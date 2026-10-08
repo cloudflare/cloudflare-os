@@ -5,12 +5,34 @@
  * slide number "11"), while Slides indexes an AutoText as one code unit whatever it shows. Every
  * other character occupies one index per UTF-16 code unit, so a range of projected text maps onto
  * provider indices exactly, unless a boundary falls inside an AutoText.
+ *
+ * Rewriting keeps styles: inserted text takes the style of the run at its insertion index, as
+ * Google's `insertText` "generally" does, and a newline it inserts starts a paragraph copying the
+ * one it was inserted into, bullet included, as `insertText` documents. Deleting a newline merges
+ * its paragraph into the next, which keeps its own style. Google documents neither the first rule
+ * exactly nor the last at all, so the requests set both styles explicitly.
  */
 
-import type { RestText } from "./slides-api";
+import type {
+  RestBullet, RestParagraphStyle, RestText, RestTextElement, RestTextStyle,
+} from "./slides-api";
 
 /** A text run, or an AutoText occupying `width` provider indices whatever `text` it shows. */
-export type TextSegment = { text: string; width: number; autoText?: string };
+export type TextSegment = { text: string; width: number; autoText?: string; style?: RestTextStyle };
+
+/** What a paragraph marker carries. */
+export type Paragraph = { style?: RestParagraphStyle; bullet?: RestBullet };
+
+/**
+ * A shape's or cell's text: its segments, without the newline Slides keeps at its end, one
+ * paragraph per newline including that last one, and the last newline's own style.
+ */
+export type RichText = {
+  segments: TextSegment[];
+  paragraphs: Paragraph[];
+  endStyle?: RestTextStyle;
+  lists?: Record<string, unknown>;
+};
 
 /** Where text requests apply: a shape, or one cell of a table. */
 export type TextLocation = {
@@ -33,31 +55,42 @@ export const STRIPPED_CHARACTERS = /[\u0000-\u0008\u000c-\u001f\ue000-\uf8ff]/;
 
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
-function run(text: string): TextSegment {
-  return { text, width: text.length };
-}
-
-/** The segments of a shape's or cell's text, without the newline Slides keeps at its end. */
-export function segmentsOf(body: RestText | undefined): TextSegment[] {
+/** The text and paragraphs of a shape or cell, as `RichText` describes them. */
+export function richTextOf(body: RestText | undefined): RichText {
   let segments: TextSegment[] = [];
+  let markers: Paragraph[] = [];
   for (let element of body?.textElements ?? []) {
-    if (element.textRun) {
-      segments.push(run(element.textRun.content ?? ""));
+    if (element.paragraphMarker) {
+      let { style, bullet } = element.paragraphMarker;
+      markers.push({ ...(style ? { style } : {}), ...(bullet ? { bullet } : {}) });
+    } else if (element.textRun) {
+      let { content = "", style } = element.textRun;
+      segments.push({ text: content, width: content.length, ...(style ? { style } : {}) });
     } else if (element.autoText) {
       let width = (element.endIndex ?? 0) - (element.startIndex ?? 0);
       if (!Number.isInteger(width) || width <= 0) {
         throw new Error("Google Slides returned an invalid AutoText");
       }
-      segments.push({
-        text: element.autoText.content ?? "", width, autoText: element.autoText.type ?? "UNSPECIFIED",
-      });
+      let { type = "UNSPECIFIED", content = "", style } = element.autoText;
+      segments.push({ text: content, width, autoText: type, ...(style ? { style } : {}) });
     }
   }
+  let endStyle: RestTextStyle | undefined;
   let last = segments.at(-1);
   if (last && !last.autoText && last.text.endsWith("\n")) {
-    segments[segments.length - 1] = run(last.text.slice(0, -1));
+    endStyle = last.style;
+    let text = last.text.slice(0, -1);
+    segments.pop();
+    if (text) segments.push({ ...last, text, width: text.length });
   }
-  return segments;
+  // A summary read's field mask leaves out paragraph markers.
+  let count = projectedText(segments).split("\n").length;
+  return {
+    segments,
+    paragraphs: Array.from({ length: count }, (_, i) => markers[i] ?? {}),
+    ...(endStyle ? { endStyle } : {}),
+    ...(body?.lists ? { lists: body.lists } : {}),
+  };
 }
 
 /** The text agents read, as `slides-model.ts` projects it. */
@@ -79,8 +112,9 @@ function cut(
       }
       let k = offset - projected;
       return [
-        [...segments.slice(0, i), run(segment.text.slice(0, k))],
-        [run(segment.text.slice(k)), ...segments.slice(i + 1)],
+        [...segments.slice(0, i), { ...segment, text: segment.text.slice(0, k), width: k }],
+        [{ ...segment, text: segment.text.slice(k), width: segment.text.length - k },
+          ...segments.slice(i + 1)],
       ];
     }
     projected += segment.text.length;
@@ -99,13 +133,44 @@ export function providerRange(
   return { startIndex: width(cut(segments, start)[0]), endIndex: width(cut(segments, end)[0]) };
 }
 
-/** Replace the projected range `[start, end)` with `text`. */
-export function spliceSegments(
-  segments: readonly TextSegment[], start: number, end: number, text: string,
-): TextSegment[] {
+/** The style text inserted at a projected offset takes: the run's there, as `insertText` does. */
+function styleAt(rich: RichText, offset: number): RestTextStyle | undefined {
+  let [, from] = cut(rich.segments, offset);
+  return from.length > 0 ? from[0].style : rich.endStyle;
+}
+
+/** Replace the projected range `[start, end)` with `text`, keeping styles as the module says. */
+export function spliceText(rich: RichText, start: number, end: number, text: string): RichText {
+  let { segments, paragraphs } = rich;
   let [before] = cut(segments, start);
   let [, after] = cut(segments, end);
-  return [...before, ...(text ? [run(text)] : []), ...after].filter(s => s.width > 0);
+  let style = styleAt(rich, start);
+  let projected = projectedText(segments);
+  let paragraph = projected.slice(0, start).split("\n").length - 1;
+  let merged = projected.slice(0, end).split("\n").length - 1;
+  let inserted = text.split("\n").length - 1;
+  // Google may give a merged paragraph either one's style; that is pinned when applied, but a list
+  // item's bullet cannot be.
+  let [first, last] = [paragraphs[paragraph], paragraphs[merged]]
+    .map(({ bullet }) => JSON.stringify([bullet?.listId, bullet?.nestingLevel ?? 0]));
+  if (merged > paragraph && first !== last) {
+    throw new ChangeConflict(
+      "the edit joins paragraphs that are not items of the same list at the same level; edit " +
+      "each paragraph's text on its own");
+  }
+  return {
+    ...rich,
+    segments: [
+      ...before,
+      ...(text ? [{ text, width: text.length, ...(style ? { style } : {}) }] : []),
+      ...after,
+    ],
+    paragraphs: [
+      ...paragraphs.slice(0, paragraph),
+      ...Array.from({ length: inserted }, () => structuredClone(paragraphs[paragraph])),
+      ...paragraphs.slice(merged),
+    ],
+  };
 }
 
 // Whether an edit may start or end at a projected offset: not inside a character, nor an AutoText.
@@ -139,17 +204,35 @@ export function narrowChange(
   return { start: start + prefix, end: end - suffix, text: text.slice(prefix, text.length - suffix) };
 }
 
-/** `TextContent` holding `segments`, with the indices and final newline Slides would report. */
-export function restTextOf(segments: readonly TextSegment[]): RestText {
+/** `TextContent` holding `rich`, with the indices, runs and paragraph markers Slides reports. */
+export function restTextOf(rich: RichText): RestText {
+  // Google ends a run at every newline, the last included.
+  let pieces = rich.segments.flatMap(segment => segment.autoText ? [segment] :
+    segment.text.split(/(?<=\n)/).filter(Boolean)
+      .map(text => ({ ...segment, text, width: text.length })));
+  pieces.push({ text: "\n", width: 1, ...(rich.endStyle ? { style: rich.endStyle } : {}) });
+  let textElements: RestTextElement[] = [];
   let index = 0;
-  return {
-    textElements: [...segments, run("\n")].map(segment => {
-      let at = { startIndex: index, endIndex: index += segment.width };
-      return segment.autoText
-        ? { ...at, autoText: { type: segment.autoText, content: segment.text } }
-        : { ...at, textRun: { content: segment.text } };
-    }),
-  };
+  let paragraph = 0;
+  let runs: RestTextElement[] = [];
+  for (let piece of pieces) {
+    let at = { startIndex: index, endIndex: index += piece.width };
+    let style = piece.style ? { style: piece.style } : {};
+    runs.push(piece.autoText
+      ? { ...at, autoText: { type: piece.autoText, content: piece.text, ...style } }
+      : { ...at, textRun: { content: piece.text, ...style } });
+    if (piece.autoText || !piece.text.endsWith("\n")) continue;
+    // Each paragraph opens with a marker spanning it.
+    let { style: paragraphStyle, bullet } = rich.paragraphs[paragraph++] ?? {};
+    textElements.push({
+      startIndex: runs[0].startIndex, endIndex: index,
+      paragraphMarker: {
+        ...(paragraphStyle ? { style: paragraphStyle } : {}), ...(bullet ? { bullet } : {}),
+      },
+    }, ...runs);
+    runs = [];
+  }
+  return { textElements, ...(rich.lists ? { lists: rich.lists } : {}) };
 }
 
 function isGraphemeBoundary(text: string, offset: number): boolean {
@@ -184,24 +267,58 @@ export function changeRange(
   return { start, end };
 }
 
+/** Every `TextStyle` field, so a style sent with them replaces the text's whole style. */
+export const TEXT_STYLE_FIELDS = "backgroundColor,baselineOffset,bold,fontFamily,fontSize," +
+  "foregroundColor,italic,link,smallCaps,strikethrough,underline,weightedFontFamily";
+
+/** Every writable `ParagraphStyle` field, likewise. */
+export const PARAGRAPH_STYLE_FIELDS = "alignment,direction,indentEnd,indentFirstLine,indentStart," +
+  "lineSpacing,spaceAbove,spaceBelow,spacingMode";
+
+/** A `Range` of provider indices. */
+export function fixedRange(startIndex: number, endIndex: number) {
+  return { type: "FIXED_RANGE", startIndex, endIndex };
+}
+
 /**
- * Requests replacing `range` with `text`. The insertion comes first, so the new text joins the
- * run at that index, which is the text it replaces, and takes its style.
+ * Requests turning `before` into `after`, which `spliceText` made by replacing `[start, end)` with
+ * `text`. Google only "generally" keeps neighbouring styles and documents no rule for a merge, so
+ * the new text is given its style explicitly, and so is the paragraph a merge leaves.
  */
-export function replaceRequests(location: TextLocation, range: IndexRange, text: string): unknown[] {
+export function replaceRequests(
+  location: TextLocation, before: RichText, after: RichText, start: number, end: number,
+  text: string,
+): unknown[] {
+  let range = providerRange(before.segments, start, end);
   let requests: unknown[] = [];
   if (text) {
-    requests.push({ insertText: { ...location, text, insertionIndex: range.startIndex } });
+    let style = styleAt(before, start) ?? {};
+    requests.push(
+      { insertText: { ...location, text, insertionIndex: range.startIndex } },
+      { updateTextStyle: {
+        ...location, style, fields: TEXT_STYLE_FIELDS,
+        textRange: fixedRange(range.startIndex, range.startIndex + text.length),
+      } },
+    );
   }
   if (range.endIndex > range.startIndex) {
     requests.push({
       deleteText: {
-        ...location,
-        textRange: {
-          type: "FIXED_RANGE",
-          startIndex: range.startIndex + text.length,
-          endIndex: range.endIndex + text.length,
-        },
+        ...location, textRange: fixedRange(range.startIndex + text.length, range.endIndex + text.length),
+      },
+    });
+  }
+  let projected = projectedText(before.segments);
+  if (projected.slice(start, end).includes("\n")) {
+    let paragraph = (projected.slice(0, start) + text).split("\n").length - 1;
+    let lines = projectedText(after.segments).split("\n");
+    let from = lines.slice(0, paragraph).reduce((sum, line) => sum + line.length + 1, 0);
+    let { startIndex, endIndex } = providerRange(after.segments, from, from + lines[paragraph].length);
+    requests.push({
+      updateParagraphStyle: {
+        ...location, style: after.paragraphs[paragraph].style ?? {}, fields: PARAGRAPH_STYLE_FIELDS,
+        // Through its newline, so an empty paragraph has a range too.
+        textRange: fixedRange(startIndex, endIndex + 1),
       },
     });
   }

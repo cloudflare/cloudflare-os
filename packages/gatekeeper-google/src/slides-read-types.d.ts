@@ -71,32 +71,105 @@ type SlideElementBase = {
 };
 
 /**
+ * A colour: `#rrggbb`, or a theme colour such as `ACCENT1`, `DARK1` or `HYPERLINK`, which follows
+ * the presentation's theme.
+ */
+export type SlideColor = string;
+
+/**
+ * Text formatting set on the text itself. What text takes from its placeholder, layout or theme is
+ * not shown, and Google stores a value equal to the one the text would take anyway as not set, so
+ * such a value disappears once a change setting it is applied.
+ */
+export type TextFormat = {
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strikethrough?: boolean;
+  smallCaps?: boolean;
+  /** Font name, such as `Roboto`. */
+  fontFamily?: string;
+  /** Font size in points. */
+  fontSize?: number;
+  /** Text colour. */
+  color?: SlideColor;
+  /** Highlight colour behind the text. */
+  highlight?: SlideColor;
+  /** The URL the text links to. */
+  link?: string;
+  /** Text raised or lowered from the line. */
+  baseline?: "superscript" | "subscript";
+};
+
+/**
+ * The formatting of `text.slice(start, end)`. A range may run on across a paragraph break when the
+ * text on both sides sets the same; the newline itself is not reported.
+ */
+export type FormattedRange = TextFormat & { start: number; end: number };
+
+/** Paragraph formatting set on the paragraph itself, as for `TextFormat`. */
+export type ParagraphFormat = {
+  alignment?: "start" | "center" | "end" | "justified";
+  /** Line spacing as a percentage of single spacing, which is 100. */
+  lineSpacing?: number;
+  /** Space above the paragraph, in points. */
+  spaceAbove?: number;
+  /** Space below the paragraph, in points. */
+  spaceBelow?: number;
+};
+
+/** A paragraph, `text.slice(start, end)` without its newline, and its formatting. */
+export type FormattedParagraph = ParagraphFormat & {
+  start: number;
+  end: number;
+  /** Set when the paragraph is a list item: its nesting level, 0 for the outermost. */
+  bullet?: { level: number };
+};
+
+/** Text with its formatting. */
+type FormattedText = {
+  /**
+   * Paragraphs are separated by `\n`, a line break within a paragraph is `\u000b`, a slide number
+   * appears as the number it shows, and the final paragraph's newline is omitted.
+   */
+  text: string;
+  /** Ranges of `text` that set formatting, in order, not overlapping; absent if none does. */
+  formats?: FormattedRange[];
+  /** The paragraphs that set formatting or are list items; absent if none is. */
+  paragraphs?: FormattedParagraph[];
+};
+
+/**
  * One table cell. `null` in `TableElement.cells` marks a position covered by a merged cell that
  * starts above or to the left of it.
  */
-export type TableCell = {
-  /** The cell's text. */
-  text: string;
+export type TableCell = FormattedText & {
   /** Rows this cell spans, when more than one. */
   rowSpan?: number;
   /** Columns this cell spans, when more than one. */
   columnSpan?: number;
+  /** Background colour set on the cell, or `"none"` for transparent. */
+  fill?: SlideColor | "none";
+  /** Where the cell's text sits vertically, when set on the cell. */
+  contentAlignment?: "top" | "middle" | "bottom";
 };
 
-/** A shape, text box, or placeholder. */
-export type ShapeElement = SlideElementBase & {
+/**
+ * A shape, text box, or placeholder. An empty placeholder's text is `""`; the prompt text its
+ * layout shows in the editor is not part of the slide.
+ */
+export type ShapeElement = SlideElementBase & FormattedText & {
   kind: "shape";
   /** Google shape type, such as `TEXT_BOX` or `RECTANGLE`. */
   shapeType: string;
   /** Placeholder type, such as `TITLE` or `BODY`, when the shape is a layout placeholder. */
   placeholder?: string;
-  /**
-   * The shape's own text: paragraphs are separated by `\n`, a line break within a paragraph is
-   * `\u000b`, a slide number appears as the number it shows, and the final paragraph's newline is
-   * omitted. An empty placeholder is `""`; the prompt text its layout shows in the editor is not
-   * part of the slide.
-   */
-  text: string;
+  /** Fill colour set on the shape, or `"none"` for no fill; absent when it takes its default. */
+  fill?: SlideColor | "none";
+  /** Outline set on the shape (weight in points), or `"none"`; absent when it takes its default. */
+  outline?: { color?: SlideColor; weight?: number } | "none";
+  /** Where the shape's text sits vertically, when set on the shape. */
+  contentAlignment?: "top" | "middle" | "bottom";
 };
 
 /** A table. */
@@ -163,9 +236,9 @@ export type SlideThumbnail = {
 /**
  * Read-only access to one Google Slides presentation.
  *
- * `getSlides()` returns the slides' own elements: their text and where they are. Layout and master
- * elements such as logos and footers, and styles, are not included; `getSlideThumbnail()` shows
- * the slide whole.
+ * `getSlides()` returns the slides' own elements: their text, formatting, and where they are.
+ * Layout and master elements such as logos and footers are not included, nor is formatting an
+ * element takes from its placeholder or theme; `getSlideThumbnail()` shows the slide whole.
  */
 export interface GooglePresentationReadSession {
   /** Return presentation metadata and a summary of every slide. */

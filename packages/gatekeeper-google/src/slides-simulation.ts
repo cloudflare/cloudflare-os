@@ -16,8 +16,8 @@ import {
 } from "@gadgets/gatekeeper-kit/simulation";
 import type { RestPageElement, RestSlide, RestText } from "./slides-api";
 import {
-  ChangeConflict, changeRange, narrowChange, projectedText, providerRange, restTextOf, segmentsOf,
-  spliceSegments, type IndexRange, type TextLocation,
+  ChangeConflict, changeRange, narrowChange, projectedText, providerRange, replaceRequests,
+  restTextOf, richTextOf, spliceText, type IndexRange, type TextLocation,
 } from "./slides-text";
 
 /** A slide as it was when a change was queued, so the approver can recognize it. */
@@ -63,9 +63,12 @@ export type Deck = {
   slides: ReadonlyMap<string, RestSlide>;
 };
 
-/** Where one edit landed: the provider range it replaces with `inserted`, and the text after it. */
+/**
+ * Where one edit landed: the provider range it replaces with `inserted`, the requests that do it,
+ * and the text before and after it.
+ */
 export type EditPlacement = {
-  location: TextLocation; range: IndexRange; inserted: string; previous: string; text: string;
+  range: IndexRange; inserted: string; requests: unknown[]; previous: string; text: string;
 };
 
 type TextSlot = { location: TextLocation; body: RestText | undefined; write(body: RestText): void };
@@ -147,19 +150,22 @@ function textSlot(slide: RestSlide, edit: Omit<TextEditRecord, "slide">): TextSl
 /** Applies one edit to `slide` in place, returning where it landed. Throws `ChangeConflict`. */
 export function editSlide(slide: RestSlide, edit: Omit<TextEditRecord, "slide">): EditPlacement {
   let slot = textSlot(slide, edit);
-  let segments = segmentsOf(slot.body);
-  let previous = projectedText(segments);
+  let rich = richTextOf(slot.body);
+  let previous = projectedText(rich.segments);
   let found = changeRange(previous, edit);
-  let { start, end, text } = narrowChange(segments, found.start, found.end, edit.replace);
-  let range = providerRange(segments, start, end);
-  let edited = spliceSegments(segments, start, end, text);
+  let { start, end, text } = narrowChange(rich.segments, found.start, found.end, edit.replace);
+  let range = providerRange(rich.segments, start, end);
+  let edited = spliceText(rich, start, end, text);
   slot.write(restTextOf(edited));
-  return { location: slot.location, range, inserted: text, previous, text: projectedText(edited) };
+  return {
+    range, inserted: text, requests: replaceRequests(slot.location, rich, edited, start, end, text),
+    previous, text: projectedText(edited.segments),
+  };
 }
 
 /** The current text an edit addresses. Throws `ChangeConflict` when it is not there. */
 export function textOfTarget(slide: RestSlide, edit: Omit<TextEditRecord, "slide">): string {
-  return projectedText(segmentsOf(textSlot(slide, edit).body));
+  return projectedText(richTextOf(textSlot(slide, edit).body).segments);
 }
 
 // Prefixes a conflict with the edit it is about.

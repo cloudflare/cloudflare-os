@@ -4,6 +4,7 @@ import type {
   RestPageElement, RestPresentation, RestSlide, RestText,
 } from "../../src/slides-api";
 import type { Slide, PresentationInfo, ShapeElement, TableElement } from "../../src/slides-read-types";
+import { TEXT_STYLE_FIELDS } from "../../src/slides-text";
 import { presentation, shape, slide, text } from "../slides-fixture";
 
 /** One provider index of a shape's text: a character, or an AutoText. */
@@ -66,7 +67,7 @@ class Invalid extends Error {}
 
 /**
  * Google Slides as far as these tests need it: presentation and page reads, and an atomic,
- * revision-checked `batchUpdate` of the five requests the gatekeeper sends.
+ * revision-checked `batchUpdate` of the requests the gatekeeper sends.
  */
 class SlidesProvider {
   revision = 1;
@@ -157,6 +158,14 @@ class SlidesProvider {
         units.splice(startIndex, endIndex - startIndex);
       }
       holder.text = textOfUnits(units);
+    } else if (request.updateTextStyle || request.updateParagraphStyle) {
+      // Styles are not modelled here; the request must still address text that exists.
+      let { objectId, cellLocation, textRange, fields } =
+        request.updateTextStyle ?? request.updateParagraphStyle;
+      let length = unitsOf(this.#textHolder(deck, objectId, cellLocation).text).length;
+      let { type, startIndex, endIndex } = textRange;
+      if (type !== "FIXED_RANGE" || !fields || startIndex < 0 || endIndex <= startIndex ||
+        endIndex > length) throw new Invalid();
     } else if (request.duplicateObject) {
       let { objectId, objectIds } = request.duplicateObject;
       let at = slides.findIndex(s => s.objectId === objectId);
@@ -326,11 +335,16 @@ describe("Google Slides changes", () => {
     expect(await slides.apply(actionId!)).toBeNull();
 
     expect(provider.text("s2", "b2")).toBe("Revenue: $12M\nMargin: 20%\n");
-    // Only "0" became "2": the label and unit are not rewritten, so they keep their own style.
+    // Only "0" became "2": the label and unit are not rewritten, so they keep their own style, and
+    // the "2" is given the style of the "0" it replaces, here none.
     expect(provider.batches).toEqual([{
       requiredRevisionId: "r1",
       requests: [
         { insertText: { objectId: "b2", text: "2", insertionIndex: 11 } },
+        { updateTextStyle: {
+          objectId: "b2", style: {}, fields: TEXT_STYLE_FIELDS,
+          textRange: { type: "FIXED_RANGE", startIndex: 11, endIndex: 12 },
+        } },
         { deleteText: { objectId: "b2", textRange: { type: "FIXED_RANGE", startIndex: 12, endIndex: 13 } } },
       ],
     }]);

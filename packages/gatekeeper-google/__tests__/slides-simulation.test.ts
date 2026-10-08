@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RestText } from "../src/slides-api";
+import { slideOf } from "../src/slides-model";
 import {
   applyChange, editSlide, slidesToFetch, type Deck, type SlidesAction,
 } from "../src/slides-simulation";
@@ -35,6 +36,46 @@ describe("Slides text edits", () => {
     expect(edit(text(["Caf\u0065\u0301"]), "e\u0301", "e\u0300")).toMatchObject({
       range: { startIndex: 3, endIndex: 5 }, inserted: "e\u0300",
     });
+  });
+
+  it("keeps styles as Google does: new text joins the run it replaces, a new paragraph copies its own", () => {
+    let red = { foregroundColor: { opaqueColor: { themeColor: "ACCENT2" } } };
+    let body = text(
+      { runs: ["Revenue ", { content: "up 4%", style: { bold: true } }, " in Q3"],
+        marker: { style: { alignment: "CENTER" } } },
+      { runs: [{ content: "Costs", style: red }, " flat"], marker: { style: { alignment: "END" } } },
+      { runs: ["Next"], marker: { bullet: { listId: "l", nestingLevel: 1 } } },
+    );
+    let change = (find: string, replace: string) => {
+      let page = slide("s1", [shape("box", body)]);
+      let { requests } = editSlide(page, { slideId: "s1", elementId: "box", find, replace });
+      return { read: slideOf(page, 0, new Map()).elements[0], requests };
+    };
+
+    expect(change("up 4%", "up 9%").read).toMatchObject({
+      text: "Revenue up 9% in Q3\nCosts flat\nNext",
+      formats: [{ start: 8, end: 13, bold: true }, { start: 20, end: 25, color: "ACCENT2" }],
+    });
+    // Splitting the bulleted paragraph makes two bulleted paragraphs.
+    expect(change("Next", "Ne\nxt").read).toMatchObject({
+      paragraphs: [
+        { alignment: "center" }, { alignment: "end" },
+        { start: 31, end: 33, bullet: { level: 1 } }, { start: 34, end: 36, bullet: { level: 1 } },
+      ],
+    });
+    // Joining paragraphs keeps the second's, whose newline survives, and says so to Google. "osts"
+    // is left as it was, so it stays red; "; c" replacing " in Q3\nC" joins the run it starts in.
+    let joined = change(" in Q3\nCosts", "; costs");
+    expect(joined.read).toMatchObject({
+      text: "Revenue up 4%; costs flat\nNext",
+      formats: [{ start: 8, end: 13, bold: true }, { start: 16, end: 20, color: "ACCENT2" }],
+      paragraphs: [{ start: 0, end: 25, alignment: "end" }, { start: 26, end: 30 }],
+    });
+    expect(joined.requests.at(-1)).toMatchObject({
+      updateParagraphStyle: { style: { alignment: "END" }, textRange: { startIndex: 0, endIndex: 26 } },
+    });
+    // Which bullet a merged paragraph keeps cannot be said to Google, so it is refused.
+    expect(() => change("flat\nNext", "flat, next")).toThrow("not items of the same list");
   });
 });
 

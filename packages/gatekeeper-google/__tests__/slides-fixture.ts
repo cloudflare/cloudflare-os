@@ -8,23 +8,32 @@
  * `slides-live-sample.json` is a recorded response (styles stripped) that pins these facts.
  */
 
-import type { RestPageElement, RestPresentation, RestText, RestTextElement } from "../src/slides-api";
+import type {
+  RestPageElement, RestPresentation, RestText, RestTextElement, RestTextStyle,
+} from "../src/slides-api";
 
-/** A run of text, or the slide-number AutoText with the content it renders. */
-export type FixtureRun = string | { slideNumber: string };
+/** A run of text, a styled run, or the slide-number AutoText with the content it renders. */
+export type FixtureRun = string | { slideNumber: string } | { content: string; style: RestTextStyle };
+
+/** A paragraph: its runs, or its runs and what its marker carries. */
+export type FixtureParagraph =
+  FixtureRun[] | { runs: FixtureRun[]; marker: NonNullable<RestTextElement["paragraphMarker"]> };
 
 /** `TextContent` for paragraphs of runs, each paragraph ending in the newline Slides stores. */
-export function text(...paragraphs: FixtureRun[][]): RestText {
+export function text(...paragraphs: FixtureParagraph[]): RestText {
   let elements: RestTextElement[] = [];
   let index = 0;
   let at = (start: number, length: number) =>
     ({ ...(start === 0 ? {} : { startIndex: start }), endIndex: start + length });
   for (let paragraph of paragraphs) {
-    let runs = [...paragraph, "\n"].map(run => typeof run === "string"
-      ? { element: { textRun: { content: run } }, width: run.length }
-      : { element: { autoText: { type: "SLIDE_NUMBER", content: run.slideNumber } }, width: 1 });
+    let { runs: content, marker } = Array.isArray(paragraph) ? { runs: paragraph, marker: {} } : paragraph;
+    let runs = [...content, "\n"].map(run => {
+      if (typeof run === "string") return { element: { textRun: { content: run } }, width: run.length };
+      if ("content" in run) return { element: { textRun: run }, width: run.content.length };
+      return { element: { autoText: { type: "SLIDE_NUMBER", content: run.slideNumber } }, width: 1 };
+    });
     let length = runs.reduce((sum, run) => sum + run.width, 0);
-    elements.push({ ...at(index, length), paragraphMarker: {} });
+    elements.push({ ...at(index, length), paragraphMarker: marker });
     for (let { element, width } of runs) {
       elements.push({ ...element, ...at(index, width) });
       index += width;

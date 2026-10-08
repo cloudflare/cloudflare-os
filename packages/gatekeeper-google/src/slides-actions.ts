@@ -22,7 +22,7 @@ import {
   editDeck, elementIdsOf, movedOrder, requireNewSlide, textOfTarget, type Deck, type SlideLabel,
   type SlidesActions, type TextEditRecord,
 } from "./slides-simulation";
-import { ChangeConflict, replaceRequests } from "./slides-text";
+import { ChangeConflict } from "./slides-text";
 
 /** What an approved change is written with. */
 export type SlidesHost = { api: GoogleSlidesApi; presentationId: string };
@@ -176,8 +176,7 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
     apply: ({ edits }, host) => write(host, [...new Set(edits.map(edit => edit.slideId))], fresh => {
       let { deck, placements } = editDeck(fresh, edits);
       return {
-        requests: placements.flatMap(placement =>
-          replaceRequests(placement!.location, placement!.range, placement!.inserted)),
+        requests: placements.flatMap(placement => placement!.requests),
         landed: after => quietly(() => edits.every(edit =>
           textOfTarget(after.slides.get(edit.slideId) ?? {}, edit) ===
             textOfTarget(deck.slides.get(edit.slideId)!, edit))),

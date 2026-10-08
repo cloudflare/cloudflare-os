@@ -12,6 +12,7 @@ import type { RestPageElement, RestPresentation, RestSlide, RestText } from "./s
 import {
   emu, IDENTITY, localBox, matrixOf, multiply, placementOf, points, type Matrix,
 } from "./slides-geometry";
+import { cellPropertiesOf, formattingOf, shapePropertiesOf } from "./slides-format";
 import type {
   PresentationInfo, Slide, SlideElement, SlideSummary, TableCell,
 } from "./slides-read-types";
@@ -44,10 +45,13 @@ function cellsOf(table: NonNullable<RestPageElement["table"]>): (TableCell | nul
       let r = cell.location.rowIndex ?? 0;
       let c = cell.location.columnIndex ?? 0;
       if (r >= rows || c >= columns) throw new Error(INVALID_ELEMENT);
+      let text = textOf(cell.text);
       cells[r][c] = {
-        text: textOf(cell.text),
+        text,
+        ...formattingOf(cell.text, text),
         ...(cell.rowSpan && cell.rowSpan > 1 ? { rowSpan: cell.rowSpan } : {}),
         ...(cell.columnSpan && cell.columnSpan > 1 ? { columnSpan: cell.columnSpan } : {}),
+        ...cellPropertiesOf(cell.tableCellProperties),
       };
     }
   }
@@ -70,12 +74,15 @@ function elementOf(element: RestPageElement, parent: Matrix = IDENTITY): SlideEl
     ...(element.description ? { altDescription: element.description } : {}),
   };
   if (element.shape) {
+    let text = textOf(element.shape.text);
     return {
       ...base,
       kind: "shape",
       shapeType: element.shape.shapeType ?? "TYPE_UNSPECIFIED",
       ...(element.shape.placeholder?.type ? { placeholder: element.shape.placeholder.type } : {}),
-      text: textOf(element.shape.text),
+      text,
+      ...formattingOf(element.shape.text, text),
+      ...shapePropertiesOf(element.shape.shapeProperties),
     };
   }
   if (element.table) {

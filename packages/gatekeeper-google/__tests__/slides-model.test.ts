@@ -135,6 +135,55 @@ describe("Slides model", () => {
     expect(unplaced).not.toHaveProperty("bounds");
   });
 
+  it("reads formatting set on text, paragraphs, shapes and cells, merging equal adjacent runs", () => {
+    let bold = { bold: true, fontSize: { magnitude: 18, unit: "PT" as const } };
+    let body = text(
+      { runs: [{ content: "Big ", style: bold }, { content: "news", style: bold }, " today"],
+        marker: { style: { alignment: "CENTER", spaceBelow: { magnitude: 127_000, unit: "EMU" } } } },
+      { runs: [{ content: "item", style: {
+        foregroundColor: { opaqueColor: { rgbColor: { red: 1, blue: 0.5 } } },
+        backgroundColor: {}, link: { url: "https://example.com" }, baselineOffset: "NONE",
+      } }], marker: { bullet: { listId: "l1", glyph: "●" } } },
+      { runs: [{ content: "deep", style: { foregroundColor: { opaqueColor: { themeColor: "ACCENT1" } } } }],
+        marker: { bullet: { listId: "l1", nestingLevel: 2 } } },
+    );
+    let box = {
+      ...shape("box", body),
+      shape: { ...shape("box", body).shape, shapeProperties: {
+        shapeBackgroundFill: { propertyState: "NOT_RENDERED" as const },
+        outline: { outlineFill: { solidFill: { color: { opaqueColor: { rgbColor: {} } } } },
+          weight: { magnitude: 25_400, unit: "EMU" as const } },
+        contentAlignment: "MIDDLE",
+      } },
+    };
+    let table = { objectId: "t", table: { rows: 1, columns: 1, tableRows: [{ tableCells: [{
+      location: {}, text: text(["cell"]),
+      tableCellProperties: {
+        tableCellBackgroundFill: { solidFill: { color: { opaqueColor: { themeColor: "LIGHT2" } } } },
+      },
+    }] }] } };
+
+    let [shapeRead, tableRead] = onlySlide(box, table).elements;
+
+    expect(shapeRead).toMatchObject({
+      text: "Big news today\nitem\ndeep",
+      formats: [
+        { start: 0, end: 8, bold: true, fontSize: 18 },
+        { start: 15, end: 19, color: "#ff0080", link: "https://example.com" },
+        { start: 20, end: 24, color: "ACCENT1" },
+      ],
+      paragraphs: [
+        { start: 0, end: 14, alignment: "center", spaceBelow: 10 },
+        { start: 15, end: 19, bullet: { level: 0 } },
+        { start: 20, end: 24, bullet: { level: 2 } },
+      ],
+      fill: "none",
+      outline: { color: "#000000", weight: 2 },
+      contentAlignment: "middle",
+    });
+    expect(tableRead).toHaveProperty("cells.0.0", { text: "cell", fill: "LIGHT2" });
+  });
+
   it("reads speaker notes from the notes page's speaker-notes shape only", () => {
     let slides = [
       slide("with-notes", [], { notes: text(["Mention Q3"], ["then demo"]) }),

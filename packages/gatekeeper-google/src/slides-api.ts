@@ -43,17 +43,81 @@ export type RestTransform = {
   translateX?: number; translateY?: number; unit?: "EMU" | "PT" | "UNIT_UNSPECIFIED";
 };
 
+/** An `OptionalColor`: opaque when it has a colour, transparent when it has none. */
+export type RestColor = {
+  opaqueColor?: { rgbColor?: { red?: number; green?: number; blue?: number }; themeColor?: string };
+};
+
+/** A `TextStyle`. A field Google leaves unset is inherited. */
+export type RestTextStyle = {
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strikethrough?: boolean;
+  smallCaps?: boolean;
+  fontFamily?: string;
+  weightedFontFamily?: { fontFamily?: string; weight?: number };
+  fontSize?: RestDimension;
+  foregroundColor?: RestColor;
+  backgroundColor?: RestColor;
+  link?: { url?: string; slideIndex?: number; pageObjectId?: string; relativeLink?: string };
+  baselineOffset?: string;
+};
+
+/** A `ParagraphStyle`. A field Google leaves unset is inherited. */
+export type RestParagraphStyle = {
+  alignment?: string;
+  lineSpacing?: number;
+  spaceAbove?: RestDimension;
+  spaceBelow?: RestDimension;
+  indentStart?: RestDimension;
+  indentEnd?: RestDimension;
+  indentFirstLine?: RestDimension;
+  direction?: string;
+  spacingMode?: string;
+};
+
+/** A paragraph's `Bullet`, present when the paragraph is in a list. */
+export type RestBullet = {
+  listId?: string; nestingLevel?: number; glyph?: string; bulletStyle?: RestTextStyle;
+};
+
 /** One `TextElement` of a shape's or table cell's `TextContent`. */
 export type RestTextElement = {
   startIndex?: number;
   endIndex?: number;
-  paragraphMarker?: unknown;
-  textRun?: { content?: string };
-  autoText?: { type?: string; content?: string };
+  paragraphMarker?: { style?: RestParagraphStyle; bullet?: RestBullet };
+  textRun?: { content?: string; style?: RestTextStyle };
+  autoText?: { type?: string; content?: string; style?: RestTextStyle };
 };
 
-/** A `TextContent`. */
-export type RestText = { textElements?: RestTextElement[] };
+/** A `TextContent`. `lists` holds the lists its bullets name, which replay carries unread. */
+export type RestText = { textElements?: RestTextElement[]; lists?: Record<string, unknown> };
+
+/** A `SolidFill`. */
+export type RestSolidFill = { color?: RestColor; alpha?: number };
+
+/** A fill or outline Google renders, does not render, or inherits from a placeholder. */
+export type RestPropertyState = "RENDERED" | "NOT_RENDERED" | "INHERIT";
+
+/** A shape's `ShapeProperties`, as far as the gatekeeper reads them. */
+export type RestShapeProperties = {
+  shapeBackgroundFill?: { propertyState?: RestPropertyState; solidFill?: RestSolidFill };
+  outline?: {
+    propertyState?: RestPropertyState;
+    outlineFill?: { solidFill?: RestSolidFill };
+    weight?: RestDimension;
+    dashStyle?: string;
+  };
+  contentAlignment?: string;
+  autofit?: { autofitType?: string };
+};
+
+/** A table cell's `TableCellProperties`. */
+export type RestTableCellProperties = {
+  tableCellBackgroundFill?: { propertyState?: RestPropertyState; solidFill?: RestSolidFill };
+  contentAlignment?: string;
+};
 
 /** A `PageElement`, as far as the gatekeeper reads one. */
 export type RestPageElement = {
@@ -62,7 +126,12 @@ export type RestPageElement = {
   transform?: RestTransform;
   title?: string;
   description?: string;
-  shape?: { shapeType?: string; placeholder?: { type?: string }; text?: RestText };
+  shape?: {
+    shapeType?: string;
+    placeholder?: { type?: string };
+    text?: RestText;
+    shapeProperties?: RestShapeProperties;
+  };
   table?: {
     rows?: number;
     columns?: number;
@@ -72,6 +141,7 @@ export type RestPageElement = {
         rowSpan?: number;
         columnSpan?: number;
         text?: RestText;
+        tableCellProperties?: RestTableCellProperties;
       }[];
     }[];
   };
