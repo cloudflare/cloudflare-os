@@ -4,3 +4,4 @@
  */
 
 export { deckToPptx, MAX_TOTAL_TEXT_LENGTH, measureText } from "./src/pptx.ts";
+export type { PptxBlockAdapter } from "./src/pptx.ts";

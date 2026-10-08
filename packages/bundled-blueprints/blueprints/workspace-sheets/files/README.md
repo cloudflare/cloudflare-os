@@ -166,11 +166,12 @@ and the save-status dot. `@gadgets/bundled-blueprints/libraries/sync/client` and
 collaboration loop: the debounced, serialized, retrying save scheduler, the presence roster and
 heartbeat, the subscriber object the server calls back on, and in the Durable Object the mutation
 queue and the subscriber registry with its presence announcements (whose broadcasts are never
-awaited, so a callback may re-enter the queue). The cell model, the formula engine, the grid, the
-sheet tabs and the exports are this gadget's own.
+awaited, so a callback may re-enter the queue). `@gadgets/bundled-blueprints/libraries/zip/server`
+provides the streaming ZIP writer used by XLSX export. The cell model, the formula engine, the grid,
+sheet tabs and the export-specific code are this gadget's own.
 
 In the repository the source is TypeScript under `blueprints/workspace-sheets/files/`
-(`client.ts`, `server.ts`, `lib/protocol.ts`, `lib/formula.ts`, `lib/xlsx.ts`, `lib/zip.ts`), which the build bundles
+(`client.ts`, `server.ts`, `lib/protocol.ts`, `lib/formula.ts`, `lib/xlsx.ts`), which the build bundles
 into the `client.js` and `server.js` shipped here.
 
 ### `client.js`

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { deckToPptx } from "@gadgets/bundled-blueprints/libraries/pptx/server";
 import { crc32 } from "@gadgets/bundled-blueprints/libraries/zip/server";
-import { ExportHandler, normalizeDeckForPptx } from "../files/server.ts";
+import { ExportHandler, Gadget } from "../files/server.ts";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -294,6 +294,10 @@ function resolveRelationship(source: string, target: string): string {
 
 function handler(): ExportHandler {
   return Object.create(ExportHandler.prototype) as ExportHandler;
+}
+
+async function exportDeck(deck: unknown): Promise<ReadableStream<Uint8Array>> {
+  return handler().export({getDeck: async () => deck} as never, "pptx");
 }
 
 describe("Workspace Slides PPTX package", () => {
@@ -944,6 +948,55 @@ describe("Workspace Slides PPTX resource limits", () => {
       .toThrow("Slide 1 has 1001 blocks; the export limit is 1000 per slide");
   });
 
+  it("rejects every authored quota before invoking adapters or preparing earlier slides", () => {
+    const prepare = vi.fn(() => { throw new Error("prepared before quota validation"); });
+    const early = {get background() { return prepare(); }, blocks: [block("text", {text: "early"})]};
+    const adapt = vi.fn(() => undefined);
+    const cases = [
+      {deck: {slides: [early, ...Array.from({length: 500}, () => ({blocks: []}))]}, message: "Deck has 501 slides"},
+      {deck: {slides: [early, {blocks: Array(1001).fill(null)}]}, message: "Slide 2 has 1001 blocks"},
+      {deck: {slides: [early, ...Array.from({length: 10}, () => ({blocks: Array(1000).fill(null)}))]}, message: "Deck has more than 10000 blocks"},
+    ];
+    for (const {deck, message} of cases) {
+      expect(() => deckToPptx(deck, adapt)).toThrow(message);
+      expect(adapt).not.toHaveBeenCalled();
+      expect(prepare).not.toHaveBeenCalled();
+    }
+  });
+
+  it("bounds adapted arrays across the whole deck before preparing blocks", () => {
+    const prepare = vi.fn(() => { throw new Error("prepared before adapted quota validation"); });
+    const expensive = {type: "text", get props() { return prepare(); }};
+    const replacement = Array.from({length: 2000}, () => expensive);
+    expect(() => deckToPptx(oneSlide([null, null]), () => replacement))
+      .toThrow("Slide 1 has more than 2000 adapted blocks, the PowerPoint export limit.");
+    expect(() => deckToPptx({slides: Array.from({length: 11}, () => ({blocks: [null]}))}, () => replacement))
+      .toThrow("Deck has more than 20000 adapted blocks, the PowerPoint export limit.");
+    expect(prepare).not.toHaveBeenCalled();
+    const oversized = Array.from({length: 2001});
+    Object.defineProperty(oversized, 0, {get: prepare});
+    expect(() => deckToPptx(oneSlide([null]), () => oversized))
+      .toThrow("Slide 1 has more than 2000 adapted blocks");
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it("exports adapter replacements in source z-order, preserving undefined and removing empty arrays", async () => {
+    const kept = block("text", {text: "kept"});
+    const replaced = block("custom", {});
+    const removed = block("removed", {});
+    const zip = await readZip(deckToPptx(oneSlide([kept, replaced, removed, block("text", {text: "last"})]), source => {
+      if (source === removed) return [];
+      if (source === replaced) return [block("text", {text: "replacement"}), block("shape", {fill: "#123456"})];
+      return undefined;
+    }));
+    const xml = partText(zip, "ppt/slides/slide1.xml");
+    expect(shapeByName(xml, "Block 1 text")).toContain("kept</a:t>");
+    expect(shapeByName(xml, "Block 2 text")).toContain("replacement</a:t>");
+    expect(shapeByName(xml, "Block 3 shape")).toContain('<a:srgbClr val="123456">');
+    expect(shapeByName(xml, "Block 4 text")).toContain("last</a:t>");
+    expect(xml).not.toContain("?:");
+  });
+
   it("exports many references to one large text block without holding the deck text twice", async () => {
     // Structured-clone decks can alias one block object many times; the export must not build
     // per-character ropes over the resulting 7.9 MB of text.
@@ -1016,111 +1069,70 @@ describe("Workspace Slides PPTX resource limits", () => {
   });
 });
 
-describe("Workspace Slides logo normalization", () => {
-  it("expands logo blocks in place without touching the rest of the deck", () => {
-    const deck = {
-      slides: [
-        {id: "cover", background: {coverOrange: true}, blocks: [
-          block("shape", {fill: "#000"}), block("logo", {}, {x: 36, y: 56, w: 267}), block("title", {text: "T"}),
-        ]},
-        {id: "plain", background: {inset: true}, blocks: [block("text", {text: "kept"})]},
-        {id: "empty", blocks: "not an array"},
-        null,
-      ],
-    };
-    const before = structuredClone(deck);
-    const normalized = normalizeDeckForPptx(deck);
-    // The adapter preserves the outer deck while replacing logo blocks with renderer blocks.
-    const normalizedSlides = normalized.slides as Array<Record<string, unknown> | null>;
-    const normalizedCover = normalizedSlides[0] as {blocks: Array<Record<string, unknown>>; background: unknown};
+describe("Workspace Slides logo export", () => {
+  it.each([501, 1000])("exports %i authored dotted logos without counting expansion against source quotas", async count => {
+    const zip = await readZip(await exportDeck(oneSlide(Array.from({length: count}, () => block("logo", {})))));
+    const xml = partText(zip, "ppt/slides/slide1.xml");
+    expect(occurrences(xml, "Workspace</a:t>")).toBe(count);
+    expect(occurrences(xml, '<a:prstGeom prst="ellipse">')).toBe(count);
+    expect(xml).not.toContain("?: logo");
+  });
 
-    expect(deck).toEqual(before);
-    expect(normalized).not.toBe(deck);
-    expect(normalizedCover.blocks.map(each => each.type)).toEqual(["shape", "text", "shape", "title"]);
-    expect(normalizedCover.blocks[0]).toBe(deck.slides[0]!.blocks[0]);
-    expect(normalizedCover.blocks[3]).toBe(deck.slides[0]!.blocks[2]);
-    expect(normalizedCover.background).toBe(deck.slides[0]!.background);
-    expect(normalizedSlides[1]).toBe(deck.slides[1]);
-    expect(normalizedSlides[2]).toBe(deck.slides[2]);
-    expect(normalizedSlides[3]).toBeNull();
+  it("rejects 1001 authored logos", async () => {
+    await expect(exportDeck(oneSlide(Array.from({length: 1001}, () => block("logo", {})))))
+      .rejects.toThrow("Slide 1 has 1001 blocks; the export limit is 1000 per slide.");
+  });
 
-    // Untouched decks come back as they are, malformed ones included; deckToPptx validates those.
-    const untouched = oneSlide([block("title", {text: "no logo"})]);
-    expect(normalizeDeckForPptx(untouched)).toBe(untouched);
-    for (const value of [null, undefined, {}, {slides: "x"}, "deck"]) {
-      expect(normalizeDeckForPptx(value)).toBe(value);
+  it("exports 10000 authored logos as native wordmarks and dots, rejecting a 10001st source object", async () => {
+    const slides = Array.from({length: 10}, () => ({blocks: Array.from({length: 1000}, () => block("logo", {}))}));
+    const zip = await readZip(await exportDeck({slides}));
+    let wordmarks = 0;
+    let dots = 0;
+    for (let i = 1; i <= 10; i++) {
+      const xml = partText(zip, `ppt/slides/slide${i}.xml`);
+      wordmarks += occurrences(xml, "Workspace</a:t>");
+      dots += occurrences(xml, '<a:prstGeom prst="ellipse">');
     }
+    expect(wordmarks).toBe(10000);
+    expect(dots).toBe(10000);
+    await expect(exportDeck({slides: [...slides, {blocks: [block("logo", {})]}]}))
+      .rejects.toThrow("Deck has more than 10000 blocks, the PowerPoint export limit.");
+    await expect(exportDeck({slides: [...slides, {blocks: [block("shape", {kind: "rect", fill: "#123456"})]}]}))
+      .rejects.toThrow("Deck has more than 10000 blocks, the PowerPoint export limit.");
   });
 
-  it("lays the wordmark and accent dot out as client.js does", () => {
-    const [wordmark, dot] = normalizeDeckForPptx(oneSlide([
-      block("logo", {variant: "dark", scale: 0.62}, {x: 1013, y: 40}),
-    ])).slides[0].blocks;
-    const fontPx = 24 * 0.62;
-    // "Workspace" in Arial Bold is 5.335em; Chrome tracks (-0.02em) after each of its 9 glyphs.
-    const advance = (5.335 - 8 * 0.02) * fontPx;
-    // The browser's line-height 1 puts the baseline 0.83em down (Arial's 0.905em ascent less half
-    // its 0.15em natural leading); the renderer's natural line is raised by that half-leading.
-    const baseline = 40 + fontPx * 0.83;
-
-    expect(wordmark).toEqual({
-      type: "text", x: 1013, y: expect.closeTo(40 - fontPx * 0.075, 6),
-      w: expect.closeTo(advance * 1.02 + 8 * 0.62, 6), h: expect.closeTo(fontPx * 1.15, 6),
-      props: {
-        text: "Workspace", fontSize: fontPx, weight: 700, letterSpacing: "-0.02em",
-        lineHeight: expect.closeTo(1.15, 6), align: "left", color: "#000000",
-      },
-    });
-    expect(dot).toEqual({
-      type: "shape",
-      x: expect.closeTo(1013 + advance - 0.02 * fontPx + 3 * 0.62, 6),
-      y: expect.closeTo(baseline - 7 * 0.62, 6),
-      w: 6 * 0.62, h: 6 * 0.62,
-      props: {kind: "ellipse", fill: "#F6821F"},
-    });
-  });
-
-  it("stops measuring once the wordmarks alone exceed the renderer's text limit", () => {
-    // One aliased 1 MB logo repeated: measuring every copy would be work the renderer never
-    // accepts. Eight fill the 8 MB total-text limit; the ninth is handed over unmeasured, and the
-    // renderer rejects the deck on the total either way.
+  it("rejects wordmarks exceeding the aggregate text budget", async () => {
     const huge = block("logo", {text: "x".repeat(1_000_000)});
-    const started = performance.now();
-    const normalized = normalizeDeckForPptx(oneSlide(Array.from({length: 1_000}, () => huge)));
-    expect(performance.now() - started).toBeLessThan(2_000);
-    const blocks = normalized.slides[0].blocks;
-    expect(blocks.length).toBe(8 * 2 + 992);
-    expect(blocks[15]).toMatchObject({type: "shape"});
-    expect(blocks[16]).toEqual({type: "text", x: 0, y: 0, props: {text: huge.props.text}});
-    expect(() => deckToPptx(normalizeDeckForPptx(oneSlide(Array.from({length: 9}, () => huge)))))
-      .toThrow("Deck text is too large for PowerPoint export (maximum 8000000 characters total)");
+    await expect(exportDeck(oneSlide(Array.from({length: 9}, () => huge))))
+      .rejects.toThrow("Deck text is too large for PowerPoint export (maximum 8000000 characters total)");
   });
 
-  it("applies the component's defaults, variants and whitespace collapsing", () => {
-    // The adapter emits generic renderer blocks in place of every logo.
-    const blocks = normalizeDeckForPptx(oneSlide([
+  it("preserves defaults, variants and collapsed whitespace in exported shapes", async () => {
+    const zip = await readZip(await exportDeck(oneSlide([
       block("logo", {}, {x: 10, y: 20}),
-      block("logo", {text: "Work\n\t space ", variant: "light", accentDot: false, scale: "2"}, {x: 0, y: 0}),
+      block("logo", {text: "Work\n\t space ", variant: "light", accentDot: false, scale: "2"}),
       block("logo", {text: "", scale: 0}, {x: 100, y: 0}),
       block("logo", {text: 42, scale: "junk", accentDot: true}, {x: "5", y: null}),
-    ])).slides[0].blocks as Array<{type: string; props: Record<string, unknown>; x?: unknown}>;
-
-    expect(blocks.map((each: {type: string}) => each.type)).toEqual(["text", "shape", "text", "text", "shape", "text", "shape"]);
-    expect(blocks[0].props).toMatchObject({text: "Workspace", fontSize: 24, color: "#FFFFFF"});
-    expect(blocks[1]).toMatchObject({w: 6, h: 6});
-    expect(blocks[2].props).toMatchObject({text: "Work space", fontSize: 48, color: "#FFFFFF"});
-    // An empty wordmark has no trailing tracking: the dot sits one flex gap from the block's edge.
-    expect(blocks[3].props.text).toBe("");
-    expect(blocks[4].x).toBe(103);
-    // Coordinates are numbers, so a string x is read and a null y is 0 (then raised by the half-leading).
-    expect(blocks[5]).toMatchObject({x: 5, y: expect.closeTo(-1.8, 6), props: {text: "42", fontSize: 24}});
+    ])));
+    const xml = partText(zip, "ppt/slides/slide1.xml");
+    const defaultWordmark = shapeByName(xml, "Block 1 text");
+    expect(defaultWordmark).toContain("Workspace</a:t>");
+    expect(defaultWordmark).toContain('sz="1920"');
+    expect(defaultWordmark).toContain('<a:srgbClr val="FFFFFF">');
+    expect(shapeByName(xml, "Block 2 shape")).toContain('<a:ext cx="60960" cy="60960"/>');
+    expect(shapeByName(xml, "Block 3 text")).toContain("Work space</a:t>");
+    expect(shapeByName(xml, "Block 3 text")).toContain('sz="3840"');
+    expect(shapeByName(xml, "Block 5 shape")).toContain('x="1046480"');
+    expect(shapeByName(xml, "Block 6 text")).toContain("42</a:t>");
+    expect(shapeByName(xml, "Block 6 text")).toContain('<a:off x="50800" y="-18288"/>');
+    expect(occurrences(xml, '<a:prstGeom prst="ellipse">')).toBe(3);
   });
 
   it("renders through the generic blocks at the logo's previous geometry", async () => {
-    const zip = await readZip(deckToPptx(normalizeDeckForPptx(oneSlide([
+    const zip = await readZip(await exportDeck(oneSlide([
       block("logo", {text: "Workspace", variant: "dark", scale: 0.62}, {x: 1013, y: 40}),
       block("sectionLabel", {text: "AFTER"}, {x: 36, y: 35}),
-    ]))));
+    ])));
     const xml = partText(zip, "ppt/slides/slide1.xml");
 
     const wordmark = shapeByName(xml, "Block 1 text");
@@ -1145,6 +1157,8 @@ describe("Workspace Slides logo normalization", () => {
     const dotX = Number(/<a:off x="(\d+)"/.exec(dot)![1]);
     expect(dotX).toBeCloseTo((1013 + (5.335 - 9 * 0.02) * fontPx + 3 * 0.62) * 10160, -2);
     expect(xml).toContain('name="Block 3 sectionLabel"');
+    expect(xml.indexOf('name="Block 1 text"')).toBeLessThan(xml.indexOf('name="Block 2 shape"'));
+    expect(xml.indexOf('name="Block 2 shape"')).toBeLessThan(xml.indexOf('name="Block 3 sectionLabel"'));
 
     // The renderer itself knows no logo: fed one directly, it shows the unknown-block marker.
     const raw = await readZip(deckToPptx(oneSlide([block("logo", {})])));
@@ -1153,6 +1167,43 @@ describe("Workspace Slides logo normalization", () => {
 });
 
 describe("Workspace Slides export handler", () => {
+  it("exports the reset starter deck with chart data and editable native icons", async () => {
+    const stored = new Map<string, unknown>();
+    const state = {
+      storage: {
+        get: async (key: string) => stored.get(key),
+        put: async (key: string, value: unknown) => { stored.set(key, value); },
+      },
+    } as unknown as DurableObjectState;
+    const gadget = new Gadget(state, {});
+    const deck = await gadget.resetAll();
+    const zip = await readZip(await handler().export(gadget, "pptx"));
+    const chartIndex = deck.slides.findIndex(slide => slide.id === "6a7e5ae2");
+    const iconsIndex = deck.slides.findIndex(slide => slide.id === "4f8c2d91");
+    expect(chartIndex).toBeGreaterThanOrEqual(0);
+    expect(iconsIndex).toBeGreaterThanOrEqual(0);
+    const chart = partText(zip, `ppt/slides/slide${chartIndex + 1}.xml`);
+    for (const label of ["Quarterly adoption", "Q1", "Q2", "Q3", "Q4", "38", "57", "73", "91", "Connected source"]) {
+      expect(chart).toContain(`${label}</a:t>`);
+    }
+    const icons = partText(zip, `ppt/slides/slide${iconsIndex + 1}.xml`);
+    expect(icons).toContain("Click Edit</a:t>");
+    expect(icons).toContain("Ask the agent</a:t>");
+    const nativeShapes = [...icons.matchAll(/<p:sp>[\s\S]*?<\/p:sp>/g)].map(match => match[0]);
+    for (const [x, y, w, h] of [
+      [63, 213, 28, 22], // Edit input frame.
+      [659, 212, 28, 22], // Agent conversation frame.
+      [665, 221, 3, 3], [672, 221, 3, 3], [679, 221, 3, 3],
+    ]) {
+      const offset = `<a:off x="${x * 10160}" y="${y * 10160}"/>`;
+      const shape = nativeShapes.find(candidate => candidate.includes(offset));
+      expect(shape).toContain(`<a:ext cx="${w * 10160}" cy="${h * 10160}"/>`);
+      expect(shape).toContain("<a:prstGeom");
+    }
+    expect(chart).not.toContain("?:");
+    expect(icons).not.toContain("?:");
+  });
+
   it("publishes the exact HTML, PDF, and PowerPoint export metadata", async () => {
     await expect(handler().getExportFormats()).resolves.toEqual([
       {id: "html", label: "HTML", mode: "browser", contentType: "text/html", fileExtension: ".html"},
@@ -1175,7 +1226,7 @@ describe("Workspace Slides export handler", () => {
     expect(gadget.getDeck).not.toHaveBeenCalled();
   });
 
-  it("normalizes the deck and materializes getDeck before returning the PPTX stream", async () => {
+  it("materializes the original deck before returning the PPTX stream", async () => {
     const deck = oneSlide([
       block("title", {text: "Materialized before streaming"}),
       block("logo", {text: "Brand"}, {x: 36, y: 56}),

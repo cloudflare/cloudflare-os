@@ -300,8 +300,16 @@ const GET_STARTED_SLIDE: Slide = {
         highlight: "" } },
     { id: "165a8f0c", type: "logo", x: 1013, y: 40,
       props: { variant: "dark", scale: 0.62 } },
-    { id: "a1725e4f", type: "svg", x: 50, y: 198, w: 54, h: 54,
-      props: { markup: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 54 54"><rect x="1" y="1" width="52" height="52" rx="2" fill="#FFF8F2" stroke="#F3D8C5"/><g transform="translate(15 15)" fill="none" stroke="#F6821F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></g></svg>`, fit: "contain", background: "" } },
+    { id: "a1725e4f", type: "shape", x: 51, y: 199, w: 52, h: 52,
+      props: { kind: "rect", fill: "#FFF8F2", stroke: "#F3D8C5", strokeWidth: 1, radius: 2 } },
+    { id: "edit-input-frame", type: "shape", x: 63, y: 213, w: 28, h: 22,
+      props: { kind: "rect", fill: "", stroke: "#F6821F", strokeWidth: 2, radius: 2 } },
+    { id: "edit-input-line", type: "divider", x: 68, y: 224, w: 12, h: 2,
+      props: { color: "#F6821F", opacity: 1 } },
+    { id: "edit-input-caret", type: "divider", x: 83, y: 219, w: 2, h: 10,
+      props: { color: "#F6821F", opacity: 1 } },
+    { id: "edit-input-baseline", type: "divider", x: 70, y: 239, w: 14, h: 2,
+      props: { color: "#F6821F", opacity: 1 } },
     { id: "db375e12", type: "text", x: 50, y: 282, w: 500,
       props: { text: "Click Edit", fontSize: 22, weight: 600,
         color: "#000000", family: "sans", align: "left", lineHeight: 1.3 } },
@@ -311,8 +319,20 @@ const GET_STARTED_SLIDE: Slide = {
         align: "left", lineHeight: 1.55 } },
     { id: "8cf12ea4", type: "divider", x: 594, y: 198, w: 1, h: 260,
       props: { color: "#E5E5E5", opacity: 1 } },
-    { id: "02d7fc35", type: "svg", x: 646, y: 198, w: 54, h: 54,
-      props: { markup: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 54 54"><rect x="1" y="1" width="52" height="52" rx="2" fill="#FFF8F2" stroke="#F3D8C5"/><g transform="translate(15 15)" fill="none" stroke="#F6821F" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l1.5 5.5L19 9l-5.5 1.5L12 16l-1.5-5.5L5 9l5.5-1.5L12 2z"/><path d="M20 15l.8 3.2L24 19l-3.2.8L20 23l-.8-3.2L16 19l3.2-.8L20 15z"/><path d="M4 14l.7 2.3L7 17l-2.3.7L4 20l-.7-2.3L1 17l2.3-.7L4 14z"/></g></svg>`, fit: "contain", background: "" } },
+    { id: "02d7fc35", type: "shape", x: 647, y: 199, w: 52, h: 52,
+      props: { kind: "rect", fill: "#FFF8F2", stroke: "#F3D8C5", strokeWidth: 1, radius: 2 } },
+    { id: "agent-chat-frame", type: "shape", x: 659, y: 212, w: 28, h: 22,
+      props: { kind: "rect", fill: "#FFF8F2", stroke: "#F6821F", strokeWidth: 2, radius: 4 } },
+    { id: "agent-chat-tail", type: "shape", x: 663, y: 231, w: 7, h: 8,
+      props: { kind: "rect", fill: "#FFF8F2", stroke: "#F6821F", strokeWidth: 2, radius: 1 } },
+    { id: "agent-chat-tail-join", type: "shape", x: 665, y: 230, w: 3, h: 4,
+      props: { kind: "rect", fill: "#FFF8F2", strokeWidth: 0 } },
+    { id: "agent-chat-dot-1", type: "shape", x: 665, y: 221, w: 3, h: 3,
+      props: { kind: "ellipse", fill: "#F6821F", strokeWidth: 0 } },
+    { id: "agent-chat-dot-2", type: "shape", x: 672, y: 221, w: 3, h: 3,
+      props: { kind: "ellipse", fill: "#F6821F", strokeWidth: 0 } },
+    { id: "agent-chat-dot-3", type: "shape", x: 679, y: 221, w: 3, h: 3,
+      props: { kind: "ellipse", fill: "#F6821F", strokeWidth: 0 } },
     { id: "47a8d50c", type: "text", x: 646, y: 282, w: 500,
       props: { text: "Ask the agent", fontSize: 22, weight: 600,
         color: "#000000", family: "sans", align: "left", lineHeight: 1.3 } },
@@ -342,9 +362,54 @@ const KEY_TAKEAWAYS_SLIDE: Slide = {
         letterSpacing: "-0.03em", lineHeight: 1.2, highlight: "" } },
     { id: "16c8d805", type: "logo", x: 1013, y: 40,
       props: { variant: "dark", scale: 0.62 } },
-    { id: "2b48e66e", type: "svg", x: 36, y: 178, w: 1128, h: 430,
-      props: { markup: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1128 430" role="img" aria-label="Example bar chart showing connected internal data"><rect width="1128" height="430" fill="#fff"/><text x="0" y="25" font-family="Inter,Arial,sans-serif" font-size="16" font-weight="600" fill="#000">Quarterly adoption</text><text x="0" y="49" font-family="Inter,Arial,sans-serif" font-size="12" fill="#747474">Illustrative data • refreshed from your system of record</text><g transform="translate(0 75)"><line x1="0" y1="280" x2="730" y2="280" stroke="#D9D9D9"/><line x1="0" y1="210" x2="730" y2="210" stroke="#EEEEEE"/><line x1="0" y1="140" x2="730" y2="140" stroke="#EEEEEE"/><line x1="0" y1="70" x2="730" y2="70" stroke="#EEEEEE"/><rect x="58" y="173" width="92" height="107" rx="2" fill="#FF6633"/><rect x="222" y="119" width="92" height="161" rx="2" fill="#F6821F"/><rect x="386" y="75" width="92" height="205" rx="2" fill="#FBAD41"/><rect x="550" y="26" width="92" height="254" rx="2" fill="#F6821F"/><g font-family="Inter,Arial,sans-serif" font-size="13" fill="#747474" text-anchor="middle"><text x="104" y="307">Q1</text><text x="268" y="307">Q2</text><text x="432" y="307">Q3</text><text x="596" y="307">Q4</text></g><g font-family="Inter,Arial,sans-serif" font-size="14" font-weight="600" fill="#000" text-anchor="middle"><text x="104" y="162">38</text><text x="268" y="108">57</text><text x="432" y="64">73</text><text x="596" y="15">91</text></g></g><g transform="translate(795 92)"><rect width="333" height="245" rx="2" fill="#FFF8F2" stroke="#F3D8C5"/><text x="24" y="38" font-family="Inter,Arial,sans-serif" font-size="11" font-weight="600" letter-spacing="1" fill="#FF6633">LIVE DATA, READY TO PRESENT</text><text x="24" y="78" font-family="Inter,Arial,sans-serif" font-size="20" font-weight="600" fill="#000">Ask the agent to add chart</text><text x="24" y="104" font-family="Inter,Arial,sans-serif" font-size="20" font-weight="600" fill="#000">from internal data source.</text><text x="24" y="145" font-family="Inter,Arial,sans-serif" font-size="14" fill="#747474">Or connect an approved internal</text><text x="24" y="167" font-family="Inter,Arial,sans-serif" font-size="14" fill="#747474">system of record so an agent can</text><text x="24" y="189" font-family="Inter,Arial,sans-serif" font-size="14" fill="#747474">pull, shape, and refresh the data.</text><circle cx="27" cy="218" r="4" fill="#26A641"/><text x="41" y="223" font-family="Inter,Arial,sans-serif" font-size="12" font-weight="600" fill="#000">Connected source</text></g></svg>`,
-        fit: "contain", background: "" } },
+    { id: "2b48e66e", type: "text", x: 36, y: 187, w: 730, h: 24,
+      props: { text: "Quarterly adoption", fontSize: 16, weight: 600, color: "#000000", lineHeight: 1.2 } },
+    { id: "adoption-subtitle", type: "text", x: 36, y: 215, w: 730, h: 18,
+      props: { text: "Illustrative data • refreshed from your system of record", fontSize: 12, color: "#747474", lineHeight: 1.2 } },
+    { id: "adoption-grid-1", type: "divider", x: 36, y: 323, w: 730, h: 1,
+      props: { color: "#EEEEEE", opacity: 1 } },
+    { id: "adoption-grid-2", type: "divider", x: 36, y: 393, w: 730, h: 1,
+      props: { color: "#EEEEEE", opacity: 1 } },
+    { id: "adoption-grid-3", type: "divider", x: 36, y: 463, w: 730, h: 1,
+      props: { color: "#EEEEEE", opacity: 1 } },
+    { id: "adoption-baseline", type: "divider", x: 36, y: 533, w: 730, h: 1,
+      props: { color: "#D9D9D9", opacity: 1 } },
+    { id: "adoption-q1-bar", type: "shape", x: 94, y: 426, w: 92, h: 107,
+      props: { kind: "rect", fill: "#FF6633", strokeWidth: 0, radius: 2 } },
+    { id: "adoption-q2-bar", type: "shape", x: 258, y: 372, w: 92, h: 161,
+      props: { kind: "rect", fill: "#F6821F", strokeWidth: 0, radius: 2 } },
+    { id: "adoption-q3-bar", type: "shape", x: 422, y: 328, w: 92, h: 205,
+      props: { kind: "rect", fill: "#FBAD41", strokeWidth: 0, radius: 2 } },
+    { id: "adoption-q4-bar", type: "shape", x: 586, y: 279, w: 92, h: 254,
+      props: { kind: "rect", fill: "#F6821F", strokeWidth: 0, radius: 2 } },
+    { id: "adoption-q1-label", type: "text", x: 94, y: 547, w: 92, h: 20,
+      props: { text: "Q1", fontSize: 13, color: "#747474", align: "center", lineHeight: 1.2 } },
+    { id: "adoption-q2-label", type: "text", x: 258, y: 547, w: 92, h: 20,
+      props: { text: "Q2", fontSize: 13, color: "#747474", align: "center", lineHeight: 1.2 } },
+    { id: "adoption-q3-label", type: "text", x: 422, y: 547, w: 92, h: 20,
+      props: { text: "Q3", fontSize: 13, color: "#747474", align: "center", lineHeight: 1.2 } },
+    { id: "adoption-q4-label", type: "text", x: 586, y: 547, w: 92, h: 20,
+      props: { text: "Q4", fontSize: 13, color: "#747474", align: "center", lineHeight: 1.2 } },
+    { id: "adoption-q1-value", type: "text", x: 94, y: 401, w: 92, h: 20,
+      props: { text: "38", fontSize: 14, weight: 600, color: "#000000", align: "center", lineHeight: 1.2 } },
+    { id: "adoption-q2-value", type: "text", x: 258, y: 347, w: 92, h: 20,
+      props: { text: "57", fontSize: 14, weight: 600, color: "#000000", align: "center", lineHeight: 1.2 } },
+    { id: "adoption-q3-value", type: "text", x: 422, y: 303, w: 92, h: 20,
+      props: { text: "73", fontSize: 14, weight: 600, color: "#000000", align: "center", lineHeight: 1.2 } },
+    { id: "adoption-q4-value", type: "text", x: 586, y: 254, w: 92, h: 20,
+      props: { text: "91", fontSize: 14, weight: 600, color: "#000000", align: "center", lineHeight: 1.2 } },
+    { id: "adoption-source-panel", type: "shape", x: 831, y: 270, w: 333, h: 245,
+      props: { kind: "rect", fill: "#FFF8F2", stroke: "#F3D8C5", strokeWidth: 1, radius: 2 } },
+    { id: "adoption-source-heading", type: "text", x: 855, y: 297, w: 285, h: 18,
+      props: { text: "LIVE DATA, READY TO PRESENT", fontSize: 11, weight: 600, letterSpacing: "1px", color: "#FF6633", lineHeight: 1.2 } },
+    { id: "adoption-source-title", type: "text", x: 855, y: 328, w: 285, h: 54,
+      props: { text: "Ask the agent to add chart\nfrom internal data source.", fontSize: 20, weight: 600, color: "#000000", lineHeight: 1.3 } },
+    { id: "adoption-source-copy", type: "text", x: 855, y: 401, w: 285, h: 66,
+      props: { text: "Or connect an approved internal\nsystem of record so an agent can\npull, shape, and refresh the data.", fontSize: 14, color: "#747474", lineHeight: 1.57 } },
+    { id: "adoption-source-status-dot", type: "shape", x: 854, y: 484, w: 8, h: 8,
+      props: { kind: "ellipse", fill: "#26A641", strokeWidth: 0 } },
+    { id: "adoption-source-status", type: "text", x: 872, y: 481, w: 268, h: 18,
+      props: { text: "Connected source", fontSize: 12, weight: 600, color: "#000000", lineHeight: 1.2 } },
     { id: "39af0189", type: "shape", x: 0, y: 663, w: 1200, h: 12,
       props: { kind: "rect", fill: "#F6821F", stroke: "", strokeWidth: 0, radius: 0,
         opacity: 1 } },
@@ -563,36 +628,14 @@ export class ExportHandler extends WorkerEntrypoint {
   async export(gadget: GadgetStub, id: string): Promise<ReadableStream<Uint8Array>> {
     if (id === "pptx") {
       const deck = await gadget.getDeck();
-      return deckToPptx(normalizeDeckForPptx(deck));
+      const budget = { remaining: MAX_TOTAL_TEXT_LENGTH };
+      // The renderer validates every authored slide/block quota before expanding logos.
+      return deckToPptx(deck, (block) => isLogoBlock(block) ? logoBlocks(block, budget) : undefined);
     }
     throw new Error("Unsupported slides export format: " + id);
   }
 }
 
-/**
- * Rewrites this blueprint's `logo` blocks -- its brand mark, which the generic PowerPoint renderer
- * does not know -- into a text block for the wordmark and an ellipse for the accent dot. Pure: the
- * input is not modified, and work before the renderer is bounded by the renderer's text limit.
- */
-export function normalizeDeckForPptx<T>(deck: T): T {
-  if (deck === null || typeof deck !== "object" || Array.isArray(deck)) return deck;
-  const deckSource = deck as Record<string, unknown>;
-  if (!Array.isArray(deckSource.slides)) return deck;
-
-  const budget = { remaining: MAX_TOTAL_TEXT_LENGTH };
-  let changed = false;
-  const slides = deckSource.slides.map((slide) => {
-    if (slide === null || typeof slide !== "object" || Array.isArray(slide)) return slide;
-    const slideSource = slide as Record<string, unknown>;
-    if (!Array.isArray(slideSource.blocks) || !slideSource.blocks.some(isLogoBlock)) return slide;
-    changed = true;
-    return {
-      ...slideSource,
-      blocks: slideSource.blocks.flatMap((block) => isLogoBlock(block) ? logoBlocks(block, budget) : block),
-    };
-  });
-  return (changed ? { ...deckSource, slides } : deck) as T;
-}
 
 function isLogoBlock(block: unknown): block is Record<string, unknown> & {type: "logo"} {
   return block !== null && typeof block === "object" && !Array.isArray(block) &&

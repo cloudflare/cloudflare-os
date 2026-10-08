@@ -374,15 +374,21 @@ need to touch styles when adding a new field type.
 
 The deck supports **HTML**, **PDF**, and **PowerPoint (`.pptx`)** exports. HTML and PDF use the
 browser print renderer. PowerPoint export runs on the server and creates a conventional OPC /
-PresentationML package through the shared `@gadgets/bundled-blueprints/libraries/pptx/server`
-library.
+PresentationML package through `@gadgets/bundled-blueprints/libraries/pptx/server`. The build inlines
+that library into `server.js`; there is no separately shipped `pptx.js` or runtime package dependency.
 
 Text, cards, boxes, pills, basic shapes, dividers, arrows, and the two brand marks become editable
-native PowerPoint objects rather than a screenshot. Before calling the generic renderer,
-`normalizeDeckForPptx()` in `server.js` expands this blueprint's `logo` blocks into a text wordmark
-and ellipse accent dot. Another slides blueprint can import the same renderer and supply its own
-adapter. Source block order remains the shape z-order. The shape-based bottom brand bar and orange
-cover treatment export as native objects; SVG blocks and dot-grid backgrounds are omitted.
+native PowerPoint objects rather than a screenshot. `ExportHandler` passes the original deck to
+`deckToPptx(deck, adaptBlock)`, with an adapter that expands each `logo` into a text wordmark and
+ellipse accent dot. Other repository-authored TypeScript blueprints can import the same renderer
+and supply their own adapters. Source block order remains the shape z-order.
+
+Authored quotas are checked before adaptation: 500 slides, 1,000 blocks per slide, and 10,000 blocks
+per deck. Adapted output has separate bounds of 2,000 blocks per slide and 20,000 per deck, so a
+logo's accent dot does not consume another authored block. Text and image budgets still apply.
+
+The starter chart, Edit/agent icons, and bottom brand bars use native blocks and survive export.
+The orange cover treatment exports as native objects; SVG blocks and dot-grid backgrounds are omitted.
 
 The 1200 x 675 canvas maps to standard widescreen PowerPoint at 12,192,000 x 6,858,000 EMU. The
 renderer asks consumers to grow auto-height blocks and shrink card text where PresentationML cannot

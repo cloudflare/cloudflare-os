@@ -183,6 +183,8 @@ const BULLET_FONT_HUNDREDTHS = Math.round(6 * PX_TO_POINT / 0.43 * 100);
 const MAX_SLIDES = 500;
 const MAX_BLOCKS_PER_SLIDE = 1000;
 const MAX_TOTAL_BLOCKS = 10000;
+const MAX_ADAPTED_BLOCKS_PER_SLIDE = 2000;
+const MAX_TOTAL_ADAPTED_BLOCKS = 20000;
 const MAX_TEXT_LENGTH = 1000000;
 /**
  * Maximum total text length accepted by `deckToPptx`.
@@ -1027,7 +1029,13 @@ function prepareBlock(source: unknown, slideIndex: number, blockIndex: number, l
 }
 
 
-function prepareDeck(deck: unknown): PreparedDeck {
+/**
+ * Adapts one authored block after the entire deck passes source quotas.
+ * Undefined preserves the block; a returned array replaces it in the same z-order position.
+ */
+export type PptxBlockAdapter = (block: unknown) => readonly unknown[] | undefined;
+
+function prepareDeck(deck: unknown, adaptBlock?: PptxBlockAdapter): PreparedDeck {
   const limits = {
     totalText: 0, totalLineBreaks: 0, totalHighlightWork: 0, totalHighlightTransitions: 0,
     encodedBytes: 0, decodedBytes: 0,
@@ -1043,11 +1051,13 @@ function prepareDeck(deck: unknown): PreparedDeck {
     throw new Error(`Deck has ${sourceSlides.length} slides; PowerPoint export supports at most ${MAX_SLIDES}.`);
   }
   let totalBlocks = 0;
-  const slides = Array.from(sourceSlides, (source, slideIndex) => {
-    const slideSource: Record<string, unknown> = source !== null && typeof source === "object" && !Array.isArray(source)
+  const sourceBlocksBySlide = sourceSlides.map(source => {
+    const slideSource = source !== null && typeof source === "object" && !Array.isArray(source)
       ? source as Record<string, unknown>
       : {};
-    const sourceBlocks = Array.isArray(slideSource.blocks) ? slideSource.blocks : [];
+    return Array.isArray(slideSource.blocks) ? slideSource.blocks : [];
+  });
+  for (const [slideIndex, sourceBlocks] of sourceBlocksBySlide.entries()) {
     if (sourceBlocks.length > MAX_BLOCKS_PER_SLIDE) {
       throw new Error(`Slide ${slideIndex + 1} has ${sourceBlocks.length} blocks; the export limit is ${MAX_BLOCKS_PER_SLIDE} per slide.`);
     }
@@ -1055,6 +1065,30 @@ function prepareDeck(deck: unknown): PreparedDeck {
     if (totalBlocks > MAX_TOTAL_BLOCKS) {
       throw new Error(`Deck has more than ${MAX_TOTAL_BLOCKS} blocks, the PowerPoint export limit.`);
     }
+  }
+  // Validate the entire authored deck before any adapter or expensive block preparation runs.
+  let totalAdaptedBlocks = 0;
+  const blocksBySlide = adaptBlock ? sourceBlocksBySlide.map((sourceBlocks, slideIndex) => {
+    const blocks: unknown[] = [];
+    for (const block of sourceBlocks) {
+      const replacement = adaptBlock(block);
+      const count = replacement === undefined ? 1 : replacement.length;
+      if (blocks.length + count > MAX_ADAPTED_BLOCKS_PER_SLIDE) {
+        throw new Error(`Slide ${slideIndex + 1} has more than ${MAX_ADAPTED_BLOCKS_PER_SLIDE} adapted blocks, the PowerPoint export limit.`);
+      }
+      totalAdaptedBlocks += count;
+      if (totalAdaptedBlocks > MAX_TOTAL_ADAPTED_BLOCKS) {
+        throw new Error(`Deck has more than ${MAX_TOTAL_ADAPTED_BLOCKS} adapted blocks, the PowerPoint export limit.`);
+      }
+      if (replacement === undefined) blocks.push(block);
+      else for (const adapted of replacement) blocks.push(adapted);
+    }
+    return blocks;
+  }) : sourceBlocksBySlide;
+  const slides = Array.from(sourceSlides, (source, slideIndex) => {
+    const slideSource: Record<string, unknown> = source !== null && typeof source === "object" && !Array.isArray(source)
+      ? source as Record<string, unknown>
+      : {};
     const rawBackground = slideSource.background;
     const backgroundSource: Record<string, unknown> | null = rawBackground !== null && typeof rawBackground === "object" && !Array.isArray(rawBackground)
       ? rawBackground as Record<string, unknown>
@@ -1064,7 +1098,7 @@ function prepareDeck(deck: unknown): PreparedDeck {
       inset: backgroundSource.inset,
       coverOrange: backgroundSource.coverOrange,
     } : null;
-    const blocks = Array.from(sourceBlocks, (block, blockIndex) =>
+    const blocks = Array.from(blocksBySlide[slideIndex], (block, blockIndex) =>
       prepareBlock(block, slideIndex, blockIndex, limits, mediaState));
     const relationshipByMedia = new Map<number, string>();
     const relationships: PreparedRelationship[] = [];
@@ -1805,8 +1839,13 @@ function themeXml() {
     '</a:fmtScheme></a:themeElements><a:objectDefaults/><a:extraClrSchemeLst/></a:theme>';
 }
 
-export function deckToPptx(deck: unknown): ReadableStream<Uint8Array> {
-  const prepared = prepareDeck(deck);
+/**
+ * Exports a block deck, optionally adapting blocks without changing authored quota accounting.
+ * Authored limits are 500 slides, 1000 blocks per slide and 10000 blocks total. Adapted output
+ * is bounded separately at 2000 blocks per slide and 20000 total before block preparation.
+ */
+export function deckToPptx(deck: unknown, adaptBlock?: PptxBlockAdapter): ReadableStream<Uint8Array> {
+  const prepared = prepareDeck(deck, adaptBlock);
   const entries: ZipEntry[] = [
     {name: "[Content_Types].xml", data: contentTypes(prepared.slides, prepared.media)},
     {name: "_rels/.rels", data: rootRelationships()},

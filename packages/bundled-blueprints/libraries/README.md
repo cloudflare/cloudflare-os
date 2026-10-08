@@ -73,5 +73,7 @@ test runs against a stub of `cloudflare:workers` that the package's vitest confi
   with retry backoff, a presence roster and a subscribe helper. The Docs, Sheets and Slides
   blueprints build on it.
 - `zip` -- a server-only streaming ZIP32 writer shared by the Sheets XLSX exporter and PPTX library.
-- `pptx` -- a server-only PresentationML renderer for block-based slide decks. A blueprint adapts
-  its brand-specific blocks before calling the renderer.
+- `pptx` -- a server-only PresentationML renderer for block-based slide decks, inlined into each
+  importing blueprint's `server.js`, not shipped as a separate `pptx.js`. `deckToPptx(deck, adaptBlock)`
+  validates authored quotas before a per-block adapter replaces brand-specific blocks; adapted
+  output is bounded separately. Installed gadgets cannot resolve these package imports at runtime.
