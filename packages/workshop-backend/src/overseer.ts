@@ -5308,15 +5308,6 @@ class OverseerImpl implements AgentHooks {
   async submitAction(gatekeeperId: number, action: number,
                      description: ActionDescription, caller: GatekeeperCaller)
       : Promise<void> {
-    // An in-flight facet RPC can outlive removeGatekeeper, and a pending action on a removed
-    // connection could never be approved or rejected (both dereference the facet).
-    let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
-    if (!gatekeeper) {
-      throw new Error(
-          "This action was blocked because the connection it was submitted through has been " +
-          "removed from this workspace.");
-    }
-
     // Restricted mode: the approver vouches for the text they read, and a push's commits cannot
     // be reviewed as text here, so a push is refused outright until there is a UI to review
     // commits. Any other action pends for manual approval; one whose description is not complete
@@ -5333,9 +5324,19 @@ class OverseerImpl implements AgentHooks {
     // verify that every declared head's ancestry reaches a commit proven on this gatekeeper's
     // remote. This is the chokepoint that makes an accidental push to an unrelated remote fail
     // closed at queue time, with the error propagating to the submitting gatekeeper (and on to
-    // the agent). Read-only; the marking walk below runs only if this passes.
+    // the agent). The marking walk below runs only if this passes.
     if (description.pushedCommits !== undefined && description.pushedCommits.length > 0) {
-      this.gitCache.verifyPushAncestry(gatekeeperId, description.pushedCommits);
+      await this.gitCache.verifyPushAncestry(gatekeeperId, description.pushedCommits);
+    }
+
+    // An in-flight facet RPC, or the pull verifying a push, can outlive removeGatekeeper, and a
+    // pending action on a removed connection could never be approved or rejected (both
+    // dereference the facet).
+    let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
+    if (!gatekeeper) {
+      throw new Error(
+          "This action was blocked because the connection it was submitted through has been " +
+          "removed from this workspace.");
     }
 
     let actionId = this.storage.nextActionId.get();

@@ -18,7 +18,8 @@
 // - `ensureGitObjects()` is the pull driver: it routes a fault to the recorded sources and calls
 //   `Gatekeeper.gitPull()` through the overseer-provided delegate. It is reachable only from
 //   overseer-initiated paths (lazy reads and the pending-push pull-through), so a gatekeeper can
-//   never direct a pull of anything outside a verified queued push.
+//   never direct a pull of anything outside a verified queued push, except that verifying its own
+//   push may pull commits it claims (see `verifyPushAncestry()`).
 // - `verifyPushAncestry()`/`markPushClosure()` implement `ActionDescription.pushedCommits`
 //   authorization at the `submitAction` chokepoint, and the mark lifecycle helpers convert or
 //   clear the marks when the action applies, is rejected, or its gatekeeper is deleted.
@@ -934,12 +935,42 @@ export class WorkspaceGitCache {
    * gatekeeper's remote (`onRemote` -- an advertisement never qualifies), walking cached commit
    * objects only. Throws an agent-visible error for an absent ancestor and for a parentless
    * root that isn't itself proven (no vacuous pass for roots): this is the safeguard that makes
-   * an accidental push to an unrelated remote fail closed at queue time. Read-only; call before
+   * an accidental push to an unrelated remote fail closed at queue time. Call before
    * `markPushClosure()`.
+   *
+   * Where the chains stop short of proof only at commits the gatekeeper claims (`pullableFrom`),
+   * as when the base came through another connection to the same repository, those commits are
+   * pulled through the gatekeeper, so that its remote's bytes prove them, and the walk runs
+   * again. Nothing else is pulled.
    */
-  verifyPushAncestry(gatekeeperId: WorkpieceId, heads: GitOid[]): void {
+  async verifyPushAncestry(gatekeeperId: WorkpieceId, heads: GitOid[]): Promise<void> {
+    let claimed: GitOid[] = [];
+    try {
+      this.#walkPushAncestry(gatekeeperId, heads);
+      return;
+    } catch (err) {
+      try {
+        this.#walkPushAncestry(gatekeeperId, heads, claimed);
+      } catch {
+        throw err;  // proving the claimed commits would not be enough
+      }
+    }
+    await this.puller.pull(gatekeeperId, claimed, this.#exactObjectHints("commit"))
+        .catch((err: unknown) => {
+          throw new Error(
+              `Cannot push: could not fetch ${claimed.join(", ")} through this connection to ` +
+              `confirm that its repository has the pushed history: ` +
+              `${err instanceof Error ? err.message : String(err)}`);
+        });
+    this.#walkPushAncestry(gatekeeperId, heads);
+  }
+
+  // The walk behind verifyPushAncestry(). Given `claimed`, a commit the gatekeeper claims but
+  // hasn't proven also ends its chain, and is collected there.
+  #walkPushAncestry(gatekeeperId: WorkpieceId, heads: GitOid[], claimed?: GitOid[]): void {
     let visited = new Set<GitOid>();
     let stack = heads.map(validateGitOid);
+    let provenElsewhere: GitOid | undefined;  // the nearest commit another connection proved
     while (stack.length > 0) {
       let oid = stack.pop()!;
       if (visited.has(oid)) continue;
@@ -956,8 +987,14 @@ export class WorkspaceGitCache {
         }
         continue;  // proven on the destination
       }
+      if (claimed !== undefined && meta?.pullableFrom.includes(gatekeeperId)) {
+        claimed.push(oid);
+        continue;
+      }
+      if (meta?.onRemote.length) provenElsewhere ??= oid;
       let local = this.readLocalObject(oid);
       if (local === undefined) {
+        if (provenElsewhere !== undefined) throw new Error(provenElsewhereMessage(provenElsewhere));
         throw new Error(
             `Cannot push: commit ${oid} in the pushed history is not available in the ` +
             `workspace's git cache, so the history cannot be verified against the destination. ` +
@@ -972,6 +1009,7 @@ export class WorkspaceGitCache {
       }
       let refs = parseGitCommitRefs(local.payload, oid);
       if (refs.parents.length === 0) {
+        if (provenElsewhere !== undefined) throw new Error(provenElsewhereMessage(provenElsewhere));
         throw new Error(
             `Cannot push: the pushed history reaches root commit ${oid}, which is not known ` +
             `to the destination. Pushing a history unrelated to the destination is not ` +
@@ -1405,6 +1443,13 @@ function submoduleMessage(path: string, target: GitOid): string {
 
 function tooLargeMessage(path: string): string {
   return `${path} is too large to read (over ${MAX_GIT_OBJECT_SIZE} bytes)`;
+}
+
+// Why a push is refused when its history is proven only on another connection's remote.
+function provenElsewhereMessage(oid: GitOid): string {
+  return `Cannot push: commit ${oid} in the pushed history came through a different connection, ` +
+      `not this one. If both connections are to the same repository, look the commit up ` +
+      `through this one (e.g. its commit or branch APIs), then push again.`;
 }
 
 // Decodes a blob's payload as strict UTF-8 text, throwing the path-flavored

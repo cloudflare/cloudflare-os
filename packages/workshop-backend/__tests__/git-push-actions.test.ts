@@ -25,7 +25,22 @@ declare module "cloudflare:workers" {
 }
 
 const GATEKEEPER = 7;
+const SECOND = 8;  // a second connection to the same repository
 const USER = { type: "user" as const, id: "alice@example.com", name: "Alice" };
+
+function addConnection(impl: any, id: number): void {
+  impl.storage.gatekeepers.put({
+    id,
+    resourceTitle: "Remote repository",
+    class: {} as any,
+    creationSpec: {
+      type: "gatekeeper",
+      vendorId: "testvendor",
+      resourceUrl: "https://example.com/repo",
+      typeUrlPattern: "https://*",
+    },
+  });
+}
 
 // Every scenario starts with the gatekeeper's record in place: submitAction refuses an action
 // naming a connection the workspace no longer has.
@@ -33,17 +48,7 @@ async function inOverseer(name: string, fn: (impl: any) => Promise<void>): Promi
   let stub = env.TEST_OVERSEER.getByName(name);
   await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
     let impl = (instance as unknown as { impl: any }).impl;
-    impl.storage.gatekeepers.put({
-      id: GATEKEEPER,
-      resourceTitle: "Remote repository",
-      class: {} as any,
-      creationSpec: {
-        type: "gatekeeper",
-        vendorId: "testvendor",
-        resourceUrl: "https://example.com/repo",
-        typeUrlPattern: "https://*",
-      },
-    });
+    addConnection(impl, GATEKEEPER);
     await fn(impl);
   });
 }
@@ -159,6 +164,28 @@ describe("push authorization through the Overseer chokepoints", () => {
       // Proven ancestry does not help: the commits cannot be reviewed as text by the approver.
       await expect(impl.submitAction(GATEKEEPER, 1, pushDescription([head]), { from: "user" }))
           .rejects.toThrow(/git push cannot be reviewed as of yet/);
+      expect(Array.from(impl.storage.actions.list())).toStrictEqual([]);
+      expect(Array.from(impl.storage.gitObjectMetadata.byPendingPushAction.list()))
+          .toStrictEqual([]);
+    });
+  });
+
+  it("refuses a push whose connection is removed while its base is being proven", async () => {
+    await inOverseer("push-removed-mid-pull", async impl => {
+      // The base was pulled through GATEKEEPER. SECOND has reported it but not proven it, so
+      // verifying a push through SECOND pulls it from SECOND, which is removed meanwhile.
+      let { base, head } = await seedPushableHistory(impl);
+      addConnection(impl, SECOND);
+      impl.gitCache.advertiseCommit(SECOND, base);
+      impl.getGatekeeperFacet = (id: number) => ({
+        async gitPull(_oids: string[], cache: any) {
+          impl.removeGatekeeper(id);
+          await cache.put("commit", impl.gitCache.readLocalObject(base).payload);
+        },
+      });
+
+      await expect(impl.submitAction(SECOND, 1, pushDescription([head]), { from: "user" }))
+          .rejects.toThrow(/has been removed from this workspace/);
       expect(Array.from(impl.storage.actions.list())).toStrictEqual([]);
       expect(Array.from(impl.storage.gitObjectMetadata.byPendingPushAction.list()))
           .toStrictEqual([]);

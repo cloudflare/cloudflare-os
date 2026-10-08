@@ -609,7 +609,7 @@ describe("pull driver", () => {
 describe("push ancestry verification", () => {
   it("passes when every chain reaches a commit proven on the destination", async () => {
     let t = await setupCrossRemote();
-    expect(() => t.cache.verifyPushAncestry(G2, [t.child])).not.toThrow();
+    await expect(t.cache.verifyPushAncestry(G2, [t.child])).resolves.toBeUndefined();
   });
 
   it("trivially passes pushing derived work back to its origin", async () => {
@@ -620,7 +620,7 @@ describe("push ancestry verification", () => {
       type: "commit",
       payload: commitPayload(TREE_1, [COMMIT_1], "derived work"),
     });
-    expect(() => t.cache.verifyPushAncestry(G1, [child])).not.toThrow();
+    await expect(t.cache.verifyPushAncestry(G1, [child])).resolves.toBeUndefined();
   });
 
   it("rejects when an ancestor commit is absent from the cache", async () => {
@@ -630,8 +630,8 @@ describe("push ancestry verification", () => {
       type: "commit",
       payload: commitPayload(TREE_1, [missingParent], "child of missing"),
     });
-    expect(() => t.cache.verifyPushAncestry(G1, [child]))
-        .toThrow(new RegExp(`commit ${missingParent}.*not available`, "s"));
+    await expect(t.cache.verifyPushAncestry(G1, [child]))
+        .rejects.toThrow(new RegExp(`commit ${missingParent}.*not available`, "s"));
   });
 
   it("rejects a root commit that is not itself proven -- no vacuous pass", async () => {
@@ -640,19 +640,55 @@ describe("push ancestry verification", () => {
       type: "commit",
       payload: commitPayload(TREE_1, [], "local root"),
     });
-    expect(() => t.cache.verifyPushAncestry(G1, [root]))
-        .toThrow(new RegExp(`root commit ${root}.*not known to the destination`, "s"));
+    await expect(t.cache.verifyPushAncestry(G1, [root]))
+        .rejects.toThrow(new RegExp(`root commit ${root}.*not known to the destination`, "s"));
   });
 
-  it("rejects on an advertisement where a put would pass -- assertion is not proof", async () => {
-    let t = makeCache();
-    let rootPayload = commitPayload(TREE_1, [], "the base");
-    let root = await storeLocal(t.storage, { type: "commit", payload: rootPayload });
-    t.cache.advertiseCommit(G1, root);
-    expect(() => t.cache.verifyPushAncestry(G1, [root])).toThrow(/root commit/);
+  // The reported shape: a base pulled shallowly through G1 (so its parent is absent), and a
+  // commit authored on top of it, to be pushed through G2, a second connection to the same
+  // repository.
+  async function storeBaseFromOtherConnection(t: TestCache) {
+    let basePayload = commitPayload(TREE_1, ["d".repeat(40)], "base");
+    let base = await t.cache.putFromGatekeeper(G1, "commit", basePayload);
+    let child = await storeLocal(t.storage, {
+      type: "commit", payload: commitPayload(TREE_1, [base], "child"),
+    });
+    return { base, basePayload, child };
+  }
 
-    await t.cache.putFromGatekeeper(G1, "commit", rootPayload);
-    expect(() => t.cache.verifyPushAncestry(G1, [root])).not.toThrow();
+  it("proves a base another connection pulled by pulling it through the destination", async () => {
+    let t = makeCache();
+    let { base, basePayload, child } = await storeBaseFromOtherConnection(t);
+    t.cache.advertiseCommit(G2, base);
+    t.sources.set(G2, async () => {
+      await t.cache.putFromGatekeeper(G2, "commit", basePayload);
+    });
+
+    await expect(t.cache.verifyPushAncestry(G2, [child])).resolves.toBeUndefined();
+    // Just the commit G2 itself reported, without its tree.
+    expect(t.pulls).toMatchObject(
+        [{ gatekeeperId: G2, oids: [base], hints: { filterTreeDepth: 0 } }]);
+  });
+
+  it("rejects when the destination cannot serve a commit it advertised -- assertion is not proof",
+      async () => {
+    let t = makeCache();
+    let { base, child } = await storeBaseFromOtherConnection(t);
+    t.cache.advertiseCommit(G2, base);
+    t.sources.set(G2, async () => { throw new Error("upload-pack: not our ref"); });
+
+    await expect(t.cache.verifyPushAncestry(G2, [child]))
+        .rejects.toThrow(new RegExp(`could not fetch ${base}.*not our ref`, "s"));
+  });
+
+  it("names the base, asking nothing of the destination, when it never reported the base",
+      async () => {
+    let t = makeCache();
+    let { base, child } = await storeBaseFromOtherConnection(t);
+
+    await expect(t.cache.verifyPushAncestry(G2, [child]))
+        .rejects.toThrow(new RegExp(`commit ${base}.*different connection`, "s"));
+    expect(t.pulls).toStrictEqual([]);
   });
 
   it("rejects a non-commit oid", async () => {
@@ -661,8 +697,8 @@ describe("push ancestry verification", () => {
       type: "blob",
       payload: new TextEncoder().encode("not a commit"),
     });
-    expect(() => t.cache.verifyPushAncestry(G1, [blob]))
-        .toThrow(new RegExp(`${blob}: it is a blob, not a commit`));
+    await expect(t.cache.verifyPushAncestry(G1, [blob]))
+        .rejects.toThrow(new RegExp(`${blob}: it is a blob, not a commit`));
   });
 
   it("judges a proven object by its local bytes, not its recorded type", async () => {
@@ -678,14 +714,14 @@ describe("push ancestry verification", () => {
     let child = await storeLocal(t.storage, {
       type: "commit", payload: commitPayload(TREE_1, [ancestor], "child"),
     });
-    expect(() => t.cache.verifyPushAncestry(G1, [child])).not.toThrow();
+    await expect(t.cache.verifyPushAncestry(G1, [child])).resolves.toBeUndefined();
 
     // Conversely, local bytes proving a non-commit reject it even if the row claims "commit".
     let tree = await storeLocal(t.storage, fixture(TREE_1));
     t.storage.gitObjectMetadata.put(
         { oid: tree, type: "commit", onRemote: [G1], pullableFrom: [], pendingPush: [] });
-    expect(() => t.cache.verifyPushAncestry(G1, [tree]))
-        .toThrow(new RegExp(`${tree}: it is a tree, not a commit`));
+    await expect(t.cache.verifyPushAncestry(G1, [tree]))
+        .rejects.toThrow(new RegExp(`${tree}: it is a tree, not a commit`));
   });
 });
 
