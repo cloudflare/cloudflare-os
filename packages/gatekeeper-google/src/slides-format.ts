@@ -5,7 +5,7 @@
  */
 
 import type {
-  RestColor, RestDimension, RestParagraphStyle, RestPropertyState, RestShapeProperties,
+  RestColor, RestDimension, RestOpaqueColor, RestParagraphStyle, RestPropertyState, RestShapeProperties,
   RestSolidFill, RestText, RestTextStyle,
 } from "./slides-api";
 import { emu, points } from "./slides-geometry";
@@ -30,13 +30,12 @@ export const CONTENT_ALIGNMENTS: Record<string, NonNullable<ShapeElement["conten
   TOP: "top", MIDDLE: "middle", BOTTOM: "bottom",
 };
 
-/** A colour as agents read it; undefined for a transparent one. */
-export function colorOf(color: RestColor | undefined): SlideColor | undefined {
-  let opaque = color?.opaqueColor;
-  if (opaque?.themeColor) return opaque.themeColor;
-  if (!opaque?.rgbColor) return undefined;
+/** A colour as agents read it; undefined for none. */
+export function colorOf(color: RestOpaqueColor | undefined): SlideColor | undefined {
+  if (color?.themeColor) return color.themeColor;
+  if (!color?.rgbColor) return undefined;
   // Google omits a zero component, as it omits every zero-valued field.
-  let { red = 0, green = 0, blue = 0 } = opaque.rgbColor;
+  let { red = 0, green = 0, blue = 0 } = color.rgbColor;
   return `#${[red, green, blue]
     .map(value => Math.round(value * 255).toString(16).padStart(2, "0")).join("")}`;
 }
@@ -48,9 +47,9 @@ export function formatOf(style: RestTextStyle | undefined): TextFormat {
   for (let key of BOOLEAN_STYLES) if (style[key] !== undefined) format[key] = style[key];
   if (style.fontFamily) format.fontFamily = style.fontFamily;
   if (style.fontSize?.magnitude) format.fontSize = points(emu(style.fontSize));
-  let color = colorOf(style.foregroundColor);
+  let color = colorOf(style.foregroundColor?.opaqueColor);
   if (color) format.color = color;
-  let highlight = colorOf(style.backgroundColor);
+  let highlight = colorOf(style.backgroundColor?.opaqueColor);
   if (highlight) format.highlight = highlight;
   if (style.link?.url) format.link = style.link.url;
   let baseline = BASELINES[style.baselineOffset ?? ""];
@@ -163,15 +162,16 @@ export function isSlideColor(color: string): boolean {
 }
 
 /** A colour as Google takes it, from a `#rrggbb` colour or a theme colour's name. */
-export function restColorOf(color: SlideColor): RestColor {
-  if (THEME_COLORS.has(color)) return { opaqueColor: { themeColor: color } };
+export function restColorOf(color: SlideColor): RestOpaqueColor {
+  if (THEME_COLORS.has(color)) return { themeColor: color };
   let [red, green, blue] = [1, 3, 5].map(at => parseInt(color.slice(at, at + 2), 16) / 255);
   // Google omits a zero component, as it omits every zero-valued field.
-  return {
-    opaqueColor: {
-      rgbColor: { ...(red ? { red } : {}), ...(green ? { green } : {}), ...(blue ? { blue } : {}) },
-    },
-  };
+  return { rgbColor: { ...(red ? { red } : {}), ...(green ? { green } : {}), ...(blue ? { blue } : {}) } };
+}
+
+/** A text colour as Google takes it: an `OptionalColor`, which wraps the colour a fill takes bare. */
+function restTextColorOf(color: SlideColor | null): RestColor | null {
+  return color === null ? null : { opaqueColor: restColorOf(color) };
 }
 
 /** A length in points, as Google takes it. */
@@ -208,14 +208,9 @@ export function textStyleChange(format: TextFormatChange): StyleChange<RestTextS
   if (format.fontSize !== undefined) {
     set("fontSize", format.fontSize === null ? null : pointsDimension(format.fontSize));
   }
-  if (format.color !== undefined) {
-    set("foregroundColor", format.color === null ? null : restColorOf(format.color));
-  } else if (format.link !== undefined) {
-    set("foregroundColor", restColorOf("HYPERLINK"));
-  }
-  if (format.highlight !== undefined) {
-    set("backgroundColor", format.highlight === null ? null : restColorOf(format.highlight));
-  }
+  if (format.color !== undefined) set("foregroundColor", restTextColorOf(format.color));
+  else if (format.link !== undefined) set("foregroundColor", restTextColorOf("HYPERLINK"));
+  if (format.highlight !== undefined) set("backgroundColor", restTextColorOf(format.highlight));
   if (format.link !== undefined) {
     set("link", { url: format.link });
     if (format.underline === undefined) set("underline", true);

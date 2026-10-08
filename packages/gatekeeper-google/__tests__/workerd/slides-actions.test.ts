@@ -690,6 +690,17 @@ describe("Google Slides design changes", () => {
     expect(provider.text("s2", badge)).toBe("New\n");
   });
 
+  it("shows a font name in full, since any string is sent and kept", async () => {
+    new SlidesProvider(deck()).install();
+    let font = `${"Workspace data ".repeat(5)}*not* [shown] in prose`;
+    let { action } = await gatekeeper().queued("updateSlides", [
+      { op: "formatText", slideId: "s2", elementId: "t2", format: { fontFamily: font } },
+    ]);
+
+    expect(action).toMatchObject({ descriptionIsComplete: true, fields: [{ label: "Font", value: font }] });
+    expect(action!.description).toContain("the font below");
+  });
+
   it("finds a batch whose response was lost landed by the element it created", async () => {
     let provider = new SlidesProvider(deck()).install();
     let slides = gatekeeper();

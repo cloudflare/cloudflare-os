@@ -43,10 +43,13 @@ export type RestTransform = {
   translateX?: number; translateY?: number; unit?: "EMU" | "PT" | "UNIT_UNSPECIFIED";
 };
 
-/** An `OptionalColor`: opaque when it has a colour, transparent when it has none. */
-export type RestColor = {
-  opaqueColor?: { rgbColor?: { red?: number; green?: number; blue?: number }; themeColor?: string };
+/** An `OpaqueColor`: an RGB colour or a theme colour. */
+export type RestOpaqueColor = {
+  rgbColor?: { red?: number; green?: number; blue?: number }; themeColor?: string;
 };
+
+/** An `OptionalColor`, as text takes it: opaque when it has a colour, transparent when it has none. */
+export type RestColor = { opaqueColor?: RestOpaqueColor };
 
 /** A `TextStyle`. A field Google leaves unset is inherited. */
 export type RestTextStyle = {
@@ -95,7 +98,7 @@ export type RestTextElement = {
 export type RestText = { textElements?: RestTextElement[]; lists?: Record<string, unknown> };
 
 /** A `SolidFill`. */
-export type RestSolidFill = { color?: RestColor; alpha?: number };
+export type RestSolidFill = { color?: RestOpaqueColor; alpha?: number };
 
 /** A fill or outline Google renders, does not render, or inherits from a placeholder. */
 export type RestPropertyState = "RENDERED" | "NOT_RENDERED" | "INHERIT";

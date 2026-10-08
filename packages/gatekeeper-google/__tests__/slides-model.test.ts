@@ -149,18 +149,17 @@ describe("Slides model", () => {
     );
     let box = {
       ...shape("box", body),
+      // A `SolidFill` holds its `OpaqueColor` bare, where text wraps one in an `OptionalColor`.
       shape: { ...shape("box", body).shape, shapeProperties: {
         shapeBackgroundFill: { propertyState: "NOT_RENDERED" as const },
-        outline: { outlineFill: { solidFill: { color: { opaqueColor: { rgbColor: {} } } } },
+        outline: { outlineFill: { solidFill: { color: { rgbColor: {} } } },
           weight: { magnitude: 25_400, unit: "EMU" as const } },
         contentAlignment: "MIDDLE",
       } },
     };
     let table = { objectId: "t", table: { rows: 1, columns: 1, tableRows: [{ tableCells: [{
       location: {}, text: text(["cell"]),
-      tableCellProperties: {
-        tableCellBackgroundFill: { solidFill: { color: { opaqueColor: { themeColor: "LIGHT2" } } } },
-      },
+      tableCellProperties: { tableCellBackgroundFill: { solidFill: { color: { themeColor: "LIGHT2" } } } },
     }] }] } };
 
     let [shapeRead, tableRead] = onlySlide(box, table).elements;

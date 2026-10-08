@@ -160,7 +160,10 @@ function boundsName({ x, y, width, height }: SlideBounds): string {
   return `${width} × ${height} pt at (${x}, ${y})`;
 }
 
-function formatNames(format: TextFormatChange): string[] {
+type Field = (label: string, text: string) => void;
+
+// The formatting set, naming in a field what the approver must see verbatim.
+function formatNames(format: TextFormatChange, field: Field): string[] {
   let names: string[] = [];
   for (let key of ["bold", "italic", "underline", "strikethrough", "smallCaps"] as const) {
     let value = format[key];
@@ -170,7 +173,9 @@ function formatNames(format: TextFormatChange): string[] {
   let valued = (value: unknown, name: string, shown: (value: never) => string) => {
     if (value !== undefined) names.push(value === null ? `default ${name}` : shown(value as never));
   };
-  valued(format.fontFamily, "font", (family: string) => `font "${plainInline(family, 60)}"`);
+  if (format.fontFamily) field("Font", format.fontFamily);
+  if (format.link) field("Link", format.link);
+  valued(format.fontFamily, "font", () => "the font below");
   valued(format.fontSize, "size", (size: number) => `${size} pt`);
   valued(format.color, "colour", (color: string) => `colour ${color}`);
   valued(format.highlight, "highlight", (color: string) => `highlight ${color}`);
@@ -212,7 +217,7 @@ function lineCount(noun: string, at: number, count: number): string {
 
 /** One line naming what a change does; `field` adds what the approver must see verbatim. */
 function describeChange(
-  change: DesignChange, element: ElementName, field: (label: string, text: string) => void,
+  change: DesignChange, element: ElementName, field: Field,
 ): string {
   switch (change.op) {
     case "editText":
@@ -236,18 +241,16 @@ function describeChange(
       if (change.op === "formatParagraphs") {
         return `format the paragraphs of ${target}: ${paragraphNames(change).join(", ")}`;
       }
-      if (change.format.link !== undefined) field("Link", change.format.link);
-      return `format ${target}: ${formatNames(change.format).join(", ")}`;
+      return `format ${target}: ${formatNames(change.format, field).join(", ")}`;
     }
     case "createShape": {
+      if (change.text) field("Text", change.text);
       let extras = [
         ...(change.text ? ["the text below"] : []),
-        ...(change.format ? [formatNames(change.format).join(", ")] : []),
+        ...(change.format ? [formatNames(change.format, field).join(", ")] : []),
         ...(change.fill !== undefined ? [fillName(change.fill)] : []),
         ...(change.outline !== undefined ? [outlineName(change.outline)] : []),
       ];
-      if (change.text) field("Text", change.text);
-      if (change.format?.link !== undefined) field("Link", change.format.link);
       return `add a ${change.shapeType} shape, ${boundsName(change.bounds)}` +
         (extras.length > 0 ? `, with ${extras.join("; ")}` : "");
     }

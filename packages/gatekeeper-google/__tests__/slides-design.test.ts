@@ -149,6 +149,10 @@ describe("Slides design changes", () => {
     expect(requests.map(request => Object.keys(request)[0])).toEqual([
       "createShape", "insertText", "updateTextStyle", "updateTextStyle", "updateShapeProperties", "updateTextStyle",
     ]);
+    // A `SolidFill` takes its `OpaqueColor` bare, unlike text's `OptionalColor`.
+    expect(requests[4].updateShapeProperties.shapeProperties.shapeBackgroundFill).toEqual({
+      propertyState: "RENDERED", solidFill: { color: { rgbColor: { red: 1, green: 136 / 255 } }, alpha: 1 },
+    });
     expect(requests.every(request => Object.values(request)[0].objectId === refs.badge)).toBe(true);
   });
 
