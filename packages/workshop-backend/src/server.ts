@@ -15,7 +15,7 @@ import { deploymentOutputForBlueprint, listFormatOffers, readAdminConfig } from 
 // Re-export the optional-feature Durable Objects + entrypoints so they can be bound in wrangler.
 export { PendingLogin, LoginConnectCallbackImpl };
 import { GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
-import { LanguageModelGatekeeper } from "./ai-models";
+import { ClassifierModelGatekeeper, LanguageModelGatekeeper } from "./ai-models";
 import { getGatewayModels } from "./ai-gateway.js";
 import { AdminSettings, AdminApiImpl } from "./admin-settings.js";
 import { blueprintContentKey, buildBlueprintArchiveStream, sanitizeBlueprintOutput, parseBlueprintArchive, randomBlueprintId } from "./blueprint-archive.js";
@@ -50,7 +50,7 @@ function publicBlueprintInfo(id: string, metadata: BlueprintPublicInfo['metadata
 }
 
 // Re-export entrypoint types from ai-models.ts.
-export { LanguageModelGatekeeper };
+export { ClassifierModelGatekeeper, LanguageModelGatekeeper };
 
 // Re-export entrypoint types from admin-settings.ts.
 export { AdminSettings };
@@ -161,6 +161,9 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
   listModels(): Promise<AiChatAuthorInfo[]> {
     return retryOnDoReset(() => this.#user.listModels());
+  }
+  listClassifierModels(): Promise<AiChatAuthorInfo[]> {
+    return retryOnDoReset(() => this.#user.listModels("classifier"));
   }
   addModel(profile: AiChatAuthorInfo, config: RedactedAiModelConfig,
            copySecretsFrom?: string): Promise<void> {

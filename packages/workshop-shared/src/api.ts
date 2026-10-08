@@ -461,12 +461,19 @@ export interface AuthenticatedApi extends RpcTarget {
   hasPasswordLogin(): Promise<boolean>;
 
   /**
-   * List the user's configured AI models.
+   * List the user's configured AI models that can chat. Classifier models can't, and are listed
+   * by `listClassifierModels()` instead.
    *
    * Note that the list returned here could be different from a particular gadget's Overseer,
    * especially if the gadget is owned by someone else.
    */
   listModels(): Promise<AiChatAuthorInfo[]>;
+
+  /**
+   * List the user's configured classifier models (see `isClassifierModel()`). Gadgets bind them
+   * through `Overseer.newAiModelGatekeeper()`; they can't chat.
+   */
+  listClassifierModels(): Promise<AiChatAuthorInfo[]>;
 
   /**
    * Adds a new model to the user's configured set. The ID must not name a model the user already
@@ -1804,6 +1811,13 @@ type SuggestedModel = {
    * admin can override the default for its AI Gateway.
    */
   hidden?: true;
+
+  /**
+   * Marks a classifier (decision) model, which answers `ClassifierModelBinding.classify()`
+   * questions instead of chatting. Gadgets can bind it, but it is never offered for chats or
+   * agents.
+   */
+  classifier?: true;
 };
 
 // The literal is kept apart from the export so SuggestedModelId can derive the model ids from it.
@@ -1823,6 +1837,10 @@ const SUGGESTED_MODEL_CATALOG = {
     "@cf/deepseek-ai/deepseek-v4-pro-0813": {
       name: "DeepSeek V4 Pro 0813 (Workers AI)", contextWindow: 1048576,
       outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/cloudflare/clef": {name: "Clef (Workers AI)", contextWindow: 65536, classifier: true},
+    "@cf/cloudflare/clef-flash": {
+      name: "Clef Flash (Workers AI)", contextWindow: 65536, classifier: true,
     },
   },
   "anthropic": {
@@ -1886,6 +1904,14 @@ export const SUGGESTED_MODELS: Record<AiModelProvider, Record<string, SuggestedM
 /** A model ID listed in SUGGESTED_MODELS, optionally narrowed to one provider's catalog. */
 export type SuggestedModelId<P extends AiModelProvider = AiModelProvider> =
   { [K in P]: keyof (typeof SUGGESTED_MODEL_CATALOG)[K] & string }[P];
+
+/**
+ * Whether a model, named by its provider and its ID on the provider's API, is a classifier (see
+ * `SuggestedModel.classifier`), which only a `ClassifierModelBinding` can run.
+ */
+export function isClassifierModel(provider: string, model: string): boolean {
+  return SUGGESTED_MODELS[provider as AiModelProvider]?.[model]?.classifier === true;
+}
 
 /**
  * Providers whose pi API adapter refuses a custom fetch, so their inference cannot ride the
@@ -2533,7 +2559,9 @@ export interface Overseer extends RpcTarget {
 
   /**
    * Create a new gatekeeper for an AI model binding. The model can be any returned by
-   * listModels().
+   * `AuthenticatedApi.listModels()`, whose gatekeepers provide a `LanguageModelBinding`, or by
+   * `AuthenticatedApi.listClassifierModels()`, whose gatekeepers provide a
+   * `ClassifierModelBinding`.
    */
   newAiModelGatekeeper(modelId: string): Promise<GatekeeperClient<any>>;
 
@@ -2656,8 +2684,8 @@ export interface Overseer extends RpcTarget {
   listChats(): Promise<AiChatMetadata[]>;
 
   /**
-   * List available models. The first listed model should be the default, unless the user has
-   * chosen something else.
+   * List available chat models; classifier models are left out. The first listed model should be
+   * the default, unless the user has chosen something else.
    */
   listModels(): Promise<AiChatAuthorInfo[]>;
 
@@ -4930,6 +4958,9 @@ export type BlueprintBinding = {
    * it up to the recipient.
    */
   suggestedModel?: {provider: string, modelName: string};
+
+  /** Set when the source binding is a classifier model, so installers pick among classifiers. */
+  classifier?: true;
 } | {
   /** An agent spawner binding. */
   type: "agentSpawner";

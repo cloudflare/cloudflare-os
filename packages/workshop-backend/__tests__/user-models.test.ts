@@ -442,4 +442,17 @@ describe("UserDurableObject gateway model modes", () => {
           .toBe("Claude Haiku 4.5");
     }, DISABLED));
   });
+
+  // Chats, spawners and the external-message default all take listModels(), which no classifier
+  // can serve.
+  it("lists classifier models apart from chat models", () => inGatewayUser(async user => {
+    await user.addModel({ ...PROFILE, id: "my-clef" },
+        { provider: "cloudflare", model: "@cf/cloudflare/clef", apiToken: "" });
+
+    const classifierIds = ["@cf/cloudflare/clef", "@cf/cloudflare/clef-flash", "my-clef"];
+    expect((await user.listModels("classifier")).map(model => model.id)).toEqual(classifierIds);
+    const chatIds = await listedIds(user);
+    expect(chatIds).toContain("@cf/zai-org/glm-5.2");
+    expect(chatIds.filter(id => classifierIds.includes(id))).toEqual([]);
+  }, { addedProviders: ["cloudflare"] }));
 });

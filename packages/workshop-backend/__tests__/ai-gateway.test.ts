@@ -193,9 +193,12 @@ describe("GatewayModels", () => {
       ...Object.keys(SUGGESTED_MODELS.anthropic),
       ...Object.keys(SUGGESTED_MODELS.openai),
     ]);
-    expect(ids(models.list())).toEqual(ids(models.all.filter(model => model.mode === "enabled")));
-    expect(ids(models.list())).toContain("claude-opus-5-5");
-    expect(ids(models.list())).not.toContain("gpt-6-sol");
+    // Each enabled model is listed as exactly one kind.
+    expect([...ids(models.list("chat")), ...ids(models.list("classifier"))].toSorted())
+        .toEqual(ids(models.all.filter(model => model.mode === "enabled")).toSorted());
+    expect(ids(models.list("classifier"))).toEqual(["@cf/cloudflare/clef", "@cf/cloudflare/clef-flash"]);
+    expect(ids(models.list("chat"))).toContain("claude-opus-5-5");
+    expect(ids(models.list("chat"))).not.toContain("gpt-6-sol");
   });
 
   // Chats, spawners, and preferences created before a model was hidden still name it. A catalog
@@ -212,7 +215,7 @@ describe("GatewayModels", () => {
   it("hides an enabled model: unlisted, still resolved", () => {
     const models = gatewayModels({ modelModes: { "claude-fable-5-1": "hidden" } });
     expect(models.get("claude-fable-5-1")).toMatchObject({ mode: "hidden", defaultMode: "enabled" });
-    expect(ids(models.list())).not.toContain("claude-fable-5-1");
+    expect(ids(models.list("chat"))).not.toContain("claude-fable-5-1");
     expect(models.resolve("claude-fable-5-1")?.profile.name).toBe("Claude Fable 5.1");
     expect(() => models.refuseDisabled("claude-fable-5-1")).not.toThrow();
   });
@@ -222,7 +225,7 @@ describe("GatewayModels", () => {
     expect(models.get("claude-fable-5-1")).toMatchObject(
         { name: "Claude Fable 5.1", mode: "disabled", defaultMode: "enabled" });
     expect(ids(models.all)).toContain("claude-fable-5-1");
-    expect(ids(models.list())).not.toContain("claude-fable-5-1");
+    expect(ids(models.list("chat"))).not.toContain("claude-fable-5-1");
     expect(models.resolve("claude-fable-5-1")).toBeUndefined();
     expect(() => models.refuseDisabled("claude-fable-5-1")).toThrow(new Error(DISABLED_MESSAGE));
   });
@@ -230,7 +233,7 @@ describe("GatewayModels", () => {
   it("enables a model the catalog hides, in its catalog position", () => {
     const models = gatewayModels({ modelModes: { "claude-opus-5": "enabled" } });
     expect(models.get("claude-opus-5")).toMatchObject({ mode: "enabled", defaultMode: "hidden" });
-    const listed = ids(models.list());
+    const listed = ids(models.list("chat"));
     expect(listed.indexOf("claude-opus-5")).toBe(listed.indexOf("claude-fable-5-1") + 1);
   });
 
@@ -255,7 +258,7 @@ describe("GatewayModels", () => {
         'The "My Model" model can\'t be used: adding your own models is disabled on this ' +
         "deployment by an administrator."));
     // The gateway's own models are as they were.
-    expect(ids(off.list())).toEqual(ids(on.list()));
+    expect(ids(off.list("chat"))).toEqual(ids(on.list("chat")));
     expect(off.resolve("gpt-6-sol")).toStrictEqual(on.resolve("gpt-6-sol"));
   });
 
@@ -270,7 +273,7 @@ describe("GatewayModels", () => {
       provider: "anthropic", id: "claude-test", name: "Claude Test", contextWindow: 500000,
       mode: "enabled", defaultMode: "enabled", added: true,
     });
-    const listed = ids(models.list());
+    const listed = ids(models.list("chat"));
     expect(listed.indexOf("claude-test")).toBe(listed.indexOf("claude-haiku-4-5") + 1);
     expect(listed.indexOf("claude-test-2")).toBe(listed.indexOf("claude-test") + 1);
   });
@@ -296,7 +299,7 @@ describe("GatewayModels", () => {
 
   it("gives an added model the same three modes", () => {
     const hidden = gatewayModels({ addedModels: ADDED, modelModes: { "claude-test": "hidden" } });
-    expect(ids(hidden.list())).not.toContain("claude-test");
+    expect(ids(hidden.list("chat"))).not.toContain("claude-test");
     expect(hidden.resolve("claude-test")?.profile.name).toBe("Claude Test");
 
     const disabled = gatewayModels({ addedModels: ADDED, modelModes: { "claude-test": "disabled" } });
@@ -311,7 +314,7 @@ describe("GatewayModels", () => {
     expect(models.get("@cf/test/added")).toBeUndefined();
     expect(models.resolve("@cf/test/added")).toBeUndefined();
     expect(ids(models.all)).not.toContain("@cf/test/added");
-    expect(ids(models.list())).toContain("claude-test");
+    expect(ids(models.list("chat"))).toContain("claude-test");
   });
 
   it("lets the catalog win an ID that an added model also claims", () => {
@@ -656,8 +659,8 @@ describe("GatewayModels", () => {
           new AiGatewayConfig(tokenless()), { ...NO_CONFIG, addedProviders: ["google"] });
       expect(models.providerSettings.at(-1)).toStrictEqual(
           { provider: "google", enabledBy: "admin", needsApiToken: true });
-      expect(ids(models.list())).toContain(GEMINI);
-      expect(ids(models.list())).toContain("claude-opus-5-5");
+      expect(ids(models.list("chat"))).toContain(GEMINI);
+      expect(ids(models.list("chat"))).toContain("claude-opus-5-5");
 
       const read = await getGatewayModels({
         ...tokenless(),
@@ -736,7 +739,7 @@ describe("getGatewayModels", () => {
     expect(BLUEPRINTS.get).toHaveBeenCalledWith(".adminConfig");
     expect(models!.gateway.gateway).toBe("platform-gateway");
     expect(models!.resolve("claude-fable-5-1")).toBeUndefined();
-    expect(ids(models!.list())).toContain("claude-test");
+    expect(ids(models!.list("chat"))).toContain("claude-test");
     expect(models!.userModels).toBe(true);
   });
 

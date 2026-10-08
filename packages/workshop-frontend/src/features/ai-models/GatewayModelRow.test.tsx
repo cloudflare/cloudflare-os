@@ -245,6 +245,20 @@ describe('GatewayModelRow', () => {
     })
   })
 
+  // Its Test would send a chat request, and its Settings only shape chats.
+  it('offers a classifier its modes, but no Test or Settings', async () => {
+    const clef: AdminModelView = {
+      ...SONNET, provider: 'cloudflare', id: '@cf/cloudflare/clef', name: 'Clef',
+      reasoningLevels: [], builtInReasoning: null,
+    }
+    await render({ model: clef }, { collapsed: true })
+
+    expect(document.body.querySelector('li')!.textContent).toContain('Classifier')
+    expect(() => testButton('Clef')).toThrow('No Test button')
+    expect(() => button('Settings for Clef')).toThrow('No button')
+    expect(document.body.querySelectorAll('[role="radio"]')).toHaveLength(3)
+  })
+
   describe('the reasoning level', () => {
     it.each<[BuiltInReasoning, string]>([
       ['adaptive', 'Deployment default (built-in: Provider default)'],

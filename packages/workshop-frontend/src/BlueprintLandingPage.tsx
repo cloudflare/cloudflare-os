@@ -32,6 +32,24 @@ interface Props {
 type BindingFormState = Record<string, any>
 const NO_AGENT_MODEL_ID = 'gadgets:sentinel:no-agent-model'
 
+function findSuggestedModelId(models: AiChatAuthorInfo[], suggested: {provider: string, modelName: string}) {
+  const provider = suggested.provider.trim().toLowerCase()
+  const modelName = suggested.modelName.trim().toLowerCase()
+  const exactMatches = models.filter(model =>
+    model.id.toLowerCase() === modelName ||
+    model.name.toLowerCase() === modelName ||
+    model.id.toLowerCase() === `${provider}/${modelName}` ||
+    model.id.toLowerCase() === `${provider}:${modelName}`
+  )
+  if (exactMatches.length === 1) return exactMatches[0].id
+
+  const providerScopedMatches = models.filter(model => {
+    const text = `${model.id} ${model.name}`.toLowerCase()
+    return text.includes(provider) && text.includes(modelName)
+  })
+  return providerScopedMatches.length === 1 ? providerScopedMatches[0].id : null
+}
+
 export default function BlueprintLandingPage({ rpcStub }: Props) {
   const params = useParams({ strict: false }) as { id?: string }
   const id = params.id ?? ''
@@ -50,6 +68,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
   const [bindingForm, setBindingForm] = useState<BindingFormState>({})
   const [draftAssignments, setDraftAssignments] = useState<Record<string, BlueprintBindingAssignment>>({})
   const [models, setModels] = useState<AiChatAuthorInfo[]>([])
+  const [classifierModels, setClassifierModels] = useState<AiChatAuthorInfo[]>([])
   const [creating, setCreating] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [showLogin, setShowLogin] = useState(false)
@@ -127,8 +146,12 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
       authenticatedApi.listModels()
         .then(setModels)
         .catch(err => logRpcFailure('Failed to load models:', err))
+      authenticatedApi.listClassifierModels()
+        .then(setClassifierModels)
+        .catch(err => logRpcFailure('Failed to load classifier models:', err))
     } else {
       setModels([])
+      setClassifierModels([])
     }
   }, [isAuthenticated, authenticatedApi])
 
@@ -365,23 +388,10 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     )
   }, [accounts])
 
-  const findSuggestedModelId = useCallback((suggested: {provider: string, modelName: string}) => {
-    const provider = suggested.provider.trim().toLowerCase()
-    const modelName = suggested.modelName.trim().toLowerCase()
-    const exactMatches = models.filter(model =>
-      model.id.toLowerCase() === modelName ||
-      model.name.toLowerCase() === modelName ||
-      model.id.toLowerCase() === `${provider}/${modelName}` ||
-      model.id.toLowerCase() === `${provider}:${modelName}`
-    )
-    if (exactMatches.length === 1) return exactMatches[0].id
-
-    const providerScopedMatches = models.filter(model => {
-      const text = `${model.id} ${model.name}`.toLowerCase()
-      return text.includes(provider) && text.includes(modelName)
-    })
-    return providerScopedMatches.length === 1 ? providerScopedMatches[0].id : null
-  }, [models])
+  // A classifier binding takes a classifier model; every other model binding takes a chat model.
+  const modelsFor = useCallback((binding: BlueprintBinding) =>
+    binding.type === 'aiModel' && binding.classifier ? classifierModels : models,
+  [models, classifierModels])
 
   const getFirstUnresolvedBindingName = useCallback((assignments = draftAssignments) => {
     if (!blueprint) return null
@@ -425,7 +435,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     if (!blueprint || !isAuthenticated) return
 
     // Re-run when account/model data changes: findMatchingAccounts depends on accounts,
-    // and findSuggestedModelId depends on models.
+    // and modelsFor on the model lists.
     setDraftAssignments(prev => {
       let next = { ...prev }
       let changed = false
@@ -446,7 +456,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
           }
         } else if (binding.type === 'aiModel') {
           if (!binding.suggestedModel) continue
-          const modelId = findSuggestedModelId(binding.suggestedModel)
+          const modelId = findSuggestedModelId(modelsFor(binding), binding.suggestedModel)
           if (modelId) {
             next[name] = { type: 'aiModel', modelId }
             changed = true
@@ -456,7 +466,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
             next[name] = { type: 'agentSpawner', modelId: null }
             changed = true
           } else if (binding.suggestedModel) {
-            const modelId = findSuggestedModelId(binding.suggestedModel)
+            const modelId = findSuggestedModelId(modelsFor(binding), binding.suggestedModel)
             if (modelId) {
               next[name] = { type: 'agentSpawner', modelId }
               changed = true
@@ -467,7 +477,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
 
       return changed ? next : prev
     })
-  }, [blueprint, isAuthenticated, findMatchingAccounts, findSuggestedModelId])
+  }, [blueprint, isAuthenticated, findMatchingAccounts, modelsFor])
 
   const handleStartConfigure = () => {
     if (!isAuthenticated) {
@@ -972,7 +982,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                     binding={binding}
                     assignment={draftAssignments[name]}
                     vendor={binding.type === 'gatekeeper' ? vendorById.get(binding.gatekeeperName.toLowerCase()) : undefined}
-                    models={models}
+                    models={modelsFor(binding)}
                     onConfigure={() => isAuthenticated ? openBindingConfigurator(name) : setShowLogin(true)}
                   />
                 ))}
@@ -1034,7 +1044,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
                   name={activeBindingName}
                   binding={activeBinding}
                   value={bindingForm[activeBindingName] || {}}
-                  models={models}
+                  models={modelsFor(activeBinding)}
                   authenticatedApi={authenticatedApi}
                   vendors={vendors}
                   accounts={accounts}
@@ -1409,7 +1419,9 @@ function BindingField({
         </Select>
         {models.length === 0 && (
           <p className="text-xs text-kumo-subtle mt-1">
-            No AI models are available yet. Add a model from AI Providers first.
+            {binding.classifier
+              ? 'No classifier models are available yet. Add one (e.g. Clef) from AI Providers first.'
+              : 'No AI models are available yet. Add a model from AI Providers first.'}
           </p>
         )}
       </div>

@@ -26,7 +26,8 @@ const PRIMARY_BTN =
 // ─── model row ─────────────────────────────────────────────────────────────────
 
 // Rows mirror the Blueprints list: a clickable row (here, clicking sets/clears the quick model)
-// plus a kebab for the rest. The whole row is the primary affordance, so it shows a pointer.
+// plus a kebab for the rest. The whole row is the primary affordance, so it shows a pointer. A
+// classifier model can't be the quick model, so its row has no primary affordance.
 function ModelRow({
   model,
   isQuick,
@@ -45,21 +46,21 @@ function ModelRow({
   onEdit: () => void
   onClone: () => void
   onDelete: () => void
-  onSetQuick: () => void
+  onSetQuick?: () => void
 }) {
   return (
     <div
-      role="button"
-      tabIndex={0}
+      role={onSetQuick && 'button'}
+      tabIndex={onSetQuick && 0}
       onClick={onSetQuick}
-      onKeyDown={(e) => {
+      onKeyDown={onSetQuick && ((e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault()
           onSetQuick()
         }
-      }}
-      title={isQuick ? 'Quick model. Click to clear' : 'Click to set as quick model'}
-      className="group flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 transition-colors duration-150 ease-out hover:bg-kumo-tint"
+      })}
+      title={onSetQuick && (isQuick ? 'Quick model. Click to clear' : 'Click to set as quick model')}
+      className={`group flex items-center gap-3 rounded-lg px-3 py-2.5 transition-colors duration-150 ease-out hover:bg-kumo-tint ${onSetQuick ? 'cursor-pointer' : ''}`}
     >
       {/* Neutral monogram — matches the sidebar/workspaces treatment */}
       <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-kumo-fill text-[12px] font-medium text-kumo-subtle">
@@ -103,10 +104,12 @@ function ModelRow({
             }
           />
           <DropdownMenu.Content className={MENU_CONTENT}>
-            <DropdownMenu.Item onClick={onSetQuick} className={MENU_ITEM}>
-              <Lightning size={13} className="mr-2" weight={isQuick ? 'fill' : 'regular'} />
-              {isQuick ? 'Clear quick model' : 'Set as quick model'}
-            </DropdownMenu.Item>
+            {onSetQuick && (
+              <DropdownMenu.Item onClick={onSetQuick} className={MENU_ITEM}>
+                <Lightning size={13} className="mr-2" weight={isQuick ? 'fill' : 'regular'} />
+                {isQuick ? 'Clear quick model' : 'Set as quick model'}
+              </DropdownMenu.Item>
+            )}
             {!isBuiltIn && canEdit && (
               <>
                 <DropdownMenu.Item onClick={onEdit} className={MENU_ITEM}>
@@ -149,7 +152,8 @@ function ProvidersPage() {
 
   const { authenticatedApi } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
-  const [models, setModels] = useState<AiChatAuthorInfo[]>([])
+  const [chatModels, setChatModels] = useState<AiChatAuthorInfo[]>([])
+  const [classifierModels, setClassifierModels] = useState<AiChatAuthorInfo[]>([])
   const [quickModel, setQuickModel] = useState<string | null>(null)
   const [aiConfig, setAiConfig] = useState<AiGatewayInfo | null>(null)
   const [search, setSearch] = useState('')
@@ -163,12 +167,14 @@ function ProvidersPage() {
   const fetchAll = async () => {
     setLoadError(false)
     try {
-      const [modelList, qm, cfg] = await Promise.all([
+      const [chatList, classifierList, qm, cfg] = await Promise.all([
         authenticatedApi.listModels(),
+        authenticatedApi.listClassifierModels(),
         authenticatedApi.getQuickModel(),
         authenticatedApi.getAiConfig(),
       ])
-      setModels(modelList)
+      setChatModels(chatList)
+      setClassifierModels(classifierList)
       setQuickModel(qm)
       setAiConfig(cfg)
       // Each dialog saves a model of the user's own, so none stays open, or opens late, once the
@@ -191,6 +197,9 @@ function ProvidersPage() {
   const gatewayMode = aiConfig?.enabled === true
   // False only on an AI Gateway deployment whose administrator turned adding models off.
   const canAddModels = aiConfig?.enabled !== true || aiConfig.userModelsEnabled
+  const models = [...chatModels, ...classifierModels]
+  // Only a chat model can be the quick model, so the quick-model notice needs one.
+  const hasChatModel = chatModels.length > 0
 
   const isBuiltIn = (modelId: string): boolean =>
     aiConfig?.enabled === true && aiConfig.builtInModelIds.includes(modelId)
@@ -294,7 +303,7 @@ function ProvidersPage() {
 
       <div className="chat-panel flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pt-1 pb-16">
         {/* Notices */}
-        {(gatewayMode || (!gatewayMode && models.length > 0)) && !loading && !loadError && (
+        {(gatewayMode || (!gatewayMode && hasChatModel)) && !loading && !loadError && (
           <div className="flex flex-col gap-2.5 px-3 pb-2">
             {gatewayMode && (
               <Notice>
@@ -310,7 +319,7 @@ function ProvidersPage() {
               </Notice>
             )}
 
-            {!gatewayMode && models.length > 0 && (
+            {!gatewayMode && hasChatModel && (
               <Notice>
                 <Lightning size={15} className="mt-px shrink-0 text-kumo-brand" />
                 <span>
@@ -377,7 +386,7 @@ function ProvidersPage() {
                 onEdit={() => openWithSource('edit', model)}
                 onClone={() => openWithSource('clone', model)}
                 onDelete={() => handleDelete(model)}
-                onSetQuick={() => handleSetQuick(model.id)}
+                onSetQuick={classifierModels.includes(model) ? undefined : () => handleSetQuick(model.id)}
               />
             </div>
           ))

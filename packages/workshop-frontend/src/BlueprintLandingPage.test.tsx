@@ -48,6 +48,12 @@ const MODEL: AiChatAuthorInfo = {
   name: 'Model one',
 }
 
+const CLASSIFIER_MODEL: AiChatAuthorInfo = {
+  type: 'agent',
+  id: 'classifier-one',
+  name: 'Classifier one',
+}
+
 const BLUEPRINT: BlueprintPublicInfo = {
   id: 'blueprint-one',
   metadata: {
@@ -76,6 +82,7 @@ function subscription() {
 function authenticatedApi(): RpcStub<AuthenticatedApi> {
   return {
     listModels: async () => [MODEL],
+    listClassifierModels: async () => [CLASSIFIER_MODEL],
     listGatekeeperVendors: async () => [],
     subscribeConnectedAccounts: subscription,
     getAdminApi: async () => null,
@@ -85,9 +92,9 @@ function authenticatedApi(): RpcStub<AuthenticatedApi> {
   } as unknown as RpcStub<AuthenticatedApi>
 }
 
-function publicApi(): RpcStub<PublicApi> {
+function publicApi(blueprint: BlueprintPublicInfo): RpcStub<PublicApi> {
   return {
-    getBlueprint: async () => BLUEPRINT,
+    getBlueprint: async () => blueprint,
   } as unknown as RpcStub<PublicApi>
 }
 
@@ -102,14 +109,14 @@ describe('BlueprintLandingPage model configuration', () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth })
   })
 
-  it('portals model options above the configure dialog and accepts a selection', async () => {
-    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 320 })
+  // Opens the model picker of the blueprint's binding, returning the picker's trigger.
+  const openModelPicker = async (blueprint = BLUEPRINT) => {
     testState.authenticatedApi = authenticatedApi()
     rootContainer = document.createElement('div')
     document.body.appendChild(rootContainer)
     root = createRoot(rootContainer)
 
-    await act(async () => root!.render(<BlueprintLandingPage rpcStub={publicApi()} />))
+    await act(async () => root!.render(<BlueprintLandingPage rpcStub={publicApi(blueprint)} />))
     await act(async () => { await Promise.resolve() })
 
     const configure = Array.from(document.body.querySelectorAll('button'))
@@ -118,6 +125,12 @@ describe('BlueprintLandingPage model configuration', () => {
 
     const trigger = document.body.querySelector<HTMLButtonElement>('[aria-label="Choose an AI model"]')!
     await act(async () => trigger.click())
+    return trigger
+  }
+
+  it('portals model options above the configure dialog and accepts a selection', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 320 })
+    const trigger = await openModelPicker()
 
     const option = document.body.querySelector<HTMLElement>('[role="option"]')!
     const portalHost = option.closest('[data-base-ui-portal]')!.parentElement!
@@ -131,5 +144,21 @@ describe('BlueprintLandingPage model configuration', () => {
     const save = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
       .find(button => button.textContent === 'Save connection')!
     expect(save.disabled).toBe(false)
+  })
+
+  it.each([
+    { kind: 'model', classifier: undefined, options: ['Model one'] },
+    { kind: 'classifier', classifier: true as const, options: ['Classifier one'] },
+  ])('offers a $kind binding only models of its kind', async ({ classifier, options }) => {
+    await openModelPicker({
+      ...BLUEPRINT,
+      metadata: {
+        ...BLUEPRINT.metadata,
+        bindings: { AI: { type: 'aiModel', title: 'Model', description: '', classifier } },
+      },
+    })
+
+    expect(Array.from(document.body.querySelectorAll('[role="option"]'), option => option.textContent))
+      .toEqual(options)
   })
 })

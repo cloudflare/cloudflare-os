@@ -47,7 +47,7 @@ Blueprints support three types of bindings, matching the three types of gatekeep
 
 1. **Gatekeeper** (`type: "gatekeeper"`) -- an external resource connection (e.g. Google Drive, a REST API). The blueprint records the gatekeeper adapter name and a URL pattern describing what kind of resource is expected. When instantiating, the user picks a connected account and configures a matching resource.
 
-2. **AI Model** (`type: "aiModel"`) -- a language model binding. The blueprint may suggest a specific provider/model. When instantiating, the user picks from their own configured models.
+2. **AI Model** (`type: "aiModel"`) -- a language model binding, or a classifier model binding when `classifier: true` (see `isClassifierModel()`). The blueprint may suggest a specific provider/model. When instantiating, the user picks from their own configured models of the same kind.
 
 3. **Agent Spawner** (`type: "agentSpawner"`) -- an agent spawner binding. The blueprint carries over the spawner configuration (prompt types, env restrictions) from the source gadget. The user only needs to choose which model the spawner should use (or no model).
 

@@ -1,6 +1,6 @@
 import { useId, useRef, useState, type FormEvent } from 'react'
 import { Badge, Button, Collapsible, Input, Radio, Select } from '@cloudflare/kumo'
-import { COMPACTION_TRIGGER_RATIO, GATEWAY_MODEL_MODES } from '@gadgets/workshop-shared/api'
+import { COMPACTION_TRIGGER_RATIO, GATEWAY_MODEL_MODES, isClassifierModel } from '@gadgets/workshop-shared/api'
 import type {
   AdminModelView,
   GatewayModelCapabilities,
@@ -99,6 +99,8 @@ export const GatewayModelRow = ({
   const budgetAlert = useFieldErrorAlert()
 
   const stated = statedFacts(model.capabilities)
+  // A classifier runs no chat, so the chat-request test and the chat settings don't apply to it.
+  const classifier = isClassifierModel(model.provider, model.id)
   const ownLevel = model.settings?.reasoning
   const levelInEffect = ownLevel ?? defaultReasoning
   const takesLevels = model.reasoningLevels.length > 0
@@ -160,6 +162,7 @@ export const GatewayModelRow = ({
       <div className="min-w-0 flex-1 basis-56">
         <p className="flex flex-wrap items-center gap-2">
           <span className="min-w-0 break-words text-sm font-medium text-kumo-default">{model.name}</span>
+          {classifier && <Badge variant="secondary">Classifier</Badge>}
           {(model.mode !== model.defaultMode || model.settings !== undefined) && (
             <Badge variant="outline">Changed</Badge>
           )}
@@ -210,7 +213,9 @@ export const GatewayModelRow = ({
         ))}
       </Radio.Group>
 
-      <GatewayTestButton name={model.name} testing={test?.state === 'testing'} onTest={onTest} />
+      {!classifier && (
+        <GatewayTestButton name={model.name} testing={test?.state === 'testing'} onTest={onTest} />
+      )}
 
       {onRemove && (
         <Button
@@ -226,7 +231,7 @@ export const GatewayModelRow = ({
 
       {/* The test's result brings its own space above it, so this line takes margins in place of
           the row's gap: an empty status then takes no room above the Settings. */}
-      <div className="-mt-2 min-w-0 basis-full">
+      {!classifier && <div className="-mt-2 min-w-0 basis-full">
         <GatewayTestStatus test={test} subject="model" />
         <Collapsible.Root className="mt-2">
           <Collapsible.DefaultTrigger className="w-fit text-sm">
@@ -326,7 +331,7 @@ export const GatewayModelRow = ({
             </div>
           </Collapsible.DefaultPanel>
         </Collapsible.Root>
-      </div>
+      </div>}
     </li>
   )
 }

@@ -71,6 +71,10 @@ than an unbinding because `WORKERS_AI` also backs the webFetch tool's document-t
 conversion (and is hardcoded for every released backend), so removing it would break that instead
 of just moving gateway traffic. The token stays required for the `google` provider even when the
 binding transport applies. Every provider, Workers AI included, routes through the same Gateway.
+Classifier models (Clef) need the binding transport: over HTTPS the Gateway supplies Workers AI's
+credential only for chat, and a classifier request that sends the Gateway token in its place is
+refused with "Authentication error". A deployment without the binding transport should set them to
+**Disabled** on the admin Models tab.
 
 The Cloudflare dashboard OAuth endpoints and scopes are **hardcoded** in the Cloudflare gatekeeper
 (`packages/gatekeeper-cloudflare/src/oauth.ts`):

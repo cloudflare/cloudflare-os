@@ -721,6 +721,7 @@ export default function OnboardingWizard({
       }}
       authenticatedApi={authenticatedApi}
       aiConfig={aiConfig}
+      chatModelsOnly
     />
     </>
   )

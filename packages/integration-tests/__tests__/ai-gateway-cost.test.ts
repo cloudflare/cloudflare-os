@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import {
-  SUGGESTED_MODELS, type GatewayModel, type GatewayModelMode,
+  SUGGESTED_MODELS, isClassifierModel, type AdminModel, type GatewayModel, type GatewayModelMode,
 } from "@gadgets/workshop-shared/api";
 import { ADMIN_USERNAME, startHarness, type Harness } from "../src/harness.js";
 import { SCRIPTED_MODEL_ID, scriptedChatCompletions } from "../src/mock-model.js";
@@ -95,6 +95,10 @@ const ADDING_REFUSED = "Adding your own models is disabled on this deployment by
 const cantBeUsedMessage = (name: string) => `The "${name}" model can't be used: ` +
     "adding your own models is disabled on this deployment by an administrator.";
 const ids = (models: readonly { id: string }[]) => models.map(candidate => candidate.id);
+// The IDs of the gateway models listModels() offers: the enabled ones, but no classifier, which
+// can't chat.
+const chatIds = (models: readonly AdminModel[]) => ids(models.filter(candidate =>
+    candidate.mode === "enabled" && !isClassifierModel(candidate.provider, candidate.id)));
 // A provider the gateway serves, as the admin is shown it while it is off.
 const offProvider = (provider: string) => ({ provider, needsApiToken: false });
 
@@ -134,8 +138,10 @@ it("an admin's modes, added models and say over users' own decide which models r
   if (scripted?.mode !== "enabled" || other === undefined) {
     throw new Error("The gateway offers too few models for this test");
   }
-  const offered = ids(before.models.filter(candidate => candidate.mode === "enabled"));
+  const offered = chatIds(before.models);
   expect(ids(await api.listModels())).toEqual(offered);
+  expect(ids(await api.listClassifierModels()))
+      .toEqual(["@cf/cloudflare/clef", "@cf/cloudflare/clef-flash"]);
 
   // A gadget's model binding, minted while its model is still enabled. Starting a session calls
   // no provider.
@@ -420,8 +426,7 @@ it("an admin turns on a provider beside the environment's, and tests what one an
       builtInModelIds: ids(on.models),
       userModelsEnabled: true,
     });
-    expect(ids(await api.listModels()))
-        .toEqual(ids(on.models.filter(candidate => candidate.mode === "enabled")));
+    expect(ids(await api.listModels())).toEqual(chatIds(on.models));
     await api.addModel(mine, mineConfig);
 
     // What the admin may not do. None of it changes anything.
