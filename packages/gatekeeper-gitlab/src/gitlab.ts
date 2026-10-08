@@ -714,7 +714,7 @@ export interface GitLabVerifierApi extends GatekeeperUserVerifier {
  * The lowest role that sees everything a binding can disclose: the repository, confidential
  * issues, and internal notes.
  */
-export const REPORTER_ACCESS_LEVEL = 20;
+const REPORTER_ACCESS_LEVEL = 20;
 
 /**
  * Decide from a user's effective membership (or its absence) whether they see everything a
@@ -723,7 +723,7 @@ export const REPORTER_ACCESS_LEVEL = 20;
  * project, and a row it has not yet swept may still be listed with the date passed. The date is
  * a day (`2026-09-18`), read as its UTC midnight; a date that does not parse expires too.
  */
-export function membershipGrantsFullRead(
+function membershipGrantsFullRead(
   member: { access_level: number; membership_state?: string; expires_at?: string | null } | null,
   now: Date = new Date(),
 ): boolean {
