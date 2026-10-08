@@ -1144,11 +1144,13 @@ export default function GadgetEditor() {
     setUserNavigatedToList(false)
   }, [id])
 
-  // ?showChat (a notification's "Open task") asks to see the chat, not merely select it: on a phone
-  // the pane hides it. Declared after the reset above, so arriving from another workspace beats its
-  // stored view; dropped once honoured, so the next request for the same chat works too.
+  // ?showChat (a notification's "Open task") asks to see the chat, not merely select it: full-screen
+  // preview covers it, and on a phone so does the pane. Declared after the reset above, so arriving
+  // from another workspace beats its stored view; dropped once honoured, so the next request for
+  // the same chat works too.
   useEffect(() => {
     if (!showChatParam) return
+    exitGadgetFullscreen()
     if (isSinglePaneLayout()) setWorkspaceVisibility('closed')
     navigate({
       to: '/workspace/$id',
@@ -1156,7 +1158,7 @@ export default function GadgetEditor() {
       search: (prev: Record<string, unknown>) => ({ ...prev, showChat: undefined }),
       replace: true,
     })
-  }, [showChatParam, id, navigate, setWorkspaceVisibility])
+  }, [showChatParam, id, navigate, setWorkspaceVisibility, exitGadgetFullscreen])
 
   // ── navigation helper ────────────────────────────────────────────────────────
   const navigateToChat = useCallback(

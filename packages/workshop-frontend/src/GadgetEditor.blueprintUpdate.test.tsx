@@ -282,4 +282,18 @@ describe('GadgetEditor, opening a chat from a notification', () => {
     expect(replace).toBe(true)
     expect(search(mocks.search)).toEqual({ chat: 3, showChat: undefined })
   })
+
+  it('leaves full-screen preview, which would cover the chat', async () => {
+    window.history.replaceState(null, '', '#fullscreen')
+    await openEditor('desktop')
+    const fullScreen = () => container.querySelector('[aria-label="Gadget full screen"]')
+    expect(fullScreen()).not.toBeNull()
+
+    // The router drops the hash with history.pushState, which fires no hashchange.
+    window.history.replaceState(null, '', window.location.pathname)
+    mocks.search = { chat: 3, showChat: true }
+    await openEditor('desktop')
+
+    expect(fullScreen()).toBeNull()
+  })
 })
