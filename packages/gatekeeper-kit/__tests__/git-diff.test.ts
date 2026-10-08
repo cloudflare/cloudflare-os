@@ -414,7 +414,7 @@ describe("diffGitTrees", () => {
     ]);
   });
 
-  it("omits a file whose emitted diff exceeds the per-file output cap", async () => {
+  it("omits the hunks, not the counts, of a file past the per-file output cap", async () => {
     // A rewrite past the edit-distance cap takes the wholesale path: every line removed and added.
     const lines = (prefix: string) =>
       text(Array.from({ length: 3000 }, (_, i) => `${prefix}${i}`).join("\n") + "\n");
@@ -427,7 +427,8 @@ describe("diffGitTrees", () => {
     );
     const [file] = await diffGitTrees(source, oid(30), oid(31));
     expect(file).toEqual({
-      path: "lock.json", status: "modified", additions: 0, deletions: 0, diffOmitted: true, hunks: [],
+      path: "lock.json", status: "modified", additions: 3000, deletions: 3000,
+      diffOmitted: true, hunks: [],
     });
   });
 
@@ -458,7 +459,7 @@ describe("diffGitTrees", () => {
     expect(emitted.length).toBeLessThan(count);
     expect(files.map(file => file.diffOmitted)).toEqual(
       names.map((_, i) => i >= emitted.length));
-    for (const file of emitted) expect(file.additions).toBe(1000);
+    for (const file of files) expect(file.additions).toBe(1000);
   });
 
   it("throws TreeUnavailableError when a needed tree cannot be loaded", async () => {

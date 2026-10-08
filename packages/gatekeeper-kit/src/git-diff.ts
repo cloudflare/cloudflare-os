@@ -85,7 +85,8 @@ export const MAX_DIFF_BLOB_BYTES = 1024 * 1024;
 export const MAX_DIFF_TOTAL_BYTES = 20 * 1024 * 1024;
 /**
  * Caps on emitted hunks, measured cheaply as line text length plus `DIFF_LINE_OVERHEAD` per
- * line: per file, and across one tree diff (past either, files are reported with diffOmitted).
+ * line: per file, and across one tree diff (past either, files keep their line counts but are
+ * reported with diffOmitted and no hunks).
  * Gatekeepers cache the whole simulated comparison as one Durable Object storage value, which
  * is capped at 2 MB; the total stays well under that, leaving room for the rest of the record
  * and for non-Latin-1 text, which V8's serializer stores at two bytes per character.
@@ -236,11 +237,11 @@ function isBinary(bytes: Uint8Array): boolean {
 
 /**
  * Diff two trees into the same per-file shape a provider's compare / changed-files responses
- * normalize to. Gitlinks (submodule pointers), binary files, files over `MAX_DIFF_BLOB_BYTES` or
- * whose hunks would exceed the `MAX_DIFF_OUTPUT_*` caps, and files whose content is unavailable
- * are reported with `diffOmitted: true` and no hunks; renames are not detected (they appear as a
- * remove plus an add, which the provider's own rename detection will supersede once the work
- * reaches the remote).
+ * normalize to. Gitlinks (submodule pointers), binary files, files over `MAX_DIFF_BLOB_BYTES`,
+ * and files whose content is unavailable are reported with `diffOmitted: true`, no hunks and zero
+ * counts; a file whose hunks would exceed the `MAX_DIFF_OUTPUT_*` caps keeps its counts but not
+ * its hunks. Renames are not detected (they appear as a remove plus an add, which the provider's
+ * own rename detection will supersede once the work reaches the remote).
  */
 export async function diffGitTrees(
   source: TreeDiffSource,
@@ -290,7 +291,7 @@ export async function diffGitTrees(
       diffTextLines(decoder.decode(oldContent), decoder.decode(newContent));
     const outputSize = diffOutputSize(hunks);
     if (outputSize > Math.min(MAX_DIFF_OUTPUT_PER_FILE, outputBudget)) {
-      files.push(omitted);
+      files.push({ ...omitted, additions, deletions });
       continue;
     }
     outputBudget -= outputSize;

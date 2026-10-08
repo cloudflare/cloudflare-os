@@ -2265,8 +2265,8 @@ vendor-neutral; each gatekeeper's agent-facing `types.d.ts` keeps structurally i
 (that text must stay self-contained). `MAX_DIFF_*` cap blob size, total bytes, and lines diffed per
 file, and `MAX_DIFF_OUTPUT_PER_FILE`/`MAX_DIFF_OUTPUT_TOTAL` cap the hunk text emitted, so a
 result stays under Durable Object storage's 2 MB value limit; a file past any cap reports
-`diffOmitted` and no hunks. The reader of unified patches (`parsePatch`) is still per gatekeeper;
-see §11.
+`diffOmitted` and no hunks, and one past an output cap keeps its line counts. The reader of
+unified patches (`parsePatch`) is still per gatekeeper; see §11.
 
 ### 4.22 `./git-objects`
 
