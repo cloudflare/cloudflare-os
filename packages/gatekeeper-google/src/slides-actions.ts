@@ -11,6 +11,7 @@
 
 import {
   ActionApplyError, ActionOutcomeUnknownError, APPLY_OUTCOME_UNKNOWN_MESSAGE, defineActions,
+  type ActionDefinition,
 } from "@gadgets/gatekeeper-kit/actions";
 import {
   buildDescription, codeSpan, plainInline, sanitizeTitle,
@@ -22,8 +23,7 @@ import { CREATES } from "./slides-design-input";
 import { slideIds } from "./slides-model";
 import type { SlideBounds } from "./slides-read-types";
 import {
-  editDeck, movedOrder, requireNewSlide, type Deck, type SlideLabel, type SlidesActions,
-  type TextEditRecord,
+  movedOrder, requireNewSlide, type Deck, type DesignBatch, type SlideLabel, type SlidesActions,
 } from "./slides-simulation";
 import { elementIdsOf, textOfTarget, type TextAddress } from "./slides-target";
 import { ChangeConflict } from "./slides-text";
@@ -32,8 +32,22 @@ import type { ShapeOutline, TextFormatChange } from "./slides-types";
 /** What an approved change is written with. */
 export type SlidesHost = { api: GoogleSlidesApi; presentationId: string };
 
-// Text edits, the one kind of Slides change a user may let apply without asking.
+// What a user may let apply without asking: a batch that only edits text, or one that only changes
+// how existing text and elements look. Setting a link or font does not count, since Google keeps
+// the whole string, and anything that creates, deletes, or reaches tables or alt text needs approval.
 const EDIT_SLIDES_TEXT: ActionKind = { tag: "editSlidesText", label: "Slide text edits" };
+const FORMAT_SLIDES: ActionKind = { tag: "formatSlides", label: "Slide formatting and layout" };
+const FORMATTING = new Set<DesignChange["op"]>([
+  "formatText", "formatParagraphs", "updateShape", "setBounds", "arrange",
+]);
+
+/** The kind a batch is queued as, so approving a kind approves no more than it says. */
+export function batchKind(changes: readonly DesignChange[]): "editText" | "formatSlides" | "updateSlides" {
+  if (changes.every(change => change.op === "editText")) return "editText";
+  let formats = changes.every(change => FORMATTING.has(change.op) &&
+    !(change.op === "formatText" && (change.format.link || change.format.fontFamily)));
+  return formats ? "formatSlides" : "updateSlides";
+}
 
 // Planning against a fresh read, and resending a batch whose response was lost.
 const MAX_ATTEMPTS = 3;
@@ -140,20 +154,11 @@ type ElementName = (id: string, noun?: string) => string;
 
 const byId: ElementName = (id, noun = "element") => `${noun} ${codeSpan(id)}`;
 
-function targetName(edit: TextEditRecord): string {
-  if (edit.elementId === undefined) return `the speaker notes of ${slideName(edit.slide)}`;
-  return `${addressName(edit, byId)} on ${slideName(edit.slide)}`;
-}
-
 function addressName(address: TextAddress, element: ElementName): string {
   if (address.elementId === undefined) return "the speaker notes";
   if (!address.cell) return element(address.elementId, "shape");
   let { row, column } = address.cell;
   return `row ${row + 1}, column ${column + 1} of ${element(address.elementId, "table")}`;
-}
-
-function capitalized(text: string): string {
-  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function boundsName({ x, y, width, height }: SlideBounds): string {
@@ -376,48 +381,10 @@ function designLanded(
   return checks.length > 0 && checks.every(Boolean);
 }
 
-/** The Slides change set, bound once per presentation's journal. */
-export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
-  editText: {
-    kind: EDIT_SLIDES_TEXT,
-    autoApprovable: true,
-    delivery: "continue-with-simulation",
-    claimBeforeApply: true,
-    describe: ({ edits }) => {
-      let builder = buildDescription(edits.length === 1
-        ? `Edits the text of ${targetName(edits[0])}.`
-        : `Makes ${edits.length} text edits, all or none of which are applied:\n\n` +
-          edits.map((edit, i) => `${i + 1}. ${capitalized(targetName(edit))}`).join("\n"));
-      edits.forEach((edit, i) => {
-        let label = edits.length === 1 ? "" : `Edit ${i + 1}: `;
-        if (edit.find === undefined) {
-          builder.verbatim(`${label}Current text`, edit.before ?? "");
-          builder.verbatim(`${label}New text`, edit.replace);
-        } else {
-          builder.verbatim(`${label}Find`, edit.find);
-          builder.verbatim(`${label}Replace with`, edit.replace);
-        }
-      });
-      return {
-        title: sanitizeTitle(edits.length === 1
-          ? `Edit text on ${slideName(edits[0].slide)}`
-          : `Edit text in ${edits.length} places`),
-        ...builder.finish(),
-        implementsRevert: false,
-      };
-    },
-    apply: ({ edits }, host) => write(host, [...new Set(edits.map(edit => edit.slideId))], fresh => {
-      let { deck, placements } = editDeck(fresh, edits);
-      return {
-        requests: placements.flatMap(placement => placement!.requests),
-        landed: after => quietly(() => edits.every(edit =>
-          textOfTarget(after.slides.get(edit.slideId) ?? {}, edit) ===
-            textOfTarget(deck.slides.get(edit.slideId)!, edit))),
-      };
-    }),
-  },
-
-  updateSlides: {
+/** A design batch's definition, the same for each kind but in the `kind` a user may auto-approve. */
+function designBatch(kind?: ActionKind): ActionDefinition<DesignBatch, SlidesHost> {
+  return {
+    ...(kind ? { kind, autoApprovable: true } : {}),
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
     describe: ({ changes, slides }) => {
@@ -443,7 +410,14 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
         landed: after => quietly(() => designLanded(changes, steps, fresh, deck, after)),
       };
     }),
-  },
+  };
+}
+
+/** The Slides change set, bound once per presentation's journal. */
+export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
+  editText: designBatch(EDIT_SLIDES_TEXT),
+  formatSlides: designBatch(FORMAT_SLIDES),
+  updateSlides: designBatch(),
 
   duplicateSlide: {
     delivery: "continue-with-simulation",

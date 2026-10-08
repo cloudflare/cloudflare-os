@@ -82,7 +82,11 @@ export type ShapeOutline = { color?: SlideColor; weight?: number };
  * its real ID is returned under that name.
  */
 export type SlideChange =
-  /** A text edit, as `editText()` makes. */
+  /**
+   * Replace the one occurrence of `find`, or all of the target's text. New text takes the style of
+   * the text it replaces, and text the edit leaves unchanged at either end keeps its own, so `find`
+   * and `replace` may share context. A slide number can be replaced whole, not in part.
+   */
   | ({ op: "editText" } & SlideTextEdit)
   /** Format text. */
   | ({ op: "formatText"; format: TextFormatChange } & SlideTextTarget)
@@ -222,19 +226,14 @@ export type SlideChange =
  */
 export interface GooglePresentationSession extends GooglePresentationReadSession {
   /**
-   * Queue text edits, applied in order, together or not at all. Each replaces the one occurrence of
-   * `find`, or all of the target's text. New text takes the style of the text it replaces, and
-   * text an edit leaves unchanged at either end keeps its own, so `find` and `replace` may share
-   * context. A slide number can be replaced whole, not in part. Throws, queuing nothing, when an
-   * edit does not apply to the text `getSlides()` would now return.
-   */
-  editText(edits: SlideTextEdit[]): Promise<void>;
-
-  /**
-   * Queue design changes, applied in order, together or not at all, as one approval: formatting,
-   * shapes, images, tables, and where elements sit. Changes to text that `editText()` makes may
-   * be included, so a slide can be reworked at once. Returns the ID of each element created with
-   * a `ref`, under that ref.
+   * Queue changes, applied in order, together or not at all, as one approval: text edits,
+   * formatting, shapes, images, tables, and where elements sit. Returns the ID of each element
+   * created with a `ref`, under that ref.
+   *
+   * The user may let a batch apply without asking when it only edits text, or when it only
+   * formats text, paragraphs and shapes or moves elements, setting no link or font. Any other
+   * batch, mixing those two included, waits for approval, so queue changes that need not apply
+   * together as separate batches.
    *
    * Reads show the changes as if applied, except what only Google can work out: a new element
    * reads with just what the change sets until it is applied, and an image's fitted size, the size

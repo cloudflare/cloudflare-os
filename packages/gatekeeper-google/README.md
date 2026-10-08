@@ -219,19 +219,24 @@ Large batches awaiting approval therefore cost reads more requests against Googl
 
 ## Google Slides edits
 
-A directly bound presentation accepts five changes, each queued for approval: `editText()`
-(find-and-replace or whole-text replacement in shapes, table cells, and speaker notes, up to 50
-edits applied together), `updateSlides()`, `duplicateSlide()`, `deleteSlide()`, and
-`moveSlides()`. Only text edits can be set to apply without asking. Changes are journaled with the
-kit's `ActionJournal`, and apply in the order they were queued.
+A directly bound presentation accepts four changes, each queued for approval: `updateSlides()`,
+`duplicateSlide()`, `deleteSlide()`, and `moveSlides()`. Changes are journaled with the kit's
+`ActionJournal`, and apply in the order they were queued.
 
-`updateSlides()` takes up to 50 design changes applied together: text edits, text and paragraph
-formatting (including bullets), shapes and their fill, outline and vertical alignment, moving,
-resizing, rotating, stacking and deleting elements, alt text, images by public `https:` URL, and
-tables with their rows, columns and cell fills. Elements a batch creates get IDs the gatekeeper
-mints, so later changes in the batch, and later batches, can address them before they exist. An
-image URL is never fetched by the gatekeeper: Google downloads it when the change is applied, so
-nothing is read from it before approval. A batch is never auto-approvable.
+`updateSlides()` takes up to 50 changes applied together: find-and-replace or whole-text
+replacement in shapes, table cells, and speaker notes, text and paragraph formatting (including
+bullets), shapes and their fill, outline and vertical alignment, moving, resizing, rotating,
+stacking and deleting elements, alt text, images by public `https:` URL, and tables with their
+rows, columns and cell fills. Elements a batch creates get IDs the gatekeeper mints: later changes
+in the batch can address one by its `ref`, and later batches by the ID returned for it. An image
+URL is never fetched by the gatekeeper: Google downloads it when the change is applied, so nothing
+is read from it before approval.
+
+A batch is queued as one of three action kinds, which share everything but which ones a user may
+let apply without asking: "Slide text edits" (only text edits), "Slide formatting and layout"
+(only formatting text, paragraphs and shapes, and moving or stacking elements, setting no link or
+font, since Google keeps their whole strings), and every other batch, mixed ones included, which
+always waits for approval.
 
 Reads show queued changes as if applied, by replaying them over Slides' own JSON before it is
 projected; thumbnails show the presentation as saved. Each change is replayed as Google documents

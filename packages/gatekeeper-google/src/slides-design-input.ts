@@ -87,11 +87,6 @@ function checkEdit(edit: SlideTextEdit): void {
   checkInsertedText(edit.replace, "replace");
 }
 
-/** Checks one text edit, as `editText()` takes it. Throws `Error`. */
-export function checkTextEdit(edit: SlideTextEdit, label: string): void {
-  inChange(label, () => checkEdit(edit));
-}
-
 function checkTarget(target: SlideTextTarget, emptyRange: boolean): void {
   checkCell(target.cell, target.elementId);
   if (target.find === "") refuse("find is empty. Omit it to address all of the text");

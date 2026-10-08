@@ -7,7 +7,7 @@ import type {
 import { AccessTokenCache, type AccessTokenRequest } from "./auth-retry";
 import { unguardedNativeRead, type NativeRead } from "./drive-session";
 import type { GoogleVerifierApi } from "./google-verifier-types";
-import { SLIDES_ACTIONS } from "./slides-actions";
+import { batchKind, SLIDES_ACTIONS } from "./slides-actions";
 import { GoogleSlidesApi, type RestSlide, type ThumbnailSize } from "./slides-api";
 import {
   layoutNames, presentationInfo, slideIds, slideOf, type LayoutNames,
@@ -16,15 +16,14 @@ import type {
   PresentationInfo, Slide, SlideThumbnail, SlideThumbnailSize,
 } from "./slides-read-types";
 import { designDeck, type DesignStep } from "./slides-design";
-import { checkTextEdit, prepareChanges } from "./slides-design-input";
+import { prepareChanges } from "./slides-design-input";
 import {
-  batchSlides, conflictReason, editDeck, mintObjectId, movedOrder, replayChanges, slidesToFetch,
+  batchSlides, conflictReason, mintObjectId, movedOrder, replayChanges, slidesToFetch,
   type Deck, type QueuedChange, type SlideLabel, type SlidesAction, type SlidesActions,
-  type TextEditRecord,
 } from "./slides-simulation";
 import { elementIdsOf } from "./slides-target";
 import { ChangeConflict } from "./slides-text";
-import type { GooglePresentationSession, SlideChange, SlideTextEdit } from "./slides-types";
+import type { GooglePresentationSession, SlideChange } from "./slides-types";
 import { SLIDES_TYPES_MODULE_PREFIX, stripTypeModulePrefix } from "./type-bundle";
 import SLIDES_READ_TYPES_CODE from "./slides-read-types.txt";
 import SLIDES_TYPES_CODE from "./slides-types.txt";
@@ -36,7 +35,6 @@ const MAX_SLIDES_READ_LENGTH = 8 * 1024 * 1024;
 const THUMBNAIL_SIZES = {
   small: "SMALL", medium: "MEDIUM", large: "LARGE",
 } as const satisfies Record<SlideThumbnailSize, ThumbnailSize>;
-const MAX_EDITS = 50;
 const MAX_SLIDES_PER_MOVE = 100;
 // A queued change is one Durable Object KV value, which may not exceed 128 KiB serialized.
 const MAX_CHANGE_BYTES = 100 * 1024;
@@ -237,13 +235,6 @@ function asError(error: unknown): never {
   throw error;
 }
 
-function checkEdits(edits: SlideTextEdit[]): void {
-  if (edits.length === 0 || edits.length > MAX_EDITS) {
-    throw new Error(`Make between 1 and ${MAX_EDITS} edits at a time.`);
-  }
-  edits.forEach((edit, i) => checkTextEdit(edit, `Edit ${i + 1}`));
-}
-
 /** One slide's place and title, for the approver. */
 function labelOf(deck: Deck, id: string, layouts: LayoutNames): SlideLabel {
   let index = deck.order.indexOf(id);
@@ -411,39 +402,10 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
     throw noSlide(slideId, title);
   }
 
-  async editText(edits: SlideTextEdit[]): Promise<void> {
-    checkEdits(edits);
-    let ids = [...new Set(edits.map(edit => edit.slideId))];
-    await this.#changes.queue("editText", async () => {
-      let { deck, layouts } = await this.#prepare(ids, "queue edits to them");
-      let placements = (() => {
-        try {
-          return editDeck(deck, edits).placements;
-        } catch (error) {
-          asError(error);
-        }
-      })();
-      let records = edits.map(({ slideId, elementId, cell, find, replace }, i): TextEditRecord => {
-        let { previous, text } = placements[i]!;
-        if (text === previous) throw new Error(`Edit ${i + 1} leaves the text as it is.`);
-        return {
-          slideId,
-          ...(elementId !== undefined ? { elementId } : {}),
-          ...(cell ? { cell: { row: cell.row, column: cell.column } } : {}),
-          // Replacing all of the text guards on that text, so an edit made since is not lost.
-          ...(find !== undefined ? { find } : { before: previous }),
-          replace,
-          slide: labelOf(deck, slideId, layouts),
-        };
-      });
-      return { payload: { edits: records }, result: undefined };
-    });
-  }
-
   async updateSlides(changes: SlideChange[]): Promise<Record<string, string>> {
     let { changes: prepared, refs } = prepareChanges(changes);
     let ids = [...new Set(changes.map(change => change.slideId))];
-    return this.#changes.queue("updateSlides", async () => {
+    return this.#changes.queue(batchKind(prepared), async () => {
       let { deck, layouts } = await this.#prepare(ids, "queue changes to them");
       let existing = new Set(ids.flatMap(id => elementIdsOf(deck.slides.get(id)?.pageElements)));
       let shadowing = Object.keys(refs).find(ref => existing.has(ref));

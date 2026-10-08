@@ -4,11 +4,11 @@
  */
 
 import type { RestPageElement, RestSlide, RestText } from "./slides-api";
-import type { TextEditRecord } from "./slides-simulation";
 import {
   ChangeConflict, changeRange, narrowChange, projectedText, providerRange, replaceRequests,
   restTextOf, richTextOf, spliceText, type IndexRange, type TextLocation,
 } from "./slides-text";
+import type { SlideTextEdit } from "./slides-types";
 
 /**
  * Where one edit landed: the provider range it replaces with `inserted`, the requests that do it,
@@ -24,7 +24,10 @@ export type TextSlot = {
 };
 
 /** The text of a shape, a table cell, or, with no element, a slide's speaker notes. */
-export type TextAddress = Pick<TextEditRecord, "slideId" | "elementId" | "cell">;
+export type TextAddress = Pick<SlideTextEdit, "slideId" | "elementId" | "cell">;
+
+/** A text edit as queued: replacing all of the text, it carries what that text was then. */
+export type TextEdit = SlideTextEdit & { before?: string };
 
 /** An element, the list holding it, and the group that list belongs to, if any. */
 export type Located = {
@@ -51,15 +54,6 @@ export function elementIdsOf(elements: RestPageElement[] | undefined): string[] 
     ...(element.objectId ? [element.objectId] : []),
     ...elementIdsOf(element.elementGroup?.children),
   ]);
-}
-
-/** Names an edit's target, for prefixing a conflict. */
-export function editTarget(edit: TextAddress): string {
-  if (edit.elementId === undefined) return `the speaker notes of slide "${edit.slideId}"`;
-  if (edit.cell) {
-    return `row ${edit.cell.row}, column ${edit.cell.column} of table "${edit.elementId}"`;
-  }
-  return `element "${edit.elementId}"`;
 }
 
 /** The text `address` names on `slide`. Throws `ChangeConflict` when it is not there. */
@@ -105,7 +99,7 @@ export function textSlot(slide: RestSlide, address: TextAddress): TextSlot {
 }
 
 /** Applies one edit to `slide` in place, returning where it landed. Throws `ChangeConflict`. */
-export function editSlide(slide: RestSlide, edit: Omit<TextEditRecord, "slide">): EditPlacement {
+export function editSlide(slide: RestSlide, edit: TextEdit): EditPlacement {
   let slot = textSlot(slide, edit);
   let rich = richTextOf(slot.body);
   let previous = projectedText(rich.segments);

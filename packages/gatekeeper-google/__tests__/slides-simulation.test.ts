@@ -91,10 +91,10 @@ describe("Slides change replay", () => {
     expect(slidesToFetch(["c3"], changes)).toEqual(new Set(["c3", "c1", "s1"]));
   });
 
-  it("fetches every slide of a text edit batch touching a requested slide, since it applies whole", () => {
+  it("fetches every slide of a batch touching a requested slide, since it applies whole", () => {
     let batch = (...slideIds: string[]): SlidesAction => ({
       kind: "editText",
-      payload: { edits: slideIds.map(slideId => ({ slideId, replace: "x", slide: { number: 1 } })) },
+      payload: { changes: slideIds.map(slideId => ({ op: "editText", slideId, replace: "x" })), slides: {} },
     });
     let changes = [copyOf("s1", "c1", {}), batch("c1", "s2"), batch("s4", "s5")]
       .map((action, i) => ({ id: i + 1, action }));

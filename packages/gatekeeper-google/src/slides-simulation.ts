@@ -17,31 +17,23 @@ import {
 } from "@gadgets/gatekeeper-kit/simulation";
 import type { RestPageElement, RestSlide } from "./slides-api";
 import { designDeck, type DesignChange } from "./slides-design";
-import { editSlide, editTarget, type EditPlacement } from "./slides-target";
 import { ChangeConflict } from "./slides-text";
 
 /** A slide as it was when a change was queued, so the approver can recognize it. */
 export type SlideLabel = { number: number; title?: string };
 
-/** One queued text edit, addressed as `SlideTextEdit` addresses it. */
-export type TextEditRecord = {
-  slideId: string;
-  /** The shape or table; absent for the slide's speaker notes. */
-  elementId?: string;
-  cell?: { row: number; column: number };
-  /** Absent to replace all of the text. */
-  find?: string;
-  replace: string;
-  /** With no `find`: the text when the edit was queued, which it must still be at apply. */
-  before?: string;
-  slide: SlideLabel;
-};
+/** An `updateSlides()` batch. `slides` labels each slide a change is on. */
+export type DesignBatch = { changes: DesignChange[]; slides: Record<string, SlideLabel> };
 
-/** The payload of each kind of queued change. */
+/**
+ * The payload of each kind of queued change. A batch is queued as `editText` when it only edits
+ * text, `formatSlides` when it only formats or moves, and `updateSlides` otherwise; they differ in
+ * nothing but which kinds a user may let apply without asking.
+ */
 export type SlidesActions = {
-  editText: { edits: TextEditRecord[] };
-  /** `slides` labels each slide a change is on. */
-  updateSlides: { changes: DesignChange[]; slides: Record<string, SlideLabel> };
+  editText: DesignBatch;
+  formatSlides: DesignBatch;
+  updateSlides: DesignBatch;
   /** `objectIds` maps the source's element IDs to the IDs the gatekeeper minted for the copy's. */
   duplicateSlide: {
     slideId: string; newSlideId: string; objectIds: Record<string, string>; slide: SlideLabel;
@@ -70,16 +62,6 @@ export function mintObjectId(): string {
   return `gk${crypto.randomUUID().replaceAll("-", "")}`;
 }
 
-// Prefixes a conflict with the edit it is about.
-function inEdit<T>(index: number, edit: Omit<TextEditRecord, "slide">, body: () => T): T {
-  try {
-    return body();
-  } catch (error) {
-    if (!(error instanceof ChangeConflict)) throw error;
-    throw new ChangeConflict(`edit ${index + 1}, to ${editTarget(edit)}: ${error.message}`);
-  }
-}
-
 function requireSlide(order: readonly string[], id: string): void {
   if (!order.includes(id)) throw new ChangeConflict(`slide "${id}" no longer exists`);
 }
@@ -87,30 +69,6 @@ function requireSlide(order: readonly string[], id: string): void {
 /** Throws `ChangeConflict` if a slide already has the ID a copy is to take. */
 export function requireNewSlide(order: readonly string[], id: string): void {
   if (order.includes(id)) throw new ChangeConflict(`a slide with the copy's ID "${id}" already exists`);
-}
-
-/**
- * Applies text edits in order. Returns the edited deck, and where each edit landed: null for one
- * whose target the deck does not hold. Throws `ChangeConflict`.
- */
-export function editDeck(
-  deck: Deck, edits: readonly Omit<TextEditRecord, "slide">[],
-): { deck: Deck; placements: (EditPlacement | null)[] } {
-  let edited = new Map<string, RestSlide>();
-  let placements = edits.map((edit, i) => inEdit(i, edit, () => {
-    requireSlide(deck.order, edit.slideId);
-    let slide = edited.get(edit.slideId);
-    if (!slide) {
-      let held = deck.slides.get(edit.slideId);
-      if (!held) return null;
-      edited.set(edit.slideId, slide = structuredClone(held));
-    }
-    return editSlide(slide, edit);
-  }));
-  return {
-    deck: edited.size === 0 ? deck : { order: deck.order, slides: new Map([...deck.slides, ...edited]) },
-    placements,
-  };
 }
 
 /** The order after moving `slideIds`, kept in their current order, to follow `after`. */
@@ -168,7 +126,7 @@ export function applyChange(deck: Deck, action: SlidesAction): Deck {
   let { order, slides } = deck;
   switch (action.kind) {
     case "editText":
-      return editDeck(deck, action.payload.edits).deck;
+    case "formatSlides":
     case "updateSlides":
       return designDeck(deck, action.payload.changes).deck;
     case "duplicateSlide": {
@@ -234,11 +192,16 @@ export function slidesToFetch(ids: readonly string[], changes: readonly QueuedCh
   return needed;
 }
 
-/** The slides a text edit or design batch changes, which it checks together; none for others. */
+/** The slides a design batch changes, which it checks together; none for other changes. */
 export function batchSlides(action: SlidesAction): string[] {
-  if (action.kind === "editText") return action.payload.edits.map(edit => edit.slideId);
-  if (action.kind === "updateSlides") return action.payload.changes.map(change => change.slideId);
-  return [];
+  switch (action.kind) {
+    case "editText":
+    case "formatSlides":
+    case "updateSlides":
+      return action.payload.changes.map(change => change.slideId);
+    default:
+      return [];
+  }
 }
 
 /** The reason a read shows only some queued changes: the first that no longer applies. */
