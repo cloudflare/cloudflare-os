@@ -1,0 +1,136 @@
+plans/restricted-data-sharing.md
+  s_6d79354b9d5d8c::t_49b59056d10678 177-208
+packages/gatekeeper-kit/src/action-description.ts
+  s_2d1ae144546e14::t_8053c38a8e4fd2 97-98,154-161,164-166
+  s_ea0ed5df37b4df::t_cd1512011401ef 42-43,207,211,223-224
+  s_ea0ed5df37b4df::t_0b0db0d7198d5a 88-89,91-92
+  s_ea0ed5df37b4df::t_78ef3c9c4282b8 36,40-41,111-112,130-141,143-144,147,173,181,213,225-226,236-237,243-246,260-261,268-270,280-285
+  s_ea0ed5df37b4df::t_ef49a7d05e05da 39
+  s_f5d4fa896fc128::t_9b083d388a8e22 37-38,45-57,174-175,180,192-193,208-210,227-229
+  s_f5d4fa896fc128::t_dd7f4d8d30dd3d 44
+  s_f5d4fa896fc128::t_8346dc16a09182 194-196
+  s_f5d4fa896fc128::t_5989580ea1109d 230
+packages/gatekeeper-kit/__tests__/action-description.test.ts
+  s_2d1ae144546e14::t_5cbbfec5f5c54e 235-248
+  s_ea0ed5df37b4df::t_c56fd1c6d49dcd 110-113,119-125,129-154,156-162
+  s_ea0ed5df37b4df::t_ef49a7d05e05da 155
+  s_ea0ed5df37b4df::t_cd1512011401ef 126-128
+  s_ea0ed5df37b4df::t_57d21c61c26ffc 163
+  s_f5d4fa896fc128::t_599861b528a39d 164-224
+  s_f5d4fa896fc128::t_60a1e61c32b96d 225
+packages/gatekeeper-kit/USAGE.md
+  s_2d1ae144546e14::t_0de625658249ed 468-472
+  s_2d1ae144546e14::t_4b49575447cd80 466-467,477-478
+packages/gatekeeper-github/src/github.ts
+  s_2d1ae144546e14::t_86e76f87d65d5f 24,325-338,358,362,367,372,381-383,406-408,418,421-423,428-429,432-435
+  s_2d1ae144546e14::t_aa9f5eafcd6f4c 350-351,453-456
+  s_2d1ae144546e14::t_5075f1961f83bb 398-403,439-440
+  s_2d1ae144546e14::t_eb8b75a95469a5 397,404
+  s_f5d4fa896fc128::t_1f60327b881e4a 339-345
+  s_f5d4fa896fc128::t_11ab4913b34074 390-392,394-395
+  s_f5d4fa896fc128::t_ac189e43e75690 3839-3840
+  s_f5d4fa896fc128::t_77c4b609a37e84 393
+packages/gatekeeper-google/src/google.ts
+  s_2d1ae144546e14::t_0860b27b025ebd 4,1296-1297,1300,2712-2714,2762
+  s_2d1ae144546e14::t_b9855dada02a35 2716-2717,2761,2763
+packages/gatekeeper-linear/src/linear.ts
+  s_2d1ae144546e14::t_551015d94530d9 20,22,2084,2133-2134,2136,2149,2173-2174,2361-2364,2395-2396,2441
+  s_ea0ed5df37b4df::t_81854dd4790ad6 21,2157,2397-2403,2447
+packages/gatekeeper-confluence/src/confluence-actions.ts
+  s_2d1ae144546e14::t_33366374881e13 412
+  s_ea0ed5df37b4df::t_56d0249a0b2170 389-391,407
+  s_ea0ed5df37b4df::t_beb976f7ee04d0 12-15,392-396,405-406,408-409,424,433,442,452,459,466,471,489,496
+packages/gatekeeper-homeassistant/src/approvals.ts
+  s_2d1ae144546e14::t_0b382c0c36e490 150-151,226-252,263-264,285,287
+packages/gatekeeper-spotify/src/types.d.ts
+  s_2d1ae144546e14::t_3b8295ff18fda9 487-488
+packages/gatekeeper-spotify/src/spotify.ts
+  s_2d1ae144546e14::t_dc731187c30a1a 819-820,1770-1772
+  s_ea0ed5df37b4df::t_81854dd4790ad6 894-895
+packages/gatekeeper-google/__tests__/workerd/gmail-actions.test.ts
+  s_ea0ed5df37b4df::t_5464e780f6a35e 1123,1127-1140
+  s_ea0ed5df37b4df::t_a7cad1f15857e9 1141-1142
+  s_f5d4fa896fc128::t_44dc13a1644a82 1253-1333,1337-1360
+  s_f5d4fa896fc128::t_1d05e0fb1049ae 1334-1336
+packages/gatekeeper-google/src/gmail.ts
+  s_ea0ed5df37b4df::t_3e73a59d76a5ee 1552-1559
+  s_f5d4fa896fc128::t_a48bed3d81a23f 3423-3424,3521-3523
+  s_f5d4fa896fc128::t_d93f0aa67936f5 17-18,987-1025,1031-1064,1067-1068,1071-1092,2839-2840,3003,3005-3006,3011-3025,3027,3030-3032
+  s_f5d4fa896fc128::t_e0b802f8327d08 3010
+  s_f5d4fa896fc128::t_4a157bc46fc5f6 3422
+packages/gatekeeper-kit/src/actions.ts
+  s_f5d4fa896fc128::t_03ff8e324732a2 721-722,724-726
+packages/gatekeeper-kit/__tests__/actions.test.ts
+  s_f5d4fa896fc128::t_dd7f4d8d30dd3d 831
+  s_f5d4fa896fc128::t_41ff73ceb9e148 857-858,862-866
+  s_f5d4fa896fc128::t_0faae51675260e 854-856,859-861,867
+  s_f5d4fa896fc128::t_335de6d246465d 853
+packages/mcp-shared/src/tools.ts
+  s_f5d4fa896fc128::t_ab3ef7b84dd1e7 205-206,214-216,218
+packages/mcp-shared/__tests__/tools.test.ts
+  s_f5d4fa896fc128::t_f6549ec751fd6c 206-240
+packages/gatekeeper-google/__tests__/gmail-api.test.ts
+  s_f5d4fa896fc128::t_a08b90a8f321c1 7-8,50-60,62-93
+packages/gatekeeper-google/src/google-api.ts
+  s_f5d4fa896fc128::t_10a205278d6e0e 667-683,706-711,930-935
+packages/gatekeeper-notion/__tests__/notion-actions.test.ts
+  s_f5d4fa896fc128::t_864190561e1f1a 5-11,44-67
+  s_8c730c03b0f214::t_b768ef56eb36fb 4,68
+packages/gatekeeper-notion/src/notion-actions.ts
+  s_f5d4fa896fc128::t_8b643c3f5c8d00 1052
+  s_f5d4fa896fc128::t_67fb24b2a112e8 1039-1049
+  s_f5d4fa896fc128::t_1b86c479cfe160 777-782
+  s_f5d4fa896fc128::t_4d39e322422e99 1066-1067
+  s_8c730c03b0f214::t_aa1fd9747bbaab 1050-1051
+packages/gatekeeper-zoominfo/src/zoominfo.ts
+  s_f5d4fa896fc128::t_2fdc8ebba36403 1330,1357
+  s_f5d4fa896fc128::t_ff889ae61195d8 1298
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e5b9b0d0ab8f6cb09070b84021b19bf238f87bfd",
+  "prompts": {},
+  "sessions": {
+    "s_2d1ae144546e14": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cd809748-14fd-4762-8298-cc33631a1092",
+        "model": "claude-wafer-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_6d79354b9d5d8c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "32de7eff-dc88-4d7f-82cb-613824de97fc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_8c730c03b0f214": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e28df836-1409-4284-a763-c6ad89df1aab",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_ea0ed5df37b4df": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3c7267a6-3f35-40d5-ab55-c7a427009a3e",
+        "model": "claude-wafer-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_f5d4fa896fc128": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "41e3e171-c705-490f-8506-a539c1a11e55",
+        "model": "claude-wafer-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

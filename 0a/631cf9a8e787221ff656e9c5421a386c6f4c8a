@@ -1,0 +1,19 @@
+packages/workshop-backend/src/analytics.ts
+  s_f283112744f6b6::t_ae7dd7d12caeb2 14-15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0a631cf9a8e787221ff656e9c5421a386c6f4c8a",
+  "prompts": {},
+  "sessions": {
+    "s_f283112744f6b6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "760357fb-05f7-45f4-9c56-c8eb0ef25f35",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,38 @@
+packages/gatekeeper-kit/src/action-description.ts
+  s_6d79354b9d5d8c::t_b160a9ee025740 145-146,148-152,179,183,201,251,265
+  s_6d79354b9d5d8c::t_00e83128ce88da 1-35,58-87,90,93-96,99-110,113-129,153,162-163,167-172,176-178,182,184-191,197-200,202-206,212,214-222,231-235,238-242,247-250,252-259,262-264,266-267,271-279,286-345
+  s_6d79354b9d5d8c::t_2f5ee5737efe4a 142
+packages/gatekeeper-kit/package.json
+  s_6d79354b9d5d8c::t_00e83128ce88da 8
+packages/gatekeeper-kit/__tests__/action-description.test.ts
+  s_6d79354b9d5d8c::t_5e647d757ba141 1-109,117-118,226-234,249-296
+  s_6d79354b9d5d8c::t_2f5ee5737efe4a 114-116
+packages/gatekeeper-kit/__tests__/workerd/conformance/gatekeeper.ts
+  s_6d79354b9d5d8c::t_1c30c05ceb6c35 168-169,184
+packages/gatekeeper-kit/__tests__/actions.test.ts
+  s_6d79354b9d5d8c::t_1aebcdcadf478a 832-852,868-869
+packages/gatekeeper-kit/src/actions.ts
+  s_6d79354b9d5d8c::t_1c30c05ceb6c35 104-105,711,720
+packages/gatekeeper-kit/__tests__/workerd/conformance.test.ts
+  s_6d79354b9d5d8c::t_1c30c05ceb6c35 416
+packages/gatekeeper-kit/USAGE.md
+  s_6d79354b9d5d8c::t_61e17a439fefe0 460-465,473-476,479-488
+plans/gatekeeper-kit.md
+  s_6d79354b9d5d8c::t_b75bf128cc4760 922-923
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "af72425e633e408baa1447eb0ddca975f516a039",
+  "prompts": {},
+  "sessions": {
+    "s_6d79354b9d5d8c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "32de7eff-dc88-4d7f-82cb-613824de97fc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

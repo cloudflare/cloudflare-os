@@ -1,0 +1,29 @@
+packages/workshop-backend/__tests__/loop-limit-restart.test.ts
+  s_e7c513d5aff35a::t_b3a8c48e3baeb4 161-181
+  s_e7c513d5aff35a::t_4d5b6ecd4b7917 74
+  s_c2ca47a7bbff41::t_f71e54dc1b6f98 182-183
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f0c6097172f59a357a710238ce0126ecebb63469",
+  "prompts": {},
+  "sessions": {
+    "s_c2ca47a7bbff41": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5835672d-7617-41aa-98d2-c6640f4e44c9",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_e7c513d5aff35a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7b02a808-2296-499c-bbc0-ef8e0a1b81a7",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

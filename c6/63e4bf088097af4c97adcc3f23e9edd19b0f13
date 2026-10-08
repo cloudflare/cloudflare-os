@@ -1,0 +1,21 @@
+packages/workshop-frontend/src/ShareModal.tsx
+  s_3b97a61ed72c3f::t_6496e3a3ff387b 45-49,1040,1048-1050,1053,1193-1194
+packages/workshop-frontend/src/ShareModal.test.tsx
+  s_3b97a61ed72c3f::t_3f73a394133105 366,524-548,573,712,735,1101-1106
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c663e4bf088097af4c97adcc3f23e9edd19b0f13",
+  "prompts": {},
+  "sessions": {
+    "s_3b97a61ed72c3f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "653c9e94-d58a-47ae-b6ae-78aea67744eb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

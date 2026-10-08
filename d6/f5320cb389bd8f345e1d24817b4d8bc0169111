@@ -1,0 +1,19 @@
+packages/workshop-backend/src/agent.ts
+  s_de2d3ee7327897::t_400b5293356e7b 757
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d6f5320cb389bd8f345e1d24817b4d8bc0169111",
+  "prompts": {},
+  "sessions": {
+    "s_de2d3ee7327897": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f4a299c76ffe0QI7Hmy61t0q5n",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

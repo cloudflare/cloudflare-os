@@ -1,0 +1,24 @@
+packages/workshop-frontend/src/features/code/WorkpieceCodeInterface.tsx
+  s_da75e44ab0f759::t_82d0873ef8ffe0 417-428
+packages/workshop-frontend/src/features/code/otClient.ts
+  s_da75e44ab0f759::t_2c02799e881546 102-107,787-788,791,1006
+packages/workshop-backend/src/agent.ts
+  s_da75e44ab0f759::t_c070abcbff3eab 2409-2412,3160-3165
+  s_da75e44ab0f759::t_124d438e870a92 2-3,756
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "599cef8d22c8240d63e167991aac88c0aa92e823",
+  "prompts": {},
+  "sessions": {
+    "s_da75e44ab0f759": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f4a2e2318ffeE669L5yTFjVqIq",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

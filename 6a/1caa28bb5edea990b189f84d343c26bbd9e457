@@ -1,0 +1,21 @@
+packages/mcp-shared/src/tools.ts
+  s_f5d4fa896fc128::t_ab3ef7b84dd1e7 205-206,214-216,218
+packages/mcp-shared/__tests__/tools.test.ts
+  s_f5d4fa896fc128::t_f6549ec751fd6c 206-240
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6a1caa28bb5edea990b189f84d343c26bbd9e457",
+  "prompts": {},
+  "sessions": {
+    "s_f5d4fa896fc128": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "41e3e171-c705-490f-8506-a539c1a11e55",
+        "model": "claude-wafer-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,45 @@
+packages/gatekeeper-gitlab/deploy-inputs.json
+  s_b235d7e85db519::t_b273ec6756d945 1-20
+packages/gatekeeper-gitlab/package.json
+  s_b235d7e85db519::t_21c598984de1da 1-28
+packages/gatekeeper-gitlab/src/gitlab-logo.svg
+  s_b235d7e85db519::t_91211320a9d0f2 1-22
+packages/gatekeeper-gitlab/src/observability.ts
+  s_b235d7e85db519::t_65d6284fe4f966 1-7
+packages/gatekeeper-gitlab/src/text-modules.d.ts
+  s_b235d7e85db519::t_799abb29187a36 1-9
+packages/gatekeeper-gitlab/src/types.txt
+  s_b235d7e85db519::t_310a9fef9538cf 1
+packages/gatekeeper-gitlab/storage-schema.md
+  s_b235d7e85db519::t_9b118d67454306 1-24
+packages/gatekeeper-gitlab/tsconfig.json
+  s_b235d7e85db519::t_4153d2e22336f0 1-19
+packages/gatekeeper-gitlab/vite.config.ts
+  s_b235d7e85db519::t_8fd8464c6eaa3b 1-11
+packages/gatekeeper-gitlab/vitest.config.ts
+  s_b235d7e85db519::t_f5eb6ecd131cd4 1-8
+packages/gatekeeper-gitlab/wrangler.jsonc
+  s_b235d7e85db519::t_d75a662a05da5a 1-27
+pnpm-lock.yaml
+  s_b235d7e85db519::t_641057d0c06291 416-455
+scripts/release/testdata/fixture-bundles/gatekeeper-gitlab/gitlab.js
+  s_b235d7e85db519::t_3cb5c23fa9a870 1
+scripts/release/testdata/golden-manifest.json
+  s_b235d7e85db519::t_476f6dd194b965 317-387
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ffd2a265b5ac15067c963c85b4c0967d236aa59b",
+  "prompts": {},
+  "sessions": {
+    "s_b235d7e85db519": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f73e2ba17ffeG15LUZZx8sUx6N",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

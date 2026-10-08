@@ -1,0 +1,51 @@
+packages/workshop-shared/src/api.ts
+  s_c112dea2bc0662::t_bd8ca761483d56 1310-1313,1321-1324
+  s_c112dea2bc0662::t_4d7dfe0b2b32ec 1670-1675,1680-1685
+  s_c112dea2bc0662::t_efb359b09414e3 1314-1320
+packages/workshop-backend/__tests__/ai-gateway.test.ts
+  s_c112dea2bc0662::t_39e55c53995e93 491
+  s_8d787a1cb5bf3d::t_81ad0fe2c87bc5 12,485-490,492-515
+packages/workshop-frontend/src/features/ai-models/GatewayTest.tsx
+  s_c112dea2bc0662::t_015ae7ccdaa8d5 2-3,11,16-17,20,22,32-49,52-68,82-103,105-117,120
+  s_c112dea2bc0662::t_0d7fdd34909da4 50-51
+packages/workshop-backend/src/ai-gateway.ts
+  s_c112dea2bc0662::t_6f9bd7275299d7 279-280
+  s_c112dea2bc0662::t_98d0b0407c0d41 54-70
+packages/workshop-backend/__tests__/admin-settings-models.test.ts
+  s_c112dea2bc0662::t_ec054659d0836a 1518-1519
+  s_c112dea2bc0662::t_03bf2132c1311e 988-989,1017-1019,1453-1517,1520-1661
+packages/workshop-backend/src/admin-settings.ts
+  s_c112dea2bc0662::t_7a961cc3570584 1,12,42-47,543-547,554-575,577,666-691,1020-1023
+packages/workshop-frontend/src/features/ai-models/AddGatewayModelForm.tsx
+  s_c112dea2bc0662::t_d2f05d58416541 9,12,16,33-36,41-43,46,52-55,71-72,83-85,117,134-147,151,163,165-179,186-187,189,206,333,353,372,384,391-406
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.test.tsx
+  s_c112dea2bc0662::t_a188ffbc6caa44 12,14,101-109,354-362,364-380,417-418,423,436-437,2115-2468
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.tsx
+  s_c112dea2bc0662::t_36203652645f12 420
+packages/workshop-frontend/src/features/ai-models/useGatewayTests.ts
+  s_c112dea2bc0662::t_aff268cacbe845 7,9,11,19-25,27,46
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "78d890266877659cdda6fe9781d433247c91a755",
+  "prompts": {},
+  "sessions": {
+    "s_8d787a1cb5bf3d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5c0955f3-89bf-4faa-a5ec-92428c64cbac",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_c112dea2bc0662": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7b85182d-63dc-42c2-af5a-e365a1753a49",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

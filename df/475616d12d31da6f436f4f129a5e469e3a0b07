@@ -1,0 +1,19 @@
+plans/gitlab-gatekeeper.md
+  s_b235d7e85db519::t_74774635cbd2d5 135-145,150-151,154-158,209-214,630-637,639-650,660-666,1112-1114,1155-1161
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "df475616d12d31da6f436f4f129a5e469e3a0b07",
+  "prompts": {},
+  "sessions": {
+    "s_b235d7e85db519": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f73e2ba17ffeG15LUZZx8sUx6N",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

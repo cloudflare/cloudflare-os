@@ -1,0 +1,44 @@
+packages/observability/package.json
+  s_1e5e46268c04cf::t_7712f28247019d 22-29
+packages/observability/src/metrics-schema.ts
+  s_1e5e46268c04cf::t_87e0d8cef00c0c 1-78
+AGENTS.md
+  s_1e5e46268c04cf::t_7e3ebc90d14a42 155
+  s_1e5e46268c04cf::t_ec5a30967b3f73 156-157
+packages/observability/src/metrics.ts
+  s_1e5e46268c04cf::t_9d4992c06127c3 1-119
+packages/observability/README.md
+  s_1e5e46268c04cf::t_7e3ebc90d14a42 17
+  s_1e5e46268c04cf::t_ec5a30967b3f73 18-23
+packages/observability/vitest.config.ts
+  s_1e5e46268c04cf::t_10d8e0029564f6 53
+packages/observability/__tests__/metrics.test.ts
+  s_1e5e46268c04cf::t_b416161feb91a3 1-132
+packages/workshop-backend/src/overseer.ts
+  s_1e5e46268c04cf::t_59723054defd44 2409-2413,4624-4628,10001-10005,10177-10183
+packages/workshop-backend/__tests__/analytics.test.ts
+  s_1e5e46268c04cf::t_9271c1f9f2586e 1-72
+packages/workshop-backend/src/analytics.ts
+  s_1e5e46268c04cf::t_eabbf18dff7e9f 1,8-9,14-15,17-18,41,92-107,114,132-139,171-197,201,205-223,226-232
+  s_1e5e46268c04cf::t_ec5a30967b3f73 40,198-200,202-204,224-225
+packages/workshop-backend/src/user.ts
+  s_1e5e46268c04cf::t_59723054defd44 486-489
+  s_1e5e46268c04cf::t_34123fa2be4e21 8
+  s_1e5e46268c04cf::t_adce692885321b 490
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5377aa322bf8bf9d558eb9bebfc92db675323057",
+  "prompts": {},
+  "sessions": {
+    "s_1e5e46268c04cf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "feafd312-78ab-469a-8dde-1b6ff8e38b0f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

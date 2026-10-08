@@ -1,0 +1,19 @@
+packages/gatekeeper-kit/__tests__/action-description.test.ts
+  s_ded0a9f8d148f7::t_f8dd62522f4acc 172-175,286-287
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "54e1f475e683fcf3302d6e9e7a964a8ee8fd106b",
+  "prompts": {},
+  "sessions": {
+    "s_ded0a9f8d148f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "59846bd6-dbd5-465c-834b-fcf9cfb21880",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": null
+    }
+  }
+}

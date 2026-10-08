@@ -1,0 +1,45 @@
+packages/workshop-frontend/src/features/spaces/SpaceRoleSelect.tsx
+  s_1da8b1c2e6d0c9::t_de797b5a6ff435 3,6,24
+packages/workshop-frontend/src/features/spaces/SpacePage.test.tsx
+  s_1da8b1c2e6d0c9::t_c172f234415c17 237-238
+  s_1da8b1c2e6d0c9::t_469be37e8877d3 460-472
+  s_1da8b1c2e6d0c9::t_819ec58f13375b 473-474
+packages/workshop-frontend/src/features/spaces/SidebarSpaceLinks.test.tsx
+  s_1da8b1c2e6d0c9::t_c172f234415c17 24,63,99
+packages/workshop-frontend/src/features/spaces/spaceRoles.ts
+  s_1da8b1c2e6d0c9::t_0f37f63da3c8b1 1,21-22
+packages/workshop-frontend/src/features/spaces/SpaceEntryPoints.tsx
+  s_1da8b1c2e6d0c9::t_50cdd19ba55477 26
+  s_1da8b1c2e6d0c9::t_e9364fbd166b6d 11-13,19-20
+packages/workshop-frontend/src/features/spaces/spaceKinds.ts
+  s_1da8b1c2e6d0c9::t_de797b5a6ff435 4-7
+  s_1da8b1c2e6d0c9::t_ccc9e8e09a3429 13-15
+packages/workshop-frontend/src/features/spaces/SpaceMemberList.tsx
+  s_1da8b1c2e6d0c9::t_0f37f63da3c8b1 28,57,70
+packages/workshop-frontend/src/features/spaces/SpaceMembersDialog.tsx
+  s_1da8b1c2e6d0c9::t_de797b5a6ff435 17
+  s_1da8b1c2e6d0c9::t_0f37f63da3c8b1 38-42,83,227
+packages/workshop-frontend/src/features/spaces/SpaceSections.test.tsx
+  s_1da8b1c2e6d0c9::t_9f762dc3399d37 330,445-458,460-462
+  s_1da8b1c2e6d0c9::t_7cabeae32c8738 48,66,68,85,173,243,250,261,305,375,377,398,406,415,434,438-439,441-444,470-471,507,516,535,560,576,590,597,609,679,713,718,742,789
+packages/workshop-frontend/src/features/spaces/groupWorkspaces.test.ts
+  s_1da8b1c2e6d0c9::t_73c42cb9e8f89f 14,17,69,92,97,162
+packages/workshop-frontend/src/features/spaces/SpacePage.tsx
+  s_1da8b1c2e6d0c9::t_cfdd790a08c624 54-58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2dc02435daa5c6529a093759a48d8aff338edfa4",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

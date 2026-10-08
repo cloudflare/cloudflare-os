@@ -1,0 +1,19 @@
+packages/gatekeeper-github/src/github.ts
+  s_5cb17e776ce221::t_66aa61d860b6c4 359,370,428,438
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ba0276457463a17e840ab6394e4bb17622955e1b",
+  "prompts": {},
+  "sessions": {
+    "s_5cb17e776ce221": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc29a5d3-0f8d-4585-807a-fd3e07f1b432",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,33 @@
+packages/workshop-backend/__tests__/agent-file-tools.test.ts
+  s_b235d7e85db519::t_66fe003b985db6 1-167
+packages/workshop-backend/src/agent.ts
+  s_da75e44ab0f759::t_994fe00cb1182f 2-3,2407-2413
+packages/workshop-backend/src/overseer.ts
+  s_b235d7e85db519::t_757949a5e5f48e 3713-3714
+packages/workshop-shared/src/code-change.ts
+  s_b235d7e85db519::t_a1627448e2d267 553,603,607-613
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3399e7dca8ee3dca1a93aecd01fc20c0604961e4",
+  "prompts": {},
+  "sessions": {
+    "s_b235d7e85db519": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f73e2ba17ffeG15LUZZx8sUx6N",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_da75e44ab0f759": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f4a2e2318ffeE669L5yTFjVqIq",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

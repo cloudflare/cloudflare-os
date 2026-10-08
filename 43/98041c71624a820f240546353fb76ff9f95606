@@ -1,0 +1,20 @@
+packages/gatekeeper-google/src/google.ts
+  s_2d1ae144546e14::t_0860b27b025ebd 4,1291-1292,1295,2701-2703,2751
+  s_2d1ae144546e14::t_b9855dada02a35 2705-2706,2750,2752
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4398041c71624a820f240546353fb76ff9f95606",
+  "prompts": {},
+  "sessions": {
+    "s_2d1ae144546e14": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cd809748-14fd-4762-8298-cc33631a1092",
+        "model": "claude-wafer-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

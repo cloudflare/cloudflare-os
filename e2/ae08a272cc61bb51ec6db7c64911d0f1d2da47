@@ -1,0 +1,24 @@
+packages/gatekeeper-google/__tests__/workerd/gmail-actions.test.ts
+  s_6d79354b9d5d8c::t_82044b727d500f 1080-1112,1120,1122-1123
+  s_6d79354b9d5d8c::t_e6665cf607eab5 1113-1115
+packages/gatekeeper-google/src/gmail.ts
+  s_6d79354b9d5d8c::t_c842091d9ba24b 46-49,986-1002,1004,1456,1461-1466,2118,2130,2169-2170,2192,2228-2229,2265-2266,2289-2291,2314-2315,2429-2430,2442-2443,2496,2580,2582-2584,2586-2599,2655,2708,2746-2751,2784-2789,2911-2916,2925-2959,3024-3025,3029,3167,3333-3335,3373-3374,3430-3432
+packages/gatekeeper-google/src/google.ts
+  s_6d79354b9d5d8c::t_82044b727d500f 2050-2053,2096-2098,2704,2707-2708,2749,2753-2754
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e2ae08a272cc61bb51ec6db7c64911d0f1d2da47",
+  "prompts": {},
+  "sessions": {
+    "s_6d79354b9d5d8c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "32de7eff-dc88-4d7f-82cb-613824de97fc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
