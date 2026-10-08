@@ -41,10 +41,29 @@ export type PresentationInfo = {
   queuedChangeConflict?: string;
 };
 
-/** Alternative text a page element may carry. */
+/**
+ * The box an element occupies on its slide, before any rotation, in points from the slide's
+ * top-left corner: what the Slides editor shows as its position and size.
+ */
+export type SlideBounds = {
+  /** Distance of the box's left edge from the slide's left edge. */
+  x: number;
+  /** Distance of the box's top edge from the slide's top edge. */
+  y: number;
+  /** Width in points. */
+  width: number;
+  /** Height in points. */
+  height: number;
+};
+
+/** What every page element carries: its ID, place, and alternative text. */
 type SlideElementBase = {
   /** Stable page element object ID. */
   id: string;
+  /** Where the element is, absent when Google reports no place for it. */
+  bounds?: SlideBounds;
+  /** Clockwise rotation in degrees about the centre of `bounds`, when not 0. */
+  rotation?: number;
   /** Alt-text title. */
   altTitle?: string;
   /** Alt-text description. */
@@ -144,8 +163,9 @@ export type SlideThumbnail = {
 /**
  * Read-only access to one Google Slides presentation.
  *
- * `getSlides()` returns the slides' own text. Layout and master elements such as logos and
- * footers, styles, and positions are not included; `getSlideThumbnail()` shows the slide whole.
+ * `getSlides()` returns the slides' own elements: their text and where they are. Layout and master
+ * elements such as logos and footers, and styles, are not included; `getSlideThumbnail()` shows
+ * the slide whole.
  */
 export interface GooglePresentationReadSession {
   /** Return presentation metadata and a summary of every slide. */

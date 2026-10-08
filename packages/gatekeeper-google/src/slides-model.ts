@@ -9,6 +9,9 @@
  */
 
 import type { RestPageElement, RestPresentation, RestSlide, RestText } from "./slides-api";
+import {
+  emu, IDENTITY, localBox, matrixOf, multiply, placementOf, points, type Matrix,
+} from "./slides-geometry";
 import type {
   PresentationInfo, Slide, SlideElement, SlideSummary, TableCell,
 } from "./slides-read-types";
@@ -16,17 +19,10 @@ import type {
 /** Layout display names by layout object ID. */
 export type LayoutNames = Map<string, string>;
 
-const EMU_PER_POINT = 12_700;
 const MAX_TITLE_LENGTH = 200;
 const TITLE_PLACEHOLDERS = new Set(["TITLE", "CENTERED_TITLE"]);
 
 const INVALID_ELEMENT = "Google Slides returned an invalid page element";
-
-function points(dimension: { magnitude?: number; unit?: string } | undefined): number {
-  let magnitude = dimension?.magnitude ?? 0;
-  let value = dimension?.unit === "PT" ? magnitude : magnitude / EMU_PER_POINT;
-  return Math.round(value * 100) / 100;
-}
 
 function textOf(text: RestText | undefined): string {
   let content = (text?.textElements ?? [])
@@ -58,12 +54,18 @@ function cellsOf(table: NonNullable<RestPageElement["table"]>): (TableCell | nul
   return cells;
 }
 
-function elementOf(element: RestPageElement): SlideElement {
+/** One element, placed by `parent`, the matrix of the groups holding it. */
+function elementOf(element: RestPageElement, parent: Matrix = IDENTITY): SlideElement {
   if (typeof element.objectId !== "string" || element.objectId.length === 0) {
     throw new Error(INVALID_ELEMENT);
   }
+  let matrix = element.transform && multiply(parent, matrixOf(element.transform));
+  let box = localBox(element);
+  let placement = matrix && box && placementOf(matrix, box);
   let base = {
     id: element.objectId,
+    ...(placement ? { bounds: placement.bounds } : {}),
+    ...(placement?.rotation ? { rotation: placement.rotation } : {}),
     ...(element.title ? { altTitle: element.title } : {}),
     ...(element.description ? { altDescription: element.description } : {}),
   };
@@ -86,7 +88,8 @@ function elementOf(element: RestPageElement): SlideElement {
     };
   }
   if (element.elementGroup) {
-    return { ...base, kind: "group", children: (element.elementGroup.children ?? []).map(elementOf) };
+    let children = (element.elementGroup.children ?? []).map(child => elementOf(child, matrix ?? parent));
+    return { ...base, kind: "group", children };
   }
   if (element.image) return { ...base, kind: "image" };
   if (element.video) return { ...base, kind: "video" };
@@ -147,7 +150,9 @@ export function presentationInfo(rest: RestPresentation): PresentationInfo {
     id: rest.presentationId,
     title: rest.title ?? "Untitled presentation",
     ...(rest.locale ? { locale: rest.locale } : {}),
-    pageSize: { width: points(rest.pageSize?.width), height: points(rest.pageSize?.height) },
+    pageSize: {
+      width: points(emu(rest.pageSize?.width)), height: points(emu(rest.pageSize?.height)),
+    },
     slides: (rest.slides ?? []).map((slide, index) => summaryOf(slide, index, layouts)),
   };
 }
@@ -156,7 +161,7 @@ export function presentationInfo(rest: RestPresentation): PresentationInfo {
 export function slideOf(page: RestSlide, index: number, layouts: LayoutNames): Slide {
   return {
     ...summaryOf(page, index, layouts),
-    elements: (page.pageElements ?? []).map(elementOf),
+    elements: (page.pageElements ?? []).map(element => elementOf(element)),
     speakerNotes: speakerNotesOf(page),
   };
 }

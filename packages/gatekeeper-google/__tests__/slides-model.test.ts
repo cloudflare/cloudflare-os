@@ -94,6 +94,47 @@ describe("Slides model", () => {
     });
   });
 
+  it("places elements in points, composing group transforms and reading rotation clockwise", () => {
+    let inch = 914_400;
+    let size = (width: number, height: number) => ({
+      width: { magnitude: width, unit: "EMU" as const },
+      height: { magnitude: height, unit: "EMU" as const },
+    });
+    // Turned 90° clockwise about its own top-left corner, which then sits at (3in, 1in).
+    let turned = {
+      objectId: "turned", size: size(2 * inch, inch),
+      transform: { shearY: 1, shearX: -1, translateX: 3 * inch, translateY: inch, unit: "EMU" as const },
+    };
+    let [plain, rotated, group, unplaced] = onlySlide(
+      { ...shape("plain"), size: size(inch, inch / 2),
+        transform: { scaleX: 2, scaleY: 1, translateX: 36, translateY: 72, unit: "PT" } },
+      { ...shape("turned"), ...turned },
+      {
+        objectId: "group",
+        transform: { scaleX: 1, scaleY: 1, translateX: inch, unit: "EMU" },
+        elementGroup: { children: [
+          { ...shape("left"), size: size(inch, inch), transform: { scaleX: 1, scaleY: 1 } },
+          { ...shape("right"), size: size(inch, inch),
+            transform: { scaleX: 1, scaleY: 1, translateX: 2 * inch, translateY: inch } },
+        ] },
+      },
+      shape("unplaced"),
+    ).elements;
+
+    expect(plain).toMatchObject({ bounds: { x: 36, y: 72, width: 144, height: 36 } });
+    expect(plain).not.toHaveProperty("rotation");
+    // The 144 x 72 box turned about its centre, which is at (180, 144).
+    expect(rotated).toMatchObject({ bounds: { x: 108, y: 108, width: 144, height: 72 }, rotation: 90 });
+    expect(group).toMatchObject({
+      bounds: { x: 72, y: 0, width: 216, height: 144 },
+      children: [
+        { id: "left", bounds: { x: 72, y: 0, width: 72, height: 72 } },
+        { id: "right", bounds: { x: 216, y: 72, width: 72, height: 72 } },
+      ],
+    });
+    expect(unplaced).not.toHaveProperty("bounds");
+  });
+
   it("reads speaker notes from the notes page's speaker-notes shape only", () => {
     let slides = [
       slide("with-notes", [], { notes: text(["Mention Q3"], ["then demo"]) }),

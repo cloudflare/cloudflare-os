@@ -37,6 +37,12 @@ const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
 /** A `Dimension`; Slides reports sizes in EMU or points. */
 export type RestDimension = { magnitude?: number; unit?: "EMU" | "PT" | "UNIT_UNSPECIFIED" };
 
+/** An `AffineTransform`; Google omits each field that is 0. */
+export type RestTransform = {
+  scaleX?: number; scaleY?: number; shearX?: number; shearY?: number;
+  translateX?: number; translateY?: number; unit?: "EMU" | "PT" | "UNIT_UNSPECIFIED";
+};
+
 /** One `TextElement` of a shape's or table cell's `TextContent`. */
 export type RestTextElement = {
   startIndex?: number;
@@ -52,6 +58,8 @@ export type RestText = { textElements?: RestTextElement[] };
 /** A `PageElement`, as far as the gatekeeper reads one. */
 export type RestPageElement = {
   objectId?: string;
+  size?: { width?: RestDimension; height?: RestDimension };
+  transform?: RestTransform;
   title?: string;
   description?: string;
   shape?: { shapeType?: string; placeholder?: { type?: string }; text?: RestText };
