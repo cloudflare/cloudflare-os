@@ -2407,8 +2407,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
    * create depends on is discarded without reading GitHub, so a dead connection cannot block it.
    * Otherwise the branch is read before anything is marked, so a failed read leaves the push
    * pending and a retried discard still cascades; everything after the read runs without
-   * yielding, so a pull request queued during it is cascaded too. Returns whether anything was
-   * cascaded.
+   * yielding, so a pull request queued during it is cascaded too, and a push applied during it
+   * is refused rather than overwritten as discarded. Returns whether anything was cascaded.
    */
   async #rejectPush(push: PushAction): Promise<boolean> {
     const dependsOnBranch = (action: GitHubAction): action is CreatePullRequestAction =>
@@ -2419,6 +2419,12 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     const realHead = this.#listPendingActions().some(dependsOnBranch)
       ? await this.#withApi(api => api.getBranchHead(this.ctx.props.owner, this.ctx.props.repo, push.branch))
       : undefined;
+    // The read yields, so a concurrent apply or discard may have settled the push meanwhile.
+    const { state } = this.#requireActionRecord(push.approvalId);
+    if (state === "approved") {
+      throw new Error(`GitHub action ${push.approvalId} was applied while it was being discarded.`);
+    }
+    if (state === "rejected") return false;
     // Marked before simulating, which takes the push out of the queued pushes it overlays.
     this.#markActionRejected(push);
     if (realHead === undefined || this.#simulateBranchHead(push.branch, realHead) !== null) return false;

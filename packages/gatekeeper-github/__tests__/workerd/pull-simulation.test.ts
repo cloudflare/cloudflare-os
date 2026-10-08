@@ -680,6 +680,27 @@ describe("push rejection cascade", () => {
     }
   });
 
+  it("refuses to discard a push applied while the discard reads its branch", async () => {
+    const github = scenarioGitHub();
+    const gk = await repoGatekeeper();
+    const cache = scenarioCache();
+    const push = await queuePush(gk, cache, "feature", HEAD1);
+    const pr = await queuePullRequest(gk, { title: "Add new.txt", head: "feature", base: "main" });
+
+    github.heldBranchReads.add("feature");
+    const discard = gk.rejectAction(push.approvalId);
+    await vi.waitFor(() => expect(github.heldReads).toBe(1));
+    github.respondToPush("unpack ok", "ok refs/heads/feature");
+    await gk.applyAction(push.approvalId, cache);
+    github.branches.set("feature", HEAD1);
+    github.heldReadsReleased = true;
+
+    await expect(discard).rejects.toThrow(/was applied while it was being discarded/);
+    // Not cascaded: the pull request's create still applies, at the pushed head.
+    await gk.applyAction(pr.approvalId, cache);
+    expect((await gk.openPullRequest(pr.provisionalId, cache)).head.sha).toBe(HEAD1);
+  });
+
   it("discards a push nothing depends on without reaching GitHub", async () => {
     const github = scenarioGitHub();
     const gk = await repoGatekeeper();
