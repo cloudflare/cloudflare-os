@@ -255,6 +255,11 @@ export class GmailHookDriver extends DurableObject<Env> {
           next = profile.historyId;
           nextSyncAt = now + SAFETY_SYNC_INTERVAL_MS;
         }
+        // Every request takes the connection's current token, so a reconnect to another Google
+        // account during the read would have read that account's history instead.
+        if ((await api.getProfile()).emailAddress !== profile.emailAddress) {
+          throw new Error("The connection changed Google accounts while reading Gmail history.");
+        }
       }
 
       const registrations = this.#registrations();

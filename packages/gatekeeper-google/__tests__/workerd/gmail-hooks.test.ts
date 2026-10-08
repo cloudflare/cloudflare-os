@@ -19,6 +19,7 @@ const testEnv = env as unknown as {
 // Each test watches a fresh mailbox, so that no other test's hooks share its driver.
 let MAILBOX: string;
 const PUSH_ACCOUNT = "push@test.iam.gserviceaccount.com";
+const OTHER_ACCOUNT = "other@example.com";
 const PUSH_URL = "http://localhost:8787/gatekeeper/google/pubsub";
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -72,8 +73,14 @@ type MockGmail = {
   watchFailures: number[];
   /** Make history.list answer 404, as for a start history ID too old to read from. */
   historyExpired: boolean;
+  /** Holds the next history.list response until released. */
   holdHistory?: Gate;
+  /** Holds the next users.getProfile response until released. */
   holdProfile?: Gate;
+  /** Access tokens that belong to another Google account, as a reconnect to one leaves them. */
+  otherAccountTokens: Set<string>;
+  /** Once the next users.getProfile answers, its connection is reconnected to another account. */
+  reconnectAfterProfile: boolean;
   /** Every Gmail API request, as `METHOD /path` below `users/me`. */
   requests: string[];
 };
@@ -81,7 +88,8 @@ type MockGmail = {
 function mockGmail(): MockGmail {
   const gmail: MockGmail = {
     profileEmail: MAILBOX, historyId: 1000, records: [], messages: new Map(), watches: 0,
-    watchFailures: [], historyExpired: false, requests: [],
+    watchFailures: [], historyExpired: false, otherAccountTokens: new Set(), reconnectAfterProfile: false,
+    requests: [],
   };
   const metadata = ({id, threadId, labelIds, subject}: MockMessage) => ({
     id, threadId, labelIds, internalDate: String(Date.now()), sizeEstimate: 100,
@@ -90,22 +98,41 @@ function mockGmail(): MockGmail {
       {name: "Subject", value: subject}, {name: "Message-ID", value: `<${id}@example.com>`},
     ]},
   });
+  const take = (hold: "holdHistory" | "holdProfile") => {
+    const gate = gmail[hold];
+    gmail[hold] = undefined;
+    return pass(gate);
+  };
   vi.stubGlobal("fetch", async (input: string | URL | Request, init: RequestInit = {}) => {
     const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
     const method = (init.method ?? "GET").toUpperCase();
+    const token = new Headers(init.headers).get("Authorization") ?? "";
+    const otherAccount = gmail.otherAccountTokens.has(token);
     if (url.href === "https://www.googleapis.com/oauth2/v3/certs") return json(jwks);
     if (url.href === "https://www.googleapis.com/oauth2/v3/userinfo") {
-      return json({sub: "account-subject", email: MAILBOX});
+      return json(otherAccount
+        ? {sub: "other-subject", email: OTHER_ACCOUNT}
+        : {sub: "account-subject", email: MAILBOX});
     }
     if (url.hostname !== "gmail.googleapis.com" || !url.pathname.startsWith("/gmail/v1/users/me/")) {
       throw new Error(`Unexpected request: ${method} ${url}`);
     }
     const path = url.pathname.slice("/gmail/v1/users/me".length);
     gmail.requests.push(`${method} ${path}`);
+    // Another account's history doesn't reach this mailbox's history IDs, nor its messages.
+    if (otherAccount) {
+      return path === "/profile"
+        ? json({emailAddress: OTHER_ACCOUNT, historyId: "1"})
+        : json({error: {code: 404}}, 404);
+    }
     if (path === "/profile") {
       // The history ID is read before any hold, as Gmail fixes it when it answers.
       const historyId = String(gmail.historyId);
-      await pass(gmail.holdProfile);
+      await take("holdProfile");
+      if (gmail.reconnectAfterProfile) {
+        gmail.reconnectAfterProfile = false;
+        gmail.otherAccountTokens.add(token);
+      }
       return json({emailAddress: gmail.profileEmail, historyId});
     }
     if (path === "/watch" && method === "POST") {
@@ -115,7 +142,7 @@ function mockGmail(): MockGmail {
       return json({historyId: String(gmail.historyId), expiration: String(Date.now() + 7 * 24 * HOUR)});
     }
     if (path === "/history") {
-      await pass(gmail.holdHistory);
+      await take("holdHistory");
       if (gmail.historyExpired) return json({error: {code: 404}}, 404);
       const start = BigInt(url.searchParams.get("startHistoryId")!);
       const offset = Number(url.searchParams.get("pageToken") ?? 0);
@@ -178,7 +205,7 @@ async function connect(binding: {labelName?: string; searchQuery?: string; threa
   await runInDurableObject(userObject, (_instance: unknown, state: DurableObjectState) => {
     state.storage.kv.put("refreshToken", "refresh-token");
     // Valid for a week, so faking the clock forward to a renewal needs no token refresh.
-    state.storage.kv.put("accessToken", {token: "access-token", expires: new Date(Date.now() + 7 * 24 * HOUR)});
+    state.storage.kv.put("accessToken", {token: `access-token-${name}`, expires: new Date(Date.now() + 7 * 24 * HOUR)});
   });
   const {threadId, ...resource} = binding;
   const props: GmailGatekeeperImplProps = {userObjectId: userObject.id.toString(), ...resource};
@@ -424,6 +451,24 @@ it("refuses a mailbox that now reports another address, retrying its history rea
 
   expect(await receivedIds(ada)).toEqual([]);
   expect(await driverStorage<number>("syncAt")).toBeGreaterThan(Date.now() + 50 * MINUTE);
+});
+
+it("keeps the history cursor when a connection reconnects to another account mid-read", async () => {
+  const gmail = mockGmail();
+  const ada = await connect();
+  await enable(ada);
+  const bob = await connect();
+  await enable(bob);
+  const message = arrive(gmail);
+
+  // The connection that reads the profile is reconnected before the history read that follows.
+  gmail.reconnectAfterProfile = true;
+  await push(gmail);
+  await settled();
+  // The retry reads with the connection that still reaches the mailbox.
+  await later(5 * MINUTE);
+
+  expect([...await receivedIds(ada), ...await receivedIds(bob)]).toEqual([message]);
 });
 
 it("acknowledges pushes it can't use without reading Gmail", async () => {
