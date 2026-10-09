@@ -676,6 +676,27 @@ describe("Google Slides changes", () => {
     expect(await slides.apply(actionId!)).toContain("may or may not have taken effect");
   });
 
+  // The collaborator's 3 × 3 table, each row's first cell spanning two columns, holds the same
+  // text row by row as the 3 × 2 table the batch plans; only their sizes and spans tell them apart.
+  it("records an unknown outcome for a dropped row insertion when a collaborator merges cells instead", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    let { actionId } = await slides.queued("updateSlides", [
+      { op: "insertTableRows", slideId: "s2", elementId: "tb2", at: 2 },
+    ]);
+    dropNextWrite(provider, d => {
+      let merged = table("tb2", [["Region", "Sales"], ["EMEA", "4"], ["", ""]]);
+      merged.table!.columns = 3;
+      for (let row of merged.table!.tableRows!) {
+        row.tableCells![0].columnSpan = 2;
+        row.tableCells![1].location!.columnIndex = 2;
+      }
+      d.slides![1].pageElements![2] = merged;
+    });
+
+    expect(await slides.apply(actionId!)).toContain("may or may not have taken effect");
+  });
+
   it("asks for a restart only when rejecting a change that later ones were built on", async () => {
     new SlidesProvider(deck()).install();
     let slides = gatekeeper();

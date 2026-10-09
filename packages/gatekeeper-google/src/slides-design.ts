@@ -374,6 +374,15 @@ function setBounds(
       throw new ChangeConflict("it is a line, which has no width or height across it to set");
     }
   }
+  // Google takes no shear for a video, which every rotation but a half turn needs. A half turn
+  // leaves rounding error where its shear is zero, so that is cleared.
+  if (element.video) {
+    let scale = Math.hypot(next.a, next.b, next.c, next.d);
+    if (Math.abs(next.b) > 1e-9 * scale || Math.abs(next.c) > 1e-9 * scale) {
+      throw new ChangeConflict("Google Slides cannot place a video rotated or skewed");
+    }
+    next = { ...next, b: 0, c: 0 };
+  }
   element.transform = transformOf(next);
   return {
     requests: [{

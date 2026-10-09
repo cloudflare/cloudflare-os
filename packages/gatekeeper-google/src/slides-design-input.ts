@@ -111,11 +111,14 @@ function checkPositive(value: number | null | undefined, field: string, max = In
   }
 }
 
+// The length checked is the URL as `normalizedUrls` sends it, percent-encoded, which can run to
+// several times what was given.
 function checkUrl(url: string, field: string, protocols: readonly string[]): void {
-  let parsed = url.length <= MAX_URL_LENGTH ? URL.parse(url) : null;
-  if (!parsed || !protocols.includes(parsed.protocol) || parsed.username || parsed.password) {
+  let parsed = URL.parse(url);
+  if (!parsed || parsed.href.length > MAX_URL_LENGTH || !protocols.includes(parsed.protocol) ||
+    parsed.username || parsed.password) {
     refuse(`${field} must be a${protocols.length === 1 ? "n" : ""} ${protocols.join(", ")} URL of ` +
-      `at most ${MAX_URL_LENGTH} characters, with no user name or password`);
+      `at most ${MAX_URL_LENGTH} characters once percent-encoded, with no user name or password`);
   }
 }
 

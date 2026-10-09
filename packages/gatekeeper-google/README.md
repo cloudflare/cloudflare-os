@@ -242,12 +242,16 @@ Reads show queued changes as if applied, by replaying them over Slides' own JSON
 projected; thumbnails show the presentation as saved. Each change is replayed as Google documents
 its request, and one the replay cannot follow exactly is refused instead: a bullet list started
 right after another list item, which Google may join to that list; table rows or columns inserted
-or deleted beside a merged cell; and deleting a grouped element that would leave its group with
-one. The replay makes no claim about what Google renders: autofit, wrapping, the box Google fits
-an image to, the size it gives a new table, and the formatting new table rows and columns take
-appear once applied. A replacement takes the style of the text it replaces, and text left
-unchanged at either end of a match is not rewritten, so it keeps its own. A slide number or other
-AutoText can only be replaced whole.
+or deleted beside a merged cell; deleting a grouped element that would leave its group with one;
+rotating a video, which Google cannot shear; and new text filling a list item whose bullet is
+styled apart from its text, which Google would restyle to match. The replay makes no claim about
+what Google renders: shrinking text to fit, wrapping, the box Google fits an image to, the size it
+gives a new table, and the formatting new table rows and columns take appear once applied. It
+does follow Google in turning a shape's autofit off once its text changes, fixing the font sizes
+and line spacings the text sets at what the autofit had shrunk them to. A replacement takes the
+style of the text it replaces, and text left unchanged at either end of a match is not rewritten,
+so it keeps its own. Setting a font sets it at regular weight, so the text is no longer bold unless
+the change says so. A slide number or other AutoText can only be replaced whole.
 
 Each approved change is one `batchUpdate`, planned against a fresh read and pinned to its revision
 with `requiredRevisionId`, so a change applies only to the text it was planned against: one that
@@ -255,9 +259,10 @@ no longer applies fails without writing, and a concurrent edit makes Google refu
 is planned again. A write whose response is lost may have been committed, so it is only ever
 resent as first sent, at the same revision. If that is refused, a read decides whether it landed,
 counting only what the write would have changed: an element it created that it does not also
-delete, an element it deleted that was there before, and text it edited. If the read cannot tell,
-as for a batch that only formats or moves elements, the change is marked as having an unknown
-outcome and never retried.
+delete, an element it deleted that was there before, text it edited, and a table it adds or
+deletes rows or columns of, by its size and its cells' positions, spans and text. If the read
+cannot tell, as for a batch that only formats or moves elements, the change is marked as having an
+unknown outcome and never retried.
 
 Google returns a presentation's revision only to an account that can edit it, so a view-only
 account can read a presentation but every change to it fails. A queued change is stored in one

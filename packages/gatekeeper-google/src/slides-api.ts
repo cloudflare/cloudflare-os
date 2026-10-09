@@ -113,7 +113,7 @@ export type RestShapeProperties = {
     dashStyle?: string;
   };
   contentAlignment?: string;
-  autofit?: { autofitType?: string };
+  autofit?: { autofitType?: string; fontScale?: number; lineSpacingReduction?: number };
 };
 
 /** A table cell's `TableCellProperties`. */

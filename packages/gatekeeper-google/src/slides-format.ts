@@ -188,9 +188,10 @@ export type StyleChange<S> = { style: S; fields: (keyof S & string)[] };
 const REST_BASELINES = { superscript: "SUPERSCRIPT", subscript: "SUBSCRIPT", none: "NONE" };
 
 /**
- * The text style change `format` makes. A font is set at regular weight, and a link turns the
- * text the theme's link colour and underlined unless `format` says otherwise, as Google does, but
- * explicitly, so the request does not depend on it.
+ * The text style change `format` makes. A font is set at regular weight, which Google renders not
+ * bold, so unless `format` sets `bold` the change unsets it explicitly, keeping what Google keeps.
+ * A link turns the text the theme's link colour and underlined unless `format` says otherwise, as
+ * Google does, but explicitly, so the request does not depend on it.
  */
 export function textStyleChange(format: TextFormatChange): StyleChange<RestTextStyle> {
   let style: RestTextStyle = {};
@@ -204,6 +205,8 @@ export function textStyleChange(format: TextFormatChange): StyleChange<RestTextS
     let family = format.fontFamily;
     set("fontFamily", family);
     set("weightedFontFamily", family === null ? null : { fontFamily: family, weight: 400 });
+    // Weights under 700 are not bold, so a `bold: true` the text kept would describe it wrongly.
+    if (family !== null && format.bold === undefined) set("bold", false);
   }
   if (format.fontSize !== undefined) {
     set("fontSize", format.fontSize === null ? null : pointsDimension(format.fontSize));

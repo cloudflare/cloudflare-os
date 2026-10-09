@@ -289,6 +289,67 @@ describe("Slides design changes", () => {
       .toEqual(["ACCENT1", undefined, "ACCENT1", "ACCENT1"]);
   });
 
+  it("sets a font at regular weight, unbolding the text in the request and the replay alike", () => {
+    let page = () => slide("s1", [shape("box", text([{ content: "AB", style: { bold: true } }]))]);
+    let font = (format: { bold?: boolean }) => run([page()], [
+      { op: "formatText", slideId: "s1", elementId: "box", format: { fontFamily: "Roboto", ...format } },
+      { op: "editText", slideId: "s1", elementId: "box", find: "B", replace: "X" },
+    ]);
+    let { read, requests } = font({});
+    expect(requests[0].updateTextStyle).toMatchObject({
+      style: { bold: false, fontFamily: "Roboto", weightedFontFamily: { fontFamily: "Roboto", weight: 400 } },
+    });
+    // The edit restyles its text as what it replaces now is, not as it was.
+    expect(requests[2].updateTextStyle.style.bold).toBe(false);
+    expect((read().elements[0] as ShapeElement).formats).toEqual([{ start: 0, end: 2, bold: false, fontFamily: "Roboto" }]);
+    expect((font({ bold: true }).read().elements[0] as ShapeElement).formats)
+      .toEqual([{ start: 0, end: 2, bold: true, fontFamily: "Roboto" }]);
+  });
+
+  it("edits text in a shrunk shape at the sizes Google fixes when it turns the autofit off", () => {
+    let box = shape("box", text([{ content: "AB", style: { fontSize: pt(40) } }]));
+    box.shape!.shapeProperties = { autofit: { autofitType: "TEXT_AUTOFIT", fontScale: 0.5 } };
+    let { read, requests } = run([slide("s1", [box])], [
+      { op: "editText", slideId: "s1", elementId: "box", find: "B", replace: "X" },
+      // The autofit is off by now, so this edit scales nothing again.
+      { op: "editText", slideId: "s1", elementId: "box", find: "A", replace: "Z" },
+    ]);
+    expect(requests.filter(request => request.updateTextStyle).map(request => request.updateTextStyle.style))
+      .toEqual([{ fontSize: pt(20) }, { fontSize: pt(20) }]);
+    expect((read().elements[0] as ShapeElement).formats).toEqual([{ start: 0, end: 2, fontSize: 20 }]);
+  });
+
+  it("refuses new text filling a list item whose bullet is styled apart from its text", () => {
+    let black = { foregroundColor: { opaqueColor: { rgbColor: {} } }, fontSize: pt(20) };
+    let red = { foregroundColor: { opaqueColor: { rgbColor: { red: 1 } } }, fontSize: pt(30) };
+    let list = (content: string, bulletStyle: object) => slide("s1", [shape("box", text({
+      runs: [{ content, style: black }], marker: { bullet: { listId: "l", bulletStyle } },
+    }))]);
+    let edit = (page: RestSlide, find: string, replace: string) =>
+      run([page], [{ op: "editText", slideId: "s1", elementId: "box", find, replace }]);
+    expect(() => edit(list("A", red), "A", "X\nY")).toThrow("the new text fills a list item");
+    expect(() => edit(list("A", red), "A", "A\nY")).toThrow("the new text fills a list item");
+    // Splitting the item's own text leaves each part of it beside the new text.
+    expect(edit(list("AB", red), "AB", "AX\nYB").read().elements[0]).toMatchObject({ text: "AX\nYB" });
+    // Google lists a style's fields in its own order, which does not make it another style.
+    let same = { fontSize: pt(20), foregroundColor: { opaqueColor: { rgbColor: {} } } };
+    expect(edit(list("A", same), "A", "X\nY").read().elements[0]).toMatchObject({ text: "X\nY" });
+  });
+
+  it("refuses to rotate a video, which Google cannot shear, but resizes and half-turns it", () => {
+    let video = () => slide("s1", [element("vid", {
+      size: { width: { magnitude: 100 * EMU, unit: "EMU" }, height: { magnitude: 50 * EMU, unit: "EMU" } },
+      transform: { scaleX: 1, scaleY: 1, translateX: 10 * EMU, translateY: 20 * EMU, unit: "EMU" },
+      video: {},
+    })]);
+    let transform = (change: { bounds?: { width: number }; rotation?: number }) =>
+      run([video()], [{ op: "setBounds", slideId: "s1", elementId: "vid", ...change }])
+        .requests[0].updatePageElementTransform.transform;
+    expect(() => transform({ rotation: 45 })).toThrow("Google Slides cannot place a video rotated or skewed");
+    expect(transform({ rotation: 180 })).toMatchObject({ scaleX: -1, scaleY: -1, shearX: 0, shearY: 0 });
+    expect(transform({ bounds: { width: 200 } })).toMatchObject({ scaleX: 2, scaleY: 1, shearX: 0, shearY: 0 });
+  });
+
   it("refuses what Google would not take before reading anything", () => {
     let refusal = (change: SlideChange) => {
       try {
@@ -308,6 +369,9 @@ describe("Slides design changes", () => {
       .toContain('fill "" is not a #rrggbb colour');
     expect(refusal({ op: "insertImage", slideId: "s1", url: "http://example.com/a.png" }))
       .toContain("url must be an https: URL");
+    // 420 characters as given, but 2,420 once percent-encoded, past Google's limit.
+    expect(refusal({ op: "replaceImage", slideId: "s1", elementId: "a", url: `https://example.com/${"é".repeat(400)}` }))
+      .toContain("at most 2048 characters once percent-encoded");
     expect(refusal({ op: "formatText", slideId: "s1", elementId: "a", format: {} })).toContain("format sets nothing");
     expect(refusal({ op: "setAltText", slideId: "s1", elementId: "a", title: "" }))
       .toContain("alt text cannot be cleared");

@@ -3,7 +3,7 @@
  * the text of a shape, a table cell, or the speaker notes, with the text edit that rewrites it.
  */
 
-import type { RestPageElement, RestSlide, RestText } from "./slides-api";
+import type { RestPageElement, RestSlide, RestText, RestTextStyle } from "./slides-api";
 import {
   ChangeConflict, changeRange, narrowChange, projectedText, providerRange, replaceRequests,
   restTextOf, richTextOf, spliceText, type IndexRange, type TextLocation,
@@ -65,11 +65,12 @@ export function textSlot(slide: RestSlide, address: TextAddress): TextSlot {
     if (!notes || !id) throw new ChangeConflict("the slide has no speaker notes");
     // Absent until someone first writes notes; inserting text at its ID creates it.
     let shape = notes.pageElements?.find(element => element.objectId === id)?.shape;
+    let held = shape && shapeText(shape);
     return {
       location: { objectId: id },
-      body: shape?.text,
+      body: held?.body,
       write: text => {
-        if (shape) shape.text = text;
+        if (held) held.write(text);
         else (notes.pageElements ??= []).push({ objectId: id, shape: { shapeType: "TEXT_BOX", text } });
       },
     };
@@ -95,7 +96,53 @@ export function textSlot(slide: RestSlide, address: TextAddress): TextSlot {
   if (element.table) throw new ChangeConflict(`element "${elementId}" is a table; give a cell`);
   let shape = element.shape;
   if (!shape) throw new ChangeConflict(`element "${elementId}" has no editable text`);
-  return { location: { objectId: elementId }, body: shape.text, write: text => { shape.text = text; } };
+  return { location: { objectId: elementId }, ...shapeText(shape) };
+}
+
+type Shape = NonNullable<RestPageElement["shape"]>;
+
+/**
+ * A shape's text, and how to put replayed text back. Google turns a shape's autofit off at the
+ * first request that may change how its text fits, applying the scale it shrank the text by to
+ * the font sizes the text sets, and its line spacing reduction to the line spacings its paragraphs
+ * set. So the text is read as that leaves it, and is written back with the autofit off. Google
+ * says nothing of sizes or spacings the text inherits, so those are left as they are.
+ */
+function shapeText(shape: Shape): Pick<TextSlot, "body" | "write"> {
+  let fit = shape.shapeProperties?.autofit;
+  let scale = fit?.fontScale ?? 1;
+  let reduction = fit?.lineSpacingReduction ?? 0;
+  if (scale === 1 && reduction === 0) return { body: shape.text, write: text => { shape.text = text; } };
+  return {
+    body: shape.text && unfitted(shape.text, scale, reduction),
+    write: text => {
+      shape.text = text;
+      shape.shapeProperties = { ...shape.shapeProperties, autofit: { autofitType: "NONE" } };
+    },
+  };
+}
+
+function unfitted(body: RestText, scale: number, reduction: number): RestText {
+  let sized = (style: RestTextStyle | undefined) => style?.fontSize?.magnitude
+    ? { ...style, fontSize: { ...style.fontSize, magnitude: style.fontSize.magnitude * scale } }
+    : style;
+  return {
+    ...body,
+    textElements: body.textElements?.map(element => {
+      let { textRun, autoText, paragraphMarker } = element;
+      if (textRun) return { ...element, textRun: { ...textRun, style: sized(textRun.style) } };
+      if (autoText) return { ...element, autoText: { ...autoText, style: sized(autoText.style) } };
+      if (!paragraphMarker) return element;
+      let { style, bullet } = paragraphMarker;
+      return {
+        ...element,
+        paragraphMarker: {
+          style: style?.lineSpacing ? { ...style, lineSpacing: style.lineSpacing - reduction } : style,
+          bullet: bullet && { ...bullet, bulletStyle: sized(bullet.bulletStyle) },
+        },
+      };
+    }),
+  };
 }
 
 /** Applies one edit to `slide` in place, returning where it landed. Throws `ChangeConflict`. */

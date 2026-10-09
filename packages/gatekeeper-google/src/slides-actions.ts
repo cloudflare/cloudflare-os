@@ -173,7 +173,9 @@ function formatNames(format: TextFormatChange, field: Field): string[] {
   };
   if (format.fontFamily) field("Font", format.fontFamily);
   if (format.link) field("Link", format.link);
-  valued(format.fontFamily, "font", () => "the font below");
+  // A font is set at regular weight, which unbolds the text unless the change makes it bold.
+  valued(format.fontFamily, "font", () =>
+    format.bold === undefined ? "the font below, not bold" : "the font below");
   valued(format.fontSize, "size", (size: number) => `${size} pt`);
   valued(format.color, "colour", (color: string) => `colour ${color}`);
   valued(format.highlight, "highlight", (color: string) => `highlight ${color}`);
@@ -383,13 +385,18 @@ function addressAfter(address: TextAddress, later: readonly DesignChange[]): Tex
 }
 
 /**
- * The text of a table's cells, row by row, or undefined if the slide has no table `id`. Its size
- * alone could match a table a collaborator changed some other way.
+ * A table's size and cells, row by row: where each starts, its spans and its text, or undefined
+ * if the slide has no table `id`. Neither its size nor its cells' text alone tells it from a table
+ * a collaborator changed some other way, such as by merging cells.
  */
 function cellsOf(slide: RestSlide, id: string): string | undefined {
   let table = locate(slide.pageElements, id)?.element.table;
-  return table && JSON.stringify(table.tableRows?.map(row =>
-    row.tableCells?.map(cell => projectedText(richTextOf(cell.text).segments))));
+  // Google omits a zero index, and a span of 1 may be omitted too.
+  return table && JSON.stringify([table.rows ?? 0, table.columns ?? 0, table.tableRows?.map(row =>
+    row.tableCells?.map(cell => [
+      cell.location?.rowIndex ?? 0, cell.location?.columnIndex ?? 0, cell.rowSpan ?? 1,
+      cell.columnSpan ?? 1, projectedText(richTextOf(cell.text).segments),
+    ]))]);
 }
 
 /**

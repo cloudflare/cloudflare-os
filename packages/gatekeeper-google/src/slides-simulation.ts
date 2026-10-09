@@ -4,8 +4,8 @@
  * Replay works on Slides' own JSON, before `slides-model.ts` projects it, so a simulated read
  * projects exactly as a fresh one would. It is exact for text and for which slides exist in what
  * order; `slides-design.ts` replays design changes, refusing what it cannot replay exactly.
- * Nothing Google renders is simulated: autofit, wrapping and thumbnails show the presentation as
- * saved.
+ * Nothing Google renders is simulated: shrinking text to fit, wrapping and thumbnails show the
+ * presentation as saved.
  *
  * Apply re-runs the same functions over a fresh read to find the provider indices it writes, so
  * the preview and the write cannot disagree about where an edit lands.

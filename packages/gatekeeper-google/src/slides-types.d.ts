@@ -56,7 +56,7 @@ export type TextFormatChange = {
   underline?: boolean | null;
   strikethrough?: boolean | null;
   smallCaps?: boolean | null;
-  /** Font name, such as `Roboto` or `Georgia`, at regular weight. */
+  /** Font name, such as `Roboto` or `Georgia`, at regular weight: not bold unless `bold` is set. */
   fontFamily?: string | null;
   /** Font size in points. */
   fontSize?: number | null;
@@ -133,8 +133,8 @@ export type SlideChange =
   /**
    * Move, resize or rotate an element that is not inside a group. Omitted fields keep their
    * value, and `x` and `y` place the unrotated box's top-left corner, so resizing a rotated
-   * element moves its centre. A table can only be moved. An element created in the same batch
-   * cannot be changed this way: give it the bounds it should have instead.
+   * element moves its centre. A table can only be moved, and a video cannot be rotated. An element
+   * created in the same batch cannot be changed this way: give it the bounds it should have instead.
    */
   | {
     op: "setBounds";
