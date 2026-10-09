@@ -6,10 +6,17 @@ import type {
   ActionKind, ApprovalQueue, Gatekeeper, GatekeeperUserVerifier, GitCache, ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { AccessTokenCache, type AccessTokenRequest } from "./auth-retry";
+import {
+  boundProps, createFileOnce, isSimulated, UNCREATED_FILE_ID, type SimulatedFileProps,
+} from "./creation";
 import { unguardedNativeRead, type NativeRead } from "./drive-session";
 import type { GoogleVerifierApi } from "./google-verifier-types";
+import { Mutex } from "./mutex";
+import { nativeFileUrl } from "./resources";
 import { batchKind, SLIDES_ACTIONS } from "./slides-actions";
-import { GoogleSlidesApi, type ThumbnailSize } from "./slides-api";
+import {
+  BlankPresentation, GoogleSlidesApi, type PresentationReader, type ThumbnailSize,
+} from "./slides-api";
 import { layoutNames, mastersOf, presentationInfo, slideIds, slideOf, titleOf } from "./slides-model";
 import type {
   PresentationInfo, Slide, SlideThumbnail, SlideThumbnailSize,
@@ -53,10 +60,8 @@ export function getGoogleSlidesTypesCode(): string {
   ].join("\n");
 }
 
-export type GoogleSlidesGatekeeperImplProps = {
-  userObjectId: string;
-  presentationId: string;
-};
+export type GoogleSlidesGatekeeperImplProps =
+  { userObjectId: string; presentationId: string } | SimulatedFileProps;
 
 /** What a session needs of its gatekeeper to show and queue changes. */
 export type SlidesChangeQueue = {
@@ -107,26 +112,43 @@ class ReadGate {
 export class GoogleSlidesGatekeeperImpl
     extends DurableObject<Env, GoogleSlidesGatekeeperImplProps>
     implements Gatekeeper<GooglePresentationSession> {
+  #creating = new Mutex();
   #tokens = new AccessTokenCache(opts => {
     let account = this.ctx.exports.UserAccount.get(
-      this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId),
+      this.ctx.exports.UserAccount.idFromString(this.#bound.userObjectId),
     );
     return account.getAccessToken(opts);
   });
 
   #api = new GoogleSlidesApi((opts?: AccessTokenRequest) => this.#tokens.get(opts));
+  #presentationId = isSimulated(this.ctx.props) ? UNCREATED_FILE_ID : this.ctx.props.presentationId;
   #journal = new ActionJournal<SlidesAction>(this.ctx.storage.kv, { namespace: "slides" });
-  #actions = SLIDES_ACTIONS.bind(
-    this.#journal, { api: this.#api, presentationId: this.ctx.props.presentationId });
+  #actions = SLIDES_ACTIONS.bind(this.#journal, { api: this.#api, presentationId: this.#presentationId });
   #reads = new ReadGate();
   #preparing = new SerialTaskQueue();
   #inPreparation = 0;
 
+  /** The account and presentation this binding reaches, which one not yet created has not. */
+  get #bound(): { userObjectId: string; presentationId: string } {
+    return boundProps(this.ctx.props, "slides");
+  }
+
   async describe(): Promise<ResourceDescription> {
-    let title = await this.#api.getPresentationTitle(this.ctx.props.presentationId) ??
+    let props = this.ctx.props;
+    if (isSimulated(props)) {
+      let { title } = props.creation;
+      return {
+        url: nativeFileUrl("slides"),
+        title,
+        snippet: `Google Slides presentation: ${title} (not created yet, so it has no slides to change)`,
+        suggestedBindingName: "GOOGLE_SLIDES",
+        tsType: "GooglePresentationSession",
+      };
+    }
+    let title = await this.#api.getPresentationTitle(props.presentationId) ??
       "Untitled presentation";
     return {
-      url: `https://docs.google.com/presentation/d/${this.ctx.props.presentationId}/edit`,
+      url: nativeFileUrl("slides", props.presentationId),
       title,
       snippet: `Google Slides presentation: ${title}`,
       suggestedBindingName: "GOOGLE_SLIDES",
@@ -143,10 +165,13 @@ export class GoogleSlidesGatekeeperImpl
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GooglePresentationSession> {
+    let props = this.ctx.props;
     let queue = approvalQueue.dup();
     // A presentation binding's scope is the one presentation, so there is nothing to revalidate.
     return new GooglePresentationSessionImpl(
-      this.#api, this.ctx.props.presentationId, queue,
+      isSimulated(props) ? new BlankPresentation(props.creation.title) : this.#api,
+      this.#presentationId,
+      queue,
       unguardedNativeRead(description => queue.authorizeObservation(description)),
       {
         snapshot: read => this.#reads.read(() => read(this.#journal.listUndecided())),
@@ -163,6 +188,18 @@ export class GoogleSlidesGatekeeperImpl
         }),
       },
     );
+  }
+
+  async applyCreation(creator: Fetcher<GatekeeperUserVerifier>)
+      : Promise<{class: DurableObjectClass<Gatekeeper<any>>, resourceUrl: string}> {
+    return this.#creating.run(async () => {
+      let { userObjectId, fileId, resourceUrl } = await createFileOnce(this.ctx, creator, "slides",
+          (title, tokens) => new GoogleSlidesApi(tokens).createPresentation(title));
+      return {
+        class: this.ctx.exports.GoogleSlidesGatekeeperImpl({props: {userObjectId, presentationId: fileId}}),
+        resourceUrl,
+      };
+    });
   }
 
   #prepareExclusively<T>(body: () => Promise<T>): Promise<T> {
@@ -209,7 +246,7 @@ export class GoogleSlidesGatekeeperImpl
    */
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     let verifier = user as unknown as Fetcher<GoogleVerifierApi>;
-    if (!(await verifier.hasPresentationAccess(this.ctx.props.presentationId))) {
+    if (!(await verifier.hasPresentationAccess(this.#bound.presentationId))) {
       throw new Error(
         "This collaborator does not have access to the bound Google Slides presentation, so they " +
         "cannot observe data this workspace read from it.",
@@ -244,14 +281,14 @@ function labelOf(deck: Deck, id: string): SlideLabel {
 
 @validateRpc()
 export class GooglePresentationSessionImpl extends RpcTarget implements GooglePresentationSession {
-  #api: GoogleSlidesApi;
+  #api: PresentationReader;
   #presentationId: string;
   #approvalQueue: RpcStub<ApprovalQueue>;
   #read: NativeRead;
   #changes: SlidesChangeQueue;
 
   constructor(
-    api: GoogleSlidesApi,
+    api: PresentationReader,
     presentationId: string,
     approvalQueue: RpcStub<ApprovalQueue>,
     read: NativeRead,

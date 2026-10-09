@@ -39,14 +39,22 @@ export const GOOGLE_DOC_RESOURCE: SupportedResource = {
   title: "Google Doc",
   description: "Read and edit documents you choose.",
   grantable: true,
+  creatable: true,
 };
 
-/** A single Google Sheet. */
+/**
+ * A single Google Sheet.
+ *
+ * Requests the read-write `spreadsheets` scope although reads are all it offers on an existing
+ * spreadsheet: creating one (see GatekeeperVendor.createResource()) needs it, since Google's
+ * `spreadsheets.create` accepts no read-only scope.
+ */
 export const GOOGLE_SHEETS_RESOURCE: SupportedResource = {
   urlPattern: "https://docs.google.com/spreadsheets/d/:spreadsheetId/*",
   title: "Google Spreadsheet",
   description: "Read values from a spreadsheet you choose.",
   grantable: true,
+  creatable: true,
 };
 
 /** A single Google Slides presentation. */
@@ -57,6 +65,7 @@ export const GOOGLE_SLIDES_RESOURCE: SupportedResource = {
     "Read a presentation you choose, and edit its text and speaker notes and copy, move, or " +
     "delete its slides, with your approval.",
   grantable: true,
+  creatable: true,
 };
 
 /** A single Google Calendar. */
@@ -222,7 +231,7 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
   {
     resource: GOOGLE_SHEETS_RESOURCE,
     scopes: [
-      "https://www.googleapis.com/auth/spreadsheets.readonly",
+      "https://www.googleapis.com/auth/spreadsheets",
       // Read-only Drive file metadata, used to power the spreadsheet picker.
       "https://www.googleapis.com/auth/drive.metadata.readonly",
     ],
@@ -365,6 +374,7 @@ const SCOPE_COVERED_BY: Record<string, readonly string[]> = {
   "https://www.googleapis.com/auth/presentations.readonly": [
     "https://www.googleapis.com/auth/presentations", DRIVE_READONLY_SCOPE, DRIVE_READWRITE_SCOPE,
   ],
+  "https://www.googleapis.com/auth/spreadsheets": [DRIVE_READWRITE_SCOPE],
   "https://www.googleapis.com/auth/chat.spaces.readonly": [
     "https://www.googleapis.com/auth/chat.spaces",
   ],
@@ -482,6 +492,30 @@ export const RESOURCE_BY_KIND: Record<ResourceTarget["kind"], SupportedResource>
   chatSpace: GOOGLE_CHAT_SPACE_RESOURCE,
   chatThread: GOOGLE_CHAT_THREAD_RESOURCE,
 };
+
+/** The resource kinds createResource() can make: Google's native editor files. */
+export type CreatableKind = "doc" | "sheets" | "slides";
+const CREATABLE_KINDS: CreatableKind[] = ["doc", "sheets", "slides"];
+const NATIVE_FILE_PATHS: Record<CreatableKind, string> =
+    { doc: "document", sheets: "spreadsheets", slides: "presentation" };
+
+/** The kind of the creatable resource type `resourceUrlPattern`, or an agent-readable refusal. */
+export function creatableKind(resourceUrlPattern: string): CreatableKind {
+  let kind = CREATABLE_KINDS.find(candidate => {
+    let resource = RESOURCE_BY_KIND[candidate];
+    return resource.urlPattern === resourceUrlPattern && resource.creatable;
+  });
+  if (kind) return kind;
+  let types = CREATABLE_KINDS.map(candidate =>
+      `${RESOURCE_BY_KIND[candidate].title} (${RESOURCE_BY_KIND[candidate].urlPattern})`);
+  throw new Error(`Google can create only these resource types: ${types.join(", ")}.`);
+}
+
+/** A native file's canonical URL; with no `id`, its product's home page (a file not yet created). */
+export function nativeFileUrl(kind: CreatableKind, id?: string): string {
+  let base = `https://docs.google.com/${NATIVE_FILE_PATHS[kind]}/`;
+  return id === undefined ? base : `${base}d/${id}/edit`;
+}
 
 /**
  * Parses a bound resource URL into the target its gatekeeper needs.

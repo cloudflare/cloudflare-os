@@ -273,15 +273,34 @@ function pagePath(presentationId: string, pageId: string): string {
 export class GoogleSlidesApi {
   constructor(private getAccessToken: AccessTokenProvider) {}
 
+  async #send<T>(url: URL, init: RequestInit, operation: string, maxBytes: number): Promise<T> {
+    let response = await fetchWithAuthRetry(
+      url.toString(), init, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
+    );
+    return readGoogleJson<T>(response, { provider: "Google Slides", operation, maxBytes });
+  }
+
   async #get<T>(
     path: string, params: Record<string, string>, operation: string, maxBytes = MAX_RESPONSE_BYTES,
   ): Promise<T> {
     let url = new URL(`${API_BASE}/${path}`);
     for (let [name, value] of Object.entries(params)) url.searchParams.set(name, value);
-    let response = await fetchWithAuthRetry(
-      url.toString(), {}, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
-    );
-    return readGoogleJson<T>(response, { provider: "Google Slides", operation, maxBytes });
+    return this.#send<T>(url, {}, operation, maxBytes);
+  }
+
+  /** Create a presentation titled `title` in the caller's My Drive, returning its ID. */
+  async createPresentation(title: string): Promise<string> {
+    let url = new URL(API_BASE);
+    url.searchParams.set("fields", "presentationId");
+    let { presentationId } = await this.#send<{ presentationId?: unknown }>(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    }, "create presentation", MAX_RESPONSE_BYTES);
+    if (typeof presentationId !== "string" || presentationId.length === 0) {
+      throw new Error("Google Slides returned no presentation ID");
+    }
+    return presentationId;
   }
 
   async #presentation(
@@ -387,5 +406,47 @@ export class GoogleSlidesApi {
     }).catch((error: unknown) => error);
     let refused = response.status >= 400 && response.status < 500;
     throw refused ? new SlidesWriteRefused(response.status) : failure;
+  }
+}
+
+/** The reads a presentation session makes. */
+export type PresentationReader = Pick<
+  GoogleSlidesApi, "getPresentation" | "getOutline" | "getSlides" | "getLayout" | "getThumbnail">;
+
+/**
+ * A presentation not yet created: a 16:9 deck with no slides, so no change to it can be queued.
+ * Google gives a created one a title slide, which this does not show. Makes no request.
+ */
+export class BlankPresentation implements PresentationReader {
+  constructor(private title: string) {}
+
+  async getPresentation(presentationId: string): Promise<RestPresentation> {
+    return {
+      presentationId,
+      title: this.title,
+      pageSize: {
+        width: { magnitude: 9144000, unit: "EMU" },
+        height: { magnitude: 5143500, unit: "EMU" },
+      },
+      layouts: [],
+      slides: [],
+    };
+  }
+
+  getOutline(presentationId: string): Promise<RestPresentation> {
+    return this.getPresentation(presentationId);
+  }
+
+  /** Sessions ask only for slides the outline lists, and it lists none. */
+  async getSlides(): Promise<Map<string, RestSlide>> {
+    return new Map();
+  }
+
+  async getLayout(): Promise<RestPage> {
+    throw new Error("A presentation awaiting creation has no layouts.");
+  }
+
+  async getThumbnail(): Promise<PageThumbnail> {
+    throw new Error("A presentation awaiting creation has no slides.");
   }
 }

@@ -42,7 +42,7 @@ export type SlideLayout = {
 
 /** Metadata about the connected presentation and the slides it contains. */
 export type PresentationInfo = {
-  /** Stable Google presentation ID. */
+  /** Stable Google presentation ID. Empty until a presentation made with createExternalResource is created. */
   id: string;
   /** Presentation title. */
   title: string;

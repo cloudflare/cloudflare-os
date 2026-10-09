@@ -79,10 +79,11 @@ included). Across all resource types, the gatekeeper can request:
 
 - `openid`, `userinfo.profile`, and `userinfo.email` to identify the connected account.
 - `gmail.modify` for Gmail thread reads, organization, replies, forwards, and sending. This single scope already includes label access and sending.
-- `documents` for direct Google Docs reads and edits; `documents.readonly` for native Docs opened from account-wide, folder, or exact-file Drive bindings.
+- `documents` for direct Google Docs reads, edits, and creation; `documents.readonly` for native Docs opened from account-wide, folder, or exact-file Drive bindings.
 - `drive.metadata.readonly` for the Docs, Sheets, Slides, and folder pickers, account-wide Drive discovery, exact-file metadata, folder descendant proofs, and native-file scope checks. Google classifies this as a restricted scope, so every Drive resource here needs restricted-scope verification.
-- `spreadsheets.readonly` to read metadata and bounded cell ranges from directly selected spreadsheets or native Sheets opened from account-wide, folder, or exact-file Drive bindings.
-- `presentations` to read and edit directly selected presentations, and to render slide thumbnails; `presentations.readonly` to read and render native Slides opened from account-wide, folder, or exact-file Drive bindings. Google counts each thumbnail as an expensive read, limited to 60 a minute per user and 300 per project.
+- `spreadsheets` to read metadata and bounded cell ranges from directly selected spreadsheets, and to create spreadsheets. Google Sheets bindings are read-only; the read-write scope is requested because Google's `spreadsheets.create` accepts no read-only scope. The switch from `spreadsheets.readonly` retracted every existing Sheets grant, including one derived from `drive.readonly`: owners re-consent the next time they connect a spreadsheet, and collaborators observing an existing Sheets binding are asked to grant read-write `spreadsheets` the next time they open its workspace.
+- `spreadsheets.readonly` to read native Sheets opened from account-wide, folder, or exact-file Drive bindings.
+- `presentations` to read, edit, and create directly selected presentations, and to render slide thumbnails; `presentations.readonly` to read and render native Slides opened from account-wide, folder, or exact-file Drive bindings. Google counts each thumbnail as an expensive read, limited to 60 a minute per user and 300 per project.
 - `calendar.calendarlist.readonly` so the resource picker can list calendars.
 - `calendar.events` to manage selected calendar and check calendar availability.
 - `chat.spaces.readonly`, `chat.messages`, and `chat.memberships.readonly` for every Chat resource. A whole-account Chat connection adds `chat.users.readstate.readonly` for its unread-only search, and `chat.spaces.create` and `directory.readonly` to start direct messages and group chats with people in the connected account's Workspace directory. Starting a conversation is its own approval kind, separate from sending in an existing one, and people outside the organization can't be added to a new conversation.
@@ -202,6 +203,27 @@ result and state. Normal deployments should omit these settings and continue usi
 
 Deploy the relay-capable stable Worker before enabling the fixed redirect on previews. Wrangler
 stores baseline and Preview secrets separately, so provision the same signing value in both places.
+
+## Creating files
+
+Google Docs, Sheets and Slides are creatable resource types: an agent can ask for a new one with
+`createExternalResource`, giving a one-line title (trimmed, at most 256 characters), and its binding
+works at once, before anything exists at Google. Until the creation is approved the gatekeeper
+simulates an empty file: a Doc reads as one empty tab and queues edits as usual, a spreadsheet as
+one empty `Sheet1` of 1000 × 26 cells, a presentation as a 16:9 deck with no slides, so no Slides
+change can be queued until it exists. Nothing reaches Google and no account is involved.
+
+The approver picks which of their connected Google accounts to create the file in; it lands in
+that account's My Drive, and the binding switches to the real file. Doc edits queued against the
+simulation then apply to the created document like any other edit. Google gives a created
+presentation one title slide, which the agent can then change.
+
+Google's create calls take no idempotency key. A retried approval after a lost reply binds the file
+already created (the gatekeeper records it), but a file can still be orphaned in the approver's
+Drive: a create request that times out or fails with a 5xx after Google acted, a crash between
+Google's reply and that record being written, or a creation rejected after an approval whose
+success was lost. Every created file's ID is logged (`google.creation.file.created`), so an orphan
+can be found.
 
 ## Known limitations
 
