@@ -320,7 +320,12 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
         ]);
         let { deck, conflict } = replayed({ order, slides, ...mastersOf(rest) }, changes);
         return {
-          ...presentationInfo({ ...rest, slides: deck.order.map(id => deck.slides.get(id)!) }),
+          ...presentationInfo({
+            ...rest,
+            slides: deck.order.map(id => deck.slides.get(id)!),
+            // Less any master a queued deletion leaves with no slide, as Google removes it.
+            layouts: rest.layouts?.filter(({ objectId }) => !!objectId && deck.masters.has(objectId)),
+          }),
           ...(conflict ? { queuedChangeConflict: conflict } : {}),
         };
       }),

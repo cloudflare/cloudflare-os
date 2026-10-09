@@ -284,5 +284,24 @@ describe("Slides change replay", () => {
       expect(() => applyChange(emptied, create())).toThrow("belongs to a different master than the presentation's first");
       expect(applyChange({ ...emptied, firstMaster: "m1" }, create()).order).toEqual(["new"]);
     });
+
+    it("conflicts once a queued deletion removes the last slide of its layout's master", () => {
+      // Google deletes a master and its layouts with its last slide, unless it is the first master.
+      let themed: Deck = { ...deck, masters: new Map([...deck.masters, ["s2", "m2"], ["layout-m2", "m2"]]), firstMaster: "m1" };
+      let drop = (from: Deck, slideId: string) =>
+        applyChange(from, { kind: "deleteSlide", payload: { slideId, slide: { number: 1 } } });
+      let createFrom = (layoutId: string, after?: string | null): SlidesAction =>
+        ({ ...create(after), payload: { ...create(after).payload, layoutId } } as SlidesAction);
+
+      let noM2 = drop(themed, "s2");
+      expect([...noM2.masters]).toEqual([["s1", "m1"], ["layout-title-body", "m1"]]);
+      expect(() => applyChange(noM2, createFrom("layout-m2"))).toThrow('layout "layout-m2" no longer exists');
+      // The first master stays with no slide on it, and a master stays while any slide is on it.
+      let noM1 = drop(themed, "s1");
+      expect(noM1.masters.get("layout-title-body")).toBe("m1");
+      expect(applyChange(drop(noM1, "s2"), create()).order).toEqual(["new"]);
+      expect(drop({ ...themed, masters: new Map([...themed.masters, ["s1", "m2"]]) }, "s2").masters.get("layout-m2"))
+        .toBe("m2");
+    });
   });
 });

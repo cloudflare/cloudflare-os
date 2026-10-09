@@ -198,7 +198,14 @@ class SlidesProvider {
       let { objectId } = request.deleteObject;
       let at = slides.findIndex(s => s.objectId === objectId);
       if (at >= 0) {
-        slides.splice(at, 1);
+        let [{ slideProperties }] = slides.splice(at, 1);
+        // Google deletes a master, and its layouts, with its last slide, unless it is the first.
+        let master = slideProperties!.masterObjectId;
+        if (deck.masters?.slice(1).some(m => m.objectId === master) &&
+          !slides.some(s => s.slideProperties!.masterObjectId === master)) {
+          deck.masters = deck.masters.filter(m => m.objectId !== master);
+          deck.layouts = deck.layouts!.filter(l => l.layoutProperties!.masterObjectId !== master);
+        }
       } else {
         let page = slides.find(s => s.pageElements?.some(e => e.objectId === objectId));
         if (!page) throw new Invalid();
@@ -1105,6 +1112,24 @@ describe("Google Slides new and skipped slides", () => {
     expect(await slides.apply(atEnd.actionId!)).toBeNull();
 
     expect(provider.deck.slides!.at(-1)!.slideProperties!.masterObjectId).toBe("master-2");
+  });
+
+  it("drops a theme's layouts with its last slide, so no new slide is queued on one", async () => {
+    let themed = layoutDeck();
+    themed.masters = [{ objectId: "master-1" }, { objectId: "master-2" }];
+    themed.slides!.at(-1)!.slideProperties!.masterObjectId = "master-2";
+    themed.layouts.push({ objectId: "layout-other", layoutProperties: { displayName: "Other", masterObjectId: "master-2" },
+      pageElements: [] });
+    let provider = new SlidesProvider(themed).install();
+    let slides = gatekeeper();
+
+    let remove = await slides.queued("deleteSlide", "s3");
+    expect((await slides.outline()).layouts.map(({ id }) => id)).toEqual(["layout-title", "layout-title-body"]);
+    expect((await slides.call("createSlide", "layout-other")).error).toContain('Layout "layout-other" no longer exists');
+    expect(await slides.apply(remove.actionId!)).toBeNull();
+
+    expect(provider.deck.layouts!.map(l => l.objectId)).toEqual(["layout-title", "layout-title-body"]);
+    expect((await slides.outline()).layouts.map(({ id }) => id)).toEqual(["layout-title", "layout-title-body"]);
   });
 
   it("skips and unskips slides as previewed, writing only the slides that change", async () => {

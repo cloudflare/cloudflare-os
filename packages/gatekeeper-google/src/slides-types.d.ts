@@ -250,7 +250,10 @@ export interface GooglePresentationSession extends GooglePresentationReadSession
    */
   duplicateSlide(slideId: string): Promise<string>;
 
-  /** Queue deleting a slide. */
+  /**
+   * Queue deleting a slide. Deleting the last slide of any master but the presentation's first
+   * removes that master's layouts from `PresentationInfo.layouts`, as Google deletes them with it.
+   */
   deleteSlide(slideId: string): Promise<void>;
 
   /**

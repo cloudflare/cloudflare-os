@@ -253,7 +253,14 @@ export function applyChange(deck: Deck, action: SlidesAction): Deck {
       requireSlide(order, slideId);
       let next = new Map(slides);
       next.delete(slideId);
-      return reordered(deck, order.filter(id => id !== slideId), next);
+      let rest = order.filter(id => id !== slideId);
+      // Google deletes a master, and its layouts, with the last slide on it, unless it is the
+      // presentation's first master.
+      let master = masters.get(slideId);
+      let dropped = master !== undefined && master !== deck.firstMaster &&
+        !rest.some(id => masters.get(id) === master);
+      return reordered(deck, rest, next,
+        dropped ? new Map([...masters].filter(([, of]) => of !== master)) : masters);
     }
     case "moveSlides": {
       let { slideIds, after } = action.payload;
