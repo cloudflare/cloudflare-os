@@ -58,6 +58,10 @@ const BULLET_PRESETS = {
 // Google nests list items nine levels deep.
 const MAX_NESTING_LEVEL = 8;
 
+// Points of indentation a nesting level, as Google sets them on list items and leaves them when it
+// removes a bullet.
+const LEVEL_INDENT = 36;
+
 // How far a read-back placement may be from the one asked for: under the reads' rounding.
 const PLACEMENT_TOLERANCE = 0.005;
 
@@ -229,9 +233,11 @@ function formatParagraphs(
     next = {
       ...next,
       paragraphs: next.paragraphs.map((paragraph, i) => {
-        if (!touched(i)) return paragraph;
-        let { bullet: _, ...rest } = paragraph;
-        return rest;
+        let { bullet, ...rest } = paragraph;
+        if (!touched(i) || !bullet) return paragraph;
+        // Google keeps the item's nesting as both indents.
+        let indent = pointsDimension(LEVEL_INDENT * (bullet.nestingLevel ?? 0));
+        return { ...rest, style: { ...rest.style, indentStart: indent, indentFirstLine: indent } };
       }),
     };
   } else if (change.bullets) {
@@ -266,8 +272,15 @@ function bulleted(rich: RichText, first: number, last: number, listId: string): 
         `a paragraph starts with ${tabs} tabs; lists nest at most ${MAX_NESTING_LEVEL + 1} deep`);
     }
     if (tabs > 0) next = spliceText(next, from, from + tabs, "");
+    let paragraph = next.paragraphs[i];
     next.paragraphs[i] = {
-      ...next.paragraphs[i],
+      ...paragraph,
+      // Google indents an item a level more than its nesting, hanging its bullet half a level out.
+      style: {
+        ...paragraph.style,
+        indentStart: pointsDimension(LEVEL_INDENT * (tabs + 1)),
+        indentFirstLine: pointsDimension(LEVEL_INDENT * (tabs + 0.5)),
+      },
       // Google omits a zero nesting level, as it omits every zero-valued field.
       bullet: { listId, ...(tabs > 0 ? { nestingLevel: tabs } : {}) },
     };

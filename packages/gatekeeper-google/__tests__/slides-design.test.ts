@@ -8,6 +8,7 @@ import type { SlideChange } from "../src/slides-types";
 import { shape, slide, text } from "./slides-fixture";
 
 const EMU = 12_700;
+const pt = (magnitude: number) => ({ magnitude, unit: "PT" as const });
 
 /** Runs `changes` over the slides as `updateSlides()` would queue them. */
 function run(pages: RestSlide[], changes: SlideChange[]) {
@@ -139,6 +140,46 @@ describe("Slides design changes", () => {
       { op: "formatParagraphs", slideId: "s1", elementId: "box", find: "A", bullets: "numbered" },
       { op: "editText", slideId: "s1", elementId: "box", find: "A\nB", replace: "AB" },
     ])).toThrow("not items of the same list");
+  });
+
+  // Read back live: Google indents new items 36/18, 72/54 pt, …, and removing their bullets leaves
+  // 0/0, 36/36, ….
+  it("indents list items by their nesting as Google does, which a later join keeps", () => {
+    let joined = (page: RestSlide, bullets: "bullet" | "none") => run([page], [
+      { op: "formatParagraphs", slideId: "s1", elementId: "box", bullets },
+      { op: "editText", slideId: "s1", elementId: "box", find: "A\nB", replace: "AB" },
+    ]).requests.at(-1)!.updateParagraphStyle.style;
+    expect(joined(slide("s1", [shape("box", text(["\tA"], ["\tB"]))]), "bullet")).toMatchObject({
+      indentStart: pt(72), indentFirstLine: pt(54),
+    });
+    let item = (content: string, nestingLevel: number, start: number, firstLine: number) => ({
+      runs: [content],
+      marker: {
+        bullet: { listId: "l", ...(nestingLevel ? { nestingLevel } : {}) },
+        style: { indentStart: pt(start), indentFirstLine: pt(firstLine) },
+      },
+    });
+    let list = slide("s1", [shape("box", text(item("A", 0, 36, 18), item("B", 1, 72, 54)))]);
+    expect(joined(list, "none")).toMatchObject({ indentStart: pt(36), indentFirstLine: pt(36) });
+  });
+
+  // Read back live: a style reaches the newline ending its range's paragraph, which text added
+  // before it then takes, but no other newline: not a further one, nor one a replacement keeps.
+  it("carries a style set to a paragraph's end onto its newline, and no further", () => {
+    let target = { slideId: "s1", elementId: "box" };
+    let formats = (paragraphs: string[], ...changes: SlideChange[]) => {
+      let page = slide("s1", [shape("box", text(...paragraphs.map(paragraph => [paragraph])))]);
+      return (run([page], changes).read().elements[0] as ShapeElement).formats;
+    };
+    let bold = (find: string): SlideChange => ({ op: "formatText", ...target, find, format: { bold: true } });
+    let edit = (find: string, replace: string): SlideChange => ({ op: "editText", ...target, find, replace });
+    expect(formats(["ABC", "DEF"], bold("ABC"), edit("ABC", "ABCX"))).toEqual([{ start: 0, end: 4, bold: true }]);
+    expect(formats(["ABC", "DEF"], bold("DEF"), edit("DEF", "DEFX"))).toEqual([{ start: 4, end: 8, bold: true }]);
+    expect(formats(["ABC", "DEF"], bold("DEF"), edit("ABC", "ABCX"))).toEqual([{ start: 5, end: 8, bold: true }]);
+    expect(formats(["ABC", "DEF"], bold("B"), edit("BC", "XY"), edit("XY", "XYZ")))
+      .toEqual([{ start: 1, end: 3, bold: true }]);
+    expect(formats(["ABC", "", "DEF"], bold("ABC\n"), edit("\n\n", "\nY\n")))
+      .toEqual([{ start: 0, end: 3, bold: true }]);
   });
 
   it("creates a shape that later changes in the batch address by its ref", () => {

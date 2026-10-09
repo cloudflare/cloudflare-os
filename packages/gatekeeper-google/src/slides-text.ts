@@ -10,7 +10,8 @@
  * Google's `insertText` "generally" does, and a newline it inserts starts a paragraph copying the
  * one it was inserted into, bullet included, as `insertText` documents. Deleting a newline merges
  * its paragraph into the next, which keeps its own style. Google documents neither the first rule
- * exactly nor the last at all, so the requests set both styles explicitly.
+ * exactly nor the last at all, so the requests set both styles explicitly. A style set on text
+ * that ends a paragraph also reaches its newline, as a live read shows, though a link never does.
  */
 
 import type {
@@ -215,7 +216,28 @@ export function styledText(
     before = left.toReversed();
     retarget(after, pieces.at(-1)?.style?.link);
   }
-  return { ...rich, segments: [...before, ...styled, ...after] };
+  let result = { ...rich, segments: [...before, ...styled, ...after] };
+  // A range ending in a newline holds its paragraph's newline already, and reaches no further.
+  return pieces.at(-1)?.text === "\n" ? result : styledParagraphEnd(result, end, change);
+}
+
+/**
+ * Restyles the newline at projected `offset`, or the last one if `offset` ends the text, as a
+ * `change` set on text ending there reaches it, link aside.
+ */
+function styledParagraphEnd(
+  rich: RichText, offset: number, change: StyleChange<RestTextStyle>,
+): RichText {
+  let restyle = (style: RestTextStyle | undefined) => restyled(style, change, "link");
+  let [head, [next, ...tail]] = cut(rich.segments, offset);
+  if (!next) {
+    let { endStyle, ...rest } = rich;
+    let style = restyle(endStyle);
+    return style ? { ...rest, endStyle: style } : rest;
+  }
+  let [newline, ...line] = atNewlines(next);
+  if (newline?.text !== "\n") return rich;
+  return { ...rich, segments: [...head, withStyle(newline, restyle(newline.style)), ...line, ...tail] };
 }
 
 function withStyle(segment: TextSegment, style: RestTextStyle | undefined): TextSegment {
