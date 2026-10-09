@@ -14,7 +14,7 @@ A lightweight, persistent spreadsheet Gadget with a familiar grid interface, for
 - Number, currency, percent, scientific, date, and time formatting
 - Bold, italic, underline, strikethrough, text color, fill color, alignment, wrapping, and text overflow into adjacent empty cells
 - Row and column insertion, deletion, and resizing
-- Range sorting, AutoSum, copy/paste via TSV, and local undo/redo for cell edits
+- Range sorting, AutoSum, copy/paste via TSV, and local undo/redo for cell edits; undoing or redoing a cut/paste also restores its moved comments across sheets
 - Persistent filter rows with per-column, multi-value dropdown filters and reversible sorting
 - Line, pie, area, and stacked bar charts created from selected ranges, with an adjustable right-side settings panel, drag positioning, and rich SVG copy
 - Persistent cell comments with in-cell markers, hover previews, a consolidated sidebar, and resolve/delete actions

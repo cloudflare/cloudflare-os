@@ -1722,9 +1722,10 @@ interface HistoryRecord {
   ref: string;
   prev: Cell | null;
 }
-// One undoable step: every cell it changed, by "sheetId!REF".
+// One undoable step: changed cells and moved comments, keyed by sheet and cell/comment id.
 interface HistoryBatch {
   cells: Map<string, HistoryRecord>;
+  comments?: Map<string, { sheetId: string; id: string; prev: SheetComment | null }>;
   sheetId: string;
 }
 const undoStack: HistoryBatch[] = [];
@@ -1740,8 +1741,16 @@ function recordCell(sheetId: string, ref: string): void {
     historyBatch!.cells.set(key, { sheetId, ref, prev: cur ? { ...cur } : null });
   }
 }
+function recordComment(sheetId: string, id: string): void {
+  if (!historyBatch) beginBatch();
+  const comments = historyBatch!.comments || (historyBatch!.comments = new Map());
+  const key = sheetId + "!" + id;
+  if (comments.has(key)) return;
+  const previous = model.sheets[sheetId]?.comments?.find((comment) => comment.id === id);
+  comments.set(key, { sheetId, id, prev: previous ? { ...previous } : null });
+}
 function commitBatch(): void {
-  if (!historyBatch || !historyBatch.cells.size) { historyBatch = null; return; }
+  if (!historyBatch || !historyBatch.cells.size && !historyBatch.comments?.size) { historyBatch = null; return; }
   undoStack.push(historyBatch);
   if (undoStack.length > 200) undoStack.shift();
   redoStack.length = 0;
@@ -1758,6 +1767,17 @@ function applyHistory(entry: HistoryBatch, into: HistoryBatch[]): void {
     else delete cells[rec.ref];
     queueCellOp(rec.sheetId, rec.ref, rec.prev ? rec.prev.value : null, rec.prev ? rec.prev.fmt : null, now ? now.version : 0);
   }
+  for (const [key, rec] of entry.comments || []) {
+    const sheet = model.sheets[rec.sheetId];
+    if (!sheet) continue;
+    const comments = sheet.comments || [];
+    const now = comments.find((comment) => comment.id === rec.id);
+    const inverseComments = inverse.comments || (inverse.comments = new Map());
+    inverseComments.set(key, { sheetId: rec.sheetId, id: rec.id, prev: now ? { ...now } : null });
+    sheet.comments = comments.filter((comment) => comment.id !== rec.id);
+    if (rec.prev) sheet.comments.push({ ...rec.prev });
+  }
+  if (inverse.comments?.size) { queueStructure(); renderChartPanel(); refreshToolbarState(); }
   into.push(inverse);
   rebuildEngine();
   renderGrid();
@@ -4541,6 +4561,8 @@ if (moving && useSnapshot) {
     for (const comment of sourceSheet.comments) {
       const destination = unchangedSources.has(comment.ref) ? moves.get(comment.ref) : null;
       if (!destination || destination.sheetId === useSnapshot.sheetId && destination.ref === comment.ref) { remaining.push(comment); continue; }
+      recordComment(useSnapshot.sheetId, comment.id);
+      if (destination.sheetId !== useSnapshot.sheetId) recordComment(destination.sheetId, comment.id);
       const moved = { ...comment, ref: destination.ref };
       if (destination.sheetId === useSnapshot.sheetId) remaining.push(moved);
       else {
