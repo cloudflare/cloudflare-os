@@ -28,15 +28,15 @@ import {
   clearCredentialExpiryLatch, notifyCredentialsExpiredOnce,
 } from "@gadgets/gatekeeper-kit/credential-expiry";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
+import { CredentialCoordinator, type RejectionVerdict } from "@gadgets/gatekeeper-kit/credentials";
 import {
-  CredentialCoordinator, isCredentialsExpired, type RejectionVerdict,
-} from "@gadgets/gatekeeper-kit/credentials";
-import {
+  CREDENTIALS_EXPIRED_MESSAGE,
   GitHubApi,
   GitHubApiError,
   exchangeAuthCode,
   refreshGitHubGrant,
   revokeOAuthToken,
+  withAccountApi,
   type GitHubOAuthGrant,
   type ConditionalRequestResult,
   type GitHubCompareResponse,
@@ -48,6 +48,7 @@ import {
   type GitHubPullRequestReviewCommentResponse,
   type PinnedRepo,
 } from "./github-api";
+import { getBasePath, getBaseUrl, type Env } from "./github-env";
 import { assertIssueSearchResultsInRepo, buildIssueSearchQuery } from "./github-search";
 import {
   MAX_DIFF_BLOB_BYTES,
@@ -136,12 +137,6 @@ const VENDOR_ID = "github";
 const logger = obsContext.createLogger({
   component: "gatekeeper.github", vendorId: VENDOR_ID,
 });
-
-type Env = Cloudflare.Env & {
-  BASE_URL?: string;
-  CLIENT_ID?: string;
-  CLIENT_SECRET?: string;
-};
 
 type StoredNonce = {
   value: string;
@@ -608,15 +603,6 @@ function constantTimeEqual(a: string, b: string): boolean {
   const bufB = encoder.encode(b);
   if (bufA.byteLength !== bufB.byteLength) return false;
   return crypto.subtle.timingSafeEqual(bufA, bufB);
-}
-
-function getBaseUrl(env: Env): string {
-  return stripTrailingSlashes(env.BASE_URL ?? "http://localhost:8787/gatekeeper/github");
-}
-
-function getBasePath(env: Env): string {
-  const path = new URL(getBaseUrl(env)).pathname;
-  return path === "/" ? "" : path;
 }
 
 function ensureConfigured(env: Env): void {
@@ -1313,9 +1299,6 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
   }
 }
 
-const CREDENTIALS_EXPIRED_MESSAGE =
-  "GitHub credentials have expired or been revoked. Please reconnect the account.";
-
 /**
  * Stands in for the identity of a token the account no longer serves, so the coordinator's
  * moved-past gate adjudicates it. Never equal to a real identity, which is a hex nonce.
@@ -1512,40 +1495,6 @@ export class UserAccount extends DurableObject<Env> {
       logger.error("failed to revoke GitHub OAuth token", {
         event: "oauth.token.revoke.failed", error,
       });
-    }
-  }
-}
-
-/**
- * Runs `fn` against GitHub as `account`, following redirects only within `repo` (see GitHubApi).
- * GitHub's rejection of the token a request presented is the account's to adjudicate, so a token
- * replaced while the request was in flight fails as retryable rather than marking the account
- * expired. With `replayable`, which only calls safe to run twice may pass, such a failure instead
- * reruns `fn` once with the replacement token.
- */
-async function withAccountApi<T>(
-  account: DurableObjectStub<UserAccount>, fn: (api: GitHubApi) => Promise<T>,
-  options: { replayable?: true; repo?: PinnedRepo } = {},
-): Promise<T> {
-  for (let replays = options.replayable ? 1 : 0; ; replays--) {
-    let presented: string | undefined;
-    const api = new GitHubApi(async () => (presented = await account.getAccessToken()),
-      { repo: options.repo });
-    try {
-      return await fn(api);
-    } catch (error) {
-      if (isCredentialsExpired(error)) {
-        throw new Error(CREDENTIALS_EXPIRED_MESSAGE, { cause: error });
-      }
-      if (!(error instanceof GitHubApiError && error.isAuthError) || presented === undefined) {
-        throw error;
-      }
-      const verdict = await account.reportTokenRejected(presented);
-      if (verdict === "expired") throw new Error(CREDENTIALS_EXPIRED_MESSAGE, { cause: error });
-      if (verdict !== "superseded") throw error;
-      if (replays > 0) continue;
-      throw new Error("GitHub credentials were renewed during this request. Please retry it.",
-        { cause: error });
     }
   }
 }

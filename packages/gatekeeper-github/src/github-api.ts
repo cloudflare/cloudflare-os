@@ -1,7 +1,8 @@
-import type { RefreshCredentials } from "@gadgets/gatekeeper-kit/credentials";
+import { isCredentialsExpired, type RefreshCredentials } from "@gadgets/gatekeeper-kit/credentials";
 import {
   isInvalidGrant, mergeOAuthTokens, OAuthClient, oauthRefresh,
 } from "@gadgets/gatekeeper-kit/oauth-client";
+import type { UserAccount } from "./github";
 
 /**
  * A GitHub OAuth grant. An expiring grant -- the default for OAuth apps registered since August
@@ -1443,5 +1444,42 @@ export class GitHubApi {
       );
     }
     return response;
+  }
+}
+
+export const CREDENTIALS_EXPIRED_MESSAGE =
+  "GitHub credentials have expired or been revoked. Please reconnect the account.";
+
+/**
+ * Runs `fn` against GitHub as `account`, following redirects only within `repo` (see GitHubApi).
+ * GitHub's rejection of the token a request presented is the account's to adjudicate, so a token
+ * replaced while the request was in flight fails as retryable rather than marking the account
+ * expired. With `replayable`, which only calls safe to run twice may pass, such a failure instead
+ * reruns `fn` once with the replacement token.
+ */
+export async function withAccountApi<T>(
+  account: DurableObjectStub<UserAccount>, fn: (api: GitHubApi) => Promise<T>,
+  options: { replayable?: true; repo?: PinnedRepo } = {},
+): Promise<T> {
+  for (let replays = options.replayable ? 1 : 0; ; replays--) {
+    let presented: string | undefined;
+    const api = new GitHubApi(async () => (presented = await account.getAccessToken()),
+      { repo: options.repo });
+    try {
+      return await fn(api);
+    } catch (error) {
+      if (isCredentialsExpired(error)) {
+        throw new Error(CREDENTIALS_EXPIRED_MESSAGE, { cause: error });
+      }
+      if (!(error instanceof GitHubApiError && error.isAuthError) || presented === undefined) {
+        throw error;
+      }
+      const verdict = await account.reportTokenRejected(presented);
+      if (verdict === "expired") throw new Error(CREDENTIALS_EXPIRED_MESSAGE, { cause: error });
+      if (verdict !== "superseded") throw error;
+      if (replays > 0) continue;
+      throw new Error("GitHub credentials were renewed during this request. Please retry it.",
+        { cause: error });
+    }
   }
 }
