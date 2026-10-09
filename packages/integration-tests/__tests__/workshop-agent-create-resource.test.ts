@@ -7,7 +7,9 @@ import {
   SCRIPTED_MODEL_ID, scriptedModelRouter, type ChatCompletionStep,
 } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
-import { accountLabel, waitFor, withOwnerWorkspace } from "../src/rpc-client.js";
+import {
+  accountLabel, connect, listConnectedAccounts, nextUsernames, signUp, waitFor, withOwnerWorkspace,
+} from "../src/rpc-client.js";
 
 let harness: Harness;
 const models = scriptedModelRouter();
@@ -54,7 +56,8 @@ async function creationAndWrite(session: WorkshopAgentSession) {
     const { entries } = await session.listActions({ filter: "pending" });
     return entries.length === 2 ? entries.toSorted((a, b) => a.id - b.id) : null;
   });
-  expect(creation).toMatchObject({ description: { title: 'Create the test thing "Notes"' } });
+  expect(creation).toMatchObject(
+      { creation: true, description: { title: 'Create the test thing "Notes"' } });
   expect(write).toMatchObject({ gatekeeperId: creation!.gatekeeperId });
   return { creation: creation!, write: write! };
 }
@@ -64,7 +67,7 @@ async function actionStates(session: WorkshopAgentSession, ids: number[]) {
   return ids.map(id => entries.find(entry => entry.id === id));
 }
 
-it.concurrent("edits to a created resource apply through it once the creation is approved",
+it.concurrent("a created resource is made in the approver's account, and edits apply through it",
     async () => {
   const model = models.script([
     CREATE_NOTES,
@@ -73,26 +76,42 @@ it.concurrent("edits to a created resource apply through it once the creation is
     runCode("read-created", "await env.NOTES.readValue()"),
     { text: "The notes are set." },
   ]);
+  // The initiator, who owns the workspace, has no account for the vendor: creating needs none.
   await using session = await openAgentSession(harness.url, {
-    modelId: SCRIPTED_MODEL_ID, userModel: model.userModel, ambientVendorIds: [TEST_VENDOR_ID],
-    usernamePrefix: "createres",
+    modelId: SCRIPTED_MODEL_ID, userModel: model.userModel, usernamePrefix: "createres",
   });
-  const label = accountLabel(session.connectedAccount(TEST_VENDOR_ID));
 
   // Nothing waits on the creation: NOTES is usable at once, and only the write suspends the turn.
   expect((await session.runTurn("Create a notes thing and set it to 9.")).outcome)
       .toEqual({ status: "completed" });
   const { creation, write } = await creationAndWrite(session);
 
-  await withOwnerWorkspace(harness.url, session.username, async ws => {
-    await expect(ws.approveAction(write.id)).rejects.toThrow("Approve its creation first.");
-    await ws.approveAction(creation.id);
+  // A collaborator with no account for the vendor opens the workspace: the pending creation
+  // simulates its resource, so there is nothing to verify them against yet.
+  const [approver] = nextUsernames("createapprover");
+  using publicApi = connect(harness.url);
+  using api = await signUp(publicApi, approver);
+  const workspaceId = await withOwnerWorkspace(harness.url, session.username, async ws => {
+    await ws.addCollaborator(approver, "build");
+    return (await ws.getMetadata()).id;
   });
+  using ws = await api.openGadget(workspaceId);
+  await expect(ws.approveAction(write.id)).rejects.toThrow("Approve its creation first.");
+  await expect(ws.approveAction(creation.id)).rejects.toThrow("Choose one of your accounts");
+
+  // They approve the creation, into an account of their own.
+  await api.provisionAmbientAccount(TEST_VENDOR_ID);
+  const account = (await listConnectedAccounts(api)).find(a => a.vendorId === TEST_VENDOR_ID)!;
+  await ws.approveAction(creation.id, account.id);
+  // Collaborators are now verified against a real resource, so approving restarts the workspace.
+  await waitFor("the restart to drop the session", async () => session.connectionDrops > 0 || null);
   expect((await session.approveActionsAndWait([write.id])).outcome)
       .toEqual({ status: "completed" });
 
-  // The simulated class refuses to apply, so the write went through the created one.
-  expect(await testActionState(harness, label)).toEqual({ pending: [], value: 9, applyCount: 1 });
+  // The simulated class refuses to apply, so the write went through the created one, which
+  // lives in the approver's account.
+  expect(await testActionState(harness, accountLabel(account)))
+      .toEqual({ pending: [], value: 9, applyCount: 1 });
   expect(await actionStates(session, [creation.id, write.id])).toMatchObject([
     { state: "approved", resourceUrl: "https://gadgets-test.example/things/Notes" },
     { state: "approved" },
@@ -112,8 +131,7 @@ it.concurrent("rejecting a creation rejects the edits queued on it and removes t
     { text: "This must not run." },
   ]);
   await using session = await openAgentSession(harness.url, {
-    modelId: SCRIPTED_MODEL_ID, userModel: model.userModel, ambientVendorIds: [TEST_VENDOR_ID],
-    usernamePrefix: "createrej",
+    modelId: SCRIPTED_MODEL_ID, userModel: model.userModel, usernamePrefix: "createrej",
   });
 
   await session.runTurn("Create a notes thing and set it to 5.");

@@ -178,6 +178,16 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     this.ctx.storage.kv.put(`actions:${label}`, state);
   }
 
+  /** Moves a simulated thing's staged actions to the account it was created in. */
+  adoptActions(from: string, to: string): void {
+    const source = this.getActionState(from);
+    const state = this.getActionState(to);
+    state.pending.push(...source.pending);
+    state.nextId = Math.max(state.nextId, source.nextId);
+    this.ctx.storage.kv.put(`actions:${to}`, state);
+    this.ctx.storage.kv.delete(`actions:${from}`);
+  }
+
   failNextApply(label: string, reason: string): void {
     this.ctx.storage.kv.put(`fail-next-apply:${label}`, reason);
   }
@@ -386,7 +396,8 @@ function control(exports: Cloudflare.Exports): DurableObjectStub<TestControl> {
 // Vendor
 
 type AccountProps = { label: string };
-// `simulated`: minted by createResource() and not yet created, so nothing may apply through it.
+// `simulated`: minted by GatekeeperVendor.createResource() and not yet created, so nothing may
+// apply through it. It belongs to no account, so its `label` keys only its staged actions.
 type BindingProps = AccountProps & { resourceUrl: string; ambient?: true; simulated?: true };
 
 @validateRpc()
@@ -428,6 +439,26 @@ export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
     const label = newAccountLabel();
     await control(this.ctx.exports).openConnect(label, callback);
     return { url: `https://${VENDOR_HOST}/connect/${label}` };
+  }
+
+  async createResource(_resourceUrlPattern: string, title: string): Promise<{
+    class: DurableObjectClass<Gatekeeper<TestSession>>;
+    resource: SupportedResource;
+    action: ActionDescription;
+  }> {
+    const resourceUrl = `https://${VENDOR_HOST}/things/${encodeURIComponent(title)}`;
+    return {
+      class: this.ctx.exports.TestGatekeeper({
+        props: { label: `creation-${crypto.randomUUID()}`, resourceUrl, simulated: true },
+      }),
+      resource: SUPPORTED_RESOURCES[0],
+      action: {
+        title: `Create the test thing "${title}"`,
+        description: `Create a test thing titled **${title}**.`,
+        descriptionIsComplete: true,
+        implementsRevert: false,
+      },
+    };
   }
 }
 
@@ -474,26 +505,6 @@ export class TestAccount
         props: { label: this.ctx.props.label, resourceUrl: url },
       }),
       resource: SUPPORTED_RESOURCES[0],
-    };
-  }
-
-  async createResource(_resourceUrlPattern: string, title: string): Promise<{
-    class: DurableObjectClass<Gatekeeper<TestSession>>;
-    resource: SupportedResource;
-    action: ActionDescription;
-  }> {
-    const resourceUrl = `https://${VENDOR_HOST}/things/${encodeURIComponent(title)}`;
-    return {
-      class: this.ctx.exports.TestGatekeeper({
-        props: { label: this.ctx.props.label, resourceUrl, simulated: true },
-      }),
-      resource: SUPPORTED_RESOURCES[0],
-      action: {
-        title: `Create the test thing "${title}"`,
-        description: `Create a test thing titled **${title}**.`,
-        descriptionIsComplete: true,
-        implementsRevert: false,
-      },
     };
   }
 
@@ -759,11 +770,13 @@ export class TestGatekeeper
     await control(this.ctx.exports).discardAction(this.ctx.props.label, action);
   }
 
-  async applyCreation(): Promise<{
+  async applyCreation(creator: Fetcher<TestVerifierApi>): Promise<{
     class: DurableObjectClass<Gatekeeper<TestSession>>;
     resourceUrl: string;
   }> {
-    const { label, resourceUrl } = this.ctx.props;
+    const label = await creator.identify();
+    const { resourceUrl } = this.ctx.props;
+    await control(this.ctx.exports).adoptActions(this.ctx.props.label, label);
     return { class: this.ctx.exports.TestGatekeeper({ props: { label, resourceUrl } }), resourceUrl };
   }
 

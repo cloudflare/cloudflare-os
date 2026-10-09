@@ -98,8 +98,7 @@ it("enforces deployment gatekeeper policy through the admin API", async () => {
       { text: "The creation was refused." },
     ]);
     await using creator = await openAgentSession(harness.url, {
-      modelId: SCRIPTED_MODEL_ID, userModel: model.userModel, ambientVendorIds: [TEST_VENDOR_ID],
-      usernamePrefix: "creator",
+      modelId: SCRIPTED_MODEL_ID, userModel: model.userModel, usernamePrefix: "creator",
     });
     await creator.runTurn("Create a test thing.");
     expect(model.requests[1]).toMatchObject({ messages: expect.arrayContaining([

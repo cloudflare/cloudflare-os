@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
 
+import { act } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { ConnectedAccountsSubscriber } from '@gadgets/workshop-shared/api'
+import type { AccountDescription, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
 
 vi.mock('@cloudflare/kumo', async (importOriginal) => {
   const actual = await importOriginal() as typeof import('@cloudflare/kumo')
@@ -11,6 +14,8 @@ vi.mock('@cloudflare/kumo', async (importOriginal) => {
 vi.mock('./useAlwaysApproveTag', () => ({
   useAlwaysApproveTag: () => ({ alwaysApproveTag: vi.fn<() => Promise<void>>(), isTagAutoApproved: () => false }),
 }))
+const auth = vi.hoisted(() => ({ authenticatedApi: {} as Record<string, unknown> }))
+vi.mock('./AuthContext', () => ({ useAuthenticatedApi: () => auth }))
 
 import { entry, flushFrames, makeOverseer, makeTestRoot } from './action-test-harness'
 import Activity from './Activity'
@@ -83,5 +88,52 @@ describe('Activity review request fields', () => {
     expect(document.body.textContent).toContain('2 fields')
     expect(document.body.textContent).not.toContain('Full body text')
     expect(document.querySelector('[aria-expanded="false"]')).not.toBeNull()
+  })
+})
+
+describe('Activity creation approval', () => {
+  it('creates the resource in the account the approver chooses, among their accounts for its vendor',
+      async () => {
+    auth.authenticatedApi = {
+      listGatekeeperVendors: async () =>
+        [{ id: 'test', description: { displayName: 'Test' }, supportedResources: [] }],
+      subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
+        const accounts = [[1, 'test', 'work'], [2, 'test', 'home'], [3, 'other', 'elsewhere']] as const
+        for (const [id, vendorId, uniqueName] of accounts) {
+          subscriber.add(id, { uniqueName } as AccountDescription, {} as VendorDescription, [], true,
+              vendorId)
+        }
+        subscriber.ready()
+        return Object.assign(Promise.resolve({}), { [Symbol.dispose]: () => {} })
+      },
+    }
+    const server = makeOverseer()
+    const approveAction = vi.fn<(id: number, accountId?: number) => Promise<void>>(async () => {})
+    Object.assign(server.overseer, {
+      approveAction,
+      getGatekeeperById: async () => ({
+        getCreationSpec: async () =>
+          ({ type: 'gatekeeper', vendorId: 'test', typeUrlPattern: 'https://test.example/*' }),
+        [Symbol.dispose]: () => {},
+      }),
+    })
+    await view.render(
+      <Activity overseer={server.overseer} view="review" onViewChange={() => {}} />,
+    )
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [entry(1, { gatekeeperId: 7, creation: true })] })
+    flushFrames()
+
+    await act(async () =>
+      [...document.querySelectorAll('button')].find(b => b.textContent === 'Approve')!.click())
+    const dialog = document.querySelector('[role="dialog"]')!
+    expect(dialog.textContent).toContain('work')
+    expect(dialog.textContent).not.toContain('elsewhere')
+    await act(async () =>
+      [...dialog.querySelectorAll('button')].find(b => b.textContent?.startsWith('home'))!.click())
+    await act(async () =>
+      [...dialog.querySelectorAll('button')].find(b => b.textContent === 'Approve')!.click())
+
+    expect(approveAction).toHaveBeenCalledWith(1, 2)
   })
 })
