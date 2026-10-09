@@ -81,6 +81,17 @@ describe("the formula parser", () => {
     expect(parseFormula(serializeAst(ast))).toEqual(ast);
   });
 
+  it.each([
+    String.raw`'a\"b'`,
+    String.raw`'a\\"b'`,
+    String.raw`'a\""b'`,
+    String.raw`"a\\\"b"`,
+    String.raw`'both \'quotes\' and \"slashes'`,
+  ])("preserves literal backslashes next to quotes when rewriting %s", (literal) => {
+    const ast = parseFormula(`IF(A1>0,${literal},"fallback")`);
+    expect(parseFormula(serializeAst(ast))).toEqual(ast);
+  });
+
   it("sees through grouping parentheses on request", () => {
     // ROW and COLUMN read their argument's shape rather than its value, so `ROW((A5))` has to find
     // the reference behind the grouping the parser keeps for the serializer.

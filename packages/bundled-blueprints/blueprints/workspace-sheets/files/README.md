@@ -36,6 +36,7 @@ A lightweight, persistent spreadsheet Gadget with a familiar grid interface, for
   - `=VLOOKUP(E2,A2:C20,3,FALSE)` (`TRUE` and `FALSE` are accepted as logical values without parentheses)
   - `=COUNTIF(A2:A20,'Complete')` (single-quoted text is accepted in addition to double quotes)
   - `=Sheet2!A1*2`
+- Within quoted formula text, doubled quotes or a backslash before the matching quote denote a literal quote. Row and column edits preserve literal backslashes next to quotes. Quoted sheet names accept escaped apostrophes, such as `='Owner\'s Sheet'!A1`; XLSX export converts them to Excel's doubled-apostrophe spelling without turning the formula into text.
 - Use the name box to jump to a cell or range such as `D12` or `A1:C8`.
 - Use the filter toolbar button to detect the current data table automatically. The app identifies the likely header row (including tables below a title row) and adds dropdowns only to columns containing data. Selecting a range first explicitly sets the filter range and its top row as the header.
 - Highlight a data range and use the chart toolbar button to create a line, pie, area, or stacked bar chart. The right-side settings panel controls chart type, range, titles, headers, labels, and legend; it can be collapsed at any time. Drag a chart by its header to reposition it. **Copy SVG** uses a rich clipboard format that may not be accepted by every destination.

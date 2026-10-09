@@ -190,7 +190,7 @@ export function unwrapParens(node: Ast): Ast {
 export function serializeAst(node: Ast): string {
   switch (node.k) {
     case "num": return String(node.v);
-    case "str": return '"' + node.v.replace(/"/g, '""') + '"';
+    case "str": return '"' + node.v.replace(/"/g, '\\"') + '"';
     case "bool": return node.v ? "TRUE" : "FALSE";
     case "ref": return node.ref;
     case "range": return node.a + ":" + node.b;

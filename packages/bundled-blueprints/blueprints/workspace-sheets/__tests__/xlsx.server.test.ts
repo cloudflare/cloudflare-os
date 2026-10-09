@@ -658,6 +658,25 @@ describe("Workspace Sheets XLSX", () => {
     expect(cellXml(worksheet, "A9")).toContain("<f>\"don'!t\"</f>");
   });
 
+  it("exports backslash-escaped sheet apostrophes as formula references", async () => {
+    const {entries} = await readZip(exportXlsx({
+      sheetOrder: ["data", "owner"],
+      sheets: {data: sheet("Data"), owner: sheet("Owner's Sheet")},
+      cells: {
+        data: {
+          A1: cell(String.raw`='Owner\'s Sheet'!A1`),
+          A2: cell(String.raw`='Owner\'s Sheet'!$A$1:'Owner\'s Sheet'!B2`),
+          A3: cell(String.raw`='Missing\'s Sheet'!A1`),
+        },
+        owner: {A1: cell("42")},
+      },
+    }));
+    const worksheet = text(entries, "xl/worksheets/sheet1.xml");
+    expect(cellXml(worksheet, "A1")).toContain("<f>'Owner''s Sheet'!A1</f>");
+    expect(cellXml(worksheet, "A2")).toContain("<f>'Owner''s Sheet'!$A$1:'Owner''s Sheet'!B2</f>");
+    expect(cellXml(worksheet, "A3")).toContain("<f>'Missing''s Sheet'!A1</f>");
+  });
+
   it("exports a filter row as an autofilter with criteria, hidden buttons, sort state and hidden rows", async () => {
     const document = {
       sheetOrder: ["data"],

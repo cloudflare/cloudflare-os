@@ -786,6 +786,11 @@ function formulaReferenceAt(formula: string, offset: number): boolean {
 function quotedSheetReference(formula: string, offset: number, names: Map<string, string>): FormulaRewrite | null {
   const nameParts: string[] = [];
   for (let i = offset + 1; i < formula.length; ++i) {
+    if (formula[i] === "\\" && formula[i + 1] === "'") {
+      nameParts.push("'");
+      ++i;
+      continue;
+    }
     if (formula[i] !== "'") {
       nameParts.push(formula[i]);
       continue;
@@ -805,9 +810,7 @@ function quotedSheetReference(formula: string, offset: number, names: Map<string
     const external = formula[offset - 1] === "]" || (!normalized && /\[[^\]]*\]/.test(name));
     if (!hasBang || !formulaReferenceAt(formula, end) || malformed || external ||
         isThreeDimensionalReference(formula, offset)) return {end, text};
-    return normalized
-      ? {end, text: `'${normalized.replace(/'/g, "''")}'!`}
-      : {end, text};
+    return {end, text: `'${(normalized ?? name).replace(/'/g, "''")}'!`};
   }
   return null;
 }
