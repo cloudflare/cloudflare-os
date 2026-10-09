@@ -210,13 +210,24 @@ Google Docs, Sheets and Slides are creatable resource types: an agent can ask fo
 `createExternalResource`, giving a one-line title (trimmed, at most 256 characters), and its binding
 works at once, before anything exists at Google. Until the creation is approved the gatekeeper
 simulates an empty file: a Doc reads as one empty tab and queues edits as usual, a spreadsheet as
-one empty `Sheet1` of 1000 × 26 cells, a presentation as a 16:9 deck with no slides, so no Slides
-change can be queued until it exists. Nothing reaches Google and no account is involved.
+one empty `Sheet1` of 1000 × 26 cells, and a presentation as the one Google creates, a 16:9 deck
+with a title slide and the default theme's 11 layouts, which queues changes as usual. Nothing
+reaches Google and no account is involved.
 
 The approver picks which of their connected Google accounts to create the file in; it lands in
 that account's My Drive, and the binding switches to the real file. Doc edits queued against the
-simulation then apply to the created document like any other edit. Google gives a created
-presentation one title slide, which the agent can then change.
+simulation then apply to the created document like any other edit, and Slides changes apply to the
+created presentation unchanged.
+
+That works for Slides because Google gives every new presentation the same object IDs (master
+`simple-light-2`, title slide `p`, layouts `p2` to `p12`), so the simulation reads a recording of
+one, `src/blank-presentation.json`: each read a session makes, through the session's own field
+masks, less the presentation's ID, title and revision. `pnpm --filter @gadgets/google-gatekeeper
+record:blank-presentation <token-file>` records it again; the file holds an access token with the
+`presentations` and `drive.file` scopes. It creates two presentations, refuses to record unless
+they read the same, and deletes them; with `--check` it compares them with the committed recording
+instead. Should Google's new presentation change, a queued change naming a slide, element or
+layout the created presentation lacks fails when approved, writing nothing.
 
 Google's create calls take no idempotency key. A retried approval after a lost reply binds the file
 already created (the gatekeeper records it), but a file can still be orphaned in the approver's
@@ -238,6 +249,9 @@ slides they address, so each can be checked as approving it would: slide content
 slides of any batch touching a slide it shows, since a batch applies all or none, and the
 summaries read every slide a queued batch changes, since they hold no tables or grouped shapes.
 Large batches awaiting approval therefore cost reads more requests against Google's per-user quota.
+
+The simulated presentation was recorded from an English-locale account, so until it is created it
+reads with locale `en` and English layout names, which Google may translate for the created one.
 
 ## Google Slides reads
 
