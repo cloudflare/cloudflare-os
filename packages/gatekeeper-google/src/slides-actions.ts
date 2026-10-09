@@ -33,8 +33,9 @@ import type { ShapeOutline, TextFormatChange } from "./slides-types";
 export type SlidesHost = { api: GoogleSlidesApi; presentationId: string };
 
 // What a user may let apply without asking: a batch that only edits text, or one that only changes
-// how existing text and elements look. Setting a link or font does not count, since Google keeps
-// the whole string, and anything that creates, deletes, or reaches tables or alt text needs approval.
+// how existing text and elements look, in shapes and table cells alike. Setting a link or font does
+// not count, since Google keeps the whole string, and anything that creates or deletes, changes a
+// table's rows, columns or cell fills, or sets alt text needs approval.
 const EDIT_SLIDES_TEXT: ActionKind = { tag: "editSlidesText", label: "Slide text edits" };
 const FORMAT_SLIDES: ActionKind = { tag: "formatSlides", label: "Slide formatting and layout" };
 const FORMATTING = new Set<DesignChange["op"]>([
@@ -57,7 +58,7 @@ type Fresh = Deck & { revisionId: string };
 
 type Plan = {
   requests: unknown[];
-  /** Whether a read taken after a lost response shows the write landed. */
+  /** Whether a read taken after a lost response shows the write landed; a throw means it does not. */
   landed(after: Fresh): boolean;
 };
 
@@ -72,12 +73,8 @@ async function readFresh(host: SlidesHost, ids: readonly string[]): Promise<Fres
   let order = slideIds(outline);
   // Read after the outline: a slide changed since then has also moved the revision this write is
   // pinned to, so Google refuses it rather than applying it against what changed.
-  let pages = await Promise.all(ids.filter(id => order.includes(id))
-    .map(id => host.api.getSlide(host.presentationId, id)));
-  return {
-    revisionId, order,
-    slides: new Map(pages.map(page => [page.objectId!, page] as [string, RestSlide])),
-  };
+  let slides = await host.api.getSlides(host.presentationId, ids, order);
+  return { revisionId, order, slides };
 }
 
 function noLongerApplies(error: unknown): never {
@@ -134,15 +131,6 @@ async function write(
     landed = false;
   }
   if (!landed) throw new ActionOutcomeUnknownError(APPLY_OUTCOME_UNKNOWN_MESSAGE);
-}
-
-function quietly(check: () => boolean): boolean {
-  try {
-    return check();
-  } catch (error) {
-    if (error instanceof ChangeConflict) return false;
-    throw error;
-  }
 }
 
 function slideName({ number, title }: SlideLabel): string {
@@ -354,34 +342,52 @@ const slideOf = (deck: Deck, slideId: string): RestSlide => deck.slides.get(slid
 
 const idsOn = (deck: Deck, slideId: string) => new Set(elementIdsOf(slideOf(deck, slideId).pageElements));
 
-const TABLE_LINES = new Set<DesignChange["op"]>([
-  "insertTableRows", "insertTableColumns", "deleteTableRows", "deleteTableColumns",
-]);
+/**
+ * Where the text `address` names is once `later` changes have inserted and deleted rows and
+ * columns of its table, or undefined if they delete its cell.
+ */
+function addressAfter(address: TextAddress, later: readonly DesignChange[]): TextAddress | undefined {
+  let { cell } = address;
+  if (!cell) return address;
+  for (let change of later) {
+    if (!("at" in change) || change.elementId !== address.elementId) continue;
+    const axis = change.op.endsWith("Rows") ? "row" : "column";
+    let { at, count = 1 } = change;
+    let index: number = cell[axis];
+    if (change.op.startsWith("insert")) {
+      if (at <= index) index += count;
+    } else if (at + count <= index) {
+      index -= count;
+    } else if (at <= index) {
+      return undefined;
+    }
+    cell = { ...cell, [axis]: index };
+  }
+  return { ...address, cell };
+}
 
 /**
  * Whether a read taken after a lost response shows a design batch landed. Only what the batch
  * would have changed counts: an element it created that survives it, an element it deleted that
- * was there before it, and text it left reading differently where it can be found. A cell a later
- * change adds or removes lines of the table around has moved, so its text proves nothing. A batch
- * with none of those, such as one that only formats or moves elements, cannot be shown to have
- * landed.
+ * was there before it, and text it left reading differently, found where later changes to its
+ * table moved it. A batch with none of those, such as one that only formats or moves elements,
+ * cannot be shown to have landed.
  */
 function designLanded(
   changes: readonly DesignChange[], steps: readonly (DesignStep | null)[],
   before: Deck, planned: Deck, after: Deck,
 ): boolean {
-  let moved = (i: number, elementId: string | undefined) => changes.slice(i + 1).some(later =>
-    TABLE_LINES.has(later.op) && "elementId" in later && later.elementId === elementId);
   let checks = changes.flatMap((change, i) => {
     let { created, deleted } = steps[i]!;
     let ids = idsOn(after, change.slideId);
     let evidence: boolean[] = [];
     if (created && idsOn(planned, change.slideId).has(created)) evidence.push(ids.has(created));
     if (deleted && idsOn(before, change.slideId).has(deleted)) evidence.push(!ids.has(deleted));
-    if (change.op === "editText" && !(change.cell && moved(i, change.elementId))) {
-      let text = textIfThere(slideOf(planned, change.slideId), change);
+    let moved = change.op === "editText" && addressAfter(change, changes.slice(i + 1));
+    if (moved) {
+      let text = textIfThere(slideOf(planned, change.slideId), moved);
       if (text !== undefined && text !== textIfThere(slideOf(before, change.slideId), change)) {
-        evidence.push(textIfThere(slideOf(after, change.slideId), change) === text);
+        evidence.push(textIfThere(slideOf(after, change.slideId), moved) === text);
       }
     }
     return evidence;
@@ -415,7 +421,7 @@ function designBatch(kind?: ActionKind): ActionDefinition<DesignBatch, SlidesHos
       let { deck, steps } = designDeck(fresh, changes);
       return {
         requests: steps.flatMap(step => step!.requests),
-        landed: after => quietly(() => designLanded(changes, steps, fresh, deck, after)),
+        landed: after => designLanded(changes, steps, fresh, deck, after),
       };
     }),
   };
@@ -493,8 +499,7 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
             insertionIndex: after === null ? 0 : fresh.order.indexOf(after) + 1,
           },
         }],
-        landed: later => quietly(() =>
-          movedOrder(later.order, ids, after).every((id, i) => later.order[i] === id)),
+        landed: later => movedOrder(later.order, ids, after).every((id, i) => later.order[i] === id),
       };
     }),
   },

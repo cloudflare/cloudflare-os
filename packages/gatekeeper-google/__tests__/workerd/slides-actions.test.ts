@@ -223,6 +223,25 @@ class SlidesProvider {
       let at = order.slice(0, insertionIndex).filter(id => !moving.has(id)).length;
       staying.splice(at, 0, ...slideObjectIds.map((id: string) => slides[order.indexOf(id)]));
       deck.slides = staying;
+    } else if (request.insertTableRows || request.deleteTableRow) {
+      let { tableObjectId, cellLocation: { rowIndex } } = request.insertTableRows ?? request.deleteTableRow;
+      let grid = slides.flatMap(s => s.pageElements ?? []).find(e => e.objectId === tableObjectId)?.table;
+      if (!grid || rowIndex >= grid.rows!) throw new Invalid();
+      if (request.insertTableRows) {
+        let { insertBelow, number } = request.insertTableRows;
+        let rows = Array.from({ length: number }, () => ({
+          tableCells: Array.from({ length: grid.columns! }, () => ({ text: text([""]) })),
+        }));
+        grid.tableRows!.splice(rowIndex + (insertBelow ? 1 : 0), 0, ...rows);
+        grid.rows! += number;
+      } else {
+        grid.tableRows!.splice(rowIndex, 1);
+        grid.rows! -= 1;
+      }
+      // Google renumbers the cells it moved.
+      grid.tableRows!.forEach((row, r) => row.tableCells!.forEach((cell, c) => {
+        cell.location = { rowIndex: r, columnIndex: c };
+      }));
     } else {
       throw new Invalid();
     }
@@ -571,6 +590,24 @@ describe("Google Slides changes", () => {
     dropNextWrite(provider);
 
     expect(await slides.apply(actionId!)).toContain("may or may not have taken effect");
+  });
+
+  it("follows an edited cell through the rows a lost batch then adds and deletes", async () => {
+    let outcome = async (...lines: { op: string; at: number }[]) => {
+      let provider = new SlidesProvider(deck()).install();
+      let slides = gatekeeper();
+      let { actionId } = await slides.queued("updateSlides", [
+        { op: "editText", slideId: "s2", elementId: "tb2", cell: { row: 1, column: 0 }, replace: "APAC" },
+        ...lines.map(line => ({ ...line, slideId: "s2", elementId: "tb2" })),
+      ]);
+      provider.nextFailure = "lost";
+      return slides.apply(actionId!);
+    };
+
+    expect(await outcome({ op: "insertTableRows", at: 1 }, { op: "insertTableRows", at: 3 })).toBeNull();
+    expect(await outcome({ op: "deleteTableRows", at: 0 })).toBeNull();
+    // Deleting its row deletes the evidence too.
+    expect(await outcome({ op: "deleteTableRows", at: 1 })).toContain("may or may not have taken effect");
   });
 
   // The edited cell moves down a row, so the text its old place shows proves nothing.

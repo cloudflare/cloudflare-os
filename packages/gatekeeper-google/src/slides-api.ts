@@ -268,6 +268,15 @@ export class GoogleSlidesApi {
     return slide;
   }
 
+  /** Fetch full pages of the slides among `ids` that `order`, the deck's slide IDs, still has. */
+  async getSlides(
+    presentationId: string, ids: Iterable<string>, order: readonly string[],
+  ): Promise<Map<string, RestSlide>> {
+    let slides = await Promise.all([...ids].filter(id => order.includes(id))
+      .map(id => this.getSlide(presentationId, id)));
+    return new Map(slides.map(slide => [slide.objectId!, slide]));
+  }
+
   /** Render the latest version of a page as a PNG. Google counts this as an expensive read. */
   async getThumbnail(
     presentationId: string, pageId: string, size: ThumbnailSize,

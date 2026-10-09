@@ -1,6 +1,7 @@
 import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
+import { SerialTaskQueue } from "@gadgets/gatekeeper-kit/serial-queue";
 import type {
   ActionKind, ApprovalQueue, Gatekeeper, GatekeeperUserVerifier, GitCache, ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -8,10 +9,8 @@ import { AccessTokenCache, type AccessTokenRequest } from "./auth-retry";
 import { unguardedNativeRead, type NativeRead } from "./drive-session";
 import type { GoogleVerifierApi } from "./google-verifier-types";
 import { batchKind, SLIDES_ACTIONS } from "./slides-actions";
-import { GoogleSlidesApi, type RestSlide, type ThumbnailSize } from "./slides-api";
-import {
-  layoutNames, presentationInfo, slideIds, slideOf, type LayoutNames,
-} from "./slides-model";
+import { GoogleSlidesApi, type ThumbnailSize } from "./slides-api";
+import { layoutNames, presentationInfo, slideIds, slideOf, titleOf } from "./slides-model";
 import type {
   PresentationInfo, Slide, SlideThumbnail, SlideThumbnailSize,
 } from "./slides-read-types";
@@ -117,7 +116,7 @@ export class GoogleSlidesGatekeeperImpl
   #actions = SLIDES_ACTIONS.bind(
     this.#journal, { api: this.#api, presentationId: this.ctx.props.presentationId });
   #reads = new ReadGate();
-  #preparing: Promise<unknown> = Promise.resolve();
+  #preparing = new SerialTaskQueue();
   #inPreparation = 0;
 
   async describe(): Promise<ResourceDescription> {
@@ -165,9 +164,7 @@ export class GoogleSlidesGatekeeperImpl
 
   #prepareExclusively<T>(body: () => Promise<T>): Promise<T> {
     this.#inPreparation++;
-    let result = this.#preparing.then(body).finally(() => this.#inPreparation--);
-    this.#preparing = result.catch(() => {});
-    return result;
+    return this.#preparing.run(body).finally(() => this.#inPreparation--);
   }
 
   applyAction(actionId: number, _cache: RpcStub<GitCache>): Promise<void> {
@@ -236,11 +233,10 @@ function asError(error: unknown): never {
 }
 
 /** One slide's place and title, for the approver. */
-function labelOf(deck: Deck, id: string, layouts: LayoutNames): SlideLabel {
-  let index = deck.order.indexOf(id);
+function labelOf(deck: Deck, id: string): SlideLabel {
   let slide = deck.slides.get(id);
-  let title = slide && slideOf(slide, index, layouts).title;
-  return { number: index + 1, ...(title ? { title } : {}) };
+  let title = slide && titleOf(slide);
+  return { number: deck.order.indexOf(id) + 1, ...(title ? { title } : {}) };
 }
 
 @validateRpc()
@@ -283,16 +279,11 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
         // Google reports the revision only to an account that can edit the presentation.
         editable: outline.revisionId !== undefined,
         layouts: layoutNames(outline),
-        ...replayed({ order, slides: await this.#pages(slidesToFetch(ids, changes), order) }, changes),
+        ...replayed({
+          order, slides: await this.#api.getSlides(this.#presentationId, slidesToFetch(ids, changes), order),
+        }, changes),
       };
     });
-  }
-
-  /** Full pages of the slides among `ids` that `order` still has. */
-  async #pages(ids: Iterable<string>, order: readonly string[]): Promise<Map<string, RestSlide>> {
-    let pages = await Promise.all([...ids].filter(id => order.includes(id))
-      .map(id => this.#api.getSlide(this.#presentationId, id)));
-    return new Map(pages.map(page => [page.objectId!, page]));
   }
 
   /**
@@ -330,7 +321,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
         let edited = changes.flatMap(({ action }) => batchSlides(action));
         let slides = new Map([
           ...(rest.slides ?? []).map(slide => [slide.objectId!, slide] as const),
-          ...await this.#pages(slidesToFetch(edited, changes), order),
+          ...await this.#api.getSlides(this.#presentationId, slidesToFetch(edited, changes), order),
         ]);
         let { deck, conflict } = replayed({ order, slides }, changes);
         return {
@@ -406,7 +397,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
     let { changes: prepared, refs } = prepareChanges(changes);
     let ids = [...new Set(changes.map(change => change.slideId))];
     return this.#changes.queue(batchKind(prepared), async () => {
-      let { deck, layouts } = await this.#prepare(ids, "queue changes to them");
+      let { deck } = await this.#prepare(ids, "queue changes to them");
       let existing = new Set(ids.flatMap(id => elementIdsOf(deck.slides.get(id)?.pageElements)));
       let shadowing = Object.keys(refs).find(ref => existing.has(ref));
       if (shadowing !== undefined) {
@@ -432,7 +423,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
       return {
         payload: {
           changes: queued,
-          slides: Object.fromEntries(ids.map(id => [id, labelOf(deck, id, layouts)])),
+          slides: Object.fromEntries(ids.map(id => [id, labelOf(deck, id)])),
         },
         result: refs,
       };
@@ -441,14 +432,14 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
 
   async duplicateSlide(slideId: string): Promise<string> {
     return this.#changes.queue("duplicateSlide", async () => {
-      let { deck, layouts } = await this.#prepare([slideId], "queue copying one");
+      let { deck } = await this.#prepare([slideId], "queue copying one");
       let source = deck.slides.get(slideId)!;
       let newSlideId = mintObjectId();
       // Minted here rather than by Google, so changes queued to the copy can name its elements.
       let objectIds = Object.fromEntries(
         elementIdsOf(source.pageElements).map(id => [id, mintObjectId()]));
       return {
-        payload: { slideId, newSlideId, objectIds, slide: labelOf(deck, slideId, layouts) },
+        payload: { slideId, newSlideId, objectIds, slide: labelOf(deck, slideId) },
         result: newSlideId,
       };
     });
@@ -456,8 +447,8 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
 
   async deleteSlide(slideId: string): Promise<void> {
     await this.#changes.queue("deleteSlide", async () => {
-      let { deck, layouts } = await this.#prepare([slideId], "queue deleting one");
-      return { payload: { slideId, slide: labelOf(deck, slideId, layouts) }, result: undefined };
+      let { deck } = await this.#prepare([slideId], "queue deleting one");
+      return { payload: { slideId, slide: labelOf(deck, slideId) }, result: undefined };
     });
   }
 
@@ -468,7 +459,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
     if (new Set(slideIds).size !== slideIds.length) throw new Error("A slide is listed twice.");
     await this.#changes.queue("moveSlides", async () => {
       let ids = after === null ? slideIds : [...slideIds, after];
-      let { deck, layouts } = await this.#prepare(ids, "queue moving them");
+      let { deck } = await this.#prepare(ids, "queue moving them");
       let moved: string[];
       try {
         moved = movedOrder(deck.order, slideIds, after);
@@ -483,8 +474,8 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
         payload: {
           slideIds,
           after,
-          slides: deck.order.filter(id => moving.has(id)).map(id => labelOf(deck, id, layouts)),
-          ...(after === null ? {} : { afterSlide: labelOf(deck, after, layouts) }),
+          slides: deck.order.filter(id => moving.has(id)).map(id => labelOf(deck, id)),
+          ...(after === null ? {} : { afterSlide: labelOf(deck, after) }),
         },
         result: undefined,
       };

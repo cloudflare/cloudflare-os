@@ -132,21 +132,27 @@ function speakerNotesOf(slide: RestSlide): string {
   return textOf(notes?.pageElements?.find(element => id && element.objectId === id)?.shape?.text);
 }
 
+/** A slide's title: the text of its first title placeholder that has any. */
+export function titleOf(slide: RestSlide): string | undefined {
+  return (slide.pageElements ?? [])
+    .filter(({ shape }) => TITLE_PLACEHOLDERS.has(shape?.placeholder?.type ?? ""))
+    .map(({ shape }) => textOf(shape?.text))
+    .find(text => text.length > 0)
+    ?.slice(0, MAX_TITLE_LENGTH);
+}
+
 // Works on a summary read too, whose elements carry only placeholders and text.
 function summaryOf(slide: RestSlide, index: number, layouts: LayoutNames): SlideSummary {
   if (!slide.objectId) throw new Error("Google Slides returned an invalid slide");
   let properties = slide.slideProperties;
   let layout = properties?.layoutObjectId && layouts.get(properties.layoutObjectId);
-  let title = (slide.pageElements ?? [])
-    .filter(({ shape }) => TITLE_PLACEHOLDERS.has(shape?.placeholder?.type ?? ""))
-    .map(({ shape }) => textOf(shape?.text))
-    .find(text => text.length > 0);
+  let title = titleOf(slide);
   return {
     id: slide.objectId,
     index,
     ...(layout ? { layout } : {}),
     skipped: properties?.isSkipped === true,
-    ...(title ? { title: title.slice(0, MAX_TITLE_LENGTH) } : {}),
+    ...(title ? { title } : {}),
     hasSpeakerNotes: speakerNotesOf(slide).length > 0,
   };
 }
