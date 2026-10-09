@@ -606,8 +606,8 @@ describe("Google Slides changes", () => {
 
     expect(await outcome({ op: "insertTableRows", at: 1 }, { op: "insertTableRows", at: 3 })).toBeNull();
     expect(await outcome({ op: "deleteTableRows", at: 0 })).toBeNull();
-    // Deleting its row deletes the evidence too.
-    expect(await outcome({ op: "deleteTableRows", at: 1 })).toContain("may or may not have taken effect");
+    // Deleting its row deletes the text's evidence, but not the table's size.
+    expect(await outcome({ op: "deleteTableRows", at: 1 })).toBeNull();
   });
 
   // The edited cell moves down a row, so the text its old place shows proves nothing.
@@ -636,6 +636,29 @@ describe("Google Slides changes", () => {
     ]);
     dropNextWrite(provider);
 
+    expect(await slides.apply(actionId!)).toContain("may or may not have taken effect");
+  });
+
+  it("takes a table's size as evidence that a batch's rows and columns landed", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    let rows = await slides.queued("updateSlides", [
+      { op: "insertTableRows", slideId: "s2", elementId: "tb2", at: 2 },
+    ]);
+    provider.nextFailure = "lost";
+    expect(await slides.apply(rows.actionId!)).toBeNull();
+
+    // A collaborator types the edit's text where the new row would move it, which the table's
+    // size does not bear out.
+    provider = new SlidesProvider(deck()).install();
+    slides = gatekeeper();
+    let { actionId } = await slides.queued("updateSlides", [
+      { op: "editText", slideId: "s2", elementId: "tb2", cell: { row: 0, column: 0 }, replace: "Area" },
+      { op: "insertTableRows", slideId: "s2", elementId: "tb2", at: 0 },
+    ]);
+    dropNextWrite(provider, d => {
+      d.slides![1].pageElements![2] = table("tb2", [["Region", "Sales"], ["Area", "4"]]);
+    });
     expect(await slides.apply(actionId!)).toContain("may or may not have taken effect");
   });
 

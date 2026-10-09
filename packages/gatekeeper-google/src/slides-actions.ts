@@ -25,7 +25,7 @@ import type { SlideBounds } from "./slides-read-types";
 import {
   movedOrder, requireNewSlide, type Deck, type DesignBatch, type SlideLabel, type SlidesActions,
 } from "./slides-simulation";
-import { elementIdsOf, textOfTarget, type TextAddress } from "./slides-target";
+import { elementIdsOf, locate, textOfTarget, type TextAddress } from "./slides-target";
 import { ChangeConflict } from "./slides-text";
 import type { ShapeOutline, TextFormatChange } from "./slides-types";
 
@@ -340,8 +340,6 @@ function textIfThere(slide: RestSlide, address: TextAddress): string | undefined
 
 const slideOf = (deck: Deck, slideId: string): RestSlide => deck.slides.get(slideId) ?? {};
 
-const idsOn = (deck: Deck, slideId: string) => new Set(elementIdsOf(slideOf(deck, slideId).pageElements));
-
 /**
  * Where the text `address` names is once `later` changes have inserted and deleted rows and
  * columns of its table, or undefined if they delete its cell.
@@ -366,30 +364,37 @@ function addressAfter(address: TextAddress, later: readonly DesignChange[]): Tex
   return { ...address, cell };
 }
 
+// A table's rows and columns, or undefined if the slide has no table `id`.
+function sizeOf(slide: RestSlide, id: string): string | undefined {
+  let table = locate(slide.pageElements, id)?.element.table;
+  return table && `${table.rows ?? 0}×${table.columns ?? 0}`;
+}
+
 /**
  * Whether a read taken after a lost response shows a design batch landed. Only what the batch
- * would have changed counts: an element it created that survives it, an element it deleted that
- * was there before it, and text that reads differently where the batch leaves it, after later
- * changes to its table move it, from what was there before. A batch with none of those, such as
- * one that only formats or moves elements, cannot be shown to have landed.
+ * would have changed counts, where it would leave it: which elements exist, a table's size, and
+ * text, found where later changes to its table move it. A batch with none of those, such as one
+ * that only formats or moves elements, cannot be shown to have landed.
  */
 function designLanded(
   changes: readonly DesignChange[], steps: readonly (DesignStep | null)[],
   before: Deck, planned: Deck, after: Deck,
 ): boolean {
   let checks = changes.flatMap((change, i) => {
-    let { created, deleted } = steps[i]!;
-    let ids = idsOn(after, change.slideId);
     let evidence: boolean[] = [];
-    if (created && idsOn(planned, change.slideId).has(created)) evidence.push(ids.has(created));
-    if (deleted && idsOn(before, change.slideId).has(deleted)) evidence.push(!ids.has(deleted));
-    let moved = change.op === "editText" && addressAfter(change, changes.slice(i + 1));
-    if (moved) {
-      let text = textIfThere(slideOf(planned, change.slideId), moved);
-      if (text !== undefined && text !== textIfThere(slideOf(before, change.slideId), moved)) {
-        evidence.push(textIfThere(slideOf(after, change.slideId), moved) === text);
+    let witness = <T>(read: (slide: RestSlide) => T | undefined) => {
+      let value = read(slideOf(planned, change.slideId));
+      if (value !== undefined && value !== read(slideOf(before, change.slideId))) {
+        evidence.push(read(slideOf(after, change.slideId)) === value);
       }
+    };
+    let { created, deleted } = steps[i]!;
+    for (let id of [created, deleted]) {
+      if (id) witness(slide => elementIdsOf(slide.pageElements).includes(id));
     }
+    const moved = change.op === "editText" && addressAfter(change, changes.slice(i + 1));
+    if (moved) witness(slide => textIfThere(slide, moved));
+    if ("at" in change) witness(slide => sizeOf(slide, change.elementId));
     return evidence;
   });
   return checks.length > 0 && checks.every(Boolean);
