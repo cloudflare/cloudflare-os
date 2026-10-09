@@ -78,6 +78,18 @@ describe("Slides text edits", () => {
     // Which bullet a merged paragraph keeps cannot be said to Google, so it is refused.
     expect(() => change("flat\nNext", "flat, next")).toThrow("not items of the same list");
   });
+
+  // Reads run a link on across a newline, but text typed before one takes the newline's style.
+  it("never links a newline the new text adds, as Google never does", () => {
+    const url = "https://x.example/";
+    let page = slide("s1", [shape("box", text([{ content: "AB", style: { link: { url } } }]))]);
+    editSlide(page, { slideId: "s1", elementId: "box", find: "AB", replace: "A\nB" });
+    editSlide(page, { slideId: "s1", elementId: "box", find: "A\n", replace: "AX\n" });
+
+    expect(slideOf(page, 0, new Map()).elements[0]).toMatchObject({
+      text: "AX\nB", formats: [{ start: 0, end: 1, link: url }, { start: 3, end: 4, link: url }],
+    });
+  });
 });
 
 describe("Slides change replay", () => {

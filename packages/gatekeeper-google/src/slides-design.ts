@@ -243,7 +243,8 @@ function formatParagraphs(
     requests.push({
       createParagraphBullets: { ...slot.location, textRange, bulletPreset: BULLET_PRESETS[change.bullets] },
     });
-    next = bulleted(next, first, last, `${slot.location.objectId}.list${first}`);
+    // Its own ID, so replay never takes it for a list the paragraph left, whose items may remain.
+    next = bulleted(next, first, last, `${slot.location.objectId}.${crypto.randomUUID()}`);
   }
   slot.write(restTextOf(next));
   return { requests, previous: text, text: projectedText(next.segments) };
@@ -298,7 +299,9 @@ function createShape(
     requests.push(...formatText(slide, { op: "formatText", slideId, elementId: id, format }).requests);
   }
   if (fill !== undefined || outline !== undefined) {
-    requests.push(updateShape(element, { ...(fill ? { fill } : {}), ...(outline ? { outline } : {}) }));
+    requests.push(updateShape(element, {
+      ...(fill !== undefined ? { fill } : {}), ...(outline !== undefined ? { outline } : {}),
+    }));
   }
   return { requests, created: id };
 }

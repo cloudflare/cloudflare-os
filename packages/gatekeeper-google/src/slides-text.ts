@@ -171,11 +171,14 @@ export function spliceText(rich: RichText, start: number, end: number, text: str
       "the edit joins paragraphs that are not items of the same list at the same level; edit " +
       "each paragraph's text on its own");
   }
+  let piece: TextSegment = { text, width: text.length, ...(style ? { style } : {}) };
   return {
     ...rich,
     segments: [
       ...before,
-      ...(text ? [{ text, width: text.length, ...(style ? { style } : {}) }] : []),
+      // Google sets no link on a newline, so one the new text takes ends at each.
+      ...atNewlines(piece).map(segment =>
+        segment.text === "\n" ? withStyle(segment, restyled(segment.style, UNLINK)) : segment),
       ...after,
     ],
     paragraphs: [
@@ -195,8 +198,7 @@ export function styledText(
 ): RichText {
   let [before, rest] = cut(rich.segments, start);
   let [inside, after] = cut(rest, end - start);
-  let pieces = inside.flatMap(segment => segment.autoText ? [segment] :
-    segment.text.split(/(\n)/).filter(Boolean).map(text => ({ ...segment, text, width: text.length })));
+  let pieces = inside.flatMap(atNewlines);
   let styled = pieces.map(segment => withStyle(
     segment, restyled(segment.style, change, segment.text === "\n" ? "link" : undefined)));
   let link = change.style.link;
@@ -219,6 +221,14 @@ export function styledText(
 function withStyle(segment: TextSegment, style: RestTextStyle | undefined): TextSegment {
   let { style: _, ...rest } = segment;
   return style ? { ...rest, style } : rest;
+}
+
+const UNLINK: StyleChange<RestTextStyle> = { style: {}, fields: ["link"] };
+
+// A segment split so each newline is its own, as Google keeps a newline's style apart.
+function atNewlines(segment: TextSegment): TextSegment[] {
+  if (segment.autoText) return [segment];
+  return segment.text.split(/(\n)/).filter(Boolean).map(text => ({ ...segment, text, width: text.length }));
 }
 
 // Whether an edit may start or end at a projected offset: not inside a character, nor an AutoText.

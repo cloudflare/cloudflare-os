@@ -100,7 +100,7 @@ function checkTarget(target: SlideTextTarget, emptyRange: boolean): void {
 }
 
 function checkColor(color: string | null | undefined, field: string): void {
-  if (color && !isSlideColor(color)) {
+  if (color !== undefined && color !== null && !isSlideColor(color)) {
     refuse(`${field} "${color}" is not a #rrggbb colour or a theme colour such as ACCENT1`);
   }
 }

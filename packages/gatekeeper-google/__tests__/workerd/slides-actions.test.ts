@@ -330,7 +330,9 @@ function duringFirstWrite<T>(during: (entered: () => void) => Promise<T>): () =>
 }
 
 /** Drops the next write, then edits as a collaborator would, so its resend is refused as stale. */
-function dropNextWrite(provider: SlidesProvider): void {
+function dropNextWrite(provider: SlidesProvider, collaborate = (d: RestPresentation) => {
+  d.slides![1].pageElements![1].shape!.text = text(["Revenue: $10M"], ["Margin: 21%"]);
+}): void {
   provider.nextFailure = "dropped";
   let fetch = globalThis.fetch;
   let sent = false;
@@ -338,9 +340,7 @@ function dropNextWrite(provider: SlidesProvider): void {
     let response = await fetch(input, init);
     if (String(input).endsWith(":batchUpdate") && !sent) {
       sent = true;
-      provider.edit(d => {
-        d.slides![1].pageElements![1].shape!.text = text(["Revenue: $10M"], ["Margin: 21%"]);
-      });
+      provider.edit(collaborate);
     }
     return response;
   });
@@ -569,6 +569,22 @@ describe("Google Slides changes", () => {
       { slideId: "s1", elementId: "t1", find: "Q4", replace: "Q3" },
     ]);
     dropNextWrite(provider);
+
+    expect(await slides.apply(actionId!)).toContain("may or may not have taken effect");
+  });
+
+  // The edited cell moves down a row, so the text its old place shows proves nothing.
+  it("records an unknown outcome for a dropped batch that edits a cell, then adds a row above it", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    let { actionId } = await slides.queued("updateSlides", [
+      { op: "editText", slideId: "s2", elementId: "tb2", cell: { row: 1, column: 0 }, replace: "APAC" },
+      { op: "insertTableRows", slideId: "s2", elementId: "tb2", at: 1 },
+    ]);
+    // The new row would leave "" where "EMEA" was, as the collaborator does.
+    dropNextWrite(provider, d => {
+      d.slides![1].pageElements![2] = table("tb2", [["Region", "Sales"], ["", "4"]]);
+    });
 
     expect(await slides.apply(actionId!)).toContain("may or may not have taken effect");
   });

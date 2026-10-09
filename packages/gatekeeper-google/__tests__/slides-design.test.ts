@@ -131,6 +131,16 @@ describe("Slides design changes", () => {
     ]).read().elements[0]).not.toHaveProperty("paragraphs");
   });
 
+  it("starts a new list each time, so text cannot join a paragraph to the list it left", () => {
+    let page = slide("s1", [shape("box", text(["A"], ["B"]))]);
+    expect(() => run([page], [
+      { op: "formatParagraphs", slideId: "s1", elementId: "box", bullets: "bullet" },
+      { op: "formatParagraphs", slideId: "s1", elementId: "box", find: "A", bullets: "none" },
+      { op: "formatParagraphs", slideId: "s1", elementId: "box", find: "A", bullets: "numbered" },
+      { op: "editText", slideId: "s1", elementId: "box", find: "A\nB", replace: "AB" },
+    ])).toThrow("not items of the same list");
+  });
+
   it("creates a shape that later changes in the batch address by its ref", () => {
     let page = slide("s1", [shape("title", text(["Q3"]), { placeholder: "TITLE" })]);
     let { read, requests, refs } = run([page], [
@@ -252,6 +262,9 @@ describe("Slides design changes", () => {
       .toContain('shapeType "BLOB" is not a Google Slides shape type');
     expect(refusal({ op: "updateShape", slideId: "s1", elementId: "a", fill: "red" }))
       .toContain('fill "red" is not a #rrggbb colour');
+    // Google would read an empty colour as black, under an approval naming none.
+    expect(refusal({ op: "createShape", slideId: "s1", shapeType: "RECTANGLE", bounds, fill: "" }))
+      .toContain('fill "" is not a #rrggbb colour');
     expect(refusal({ op: "insertImage", slideId: "s1", url: "http://example.com/a.png" }))
       .toContain("url must be an https: URL");
     expect(refusal({ op: "formatText", slideId: "s1", elementId: "a", format: {} })).toContain("format sets nothing");

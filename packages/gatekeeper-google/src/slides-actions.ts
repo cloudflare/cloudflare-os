@@ -354,23 +354,31 @@ const slideOf = (deck: Deck, slideId: string): RestSlide => deck.slides.get(slid
 
 const idsOn = (deck: Deck, slideId: string) => new Set(elementIdsOf(slideOf(deck, slideId).pageElements));
 
+const TABLE_LINES = new Set<DesignChange["op"]>([
+  "insertTableRows", "insertTableColumns", "deleteTableRows", "deleteTableColumns",
+]);
+
 /**
  * Whether a read taken after a lost response shows a design batch landed. Only what the batch
  * would have changed counts: an element it created that survives it, an element it deleted that
- * was there before it, and text it left reading differently. A batch with none of those, such as
- * one that only formats or moves elements, cannot be shown to have landed.
+ * was there before it, and text it left reading differently where it can be found. A cell a later
+ * change adds or removes lines of the table around has moved, so its text proves nothing. A batch
+ * with none of those, such as one that only formats or moves elements, cannot be shown to have
+ * landed.
  */
 function designLanded(
   changes: readonly DesignChange[], steps: readonly (DesignStep | null)[],
   before: Deck, planned: Deck, after: Deck,
 ): boolean {
+  let moved = (i: number, elementId: string | undefined) => changes.slice(i + 1).some(later =>
+    TABLE_LINES.has(later.op) && "elementId" in later && later.elementId === elementId);
   let checks = changes.flatMap((change, i) => {
     let { created, deleted } = steps[i]!;
     let ids = idsOn(after, change.slideId);
     let evidence: boolean[] = [];
     if (created && idsOn(planned, change.slideId).has(created)) evidence.push(ids.has(created));
     if (deleted && idsOn(before, change.slideId).has(deleted)) evidence.push(!ids.has(deleted));
-    if (change.op === "editText") {
+    if (change.op === "editText" && !(change.cell && moved(i, change.elementId))) {
       let text = textIfThere(slideOf(planned, change.slideId), change);
       if (text !== undefined && text !== textIfThere(slideOf(before, change.slideId), change)) {
         evidence.push(textIfThere(slideOf(after, change.slideId), change) === text);
