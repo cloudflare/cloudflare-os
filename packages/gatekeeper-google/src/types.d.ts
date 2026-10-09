@@ -235,9 +235,9 @@ export interface GmailMessageHook {
   /**
    * Called with each new message. `entry.message` can read it in full, reply and change it;
    * writes are queued for approval, and it is released when this call returns (call
-   * `entry.message.thread()` for the rest of the thread). Delivery is at least once and
-   * unordered, and a message this throws for is retried with backoff, eight attempts in all, so
-   * key any work on `entry.info.id` to keep it idempotent. Disabling the hook ends its retries.
+   * `entry.message.thread()` for the rest of the thread). A message may arrive more than once or
+   * out of order, so key any work on `entry.info.id` to keep it idempotent; one this throws for
+   * is retried with backoff, eight attempts in all. Disabling the hook ends its retries.
    */
   receiveMessage(entry: GmailMessageEntry): Promise<void>;
 }
