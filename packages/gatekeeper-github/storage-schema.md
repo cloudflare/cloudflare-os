@@ -179,6 +179,22 @@ Cache invalidation strategy:
   subsequent reads revalidate it with `since` before use.
 - Simulation is then rebuilt from the pending action log on subsequent reads.
 
+## GitHubHookDriver Durable Object
+
+One per connected account, named by its `UserAccount` id; see `src/github-hooks.ts`.
+
+- `account` -> the `UserAccount` id, whose token adds and deletes the webhooks.
+- `secret` -> the HMAC key every webhook of this driver signs its deliveries with.
+- `webhook:<repoId>` -> `{ id, repo: { owner, repo, id } }`, the webhook this driver added to the
+  repository, from when its first hook is enabled until its last is disabled.
+- `reg:<hookKey>` -> what one enabled hook watches: its repository, the issue or pull request it
+  is narrowed to, its event kinds, and the account's GitHub user id.
+- `caps:<hookKey>` -> `{ delivery, initiator }`: the facet's persistent delivery stub and the
+  Workshop's `HookInitiator`.
+- `msg:<hookKey>:<deliveryId>` -> the kit's `HookDeliveryQueue` rows: an event pending delivery
+  to one hook, or a finished one kept for a day to collapse redeliveries.
+- `revoked` -> set, with every other key deleted, once the account is disconnected.
+
 ## Simulation model
 
 - Reads fetch cached or remote GitHub state.

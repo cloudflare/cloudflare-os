@@ -85,6 +85,35 @@ Users are keyed by their GitHub primary verified email, so the OAuth App must be
 
 You can also see your connected accounts and add and remove them in the settings (accessed through the account menu in the upper-right).
 
+## Event hooks (optional)
+
+Gadgets can subscribe to a repository's issue, pull request, comment, review and push events, or
+to one issue's or pull request's (`subscribe()` in `src/types.d.ts`). GitHub delivers them through
+a repository webhook, so this needs a public URL:
+
+1. Set `WEBHOOK_ORIGIN` on this worker to the public origin GitHub should deliver to, e.g.
+   `https://gadgets.example.com`. Without it, hooks are refused and everything else works as
+   before.
+2. If the deployment sits behind Cloudflare Access, add a bypass for
+   `/gatekeeper/github/webhook/*`; the worker accepts only deliveries signed with a webhook's
+   secret instead.
+
+Enabling a hook adds a webhook to the repository, delivering to
+`${WEBHOOK_ORIGIN}/gatekeeper/github/webhook/<id>`, so GitHub allows it only if the connected
+account is an admin of the repository. An account's hooks on one repository share its webhook,
+which is deleted when the last of them is disabled, or when the account is disconnected. Each
+webhook signs its deliveries with a secret only GitHub and this deployment hold; a delivery of a
+payload already received, or of an event more than a day old, is ignored; and an event is
+delivered only while the account can still read the repository, since a webhook outlives its
+creator's access. The repository's other admins can see the webhook, though not its secret, and
+editing or deleting it stops the deliveries until a hook on the repository is next enabled, which
+restores it. GitHub does not retry a delivery that fails, but a delivery that reaches the worker is
+retried until the gadget's hook accepts it, eight attempts in all.
+
+For local development, GitHub cannot reach `localhost`: run a tunnel to the dev server (e.g.
+`cloudflared tunnel --url http://localhost:8787`) and set `WEBHOOK_ORIGIN` to its origin in the
+root `.dev.vars`.
+
 ## Using a GitHub App instead
 
 If you must use a **GitHub App** (client id `Iv…`) rather than an OAuth App, be aware:

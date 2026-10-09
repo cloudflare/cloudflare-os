@@ -18,6 +18,7 @@ export type GitHubOAuthGrant = {
 };
 
 export type GitHubSimpleUser = {
+  id: number;
   login: string;
   name?: string | null;
   avatar_url: string;
@@ -40,6 +41,8 @@ export type GitHubRepoResponse = {
   private?: boolean;
   default_branch: string;
   owner: GitHubSimpleUser;
+  /** The authenticated account's permissions on the repository. */
+  permissions?: { admin: boolean };
 };
 
 export type GitHubIssueResponse = {
@@ -157,6 +160,23 @@ export type GitHubTagResponse = {
     sha: string;
   };
 };
+
+/** A repository webhook as this gatekeeper configures one: JSON payloads, signed with `secret`. */
+export type GitHubRepoWebhookConfig = {
+  url: string;
+  secret: string;
+  events: readonly string[];
+};
+
+/** A repository webhook, as GitHub reports one (never with its secret). */
+export type GitHubRepoWebhookResponse = {
+  id: number;
+  config: { url?: string };
+};
+
+function webhookBody({ url, secret, events }: GitHubRepoWebhookConfig) {
+  return { active: true, events, config: { url, secret, content_type: "json", insecure_ssl: "0" } };
+}
 
 /** A commit author/committer identity as recorded in the git commit object itself. */
 export type GitHubGitIdentityResponse = {
@@ -620,6 +640,48 @@ export class GitHubApi {
   }): Promise<GitHubRepoResponse[]> {
     const result = await this.#request<{ items: GitHubRepoResponse[] }>("GET", "/search/repositories", { query: options });
     return result.data.items;
+  }
+
+  /**
+   * The repository's webhooks, first page only: a repository may hold at most 20 webhooks for
+   * any one event. GitHub answers only a repository admin.
+   */
+  async listRepoWebhooks(owner: string, repo: string): Promise<GitHubRepoWebhookResponse[]> {
+    return (await this.#request<GitHubRepoWebhookResponse[]>(
+      "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/hooks`,
+      { query: { per_page: 100 } },
+    )).data;
+  }
+
+  /** Adds an active webhook to the repository. GitHub allows only a repository admin to. */
+  async createRepoWebhook(
+    owner: string, repo: string, webhook: GitHubRepoWebhookConfig,
+  ): Promise<GitHubRepoWebhookResponse> {
+    return (await this.#request<GitHubRepoWebhookResponse>(
+      "POST", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/hooks`,
+      { body: { name: "web", ...webhookBody(webhook) } },
+    )).data;
+  }
+
+  /** Makes an existing webhook active, with exactly `webhook`'s URL, secret and events. */
+  async updateRepoWebhook(
+    owner: string, repo: string, hookId: number, webhook: GitHubRepoWebhookConfig,
+  ): Promise<GitHubRepoWebhookResponse> {
+    return (await this.#request<GitHubRepoWebhookResponse>(
+      "PATCH", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/hooks/${hookId}`,
+      { body: webhookBody(webhook) },
+    )).data;
+  }
+
+  /**
+   * Deletes a webhook. A 404 is not an error, though it means either that the webhook is gone or
+   * that the account may no longer manage it: GitHub answers a non-admin the same.
+   */
+  async deleteRepoWebhook(owner: string, repo: string, hookId: number): Promise<void> {
+    await this.#request<void>(
+      "DELETE", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/hooks/${hookId}`,
+      { okStatuses: [404] },
+    );
   }
 
   async getIssue(owner: string, repo: string, issueNumber: number): Promise<GitHubIssueResponse> {

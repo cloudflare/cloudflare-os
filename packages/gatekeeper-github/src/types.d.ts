@@ -1,3 +1,5 @@
+import type { RpcStub } from "cloudflare:workers";
+
 /**
  * A GitHub repository.
  *
@@ -145,6 +147,57 @@ export interface GitHubRepo {
    * string; the remaining fields are structured filters.
    */
   searchPullRequests(query: GitHubPullRequestSearch): Promise<Cursor<GitHubPullRequestSummary>>;
+
+  /**
+   * Have `hook.receiveEvent()` called with each event of the kinds in `options.events` (by
+   * default, all of them) in this repository:
+   * - `issue`: an issue was opened, closed, or reopened;
+   * - `pullRequest`: a pull request was opened, closed, merged, reopened, marked ready for review,
+   *   or pushed to;
+   * - `comment`: a comment was posted on an issue or pull request, or on a pull request's diff;
+   * - `review`: a pull request review was submitted with a verdict or a summary;
+   * - `push`: a branch was pushed to, created, or deleted.
+   *
+   * The connected account's own comments and reviews are never delivered. Every other event is,
+   * whoever caused it, including the writes a hook queues once they are approved. The hook starts
+   * disabled, and nothing is delivered until the user enables it. Every call creates a distinct
+   * hook, so subscribe once for each set of events to watch.
+   *
+   * GitHub delivers the events to a webhook that enabling the hook adds to the repository, which
+   * only the repository's admins may do: this throws unless the connected account is one, and if
+   * this deployment has not configured GitHub hooks.
+   *
+   * `hook` must be a persistent stub: from `executeCode`, create it with
+   * `env.MY_GADGET[restore](params)` on the Gadget's binding; inside the Gadget, with
+   * `this.ctx.restore(params)`. The Gadget's `[restore]()` receives those `params` for every
+   * delivery, so they can tell its subscriptions apart. The restored target is a separate
+   * object; pass it what it needs from `[restore]()`, such as `this`, the Gadget.
+   *
+   * @example
+   * // server.js
+   * import { DurableObject, RpcTarget, restore } from "cloudflare:workers";
+   * export class Gadget extends DurableObject {
+   *   async [restore](params) {
+   *     if (params.type === "triage") return new Triage();
+   *     throw new TypeError(`Unknown restore type: ${params.type}`);
+   *   }
+   * }
+   * class Triage extends RpcTarget {
+   *   async receiveEvent(event) {
+   *     if (event.kind === "issue" && event.action === "opened" && /crash/i.test(event.info.title)) {
+   *       await event.issue.addLabels(["bug"]);
+   *     }
+   *   }
+   * }
+   *
+   * // executeCode
+   * import { restore } from "cloudflare:workers";
+   * export default async function(self, env) {
+   *   const hook = await env.MY_GADGET[restore]({ type: "triage" });
+   *   await env.GITHUB_REPO.subscribe(hook, { events: ["issue"] });
+   * }
+   */
+  subscribe(hook: RpcStub<GitHubEventHook>, options?: GitHubSubscribeOptions): Promise<void>;
 }
 
 /** A single GitHub issue. */
@@ -183,6 +236,12 @@ export interface GitHubIssue {
 
   /** Posts a new Markdown comment to the discussion thread. */
   postComment(bodyMarkdown: string): Promise<void>;
+
+  /**
+   * As `GitHubRepo.subscribe()`, for this issue alone: its `issue` events and the `comment`s on
+   * it (by default, both). Throws while the issue's creation is pending.
+   */
+  subscribe(hook: RpcStub<GitHubEventHook>, options?: GitHubSubscribeOptions): Promise<void>;
 }
 
 /** A pull request. This extends the issue API with review-oriented metadata. */
@@ -243,6 +302,13 @@ export interface GitHubPullRequest extends GitHubIssue {
   /** Merges the pull request at its current head (counting your queued pushes); the merge is
    *  refused if new commits land on the pull request before it is applied. */
   merge(options?: GitHubPullRequestMergeOptions): Promise<void>;
+
+  /**
+   * As `GitHubRepo.subscribe()`, for this pull request alone: its `pullRequest` events, the
+   * `comment`s on it and on its diff, and its `review`s (by default, all three). Throws while the
+   * pull request's creation is pending.
+   */
+  subscribe(hook: RpcStub<GitHubEventHook>, options?: GitHubSubscribeOptions): Promise<void>;
 }
 
 /** Basic information about a GitHub user or bot that appears in issue or review metadata. */
@@ -586,7 +652,8 @@ export type GitHubDiffCommentTarget =
 /**
  * An inline diff comment that was submitted as part of a specific pull request review.
  *
- * This appears nested under `GitHubDiscussionEntry` with `kind: "review"`.
+ * This appears nested under `GitHubDiscussionEntry` with `kind: "review"`, and as the `comment`
+ * of a `GitHubCommentEvent` on a pull request's diff.
  */
 export type GitHubSubmittedDiffComment = {
   id: string;
@@ -661,4 +728,124 @@ export type GitHubPullRequestMergeOptions = {
   /** The head SHA you reviewed. Queuing the merge fails if the pull request's current head
    *  (counting your queued pushes) differs. */
   expectedHeadSha?: string;
+}
+
+/** Implemented by a gadget to receive GitHub activity; see `GitHubRepo.subscribe()`. */
+export interface GitHubEventHook {
+  /**
+   * Called with each event the hook watches for. Its capabilities (`issue`, `pullRequest` or
+   * `repo`) can read and queue writes for approval, and are released when this call returns.
+   * Delivery is at least once and unordered, and an event this throws for is retried with
+   * backoff, eight attempts in all, so key any work on `event.id` to keep it idempotent.
+   * Disabling the hook ends its retries.
+   */
+  receiveEvent(event: GitHubEvent): Promise<void>;
+}
+
+/** What `subscribe()` watches for. */
+export type GitHubSubscribeOptions = {
+  /** The kinds of event to deliver; by default, every kind the subscription can see. */
+  events?: GitHubEventKind[];
+}
+
+/** One event delivered to a `GitHubEventHook`, told apart by `kind`. */
+export type GitHubEvent =
+  | GitHubIssueEvent
+  | GitHubPullRequestEvent
+  | GitHubCommentEvent
+  | GitHubReviewEvent
+  | GitHubPushEvent;
+
+/** The kinds of `GitHubEvent`, which `GitHubSubscribeOptions.events` picks among. */
+export type GitHubEventKind = GitHubEvent["kind"];
+
+/** What every `GitHubEvent` carries. */
+export type GitHubEventBase = {
+  /** The event's id: the same for each delivery of it. */
+  id: string;
+  /** Who caused the event, when GitHub names someone. */
+  actor: GitHubActor | null;
+}
+
+/** An issue was opened, closed, or reopened. */
+export type GitHubIssueEvent = GitHubEventBase & {
+  kind: "issue";
+  action: "opened" | "closed" | "reopened";
+  /** The issue as of the event. */
+  info: GitHubIssueDetails;
+  /** The issue, to read and to queue changes for approval. */
+  issue: GitHubIssue;
+}
+
+/** A pull request was opened, closed, merged, reopened, marked ready for review, or pushed to. */
+export type GitHubPullRequestEvent = GitHubEventBase & {
+  kind: "pullRequest";
+  /** `merged` is a close that merged it; `pushed` means its head branch moved, to `info.head.sha`. */
+  action: "opened" | "closed" | "merged" | "reopened" | "readyForReview" | "pushed";
+  /** The pull request as of the event. */
+  info: GitHubPullRequestDetails;
+  /** The pull request, to read and to queue changes for approval. */
+  pullRequest: GitHubPullRequest;
+}
+
+/**
+ * A comment was posted on an issue or a pull request, or on a pull request's diff. Exactly one
+ * of `issue` and `pullRequest` is set, to what it was posted on.
+ */
+export type GitHubCommentEvent = GitHubEventBase & {
+  kind: "comment";
+  /** The issue or pull request it was posted on. */
+  subject: GitHubEventSubject;
+  /**
+   * The comment, as `readDiscussion()` lists one: in the conversation (`kind: "comment"`), or
+   * with a `target` on the diff, as a review's `diffComments` are.
+   */
+  comment: Extract<GitHubDiscussionEntry, { kind: "comment" }> | GitHubSubmittedDiffComment;
+  issue?: GitHubIssue;
+  pullRequest?: GitHubPullRequest;
+}
+
+/**
+ * A pull request review was submitted with a verdict or a summary. Its diff comments arrive as
+ * `comment` events, and a review with nothing else, such as a reply to a diff thread, is
+ * delivered only as them.
+ */
+export type GitHubReviewEvent = GitHubEventBase & {
+  kind: "review";
+  /** The pull request reviewed. */
+  subject: GitHubEventSubject;
+  review: GitHubEventReview;
+  pullRequest: GitHubPullRequest;
+}
+
+/** A branch was pushed to, created, or deleted. Tag pushes are not delivered. */
+export type GitHubPushEvent = GitHubEventBase & {
+  kind: "push";
+  /** The branch's name, without `refs/heads/`. */
+  branch: string;
+  /** Its head commit before the push; absent when the push created it. */
+  before?: string;
+  /** Its head commit after the push; absent when the push deleted it. */
+  after?: string;
+  /** Whether the push rewrote the branch's history. */
+  forced: boolean;
+  /** The repository, to read what was pushed (e.g. `listCommits({ ref: after })`) and queue writes. */
+  repo: GitHubRepo;
+}
+
+/** The issue or pull request a comment or review event concerns. */
+export type GitHubEventSubject = GitHubIssueId & {
+  title: string;
+}
+
+/** The review a `GitHubReviewEvent` delivers. */
+export type GitHubEventReview = {
+  id: string;
+  author: GitHubActor | null;
+  decision: GitHubReviewDecision;
+  bodyMarkdown: string;
+  /** The head commit it reviewed. */
+  commitId?: string;
+  submittedAt?: Date;
+  url: string;
 }
