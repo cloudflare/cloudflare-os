@@ -49,6 +49,9 @@ describe("creating a Google spreadsheet", () => {
       .toMatchObject({ error: expect.stringMatching(/Invalid or unbounded A1 range "A:A"/) });
     expect(await hooks().readRange("create-sheet", "'Q1 Data'!A1"))
       .toEqual({ error: 'No sheet named "Q1 Data": a spreadsheet awaiting creation has only "Sheet1".' });
+    expect(await hooks().readRange("create-sheet", "Sheet1!Z1000:AA1000")).toEqual({
+      error: 'A1 range "Sheet1!Z1000:AA1000" exceeds the 1000 rows and 26 columns of "Sheet1".',
+    });
     expect(requests).toEqual([]);
 
     expect(await hooks().applyCreation("create-sheet"))

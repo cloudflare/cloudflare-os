@@ -495,9 +495,9 @@ export const RESOURCE_BY_KIND: Record<ResourceTarget["kind"], SupportedResource>
 
 /** The resource kinds createResource() can make: Google's native editor files. */
 export type CreatableKind = "doc" | "sheets" | "slides";
-const CREATABLE_KINDS: CreatableKind[] = ["doc", "sheets", "slides"];
 const NATIVE_FILE_PATHS: Record<CreatableKind, string> =
     { doc: "document", sheets: "spreadsheets", slides: "presentation" };
+const CREATABLE_KINDS = Object.keys(NATIVE_FILE_PATHS) as CreatableKind[];
 
 /** The kind of the creatable resource type `resourceUrlPattern`, or an agent-readable refusal. */
 export function creatableKind(resourceUrlPattern: string): CreatableKind {

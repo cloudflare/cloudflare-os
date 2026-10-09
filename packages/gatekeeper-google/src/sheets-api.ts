@@ -37,6 +37,9 @@ type ValidatedRange = {
   sheet?: string;
   rows: number;
   columns: number;
+  /** The 1-based row and column of the range's bottom-right cell. */
+  endRow: number;
+  endColumn: number;
 };
 
 function columnNumber(column: string): number {
@@ -79,7 +82,7 @@ function validateRange(range: string): ValidatedRange {
     throw new Error(`A1 range "${range}" is too large.`);
   }
   return {
-    range, rows, columns,
+    range, rows, columns, endRow, endColumn,
     ...(sheet && { sheet: sheet.startsWith("'") ? sheet.slice(1, -1).replaceAll("''", "'") : sheet }),
   };
 }
@@ -229,11 +232,16 @@ export class BlankSpreadsheet implements SpreadsheetReader {
 
   /** Every requested cell is empty. */
   async readRanges(_spreadsheetId: string, ranges: string[]): Promise<SpreadsheetRange[]> {
+    let { title, rowCount, columnCount } = BLANK_SHEET;
     return validateRanges(ranges).map(range => {
       // Google matches sheet names case-insensitively, as it keeps them unique.
-      if (range.sheet !== undefined && range.sheet.toLowerCase() !== BLANK_SHEET.title.toLowerCase()) {
+      if (range.sheet !== undefined && range.sheet.toLowerCase() !== title.toLowerCase()) {
         throw new Error(
-          `No sheet named "${range.sheet}": a spreadsheet awaiting creation has only "${BLANK_SHEET.title}".`);
+          `No sheet named "${range.sheet}": a spreadsheet awaiting creation has only "${title}".`);
+      }
+      if (range.endRow > rowCount || range.endColumn > columnCount) {
+        throw new Error(`A1 range "${range.range}" exceeds the ${rowCount} rows and ${columnCount} ` +
+          `columns of "${title}".`);
       }
       return normalizeRange({}, range);
     });
