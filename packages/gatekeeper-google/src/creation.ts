@@ -45,11 +45,12 @@ const MAX_NEW_FILE_TITLE_LENGTH = 256;
 
 /**
  * The title to create a file with: `title`, trimmed. Refuses one the agent should fix: blank, longer
- * than MAX_NEW_FILE_TITLE_LENGTH, or holding a control character such as a newline.
+ * than MAX_NEW_FILE_TITLE_LENGTH, or holding a control character or line break (U+2028, U+2029).
  */
 export function newFileTitle(title: string): string {
   let trimmed = title.trim();
-  if (trimmed.length === 0 || trimmed.length > MAX_NEW_FILE_TITLE_LENGTH || /\p{Cc}/u.test(trimmed)) {
+  if (trimmed.length === 0 || trimmed.length > MAX_NEW_FILE_TITLE_LENGTH ||
+      /[\p{Cc}\p{Zl}\p{Zp}]/u.test(trimmed)) {
     throw new Error(
       `A new Google file needs a one-line title of 1 to ${MAX_NEW_FILE_TITLE_LENGTH} characters.`);
   }

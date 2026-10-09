@@ -112,6 +112,7 @@ describe("GatekeeperVendor.createResource", () => {
 
   it.each([
     ["blank", "   "], ["too long", "x".repeat(257)], ["multi-line", "Budget\nDraft"],
+    ["line-separated", "Budget\u2028Draft"],
   ])("refuses a %s title", async (_name, title) => {
     expect(await hooks().createResource("create-bad-title", SHEETS_PATTERN, title))
       .toEqual({ error: "A new Google file needs a one-line title of 1 to 256 characters." });
