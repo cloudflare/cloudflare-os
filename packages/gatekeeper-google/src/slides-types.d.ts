@@ -1,5 +1,5 @@
 import type {
-  GooglePresentationReadSession, ParagraphFormat, SlideBounds, SlideColor,
+  GooglePresentationReadSession, ParagraphFormat, SlideBounds, SlideColor, ThemeColorName,
 } from "./slides-read-types";
 export type * from "./slides-read-types";
 
@@ -77,9 +77,17 @@ export type TextFormatChange = {
 export type ShapeOutline = { color?: SlideColor; weight?: number };
 
 /**
- * One change in an `updateSlides()` batch. Every change names the slide it is on. `ref` names an
- * element the change creates, so later changes in the same batch can pass it as an `elementId`;
- * its real ID is returned under that name.
+ * A background to set: a colour, `"none"`, a picture Google downloads once from `imageUrl` when
+ * the change is applied (a public `https:` URL of a PNG, JPEG or GIF under 50 MB), stretched to
+ * fill the page, or `null` to show the background of the layout or master the page is made from.
+ */
+export type SlideBackgroundChange = SlideColor | "none" | { imageUrl: string } | null;
+
+/**
+ * One change in an `updateSlides()` batch. Every change names the page it is on, by its ID in
+ * `getPresentation()`: a slide, or a layout or master for `setBackground`, and a master for
+ * `setThemeColors`. `ref` names an element the change creates, so later changes in the same batch
+ * can pass it as an `elementId`; its real ID is returned under that name.
  */
 export type SlideChange =
   /**
@@ -215,7 +223,26 @@ export type SlideChange =
     range?: { row: number; column: number; rowSpan?: number; columnSpan?: number };
     fill?: SlideColor | "none";
     contentAlignment?: "top" | "middle" | "bottom";
-  };
+  }
+  /**
+   * Set the background of a slide, a layout or a master, named by exactly one of `slideId`,
+   * `layoutId` and `masterId`. A layout's or master's background shows on every slide made from
+   * it that sets none of its own. A master has nothing to inherit from, so `null` is refused for
+   * one: give it `"none"` instead.
+   */
+  | {
+    op: "setBackground";
+    slideId?: string;
+    layoutId?: string;
+    masterId?: string;
+    background: SlideBackgroundChange;
+  }
+  /**
+   * Set some of a master's theme colours, each `#rrggbb`, which every slide made from the master
+   * shows wherever it uses them. Colours not given keep the value the master has when the change
+   * is applied. `TEXT1`, `BACKGROUND1`, `TEXT2` and `BACKGROUND2` follow the colours they mirror.
+   */
+  | { op: "setThemeColors"; masterId: string; colors: Partial<Record<ThemeColorName, string>> };
 
 /**
  * Read/write access to one directly bound Google Slides presentation.
@@ -228,19 +255,29 @@ export type SlideChange =
 export interface GooglePresentationSession extends GooglePresentationReadSession {
   /**
    * Queue changes, applied in order, together or not at all, as one approval: text edits,
-   * formatting, shapes, images, tables, and where elements sit. Returns the ID of each element
-   * created with a `ref`, under that ref.
+   * formatting, shapes, images, tables, where elements sit, and the backgrounds and theme colours
+   * of slides, layouts and masters. Returns the ID of each element created with a `ref`, under
+   * that ref.
+   *
+   * `setBackground` names its page by exactly one of `slideId`, `layoutId` and `masterId`, and
+   * sets a colour, `"none"`, a picture from an `https:` URL, which Google downloads when the batch
+   * is applied, or with `null` the background the page inherits, which a master cannot.
+   * `setThemeColors` names a master by `masterId` and sets some of its 12 theme colours; Google
+   * takes all 12 at once, so the others are sent as the master has them when the batch is
+   * applied. Which layout a slide is made from cannot be changed.
    *
    * The user may let a batch apply without asking when it only edits text, or when it only
-   * formats text, paragraphs and shapes or moves elements, setting no link or font. Any other
-   * batch, mixing those two included, waits for approval, so queue changes that need not apply
-   * together as separate batches.
+   * formats text, paragraphs and shapes, moves elements, or sets slides' backgrounds to a colour,
+   * `"none"` or `null`, setting no link or font. Any other batch waits for approval: one mixing
+   * those two, setting a picture background, changing a layout or master, or setting theme
+   * colours. So queue changes that need not apply together as separate batches.
    *
    * Reads show the changes as if applied, except what only Google can work out: a new element
    * reads with just what the change sets until it is applied, and an image's fitted size, the
    * borders and formatting new table rows and columns take, and how text wraps or shrinks to fit
-   * appear once applied. Throws, queuing nothing, when a change does not apply to the slides
-   * `getSlides()` would now return.
+   * appear once applied. A picture background reads as `"picture"`. Throws, queuing nothing, when
+   * a change does not apply to the slides `getSlides()` would now return, or to the masters and
+   * layouts `getPresentation()` would.
    */
   updateSlides(changes: SlideChange[]): Promise<Record<string, string>>;
 

@@ -17,16 +17,18 @@ import { batchKind, SLIDES_ACTIONS } from "./slides-actions";
 import {
   BlankPresentation, GoogleSlidesApi, type PresentationReader, type ThumbnailSize,
 } from "./slides-api";
-import { layoutNames, mastersOf, presentationInfo, slideIds, slideOf, titleOf } from "./slides-model";
+import {
+  layoutNames, mastersOf, presentationInfo, slideIds, slideOf, themePagesOf, titleOf,
+} from "./slides-model";
 import type {
   PresentationInfo, Slide, SlideThumbnail, SlideThumbnailSize,
 } from "./slides-read-types";
-import { designDeck, type DesignStep } from "./slides-design";
+import { designDeck, pageOf, slideIdOf, type DesignChange, type DesignStep } from "./slides-design";
 import { prepareChanges } from "./slides-design-input";
 import {
   batchSlides, conflictReason, instantiatedPlaceholders, mintObjectId, movedOrder, newSlidePlace,
   replayChanges, slidesToFetch, type Deck, type QueuedChange, type SlideLabel, type SlidesAction,
-  type SlidesActions,
+  type SlidesActions, type ThemeLabel,
 } from "./slides-simulation";
 import { elementIdsOf } from "./slides-target";
 import { ChangeConflict } from "./slides-text";
@@ -279,6 +281,15 @@ function labelOf(deck: Deck, id: string): SlideLabel {
   return { number: deck.order.indexOf(id) + 1, ...(title ? { title } : {}) };
 }
 
+/** One master's or layout's name, and a layout's master's, for the approver. */
+function themeLabelOf(deck: Deck, id: string): ThemeLabel {
+  let page = deck.themePages.get(id);
+  let name = page?.masterProperties?.displayName ?? page?.layoutProperties?.displayName;
+  let masterId = page?.layoutProperties?.masterObjectId;
+  let master = masterId && deck.themePages.get(masterId)?.masterProperties?.displayName;
+  return { ...(name ? { name } : {}), ...(master ? { master } : {}) };
+}
+
 @validateRpc()
 export class GooglePresentationSessionImpl extends RpcTarget implements GooglePresentationSession {
   #api: PresentationReader;
@@ -307,10 +318,11 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
   }
 
   /**
-   * The slide order and the content of `ids`, with queued changes applied. A slide that no longer
-   * exists, or never did, is absent from `deck.order`.
+   * The slide order, every master and layout, and the content of the slides among `pages`, with
+   * queued changes applied. A slide that no longer exists, or never did, is absent from
+   * `deck.order`.
    */
-  async #simulated(ids: readonly string[]) {
+  async #simulated(pages: readonly string[]) {
     return this.#changes.snapshot(async changes => {
       let outline = await this.#api.getOutline(this.#presentationId);
       let order = slideIds(outline);
@@ -321,26 +333,30 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
         layouts: layoutNames(outline),
         ...replayed({
           order,
-          slides: await this.#api.getSlides(this.#presentationId, slidesToFetch(ids, changes), order),
+          slides: await this.#api.getSlides(this.#presentationId, slidesToFetch(pages, changes), order),
           ...mastersOf(outline),
+          themePages: themePagesOf(outline),
         }, changes),
       };
     });
   }
 
   /**
-   * Reads `ids` to prepare a change, refusing one that is absent, that a conflict blocks, or that
-   * the account may not make.
+   * Reads `ids`, and the masters and layouts `themePages` names, to prepare a change, refusing one
+   * that is absent, that a conflict blocks, or that the account may not make.
    */
-  async #prepare(ids: readonly string[], purpose: string) {
+  async #prepare(ids: readonly string[], purpose: string, themePages: readonly string[] = []) {
     return preparable(ids, await this.#read(
-      () => this.#simulated(ids),
-      ({ title }) => ({
+      () => this.#simulated([...ids, ...themePages]),
+      ({ title }) => ids.length === 0 && themePages.length > 0 ? {
+        title: "Read Google Slides masters and layouts to change them",
+        description: `Read the masters and layouts of "${title}" to ${purpose}.`,
+      } : {
         title: "Read Google Slides slides to change them",
         description: ids.length === 0
           ? `Read the slide order of "${title}" to ${purpose}.`
           : `Read ${ids.length} slide(s) in "${title}" to ${purpose}.`,
-      })));
+      }));
   }
 
   async getPresentation(): Promise<PresentationInfo> {
@@ -355,22 +371,21 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
           ...(rest.slides ?? []).map(slide => [slide.objectId!, slide] as const),
           ...await this.#api.getSlides(this.#presentationId, slidesToFetch(edited, changes), order),
         ]);
-        let { deck, conflict } = replayed({ order, slides, ...mastersOf(rest) }, changes);
+        let { deck, conflict } = replayed(
+          { order, slides, ...mastersOf(rest), themePages: themePagesOf(rest) }, changes);
         return {
-          ...presentationInfo({
-            ...rest,
-            slides: deck.order.map(id => deck.slides.get(id)!),
-            // Less any master a queued deletion leaves with no slide, as Google removes it.
-            layouts: rest.layouts?.filter(({ objectId }) => !!objectId && deck.masters.has(objectId)),
-          }),
+          // Less any master, and its layouts, a queued deletion leaves with no slide, as Google
+          // removes them.
+          ...presentationInfo(
+            { ...rest, slides: deck.order.map(id => deck.slides.get(id)!) }, deck.themePages),
           ...(conflict ? { queuedChangeConflict: conflict } : {}),
         };
       }),
       info => ({
         title: "Read Google Slides presentation outline",
         description:
-          `Read the outline of "${info.title}": its ${info.slides.length} slide(s), their ` +
-          "layouts, and their titles.",
+          `Read the outline of "${info.title}": its masters and layouts, and its ` +
+          `${info.slides.length} slide(s), their layouts, and their titles.`,
       }));
   }
 
@@ -433,12 +448,17 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
 
   async updateSlides(changes: SlideChange[]): Promise<Record<string, string>> {
     let { changes: prepared, refs } = prepareChanges(changes);
-    let ids = [...new Set(changes.map(change => change.slideId))];
+    let ids = [...new Set(prepared.flatMap(change => slideIdOf(change) ?? []))];
+    let themePages = [...new Set(prepared.flatMap(change => {
+      let { pageType, id } = pageOf(change);
+      return pageType === "SLIDE" ? [] : [id];
+    }))];
     return this.#changes.queue(batchKind(prepared), async () => {
-      let { deck } = await this.#prepare(ids, "queue changes to them");
+      let { deck } = await this.#prepare(ids, "queue changes to them", themePages);
       // Google names a new slide's notes shape itself, as it creates the slide, so until then an
       // edit has nothing to address. Every slide Google has, and a queued copy of one, has notes.
-      let unborn = prepared.find(change => change.op === "editText" && change.elementId === undefined &&
+      let unborn = prepared.find((change): change is Extract<DesignChange, { op: "editText" }> =>
+        change.op === "editText" && change.elementId === undefined &&
         !deck.slides.get(change.slideId)?.slideProperties?.notesPage);
       if (unborn) {
         throw new Error(`Slide "${unborn.slideId}" is awaiting approval to be added, and Google gives it ` +
@@ -470,6 +490,9 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
         payload: {
           changes: queued,
           slides: Object.fromEntries(ids.map(id => [id, labelOf(deck, id)])),
+          ...(themePages.length > 0
+            ? { themes: Object.fromEntries(themePages.map(id => [id, themeLabelOf(deck, id)])) }
+            : {}),
         },
         result: refs,
       };
