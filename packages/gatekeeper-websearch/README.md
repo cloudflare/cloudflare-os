@@ -6,12 +6,15 @@ flow, no settings and no management UI.
 
 ## Who gets it
 
-The admin Gatekeepers panel sets the mode, like every auto-provisioned gatekeeper
-(`provisioning-policy.ts` in workshop-backend):
+The admin Gatekeepers panel sets the mode (`provisioning-policy.ts` in workshop-backend):
 
-- **Optional** (the default): each user turns it on once, on the Connectors page.
-- **Enabled**: every user gets it.
+- **Enabled** (the default): every user gets it, and can't turn it off.
+- **Optional**: each user turns it on once, on the Connectors page. A user who got it under
+  Enabled keeps it, and can now remove it.
 - **Disabled**: no one gets it, and existing accounts go dormant.
+
+The other auto-provisioned gatekeepers default to Optional. Web Search defaults to Enabled because a
+search follows the same restricted-data rule as the agent's `webFetch` tool, which every agent has.
 
 A user who has it gets a `WEB_SEARCH` binding in the agent's `executeCode`, in every workspace. The
 agent can bind it into a gadget with `setGadgetBinding`. The binding appears in chats that start
@@ -64,7 +67,8 @@ search follows `webFetch`'s rule.
   query can still carry workspace text. The restricted-data check covers data that a gatekeeper
   marked restricted, and nothing else.
 - **Ambience.** The gatekeeper declares only that it can mint an account and that the account has
-  a singleton. The admin's mode and the user's opt-in decide who gets it.
+  a singleton. The Workshop's provisioning policy makes it Enabled by default, and the admin's mode
+  overrides that.
 
 ## Why Cloudflare's Web Search API
 
@@ -100,8 +104,8 @@ outside AI Gateway.
   installs it on every new deploy, like Scheduled Tasks and the Context Library.
 - **Billing.** Each search spends the deployment account's AI Gateway credits. The free daily
   allowance and Cloudflare-credits top-up for models do not cover searches, and there is no
-  per-user limit. On a public server, set the mode to Disabled unless you accept that: under the
-  default, Optional, any user can turn it on.
+  per-user limit. On a public server, set the mode to Disabled unless you accept that: by default,
+  every user has it.
 - **Local dev.** Start with `pnpm dev-server -- --use-workers-ai-binding`, which needs a Cloudflare
   login. Without the flag the Worker has no `AI` binding and every search fails.
 

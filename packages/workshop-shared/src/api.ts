@@ -964,7 +964,8 @@ export type AdminResource = {
  * Provisioning mode for an auto-provisioning ("ambient") gatekeeper — one that mints a connected
  * account with no OAuth flow (VendorDescription.autoProvisionsAccount), e.g. the Context Library:
  *   - 'disabled': not available; no account is provisioned and any existing one is dormant.
- *   - 'optional': users opt in from the Connectors page; not forced on anyone (the default).
+ *   - 'optional': users opt in from the Connectors page; not forced on anyone (the default for
+ *                 every vendor but Web Search, which defaults to 'enabled').
  *   - 'enabled':  auto-provisioned for every user (forced); they can't remove it.
  */
 export const AMBIENT_GATEKEEPER_MODES = ['disabled', 'optional', 'enabled'] as const;

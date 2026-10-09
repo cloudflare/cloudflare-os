@@ -80,9 +80,10 @@ An admin session can turn on any provider the Gateway serves.
 The **Web Search** gatekeeper (`packages/gatekeeper-websearch`) spends money outside these
 controls. Each search spends the deployment account's AI Gateway credits, through its `default`
 gateway, and the free daily allowance and top-up flow do not apply to it. Every new deploy
-installs it, and under the default mode, **Optional**, any user can turn it on. On a public
-server, set it to **Disabled** in the admin Gatekeepers panel unless you accept that spend. A
-change applies to each workspace when it next opens; uninstalling the Worker stops searches at once.
+installs it, and its default mode, **Enabled**, gives it to every user. On a public server, set it
+to **Disabled** in the admin Gatekeepers panel unless you accept that spend; **Optional** does not
+take it from users who already have it. A change applies to each workspace when it next opens;
+uninstalling the Worker stops searches at once.
 
 When using `CF_AI_GATEWAY*` in local development, start the server with
 `pnpm run dev-server -- --use-workers-ai-binding` so the server has a `WORKERS_AI` binding for

@@ -5,7 +5,8 @@
 // admin and stored in AdminConfig.ambientGatekeeperModes:
 //   - 'disabled': not available; no account is provisioned, and any existing one stays dormant.
 //   - 'optional': users opt in from the Connectors page; not forced on anyone. THE DEFAULT — we don't
-//                 impose ambient authority on every user unless an admin explicitly turns it on.
+//                 impose ambient authority on every user unless an admin explicitly turns it on —
+//                 except for the vendors in ENABLED_BY_DEFAULT.
 //   - 'enabled':  auto-provisioned for every user (forced); they can't remove it.
 //
 // These helpers are the single chokepoint for that decision; UserDurableObject reads AdminConfig and
@@ -14,14 +15,18 @@
 import { AmbientGatekeeperMode } from "@gadgets/workshop-shared/api";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
 
-export const DEFAULT_AMBIENT_GATEKEEPER_MODE: AmbientGatekeeperMode = "optional";
+// A search follows the same restricted-data rule as the agent's webFetch tool, which every agent has,
+// so Web Search needs no opt-in.
+const ENABLED_BY_DEFAULT = new Set(["websearch"]);
 
 /**
- * The configured mode for an ambient vendor, defaulting to "optional" when the admin hasn't set one.
+ * The configured mode for an ambient vendor, or its default when the admin hasn't set one.
  * Tolerates a config persisted before this field existed (ambientGatekeeperModes may be undefined).
  */
 export function ambientGatekeeperMode(config: AdminConfig, vendorId: string): AmbientGatekeeperMode {
-  return config.ambientGatekeeperModes?.[vendorId.toLowerCase()] ?? DEFAULT_AMBIENT_GATEKEEPER_MODE;
+  vendorId = vendorId.toLowerCase();
+  return config.ambientGatekeeperModes?.[vendorId] ??
+      (ENABLED_BY_DEFAULT.has(vendorId) ? "enabled" : "optional");
 }
 
 /**
