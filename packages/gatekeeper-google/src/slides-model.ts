@@ -212,6 +212,15 @@ export function layoutNames(rest: RestPresentation): LayoutNames {
   return names;
 }
 
+/** The master of every layout and slide a presentation or its outline lists, by object ID. */
+export function mastersOf(rest: RestPresentation): Map<string, string> {
+  let pages = [
+    ...(rest.layouts ?? []).map(({ objectId, layoutProperties }) => [objectId, layoutProperties?.masterObjectId]),
+    ...(rest.slides ?? []).map(({ objectId, slideProperties }) => [objectId, slideProperties?.masterObjectId]),
+  ];
+  return new Map(pages.filter((page): page is [string, string] => !!page[0] && !!page[1]));
+}
+
 /** The IDs of a presentation's slides, in presentation order. */
 export function slideIds(rest: RestPresentation): string[] {
   return (rest.slides ?? []).map(slide => {
@@ -241,11 +250,13 @@ function summaryOf(slide: RestSlide, index: number, layouts: LayoutNames): Slide
   if (!slide.objectId) throw new Error("Google Slides returned an invalid slide");
   let properties = slide.slideProperties;
   let layout = properties?.layoutObjectId && layouts.get(properties.layoutObjectId);
+  let master = properties?.masterObjectId;
   let title = titleOf(slide);
   return {
     id: slide.objectId,
     index,
     ...(layout ? { layout } : {}),
+    ...(master ? { master } : {}),
     skipped: properties?.isSkipped === true,
     ...(title ? { title } : {}),
     hasSpeakerNotes: speakerNotesOf(slide).length > 0,
@@ -256,9 +267,10 @@ function summaryOf(slide: RestSlide, index: number, layouts: LayoutNames): Slide
 function layoutsOf(rest: RestPresentation): SlideLayout[] {
   return (rest.layouts ?? []).flatMap(({ objectId, layoutProperties, pageElements }) => {
     let name = layoutProperties?.displayName;
-    if (!objectId || !name) return [];
+    let master = layoutProperties?.masterObjectId;
+    if (!objectId || !name || !master) return [];
     let placeholders = (pageElements ?? []).flatMap(({ shape }) => shape?.placeholder?.type ?? []);
-    return [{ id: objectId, name, placeholders }];
+    return [{ id: objectId, name, master, placeholders }];
   });
 }
 

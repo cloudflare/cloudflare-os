@@ -21,10 +21,10 @@ import { obsContext } from "./observability";
 import { SlidesWriteRefused, type GoogleSlidesApi, type RestSlide } from "./slides-api";
 import { designDeck, type DesignChange, type DesignStep } from "./slides-design";
 import { CREATES } from "./slides-design-input";
-import { slideIds } from "./slides-model";
+import { mastersOf, slideIds } from "./slides-model";
 import type { SlideBounds } from "./slides-read-types";
 import {
-  movedOrder, requireNewSlide, requireSlide, type Deck, type DesignBatch, type SlideLabel,
+  movedOrder, newSlidePlace, requireNewSlide, type Deck, type DesignBatch, type SlideLabel,
   type SlidesActions,
 } from "./slides-simulation";
 import { elementIdsOf, locate, textOfTarget, type TextAddress } from "./slides-target";
@@ -61,9 +61,9 @@ const MAX_ATTEMPTS = 3;
 
 /**
  * A fresh read: the revision to pin a write to, the slide order, the slides it fetched, and the
- * IDs of the layouts a slide can be made from.
+ * masters of every slide and layout.
  */
-type Fresh = Deck & { revisionId: string; layouts: string[] };
+type Fresh = Deck & { revisionId: string };
 
 type Plan = {
   requests: unknown[];
@@ -83,8 +83,7 @@ async function readFresh(host: SlidesHost, ids: readonly string[]): Promise<Fres
   // Read after the outline: a slide changed since then has also moved the revision this write is
   // pinned to, so Google refuses it rather than applying it against what changed.
   let slides = await host.api.getSlides(host.presentationId, ids, order);
-  let layouts = (outline.layouts ?? []).flatMap(({ objectId }) => objectId ?? []);
-  return { revisionId, order, slides, layouts };
+  return { revisionId, order, slides, masters: mastersOf(outline) };
 }
 
 function noLongerApplies(error: unknown): never {
@@ -560,18 +559,15 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
         implementsRevert: false,
       };
     },
-    apply: ({ newSlideId, layoutId, after, placeholders }, host) => write(host, [], fresh => {
-      requireNewSlide(fresh.order, newSlideId);
-      if (typeof after === "string") requireSlide(fresh.order, after);
-      if (!fresh.layouts.includes(layoutId)) throw new ChangeConflict(`layout "${layoutId}" no longer exists`);
+    apply: (payload, host) => write(host, [], fresh => {
+      let { newSlideId, layoutId, after, placeholders } = payload;
+      let { at } = newSlidePlace(fresh, payload);
       return {
         requests: [{
           createSlide: {
             objectId: newSlideId,
             // Without an index, Google adds the slide at the end.
-            ...(after === undefined ? {} : {
-              insertionIndex: after === null ? 0 : fresh.order.indexOf(after) + 1,
-            }),
+            ...(after === undefined ? {} : { insertionIndex: at }),
             slideLayoutReference: { layoutId },
             placeholderIdMappings: placeholders.map(({ objectId, type, index }) =>
               ({ layoutPlaceholder: { type, index }, objectId })),

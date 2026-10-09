@@ -231,7 +231,10 @@ class SlidesProvider {
       let placeholders = layout?.pageElements!.filter(e => e.shape?.placeholder) ?? [];
       let parentOf = (mapped: { type: string; index?: number }) => placeholders.find(e =>
         e.shape!.placeholder!.type === mapped.type && (e.shape!.placeholder!.index ?? 0) === (mapped.index ?? 0));
+      // Google takes the layout from the master of the slide before, or of the first slide.
+      let beside = slides[Math.max(insertionIndex - 1, 0)];
       if (!layout || JSON.stringify(deck).includes(`"objectId":"${objectId}"`) || insertionIndex > slides.length ||
+        (beside && beside.slideProperties!.masterObjectId !== layout.layoutProperties!.masterObjectId) ||
         placeholderIdMappings.some((m: BatchRequest) => !parentOf(m.layoutPlaceholder))) throw new Invalid();
       slides.splice(insertionIndex, 0, {
         objectId,
@@ -243,6 +246,7 @@ class SlidesProvider {
         })),
         slideProperties: {
           layoutObjectId: layout.objectId,
+          masterObjectId: layout.layoutProperties!.masterObjectId,
           notesPage: { notesProperties: { speakerNotesObjectId: `${objectId}-notes` }, pageElements: [] },
         },
       });
@@ -367,10 +371,10 @@ function layoutDeck() {
   return {
     ...deck(),
     layouts: [
-      { objectId: "layout-title", layoutProperties: { displayName: "Title slide" }, pageElements: [
+      { objectId: "layout-title", layoutProperties: { displayName: "Title slide", masterObjectId: "master-1" }, pageElements: [
         { objectId: "lt-title", ...BOX, shape: { shapeType: "TEXT_BOX", placeholder: { type: "CENTERED_TITLE" } } },
       ] },
-      { objectId: "layout-title-body", layoutProperties: { displayName: "Title and body" }, pageElements: [
+      { objectId: "layout-title-body", layoutProperties: { displayName: "Title and body", masterObjectId: "master-1" }, pageElements: [
         { objectId: "ltb-rule", ...BOX, shape: { shapeType: "RECTANGLE" } },
         { objectId: "ltb-title", ...BOX, shape: { shapeType: "TEXT_BOX", placeholder: { type: "TITLE" } } },
         { objectId: "ltb-body", ...BOX, shape: { shapeType: "TEXT_BOX", placeholder: { type: "BODY" } } },
@@ -1072,8 +1076,27 @@ describe("Google Slides new and skipped slides", () => {
     let atEnd = await slides.queued("createSlide", "layout-title");
     provider.edit(d => { d.layouts = d.layouts!.filter(l => l.objectId !== "layout-title"); });
 
+    expect((await slides.outline()).queuedChangeConflict).toContain('layout "layout-title" no longer exists');
     expect(await slides.apply(atEnd.actionId!)).toContain('layout "layout-title" no longer exists');
     expect(provider.batches).toEqual([]);
+  });
+
+  it("adds a slide only after one of its layout's master, as Google requires", async () => {
+    let themed = layoutDeck();
+    themed.slides!.at(-1)!.slideProperties!.masterObjectId = "master-2";
+    themed.layouts.push({ objectId: "layout-other", layoutProperties: { displayName: "Other", masterObjectId: "master-2" },
+      pageElements: [] });
+    let provider = new SlidesProvider(themed).install();
+    let slides = gatekeeper();
+
+    expect((await slides.outline()).layouts.map(({ id, master }) => [id, master]))
+      .toEqual([["layout-title", "master-1"], ["layout-title-body", "master-1"], ["layout-other", "master-2"]]);
+    expect((await slides.call("createSlide", "layout-other", "s1")).error)
+      .toContain('Layout "layout-other" belongs to a different master than slide "s1"');
+    let atEnd = await slides.queued("createSlide", "layout-other");
+    expect(await slides.apply(atEnd.actionId!)).toBeNull();
+
+    expect(provider.deck.slides!.at(-1)!.slideProperties!.masterObjectId).toBe("master-2");
   });
 
   it("skips and unskips slides as previewed, writing only the slides that change", async () => {

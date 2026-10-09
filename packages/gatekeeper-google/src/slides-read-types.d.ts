@@ -14,6 +14,8 @@ export type SlideSummary = {
   index: number;
   /** Display name of the layout the slide was made from, such as `Title and body`. */
   layout?: string;
+  /** ID of the master, or theme, its layout belongs to. */
+  master?: string;
   /** Whether the slide is skipped when presenting. */
   skipped: boolean;
   /** Text of the slide's title placeholder, truncated to 200 characters. */
@@ -28,6 +30,11 @@ export type SlideLayout = {
   id: string;
   /** Display name, such as `Title and body`, as `SlideSummary.layout` shows it. */
   name: string;
+  /**
+   * ID of the master, or theme, it belongs to. A new slide can take a layout only from the master
+   * of the slide before it, or of the first slide when it goes first.
+   */
+  master: string;
   /** The placeholders the layout holds, by type such as `TITLE` or `BODY`, in drawing order. */
   placeholders: string[];
 };

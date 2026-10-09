@@ -343,14 +343,15 @@ describe("Slides model", () => {
       locale: "en",
       pageSize: { width: 720, height: 405 },
       slides: [
-        { id: "s1", index: 0, layout: "Title slide", skipped: false, title: "T".repeat(200),
+        { id: "s1", index: 0, layout: "Title slide", master: "master-1", skipped: false,
+          title: "T".repeat(200), hasSpeakerNotes: false },
+        { id: "s2", index: 1, master: "master-1", skipped: true, title: "Agenda", hasSpeakerNotes: false },
+        { id: "s3", index: 2, layout: "Title and body", master: "master-1", skipped: false,
           hasSpeakerNotes: false },
-        { id: "s2", index: 1, skipped: true, title: "Agenda", hasSpeakerNotes: false },
-        { id: "s3", index: 2, layout: "Title and body", skipped: false, hasSpeakerNotes: false },
       ],
       layouts: [
-        { id: "layout-title", name: "Title slide", placeholders: ["CENTERED_TITLE", "SUBTITLE"] },
-        { id: "layout-title-body", name: "Title and body", placeholders: ["TITLE", "BODY", "BODY"] },
+        { id: "layout-title", name: "Title slide", master: "master-1", placeholders: ["CENTERED_TITLE", "SUBTITLE"] },
+        { id: "layout-title-body", name: "Title and body", master: "master-1", placeholders: ["TITLE", "BODY", "BODY"] },
       ],
     });
   });

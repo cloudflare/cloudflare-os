@@ -10,15 +10,15 @@ import { unguardedNativeRead, type NativeRead } from "./drive-session";
 import type { GoogleVerifierApi } from "./google-verifier-types";
 import { batchKind, SLIDES_ACTIONS } from "./slides-actions";
 import { GoogleSlidesApi, type ThumbnailSize } from "./slides-api";
-import { layoutNames, presentationInfo, slideIds, slideOf, titleOf } from "./slides-model";
+import { layoutNames, mastersOf, presentationInfo, slideIds, slideOf, titleOf } from "./slides-model";
 import type {
   PresentationInfo, Slide, SlideThumbnail, SlideThumbnailSize,
 } from "./slides-read-types";
 import { designDeck, type DesignStep } from "./slides-design";
 import { prepareChanges } from "./slides-design-input";
 import {
-  batchSlides, conflictReason, instantiatedPlaceholders, mintObjectId, movedOrder, replayChanges,
-  slidesToFetch, type Deck, type QueuedChange, type SlideLabel, type SlidesAction,
+  batchSlides, conflictReason, instantiatedPlaceholders, mintObjectId, movedOrder, newSlidePlace,
+  replayChanges, slidesToFetch, type Deck, type QueuedChange, type SlideLabel, type SlidesAction,
   type SlidesActions,
 } from "./slides-simulation";
 import { elementIdsOf } from "./slides-target";
@@ -283,7 +283,9 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
         layouts: layoutNames(outline),
         saved: order,
         ...replayed({
-          order, slides: await this.#api.getSlides(this.#presentationId, slidesToFetch(ids, changes), order),
+          order,
+          slides: await this.#api.getSlides(this.#presentationId, slidesToFetch(ids, changes), order),
+          masters: mastersOf(outline),
         }, changes),
       };
     });
@@ -316,7 +318,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
           ...(rest.slides ?? []).map(slide => [slide.objectId!, slide] as const),
           ...await this.#api.getSlides(this.#presentationId, slidesToFetch(edited, changes), order),
         ]);
-        let { deck, conflict } = replayed({ order, slides }, changes);
+        let { deck, conflict } = replayed({ order, slides, masters: mastersOf(rest) }, changes);
         return {
           ...presentationInfo({ ...rest, slides: deck.order.map(id => deck.slides.get(id)!) }),
           ...(conflict ? { queuedChangeConflict: conflict } : {}),
@@ -511,17 +513,20 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
       }
       // Minted here rather than by Google, so changes queued to the slide can name it and them.
       let newSlideId = mintObjectId();
-      return {
-        payload: {
-          newSlideId,
-          layoutId,
-          layout,
-          ...(after === undefined ? {} : { after }),
-          placeholders: instantiatedPlaceholders(page),
-          ...(typeof after === "string" ? { afterSlide: labelOf(deck, after) } : {}),
-        },
-        result: newSlideId,
+      let payload = {
+        newSlideId,
+        layoutId,
+        layout,
+        ...(after === undefined ? {} : { after }),
+        placeholders: instantiatedPlaceholders(page),
+        ...(typeof after === "string" ? { afterSlide: labelOf(deck, after) } : {}),
       };
+      try {
+        newSlidePlace(deck, payload);
+      } catch (error) {
+        asError(error);
+      }
+      return { payload, result: newSlideId };
     });
   }
 

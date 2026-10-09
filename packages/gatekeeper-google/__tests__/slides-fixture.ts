@@ -68,6 +68,7 @@ export function slide(
     pageElements,
     slideProperties: {
       layoutObjectId: options.layoutObjectId ?? "layout-title-body",
+      masterObjectId: "master-1",
       ...(options.isSkipped ? { isSkipped: true } : {}),
       notesPage: {
         notesProperties: { speakerNotesObjectId: notesId },
@@ -92,11 +93,11 @@ export function presentation(slides: NonNullable<RestPresentation["slides"]>): R
     },
     // Through the summary mask, a layout's elements carry only their placeholder.
     layouts: [
-      { objectId: "layout-title", layoutProperties: { displayName: "Title slide" }, pageElements: [
+      { objectId: "layout-title", layoutProperties: { displayName: "Title slide", masterObjectId: "master-1" }, pageElements: [
         { shape: { placeholder: { type: "CENTERED_TITLE" } } },
         { shape: { placeholder: { type: "SUBTITLE" } } },
       ] },
-      { objectId: "layout-title-body", layoutProperties: { displayName: "Title and body" }, pageElements: [
+      { objectId: "layout-title-body", layoutProperties: { displayName: "Title and body", masterObjectId: "master-1" }, pageElements: [
         { shape: {} },
         { shape: { placeholder: { type: "TITLE" } } },
         { shape: { placeholder: { type: "BODY" } } },

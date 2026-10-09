@@ -13,7 +13,11 @@ const pt = (magnitude: number) => ({ magnitude, unit: "PT" as const });
 /** Runs `changes` over the slides as `updateSlides()` would queue them. */
 function run(pages: RestSlide[], changes: SlideChange[]) {
   let { changes: prepared, refs } = prepareChanges(changes);
-  let deck = { order: pages.map(page => page.objectId!), slides: new Map(pages.map(page => [page.objectId!, page])) };
+  let deck = {
+    order: pages.map(page => page.objectId!),
+    slides: new Map(pages.map(page => [page.objectId!, page])),
+    masters: new Map(),
+  };
   let { deck: next, steps } = designDeck(deck, prepared);
   return {
     refs,
@@ -96,7 +100,7 @@ describe("Slides design changes", () => {
     let { changes } = prepareChanges([
       { op: "formatText", slideId: "s1", elementId: "box", range: { start: 0, end: 4 }, format: { italic: true } },
     ]);
-    let deck = { order: ["s1"], slides: new Map([["s1", page]]) };
+    let deck = { order: ["s1"], slides: new Map([["s1", page]]), masters: new Map() };
     expect(() => designDeck(deck, [{ ...changes[0], before: "Bolder" }]))
       .toThrow("change 1 (formatText): the text has changed since this change was made");
   });
@@ -390,7 +394,7 @@ describe("Slides design changes", () => {
       runs: [{ content, style: { bold: false } }],
       marker: { bullet: { listId: "l", bulletStyle: { bold: false } } },
     }))))]);
-    let deck = { order: ["s1"], slides: new Map([["s1", page]]) };
+    let deck = { order: ["s1"], slides: new Map([["s1", page]]), masters: new Map() };
     let { changes } = prepareChanges([
       { op: "formatText", slideId: "s1", elementId: "box", find: "A\n", format: { bold: true } },
       { op: "editText", slideId: "s1", elementId: "box", find: "A", replace: "X\nY" },

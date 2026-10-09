@@ -94,7 +94,7 @@ export function designDeck(
     }
   });
   return {
-    deck: edited.size === 0 ? deck : { order: deck.order, slides: new Map([...deck.slides, ...edited]) },
+    deck: edited.size === 0 ? deck : { ...deck, slides: new Map([...deck.slides, ...edited]) },
     steps,
   };
 }

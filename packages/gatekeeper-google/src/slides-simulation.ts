@@ -75,6 +75,8 @@ export type SlidesAction = TaggedAction<SlidesActions>;
 export type Deck = {
   order: readonly string[];
   slides: ReadonlyMap<string, RestSlide>;
+  /** The master of every slide in `order`, and of every layout the presentation has. */
+  masters: ReadonlyMap<string, string>;
 };
 
 /** Element IDs a duplicate gets: the gatekeeper's, so a queued edit can name them. */
@@ -105,6 +107,28 @@ export function movedOrder(
   let rest = order.filter(id => !moving.has(id));
   let at = after === null ? 0 : rest.indexOf(after) + 1;
   return [...rest.slice(0, at), ...order.filter(id => moving.has(id)), ...rest.slice(at)];
+}
+
+/**
+ * Where a new slide goes in `deck`, and the master it takes from its layout. Throws `ChangeConflict`
+ * for a layout that is gone, or that is not of the master Google takes a new slide's layout from:
+ * the slide before's, or the first slide's when it goes first.
+ */
+export function newSlidePlace(
+  { order, masters }: Deck, { newSlideId, layoutId, after }: SlidesActions["createSlide"],
+): { at: number; master: string } {
+  requireNewSlide(order, newSlideId);
+  if (typeof after === "string") requireSlide(order, after);
+  let master = masters.get(layoutId);
+  if (master === undefined) throw new ChangeConflict(`layout "${layoutId}" no longer exists`);
+  let at = after === undefined ? order.length : after === null ? 0 : order.indexOf(after) + 1;
+  let beside = order[Math.max(at - 1, 0)];
+  if (beside !== undefined && masters.get(beside) !== master) {
+    throw new ChangeConflict(`layout "${layoutId}" belongs to a different master than slide ` +
+      `"${beside}", and Google takes a new slide's layout from the master of the slide before it, ` +
+      "or of the first slide when it goes first");
+  }
+  return { at, master };
 }
 
 // An element added to the source after the copy was queued has no minted ID, so Google names it
@@ -161,7 +185,7 @@ const SLIDE_NUMBER_TEXT: RestText = {
 // Every placeholder but a slide number's is empty, and there are no speaker notes: Google names
 // the notes shape only when it creates the slide.
 function created(
-  newSlideId: string, layoutId: string, placeholders: readonly CreatedPlaceholder[],
+  newSlideId: string, layoutId: string, master: string, placeholders: readonly CreatedPlaceholder[],
 ): RestSlide {
   return {
     objectId: newSlideId,
@@ -176,7 +200,7 @@ function created(
         ...(type === "SLIDE_NUMBER" ? { text: structuredClone(SLIDE_NUMBER_TEXT) } : {}),
       },
     })),
-    slideProperties: { layoutObjectId: layoutId },
+    slideProperties: { layoutObjectId: layoutId, masterObjectId: master },
   };
 }
 
@@ -187,12 +211,12 @@ function withSkipped(slide: RestSlide, skipped: boolean): RestSlide {
 }
 
 // Google renders a slide number as the slide's position, so a slide that moves shows a new one.
-function reordered(deck: Deck, order: string[], slides = deck.slides): Deck {
+function reordered(deck: Deck, order: string[], slides = deck.slides, masters = deck.masters): Deck {
   let renumbered = [...slides].map(([id, slide]): [string, RestSlide] => {
     let position = order.indexOf(id);
     return position === deck.order.indexOf(id) ? [id, slide] : [id, numbered(slide, position + 1)];
   });
-  return { order, slides: new Map(renumbered) };
+  return { order, slides: new Map(renumbered), masters };
 }
 
 function numbered(slide: RestSlide, number: number): RestSlide {
@@ -202,7 +226,7 @@ function numbered(slide: RestSlide, number: number): RestSlide {
 
 /** Applies one queued change to `deck`, returning a new deck. Throws `ChangeConflict`. */
 export function applyChange(deck: Deck, action: SlidesAction): Deck {
-  let { order, slides } = deck;
+  let { order, slides, masters } = deck;
   switch (action.kind) {
     case "editText":
     case "formatSlides":
@@ -215,7 +239,9 @@ export function applyChange(deck: Deck, action: SlidesAction): Deck {
       let source = slides.get(slideId);
       let next = new Map(slides);
       if (source) next.set(newSlideId, duplicated(source, newSlideId, objectIds));
-      return reordered(deck, order.toSpliced(order.indexOf(slideId) + 1, 0, newSlideId), next);
+      let master = masters.get(slideId);
+      return reordered(deck, order.toSpliced(order.indexOf(slideId) + 1, 0, newSlideId), next,
+        master === undefined ? masters : new Map(masters).set(newSlideId, master));
     }
     case "deleteSlide": {
       let { slideId } = action.payload;
@@ -229,13 +255,11 @@ export function applyChange(deck: Deck, action: SlidesAction): Deck {
       return reordered(deck, movedOrder(order, slideIds, after));
     }
     case "createSlide": {
-      let { newSlideId, layoutId, after, placeholders } = action.payload;
-      requireNewSlide(order, newSlideId);
-      if (typeof after === "string") requireSlide(order, after);
-      let at = after === undefined ? order.length : after === null ? 0 : order.indexOf(after) + 1;
-      let next = new Map(slides);
-      next.set(newSlideId, created(newSlideId, layoutId, placeholders));
-      return reordered(deck, order.toSpliced(at, 0, newSlideId), next);
+      let { newSlideId, layoutId, placeholders } = action.payload;
+      let { at, master } = newSlidePlace(deck, action.payload);
+      return reordered(deck, order.toSpliced(at, 0, newSlideId),
+        new Map(slides).set(newSlideId, created(newSlideId, layoutId, master, placeholders)),
+        new Map(masters).set(newSlideId, master));
     }
     case "skipSlides": {
       let { slideIds, skipped } = action.payload;
@@ -245,7 +269,7 @@ export function applyChange(deck: Deck, action: SlidesAction): Deck {
         let slide = slides.get(id);
         if (slide) next.set(id, withSkipped(slide, skipped));
       }
-      return { order, slides: next };
+      return { ...deck, slides: next };
     }
   }
 }

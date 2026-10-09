@@ -118,7 +118,7 @@ describe("Slides change replay", () => {
   it("leaves out of a queued copy an element added to its source since, which it cannot name", () => {
     let source = slide("s1", [shape("title", text(["Q3"])), shape("added", text(["New"]))]);
     let unchanged = structuredClone(source);
-    let deck: Deck = { order: ["s1"], slides: new Map([["s1", source]]) };
+    let deck: Deck = { order: ["s1"], slides: new Map([["s1", source]]), masters: new Map() };
 
     let copied = applyChange(deck, copyOf("s1", "c1", { title: "c1title" }));
 
@@ -132,7 +132,9 @@ describe("Slides change replay", () => {
       startConnection: { connectedObjectId: "a", connectionSiteIndex: 1 },
       endConnection: { connectedObjectId: "b", connectionSiteIndex: 3 },
     } } };
-    let deck: Deck = { order: ["s1"], slides: new Map([["s1", slide("s1", [shape("a"), shape("b"), connector])]]) };
+    let deck: Deck = {
+      order: ["s1"], slides: new Map([["s1", slide("s1", [shape("a"), shape("b"), connector])]]), masters: new Map(),
+    };
 
     let copied = applyChange(deck, copyOf("s1", "c1", { a: "ca", b: "cb", arrow: "carrow" }));
 
@@ -142,14 +144,16 @@ describe("Slides change replay", () => {
   });
 
   it("reports a queued copy whose slide already exists, rather than showing it twice", () => {
-    let deck: Deck = { order: ["s1", "c1"], slides: new Map() };
+    let deck: Deck = { order: ["s1", "c1"], slides: new Map(), masters: new Map() };
 
     expect(() => applyChange(deck, copyOf("s1", "c1", {}))).toThrow('the new slide\'s ID "c1" already exists');
   });
 
   it("renumbers the slides a queued copy, move or delete shifts", () => {
     let numbered = (n: number) => slide(`s${n}`, [shape(`n${n}`, text(["Page ", { slideNumber: `${n}` }]))]);
-    let deck: Deck = { order: ["s1", "s2", "s3"], slides: new Map([1, 2, 3].map(n => [`s${n}`, numbered(n)])) };
+    let deck: Deck = {
+      order: ["s1", "s2", "s3"], slides: new Map([1, 2, 3].map(n => [`s${n}`, numbered(n)])), masters: new Map(),
+    };
     let pages = ({ order, slides }: Deck) => order.map(id => [id, slides.get(id)!.pageElements![0].shape!
       .text!.textElements!.find(e => e.autoText)!.autoText!.content]);
 
@@ -165,6 +169,7 @@ describe("Slides change replay", () => {
     let deck: Deck = {
       order: ["s1", "s2"],
       slides: new Map([["s1", slide("s1", [])], ["s2", slide("s2", [], { isSkipped: true })]]),
+      masters: new Map(),
     };
     let skip = (slideIds: string[], skipped: boolean): SlidesAction =>
       ({ kind: "skipSlides", payload: { slideIds, skipped, slides: [] } });
@@ -175,7 +180,7 @@ describe("Slides change replay", () => {
     expect(shown.slides.get("s1")).toEqual(slide("s1", []));
     expect(shown.slides.get("s2")!.slideProperties).not.toHaveProperty("isSkipped");
     // A slide the read did not fetch need only exist.
-    expect(applyChange({ order: ["s1"], slides: new Map() }, skip(["s1"], true)).slides.size).toBe(0);
+    expect(applyChange({ order: ["s1"], slides: new Map(), masters: new Map() }, skip(["s1"], true)).slides.size).toBe(0);
     expect(() => applyChange(deck, skip(["gone"], true))).toThrow('slide "gone" no longer exists');
   });
 
@@ -196,7 +201,11 @@ describe("Slides change replay", () => {
       },
     });
     const numbered = (n: number) => slide(`s${n}`, [shape(`n${n}`, text(["Page ", { slideNumber: `${n}` }]))]);
-    const deck: Deck = { order: ["s1", "s2"], slides: new Map([1, 2].map(n => [`s${n}`, numbered(n)])) };
+    const deck: Deck = {
+      order: ["s1", "s2"],
+      slides: new Map([1, 2].map(n => [`s${n}`, numbered(n)])),
+      masters: new Map([["s1", "m1"], ["s2", "m1"], ["layout-title-body", "m1"]]),
+    };
     const numbers = ({ order, slides }: Deck) => order.map(id => [id, slides.get(id)!.pageElements![0]?.shape!
       .text?.textElements!.find(e => e.autoText)!.autoText!.content]);
 
@@ -213,7 +222,7 @@ describe("Slides change replay", () => {
 
       expect(created).toEqual({
         objectId: "new",
-        slideProperties: { layoutObjectId: "layout-title-body" },
+        slideProperties: { layoutObjectId: "layout-title-body", masterObjectId: "m1" },
         pageElements: [
           { objectId: "new-title", size: TITLE.size, transform: TITLE.transform,
             shape: { shapeType: "TEXT_BOX", placeholder: { type: "TITLE", parentObjectId: "lt-title" } } },
@@ -259,6 +268,17 @@ describe("Slides change replay", () => {
       expect(() => applyChange(deleted, create("s1"))).toThrow(ChangeConflict);
       expect(() => applyChange(deleted, create("s1"))).toThrow('slide "s1" no longer exists');
       expect(() => applyChange(applyChange(deck, create()), create())).toThrow('"new" already exists');
+    });
+
+    it("conflicts once its layout is gone, or where Google takes no layout of its master", () => {
+      let gone = { ...deck, masters: new Map([...deck.masters].filter(([id]) => id !== "layout-title-body")) };
+      // Google takes a new slide's layout from the master of the slide before, or the first slide's.
+      let themed = { ...deck, masters: new Map([...deck.masters, ["s2", "m2"]]) };
+
+      expect(() => applyChange(gone, create())).toThrow('layout "layout-title-body" no longer exists');
+      expect(() => applyChange(themed, create())).toThrow('belongs to a different master than slide "s2"');
+      expect(applyChange(themed, create(null)).order).toEqual(["new", "s1", "s2"]);
+      expect(applyChange(themed, create("s1")).masters.get("new")).toBe("m1");
     });
   });
 });
