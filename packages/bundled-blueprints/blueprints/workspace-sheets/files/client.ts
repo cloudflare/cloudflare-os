@@ -4921,7 +4921,7 @@ function applyStructure(s: Structure, revision: number) { // A structure awaitin
 // one, so it must be replayed here as well (and re-saved merged, since the server holds only ours).
 if (revision < ackedStructureRevision) return;
 const localSource = pendingStructure || inFlightStructure;
-const local = localSource ? localStructureChanges(localSource) : null;
+const local = localSource ? localStructureChanges(localSource, s) : null;
 if (s.title != null && document.activeElement !== titleInput) { model.title = s.title; titleInput.value = s.title; }
 else if (s.title != null) model.title = s.title;
 model.sheetOrder = s.sheetOrder.slice();
@@ -4948,17 +4948,19 @@ if (local.sheetOrder) {
 pendingStructure = structureSnapshot();
 if (pendingReplacements.size === 0) wholesaleBaseRevision = model.revision;
 }
-function localStructureChanges(snapshot: Structure): StructureChanges { const base: Structure = ackedStructure || { title: snapshot.title, sheetOrder: [], sheets: {} };
+function localStructureChanges(snapshot: Structure, remote?: Structure): StructureChanges { const base: Structure = ackedStructure || { title: snapshot.title, sheetOrder: [], sheets: {} };
 const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 const changes: StructureChanges = {
   title: snapshot.title !== base.title ? snapshot.title : null,
   sheetOrder: same(snapshot.sheetOrder, base.sheetOrder) ? null : snapshot.sheetOrder,
-  added: Object.keys(snapshot.sheets).filter((id) => !base.sheets[id]),
+  added: Object.keys(snapshot.sheets).filter((id) => !base.sheets[id] && !remote?.sheets[id]),
   removed: base.sheetOrder.filter((id) => !snapshot.sheets[id]),
   sheets: {},
 };
 for (const [id, sheet] of Object.entries(snapshot.sheets)) {
-  const baseSheet = base.sheets[id];
+  // A new sheet may already have committed before its reply arrives. Only edits made since the
+  // sent snapshot are still local; its original metadata must not replace the peer's structure.
+  const baseSheet = base.sheets[id] || (remote?.sheets[id] ? inFlightStructure?.sheets[id] || sheet : undefined);
   if (!baseSheet) { changes.sheets[id] = sheet; continue; }
   const fields: Partial<SheetMeta> = {};
   for (const key of new Set([...Object.keys(sheet), ...Object.keys(baseSheet)]) as Set<keyof SheetMeta>) {
