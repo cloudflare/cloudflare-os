@@ -6,9 +6,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ConnectedAccountsSubscriber } from '@gadgets/workshop-shared/api'
 import type { AccountDescription, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
 
+const addToast = vi.hoisted(() => vi.fn<(options: unknown) => void>())
+
 vi.mock('@cloudflare/kumo', async (importOriginal) => {
   const actual = await importOriginal() as typeof import('@cloudflare/kumo')
-  const toasts = { add: vi.fn<(options: unknown) => void>() }
+  const toasts = { add: addToast }
   return { ...actual, useKumoToastManager: () => toasts }
 })
 vi.mock('./useAlwaysApproveTag', () => ({
@@ -135,5 +137,39 @@ describe('Activity creation approval', () => {
       [...dialog.querySelectorAll('button')].find(b => b.textContent === 'Approve')!.click())
 
     expect(approveAction).toHaveBeenCalledWith(1, 2)
+  })
+})
+
+describe('Activity hook toggles', () => {
+  it('says why a hook could not be enabled', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    addToast.mockClear()
+    const refusal = "GitHub refused to add a webhook to acme/widgets: only the repository's admins can."
+    const server = makeOverseer()
+    Object.assign(server.overseer as object, { enableHook: async () => { throw new Error(refusal) } })
+    await view.render(
+      <Activity overseer={server.overseer} restricted={false} view="history" onViewChange={() => {}} />,
+    )
+    await server.resolveSubscription()
+    await server.resolvePage({
+      entries: [entry(1, {
+        type: 'bindHook', hookId: 7, enabled: false,
+        description: { title: 'Watch acme/widgets on GitHub', description: 'Call this hook with each issue event.' },
+      })],
+    })
+    flushFrames()
+
+    const row = [...document.querySelectorAll('button[aria-expanded]')]
+      .find(button => button.textContent?.includes('Watch acme/widgets on GitHub'))
+    if (!(row instanceof HTMLElement)) throw new Error('No hook row rendered')
+    await act(async () => row.click())
+    // The checkbox the switch forwards its clicks to. jsdom has no PointerEvent, which the switch
+    // forwards them with.
+    const toggle = document.querySelector('[aria-label="Enable hook"]')?.nextElementSibling
+    if (!(toggle instanceof HTMLInputElement)) throw new Error('No hook toggle rendered')
+    await act(async () => toggle.click())
+
+    expect(addToast).toHaveBeenCalledExactlyOnceWith(
+      { title: 'Failed to enable hook', description: refusal, variant: 'error' })
   })
 })

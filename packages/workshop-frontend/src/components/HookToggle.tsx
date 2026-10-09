@@ -1,4 +1,5 @@
 import { Switch, Tooltip } from '@cloudflare/kumo'
+import { rpcFailureDescription } from '../rpcErrors'
 
 interface HookToggleProps {
   enabled: boolean
@@ -23,3 +24,10 @@ export function HookToggle({ enabled, disabled = false, onToggle, size = 'sm' }:
     </Tooltip>
   )
 }
+
+/** The toast for a hook that could not be enabled or disabled, saying why when the error does. */
+export const hookToggleFailureToast = (enabled: boolean, error: unknown) => ({
+  title: `Failed to ${enabled ? 'enable' : 'disable'} hook`,
+  description: rpcFailureDescription(error),
+  variant: 'error' as const,
+})
