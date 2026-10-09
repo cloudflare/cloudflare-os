@@ -294,9 +294,11 @@ always waits for approval.
 `createSlide()` adds a slide made from one of the presentation's layouts, at the start, the end, or
 after a given slide. The gatekeeper mints the slide's ID and one for each placeholder it gets from
 the layout, read from the layout's page when the change is queued, so later changes can fill the
-placeholders before it is approved. Reads show the new slide with every placeholder on the layout,
-at the layout's size and position, empty but for a slide number's, as a live probe showed Google
-makes them (`instantiatedPlaceholders()` in `slides-simulation.ts`).
+placeholders before it is approved. Reads show the new slide with the layout's placeholders, empty,
+at the layout's size and position, as a live probe showed Google makes them, but for a slide
+number: Google adds one only while the presentation shows slide numbers, which a new one does not,
+and otherwise ignores its mapping, so none is minted and a slide number appears once the slide
+exists (`instantiatedPlaceholders()` in `slides-simulation.ts`).
 Google takes a new slide's layout only from the master of the slide before it, of the first slide
 when it goes first, or of the presentation's first master when it has no slides, so a deck with
 slides imported in another theme has layouts that fit only some places: layouts and slide

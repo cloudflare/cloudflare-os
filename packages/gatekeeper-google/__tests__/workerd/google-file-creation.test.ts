@@ -120,7 +120,10 @@ describe("creating a Google Slides presentation", () => {
     expect(title.actionId).toBeDefined();
     expect(added.actionId).toBeDefined();
     let [slide] = (await hooks().callSlides("create-deck", "getSlides", [[newSlideId]])).value as Slide[];
-    expect(slide).toMatchObject({ index: 1, layout: "Title and body" });
+    // A new presentation shows no slide numbers, so Google gives the slide no slide-number placeholder.
+    expect(slide).toMatchObject({
+      index: 1, layout: "Title and body", elements: [{ placeholder: "TITLE" }, { placeholder: "BODY" }],
+    });
     expect((await hooks().callSlides("create-deck", "getPresentation", [])).value)
       .toMatchObject({ slides: [{ id: "p", title: "Pitch" }, { id: newSlideId }] });
     expect(await hooks().callSlides("create-deck", "getSlideThumbnail", ["p"]))
@@ -153,7 +156,6 @@ describe("creating a Google Slides presentation", () => {
             placeholderIdMappings: [
               { layoutPlaceholder: { type: "TITLE", index: 0 }, objectId: slide.elements[0].id },
               { layoutPlaceholder: { type: "BODY", index: 0 }, objectId: slide.elements[1].id },
-              { layoutPlaceholder: { type: "SLIDE_NUMBER", index: 0 }, objectId: slide.elements[2].id },
             ],
           },
         }],

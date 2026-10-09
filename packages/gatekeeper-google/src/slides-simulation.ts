@@ -15,7 +15,7 @@ import type { TaggedAction } from "@gadgets/gatekeeper-kit/actions";
 import {
   replaySimulation, type SimulationResult, type SimulationStep,
 } from "@gadgets/gatekeeper-kit/simulation";
-import type { RestPage, RestPageElement, RestSlide, RestText } from "./slides-api";
+import type { RestPage, RestPageElement, RestSlide } from "./slides-api";
 import { designDeck, type DesignChange } from "./slides-design";
 import { ChangeConflict } from "./slides-text";
 
@@ -163,13 +163,14 @@ function duplicated(slide: RestSlide, newSlideId: string, objectIds: Record<stri
 
 /**
  * The placeholders a slide made from `layout` gets, each with a minted ID so a queued edit can
- * name it. A live probe showed Google instantiates every placeholder on the layout, slide number
- * included, in the layout's order, each at its layout placeholder's size and transform.
+ * name it, in the layout's order, each at its layout placeholder's size and transform. A slide
+ * number is left out: Google adds one only while the presentation shows slide numbers, which a new
+ * one does not, and otherwise ignores its mapping, so a minted ID could name nothing.
  */
 export function instantiatedPlaceholders(layout: RestPage): CreatedPlaceholder[] {
   return (layout.pageElements ?? []).flatMap(({ objectId, size, transform, shape }) => {
     let { type, index = 0 } = shape?.placeholder ?? {};
-    if (!objectId || !type) return [];
+    if (!objectId || !type || type === "SLIDE_NUMBER") return [];
     return [{
       objectId: mintObjectId(), type, index, parentObjectId: objectId,
       ...(shape?.shapeType ? { shapeType: shape.shapeType } : {}),
@@ -193,17 +194,8 @@ export function requirePlaceholders(layout: RestPage, placeholders: readonly Cre
   }
 }
 
-// A slide-number placeholder's text, as Google gives a new slide's; `reordered()` sets the number.
-const SLIDE_NUMBER_TEXT: RestText = {
-  textElements: [
-    { endIndex: 2, paragraphMarker: { style: { direction: "LEFT_TO_RIGHT" } } },
-    { endIndex: 1, autoText: { type: "SLIDE_NUMBER", content: "", style: {} } },
-    { startIndex: 1, endIndex: 2, textRun: { content: "\n", style: {} } },
-  ],
-};
-
-// Every placeholder but a slide number's is empty, and there are no speaker notes: Google names
-// the notes shape only when it creates the slide.
+// Every placeholder is empty, and there are no speaker notes: Google names the notes shape only
+// when it creates the slide.
 function created(
   newSlideId: string, layoutId: string, master: string, placeholders: readonly CreatedPlaceholder[],
 ): RestSlide {
@@ -217,7 +209,6 @@ function created(
       shape: {
         ...(shapeType ? { shapeType } : {}),
         placeholder: { type, ...(index ? { index } : {}), parentObjectId },
-        ...(type === "SLIDE_NUMBER" ? { text: structuredClone(SLIDE_NUMBER_TEXT) } : {}),
       },
     })),
     slideProperties: { layoutObjectId: layoutId, masterObjectId: master },

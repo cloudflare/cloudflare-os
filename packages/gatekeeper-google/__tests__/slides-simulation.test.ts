@@ -235,33 +235,6 @@ describe("Slides change replay", () => {
       expect(() => editSlide(created, { slideId: "new", replace: "Notes" })).toThrow("no speaker notes");
     });
 
-    // As a live probe showed: the only placeholder Google gives text, numbered with the position.
-    it("numbers its slide-number placeholder as Google does, and renumbers it when it moves", () => {
-      let NUMBER: CreatedPlaceholder = {
-        objectId: "new-number", type: "SLIDE_NUMBER", index: 0, parentObjectId: "lt-number", shapeType: "TEXT_BOX",
-      };
-      let withNumber: SlidesAction = {
-        kind: "createSlide",
-        payload: {
-          newSlideId: "new", layoutId: "layout-title-body", layout: "Title and body", after: "s1",
-          placeholders: [NUMBER, TITLE],
-        },
-      };
-
-      let added = applyChange(deck, withNumber);
-
-      expect(added.slides.get("new")!.pageElements![0].shape!.text).toEqual({
-        textElements: [
-          { endIndex: 2, paragraphMarker: { style: { direction: "LEFT_TO_RIGHT" } } },
-          { endIndex: 1, autoText: { type: "SLIDE_NUMBER", content: "2", style: {} } },
-          { startIndex: 1, endIndex: 2, textRun: { content: "\n", style: {} } },
-        ],
-      });
-      expect(numbers(added)).toEqual([["s1", "1"], ["new", "2"], ["s2", "3"]]);
-      let moved = applyChange(added, { kind: "moveSlides", payload: { slideIds: ["new"], after: "s2", slides: [] } });
-      expect(numbers(moved)).toEqual([["s1", "1"], ["s2", "2"], ["new", "3"]]);
-    });
-
     it("conflicts once the slide it follows is deleted, or its ID is taken", () => {
       let deleted = applyChange(deck, { kind: "deleteSlide", payload: { slideId: "s1", slide: { number: 1 } } });
 
