@@ -32,6 +32,8 @@ import { resolveUiFeatureFlags } from "./feature-flags";
 import { serveSiteLogo, SITE_LOGO_PATH } from "./site-logo.js";
 import { createWorkshopLogger } from "./observability";
 import { retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
+import { sealMobileHandoff } from "./auth/mobile-handoff.js";
+import { mobileLoginCallback } from "./auth/mobile-login-callback.js";
 
 const logger = createWorkshopLogger("workshop.server");
 
@@ -84,7 +86,8 @@ type Env = Cloudflare.Env & {
 class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   constructor(private ctx: ExecutionContext, private env: Env,
       userId: DurableObjectId,
-      private abortSession: (reason: Error) => void) {
+      private abortSession: (reason: Error) => void,
+      private accessSession?: { jwt: string; expiresAt: number }) {
     super();
 
     this.#userId = userId;
@@ -141,6 +144,21 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   whoami(): Promise<AiChatAuthorInfo> {
     // Pure-read delegations retry once across a user-DO reset (see retryOnDoReset); writes never do.
     return retryOnDoReset(() => this.#user.whoami());
+  }
+  async createMobileHandoff(publicKey: string, state: string) {
+    if (this.env.CF_ACCESS_AUD) {
+      if (!this.accessSession || this.accessSession.expiresAt <= Date.now()) {
+        throw new Error("The Access session has expired. Sign in again before connecting the app.");
+      }
+      return sealMobileHandoff(publicKey, state, {
+        accessJwt: this.accessSession.jwt,
+        accessExpiresAt: this.accessSession.expiresAt,
+      });
+    }
+    const token = await this.#user.createMobileSession();
+    return sealMobileHandoff(publicKey, state, {
+      sessionToken: `${this.#userId.name}:${token}`,
+    });
   }
   setOwnDisplayName(name: string): Promise<void> {
     return this.#user.setOwnDisplayName(name);
@@ -682,7 +700,8 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
 
   constructor(private ctx: ExecutionContext, private env: Env,
       private abortSession: (reason: Error) => void,
-      private accessPayload?: JWTPayload) {
+      private accessPayload?: JWTPayload,
+      private accessJwt?: string) {
     super();
     this.users = this.ctx.exports.UserDurableObject;
   }
@@ -775,7 +794,8 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
       user_id: userId.toString(),
       source: "cf_access",
     });
-    return new AuthenticatedApiImpl(this.ctx, this.env, userId, this.abortSession);
+    return new AuthenticatedApiImpl(this.ctx, this.env, userId, this.abortSession,
+        { jwt: this.accessJwt!, expiresAt: (this.accessPayload.exp ?? 0) * 1000 });
   }
 
   async login(username: string, passwordHash: Uint8Array): Promise<string | null> {
@@ -873,6 +893,10 @@ export default {
       return handleClientErrorRequest(req, env, ctx);
     }
 
+    if (url.pathname === "/api/mobile-login/callback") {
+      return mobileLoginCallback(req);
+    }
+
     if (url.pathname === "/api") {
       // Make sure the bundled blueprints are installed. The AdminSettings DO doesn't wake
       // merely because someone deployed, so the install needs a trigger; hanging it off API
@@ -924,7 +948,8 @@ export default {
       };
 
       return await newWorkersRpcResponse(req,
-          new PublicApiImpl(ctx, env, abortSession, accessPayload),
+          new PublicApiImpl(ctx, env, abortSession, accessPayload,
+              accessPayload ? req.headers.get("cf-access-jwt-assertion")! : undefined),
           { abortSignal: abortController.signal });
     }
 

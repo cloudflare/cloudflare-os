@@ -63,6 +63,26 @@ email and is then discarded by the gatekeeper. To use a gatekeeper's capabilitie
 or Cloudflare AI Gateway billing, the user explicitly **connects** it afterward (which requests the
 full scopes and persists the connection).
 
+## iOS shell return after installation sign-in
+
+The separate `gadgets-internal/packages/workshop-ios` shell opens a user's install in
+`ASWebAuthenticationSession` with a fresh `?cfos_mobile_state=<uuid>` and per-attempt P-256
+public key. After `AuthenticatedApi.whoami()` confirms a user session, the Workshop backend
+seals a two-minute session handoff to that public key. The frontend posts only the ciphertext
+to **that installation's** `/api/mobile-login/callback`, which validates its shape and replies
+with a fixed `cloudflare-os://install-connected` HTTP redirect. iOS receives the redirect in
+the authentication session's completion handler, checks the pending state, decrypts the
+handoff, verifies the credential in a temporary `WKWebView`, and only then persists it with
+the install in Keychain. The browser should close automatically; **Return to app** is a retry
+control, not a required step. There is no central mobile-login relay, poller, or cross-install
+session store. This is separate from the gatekeeper OAuth callback described above.
+
+Inside an install's embedded web view, the native shell exposes a versioned
+`window.cloudflareOSNative` capability. The Workshop uses that capability to confirm the restored
+session and to offer **Back to installs** without relying on URL parameters or browser storage.
+Both the native bridge and the encrypted handoff are available in every installation; they are not
+conditioned on Cloudflare Access mode.
+
 ## Configuration
 
 ```

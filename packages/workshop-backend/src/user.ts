@@ -269,6 +269,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return secret.toBase64();
   }
 
+  /** Mint an independent web session after an authenticated browser requests a mobile handoff. */
+  async createMobileSession(): Promise<string> {
+    if (!this.storage.created.get()) {
+      throw createAuthError(AUTH_ERROR_CODES.invalidSessionToken);
+    }
+    return this.#newSessionToken();
+  }
+
   async login(passwordHash: Uint8Array): Promise<string | null> {
     let passwordHashHash = new Uint8Array(await crypto.subtle.digest('SHA-256', passwordHash));
 

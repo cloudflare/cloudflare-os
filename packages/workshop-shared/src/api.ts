@@ -446,10 +446,25 @@ export type UserDirectoryRecord = {
   name: string;
 };
 
+/** Encrypted session material for one native-app sign-in attempt. Never contains plaintext credentials. */
+export type MobileHandoff = {
+  /** Ephemeral server P-256 public key, uncompressed and base64url encoded. */
+  publicKey: string;
+  /** Random HKDF salt, base64url encoded. */
+  salt: string;
+  /** AES-GCM nonce, base64url encoded. */
+  iv: string;
+  /** AES-GCM ciphertext and tag, base64url encoded. */
+  ciphertext: string;
+};
+
 /** Top-level API exposed to the user after they have authenticated. */
 export interface AuthenticatedApi extends RpcTarget {
   /** Get profile info for the user who is logged in. */
   whoami(): Promise<AiChatAuthorInfo>;
+
+  /** Encrypt a short-lived, install-local web session to the native app's ephemeral public key. */
+  createMobileHandoff(publicKey: string, state: string): Promise<MobileHandoff>;
 
   /** Set the user's own display name, seen in chats, etc. */
   setOwnDisplayName(name: string): Promise<void>;
