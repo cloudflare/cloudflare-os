@@ -1,0 +1,41 @@
+packages/gatekeeper-google/src/type-bundle.ts
+  s_c64553d463df78::t_73b8f9fb226213 18
+packages/gatekeeper-google/src/slides-design-input.ts
+  s_c64553d463df78::t_73b8f9fb226213 6-7,12-13,57-61,151-152,164-192,293-296,326-327,334,347-349,364-366
+packages/gatekeeper-google/__tests__/slides-design.test.ts
+  s_c64553d463df78::t_73b8f9fb226213 2,5,7,9-11,16-24,26,28,31,34-54,132,376,415-509,533-559,566-567,571-575
+packages/gatekeeper-google/src/slides-actions.ts
+  s_c64553d463df78::t_73b8f9fb226213 22-24,26-27,31,43-47,49-66,71,77-80,101,166-174,336-348,366,376-378,393-395,452-454,462-468,479-484,490-494,501-506,512-519,521,526
+packages/gatekeeper-google/src/slides-design.ts
+  s_c64553d463df78::t_73b8f9fb226213 2-3,5,13,15-17,52-76,102,106-122,124,132,134-138,143-144,146,148-150,189-237
+  s_c64553d463df78::t_080f8412c5dff4 238
+packages/gatekeeper-google/src/slides-simulation.ts
+  s_c64553d463df78::t_73b8f9fb226213 18-19,25-36,62-64,69,128,188-194,196-197,201-202,209-212,218
+packages/gatekeeper-google/__tests__/slides-simulation.test.ts
+  s_c64553d463df78::t_73b8f9fb226213 3,9-16,103-104,126-175,179,189,196-198
+packages/gatekeeper-google/__tests__/workerd/native-sessions.test.ts
+  s_c64553d463df78::t_73b8f9fb226213 15,233-241
+packages/gatekeeper-google/src/slides-types.d.ts
+  s_c64553d463df78::t_73b8f9fb226213 2,80-90,225-244,257-266,269-272,277-279
+packages/gatekeeper-google/__tests__/workerd/slides-actions.test.ts
+  s_c64553d463df78::t_73b8f9fb226213 4-5,10,56-75,77-87,90-109,136-137,139-140,144,288-310,776,995-1257
+  s_c64553d463df78::t_628c1784c3520d 1258
+packages/gatekeeper-google/src/slides.ts
+  s_c64553d463df78::t_73b8f9fb226213 13-15,19,24,246-254,283-285,287,297-299,306-307,309,311-315,318,345,347-348,355-356,418-422,424,451-453
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "24af270f2180948b20a4170a1c02951dfe670ae7",
+  "prompts": {},
+  "sessions": {
+    "s_c64553d463df78": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "190b76b5-6004-4f84-b206-24043da8572a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
