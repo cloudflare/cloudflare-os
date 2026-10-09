@@ -140,7 +140,7 @@ export class GoogleSlidesGatekeeperImpl
       return {
         url: nativeFileUrl("slides"),
         title,
-        snippet: `Google Slides presentation: ${title} (not created yet, so it has no slides to change)`,
+        snippet: `Google Slides presentation: ${title} (not created yet)`,
         suggestedBindingName: "GOOGLE_SLIDES",
         tsType: "GooglePresentationSession",
       };

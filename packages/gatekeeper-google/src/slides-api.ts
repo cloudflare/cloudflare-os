@@ -1,6 +1,10 @@
 import { readBytesCapped, ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import { readGoogleJson } from "./google-response";
+import {
+  LAYOUT_PAGE_FIELDS, OUTLINE_FIELDS, SLIDE_FIELDS, SUMMARY_FIELDS,
+} from "./slides-fields";
+import BLANK_RECORDING from "./blank-presentation.json";
 
 const API_BASE = "https://slides.googleapis.com/v1/presentations";
 // 10 MiB matches the Docs bound for a document body.
@@ -8,32 +12,6 @@ const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 // A slide is read on its own; a text-heavy live slide is about 50 KiB with all its styles.
 const MAX_SLIDE_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
-
-// Replaying a queued change needs an AutoText's width, which only the indices give, and its type.
-const TEXT_FIELDS =
-  "text(textElements(startIndex,endIndex,textRun(content),autoText(type,content)))";
-// A new slide's layout must share its master with the slide before it, or with the first master
-// in a presentation that has no slides.
-const LAYOUT_PROPERTIES = "objectId,layoutProperties(displayName,masterObjectId)";
-// Summaries need titles and speaker notes, which a mask can only reach as every shape's text.
-// Styles and geometry, most of a deck's JSON, are left out: 65 KiB for a live 16-slide deck,
-// against 780 KiB with them.
-const SUMMARY_FIELDS =
-  "presentationId,title,locale,pageSize,masters(objectId)," +
-  `layouts(${LAYOUT_PROPERTIES},pageElements(shape(placeholder(type)))),` +
-  `slides(objectId,pageElements(objectId,shape(placeholder(type),${TEXT_FIELDS})),` +
-  "slideProperties(layoutObjectId,masterObjectId,isSkipped," +
-  `notesPage(notesProperties(speakerNotesObjectId),pageElements(objectId,shape(${TEXT_FIELDS})))))`;
-// Google returns `revisionId` only to an account that can edit the presentation. A skip applies
-// against the outline alone.
-const OUTLINE_FIELDS = `presentationId,title,revisionId,masters(objectId),layouts(${LAYOUT_PROPERTIES}),` +
-  "slides(objectId,slideProperties(masterObjectId,isSkipped))";
-// What a new slide takes from its layout: each placeholder's type, index, shape and geometry.
-const LAYOUT_PAGE_FIELDS =
-  "objectId,pageElements(objectId,size,transform,shape(shapeType,placeholder(type,index)))";
-const SLIDE_FIELDS =
-  "objectId,pageElements," +
-  "slideProperties(layoutObjectId,masterObjectId,isSkipped,notesPage(notesProperties,pageElements))";
 
 // A thumbnail response is a URL and two numbers.
 const MAX_THUMBNAIL_RESPONSE_BYTES = 16 * 1024;
@@ -414,39 +392,55 @@ export type PresentationReader = Pick<
   GoogleSlidesApi, "getPresentation" | "getOutline" | "getSlides" | "getLayout" | "getThumbnail">;
 
 /**
- * A presentation not yet created: a 16:9 deck with no slides, so no change to it can be queued.
- * Google gives a created one a title slide, which this does not show. Makes no request.
+ * What a presentation session reads of a new presentation, as `scripts/record-blank-presentation.ts`
+ * recorded it from Google: each read less the presentation's ID, title and revision, and each page
+ * by its ID.
+ */
+type BlankRecording = {
+  presentation: Omit<RestPresentation, "presentationId">;
+  outline: Omit<RestPresentation, "presentationId">;
+  slides: Record<string, RestSlide>;
+  layouts: Record<string, RestPage>;
+};
+
+const BLANK = BLANK_RECORDING as BlankRecording;
+// A change applies against a fresh read of the created presentation, so this never reaches Google.
+const BLANK_REVISION = "blank";
+
+/**
+ * A presentation not yet created, read as the recording of a new one: the title slide and default
+ * layouts Google gives every new presentation, under the same object IDs, so a change queued against
+ * it applies unchanged to the presentation a user's approval creates. Makes no request. Each read
+ * is a copy, since one recording serves every session in the isolate.
  */
 export class BlankPresentation implements PresentationReader {
   constructor(private title: string) {}
 
   async getPresentation(presentationId: string): Promise<RestPresentation> {
+    return { ...structuredClone(BLANK.presentation), presentationId, title: this.title };
+  }
+
+  /** With a revision, as Google reports one to the account that creates, and so can edit, it. */
+  async getOutline(presentationId: string): Promise<RestPresentation> {
     return {
-      presentationId,
-      title: this.title,
-      pageSize: {
-        width: { magnitude: 9144000, unit: "EMU" },
-        height: { magnitude: 5143500, unit: "EMU" },
-      },
-      layouts: [],
-      slides: [],
+      ...structuredClone(BLANK.outline), presentationId, title: this.title, revisionId: BLANK_REVISION,
     };
   }
 
-  getOutline(presentationId: string): Promise<RestPresentation> {
-    return this.getPresentation(presentationId);
+  async getSlides(
+    _presentationId: string, ids: Iterable<string>, order: readonly string[],
+  ): Promise<Map<string, RestSlide>> {
+    return new Map([...ids].filter(id => order.includes(id) && Object.hasOwn(BLANK.slides, id))
+      .map(id => [id, structuredClone(BLANK.slides[id])]));
   }
 
-  /** Sessions ask only for slides the outline lists, and it lists none. */
-  async getSlides(): Promise<Map<string, RestSlide>> {
-    return new Map();
-  }
-
-  async getLayout(): Promise<RestPage> {
-    throw new Error("A presentation awaiting creation has no layouts.");
+  async getLayout(_presentationId: string, layoutId: string): Promise<RestPage> {
+    if (!Object.hasOwn(BLANK.layouts, layoutId)) throw new Error("A new presentation has no such layout.");
+    return structuredClone(BLANK.layouts[layoutId]);
   }
 
   async getThumbnail(): Promise<PageThumbnail> {
-    throw new Error("A presentation awaiting creation has no slides.");
+    throw new Error("This Google Slides presentation doesn't exist yet, so its slides can't be " +
+      "rendered until a user approves its creation.");
   }
 }
