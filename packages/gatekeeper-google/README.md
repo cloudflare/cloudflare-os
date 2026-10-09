@@ -258,16 +258,17 @@ the layout, read from the layout's page when the change is queued, so later chan
 placeholders before it is approved. Reads show the new slide with every placeholder on the layout,
 at the layout's size and position, empty but for a slide number's, as a live probe showed Google
 makes them (`instantiatedPlaceholders()` in `slides-simulation.ts`).
-Google takes a new slide's layout only from the master of the slide before it, or of the first
-slide when it goes first, so a deck with slides imported in another theme has layouts that fit
-only some places: layouts and slide summaries carry their master's ID, and a layout that does not
-fit where it is to go is refused when queued, and again on approval against a fresh read, as is
-one deleted since. Google names a new slide's speaker notes only as it creates the slide, so they
-cannot be edited until it is approved. Adding a slide always waits for approval.
+Google takes a new slide's layout only from the master of the slide before it, of the first slide
+when it goes first, or of the presentation's first master when it has no slides, so a deck with
+slides imported in another theme has layouts that fit only some places: layouts and slide
+summaries carry their master's ID, and a layout that does not fit where it is to go is refused
+when queued, and again on approval against a fresh read, as is one deleted since. Google names a
+new slide's speaker notes only as it creates the slide, so they cannot be edited until it is
+approved. Adding a slide always waits for approval.
 
 `setSlidesSkipped()` skips slides, leaving them out when presenting, or shows them again. It is
 the "Skipping slides" kind, which a user may let apply without asking: it destroys nothing, and
-is undone the same way.
+is undone the same way. It applies against the presentation's outline alone, reading no slide.
 
 Reads show queued changes as if applied, by replaying them over Slides' own JSON before it is
 projected; thumbnails show the presentation as saved. Each change is replayed as Google documents

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RestPageElement, RestPresentation } from "../src/slides-api";
-import { layoutNames, presentationInfo, slideOf } from "../src/slides-model";
+import { layoutNames, mastersOf, presentationInfo, slideOf } from "../src/slides-model";
 import type { ShapeElement } from "../src/slides-read-types";
 import { presentation, shape, slide, text } from "./slides-fixture";
 import liveOutline from "./slides-live-outline.json";
@@ -353,6 +353,15 @@ describe("Slides model", () => {
         { id: "layout-title", name: "Title slide", master: "master-1", placeholders: ["CENTERED_TITLE", "SUBTITLE"] },
         { id: "layout-title-body", name: "Title and body", master: "master-1", placeholders: ["TITLE", "BODY", "BODY"] },
       ],
+    });
+  });
+
+  it("maps every slide and layout to its master, and names the presentation's first master", () => {
+    let rest = { ...presentation([slide("s1", [])]), masters: [{ objectId: "master-1" }, { objectId: "master-2" }] };
+
+    expect(mastersOf(rest)).toEqual({
+      masters: new Map([["layout-title", "master-1"], ["layout-title-body", "master-1"], ["s1", "master-1"]]),
+      firstMaster: "master-1",
     });
   });
 

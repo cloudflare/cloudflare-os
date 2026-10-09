@@ -24,8 +24,8 @@ import { CREATES } from "./slides-design-input";
 import { mastersOf, slideIds } from "./slides-model";
 import type { SlideBounds } from "./slides-read-types";
 import {
-  movedOrder, newSlidePlace, requireNewSlide, type Deck, type DesignBatch, type SlideLabel,
-  type SlidesActions,
+  movedOrder, newSlidePlace, requireNewSlide, requireSlide, type Deck, type DesignBatch,
+  type SlideLabel, type SlidesActions,
 } from "./slides-simulation";
 import { elementIdsOf, locate, textOfTarget, type TextAddress } from "./slides-target";
 import { ChangeConflict, projectedText, richTextOf } from "./slides-text";
@@ -60,10 +60,10 @@ export function batchKind(changes: readonly DesignChange[]): "editText" | "forma
 const MAX_ATTEMPTS = 3;
 
 /**
- * A fresh read: the revision to pin a write to, the slide order, the slides it fetched, and the
- * masters of every slide and layout.
+ * A fresh read: the revision to pin a write to, the slide order, the slides it fetched, the
+ * masters of every slide and layout, and which slides are skipped.
  */
-type Fresh = Deck & { revisionId: string };
+type Fresh = Deck & { revisionId: string; skipped: ReadonlySet<string> };
 
 type Plan = {
   requests: unknown[];
@@ -83,7 +83,9 @@ async function readFresh(host: SlidesHost, ids: readonly string[]): Promise<Fres
   // Read after the outline: a slide changed since then has also moved the revision this write is
   // pinned to, so Google refuses it rather than applying it against what changed.
   let slides = await host.api.getSlides(host.presentationId, ids, order);
-  return { revisionId, order, slides, masters: mastersOf(outline) };
+  let skipped = new Set(outline.slides?.flatMap(({ objectId, slideProperties }) =>
+    objectId && slideProperties?.isSkipped ? [objectId] : []));
+  return { revisionId, order, slides, ...mastersOf(outline), skipped };
 }
 
 function noLongerApplies(error: unknown): never {
@@ -595,20 +597,14 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
         implementsRevert: false,
       };
     },
-    apply: ({ slideIds: ids, skipped }, host) => write(host, ids, fresh => {
-      let changing = ids.filter(id => {
-        let slide = fresh.slides.get(id);
-        if (!slide) throw new ChangeConflict(`slide "${id}" no longer exists`);
-        return (slide.slideProperties?.isSkipped === true) !== skipped;
-      });
+    // Planned from the outline alone, which says which slides are skipped.
+    apply: ({ slideIds: ids, skipped }, host) => write(host, [], fresh => {
+      for (let id of ids) requireSlide(fresh.order, id);
       return {
-        requests: changing.map(objectId => ({
+        requests: ids.filter(id => fresh.skipped.has(id) !== skipped).map(objectId => ({
           updateSlideProperties: { objectId, slideProperties: { isSkipped: skipped }, fields: "isSkipped" },
         })),
-        landed: later => ids.every(id => {
-          let slide = later.slides.get(id);
-          return slide !== undefined && (slide.slideProperties?.isSkipped === true) === skipped;
-        }),
+        landed: later => ids.every(id => later.order.includes(id) && later.skipped.has(id) === skipped),
       };
     }),
   },

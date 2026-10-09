@@ -272,13 +272,17 @@ describe("Slides change replay", () => {
 
     it("conflicts once its layout is gone, or where Google takes no layout of its master", () => {
       let gone = { ...deck, masters: new Map([...deck.masters].filter(([id]) => id !== "layout-title-body")) };
-      // Google takes a new slide's layout from the master of the slide before, or the first slide's.
+      // Google takes a new slide's layout from the master of the slide before, or the first slide's,
+      // or with no slide, the presentation's first master.
       let themed = { ...deck, masters: new Map([...deck.masters, ["s2", "m2"]]) };
+      let emptied = { ...deck, order: [], firstMaster: "m2" };
 
       expect(() => applyChange(gone, create())).toThrow('layout "layout-title-body" no longer exists');
       expect(() => applyChange(themed, create())).toThrow('belongs to a different master than slide "s2"');
       expect(applyChange(themed, create(null)).order).toEqual(["new", "s1", "s2"]);
       expect(applyChange(themed, create("s1")).masters.get("new")).toBe("m1");
+      expect(() => applyChange(emptied, create())).toThrow("belongs to a different master than the presentation's first");
+      expect(applyChange({ ...emptied, firstMaster: "m1" }, create()).order).toEqual(["new"]);
     });
   });
 });

@@ -36,7 +36,8 @@ const MAX_SLIDES_READ_LENGTH = 8 * 1024 * 1024;
 const THUMBNAIL_SIZES = {
   small: "SMALL", medium: "MEDIUM", large: "LARGE",
 } as const satisfies Record<SlideThumbnailSize, ThumbnailSize>;
-const MAX_SLIDES_PER_MOVE = 100;
+// A move or skip names each of its slides to the approver.
+const MAX_SLIDES_PER_CHANGE = 100;
 // A queued change is one Durable Object KV value, which may not exceed 128 KiB serialized.
 const MAX_CHANGE_BYTES = 100 * 1024;
 
@@ -269,8 +270,8 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
   }
 
   /**
-   * The slide order and the content of `ids`, with queued changes applied, and `saved`, the slide
-   * order Google has. A slide that no longer exists, or never did, is absent from `deck.order`.
+   * The slide order and the content of `ids`, with queued changes applied. A slide that no longer
+   * exists, or never did, is absent from `deck.order`.
    */
   async #simulated(ids: readonly string[]) {
     return this.#changes.snapshot(async changes => {
@@ -281,11 +282,10 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
         // Google reports the revision only to an account that can edit the presentation.
         editable: outline.revisionId !== undefined,
         layouts: layoutNames(outline),
-        saved: order,
         ...replayed({
           order,
           slides: await this.#api.getSlides(this.#presentationId, slidesToFetch(ids, changes), order),
-          masters: mastersOf(outline),
+          ...mastersOf(outline),
         }, changes),
       };
     });
@@ -318,7 +318,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
           ...(rest.slides ?? []).map(slide => [slide.objectId!, slide] as const),
           ...await this.#api.getSlides(this.#presentationId, slidesToFetch(edited, changes), order),
         ]);
-        let { deck, conflict } = replayed({ order, slides, masters: mastersOf(rest) }, changes);
+        let { deck, conflict } = replayed({ order, slides, ...mastersOf(rest) }, changes);
         return {
           ...presentationInfo({ ...rest, slides: deck.order.map(id => deck.slides.get(id)!) }),
           ...(conflict ? { queuedChangeConflict: conflict } : {}),
@@ -393,11 +393,11 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
     let { changes: prepared, refs } = prepareChanges(changes);
     let ids = [...new Set(changes.map(change => change.slideId))];
     return this.#changes.queue(batchKind(prepared), async () => {
-      let { deck, saved } = await this.#prepare(ids, "queue changes to them");
+      let { deck } = await this.#prepare(ids, "queue changes to them");
       // Google names a new slide's notes shape itself, as it creates the slide, so until then an
-      // edit has nothing to address. A queued copy has its source's.
+      // edit has nothing to address. Every slide Google has, and a queued copy of one, has notes.
       let unborn = prepared.find(change => change.op === "editText" && change.elementId === undefined &&
-        !saved.includes(change.slideId) && !deck.slides.get(change.slideId)?.slideProperties?.notesPage);
+        !deck.slides.get(change.slideId)?.slideProperties?.notesPage);
       if (unborn) {
         throw new Error(`Slide "${unborn.slideId}" is awaiting approval to be added, and Google gives it ` +
           "speaker notes only then. Edit its notes once it is approved.");
@@ -457,8 +457,8 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
   }
 
   async moveSlides(slideIds: string[], after: string | null): Promise<void> {
-    if (slideIds.length === 0 || slideIds.length > MAX_SLIDES_PER_MOVE) {
-      throw new Error(`Move between 1 and ${MAX_SLIDES_PER_MOVE} slides at a time.`);
+    if (slideIds.length === 0 || slideIds.length > MAX_SLIDES_PER_CHANGE) {
+      throw new Error(`Move between 1 and ${MAX_SLIDES_PER_CHANGE} slides at a time.`);
     }
     if (new Set(slideIds).size !== slideIds.length) throw new Error("A slide is listed twice.");
     await this.#changes.queue("moveSlides", async () => {
@@ -501,11 +501,15 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
               : undefined,
           };
         },
-        ({ title, layouts }) => ({
-          title: "Read Google Slides slides to change them",
-          description: `Read the slide order of "${title}" and the placeholders of its layout ` +
-            `"${layouts.get(layoutId) ?? layoutId}" to queue adding a slide.`,
-        }));
+        ({ title, layouts }) => {
+          // An agent's ID that names no layout is not shown to the user.
+          let layout = layouts.get(layoutId);
+          return {
+            title: "Read Google Slides slides to change them",
+            description: `Read the slide order of "${title}" and the placeholders of ` +
+              `${layout === undefined ? "a layout" : `its layout "${layout}"`} to queue adding a slide.`,
+          };
+        });
       let { title, layouts, deck } = preparable(ids, simulated);
       let layout = layouts.get(layoutId);
       if (page === undefined || layout === undefined) {
@@ -531,8 +535,8 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
   }
 
   async setSlidesSkipped(slideIds: string[], skipped: boolean): Promise<void> {
-    if (slideIds.length === 0 || slideIds.length > MAX_SLIDES_PER_MOVE) {
-      throw new Error(`Skip or unskip between 1 and ${MAX_SLIDES_PER_MOVE} slides at a time.`);
+    if (slideIds.length === 0 || slideIds.length > MAX_SLIDES_PER_CHANGE) {
+      throw new Error(`Skip or unskip between 1 and ${MAX_SLIDES_PER_CHANGE} slides at a time.`);
     }
     if (new Set(slideIds).size !== slideIds.length) throw new Error("A slide is listed twice.");
     await this.#changes.queue("skipSlides", async () => {

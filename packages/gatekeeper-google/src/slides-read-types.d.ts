@@ -32,7 +32,8 @@ export type SlideLayout = {
   name: string;
   /**
    * ID of the master, or theme, it belongs to. A new slide can take a layout only from the master
-   * of the slide before it, or of the first slide when it goes first.
+   * of the slide before it, of the first slide when it goes first, or of the presentation's first
+   * master when it has no slides.
    */
   master: string;
   /** The placeholders the layout holds, by type such as `TITLE` or `BODY`, in drawing order. */

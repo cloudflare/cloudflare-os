@@ -77,6 +77,8 @@ export type Deck = {
   slides: ReadonlyMap<string, RestSlide>;
   /** The master of every slide in `order`, and of every layout the presentation has. */
   masters: ReadonlyMap<string, string>;
+  /** The presentation's first master, which a slide added to it with none takes its layout from. */
+  firstMaster?: string;
 };
 
 /** Element IDs a duplicate gets: the gatekeeper's, so a queued edit can name them. */
@@ -112,10 +114,11 @@ export function movedOrder(
 /**
  * Where a new slide goes in `deck`, and the master it takes from its layout. Throws `ChangeConflict`
  * for a layout that is gone, or that is not of the master Google takes a new slide's layout from:
- * the slide before's, or the first slide's when it goes first.
+ * the slide before's, the first slide's when it goes first, or the first master's when there is
+ * no slide.
  */
 export function newSlidePlace(
-  { order, masters }: Deck, { newSlideId, layoutId, after }: SlidesActions["createSlide"],
+  { order, masters, firstMaster }: Deck, { newSlideId, layoutId, after }: SlidesActions["createSlide"],
 ): { at: number; master: string } {
   requireNewSlide(order, newSlideId);
   if (typeof after === "string") requireSlide(order, after);
@@ -123,10 +126,12 @@ export function newSlidePlace(
   if (master === undefined) throw new ChangeConflict(`layout "${layoutId}" no longer exists`);
   let at = after === undefined ? order.length : after === null ? 0 : order.indexOf(after) + 1;
   let beside = order[Math.max(at - 1, 0)];
-  if (beside !== undefined && masters.get(beside) !== master) {
-    throw new ChangeConflict(`layout "${layoutId}" belongs to a different master than slide ` +
-      `"${beside}", and Google takes a new slide's layout from the master of the slide before it, ` +
-      "or of the first slide when it goes first");
+  if ((beside === undefined ? firstMaster : masters.get(beside)) !== master) {
+    throw new ChangeConflict(`layout "${layoutId}" belongs to a different master than ` +
+      (beside === undefined ? `the presentation's first${firstMaster ? `, "${firstMaster}"` : ""}`
+        : `slide "${beside}"`) +
+      ", and Google takes a new slide's layout from the master of the slide before it, of the " +
+      "first slide when it goes first, or of the presentation's first master when there is no slide");
   }
   return { at, master };
 }
@@ -216,7 +221,7 @@ function reordered(deck: Deck, order: string[], slides = deck.slides, masters = 
     let position = order.indexOf(id);
     return position === deck.order.indexOf(id) ? [id, slide] : [id, numbered(slide, position + 1)];
   });
-  return { order, slides: new Map(renumbered), masters };
+  return { ...deck, order, slides: new Map(renumbered), masters };
 }
 
 function numbered(slide: RestSlide, number: number): RestSlide {

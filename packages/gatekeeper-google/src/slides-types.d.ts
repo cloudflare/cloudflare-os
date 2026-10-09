@@ -262,9 +262,10 @@ export interface GooglePresentationSession extends GooglePresentationReadSession
   /**
    * Queue adding a slide made from a layout, `layoutId` being one of `PresentationInfo.layouts`'
    * IDs: right after the slide `after`, at the start when `after` is null, or at the end when it
-   * is omitted. The layout's `master` must be that of the slide before it, or of the first slide
-   * when it goes first, as Google requires. Returns the new slide's ID. The slide gets the
-   * layout's placeholders, empty: read it with `getSlides()` to fill them with `updateSlides()`.
+   * is omitted. The layout's `master` must be that of the slide before it, of the first slide when
+   * it goes first, or of the presentation's first master when it has no slides, as Google requires.
+   * Returns the new slide's ID. The slide gets the layout's placeholders, empty: read it with
+   * `getSlides()` to fill them with `updateSlides()`.
    * Its speaker notes can be edited only once it is approved.
    */
   createSlide(layoutId: string, after?: string | null): Promise<string>;

@@ -13,7 +13,9 @@ import {
   emu, IDENTITY, localBox, matrixOf, multiply, placementOf, points, roundedPlacement, slidePoint,
   tableLinesOf, type Box, type Matrix,
 } from "./slides-geometry";
-import { borderOf, cellPropertiesOf, colorOf, dashOf, formattingOf, shapePropertiesOf } from "./slides-format";
+import {
+  borderOf, cellPropertiesOf, colorOf, dashOf, formattingOf, shapePropertiesOf, weightOf,
+} from "./slides-format";
 import type {
   LineElement, PresentationInfo, Slide, SlideElement, SlideLayout, SlideSummary, TableBorder,
   TableCell, TableElement,
@@ -111,7 +113,6 @@ function lineOf(
   let properties = line.lineProperties;
   let category = LINE_CATEGORIES[line.lineCategory ?? ""];
   let color = colorOf(properties?.lineFill?.solidFill?.color);
-  let weight = properties?.weight?.magnitude ? points(emu(properties.weight)) : undefined;
   let read: Omit<LineElement, "id" | "kind"> = {
     ...(category ? { category } : {}),
     // A line runs from its box's top-left corner to its bottom-right, before its transform flips it.
@@ -119,7 +120,7 @@ function lineOf(
       start: slidePoint(matrix, box.x, box.y), end: slidePoint(matrix, box.x + box.width, box.y + box.height),
     } : {}),
     ...(color ? { color } : {}),
-    ...(weight ? { weight } : {}),
+    ...weightOf(properties?.weight),
     ...dashOf(properties?.dashStyle),
   };
   for (let end of ["start", "end"] as const) {
@@ -212,13 +213,19 @@ export function layoutNames(rest: RestPresentation): LayoutNames {
   return names;
 }
 
-/** The master of every layout and slide a presentation or its outline lists, by object ID. */
-export function mastersOf(rest: RestPresentation): Map<string, string> {
+/**
+ * The master of every layout and slide a presentation or its outline lists, by object ID, and its
+ * first master, which a slide added to a presentation with none takes its layout from.
+ */
+export function mastersOf(rest: RestPresentation): { masters: Map<string, string>; firstMaster?: string } {
   let pages = [
     ...(rest.layouts ?? []).map(({ objectId, layoutProperties }) => [objectId, layoutProperties?.masterObjectId]),
     ...(rest.slides ?? []).map(({ objectId, slideProperties }) => [objectId, slideProperties?.masterObjectId]),
   ];
-  return new Map(pages.filter((page): page is [string, string] => !!page[0] && !!page[1]));
+  return {
+    masters: new Map(pages.filter((page): page is [string, string] => !!page[0] && !!page[1])),
+    firstMaster: rest.masters?.[0]?.objectId,
+  };
 }
 
 /** The IDs of a presentation's slides, in presentation order. */

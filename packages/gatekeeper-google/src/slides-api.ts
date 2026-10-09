@@ -12,20 +12,22 @@ const REQUEST_TIMEOUT_MS = 30_000;
 // Replaying a queued change needs an AutoText's width, which only the indices give, and its type.
 const TEXT_FIELDS =
   "text(textElements(startIndex,endIndex,textRun(content),autoText(type,content)))";
-// A new slide's layout must share its master with the slide before it.
+// A new slide's layout must share its master with the slide before it, or with the first master
+// in a presentation that has no slides.
 const LAYOUT_PROPERTIES = "objectId,layoutProperties(displayName,masterObjectId)";
 // Summaries need titles and speaker notes, which a mask can only reach as every shape's text.
 // Styles and geometry, most of a deck's JSON, are left out: 65 KiB for a live 16-slide deck,
 // against 780 KiB with them.
 const SUMMARY_FIELDS =
-  "presentationId,title,locale,pageSize," +
+  "presentationId,title,locale,pageSize,masters(objectId)," +
   `layouts(${LAYOUT_PROPERTIES},pageElements(shape(placeholder(type)))),` +
   `slides(objectId,pageElements(objectId,shape(placeholder(type),${TEXT_FIELDS})),` +
   "slideProperties(layoutObjectId,masterObjectId,isSkipped," +
   `notesPage(notesProperties(speakerNotesObjectId),pageElements(objectId,shape(${TEXT_FIELDS})))))`;
-// Google returns `revisionId` only to an account that can edit the presentation.
-const OUTLINE_FIELDS = `presentationId,title,revisionId,layouts(${LAYOUT_PROPERTIES}),` +
-  "slides(objectId,slideProperties(masterObjectId))";
+// Google returns `revisionId` only to an account that can edit the presentation. A skip applies
+// against the outline alone.
+const OUTLINE_FIELDS = `presentationId,title,revisionId,masters(objectId),layouts(${LAYOUT_PROPERTIES}),` +
+  "slides(objectId,slideProperties(masterObjectId,isSkipped))";
 // What a new slide takes from its layout: each placeholder's type, index, shape and geometry.
 const LAYOUT_PAGE_FIELDS =
   "objectId,pageElements(objectId,size,transform,shape(shapeType,placeholder(type,index)))";
@@ -221,6 +223,7 @@ export type RestPresentation = {
   locale?: string;
   revisionId?: string;
   pageSize?: { width?: RestDimension; height?: RestDimension };
+  masters?: { objectId?: string }[];
   layouts?: {
     objectId?: string;
     layoutProperties?: { displayName?: string; masterObjectId?: string };

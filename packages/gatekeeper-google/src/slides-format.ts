@@ -150,6 +150,11 @@ export function dashOf(dashStyle: string | undefined): { dash?: DashStyle } {
   return dashStyle && dashStyle !== "SOLID" ? { dash: dashStyle } : {};
 }
 
+/** A line weight in points as agents read it: none when Google gives none. */
+export function weightOf(weight: RestDimension | undefined): { weight?: number } {
+  return weight?.magnitude ? { weight: points(emu(weight)) } : {};
+}
+
 /** A shape's fill, outline and content alignment, as far as the shape sets them. */
 export function shapePropertiesOf(
   properties: RestShapeProperties | undefined,
@@ -161,10 +166,10 @@ export function shapePropertiesOf(
     read.outline = "none";
   } else if (outline && outline.propertyState !== "INHERIT") {
     let color = colorOf(outline.outlineFill?.solidFill?.color);
-    let weight = outline.weight?.magnitude ? points(emu(outline.weight)) : undefined;
+    let weight = weightOf(outline.weight);
     let dash = dashOf(outline.dashStyle);
-    if (color || weight || dash.dash) {
-      read.outline = { ...(color ? { color } : {}), ...(weight ? { weight } : {}), ...dash };
+    if (color || weight.weight || dash.dash) {
+      read.outline = { ...(color ? { color } : {}), ...weight, ...dash };
     }
   }
   let contentAlignment = CONTENT_ALIGNMENTS[properties?.contentAlignment ?? ""];
@@ -191,8 +196,7 @@ export function borderOf(properties: RestBorderProperties): TableBorder {
   let solidFill = properties.tableBorderFill?.solidFill;
   if (!solidFill || solidFill.alpha === 0) return "none";
   let color = colorOf(solidFill?.color);
-  let weight = properties.weight?.magnitude ? points(emu(properties.weight)) : undefined;
-  return { ...(color ? { color } : {}), ...(weight ? { weight } : {}), ...dashOf(properties.dashStyle) };
+  return { ...(color ? { color } : {}), ...weightOf(properties.weight), ...dashOf(properties.dashStyle) };
 }
 
 /** The theme colours a `SlideColor` may name. */
