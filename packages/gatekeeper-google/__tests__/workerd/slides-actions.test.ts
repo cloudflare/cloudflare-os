@@ -1096,6 +1096,20 @@ describe("Google Slides new and skipped slides", () => {
     expect(provider.batches).toEqual([]);
   });
 
+  it("fails a new slide without writing once its layout loses a placeholder it maps", async () => {
+    let provider = new SlidesProvider(layoutDeck()).install();
+    let slides = gatekeeper();
+    let created = await slides.queued("createSlide", "layout-title-body");
+    provider.edit(d => {
+      let layout = d.layouts!.find(l => l.objectId === "layout-title-body")!;
+      layout.pageElements = layout.pageElements!.filter(e => e.objectId !== "ltb-body2");
+    });
+
+    expect(await slides.apply(created.actionId!))
+      .toContain('layout "layout-title-body" no longer has its BODY placeholder 1');
+    expect(provider.batches).toEqual([]);
+  });
+
   it("adds a slide only after one of its layout's master, as Google requires", async () => {
     let themed = layoutDeck();
     themed.slides!.at(-1)!.slideProperties!.masterObjectId = "master-2";

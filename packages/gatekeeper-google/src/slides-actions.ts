@@ -24,8 +24,8 @@ import { CREATES } from "./slides-design-input";
 import { mastersOf, slideIds } from "./slides-model";
 import type { SlideBounds } from "./slides-read-types";
 import {
-  movedOrder, newSlidePlace, requireNewSlide, requireSlide, type Deck, type DesignBatch,
-  type SlideLabel, type SlidesActions,
+  movedOrder, newSlidePlace, requireNewSlide, requirePlaceholders, requireSlide, type Deck,
+  type DesignBatch, type SlideLabel, type SlidesActions,
 } from "./slides-simulation";
 import { elementIdsOf, locate, textOfTarget, type TextAddress } from "./slides-target";
 import { ChangeConflict, projectedText, richTextOf } from "./slides-text";
@@ -97,7 +97,7 @@ function noLongerApplies(error: unknown): never {
 
 /** Writes the plan for `ids`, as the module comment describes. */
 async function write(
-  host: SlidesHost, ids: readonly string[], plan: (fresh: Fresh) => Plan,
+  host: SlidesHost, ids: readonly string[], plan: (fresh: Fresh) => Plan | Promise<Plan>,
 ): Promise<void> {
   // Set once a dispatch's outcome is unknown; from then on only this batch is ever sent.
   let sent: (Plan & { revisionId: string }) | undefined;
@@ -107,7 +107,7 @@ async function write(
       let fresh = await readFresh(host, ids);
       let planned: Plan;
       try {
-        planned = plan(fresh);
+        planned = await plan(fresh);
       } catch (error) {
         noLongerApplies(error);
       }
@@ -561,9 +561,11 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
         implementsRevert: false,
       };
     },
-    apply: (payload, host) => write(host, [], fresh => {
+    apply: (payload, host) => write(host, [], async fresh => {
       let { newSlideId, layoutId, after, placeholders } = payload;
       let { at } = newSlidePlace(fresh, payload);
+      // The layout may have lost a placeholder the change maps since it was queued.
+      requirePlaceholders(await host.api.getLayout(host.presentationId, layoutId), placeholders);
       return {
         requests: [{
           createSlide: {

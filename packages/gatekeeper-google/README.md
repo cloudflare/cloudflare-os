@@ -262,12 +262,13 @@ Google takes a new slide's layout only from the master of the slide before it, o
 when it goes first, or of the presentation's first master when it has no slides, so a deck with
 slides imported in another theme has layouts that fit only some places: layouts and slide
 summaries carry their master's ID, and a layout that does not fit where it is to go is refused
-when queued, and again on approval against a fresh read, as is one deleted since. Google deletes a
-master and its layouts with the last slide on it, unless it is the presentation's first master, as
-a live probe showed, so reads drop the layouts of a master whose last slide a queued deletion
-removes, and a slide queued after it on one of those layouts is refused. Google names a new
-slide's speaker notes only as it creates the slide, so they cannot be edited until it is approved.
-Adding a slide always waits for approval.
+when queued, and again on approval against a fresh read, as is one deleted since; approval also
+refuses one that has lost a placeholder the slide was to get. Google deletes a master and its
+layouts with the last slide on it, unless it is the presentation's first master, as a live probe
+showed, so reads drop the layouts of a master whose last slide a queued deletion removes, and a
+slide queued after it on one of those layouts is refused. Google names a new slide's speaker notes
+only as it creates the slide, so they cannot be edited until it is approved. Adding a slide always
+waits for approval.
 
 `setSlidesSkipped()` skips slides, leaving them out when presenting, or shows them again. It is
 the "Skipping slides" kind, which a user may let apply without asking: it destroys nothing, and

@@ -178,6 +178,21 @@ export function instantiatedPlaceholders(layout: RestPage): CreatedPlaceholder[]
   });
 }
 
+/**
+ * Throws `ChangeConflict` if `layout` no longer has a placeholder of each type and index in
+ * `placeholders`, as Google refuses a new slide that maps one it lacks.
+ */
+export function requirePlaceholders(layout: RestPage, placeholders: readonly CreatedPlaceholder[]): void {
+  let key = (type: string, index = 0) => `${type}#${index}`;
+  let present = new Set(layout.pageElements?.flatMap(({ shape }) =>
+    shape?.placeholder?.type ? [key(shape.placeholder.type, shape.placeholder.index)] : []));
+  let missing = placeholders.find(({ type, index }) => !present.has(key(type, index)));
+  if (missing) {
+    throw new ChangeConflict(`layout "${layout.objectId}" no longer has its ${missing.type} placeholder` +
+      (missing.index ? ` ${missing.index}` : ""));
+  }
+}
+
 // A slide-number placeholder's text, as Google gives a new slide's; `reordered()` sets the number.
 const SLIDE_NUMBER_TEXT: RestText = {
   textElements: [
