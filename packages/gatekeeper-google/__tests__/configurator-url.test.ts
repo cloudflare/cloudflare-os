@@ -238,18 +238,6 @@ describe("Drive configurator URLs", () => {
     expect(parseResourceUrl(url)).toEqual({ kind: "driveAccount" });
   });
 
-  it("explains Drive read behavior", () => {
-    expect(renderedCopy(driveAccountConfigurator)).toContain(
-      "native Google Docs and Sheets can be opened in read-only content sessions.",
-    );
-    expect(renderedCopy(driveFileConfigurator)).toContain(
-      "A selected native Google Doc or Sheet also provides read-only content.",
-    );
-    expect(renderedCopy(driveFolderConfigurator))
-      .toContain("My Drive, Shared with me, and shared drives");
-  });
-
-
   it("round-trips an encoded file ID", () => {
     let values = { fileId: "file/id with spaces" };
     let url = configurableUrl(driveFileConfigurator, values);

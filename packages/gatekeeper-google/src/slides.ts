@@ -22,6 +22,7 @@ import {
 } from "./slides-simulation";
 import { elementIdsOf } from "./slides-target";
 import { ChangeConflict } from "./slides-text";
+import type { GooglePresentationReadSession } from "./slides-read-types";
 import type { GooglePresentationSession, SlideChange } from "./slides-types";
 import { SLIDES_TYPES_MODULE_PREFIX, stripTypeModulePrefix } from "./type-bundle";
 import SLIDES_READ_TYPES_CODE from "./slides-read-types.txt";
@@ -480,6 +481,50 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
         result: undefined,
       };
     });
+  }
+}
+
+/** What a read-only presentation reads through: nothing is ever queued against it. */
+const NO_CHANGES: SlidesChangeQueue = {
+  snapshot: read => read([]),
+  queue: () => Promise.reject(new Error("This Google Slides presentation is open read-only.")),
+};
+
+/**
+ * A presentation opened read-only, as Drive opens one. It holds the read/write session rather than
+ * extending it, so its RPC surface has no write method to call: the reads are the same code, run
+ * against no queued changes.
+ */
+@validateRpc()
+export class GooglePresentationReadSessionImpl extends RpcTarget
+    implements GooglePresentationReadSession {
+  #session: GooglePresentationSessionImpl;
+
+  constructor(
+    api: GoogleSlidesApi,
+    presentationId: string,
+    approvalQueue: RpcStub<ApprovalQueue>,
+    read: NativeRead,
+  ) {
+    super();
+    this.#session = new GooglePresentationSessionImpl(
+      api, presentationId, approvalQueue, read, NO_CHANGES);
+  }
+
+  [Symbol.dispose](): void {
+    this.#session[Symbol.dispose]();
+  }
+
+  getPresentation(): Promise<PresentationInfo> {
+    return this.#session.getPresentation();
+  }
+
+  getSlides(slideIds: string[]): Promise<Slide[]> {
+    return this.#session.getSlides(slideIds);
+  }
+
+  getSlideThumbnail(slideId: string, size?: SlideThumbnailSize): Promise<SlideThumbnail> {
+    return this.#session.getSlideThumbnail(slideId, size);
   }
 }
 

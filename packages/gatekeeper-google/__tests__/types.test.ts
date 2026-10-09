@@ -79,6 +79,7 @@ function driveBundle(): string {
   return [
     source("docs-read-types.txt"),
     source("sheets-types.txt"),
+    source("slides-read-types.txt"),
     stripTypeModulePrefix(source("drive-types.txt"), DRIVE_TYPES_MODULE_PREFIX),
   ].join("\n");
 }
@@ -138,8 +139,12 @@ describe("embedded agent declarations", () => {
     expect(driveTypes).toContain(
       "openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetReadSession>",
     );
+    expect(driveTypes).toContain(
+      "openGoogleSlides(fileId: string): Promise<GooglePresentationReadSession>",
+    );
     expect(driveTypes).not.toContain("GoogleDocSession>");
     expect(driveTypes).not.toContain("GoogleSpreadsheetSession>");
+    expect(driveTypes).not.toContain("GooglePresentationSession>");
     expect(driveTypes).toContain("export interface GoogleDriveReadSession");
   });
 });

@@ -118,7 +118,8 @@ export const BIGQUERY_RESOURCE: SupportedResource = {
 };
 
 /**
- * Files, folders, and read-only native Google Docs and Sheets available to the connected account.
+ * Files, folders, and read-only native Google Docs, Sheets and Slides available to the connected
+ * account.
  *
  * Whole-account, not just My Drive: listings set `includeItemsFromAllDrives`, so a shared drive the
  * account belongs to is inside this grant.
@@ -129,7 +130,8 @@ export const GOOGLE_DRIVE_RESOURCE: SupportedResource = {
   description:
       "Find files and folders anywhere this Google account can read in Drive, including shared " +
       "drives. Full-text search examines indexed file content, descriptions, and OCR text; search " +
-      "results contain metadata only, while native Google Docs and Sheets can be opened read-only.",
+      "results contain metadata only, while native Google Docs, Sheets and Slides can be opened " +
+      "read-only.",
   grantable: true,
 };
 
@@ -139,7 +141,7 @@ export const GOOGLE_DRIVE_FOLDER_RESOURCE: SupportedResource = {
   title: "Google Drive Folder",
   description:
       "Browse a selected folder or shared drive, search its direct children, and read native " +
-      "Google Docs and Sheets.",
+      "Google Docs, Sheets and Slides.",
   grantable: true,
 };
 
@@ -147,7 +149,9 @@ export const GOOGLE_DRIVE_FOLDER_RESOURCE: SupportedResource = {
 export const GOOGLE_DRIVE_FILE_RESOURCE: SupportedResource = {
   urlPattern: "https://drive.google.com/file/d/:fileId/view",
   title: "Google Drive File",
-  description: "Read metadata and, for a native Google Doc or Sheet, content from one Drive file.",
+  description:
+      "Read metadata and, for a native Google Doc, Sheet or Slides presentation, content from one " +
+      "Drive file.",
   grantable: true,
 };
 
@@ -245,6 +249,7 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
       "https://www.googleapis.com/auth/drive.metadata.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
+      "https://www.googleapis.com/auth/presentations.readonly",
     ],
   },
   {
@@ -253,6 +258,7 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
       "https://www.googleapis.com/auth/drive.metadata.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
+      "https://www.googleapis.com/auth/presentations.readonly",
     ],
   },
   {
@@ -261,6 +267,7 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
       "https://www.googleapis.com/auth/drive.metadata.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
+      "https://www.googleapis.com/auth/presentations.readonly",
     ],
   },
   // Every Chat resource requests the same scopes: Google grants Chat authority per API, not per
@@ -354,6 +361,9 @@ const SCOPE_COVERED_BY: Record<string, readonly string[]> = {
   ],
   "https://www.googleapis.com/auth/spreadsheets.readonly": [
     "https://www.googleapis.com/auth/spreadsheets", DRIVE_READONLY_SCOPE, DRIVE_READWRITE_SCOPE,
+  ],
+  "https://www.googleapis.com/auth/presentations.readonly": [
+    "https://www.googleapis.com/auth/presentations", DRIVE_READONLY_SCOPE, DRIVE_READWRITE_SCOPE,
   ],
   "https://www.googleapis.com/auth/chat.spaces.readonly": [
     "https://www.googleapis.com/auth/chat.spaces",

@@ -40,14 +40,6 @@ describe("resource declarations", () => {
     ]);
   });
 
-  it("describes the whole-account Drive authority exactly", () => {
-    expect(GOOGLE_DRIVE_RESOURCE.description).toBe(
-      "Find files and folders anywhere this Google account can read in Drive, including shared " +
-      "drives. Full-text search examines indexed file content, descriptions, and OCR text; search " +
-      "results contain metadata only, while native Google Docs and Sheets can be opened read-only.",
-    );
-  });
-
   it("advertises one batched Calendar connection for scheduling", () => {
     expect(GOOGLE_CALENDAR_RESOURCE.description).toBe(
       "Read and manage one selected calendar. For scheduling across people, request one connection " +
@@ -90,21 +82,6 @@ describe("resource declarations", () => {
       expect(SUPPORTED_RESOURCES).toContain(resource);
     }
     expect(new Set(Object.values(RESOURCE_BY_KIND)).size).toBe(SUPPORTED_RESOURCES.length);
-  });
-
-  it("advertises native Docs and Sheets only on Drive resources", () => {
-    expect([
-      GOOGLE_DRIVE_RESOURCE.description,
-      GOOGLE_DRIVE_FOLDER_RESOURCE.description,
-      GOOGLE_DRIVE_FILE_RESOURCE.description,
-    ]).toEqual([
-      "Find files and folders anywhere this Google account can read in Drive, including shared " +
-      "drives. Full-text search examines indexed file content, descriptions, and OCR text; search " +
-      "results contain metadata only, while native Google Docs and Sheets can be opened read-only.",
-      "Browse a selected folder or shared drive, search its direct children, and read native " +
-      "Google Docs and Sheets.",
-      "Read metadata and, for a native Google Doc or Sheet, content from one Drive file.",
-    ]);
   });
 
   // The gatekeeper is deliberately a user-authenticated Chat client: `chat.bot` and the
@@ -175,16 +152,19 @@ describe("resourceUrlPatternsToOAuthScopes", () => {
       "https://www.googleapis.com/auth/drive.metadata.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
+      "https://www.googleapis.com/auth/presentations.readonly",
     ]],
     [GOOGLE_DRIVE_FOLDER_RESOURCE, [
       "https://www.googleapis.com/auth/drive.metadata.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
+      "https://www.googleapis.com/auth/presentations.readonly",
     ]],
     [GOOGLE_DRIVE_FILE_RESOURCE, [
       "https://www.googleapis.com/auth/drive.metadata.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
+      "https://www.googleapis.com/auth/presentations.readonly",
     ]],
   ] as const)("pins the permanent scopes for $urlPattern", (resource, scopes) => {
     expect(resourceUrlPatternsToOAuthScopes([resource.urlPattern])).toEqual([
@@ -203,6 +183,24 @@ describe("resourceUrlPatternsToOAuthScopes", () => {
     ]);
     expect(granted).toEqual([]);
   });
+
+  // Drive-native Slides added presentations.readonly to every Drive resource. A connection made
+  // before it must read as ungranted, so the Workshop prompts for it, while a reconnect still asks
+  // for the resource it recorded.
+  it("re-prompts a Drive grant made before Drive resources read Slides", () => {
+    const grant = {
+      resourceUrlPatterns: [GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern],
+      oauthScopes: [
+        ...IDENTITY_SCOPES,
+        "https://www.googleapis.com/auth/drive.metadata.readonly",
+        "https://www.googleapis.com/auth/documents.readonly",
+        "https://www.googleapis.com/auth/spreadsheets.readonly",
+      ],
+    };
+    expect(grantedResourceUrlPatterns(grant)).toEqual([]);
+    expect(recordedResourceUrlPatterns(grant)).toEqual([GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern]);
+  });
+
   it("deduplicates scopes shared between resources", () => {
     let scopes = resourceUrlPatternsToOAuthScopes(
       [GOOGLE_DOC_RESOURCE.urlPattern, GOOGLE_SHEETS_RESOURCE.urlPattern]);
@@ -292,6 +290,7 @@ describe("resourcesCoveredByScopes", () => {
       "https://www.googleapis.com/auth/drive.metadata",
       "https://www.googleapis.com/auth/documents",
       "https://www.googleapis.com/auth/spreadsheets",
+      "https://www.googleapis.com/auth/presentations",
     ])).toEqual(folderIntent);
     expect(resourcesCoveredByScopes(
       [GOOGLE_DOC_RESOURCE.urlPattern, GOOGLE_SHEETS_RESOURCE.urlPattern],

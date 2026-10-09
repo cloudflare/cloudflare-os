@@ -9,11 +9,29 @@ import { DriveApi } from "../../src/drive-api";
 import { GoogleDriveSessionImpl } from "../../src/google";
 import type { DriveSessionSearchQuery } from "../../src/drive-types";
 import { GoogleSheetsApi } from "../../src/sheets-api";
+import { GoogleSlidesApi } from "../../src/slides-api";
+import type { GooglePresentationSession } from "../../src/slides-types";
 import { buildTab } from "../doc-fixture";
+import { presentation, shape, slide, text } from "../slides-fixture";
 
 const DOC_MIME = "application/vnd.google-apps.document";
 const SHEET_MIME = "application/vnd.google-apps.spreadsheet";
+const SLIDES_MIME = "application/vnd.google-apps.presentation";
 const FOLDER_MIME = "application/vnd.google-apps.folder";
+
+const DECK = presentation([
+  slide("s1", [shape("t1", text(["Intro"]), { placeholder: "TITLE" })]),
+  slide("s2", [shape("b2", text(["Body"]))], { notes: text(["Say hello"]) }),
+]);
+
+/** A `presentations.get` or `presentations.pages.get` answer from {@link DECK}. */
+function slidesResponse(url: URL): Response {
+  const pageId = url.pathname.match(/\/pages\/([^/]+)$/)?.[1];
+  if (pageId === undefined) return Response.json(DECK);
+  const page = DECK.slides!.find(s => s.objectId === pageId);
+  return page ? Response.json(page) : new Response(null, { status: 404 });
+}
+
 let providerUrls: string[];
 /** The document the provider currently serves; a test may replace it mid-session. */
 let providerTabs: unknown[];
@@ -121,7 +139,7 @@ function installProvider(tabs: unknown[] = [docTab("solo", "Solo", "")]) {
     }
     if (url.hostname === "www.googleapis.com" && url.pathname.includes("/drive/v3/files/")) {
       const id = decodeURIComponent(url.pathname.split("/").at(-1)!);
-      const mimeType = id === "doc-1" ? DOC_MIME : SHEET_MIME;
+      const mimeType = id === "doc-1" ? DOC_MIME : id === "deck-1" ? SLIDES_MIME : SHEET_MIME;
       return Response.json(providerFile(id, mimeType));
     }
     if (url.hostname === "docs.googleapis.com") {
@@ -132,6 +150,7 @@ function installProvider(tabs: unknown[] = [docTab("solo", "Solo", "")]) {
         tabs: providerTabs,
       });
     }
+    if (url.hostname === "slides.googleapis.com") return slidesResponse(url);
     throw new Error(`Unexpected provider request: ${url.origin}${url.pathname}`);
   }));
   return urls;
@@ -154,6 +173,7 @@ function newSession() {
       new DriveApi(getAccessToken),
       new GoogleDocsApi(getAccessToken),
       new GoogleSheetsApi(getAccessToken),
+      new GoogleSlidesApi(getAccessToken),
       { kind: "account" },
       queueStub,
       async fileIds => ({ pendingSets: fileIds, commit() {} }),
@@ -202,6 +222,38 @@ describe("Drive nested native sessions", () => {
     await expect(Promise.resolve(sheet.readRange("A:A")))
       .rejects.toThrow(/Invalid or unbounded A1 range/);
     expect(providerUrls.some(url => new URL(url).hostname === "sheets.googleapis.com"))
+      .toBe(false);
+  });
+
+  it("opens a native presentation with reads only", async () => {
+    const { queue, session } = newSession();
+    using owned = session;
+    using deck = await owned.openGoogleSlides("deck-1");
+
+    expect((await deck.getPresentation()).slides.map(s => s.id)).toEqual(["s1", "s2"]);
+    expect((await deck.getSlides(["s2"]))[0].speakerNotes).toBe("Say hello");
+    expect(queue.observations.map(o => o.title)).toEqual([
+      "Open Google Slides presentation from Google Drive",
+      "Read Google Slides presentation outline",
+      "Read one Google Slides slide",
+    ]);
+
+    // The capability itself has no write method, whatever a caller sends it.
+    const writable = deck as unknown as GooglePresentationSession;
+    await expect(Promise.resolve(writable.deleteSlide("s1")))
+      .rejects.toThrow('The RPC receiver does not implement the method "deleteSlide".');
+    await expect(Promise.resolve(writable.updateSlides([
+      { op: "editText", slideId: "s1", elementId: "t1", replace: "Changed" },
+    ]))).rejects.toThrow('The RPC receiver does not implement the method "updateSlides".');
+    expect(queue.observations).toHaveLength(3);
+  });
+
+  it("refuses to open a file that is not a presentation as one", async () => {
+    using session = newSession().session;
+
+    await expect(Promise.resolve(session.openGoogleSlides("sheet-1")))
+      .rejects.toThrow("The requested Drive file is not a Google Slides presentation.");
+    expect(providerUrls.some(url => new URL(url).hostname === "slides.googleapis.com"))
       .toBe(false);
   });
 
@@ -445,6 +497,7 @@ describe("folder-scoped native sessions", () => {
           valueRanges: url.searchParams.getAll("ranges").map(range => ({ range, values: [["x"]] })),
         });
       }
+      if (url.hostname === "slides.googleapis.com") return slidesResponse(url);
       return Response.json({
         spreadsheetId: "sheet-1",
         properties: { title: "Forecast" },
@@ -462,6 +515,7 @@ describe("folder-scoped native sessions", () => {
         new DriveApi(getAccessToken),
         new GoogleDocsApi(getAccessToken),
         new GoogleSheetsApi(getAccessToken),
+        new GoogleSlidesApi(getAccessToken),
         { kind: "folder", folderId: ROOT },
         new RpcStub(queue),
         async fileIds => ({ pendingSets: fileIds, commit() {} }),
@@ -519,6 +573,24 @@ describe("folder-scoped native sessions", () => {
     await expect(Promise.resolve(sheet.getSpreadsheet())).rejects.toThrow(OUTSIDE);
     await expect(Promise.resolve(sheet.readRange("A1:A1"))).rejects.toThrow(OUTSIDE);
     await expect(Promise.resolve(sheet.readRanges(["A1:A1", "B1:B1"]))).rejects.toThrow(OUTSIDE);
+    expect(nativeCalls).toEqual([]);
+  });
+
+  it("refuses every Slides read after the presentation leaves the subtree", async () => {
+    const nodes = subtree();
+    nodes.set("deck-1", { id: "deck-1", mimeType: SLIDES_MIME, parents: [ROOT], trashed: false });
+    const nativeCalls = installFolderProvider(nodes);
+    using session = folderSession(nodes).session;
+    using deck = await session.openGoogleSlides("deck-1");
+    expect((await deck.getPresentation()).title).toBe("Quarterly review");
+
+    nodes.set("deck-1",
+      { id: "deck-1", mimeType: SLIDES_MIME, parents: ["elsewhere"], trashed: false });
+    nativeCalls.length = 0;
+
+    await expect(Promise.resolve(deck.getPresentation())).rejects.toThrow(OUTSIDE);
+    await expect(Promise.resolve(deck.getSlides(["s1"]))).rejects.toThrow(OUTSIDE);
+    await expect(Promise.resolve(deck.getSlideThumbnail("s1"))).rejects.toThrow(OUTSIDE);
     expect(nativeCalls).toEqual([]);
   });
 

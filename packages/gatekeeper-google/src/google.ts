@@ -14,7 +14,11 @@ import { GoogleDocSession, DocMetadata, type GoogleDocReadSession, type GoogleDo
 import { GoogleDocsApi, type GoogleDocsDocument, type GoogleDocsTab } from "./docs-api";
 import { GoogleSheetsApi } from "./sheets-api";
 import { GoogleSlidesApi } from "./slides-api";
-import { getGoogleSlidesTypesCode, type GoogleSlidesGatekeeperImplProps } from "./slides";
+import {
+  getGoogleSlidesTypesCode, GooglePresentationReadSessionImpl, type GoogleSlidesGatekeeperImplProps,
+} from "./slides";
+import type { GooglePresentationReadSession } from "./slides-read-types";
+import SLIDES_READ_TYPES_CODE from "./slides-read-types.txt";
 import type {
   GoogleSpreadsheetReadSession, GoogleSpreadsheetSession, SpreadsheetInfo, SpreadsheetRange,
   SpreadsheetValueMode,
@@ -30,7 +34,8 @@ import { driveObserverTracker, type DriveObservation } from "./drive-observers";
 import { outsideScope, readFolderRoot, type FolderLocation } from "./drive-folder-scope";
 import {
   DriveFolderSessionCore, DriveSessionCore, driveModifiedTime,
-  GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, requireDriveBindingScope, unguardedNativeRead,
+  GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE, requireDriveBindingScope,
+  unguardedNativeRead,
   type DriveBindingScope, type DriveCore, type NativeObservation, type NativeRead,
 } from "./drive-session";
 import type {
@@ -134,7 +139,7 @@ function getDriveAgentTypesCode(): string {
 
 function getGoogleDriveTypesCode(): string {
   return googleDriveTypesCode ??= [
-    DOCS_READ_TYPES_CODE, SHEETS_TYPES_CODE, getDriveAgentTypesCode(),
+    DOCS_READ_TYPES_CODE, SHEETS_TYPES_CODE, SLIDES_READ_TYPES_CODE, getDriveAgentTypesCode(),
   ].join("\n");
 }
 
@@ -3002,7 +3007,7 @@ export class GoogleDriveGatekeeperImpl
         // The natural browser URL, not the internal `_resource` selector the grant is keyed on.
         url: `https://drive.google.com/drive/folders/${encodeURIComponent(scope.folderId)}`,
         title: folder.name,
-        snippet: `List and search direct children, navigate child folders, and read native Google Docs and Sheets in Drive folder "${folder.name}"`,
+        snippet: `List and search direct children, navigate child folders, and read native Google Docs, Sheets and Slides in Drive folder "${folder.name}"`,
         suggestedBindingName: "GOOGLE_DRIVE_FOLDER",
         tsType: "GoogleDriveFolderSession",
       };
@@ -3011,7 +3016,7 @@ export class GoogleDriveGatekeeperImpl
     return {
       url: `https://drive.google.com/file/d/${encodeURIComponent(scope.fileId)}/view`,
       title: file.name,
-      snippet: `Read metadata and, when native, Google Doc or Sheet content from Drive file "${file.name}"`,
+      snippet: `Read metadata and, when native, Google Doc, Sheet or Slides content from Drive file "${file.name}"`,
       suggestedBindingName: "GOOGLE_DRIVE_FILE",
       tsType: "GoogleDriveReadSession",
     };
@@ -3032,6 +3037,7 @@ export class GoogleDriveGatekeeperImpl
       new DriveApi(getDriveAccessToken),
       new GoogleDocsApi(getDriveAccessToken),
       new GoogleSheetsApi(getDriveAccessToken),
+      new GoogleSlidesApi(getDriveAccessToken),
       this.#scope,
       approvalQueue.dup(),
       observations => observerTracker.prepareObservation(observations),
@@ -3184,6 +3190,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
   #driveApi: DriveApi;
   #docsApi: GoogleDocsApi;
   #sheetsApi: GoogleSheetsApi;
+  #slidesApi: GoogleSlidesApi;
   #scope: DriveBindingScope;
   /** Set exactly when the scope is a folder, so no core has to be built to learn which it is. */
   #location?: FolderLocation;
@@ -3197,6 +3204,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     driveApi: DriveApi,
     docsApi: GoogleDocsApi,
     sheetsApi: GoogleSheetsApi,
+    slidesApi: GoogleSlidesApi,
     scope: DriveBindingScope,
     approvalQueue: RpcStub<ApprovalQueue>,
     prepareObservation: (
@@ -3209,6 +3217,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     this.#driveApi = driveApi;
     this.#docsApi = docsApi;
     this.#sheetsApi = sheetsApi;
+    this.#slidesApi = slidesApi;
     this.#scope = scope;
     this.#location = scope.kind === "folder"
       ? location ?? {folderIds: [scope.folderId]}
@@ -3244,7 +3253,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     return this.#withQueue(async (queue, core) => {
       let location = await (core as DriveFolderSessionCore).openFolder(folderId);
       return new GoogleDriveSessionImpl(
-        this.#driveApi, this.#docsApi, this.#sheetsApi, this.#scope, queue,
+        this.#driveApi, this.#docsApi, this.#sheetsApi, this.#slidesApi, this.#scope, queue,
         this.#prepareObservation, this.#prepareWithheld, location,
       );
     });
@@ -3260,6 +3269,12 @@ export class GoogleDriveSessionImpl extends RpcTarget
     return this.#openNative(fileId, GOOGLE_SHEET_MIME_TYPE, "Google Sheet",
       (spreadsheetId, queue, read) =>
         new GoogleSpreadsheetSessionImpl(this.#sheetsApi, spreadsheetId, queue, read));
+  }
+
+  async openGoogleSlides(fileId: string): Promise<GooglePresentationReadSession> {
+    return this.#openNative(fileId, GOOGLE_SLIDES_MIME_TYPE, "Google Slides presentation",
+      (presentationId, queue, read) =>
+        new GooglePresentationReadSessionImpl(this.#slidesApi, presentationId, queue, read));
   }
 
   #coreFor(queue: RpcStub<ApprovalQueue>): DriveCore {

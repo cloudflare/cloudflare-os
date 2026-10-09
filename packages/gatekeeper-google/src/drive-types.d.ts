@@ -1,5 +1,6 @@
 import type { GoogleDocReadSession } from "./docs-read-types";
 import type { GoogleSpreadsheetReadSession } from "./sheets-types";
+import type { GooglePresentationReadSession } from "./slides-read-types";
 
 /**
  * A pagination cursor.
@@ -125,7 +126,7 @@ export type DriveFolderSearchQuery = Omit<DriveSearchQuery, "directParentId"> & 
 export type DriveSessionSearchQuery =
   DriveSearchQuery & Pick<DriveFolderSearchQuery, "childFolderIds">;
 
-/** Read-only Drive metadata discovery and native Google Docs/Sheets access. */
+/** Read-only Drive metadata discovery and native Google Docs/Sheets/Slides access. */
 export interface GoogleDriveReadSession {
   /** Return this capability's immutable scope with current display metadata. */
   getScope(): Promise<DriveScope>;
@@ -156,6 +157,12 @@ export interface GoogleDriveReadSession {
 
   /** Open an in-scope native Google Sheet as an independently disposable read capability. */
   openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetReadSession>;
+
+  /**
+   * Open an in-scope native Google Slides presentation as an independently disposable read
+   * capability.
+   */
+  openGoogleSlides(fileId: string): Promise<GooglePresentationReadSession>;
 }
 
 /** Read-only navigation within the originally selected folder. */
@@ -179,6 +186,12 @@ export interface GoogleDriveFolderSession extends Pick<GoogleDriveReadSession, "
 
   /** Open a live direct-child native Google Sheet as an independently disposable capability. */
   openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetReadSession>;
+
+  /**
+   * Open a live direct-child native Google Slides presentation as an independently disposable
+   * capability.
+   */
+  openGoogleSlides(fileId: string): Promise<GooglePresentationReadSession>;
 
   /** Open a live direct child folder as an independently disposable capability. */
   openFolder(folderId: string): Promise<GoogleDriveFolderSession>;

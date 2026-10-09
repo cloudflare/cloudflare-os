@@ -22,6 +22,8 @@ const SHORTCUT_MIME_TYPE = "application/vnd.google-apps.shortcut";
 export const GOOGLE_DOC_MIME_TYPE = "application/vnd.google-apps.document";
 /** Exact MIME type for native Google Sheets files. */
 export const GOOGLE_SHEET_MIME_TYPE = "application/vnd.google-apps.spreadsheet";
+/** Exact MIME type for native Google Slides files. */
+export const GOOGLE_SLIDES_MIME_TYPE = "application/vnd.google-apps.presentation";
 
 const FOLDER_MOVED = "The connected Drive folder moved to another drive; open a new listing.";
 
@@ -61,7 +63,7 @@ type FolderPageScope = {driveId: string | undefined; parents: DriveScopeNode[]};
 export type NativeObservation = Omit<ObservationDescription, "excludeObservers">;
 
 /**
- * Performs one native Docs or Sheets read and authorizes it before the value is disclosed.
+ * Performs one native Docs, Sheets or Slides read and authorizes it before the value is disclosed.
  *
  * The fetch is a thunk rather than a value so a scope check can refuse before the provider is
  * contacted at all.
@@ -667,7 +669,7 @@ export class DriveFolderSessionCore extends DriveCoreBase {
     return {folderIds: [...this.#location.folderIds, folder.id]};
   }
 
-  /** Revalidate the saved path and direct child on every native Docs or Sheets read. */
+  /** Revalidate the saved path and direct child on every native Docs, Sheets or Slides read. */
   nativeRead(fileId: string, expectedMimeType: string): NativeRead {
     return async <T>(fetch: () => Promise<T>, observe: (value: T) => NativeObservation) => {
       let before = await this.#requireDirectFile(fileId);
