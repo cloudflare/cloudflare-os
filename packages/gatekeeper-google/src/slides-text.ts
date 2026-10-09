@@ -192,7 +192,8 @@ export function spliceText(rich: RichText, start: number, end: number, text: str
 
 /**
  * Restyle the projected range `[start, end)` as an `updateTextStyle` of `change` does. Google sets
- * no link on a newline, and a link set over part of an existing link retargets all of it.
+ * no link on a newline or bullet, and a link set over part of an existing link retargets all of it.
+ * A range covering a whole paragraph also styles its bullet.
  */
 export function styledText(
   rich: RichText, start: number, end: number, change: StyleChange<RestTextStyle>,
@@ -216,7 +217,21 @@ export function styledText(
     before = left.toReversed();
     retarget(after, pieces.at(-1)?.style?.link);
   }
-  let result = { ...rich, segments: [...before, ...styled, ...after] };
+  let text = projectedText(rich.segments);
+  let from = 0;
+  let paragraphs = rich.paragraphs.map(paragraph => {
+    let newline = text.indexOf("\n", from);
+    let to = newline === -1 ? text.length : newline;
+    // Styling through the text's end reaches its newline too. An empty paragraph requires its
+    // newline in the range rather than an empty range at its start.
+    let covered = start <= from && end >= to && end > from;
+    from = to + 1;
+    if (!paragraph.bullet || !covered) return paragraph;
+    let { bulletStyle: _, ...bullet } = paragraph.bullet;
+    let bulletStyle = restyled(paragraph.bullet.bulletStyle, change, "link");
+    return { ...paragraph, bullet: { ...bullet, ...(bulletStyle ? { bulletStyle } : {}) } };
+  });
+  let result = { ...rich, paragraphs, segments: [...before, ...styled, ...after] };
   // A range ending in a newline holds its paragraph's newline already, and reaches no further.
   return pieces.at(-1)?.text === "\n" ? result : styledParagraphEnd(result, end, change);
 }

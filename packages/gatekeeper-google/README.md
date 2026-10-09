@@ -250,8 +250,10 @@ gives a new table, and the formatting new table rows and columns take appear onc
 does follow Google in turning a shape's autofit off once its text changes, fixing the font sizes
 and line spacings the text sets at what the autofit had shrunk them to. A replacement takes the
 style of the text it replaces, and text left unchanged at either end of a match is not rewritten,
-so it keeps its own. Setting a font sets it at regular weight, so the text is no longer bold unless
-the change says so. A slide number or other AutoText can only be replaced whole.
+so it keeps its own. Formatting a whole list paragraph also updates its bullet's style in replay,
+which later replacements use when checking whether they can keep that style. Setting a font sets
+it at regular weight, so the text is no longer bold unless the change says so. A slide number or
+other AutoText can only be replaced whole.
 
 Each approved change is one `batchUpdate`, planned against a fresh read and pinned to its revision
 with `requiredRevisionId`, so a change applies only to the text it was planned against: one that

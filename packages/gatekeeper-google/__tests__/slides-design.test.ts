@@ -336,6 +336,36 @@ describe("Slides design changes", () => {
     expect(edit(list("A", same), "A", "X\nY").read().elements[0]).toMatchObject({ text: "X\nY" });
   });
 
+  it.each([false, true])("uses updated bullet styles after formatting, with a separate pending batch: %s", separate => {
+    let page = slide("s1", [shape("box", text(...["A", "B"].map(content => ({
+      runs: [{ content, style: { bold: false } }],
+      marker: { bullet: { listId: "l", bulletStyle: { bold: false } } },
+    }))))]);
+    let deck = { order: ["s1"], slides: new Map([["s1", page]]) };
+    let { changes } = prepareChanges([
+      { op: "formatText", slideId: "s1", elementId: "box", find: "A\n", format: { bold: true } },
+      { op: "editText", slideId: "s1", elementId: "box", find: "A", replace: "X\nY" },
+    ]);
+    let pending = separate ? designDeck(deck, changes.slice(0, 1)).deck : deck;
+    let { deck: next } = designDeck(pending, separate ? changes.slice(1) : changes);
+    let body = next.slides.get("s1")!.pageElements![0].shape!.text!;
+    expect(body.textElements!.flatMap(entry => entry.paragraphMarker
+      ? [entry.paragraphMarker.bullet?.bulletStyle] : []))
+      .toEqual([{ bold: true }, { bold: true }, { bold: false }]);
+    expect(slideOf(next.slides.get("s1")!, 0, new Map()).elements[0]).toMatchObject({ text: "X\nY\nB" });
+  });
+
+  it("keeps a bullet's independent style when only part of its paragraph is formatted", () => {
+    let page = slide("s1", [shape("box", text({
+      runs: [{ content: "AB", style: { bold: false } }],
+      marker: { bullet: { listId: "l", bulletStyle: { bold: false } } },
+    }))]);
+    expect(() => run([page], [
+      { op: "formatText", slideId: "s1", elementId: "box", find: "A", format: { bold: true } },
+      { op: "editText", slideId: "s1", elementId: "box", find: "A", replace: "X\nY" },
+    ])).toThrow("the new text fills a list item");
+  });
+
   it("refuses to rotate a video, which Google cannot shear, but resizes and half-turns it", () => {
     let video = () => slide("s1", [element("vid", {
       size: { width: { magnitude: 100 * EMU, unit: "EMU" }, height: { magnitude: 50 * EMU, unit: "EMU" } },
