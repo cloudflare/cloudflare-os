@@ -105,8 +105,13 @@ describe("creating a Google Slides presentation", () => {
       pageSize: { width: 720, height: 405 },
       slides: [{ id: "p", index: 0, layout: "Title slide", master: "simple-light-2" }],
     });
-    expect(simulated.layouts.find(layout => layout.id === "p4"))
-      .toMatchObject({ name: "Title and body", placeholders: ["TITLE", "BODY", "SLIDE_NUMBER"] });
+    expect(simulated.layouts.map(layout => [layout.id, layout.name])).toEqual([
+      ["p2", "Title slide"], ["p3", "Section header"], ["p4", "Title and body"], ["p6", "Title only"],
+      ["p12", "Blank"],
+    ]);
+    // The theme's other layouts are offered only once the presentation exists.
+    expect(await hooks().callSlides("create-deck", "createSlide", ["p5"]))
+      .toMatchObject({ error: expect.stringMatching(/^No layout with ID "p5"/), actionId: undefined });
 
     let title = await hooks().callSlides("create-deck", "updateSlides",
       [[{ op: "editText", slideId: "p", elementId: "i0", replace: "Pitch" }]]);

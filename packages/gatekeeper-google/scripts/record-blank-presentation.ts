@@ -1,6 +1,7 @@
 // Records what a presentation session reads of a brand-new Google Slides presentation into
 // `src/blank-presentation.json`, which `BlankPresentation` serves while a presentation awaits
-// creation.
+// creation. Of the default theme's layouts it keeps only OFFERED_LAYOUTS, so the recording holds
+// few pages that could fall out of step with Google's.
 //
 //   node scripts/record-blank-presentation.ts <token-file> [--check]
 //
@@ -20,6 +21,9 @@ import {
 const OUTPUT = new URL("../src/blank-presentation.json", import.meta.url);
 const SLIDES_API = "https://slides.googleapis.com/v1/presentations";
 const DRIVE_FILES_API = "https://www.googleapis.com/drive/v3/files";
+// The layouts a presentation offers before it is created: the title slide's own, and the few
+// a deck is mostly built from. Every other layout appears once the presentation exists.
+const OFFERED_LAYOUTS = ["TITLE", "SECTION_HEADER", "TITLE_AND_BODY", "TITLE_ONLY", "BLANK"];
 
 type Read = Record<string, unknown> & {
   presentationId?: string;
@@ -83,12 +87,23 @@ async function record(title: string): Promise<Recording> {
       `?fields=${encodeURIComponent(fields)}`);
     let pages = async (ids: string[], fields: string) =>
       Object.fromEntries(await Promise.all(ids.map(async id => [id, await read(fields, id)] as const)));
-    let outline = await read(OUTLINE_FIELDS);
+    // The offered layouts, picked by their PredefinedLayout name: display names are localized.
+    let { layouts: named = [] } = await read("layouts(objectId,layoutProperties(name))") as
+      { layouts?: { objectId: string; layoutProperties?: { name?: string } }[] };
+    let offered = new Set(named.filter(layout => OFFERED_LAYOUTS.includes(layout.layoutProperties?.name ?? ""))
+      .map(layout => layout.objectId));
+    if (offered.size !== OFFERED_LAYOUTS.length) {
+      throw new Error(`A new presentation lacks one of the layouts ${OFFERED_LAYOUTS.join(", ")}`);
+    }
+    let offeredOnly = (presentation: Read): Read => ({
+      ...presentation, layouts: (presentation.layouts ?? []).filter(layout => offered.has(layout.objectId)),
+    });
+    let outline = offeredOnly(await read(OUTLINE_FIELDS));
     let recording: Recording = {
-      presentation: anonymous(await read(SUMMARY_FIELDS)),
+      presentation: anonymous(offeredOnly(await read(SUMMARY_FIELDS))),
       outline: anonymous(outline),
       slides: await pages((outline.slides ?? []).map(slide => slide.objectId), SLIDE_FIELDS),
-      layouts: await pages((outline.layouts ?? []).map(layout => layout.objectId), LAYOUT_PAGE_FIELDS),
+      layouts: await pages([...offered], LAYOUT_PAGE_FIELDS),
     };
     let text = JSON.stringify(recording);
     if (text.includes(presentationId) || text.includes(title)) {
