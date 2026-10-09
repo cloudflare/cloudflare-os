@@ -17,6 +17,7 @@ import {
   buildDescription, codeSpan, plainInline, sanitizeTitle,
 } from "@gadgets/gatekeeper-kit/action-description";
 import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
+import { obsContext } from "./observability";
 import { SlidesWriteRefused, type GoogleSlidesApi, type RestSlide } from "./slides-api";
 import { designDeck, type DesignChange, type DesignStep } from "./slides-design";
 import { CREATES } from "./slides-design-input";
@@ -28,6 +29,8 @@ import {
 import { elementIdsOf, locate, textOfTarget, type TextAddress } from "./slides-target";
 import { ChangeConflict, projectedText, richTextOf } from "./slides-text";
 import type { ShapeOutline, TextFormatChange } from "./slides-types";
+
+const logger = obsContext.createLogger({ component: "gatekeeper.google.slides", vendorId: "google" });
 
 /** What an approved change is written with. */
 export type SlidesHost = { api: GoogleSlidesApi; presentationId: string };
@@ -127,7 +130,9 @@ async function write(
   let landed: boolean;
   try {
     landed = sent.landed(await readFresh(host, ids));
-  } catch {
+  } catch (error) {
+    // Unknown either way: the write may have landed, so it is never planned again.
+    logger.warn("could not confirm a lost Slides write", { event: "slides.apply.confirm.failed", error });
     landed = false;
   }
   if (!landed) throw new ActionOutcomeUnknownError(APPLY_OUTCOME_UNKNOWN_MESSAGE);
@@ -340,6 +345,19 @@ function textIfThere(slide: RestSlide, address: TextAddress): string | undefined
 
 const slideOf = (deck: Deck, slideId: string): RestSlide => deck.slides.get(slideId) ?? {};
 
+/** Rows or columns a change inserts or deletes. */
+type TableLines = { elementId: string; axis: "row" | "column"; insert: boolean; at: number; count: number };
+
+function tableLinesOf(change: DesignChange): TableLines | undefined {
+  switch (change.op) {
+    case "insertTableRows": case "insertTableColumns": case "deleteTableRows": case "deleteTableColumns": {
+      let { op, elementId, at, count = 1 } = change;
+      return { elementId, at, count, axis: op.endsWith("Rows") ? "row" : "column", insert: op.startsWith("insert") };
+    }
+  }
+  return undefined;
+}
+
 /**
  * Where the text `address` names is once `later` changes have inserted and deleted rows and
  * columns of its table, or undefined if they delete its cell.
@@ -348,11 +366,11 @@ function addressAfter(address: TextAddress, later: readonly DesignChange[]): Tex
   let { cell } = address;
   if (!cell) return address;
   for (let change of later) {
-    if (!("at" in change) || change.elementId !== address.elementId) continue;
-    const axis = change.op.endsWith("Rows") ? "row" : "column";
-    let { at, count = 1 } = change;
+    let lines = tableLinesOf(change);
+    if (!lines || lines.elementId !== address.elementId) continue;
+    let { axis, insert, at, count } = lines;
     let index: number = cell[axis];
-    if (change.op.startsWith("insert")) {
+    if (insert) {
       if (at <= index) index += count;
     } else if (at + count <= index) {
       index -= count;
@@ -395,11 +413,12 @@ function designLanded(
     };
     let { created, deleted } = steps[i]!;
     for (let id of [created, deleted]) {
-      if (id) witness(slide => elementIdsOf(slide.pageElements).includes(id));
+      if (id) witness(slide => locate(slide.pageElements, id) !== undefined);
     }
     const moved = change.op === "editText" && addressAfter(change, changes.slice(i + 1));
     if (moved) witness(slide => textIfThere(slide, moved));
-    if ("at" in change) witness(slide => cellsOf(slide, change.elementId));
+    const lines = tableLinesOf(change);
+    if (lines) witness(slide => cellsOf(slide, lines.elementId));
     return evidence;
   });
   return checks.length > 0 && checks.every(Boolean);
