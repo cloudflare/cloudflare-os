@@ -5040,6 +5040,12 @@ class OverseerImpl implements AgentHooks {
     let baseline = sharing && !this.storage.ownerInvitesOnly.get()
         ? sharing.computeEffectiveRoles() : undefined;
 
+    // In the same synchronous block as the writes below, so a restricted read that landed while
+    // this observation awaited above is seen.
+    if (description.reachesPublicWeb) {
+      this.#assertPublicWebAllowed();
+    }
+
     if (description.containsRestrictedData) {
       this.storage.containsRestrictedData.put(true);
     }
@@ -5258,9 +5264,9 @@ class OverseerImpl implements AgentHooks {
     return this.#accountRequiringUseScope().has(gatekeeperId);
   }
 
-  // Provides web-fetch with the Workers AI binding and AI Gateway config it needs to call
-  // `env.WORKERS_AI.toMarkdown()`. The initiator is needed for AI Gateway metadata.
-  getWebFetchEnv(): WebFetchEnv {
+  // A workspace that has observed restricted data is cut off from the public web: from the agent's
+  // webFetch tool, and from observations marked `reachesPublicWeb`.
+  #assertPublicWebAllowed(): void {
     if (this.storage.containsRestrictedData.get()) {
       // TODO: Disallwing fetches is a bit draconian. Ideally, we would have some way to detect
       //   if a URL is well-known, and therefore not a leak problem. E.g. if the URL is already in
@@ -5268,8 +5274,14 @@ class OverseerImpl implements AgentHooks {
       //   trust... for now though, we will be extra-careful specifically when prohibiting sharing.
       throw new Error(
           "This workspace has observed sensitive data. To prevent leaks, the workspace is prohibited " +
-          "from fetching from public web sites.");
+          "from reaching the public web.");
     }
+  }
+
+  // Provides web-fetch with the Workers AI binding and AI Gateway config it needs to call
+  // `env.WORKERS_AI.toMarkdown()`. The initiator is needed for AI Gateway metadata.
+  getWebFetchEnv(): WebFetchEnv {
+    this.#assertPublicWebAllowed();
 
     return {
       ai: this.env.WORKERS_AI,

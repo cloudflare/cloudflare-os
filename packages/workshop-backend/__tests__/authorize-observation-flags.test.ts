@@ -189,3 +189,56 @@ describe("authorizeObservation's containsRestrictedData and ownerInvitesOnly fla
     });
   });
 });
+
+describe("authorizeObservation's reachesPublicWeb flag", () => {
+  it("refuses a public-web observation once the workspace holds restricted data, recording nothing",
+      async () => {
+    let stub = env.TEST_OVERSEER.getByName("reaches-public-web-flag");
+    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
+      let impl = getImpl(instance);
+      seedGatekeeper(impl, 1);
+      let search = { title: "Search the web", description: "d", reachesPublicWeb: true };
+
+      await impl.authorizeObservation(1, search, { from: "user" });
+      await impl.authorizeObservation(1, {
+        title: "Read a thing", description: "d", containsRestrictedData: true,
+      }, { from: "user" });
+      await expect(impl.authorizeObservation(1, search, { from: "user" }))
+          .rejects.toThrow("prohibited from reaching the public web");
+
+      let records = [...impl.storage.actions.list()];
+      expect(records.map((record: { description: { title: string } }) => record.description.title))
+          .toEqual(["Search the web", "Read a thing"]);
+    });
+  });
+
+  it("refuses a public-web observation when a restricted read lands while it awaits its exclusion teardown",
+      async () => {
+    let stub = env.TEST_OVERSEER.getByName("reaches-public-web-teardown-window");
+    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
+      let impl = getImpl(instance);
+      seedGatekeeper(impl, 1);
+      impl.storage.observers.put(
+          { profileId: "mallory", observerId: "obs-m", accountChoices: { 1: 10 } });
+      let held = deferred();
+      impl.getGatekeeperFacet = () => ({
+        removeObserver: async () => { await held.promise; },
+      });
+
+      let search = impl.authorizeObservation(1, {
+        title: "Search the web", description: "d", reachesPublicWeb: true,
+        excludeObservers: ["obs-m"],
+      }, { from: "user" });
+      await tick();
+      await impl.authorizeObservation(1, {
+        title: "Read a thing", description: "d", containsRestrictedData: true,
+      }, { from: "user" });
+      held.resolve();
+
+      await expect(search).rejects.toThrow("prohibited from reaching the public web");
+      let records = [...impl.storage.actions.list()];
+      expect(records.map((record: { description: { title: string } }) => record.description.title))
+          .toEqual(["Read a thing"]);
+    });
+  });
+});
