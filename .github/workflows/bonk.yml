@@ -51,19 +51,21 @@ jobs:
         uses: actions/checkout@v7.0.1
 
       - name: Run Bonk
-        uses: ask-bonk/ask-bonk/github@5d4fe8f4a557afb1b73ec8c0ffcf60359a28865f
+        uses: Cloudflare-Studio/ask-bonk/github@14a1af226388b15b389a0c1b7df9168a940165b6 # v0.5.1
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
           CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
-          OPENCODE_CONFIG_CONTENT: '{"provider":{"cloudflare-ai-gateway":{"models":{"openai/gpt-5.6-sol":{}}}}}'
+          # Paths outside the checkout are denied, not prompted: nobody can answer a prompt in CI.
+          # BONK_MODEL is a repository variable, shared by every Bonk workflow.
+          OPENCODE_CONFIG_CONTENT: '{"permission":{"external_directory":{"*":"deny","/home/runner/work/**":"allow"},"question":"deny","doom_loop":"deny"},"provider":{"cloudflare-ai-gateway":{"models":{"${{ vars.BONK_MODEL }}":{}}}}}'
         with:
           oidc_base_url: https://ask-bonk.cloudflare-exponent.workers.dev/auth
-          model: "cloudflare-ai-gateway/openai/gpt-5.6-sol"
+          model: "cloudflare-ai-gateway/${{ vars.BONK_MODEL }}"
           variant: "high"
           mentions: "/bonk,@ask-bonk"
           forks: "true"
           permissions: write
           token_permissions: NO_PUSH
           agent: bonk
-          opencode_version: 1.18.24
+          opencode_version: 1.18.33

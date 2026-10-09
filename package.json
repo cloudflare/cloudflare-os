@@ -21,8 +21,10 @@
     "lint:fix": "vp lint --fix",
     "types:check": "pnpm run build",
     "types:scripts": "tsc -p scripts/tsconfig.json",
-    "lint": "pnpm run lint:check && pnpm run types:scripts && pnpm run types:check",
-    "types:generate": "node scripts/generate-worker-types.ts"
+    "lint": "pnpm run lint:check && pnpm run types:scripts && pnpm run configs:check && pnpm run types:check",
+    "configs:generate": "node scripts/generate-worker-configs.ts",
+    "configs:check": "node scripts/generate-worker-configs.ts --check",
+    "types:generate": "node scripts/generate-worker-configs.ts && node scripts/generate-worker-types.ts"
   },
   "devDependencies": {
     "@gadgets/scripts": "workspace:*",

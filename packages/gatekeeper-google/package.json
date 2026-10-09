@@ -10,21 +10,22 @@
     "test:run": "vp run -F @gadgets/google-gatekeeper build:configurator && vitest run && vitest run -c vitest.worker.config.ts && vitest run -c vitest.docs-worker.config.ts"
   },
   "dependencies": {
-    "@gadgets/backend-utils": "workspace:*",
     "@gadgets/configurator-ui": "workspace:*",
     "@gadgets/gatekeeper-kit": "workspace:*",
+    "@gadgets/observability": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:",
+    "jose": "^6.2.12",
     "mimetext": "^3.0.28",
     "postal-mime": "^2.7.6"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",
     "@gadgets/scripts": "workspace:*",
-    "miniflare": "5.20260801.0-alpha",
+    "miniflare": "catalog:",
     "typescript": "catalog:",
-    "typescript6": "npm:typescript@6.0.3",
+    "typescript6": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"
   }

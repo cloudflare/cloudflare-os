@@ -1,25 +1,28 @@
 import { RpcStub, RpcTarget, newHttpBatchRpcResponse, newWebSocketRpcSession, RpcSessionOptions } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import type { JWTPayload } from "jose";
-import { PublicApi, AuthenticatedApi, Overseer, GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, AiGatewayInfo, AiModelProvider, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, createOpenGadgetError, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, AUTH_ERROR_CODES, createAuthError } from '@gadgets/workshop-shared/api';
+import { PublicApi, AuthenticatedApi, Overseer, GadgetMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, AiModelProvider, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenGadgetError, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, NotificationSubscriber } from '@gadgets/workshop-shared/api';
 import type { UiFeatureFlags } from "@gadgets/workshop-shared/feature-flags";
 import { getServerConfig } from "./deployment-config.js";
 import { isPasswordAuthEnabled, getAuthGatekeeperAllowlist } from "./auth/config.js";
 import { getAuthVendorBinding } from "./auth/auth-vendors.js";
 import { getUsageInfo } from "./ai-gateway-billing/limits/usage-checker.js";
 import { listConnectedAccounts, selectAccount } from "./ai-gateway-billing/cloudflare/connection-service.js";
-import { PendingLogin, LoginConnectCallbackImpl } from "./auth/login-flow.js";
+import { PendingLogin, LoginConnectCallbackImpl, EXPIRED_MESSAGE } from "./auth/login-flow.js";
+import { hashPresentedSecret, newSecretToken } from "./connect-handoff.js";
 import { deploymentOutputForBlueprint, listFormatOffers, readAdminConfig } from "./admin-config.js";
 
 // Re-export the optional-feature Durable Objects + entrypoints so they can be bound in wrangler.
 export { PendingLogin, LoginConnectCallbackImpl };
 import { GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import { LanguageModelGatekeeper } from "./ai-models";
-import { getAiGatewayConfig } from "./ai-gateway.js";
+import { getGatewayModels } from "./ai-gateway.js";
 import { AdminSettings, AdminApiImpl } from "./admin-settings.js";
-import { BlueprintKvRecord, buildBlueprintArchiveStream, sanitizeBlueprintOutput, listFeaturedBlueprintsFromKv, parseBlueprintArchive, randomBlueprintId, readBlueprintContent, readBlueprintKvRecord } from "./blueprint-archive.js";
+import { blueprintContentKey, buildBlueprintArchiveStream, sanitizeBlueprintOutput, parseBlueprintArchive, randomBlueprintId } from "./blueprint-archive.js";
+import { BlueprintKvRecord, listFeaturedBlueprintsFromKv, readBlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
 import { GatekeeperConnectCallbackImpl, normalizeUsername, UserDurableObject, CLOUDFLARE_VENDOR_ID } from "./user";
-import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback, TransientStubLoopback } from "./overseer";
+import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback } from "./overseer";
+import { UserDirectoryDurableObject } from "./user-directory.js";
 import { ExternalMessageGateway } from "./external-message-gateway";
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { recordAnalytics } from "./analytics";
@@ -32,9 +35,11 @@ import { retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
 
 const logger = createWorkshopLogger("workshop.server");
 
-// Set once we've asked the AdminSettings DO to install the bundled format blueprints (see the
+// Set once we've asked the AdminSettings DO to install the bundled blueprints (see the
 // fetch handler), so later requests skip the call. The DO holds the real answer.
-let formatBlueprintInstallStarted = false;
+let bundledBlueprintInstallStarted = false;
+
+const USER_SEARCH_POLICY_CACHE_TTL_MS = 30_000;
 
 function publicBlueprintInfo(id: string, metadata: BlueprintPublicInfo['metadata']): BlueprintPublicInfo {
   return {
@@ -50,13 +55,16 @@ export { LanguageModelGatekeeper };
 // Re-export entrypoint types from admin-settings.ts.
 export { AdminSettings };
 
+// Re-export the deployment-wide user directory Durable Object.
+export { UserDirectoryDurableObject };
+
 // Re-export entrypoint types from user.ts.
 export { UserDurableObject, GatekeeperConnectCallbackImpl };
 
 // Re-export entrypoint types from overseer.ts.
 export { OverseerDurableObject, GatekeeperLoopback, GatekeeperHookLoopback,
     CodeModeTailLoopback, AgentSpawnerGatekeeper, GadgetTailLoopback,
-    AgentSelfLoopback, TransientStubLoopback };
+    AgentSelfLoopback };
 
 // Re-export service-binding entrypoint for external channel integrations.
 export { ExternalMessageGateway };
@@ -90,6 +98,20 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   private users: DurableObjectNamespace<UserDurableObject>;
 
   #userId: DurableObjectId;
+  #userSearchPolicyCache?: { expiresAt: number; promise: Promise<boolean> };
+
+  #userSearchEnabled(): Promise<boolean> {
+    let cached = this.#userSearchPolicyCache;
+    if (cached && Date.now() < cached.expiresAt) return cached.promise;
+
+    let promise = readAdminConfig(this.env).then(config => config.userSearchEnabled);
+    let next = { expiresAt: Date.now() + USER_SEARCH_POLICY_CACHE_TTL_MS, promise };
+    this.#userSearchPolicyCache = next;
+    promise.catch(() => {
+      if (this.#userSearchPolicyCache === next) this.#userSearchPolicyCache = undefined;
+    });
+    return promise;
+  }
 
   // Get a stub pointing at the user DO. We create a new stub for every request so that we don't
   // have to worry about detecting when a stub has become broken.
@@ -123,6 +145,14 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   setOwnDisplayName(name: string): Promise<void> {
     return this.#user.setOwnDisplayName(name);
   }
+  setOwnCommitEmail(email: string | null): Promise<void> {
+    return this.#user.setOwnCommitEmail(email);
+  }
+  async searchUsers(query: string, excludeIds: string[]): Promise<UserDirectoryRecord[]> {
+    if (!(await this.#userSearchEnabled())) return [];
+    return retryOnDoReset(() => this.ctx.exports.UserDirectoryDurableObject.getByName("")
+        .searchUsers(query, [this.#userId.name!, ...excludeIds]));
+  }
   changePassword(oldHash: Uint8Array, newHash: Uint8Array): Promise<void> {
     return this.#user.changePassword(oldHash, newHash);
   }
@@ -132,8 +162,15 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   listModels(): Promise<AiChatAuthorInfo[]> {
     return retryOnDoReset(() => this.#user.listModels());
   }
-  addModel(profile: AiChatAuthorInfo, config: AiModelConfig): Promise<void> {
-    return this.#user.addModel(profile, config);
+  addModel(profile: AiChatAuthorInfo, config: RedactedAiModelConfig,
+           copySecretsFrom?: string): Promise<void> {
+    return this.#user.addModel(profile, config, copySecretsFrom);
+  }
+  getModelConfig(id: string): Promise<{profile: AiChatAuthorInfo, config: RedactedAiModelConfig}> {
+    return retryOnDoReset(() => this.#user.getModelConfig(id));
+  }
+  updateModel(profile: AiChatAuthorInfo, config: RedactedAiModelConfig): Promise<void> {
+    return this.#user.updateModel(profile, config);
   }
   deleteModel(id: string): Promise<void> {
     return this.#user.deleteModel(id);
@@ -143,6 +180,15 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
   getQuickModel(): Promise<null | string> {
     return retryOnDoReset(() => this.#user.getQuickModel());
+  }
+
+  registerNotificationDevice(deviceRegistrationId: string): Promise<void> {
+    return this.#user.registerNotificationDevice(deviceRegistrationId);
+  }
+
+  subscribeToNotifications(
+      subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>> {
+    return this.#user.subscribeToNotifications(subscriber);
   }
 
   getPreferredModel(): Promise<string | null> {
@@ -197,15 +243,17 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return new Uint8Array(result);
   }
 
-  getAiConfig(): Promise<AiGatewayInfo> {
-    let gwConfig = getAiGatewayConfig(this.env);
-    if (gwConfig) {
-      return Promise.resolve({
+  async getAiConfig(): Promise<AiGatewayInfo> {
+    let models = await getGatewayModels(this.env);
+    if (models) {
+      return {
         enabled: true,
-        enabledProviders: [...gwConfig.providers] as AiModelProvider[],
-      });
+        enabledProviders: [...models.providers] as AiModelProvider[],
+        builtInModelIds: models.all.map(model => model.id),
+        userModelsEnabled: models.userModels,
+      };
     } else {
-      return Promise.resolve({ enabled: false });
+      return { enabled: false };
     }
   }
 
@@ -263,12 +311,6 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
       throw err;
     }
     started = true;
-    recordAnalytics(this.ctx, this.env, {
-      event_name: "gadget_opened",
-      user_id: userId,
-      gadget_id: id,
-      source: shareKey ? "share_key" : "direct",
-    });
     return result;
   }
 
@@ -314,11 +356,16 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return retryOnDoReset(() => this.#user.listGatekeeperVendors(filter));
   }
 
-  connectAccount(vendorId: string, resourceUrlPatterns?: string[]): Promise<{url: string}> {
+  connectAccount(vendorId: string, resourceUrlPatterns?: string[]): Promise<ConnectFlowStart> {
     return this.#user.connectAccount(vendorId, resourceUrlPatterns);
   }
 
-  ensureAccountResources(accountId: number, resourceUrlPatterns: string[]): Promise<{url?: string}> {
+  completeConnectHandoff(ticket: string, nonce: string): Promise<void> {
+    return this.#user.completeConnectHandoff(ticket, nonce);
+  }
+
+  ensureAccountResources(accountId: number, resourceUrlPatterns: string[])
+      : Promise<ConnectFlowStart | null> {
     return this.#user.ensureAccountResources(accountId, resourceUrlPatterns);
   }
 
@@ -340,7 +387,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return this.#user.disconnectAccount(accountId);
   }
 
-  reconnectAccount(accountId: number): Promise<{url: string}> {
+  reconnectAccount(accountId: number): Promise<ConnectFlowStart> {
     return this.#user.reconnectAccount(accountId);
   }
 
@@ -395,7 +442,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     let { metadata, contentLength, content } = await parseBlueprintArchive(archive);
     delete metadata.screenshot;
     let blueprintId = randomBlueprintId();
-    let r2Key = `${blueprintId}/${metadata.version}`;
+    let r2Key = blueprintContentKey(blueprintId, metadata);
 
     try {
       let fixedLengthStream = new FixedLengthStream(contentLength);
@@ -438,22 +485,19 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     let kvRecord = await readBlueprintKvRecord(this.env, blueprintId);
     if (!kvRecord) throw new Error("Blueprint not found.");
 
-    // 2. Read gzip-compressed Yjs doc from R2 and decompress.
-    let codeBytes = await readBlueprintContent(this.env, blueprintId, kvRecord.metadata.version);
-    if (!codeBytes) throw new Error("Blueprint content not found in R2.");
-
-    // 3. Create new Overseer DO (same as newGadget()).
+    // 2. Create new Overseer DO (same as newGadget()).
     let id = this.overseers.newUniqueId().toString();
     await this.#user.newGadget(id, kvRecord.metadata.title);
     let overseerResult = await this.#openGadgetInternal(id);
 
-    // 4. Initialize from blueprint code.
+    // 3. Initialize from the blueprint's code. The Overseer reads it for itself, as the version
+    //    this metadata describes, so that it is the code the bindings assigned below belong to.
     let overseerDo = this.overseers.get(this.overseers.idFromString(id));
-    await overseerDo.initializeFromBlueprint(codeBytes, kvRecord.metadata.title,
+    await overseerDo.initializeFromBlueprint(blueprintId, kvRecord.metadata,
         deploymentOutputForBlueprint(await readAdminConfig(this.env), blueprintId,
             sanitizeBlueprintOutput(kvRecord.metadata.output)));
 
-    // 5. Create gatekeepers from assignments and bind them into the workspace's (only) gadget.
+    // 4. Create gatekeepers from assignments and bind them into the workspace's (only) gadget.
     let metadata = await overseerResult.getMetadata();
     using gadget = await overseerResult.getGadget(metadata.defaultGadgetId!);
 
@@ -617,18 +661,18 @@ async function serveBlueprintScreenshot(env: Env, blueprintId: string): Promise<
   });
 }
 
-// Returned by startGatekeeperLogin(). Wraps the PendingLogin DO so the client awaits the login
+// Returned by startGatekeeperLogin(). Wraps the PendingLogin DO so the client redeems the login
 // result through a capability (this stub) rather than a guessable id — no login id is ever exposed
-// to the client. Disposing the stub (e.g. when the pop-up closes or the component unmounts) cancels
-// the in-flight wait and lets the DO be evicted.
+// to the client. The stub alone is not enough: receive() yields the token only once the popup has
+// confirmed the attempt's ticket with the nonce (PublicApi.confirmLogin).
 @validateRpc()
 class LoginAttemptImpl extends RpcTarget implements LoginAttempt {
   constructor(private pending: DurableObjectStub<PendingLogin>) {
     super();
   }
 
-  async wait(): Promise<string> {
-    return await this.pending.awaitResult();
+  async receive(): Promise<string | null> {
+    return await this.pending.receive();
   }
 }
 
@@ -649,7 +693,8 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
     return getServerConfig(this.env);
   }
 
-  async startGatekeeperLogin(vendorId: string): Promise<{ url: string; attempt: RpcStub<LoginAttempt> }> {
+  async startGatekeeperLogin(vendorId: string)
+      : Promise<{ url: string; nonce: string; attempt: RpcStub<LoginAttempt> }> {
     if (!getAuthGatekeeperAllowlist(this.env).includes(vendorId)) {
       throw new Error(`Sign-in via "${vendorId}" is not enabled on this deployment.`);
     }
@@ -658,10 +703,16 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
     const desc = await vendor.describe();
     if (!desc.providesAuth) throw new Error(`"${vendorId}" does not provide authentication.`);
 
-    // The PendingLogin DO is the rendezvous between this request and the (separate) OAuth-callback
-    // invocation. The client never sees its id — we hand back an `attempt` stub instead.
-    const pendingId = this.ctx.exports.PendingLogin.newUniqueId();
+    // The PendingLogin DO is the rendezvous between this request, the (separate) OAuth-callback
+    // invocation, and the popup's confirmLogin(). Its name is the hash of a secret only the popup
+    // will hold, so confirmLogin can address it while the client side holds no id at all; the client
+    // redeems through the `attempt` capability.
+    const { secret, hash } = await newSecretToken();
+    const pendingId = this.ctx.exports.PendingLogin.idFromName(hash);
     const pending = this.ctx.exports.PendingLogin.get(pendingId);
+    // Mark the attempt as started before the gatekeeper can deliver to it, so receive() answers null
+    // while it is still running instead of reporting it expired.
+    await pending.begin();
     const callback = this.ctx.exports.LoginConnectCallbackImpl(
         { props: { pendingId: pendingId.toString(), vendorId } });
     // For most providers, sign-in needs only minimal scopes to verify the user's email (the grant is
@@ -674,7 +725,16 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
     const { url } = await vendor.connectAccount(callback, options);
     // @ts-expect-error Cap'n Web RPC stubs and native RPC targets are compatible but the type
     //     system doesn't know this.
-    return { url, attempt: new LoginAttemptImpl(pending) };
+    return { url, nonce: secret.toHex(), attempt: new LoginAttemptImpl(pending) };
+  }
+
+  async confirmLogin(ticket: string, nonce: string): Promise<void> {
+    // A nonce naming a DO that never began finds no result there and is refused as expired; reading
+    // an empty DO creates nothing. The ticket is checked by confirm() itself.
+    const nonceHash = await hashPresentedSecret(nonce);
+    if (nonceHash === undefined) throw new Error(EXPIRED_MESSAGE);
+    const id = this.ctx.exports.PendingLogin.idFromName(nonceHash);
+    await this.ctx.exports.PendingLogin.get(id).confirm(ticket);
   }
 
   async authenticate(token: string): Promise<AuthenticatedApi> {
@@ -781,7 +841,7 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
     let kvRecord = await readBlueprintKvRecord(this.env, id);
     if (!kvRecord) throw new Error("Blueprint not found.");
 
-    let r2Object = await this.env.BLUEPRINT_CONTENT.get(`${id}/${kvRecord.metadata.version}`);
+    let r2Object = await this.env.BLUEPRINT_CONTENT.get(blueprintContentKey(id, kvRecord.metadata));
     if (!r2Object) throw new Error("Blueprint content not found in R2.");
 
     let metadata = { ...kvRecord.metadata };
@@ -814,24 +874,24 @@ export default {
     }
 
     if (url.pathname === "/api") {
-      // Make sure the bundled format blueprints are installed. The AdminSettings DO doesn't wake
+      // Make sure the bundled blueprints are installed. The AdminSettings DO doesn't wake
       // merely because someone deployed, so the install needs a trigger; hanging it off API
       // traffic means a fresh deployment is provisioned by its first visitor. Fire-and-forget,
       // and the DO is idempotent.
-      if (!formatBlueprintInstallStarted) {
-        formatBlueprintInstallStarted = true;
-        ctx.waitUntil(ctx.exports.AdminSettings.getByName("").ensureFormatBlueprintsInstalled()
+      if (!bundledBlueprintInstallStarted) {
+        bundledBlueprintInstallStarted = true;
+        ctx.waitUntil(ctx.exports.AdminSettings.getByName("").ensureBundledBlueprintsInstalled()
             .then((complete: boolean) => {
               // A partial install resolves rather than throwing, and nothing else will call the DO
               // from here, so clearing this is the whole retry: one bad archive would otherwise
               // leave the deployment half-provisioned for as long as the isolate lives.
-              if (!complete) formatBlueprintInstallStarted = false;
+              if (!complete) bundledBlueprintInstallStarted = false;
             })
             .catch((err: unknown) => {
               // Likewise let the next request try again. The DO coalesces concurrent callers, so a
               // retry costs one comparison once it succeeds.
-              formatBlueprintInstallStarted = false;
-              logger.warn("failed to install bundled format blueprints", {
+              bundledBlueprintInstallStarted = false;
+              logger.warn("failed to install bundled blueprints", {
                 event: "formats.install.trigger.failed", error: err,
               });
             }));

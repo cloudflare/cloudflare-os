@@ -79,19 +79,27 @@ One corollary that is easy to get wrong: the "nothing escaped to the internet" a
 running, so it would inspect and clear state they are still using — and could discard an escape a
 sibling was about to be blamed for.
 
-### wrangler and workerd versions are coupled
+### A redeploy keeps storage, so an upgrade can be tested
 
-The public repo pins `workerd` through a root `overrides` entry, which collapses every transitive
-request to one version. A newer `wrangler` brings a newer `miniflare` that demands a newer `workerd`
-than the override yields, and the harness then fails to boot:
+`server.update()` is the opposite of `reset()`: it reloads the Workers from new configs and keeps
+every Durable Object, the KV namespaces, the R2 bucket and the server URL. That makes it a
+deployment of a new version over an old one, which is what `Harness.redeployWorkshop()` uses it for.
+It costs about 1.5 s, and it does break every open RPC session, so a test that redeploys starts a
+harness of its own rather than doing it under its siblings.
 
-```
-The Workers runtime failed to start ... requires compatibility date "2026-07-08",
-but the newest date supported by this server binary is "2026-06-30".
-```
+What changes between the two builds has to be something a config can express, because the Workshop
+is built once, before any test file runs. A build-time input qualifies if wrangler's bundler can
+swap it: `bundleBlueprints()` points the `alias` for the Workshop's generated bundled-blueprints
+module at `fixtures/bundled-blueprints.ts`, and hands that fixture its list through a `define`. The
+installer, and the check that decides whether to run it, are the Workshop's own.
 
-So the public package pins `wrangler` to `~4.104.0` — the release whose bundled `workerd` matches the
-override. Bumping it means bumping the override in step.
+### wrangler and miniflare versions are coupled
+
+Nothing pins `workerd` directly: `wrangler` and `miniflare` each depend on an exact `workerd`. The
+catalog in `pnpm-workspace.yaml` pins `miniflare` exactly, to the prerelease the catalog `wrangler`
+depends on, and its `overrides` point `@cloudflare/vitest-pool-workers` at those same catalog
+versions, so the lockfile resolves one Wrangler/Miniflare/workerd stack. Bump `wrangler` and
+`miniflare` together; letting them drift installs a second stack.
 
 ### A consumer in another repo can end up with two copies of capnweb
 

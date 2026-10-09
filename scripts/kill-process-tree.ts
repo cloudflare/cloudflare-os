@@ -8,7 +8,7 @@
 // shell parses an interpolated pid, and a guard on the child-lister producing no pids (see below).
 //
 // `node:child_process` `kill()` signals one process, which is not enough for anything here that
-// spawns through a wrapper: `pnpm exec vp run ...` and `node build-app.mjs --watch` (which itself
+// spawns through a wrapper: `pnpm exec vp run ...` and `node build-app.ts --watch` (which itself
 // runs `pnpm exec vite build --watch`) both leave the real worker running when only the wrapper is
 // signalled.
 

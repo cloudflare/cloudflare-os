@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import { parse } from "jsonc-parser";
 import { resolveBinEntry } from "./bin-entry.ts";
 import { getDevServerConfig } from "./dev-server-config.ts";
+import { generateWorkerConfigs } from "./generate-worker-configs.ts";
 import { killProcessTree } from "./kill-process-tree.ts";
 import { pnpmCommand } from "./pnpm-command.ts";
 import type { ServiceBinding, WranglerBuild } from "./release/manifest-lib.ts";
@@ -99,6 +100,10 @@ function findGatekeepers(parentDir: string): Gatekeeper[] {
   }
 }
 
+// The committed wrangler.jsonc files are generated from cloudflare.config.ts; regenerate them so a
+// TypeScript edit reaches `pnpm dev-server` without a separate step.
+await generateWorkerConfigs({ check: false });
+
 const gatekeepers = findGatekeepers(PACKAGES_DIR);
 
 // The Context Library (packages/gatekeeper-context) is discovered by findGatekeepers and bound
@@ -163,7 +168,7 @@ function stopDevWatchers(): void {
 process.on("exit", stopDevWatchers);
 
 // Reaches each app watcher's `pnpm exec vite build --watch` grandchild, which a bare kill() on the
-// `node build-app.mjs --watch` wrapper leaves holding CPU and file watches after we are gone. Must
+// `node build-app.ts --watch` wrapper leaves holding CPU and file watches after we are gone. Must
 // not call stopDevWatchers() first: killing a wrapper reparents its children away from it, and the
 // tree walk can no longer find them.
 async function stopDevWatchersDeep(): Promise<void> {
@@ -294,7 +299,7 @@ function runBuild(
   });
 }
 
-// Everything Wrangler needs generated before it bundles: the backend's format blueprint module
+// Everything Wrangler needs generated before it bundles: the backend's bundled blueprint module
 // (gitignored, so absent on a clean checkout) and each gatekeeper's UI.
 //
 // The UI groups go through `vp` rather than a loop over `gatekeepers` so they run in parallel and
@@ -326,9 +331,9 @@ const vpEnv = vpRunEnv({ concurrentRuns: VP_PREFLIGHT_BUILDS.length });
 try {
   await Promise.all([
     runBuild(
-      "format blueprints",
+      "bundled blueprints",
       process.execPath,
-      [join(WORKSHOP_BACKEND_DIR, "scripts", "build-format-blueprints.ts")],
+      [join(WORKSHOP_BACKEND_DIR, "scripts", "build-bundled-blueprints.ts")],
       WORKSHOP_BACKEND_DIR,
     ),
     ...VP_PREFLIGHT_BUILDS.map(({ label, args }) =>
@@ -363,18 +368,18 @@ for (const gk of gatekeepers) {
     );
   }
 
-  // Single-file app UI (Vite bundle written to src/generated/app.txt by build-app.mjs).
+  // Single-file app UI (Vite bundle written to src/generated/app.txt by build-app.ts).
   //
   // Deferred until Wrangler is listening: unlike the configurator watcher, `vite build --watch`
   // cannot skip its initial build, and these are the largest builds in the repo, so running them now
   // takes cores from the worker bundles Wrangler is building concurrently. Nothing needs them sooner
   // -- the pre-flight already wrote the `app.txt` they will produce -- and Vite reads the disk when
   // it finally starts, so an edit made while the server was coming up is still picked up.
-  if (existsSync(join(gk.dir, "build-app.mjs"))) {
+  if (existsSync(join(gk.dir, "build-app.ts"))) {
     deferredWatchers.push(() => spawnDevWatcher(
       `app UI watcher for ${gk.name}`,
       process.execPath,
-      [join(gk.dir, "build-app.mjs"), "--watch"],
+      [join(gk.dir, "build-app.ts"), "--watch"],
     ));
   }
 }
@@ -467,6 +472,7 @@ function devBuildConfig(build: WranglerBuild | undefined, pkgDir: string): Wrang
 // Maps a gatekeeper name to the shared env vars whose values seed its CLIENT_ID / CLIENT_SECRET.
 const SHARED_GATEKEEPER_CREDS: Record<string, { id: string; secret: string }> = {
   "gatekeeper-github": { id: "GITHUB_CLIENT_ID", secret: "GITHUB_CLIENT_SECRET" },
+  "gatekeeper-gitlab": { id: "GITLAB_CLIENT_ID", secret: "GITLAB_CLIENT_SECRET" },
   "gatekeeper-google": { id: "GOOGLE_CLIENT_ID", secret: "GOOGLE_CLIENT_SECRET" },
   "gatekeeper-cloudflare": { id: "CLOUDFLARE_OAUTH_CLIENT_ID", secret: "CLOUDFLARE_OAUTH_CLIENT_SECRET" },
   "gatekeeper-supabase": { id: "SUPABASE_CLIENT_ID", secret: "SUPABASE_CLIENT_SECRET" },
@@ -491,6 +497,9 @@ const PASSTHROUGH_GATEKEEPER_VARS: Record<string, string[]> = {
     "MCP_PORTAL_TRUST_ANNOTATIONS", "MCP_PORTAL_HIDDEN_SERVER_IDS", "MCP_ALLOW_INSECURE",
   ],
   "gatekeeper-mcp": ["MCP_ALLOW_INSECURE"],
+  // The instance a self-hosted GitLab gatekeeper talks to, and the Access service token for one
+  // behind Cloudflare Access; unset, it talks to gitlab.com.
+  "gatekeeper-gitlab": ["GITLAB_URL", "GITLAB_API_URL", "CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET"],
 };
 
 for (const gk of gatekeepers) {
@@ -553,6 +562,15 @@ for (const gk of gatekeepers) {
   // they are injected into the gatekeeper Workers (see SHARED_GATEKEEPER_CREDS below).
   for (const name of OPTIONAL_FEATURE_VARS) {
     if (process.env[name] !== undefined) config.vars[name] = process.env[name];
+  }
+
+  // Account connect flows post their completion ticket to the Workshop *origin* named here (see
+  // packages/workshop-backend/src/connect-handoff.ts), so the backend refuses to complete one without
+  // it. Default to wherever the frontend is served from: Vite in normal dev, the backend itself in
+  // run-local mode.
+  if (config.vars.PUBLIC_BASE_URL === undefined) {
+    config.vars.PUBLIC_BASE_URL =
+        serveFrontendAssets ? `http://${backendHost}` : "http://localhost:3000";
   }
 
   for (const gk of gatekeepers) {

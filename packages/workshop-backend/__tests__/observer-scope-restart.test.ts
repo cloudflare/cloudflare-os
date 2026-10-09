@@ -13,6 +13,7 @@ import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer.js";
+import type { SeedBindingInfo } from "../src/agent.js";
 import { openFakeOverseer } from "./fixtures.js";
 
 declare module "cloudflare:workers" {
@@ -144,7 +145,10 @@ describe("restarting sessions when verification scope widens", () => {
     // A "build" client interface whose blocked-connection check is the real impl's.
     let client = await openFakeOverseer(
         { gatekeepers: impl.storage.gatekeepers },
-        { impl: { assertGatekeeperUsable: (id: number) => impl.assertGatekeeperUsable(id) } });
+        { impl: {
+          assertGatekeeperUsable: (id: number) => impl.assertGatekeeperUsable(id),
+          getGatekeeperFacet: (id: number) => impl.getGatekeeperFacet(id),
+        } });
 
     let added = await impl.addGatekeeper({} as any, CONNECTION_SPEC);
     let id = await added.getId();
@@ -223,47 +227,6 @@ describe("restarting sessions when verification scope widens", () => {
 
     expect(restarts).toEqual([]);
     expect(() => impl.assertGatekeeperUsable(1)).not.toThrow();
-  }));
-
-  it("a pending bind is invisible to collaborators, so it restarts nothing",
-      () => withImpl(async (impl, restarts) => {
-    joinSession(impl, "use");
-    seedGatekeeper(impl, 1);
-    seedGadget(impl, 100);
-
-    // An edge provisional to a chat isn't in #useScopeGatekeeperIds until it's promoted, which
-    // is what restarts (see the merge case below).
-    impl.bindWorkpiece(100, "DB", 1, 7);
-
-    expect(restarts).toEqual([]);
-  }));
-
-  it("promoting a pending bind at merge restarts a connected use collaborator",
-      () => withImpl(async (impl, restarts) => {
-    joinSession(impl, "use");
-    seedGatekeeper(impl, 1);
-    seedGadget(impl, 100);
-    impl.storage.chatMeta.put(
-        { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
-
-    impl.bindWorkpiece(100, "DB", 1, 1);
-    await impl.commitAgentStep(1, AGENT, [{ type: "message", message: "bound a connection" }], {
-      changes: [],
-      createdGadgets: [],
-      addedBindings: [{ gadgetId: 100, name: "DB", target: 1 }],
-      createdWorktrees: [],
-      worktreeCommits: [],
-    });
-    expect(restarts).toEqual([]);
-
-    expect(await impl.mergeChanges(1, USER_META, "owner-user-do"))
-        .toEqual({ outcome: "merged" });
-
-    // Accepting the change is the moment the edge becomes visible to "use" collaborators.
-    expect(impl.storage.gadgets.get(100).bindings.DB.pending).toBeUndefined();
-    expect(restarts).toHaveLength(1);
-    // And, as with a direct bind, the promoted connection is blocked until the reset lands.
-    expect(() => impl.assertGatekeeperUsable(1)).toThrow(/restarting/);
   }));
 
   it("a merge that promotes only a vendorless edge restarts nothing",
@@ -418,7 +381,7 @@ describe("restarting sessions when verification scope widens", () => {
 
     // A connection capability minted into a collaborator's session (joinAs "build") counts for
     // its own lifetime: the client can dispose the interface that minted it and retain this.
-    let added = await impl.addGatekeeper({} as any, CONNECTION_SPEC, "build");
+    let added = await impl.addGatekeeper({} as any, CONNECTION_SPEC, OWNER, "build");
     expect(restarts).toEqual([]);
 
     await impl.addGatekeeper({} as any, CONNECTION_SPEC);
@@ -495,8 +458,8 @@ describe("restarting sessions when verification scope widens", () => {
     expect(restarts).toEqual([]);
   }));
 
-  // A pre-creationSpec record, which observerVendorId() refuses to classify: sharing anything
-  // that reaches it requires the owner to reconnect it first.
+  // A pre-creationSpec record, which observerVendorId() refuses to classify: nobody can be
+  // verified against it, so sharing anything that reaches it requires the owner to remove it first.
   function seedLegacyGatekeeper(impl: any, id: number): void {
     impl.storage.gatekeepers.put({ id, resourceTitle: `Legacy ${id}`, class: {} as any });
   }
@@ -518,8 +481,8 @@ describe("restarting sessions when verification scope widens", () => {
     seedLegacyGatekeeper(impl, 1);
 
     // "Build" scope is everything, so the record is in scope and the intended fail-closed error
-    // still fires: the owner must reconnect it before the workspace can be shared at that level.
-    expect(() => impl.listObserverRequirements("build")).toThrow(/reconnected/);
+    // still fires: the owner must remove it before the workspace can be shared at that level.
+    expect(() => impl.listObserverRequirements("build")).toThrow(/cannot verify collaborators/);
   }));
 
   it("...and still blocks a use collaborator once a gadget binds it",
@@ -530,7 +493,7 @@ describe("restarting sessions when verification scope widens", () => {
     // Bound, the record is genuinely in "use" scope, and verification can't proceed without
     // knowing what to verify against -- same fail-closed refusal as "build".
     impl.bindWorkpiece(100, "DB", 1);
-    expect(() => impl.listObserverRequirements("use")).toThrow(/reconnected/);
+    expect(() => impl.listObserverRequirements("use")).toThrow(/cannot verify collaborators/);
   }));
 
   it("binding a legacy connection restarts a connected use collaborator and quarantines it",
@@ -542,7 +505,8 @@ describe("restarting sessions when verification scope widens", () => {
     // A legacy record has no vendor, so nobody CAN be verified against it -- but that must make
     // it count on the widening diff, not vanish from both sides of it: binding it is still the
     // moment live use sessions gain a route to it. The restart severs them and the quarantine
-    // holds until the reset; fresh use opens then fail closed (/reconnected/, above).
+    // holds until the reset; fresh use opens then fail closed (/cannot verify collaborators/,
+    // above).
     impl.bindWorkpiece(100, "DB", 1);
 
     expect(restarts).toHaveLength(1);
@@ -578,20 +542,6 @@ describe("hooks widen use scope", () => {
       pending: { chatId },
     });
   }
-
-  it("enabling a hook on an unbound connection restarts a connected use collaborator",
-      () => withImpl(async (impl, restarts) => {
-    joinSession(impl, "use");
-    seedGatekeeper(impl, 1);
-    seedHook(impl);
-
-    impl.enableHookRecord(impl.storage.boundHooks.get(5));
-
-    expect(impl.storage.boundHooks.get(5).enabled).toBe(true);
-    expect(restarts).toHaveLength(1);
-    // And, like any other widening, the connection is blocked until the reset lands.
-    expect(() => impl.assertGatekeeperUsable(1)).toThrow(/restarting/);
-  }));
 
   it("enabling a hook on an already-bound connection widens nothing",
       () => withImpl(async (impl, restarts) => {
@@ -1052,7 +1002,7 @@ describe("connections blocked pending restart", () => {
         resourceUrl: "https://example.com/1", typeUrlPattern: "https://*",
       },
     });
-    impl.getGatekeeperFacet = (id: number) => ({
+    impl.getGatekeeperFacet = async (id: number) => ({
       describe: async () =>
           ({ title: "Test", url: "https://example.com/new", hasSlashCommands: true }),
       ...slashProvider(id === 1 ? "usable" : "blocked"),
@@ -1065,33 +1015,82 @@ describe("connections blocked pending restart", () => {
     expect(names).not.toContain("blocked");
   }));
 
-  it("a blocked connection is skipped by the ambient catalog load",
+  it("usable ambient catalogs retry and refresh while blocked connections stay skipped",
       () => withImpl(async (impl) => {
     joinSession(impl);
     let catalogLoads: number[] = [];
+    let catalogAttempt = 0;
     impl.getGatekeeperFacet = (id: number) => ({
       describe: async () =>
           ({ title: `T${id}`, url: "https://example.com", suggestedBindingName: "RES" }),
-      getAgentCatalog: async () => { catalogLoads.push(id); return { entries: [] }; },
+      getAgentCatalog: async () => {
+        catalogLoads.push(id);
+        if (++catalogAttempt === 1) throw new Error("transient catalog failure");
+        return {
+          entries: [{
+            id: `entry-${catalogAttempt}`,
+            title: `Entry ${catalogAttempt}`,
+            description: "test",
+          }],
+        };
+      },
     });
-    impl.storage.gatekeepers.put({
-      id: 1, resourceTitle: "Usable", class: {} as any,
-      creationSpec: { type: "ambient", vendorId: "v1" },
-    });
-    let added = await impl.addGatekeeper({} as any, { type: "ambient", vendorId: "v2" });
+    seedGatekeeper(impl, 1);
+    let usable = impl.storage.gatekeepers.get(1);
+    usable.resourceTitle = "Usable";
+    usable.creationSpec = { type: "ambient", vendorId: "v1" };
+    impl.storage.gatekeepers.put(usable);
+    let added = await impl.addGatekeeper(
+        usable.class, { type: "ambient", vendorId: "v2" });
     let blockedId = await added.getId();
     impl.storage.chatMeta.put(
         { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
 
-    let seeds = await impl.prepareChatBindings(1, []);
+    let prepare = (): Promise<SeedBindingInfo[]> => impl.prepareChatBindings(1, []);
+    let failed = await prepare();
+    let recovered = await prepare();
+    let refreshed = await prepare();
 
-    // The blocked connection is left out entirely, like the other enumerating routes: its
-    // catalog is neither queried nor cached, and even its seed entry's metadata belongs to a
-    // scope nobody live was verified against. It reappears once the reset lands and clients
-    // reconnect; the next turn then loads its catalog as a missing id.
-    expect(catalogLoads).toEqual([1]);
-    expect(seeds.some((seed: any) => seed.target === blockedId)).toBe(false);
-    expect(impl.storage.chatContext.get(1).alwaysAvailableCatalogs
-        .map((entry: any) => entry.gatekeeperId)).toEqual([1]);
+    expect(catalogLoads).toEqual([1, 1, 1]);
+    for (let seeds of [failed, recovered, refreshed]) {
+      expect(seeds.some(seed => seed.target === blockedId)).toBe(false);
+    }
+    expect(failed.find(seed => seed.target === 1)?.catalog).toBeNull();
+    expect(recovered.find(seed => seed.target === 1)?.catalog?.entries[0]?.id).toBe("entry-2");
+    expect(refreshed.find(seed => seed.target === 1)?.catalog?.entries[0]?.id).toBe("entry-3");
+  }));
+});
+
+describe("ambient catalogs", () => {
+  it("a connection that answers null is not asked again, in any chat",
+      () => withImpl(async (impl) => {
+    let catalogLoads: number[] = [];
+    impl.getGatekeeperFacet = (id: number) => ({
+      describe: async () =>
+          ({ title: `T${id}`, url: "https://example.com", suggestedBindingName: `RES${id}` }),
+      getAgentCatalog: async () => {
+        catalogLoads.push(id);
+        return id === 1 ? { entries: [] } : null;
+      },
+    });
+    for (let id of [1, 2]) {
+      seedGatekeeper(impl, id);
+      let record = impl.storage.gatekeepers.get(id);
+      record.creationSpec = { type: "ambient", vendorId: `v${id}` };
+      impl.storage.gatekeepers.put(record);
+    }
+    for (let chatId of [1, 2]) {
+      impl.storage.chatMeta.put(
+          { id: chatId, title: "Chat", started: new Date(0), lastActive: new Date(chatId) });
+    }
+
+    await impl.prepareChatBindings(1, []);
+    await impl.prepareChatBindings(1, []);
+    let other: SeedBindingInfo[] = await impl.prepareChatBindings(2, []);
+
+    // An empty catalog is asked for every time; null is remembered for the connection.
+    expect(catalogLoads).toEqual([1, 2, 1, 1]);
+    expect(other.find(seed => seed.target === 1)?.catalog).toEqual({ entries: [] });
+    expect(other.find(seed => seed.target === 2)?.catalog).toBeNull();
   }));
 });

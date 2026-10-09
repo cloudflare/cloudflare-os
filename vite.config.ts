@@ -17,7 +17,7 @@ export default defineConfig({
       suspicious: 'error',
     },
     plugins: ['typescript', 'unicorn', 'oxc', 'import'],
-    jsPlugins: ['./scripts/oxlint-plugin.mjs'],
+    jsPlugins: ['./scripts/oxlint-plugin.ts'],
     options: {
       // Note: type-aware linting is intentionally not enabled yet.
       // Enabling them is its own change: triage the first run's findings, decide a `no-floating-promises` policy (RPC promise
@@ -92,7 +92,7 @@ export default defineConfig({
       '**/generated/**',
       // Bundled blueprint files are user-authored gadget source extracted verbatim for review. They
       // do not follow the host repository's lint rules and must round-trip without code changes.
-      '**/format-blueprints/*/files/**',
+      '**/bundled-blueprints/blueprints/*/files/**',
       '**/*.gen.ts',
       '**/node_modules/**',
       '**/.wrangler/**',
@@ -132,6 +132,32 @@ export default defineConfig({
         },
       },
       {
+        // Declarations the agent receives as verbatim text (mostly through a `.txt` symlink to the
+        // file), so nothing resolves their imports for it.
+        files: [
+          'packages/gatekeeper-*/src/*types.d.ts',
+          'packages/mcp-shared/src/types.d.ts',
+          'packages/workshop-backend/src/*-binding.d.ts',
+        ],
+        // Configurator declarations type the iframe-facing `ui` API, not the agent's, and import
+        // freely. `*` above already stops at `src/`; this keeps a wider glob from reaching them.
+        excludeFiles: ['**/configurator/**'],
+        rules: {
+          'gadgets/self-contained-agent-types': 'error',
+        },
+      },
+      {
+        // `type-bundle.ts` strips exactly these imports before concatenating the imported
+        // declarations into the same agent bundle, so they do resolve for the agent.
+        files: ['packages/gatekeeper-google/src/{docs,drive,slides}-types.d.ts'],
+        rules: {
+          'gadgets/self-contained-agent-types': [
+            'error',
+            { allow: ['./docs-read-types', './sheets-types', './slides-read-types'] },
+          ],
+        },
+      },
+      {
         files: ['**/*.test.ts', '**/*.test.tsx', '**/vitest.config.ts'],
         plugins: ['typescript', 'unicorn', 'oxc', 'import', 'vitest'],
         env: {
@@ -140,7 +166,17 @@ export default defineConfig({
         },
       },
       {
-        files: ['scripts/**/*.ts', 'scripts/**/*.mjs'],
+        // Hook tests capture the hook's return value from a throwaway probe component into a `let`
+        // in the enclosing `describe` -- reassigning an outer variable during render is the whole
+        // point there, not the production side effect this rule guards against.
+        files: ['packages/workshop-frontend/**/*.test.tsx'],
+        plugins: ['typescript', 'unicorn', 'oxc', 'import', 'react', 'jsx-a11y', 'vitest'],
+        rules: {
+          'react/globals': 'off',
+        },
+      },
+      {
+        files: ['scripts/**/*.ts'],
         env: {
           node: true,
           es2024: true,

@@ -8,7 +8,8 @@
 // bound to it is owner-only. See `sharing-policy.ts` and the README.
 import { RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import { validateRpc, skipRpcValidation } from "capnweb-validate";
-import { createLogger } from "@gadgets/backend-utils/logger";
+import { createLogger } from "@gadgets/observability/logger";
+import { readTextCapped } from "@gadgets/gatekeeper-kit/response-body";
 import {
   stripTrailingSlashes,
   type AvatarImage,
@@ -52,9 +53,9 @@ import {
 import { validateCustomEndpoint } from "@gadgets/mcp-shared/endpoint";
 import { fetchOptions } from "@gadgets/mcp-shared/fetch";
 import {
+  connectHandoffPageHtml,
   htmlResponse,
   INVALID_LINK_HTML,
-  SELF_CLOSING_HTML,
 } from "@gadgets/mcp-shared/html";
 import { handleMcpHttpRequest } from "@gadgets/mcp-shared/http";
 import {
@@ -92,6 +93,9 @@ function getBaseUrl(env: Env): string {
 // ---------------------------------------------------------------------------
 // HTTP handler — serves the connect form and the OAuth callback.
 
+// The route checks only path shape before reading the form; the account checks the nonce after.
+const MAX_CONNECT_FORM_BYTES = 16 * 1024;
+
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     return handleMcpHttpRequest(req, {
@@ -114,7 +118,12 @@ export default {
           }
           return htmlResponse(connectFormHtml(path));
         }
-        const form = await request.formData();
+        let form: URLSearchParams;
+        try {
+          form = new URLSearchParams(await readTextCapped(request, MAX_CONNECT_FORM_BYTES));
+        } catch {
+          return new Response("Invalid form submission.", { status: 400 });
+        }
         return continueConnect(
           account, initiationNonce, String(form.get("url") ?? ""), env, path);
       },
@@ -160,7 +169,7 @@ async function continueConnect(
 
   if (outcome.kind === "invalid") return htmlResponse(INVALID_LINK_HTML, 400);
   if (outcome.kind === "redirect") return Response.redirect(outcome.url, 302);
-  return htmlResponse(SELF_CLOSING_HTML);
+  return htmlResponse(connectHandoffPageHtml(outcome.handoff));
 }
 
 // ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ export default {
 
   isReady({ values }) {
     return typeof values.repoFullName === "string" && values.repoFullName.length > 0 &&
-      typeof values.issueNumber === "string" && values.issueNumber.length > 0;
+      typeof values.issueNumber === "string" && /^\d+$/.test(values.issueNumber);
   },
 
   initialValuesFromResourceUrl({ resourceUrl }) {

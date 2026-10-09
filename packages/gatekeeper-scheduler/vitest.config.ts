@@ -2,6 +2,9 @@ import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import capnwebValidate from "capnweb-validate/vite";
 import { kCurrentWorker } from "miniflare";
 import { defineConfig } from "vitest/config";
+import deployed from "./cloudflare.config.ts";
+
+const { compatibilityDate, compatibilityFlags } = deployed.worker;
 
 export default defineConfig({
   plugins: [
@@ -9,8 +12,8 @@ export default defineConfig({
     cloudflareTest({
       main: "./__tests__/worker.ts",
       miniflare: {
-        compatibilityDate: "2026-09-04",
-        compatibilityFlags: ["allow_irrevocable_stub_storage", "nodejs_als"],
+        compatibilityDate,
+        compatibilityFlags,
         durableObjects: {
           SCHEDULE_DRIVER: { className: "ScheduleDriver", useSQLite: true },
           SCHEDULER_SCOPE_TEST_PARENT: {

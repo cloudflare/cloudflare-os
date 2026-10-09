@@ -512,7 +512,9 @@ class MySessionImpl extends RpcTarget implements MySession {
 
   // Example: action (side effect). Submit for approval; do NOT perform here.
   // Assign a sequential action ID, store the action details in the gatekeeper's
-  // own storage, then submit the ID to the approval queue.
+  // own storage, then submit the ID to the approval queue. If you read current state to build
+  // the description or capture revert info, do NOT log it as an observation: nothing is
+  // returned to the caller.
   async updateData(newValue: string): Promise<void> {
     let actionId = /* assign next sequential ID and store action details */ 0;
 
@@ -543,24 +545,30 @@ class MySessionImpl extends RpcTarget implements MySession {
 }
 ```
 
-## `wrangler.jsonc`
+## `cloudflare.config.ts`
 
-```jsonc
-{
-  "name": "gatekeeper-<name>",
-  "main": "src/<name>.ts",
-  "compatibility_date": "2026-09-04",
-  "compatibility_flags": ["allow_irrevocable_stub_storage"],
-  "migrations": [
-    {
-      "tag": "v0",
-      "new_sqlite_classes": ["UserAccount", "MyGatekeeperImpl"]
-    }
-  ]
-}
+```typescript
+import {
+  DEFAULT_GATEKEEPER_WRANGLER, OBSERVABILITY, defineGadgetsWorker, type DurableObjectMigration,
+} from "@gadgets/scripts/worker-config";
+
+export default defineGadgetsWorker({
+  name: "gatekeeper-<name>",
+  entrypoint: ".wrangler/validate/src/<name>.ts",
+  compatibilityFlags: ["allow_irrevocable_stub_storage"],
+  observability: OBSERVABILITY,
+});
+
+export const wrangler = DEFAULT_GATEKEEPER_WRANGLER;
+
+export const migrations: DurableObjectMigration[] = [
+  { tag: "v0", new_sqlite_classes: ["UserAccount", "MyGatekeeperImpl"] },
+];
 ```
 
-Only Durable Object classes go in `new_sqlite_classes`. `MyVerifier` and `MyHookControllerImpl` are `WorkerEntrypoint`s, so they need no migration entry — but, like all entrypoints, they must be `export`ed from the worker's main module (so `ctx.exports.MyVerifier(...)` resolves). If your hook uses a dedicated event-source DO to hold the `initiator`, add that DO here too.
+Run `pnpm configs:generate`; the generated `wrangler.jsonc` is committed and never edited by hand.
+
+Only Durable Object classes go in `new_sqlite_classes`. `MyVerifier` and `MyHookControllerImpl` are `WorkerEntrypoint`s, so they need no `migrations` entry — but, like all entrypoints, they must be `export`ed from the worker's main module (so `ctx.exports.MyVerifier(...)` resolves). If your hook uses a dedicated event-source DO to hold the `initiator`, add that DO here too.
 
 ## Creating the `types.txt` symlink
 

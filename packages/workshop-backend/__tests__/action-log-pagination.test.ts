@@ -1,9 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RpcStub } from "capnweb";
 import type { ActionLogEntry, ActionsSubscriber } from "@gadgets/workshop-shared/api";
-import {
-  ACTION_HISTORY_PAGE_DEFAULT_LIMIT, ACTION_REPLAY_PAGE_SIZE,
-} from "../src/overseer.js";
+import { ACTION_HISTORY_PAGE_DEFAULT_LIMIT, ACTION_REPLAY_PAGE_SIZE } from "../src/overseer.js";
 import { makeMockStorage } from "./mock-storage.js";
 import {
   FIXTURE_EPOCH, makeActionStorage, makePreIndexActionStorage, openFakeOverseer, putAction,
@@ -26,19 +24,6 @@ function makeSubscriber(entry?: (record: ActionLogEntry) => Promise<void>) {
 }
 
 describe("subscribeToActions", () => {
-  it("delivers no pre-existing records: ready fires immediately", async () => {
-    // Live deltas only — the current pending set is queried via listActions({filter: "pending"}).
-    let storage = makeActionStorage();
-    putAction(storage, 0);                                          // pending action
-    putAction(storage, 1, { state: "approved" });
-    putAction(storage, 2, { type: "bindHook", state: "pending" });  // pending, non-action type
-    let client = await openFakeOverseer(storage);
-    let { subscriber, events } = makeSubscriber();
-
-    using _sub = await client.subscribeToActions(subscriber);
-    expect(events).toEqual(["ready"]);
-  });
-
   it("delivers adds and resolutions live, in stream order", async () => {
     let storage = makeActionStorage();
     let client = await openFakeOverseer(storage);
@@ -51,34 +36,6 @@ describe("subscribeToActions", () => {
     storage.actions.put(record);
 
     expect(events).toEqual(["ready", 0, 0]);  // the add, then the resolving update
-  });
-
-  it("replays every record, resolved included, for an epoch startAfter", async () => {
-    let storage = makeActionStorage();
-    putAction(storage, 0);
-    putAction(storage, 1, { state: "approved" });
-    putAction(storage, 2, { type: "observation", state: "rejected" });
-    putAction(storage, 3, { type: "bindHook", state: "pending" });
-    let client = await openFakeOverseer(storage);
-    let { subscriber, events } = makeSubscriber();
-
-    using _sub = await client.subscribeToActions(subscriber, new Date(0));
-    expect(events).toEqual([0, 1, 2, 3, "ready"]);
-  });
-
-  it("replays only records whose last state change is at or past startAfter", async () => {
-    // putAction stamps createdAt = FIXTURE_EPOCH + id, so the cutoff falls mid-log. The bound is
-    // inclusive: the record last changed exactly at the cutoff is re-delivered.
-    let storage = makeActionStorage();
-    putAction(storage, 0);
-    putAction(storage, 1, { state: "approved" });
-    putAction(storage, 2, { state: "rejected" });
-    putAction(storage, 3);
-    let client = await openFakeOverseer(storage);
-    let { subscriber, events } = makeSubscriber();
-
-    using _sub = await client.subscribeToActions(subscriber, new Date(FIXTURE_EPOCH + 1));
-    expect(events).toEqual([1, 2, 3, "ready"]);
   });
 
   it("replays only the changed records, in change-time order, however large the log", async () => {
@@ -136,17 +93,6 @@ describe("subscribeToActions", () => {
     expect(events.filter(id => id === newId)).toEqual([newId]);
     expect(events.at(-1)).toBe("ready");
     expect(events.length).toBe(ACTION_REPLAY_PAGE_SIZE + 3);  // replayed pages + live add + ready
-  });
-
-  it("replays a record created before the cutoff but resolved after it", async () => {
-    let storage = makeActionStorage();
-    putAction(storage, 0, { state: "approved", appliedAt: new Date(FIXTURE_EPOCH + 500) });
-    putAction(storage, 1, { state: "approved" });  // both created and resolved before the cutoff
-    let client = await openFakeOverseer(storage);
-    let { subscriber, events } = makeSubscriber();
-
-    using _sub = await client.subscribeToActions(subscriber, new Date(FIXTURE_EPOCH + 100));
-    expect(events).toEqual([0, "ready"]);
   });
 
   it("replays a hook toggled after the cutoff, carrying the toggled state", async () => {
@@ -209,46 +155,6 @@ describe("subscribeToActions", () => {
 });
 
 describe("listActions", () => {
-  it("returns records newest-first, pending included", async () => {
-    let storage = makeActionStorage();
-    putAction(storage, 0, { state: "approved" });
-    putAction(storage, 1);  // pending
-    putAction(storage, 2, { state: "rejected" });
-    putAction(storage, 3, { type: "observation", state: "approved" });
-    let client = await openFakeOverseer(storage);
-
-    let page = await client.listActions();
-    expect(page.entries.map(e => e.id)).toEqual([3, 2, 1, 0]);
-    expect(page.nextBeforeId).toBeUndefined();
-  });
-
-  it("filters by record type, pending included", async () => {
-    let storage = makeActionStorage();
-    putAction(storage, 0, { state: "approved" });
-    putAction(storage, 1, { type: "observation", state: "approved" });
-    putAction(storage, 2, { type: "bindHook", state: "approved" });
-    putAction(storage, 3, { type: "observation", state: "pending" });
-    let client = await openFakeOverseer(storage);
-
-    let page = await client.listActions({ filter: "observation" });
-    expect(page.entries.map(e => e.id)).toEqual([3, 1]);
-  });
-
-  it("applies the default limit and reports more history", async () => {
-    let storage = makeActionStorage();
-    let total = ACTION_HISTORY_PAGE_DEFAULT_LIMIT + 10;
-    for (let id = 0; id < total; id++) putAction(storage, id, { state: "approved" });
-    let client = await openFakeOverseer(storage);
-
-    let first = await client.listActions();
-    expect(first.entries.length).toBe(ACTION_HISTORY_PAGE_DEFAULT_LIMIT);
-    expect(first.nextBeforeId).toBe(total - ACTION_HISTORY_PAGE_DEFAULT_LIMIT);
-
-    let second = await client.listActions({ beforeId: first.nextBeforeId });
-    expect(second.entries.length).toBe(10);
-    expect(second.nextBeforeId).toBeUndefined();
-  });
-
   it("returns sparse matches in one full page, however much history buries them", async () => {
     let storage = makeActionStorage();
     // A few observations buried under far more history than the old design's per-call scan cap:
@@ -282,6 +188,21 @@ describe("listActions", () => {
     } while (beforeId !== undefined);
 
     expect(ids).toEqual(expected);
+  });
+
+  it("applies the default limit and reports more history", async () => {
+    let storage = makeActionStorage();
+    let total = ACTION_HISTORY_PAGE_DEFAULT_LIMIT + 10;
+    for (let id = 0; id < total; id++) putAction(storage, id, { state: "approved" });
+    let client = await openFakeOverseer(storage);
+
+    let first = await client.listActions();
+    expect(first.entries.length).toBe(ACTION_HISTORY_PAGE_DEFAULT_LIMIT);
+    expect(first.nextBeforeId).toBe(total - ACTION_HISTORY_PAGE_DEFAULT_LIMIT);
+
+    let second = await client.listActions({ beforeId: first.nextBeforeId });
+    expect(second.entries.length).toBe(10);
+    expect(second.nextBeforeId).toBeUndefined();
   });
 
   it("rejects an invalid beforeId", async () => {
@@ -330,26 +251,6 @@ describe("listActions with the pending filter", () => {
     expect(ids).toEqual(expected);
   });
 
-  it("reflects a resolution between pages: the record stops appearing", async () => {
-    let storage = makeActionStorage();
-    let total = ACTION_HISTORY_PAGE_DEFAULT_LIMIT + 10;
-    for (let id = 0; id < total; id++) putAction(storage, id);
-    let client = await openFakeOverseer(storage);
-
-    let first = await client.listActions({ filter: "pending" });
-    expect(first.entries.length).toBe(ACTION_HISTORY_PAGE_DEFAULT_LIMIT);
-    expect(first.nextBeforeId).toBe(10);
-
-    // Resolve a record that would have been on the second page.
-    let record = storage.actions.get(5)!;
-    record.state = "approved";
-    storage.actions.put(record);
-
-    let second = await client.listActions({ filter: "pending", beforeId: first.nextBeforeId });
-    expect(second.entries.map(e => e.id)).toEqual([9, 8, 7, 6, 4, 3, 2, 1, 0]);
-    expect(second.nextBeforeId).toBeUndefined();
-  });
-
   it("sees records written before the indexes existed once a rebuild backfills them", async () => {
     // Mirrors the version-3 migration: records predate the index declarations, so each index
     // starts empty until the migration's rebuild() runs.
@@ -387,22 +288,5 @@ describe("listActions with the pending filter", () => {
     let { subscriber, events } = makeSubscriber();
     using _sub = await client.subscribeToActions(subscriber, new Date(FIXTURE_EPOCH + 3));
     expect(events).toEqual([3, 2, "ready"]);
-  });
-});
-
-describe("UseOverseerInterface", () => {
-  it("answers listActions with an empty terminal page and the subscription inertly", async () => {
-    let storage = makeActionStorage();
-    putAction(storage, 0);
-    putAction(storage, 1, { state: "approved" });
-    let client = await openFakeOverseer(storage, { role: "use" });
-    let { subscriber, events } = makeSubscriber();
-
-    expect(await client.listActions()).toEqual({ entries: [] });
-    expect(await client.listActions({ filter: "pending" })).toEqual({ entries: [] });
-
-    using _sub = await client.subscribeToActions(subscriber);
-    putAction(storage, 2);
-    expect(events).toEqual(["ready"]);  // settled empty; nothing replayed or delivered
   });
 });

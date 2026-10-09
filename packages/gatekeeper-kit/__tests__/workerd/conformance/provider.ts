@@ -40,6 +40,8 @@ export class FakeProvider {
   readonly controls: ProviderControls = {};
   /** Refresh tokens the provider will no longer honour, by rotation or explicit revocation. */
   readonly revoked = new Set<string>();
+  /** Access tokens the provider still accepts. */
+  readonly activeAccessTokens = new Set<string>();
   /** Every project the provider holds, by id. */
   readonly projects = new Map<string, Project>();
   /** Per-user visibility, so a collaborator can legitimately lack access to one space. */
@@ -49,6 +51,7 @@ export class FakeProvider {
   /** The principal a fresh authorization belongs to; reassign it to reconnect as someone else. */
   principal = "user-a";
   #issued = 0;
+  readonly #owners = new Map<string, string>();
   #created = 0;
 
   /**
@@ -61,7 +64,8 @@ export class FakeProvider {
     if (this.controls.grantDead || this.revoked.has(current.refreshToken)) {
       throw new ProviderAuthError("invalid_grant");
     }
-    const next = this.mint();
+    // A refresh continues its own grant, whoever a fresh authorization would belong to now.
+    const next = this.#issue(this.#owners.get(current.refreshToken) ?? this.principal);
     // Rotating: the old refresh token dies with this call.
     this.revoked.add(current.refreshToken);
     return {
@@ -71,21 +75,28 @@ export class FakeProvider {
     };
   }
 
-  /** @returns A newly issued grant, as both the first code exchange and a refresh produce. */
+  /** @returns A newly issued grant for the principal a fresh authorization belongs to. */
   mint(): Grant {
+    return this.#issue(this.principal);
+  }
+
+  #issue(principal: string): Grant {
     this.#issued += 1;
+    const accessToken = `${principal}-access-${this.#issued}`;
+    const refreshToken = `${principal}-refresh-${this.#issued}`;
+    this.activeAccessTokens.add(accessToken);
+    this.#owners.set(refreshToken, principal);
     return {
-      accessToken: `${this.principal}-access-${this.#issued}`,
-      refreshToken: `${this.principal}-refresh-${this.#issued}`,
+      accessToken,
+      refreshToken,
       scopes: ["projects:read", "projects:write"],
       expiresAt: Date.now() + 3_600_000,
     };
   }
 
   #check(grant: PublicGrant): void {
-    if (this.controls.rejectCredentials) throw new ProviderAuthError("401 unauthorized");
-    if (grant.accessToken !== `${this.principal}-access-${this.#issued}`) {
-      throw new ProviderAuthError("401 token belongs to another principal");
+    if (this.controls.rejectCredentials || !this.activeAccessTokens.has(grant.accessToken)) {
+      throw new ProviderAuthError("401 unauthorized");
     }
   }
 

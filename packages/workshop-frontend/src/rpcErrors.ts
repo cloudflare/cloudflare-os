@@ -101,6 +101,17 @@ export function logRpcFailure(
   return transient
 }
 
+/**
+ * The server's own account of a failed RPC, for the description of a toast whose title only names
+ * the action — a refusal such as a disabled model says what the user can do about it. Undefined
+ * for a non-Error throw, an empty message, and a transient (connection or Durable Object reset)
+ * failure, whose message is a transport or runtime string.
+ */
+export function rpcFailureDescription(err: unknown): string | undefined {
+  if (!(err instanceof Error) || !err.message || isTransientRpcError(err)) return undefined
+  return err.message
+}
+
 // No client-side retry lives here on purpose: the Worker owns DO-reset recovery (fresh stubs,
 // one same-colo retry for idempotent reads — see workshop-backend's do-retry.ts), so a do-reset
 // error that reaches the browser already survived that and is worth surfacing. Connection-class

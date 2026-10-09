@@ -31,10 +31,18 @@ export type GmailThreadInfoRaw = {
   snippet?: string;
   subject: string;
   messageCount: number;
+  latestMessageId: string;
   timestamp: Date;
   participants: EmailAddress[];
   unread: boolean;
   labelIds: string[];
+};
+
+/** A thread's snippet and per-message metadata, from which its summary is computed. */
+export type GmailThreadMetadataRaw = {
+  id: string;
+  snippet?: string;
+  messages: GmailMessageInfoRaw[];
 };
 
 export type GmailNormalizedRecipients = {
@@ -198,24 +206,22 @@ export async function getAccessToken(
   };
 }
 
-type GoogleAccountProfile = {
+export type GoogleAccountProfile = {
+  /** The stable Google account ID; also the `{user}` in Chat's `users/{user}` names. */
   sub: string;
   email?: string;
   name?: string;
   picture?: string;
 };
 
-async function getGoogleAccountProfile(accessToken: string): Promise<GoogleAccountProfile> {
-  const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+export async function getGoogleAccountProfile(accessToken: string | AccessTokenProvider): Promise<GoogleAccountProfile> {
+  const response = await fetchWithAuthRetry('https://www.googleapis.com/oauth2/v3/userinfo', {
     method: 'GET',
-    headers: {
-      'Authorization': `Bearer ${accessToken}`,
-      'Accept': 'application/json',
-    },
-  });
+    headers: { 'Accept': 'application/json' },
+  }, typeof accessToken === "string" ? async () => accessToken : accessToken);
 
   if (!response.ok) {
-    response.body?.cancel();
+    await response.body?.cancel();
     throw new Error(`Failed to fetch user info: ${response.status} ${response.statusText}`);
   }
 
@@ -379,7 +385,7 @@ export type GmailLabelRaw = {
   type: "system" | "user";
 };
 
-// Metadata-only thread response (format=metadata). Used by getThreadInfo()
+// Metadata-only thread response (format=metadata). Used by getThreadMetadata()
 // to avoid downloading full message payloads.
 type GmailThreadMetadata = {
   id: string;
@@ -393,6 +399,8 @@ type GmailThreadMetadata = {
 export const MAX_GMAIL_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 /** Conservative raw-message ceiling aligned with Gmail's documented 25 MB personal limit. */
 export const MAX_GMAIL_FORWARD_SOURCE_BYTES = 25 * 1024 * 1024;
+/** Gmail's per-call limit on message IDs for `users.messages.batchModify`. */
+export const GMAIL_BATCH_MODIFY_MAX_IDS = 1000;
 const MAX_GMAIL_MESSAGE_HEADERS = 256;
 const MAX_GMAIL_MESSAGE_HEADER_BYTES = 128 * 1024;
 
@@ -664,6 +672,23 @@ function normalizeReferences(references: string): string {
   return foldReferenceTokens(parseReferenceTokens(references));
 }
 
+/**
+ * The Message-ID `buildEncodedEmail` writes for `value` in a Message-ID or In-Reply-To header.
+ * @throws When the builder would refuse the value.
+ */
+export function normalizeMessageIdHeader(value: string): string {
+  return validateMessageId(value, "Message-ID");
+}
+
+/**
+ * The message IDs `buildEncodedEmail` writes, in order, for `references` in the References
+ * header. The header joins them with spaces, folded across lines.
+ * @throws When the builder would refuse the value.
+ */
+export function normalizeReferencesHeader(references: string): string[] {
+  return parseReferenceTokens(references);
+}
+
 function foldReferences(references: string | undefined, parentId: string): string {
   let valid: string[] = [];
   if (references) {
@@ -686,7 +711,12 @@ function foldReferences(references: string | undefined, parentId: string): strin
   return foldReferenceTokens(tokens);
 }
 
-function normalizeTextBody(body: string): string {
+/**
+ * The text `buildEncodedEmail` encodes for a plain-text or HTML body: every line break (CR, LF or
+ * CRLF) becomes CRLF, as RFC 5322 requires.
+ * @throws When the body contains a NUL character.
+ */
+export function normalizeTextBody(body: string): string {
   if (body.includes('\0')) throw new Error("Email body must not contain NUL bytes.");
   return body.replace(/\r\n|\r|\n/g, '\r\n');
 }
@@ -905,7 +935,12 @@ function encodeMimeParameter(value: string): string {
     `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 
-function normalizeContentId(value: string): string {
+/**
+ * The Content-ID header value `buildEncodedEmail` writes for an attachment's `contentId`,
+ * bracketed.
+ * @throws When the builder would refuse the value.
+ */
+export function normalizeContentId(value: string): string {
   const trimmed = value.trim();
   const id = trimmed.startsWith("<") && trimmed.endsWith(">")
     ? trimmed.slice(1, -1)
@@ -1664,7 +1699,8 @@ async function readGmailDraftWriteResult(
   return parseGmailDraftWriteResult(value, operation);
 }
 
-function shouldIncludeSpamTrash(query?: string, labelIds?: string[]): boolean {
+/** Whether a list request must ask Gmail for spam and trash, which it leaves out by default. */
+export function shouldIncludeSpamTrash(query?: string, labelIds?: string[]): boolean {
   if (labelIds?.some(id => id === "SPAM" || id === "TRASH")) return true;
   const operators = new Set(["in:anywhere", "in:spam", "in:trash", "label:spam", "label:trash"]);
   let token = "";
@@ -1781,9 +1817,14 @@ export function summarizeGmailThread(
   const labelIds: string[] = [];
   const seenLabels = new Set<string>();
   let timestamp = 0;
+  let latestMessageId = "";
   let unread = false;
   for (const message of messages) {
-    timestamp = Math.max(timestamp, message.timestamp.getTime());
+    // Callers may pass messages in search order, so pick the newest by date; ties keep the later.
+    if (!latestMessageId || message.timestamp.getTime() >= timestamp) {
+      latestMessageId = message.id;
+      timestamp = message.timestamp.getTime();
+    }
     unread ||= message.labelIds.includes("UNREAD");
     for (const labelId of message.labelIds) {
       if (!seenLabels.has(labelId)) {
@@ -1804,6 +1845,7 @@ export function summarizeGmailThread(
     ...(snippet !== undefined ? {snippet} : {}),
     subject: messages[0]?.subject ?? "",
     messageCount: messages.length,
+    latestMessageId,
     timestamp: new Date(timestamp),
     participants,
     unread,
@@ -2260,6 +2302,14 @@ function messageInfoFromParsed(
   };
 }
 
+/** A Gmail history ID, checked to be the decimal integer its readers compare as a `BigInt`. */
+function gmailHistoryId(value: unknown): string {
+  if (typeof value !== "string" || !/^\d{1,20}$/.test(value)) {
+    throw new Error("Gmail returned an invalid history ID.");
+  }
+  return value;
+}
+
 export class GmailApi {
   private selfEmail: string;
 
@@ -2279,7 +2329,7 @@ export class GmailApi {
   // ─────────────────────────────────────────────────────────────────
 
   /**
-   * List threads. Gmail returns only IDs and snippets here; getThreadInfo()
+   * List threads. Gmail returns only IDs and snippets here; getThreadMetadata()
    * fetches the metadata needed for public thread summaries.
    */
   async listThreads(count: number, query?: string, pageToken?: string, labelIds?: string[]):
@@ -2343,10 +2393,10 @@ export class GmailApi {
   }
 
   /**
-   * Get aggregate thread metadata using a metadata-only fetch, without
-   * downloading message bodies or attachments.
+   * Get each message's metadata using a metadata-only fetch, without downloading message bodies
+   * or attachments. The caller summarizes the thread, so it can adjust the messages first.
    */
-  async getThreadInfo(threadId: string): Promise<GmailThreadInfoRaw> {
+  async getThreadMetadata(threadId: string): Promise<GmailThreadMetadataRaw> {
     validateGmailId(threadId, "thread ID");
 
     const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${threadId}`);
@@ -2361,10 +2411,11 @@ export class GmailApi {
     }
 
     const thread = await response.json() as GmailThreadMetadata;
-    return summarizeGmailThread(
-      threadId, thread.snippet,
-      (thread.messages ?? []).map(parseGmailMessageMetadata),
-    );
+    return {
+      id: threadId,
+      snippet: thread.snippet,
+      messages: (thread.messages ?? []).map(parseGmailMessageMetadata),
+    };
   }
 
   /** Modify thread labels (for archive, trash, read/unread). */
@@ -2666,35 +2717,27 @@ export class GmailApi {
     return await response.json() as GmailMessageRaw;
   }
 
-  async modifyMessage(
-      messageId: string, addLabelIds: string[] = [], removeLabelIds: string[] = []): Promise<void> {
-    validateGmailId(messageId, "message ID");
+  /**
+   * Add and remove labels on exactly the listed messages in one call. Gmail accepts at most
+   * {@link GMAIL_BATCH_MODIFY_MAX_IDS} IDs per call. `TRASH` may be added or removed like any
+   * other label, which is how trash and untrash are expressed.
+   */
+  async batchModifyMessages(
+      messageIds: readonly string[], addLabelIds: string[] = [],
+      removeLabelIds: string[] = []): Promise<void> {
+    if (messageIds.length === 0 || messageIds.length > GMAIL_BATCH_MODIFY_MAX_IDS) {
+      throw new Error(
+        `Gmail batchModify requires between 1 and ${GMAIL_BATCH_MODIFY_MAX_IDS} message IDs.`);
+    }
+    for (const id of messageIds) validateGmailId(id, "message ID");
     for (const id of [...addLabelIds, ...removeLabelIds]) validateGmailId(id, "label ID");
     const response = await this.authedFetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/modify`, {
+      "https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({addLabelIds, removeLabelIds}),
+        body: JSON.stringify({ids: messageIds, addLabelIds, removeLabelIds}),
       });
-    if (!response.ok) await gmailApiFailure("messages.modify", response);
-    await response.body?.cancel();
-  }
-
-  async trashMessage(messageId: string): Promise<void> {
-    validateGmailId(messageId, "message ID");
-    const response = await this.authedFetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/trash`, {method: "POST"});
-    if (!response.ok) await gmailApiFailure("messages.trash", response);
-    await response.body?.cancel();
-  }
-
-  /** Restore one message from trash. */
-  async untrashMessage(messageId: string): Promise<void> {
-    validateGmailId(messageId, "message ID");
-    const response = await this.authedFetch(
-      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}/untrash`,
-      {method: "POST"});
-    if (!response.ok) await gmailApiFailure("messages.untrash", response);
+    if (!response.ok) await gmailApiFailure("messages.batchModify", response);
     await response.body?.cancel();
   }
 
@@ -3185,5 +3228,68 @@ export class GmailApi {
       `https://gmail.googleapis.com/gmail/v1/users/me/labels/${labelId}`, {method: "DELETE"});
     if (!response.ok) await gmailApiFailure("labels.delete", response);
     await response.body?.cancel();
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // Push notifications
+  // ─────────────────────────────────────────────────────────────────
+
+  /** The mailbox's primary address and its current history ID. */
+  async getProfile(): Promise<{emailAddress: string; historyId: string}> {
+    const response = await this.authedFetch("https://gmail.googleapis.com/gmail/v1/users/me/profile");
+    if (!response.ok) await gmailApiFailure("users.getProfile", response);
+    const profile = await response.json() as {emailAddress?: unknown; historyId?: unknown};
+    if (typeof profile.emailAddress !== "string") throw new Error("Gmail returned an invalid profile.");
+    return {emailAddress: profile.emailAddress, historyId: gmailHistoryId(profile.historyId)};
+  }
+
+  /**
+   * Have Gmail publish every change to this mailbox to `topicName`, replacing any watch this
+   * Cloud project already has on it. Unfiltered: readers decide which changes matter.
+   */
+  async watch(topicName: string): Promise<{historyId: string; expiration: number}> {
+    const response = await this.authedFetch("https://gmail.googleapis.com/gmail/v1/users/me/watch", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({topicName}),
+    });
+    if (!response.ok) await gmailApiFailure("users.watch", response);
+    const watch = await response.json() as {historyId?: unknown; expiration?: unknown};
+    return {historyId: gmailHistoryId(watch.historyId), expiration: Number(watch.expiration)};
+  }
+
+  /**
+   * One page of the messages added to the mailbox after `startHistoryId`, by history record.
+   * Each message is partial: `labelIds` is what it arrived with, and is not guaranteed present.
+   * A `GmailApiError` with status 404 means `startHistoryId` is too old to read from.
+   */
+  async listMessagesAdded(startHistoryId: string, pageToken?: string): Promise<{
+    records: Array<{id: string; messages: Array<{id: string; threadId: string; labelIds?: string[]}>}>;
+    historyId: string;
+    nextPageToken?: string;
+  }> {
+    const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/history");
+    url.searchParams.set("startHistoryId", startHistoryId);
+    url.searchParams.set("historyTypes", "messageAdded");
+    url.searchParams.set("maxResults", "500");
+    if (pageToken) url.searchParams.set("pageToken", pageToken);
+    const response = await this.authedFetch(url.toString());
+    if (!response.ok) await gmailApiFailure("history.list", response);
+    const data = await response.json() as {
+      history?: Array<{
+        id?: unknown;
+        messagesAdded?: Array<{message: {id: string; threadId: string; labelIds?: string[]}}>;
+      }>;
+      historyId?: unknown;
+      nextPageToken?: string;
+    };
+    return {
+      records: (data.history ?? []).map(record => ({
+        id: gmailHistoryId(record.id),
+        messages: (record.messagesAdded ?? []).map(added => added.message),
+      })),
+      historyId: gmailHistoryId(data.historyId),
+      nextPageToken: data.nextPageToken,
+    };
   }
 }

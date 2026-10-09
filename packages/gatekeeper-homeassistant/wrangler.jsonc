@@ -1,22 +1,30 @@
+// Generated from cloudflare.config.ts by scripts/generate-worker-configs.ts -- do not edit.
+// Change cloudflare.config.ts and run `pnpm configs:generate`.
 {
   "name": "gatekeeper-homeassistant",
   "main": ".wrangler/validate/src/homeassistant.ts",
-  "build": {
-    "command": "pnpm exec capnweb-validate build --out .wrangler/validate",
-    "watch_dir": "src"
-  },
   "compatibility_date": "2026-09-04",
-  "compatibility_flags": ["allow_irrevocable_stub_storage"],
-  "migrations": [
-    {
-      "tag": "v0",
-      "new_sqlite_classes": ["UserAccount", "HomeAssistantGatekeeperImpl"]
-    }
+  "compatibility_flags": [
+    "allow_irrevocable_stub_storage"
   ],
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1,
-    "logs": { "invocation_logs": false }
-  }
-
+    "logs": {
+      "invocation_logs": false
+    }
+  },
+  "build": {
+    "command": "pnpm exec capnweb-validate build --out .wrangler/validate",
+    "watch_dir": "src"
+  },
+  "migrations": [
+    {
+      "tag": "v0",
+      "new_sqlite_classes": [
+        "UserAccount",
+        "HomeAssistantGatekeeperImpl"
+      ]
+    }
+  ]
 }

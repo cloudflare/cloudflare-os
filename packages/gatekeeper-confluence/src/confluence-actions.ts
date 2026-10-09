@@ -9,6 +9,10 @@
 // without it.
 
 import type { RpcStub } from "cloudflare:workers";
+import {
+  type ActionDescriptionBuilder,
+  buildDescription,
+} from "@gadgets/gatekeeper-kit/action-description";
 import { ActionFileStore, type ActionFileReference } from "@gadgets/gatekeeper-kit/action-files";
 import type { ActionDescription, ApprovalQueue, ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import {
@@ -382,84 +386,120 @@ export function observation(title: string, description: string): ObservationDesc
 
 const kind = (tag: string, label: string): ActionDescription["actionKind"] => ({ tag: `confluence.${tag}`, label });
 
+// Starts a description naming, by ID, the existing content an action writes to or under.
+function onContent(intro: string, contentId: string, label = "Content ID"): ActionDescriptionBuilder {
+  const builder = buildDescription(intro).inline(label, contentId);
+  return ConfluenceStore.isProvisional(contentId)
+    ? builder.prose("An ID starting with `~` names content created by an earlier action in this workspace.")
+    : builder;
+}
+
+// The approver's text, built so every value the agent supplied (bodies, comments, titles, labels)
+// is shown in full in a field, and the completeness claim is the builder's. An uploaded attachment
+// is agent-supplied bytes the approver cannot read as text, so it is named by size and digest and
+// never claims completeness.
 function describeAction(action: ConfluenceAction): ActionDescription {
   switch (action.type) {
-    case "createContent":
+    case "createContent": {
+      const noun = action.kind === "blogpost" ? "blog post" : "page";
+      const { parent } = action;
+      const builder = parent.type === "page"
+        ? onContent(`Create a new ${noun} as a child page.`, parent.parentId, "Parent page ID")
+        : buildDescription(`Create a new ${noun} in a space.`);
+      if (parent.spaceKey !== undefined) builder.inline("Space", parent.spaceKey);
       return {
-        title: `Create Confluence ${action.kind === "blogpost" ? "blog post" : "page"}`,
-        description: `Create a new ${action.kind === "blogpost" ? "blog post" : "page"} titled **${action.title}**` +
-          (action.parent.type === "page" ? " as a child page." : ` in space ${action.parent.spaceKey}.`),
+        title: `Create Confluence ${noun}`,
+        ...builder
+          .inline("Provisional ID", action.provisionalId)
+          .inline("Title", action.title)
+          .inline("Status", action.status)
+          .verbatim("Content", action.content ?? "", "markdown")
+          .finish(),
         implementsRevert: true,
         actionKind: kind("createContent", "Create page/blog post"),
       };
+    }
     case "setContent":
       return {
         title: "Replace Confluence page content",
-        description: `Replace the body with:\n\n${truncate(action.markdown)}`,
+        ...onContent("Replace the body with the content below.", action.contentId)
+          .verbatim("Content", action.markdown, "markdown")
+          .finish(),
         implementsRevert: true,
         actionKind: kind("editContent", "Edit page content"),
       };
     case "appendContent":
       return {
         title: "Append to Confluence page",
-        description: `Append to the body:\n\n${truncate(action.markdown)}`,
+        ...onContent("Append the content below to the body.", action.contentId)
+          .verbatim("Content", action.markdown, "markdown")
+          .finish(),
         implementsRevert: true,
         actionKind: kind("editContent", "Edit page content"),
       };
     case "setTitle":
       return {
         title: "Rename Confluence content",
-        description: `Change the title to **${action.title}** (was “${action.previousTitle}”).`,
+        ...onContent("Change the title.", action.contentId)
+          .inline("Current title", action.previousTitle)
+          .inline("New title", action.title)
+          .finish(),
         implementsRevert: true,
         actionKind: kind("setTitle", "Rename content"),
       };
     case "addComment":
       return {
         title: "Comment on Confluence content",
-        description: `Post a comment:\n\n${truncate(action.text)}`,
+        ...onContent("Post a comment.", action.contentId).verbatim("Comment", action.text).finish(),
         implementsRevert: true,
         actionKind: kind("addComment", "Add comment"),
       };
     case "addLabel":
       return {
         title: "Add label to Confluence content",
-        description: `Add the label \`${action.name}\`.`,
+        ...onContent("Add a label.", action.contentId).inline("Label", action.name).finish(),
         implementsRevert: true,
         actionKind: kind("label", "Add/remove label"),
       };
     case "removeLabel":
       return {
         title: "Remove label from Confluence content",
-        description: `Remove the label \`${action.name}\`.`,
+        ...onContent("Remove a label.", action.contentId).inline("Label", action.name).finish(),
         implementsRevert: true,
         actionKind: kind("label", "Add/remove label"),
       };
     case "uploadAttachment":
       return {
         title: "Upload attachment to Confluence",
-        description: `Upload **${action.filename}** (${action.mediaType}, ${action.file.size} bytes).`,
+        // The bytes themselves are not shown, so the builder makes no completeness claim.
+        ...onContent("Upload a file as an attachment.", action.contentId)
+          .file("File", {
+            name: action.filename,
+            mediaType: action.mediaType,
+            size: action.file.size,
+            sha256: action.file.digest,
+            origin: "agent",
+          })
+          .verbatim("Comment", action.comment ?? "")
+          .finish(),
         implementsRevert: true,
         actionKind: kind("uploadAttachment", "Upload attachment"),
       };
     case "trash":
       return {
         title: "Move Confluence content to trash",
-        description: "Move this content to the trash (reversible).",
+        ...onContent("Move this content to the trash (reversible).", action.contentId).finish(),
         implementsRevert: true,
         actionKind: kind("trash", "Trash content"),
       };
     case "restore":
       return {
         title: "Restore Confluence content from trash",
-        description: "Restore this content from the trash.",
+        ...onContent("Restore this content from the trash.", action.contentId).finish(),
         implementsRevert: true,
         actionKind: kind("trash", "Trash content"),
       };
   }
-}
-
-function truncate(text: string, max = 2000): string {
-  return text.length > max ? text.slice(0, max) + "…" : text;
 }
 
 // ---------------------------------------------------------------------------------------------

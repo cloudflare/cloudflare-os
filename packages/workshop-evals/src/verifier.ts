@@ -1,12 +1,15 @@
+import { setTimeout as delay } from "node:timers/promises";
 import type { RpcCompatible, RpcStub } from "capnweb";
 import type { WorkshopAgentSession } from "@gadgets/integration-tests/agent-session";
-import type { GadgetClient, WorkpieceId, WorkpieceSummary } from "@gadgets/workshop-shared/api";
+import type {
+  AiChatMessage, GadgetClient, WorkpieceId, WorkpieceSummary,
+} from "@gadgets/workshop-shared/api";
 import type { EvalCheck, EvalCheckOutcome } from "./task.js";
 
 const EVIDENCE_LIMIT = 2_000;
 const VERIFIER_THREW = "verifier.threw";
 
-export type VerifierSession = Pick<WorkshopAgentSession, "openGadget">;
+export type VerifierSession = Pick<WorkshopAgentSession, "openGadget" | "connectionDrops">;
 
 function truncate(value: string): string {
   return value.length > EVIDENCE_LIMIT ? `${value.slice(0, EVIDENCE_LIMIT)}...` : value;
@@ -32,16 +35,35 @@ export function resolveGadget(
   return match.id;
 }
 
+/** The agent's chat messages after `sinceSequence`, in order. */
+export function agentReplies(
+    history: readonly AiChatMessage[], sinceSequence: number): string[] {
+  return history.flatMap(message =>
+    message.sequence > sinceSequence && message.type === "message" &&
+    message.author.type === "agent" ? [message.message] : []);
+}
+
+/** A reply's non-empty lines, trimmed, without the code fences agents often wrap answers in. */
+export function replyLines(reply: string): string[] {
+  return reply.split("\n").map(line => line.trim())
+    .filter(line => line !== "" && !line.startsWith("```"));
+}
+
 /** Runs independent functional checks against the agent's provisional Gadget branch. */
 export class EvalVerifier {
   readonly workpieces: readonly WorkpieceSummary[];
+  /** What the agent said in chat during this turn, oldest first. Empty when it only acted. */
+  readonly replies: readonly string[];
   readonly #session: VerifierSession;
   readonly #checks: EvalCheck[] = [];
   readonly #pending: Promise<void>[] = [];
 
-  constructor(session: VerifierSession, workpieces: readonly WorkpieceSummary[]) {
+  constructor(
+      session: VerifierSession, workpieces: readonly WorkpieceSummary[],
+      replies: readonly string[] = []) {
     this.#session = session;
     this.workpieces = workpieces;
+    this.replies = replies;
   }
 
   async check(id: string, body: () => Promise<EvalCheckOutcome>): Promise<void> {
@@ -66,13 +88,25 @@ export class EvalVerifier {
     }
   }
 
+  /**
+   * Runs `verify` and returns its checks. Throws instead when a check failed while the Workshop
+   * connection dropped, since that failure says nothing about the agent's work.
+   */
   async collect(verify: (verifier: EvalVerifier) => Promise<void>): Promise<EvalCheck[]> {
+    const drops = this.#session.connectionDrops;
     try {
       await verify(this);
     } catch (error) {
       this.#checks.push({ id: VERIFIER_THREW, pass: false, evidence: truncate(String(error)) });
     }
     await Promise.all(this.#pending);
+    if (this.#checks.some(check => !check.pass)) {
+      // A check can see its RPC fail before the session counts the drop behind it.
+      await delay(0);
+      if (this.#session.connectionDrops !== drops) {
+        throw new Error("The Workshop connection dropped during verification");
+      }
+    }
     return this.#checks;
   }
 

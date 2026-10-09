@@ -37,16 +37,23 @@
       "types": "./release/manifest-lib.ts",
       "import": "./release/manifest-lib.ts"
     },
-    "./oxlint-plugin": "./oxlint-plugin.mjs"
+    "./worker-config": {
+      "types": "./worker-config.ts",
+      "import": "./worker-config.ts"
+    },
+    "./oxlint-plugin": "./oxlint-plugin.ts"
   },
   "dependencies": {
+    "@cloudflare/config": "0.20.0",
     "aws4fetch": "^1.0.20",
     "jsonc-parser": "^3.3.1",
-    "typescript6": "npm:typescript@6.0.3",
-    "vite": "catalog:"
+    "typescript6": "catalog:",
+    "vite": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@types/node": "26.1.0",
-    "jsdom": "^26.1.0"
+    "jsdom": "^26.1.0",
+    "vite-plus": "catalog:"
   }
 }

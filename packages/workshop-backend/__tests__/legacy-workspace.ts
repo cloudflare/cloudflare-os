@@ -13,9 +13,10 @@ import type {
 } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, type CodeContent } from "@gadgets/workshop-shared/code-change";
 import { makeMockStorage } from "./mock-storage";
-import { makeOverseerStorage, type GadgetRecord, type OverseerStorage } from "../src/overseer";
+import { makeOverseerStorage, type GadgetRecord, type OverseerStorage }
+  from "../src/storage-schema/overseer-storage";
 import { GitStore } from "../src/git-store";
-import type { GitMigrationHost } from "../src/git-migration";
+import type { GitMigrationHost } from "../src/storage-schema/overseer-git-migration";
 
 export const USER: AiChatAuthorInfo = { type: "user", id: "alice@example.com", name: "Alice" };
 export const AGENT: AiChatAuthorInfo = { type: "agent", id: "some-model", name: "Agent" };
@@ -106,7 +107,7 @@ export class LegacyWorkspace {
     return sequence;
   }
 
-  /** Records a legacy live draft (see ChatDraftUpdateRecord in overseer.ts). */
+  /** Records a legacy live draft (see ChatDraftUpdateRecord in overseer-storage.ts). */
   addDraft(chatId: number, update: Uint8Array): void {
     this.storage.chatDraftUpdates.put({
       chatId, timestamp: new Date(T0 + ++this.#timestamp), author: USER, update,
@@ -121,24 +122,16 @@ export class LegacyWorkspace {
       defaultGadgetId,
       createDefaultGadget: () => {
         // Mirrors OverseerImpl.ensureDefaultGadget(undefined): allocate from the real counter,
-        // record the default (so gadgetRootName below maps it to ""), leave the head to the
-        // migration. A fixed `created` keeps synthesized empty-tree commits deterministic.
+        // record the default, leave the head to the migration. A fixed `created` keeps
+        // synthesized empty-tree commits deterministic.
         let id = this.storage.nextGatekeeperId.get();
         this.storage.nextGatekeeperId.put(id + 1);
         this.storage.defaultGadgetId.put(id);
-        defaultGadgetId = id;
         // A legacy row, like addGadget's (the migration host predates the v4 type stamp).
         this.storage.gadgets.put({
           id, title: "Workspace", created: new Date(T0), bindingName: "GADGET", bindings: {},
         } as GadgetRecord);
         return id;
-      },
-      gadgetRootName: (id) => id === defaultGadgetId ? "" : `${id}`,
-      getActiveChatCompaction: (chatId) => {
-        let compactedTo = this.storage.chatMeta.get(chatId)?.compactedTo;
-        return compactedTo === undefined ? undefined
-            : this.storage.chatCompactions.get(
-                `${keyString(chatId)}.${keyString(compactedTo)}`);
       },
       // The shared counter keeps conversion timestamps unique against every message's (the
       // chats collection's byTimestamp index is unique), like the real getChatTimestamp().
@@ -195,8 +188,8 @@ export function captureEdit(doc: Y.Doc, fn: (doc: Y.Doc) => void): Uint8Array {
 }
 
 /**
- * `name -> text` snapshot of one root map of a legacy code doc, mirroring git-migration.ts's
- * private reader of the same name.
+ * `name -> text` snapshot of one root map of a legacy code doc, mirroring
+ * overseer-git-migration.ts's private reader of the same name.
  */
 export function readDocFiles(doc: Y.Doc, rootName: string): Map<string, string> {
   let files = new Map<string, string>();

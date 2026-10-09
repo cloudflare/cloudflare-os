@@ -23,6 +23,13 @@ out including the terminal empty one, and can `lease()` a gate that outlives the
 journals and caches require a named keyspace; and `connect()` can fence the OAuth completion
 window. The observation "set" vocabulary is now "collection".
 
+The browser-bound completion page and reconnect credential escrow are shipped Layer-1 leaves used
+by production gatekeepers. Layer 2 remains unimplemented. A 2026-10-05 pass over both corpora added
+the once-only `complete()` marker (§4.2), moved supabase, linear, spotify, zoominfo and
+homeassistant onto `./credential-expiry` (each latched before notifying, so one failed callback
+silenced expiry for good), capped homeassistant's and gatekeeper-mcp's connect-form reads with
+`readTextCapped`, and recorded the candidates it did not build in §11.
+
 Google consumes the preview OAuth leaf; Layer 2 (§5, the assembly) and §7 steps 8–16 are still
 proposal, so no gatekeeper has been ported to the assembly and none of §5's ergonomics have met a
 real consumer. Findings that review raised and declined are recorded in the obligations table
@@ -44,11 +51,11 @@ The kit is one new workspace package, `packages/gatekeeper-kit`, with **two stri
 layers**:
 
 - **Layer 1 — leaf modules.** Small, standalone primitives behind per-file subpath exports:
-  connect nonces and the two-stage handshake, preview OAuth callback relaying, browser status pages,
-  a credential-expiry latch, HTTP error classification, credential storage with refresh
-  coalescing, observer strategies, a durable action journal, a transactional action-file store,
-  pure simulation helpers, a TTL cache, and RPC cursors. Each is usable on its own; none requires
-  the assembly layer.
+  connect nonces and the two-stage handshake, reconnect credential staging, preview OAuth callback
+  relaying, browser connect and handoff pages, a credential-expiry latch, HTTP error classification,
+  credential storage with refresh coalescing, observer strategies, a durable action journal, a
+  transactional action-file store, pure simulation helpers, a TTL cache, and RPC cursors. Each is
+  usable on its own; none requires the assembly layer.
 - **Layer 2 — the assembly.** A `gatekeeperKit<Env, Grant, Exports, Public>()` factory producing a
   typed spec (`define`, `resource`), pluggable auth strategies (`oauth2`, `tokenAuth`, or a
   hand-written `AuthStrategy`), an HTTP handler, and four abstract base classes (`KitVendorBase`,
@@ -59,7 +66,10 @@ layers**:
 
 The escape hatch is structural. A gatekeeper that outgrows the assembly implements the canonical
 `workshop-shared/gatekeeper` interfaces by hand and keeps using whatever leaf modules still fit;
-`packages/mcp-shared` already proves the two styles coexist in one repo.
+`packages/mcp-shared` already proves the two styles coexist in one repo. The same rule decides
+what the kit admits: it abstracts behavior several gatekeepers share under one contract, and
+gives an unusual gatekeeper plain TypeScript seams (hooks, callbacks, hand-written interfaces)
+rather than a variant shaped for one provider.
 
 Provider *policy* and shared *sequencing* are deliberately separated. The kit never decides what a
 provider error means or which scopes to request; it does own the order of operations — nonce
@@ -71,7 +81,7 @@ ironclad's generation counter in the internal repo), which is how sequencing bug
 ### v1 scope decisions (agreed)
 
 - **New package `@gadgets/gatekeeper-kit`**, private, non-deployable (no `wrangler.jsonc`).
-  `@gadgets/backend-utils` is not touched; it stays a logging/observability package with no
+  `@gadgets/observability` is not touched; it stays a logging/observability package with no
   `workshop-shared` dependency.
 - **Layer 2 parity goal: port `gatekeeper-supabase`** to the assembly, keeping every export name and
   the entire `wrangler.jsonc` (including migrations) byte-identical, and keeping live account DO
@@ -118,11 +128,13 @@ ironclad's generation counter in the internal repo), which is how sequencing bug
   credentials. The kit ships `oauth2` and `tokenAuth`; Cloudflare Access and other exotic flows
   implement the same interface elsewhere.
 - **Grant death:** a provider response that proves the stored grant is gone. For OAuth this is an
-  RFC 6749 §5.2 token-error response — HTTP 400, or 401 for client authentication, or an
-  `invalid_grant`/`invalid_token` error code. A 403 WAF page, a 404, an unexpected redirect, a
-  malformed 2xx, or a network failure is infrastructure, and must never destroy stored
-  credentials. Strategies signal grant death by throwing `CredentialsExpiredError`; everything
-  else propagates with credentials intact.
+  RFC 6749 §5.2 `invalid_grant` returned to a refresh, below HTTP 500 other than 429 (never to a
+  code exchange); `invalid_client` is misconfiguration unless the gatekeeper opts in (e.g. a
+  deleted dynamically registered client); `invalid_token` (RFC 6750) triggers a refresh, never
+  death. `isInvalidGrant` (§4.19) is that default, and a gatekeeper widens it only on provider
+  evidence. A 403 WAF page, a 404, an unexpected redirect, a malformed 2xx, or a network failure is
+  infrastructure, and must never destroy stored credentials. Strategies signal grant death by
+  throwing `CredentialsExpiredError`; everything else propagates with credentials intact.
 - **Identity fencing:** a refresh result is committed only if the stored credential record is
   still the one the refresh started from, so a stale refresh cannot clobber a newer reconnect.
 - **Attempt generation:** a random value stored when a connect attempt starts and re-checked after
@@ -138,14 +150,14 @@ ironclad's generation counter in the internal repo), which is how sequencing bug
 ## 4. Layer 1: leaf modules
 
 Each module is a subpath export (`@gadgets/gatekeeper-kit/<name>`), mirroring
-`packages/mcp-shared/package.json`. Seven files are internal instead: `serial-queue` (§4.12);
+`packages/mcp-shared/package.json`. Six files are internal instead: `serial-queue` (§4.12);
 `action-journal` and `observer-tracker`, split out of `actions` and `observers` and reached through
 their owning subpaths; `positive-int` — one `requirePositiveInt` shared by every module that takes a
 bound; `kv` — the three KV surface slices the leaves name, since seven modules had begun to carry
-byte-identical structural copies; `single-flight` — the in-flight coalescer four leaves had
-hand-rolled, on the same reasoning as `serial-queue`; and `per-storage` — the
-process-local-value-per-storage-object helper behind credential refresh and notification
-single-flights and observer claim counts.
+byte-identical structural copies; and `per-storage` — the process-local-value-per-storage-object
+helper behind credential refresh and notification single-flights and observer claim counts.
+`single-flight`, the in-flight coalescer four leaves had hand-rolled, started internal on the same
+reasoning as `serial-queue` and is now exported for gatekeepers that coalesce their own writes.
 
 One spec discipline applies to every section below: a behavioral sentence must name the surface
 that carries it in the adjacent method list. Behavior with no named carrier is a spec bug (three
@@ -205,11 +217,32 @@ property; the reserved keys (`value`, `expiresAt`, `stage`) are intersected onto
 runtime. The exclusion lives on the parameter rather than the `Extra` constraint: as a constraint
 it is a weak type, which defeats inference and collapses `StoredNonce<Extra>` to `never`.
 
+```ts
+export function isConnectAttempted(kv): boolean;
+export function markConnectAttempted(kv): void;   // key "connectAttempted", as already stored
+```
+
+An account calls `GatekeeperConnectCallback.complete()` at most once. Each call stages another
+Workshop ticket (`stagePendingConnect`), and an unredeemed ticket revokes the account
+(`#dropPendingConnect`), so a second call can destroy the connection the first made, even one that
+threw or lost its reply. A flow that claimed a single-use nonce is already once-only; a link or form
+with none (internal gitlab, sentry, http, and eight more, plus `gatekeeper-shared`'s CF Access flow)
+checks early, then re-checks, writes the live credential, and marks in one synchronous section
+before awaiting `complete()`. Check and mark stay separate because every copy folds the check into a
+provider condition (an existing token, a live grant). The marker is never cleared; `deleteAll()` on
+revoke removes it with the account.
+
 ### 4.3 `./connect-pages`
 
 The browser pages and request guards used during connect. Exports `escapeHtml`,
-`htmlResponse(body, status = 200)`, `connectMutationError(req, options)`, `SELF_CLOSING_HTML`,
-`INVALID_LINK_HTML`, `errorPageHtml(title, detail)`, and `PAGE_STYLE`.
+`htmlResponse(body, status = 200)`, `connectMutationError(req, options)`,
+`connectHandoffPageHtml(handoff)`, `INVALID_LINK_HTML`, `errorPageHtml(title, detail)`, and
+`PAGE_STYLE`.
+
+`connectHandoffPageHtml` rejects a `targetOrigin` that is not exactly an origin. It redirects the
+popup to `<targetOrigin>/connect/handoff#<encoded-ticket>` with `location.replace()`. The opaque
+ticket stays in the fragment, and the page has no RPC client. Workshop redeems it over the popup's
+own session. Serve the result through `htmlResponse()`.
 
 `htmlResponse` sets `Cache-Control: no-store`, `Content-Security-Policy: frame-ancestors 'none'`,
 `Referrer-Policy: no-referrer`, and `X-Content-Type-Options: nosniff`.
@@ -231,7 +264,10 @@ HTML. A **missing** `Origin` is refused, not waved through: browsers send it on 
 absence means a non-browser caller on a URL whose whole authority is that a browser followed a
 link. This is the third copy of the same check — Marketo's `checkMutation`, and
 `workshop-backend/src/client-errors.ts:100-104` — and homeassistant, which accepts POSTs on its
-connect route, has none.
+connect route, has none. A page served `Referrer-Policy: no-referrer`, as `htmlResponse` pages are,
+submits its forms with `Origin: null` (checked in Chromium 154), so a guarded HTML form is served
+with `Referrer-Policy: same-origin`, which still keeps the bearer URL out of cross-origin `Referer`.
+`fetch()` posts keep their `Origin` under either policy, which is why Marketo's JSON flow works.
 
 The expected `origin` is **required and explicit** rather than derived from `req.url` (the shape
 client-errors uses): the form's action URL is built from the configured base URL, so the legitimate
@@ -282,7 +318,7 @@ RPC leaves a crash window in which the latch is set but nobody was notified, per
 silencing the account. With mark-on-success, the worst crash outcome is a duplicate notification,
 which the `GatekeeperConnectCallback` contract explicitly tolerates. Failures log `warn` with
 event `credentials.expiry.notify.failed` and the caller's `vendorId` via
-`@gadgets/backend-utils/logger` (component `"gatekeeper.connect"`). Existing stored `true` latch
+`@gadgets/observability/logger` (component `"gatekeeper.connect"`). Existing stored `true` latch
 values remain honored.
 `CredentialCoordinator.connect()` calls `clearCredentialExpiryLatch` itself before installing a new
 connection; the standalone export remains for hand-written account implementations.
@@ -781,12 +817,12 @@ admission landing inside that round trip is absent from `excludeObservers` for a
 to be owner-only. A removal or a later attempt rotates `observer-nonce:<id>`, which the admission
 rechecks after every await, so the fence holds across separately constructed trackers.
 
-**No arm maps to `prohibitAllSharing`.** That field is a permanent gadget-wide escalation, not a
+**No arm maps to `containsRestrictedData`.** That field is a permanent gadget-wide escalation, not a
 per-read withholding: `authorizeObservation()` throws if the gadget is already shared, all future
 sharing is prohibited, and the gadget enters lockdown where it "can no longer perform any actions,
 only make observations" (`workshop-shared/src/gatekeeper.ts:1072-1087`). Firing that on a routine
 empty search would disable the gadget's actions for good. `excludeObservers` is the per-observation
-mechanism the overseer promises to enforce (`:1089-1106`). So `prohibitAllSharing` stays
+mechanism the overseer promises to enforce (`:1089-1106`). So `containsRestrictedData` stays
 **caller-set** and passes through untouched — four corpus packages set it on every read (gtmdata,
 lighthouse, salesforce, town-lake) while ironclad is equally private-by-binding and deliberately
 does not, because it has actions to run, so the gate cannot infer it.
@@ -910,7 +946,8 @@ export function stageAction<A>(journal, queue: ActionSubmitter,
   action: A, description: ActionDescription, fence?: ActionFence): Promise<number>;
 
 export type ActionPresentation =                        // the approver-facing text; policy fields
-  Pick<ActionDescription, "title" | "description" | "implementsRevert">;   // come from the decl
+  Pick<ActionDescription, "title" | "description" |     // come from the decl
+    "descriptionIsComplete" | "pushedCommits" | "implementsRevert">;
 export type ActionContext = { readonly id: number; readonly gitCache?: RpcStub<GitCache>;
   readonly fence?: ActionFence };                       // staged fence reaches apply/reject handlers
 export type ActionApplyContext = { gitCache?: RpcStub<GitCache>; generation?: string };
@@ -1703,6 +1740,15 @@ no such bound, since an empty page ends its walk. Neither detects a provider tha
 argument and keeps answering with rows, which yields duplicates instead of ending; that needs an item
 identity the cursor does not have, and no page ceiling substitutes for one.
 
+`PageHookCursor<T>` wraps a cursor the gatekeeper already built and runs `beforePage(items)` on each
+page before `next()` returns it — for listings that authorize their observation once, up front, so
+the hook acts on a page rather than authorizing it (GitHub and GitLab advertise each page's commit
+ids through it, with `advertisePages` from §4.22). It serializes `next()` on a `SerialTaskQueue`, and
+a hook that throws holds its page so the retry re-offers exactly it. It replaced github's
+`CommitAdvertisingCursor`, which did neither: an unserialized walk could interleave two callers, and
+a failed advertisement lost the page. `dispose?()` releases what the hook owns; the wrapped cursor
+is not disposed, so a provider cursor with its own `dispose` lease must not be wrapped until it is.
+
 ### 4.12 `./serial-queue` — internal
 
 ```ts
@@ -1916,7 +1962,7 @@ for no new consumer.
 ```ts
 export const MAX_RESPONSE_BYTES = 1024 * 1024;
 export class ResponseTooLargeError extends Error {}
-export function readTextCapped(response: Response, maxBytes?: number): Promise<string>;
+export function readTextCapped(response: Request | Response, maxBytes?: number): Promise<string>;
 ```
 
 The one thing the competing `gatekeeper-factory-research` branch surfaced that belongs here — and it
@@ -2018,6 +2064,230 @@ by google's `GmailForwardSnapshotStore` for exact inline-forward source snapshot
 (`gmail-state.ts:5-34`; `gmail.ts:255-273,730-744`) and by `ConfluenceStore` for pending attachment
 uploads, including orphan pruning and release after resolution
 (`confluence-actions.ts:50-62,83-106,162-186,590-613`).
+
+### 4.18 `./credential-stage`
+
+```ts
+export const STAGED_CREDENTIALS_KEY = "stagedCredentials";
+export type StagedCredentialsView<T> = { creds: T; stageId: string };
+export function stageCredentials<T>(kv, creds: T, now: number, ttlMs?: number): string;
+export function peekStagedCredentials<T>(kv, now: number): StagedCredentialsView<T> | null;
+export function commitStagedCredentials<T>(kv, now: number, stageId: string): T | null;
+export function discardStagedCredentials<T>(kv, stageId?: string): T | null;
+```
+
+`./credential-stage` escrows credentials for reconnect and `ensureResources`. `stageCredentials`
+replaces the previous stage and returns the random id passed to `reconnectComplete(stageId)`. An
+exact, live commit consumes the stage; an id mismatch preserves the newer stage. A commit deletes
+expired or corrupt stages. The stage TTL bounds commit, not the optional
+credential-refreshability expiry reported to Workshop. Account and resource reads cannot use
+staged credentials. `peekStagedCredentials` is only for connector-local work on the current stage
+before commit.
+
+`discardStagedCredentials` drops a stage and returns what it held, for gatekeeper-owned disposal.
+It ignores the stage TTL, so it reaches an abandoned stage that no commit can activate, which is
+why what it returns must never be written live. Disconnect and account deletion call it with no
+id. The optional `stageId` drops one exact stage, leaving a newer flow's stage intact, for a
+gatekeeper that retains stage ids under its own key and runs its own cleanup alarm; nothing in the
+repo does that yet, so that parameter has no production consumer. The staging and commit halves
+are consumed by cloudflare, confluence, google, homeassistant, linear, notion, slack, spotify,
+supabase, zoominfo, and `mcp-shared`; the conformance account
+(`__tests__/workerd/conformance/gatekeeper.ts`) is the executable reference for the full sequence.
+
+### 4.19 `./oauth-client`
+
+```ts
+export type Pkce = { codeVerifier: string; codeChallenge: string; codeChallengeMethod: "S256" };
+export function createPkce(options?: { verifierBytes?: number }): Promise<Pkce>;
+export function pkceChallenge(codeVerifier: string): Promise<string>;
+export type OAuthClientAuth =
+  | { method: "none"; id: string }
+  | { method: "basic"; id: string; secret: string; encoding?: "raw" | "form" }
+  | { method: "post"; id: string; secret: string };
+export type OAuthClientOptions = {
+  label: string; client: OAuthClientAuth; tokenEndpoint: string;
+  authorizationEndpoint?: string; revocationEndpoint?: string;
+  bodyEncoding?: "form" | "json"; headers?: Record<string, string>;
+  defaultExpiresIn?: number; scopeSeparator?: string; timeoutMs?: number; maxResponseBytes?: number;
+  fetch?: (input: string, init: RequestInit) => Promise<Response>;
+};
+export type OAuthTokens = { accessToken: string; tokenType?: string; refreshToken?: string;
+  expiresAt?: number; scopes?: string[]; idToken?: string; raw: Record<string, unknown> };
+export class OAuthResponseError extends Error {
+  readonly httpStatus: number; readonly oauthError?: string; readonly description?: string;
+}
+export function isInvalidGrant(error: unknown): boolean;
+export class OAuthClient {
+  constructor(options: OAuthClientOptions);
+  authorizationUrl(request: { redirectUri: string; state: string; scopes?: readonly string[];
+    codeChallenge?: string; params?: Record<string, string> }): URL;
+  exchangeCode(request: { code: string; redirectUri: string; codeVerifier?: string;
+    params?: Record<string, string>; signal?: AbortSignal }): Promise<OAuthTokens>;
+  refresh(request: { refreshToken: string; scopes?: readonly string[];
+    params?: Record<string, string>; signal?: AbortSignal }): Promise<OAuthTokens>;
+  revoke(request: { token: string; tokenTypeHint?: "access_token" | "refresh_token";
+    params?: Record<string, string>; signal?: AbortSignal }): Promise<void>;
+  request(endpoint: "token" | "revocation", params: Record<string, string>,
+    options?: { signal?: AbortSignal }): Promise<Record<string, unknown>>;
+}
+export function parseTokenResponse(body: Record<string, unknown>, options: {
+  requestedAt: number; defaultExpiresIn?: number; scopeSeparator?: string }): OAuthTokens;
+export function oauthRefresh<Creds>(client: OAuthClient, options: {
+  refreshToken(current: Creds): string | undefined;
+  merge(current: Creds, tokens: OAuthTokens): Creds;
+  isGrantDeath?(error: OAuthResponseError): boolean;       // default isInvalidGrant
+  request?(current: Creds): { scopes?: readonly string[]; params?: Record<string, string> };
+  expiredMessage: string;
+}): RefreshCredentials<Creds>;
+export type OAuthGrant = Pick<OAuthTokens, "accessToken" | "refreshToken" | "expiresAt" | "scopes">;
+export function mergeOAuthTokens<G extends OAuthGrant>(current: G, tokens: OAuthTokens): G;
+```
+
+Every public gatekeeper hand-rolls token exchange, refresh, and revoke — cloudflare, supabase,
+confluence, notion, slack, linear, google, spotify, zoominfo, and github — and none of them refuses
+redirects, caps the response, or bounds the request in time. Each also classifies failures its own
+way: cloudflare reports *any* failed refresh, a 5xx or a timeout included, as an expired grant
+(`cloudflare.ts:356-386`), which hides a healthy account and asks for a reconnect that fixes
+nothing. This leaf is the protocol client only. Single-flight, identity fencing, and adjudication
+stay `CredentialCoordinator`'s (§4.6): `oauthRefresh` is a `RefreshCredentials` and adds no lock.
+
+The defaults and their evidence:
+
+- **Redirects are refused, not followed.** A followed 307 or 308 re-POSTs the client secret and
+  the code to wherever the provider pointed, so a 3xx is an `OAuthResponseError` with no
+  `oauthError`. The internal `chore-oauth-refresh` branch (`access-oauth.ts`) established this,
+  along with the timeout combined with the caller's signal (`AbortSignal.any`), which also bounds
+  `revoke` because the coordinator awaits `discardMint` inside its single-flight.
+- **Bodies go through `readTextCapped` (§4.15)** with a 64 KiB default; token responses are small.
+  Oversize, transport, abort, and timeout failures propagate as the same instance and are never
+  grant death.
+- **Basic auth sends the raw `base64(utf8(id:secret))` by default.** RFC 6749 §2.3.1 form-encodes
+  the id and secret first, but the corpus sends the raw form (cloudflare `oauth.ts`, supabase
+  `basicAuthHeader`), as providers' docs do. Each form fails against the other kind of server once
+  a credential holds a character form encoding escapes (a base64 `+`, `/` or `=`), so neither is a
+  safe default; the corpus decides it. `encoding: "form"` opts in to the RFC. Ory Hydra (fosite,
+  and so Cloudflare) decodes, so the Cloudflare pilot works raw only because its credentials hold
+  no such character. It stays raw to keep the wire unchanged. Pre-encoding the credentials instead
+  would double-encode the id in `authorizationUrl`. A raw id containing `:` is rejected at
+  construction: RFC 7617 forbids it, and servers split at the first colon.
+- **A 2xx body with a string `error` and no non-empty `access_token` is a rejection**, so
+  providers that report errors with a 200 need no extra code. A 2xx exchange or refresh without an
+  `access_token` is malformed: it carries no `oauthError`, so no death rule matches it.
+- **Only `invalid_grant` below 500, other than 429, is death by default (§3).** With static
+  `CLIENT_ID`/`CLIENT_SECRET`, `invalid_client`, `unauthorized_client`, and `invalid_scope` are
+  operator faults, and 429 and 5xx are provider faults; reading any as death would expire every
+  user at once. `isGrantDeath` is the widening for provider evidence. It replaces the default
+  rather than extending it, so a port composes with `isInvalidGrant`. `oauthRefresh` is its only
+  reader, so an exchange never proves death.
+- **A refresh that requests scopes reports them when the response omits `scope`**, which RFC 6749
+  §5.1 allows only when the grant matches the request. Otherwise `mergeOAuthTokens`, which keeps
+  unreported scopes, would record the wider set a narrowing refresh gave up. A provider that
+  ignores the request errs toward recording too little.
+- **`expiresAt` is absolute epoch milliseconds, anchored at the request's start**, so it feeds
+  `CredentialCoordinatorOptions.expiresAt` directly and errs early. `expires_in` must be a positive
+  number or numeric string that stays finite in milliseconds; otherwise `defaultExpiresIn`
+  applies, and failing that `expiresAt` is absent, which means refresh on rejection only rather
+  than on every read.
+  `mergeOAuthTokens` replaces `expiresAt` rather than carrying it forward for the same reason.
+- **`params` and `headers` may not redeclare what the leaf owns** (the grant, code, verifier, token,
+  scope, and client-authentication keys; `Authorization` and `Content-Type`), following
+  `rejectReservedKeys` in `./connect-handshake`. `request()` is the unreserved escape hatch.
+- **Endpoints must be HTTPS without userinfo or a fragment**, checked by a private helper that keeps
+  the query string. `normalizeVendorEndpoint` (§4.14) does not fit: it requires a host pattern and
+  drops the query.
+
+The error's field names are part of the no-wedging contract with the other leaves.
+`OAuthResponseError` carries `httpStatus` rather than `status`, and is not an `HttpError`, because
+`isNoAccessError` (§4.5) duck-types `status` 401/403/404 and would read a bad client secret as "the
+user lacks access". It carries `oauthError` rather than `code`, because the credential marks match
+`code`, and a provider answering `{"error":"CredentialsExpiredError"}` must not spoof them. Its
+message holds only the label, status, and a validated code; `description` is non-enumerable and
+sanitized, for death evidence rather than display. `redirectUri` is per call rather than client
+configuration because `PreviewOAuth.redirectUri` (§4.16) depends on the deployment; it rides the
+handshake's nonce metadata with the PKCE verifier. The two OAuth leaves import nothing from each
+other.
+
+Escape hatches, most assisted first: `oauthRefresh` with `mergeOAuthTokens`; the client methods,
+which classify nothing, with `params`, `headers`, `bodyEncoding`, and `searchParams.append` on the
+returned authorization `URL` (Google's `access_type`/`prompt`, Access's repeated `resource`);
+`request()` with `parseTokenResponse` for request or response shapes outside RFC 6749 (Slack's
+`authed_user`); and a native `RefreshCredentials`, where non-RFC revocation (supabase's JSON body,
+github's `DELETE`) stays. The workerd suite (`__tests__/workerd/oauth-client.test.ts`) drives the
+leaf through the handshake and the coordinator, including a `discardMint` revoke of a mint a
+reconnect overtook. Cloudflare is the first consumer, with an `isGrantDeath` widened to any OAuth
+error in a 4xx but 429, other than `invalid_client`, until live evidence shows what its token
+endpoint answers for a revoked grant. A 4xx without one, such as a WAF challenge, is never death.
+
+### 4.20 `./git-transport`
+
+```ts
+export function buildGitFetchRequest(oids: GitOid[], hints: GitPullHints): Uint8Array;
+export function pullGitObjectsIntoCache(fetchUploadPack: (requestBody: Uint8Array) => Promise<Response>,
+  oids: GitOid[], hints: GitPullHints, cache: GitPackSink): Promise<void>;
+export function validateBranchName(branch: string): string;
+export function pushGitRefUpdate(
+  fetchReceivePack: (requestBody: ReadableStream<Uint8Array>) => Promise<Response>,
+  update: GitRefUpdate, pack: ReadableStream<Uint8Array> | null): Promise<void>;
+export class GitRefUpdateRejectedError extends Error { readonly reason: string }
+export function emptyPackBytes(): Promise<Uint8Array>;
+export const ZERO_OID: string;
+```
+
+Git smart-HTTP protocol v2 framing, moved verbatim from gatekeeper-github: pkt-line encoding and
+parsing, the `command=fetch` request, the sideband demultiplexer, and receive-pack's single-ref
+compare-and-swap with its report-status parsing. The gatekeeper's callback supplies the URL, the
+credentials, the timeouts and the protocol headers (`Git-Protocol: version=2` among them); the kit
+owns the bodies. A pre-receive refusal surfaces as `GitRefUpdateRejectedError.reason`, the server's
+own line, which the gatekeeper passes through. `filterSpecForHints` encodes GitHub's verified
+partial-clone limits; other servers may accept more. Consumed by github and gitlab.
+
+### 4.21 `./git-diff`
+
+```ts
+export type GitDiffFile = { path: string; previousPath?: string;
+  status: "added" | "modified" | "removed" | "renamed" | "copied";
+  additions: number; deletions: number; diffOmitted?: boolean; hunks: GitDiffHunk[] };
+export type TreeDiffFile = GitDiffFile & { status: "added" | "modified" | "removed" };
+export type TreeDiffSource = { getTree(oid: GitOid): Promise<GitTreeEntry[] | null>;
+  getBlob(oid: GitOid): Promise<Uint8Array | "unavailable"> };
+export function diffGitTrees(source: TreeDiffSource, oldTree: GitOid | null,
+  newTree: GitOid | null): Promise<TreeDiffFile[]>;
+export function changedPathsBetweenTrees(source: TreeDiffSource, oldTree: GitOid | null,
+  newTree: GitOid | null): Promise<string[]>;
+export function diffTextLines(oldText: string, newText: string):
+  { hunks: GitDiffHunk[]; additions: number; deletions: number };
+export function parseGitTreePayload(payload: Uint8Array, oid: GitOid): GitTreeEntry[];
+```
+
+A tree-to-tree diff over an injected `TreeDiffSource`, so a gatekeeper can simulate the diff of
+commits its provider has not received yet from the workspace's git cache. Output types are
+vendor-neutral; each gatekeeper's agent-facing `types.d.ts` keeps structurally identical copies
+(that text must stay self-contained). `MAX_DIFF_*` cap blob size, total bytes, and lines diffed per
+file, and `MAX_DIFF_OUTPUT_PER_FILE`/`MAX_DIFF_OUTPUT_TOTAL` cap the hunk text emitted, so a
+result stays under Durable Object storage's 2 MB value limit; a file past any cap reports
+`diffOmitted` and no hunks, and one past an output cap keeps its line counts. The reader of
+unified patches (`parsePatch`) is still per gatekeeper; see §11.
+
+### 4.22 `./git-objects`
+
+```ts
+export function isCommitOid(value: string): boolean;
+export function parseGitCommitPayload(payload: Uint8Array, oid: GitOid): ParsedGitCommit;
+export function commitDetailsFromGitObject(oid: GitOid, payload: Uint8Array,
+  commitUrl: (oid: GitOid) => string): GitCommitDetails;
+export function advertiseCommits(advertiser: CommitAdvertiser, ids: Iterable<GitOid>,
+  options?: CommitAdvertisingOptions): Promise<void>;
+export function advertisePages<T>(advertiser: CommitAdvertiser,
+  commitIds: (item: T) => readonly GitOid[],
+  options?: CommitAdvertisingOptions): (items: readonly T[]) => Promise<void>;
+```
+
+Raw commit-object parsing and commit advertising. `commitUrl` is a callback because providers put
+the page in different places (`/commit/` on GitHub, `/-/commit/` on GitLab). `advertisePages` is
+the `PageHookCursor` hook for git listings: an id counts as advertised only once its advertisement
+lands, so a failed page is advertised in full when re-offered. `withhold` names ids the remote
+cannot supply yet — simulated heads of queued pushes — and is consulted per batch, so a push queued
+mid-walk is honoured.
 
 ## 5. Layer 2: the assembly
 
@@ -2153,17 +2423,17 @@ title to `${vendor.displayName} Gatekeeper Not Configured`.
 ```ts
 export type BeginResult = { redirectUrl: string } | { html: string };
 export type AttemptMetadata = { connect?: GatekeeperConnectOptions; [key: string]: unknown };
-// A fresh Durable Object stub per call, never a property-derived RpcStub the strategy would leak.
-export type StrategyAccountStub = { completeAuth(payload: unknown, state: string): Promise<boolean> };
+// A fresh Durable Object stub per call; property-derived stubs would leak.
+export type StrategyAccountStub = {
+  completeAuth(payload: unknown, state: string): Promise<ConnectHandoff | null>;
+};
 
 export interface AuthStrategy<Creds, E extends KitEnv = KitEnv> {
   configured(env: E): boolean;
   routes(req: Request, ctx: { env: E; baseUrl: string; relPath: string; url: URL;
     accountForId(id: string): StrategyAccountStub }): Promise<Response | null>;
   begin(ctx: { env: E; baseUrl: string; accountId: string; state: string;
-    metadata: AttemptMetadata; kv;            // "auth:"-namespaced view of account storage
-    deliver(creds: Creds): Promise<void>;
-    waitUntil(p: Promise<unknown>): void }): Promise<BeginResult>;
+    metadata: AttemptMetadata; kv }): Promise<BeginResult>; // "auth:"-namespaced account storage
   obtain(ctx: { env: E; baseUrl: string; payload: unknown; metadata: AttemptMetadata;
     kv }): Promise<Creds>;
   refresh?(creds: Creds, ctx: { env: E }): Promise<Creds>;   // CredentialsExpiredError on grant death only
@@ -2172,7 +2442,7 @@ export interface AuthStrategy<Creds, E extends KitEnv = KitEnv> {
   revoke?(creds: Creds, ctx: { env: E }): Promise<void>;
   isAuthError(error: unknown): boolean;      // runtime API classification (CredentialSource.run)
   expiredMessage: string;
-  expiresAt?(creds: Creds): number | undefined;
+  expiresAt?(creds: Creds): number | undefined; // Access-token refresh only; never sent to Workshop.
   refreshSkewMs?: number;
   // Layer 1's exact contract: reads only, and never deletes anything itself.
   legacyKeys?: readonly string[];
@@ -2180,13 +2450,11 @@ export interface AuthStrategy<Creds, E extends KitEnv = KitEnv> {
 }
 ```
 
-The seam covers three known shapes: redirect flows with a provider callback (`oauth2`), form
-flows with no provider round trip (`tokenAuth`), and poll-based flows that complete from inside
-the DO — the Cloudflare Access CLI flow returns a redirect from `begin` while scheduling
-`waitUntil(poll().then(deliver))`, and serves its transfer proxy from `routes`. `deliver` is
-therefore fenced on its own: it captures the attempt generation and no-ops if a revoke or a new
-attempt overtook it, since a poll flow commits after `begin` returned and the account's post-begin
-re-check cannot cover it.
+The seam covers two shapes: redirect flows with a provider callback (`oauth2`) and forms with no
+provider round trip (`tokenAuth`). Poll-based flows remain gatekeeper-specific. Their background
+completion must durably associate the returned `ConnectHandoff` with the browser's later transfer
+request, and this contract has no such channel. Add that strategy only with its first consumer and a
+one-time transfer test.
 
 `legacyKeys` and `upgradeStoredCredentials` pass straight through to `CredentialCoordinator` (§4.6):
 the key list is declared, the hook only reads, and the coordinator reaps after the canonical record
@@ -2221,24 +2489,30 @@ export function oauth2<Creds, E extends KitEnv = KitEnv>(config: {
 Provider behavior remains compatible with the handlers it replaces (`supabase.ts:267-334`,
 `github.ts:931-1004`): `begin` builds the authorize URL carrying `client_id`,
 `redirect_uri = ${baseUrl}/oauth`, `state = ${accountId}:${stateNonce}`, scope/PKCE/extra params;
-`routes` handles exactly `GET /oauth`, parses state, and dispatches to the account DO. Provider
-errors yield a 400 plain-text restart message; malformed or expired callbacks render
-`INVALID_LINK_HTML`.
+`routes` handles exactly `GET /oauth`, parses state, and calls `completeAuth`. It renders
+`INVALID_LINK_HTML` for a stale attempt or
+`htmlResponse(connectHandoffPageHtml(handoff))` for a completed one. Provider errors yield a 400
+plain-text restart message.
 `scopes.auth` is the sign-in-only subset used when
-`GatekeeperConnectOptions.scopes === "auth"`. The README instructs config
-authors to wrap provider refresh calls so only 400/401/`invalid_grant`/`invalid_token` become
-`CredentialsExpiredError` and everything else rethrows untouched.
+`GatekeeperConnectOptions.scopes === "auth"`. Absent a provider quirk, `exchange`, `refresh`, and
+`revoke` are thin wrappers over an `OAuthClient` (§4.19), and `refresh` is `oauthRefresh`, so only
+grant death as §3 defines it — an RFC 6749 §5.2 `invalid_grant` returned to a refresh, below HTTP 500 other than 429 (never to a code exchange); `invalid_client` is misconfiguration unless the gatekeeper opts in (e.g. a deleted dynamically registered client); `invalid_token` (RFC 6750) triggers a refresh, never death — becomes `CredentialsExpiredError` and
+everything else rethrows untouched. A config with provider evidence widens that rule through
+`isGrantDeath`.
 
 ### 5.4 `./auth-token`
 
 `tokenAuth<Creds, E>(config)` for user-pasted secrets (the shape internal gatekeepers like sentry
-need): `begin` returns `{ html }` — a minimal form styled with `PAGE_STYLE`, fields from
+need): `begin` returns `{ html }` — a minimal form styled with `PAGE_STYLE` and served with
+`Referrer-Policy: same-origin` (under `htmlResponse`'s `no-referrer` the browser sends
+`Origin: null` and every submission 403s, §4.3), fields from
 `config.fields: { name, label, secret?: boolean }[]`, a hidden `state`, posting to
 `${baseUrl}/connect/${accountId}`; `routes` handles that POST, first calls
 `connectMutationError(req, { origin: baseUrl, contentType: "application/x-www-form-urlencoded" })`
-(the expected origin is the base URL's, never `req.url`'s — §4.3) and renders any
-refusal, then reads the form and calls `completeAuth(formFields, state)`; `obtain` delegates to
-`config.validate(fields, env): Promise<Creds>`, and a validation throw renders `errorPageHtml`.
+(the expected origin is the base URL's, never `req.url`'s — §4.3) and renders any refusal, then reads
+the form and calls `completeAuth(formFields, state)`. It renders a returned handoff with
+`connectHandoffPageHtml`; a stale attempt gets `INVALID_LINK_HTML`, and a validation throw gets
+`errorPageHtml`.
 `configured` is always true; no refresh or revoke by default. The shipped token-auth gatekeepers —
 homeassistant and internal sentry/http/clickhouse — accept these POSTs without this check; the kit
 closes that corpus-wide gap. **This is a parity break, not just a hardening**: a non-browser client
@@ -2278,36 +2552,54 @@ protected abstract [kitAccountConfig](): {
 Public loopback-RPC methods and their sequencing:
 
 - `setCallback(callback, initiationNonce, options?: GatekeeperConnectOptions)` — stores the
-  callback under `"callback"`, connect options under `"connectOptions"`, `"ephemeral"` when
-  `options?.scopes === "auth"`; `putInitiation`; mints and stores a fresh random
-  `"attemptGeneration"`; sets a `CONNECT_TIMEOUT_MS` self-destruct alarm when no credentials
+  callback under `"callback"`, connect options under `"connectOptions"`, and `"ephemeral"` when
+  `options?.scopes === "auth"`; calls `putInitiation`; captures
+  `coordinator.connectionGeneration()` as the attempt's `startedUnder` fence; writes a fresh
+  `"attemptGeneration"`; and sets a `CONNECT_TIMEOUT_MS` self-destruct alarm when no credentials
   exist.
-- `prepareReconnect(nonce)` — sets `"reconnecting"`, calls `putInitiation`, and writes a fresh
-  `"attemptGeneration"`.
-- `beginAuth(nonce)` — `advanceToOAuth` with `{ connect }` metadata, then `strategy.begin`; after
-  `begin`'s awaits, re-checks `"attemptGeneration"` and returns null on mismatch (rendered as an
-  invalid link).
-- `completeAuth(payload, state)` — `strategy.obtain`, then re-checks `"attemptGeneration"` and
-  returns false on mismatch. This closes the revoke race: a `revoke()` that ran during the token
-  exchange has already cleared the generation, so the exchange result is discarded instead of
-  resurrecting credentials after
-  `deleteAll()`. On success: `coordinator.connect` (which re-arms the expiry latch), clear
-  `"attemptGeneration"`; then `callback.credentialsRestored()` when reconnecting, else
-  `callback.complete(mintUser())` — **and the credentials stay whatever that call does**; ephemeral
-  sign-in accounts arm a 2-minute self-destruct alarm, everything else `deleteAlarm()`s.
+- `prepareReconnect(nonce)` — sets `"reconnecting"`, captures
+  `coordinator.connectionGeneration()` as the reconnect's `startedUnder` fence, calls
+  `putInitiation`, and writes a fresh `"attemptGeneration"`.
+- `beginAuth(nonce)` — `advanceToOAuth` with the auth state and `startedUnder` metadata, then
+  `strategy.begin`; after `begin`'s awaits, re-checks `"attemptGeneration"` and returns null on
+  mismatch (rendered as an invalid link).
+- `completeAuth(payload, state)` — claims the OAuth nonce before `strategy.obtain`, then re-checks
+  `"attemptGeneration"` and `coordinator.connectionGeneration()` against `startedUnder` before any
+  write or stage. A revoke or newer connection during the exchange changes a fence, so the method
+  disposes the mint under the provider's alias-safe policy instead of restoring deleted credentials.
 
-  Committing is the point of no return, deliberately against the corpus. Eleven shipped accounts
-  delete their grant when `complete()` rejects (github `github.ts:1120-1127`, cloudflare
-  `cloudflare.ts:309-313`, supabase `supabase.ts:447-454`, and eight more), which is exactly wrong
-  under RPC response loss: the user DO keys connected accounts by the id it minted before the
-  connect began (`user.ts:1142-1166`), so a lost reply means Workshop has the account and the
-  gatekeeper has thrown away the grant behind it — unrecoverable without a reconnect the user is
-  never prompted for. Retaining it leaves at worst a grant Workshop never adopted, which the
-  connect-timeout alarm already collects. `mcp-shared` reaches the same conclusion for the same
-  reason (`account.ts:633-650`). Redelivering `complete()` instead would need an outbox the kit
-  does not have and could not safely enable: sign-in replay mints a second session
-  (`user.ts:416-426`) and, for cloudflare login, revokes the grant it is about to keep
-  (`user.ts:1567-1590`).
+  For an initial connect, `coordinator.connect(grant, { ifGeneration: startedUnder })` writes the
+  grant and records its credential identity under `"unconfirmedCompletion"`, then re-arms the
+  `CONNECT_TIMEOUT_MS` alarm before awaiting `callback.complete(mintUser())`. A returned handoff
+  proves Workshop staged a pending connect, so the base removes the matching marker and deletes the
+  normal-connect alarm. A rejection is ambiguous, so the marker and grant remain for `alarm()` to
+  reclaim. Workshop separately revokes a pending connect that it accepted but the browser never
+  redeemed.
+
+  A sign-in completion proves less: `LoginConnectCallbackImpl.complete()` returns a handoff even
+  when delivery failed on a missing verified email or disabled sign-ups, recording the reason for
+  the login tab rather than rejecting. A transient sign-in grant self-destructs regardless, but one
+  requesting persistent scopes (Cloudflare, which Workshop links for billing) must keep its marker
+  and timeout armed until the link is observable, or the kernel must make a failed login reject.
+
+  For reconnect / `ensureResources`, the base reads the previous live stage and calls
+  `stageCredentials(kv, { grant, startedUnder }, now)` without an await between them. Live
+  credentials stay untouched; provider-local policy disposes the displaced mint after replacement.
+  `completeAuth` awaits and returns `callback.reconnectComplete(stageId)`. A rejection is
+  ambiguous, since Workshop may already hold the `stageId`, so the stage stays committable.
+  `commitStagedCredentials` refuses it once the TTL passes, and reclaiming the record afterwards is
+  the optional exact-stage cleanup.
+  `commitReconnect(stageId)` consumes only that exact live stage, captures the current live grant,
+  and calls `coordinator.connect(grant, { ifGeneration: startedUnder })` without an await between the
+  capture and write. An id mismatch preserves the newer stage. If the generation fence fails, the
+  live connection remains unchanged and provider-local policy decides whether to dispose the
+  consumed mint. After a successful replacement, provider-local policy disposes the retired grant
+  only when doing so cannot invalidate the successor. No account or resource read sees the stage.
+
+  The strategy's numeric `expiresAt` drives account-side access-token refresh only. Layer 2 does
+  not report credential refreshability to Workshop without a separate source. Ephemeral sign-in
+  accounts still arm a two-minute self-destruct alarm. A completed normal connect deletes its
+  alarm; an unconfirmed completion, and any auth flow, leaves its timeout armed.
 - `getCredentials()` — `coordinator.snapshot(strategy.refresh, { notify })` with
   `notify = () => notifyCredentialsExpiredOnce(kv, callback, spec.id)`, projected through
   `config.publicCredentials` and returned as `{ creds, identity, generation }` (the coordinator's
@@ -2334,25 +2626,26 @@ Public loopback-RPC methods and their sequencing:
   the latch deliberately stays unset on a failed callback so a later expiry re-notifies, and
   returning that failure would make the source resolve a dead grant as superseded — an endless
   retry the user is never told about.
-- `revoke()` — clears `"attemptGeneration"`, `deleteAlarm()` and `deleteAll()` **before** the first
-  await, then best-effort `strategy.revoke` on the grant it captured (failures log `error` with
-  event `oauth.grant.revoke.failed`). Destroying local state after awaiting the provider would let
-  a connection begun during that await be erased by the revoke that preceded it. It revokes only
-  the grant it captured: a mint that loses its identity fence — from a refresh or a rejection heal
-  alike — belongs to the coordinator's `discardMint`, which the base wires to a strategy hook for
-  disposing *one* mint, never to `strategy.revoke`: RFC 7009 lets a provider treat revoking one
-  refresh token as revoking the whole grant, which would kill the connection that just won
-  (§4.6). One owner, because a mint both drained and revoked here would be revoked twice at the
-  provider, and splitting ownership by which callback minted it reopens the leak either way.
-- `alarm()` — `deleteAll()` when no credentials exist or the account is ephemeral.
+- `revoke()` — captures the live grant and current live stage; clears `"attemptGeneration"`, staged
+  credentials, the alarm, and all local storage **before** the first await; then best-effort revokes
+  the live grant and applies alias-safe disposal to the staged mint. Provider failures log `error`.
+  Destroying local state after awaiting the provider would let a connection begun during that await
+  be erased by the earlier revoke. A mint that loses its identity fence follows the same
+  provider-local policy, never unconditional grant revocation. RFC 7009 lets a provider treat one
+  refresh-token revocation as revoking the whole grant, which could kill the connection that won
+  (§4.6).
+- `alarm()` — if `"unconfirmedCompletion"` still names the current credential identity, captures
+  and clears that grant synchronously, then applies alias-safe provider cleanup. An identity
+  mismatch removes only the stale marker. It otherwise calls `deleteAll()` when no credentials
+  exist or the account is ephemeral.
 
 Storage keys owned by the base: `"callback"`, `"nonce"`, `"reconnecting"`, `"expiredNotified"`,
 `"expiredNotifiedArm"`, `"credentials"`, `"credentials:identity"`, `"credentials:migrated"`,
-`"credentials:connection"`,
-`"connectOptions"`, `"ephemeral"`, `"attemptGeneration"`. `expiredNotifiedArm` is the expiry-latch
-arm; the three `credentials:` siblings are the coordinator's identity fence, migration marker, and
-connection generation. The original first four match every existing OAuth gatekeeper, so live
-accounts keep working across a port.
+`"credentials:connection"`, `"stagedCredentials"`, `"connectOptions"`, `"ephemeral"`,
+`"attemptGeneration"`, `"unconfirmedCompletion"`, and the reconnect `startedUnder` fence.
+`expiredNotifiedArm` is the
+expiry-latch arm; the three `credentials:` siblings are the coordinator's identity fence, migration
+marker, and connection generation.
 
 **Refresh material must not cross the account boundary.** `AuthStrategy.refresh(creds)` and
 `revoke(creds)` (§5.2) take `Creds`, so for any gatekeeper with a refresh flow `Creds` *is* the
@@ -2446,7 +2739,8 @@ Implements:
   claiming) override the method; it is a normal public method on the subclass.
 - `startResourceConfigurator(pattern)`: matches `def.supported.urlPattern` exactly and returns
   `def.configurator(handle)`; unknown patterns throw, as today.
-- `revoke` / `reconnect` via the account stub; `reconnect` returns a fresh initiation URL.
+- `revoke`, `reconnect`, and `commitReconnect(stageId)` via the account stub. `reconnect` returns a
+  fresh initiation URL; `commitReconnect` delegates the stage id unchanged.
 - `ensureResources` returns `{}` (override for scope-expanding vendors).
 - **Abstract `getVerifier()`** — every consumer implements it (with `@skipRpcValidation()`, since
   Fetcher returns cannot be validated), because the verifier class and its props are
@@ -2608,7 +2902,7 @@ Each step leaves the tree building; tests land with the module they cover. Nothi
    `test:run: "vitest run && vitest run -c vitest.worker.config.ts"`,
    `test:watch:node: "vitest"`, and
    `test:watch:workerd: "vitest -c vitest.worker.config.ts"`; dependencies
-   `@gadgets/workshop-shared` and `@gadgets/backend-utils` (`workspace:*`) plus `jose`; devDependencies
+   `@gadgets/workshop-shared` and `@gadgets/observability` (`workspace:*`) plus `jose`; devDependencies
    `@cloudflare/vitest-pool-workers`, `@cloudflare/workers-types`, `typescript`, and `vitest`
    (`catalog:`) plus `@gadgets/scripts` (`workspace:*`)). `build` (`tsc`) and `clean`
    (`rm -rf dist`, uncached) are Vite+ tasks, not package scripts. As landed the
@@ -2764,12 +3058,11 @@ Each step leaves the tree building; tests land with the module they cover. Nothi
    step 11.
 10. **Kit `README.md`.** Architecture and the à-la-carte doctrine; per-module docs; consumer
     obligations (named exports, migrations, decorated subclasses, `@skipRpcValidation()` on
-    `getVerifier`, `env.d.ts`, `types.txt` symlink); the `AuthStrategy` contract with the
-    Cloudflare Access CLI mapping sketched (redirect plus `waitUntil(poll → deliver)` plus a
-    transfer-proxy route); storage-compat options for ports; the grant-death doctrine and the
-    explicit warnings that credential rotation is not transactional, that action apply is
-    at-least-once unless the definition sets `claimBeforeApply`, and that a retaining gatekeeper
-    owns GC of its retained journal tier.
+    `getVerifier`, `env.d.ts`, `types.txt` symlink); the `oauth2` and `tokenAuth` strategy contracts;
+    the explicit deferral of poll-based handoff transfer until its first consumer; storage-compat
+    options for ports; the grant-death doctrine; and warnings that credential rotation is not
+    transactional, action apply is at-least-once unless the definition sets `claimBeforeApply`, and
+    a retaining gatekeeper owns GC of its retained journal tier.
 11. **Fixture gatekeeper + workerd suite.** `__tests__/fixture/worker.ts` builds a complete
     "Acme" gatekeeper the intended consumer way: `gatekeeperKit<FixtureEnv, AcmeCreds,
     FixtureExports, AcmePublicCreds>()`, `oauth2` against `https://acme.test` endpoints mocked with
@@ -2778,15 +3071,18 @@ Each step leaves the tree building; tests land with the module they cover. Nothi
     decorated `UserAccount`, a one-method verifier, `defineActions` with one kind, `aclObservers`,
     and a session that authorizes reads through `ObservationGate` and returns a `PageNumberCursor`.
     Alongside it: a `TestHooks` DO for facet access, a `GatekeeperConnectCallback` entrypoint
-    capturing `complete`/`credentialsExpired`/`credentialsRestored`, and a fake `ApprovalQueue`
-    recording calls. `vitest.worker.config.ts` runs `capnwebValidate()` plus `cloudflareTest`
+    capturing `complete`/`reconnectComplete`/`credentialsExpired`/`credentialsRestored`, and a fake
+    `ApprovalQueue` recording calls. `vitest.worker.config.ts` runs
+    `capnwebValidate()` plus `cloudflareTest`
     (compatibility date `2026-02-02`, flags `allow_irrevocable_stub_storage` + `nodejs_als`, the
     three DOs). Tests: the full connect round trip (connectAccount URL → initiation fetch → 302 with
     state → `/oauth` callback → mocked token exchange → `complete()` delivering a working user stub);
     concurrent `beginAuth` advancing exactly once; the revoke-during-obtain race
-    (`beginAuth` → `revoke()` → `/oauth` callback: `completeAuth` returns false and storage stays
-    empty); ephemeral sign-in self-destruct via `runDurableObjectAlarm`; reconnect →
-    `credentialsRestored`; a mocked 400 `invalid_grant` refresh notifying `credentialsExpired`
+    (`beginAuth` → `revoke()` → `/oauth` callback: `completeAuth` returns `null`, the route renders
+    `INVALID_LINK_HTML`, and storage stays empty); ephemeral sign-in self-destruct via
+    `runDurableObjectAlarm`; reconnect staging →
+    `reconnectComplete(stageId)` → exact `commitReconnect(stageId)`, with live credentials unchanged
+    before the exact commit; a mocked 400 `invalid_grant` refresh notifying `credentialsExpired`
     exactly once and re-notifying after a failed callback; a mocked 500 refresh propagating with
     stored credentials intact and the next `getCredentials` retrying; revoke; `getGatekeeperClassFor`
     through facet `describe`/`startSession`; observation data withheld until `authorizeObservation`
@@ -2835,9 +3131,10 @@ Each step leaves the tree building; tests land with the module they cover. Nothi
       `publicCredentials` maps `accessToken` onto `token`, so no refresh material crosses to a
       facet. The `oauth2` config wraps the untouched `supabase-api.ts` helpers (`exchangeAuthCode`,
       `refreshAccessToken`, `revokeRefreshToken`); its `refresh` maps `SupabaseApiError.isAuthError`
-      (the client derives it from 401, or an exact 400 `invalid_grant` — never 403) to
-      `CredentialsExpiredError` and rethrows everything else untouched, so infrastructure failures
-      stop destroying sessions; `extraAuthorizeParams:
+      (the client derives it from 401, or an exact 400 `invalid_grant` — never 403; the 401 is a
+      provider-specific widening of §3's default, which an `oauthRefresh` port expresses as
+      `isGrantDeath`, §4.19) to `CredentialsExpiredError` and rethrows everything else untouched,
+      so infrastructure failures stop destroying sessions; `extraAuthorizeParams:
       { response_type: "code" }`; `expiredMessage` and the not-configured wording preserved
       verbatim; `legacyKeys` declares
       `accessToken`/`refreshToken`/`accessTokenExpiresAt` and `upgradeStoredCredentials` reassembles
@@ -2978,17 +3275,17 @@ preserved so the work is additive when its trigger port lands. Each entry names 
 evidence, and the trigger.
 
 - **Expiry-derived consumer credential cache** behind `CredentialSource`'s `get`/`run` surface.
-  Google caches a fetched token until expiry − 60s (`google/src/auth-retry.ts:181-213`) and slack
-  until expiry − 300s (`slack.ts:510-519`) — freshness derived from the credential rather than a
-  fixed TTL. *Trigger:* the google or slack port. Add an `expiresAt`-aware variant rather than
-  reintroducing a TTL knob; it needs an `expiresAt` projection the stored/public credential split
-  does not carry today (§4.6).
-- **Split-key handshake variant** behind the `putInitiation`/`advanceToOAuth`/`claimOAuth`
-  operations. Internal ironclad stores `initiationNonce` and `oauthNonce` under two keys
-  (`ironclad.ts:129-131,1634-1692`) where the kit uses one `nonce` record. *Trigger:* the ironclad
-  port — either a variant module or a one-time key migration. Salesforce
-  (`salesforce.ts:150-152,1210-1269`) already matches the kit shape exactly, PKCE verifier in the
-  record.
+  Google caches a fetched token until expiry − 60s (`google/src/auth-retry.ts`, `AccessTokenCache`)
+  and slack until expiry − 300s (`slack.ts`, `ACCESS_TOKEN_EXPIRY_SAFETY_MS`) — freshness derived
+  from the credential rather than a fixed TTL. *Trigger:* the google or slack port. Add an
+  `expiresAt`-aware variant rather than reintroducing a TTL knob; it needs an `expiresAt`
+  projection the stored/public credential split does not carry today (§4.6).
+- **Split-key handshake layout.** Internal ironclad stores `initiationNonce` and `oauthNonce` under
+  two keys (`ironclad.ts:129-131,1634-1692`) where the kit uses one `nonce` record. That is one
+  gatekeeper's layout, not a second contract, so the kit adds no variant for it. *Trigger:* the
+  ironclad port, which either migrates its keys once or keeps its hand-written handshake.
+  Salesforce (`salesforce.ts:150-152,1210-1269`) already matches the kit shape exactly, PKCE
+  verifier in the record.
 - **Per-action-id claim serialization** as an alternative to the facet's global `SerialTaskQueue`.
   The durable claim itself is now in the journal (§4.8, `claimBeforeApply`); what stays deferred is
   its granularity. `mcp-shared` stamps `applying` synchronously before awaiting
@@ -3009,6 +3306,60 @@ evidence, and the trigger.
   `claimed`, and the work is extending it past the tier boundary. *Trigger:* the first
   non-idempotent compensating write — today's are mostly restores of a previous value, which is why
   the gap has cost nothing yet.
+- **OAuth discovery and dynamic client registration** (RFC 8414, RFC 7591) behind
+  `OAuthClientOptions`. The internal Access client discovers its endpoints and registers itself,
+  then speaks the same token protocol `./oauth-client` implements (§4.19); discovery would produce
+  the endpoints and DCR the `OAuthClientAuth`, and a registered client is the case where
+  `invalid_client` is evidence for `isGrantDeath`. Only Access needs this outside the MCP SDK, so
+  until a second gatekeeper does, the Access port discovers and registers on its own and passes the
+  results into `OAuthClientOptions`. No kit change is needed for that. *Trigger:* a second
+  gatekeeper needing discovery or registration outside the MCP SDK.
 - **Already realized** (orientation only, no work): the `ObserverStrategy` A–D wrappers behind one
   interface; `ArrayCursor`/`PageNumberCursor`/`OffsetCursor`/`TokenCursor` behind `Cursor<T>`; and
-  Layer 2's `AuthStrategy` (`oauth2` / `tokenAuth` / CF Access) — the same doctrine at the auth seam.
+  Layer 2's `AuthStrategy` (`oauth2` / `tokenAuth`) — the same doctrine at the auth seam.
+
+## 11. Candidate leaves reviewed and not built
+
+The 2026-10-05 pass looked for provider-independent plumbing the kit lacks. The leaf candidates are
+behavior several gatekeepers share that does not yet justify a leaf. Behavior only one gatekeeper
+has is not a candidate (§1). The first entry is different: it is a guard in the Workshop kernel,
+recorded here because the pass found it. Each entry names why it waits and what would revive it.
+
+- **Workshop-side once-only `complete()`.** The kernel could refuse a second `stagePendingConnect`
+  for one account id and protect every gatekeeper at once. No gatekeeper reaches a second
+  `complete()` today (§4.2). The guard would have to reserve the id synchronously, before
+  `describe()` is awaited, or two concurrent calls both pass it. *Trigger:* a gatekeeper found able
+  to call `complete()` twice.
+- **Connect-form reader** in `./connect-pages`. Homeassistant and gatekeeper-mcp read their forms
+  through `readTextCapped` (16 KiB): each route reads the body before the account checks the nonce,
+  so anyone holding one connect URL could otherwise buffer a request body as large as the plan
+  allows (5 GB on Enterprise) into a 128 MB isolate. Internal sentry and http still call
+  `formData()`. A kit reader would pair the cap with `connectMutationError`, but that guard does not
+  fit mcp's `htmlResponse` form (§4.3). *Trigger:* `tokenAuth` (§5.4), which owns the form read.
+- **Token memo** for `withAuthRetry`'s `getToken({ forceRefresh, staleToken })`. Zylo, the only
+  production caller, ignores `staleToken` and does not coalesce: redundant mints, not wrong
+  results, and `SingleFlight` fixes it locally. Google coalesces at the account (§4.13). *Trigger:*
+  a second consumer outside `CredentialSource`.
+- **`Retry-After` parser.** Slack, Google, Cloudflare observability and internal Jira parse it under
+  different fallbacks and caps; internal Zip and NetSuite pass it through. *Trigger:* the next
+  hand-written retry loop.
+- **Hook delivery** (`startHook`, observe, deliver, dispose). Only email and scheduler produce hooks,
+  with different policies. *Trigger:* a third producer.
+- **Simulated-item cursor overlay.** cf-wiki and GitHub's provisional items order differently.
+  GitHub and GitLab now carry near-identical `StreamingCursor`s (overlay, injected rows merged by
+  comparator, re-validation at serve time); GitLab's buffers before serving and serializes `next()`,
+  GitHub's still loses the rows of a page whose fetch throws. *Trigger:* the git extraction below.
+- **Resource-pattern scope helpers.** Cloudflare, Google, Slack and internal Ironclad each model the
+  granted scope differently, so there is no shared contract yet. *Trigger:* a second gatekeeper
+  that records requested and granted scopes the way Google does.
+- **Git push simulation.** The pending-chain walk, simulated branch heads, the served-id set,
+  `SessionGitCache`, push apply and rollback, and `parsePatch` are duplicated across github and
+  gitlab, and where the copies differ GitHub's side is the bug, not a provider difference: GitLab's
+  plan records its first-parent walk and missing cascade through stacked pushes as GitHub bugs, and
+  GitHub also drops the rejection reason and lacks the trailing-newline guard. *Trigger:* the next
+  change to either copy — land it as the extraction, into `./git-diff` and a git-simulation leaf,
+  with GitLab's behaviour.
+
+Rejected: a `clientCredentials()` grant (`OAuthClient.request("token", …)` covers both instances, and
+Zylo returns `expires_on`), streaming `ActionFileStore` capture (no Drive upload exists), and a
+general retry executor (the policies differ, not the loops).

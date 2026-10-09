@@ -1,7 +1,19 @@
+import type { RefreshCredentials } from "@gadgets/gatekeeper-kit/credentials";
+import {
+  isInvalidGrant, mergeOAuthTokens, OAuthClient, oauthRefresh,
+} from "@gadgets/gatekeeper-kit/oauth-client";
+
+/**
+ * A GitHub OAuth grant. An expiring grant -- the default for OAuth apps registered since August
+ * 2026, opt-in before -- also carries `refreshToken` and `expiresAt`: its access token lasts eight
+ * hours, and each refresh rotates both tokens. A grant without them does not expire.
+ */
 export type GitHubOAuthGrant = {
   accessToken: string;
   scopes: string[];
-  tokenType: string;
+  refreshToken?: string;
+  /** Absolute access-token expiry, epoch milliseconds. */
+  expiresAt?: number;
 };
 
 export type GitHubSimpleUser = {
@@ -18,6 +30,7 @@ export type GitHubLabelResponse = {
 };
 
 export type GitHubRepoResponse = {
+  id: number;
   name: string;
   full_name: string;
   html_url: string;
@@ -122,7 +135,7 @@ export type GitHubPullRequestReviewCommentResponse = {
 export type GitHubPullFileResponse = {
   sha?: string;
   filename: string;
-  status: "added" | "modified" | "removed" | "renamed" | "copied";
+  status: "added" | "modified" | "removed" | "renamed" | "copied" | "changed" | "unchanged";
   previous_filename?: string;
   additions: number;
   deletions: number;
@@ -230,7 +243,6 @@ export class GitHubApiError extends Error {
 type RequestOptions = {
   query?: Record<string, string | number | boolean | undefined>;
   body?: unknown;
-  baseUrl?: string;
   auth?: "bearer" | "basic" | "none";
   headers?: Record<string, string | undefined>;
   okStatuses?: number[];
@@ -239,6 +251,13 @@ type RequestOptions = {
     password: string;
   };
 };
+
+/**
+ * A repository with its GitHub id, which survives renames and owner transfers. GitHub redirects
+ * a renamed repo's `/repos/<owner>/<name>/...` to `/repositories/<id>/...`, while a transferred
+ * issue redirects into another repository, so the id tells the two apart.
+ */
+export type PinnedRepo = { owner: string; repo: string; id: number };
 
 export type RequestResult<T> = {
   data: T;
@@ -279,13 +298,42 @@ async function parseBody(response: Response): Promise<unknown> {
   return await response.text();
 }
 
+function isRedirect(status: number): boolean {
+  return status >= 300 && status < 400 && status !== 304;
+}
+
+const REPO_ROOT_PATH = /^\/repos\/[^/]+\/[^/]+$/;
+const REPO_ID_PATH = /^\/repositories\/\d+$/;
+
+/**
+ * The URL to re-issue a redirected request to, built rather than taken from `location`. Without
+ * `pin`, only a repository's root is followed, to `/repositories/<id>`: GitHub redirects a renamed
+ * or transferred repository there, and at the root the id can only be that same repository's.
+ * With it, a redirect is followed only to the same path under the pinned id, since beneath the
+ * root a transferred issue redirects into another repository.
+ */
+function redirectTarget(url: URL, location: string | null, pin: PinnedRepo | undefined): URL | undefined {
+  const moved = location === null ? null : URL.parse(location);
+  if (moved?.origin !== API_BASE_URL) return undefined;
+  if (!pin) {
+    return REPO_ROOT_PATH.test(url.pathname) && REPO_ID_PATH.test(moved.pathname)
+      ? new URL(`${moved.pathname}${url.search}`, API_BASE_URL) : undefined;
+  }
+  const prefix = `/repos/${encodeURIComponent(pin.owner)}/${encodeURIComponent(pin.repo)}`;
+  const suffix = url.pathname.slice(prefix.length);
+  if (!url.pathname.startsWith(prefix) || !(suffix === "" || suffix.startsWith("/"))) return undefined;
+  const target = new URL(`/repositories/${pin.id}${suffix}${url.search}`, API_BASE_URL);
+  return moved.pathname === target.pathname ? target : undefined;
+}
+
 async function request<T>(
   method: string,
   path: string,
   options: RequestOptions = {},
   getToken?: () => Promise<string>,
+  pin?: PinnedRepo,
 ): Promise<RequestResult<T>> {
-  const url = new URL(path, options.baseUrl ?? API_BASE_URL);
+  const url = new URL(path, API_BASE_URL);
 
   for (const [key, value] of Object.entries(options.query ?? {})) {
     if (value !== undefined) {
@@ -327,12 +375,19 @@ async function request<T>(
     body = JSON.stringify(options.body);
   }
 
-  const response = await fetch(url.toString(), {
-    method,
-    headers,
-    body,
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
+  const init: RequestInit = { method, headers, body, redirect: "manual" };
+  let response = await fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+  if (isRedirect(response.status)) {
+    const target = redirectTarget(url, response.headers.get("location"), pin);
+    if (target) {
+      response = await fetch(target, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    }
+    if (!target || isRedirect(response.status)) {
+      // The destination is withheld: it may name a repository the binding's observers cannot read.
+      throw new GitHubApiError(response.status,
+        `GitHub moved ${url.pathname} out of the bound repository; it was not followed.`);
+    }
+  }
 
   if (!response.ok && !(options.okStatuses ?? []).includes(response.status)) {
     const parsed = await parseBody(response);
@@ -357,70 +412,67 @@ async function request<T>(
   };
 }
 
+function oauthClient(clientId: string, clientSecret: string): OAuthClient {
+  return new OAuthClient({
+    label: "GitHub",
+    client: { method: "post", id: clientId, secret: clientSecret },
+    tokenEndpoint: `${LOGIN_BASE_URL}/login/oauth/access_token`,
+    headers: { "User-Agent": USER_AGENT },
+    scopeSeparator: ",",
+    timeoutMs: REQUEST_TIMEOUT_MS,
+  });
+}
+
 export async function exchangeAuthCode(
   code: string,
   clientId: string,
   clientSecret: string,
   redirectUri: string,
 ): Promise<GitHubOAuthGrant> {
-  const body = new URLSearchParams({
-    client_id: clientId,
-    client_secret: clientSecret,
-    code,
-    redirect_uri: redirectUri,
-  });
-
-  const response = await fetch(`${LOGIN_BASE_URL}/login/oauth/access_token`, {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/x-www-form-urlencoded",
-      "User-Agent": USER_AGENT,
-    },
-    body: body.toString(),
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-  });
-
-  const parsed = await parseBody(response);
-  if (!response.ok) {
-    let message = `${response.status} ${response.statusText}`;
-    if (typeof parsed === "string" && parsed.length > 0) {
-      message = parsed;
-    } else if (parsed && typeof parsed === "object") {
-      const details = parsed as { error?: string; error_description?: string };
-      message = [details.error, details.error_description].filter(Boolean).join(": ") || message;
-    }
-    throw new GitHubApiError(response.status, message, parsed);
-  }
-
-  const result = parsed as {
-    access_token?: string;
-    scope?: string;
-    token_type?: string;
-    error?: string;
-    error_description?: string;
+  const tokens = await oauthClient(clientId, clientSecret).exchangeCode({ code, redirectUri });
+  const grant: GitHubOAuthGrant = {
+    accessToken: tokens.accessToken,
+    scopes: tokens.scopes?.map(scope => scope.trim()).filter(Boolean) ?? [],
   };
-  if (!result.access_token || !result.token_type || result.error) {
-    const message = [result.error, result.error_description].filter(Boolean).join(": ")
-      || "GitHub OAuth token exchange failed";
-    throw new GitHubApiError(400, message, parsed);
-  }
-
-  return {
-    accessToken: result.access_token,
-    scopes: result.scope?.split(",").map((scope: string) => scope.trim()).filter(Boolean) ?? [],
-    tokenType: result.token_type,
-  };
+  if (tokens.refreshToken !== undefined) grant.refreshToken = tokens.refreshToken;
+  if (tokens.expiresAt !== undefined) grant.expiresAt = tokens.expiresAt;
+  return grant;
 }
 
-export async function revokeOAuthGrant(
+/**
+ * Refreshes an expiring grant. The scopes are kept as stored, since GitHub never changes them on
+ * refresh. GitHub answers a refresh token that is expired, revoked, or already used with
+ * `bad_refresh_token` (in an HTTP 200), which proves the grant dead.
+ */
+export function refreshGitHubGrant(
+  clientId: string,
+  clientSecret: string,
+  expiredMessage: string,
+): RefreshCredentials<GitHubOAuthGrant> {
+  return oauthRefresh<GitHubOAuthGrant>(oauthClient(clientId, clientSecret), {
+    refreshToken: grant => grant.refreshToken,
+    merge: (grant, tokens) => ({ ...mergeOAuthTokens(grant, tokens), scopes: grant.scopes }),
+    isGrantDeath: error => isInvalidGrant(error)
+      || (error.oauthError === "bad_refresh_token" && error.httpStatus < 500),
+    expiredMessage,
+  });
+}
+
+/**
+ * Revokes one OAuth token, and only that token. The neighbouring `/applications/{id}/grant`
+ * endpoint revokes every token the user holds for this OAuth app at once, which took a working
+ * connection down whenever a duplicate or an abandoned pending connect for the same user was
+ * revoked; a user may legitimately hold several tokens (one per connected account, plus the
+ * transient sign-in grant).
+ */
+export async function revokeOAuthToken(
   accessToken: string,
   clientId: string,
   clientSecret: string,
 ): Promise<void> {
   await request<void>(
     "DELETE",
-    `/applications/${encodeURIComponent(clientId)}/grant`,
+    `/applications/${encodeURIComponent(clientId)}/token`,
     {
       auth: "basic",
       basicAuth: {
@@ -434,11 +486,18 @@ export async function revokeOAuthGrant(
   );
 }
 
+/**
+ * GitHub's REST API as one account. Redirects are followed only within `repo`, by its id (see
+ * PinnedRepo); without it, only a repository root's redirect to its id is (see redirectTarget),
+ * and every other redirect fails with a GitHubApiError.
+ */
 export class GitHubApi {
   #getToken: () => Promise<string>;
+  #repo?: PinnedRepo;
 
-  constructor(getToken: () => Promise<string>) {
+  constructor(getToken: () => Promise<string>, options: { repo?: PinnedRepo } = {}) {
     this.#getToken = getToken;
+    this.#repo = options.repo;
   }
 
   async #request<T>(
@@ -446,7 +505,7 @@ export class GitHubApi {
     path: string,
     options: RequestOptions = {},
   ): Promise<RequestResult<T>> {
-    return await request<T>(method, path, options, this.#getToken);
+    return await request<T>(method, path, options, this.#getToken, this.#repo);
   }
 
   async #conditionalGet<T>(
@@ -934,47 +993,6 @@ export class GitHubApi {
     )).data;
   }
 
-  async listReviewCommentsForReview(
-    owner: string,
-    repo: string,
-    pullNumber: number,
-    reviewId: number,
-    page: number,
-    perPage: number,
-  ): Promise<GitHubPullRequestReviewCommentResponse[]> {
-    const result = await this.listReviewCommentsForReviewConditional(
-      owner,
-      repo,
-      pullNumber,
-      reviewId,
-      page,
-      perPage,
-    );
-    if (result.status === 304) {
-      throw new Error("GitHub unexpectedly returned 304 for an unconditional review comment list request.");
-    }
-    return result.data;
-  }
-
-  async listReviewCommentsForReviewConditional(
-    owner: string,
-    repo: string,
-    pullNumber: number,
-    reviewId: number,
-    page: number,
-    perPage: number,
-    options: ConditionalRequestOptions = {},
-  ): Promise<ConditionalRequestResult<GitHubPullRequestReviewCommentResponse[]>> {
-    return await this.#conditionalGet<GitHubPullRequestReviewCommentResponse[]>(
-      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${pullNumber}/reviews/${reviewId}/comments`,
-      {
-        per_page: perPage,
-        page,
-      },
-      options,
-    );
-  }
-
   async getPullRequestReviewComment(
     owner: string,
     repo: string,
@@ -1193,18 +1211,21 @@ export class GitHubApi {
   /**
    * Look up a single branch's current head commit sha, or null if the branch does not exist.
    * Always an unconditional, uncached read: callers use this to bind a push's expected old head,
-   * which must reflect the remote's live state.
+   * which must reflect the remote's live state. Read as the exact git ref, because
+   * `/branches/<name>` redirects a renamed branch's old name to the new one (as `master` does in
+   * many repositories), and git has no such alias.
    */
   async getBranchHead(owner: string, repo: string, branch: string): Promise<string | null> {
     try {
-      const result = await this.#request<GitHubBranchResponse>(
+      const result = await this.#request<{ object: { sha: string } }>(
         "GET",
-        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches/${
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${
           branch.split("/").map(encodeURIComponent).join("/")}`,
       );
-      return result.data.commit.sha;
+      return result.data.object.sha;
     } catch (error) {
-      if (error instanceof GitHubApiError && error.status === 404) {
+      // 409 is GitHub's answer for an empty repository, which has no branches at all.
+      if (error instanceof GitHubApiError && (error.status === 404 || error.status === 409)) {
         return null;
       }
       throw error;
@@ -1355,7 +1376,7 @@ export class GitHubApi {
   /**
    * POST a git smart-HTTP protocol v2 `upload-pack` request (the git fetch endpoint, on
    * github.com rather than api.github.com) and return the raw `Response`, whose body the caller
-   * streams -- see git-transport.ts. Auth is Basic with the `x-access-token` username GitHub
+   * streams -- see `@gadgets/gatekeeper-kit/git-transport`. Auth is Basic with the `x-access-token` username GitHub
    * specifies for token-authenticated git operations. Throws `GitHubApiError` on a non-OK
    * status (401 marks it an auth error, like every other method here), so callers get the same
    * credential-expiry handling as REST calls.
@@ -1372,6 +1393,9 @@ export class GitHubApi {
         Authorization: `Basic ${encodeBasicAuth("x-access-token", await this.#getToken())}`,
       },
       body: requestBody,
+      // GitHub serves a renamed repo over smart-HTTP without redirecting, so any redirect is
+      // refused (as a non-OK status) rather than followed somewhere unbound.
+      redirect: "manual",
       // Longer than REQUEST_TIMEOUT_MS: the signal also covers streaming the response body,
       // which may be a pack of tens of megabytes.
       signal: AbortSignal.timeout(GIT_UPLOAD_PACK_TIMEOUT_MS),
@@ -1391,7 +1415,7 @@ export class GitHubApi {
   /**
    * POST a git smart-HTTP `receive-pack` request (the git push endpoint; classic protocol -- there
    * is no v2 for receive-pack) and return the raw `Response`, whose report-status body the caller
-   * parses -- see git-transport.ts. The request body streams (the pack may be large), so it is
+   * parses -- see `@gadgets/gatekeeper-kit/git-transport`. The request body streams (the pack may be large), so it is
    * sent chunked. Auth and error handling mirror `fetchGitUploadPack`.
    */
   async fetchGitReceivePack(
@@ -1407,6 +1431,7 @@ export class GitHubApi {
         Authorization: `Basic ${encodeBasicAuth("x-access-token", await this.#getToken())}`,
       },
       body: requestBody,
+      redirect: "manual",
       // Same generous budget as fetch: the signal also covers streaming the pack up.
       signal: AbortSignal.timeout(GIT_UPLOAD_PACK_TIMEOUT_MS),
     });

@@ -22,18 +22,65 @@ export function gmailMessagesAllowedByScope<T extends {id: string}>(
   return messages.filter(message => admitted.has(message.id));
 }
 
-export type GmailMutationTarget =
-  | {kind: "thread"; threadId: string}
-  | {kind: "messages"; messageIds: string[]};
+/** Exact message IDs a mutation applies to. */
+export type GmailMessagesTarget = {kind: "messages"; messageIds: string[]};
 
-/** Restricted capabilities always resolve to message endpoints, never a thread-wide endpoint. */
-export function gmailMutationTarget(
-    scope: GmailCapabilityScope, threadId: string): GmailMutationTarget {
-  if (scope.kind === "mailbox") return {kind: "thread", threadId};
-  if (scope.admittedMessageIds.length === 0) {
-    throw new Error("This restricted Gmail thread capability admits no messages.");
+/**
+ * What a stored mutation applies to. New actions always name exact messages; `thread` survives
+ * only in actions queued by earlier versions, which Gmail applies to the thread as it is then.
+ */
+export type GmailMutationTarget = {kind: "thread"; threadId: string} | GmailMessagesTarget;
+
+/**
+ * Where a thread mutation stops when the last message its caller saw is one this binding sent.
+ *
+ * A thread's messages run "through" a message by position, but such a message may have no
+ * position yet: Gmail has no copy of it until its send is approved, and then files it at the
+ * approval time, after mail the caller never saw. So the mutation stops at the time the send was
+ * submitted instead. Whatever the thread showed by then is what the caller saw, because a newer
+ * message would itself have been the last one. That stays true once the send is delivered, so
+ * the same `lastMessageId` keeps meaning the same messages.
+ */
+export type GmailSentBoundary = {
+  /** When the send was submitted. */
+  submittedAt: number;
+  /**
+   * When each of the thread's messages first showed in the thread, by ID. For mail this binding
+   * sent that is when its send was submitted, not the later time Gmail dates it: the thread
+   * showed it from then on. That holds for the boundary message itself, which is how it comes
+   * to be in the target once Gmail has it. For any other message it is Gmail's timestamp.
+   */
+  appearedAt: ReadonlyMap<string, number>;
+};
+
+/**
+ * Resolve a thread mutation to exact message IDs, fixed when the action is submitted: the
+ * thread's messages admitted by `scope`, in thread order, through `last` when given. Never a
+ * thread-wide endpoint, which would also reach messages arriving before approval.
+ *
+ * `last` is a Gmail message ID, or the boundary a message this binding sent stands for.
+ */
+export function gmailThreadMutationTarget(
+    scope: GmailCapabilityScope, threadMessageIds: readonly string[],
+    last?: string | GmailSentBoundary): GmailMessagesTarget {
+  const admitted = gmailMessagesAllowedByScope(
+    scope, [...new Set(threadMessageIds)].map(id => ({id}))).map(message => message.id);
+  if (typeof last === "object") {
+    const seen = admitted.filter(
+      id => (last.appearedAt.get(id) ?? Infinity) <= last.submittedAt);
+    if (seen.length === 0) {
+      throw new Error(
+        "No message through lastMessageId can be changed until that message has been delivered.");
+    }
+    return {kind: "messages", messageIds: seen};
   }
-  return {kind: "messages", messageIds: [...scope.admittedMessageIds]};
+  if (admitted.length === 0) throw new Error("This Gmail thread capability admits no messages.");
+  if (last === undefined) return {kind: "messages", messageIds: admitted};
+  const end = admitted.indexOf(last);
+  if (end < 0) {
+    throw new Error("lastMessageId is not a message of this thread available to this capability.");
+  }
+  return {kind: "messages", messageIds: admitted.slice(0, end + 1)};
 }
 
 /** Group matching messages into restricted thread capabilities without duplicate message IDs. */

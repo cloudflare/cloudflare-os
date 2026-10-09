@@ -90,7 +90,9 @@ export type AppUiContext = {
 // The agent catalog is bounded discovery metadata a gatekeeper exposes via
 // Gatekeeper.getAgentCatalog() so the agent can see *what* is reachable through a session (e.g. the
 // titles of the Context Library collections it can search) without first reading everything. It is
-// shown to the agent as untrusted data, so entries carry no authority and are size-capped.
+// shown to the agent as untrusted data, so entries carry no authority and are size-capped. It is
+// delivered to every chat automatically and is not an observation, so it must not contain anything
+// that would need observer verification; reading an item through the session is where that happens.
 
 /** One discoverable item within a gatekeeper's session. */
 export type AgentCatalogEntry = {
@@ -394,6 +396,8 @@ export interface ResourceConfiguratorHost extends RpcTarget {
   /**
    * Tell Workshop whether the current selection is ready to submit.
    * Workshop uses this to determine whether `Add connection` button should be enabled/disabled.
+   * A custom frame must report `true` after it initializes successfully; generated configurator
+   * frames do this automatically when their optional readiness predicate is omitted.
    */
   setSelectionReady(ready: boolean): void;
 
@@ -443,26 +447,55 @@ export type GatekeeperConnectOptions = {
   resourceUrlPatterns?: string[];
 };
 
+/**
+ * What the browser tab that finished a connect flow must deliver to the Workshop, as returned by
+ * `GatekeeperConnectCallback.complete()` / `reconnectComplete()`.
+ *
+ * `ticket` is a single-use secret redeemed over the initiating user's authenticated RPC session
+ * (`AuthenticatedApi.completeConnectHandoff`, or confirmed via `PublicApi.confirmLogin` for
+ * sign-in); the staged grant is activated only then. `targetOrigin` is the Workshop's origin. The
+ * completion page navigates the popup to `<targetOrigin>/connect/handoff#<ticket>`, and that
+ * Workshop page redeems the ticket over the popup's own session together with a per-flow nonce that
+ * only this popup holds (the Workshop wrote it into the popup's sessionStorage before navigating
+ * it). The fragment never reaches a server or a Referer, and `location.replace()` leaves no
+ * history entry. Opaque to gatekeepers: they only render it into the completion page (see
+ * `connectHandoffPageHtml` in gatekeeper-kit).
+ */
+export type ConnectHandoff = {
+  targetOrigin: string;
+  ticket: string;
+};
+
 export interface GatekeeperVendor extends WorkerEntrypoint {
   /** Get display info for the service, suitable for display to a user. */
   describe(): Promise<VendorDescription>;
 
   /**
    * Start the auth flow to connect to the user's remote account. Returns the URL which the user
-   * should open in their browser in order to complete the flow. This URL will be opened in a new
-   * tab; when it completes, it should close itself using window.close().
+   * should open in their browser in order to complete the flow. The Workshop opens this URL as a
+   * popup it has disowned, so the provider's pages hold no handle to the Workshop window.
    *
    * When the flow completes, `callback.complete()` should be called to add the connection to the
-   * user's list of authorizations. (`callback` can be stored.)
+   * user's list of authorizations. (`callback` can be stored.) It returns a `ConnectHandoff` which
+   * the flow's final page must deliver to the Workshop (render it with gatekeeper-kit's
+   * `connectHandoffPageHtml`); the connection is not active until the Workshop has redeemed it.
    *
    * A typical implementation creates a UserAccount Durable Object to manage the authorization
    * flow, storing the callback in its storage, then directing the user to a URL that references
    * the DO. Once the user completes the flow, the DO invokes the callback. The DO should set an
    * alarm to delete itself after some timeout if the user fails to complete the flow.
    *
-   * SECURITY: The returned URL must include a cryptographic nonce (in addition to the DO ID) to
-   * prevent replay attacks. The nonce should be stored in the DO and verified when the user visits
-   * the URL. See gatekeeper-google for a reference implementation.
+   * SECURITY: The returned URL is a bearer capability: anyone who opens it can finish the flow, and
+   * nothing about the HTTP requests ties the browser that finishes to the user who started it. So
+   * an attacker can start a connect and trick a victim into opening the URL, whereupon the victim's
+   * provider credentials would be delivered into the attacker's Workshop account. The defence is
+   * the handoff: the flow must end on the kit's handoff page, which delivers the ticket only to
+   * the Workshop's origin, and the Workshop activates the grant only when the ticket comes back
+   * over the initiator's own session. Until then the gatekeeper holds the
+   * credentials but they are reachable from no Workshop account; if the ticket is never redeemed,
+   * the Workshop calls `GatekeeperUser.revoke()` on the staged account. The URL must additionally
+   * include a cryptographic nonce (in addition to the DO ID), stored in the DO and verified when the
+   * user visits the URL, to prevent replay. See gatekeeper-github for a reference implementation.
    *
    * `options.scopes` selects how much access to request (default "full"):
    *   - "full": the gatekeeper's full capability scopes (repos, docs, etc.). The resulting
@@ -525,7 +558,10 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
 
 export interface GatekeeperConnectCallback extends WorkerEntrypoint {
   /**
-   * Indicates the connection completed successfully.
+   * Indicates the connection completed successfully. The Workshop *stages* the account: it is not
+   * added to the user's list until the returned handoff has been redeemed from the initiating
+   * user's browser (see `GatekeeperVendor.connectAccount`). The caller must render the handoff into
+   * the page the browser lands on; if the handoff is never redeemed the Workshop revokes `user`.
    *
    * `expiresAt`, if provided, indicates when the credentials are expected to stop being
    * refreshable. Do not pass the expiry of a short-lived access token if the gatekeeper can
@@ -534,7 +570,21 @@ export interface GatekeeperConnectCallback extends WorkerEntrypoint {
    * operation to fail. If not provided, the system relies on the gatekeeper calling
    * `credentialsExpired()` when a refresh or authorization failure is detected.
    */
-  complete(user: Fetcher<GatekeeperUser>, expiresAt?: Date): Promise<void>;
+  complete(user: Fetcher<GatekeeperUser>, expiresAt?: Date): Promise<ConnectHandoff>;
+
+  /**
+   * Indicates a `reconnect()` / `ensureResources()` flow finished and the new credentials are
+   * *staged* in the gatekeeper (not yet live; see `GatekeeperUser.commitReconnect`). Returns the
+   * handoff the flow's final page must deliver to the Workshop. Once the Workshop has verified the
+   * completing browser belongs to the account's owner it calls `commitReconnect(stageId)` on the
+   * account, then treats the credentials as restored.
+   *
+   * `stageId` identifies the staged credentials this completion produced (gatekeeper-kit's
+   * `stageCredentials` returns one); the Workshop hands it back in `commitReconnect()` so the
+   * ticket it mints activates exactly these credentials and no later stage's. `expiresAt` is the
+   * staged credentials' expected refreshability expiry, if known (same semantics as `complete()`).
+   */
+  reconnectComplete(stageId: string, expiresAt?: Date): Promise<ConnectHandoff>;
 
   // Note: If the authorization flow fails, the error can be displayed directly to the user, and
   // the callback can be discarded.
@@ -550,8 +600,11 @@ export interface GatekeeperConnectCallback extends WorkerEntrypoint {
   credentialsExpired(): Promise<void>;
 
   /**
-   * Called when credentials have been restored (e.g., after a reconnect flow completes).
-   * `expiresAt` is the new expected refreshability expiration date, if known.
+   * Called when credentials have been restored without a browser flow (e.g. a token refresh that
+   * succeeds after an earlier failure was reported via `credentialsExpired()`). A reconnect flow
+   * that finishes in a browser must call `reconnectComplete()` instead, since credentials
+   * restored there are not trusted until the handoff is redeemed. `expiresAt` is the new expected
+   * refreshability expiration date, if known.
    */
   credentialsRestored(expiresAt?: Date): Promise<void>;
 }
@@ -609,15 +662,35 @@ export interface GatekeeperUser extends WorkerEntrypoint {
 
   /**
    * Start the flow to refresh/replace credentials on this account. Returns the URL for the user
-   * to visit in a new tab to complete re-authentication. When the flow completes, the
-   * GatekeeperConnectCallback (provided during the original connectAccount() flow) will be
-   * notified via credentialsRestored(). The existing account Fetcher and all gatekeeper bindings
-   * created through it continue to work with the new credentials.
+   * to visit in a popup to complete re-authentication. When the flow completes, the gatekeeper
+   * stages the new credentials, notifies the GatekeeperConnectCallback (provided during the
+   * original connectAccount() flow) via reconnectComplete(stageId), and renders the returned
+   * handoff on the final page. The Workshop then calls commitReconnect(stageId), after which the
+   * existing account Fetcher and all gatekeeper bindings created through it work with the new
+   * credentials.
    *
-   * SECURITY: As with connectAccount(), the returned URL must include a cryptographic nonce to
-   * prevent replay attacks.
+   * SECURITY: As with connectAccount(), the returned URL is a bearer capability that may be opened
+   * by someone other than the account's owner. The flow must therefore *stage* the new credentials
+   * rather than write them over the live ones: gadgets already bound to this account read its live
+   * credentials directly, so a live write would hand them a phished victim's tokens with no
+   * Workshop-side check in the way. Staged credentials become live only in commitReconnect(). The
+   * URL must also include a cryptographic nonce to prevent replay.
    */
   reconnect(): Promise<{url: string}>;
+
+  /**
+   * Make the credentials staged under `stageId` by a reconnect()/ensureResources() flow live,
+   * replacing the account's current credentials. Called by the Workshop once the completing browser
+   * has been verified as the owner's (see `GatekeeperConnectCallback.reconnectComplete`). Throws if
+   * nothing is staged, the stage has expired, or the current stage is a different one; the live
+   * credentials are then left as they were.
+   *
+   * SECURITY: Two reconnects can overlap — the owner's, and one a phished victim was tricked into
+   * finishing, each replacing the stage. Their tickets are redeemed separately, so a commit of
+   * "whatever is staged" would let the ticket from one flow activate the other's credentials. The
+   * id ties each ticket to the credentials whose completion minted it.
+   */
+  commitReconnect(stageId: string): Promise<void>;
 
   /**
    * For vendors that advertise `providesAuth`, returns the account's email address for use as the
@@ -636,9 +709,12 @@ export interface GatekeeperUser extends WorkerEntrypoint {
    * on this account, expanding the grant if needed.
    *
    * Returns the URL for the user to visit to authorize them, or no URL if nothing was needed.
-   * Gatekeepers with no grantable resource types should return no URL.
+   * Gatekeepers with no grantable resource types should return no URL. A returned URL completes
+   * exactly like reconnect(): staged credentials, reconnectComplete(stageId), then
+   * commitReconnect(stageId).
    *
-   * SECURITY: As with connectAccount(), any returned URL must include a cryptographic nonce.
+   * SECURITY: As with reconnect(), any returned URL is a bearer capability, so the flow must stage
+   * the widened grant rather than write it live, and the URL must include a cryptographic nonce.
    */
   ensureResources(resourceUrlPatterns: string[]): Promise<{url?: string}>;
 
@@ -654,8 +730,8 @@ export interface GatekeeperUser extends WorkerEntrypoint {
    * owner's gadgets like any other gatekeeper — as a Facet under the Overseer — and auto-provides
    * its session to the agent as an unnamed capsule. Because it is a normal Gatekeeper, the session
    * (Gatekeeper.startSession) and catalog (Gatekeeper.getAgentCatalog) run gadget-side in the
-   * gatekeeper's own worker with no round-trip back through this account DO; every read is still
-   * authorized as an observation via the ApprovalQueue, exactly like any gatekeeper.
+   * gatekeeper's own worker with no round-trip back through this account DO; every session read is
+   * still authorized as an observation via the ApprovalQueue, exactly like any gatekeeper.
    *
    * The returned class is imbued (via `ctx.props`) with whatever the account needs to serve the
    * singleton (e.g. the account id and sharing domain).
@@ -695,6 +771,13 @@ export interface GatekeeperUserVerifier extends WorkerEntrypoint {}
  *
  * The Gatekeeper executes as a Durable Object Facet, where it is a child of the Overseer. This
  * interface is exposed to the Overseer, not directly to the Gadget.
+ *
+ * A Gatekeeper may mint persistent stubs to itself with `this.ctx.restore(params)` and a
+ * `[restore](params)` method (see `ApprovalQueue.bindHook()`), e.g. for its worker's push handler
+ * to deliver events through. They keep restoring until the connection is removed from the
+ * workspace, and reach whatever `[restore]()` returns: return a target narrowed to the stub's
+ * purpose, never the Gatekeeper itself (which answers Overseer-only calls such as `applyAction()`),
+ * and keep the stubs within the gatekeeper's own worker.
  */
 export interface Gatekeeper<Session> extends DurableObject {
   /**
@@ -742,14 +825,16 @@ export interface Gatekeeper<Session> extends DurableObject {
    * Bounded, user-specific metadata the agent uses to discover entries reachable through this
    * gatekeeper's session, without paging the full session API. Implemented only by gatekeepers
    * whose session benefits from a discovery index (e.g. an agent singleton like the Context
-   * Library); most gatekeepers omit it. Catalog access is an observation, so the implementation
-   * must authorize it via `authorizer.authorizeObservation()` before returning metadata. Returns
-   * null when there is no catalog. Return the entries the agent most needs first and pass them
-   * through `boundAgentCatalog()`, since both that clamp and the Workshop's drop from the tail.
+   * Library); most gatekeepers omit it. The Workshop loads the catalog into every chat's prompt on
+   * every turn, so it is not an observation and must not contain anything that would need observer
+   * verification: the item's title and description are all that is revealed, and reading the item
+   * through the session is where the observation happens. Return null only when this gatekeeper has
+   * no catalog at all: the Workshop then stops asking this connection until the workspace next
+   * restarts. A catalog that is empty right now is `{entries: []}`. Return the entries the agent
+   * most needs first and pass them through `boundAgentCatalog()`, since both that clamp and the
+   * Workshop's drop from the tail.
    */
-  getAgentCatalog?(
-    authorizer: RpcStub<ObservationAuthorizer>,
-  ): Promise<AgentCatalog | null>;
+  getAgentCatalog?(): Promise<AgentCatalog | null>;
 
   /**
    * Informs the gatekeeper that a new user is being added to the Gadget with the potential to see
@@ -1108,6 +1193,9 @@ export type ObservationDescription = {
    */
   description: string;
 
+  /** Values shown literally after `description`, as in `ActionDescription.fields`. */
+  fields?: ActionField[];
+
   // ----------------------------------------------------------------------------
   // Policy hints
   //
@@ -1121,21 +1209,37 @@ export type ObservationDescription = {
   //   can help detect situations where the gadget could leak information.
 
   /**
-   * If true, then this observation contains sensitive information that MUST NOT be shared with
-   * ANYONE except the account owner. This means:
-   * - If the gadget is shared already, authorizeObservation() must throw an exception to block
-   *   the observation.
-   * - All future sharing of the gadget is prohibited.
-   * - Once observed, the gadget goes into "lockdown mode" where it can no longer perform any
-   *   actions, only make observations. This prevents the gadget from leaking data through other
-   *   gatekeepers.
+   * If true, then this observation contains sensitive information that must only be shown to
+   * people who are verified to have access to the same data. This means:
+   * - Every collaborator must pass this gatekeeper's `addObserver()` to open the gadget, so a
+   *   gatekeeper whose `addObserver()` always throws makes the gadget effectively unshareable
+   *   once it has made one of these observations.
+   * - Once observed, the gadget enters a restricted mode: no public-web fetches, and every action
+   *   requires manual approval -- auto-approval rules are suspended. The approver is shown the
+   *   action's full `description` and is responsible for checking it contains none of the
+   *   restricted data. An action whose description is not complete
+   *   (`ActionDescription.descriptionIsComplete`) is accepted and flagged to the approver; only
+   *   git pushes are refused. The kernel does not restrict which connections may be acted on.
    *
-   * TODO(someday): This was added as a stopgap in order to be able to make certain sensitive data
-   *   sources available to internal users. In the longer-term, it should be possible to share
-   *   sensitive data as long as the recipients also have access to that same data, but this
-   *   requires a more complex policy framework to compute.
+   * TODO(someday): The restricted mode is a blunt instrument. It should be possible to perform
+   *   actions whose visibility is limited to people verified to have access to the same data: an
+   *   action should declare who can see its effects, and each restricted producer verify that
+   *   every such person can already see the data.
    */
-  prohibitAllSharing?: boolean;
+  containsRestrictedData?: boolean;
+
+  /**
+   * If true, then once any observation carrying this flag is authorized, only collaborators the
+   * owner added directly keep access: share links stop granting anything (none can be created,
+   * copied, or redeemed), and people who joined through a link or through another collaborator
+   * lose access, restarting the gadget if any are present. After that, only the owner can add
+   * collaborators, one at a time. Those who remain are still subject to `addObserver()`
+   * verification on every open.
+   *
+   * Typically paired with `containsRestrictedData`, for data sources whose own sharing model
+   * requires each recipient to be granted access individually.
+   */
+  ownerInvitesOnly?: boolean;
 
   /**
    * If present, then this observation includes data that must not be revealed to the given
@@ -1157,6 +1261,46 @@ export type ObservationDescription = {
    */
   excludeObservers?: string[];
 }
+
+/** The language a `text` action field is written in, named so the approver knows how it is read. */
+export type ActionFieldSyntax = "markdown" | "html" | "sql";
+
+/**
+ * One value an approver reviews, carried as data so surfaces show it literally. `label` is the
+ * gatekeeper's own name for the value; everything else is the value as the action will send it.
+ */
+export type ActionField = {
+  /** The gatekeeper's name for the value, such as "Body" or "To". Plain text. */
+  label: string;
+
+  /**
+   * Present when `value` or `items` is not the whole value: the UTF-8 bytes shown and the bytes
+   * the whole value has. `shownBytes` of 0 means the field was omitted for lack of room.
+   */
+  truncated?: { shownBytes: number; totalBytes: number };
+} & (
+  /** A short single-line value, such as an ID or an address. */
+  | { kind: "inline"; value: string }
+  /** Text to read in full, line breaks included, optionally in a named language. */
+  | { kind: "text"; value: string; syntax?: ActionFieldSyntax }
+  /** Pretty-printed JSON, with every invisible character escaped so the text shows exactly. */
+  | { kind: "json"; value: string }
+  /** Short single-line values, one per row. */
+  | { kind: "list"; items: string[] }
+  /**
+   * Bytes named rather than shown. `origin` says where they come from: `"provider"` bytes are
+   * re-sent unchanged from the same provider, `"agent"` bytes come from this workspace and so
+   * leave the description incomplete.
+   */
+  | {
+    kind: "file";
+    name: string;
+    mediaType: string;
+    size: number;
+    sha256?: string;
+    origin: "provider" | "agent";
+  }
+);
 
 /**
  * A stable, machine-readable tag for an action paired with its human-readable display name; the two
@@ -1184,9 +1328,30 @@ export type ActionDescription = {
   /**
    * A complete description of the action to be taken, in Markdown-formatted natural language.
    * This will be displayed to the approver. It must include all details that might be relevant to
-   * consider before approving.
+   * consider before approving; see `descriptionIsComplete` for the standard this is held to.
+   * Values the approver reviews are better carried in `fields`, leaving this the gatekeeper's own
+   * prose.
    */
   description: string;
+
+  /**
+   * The values the approver reviews, as typed data shown literally after `description`: never
+   * rendered as Markdown, so a value needs no escaping to display as exactly itself.
+   */
+  fields?: ActionField[];
+
+  /**
+   * The gatekeeper's assertion that `description` and `fields` together reproduce, verbatim, every
+   * piece of content originating in this workspace that applying the action will write or send:
+   * bodies, field values, identifiers, serialized arguments. Bytes the gatekeeper re-sends
+   * unchanged from the same provider may instead be named by size and digest, as a `file` field
+   * with `origin: "provider"`. A provisional ID standing for something this workspace creates
+   * counts as shown when the description says the gatekeeper sends the provider's ID in its place.
+   * Absent means incomplete: a summary, a truncated field, or opaque bytes the approver cannot read
+   * as text. A push (`pushedCommits`) is never complete. Approval surfaces tell the approver when
+   * this is absent; an incomplete description is never refused for that reason.
+   */
+  descriptionIsComplete?: boolean;
 
   /**
    * If present, applying this action will push the named commits to the remote resource this
@@ -1477,9 +1642,14 @@ export interface GitCache extends RpcTarget {
   buildPack(): Promise<ReadableStream<Uint8Array>>;
 
   /**
-   * Consumes a standard git packfile and inserts all the objects within into the git cache. This
-   * is exactly equivalent to if the Gatekeeper decoded the packfile itself and `put()` each object
-   * into the cache.
+   * Consumes a standard git packfile, storing each object in it as `put()` would, and returns
+   * the oids of those now in the cache. An object too large to store is measured and left out of
+   * the result rather than thrown on, which is how a `gitPull()` notices it.
+   *
+   * The pack is decoded in one pass, so a delta must follow its base, as in every pack
+   * `git upload-pack` sends. Objects are stored as the pack streams in, and its commits last,
+   * once the rest has verified and been stored: a pack that fails can leave some of its objects
+   * stored, but not a commit without the trees that came with it.
    */
   consumePack(pack: ReadableStream<Uint8Array>): Promise<GitOid[]>;
 

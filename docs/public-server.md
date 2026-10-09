@@ -38,6 +38,7 @@ CLOUDFLARE_OAUTH_CLIENT_SECRET=...
 
 # Platform AI Gateway used for the free tier:
 CF_AI_GATEWAY=your-gateway
+# The providers that are always on. An admin can turn on others on the Models tab of /admin:
 CF_AI_GATEWAY_PROVIDERS=anthropic,openai,google
 
 # Required whenever CF_AI_GATEWAY is set:
@@ -62,6 +63,19 @@ account or a different one). The token stays required for the `google` provider 
 binding (the model SDK adapter refuses the binding's fetch — note the platform config above enables
 it, so the platform server itself still needs the token). Every provider, Workers AI included,
 routes through the same Gateway.
+
+Which models the Gateway offers is managed on the **Models** tab of `/admin`, not in the
+environment. `CF_AI_GATEWAY_PROVIDERS` names the providers that are always on, and an admin can
+turn on the others there. Each model is **Enabled**, **Hidden** (out of the model pickers, still
+works where it is already in use) or **Disabled** (stops working everywhere, including existing
+chats, gadget model bindings and scheduled tasks). The tab also sets reasoning levels and
+compaction budgets, adds models the catalog doesn't list, and tests a provider or a model with
+one real request.
+
+Disabling a model or turning a provider off is not a spend control while **Users may add their
+own models** is on: a user can still add a model under any provider that is on, and it runs
+through the deployment's Gateway. Turn that switch off to make the listed models the only ones.
+An admin session can turn on any provider the Gateway serves.
 
 When using `CF_AI_GATEWAY*` in local development, start the server with
 `pnpm run dev-server -- --use-workers-ai-binding` so the server has a `WORKERS_AI` binding for

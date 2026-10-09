@@ -1,6 +1,6 @@
 // The two configurator UIs build the resource URL that `parseObservabilityResourceUrl` then has to
 // accept, but they cannot share the builders in `resources.ts`: each configurator module is
-// transpiled on its own by `scripts/build-gatekeeper-configurator.mjs`, which only strips
+// transpiled on its own by `scripts/build-gatekeeper-configurator.ts`, which only strips
 // `@gadgets/configurator-ui` and type-only imports, so a runtime import would not resolve inside the
 // sandboxed frame. The duplication is therefore deliberate, and this test is what keeps the copies
 // honest: it runs each configurator's real `resourceUrl` and requires the result to round-trip through

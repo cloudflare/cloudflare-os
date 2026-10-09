@@ -4,8 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { AiChatMessage, AiChatMessageBody, ChatCodeBase } from "@gadgets/workshop-shared/api";
 import type { CodeChange } from "@gadgets/workshop-shared/code-change";
 import {
-  buildChatDisplayEntries, computeChatEpochChanges, computeMessageStates,
-  type CompactionBoundary,
+  buildChatDisplayEntries, computeChatEpochChanges, type CompactionBoundary,
 } from "./ChatInterface";
 
 const AUTHOR = { type: "agent", id: "test-model", name: "Test" } as const;
@@ -38,69 +37,6 @@ function codeBase(overrides?: Partial<ChatCodeBase>): ChatCodeBase {
 const PRE_BOUNDARY: CodeChange = { 1: [["pre.txt", { set: "pre" }]] };
 const LOADED: CodeChange = { 1: [["loaded.txt", { set: "loaded" }]] };
 const OLDER: CodeChange = { 1: [["older.txt", { set: "older" }]] };
-
-describe("computeMessageStates compaction seeding", () => {
-  it("counts the boundary's proposed changes as one entry below the oldest loaded message", () => {
-    const { activeChanges } = computeMessageStates(
-      [changes(10, LOADED)],
-      boundary(10, PRE_BOUNDARY),
-    );
-
-    expect(activeChanges).toEqual([
-      { sequence: 9, change: PRE_BOUNDARY },
-      { sequence: 10, change: LOADED },
-    ]);
-  });
-
-  it("ignores a boundary that carries no proposed changes", () => {
-    const { activeChanges } = computeMessageStates([changes(10, LOADED)], boundary(10));
-
-    expect(activeChanges).toEqual([{ sequence: 10, change: LOADED }]);
-  });
-
-  // Accepting changes must clear the compacted prefix's change too, or the chat keeps reporting
-  // proposed changes that the user already accepted.
-  it("resolves the boundary entry when a merge reaches across it", () => {
-    const { activeChanges } = computeMessageStates(
-      [changes(10, LOADED), merge(11, 10), changes(12, OLDER)],
-      boundary(10, PRE_BOUNDARY),
-    );
-
-    expect(activeChanges).toEqual([{ sequence: 12, change: OLDER }]);
-  });
-
-  it("keeps the boundary entry when a revert stops above it", () => {
-    const { activeChanges } = computeMessageStates(
-      [changes(10, LOADED), revert(11, 10)],
-      boundary(10, PRE_BOUNDARY),
-    );
-
-    expect(activeChanges).toEqual([{ sequence: 9, change: PRE_BOUNDARY }]);
-  });
-
-  // The boundary's change is the composition of the "changes" messages before it, so it must
-  // drop out the moment those messages load -- otherwise the same edits are counted twice.
-  it("drops the boundary entry once the messages before it have loaded", () => {
-    const { activeChanges } = computeMessageStates(
-      [changes(5, OLDER), changes(10, LOADED)],
-      boundary(10, PRE_BOUNDARY),
-    );
-
-    expect(activeChanges).toEqual([
-      { sequence: 5, change: OLDER },
-      { sequence: 10, change: LOADED },
-    ]);
-  });
-
-  it("leaves loaded messages' change status alone", () => {
-    const { changeStatus } = computeMessageStates(
-      [changes(10, LOADED), merge(11, 10)],
-      boundary(10, PRE_BOUNDARY),
-    );
-
-    expect(changeStatus.get(10)).toBe("merged");
-  });
-});
 
 // The durable half of the chat's content: the current epoch's non-reverted changes composed into
 // one, with the oldest loaded boundary's proposedChange standing in for the compacted pages, plus
@@ -138,13 +74,15 @@ describe("computeChatEpochChanges", () => {
     });
   });
 
-  it("drops the boundary's proposed change when a revert reaches across it", () => {
+  // The server refolds a boundary's proposed change when a revert reaches across it, so a loaded
+  // revert must not take it back a second time.
+  it("keeps the boundary's proposed change when a revert reaches across it", () => {
     const { epochChange } = computeChatEpochChanges(
       [changes(10, LOADED), revert(11, 0)],
       boundary(10, PRE_BOUNDARY),
     );
 
-    expect(epochChange).toBeUndefined();
+    expect(epochChange).toEqual(PRE_BOUNDARY);
   });
 
   it("drops the boundary change once the messages before it have loaded", () => {
@@ -165,6 +103,45 @@ describe("computeChatEpochChanges", () => {
         createdGadgets: [{ gadgetId: 1, title: "New", bindingName: "NEW" }],
       }),
       changes(11, LOADED),
+    ]);
+
+    expect(epochChange).toEqual(LOADED);
+  });
+
+  // An update from mainline re-roots a gadget at the merge commit (see ChatGadgetPinRecord):
+  // everything composed for it before, the boundary's seed included, is in that commit already.
+  it("restarts a gadget at a pin declaration, keeping other gadgets' changes", () => {
+    const other: CodeChange = { 2: [["other.txt", { set: "other" }]] };
+    const { epochChange } = computeChatEpochChanges(
+      [
+        changes(10, { ...LOADED, ...other }),
+        message(11, {
+          type: "changes",
+          pins: [{ gadgetId: 1, baseCommit: "merge", mergedCommit: "head" }],
+          mainlineMerge: { conflictPaths: [], gadgets: [] },
+        }),
+        changes(12, OLDER),
+      ],
+      boundary(10, PRE_BOUNDARY),
+    );
+
+    expect(epochChange).toEqual({ ...OLDER, ...other });
+  });
+
+  it("leaves nothing composed when a re-root is the whole proposal", () => {
+    const { epochChange } = computeChatEpochChanges([
+      changes(10, LOADED),
+      message(11, { type: "changes", pins: [{ gadgetId: 1, baseCommit: "merge" }] }),
+    ]);
+
+    expect(epochChange).toBeUndefined();
+  });
+
+  it("brings back what a reverted re-root dropped", () => {
+    const { epochChange } = computeChatEpochChanges([
+      changes(10, LOADED),
+      message(11, { type: "changes", pins: [{ gadgetId: 1, baseCommit: "merge" }] }),
+      revert(12, 11),
     ]);
 
     expect(epochChange).toEqual(LOADED);

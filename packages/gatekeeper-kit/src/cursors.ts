@@ -1,7 +1,14 @@
-/** In-memory and provider-backed implementations of the gatekeeper cursor RPC. */
+/**
+ * In-memory and provider-backed implementations of the gatekeeper cursor RPC.
+ *
+ * No class here carries `@validateRpc()`: on a server target it validates incoming arguments, and
+ * `next()` takes none. A gatekeeper's capnweb-validate build also transforms only its own sources,
+ * so a decorator here would reach the Worker untransformed and throw.
+ */
 
-import { RpcTarget } from "cloudflare:workers";
-import type { Cursor } from "@gadgets/workshop-shared/gatekeeper";
+import { RpcTarget, type RpcStub } from "cloudflare:workers";
+import type { ApprovalQueue, Cursor, GitCache, GitOid } from "@gadgets/workshop-shared/gatekeeper";
+import { advertiseCommits, advertisePages, type CommitAdvertisingOptions } from "./git-objects";
 import { SerialTaskQueue } from "./serial-queue";
 import { requirePositiveInt } from "./positive-int";
 
@@ -341,5 +348,120 @@ export class TokenCursor<T> extends BufferedCursor<T> {
     this.remoteExhausted = exhausted;
     this.#token = page.nextToken;
     for (const item of page.items) this.buffer.push(item);
+  }
+}
+
+/** What a `PageHookCursor` runs on each page, and what it releases. */
+export type PageHookCursorOptions<T> = {
+  /**
+   * Runs on each page before `next()` returns it -- e.g. `advertisePages()` from `./git-objects`,
+   * which reports a git listing's commit ids to the workspace before the caller sees them. A
+   * throw rejects that `next()` and holds the page, so the retry re-offers exactly it instead of
+   * skipping it.
+   * @param items The page `next()` is about to return.
+   */
+  beforePage(items: readonly T[]): Promise<void>;
+  /** Releases what the hook owns -- a duplicated RPC stub, most often -- when the cursor is disposed. */
+  dispose?(): void;
+};
+
+/**
+ * Wraps a cursor the gatekeeper already built, so a hook sees each page before the caller does.
+ * For listings whose observation was authorized once, up front: the hook is not an authorization
+ * point (the provider-backed cursors' `authorizePage` is), it only acts on what is about to be
+ * returned.
+ */
+export class PageHookCursor<T> extends RpcTarget implements Cursor<T>, Disposable {
+  readonly #inner: Cursor<T>;
+  readonly #options: PageHookCursorOptions<T>;
+  readonly #queue = new SerialTaskQueue();
+  #held?: T[];
+  #disposed = false;
+
+  /**
+   * Creates the wrapper. It does not take ownership of `inner`.
+   * @param inner The cursor whose pages to return.
+   * @param options The hook, and an optional release hook.
+   */
+  constructor(inner: Cursor<T>, options: PageHookCursorOptions<T>) {
+    super();
+    this.#inner = inner;
+    this.#options = options;
+  }
+
+  /** @returns The next page, or `null` after exhaustion. Concurrent calls are serialized. */
+  next(): Promise<T[] | null> {
+    return this.#queue.run(async () => {
+      const page = this.#held ?? await this.#inner.next();
+      if (page === null) return null;
+      this.#held = page;
+      await this.#options.beforePage(page);
+      this.#held = undefined;
+      return page;
+    });
+  }
+
+  /** Runs the release hook. Idempotent, since the runtime may dispose a target twice. */
+  [Symbol.dispose](): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    this.#options.dispose?.();
+  }
+}
+
+/**
+ * Lazily obtains and owns a git session's `GitCache` stub (fetched at most once, via its
+ * `ApprovalQueue`), through which the session advertises the commit ids its reads return --
+ * directly, or per page of a listing by wrapping its cursor in a `PageHookCursor` over
+ * `advertisePages()`. Advertisement is workspace-internal pull-routing metadata, not a read, so
+ * no observation accompanies it. A plain helper, deliberately not an `RpcTarget`: the cache stub
+ * must never be reachable by the session's callers.
+ */
+export class SessionGitCache {
+  readonly #approvalQueue: RpcStub<ApprovalQueue>;
+  readonly #options: CommitAdvertisingOptions | undefined;
+  #cache?: Promise<RpcStub<GitCache>>;
+
+  /**
+   * `approvalQueue` is only borrowed; the owning session must outlive this helper. `options` apply
+   * to every advertisement: `withhold` typically names the simulated heads of queued pushes, which
+   * reads show as if pushed but the remote does not have yet.
+   */
+  constructor(approvalQueue: RpcStub<ApprovalQueue>, options?: CommitAdvertisingOptions) {
+    this.#approvalQueue = approvalQueue;
+    this.#options = options;
+  }
+
+  /**
+   * The session-owned cache stub itself, for callers that need more than advertising (the
+   * simulation reads of queued pushes). Borrowed, not transferred: this helper still owns and
+   * disposes it.
+   */
+  stub(): Promise<RpcStub<GitCache>> {
+    this.#cache ??= this.#approvalQueue.getGitCache();
+    return this.#cache;
+  }
+
+  /** Advertise the given commit ids; values that aren't full commit ids are skipped. */
+  async advertise(ids: Iterable<GitOid>): Promise<void> {
+    await advertiseCommits(await this.stub(), ids, this.#options);
+  }
+
+  /**
+   * Wrap a cursor so that each page it returns advertises its commit ids first. The wrapper holds
+   * its own dup of the cache stub, so it keeps working if the session is disposed before the
+   * cursor is drained.
+   */
+  async wrap<T>(cursor: Cursor<T>, commitIds: (item: T) => readonly GitOid[]): Promise<Cursor<T>> {
+    const cache = (await this.stub()).dup();
+    return new PageHookCursor(cursor, {
+      beforePage: advertisePages(cache, commitIds, this.#options),
+      dispose: () => cache[Symbol.dispose](),
+    });
+  }
+
+  /** Releases the cache stub, if one was fetched. */
+  dispose(): void {
+    void this.#cache?.then(cache => cache[Symbol.dispose]()).catch(() => {});
   }
 }

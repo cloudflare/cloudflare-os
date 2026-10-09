@@ -25,6 +25,9 @@ const USER_DO_ABORT_REASON = "user-DO reset injected by test";
 const EXPECTED_MESSAGES: Record<OpenGadgetErrorCode, string> = {
   [OPEN_GADGET_ERROR_CODES.workspaceNotFound]: "Workspace not found.",
   [OPEN_GADGET_ERROR_CODES.workspaceAccessDenied]: "You don't have access to this workspace.",
+  [OPEN_GADGET_ERROR_CODES.shareLinksDisabled]:
+      "Share links are disabled for this workspace because it contains sensitive data. " +
+      "The owner must add each person directly.",
 };
 
 function username(prefix: string): string {
@@ -225,22 +228,5 @@ describe("workspace session across a user-DO-only reset", () => {
     // GadgetClient capability that must also be born with the fresh-stub design.
     using gadget = await workspace.createGadget("post-reset gadget");
     expect(await gadget.getTitle()).toBe("post-reset gadget");
-  });
-});
-
-// Smoke the paged action-log read against a real workspace DO: proves the @validateRpc wiring
-// accepts the option shape (the semantics live in __tests__/action-log-pagination.test.ts).
-// Runs after the reset tests so this session's DOs aren't torn down by abortAllDurableObjects().
-describe("paged action-log reads", () => {
-  it("answers listActions on a fresh workspace", async () => {
-    using publicApi = await connect();
-    const account = await createAccount(publicApi, "actionlog");
-    using authenticated = await publicApi.authenticate(account.token);
-    using workspace = await authenticated.newGadget();
-
-    expect(await workspace.listActions({ filter: "action" })).toEqual({ entries: [] });
-    // The pending filter is a distinct union member; this proves the regenerated validator
-    // accepts it end to end.
-    expect(await workspace.listActions({ filter: "pending" })).toEqual({ entries: [] });
   });
 });

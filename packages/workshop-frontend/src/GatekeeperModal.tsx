@@ -36,6 +36,7 @@ import { reportIssue } from './errorReporting'
 import { useSiteName } from './ServerConfigContext'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
 import { useDialogSelectPortalContainer } from './useDialogSelectPortalContainer'
+import { openConnectWindow } from './connectHandoff'
 
 export interface GatekeeperModalProps {
   open: boolean
@@ -586,9 +587,8 @@ export default function GatekeeperModal({
   const handleConnectAccount = async (vendorId: string, resourceUrlPatterns?: string[]) => {
     setConnectingVendor(vendorId)
     try {
-      const result = await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns)
-      window.open(result.url, '_blank', 'noopener,noreferrer')
-      toasts.add({ title: 'Complete the account connection in the new tab.', variant: 'success' })
+      openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns))
+      toasts.add({ title: 'Complete the account connection in the pop-up window.', variant: 'success' })
     } catch (error) {
       console.error('Failed to initiate connection:', error)
       reportIssue('gatekeeper.connect-start', error, { gatekeeperVendorId: vendorId })
@@ -607,13 +607,13 @@ export default function GatekeeperModal({
     if (missing.length === 0) return
     setGrantingAccountId(accountId)
     try {
-      const result = await authenticatedApi.ensureAccountResources(accountId, missing)
-      if (result.url) {
-        window.open(result.url, '_blank', 'noopener,noreferrer')
-        toasts.add({ title: 'Grant the additional access in the new tab.', variant: 'success' })
+      const flow = await authenticatedApi.ensureAccountResources(accountId, missing)
+      if (flow) {
+        openConnectWindow(flow)
+        toasts.add({ title: 'Grant the additional access in the pop-up window.', variant: 'success' })
       }
-      // The new grant arrives via subscribeConnectedAccounts(); the account's flag then clears and
-      // the configurator loads automatically.
+      // The popup redeems the ticket itself; the new grant arrives via subscribeConnectedAccounts(),
+      // the account's flag then clears and the configurator loads automatically.
     } catch (error) {
       console.error('Failed to request additional access:', error)
       reportIssue('gatekeeper.resource-grant', error, {
@@ -628,9 +628,8 @@ export default function GatekeeperModal({
   const handleReconnectAccount = async (accountId: number) => {
     setReconnectingAccountId(accountId)
     try {
-      const result = await authenticatedApi.reconnectAccount(accountId)
-      window.open(result.url, '_blank', 'noopener,noreferrer')
-      toasts.add({ title: 'Complete the account reconnect in the new tab.', variant: 'success' })
+      openConnectWindow(await authenticatedApi.reconnectAccount(accountId))
+      toasts.add({ title: 'Complete the account reconnect in the pop-up window.', variant: 'success' })
     } catch (error) {
       console.error('Failed to initiate reconnect:', error)
       reportIssue('gatekeeper.reconnect-start', error, {
@@ -753,7 +752,7 @@ export default function GatekeeperModal({
         configuratorFrameState?.frame &&
         configuratorFrameState.accountId === selectedAccountId &&
         configuratorFrameState.resourceUrlPattern === resourceUrlPattern &&
-        configuratorSelectionReady !== false &&
+        configuratorSelectionReady === true &&
         !hasMissingResourceGrants,
       )
     }

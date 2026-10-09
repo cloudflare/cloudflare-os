@@ -16,7 +16,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
 import type { AuthenticatedApi, Overseer, PublicApi } from "@gadgets/workshop-shared/api";
 import {
-  startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, type Harness,
+  startTestGatekeeperHarness, TEST_GATEKEEPER_WORKER, TEST_VENDOR_ID, testControl, type Harness,
 } from "../src/harness.js";
 import {
   accountLabel, connect, listConnectedAccounts, MAX_OBSERVER_PROMPTS, nextUsernames,
@@ -78,40 +78,23 @@ async function provisionAccount(api: RpcStub<AuthenticatedApi>): Promise<Connect
  * Tell the gatekeeper what to do the next time it's asked to admit `label` as an observer --
  * everywhere, or only at the binding `resourceUrl` names (a resource-specific outcome wins).
  */
-async function setVerifyOutcome(
+function setVerifyOutcome(
     label: string, outcome: { allow: true } | { allow: false; reason: string },
     resourceUrl?: string): Promise<void> {
-  const res = await harness.fetchWorker(
-    TEST_GATEKEEPER_WORKER, "http://gatekeeper-test.test/control/verify-outcome",
-    { method: "POST", body: JSON.stringify({ label, resourceUrl, ...outcome }) });
-  if (res.status !== 204) {
-    // The control route answers a rejected body with 400 and a reason, so surface it here rather
-    // than leaving a bare status to be puzzled over.
-    throw new Error(`Setting the verify outcome failed with ${res.status}: ${await res.text()}`);
-  }
+  return testControl(harness, "verify-outcome", { label, resourceUrl, ...outcome });
 }
 
 type ObserverEvent = { resourceUrl: string; type: "add" | "remove"; id: string };
 
 /** The addObserver()/removeObserver() calls one binding's gatekeeper has seen, in order. */
 async function observerEvents(resourceUrl: string): Promise<ObserverEvent[]> {
-  const res = await harness.fetchWorker(
-    TEST_GATEKEEPER_WORKER, "http://gatekeeper-test.test/control/observer-events",
-    { method: "POST", body: JSON.stringify({ resourceUrl }) });
-  if (res.status !== 200) {
-    throw new Error(`Reading observer events failed with ${res.status}: ${await res.text()}`);
-  }
-  return (await res.json() as { events: ObserverEvent[] }).events;
+  return (await testControl<{ events: ObserverEvent[] }>(harness, "observer-events", { resourceUrl }))
+    .events;
 }
 
 async function ambientVerificationCount(label: string): Promise<number> {
-  const res = await harness.fetchWorker(
-    TEST_GATEKEEPER_WORKER, "http://gatekeeper-test.test/control/ambient-verification-count",
-    { method: "POST", body: JSON.stringify({ label }) });
-  if (res.status !== 200) {
-    throw new Error(`Reading the ambient verification count failed with ${res.status}: ${await res.text()}`);
-  }
-  return (await res.json() as { count: number }).count;
+  return (await testControl<{ count: number }>(harness, "ambient-verification-count", { label }))
+    .count;
 }
 
 type SharedGadget = {

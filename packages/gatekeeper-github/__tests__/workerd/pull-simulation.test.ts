@@ -11,10 +11,13 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ActionDescription, GitObjectType, GitOid }
   from "@gadgets/workshop-shared/gatekeeper";
-import { FLUSH_PKT, encodePktLine } from "../../src/git-transport";
-import type { GitHubCommitFilter, GitHubCreatePullRequestOptions } from "../../src/types";
+import { FLUSH_PKT, encodePktLine } from "@gadgets/gatekeeper-kit/git-transport";
 import type {
-  CreatePullRequestActionData, GatekeeperProps, Outcome, PushActionData,
+  GitHubCommitFilter, GitHubCreatePullRequestOptions, GitHubPullRequestMergeOptions,
+} from "../../src/types";
+import type {
+  CreatePullRequestActionData, GatekeeperProps, MergePullRequestActionData, Outcome,
+  PushActionData,
 } from "./worker";
 
 const OWNER = "acme";
@@ -148,7 +151,18 @@ function commitResponse(commit: FakeCommit) {
   };
 }
 
-function pullResponse(number: number, head: { ref: string, sha: string }, base: { ref: string, sha: string }) {
+/** A branch's repository in a pull request's REST shape. */
+type RestRepo = { owner: { login: string }, name: string };
+
+/**
+ * A pull request's REST shape. `repo` names a branch's repository as GitHub spells it; omitted,
+ * it is the bound repo as the binding spells it.
+ */
+function pullResponse(
+  number: number,
+  head: { ref: string, sha: string, repo?: RestRepo },
+  base: { ref: string, sha: string, repo?: RestRepo },
+) {
   return {
     number,
     html_url: `https://github.com/${OWNER}/${REPO}/pull/${number}`,
@@ -164,21 +178,22 @@ function pullResponse(number: number, head: { ref: string, sha: string }, base: 
     closed_at: null,
     comments: 0,
     draft: false,
-    merged_at: null,
+    merged_at: null as string | null,
     mergeable: null,
     commits: 1,
     additions: 1,
     deletions: 0,
     changed_files: 1,
-    head: { ref: head.ref, sha: head.sha, repo: null },
-    base: { ref: base.ref, sha: base.sha, repo: null },
+    head: { ref: head.ref, sha: head.sha, repo: head.repo ?? null },
+    base: { ref: base.ref, sha: base.sha, repo: base.repo ?? null },
   };
 }
 
 /**
  * Fakes GitHub at the fetch boundary: branches, single commits (404 for pending ids -- the
  * anchor probe), commit listings, compares, the pulls API (create fails 422 while the head
- * branch is missing, exactly like GitHub), the viewer, and git-receive-pack.
+ * branch is missing, and merge checks `sha` and answers 405 once merged, exactly like GitHub),
+ * the viewer, and git-receive-pack.
  */
 class FakeGitHub {
   readonly branches = new Map<string, string>();
@@ -187,6 +202,21 @@ class FakeGitHub {
   readonly commitListings = new Map<string, FakeCommit[]>();  // sha → listing (no path filter)
   readonly pulls = new Map<number, ReturnType<typeof pullResponse>>();
   readonly receivePackResponses: Uint8Array[] = [];
+  readonly requests: URL[] = [];
+  /** The `sha` of every merge request, in order. */
+  readonly merges: (string | undefined)[] = [];
+  /** Branches whose next read fails with a 502. */
+  readonly failingBranchReads = new Set<string>();
+  /**
+   * Branches whose next read is held until `heldReadsReleased`, counted in `heldReads`. Polled
+   * rather than awaited: a promise settled from the test would carry the test's I/O context into
+   * the gatekeeper's Durable Object.
+   */
+  readonly heldBranchReads = new Set<string>();
+  heldReads = 0;
+  heldReadsReleased = false;
+  /** Merge the next merge request but lose its reply (a 502). */
+  loseNextMergeReply = false;
   #nextPullNumber = 7;
 
   install(): void {
@@ -207,6 +237,7 @@ class FakeGitHub {
   async #handle(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     const url = new URL(typeof input === "string" ? input : (input as Request).url ?? String(input));
     const path = url.origin + url.pathname;
+    this.requests.push(url);
 
     if (path === RECEIVE_PACK_URL) {
       const response = this.receivePackResponses.shift();
@@ -230,13 +261,20 @@ class FakeGitHub {
       });
     }
 
-    if (path.startsWith(`${API_BASE}/branches/`)) {
-      const name = decodeURIComponent(path.slice(`${API_BASE}/branches/`.length));
-      const head = this.branches.get(name);
-      if (head === undefined) {
-        return Response.json({ message: "Branch not found" }, { status: 404 });
+    if (path.startsWith(`${API_BASE}/git/ref/heads/`)) {
+      const name = decodeURIComponent(path.slice(`${API_BASE}/git/ref/heads/`.length));
+      if (this.heldBranchReads.delete(name)) {
+        this.heldReads++;
+        while (!this.heldReadsReleased) await scheduler.wait(1);
       }
-      return Response.json({ name, commit: { sha: head } });
+      const head = this.branches.get(name);
+      if (this.failingBranchReads.delete(name)) {
+        return Response.json({ message: "Bad Gateway" }, { status: 502 });
+      }
+      if (head === undefined) {
+        return Response.json({ message: "Not Found" }, { status: 404 });
+      }
+      return Response.json({ ref: `refs/heads/${name}`, object: { sha: head, type: "commit" } });
     }
 
     if (path.startsWith(`${API_BASE}/compare/`)) {
@@ -289,6 +327,25 @@ class FakeGitHub {
         return this.pulls.has(Number(rest.slice(0, -"/files".length)))
           ? Response.json([])
           : Response.json({ message: "Not Found" }, { status: 404 });
+      }
+      if (rest.endsWith("/merge") && init?.method === "PUT") {
+        const pull = this.pulls.get(Number(rest.slice(0, -"/merge".length)));
+        const { sha } = JSON.parse(await new Response(init.body as BodyInit).text()) as
+          { sha?: string };
+        this.merges.push(sha);
+        if (pull === undefined) return Response.json({ message: "Not Found" }, { status: 404 });
+        if (pull.merged_at !== null) {
+          return Response.json({ message: "Pull Request is not mergeable" }, { status: 405 });
+        }
+        if (sha !== undefined && sha !== pull.head.sha) {
+          return Response.json({ message: "Head branch was modified." }, { status: 409 });
+        }
+        pull.merged_at = "2026-01-02T00:00:00Z";
+        if (this.loseNextMergeReply) {
+          this.loseNextMergeReply = false;
+          return Response.json({ message: "Bad Gateway" }, { status: 502 });
+        }
+        return Response.json({ sha: "f".repeat(40), merged: true, message: "merged" });
       }
       const pull = this.pulls.get(Number(rest));
       if (pull === undefined) {
@@ -353,6 +410,12 @@ async function repoGatekeeper() {
       unwrap(hooks.submitCreatePullRequest(scenario, props, stubOf(queue), action, {
         title: "create PR", description: "test PR", implementsRevert: false,
       })),
+    prepareMerge: (pullId: string, options?: GitHubPullRequestMergeOptions) =>
+      unwrap(hooks.prepareMergePullRequest(scenario, props, pullId, options)),
+    submitMerge: (queue: TestApprovalQueue, action: MergePullRequestActionData) =>
+      unwrap(hooks.submitMerge(scenario, props, stubOf(queue), action, {
+        title: "merge", description: "test merge", implementsRevert: false,
+      })),
     applyAction: (actionId: number, cache: TestGitCache) =>
       unwrap(hooks.applyAction(scenario, props, actionId, stubOf(cache))),
     rejectAction: (actionId: number) => unwrap(hooks.rejectAction(scenario, props, actionId)),
@@ -367,6 +430,11 @@ async function repoGatekeeper() {
         scenario, props, filter, 50, cache === undefined ? undefined : stubOf(cache))),
     pullMergeBase: (id: string, cache?: TestGitCache) =>
       unwrap(hooks.pullMergeBase(scenario, props, id, cache === undefined ? undefined : stubOf(cache))),
+    isSimulatedCommitId: (commitId: string) =>
+      unwrap(hooks.isSimulatedCommitId(scenario, props, commitId)),
+    restart: () => hooks.restartGatekeeper(scenario),
+    /** Writes storage directly; must precede every other call on this gatekeeper. */
+    seed: (entries: Record<string, unknown>) => hooks.seedGatekeeper(scenario, props, entries),
   };
 }
 
@@ -387,6 +455,16 @@ async function queuePullRequest(
   const action = await gk.prepareCreatePullRequest(options);
   await gk.submitCreatePullRequest(new TestApprovalQueue(), action);
   return action;
+}
+
+/** prepare + submit a merge; returns the action and the card the approval queue received. */
+async function queueMerge(
+  gk: GatekeeperHandle, pullId: string, options?: GitHubPullRequestMergeOptions,
+): Promise<{ action: MergePullRequestActionData, card: ActionDescription }> {
+  const action = await gk.prepareMerge(pullId, options);
+  const queue = new TestApprovalQueue();
+  await gk.submitMerge(queue, action);
+  return { action, card: queue.submitted[0].description };
 }
 
 /** The standard fake: `main` at BASE (known), agent commits not on GitHub yet. */
@@ -556,11 +634,80 @@ describe("push rejection cascade", () => {
     const cache = scenarioCache();
     const push = await queuePush(gk, cache, "feature", HEAD1);
     const pr = await queuePullRequest(gk, { title: "Add new.txt", head: "feature", base: "main" });
+    const merge = await queueMerge(gk, pr.provisionalId);
+    expect(merge.action.expectedHeadSha).toBe(HEAD1);  // the create's head branch, simulated
 
     expect(await gk.rejectAction(push.approvalId)).toEqual({ restart: true });
     await expect(gk.openPullRequest(pr.provisionalId, cache))
       .rejects.toThrow(/No provisional pull request exists/);
-    await expect(gk.applyAction(pr.approvalId, cache)).rejects.toThrow(/no longer pending/);
+    // The Workshop still shows the cascaded cards: applying one explains, discarding one succeeds.
+    for (const { approvalId } of [pr, merge.action]) {
+      await expect(gk.applyAction(approvalId, cache))
+        .rejects.toThrow(/was discarded, or something it depended on was/);
+      expect(await gk.rejectAction(approvalId)).toBeUndefined();
+    }
+  });
+
+  it("reads branches before discarding, so a retry after a failed read still cascades", async () => {
+    const github = scenarioGitHub();
+    const gk = await repoGatekeeper();
+    const cache = scenarioCache();
+    const push = await queuePush(gk, cache, "feature", HEAD1);
+    const pr = await queuePullRequest(gk, { title: "Add new.txt", head: "feature", base: "main" });
+
+    github.failingBranchReads.add("feature");
+    await expect(gk.rejectAction(push.approvalId)).rejects.toThrow();
+    expect(await gk.rejectAction(push.approvalId)).toEqual({ restart: true });
+    await expect(gk.applyAction(pr.approvalId, cache)).rejects.toThrow(/was discarded/);
+  });
+
+  it("cascades a pull request queued while the discard reads its branch", async () => {
+    const github = scenarioGitHub();
+    const gk = await repoGatekeeper();
+    const cache = scenarioCache();
+    const push = await queuePush(gk, cache, "feature", HEAD1);
+    const first = await queuePullRequest(gk, { title: "First", head: "feature", base: "main" });
+
+    github.heldBranchReads.add("feature");
+    const discard = gk.rejectAction(push.approvalId);
+    await vi.waitFor(() => expect(github.heldReads).toBe(1));
+    const second = await queuePullRequest(gk, { title: "Second", head: "feature", base: "main" });
+    github.heldReadsReleased = true;
+
+    expect(await discard).toEqual({ restart: true });
+    for (const { approvalId } of [first, second]) {
+      await expect(gk.applyAction(approvalId, cache)).rejects.toThrow(/was discarded/);
+    }
+  });
+
+  it("refuses to discard a push applied while the discard reads its branch", async () => {
+    const github = scenarioGitHub();
+    const gk = await repoGatekeeper();
+    const cache = scenarioCache();
+    const push = await queuePush(gk, cache, "feature", HEAD1);
+    const pr = await queuePullRequest(gk, { title: "Add new.txt", head: "feature", base: "main" });
+
+    github.heldBranchReads.add("feature");
+    const discard = gk.rejectAction(push.approvalId);
+    await vi.waitFor(() => expect(github.heldReads).toBe(1));
+    github.respondToPush("unpack ok", "ok refs/heads/feature");
+    await gk.applyAction(push.approvalId, cache);
+    github.branches.set("feature", HEAD1);
+    github.heldReadsReleased = true;
+
+    await expect(discard).rejects.toThrow(/was applied while it was being discarded/);
+    // Not cascaded: the pull request's create still applies, at the pushed head.
+    await gk.applyAction(pr.approvalId, cache);
+    expect((await gk.openPullRequest(pr.provisionalId, cache)).head.sha).toBe(HEAD1);
+  });
+
+  it("discards a push nothing depends on without reaching GitHub", async () => {
+    const github = scenarioGitHub();
+    const gk = await repoGatekeeper();
+    const push = await queuePush(gk, scenarioCache(), "feature", HEAD1);
+
+    github.failingBranchReads.add("feature");
+    expect(await gk.rejectAction(push.approvalId)).toBeUndefined();
   });
 
   it("leaves a pull request whose branches still exist", async () => {
@@ -576,6 +723,103 @@ describe("push rejection cascade", () => {
     // Still pending: applying it now creates the pull request (both branches exist).
     await gk.applyAction(pr.approvalId, cache);
     expect((await gk.openPullRequest(pr.provisionalId, cache)).id).toBe("7");
+  });
+});
+
+describe("merge head binding", () => {
+  const FORK = { owner: { login: "contributor" }, name: REPO };
+
+  /** `topic` at OLD with pull request #7 on it, plus the agent commit HEAD1 on top of OLD. */
+  function topicScenario() {
+    const github = scenarioGitHub();
+    github.branches.set("topic", OLD);
+    github.pulls.set(7, pullResponse(7, { ref: "topic", sha: OLD }, { ref: "main", sha: BASE }));
+    const cache = scenarioCache()
+      .withObject(HEAD1, "commit", commitPayload(TREE_1, [OLD], "feat: add new.txt"))
+      .withAncestry(OLD, HEAD1);
+    return { github, cache, pull: github.pulls.get(7)! };
+  }
+
+  it("binds the head a queued push leaves, and merges only at it", async () => {
+    const { github, cache, pull } = topicScenario();
+    const gk = await repoGatekeeper();
+    const push = await queuePush(gk, cache, "topic", HEAD1);
+
+    const { action, card } = await queueMerge(gk, "7");
+    expect(action).toMatchObject({ expectedHeadSha: HEAD1, headBranch: "topic" });
+    expect(JSON.stringify(card)).toContain(HEAD1);
+    await expect(gk.prepareMerge("7", { expectedHeadSha: OLD }))
+      .rejects.toThrow(`its head is ${HEAD1}, not the expected ${OLD}`);
+
+    // Approved before the push it is bound behind: GitHub's 409 becomes ordering guidance.
+    await expect(gk.applyAction(action.approvalId, cache)).rejects.toThrow(/Approve that push first/);
+
+    github.respondToPush("unpack ok", "ok refs/heads/topic");
+    await gk.applyAction(push.approvalId, cache);
+    pull.head.sha = HEAD1;
+    await gk.applyAction(action.approvalId, cache);
+    expect(github.merges).toEqual([HEAD1, HEAD1]);
+
+    // A re-delivered apply of the approved merge succeeds without merging again.
+    await gk.applyAction(action.approvalId, cache);
+    expect(github.merges).toHaveLength(2);
+  });
+
+  it("treats a 405 after a lost merge reply as the merge it lost", async () => {
+    const { github, cache } = topicScenario();
+    const gk = await repoGatekeeper();
+    const { action } = await queueMerge(gk, "7");
+
+    github.loseNextMergeReply = true;
+    await expect(gk.applyAction(action.approvalId, cache)).rejects.toThrow();
+    await gk.applyAction(action.approvalId, cache);
+    expect(github.merges).toEqual([OLD, OLD]);
+  });
+
+  it("refuses a merge whose head moved after it was queued", async () => {
+    const { cache, pull } = topicScenario();
+    const gk = await repoGatekeeper();
+    const { action } = await queueMerge(gk, "7");
+
+    pull.head.sha = HEAD2;
+    await expect(gk.applyAction(action.approvalId, cache))
+      .rejects.toThrow(`head has moved from ${OLD}`);
+  });
+
+  it("applies a merge an earlier release queued only if the agent bound its head", async () => {
+    const { github, cache } = topicScenario();
+    const gk = await repoGatekeeper();
+    const legacy = { type: "mergePullRequest", owner: OWNER, repo: REPO, pullId: "7" };
+    await gk.seed({
+      "action:1": { state: "pending", action: { ...legacy, approvalId: 1 } },
+      "action:2": { state: "pending", action: { ...legacy, approvalId: 2, options: { expectedHeadSha: OLD } } },
+    });
+
+    await expect(gk.applyAction(1, cache)).rejects.toThrow(/without a bound head commit/);
+    await gk.applyAction(2, cache);
+    expect(github.merges).toEqual([OLD]);
+  });
+
+  it("binds a fork's head as GitHub reports it, ignoring same-named local pushes", async () => {
+    const { github, cache } = topicScenario();
+    github.pulls.set(9, pullResponse(9, { ref: "topic", sha: HEAD2, repo: FORK }, { ref: "main", sha: BASE }));
+    const gk = await repoGatekeeper();
+    await queuePush(gk, cache, "topic", HEAD1);
+
+    const { action } = await queueMerge(gk, "9");
+    expect(action).toMatchObject({ expectedHeadSha: HEAD2, headBranch: null });
+  });
+
+  it("binds a same-repo head the binding spells in a different case", async () => {
+    const { github, cache } = topicScenario();
+    const canonical = { owner: { login: "Acme" }, name: "Widgets" };
+    github.pulls.set(7, pullResponse(7,
+      { ref: "topic", sha: OLD, repo: canonical }, { ref: "main", sha: BASE, repo: canonical }));
+    const gk = await repoGatekeeper();
+    await queuePush(gk, cache, "topic", HEAD1);
+
+    const { action } = await queueMerge(gk, "7");
+    expect(action).toMatchObject({ expectedHeadSha: HEAD1, headBranch: "topic" });
   });
 });
 
@@ -737,5 +981,58 @@ describe("repo commit listing on a provisional branch", () => {
 
     const page = await gk.listCommitsFirstPage(undefined, cache);
     expect(page?.map(commit => commit.id)).toEqual([BASE]);
+  });
+});
+
+describe("pending commit walk", () => {
+  const SIDE = "f".repeat(40);   // an unpushed local branch's commit, merged into MERGE
+  const MERGE = "9".repeat(40);  // a local merge of SIDE into HEAD1
+  const HEAD3 = "8".repeat(40);  // rebuilt on HEAD1 after HEAD1's push was rejected
+
+  it("withholds a local merge's unpushed side parent and keeps it in the cached comparison", async () => {
+    scenarioGitHub();
+    const gk = await repoGatekeeper();
+    const cache = scenarioCache()
+      .withObject(SIDE, "commit", commitPayload(TREE_1, [BASE], "side"))
+      .withObject(MERGE, "commit", commitPayload(TREE_1, [HEAD1, SIDE], "merge side"));
+    await queuePush(gk, cache, "feature", MERGE);
+    const pr = await queuePullRequest(gk, { title: "Merge", head: "feature", base: "main" });
+
+    // The listing still follows first parents; the side parent is withheld all the same, since
+    // MERGE's summary names it.
+    const commits = await gk.pullCommitsAll(pr.provisionalId, cache);
+    expect(commits.map(commit => commit.id)).toEqual([HEAD1, MERGE]);
+    expect(await gk.isSimulatedCommitId(SIDE)).toBe(true);
+
+    // A fresh instance reads the comparison from storage and re-records its pending ids.
+    await gk.restart();
+    expect(await gk.isSimulatedCommitId(SIDE)).toBe(false);
+    await gk.openPullRequest(pr.provisionalId, cache);
+    expect(await gk.isSimulatedCommitId(SIDE)).toBe(true);
+  });
+
+  it("does not anchor at a rejected push's head that a stacked push still expects", async () => {
+    const github = scenarioGitHub();
+    github.branches.set("feature", OLD);
+    github.restCommits.set(OLD, { sha: OLD, message: "old head", parents: [BASE] });
+    github.commitListings.set(OLD, [{ sha: OLD, message: "old head", parents: [BASE] }]);
+    const gk = await repoGatekeeper();
+    const cache = scenarioCache()
+      .withObject(HEAD1, "commit", commitPayload(TREE_1, [OLD], "feat: add new.txt"))
+      .withObject(HEAD2, "commit", commitPayload(TREE_1, [HEAD1], "second"))
+      .withObject(HEAD3, "commit", commitPayload(TREE_1, [HEAD1], "rebuilt"))
+      .withAncestry(OLD, HEAD1)
+      .withAncestry(HEAD1, HEAD2)
+      .withAncestry(OLD, HEAD3);
+    const first = await queuePush(gk, cache, "feature", HEAD1);
+    await queuePush(gk, cache, "feature", HEAD2);  // stacked: expects HEAD1
+    await gk.rejectAction(first.approvalId);
+    // HEAD1 never reaches GitHub, yet the stranded second push still names it as expected.
+    const third = await queuePush(gk, cache, "feature", HEAD3);
+    expect(third.expectedOldSha).toBe(OLD);
+
+    const page = await gk.listCommitsFirstPage({ ref: "feature" }, cache);
+    expect(page?.map(commit => commit.id)).toEqual([HEAD3, HEAD1, OLD]);
+    expect(github.requests.some(url => url.searchParams.get("sha") === HEAD1)).toBe(false);
   });
 });

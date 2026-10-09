@@ -33,23 +33,30 @@ export type CursorPagerOptions<Item, Entry> = {
    */
   buildEntries(items: Item[]): Promise<Entry[]>;
 
-  /** Authorize a page or terminal empty result before returning it. Throws to deny. */
-  authorize(entries: Entry[]): Promise<void>;
+  /**
+   * Authorize a page before it is disclosed. Throws to deny.
+   *
+   * `exhausted` says the provider handed back no continuation token, so this really is the end of
+   * the results. An empty page with `exhausted: false` is only this call's budget running out, and
+   * must not be treated as a negative answer -- there are results ahead of it.
+   */
+  authorize(entries: Entry[], exhausted: boolean): Promise<void>;
 
   /** Best-effort cleanup for built entries that authorization prevents from being returned. */
   disposeEntries?(entries: Entry[]): void | Promise<void>;
 
-  /** How many result-less pages to walk past before giving up. */
-  maxEmptyPages?: number;
+  /** Provider pages one `next()` may fetch before returning what it has. */
+  maxProviderPagesPerCall?: number;
 };
 
 /**
- * Pages to walk past before concluding the provider is wasting our time.
+ * Provider pages one `next()` walks past before handing the caller an empty page.
  *
  * Reached either because the provider itself keeps returning empty pages, or because a scope
- * filter keeps discarding everything on them.
+ * filter keeps discarding everything on them. The bound is per call, not per cursor: it caps the
+ * work and the subrequests one invocation can spend, and the caller drains to `null` regardless.
  */
-export const DEFAULT_MAX_EMPTY_PAGES = 20;
+export const DEFAULT_MAX_PROVIDER_PAGES_PER_CALL = 20;
 
 /** The one method a `Cursor` exposes. `CursorPager` implements it; google.ts wraps it for RPC. */
 export interface Pager<Entry> {
@@ -58,7 +65,7 @@ export interface Pager<Entry> {
 
 export class CursorPager<Item, Entry> implements Pager<Entry> {
   #options: CursorPagerOptions<Item, Entry>;
-  #maxEmptyPages: number;
+  #maxProviderPages: number;
   #pageToken: string | undefined;
   // Every token the provider has handed back. A cursor stops at the first repeat, so this grows
   // only with genuinely distinct pages.
@@ -68,11 +75,13 @@ export class CursorPager<Item, Entry> implements Pager<Entry> {
 
   constructor(options: CursorPagerOptions<Item, Entry>) {
     this.#options = options;
-    this.#maxEmptyPages = options.maxEmptyPages ?? DEFAULT_MAX_EMPTY_PAGES;
+    this.#maxProviderPages =
+      options.maxProviderPagesPerCall ?? DEFAULT_MAX_PROVIDER_PAGES_PER_CALL;
   }
 
   /**
-   * The next page of entries, or null once there are none left.
+   * The next page of entries, `[]` when this call's page budget ran out with results still ahead,
+   * or null once there are none left.
    *
    * Calls are serialized: a caller that fires several without awaiting gets successive pages
    * rather than a race over the cursor's position.
@@ -88,7 +97,7 @@ export class CursorPager<Item, Entry> implements Pager<Entry> {
   async #nextPage(): Promise<Entry[] | null> {
     if (this.#exhausted) return null;
 
-    let { provider, fetchPage, buildEntries, authorize, disposeEntries } = this.#options;
+    let { fetchPage, buildEntries, authorize, disposeEntries, provider } = this.#options;
     let pageToken = this.#pageToken;
     // Tokens followed during this call. Merged into the committed set only once the page is
     // approved: a denied read rewinds the cursor, and the retry re-derives these same tokens.
@@ -110,19 +119,16 @@ export class CursorPager<Item, Entry> implements Pager<Entry> {
       }
 
       entries = await buildEntries(page.items);
-      if (entries.length > 0) break;
-
-      if (pageToken === undefined) break;
-      if (fetched >= this.#maxEmptyPages) {
-        throw new Error(
-          `${provider} returned ${fetched} pages with no usable results.`);
-      }
+      if (entries.length > 0 || pageToken === undefined) break;
+      // Out of budget with pages still to come. Hand back an empty page rather than throwing: the
+      // caller's own retry is the next slice of the same work, and a cursor is drained to `null`.
+      if (fetched >= this.#maxProviderPages) break;
     }
 
     // Advance only once the page has been approved. A denied read leaves the cursor where it was,
     // so retrying re-offers the same page instead of silently skipping over it.
     try {
-      await authorize(entries);
+      await authorize(entries, pageToken === undefined);
     } catch (error) {
       try {
         await disposeEntries?.(entries);
@@ -134,6 +140,6 @@ export class CursorPager<Item, Entry> implements Pager<Entry> {
     for (let token of followed) this.#seenTokens.add(token);
     this.#pageToken = pageToken;
     this.#exhausted = pageToken === undefined;
-    return entries.length > 0 ? entries : null;
+    return entries.length === 0 && this.#exhausted ? null : entries;
   }
 }

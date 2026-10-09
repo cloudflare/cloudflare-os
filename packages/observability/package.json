@@ -1,0 +1,47 @@
+{
+  "name": "@gadgets/observability",
+  "version": "1.0.0",
+  "description": "Shared Worker-side libraries; not a standalone deployable Worker.",
+  "type": "module",
+  "exports": {
+    "./logger": {
+      "types": "./src/logger.ts",
+      "import": "./src/logger.ts"
+    },
+    "./observability-context": {
+      "types": "./src/observability-context.ts",
+      "import": "./src/observability-context.ts"
+    },
+    "./tracing": {
+      "types": "./src/tracing.ts",
+      "import": "./src/tracing.ts"
+    },
+    "./error-reporting": {
+      "types": "./src/error-reporting.ts",
+      "import": "./src/error-reporting.ts"
+    },
+    "./metrics": {
+      "types": "./src/metrics.ts",
+      "import": "./src/metrics.ts"
+    },
+    "./metrics-schema": {
+      "types": "./src/metrics-schema.ts",
+      "import": "./src/metrics-schema.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test:run": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@gadgets/error-reporting": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@cloudflare/workers-types": "catalog:",
+    "@gadgets/scripts": "workspace:*",
+    "vitest": "catalog:"
+  }
+}

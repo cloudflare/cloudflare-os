@@ -8,6 +8,7 @@
 
 import type { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import type { CalendarAvailabilityMode } from "./calendar-types";
+import { validateChatSpaceId, validateChatThreadId } from "./chat-api";
 import { validateGmailLabelName, validateGmailQueryForGrouping } from "./gmail-validate";
 
 /** Host serving the synthetic BigQuery resource URLs. */
@@ -48,6 +49,16 @@ export const GOOGLE_SHEETS_RESOURCE: SupportedResource = {
   grantable: true,
 };
 
+/** A single Google Slides presentation. */
+export const GOOGLE_SLIDES_RESOURCE: SupportedResource = {
+  urlPattern: "https://docs.google.com/presentation/d/:presentationId/*",
+  title: "Google Slides Presentation",
+  description:
+    "Read a presentation you choose, and edit its text and speaker notes and copy, move, or " +
+    "delete its slides, with your approval.",
+  grantable: true,
+};
+
 /** A single Google Calendar. */
 export const GOOGLE_CALENDAR_RESOURCE: SupportedResource = {
   urlPattern: "https://calendar.google.com/calendar/:calendarId/*",
@@ -57,6 +68,43 @@ export const GOOGLE_CALENDAR_RESOURCE: SupportedResource = {
       "using https://calendar.google.com/calendar/primary/?availability=allVisible, then call " +
       "checkAvailability once with up to 50 attendee email addresses. Do not request each " +
       "attendee's calendar.",
+  grantable: true,
+};
+
+/**
+ * Every Google Chat conversation the connected account can reach.
+ *
+ * Deliberately not shareable: the grant spans direct messages and every space the owner belongs
+ * to, so no collaborator can be verified against it (see `GoogleChatGatekeeperImpl.addObserver`).
+ * Users who want a Gadget others can open should connect a single conversation instead.
+ */
+export const GOOGLE_CHAT_RESOURCE: SupportedResource = {
+  urlPattern: "https://chat.google.com/",
+  title: "Google Chat Account",
+  description:
+      "Find conversations, read and search messages across them, and post, react, or edit as " +
+      "you. Can also look people up in your organization's directory and start direct messages " +
+      "or group chats with them. Covers direct messages as well as spaces, so it cannot be " +
+      "shared with collaborators — connect a single conversation for that.",
+  grantable: true,
+};
+
+/** One selected Google Chat space, group chat, or direct message. */
+export const GOOGLE_CHAT_SPACE_RESOURCE: SupportedResource = {
+  urlPattern: "https://chat.google.com/room/:spaceId",
+  title: "Google Chat Conversation",
+  description:
+      "Read and post in one selected conversation as you, including its members, reactions, " +
+      "and attachments.",
+  grantable: true,
+};
+
+/** One thread in a Google Chat conversation: its first message, replies, and future replies. */
+export const GOOGLE_CHAT_THREAD_RESOURCE: SupportedResource = {
+  urlPattern: "https://chat.google.com/room/:spaceId/:threadId",
+  title: "Google Chat Thread",
+  description:
+      "Read and reply in one selected thread as you, including its reactions and attachments.",
   grantable: true,
 };
 
@@ -70,7 +118,8 @@ export const BIGQUERY_RESOURCE: SupportedResource = {
 };
 
 /**
- * Files, folders, and read-only native Google Docs and Sheets available to the connected account.
+ * Files, folders, and read-only native Google Docs, Sheets and Slides available to the connected
+ * account.
  *
  * Whole-account, not just My Drive: listings set `includeItemsFromAllDrives`, so a shared drive the
  * account belongs to is inside this grant.
@@ -81,15 +130,18 @@ export const GOOGLE_DRIVE_RESOURCE: SupportedResource = {
   description:
       "Find files and folders anywhere this Google account can read in Drive, including shared " +
       "drives. Full-text search examines indexed file content, descriptions, and OCR text; search " +
-      "results contain metadata only, while native Google Docs and Sheets can be opened read-only.",
+      "results contain metadata only, while native Google Docs, Sheets and Slides can be opened " +
+      "read-only.",
   grantable: true,
 };
 
-/** Files, folders, and read-only native content in one Google Workspace shared drive. */
-export const GOOGLE_SHARED_DRIVE_RESOURCE: SupportedResource = {
-  urlPattern: "https://drive.google.com/drive/folders/:driveId",
-  title: "Google Workspace Shared Drive",
-  description: "Find files and folders, and read native Google Docs and Sheets, in one organization-owned shared drive.",
+/** A selected Drive folder or shared-drive root, exposed through direct-child navigation. */
+export const GOOGLE_DRIVE_FOLDER_RESOURCE: SupportedResource = {
+  urlPattern: "https://drive.google.com/drive/folders/:folderId",
+  title: "Google Drive Folder",
+  description:
+      "Browse a selected folder or shared drive, search its direct children, and read native " +
+      "Google Docs, Sheets and Slides.",
   grantable: true,
 };
 
@@ -97,7 +149,9 @@ export const GOOGLE_SHARED_DRIVE_RESOURCE: SupportedResource = {
 export const GOOGLE_DRIVE_FILE_RESOURCE: SupportedResource = {
   urlPattern: "https://drive.google.com/file/d/:fileId/view",
   title: "Google Drive File",
-  description: "Read metadata and, for a native Google Doc or Sheet, content from one Drive file.",
+  description:
+      "Read metadata and, for a native Google Doc, Sheet or Slides presentation, content from one " +
+      "Drive file.",
   grantable: true,
 };
 
@@ -132,6 +186,22 @@ export const SCOPE_DERIVED_RESOURCE_URL_PATTERNS = [
   BIGQUERY_RESOURCE.urlPattern,
 ];
 
+/**
+ * The user scopes the Chat resources need.
+ *
+ * `chat.messages` rather than the narrower `chat.messages.readonly` plus `chat.messages.create`
+ * because the binding also edits messages and can undo its own sends, which need the combined
+ * scope; it covers reactions too. Only the account resource adds `chat.users.readstate.readonly`,
+ * for its `unreadOnly` search filter, and what starting a conversation needs: `chat.spaces.create`
+ * (not `chat.spaces`, which could also rename and reconfigure conversations) and
+ * `directory.readonly`, to find people and to confirm they belong to the organization.
+ */
+const CHAT_SCOPES = [
+  "https://www.googleapis.com/auth/chat.spaces.readonly",
+  "https://www.googleapis.com/auth/chat.messages",
+  "https://www.googleapis.com/auth/chat.memberships.readonly",
+];
+
 /** The OAuth scopes each grantable resource needs. */
 export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] = [
   {
@@ -158,6 +228,14 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
     ],
   },
   {
+    resource: GOOGLE_SLIDES_RESOURCE,
+    scopes: [
+      "https://www.googleapis.com/auth/presentations",
+      // Read-only Drive file metadata, used to power the presentation picker.
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+    ],
+  },
+  {
     resource: GOOGLE_CALENDAR_RESOURCE,
     scopes: [
       // Read-only calendar list, used to power the calendar picker when connecting a calendar.
@@ -171,18 +249,17 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
       "https://www.googleapis.com/auth/drive.metadata.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
+      "https://www.googleapis.com/auth/presentations.readonly",
     ],
   },
   {
-    resource: GOOGLE_SHARED_DRIVE_RESOURCE,
-    // `drive.readonly` (not `drive.metadata.readonly`): the shared-drive picker and the binding's
-    // `getScope` use `drives.list`/`drives.get`, which accept nothing narrower. The same scope already
-    // authorizes native Docs and Sheets content, so do not add redundant API scopes. It is a
-    // restricted scope granting account-wide content access, strictly wider than the authority the
-    // shared-drive binding exercises. Narrowing it means dropping both calls: resolving a shared
-    // drive's name through `files.get` on the drive root instead, and giving up drive enumeration in
-    // the configurator.
-    scopes: ["https://www.googleapis.com/auth/drive.readonly"],
+    resource: GOOGLE_DRIVE_FOLDER_RESOURCE,
+    scopes: [
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/documents.readonly",
+      "https://www.googleapis.com/auth/spreadsheets.readonly",
+      "https://www.googleapis.com/auth/presentations.readonly",
+    ],
   },
   {
     resource: GOOGLE_DRIVE_FILE_RESOURCE,
@@ -190,7 +267,30 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
       "https://www.googleapis.com/auth/drive.metadata.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
+      "https://www.googleapis.com/auth/presentations.readonly",
     ],
+  },
+  // Every Chat resource requests the same scopes: Google grants Chat authority per API, not per
+  // space, so narrowing to one conversation or thread is enforced by the binding rather than by
+  // consent.
+  // Every scope here is a user scope; `chat.bot`, `chat.app.*`, `chat.admin.*`, `chat.import`
+  // and `chat.delete` are all deliberately absent.
+  {
+    resource: GOOGLE_CHAT_RESOURCE,
+    scopes: [
+      ...CHAT_SCOPES,
+      "https://www.googleapis.com/auth/chat.users.readstate.readonly",
+      "https://www.googleapis.com/auth/chat.spaces.create",
+      "https://www.googleapis.com/auth/directory.readonly",
+    ],
+  },
+  {
+    resource: GOOGLE_CHAT_SPACE_RESOURCE,
+    scopes: CHAT_SCOPES,
+  },
+  {
+    resource: GOOGLE_CHAT_THREAD_RESOURCE,
+    scopes: CHAT_SCOPES,
   },
   {
     resource: BIGQUERY_RESOURCE,
@@ -204,7 +304,7 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
 
 const DRIVE_RESOURCE_PATTERNS = new Set([
   GOOGLE_DRIVE_RESOURCE.urlPattern,
-  GOOGLE_SHARED_DRIVE_RESOURCE.urlPattern,
+  GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern,
   GOOGLE_DRIVE_FILE_RESOURCE.urlPattern,
 ]);
 
@@ -216,6 +316,13 @@ const KNOWN_RESOURCE_PATTERNS = new Set(SUPPORTED_RESOURCES.map(resource => reso
 export function hasDriveResourceGrant(resourceUrlPatterns: readonly string[]): boolean {
   return resourceUrlPatterns.some(pattern => DRIVE_RESOURCE_PATTERNS.has(pattern));
 }
+
+/**
+ * Wider Drive grants an account may already hold. Never requested here; they appear only in
+ * {@link SCOPE_COVERED_BY}, where they truthfully subsume the narrow requirements.
+ */
+const DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
+const DRIVE_READWRITE_SCOPE = "https://www.googleapis.com/auth/drive";
 
 /** Rejects any pattern that is not a known grantable resource. */
 export function validateResourceUrlPatterns(resourceUrlPatterns: readonly string[]): void {
@@ -239,6 +346,45 @@ export function resourceUrlPatternsToOAuthScopes(resourceUrlPatterns: readonly s
 }
 
 /**
+ * Scopes that subsume each required scope, so a wider grant still covers a resource.
+ *
+ * Declared as data beside {@link RESOURCE_SCOPES} rather than as branches: a missing implication
+ * reads as an ungranted resource and silently hides a configurator, so the next readonly/readwrite
+ * pair should be a row here and nothing else.
+ */
+const SCOPE_COVERED_BY: Record<string, readonly string[]> = {
+  "https://www.googleapis.com/auth/drive.metadata.readonly": [
+    "https://www.googleapis.com/auth/drive.metadata", DRIVE_READONLY_SCOPE, DRIVE_READWRITE_SCOPE,
+  ],
+  "https://www.googleapis.com/auth/documents.readonly": [
+    "https://www.googleapis.com/auth/documents", DRIVE_READONLY_SCOPE, DRIVE_READWRITE_SCOPE,
+  ],
+  "https://www.googleapis.com/auth/spreadsheets.readonly": [
+    "https://www.googleapis.com/auth/spreadsheets", DRIVE_READONLY_SCOPE, DRIVE_READWRITE_SCOPE,
+  ],
+  "https://www.googleapis.com/auth/presentations.readonly": [
+    "https://www.googleapis.com/auth/presentations", DRIVE_READONLY_SCOPE, DRIVE_READWRITE_SCOPE,
+  ],
+  "https://www.googleapis.com/auth/chat.spaces.readonly": [
+    "https://www.googleapis.com/auth/chat.spaces",
+  ],
+  "https://www.googleapis.com/auth/chat.spaces.create": [
+    "https://www.googleapis.com/auth/chat.spaces",
+  ],
+  "https://www.googleapis.com/auth/chat.memberships.readonly": [
+    "https://www.googleapis.com/auth/chat.memberships",
+  ],
+  "https://www.googleapis.com/auth/chat.users.readstate.readonly": [
+    "https://www.googleapis.com/auth/chat.users.readstate",
+  ],
+};
+
+function oauthScopeCovers(required: string, granted: ReadonlySet<string>): boolean {
+  return granted.has(required) ||
+    (SCOPE_COVERED_BY[required]?.some(scope => granted.has(scope)) ?? false);
+}
+
+/**
  * The subset of `resourceUrlPatterns` whose every OAuth scope is present in `grantedOAuthScopes`.
  *
  * Fails closed, so a scope the user declined at the consent screen, or dropped on a later
@@ -251,7 +397,7 @@ export function resourcesCoveredByScopes(
   let requested = new Set(resourceUrlPatterns);
   return RESOURCE_SCOPES
       .filter(entry => requested.has(entry.resource.urlPattern) &&
-                       entry.scopes.every(scope => granted.has(scope)))
+                       entry.scopes.every(scope => oauthScopeCovers(scope, granted)))
       .map(entry => entry.resource.urlPattern);
 }
 
@@ -283,9 +429,14 @@ export type RecordedResourceGrant = {
  * writable Docs, writable Calendar, Sheets and BigQuery, and would have them recorded once it
  * accepted. That generation cannot express an outgrown grant either — a resource whose scopes it no
  * longer covers is indistinguishable from one it never held — so there is nothing to keep.
+ *
+ * A `urlPattern` a later deploy retired is dropped rather than returned: it maps to no scopes, so
+ * requesting it would throw and take the reconnect that repairs the account down with it.
  */
 export function recordedResourceUrlPatterns(grant: RecordedResourceGrant): string[] {
-  if (grant.resourceUrlPatterns !== undefined) return [...grant.resourceUrlPatterns];
+  if (grant.resourceUrlPatterns !== undefined) {
+    return grant.resourceUrlPatterns.filter(pattern => KNOWN_RESOURCE_PATTERNS.has(pattern));
+  }
   if (grant.oauthScopes === undefined) return [...LEGACY_GRANTED_RESOURCE_URL_PATTERNS];
   return resourcesCoveredByScopes(SCOPE_DERIVED_RESOURCE_URL_PATTERNS, grant.oauthScopes);
 }
@@ -306,22 +457,30 @@ export type ResourceTarget =
   | { kind: "gmail"; searchQuery?: string; labelName?: string }
   | { kind: "doc"; documentId: string }
   | { kind: "sheets"; spreadsheetId: string }
+  | { kind: "slides"; presentationId: string }
   | { kind: "calendar"; calendarId: string; availabilityMode: CalendarAvailabilityMode }
   | { kind: "bigquery"; projectId: string; datasetId?: string; tableId?: string }
   | { kind: "driveAccount" }
-  | { kind: "sharedDrive"; driveId: string }
-  | { kind: "driveFile"; fileId: string };
+  | { kind: "driveFolder"; folderId: string }
+  | { kind: "driveFile"; fileId: string }
+  | { kind: "chatAccount" }
+  | { kind: "chatSpace"; spaceId: string }
+  | { kind: "chatThread"; spaceId: string; threadId: string };
 
 /** The grantable resource each {@link ResourceTarget} kind belongs to. */
 export const RESOURCE_BY_KIND: Record<ResourceTarget["kind"], SupportedResource> = {
   gmail: GMAIL_RESOURCE,
   doc: GOOGLE_DOC_RESOURCE,
   sheets: GOOGLE_SHEETS_RESOURCE,
+  slides: GOOGLE_SLIDES_RESOURCE,
   calendar: GOOGLE_CALENDAR_RESOURCE,
   bigquery: BIGQUERY_RESOURCE,
   driveAccount: GOOGLE_DRIVE_RESOURCE,
-  sharedDrive: GOOGLE_SHARED_DRIVE_RESOURCE,
+  driveFolder: GOOGLE_DRIVE_FOLDER_RESOURCE,
   driveFile: GOOGLE_DRIVE_FILE_RESOURCE,
+  chatAccount: GOOGLE_CHAT_RESOURCE,
+  chatSpace: GOOGLE_CHAT_SPACE_RESOURCE,
+  chatThread: GOOGLE_CHAT_THREAD_RESOURCE,
 };
 
 /**
@@ -350,6 +509,7 @@ export function parseResourceUrl(url: string): ResourceTarget {
     case "calendar.google.com": return parseCalendarUrl(parsed);
     case BIGQUERY_HOST: return parseBigQueryUrl(parsed);
     case "drive.google.com": return parseDriveUrl(parsed);
+    case "chat.google.com": return parseChatUrl(parsed);
   }
   throw new Error(`Unsupported Google resource URL host: ${parsed.hostname}`);
 }
@@ -394,7 +554,7 @@ function parseGmailUrl(parsed: URL): ResourceTarget {
 }
 
 function parseDocsUrl(parsed: URL): ResourceTarget {
-  // Both forms are /<type>/d/<id>/..., so the id is always the third segment.
+  // Every form is /<type>/d/<id>/..., so the id is always the third segment.
   let id = parsed.pathname.split("/")[3];
   if (parsed.pathname.startsWith("/document/d/")) {
     if (!id) throw new Error("Invalid Google Docs URL: no document ID found");
@@ -403,6 +563,10 @@ function parseDocsUrl(parsed: URL): ResourceTarget {
   if (parsed.pathname.startsWith("/spreadsheets/d/")) {
     if (!id) throw new Error("Invalid Google Sheets URL: no spreadsheet ID found");
     return { kind: "sheets", spreadsheetId: id };
+  }
+  if (parsed.pathname.startsWith("/presentation/d/")) {
+    if (!id) throw new Error("Invalid Google Slides URL: no presentation ID found");
+    return { kind: "slides", presentationId: id };
   }
   throw new Error(`Unsupported Google Docs resource URL: ${describeUrl(parsed)}`);
 }
@@ -429,13 +593,43 @@ function parseCalendarUrl(parsed: URL): ResourceTarget {
 function parseDriveUrl(parsed: URL): ResourceTarget {
   if (/^\/drive\/my-drive\/?$/.test(parsed.pathname)) return { kind: "driveAccount" };
 
-  let sharedDrive = /^\/drive\/folders\/([^/]+)\/?$/.exec(parsed.pathname);
-  if (sharedDrive) return { kind: "sharedDrive", driveId: decodeURIComponent(sharedDrive[1]) };
+  let folder = /^\/drive\/folders\/([^/]+)\/?$/.exec(parsed.pathname);
+  if (folder) return { kind: "driveFolder", folderId: decodeURIComponent(folder[1]) };
 
   let file = /^\/file\/d\/([^/]+)\/view\/?$/.exec(parsed.pathname);
   if (file) return { kind: "driveFile", fileId: decodeURIComponent(file[1]) };
 
   throw new Error(`Unsupported Google Drive resource URL: ${describeUrl(parsed)}`);
+}
+
+/**
+ * Chat's own URLs carry a view path and a fragment, so the grant is keyed on the canonical form
+ * the configurator mints: the bare host for the whole account, `/room/{space}` for one
+ * conversation, `/room/{space}/{thread}` for one thread. The ids are Chat's without their
+ * `spaces/` and `threads/` prefixes, validated here because every downstream request
+ * interpolates them into a path.
+ */
+function parseChatUrl(parsed: URL): ResourceTarget {
+  if (parsed.search || parsed.hash) {
+    throw new Error("Google Chat resource URLs must not include query strings or fragments.");
+  }
+  if (/^\/?$/.test(parsed.pathname)) return { kind: "chatAccount" };
+
+  let room = /^\/room\/([^/]+)\/?$/.exec(parsed.pathname);
+  if (room) {
+    return { kind: "chatSpace", spaceId: validateChatSpaceId(decodeURIComponent(room[1])) };
+  }
+
+  let thread = /^\/room\/([^/]+)\/([^/]+)\/?$/.exec(parsed.pathname);
+  if (thread) {
+    return {
+      kind: "chatThread",
+      spaceId: validateChatSpaceId(decodeURIComponent(thread[1])),
+      threadId: validateChatThreadId(decodeURIComponent(thread[2])),
+    };
+  }
+
+  throw new Error(`Unsupported Google Chat resource URL: ${describeUrl(parsed)}`);
 }
 
 function parseBigQueryUrl(parsed: URL): ResourceTarget {

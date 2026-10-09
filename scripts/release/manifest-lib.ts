@@ -29,6 +29,11 @@ export interface BindingDecl {
   binding: string;
 }
 
+/** A KV namespace binding declaration. `preview_id` names a local-dev Miniflare namespace only. */
+export interface KvNamespaceDecl extends BindingDecl {
+  preview_id?: string;
+}
+
 /** A service binding declaration in a wrangler config. */
 export interface ServiceBinding {
   /** Binding name the calling worker reads. */
@@ -105,7 +110,7 @@ export interface WranglerConfig {
   /** Workers observability settings. */
   observability?: ObservabilityConfig;
   /** KV namespace bindings; ids become `$KV_<BINDING>_ID` placeholders. */
-  kv_namespaces?: BindingDecl[];
+  kv_namespaces?: KvNamespaceDecl[];
   /** R2 bucket bindings; names become `$R2_<BINDING>_NAME` placeholders. */
   r2_buckets?: BindingDecl[];
   /** Worker Loader bindings (the Gadget sandbox). */
@@ -129,8 +134,6 @@ export interface WranglerConfig {
   build?: WranglerBuild;
   /** Module resolution rules for non-JS imports. */
   rules?: unknown[];
-  /** Present in the files but ignored. */
-  $schema?: string;
 }
 
 /** A deployable workspace package and its parsed Wrangler configuration. */

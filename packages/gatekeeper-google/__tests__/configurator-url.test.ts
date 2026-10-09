@@ -17,16 +17,24 @@ vi.mock("@gadgets/configurator-ui", () => ({
   Field: "Field",
   RadioCards: "RadioCards",
   Section: "Section",
+  TextInput: "TextInput",
 }));
 import driveAccountConfigurator from "../src/configurator/drive-account-configurator-ui";
 import driveFileConfigurator from "../src/configurator/drive-file-configurator-ui";
 import calendarConfigurator from "../src/configurator/calendar-configurator-ui";
 import type { CalendarConfiguratorRpc } from "../src/configurator/calendar-configurator-types";
+import driveFolderConfigurator from "../src/configurator/drive-folder-configurator-ui";
 import gmailConfigurator from "../src/configurator/gmail-configurator-ui";
-import sharedDriveConfigurator from "../src/configurator/shared-drive-configurator-ui";
+import chatAccountConfigurator from "../src/configurator/chat-account-configurator-ui";
+import chatSpaceConfigurator from "../src/configurator/chat-space-configurator-ui";
+import chatThreadConfigurator from "../src/configurator/chat-thread-configurator-ui";
+import googleSlidesConfigurator from "../src/configurator/google-slides-configurator-ui";
 import {
-  GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_RESOURCE,
-  GOOGLE_SHARED_DRIVE_RESOURCE, parseResourceUrl,
+  GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE,
+  GOOGLE_CHAT_THREAD_RESOURCE,
+  GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE,
+  GOOGLE_SLIDES_RESOURCE,
+  parseResourceUrl,
 } from "../src/resources";
 
 // The configurators never call `ui` from these two methods; it is present only to satisfy the
@@ -148,32 +156,86 @@ describe("Calendar configurator URLs", () => {
   });
 });
 
+describe("Google Chat configurator URLs", () => {
+  const chatValues = (resourceUrl: string) =>
+    chatSpaceConfigurator.initialValuesFromResourceUrl!({
+      resourceUrl, resourceUrlPattern: GOOGLE_CHAT_SPACE_RESOURCE.urlPattern, ui: noUi,
+    });
+
+  it("mints the whole-account resource", () => {
+    const url = configurableUrl(chatAccountConfigurator, { scope: "account" });
+    expect(url).toBe(GOOGLE_CHAT_RESOURCE.urlPattern);
+    expect(parseResourceUrl(url)).toEqual({ kind: "chatAccount" });
+  });
+
+  it("mints a conversation URL the server parses back", () => {
+    const url = configurableUrl(chatSpaceConfigurator, { spaceId: "AAAA1234" });
+    expect(url).toBe("https://chat.google.com/room/AAAA1234");
+    expect(parseResourceUrl(url)).toEqual({ kind: "chatSpace", spaceId: "AAAA1234" });
+  });
+
+  it("round-trips its own URL back to the same values", () => {
+    const values = { spaceId: "AAAA1234" };
+    expect(chatValues(configurableUrl(chatSpaceConfigurator, values))).toEqual(values);
+  });
+
+  it("prefills nothing from a URL that names no conversation", () => {
+    expect(chatValues("https://chat.google.com/")).toEqual({});
+    expect(chatValues("https://chat.google.com/room/%ZZ")).toEqual({});
+    expect(chatValues("spaces/%E0%A4")).toEqual({});
+  });
+
+  it("explains that a conversation connection is shareable but an account one is not", () => {
+    expect(renderedCopy(chatAccountConfigurator))
+      .toContain("cannot be shared with collaborators");
+    expect(renderedCopy(chatSpaceConfigurator))
+      .toContain("only if their own Google account can open it too");
+  });
+});
+
+describe("Google Chat thread configurator URLs", () => {
+  const threadReady = (link: string) =>
+    chatThreadConfigurator.isReady!({ values: { link }, ui: noUi } as never);
+
+  it.for([
+    ["https://chat.google.com/dm/pBt6ayAAAAE/HrpoFQHIJRc/HrpoFQHIJRc?cls=10", "pBt6ayAAAAE", "HrpoFQHIJRc"],
+    ["https://chat.google.com/room/AAAA1234/TTT?cls=10", "AAAA1234", "TTT"],
+    ["spaces/AAAA1234/threads/TTT", "AAAA1234", "TTT"],
+  ] as const)("mints a canonical thread URL from %s", ([link, spaceId, threadId]) => {
+    expect(threadReady(link)).toBe(true);
+    const url = configurableUrl(chatThreadConfigurator, { link });
+    expect(url).toBe(`https://chat.google.com/room/${spaceId}/${threadId}`);
+    expect(parseResourceUrl(url)).toEqual({ kind: "chatThread", spaceId, threadId });
+  });
+
+  it("round-trips a canonical thread URL", () => {
+    const url = "https://chat.google.com/room/AAAA1234/TTT";
+    const values = chatThreadConfigurator.initialValuesFromResourceUrl!({
+      resourceUrl: url, resourceUrlPattern: GOOGLE_CHAT_THREAD_RESOURCE.urlPattern, ui: noUi,
+    });
+    expect(configurableUrl(chatThreadConfigurator, values)).toBe(url);
+  });
+
+  it.for([
+    "https://chat.google.com/room/AAAA1234",
+    "https://chat.google.com/room/AAAA1234/...",
+    "spaces/AAAA1234",
+    "https://example.com/room/AAAA1234/TTT",
+  ])("is not ready for %s", link => {
+    expect(threadReady(link)).toBe(false);
+  });
+
+  it("explains who can open a thread connection", () => {
+    expect(renderedCopy(chatThreadConfigurator))
+      .toContain("only if their own Google account can open its conversation");
+  });
+});
+
 describe("Drive configurator URLs", () => {
   it("mints the whole-account resource", () => {
     let url = configurableUrl(driveAccountConfigurator, { scope: "account" });
     expect(url).toBe(GOOGLE_DRIVE_RESOURCE.urlPattern);
     expect(parseResourceUrl(url)).toEqual({ kind: "driveAccount" });
-  });
-
-  it("explains native Doc and Sheet reads at every Drive scope", () => {
-    expect(renderedCopy(driveAccountConfigurator)).toContain(
-      "native Google Docs and Sheets can be opened in read-only content sessions.",
-    );
-    expect(renderedCopy(sharedDriveConfigurator)).toContain(
-      "Search its files and read native Google Docs and Sheets.",
-    );
-    expect(renderedCopy(driveFileConfigurator)).toContain(
-      "A selected native Google Doc or Sheet also provides read-only content.",
-    );
-  });
-
-  it("round-trips an encoded shared-drive ID", () => {
-    let values = { driveId: "shared/id with spaces" };
-    let url = configurableUrl(sharedDriveConfigurator, values);
-    expect(url).toBe(
-      GOOGLE_SHARED_DRIVE_RESOURCE.urlPattern.replace(":driveId", encodeURIComponent(values.driveId)),
-    );
-    expect(parseResourceUrl(url)).toEqual({ kind: "sharedDrive", driveId: values.driveId });
   });
 
   it("round-trips an encoded file ID", () => {
@@ -185,17 +247,42 @@ describe("Drive configurator URLs", () => {
     expect(parseResourceUrl(url)).toEqual({ kind: "driveFile", fileId: values.fileId });
   });
 
+  it("round-trips an encoded folder ID", () => {
+    let values = { folderId: "folder/id with spaces" };
+    let url = configurableUrl(driveFolderConfigurator, values);
+    expect(url).toBe(
+      GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern.replace(
+        ":folderId", encodeURIComponent(values.folderId)),
+    );
+    expect(parseResourceUrl(url)).toEqual({ kind: "driveFolder", folderId: values.folderId });
+  });
+
+  it("mints the natural Drive folder URL", () => {
+    let url = configurableUrl(driveFolderConfigurator, { folderId: "FOLDER123" });
+    expect(url).toBe("https://drive.google.com/drive/folders/FOLDER123");
+    expect(parseResourceUrl(url)).toEqual({ kind: "driveFolder", folderId: "FOLDER123" });
+  });
+
   // Prefill after deleting the hand-written hooks: the sandbox fallback extracts named groups and
   // decodeURIComponent's them. A missing decode would leave `%2F`/`%20` in the form values.
   it("prefills encoded IDs from urlPattern named groups", () => {
-    let driveValues = { driveId: "shared/id with spaces" };
-    let driveUrl = configurableUrl(sharedDriveConfigurator, driveValues);
-    expect(valuesFromUrlPattern(driveUrl, GOOGLE_SHARED_DRIVE_RESOURCE.urlPattern))
-      .toEqual(driveValues);
-
     let fileValues = { fileId: "file/id with spaces" };
     let fileUrl = configurableUrl(driveFileConfigurator, fileValues);
     expect(valuesFromUrlPattern(fileUrl, GOOGLE_DRIVE_FILE_RESOURCE.urlPattern))
       .toEqual(fileValues);
+
+    let folderValues = { folderId: "folder/id with spaces" };
+    let folderUrl = configurableUrl(driveFolderConfigurator, folderValues);
+    expect(valuesFromUrlPattern(folderUrl, GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern))
+      .toEqual(folderValues);
+  });
+});
+
+describe("Google Slides configurator URLs", () => {
+  it("mints a presentation URL the server parses and the prefill reads back", () => {
+    let values = { presentationId: "1AbC-dEf_9xYz" };
+    let url = configurableUrl(googleSlidesConfigurator, values);
+    expect(parseResourceUrl(url)).toEqual({ kind: "slides", presentationId: values.presentationId });
+    expect(valuesFromUrlPattern(url, GOOGLE_SLIDES_RESOURCE.urlPattern)).toEqual(values);
   });
 });

@@ -11,37 +11,41 @@ export default {
   run: {
     tasks: {
       /**
-       * Its own task because it is the one step here that reads an env var: `FORMAT_BLUEPRINTS_DIR`
+       * Its own task because it is the one step here that reads an env var: `BUNDLED_BLUEPRINTS_DIR`
        * points the generator at a blueprint set outside this workspace, and a cached `vp` run strips
        * undeclared vars, so a cached caller compiles the defaults in instead. Everything needing
-       * `src/generated/format-blueprints.ts` depends on it -- `cache: false` is per-task, so running
+       * `src/generated/bundled-blueprints.ts` depends on it -- `cache: false` is per-task, so running
        * the generator inside a cached task strips the override however its siblings are declared.
        *
-       * `cache: false` rather than `env: ['FORMAT_BLUEPRINTS_DIR']`: `env` fingerprints the value,
-       * not the contents of the directory it names, so edits inside it would replay a stale module.
+       * `cache: false` rather than `cache: { env: ['BUNDLED_BLUEPRINTS_DIR'] }`: `env` fingerprints
+       * the value, not the contents of the directory it names, so edits inside it would replay a
+       * stale module.
+       *
+       * The generator itself, and the blueprints it bundles by default, are `@gadgets/bundled-blueprints`;
+       * the script here is the command line around it, because the module it writes is this package's.
        */
-      'build:format-blueprints': {
-        command: 'node scripts/build-format-blueprints.ts',
+      'build:bundled-blueprints': {
+        command: 'node scripts/build-bundled-blueprints.ts',
         cache: false,
       },
       'build:browser-runtime': {
-        command: withTestTimeout('node build-browser-runtime.mjs'),
+        command: withTestTimeout('node scripts/build-browser-runtime.ts'),
         cache: false,
       },
       /**
        * Builds the validated entrypoint shared by integration-test file workers.
        *
        * Cached with the `build:app` shape: the build writes `.wrangler/validate/` back into the
-       * package automatic tracking treats as input, so without dropping that tree from `input`
+       * package automatic tracking treats as input, so without dropping that tree from `cache.input`
        * nothing ever caches. Workspace-wide, since tracking reaches past this package and any
-       * sibling that ran `wrangler dev` would otherwise guarantee a miss. The explicit `output`
+       * sibling that ran `wrangler dev` would otherwise guarantee a miss. The explicit `cache.output`
        * matters as much: a cache hit has to leave the tree on disk, because
        * `@gadgets/integration-tests` reads it rather than rebuilding it.
        *
        * Its two codegen prerequisites stay uncached, which is what makes this safe: they always
-       * run, so `src/generated/format-blueprints.ts` and the browser-runtime artifacts are current
+       * run, so `src/generated/bundled-blueprints.ts` and the browser-runtime artifacts are current
        * when this task's fingerprint is taken. Fingerprinting those *generated* files rather than
-       * `FORMAT_BLUEPRINTS_DIR` sidesteps the "env fingerprints the value, not what it points at"
+       * `BUNDLED_BLUEPRINTS_DIR` sidesteps the "env fingerprints the value, not what it points at"
        * hazard one level down -- an external blueprint edit rewrites the generated module, which is
        * a tracked input here.
        *
@@ -51,16 +55,26 @@ export default {
        */
       'build:integration-worker': {
         command: withTestTimeout('capnweb-validate build --out .wrangler/validate'),
-        env: TESTS_WITH_TIMEOUT_ENV,
         dependsOn: [
-          '@gadgets/typed-storage#build', 'build:format-blueprints', 'build:browser-runtime',
+          '@gadgets/typed-storage#build', 'build:bundled-blueprints', 'build:browser-runtime',
         ],
-        input: [{ auto: true }, { pattern: '!**/.wrangler/**', base: 'workspace' }],
-        output: ['.wrangler/validate/**'],
+        cache: {
+          env: TESTS_WITH_TIMEOUT_ENV,
+          input: [{ auto: true }, { pattern: '!**/.wrangler/**', base: 'workspace' }],
+          output: ['.wrangler/validate/**'],
+        },
       },
+      /**
+       * Two programs: this package's `src/` under its generated Workers types, and `browser/` under
+       * the DOM lib. The bundled blueprints' TypeScript is type-checked by `@gadgets/bundled-blueprints`'s
+       * own `build`, not here -- a gadget's Durable Object must not see this Worker's bindings.
+       */
       build: {
-        command: ['tsc --project tsconfig.browser.json', 'tsc'],
-        dependsOn: ['build:format-blueprints', 'build:browser-runtime'],
+        command: [
+          'tsc',
+          'tsc --project tsconfig.browser.json',
+        ],
+        dependsOn: ['build:bundled-blueprints', 'build:browser-runtime'],
         cache: false,
       },
       /**
@@ -76,7 +90,9 @@ export default {
           { command: 'vitest run', idleSeconds: 120 },
           'vitest run --config vitest.integration.config.ts',
         ]),
-        dependsOn: ['build:format-blueprints', 'build:browser-runtime'],
+        dependsOn: [
+          '@gadgets/typed-storage#build', 'build:bundled-blueprints', 'build:browser-runtime',
+        ],
       },
     },
   },

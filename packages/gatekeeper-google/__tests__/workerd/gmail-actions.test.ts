@@ -1,7 +1,9 @@
 import {env} from "cloudflare:workers";
 import {runInDurableObject} from "cloudflare:test";
 import {afterEach, describe, expect, it, vi} from "vitest";
-import type {ActionKind, ResourceDescription} from "@gadgets/workshop-shared/gatekeeper";
+import type {
+  ActionDescription, ActionField, ActionKind, ResourceDescription,
+} from "@gadgets/workshop-shared/gatekeeper";
 import {
   base64UrlDecodedByteLength, buildEncodedEmail, decodeBase64UrlToBytes, extractRfc822Attachments,
   GmailApi, GmailOutboundSpec, parseMimeMessage,
@@ -16,6 +18,11 @@ import type {
   GmailDraftInput, GmailDraftPatch, GmailMessageInfo, GmailReplyOptions, GmailThreadInfo,
 } from "../../src/types";
 import {containsBytes} from "../gmail-test-utils";
+
+// The field an approver reads under `label`, from a submitted description.
+function fieldOf(description: unknown, label: string): ActionField | undefined {
+  return (description as ActionDescription).fields?.find(field => field.label === label);
+}
 
 type TestHooks = {
   initialize(
@@ -226,17 +233,45 @@ class TestMessage {
 
   markReadAndRefresh(actionId: number): Promise<{
     before: GmailMessageInfo;
+    pending: GmailMessageInfo;
     after: GmailMessageInfo;
   }> {
     return this.call("message.markReadAndRefresh", [this.id, actionId]) as Promise<{
       before: GmailMessageInfo;
+      pending: GmailMessageInfo;
       after: GmailMessageInfo;
+    }>;
+  }
+
+  getContent(): Promise<EmailContent> {
+    return this.call("message.getContent", [this.id]) as Promise<EmailContent>;
+  }
+
+  attachments(): Promise<Array<{info: GmailAttachmentInfo; content?: ArrayBuffer}>> {
+    return this.call("message.attachments", [this.id]) as Promise<Array<{
+      info: GmailAttachmentInfo; content?: ArrayBuffer;
+    }>>;
+  }
+
+  readAcrossDecision(actionId: number, decision: "apply" | "reject"): Promise<{
+    before: GmailMessageInfo; after?: GmailMessageInfo; error?: string;
+  }> {
+    return this.call("message.readAcrossDecision", [this.id, actionId, decision]) as Promise<{
+      before: GmailMessageInfo; after?: GmailMessageInfo; error?: string;
     }>;
   }
 
   async thread(): Promise<TestThread> {
     const info = await this.call("message.thread", [this.id]) as GmailThreadInfo;
     return new TestThread(this.call, info.id, info);
+  }
+
+  threadMessages(): Promise<GmailMessageInfo[]> {
+    return this.call("message.threadMessages", [this.id]) as Promise<GmailMessageInfo[]>;
+  }
+
+  threadArchive(lastMessageId?: string): Promise<void> {
+    return this.call("message.threadArchive", [this.id, lastMessageId]) as Promise<void>;
   }
 
   reply(body: string, options?: GmailReplyOptions): Promise<string> {
@@ -252,6 +287,10 @@ class TestMessage {
   }
 
   archive(): Promise<void> { return this.call("message.archive", [this.id]) as Promise<void>; }
+
+  mutate(operation: string): Promise<void> {
+    return this.call("message.mutate", [this.id, operation]) as Promise<void>;
+  }
 
   async createReplyDraft(body: string, options?: GmailReplyOptions): Promise<TestDraft> {
     const info = await this.call("message.createReplyDraft", [this.id, body, options]) as GmailDraftInfo;
@@ -294,6 +333,10 @@ class TestThread {
     const infos = await this.call("thread.messagesVisibleTo", [this.id, address]) as GmailMessageInfo[];
     return infos.map(info => new TestMessage(this.call, info.id, info));
   }
+
+  mutate(operation: string, lastMessageId?: string, label?: unknown): Promise<void> {
+    return this.call("thread.mutate", [this.id, operation, lastMessageId, label]) as Promise<void>;
+  }
 }
 
 class TestSession {
@@ -321,6 +364,28 @@ class TestSession {
       const infos = await this.call("session.listMessages") as GmailMessageInfo[] | null;
       return infos?.map(info => ({info, message: new TestMessage(this.call, info.id, info)})) ?? null;
     }));
+  }
+
+  searchThreads(query: string): Promise<TestCursor<{info: GmailThreadInfo; thread: TestThread}>> {
+    return Promise.resolve(new TestCursor(async () => {
+      const infos = await this.call("session.searchThreads", [query]) as GmailThreadInfo[] | null;
+      return infos?.map(info => ({info, thread: new TestThread(this.call, info.id)})) ?? null;
+    }));
+  }
+
+  searchMessages(query: string): Promise<TestCursor<{info: GmailMessageInfo; message: TestMessage}>> {
+    return Promise.resolve(new TestCursor(async () => {
+      const infos = await this.call("session.searchMessages", [query]) as GmailMessageInfo[] | null;
+      return infos?.map(info => ({info, message: new TestMessage(this.call, info.id, info)})) ?? null;
+    }));
+  }
+
+  listedThreadAfterArchivingMessage(id: string): Promise<{
+    listed: GmailThreadInfo; afterwards: GmailThreadInfo;
+  }> {
+    return this.call("session.listedThreadAfterArchivingMessage", [id]) as Promise<{
+      listed: GmailThreadInfo; afterwards: GmailThreadInfo;
+    }>;
   }
 
   getThreadMetadataTwice(id: string): Promise<{first: GmailThreadInfo; second: GmailThreadInfo}> {
@@ -394,6 +459,10 @@ const json = (value: unknown, status = 200) =>
   new Response(JSON.stringify(value), {status, headers: {"Content-Type": "application/json"}});
 
 type FetchCall = {url: URL; init: RequestInit};
+
+async function until(condition: () => boolean): Promise<void> {
+  while (!condition()) await new Promise(resolve => setTimeout(resolve, 1));
+}
 
 function actionHarness(
     gmailFetch: (url: URL, init: RequestInit) => Response | Promise<Response>,
@@ -725,7 +794,9 @@ describe("Gmail session API surface", () => {
 
     const messageId = await session.send(["to@example.com"], "Subject", "Body");
     expect(messageId).toMatch(/^<[-0-9a-f]+@gadgets\.invalid>$/);
-    await expect(session.getMessage(messageId)).rejects.toThrow(/pending or has not been reconciled/);
+    // The same ID opens the message before Gmail has it.
+    await expect((await session.getMessage(messageId)).getMetadata())
+      .resolves.toMatchObject({id: messageId, subject: "Subject"});
 
     await gatekeeper.applyAction(1);
 
@@ -925,6 +996,42 @@ describe("Gmail auto-approval eligibility", () => {
       {actionKind: {tag: "labelRename", label: "Rename labels"}, autoApprovable: true},
       {actionKind: {tag: "labelDelete", label: "Delete labels"}, autoApprovable: true},
     ]);
+    // Later reads simulate each of these, so none stops the caller to wait for a decision.
+    for (const description of descriptions) {
+      expect(description).not.toHaveProperty("awaitDecision");
+    }
+  });
+
+  it("records no observations for reads that only prepare an action", async () => {
+    const {gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/messages/abc123" && !init.method) {
+        return json(messageMetadata("abc123", "def456"));
+      }
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
+        return json({labels: []});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+
+    const draft = await session.createDraft({
+      to: ["to@example.com"], subject: "Subject", text: "Body",
+    });
+    await draft.update({subject: "Updated subject"});
+    await draft.delete();
+    await (await session.getMessage("abc123")).archive();
+    const label = await session.createLabel("Agent label");
+    const renamed = await session.renameLabel(label, "Renamed agent label");
+    await session.deleteLabel(renamed);
+
+    const {observations, submissions} = await queue.read!();
+    expect(submissions).toHaveLength(7);
+    // The only read that returns data is the harness's createDraft(), which returns the draft's
+    // metadata. Reopening a draft or message by its opaque ID is not an observation.
+    expect((observations as Array<{title: string}>).map(({title}) => title)).toEqual([
+      "Read Gmail draft: Subject",
+    ]);
   });
 
   it.each([
@@ -1052,6 +1159,10 @@ describe("Gmail auto-approval eligibility", () => {
       expect(descriptions[index]).not.toHaveProperty("actionKind");
       expect(descriptions[index]).not.toHaveProperty("autoApprovable");
     }
+    // Later reads show each message as sent, so no send stops the caller to wait for a decision.
+    for (const description of descriptions) {
+      expect(description).not.toHaveProperty("awaitDecision");
+    }
     expect(descriptions[4]).toMatchObject({
       actionKind: {tag: "draftCreate", label: "Create drafts"},
       autoApprovable: true,
@@ -1070,23 +1181,84 @@ describe("Gmail forward action snapshots", () => {
     const body = `${"x".repeat(64 * 1024 - 16)}complete-marker`;
     await session.send(["to@example.com"], "Subject", body);
 
-    const description = (await queue.read!()).submissions[0]?.description as {description: string};
-    expect(description).toBeDefined();
-    expect(description.description).toContain(body);
-    expect(description.description).not.toContain("truncated");
+    const description = (await queue.read!()).submissions[0]?.description as ActionDescription;
+    expect(description.descriptionIsComplete).toBe(true);
+    expect(fieldOf(description, "Plain text")).toEqual({label: "Plain text", kind: "text", value: body});
   });
 
-  it("fails closed when rendering would exceed the approval description limit", async () => {
-    const {gatekeeper} = actionHarness(url => {
+  it("submits an oversize forward without the completeness flag", async () => {
+    // An outbound body is capped well under the description budget, but an inline forward quotes
+    // the whole source message, which is not.
+    const sourceRaw = buildEncodedEmail({
+      from: "source@example.com",
+      to: ["me@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Source subject",
+      text: "x".repeat(100 * 1024),
+      messageId: "<oversize-source@gadgets.invalid>",
+      attachments: [],
+    });
+    const {gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/messages" && !init.method) {
+        return url.searchParams.has("q")
+          ? json({messages: []})
+          : json({messages: [{id: "source-message", threadId: "source-thread"}]});
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages/source-message" && !init.method) {
+        if (url.searchParams.get("format") === "raw") {
+          return json({id: "source-message", threadId: "source-thread", internalDate: "1", raw: sourceRaw});
+        }
+        return json({
+          id: "source-message", threadId: "source-thread", internalDate: "1",
+          sizeEstimate: base64UrlDecodedByteLength(sourceRaw), labelIds: ["INBOX"],
+          payload: {headers: [
+            {name: "From", value: "source@example.com"},
+            {name: "To", value: "me@example.com"},
+            {name: "Subject", value: "Source subject"},
+            {name: "Message-ID", value: "<oversize-source@gadgets.invalid>"},
+          ]},
+        });
+      }
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
+        return json({labels: []});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const messages = await (await session.listMessages()).next();
+
+    await messages![0].message.forward(["to@example.com"], "Intro");
+    // The approver sees the truncated rendering; the missing flag tells them it is partial.
+    const {submissions} = await queue.read!();
+    expect(submissions).toHaveLength(1);
+    const description = submissions[0].description as
+      {description: string; descriptionIsComplete?: true};
+    expect(description.descriptionIsComplete).toBeUndefined();
+    const truncated = (description as ActionDescription).fields?.find(field => field.truncated);
+    expect(truncated?.truncated?.shownBytes).toBeLessThan(truncated!.truncated!.totalBytes);
+  });
+
+  it("shows a draft body with an undisplayable character exactly, as JSON", async () => {
+    const {gatekeeper, values} = actionHarness(url => {
       throw new Error(`Unexpected request: ${url}`);
     });
     const queue = approvalQueue();
     const session = await gatekeeper.startSession(queue);
 
-    await expect(session.send(
-      ["to@example.com"], "Subject", "x\n".repeat(32 * 1024),
-    )).rejects.toThrow(/exceeds.*approval description limit/i);
-    expect((await queue.read!()).submissions).toHaveLength(0);
+    // A bell character renders as nothing as text, so the body is shown escaped.
+    await session.createDraft({to: ["to@example.com"], subject: "Subject", text: "a\u0007b"});
+    const {submissions} = await queue.read!();
+    expect(submissions).toHaveLength(1);
+    const description = submissions[0].description as ActionDescription;
+    expect(description.descriptionIsComplete).toBe(true);
+    expect(fieldOf(description, "Plain text")).toEqual(
+      {label: "Plain text", kind: "json", value: '"a\\u0007b"'});
+    // The staged action and its draft are kept for the approver to decide on.
+    const keys = await values.keys();
+    expect(keys.some(key => key.startsWith("pending:action:"))).toBe(true);
+    expect(keys.some(key => key.startsWith("gmail:draft:"))).toBe(true);
   });
 
   it("sends a new forward inline with ordinary source attachments", async () => {
@@ -1120,7 +1292,7 @@ describe("Gmail forward action snapshots", () => {
         }
         return json({
           id: "source-message", threadId: "source-thread", internalDate: "1",
-          sizeEstimate: base64UrlDecodedByteLength(sourceRaw), labelIds: [],
+          sizeEstimate: base64UrlDecodedByteLength(sourceRaw), labelIds: ["INBOX"],
           payload: {headers: [
             {name: "From", value: "source@example.com"},
             {name: "To", value: "me@example.com"},
@@ -1192,11 +1364,144 @@ describe("Gmail forward action snapshots", () => {
 
     await draft.send();
 
-    const description = (await queue.read!()).submissions[1]?.description as {description: string};
-    expect(description.description).toContain("Intro");
-    expect(description.description).toContain("Source body");
-    expect(description.description).toContain("Source <strong>HTML</strong>");
-    expect(description.description).toContain("source.txt (text/plain)");
+    const description = (await queue.read!()).submissions[1]?.description as ActionDescription;
+    const text = fieldOf(description, "Plain text") as {value: string};
+    expect(text.value).toContain("Intro");
+    expect(text.value).toContain("Source body");
+    expect((fieldOf(description, "HTML") as {value: string}).value)
+      .toContain("Source <strong>HTML</strong>");
+    expect(description.fields).toContainEqual(expect.objectContaining(
+      {kind: "file", name: "source.txt", mediaType: "text/plain", origin: "provider"}));
+  });
+
+  it("shows every identifier a reply and a reply draft are written with", async () => {
+    const {gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/messages/abc123" && !init.method) {
+        const metadata = messageMetadata("abc123", "def456", "<parent@example.com>");
+        return json({...metadata, payload: {headers: [
+          ...metadata.payload.headers,
+          {name: "References", value: "<root@example.com> <middle@example.com>"},
+        ]}});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const message = await session.getMessage("abc123");
+
+    // Overridden recipients receive the source message's identifiers all the same.
+    const replyId = await message.reply("Reply body", {to: ["other@example.com"]});
+    await message.createReplyDraft("Draft reply body");
+
+    const [reply, draft] = (await queue.read!()).submissions.map(submission =>
+      submission.description as ActionDescription);
+    const references = {
+      label: "References", kind: "list",
+      items: ["<root@example.com>", "<middle@example.com>", "<parent@example.com>"],
+    };
+    const inline = (label: string, value: string) => ({label, kind: "inline", value});
+    expect(reply?.descriptionIsComplete).toBe(true);
+    expect(reply?.fields).toEqual(expect.arrayContaining([
+      inline("Message-ID", replyId),
+      inline("In-Reply-To", "<parent@example.com>"),
+      references,
+      inline("Thread ID", "def456"),
+    ]));
+    expect(draft?.descriptionIsComplete).toBe(true);
+    expect((fieldOf(draft, "Message-ID") as {value: string}).value)
+      .toMatch(/^<[^<>\s]+@gadgets\.invalid>$/);
+    expect((fieldOf(draft, "Date") as {value: string}).value).toMatch(/ GMT$/);
+    expect(draft?.fields).toEqual(expect.arrayContaining([
+      inline("In-Reply-To", "<parent@example.com>"),
+      references,
+      inline("Thread ID", "def456"),
+    ]));
+  });
+
+  it("shows each forwarded attachment's disposition and Content-ID", async () => {
+    const sourceId = "abc123";
+    const sourceRaw = buildEncodedEmail({
+      from: "source@example.com",
+      to: ["me@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Source subject",
+      text: "Source body",
+      html: "<p><img src=\"cid:logo@example.com\"></p>",
+      messageId: "<source-parts@gadgets.invalid>",
+      attachments: [{
+        filename: "logo.png",
+        contentType: "image/png",
+        data: btoa("png bytes"),
+        disposition: "inline",
+        contentId: "logo@example.com",
+        description: "logo",
+      }, {
+        filename: "notes.txt",
+        contentType: "text/plain",
+        data: btoa("notes"),
+        disposition: "attachment",
+        description: "notes",
+      }],
+    });
+    const queue = approvalQueue();
+    const {gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === `/gmail/v1/users/me/messages/${sourceId}` && !init.method) {
+        if (url.searchParams.get("format") === "raw") {
+          return json({id: sourceId, threadId: "abc124", internalDate: "1", raw: sourceRaw});
+        }
+        return json({
+          ...messageMetadata(sourceId, "abc124", "<source-parts@gadgets.invalid>"),
+          sizeEstimate: base64UrlDecodedByteLength(sourceRaw),
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const session = await gatekeeper.startSession(queue);
+    await (await session.getMessage(sourceId)).forward(["recipient@example.com"], "Intro");
+
+    const description = (await queue.read!()).submissions[0]?.description as ActionDescription;
+    expect(description.descriptionIsComplete).toBe(true);
+    const sha256 = expect.stringMatching(/^[0-9a-f]{64}$/);
+    const labels = description.fields?.map(field => field.label) ?? [];
+    const attachment = (name: string) => labels[description.fields!.findIndex(field =>
+      field.kind === "file" && field.name === name)]!;
+    const logo = attachment("logo.png");
+    const notes = attachment("notes.txt");
+    expect(fieldOf(description, logo)).toEqual({
+      label: logo, kind: "file", name: "logo.png", mediaType: "image/png", size: 9, sha256,
+      origin: "provider",
+    });
+    expect(fieldOf(description, `${logo} disposition`))
+      .toEqual({label: `${logo} disposition`, kind: "inline", value: "inline"});
+    expect(fieldOf(description, `${logo} Content-ID`))
+      .toEqual({label: `${logo} Content-ID`, kind: "inline", value: "<logo@example.com>"});
+    expect(fieldOf(description, notes)).toEqual({
+      label: notes, kind: "file", name: "notes.txt", mediaType: "text/plain", size: 5, sha256,
+      origin: "provider",
+    });
+    expect(fieldOf(description, `${notes} disposition`))
+      .toEqual({label: `${notes} disposition`, kind: "inline", value: "attachment"});
+    expect(fieldOf(description, `${notes} Content-ID`)).toBeUndefined();
+  });
+
+  it("shows a body's line breaks as the CRLF it is sent with, and stays complete", async () => {
+    const {gatekeeper} = actionHarness(url => {
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+
+    await session.send(["to@example.com"], "Subject", "line one\nline two", {
+      html: "<p>one</p>\n<p>two</p>",
+    });
+
+    const description = (await queue.read!()).submissions[0]?.description as ActionDescription;
+    expect(description.descriptionIsComplete).toBe(true);
+    expect(fieldOf(description, "Plain text"))
+      .toEqual({label: "Plain text", kind: "text", value: "line one\r\nline two"});
+    expect(fieldOf(description, "HTML")).toEqual(
+      {label: "HTML", kind: "text", value: "<p>one</p>\r\n<p>two</p>", syntax: "html"});
   });
 
   it("creates an inline forward draft from the captured source snapshot", async () => {
@@ -1223,7 +1528,7 @@ describe("Gmail forward action snapshots", () => {
         }
         return json({
           id: "source-message", threadId: "source-thread", internalDate: "1", sizeEstimate: 100,
-          labelIds: [], payload: {headers: [
+          labelIds: ["INBOX"], payload: {headers: [
             {name: "From", value: "source@example.com"},
             {name: "To", value: "me@example.com"},
             {name: "Subject", value: "Source subject"},
@@ -1737,7 +2042,7 @@ describe("Gmail forward action snapshots", () => {
           threadId,
           internalDate: "1",
           sizeEstimate: 100,
-          labelIds: [],
+          labelIds: ["INBOX"],
           payload: {headers: [
             {name: "From", value: "sender@example.com"},
             {name: "To", value: "me@example.com"},
@@ -1827,8 +2132,9 @@ describe("Gmail draft lookup", () => {
     expect(action.messageId).toMatch(/^<[-0-9a-f]+@gadgets\.invalid>$/);
     expect(sentMessageId).toBe(action.messageId);
     expect(action.approved.rfcMessageId).toBe(action.messageId);
-    await expect(session.getMessage(sentMessageId))
-      .rejects.toThrow(/pending or has not been reconciled/);
+    // The message is read back under the send's own Message-ID before Gmail has it.
+    await expect((await session.getMessage(sentMessageId)).getHeaders())
+      .resolves.toContainEqual({name: "Message-ID", value: sentMessageId});
   });
 
   it("replaces an imported Message-ID with the send action identity used for reconciliation", async () => {
@@ -2482,14 +2788,14 @@ describe("Gmail message lookup", () => {
         }
         const messageIndex = ids.indexOf(url.pathname.split("/").at(-1) ?? "");
         if (kind === "message" && messageIndex >= 0 && !init.method) {
-          return json(messageMetadata(ids[messageIndex], threadId, null, ["Label_1"]));
+          return json(messageMetadata(ids[messageIndex], threadId, null, ["INBOX", "Label_1"]));
         }
         const threadIndex = ids.indexOf(url.pathname.split("/").at(-1) ?? "");
         if (kind === "thread" && threadIndex >= 0 && !init.method) {
           return json({
             id: ids[threadIndex],
             messages: [messageMetadata(
-              `1a03a1e31ecc5e8${threadIndex}`, ids[threadIndex], null, ["Label_1"])],
+              `1a03a1e31ecc5e8${threadIndex}`, ids[threadIndex], null, ["INBOX", "Label_1"])],
           });
         }
         if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
@@ -2505,10 +2811,11 @@ describe("Gmail message lookup", () => {
         : await (await session.listThreads()).next();
 
       expect(entries).toHaveLength(2);
-      expect(entries?.map(entry => entry.info.labels)).toEqual([
-        [{id: "Label_1", name: "Page label", type: "custom"}],
-        [{id: "Label_1", name: "Page label", type: "custom"}],
-      ]);
+      const labels = [
+        {id: "INBOX", name: "INBOX", type: "system"},
+        {id: "Label_1", name: "Page label", type: "custom"},
+      ];
+      expect(entries?.map(entry => entry.info.labels)).toEqual([labels, labels]);
       expect(labelReads).toBe(1);
     },
   );
@@ -2559,6 +2866,7 @@ describe("Gmail message lookup", () => {
       snippet: "Latest reply",
       subject: "Project update",
       messageCount: 2,
+      latestMessageId: "1a03a1e31ecc5e71",
       timestamp: new Date(2000),
       participants: [
         {address: "alice@example.com", name: "Alice"},
@@ -2629,7 +2937,7 @@ describe("Gmail message lookup", () => {
     expect(await headerObservations()).toHaveLength(1);
   });
 
-  it("refreshes metadata on one message capability after an approved mark-read", async () => {
+  it("shows a mark-read on one message capability before and after it is approved", async () => {
     let unread = true;
     let metadataReads = 0;
     const {gatekeeper} = actionHarness((url, init) => {
@@ -2638,8 +2946,7 @@ describe("Gmail message lookup", () => {
         return json(messageMetadata(
           messageId, threadId, "<refresh@example.com>", unread ? ["UNREAD"] : []));
       }
-      if (url.pathname === `/gmail/v1/users/me/messages/${messageId}/modify` &&
-          init.method === "POST") {
+      if (url.pathname === "/gmail/v1/users/me/messages/batchModify" && init.method === "POST") {
         unread = false;
         return new Response(null, {status: 204});
       }
@@ -2651,11 +2958,12 @@ describe("Gmail message lookup", () => {
     const session = await gatekeeper.startSession(approvalQueue());
     const message = await session.getMessage(messageId);
 
-    const {before, after} = await message.markReadAndRefresh(1);
+    const {before, pending, after} = await message.markReadAndRefresh(1);
 
     expect(before.labels).toContainEqual({id: "UNREAD", name: "UNREAD", type: "system"});
+    expect(pending.labels).not.toContainEqual({id: "UNREAD", name: "UNREAD", type: "system"});
     expect(after.labels).not.toContainEqual({id: "UNREAD", name: "UNREAD", type: "system"});
-    expect(metadataReads).toBe(4);
+    expect(metadataReads).toBe(5);
   });
 
   it("refreshes externally renamed provider labels on one production session capability", async () => {
@@ -2712,7 +3020,7 @@ describe("Gmail message lookup", () => {
         return json({messages: [{id: messageId, threadId}]});
       }
       if (url.pathname === `/gmail/v1/users/me/messages/${messageId}` && !init.method) {
-        return json(messageMetadata(messageId, threadId));
+        return json(messageMetadata(messageId, threadId, undefined, ["INBOX"]));
       }
       if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
         return json({labels: []});
@@ -2737,7 +3045,7 @@ describe("Gmail message lookup", () => {
         return json({messages: [{id: messageId, threadId}]});
       }
       if (url.pathname === `/gmail/v1/users/me/messages/${messageId}` && !init.method) {
-        return json(messageMetadata(messageId, threadId));
+        return json(messageMetadata(messageId, threadId, undefined, ["INBOX"]));
       }
       if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
         return json({labels: []});
@@ -3003,6 +3311,8 @@ describe("Gmail message lookup", () => {
       id: threadId,
       subject: "Visible subject",
       messageCount: 1,
+      // The newer excluded message must not leak through the cutoff hint.
+      latestMessageId: messageId,
       timestamp: new Date(1000),
       participants: [
         {address: "allowed@example.com", name: "Allowed"},
@@ -3225,13 +3535,188 @@ describe("Gmail account identity", () => {
 });
 
 describe("Gmail message mutations", () => {
+  const batchModifyPath = "/gmail/v1/users/me/messages/batchModify";
+  type BatchBody = {ids: string[]; addLabelIds: string[]; removeLabelIds: string[]};
+  const batchBodies = (calls: FetchCall[]) => calls
+    .filter(call => call.url.pathname === batchModifyPath && call.init.method === "POST")
+    .map(call => JSON.parse(String(call.init.body)) as BatchBody);
+
+  // A whole-mailbox thread whose message list can grow between calls, like a live inbox.
+  function liveThreadHarness(threadMessages: string[]) {
+    const harness = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/threads/abc" && !init.method) {
+        if (url.searchParams.get("format") === "minimal") {
+          return json(threadMinimal("abc", threadMessages));
+        }
+        return json({id: "abc", messages: threadMessages.map((id, i) => ({
+          ...messageMetadata(id, "abc"), internalDate: String(i + 1),
+        }))});
+      }
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
+        return json({labels: [{id: "Label_1", name: "Done", type: "user"}]});
+      }
+      if (url.pathname === batchModifyPath && init.method === "POST") {
+        return new Response(null, {status: 204});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    return harness;
+  }
+
+  it("reports the newest message as latestMessageId", async () => {
+    const {gatekeeper} = liveThreadHarness(["a1", "a2", "a3"]);
+    const session = await gatekeeper.startSession(approvalQueue());
+    await expect((await session.getThread("abc")).getMetadata())
+      .resolves.toMatchObject({messageCount: 3, latestMessageId: "a3"});
+  });
+
+  it("leaves messages after lastMessageId untouched, even ones arriving before approval", async () => {
+    const threadMessages = ["a1", "a2"];
+    const {calls, gatekeeper} = liveThreadHarness(threadMessages);
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const thread = await session.getThread("abc");
+    const {latestMessageId} = await thread.getMetadata();
+
+    threadMessages.push("a3"); // Arrives after the user saw the thread.
+    await thread.mutate("archive", latestMessageId);
+    threadMessages.push("a4"); // Arrives while the action awaits approval.
+    await gatekeeper.applyAction(1);
+
+    expect(batchBodies(calls)).toEqual([
+      {ids: ["a1", "a2"], addLabelIds: [], removeLabelIds: ["INBOX"]},
+    ]);
+    const [submission] = (await queue.read!()).submissions;
+    expect(fieldOf(submission.description, "Message IDs")).toMatchObject({items: ["a1", "a2"]});
+    expect(calls.some(call => call.url.pathname.startsWith("/gmail/v1/users/me/threads/abc/")))
+      .toBe(false);
+  });
+
+  it("fixes the message set at submission when lastMessageId is omitted", async () => {
+    const threadMessages = ["a1", "a2"];
+    const {calls, gatekeeper} = liveThreadHarness(threadMessages);
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    await (await session.getThread("abc")).mutate("markRead");
+    threadMessages.push("a3");
+    await gatekeeper.applyAction(1);
+
+    expect(batchBodies(calls)).toEqual([
+      {ids: ["a1", "a2"], addLabelIds: [], removeLabelIds: ["UNREAD"]},
+    ]);
+  });
+
+  it("applies a label through lastMessageId", async () => {
+    const {calls, gatekeeper} = liveThreadHarness(["a1", "a2", "a3"]);
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    await (await session.getThread("abc")).mutate(
+      "applyLabel", "a2", {id: "Label_1", name: "Done", type: "custom"});
+    await gatekeeper.applyAction(1);
+
+    expect(batchBodies(calls)).toEqual([
+      {ids: ["a1", "a2"], addLabelIds: ["Label_1"], removeLabelIds: []},
+    ]);
+  });
+
+  it("rejects a lastMessageId that is not in the thread", async () => {
+    const {gatekeeper} = liveThreadHarness(["a1"]);
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+
+    await expect((await session.getThread("abc")).mutate("trash", "ffff"))
+      .rejects.toThrow(/lastMessageId/);
+    expect((await queue.read!()).submissions).toHaveLength(0);
+  });
+
+  it("limits a restricted thread cutoff to its admitted messages", async () => {
+    const {calls, gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/messages" && !init.method) {
+        return json({messages: [{id: "a3", threadId: "abc"}, {id: "a1", threadId: "abc"}]});
+      }
+      if (url.pathname === "/gmail/v1/users/me/threads/abc" && !init.method) {
+        return json(threadMinimal("abc", ["a1", "a2", "a3", "a4"]));
+      }
+      if (/^\/gmail\/v1\/users\/me\/messages\/a[1-4]$/.test(url.pathname) && !init.method) {
+        const id = url.pathname.split("/").pop()!;
+        return json({...messageMetadata(id, "abc"), internalDate: id.slice(1)});
+      }
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
+        return json({labels: []});
+      }
+      if (url.pathname === batchModifyPath && init.method === "POST") {
+        return new Response(null, {status: 204});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }, {searchQuery: "from:sender@example.com"});
+    const session = await gatekeeper.startSession(approvalQueue());
+    const thread = await session.getThread("abc");
+
+    await expect(thread.getMetadata()).resolves.toMatchObject({latestMessageId: "a3"});
+    await expect(thread.mutate("star", "a2")).rejects.toThrow(/lastMessageId/);
+    await thread.mutate("star", "a3");
+    await gatekeeper.applyAction(1);
+
+    expect(batchBodies(calls)).toEqual([
+      {ids: ["a1", "a3"], addLabelIds: ["STARRED"], removeLabelIds: []},
+    ]);
+  });
+
   it.each([
-    ["archive", "/modify", {addLabelIds: [], removeLabelIds: ["INBOX"]}],
-    ["markRead", "/modify", {addLabelIds: [], removeLabelIds: ["UNREAD"]}],
-    ["markUnread", "/modify", {addLabelIds: ["UNREAD"], removeLabelIds: []}],
-    ["star", "/modify", {addLabelIds: ["STARRED"], removeLabelIds: []}],
-    ["unstar", "/modify", {addLabelIds: [], removeLabelIds: ["STARRED"]}],
-  ] as const)("applies %s with the expected label mutation", async (operation, suffix, body) => {
+    ["archive", undefined, {addLabelIds: [], removeLabelIds: ["INBOX"]}],
+    ["trash", undefined, {addLabelIds: ["TRASH"], removeLabelIds: []}],
+    ["markRead", undefined, {addLabelIds: [], removeLabelIds: ["UNREAD"]}],
+    ["markUnread", undefined, {addLabelIds: ["UNREAD"], removeLabelIds: []}],
+    ["star", undefined, {addLabelIds: ["STARRED"], removeLabelIds: []}],
+    ["unstar", undefined, {addLabelIds: [], removeLabelIds: ["STARRED"]}],
+    ["applyLabel", "TRASH", {addLabelIds: ["TRASH"], removeLabelIds: []}],
+    ["removeLabel", "TRASH", {addLabelIds: [], removeLabelIds: ["TRASH"]}],
+  ] as const)("applies %s as one batchModify call", async (operation, labelId, body) => {
+    const {calls, gatekeeper, storage} = actionHarness((url, init) => {
+      if (url.pathname === batchModifyPath && init.method === "POST") {
+        return new Response(null, {status: 204});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    storage.kv.put("pending:action:1", {
+      type: "messageMutation",
+      operation,
+      target: {kind: "messages", messageIds: ["aaa", "bbb"]},
+      ...(labelId ? {labelId} : {}),
+    });
+
+    await gatekeeper.applyAction(1);
+
+    expect(batchBodies(calls)).toEqual([{ids: ["aaa", "bbb"], ...body}]);
+  });
+
+  it("splits more than 1000 messages across batchModify calls", async () => {
+    const {calls, gatekeeper, storage} = actionHarness((url, init) => {
+      if (url.pathname === batchModifyPath && init.method === "POST") {
+        return new Response(null, {status: 204});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const messageIds = Array.from({length: 1001}, (_, i) => `m${i}`);
+    storage.kv.put("pending:action:1", {
+      type: "messageMutation", operation: "archive", target: {kind: "messages", messageIds},
+    });
+
+    await gatekeeper.applyAction(1);
+
+    expect(batchBodies(calls).map(body => body.ids)).toEqual([
+      messageIds.slice(0, 1000), messageIds.slice(1000),
+    ]);
+  });
+
+  it.each([
+    ["archive", undefined, "/modify", {addLabelIds: [], removeLabelIds: ["INBOX"]}],
+    ["markUnread", undefined, "/modify", {addLabelIds: ["UNREAD"], removeLabelIds: []}],
+    ["trash", undefined, "/trash", undefined],
+    ["applyLabel", "TRASH", "/trash", undefined],
+    ["removeLabel", "TRASH", "/untrash", undefined],
+  ] as const)("still applies a legacy thread-wide %s action", async (
+      operation, labelId, suffix, body) => {
     const {calls, gatekeeper, storage} = actionHarness((url, init) => {
       if (url.pathname === `/gmail/v1/users/me/threads/thread${suffix}` && init.method === "POST") {
         return new Response(null, {status: 204});
@@ -3242,47 +3727,24 @@ describe("Gmail message mutations", () => {
       type: "messageMutation",
       operation,
       target: {kind: "thread", threadId: "thread"},
+      ...(labelId ? {labelId} : {}),
     });
 
     await gatekeeper.applyAction(1);
 
     const call = calls.find(item => item.url.pathname.includes("/threads/thread"));
     expect(call?.url.pathname).toBe(`/gmail/v1/users/me/threads/thread${suffix}`);
-    expect(JSON.parse(String(call?.init.body))).toEqual(body);
+    if (body) expect(JSON.parse(String(call?.init.body))).toEqual(body);
   });
 
-  it.each([
-    ["trash", "/trash"],
-    ["applyLabel", "/trash"],
-    ["removeLabel", "/untrash"],
-  ] as const)("applies %s with the expected trash endpoint", async (operation, suffix) => {
-    const {calls, gatekeeper, storage} = actionHarness((url, init) => {
-      if (url.pathname === `/gmail/v1/users/me/threads/thread${suffix}` && init.method === "POST") {
-        return new Response(null, {status: 204});
-      }
-      throw new Error(`Unexpected request: ${url}`);
-    });
-    storage.kv.put("pending:action:1", {
-      type: "messageMutation",
-      operation,
-      target: {kind: "thread", threadId: "thread"},
-      ...(operation === "applyLabel" || operation === "removeLabel" ? {labelId: "TRASH"} : {}),
-    });
-
-    await gatekeeper.applyAction(1);
-
-    expect(calls.some(item => item.url.pathname === `/gmail/v1/users/me/threads/thread${suffix}`))
-      .toBe(true);
-  });
-
-  it("keeps a partially applied multi-message mutation unrejectable until retry succeeds", async () => {
+  it("keeps a partially applied multi-chunk mutation unrejectable until retry succeeds", async () => {
     let rejectSecond = true;
     const writes: string[] = [];
     const {gatekeeper, storage, values} = actionHarness((url, init) => {
-      const match = url.pathname.match(/^\/gmail\/v1\/users\/me\/messages\/(aaa|bbb)\/modify$/);
-      if (match && init.method === "POST") {
-        writes.push(match[1]);
-        if (match[1] === "bbb" && rejectSecond) {
+      if (url.pathname === batchModifyPath && init.method === "POST") {
+        const first = (JSON.parse(String(init.body)) as BatchBody).ids[0];
+        writes.push(first);
+        if (first === "m1000" && rejectSecond) {
           rejectSecond = false;
           return json({error: "invalid mutation"}, 400);
         }
@@ -3293,24 +3755,24 @@ describe("Gmail message mutations", () => {
     storage.kv.put("pending:action:1", {
       type: "messageMutation",
       operation: "markRead",
-      target: {kind: "messages", messageIds: ["aaa", "bbb"]},
+      target: {kind: "messages", messageIds: Array.from({length: 1001}, (_, i) => `m${i}`)},
     });
 
-    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/messages\.modify failed/);
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/messages\.batchModify failed/);
 
     expect(await values.has("gmail:applying:1")).toBe(true);
     await expect(gatekeeper.rejectAction(1)).rejects.toThrow(/uncertain provider outcome/);
 
     await gatekeeper.applyAction(1);
 
-    expect(writes).toEqual(["aaa", "bbb", "aaa", "bbb"]);
+    expect(writes).toEqual(["m0", "m1000", "m0", "m1000"]);
     expect(await values.has("pending:action:1")).toBe(false);
     expect(await values.has("gmail:applying:1")).toBe(false);
   });
 
-  it("allows rejection when the first mutation target gets a definitive 400", async () => {
+  it("allows rejection when the first batchModify gets a definitive 400", async () => {
     const {gatekeeper, storage, values} = actionHarness((url, init) => {
-      if (url.pathname === "/gmail/v1/users/me/messages/aaa/modify" && init.method === "POST") {
+      if (url.pathname === batchModifyPath && init.method === "POST") {
         return json({error: "invalid mutation"}, 400);
       }
       throw new Error(`Unexpected request: ${url}`);
@@ -3321,22 +3783,26 @@ describe("Gmail message mutations", () => {
       target: {kind: "messages", messageIds: ["aaa", "bbb"]},
     });
 
-    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/messages\.modify failed/);
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/messages\.batchModify failed/);
 
     expect(await values.has("gmail:applying:1")).toBe(false);
     await expect(gatekeeper.rejectAction(1)).resolves.toBeUndefined();
     expect(await values.has("pending:action:1")).toBe(false);
   });
 
-  it("treats a missing target as terminal while reconciling a multi-message mutation", async () => {
-    const writes: string[] = [];
+  it("skips messages deleted since the first attempt while reconciling", async () => {
+    const batches: string[][] = [];
     const {gatekeeper, storage, values} = actionHarness((url, init) => {
-      const match = url.pathname.match(/^\/gmail\/v1\/users\/me\/messages\/(aaa|bbb)\/modify$/);
-      if (match && init.method === "POST") {
-        writes.push(match[1]);
-        return match[1] === "aaa"
-          ? json({error: "missing"}, 404)
-          : new Response(null, {status: 204});
+      if (url.pathname === batchModifyPath && init.method === "POST") {
+        const {ids} = JSON.parse(String(init.body)) as BatchBody;
+        batches.push(ids);
+        return ids.includes("aaa") ? json({error: "missing"}, 404) : new Response(null, {status: 204});
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages/aaa" && !init.method) {
+        return json({error: "missing"}, 404);
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages/bbb" && !init.method) {
+        return json(messageMetadata("bbb", "thread"));
       }
       throw new Error(`Unexpected request: ${url}`);
     });
@@ -3349,9 +3815,1162 @@ describe("Gmail message mutations", () => {
 
     await gatekeeper.applyAction(1);
 
-    expect(writes).toEqual(["aaa", "bbb"]);
+    expect(batches).toEqual([["aaa", "bbb"], ["bbb"]]);
     expect(await values.has("pending:action:1")).toBe(false);
     expect(await values.has("gmail:applying:1")).toBe(false);
+  });
+});
+
+const systemLabel = (id: string) => ({id, name: id, type: "system"});
+
+const entryIds = (entries: Array<{info: {id: string}}> | null) =>
+  entries?.map(entry => entry.info.id) ?? null;
+
+const infoIds = (infos: Array<{id: string}>) => infos.map(info => info.id);
+
+/** The IDs a thread's message capabilities report, in the order the thread returned them. */
+async function memberIds(messages: Promise<TestMessage[]>): Promise<string[]> {
+  return infoIds(await Promise.all((await messages).map(message => message.getMetadata())));
+}
+
+const headerNamed = (headers: Array<{name: string; value: string}>, name: string) =>
+  headers.find(candidate => candidate.name.toLowerCase() === name.toLowerCase())?.value;
+
+const decodeText = (content: ArrayBuffer | undefined) => new TextDecoder().decode(content);
+
+/** A message as a fake mailbox keeps it: the MIME it was given, and what Gmail adds to it. */
+type FakeMail = {
+  id: string; threadId: string; labelIds: string[]; internalDate: number; from: string;
+  raw: string;
+};
+
+// Gmail returns header values decoded, which matters for the subject's encoded-word form.
+async function fakeMailHeaders(mail: FakeMail): Promise<Array<{name: string; value: string}>> {
+  const parsed = await parseMimeMessage(mail.raw);
+  return parsed.headers.map(candidate => ({
+    name: candidate.originalKey ?? candidate.key,
+    value: candidate.key === "subject" ? parsed.subject ?? "" : candidate.value,
+  }));
+}
+
+const fakeMailRaw = (mail: FakeMail) => ({
+  id: mail.id, threadId: mail.threadId, internalDate: String(mail.internalDate),
+  labelIds: mail.labelIds, raw: mail.raw,
+});
+
+describe("Gmail pending label changes", () => {
+  type FakeMessage = {id: string; threadId: string; labelIds: string[]};
+  const teamLabel = {id: "Label_1", name: "Team", type: "custom"};
+
+  // A mailbox that answers every read from its own labels, as Gmail does. Nothing in it changes
+  // until an action is applied, so whatever a read shows beyond it is the simulation.
+  function mailboxHarness(
+      mailbox: FakeMessage[], options: {
+        searchQuery?: string;
+        labelName?: string;
+        /** Runs ahead of each request, which waits for it. */
+        beforeRequest?: (url: URL, init: RequestInit) => Promise<void>;
+        /** Runs once the mailbox has acted on a request, which waits for it before answering. */
+        beforeResponse?: (url: URL, init: RequestInit) => Promise<void>;
+      } = {}) {
+    const userLabels = [{id: "Label_1", name: "Team", type: "user"}];
+    const metadata = (message: FakeMessage) => ({
+      ...messageMetadata(message.id, message.threadId, null, message.labelIds),
+      internalDate: String(mailbox.indexOf(message) + 1),
+    });
+    const listed = (url: URL) => {
+      const labelIds = url.searchParams.getAll("labelIds");
+      const query = url.searchParams.get("q") ?? "";
+      const spamTrash = url.searchParams.get("includeSpamTrash") === "true";
+      return mailbox.filter(message =>
+        labelIds.every(id => message.labelIds.includes(id)) &&
+        (spamTrash || !message.labelIds.some(id => id === "TRASH" || id === "SPAM")) &&
+        (!query.includes("is:unread") || message.labelIds.includes("UNREAD")));
+    };
+    const respond = (url: URL, init: RequestInit): Response => {
+      const [collection, id] = url.pathname.replace("/gmail/v1/users/me/", "").split("/");
+      if (collection === "labels" && !init.method) {
+        return json({labels: [
+          ...["INBOX", "UNREAD", "STARRED", "TRASH"].map(systemLabel), ...userLabels,
+        ]});
+      }
+      if (collection === "labels" && init.method === "POST") {
+        const {name} = JSON.parse(String(init.body)) as {name: string};
+        userLabels.push({id: `Label_${userLabels.length + 1}`, name, type: "user"});
+        return json(userLabels.at(-1));
+      }
+      if (collection === "messages" && id === "batchModify" && init.method === "POST") {
+        const body = JSON.parse(String(init.body)) as {
+          ids: string[]; addLabelIds: string[]; removeLabelIds: string[];
+        };
+        for (const message of mailbox.filter(candidate => body.ids.includes(candidate.id))) {
+          message.labelIds = [
+            ...message.labelIds.filter(label =>
+              !body.removeLabelIds.includes(label) && !body.addLabelIds.includes(label)),
+            ...body.addLabelIds,
+          ];
+        }
+        return new Response(null, {status: 204});
+      }
+      if (init.method) throw new Error(`Unexpected request: ${init.method} ${url}`);
+      if (collection === "messages" && id === undefined) {
+        return json({messages: listed(url).map(message => ({
+          id: message.id, threadId: message.threadId,
+        }))});
+      }
+      if (collection === "threads" && id === undefined) {
+        return json({threads: [...new Set(listed(url).map(message => message.threadId))]
+          .map(threadId => ({id: threadId}))});
+      }
+      const message = mailbox.find(candidate => candidate.id === id);
+      if (collection === "messages" && message) return json(metadata(message));
+      const thread = mailbox.filter(candidate => candidate.threadId === id);
+      if (collection === "threads" && thread.length) {
+        return json(url.searchParams.get("format") === "minimal"
+          ? threadMinimal(id, thread.map(candidate => candidate.id))
+          : {id, messages: thread.map(metadata)});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    };
+    return actionHarness(async (url, init) => {
+      await options.beforeRequest?.(url, init);
+      const response = respond(url, init);
+      await options.beforeResponse?.(url, init);
+      return response;
+    }, options);
+  }
+
+  it("shows a pending mark-read in message and thread metadata until it is decided", async () => {
+    const mailbox = [{id: "a1", threadId: "aa", labelIds: ["INBOX", "UNREAD"]}];
+    const {gatekeeper} = mailboxHarness(mailbox);
+    const session = await gatekeeper.startSession(approvalQueue());
+    const read = async () => ({
+      message: await (await session.getMessage("a1")).getMetadata(),
+      thread: await (await session.getThread("aa")).getMetadata(),
+    });
+
+    await (await session.getMessage("a1")).mutate("markRead");
+
+    // Gmail still has the message unread; only the reads have moved on.
+    expect(mailbox[0].labelIds).toEqual(["INBOX", "UNREAD"]);
+    let shown = await read();
+    expect(shown.message.labels).toEqual([systemLabel("INBOX")]);
+    expect(shown.thread).toMatchObject({unread: false, labels: [systemLabel("INBOX")]});
+
+    await gatekeeper.rejectAction(1);
+    shown = await read();
+    expect(shown.message.labels).toEqual([systemLabel("INBOX"), systemLabel("UNREAD")]);
+    expect(shown.thread).toMatchObject({unread: true, labels: [systemLabel("INBOX"), systemLabel("UNREAD")]});
+
+    await (await session.getMessage("a1")).mutate("markRead");
+    await gatekeeper.applyAction(2);
+    expect(mailbox[0].labelIds).toEqual(["INBOX"]);
+    shown = await read();
+    expect(shown.message.labels).toEqual([systemLabel("INBOX")]);
+    expect(shown.thread).toMatchObject({unread: false, labels: [systemLabel("INBOX")]});
+  });
+
+  it("applies opposing pending changes in the order they were submitted", async () => {
+    const mailbox = [{id: "a1", threadId: "aa", labelIds: ["INBOX"]}];
+    const {gatekeeper} = mailboxHarness(mailbox);
+    const session = await gatekeeper.startSession(approvalQueue());
+    const message = await session.getMessage("a1");
+
+    await message.mutate("star");
+    await message.mutate("unstar");
+    await expect(message.getMetadata()).resolves.toMatchObject({labels: [systemLabel("INBOX")]});
+
+    await message.mutate("star");
+    await expect(message.getMetadata()).resolves.toMatchObject({
+      labels: [systemLabel("INBOX"), systemLabel("STARRED")],
+    });
+  });
+
+  it.each([
+    ["shows the label once", false],
+    ["honors a removal queued behind them", true],
+  ])("%s when a label's creation and application are approved during a read", async (_, removal) => {
+    const mailbox = [{id: "a1", threadId: "aa", labelIds: ["INBOX"]}];
+    // Holds one metadata fetch open while actions apply. Flags rather than promises, because
+    // workerd refuses to resume a promise resolved by another Durable Object.
+    const pause = {countdown: 0, reached: false, released: false};
+    const {gatekeeper} = mailboxHarness(mailbox, {
+      async beforeRequest(url, init) {
+        if (url.pathname.endsWith("/messages/a1") && !init.method && pause.countdown > 0 &&
+            --pause.countdown === 0) {
+          pause.reached = true;
+          await until(() => pause.released);
+        }
+      },
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+    const label = await session.createLabel("New");
+    const message = await session.getMessage("a1");
+    await message.applyLabel(label);
+    if (removal) await message.removeLabel(label);
+
+    // The read opens the message, loads the pending actions, then fetches its metadata again.
+    // Gmail answers that second fetch only after it has the label and has put it on the message.
+    pause.countdown = 2;
+    const read = message.getMetadata();
+    await until(() => pause.reached);
+    await gatekeeper.applyAction(1);
+    await gatekeeper.applyAction(2);
+    expect(mailbox[0].labelIds).toEqual(["INBOX", "Label_2"]);
+    pause.released = true;
+
+    expect((await read).labels).toEqual(removal
+      ? [systemLabel("INBOX")]
+      : [systemLabel("INBOX"), {id: label.id, name: "New", type: "custom"}]);
+  });
+
+  it.each([
+    ["message", false], ["message", true], ["thread", false], ["thread", true],
+  ] as const)(
+    "renders a %s page consistently when a label's creation lands mid-read (removal queued: %s)",
+    async (kind, removal) => {
+      const mailbox = [{id: "a1", threadId: "aa", labelIds: ["INBOX"]}];
+      // Flags rather than promises, as above.
+      const creation = {reached: false, released: false};
+      const metadata = {armed: false, reached: false, released: false};
+      const metadataPath = kind === "message" ? "/messages/a1" : "/threads/aa";
+      const {gatekeeper} = mailboxHarness(mailbox, {
+        async beforeRequest(url, init) {
+          if (metadata.armed && !init.method && url.pathname.endsWith(metadataPath)) {
+            metadata.armed = false;
+            metadata.reached = true;
+            await until(() => metadata.released);
+          }
+        },
+        async beforeResponse(url, init) {
+          if (init.method === "POST" && url.pathname.endsWith("/labels")) {
+            creation.reached = true;
+            await until(() => creation.released);
+          }
+        },
+      });
+      const session = await gatekeeper.startSession(approvalQueue());
+      const label = await session.createLabel("New");
+      const message = await session.getMessage("a1");
+      await message.applyLabel(label);
+      if (removal) await message.removeLabel(label);
+
+      // Gmail now has the label, but the gatekeeper has yet to learn the ID Gmail gave it. A
+      // label list read here names the label twice: Gmail's record, and the provisional one.
+      const creating = gatekeeper.applyAction(1);
+      await until(() => creation.reached);
+      // The page's read starts in that state, and is held at its metadata fetch while the
+      // creation and the application finish. Gmail answers with the label on the message.
+      metadata.armed = true;
+      const page = kind === "message"
+        ? (await session.listMessages()).next()
+        : (await session.listThreads()).next();
+      await until(() => metadata.reached);
+      creation.released = true;
+      await creating;
+      await gatekeeper.applyAction(2);
+      expect(mailbox[0].labelIds).toEqual(["INBOX", "Label_2"]);
+      metadata.released = true;
+
+      expect((await page)?.map(entry => entry.info.labels)).toEqual([removal
+        ? [systemLabel("INBOX")]
+        : [systemLabel("INBOX"), {id: label.id, name: "New", type: "custom"}]]);
+    },
+  );
+
+  it("recomputes a listed thread's summary after an action changes one of its messages", async () => {
+    const mailbox = [{id: "a1", threadId: "aa", labelIds: ["INBOX", "UNREAD"]}];
+    const {gatekeeper} = mailboxHarness(mailbox);
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    const {listed, afterwards} = await session.listedThreadAfterArchivingMessage("aa");
+
+    expect(listed.labels).toEqual([systemLabel("INBOX"), systemLabel("UNREAD")]);
+    // The capability carried the summary from the list, which predates the archive.
+    expect(afterwards.labels).toEqual([systemLabel("UNREAD")]);
+  });
+
+  it("accepts more than 100 pending label changes", async () => {
+    const mailbox = [{id: "a1", threadId: "aa", labelIds: ["INBOX"]}];
+    const {gatekeeper, storage, values} = mailboxHarness(mailbox);
+    for (let id = 1; id <= 100; id++) {
+      storage.kv.put(`pending:action:${id}`, {
+        type: "messageMutation",
+        operation: id % 2 ? "star" : "unstar",
+        target: {kind: "messages", messageIds: ["a1"]},
+      });
+    }
+    storage.kv.put("pending:nextActionId", 101);
+    const session = await gatekeeper.startSession(approvalQueue());
+    const message = await session.getMessage("a1");
+
+    await message.mutate("archive");
+
+    const pending = (await values.keys()).filter(key => key.startsWith("pending:action:"));
+    expect(pending).toHaveLength(101);
+    // All of them show: the hundredth unstarred the message, the newest archived it.
+    await expect(message.getMetadata()).resolves.toMatchObject({labels: []});
+  });
+
+  it("drops archived mail from the inbox lists", async () => {
+    const mailbox = [
+      {id: "a1", threadId: "aa", labelIds: ["INBOX"]},
+      {id: "b1", threadId: "bb", labelIds: ["INBOX"]},
+      {id: "b2", threadId: "bb", labelIds: ["INBOX"]},
+    ];
+    const before = structuredClone(mailbox);
+    const {gatekeeper} = mailboxHarness(mailbox);
+    const session = await gatekeeper.startSession(approvalQueue());
+    const threads = async () => (await session.listThreads()).next();
+    const messages = async () => entryIds(await (await session.listMessages()).next());
+    expect(entryIds(await threads())).toEqual(["aa", "bb"]);
+
+    await (await session.getThread("aa")).mutate("archive");
+    expect(entryIds(await threads())).toEqual(["bb"]);
+    expect(await messages()).toEqual(["b1", "b2"]);
+
+    // A thread stays listed while any of its messages is still in the inbox.
+    await (await session.getMessage("b1")).mutate("archive");
+    expect(await threads()).toMatchObject([{info: {id: "bb", labels: [systemLabel("INBOX")]}}]);
+    expect(await messages()).toEqual(["b2"]);
+
+    await (await session.getMessage("b2")).mutate("archive");
+    expect(await threads()).toBeNull();
+    expect(await messages()).toBeNull();
+    expect(mailbox).toEqual(before);
+  });
+
+  it("drops trashed mail from search results unless the search includes trash", async () => {
+    const mailbox = [
+      {id: "a1", threadId: "aa", labelIds: ["INBOX"]},
+      {id: "b1", threadId: "bb", labelIds: []},
+    ];
+    const {gatekeeper} = mailboxHarness(mailbox);
+    const session = await gatekeeper.startSession(approvalQueue());
+    const query = "from:sender@example.com";
+    expect(entryIds(await (await session.searchMessages(query)).next())).toEqual(["a1", "b1"]);
+
+    await (await session.getMessage("a1")).mutate("trash");
+
+    expect(entryIds(await (await session.searchMessages(query)).next())).toEqual(["b1"]);
+    expect(entryIds(await (await session.searchThreads(query)).next())).toEqual(["bb"]);
+    expect(await (await session.searchMessages(`in:anywhere ${query}`)).next()).toMatchObject([
+      {info: {id: "a1", labels: [systemLabel("INBOX"), systemLabel("TRASH")]}},
+      {info: {id: "b1", labels: []}},
+    ]);
+  });
+
+  it("empties an is:unread search once each result has been marked read", async () => {
+    const mailbox = [
+      {id: "a1", threadId: "aa", labelIds: ["INBOX", "UNREAD"]},
+      {id: "a2", threadId: "aa", labelIds: ["INBOX"]},
+      {id: "b1", threadId: "bb", labelIds: ["INBOX", "UNREAD"]},
+      {id: "b2", threadId: "bb", labelIds: ["INBOX", "UNREAD"]},
+    ];
+    const before = structuredClone(mailbox);
+    const {gatekeeper} = mailboxHarness(mailbox);
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const unread = async () => (await session.searchThreads("is:unread")).next();
+
+    // A thread matches while any of its messages still does.
+    await (await session.getMessage("b1")).mutate("markRead");
+    expect(await unread()).toMatchObject([
+      {info: {id: "aa", unread: true}}, {info: {id: "bb", unread: true}},
+    ]);
+    expect(entryIds(await (await session.searchMessages("is:unread")).next())).toEqual(["a1", "b2"]);
+
+    // An agent working through unread mail: search, mark each result read, search again.
+    let rounds = 0;
+    for (let page = await unread(); page; page = await unread()) {
+      expect(++rounds).toBe(1);
+      for (const {thread} of page) await thread.mutate("markRead");
+    }
+    expect(rounds).toBe(1);
+    expect((await queue.read!()).submissions).toHaveLength(3);
+    expect(await (await session.searchMessages("is:unread")).next()).toBeNull();
+    expect(await (await session.searchMessages("-is:read")).next()).toBeNull();
+
+    // A query the gatekeeper cannot evaluate keeps Gmail's results, with their labels patched.
+    expect(await (await session.searchThreads("is:unread OR is:starred")).next()).toMatchObject([
+      {info: {id: "aa", unread: false}}, {info: {id: "bb", unread: false}},
+    ]);
+    expect(mailbox).toEqual(before);
+  });
+
+  it("drops a message from a label binding's lists once the label is removed from it", async () => {
+    const mailbox = [
+      {id: "a1", threadId: "aa", labelIds: ["Label_1"]},
+      {id: "a2", threadId: "aa", labelIds: ["Label_1"]},
+      {id: "b1", threadId: "bb", labelIds: ["INBOX", "Label_1"]},
+      {id: "c1", threadId: "cc", labelIds: ["INBOX"]},
+    ];
+    const before = structuredClone(mailbox);
+    const {gatekeeper} = mailboxHarness(mailbox, {labelName: "Team"});
+    const session = await gatekeeper.startSession(approvalQueue());
+    const threads = async () => (await session.listThreads()).next();
+    const messages = async () => entryIds(await (await session.listMessages()).next());
+    expect(await messages()).toEqual(["a1", "a2", "b1"]);
+
+    await (await session.getMessage("a1")).removeLabel(teamLabel);
+    expect(await messages()).toEqual(["a2", "b1"]);
+    // The thread narrows to the messages still carrying the label.
+    expect(await threads()).toMatchObject([
+      {info: {id: "aa", messageCount: 1, latestMessageId: "a2"}},
+      {info: {id: "bb", messageCount: 1}},
+    ]);
+
+    await (await session.getMessage("a2")).removeLabel(teamLabel);
+    expect(await messages()).toEqual(["b1"]);
+    expect(entryIds(await threads())).toEqual(["bb"]);
+    expect(mailbox).toEqual(before);
+  });
+
+  it("drops a message from a search binding's lists once it no longer matches", async () => {
+    const mailbox = [
+      {id: "a1", threadId: "aa", labelIds: ["INBOX", "UNREAD"]},
+      {id: "b1", threadId: "bb", labelIds: ["UNREAD"]},
+    ];
+    const {gatekeeper} = mailboxHarness(mailbox, {searchQuery: "is:unread"});
+    const session = await gatekeeper.startSession(approvalQueue());
+    expect(entryIds(await (await session.listMessages()).next())).toEqual(["a1", "b1"]);
+
+    await (await session.getMessage("a1")).mutate("markRead");
+
+    expect(entryIds(await (await session.listMessages()).next())).toEqual(["b1"]);
+    expect(entryIds(await (await session.listThreads()).next())).toEqual(["bb"]);
+    expect(entryIds(await (await session.searchMessages("from:sender@example.com")).next()))
+      .toEqual(["b1"]);
+  });
+
+  it("shows a label moved onto a message without adding the message to a list", async () => {
+    const mailbox = [
+      {id: "a1", threadId: "aa", labelIds: ["INBOX"]},
+      {id: "b1", threadId: "bb", labelIds: []},
+    ];
+    const {gatekeeper} = mailboxHarness(mailbox);
+    const session = await gatekeeper.startSession(approvalQueue());
+    const archived = await session.getMessage("b1");
+
+    await archived.applyLabel(systemLabel("INBOX"));
+
+    await expect(archived.getMetadata()).resolves.toMatchObject({labels: [systemLabel("INBOX")]});
+    // Gmail does not list it in the inbox yet, and the gatekeeper never adds to Gmail's results.
+    expect(entryIds(await (await session.listMessages()).next())).toEqual(["a1"]);
+    expect(entryIds(await (await session.listThreads()).next())).toEqual(["aa"]);
+  });
+
+  it("drops a result Gmail's index returns after it stopped matching", async () => {
+    // No pending action: the listed message's own labels already contradict the list.
+    const {gatekeeper} = actionHarness((url, init) => {
+      if (url.pathname === "/gmail/v1/users/me/messages" && !init.method) {
+        return json({messages: [{id: "a1", threadId: "aa"}, {id: "b1", threadId: "bb"}]});
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages/a1" && !init.method) {
+        return json(messageMetadata("a1", "aa", null, ["INBOX"]));
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages/b1" && !init.method) {
+        return json(messageMetadata("b1", "bb", null, []));
+      }
+      if (url.pathname === "/gmail/v1/users/me/labels" && !init.method) {
+        return json({labels: [systemLabel("INBOX")]});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    expect(entryIds(await (await session.listMessages()).next())).toEqual(["a1"]);
+  });
+});
+
+describe("Gmail pending sends", () => {
+  const ME = "me@example.com";
+  const SENDER = "sender@example.com";
+  const batchModifyPath = "/gmail/v1/users/me/messages/batchModify";
+  // The messages each submitted mutation names, in submission order.
+  const mutationTargets = async (queue: ApprovalQueueHandle) =>
+    (await queue.read!()).submissions.flatMap(({description}) => {
+      const field = fieldOf(description, "Message IDs") as {items: string[]} | undefined;
+      return field ? [field.items] : [];
+    });
+
+  // A mailbox that keeps every message as the MIME it was given and answers each read from it,
+  // as Gmail does. Only a send, a draft write or a label change that reaches Gmail alters it, so
+  // whatever a read shows beyond it is the simulation.
+  function mailHarness(options: {
+    searchQuery?: string;
+    /** What a search matches. Defaults to everything. */
+    matches?: (mail: FakeMail) => boolean;
+  } = {}) {
+    const mailbox: FakeMail[] = [];
+    const drafts = new Map<string, FakeMail>();
+    let lastId = 0;
+    // Hex, as Gmail's own IDs are.
+    const newId = (prefix: string) => `${prefix}${(++lastId).toString(16).padStart(3, "0")}`;
+    const deliver = (mail: Partial<FakeMail> & {raw: string}): FakeMail => {
+      const stored = {
+        id: newId("a"),
+        threadId: mail.threadId ?? newId("c"),
+        labelIds: mail.labelIds ?? ["INBOX", "UNREAD"],
+        internalDate: mail.internalDate ?? Date.now(),
+        from: mail.from ?? SENDER,
+        raw: mail.raw,
+      };
+      mailbox.push(stored);
+      return stored;
+    };
+    /** A message from someone else, already in the mailbox when the test starts. */
+    const receive = (spec: Partial<GmailOutboundSpec> = {}, mail: Partial<FakeMail> = {}) => {
+      const from = spec.from ?? SENDER;
+      return deliver({
+        internalDate: mailbox.length + 1,
+        from,
+        ...mail,
+        raw: buildEncodedEmail({
+          from,
+          to: [ME],
+          cc: [],
+          bcc: [],
+          subject: "Quarterly report",
+          text: "Source body",
+          messageId: `<source-${mailbox.length + 1}@example.com>`,
+          attachments: [],
+          ...spec,
+        }),
+      });
+    };
+    /** A draft written in Gmail itself, which this binding has not seen. */
+    const saveDraft = (spec: Partial<GmailOutboundSpec>) => {
+      const mail = deliver({
+        labelIds: ["DRAFT"],
+        from: ME,
+        internalDate: mailbox.length + 1,
+        raw: buildEncodedEmail({
+          from: ME, to: ["to@example.com"], cc: [], bcc: [], subject: "Imported", text: "Body",
+          messageId: "<imported@example.com>", attachments: [], ...spec,
+        }),
+      });
+      const id = newId("d");
+      drafts.set(id, mail);
+      return {id, mail};
+    };
+    const metadata = async (mail: FakeMail) => ({
+      id: mail.id,
+      threadId: mail.threadId,
+      internalDate: String(mail.internalDate),
+      labelIds: mail.labelIds,
+      sizeEstimate: base64UrlDecodedByteLength(mail.raw),
+      payload: {headers: await fakeMailHeaders(mail)},
+    });
+    // Enough of the MIME tree for a draft's headers and plain-text body to be read.
+    const full = async (mail: FakeMail) => {
+      const text = (await parseMimeMessage(mail.raw)).text ?? "";
+      return {
+        ...await metadata(mail),
+        payload: {
+          mimeType: "text/plain",
+          headers: await fakeMailHeaders(mail),
+          body: {size: text.length, data: base64Url(text)},
+        },
+      };
+    };
+    const listed = (url: URL) => {
+      const labelIds = url.searchParams.getAll("labelIds");
+      return mailbox.filter(mail => labelIds.every(id => mail.labelIds.includes(id)) &&
+        (!url.searchParams.has("q") || (options.matches?.(mail) ?? true)));
+    };
+    const respond = async (url: URL, init: RequestInit): Promise<Response> => {
+      const [collection, id] = url.pathname.replace("/gmail/v1/users/me/", "").split("/");
+      const format = url.searchParams.get("format");
+      const body = typeof init.body === "string" ? JSON.parse(init.body) : undefined;
+      if (collection === "labels" && !init.method) {
+        return json({labels: ["INBOX", "UNREAD", "STARRED", "TRASH", "SENT", "DRAFT"]
+          .map(systemLabel)});
+      }
+      if (collection === "messages" && id === "send" && init.method === "POST") {
+        const sent = deliver(
+          {raw: body.raw, threadId: body.threadId, labelIds: ["SENT"], from: ME});
+        return json({id: sent.id, threadId: sent.threadId});
+      }
+      if (collection === "messages" && id === "batchModify" && init.method === "POST") {
+        for (const mail of mailbox.filter(candidate => body.ids.includes(candidate.id))) {
+          mail.labelIds = [
+            ...mail.labelIds.filter(label =>
+              !body.removeLabelIds.includes(label) && !body.addLabelIds.includes(label)),
+            ...body.addLabelIds,
+          ];
+        }
+        return new Response(null, {status: 204});
+      }
+      if (collection === "drafts" && id === undefined && init.method === "POST") {
+        const mail = deliver({
+          raw: body.message.raw, threadId: body.message.threadId, labelIds: ["DRAFT"], from: ME,
+        });
+        const draftId = newId("d");
+        drafts.set(draftId, mail);
+        return json({id: draftId, message: {id: mail.id, threadId: mail.threadId}});
+      }
+      if (collection === "drafts" && id === "send" && init.method === "POST") {
+        const draft = drafts.get(body.id);
+        if (!draft) return json({error: "no such draft"}, 404);
+        // Gmail consumes the draft: its message is gone, and the sent one has an ID of its own.
+        drafts.delete(body.id);
+        mailbox.splice(mailbox.indexOf(draft), 1);
+        const sent = deliver(
+          {raw: body.message.raw, threadId: draft.threadId, labelIds: ["SENT"], from: ME});
+        return json({id: sent.id, threadId: sent.threadId});
+      }
+      if (init.method) throw new Error(`Unexpected request: ${init.method} ${url}`);
+      if (collection === "drafts" && id !== undefined) {
+        const mail = drafts.get(id);
+        if (!mail) return json({error: "no such draft"}, 404);
+        return json({id, message: format === "full" ? await full(mail) : fakeMailRaw(mail)});
+      }
+      if (collection === "messages" && id === undefined) {
+        return json({messages: listed(url).map(mail => ({id: mail.id, threadId: mail.threadId}))});
+      }
+      if (collection === "threads" && id === undefined) {
+        return json({threads: [...new Set(listed(url).map(mail => mail.threadId))]
+          .map(threadId => ({id: threadId}))});
+      }
+      const mail = mailbox.find(candidate => candidate.id === id);
+      if (collection === "messages") {
+        if (!mail) return json({error: "no such message"}, 404);
+        return json(format === "raw" ? fakeMailRaw(mail) : await metadata(mail));
+      }
+      const thread = mailbox.filter(candidate => candidate.threadId === id);
+      if (collection === "threads" && thread.length) {
+        return json(format === "minimal"
+          ? threadMinimal(id, thread.map(candidate => candidate.id))
+          : {id, messages: await Promise.all(thread.map(metadata))});
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    };
+    return {...actionHarness(respond, options), mailbox, drafts, receive, saveDraft};
+  }
+
+  const attachment = {
+    filename: "source.txt",
+    contentType: "text/plain",
+    data: btoa("source attachment"),
+    disposition: "attachment" as const,
+    description: "source attachment",
+  };
+
+  it("opens new mail as soon as it is sent", async () => {
+    const {gatekeeper, mailbox, values} = mailHarness();
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    const id = await session.send(["to@example.com"], "Hello", "Plain body", {
+      cc: ["Carol <carol@example.com>"], bcc: ["hidden@example.com"], html: "<p>HTML body</p>",
+    });
+    const {submittedAt} = (await values.get<{submittedAt: number}>("pending:action:1"))!;
+    const message = await session.getMessage(id);
+
+    expect(await message.getMetadata()).toEqual({
+      id,
+      from: {address: ME},
+      to: [{address: "to@example.com"}],
+      cc: [{address: "carol@example.com", name: "Carol"}],
+      bcc: [{address: "hidden@example.com"}],
+      subject: "Hello",
+      timestamp: new Date(submittedAt),
+      labels: [systemLabel("SENT")],
+    });
+    const headers = await message.getHeaders();
+    expect(headerNamed(headers, "Message-ID")).toBe(id);
+    expect(headerNamed(headers, "To")).toContain("to@example.com");
+    expect(headerNamed(headers, "Bcc")).toContain("hidden@example.com");
+    const content = await message.getContent();
+    expect(content.text?.trim()).toBe("Plain body");
+    expect(content.html?.trim()).toBe("<p>HTML body</p>");
+    expect(await message.attachments()).toEqual([]);
+    // Gmail assigns new mail its thread only when it sends it.
+    await expect(message.thread()).rejects.toThrow(/once this message has been delivered/);
+    expect(mailbox).toEqual([]);
+  });
+
+  it("reads a pending reply back as it will be sent, dated when it was submitted", async () => {
+    const {gatekeeper, receive, storage, values} = mailHarness();
+    const source = receive({cc: ["carol@example.com"]});
+    const sourceMessageId = (await parseMimeMessage(source.raw)).messageId;
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    const id = await (await session.getMessage(source.id)).reply("Reply body");
+    // Long past, so a `Date` stamped at the time of each read would show.
+    const submittedAt = Date.UTC(2026, 0, 2, 3, 4, 5);
+    storage.kv.put("pending:action:1", {...await values.get<object>("pending:action:1"), submittedAt});
+    const message = await session.getMessage(id);
+
+    expect(await message.getMetadata()).toEqual({
+      id,
+      threadId: source.threadId,
+      from: {address: ME},
+      to: [{address: SENDER}],
+      cc: [],
+      subject: "Re: Quarterly report",
+      timestamp: new Date(submittedAt),
+      labels: [systemLabel("SENT")],
+    });
+    const headers = await message.getHeaders();
+    expect(headerNamed(headers, "Message-ID")).toBe(id);
+    expect(headerNamed(headers, "In-Reply-To")).toBe(sourceMessageId);
+    expect(headerNamed(headers, "References")).toContain(sourceMessageId);
+    expect(new Date(headerNamed(headers, "Date")!)).toEqual(new Date(submittedAt));
+    expect(headerNamed(await (await session.getMessage(id)).getHeaders(), "Date"))
+      .toBe(headerNamed(headers, "Date"));
+    expect((await message.getContent()).text?.trim()).toBe("Reply body");
+    expect(await message.attachments()).toEqual([]);
+  });
+
+  it("reads a pending forward back with its quoted source and the source's attachments", async () => {
+    const {gatekeeper, receive} = mailHarness();
+    const source = receive({html: "<p>Source <strong>HTML</strong></p>", attachments: [attachment]});
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    const id = await (await session.getMessage(source.id))
+      .forward(["recipient@example.com"], "Intro");
+    const message = await session.getMessage(id);
+
+    const info = await message.getMetadata();
+    expect(info).toMatchObject({
+      id, to: [{address: "recipient@example.com"}], subject: "Fwd: Quarterly report",
+      labels: [systemLabel("SENT")],
+    });
+    expect(info).not.toHaveProperty("threadId");
+    const content = await message.getContent();
+    expect(content.text).toContain("Intro");
+    expect(content.text).toContain("---------- Forwarded message ---------");
+    expect(content.text).toContain("Source body");
+    expect(content.html).toContain("Source <strong>HTML</strong>");
+    const attachments = await message.attachments();
+    expect(attachments.map(entry => entry.info)).toEqual([{
+      filename: "source.txt", mimeType: "text/plain", size: 17, disposition: "attachment",
+      readable: true,
+    }]);
+    expect(decodeText(attachments[0].content)).toBe("source attachment");
+    await expect(message.thread()).rejects.toThrow(/once this message has been delivered/);
+  });
+
+  it("reads back the send of an inline-forward draft Gmail does not have yet", async () => {
+    const {gatekeeper, mailbox, receive} = mailHarness();
+    const source = receive({attachments: [attachment]});
+    const session = await gatekeeper.startSession(approvalQueue());
+    const draft = await (await session.getMessage(source.id))
+      .createForwardDraft(["recipient@example.com"], "Intro");
+
+    const id = await draft.send();
+    const message = await session.getMessage(id);
+
+    expect(await message.getMetadata()).toMatchObject({
+      id, to: [{address: "recipient@example.com"}], subject: "Fwd: Quarterly report",
+    });
+    expect(headerNamed(await message.getHeaders(), "Message-ID")).toBe(id);
+    const content = await message.getContent();
+    expect(content.text).toContain("Intro");
+    expect(content.text).toContain("Source body");
+    const attachments = await message.attachments();
+    expect(attachments.map(entry => entry.info.filename)).toEqual(["source.txt"]);
+    expect(decodeText(attachments[0].content)).toBe("source attachment");
+    expect(mailbox).toEqual([source]);
+  });
+
+  it("reads back the send of a draft written in Gmail, with the draft's attachments", async () => {
+    const {gatekeeper, saveDraft, storage} = mailHarness();
+    const imported = saveDraft({html: "<p>Body</p>", attachments: [attachment]});
+    storage.kv.put(`gmail:draft:${imported.id}`, {
+      logicalId: imported.id, providerId: imported.id, createdAt: 1, status: "active", version: 0,
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    const id = await (await session.getDraft(imported.id)).send();
+    const message = await session.getMessage(id);
+
+    expect(await message.getMetadata()).toMatchObject({
+      id, threadId: imported.mail.threadId, to: [{address: "to@example.com"}],
+      subject: "Imported", labels: [systemLabel("SENT")],
+    });
+    // The send carries its own Message-ID, not the one the draft was written with.
+    expect(headerNamed(await message.getHeaders(), "Message-ID")).toBe(id);
+    const content = await message.getContent();
+    expect(content.text?.trim()).toBe("Body");
+    expect(content.html?.trim()).toBe("<p>Body</p>");
+    const attachments = await message.attachments();
+    expect(attachments.map(entry => entry.info.filename)).toEqual(["source.txt"]);
+    expect(decodeText(attachments[0].content)).toBe("source attachment");
+  });
+
+  it("still describes a sent draft whose Gmail draft can no longer be read", async () => {
+    const {drafts, gatekeeper, saveDraft, storage} = mailHarness();
+    const imported = saveDraft({attachments: [attachment]});
+    storage.kv.put(`gmail:draft:${imported.id}`, {
+      logicalId: imported.id, providerId: imported.id, createdAt: 1, status: "active", version: 0,
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+    const id = await (await session.getDraft(imported.id)).send();
+
+    // As after a send whose outcome is unknown, where Gmail may have consumed the draft.
+    drafts.delete(imported.id);
+
+    const message = await session.getMessage(id);
+    await expect(message.getMetadata()).resolves.toMatchObject({id, subject: "Imported"});
+    // The email cannot be rebuilt without the draft's attachments.
+    await expect(message.getHeaders()).rejects.toThrow(/drafts\.get failed/);
+    await expect(message.getContent()).rejects.toThrow(/drafts\.get failed/);
+    await expect(message.attachments()).rejects.toThrow(/drafts\.get failed/);
+  });
+
+  it("shows a pending reply in its thread", async () => {
+    const {gatekeeper, mailbox, receive} = mailHarness();
+    const source = receive({cc: ["carol@example.com"]});
+    const before = structuredClone(mailbox);
+    const session = await gatekeeper.startSession(approvalQueue());
+
+    const id = await (await session.getMessage(source.id)).reply("Reply body");
+    const thread = await session.getThread(source.threadId);
+
+    const summary = await thread.getMetadata();
+    expect(summary).toMatchObject({
+      id: source.threadId,
+      subject: "Quarterly report",
+      messageCount: 2,
+      latestMessageId: id,
+      participants: [{address: SENDER}, {address: ME}, {address: "carol@example.com"}],
+      unread: true,
+      labels: [systemLabel("INBOX"), systemLabel("UNREAD"), systemLabel("SENT")],
+    });
+    expect(summary.timestamp.getTime()).toBeGreaterThan(source.internalDate);
+    expect(await (await session.listThreads()).next()).toMatchObject([
+      {info: {id: source.threadId, messageCount: 2, latestMessageId: id}},
+    ]);
+    expect(await memberIds(thread.messages())).toEqual([source.id, id]);
+    // The reply goes to the sender alone, so the Cc'd recipient of the original cannot see it.
+    expect(await memberIds(thread.messagesVisibleTo(SENDER))).toEqual([source.id, id]);
+    expect(await memberIds(thread.messagesVisibleTo("carol@example.com"))).toEqual([source.id]);
+    // Mail waiting to be sent is not in any message list.
+    expect(entryIds(await (await session.listMessages()).next())).toEqual([source.id]);
+    expect(entryIds(await (await session.searchMessages("subject:report")).next()))
+      .toEqual([source.id]);
+    expect(mailbox).toEqual(before);
+  });
+
+  it("shows a sent draft in its thread in place of the draft's message", async () => {
+    const {gatekeeper, mailbox, receive} = mailHarness();
+    const source = receive();
+    const session = await gatekeeper.startSession(approvalQueue());
+    const threadIds = async () => memberIds((await session.getThread(source.threadId)).messages());
+    const draft = await (await session.getMessage(source.id)).createReplyDraft("Reply body");
+    await gatekeeper.applyAction(1);
+    const draftMessage = mailbox[1];
+    // Gmail lists a draft in its thread.
+    expect(await threadIds()).toEqual([source.id, draftMessage.id]);
+
+    const id = await draft.send();
+
+    expect(await threadIds()).toEqual([source.id, id]);
+    await expect((await session.getThread(source.threadId)).getMetadata()).resolves.toMatchObject({
+      messageCount: 2, latestMessageId: id,
+      labels: [systemLabel("INBOX"), systemLabel("UNREAD"), systemLabel("SENT")],
+    });
+    await expect((await session.getMessage(id)).getMetadata())
+      .resolves.toMatchObject({id, threadId: source.threadId});
+    // The draft's message is gone from search results too.
+    expect(entryIds(await (await session.searchMessages("subject:report")).next()))
+      .toEqual([source.id]);
+    expect(mailbox).toEqual([source, draftMessage]);
+
+    await gatekeeper.applyAction(2);
+    expect(mailbox.map(mail => mail.labelIds)).toEqual([["INBOX", "UNREAD"], ["SENT"]]);
+    expect(await threadIds()).toEqual([source.id, mailbox[1].id]);
+  });
+
+  it("keeps the draft's message hidden when its creation is approved after it was sent", async () => {
+    const {gatekeeper, mailbox, receive} = mailHarness();
+    const source = receive();
+    const session = await gatekeeper.startSession(approvalQueue());
+    const threadIds = async () => memberIds((await session.getThread(source.threadId)).messages());
+    const draft = await (await session.getMessage(source.id)).createReplyDraft("Reply body");
+    const id = await draft.send();
+    expect(await threadIds()).toEqual([source.id, id]);
+
+    // Only now does Gmail have the draft, under a message ID the send never saw.
+    await gatekeeper.applyAction(1);
+
+    expect(mailbox.map(mail => mail.labelIds)).toEqual([["INBOX", "UNREAD"], ["DRAFT"]]);
+    expect(await threadIds()).toEqual([source.id, id]);
+    await expect((await session.getThread(source.threadId)).getMetadata())
+      .resolves.toMatchObject({messageCount: 2, latestMessageId: id});
+    expect(entryIds(await (await session.searchMessages("subject:report")).next()))
+      .toEqual([source.id]);
+    expect((await (await session.getMessage(id)).getContent()).text?.trim()).toBe("Reply body");
+  });
+
+  it("leaves a draft that is being deleted out of its thread", async () => {
+    const {gatekeeper, mailbox, receive} = mailHarness();
+    const source = receive();
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const thread = await session.getThread(source.threadId);
+    const draft = await (await session.getMessage(source.id)).createReplyDraft("Reply body");
+    await gatekeeper.applyAction(1);
+    expect(await memberIds(thread.messages())).toEqual([source.id, mailbox[1].id]);
+
+    await draft.delete();
+
+    expect(await memberIds(thread.messages())).toEqual([source.id]);
+    await expect(thread.getMetadata()).resolves.toMatchObject({
+      messageCount: 1, latestMessageId: source.id,
+      labels: [systemLabel("INBOX"), systemLabel("UNREAD")],
+    });
+    await thread.mutate("archive");
+    expect(await mutationTargets(queue)).toEqual([[source.id]]);
+  });
+
+  it("drops a thread from a search that only its outgoing draft still matched", async () => {
+    const {gatekeeper, receive} = mailHarness();
+    const source = receive();
+    const session = await gatekeeper.startSession(approvalQueue());
+    const read = async () => entryIds(await (await session.searchThreads("is:read")).next());
+    const draft = await (await session.getMessage(source.id)).createReplyDraft("Reply body");
+    await gatekeeper.applyAction(1);
+    // The incoming message is unread, so the thread matches through its draft alone.
+    expect(await read()).toEqual([source.threadId]);
+
+    await draft.delete();
+
+    expect(await read()).toBeNull();
+    expect(entryIds(await (await session.searchThreads("is:unread")).next()))
+      .toEqual([source.threadId]);
+  });
+
+  it("drops a thread whose only message is a draft that is being sent", async () => {
+    const {gatekeeper, saveDraft, storage} = mailHarness();
+    const imported = saveDraft({});
+    imported.mail.labelIds = ["DRAFT", "STARRED"];
+    storage.kv.put(`gmail:draft:${imported.id}`, {
+      logicalId: imported.id, providerId: imported.id, createdAt: 1, status: "active", version: 0,
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+    const starred = async () => entryIds(await (await session.searchThreads("is:starred")).next());
+    expect(await starred()).toEqual([imported.mail.threadId]);
+
+    const id = await (await session.getDraft(imported.id)).send();
+
+    // Nothing Gmail matched is left in the thread, and the message waiting to be sent is not
+    // starred. It is still there to open, in the thread the draft had.
+    expect(await starred()).toBeNull();
+    expect(await (await session.searchThreads("subject:Imported")).next()).toBeNull();
+    await expect((await session.getThread(imported.mail.threadId)).getMetadata())
+      .resolves.toMatchObject({messageCount: 1, latestMessageId: id, labels: [systemLabel("SENT")]});
+  });
+
+  it("archives through a pending reply the earlier replies delivered since", async () => {
+    const {gatekeeper, mailbox, receive} = mailHarness();
+    const source = receive();
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const message = await session.getMessage(source.id);
+    const first = await message.reply("First reply");
+    const second = await message.reply("Second reply");
+    const thread = await session.getThread(source.threadId);
+    expect(await memberIds(thread.messages())).toEqual([source.id, first, second]);
+    const {latestMessageId} = await thread.getMetadata();
+    expect(latestMessageId).toBe(second);
+
+    // Gmail dates the first reply at its approval, after the second was submitted. The caller
+    // saw it ahead of the second all the same.
+    await gatekeeper.applyAction(1);
+    mailbox[1].internalDate = Date.now() + 60_000;
+    await thread.mutate("archive", latestMessageId);
+    expect(await mutationTargets(queue)).toEqual([[source.id, mailbox[1].id]]);
+
+    await gatekeeper.applyAction(2);
+    await thread.mutate("archive", latestMessageId);
+    expect((await mutationTargets(queue))[1]).toEqual([source.id, mailbox[1].id, mailbox[2].id]);
+  });
+
+  it("archives a thread through a pending reply, and means the same after it is sent", async () => {
+    const {calls, gatekeeper, mailbox, receive, storage, values} = mailHarness();
+    const source = receive();
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const id = await (await session.getMessage(source.id)).reply("Reply body");
+    const thread = await session.getThread(source.threadId);
+    const {latestMessageId} = await thread.getMetadata();
+    expect(latestMessageId).toBe(id);
+    // Arrives once the caller has seen the thread, and so before the reply is approved.
+    const late = receive({}, {threadId: source.threadId, internalDate: Date.now() + 60_000});
+
+    await thread.mutate("archive", latestMessageId);
+    expect(await mutationTargets(queue)).toEqual([[source.id]]);
+
+    await gatekeeper.applyAction(1);
+    const delivered = mailbox[2];
+    expect(delivered.labelIds).toEqual(["SENT"]);
+    // Gmail files the reply after the late arrival, but the caller still never saw that one.
+    await thread.mutate("archive", latestMessageId);
+    expect((await mutationTargets(queue))[1]).toEqual([source.id, delivered.id]);
+
+    await gatekeeper.applyAction(3);
+    expect(late.labelIds).toEqual(["INBOX", "UNREAD"]);
+    expect(calls.filter(call => call.url.pathname === batchModifyPath)).toHaveLength(1);
+
+    // A send completed before sends recorded when they were submitted stops at Gmail's copy.
+    const receiptKey = `gmail:sentAlias:${id.slice(1, -1)}`;
+    const {submittedAt, ...receipt} = (await values.get<{submittedAt: number}>(receiptKey))!;
+    expect(submittedAt).toBeLessThan(late.internalDate);
+    storage.kv.put(receiptKey, receipt);
+    await thread.mutate("archive", latestMessageId);
+    expect((await mutationTargets(queue))[2]).toEqual([source.id, late.id, delivered.id]);
+  });
+
+  it("refuses a thread mutation through a reply that was rejected", async () => {
+    const {gatekeeper, receive} = mailHarness();
+    const source = receive();
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const id = await (await session.getMessage(source.id)).reply("Reply body");
+    const thread = await session.getThread(source.threadId);
+
+    await gatekeeper.rejectAction(1);
+
+    await expect(thread.mutate("archive", id)).rejects.toThrow(/lastMessageId is not a message/);
+    await expect(thread.mutate("archive", "<unknown@gadgets.invalid>"))
+      .rejects.toThrow(/lastMessageId is not a message/);
+    expect((await queue.read!()).submissions).toHaveLength(1);
+    await expect(thread.getMetadata())
+      .resolves.toMatchObject({messageCount: 1, latestMessageId: source.id});
+  });
+
+  it("leaves a draft that is being sent out of a thread mutation", async () => {
+    const {gatekeeper, mailbox, receive} = mailHarness();
+    const source = receive();
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const draft = await (await session.getMessage(source.id)).createReplyDraft("Reply body");
+    await gatekeeper.applyAction(1);
+    await draft.send();
+    const thread = await session.getThread(source.threadId);
+
+    await thread.mutate("archive", (await thread.getMetadata()).latestMessageId);
+    await thread.mutate("markRead");
+
+    // Gmail no longer has the draft's message once the send is applied.
+    expect(await mutationTargets(queue)).toEqual([[source.id], [source.id]]);
+    await gatekeeper.applyAction(2);
+    await gatekeeper.applyAction(3);
+    await gatekeeper.applyAction(4);
+    expect(mailbox.map(mail => mail.labelIds)).toEqual([[], ["SENT"]]);
+  });
+
+  it("becomes Gmail's copy on the same capability once the send is applied", async () => {
+    const {gatekeeper, mailbox, receive} = mailHarness();
+    const source = receive();
+    const session = await gatekeeper.startSession(approvalQueue());
+    const id = await (await session.getMessage(source.id)).reply("Reply body");
+
+    const {before, after} = await (await session.getMessage(id)).readAcrossDecision(1, "apply");
+
+    expect(before).toMatchObject({id, threadId: source.threadId});
+    expect(after).toMatchObject({
+      id: mailbox[1].id, threadId: source.threadId, subject: "Re: Quarterly report",
+      labels: [systemLabel("SENT")],
+    });
+    // Delivered, it can be changed like any other message, under either ID.
+    await (await session.getMessage(id)).mutate("star");
+    await gatekeeper.applyAction(2);
+    expect(mailbox[1].labelIds).toEqual(["SENT", "STARRED"]);
+  });
+
+  it("reports that the message was not sent once the send is rejected", async () => {
+    const {gatekeeper, receive} = mailHarness();
+    const source = receive();
+    const session = await gatekeeper.startSession(approvalQueue());
+    const id = await (await session.getMessage(source.id)).reply("Reply body");
+
+    const {before, error} = await (await session.getMessage(id)).readAcrossDecision(1, "reject");
+
+    expect(before).toMatchObject({id});
+    expect(error).toMatch(/This message was not sent/);
+    await expect(session.getMessage(id)).rejects.toThrow(/Unknown Gmail message ID/);
+    await expect((await session.getThread(source.threadId)).getMetadata())
+      .resolves.toMatchObject({messageCount: 1, latestMessageId: source.id});
+  });
+
+  it("refuses to change, answer or forward a message that has not been delivered", async () => {
+    const {gatekeeper, receive} = mailHarness();
+    const source = receive();
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const id = await (await session.getMessage(source.id)).reply("Reply body");
+    const message = await session.getMessage(id);
+    const notDelivered = /\(\) is available once this message has been delivered/;
+
+    for (const operation of ["archive", "trash", "markRead", "markUnread", "star", "unstar"]) {
+      await expect(message.mutate(operation)).rejects.toThrow(notDelivered);
+    }
+    await expect(message.applyLabel(systemLabel("INBOX"))).rejects.toThrow(notDelivered);
+    await expect(message.removeLabel(systemLabel("IMPORTANT"))).rejects.toThrow(notDelivered);
+    await expect(message.reply("Again")).rejects.toThrow(notDelivered);
+    await expect(message.replyAll("Again")).rejects.toThrow(notDelivered);
+    await expect(message.forward(["to@example.com"])).rejects.toThrow(notDelivered);
+    await expect(message.createReplyDraft("Again")).rejects.toThrow(notDelivered);
+    await expect(message.createForwardDraft(["to@example.com"])).rejects.toThrow(notDelivered);
+    expect((await queue.read!()).submissions).toHaveLength(1);
+  });
+
+  it("shows a restricted binding its pending reply only in the thread opened from it", async () => {
+    const {gatekeeper, mailbox, receive} = mailHarness({
+      searchQuery: `from:${SENDER}`, matches: mail => mail.from === SENDER,
+    });
+    const source = receive();
+    receive({from: "other@example.com"}, {threadId: source.threadId});
+    const queue = approvalQueue();
+    const session = await gatekeeper.startSession(queue);
+    const id = await (await session.getMessage(source.id)).reply("Reply body");
+
+    // The binding's own view of the thread holds what its search matches, as it will once the
+    // reply is delivered: the reply is from the mailbox owner, which the search does not match.
+    const thread = await session.getThread(source.threadId);
+    await expect(thread.getMetadata())
+      .resolves.toMatchObject({messageCount: 1, latestMessageId: source.id});
+    expect(await memberIds(thread.messages())).toEqual([source.id]);
+    expect(await (await session.listThreads()).next()).toMatchObject([
+      {info: {id: source.threadId, messageCount: 1, latestMessageId: source.id}},
+    ]);
+
+    const reply = await session.getMessage(id);
+    await expect(reply.getMetadata()).resolves.toMatchObject({id, threadId: source.threadId});
+    await expect((await reply.thread()).getMetadata())
+      .resolves.toMatchObject({messageCount: 2, latestMessageId: id});
+    // Never the sibling the search does not match.
+    expect(infoIds(await reply.threadMessages())).toEqual([source.id, id]);
+    await reply.threadArchive(id);
+    expect(await mutationTargets(queue)).toEqual([[source.id]]);
+
+    await gatekeeper.applyAction(1);
+    const delivered = mailbox[2];
+    expect(infoIds(await (await session.getMessage(id)).threadMessages()))
+      .toEqual([source.id, delivered.id]);
+  });
+
+  it("opens a restricted binding's pending reply after its source stopped matching", async () => {
+    let matching = true;
+    const {gatekeeper, receive} = mailHarness({
+      searchQuery: "is:unread", matches: () => matching,
+    });
+    const source = receive();
+    const session = await gatekeeper.startSession(approvalQueue());
+    const id = await (await session.getMessage(source.id)).reply("Reply body");
+
+    matching = false;
+
+    const reply = await session.getMessage(id);
+    await expect((await reply.thread()).getMetadata())
+      .resolves.toMatchObject({messageCount: 1, latestMessageId: id, unread: false});
+    expect(infoIds(await reply.threadMessages())).toEqual([id]);
+    await expect(reply.threadArchive(id)).rejects.toThrow(/until that message has been delivered/);
+    await expect(session.getThread(source.threadId)).rejects.toThrow(/not available/);
   });
 });
 
@@ -3399,11 +5018,11 @@ describe("Gmail label action reconciliation", () => {
     ];
     const descriptions = new Map(submissions.map(submission => [
       submission.actionId,
-      submission.description as {title: string; description: string},
+      submission.description as ActionDescription,
     ]));
     expect(descriptions.get(1)?.title).toBe("Rename Gmail label: Before");
     expect(descriptions.get(2)?.title).toBe(`Rename Gmail label: ${first?.name}`);
-    expect(descriptions.get(2)?.description).toContain(first?.name);
+    expect(JSON.stringify(descriptions.get(2)?.fields)).toContain(first?.name);
 
     await gatekeeper.applyAction(1);
     await gatekeeper.applyAction(2);
@@ -3999,8 +5618,16 @@ describe("Gmail draft dependency reconciliation", () => {
     }).raw;
     let providerMessageId = before.messageId!;
     let updates = 0;
-    const {gatekeeper, storage, values} = actionHarness((url, init) => {
+    // Holds the update's own draft read open while the earlier write applies. Flags rather than
+    // promises, because workerd refuses to resume a promise resolved by another Durable Object.
+    const pause = {armed: false, reached: false, released: false};
+    const {gatekeeper, storage, values} = actionHarness(async (url, init) => {
       if (url.pathname === `/gmail/v1/users/me/drafts/${providerId}` && !init.method) {
+        if (pause.armed) {
+          pause.armed = false;
+          pause.reached = true;
+          await until(() => pause.released);
+        }
         return json({
           id: providerId,
           message: {
@@ -4032,13 +5659,13 @@ describe("Gmail draft dependency reconciliation", () => {
     const queue = approvalQueue();
     const session = await gatekeeper.startSession(queue);
     const draft = await session.getDraft(providerId);
-    await queue.pauseObservation!("Read Gmail draft before update");
+    pause.armed = true;
 
     const updateExpectation = expect(draft.update({text: "Second update"}))
-      .rejects.toThrow(/changed while this update was being prepared/);
-    await queue.waitForPausedObservation!();
+      .rejects.toThrow(/changed identity while it was being read/);
+    await until(() => pause.reached);
     await gatekeeper.applyAction(1);
-    await queue.releasePausedObservation!();
+    pause.released = true;
     await updateExpectation;
 
     expect(updates).toBe(1);

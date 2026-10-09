@@ -1,12 +1,15 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import capnwebValidate from "capnweb-validate/vite";
 import { defineConfig } from "vitest/config";
+import deployed from "./cloudflare.config.ts";
+
+const { compatibilityDate, compatibilityFlags } = deployed.worker;
 
 export default defineConfig({
   plugins: [capnwebValidate(), cloudflareTest({
     miniflare: {
-      compatibilityDate: "2026-09-04",
-      compatibilityFlags: ["nodejs_compat", "allow_irrevocable_stub_storage"],
+      compatibilityDate,
+      compatibilityFlags,
     },
   })],
   test: {

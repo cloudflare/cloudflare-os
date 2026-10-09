@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AccessTokenRequest } from "../../src/auth-retry";
-import { BigQueryConfiguratorUI, CalendarConfiguratorUI } from "../../src/google-configurators";
+import {
+  BigQueryConfiguratorUI, CalendarConfiguratorUI, DriveFolderConfiguratorUI,
+} from "../../src/google-configurators";
 import type { GoogleAccessToken } from "../../src/google-api";
 
 const token = (value: string): GoogleAccessToken => ({
@@ -21,6 +23,73 @@ describe("Google resource configurators", () => {
 
     await expect(new CalendarConfiguratorUI(getToken).getPrimaryCalendarId())
       .resolves.toBe("person@example.com");
+  });
+
+  // One provider page across every corpus the account reaches. A continuation token is normal for
+  // an interactive picker, so it must neither be followed nor treated as a failure.
+  it("offers listable folders from every corpus in one all-drives request", async () => {
+    const calls: URL[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      calls.push(new URL(input instanceof Request ? input.url : input.toString()));
+      return Response.json({
+        nextPageToken: "next",
+        files: [
+          { id: "mine", name: "Team plans", capabilities: { canListChildren: true } },
+          {
+            id: "shared-with-me", name: "Team budget",
+            owners: [{ displayName: "Ada" }], capabilities: { canListChildren: true },
+          },
+          {
+            id: "in-drive", name: "Team drive folder", driveId: "drive-1",
+            capabilities: { canListChildren: true },
+          },
+          { id: "metadata-only", name: "Team archive", capabilities: { canListChildren: false } },
+        ],
+      });
+    }));
+
+    await expect(new DriveFolderConfiguratorUI(async () => token("access-token"))
+      .listDriveFolders("Team"))
+      .resolves.toEqual([
+        { value: "mine", title: "Team plans", subtitle: "My Drive", meta: "mine" },
+        { value: "shared-with-me", title: "Team budget", subtitle: "Ada", meta: "…-with-me" },
+        {
+          value: "in-drive", title: "Team drive folder", subtitle: "In a shared drive",
+          meta: "in-drive",
+        },
+      ]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].searchParams.get("corpora")).toBe("allDrives");
+    expect(calls[0].searchParams.get("q")).toBe(
+      "trashed = false and mimeType = 'application/vnd.google-apps.folder' and " +
+      "name contains 'Team'",
+    );
+  });
+
+  // Duplicate folder names across shared drives are ordinary, and every other column matches, so
+  // without a differentiator the user cannot see which capability they are about to grant.
+  it("tells same-named folders apart", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      files: [
+        {
+          id: "1AbCdEfGhIjKlMnOpQrStUv_platform", name: "Engineering", driveId: "drive-1",
+          capabilities: { canListChildren: true },
+        },
+        {
+          id: "1AbCdEfGhIjKlMnOpQrStUv_marketing", name: "Engineering", driveId: "drive-2",
+          capabilities: { canListChildren: true },
+        },
+      ],
+    })));
+
+    const options = await new DriveFolderConfiguratorUI(async () => token("access-token"))
+      .listDriveFolders("Engineering");
+
+    expect(options.map(option => [option.title, option.subtitle])).toEqual([
+      ["Engineering", "In a shared drive"],
+      ["Engineering", "In a shared drive"],
+    ]);
+    expect(options.map(option => option.meta)).toEqual(["…platform", "…arketing"]);
   });
 
   it("refreshes a rejected Calendar access token", async () => {

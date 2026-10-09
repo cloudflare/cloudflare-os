@@ -100,13 +100,19 @@ it("calls a tool resolved beyond the initial generated catalog", async () => {
       callTool: async () => ({ content: [{ type: "text", text: "PROJ-1" }] }),
     } as never),
   } as unknown as McpSessionHost;
-  const queue = { authorizeObservation() {} };
+  const observations: { fields?: unknown[] }[] = [];
+  const queue = {
+    authorizeObservation: (description: { fields?: unknown[] }) => { observations.push(description); },
+  };
   const session = new McpSessionBase(host, queue as never);
 
   await expect(session.callTool("jira_search_issues", { query: "open" })).resolves.toMatchObject({
     status: "ok",
     text: "PROJ-1",
   });
+  // The observation records the arguments the read was made with, as the action would.
+  expect(observations[0]?.fields).toContainEqual(
+    { label: "Arguments", kind: "json", value: '{\n  "query": "open"\n}' });
 });
 
 it("identifies the tool in a describe observation", async () => {

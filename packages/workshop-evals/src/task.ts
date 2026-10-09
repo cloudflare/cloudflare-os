@@ -1,7 +1,15 @@
 import { createHash } from "node:crypto";
 import type { AgentTurnOutcome } from "@gadgets/integration-tests/agent-session";
 import type { JsonValue } from "vitest-evals";
+import { z } from "zod";
 import type { EvalVerifier } from "./verifier.js";
+
+const JsonValueSchema: z.ZodType<JsonValue> = z.json();
+
+/** Anything JSON-serialisable, as check evidence, with a type that says so. */
+export function asEvidence(value: unknown): JsonValue {
+  return JsonValueSchema.parse(JSON.parse(JSON.stringify(value)));
+}
 
 export type EvalCheckOutcome = {
   pass: boolean;

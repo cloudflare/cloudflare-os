@@ -1,6 +1,6 @@
 import { launch, type Page } from "@cloudflare/puppeteer";
 import { RpcSession, type RpcStub, type RpcTransport } from "capnweb";
-import { createLogger } from "@gadgets/backend-utils/logger";
+import { createLogger } from "@gadgets/observability/logger";
 import type { GadgetExportFormat } from "@gadgets/workshop-shared/api";
 import BROWSER_EXPORT_RUNTIME from "./generated/browser-export-runtime.txt";
 import HTML_SANITIZER_RUNTIME from "./generated/html-sanitizer-runtime.txt";

@@ -61,6 +61,8 @@ export type DocList = {
 export type NestingLevel = {
   /** If set, this is an ordered (numbered) list level. Values: "DECIMAL", "ALPHA", etc. */
   glyphType?: string;
+  /** Number assigned to the first item at this level. */
+  startNumber?: number;
   /** If set, this is an unordered (bullet) list level. e.g. "●" */
   glyphSymbol?: string;
 }
@@ -71,8 +73,34 @@ export type StructuralElement = {
   endIndex: number;
   paragraph?: Paragraph;
   sectionBreak?: {};
-  table?: {};
+  table?: Table;
   tableOfContents?: {};
+}
+
+// The collections in the table types below are optional: the API omits an empty one from its
+// JSON rather than sending `[]`.
+
+/** A table embedded in a document body or table cell. */
+export type Table = {
+  tableRows?: TableRow[];
+}
+
+/** One row in a Google Docs table. */
+export type TableRow = {
+  startIndex: number;
+  endIndex: number;
+  tableCells?: TableCell[];
+}
+
+/** One table cell, whose contents use the same recursive structure as the document body. */
+export type TableCell = {
+  startIndex: number;
+  endIndex: number;
+  content?: StructuralElement[];
+  tableCellStyle?: {
+    rowSpan?: number;
+    columnSpan?: number;
+  };
 }
 
 /** A paragraph (including headings, list items, etc.). */
@@ -80,6 +108,8 @@ export type Paragraph = {
   elements: ParagraphElement[];
   paragraphStyle: ParagraphStyle;
   bullet?: Bullet;
+  /** Positioned objects tethered to this paragraph. */
+  positionedObjectIds?: string[];
 }
 
 export type ParagraphStyle = {
@@ -89,15 +119,36 @@ export type ParagraphStyle = {
 /** Present on paragraphs that are list items. */
 export type Bullet = {
   listId: string;
-  nestingLevel: number;
+  nestingLevel?: number;
 }
 
-/** An element within a paragraph (text run, horizontal rule, etc.). */
+/** An element within a paragraph (text run, smart chip, horizontal rule, etc.). */
 export type ParagraphElement = {
   startIndex: number;
   endIndex: number;
   textRun?: TextRun;
+  autoText?: {
+    type?: string;
+    textStyle?: TextStyle;
+  };
   horizontalRule?: {};
+  pageBreak?: { textStyle?: TextStyle };
+  columnBreak?: { textStyle?: TextStyle };
+  footnoteReference?: { footnoteId?: string; footnoteNumber?: string; textStyle?: TextStyle };
+  equation?: {};
+  inlineObjectElement?: { inlineObjectId?: string; textStyle?: TextStyle };
+  person?: {
+    textStyle?: TextStyle;
+    personProperties?: { name?: string; email?: string };
+  };
+  richLink?: {
+    textStyle?: TextStyle;
+    richLinkProperties?: { title?: string; uri?: string };
+  };
+  dateElement?: {
+    textStyle?: TextStyle;
+    dateElementProperties?: { displayText?: string };
+  };
 }
 
 export type TextRun = {
@@ -105,11 +156,19 @@ export type TextRun = {
   textStyle: TextStyle;
 }
 
+type GoogleDocsLink =
+  | { url: string }
+  | { tabId: string }
+  | { bookmark: { id: string; tabId: string } }
+  | { heading: { id: string; tabId: string } }
+  | { bookmarkId: string }
+  | { headingId: string };
+
 export type TextStyle = {
   bold?: boolean;
   italic?: boolean;
   strikethrough?: boolean;
-  link?: { url: string };
+  link?: GoogleDocsLink;
 }
 
 type GoogleDocsResponse = Pick<

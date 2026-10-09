@@ -7,7 +7,7 @@
     "moduleResolution": "bundler",
     "types": ["./worker-configuration.d.ts"],
     "paths": {
-      "@gadgets/backend-utils/*": ["../backend-utils/src/*"],
+      "@gadgets/observability/*": ["../observability/src/*"],
       "@gadgets/workshop-shared/*": ["../workshop-shared/src/*"]
     }
   },

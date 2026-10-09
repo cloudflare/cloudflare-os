@@ -4,7 +4,8 @@ import {
   enumerateGmailAttachments, extractRfc822Attachments, gmailMessageIdQueryValue, GmailApi,
   GmailApiError,
   MAX_GMAIL_ATTACHMENT_BYTES,
-  normalizeAggregateRecipients, parseGmailDraft, parseGmailDraftSnapshot, parseGmailPayloadContent,
+  normalizeAggregateRecipients, normalizeContentId, normalizeMessageIdHeader,
+  normalizeReferencesHeader, normalizeTextBody, parseGmailDraft, parseGmailDraftSnapshot, parseGmailPayloadContent,
   parseMimeMessage, type GmailPayloadPart,
 } from "../src/google-api";
 import {containsBytes} from "./gmail-test-utils";
@@ -46,7 +47,50 @@ const api = () => new GmailApi("me@example.com", async () => "token");
 
 afterEach(() => vi.unstubAllGlobals());
 
+// The decoded body of the first base64 MIME part whose Content-Type starts with `contentType`.
+function mimePartText(encodedRaw: string, contentType: string): string {
+  const raw = new TextDecoder().decode(decodeBase64UrlToBytes(encodedRaw));
+  const header = raw.indexOf(`Content-Type: ${contentType}`);
+  expect(header).toBeGreaterThanOrEqual(0);
+  const start = raw.indexOf("\r\n\r\n", header) + 4;
+  const end = raw.indexOf("\r\n--", start);
+  const binary = atob(raw.slice(start, end).replace(/\s/g, ""));
+  return new TextDecoder().decode(Uint8Array.from(binary, char => char.charCodeAt(0)));
+}
+
 describe("Gmail recipient and MIME construction", () => {
+  it("encodes exactly the normalized bodies and headers it exports", () => {
+    const text = "one\ntwo\rthree\r\nfour";
+    const html = "<p>one</p>\n<p>two</p>";
+    const encoded = buildEncodedEmail({
+      from: "me@example.com",
+      to: ["to@example.com"],
+      cc: [],
+      bcc: [],
+      subject: "Bodies",
+      text,
+      html,
+      messageId: " <new@example.com> ",
+      inReplyTo: "<parent@example.com>",
+      references: "<root@example.com>\t<parent@example.com>",
+      attachments: [],
+    });
+    expect(normalizeTextBody(text)).toBe("one\r\ntwo\r\nthree\r\nfour");
+    expect(mimePartText(encoded, "text/plain")).toBe(normalizeTextBody(text));
+    expect(mimePartText(encoded, "text/html")).toBe(normalizeTextBody(html));
+    expect(() => normalizeTextBody("a\0b")).toThrow(/NUL/);
+
+    const raw = new TextDecoder().decode(decodeBase64UrlToBytes(encoded));
+    expect(raw).toContain(`Message-ID: ${normalizeMessageIdHeader(" <new@example.com> ")}\r\n`);
+    expect(normalizeMessageIdHeader(" <new@example.com> ")).toBe("<new@example.com>");
+    expect(raw).toContain(
+      `References: ${normalizeReferencesHeader("<root@example.com>\t<parent@example.com>")
+        .join(" ")}\r\n`);
+    expect(() => normalizeReferencesHeader("root@example.com")).toThrow(/References/);
+    expect(normalizeContentId("logo@example.com")).toBe("<logo@example.com>");
+    expect(normalizeContentId("<logo@example.com>")).toBe("<logo@example.com>");
+  });
+
   it("bounds ordered message headers without changing duplicates", () => {
     const gmail = api();
     expect(gmail.collectMessageHeaders([
@@ -1539,13 +1583,22 @@ describe("Gmail API request shapes", () => {
     expect(calls[0].url.searchParams.get("includeSpamTrash")).toBe("true");
   });
 
-  it("uses the per-message modify endpoint", async () => {
+  it("modifies exactly the listed messages through batchModify", async () => {
     const calls = stubFetch([new Response(null, {status: 204})]);
-    await api().modifyMessage("m1", ["STARRED"], ["UNREAD"]);
-    expect(calls[0].url.pathname).toBe("/gmail/v1/users/me/messages/m1/modify");
+    await api().batchModifyMessages(["m1", "m2"], ["STARRED"], ["UNREAD"]);
+    expect(calls[0].url.pathname).toBe("/gmail/v1/users/me/messages/batchModify");
     expect(calls[0].init.method).toBe("POST");
     expect(JSON.parse(String(calls[0].init.body)))
-      .toEqual({addLabelIds: ["STARRED"], removeLabelIds: ["UNREAD"]});
+      .toEqual({ids: ["m1", "m2"], addLabelIds: ["STARRED"], removeLabelIds: ["UNREAD"]});
+  });
+
+  it("rejects batchModify calls outside Gmail's ID-count limits before fetching", async () => {
+    const calls = stubFetch([]);
+    await expect(api().batchModifyMessages([], ["STARRED"])).rejects.toThrow(/between 1 and 1000/);
+    await expect(api().batchModifyMessages(
+      Array.from({length: 1001}, (_, i) => `m${i}`), ["STARRED"]))
+      .rejects.toThrow(/between 1 and 1000/);
+    expect(calls).toHaveLength(0);
   });
 
   it("creates drafts and renames labels through their resource endpoints", async () => {

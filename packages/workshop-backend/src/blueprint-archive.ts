@@ -1,48 +1,36 @@
 // Helpers around managing blueprints and encoding/decoding blueprint downloads (`.gadget` files).
+// (What the BLUEPRINTS KV namespace stores is declared in storage-schema/blueprints-kv.ts.)
+//
+// A blueprint's content lives in the BLUEPRINT_CONTENT bucket, in one of two forms:
+// - A release pack (see blueprint-release.ts) under `<blueprintId>/<commitId>`, for metadata
+//   that names its release commit. A release never changes, so neither does the object.
+// - A snapshot under `<blueprintId>/<version>`, for metadata that names none: the form content
+//   took before releases were commits. It is a gzip-compressed Yjs V2 state update of a doc
+//   whose unnamed root map is filename -> Y.Text.
 //
 // `.gadget` archives are streamed as a 24-byte prefix (magic, version, metadata byte length,
-// content byte length), followed by UTF-8 JSON metadata and the gzip-compressed Yjs snapshot.
-// See docs/blueprints.md for the full format description.
+// content byte length), followed by UTF-8 JSON metadata and the content exactly as stored. The
+// version says which form that is. See docs/blueprints.md for the full format description.
 
-import { BlueprintMetadata, BlueprintOutput, BlueprintPublicInfo, isOutputIcon } from '@gadgets/workshop-shared/api';
-
-export const FEATURED_BLUEPRINTS_KEY = '.featured';
-
-/**
- * Reserved key in the BLUEPRINTS KV namespace holding the deployment-wide admin config (a single
- * JSON object). AdminSettings already owns this namespace; see admin-config.ts.
- */
-export const ADMIN_CONFIG_KEY = '.adminConfig';
+import * as Y from 'yjs';
+import { BlueprintMetadata, BlueprintOutput, isOutputIcon } from '@gadgets/workshop-shared/api';
+import type { GitOid } from '@gadgets/workshop-shared/gatekeeper';
+import {
+  buildSnapshotRelease, readReleasePack, validateReleaseObjects, type GitObjectMap,
+} from './blueprint-release.js';
+import { validateGitOid } from './git-codec.js';
+import { reviveBlueprintMetadata } from './storage-schema/blueprints-kv.js';
 
 const BLUEPRINT_ARCHIVE_MAGIC = 0xec2e2d3a2300e317n;
-const BLUEPRINT_ARCHIVE_VERSION = 1;
+// The archive version whose content is a snapshot, and the one whose content is a release pack.
+const SNAPSHOT_ARCHIVE_VERSION = 1;
+const RELEASE_ARCHIVE_VERSION = 2;
 const BLUEPRINT_ARCHIVE_PREFIX_BYTES = 24;
 const MAX_BLUEPRINT_METADATA_BYTES = 64 * 1024;
 const MAX_BLUEPRINT_CONTENT_BYTES = 32 * 1024 * 1024;
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
-
-export type BlueprintKvRecord = {
-  metadata: BlueprintMetadata;
-  /**
-   * The User DO that published or uploaded this blueprint, and which owns the authoritative
-   * "featured" bit for it. Undefined for a blueprint the deployment installed itself, which
-   * has no owning user.
-   */
-  ownerId?: string;
-  gadgetId?: string;  // undefined = uploaded, not published from a gadget on this instance
-};
-
-export function isReservedBlueprintKey(id: string): boolean {
-  return id === FEATURED_BLUEPRINTS_KEY || id === ADMIN_CONFIG_KEY;
-}
-
-export function reviveBlueprintMetadata(metadata: BlueprintMetadata): BlueprintMetadata {
-  metadata.created = new Date(metadata.created);
-  metadata.lastUpdated = new Date(metadata.lastUpdated);
-  return metadata;
-}
 
 // Longest accepted output slug/noun. Display strings shown in tabs and chips, so this keeps the
 // UI intact rather than being a safety limit.
@@ -71,73 +59,68 @@ export function sanitizeBlueprintOutput(output: unknown): BlueprintOutput | unde
   return {id: cleanId, noun: cleanNoun, plural: cleanPlural, icon};
 }
 
-export function parseBlueprintKvRecord(raw: string): BlueprintKvRecord {
-  let kvRecord = JSON.parse(raw) as BlueprintKvRecord;
-  kvRecord.metadata = reviveBlueprintMetadata(kvRecord.metadata);
-  return kvRecord;
-}
+type BlueprintContentEnv = Pick<Cloudflare.Env, 'BLUEPRINT_CONTENT'>;
 
-export function parseFeaturedBlueprints(raw: string): BlueprintPublicInfo[] {
-  let featured = JSON.parse(raw) as BlueprintPublicInfo[];
-  for (let entry of featured) {
-    entry.metadata = reviveBlueprintMetadata(entry.metadata);
-  }
-  return featured;
-}
-
-export function serializeFeaturedBlueprints(featured: BlueprintPublicInfo[]): string {
-  return JSON.stringify(featured);
+/** The BLUEPRINT_CONTENT key of the content that `metadata` describes. */
+export function blueprintContentKey(blueprintId: string, metadata: BlueprintMetadata): string {
+  return `${blueprintId}/${metadata.commitId ?? metadata.version}`;
 }
 
 /**
- * The env a blueprint KV read needs. Narrowed to the one binding so helpers that only read
- * blueprints can be called from anywhere holding it, without passing a whole env around.
+ * Reads the release that `metadata` describes: its release commit and the git objects its
+ * content holds, which have passed `validateReleaseObjects()` and so are fit to import into a
+ * workspace. A snapshot is read as the snapshot release of its files, so that everyone who
+ * reads the same one derives the same commit.
+ *
+ * The caller supplies the metadata, as it read it from KV, rather than this reading it again:
+ * the blueprint may have been republished since, and whatever else the caller takes from the
+ * metadata (the bindings to set up, say) has to belong to the same version as the code.
+ *
+ * Throws if the content is missing or invalid.
  */
-export type BlueprintKvEnv = Pick<Cloudflare.Env, 'BLUEPRINTS'>;
-
-export async function readBlueprintKvRecord(
-  env: BlueprintKvEnv,
+export async function readBlueprintRelease(
+  env: BlueprintContentEnv,
   blueprintId: string,
-): Promise<BlueprintKvRecord | null> {
-  if (isReservedBlueprintKey(blueprintId)) {
-    return null;
-  }
-
-  let raw = await env.BLUEPRINTS.get(blueprintId);
-  if (!raw) {
-    return null;
-  }
-
-  return parseBlueprintKvRecord(raw);
-}
-
-export async function listFeaturedBlueprintsFromKv(
-  env: BlueprintKvEnv,
-): Promise<BlueprintPublicInfo[]> {
-  let raw = await env.BLUEPRINTS.get(FEATURED_BLUEPRINTS_KEY);
-  if (!raw) {
-    return [];
-  }
-
-  return parseFeaturedBlueprints(raw);
-}
-
-/**
- * Read a blueprint's code snapshot (an uncompressed Yjs V2 state update of a doc whose unnamed
- * root map is filename -> Y.Text) from R2, or null if the content object doesn't exist.
- */
-export async function readBlueprintContent(
-  env: Pick<Cloudflare.Env, 'BLUEPRINT_CONTENT'>,
-  blueprintId: string,
-  version: number,
-): Promise<Uint8Array | null> {
-  let r2Object = await env.BLUEPRINT_CONTENT.get(`${blueprintId}/${version}`);
+  metadata: BlueprintMetadata,
+): Promise<{commitId: GitOid, objects: GitObjectMap}> {
+  let r2Object = await env.BLUEPRINT_CONTENT.get(blueprintContentKey(blueprintId, metadata));
   if (!r2Object) {
-    return null;
+    throw new Error(`The content of blueprint ${blueprintId} is missing.`);
+  }
+
+  if (metadata.commitId !== undefined) {
+    let pack = new Uint8Array(await r2Object.arrayBuffer());
+    return {
+      commitId: metadata.commitId,
+      objects: await readReleasePack(pack, metadata.commitId),
+    };
   }
 
   let decompressed = r2Object.body.pipeThrough(new DecompressionStream("gzip"));
-  return new Uint8Array(await new Response(decompressed).arrayBuffer());
+  let snapshot = new Y.Doc();
+  Y.applyUpdateV2(snapshot, new Uint8Array(await new Response(decompressed).arrayBuffer()));
+  let files = new Map<string, string>();
+  for (let [path, text] of snapshot.getMap<Y.Text>()) {
+    files.set(path, text.toString());
+  }
+  let release = await buildSnapshotRelease(files);
+  validateReleaseObjects(release.objects, release.commitId);
+  return release;
+}
+
+/** Deletes all of a blueprint's content: every version of it, in either form. */
+export async function deleteBlueprintContent(
+  env: BlueprintContentEnv,
+  blueprintId: string,
+): Promise<void> {
+  let cursor: string | undefined;
+  do {
+    let listing = await env.BLUEPRINT_CONTENT.list({ prefix: `${blueprintId}/`, cursor });
+    if (listing.objects.length > 0) {
+      await env.BLUEPRINT_CONTENT.delete(listing.objects.map(object => object.key));
+    }
+    cursor = listing.truncated ? listing.cursor : undefined;
+  } while (cursor !== undefined);
 }
 
 export function randomBlueprintId(): string {
@@ -151,7 +134,8 @@ function encodeBlueprintArchivePrefix(metadata: BlueprintMetadata, contentLength
   let result = new Uint8Array(BLUEPRINT_ARCHIVE_PREFIX_BYTES + metadataBytes.byteLength);
   let view = new DataView(result.buffer);
   view.setBigUint64(0, BLUEPRINT_ARCHIVE_MAGIC);
-  view.setUint32(8, BLUEPRINT_ARCHIVE_VERSION);
+  view.setUint32(8,
+      metadata.commitId === undefined ? SNAPSHOT_ARCHIVE_VERSION : RELEASE_ARCHIVE_VERSION);
   view.setUint32(12, metadataBytes.byteLength);
   view.setBigUint64(16, BigInt(contentLength));
   result.set(metadataBytes, BLUEPRINT_ARCHIVE_PREFIX_BYTES);
@@ -264,7 +248,7 @@ export async function parseBlueprintArchive(archive: ReadableStream<Uint8Array>)
   }
 
   let version = view.getUint32(8);
-  if (version !== BLUEPRINT_ARCHIVE_VERSION) {
+  if (version !== SNAPSHOT_ARCHIVE_VERSION && version !== RELEASE_ARCHIVE_VERSION) {
     throw new Error(`Unsupported gadget archive version: ${version}.`);
   }
 
@@ -293,5 +277,16 @@ export async function parseBlueprintArchive(archive: ReadableStream<Uint8Array>)
   }
 
   let metadata = reviveBlueprintMetadata(rawMetadata);
+
+  // The version says which form the content takes, but everything that reads the content back
+  // goes by whether the metadata names a release commit. Make the two agree.
+  if (version === SNAPSHOT_ARCHIVE_VERSION) {
+    delete metadata.commitId;
+  } else if (typeof metadata.commitId !== "string") {
+    throw new Error("Gadget archive metadata does not name its release commit.");
+  } else {
+    validateGitOid(metadata.commitId);
+  }
+
   return { metadata, contentLength, content: reader.takeTail() };
 }

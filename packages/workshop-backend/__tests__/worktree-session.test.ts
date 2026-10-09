@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import { createTypedStorage } from "@gadgets/typed-storage";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, type CodeChange, type CodeContent }
   from "@gadgets/workshop-shared/code-change";
@@ -10,8 +9,9 @@ import type { OverseerDurableObject } from "../src/overseer.js";
 import { WorktreeSessionImpl, type WorktreeSessionHost } from "../src/worktree-session";
 import type { WorktreeTurnAccess } from "../src/agent";
 import { formatUnifiedDiff } from "../src/agent";
-import { WorkspaceGitCache, gitObjectMetadataCollection } from "../src/git-cache";
-import { GitStore, gitObjectsCollection } from "../src/git-store";
+import { WorkspaceGitCache } from "../src/git-cache";
+import { GitStore } from "../src/git-store";
+import { makeOverseerStorage } from "../src/storage-schema/overseer-storage";
 import { concatBytes } from "../src/git-codec";
 import { makeMockStorage } from "./mock-storage";
 import { COMMIT_1, FIXTURE_OBJECTS, PACKED_OIDS, b64Bytes } from "./git-cache-fixtures";
@@ -63,18 +63,25 @@ async function loadFixtureRepo(impl: any): Promise<void> {
 }
 
 // The turn half of the session: runAgent's worktree closures, mirrored closely enough to drive
-// WorktreeSessionImpl end to end -- a session-content overlay with removal tombstones, an
-// appendChange that applies each change the way the step buffer does, and buffered commit
-// advancements, all drained through the real barrier (impl.commitAgentStep).
+// WorktreeSessionImpl end to end -- a session-content overlay with removal tombstones, the
+// pinned-else-accepted base resolution, an appendChange that applies each change the way the
+// step buffer does (pinning the worktree in the turn on its first write or commit, as the
+// barrier will in the chat), and buffered commit advancements, all drained through the real
+// barrier (impl.commitAgentStep).
 function makeTurn(impl: any, chatId: number) {
   let content = new Map<number, Map<string, string>>();
   let removed = new Map<number, Set<string>>();
   let pins = new Map<number, string>();
   let changes: { change: CodeChange }[] = [];
   let commits: { worktreeId: number, commit: string, previousHead: string }[] = [];
+  let baseCommit = (id: number): string | undefined =>
+      pins.get(id) ?? impl.getWorktreePinBase(id);
+  let pin = (id: number) => {
+    if (!pins.has(id)) pins.set(id, impl.getWorktreePinBase(id));
+  };
 
   let access: WorktreeTurnAccess = {
-    getPinBase: id => pins.get(id),
+    getBaseCommit: baseCommit,
     getBufferedHead: id => commits.findLast(entry => entry.worktreeId === id)?.commit,
     getOverlayFiles: id => content.get(id) ?? new Map(),
     getRemovedPaths: id => removed.get(id) ?? new Set(),
@@ -82,7 +89,7 @@ function makeTurn(impl: any, chatId: number) {
       let existing = content.get(id)?.get(path);
       if (existing !== undefined) return existing;
       if (removed.get(id)?.has(path)) return undefined;
-      let base = pins.get(id);
+      let base = baseCommit(id);
       if (base === undefined) return undefined;
       let text = await impl.readFileAtCommit(base, path);
       if (text === undefined) return undefined;
@@ -103,9 +110,12 @@ function makeTurn(impl: any, chatId: number) {
         removed.get(id)?.delete(path);
       }
       changes.push({ change: one });
+      pin(id);
     },
-    appendCommit: (id, commit, previousHead) =>
-        commits.push({ worktreeId: id, commit, previousHead }),
+    appendCommit: (id, commit, previousHead) => {
+      commits.push({ worktreeId: id, commit, previousHead });
+      pin(id);
+    },
   };
 
   return {
@@ -113,7 +123,7 @@ function makeTurn(impl: any, chatId: number) {
     pins,
     bufferedChanges: changes,
     bufferedCommits: commits,
-    session: (id: number) => new WorktreeSessionImpl(impl, id, access, USER),
+    session: (id: number) => new WorktreeSessionImpl(impl, id, access, async () => USER),
     barrier: async () => impl.commitAgentStep(
         chatId, AGENT, [{ type: "message", message: "step" }],
         { changes: changes.splice(0), createdGadgets: [], createdWorktrees: [],
@@ -121,9 +131,10 @@ function makeTurn(impl: any, chatId: number) {
   };
 }
 
-// Creates a worktree through the barrier and returns a session over it.
-async function createWorktreeSession(impl: any, chatId: number, commitRef: string) {
-  let created = await impl.createWorktree("Repo", chatId, commitRef);
+// Creates a worktree through the barrier and returns a session over it. The worktree is
+// unpinned: the session resolves against its accepted commit until the first write or commit.
+async function createWorktreeSession(impl: any, chatId: number, commitId: string) {
+  let created = await impl.createWorktree("Repo", chatId, commitId);
   await impl.commitAgentStep(chatId, AGENT, [{ type: "message", message: "create" }], {
     changes: [],
     createdGadgets: [],
@@ -132,7 +143,6 @@ async function createWorktreeSession(impl: any, chatId: number, commitRef: strin
     worktreeCommits: [],
   });
   let turn = makeTurn(impl, chatId);
-  turn.pins.set(created.id, created.baseCommit);
   return { id: created.id, baseCommit: created.baseCommit, turn,
            session: turn.session(created.id) };
 }
@@ -152,12 +162,7 @@ async function commitFiles(
 // `pinBase` -- so tests can observe or fail pulls precisely.
 function makeLocalHarness(
     pull: (cache: WorkspaceGitCache, oids: GitOid[], hints: GitPullHints) => Promise<void>) {
-  let storage = createTypedStorage(makeMockStorage(), {
-    collections: {
-      gitObjects: gitObjectsCollection(),
-      gitObjectMetadata: gitObjectMetadataCollection(),
-    },
-  });
+  let storage = makeOverseerStorage(makeMockStorage());
   let cache: WorkspaceGitCache = new WorkspaceGitCache(storage, {
     pull: (_gatekeeperId, oids, hints) => pull(cache, oids, hints),
   });
@@ -169,7 +174,7 @@ function makeLocalHarness(
       getWorktreeRecord: () => ({ headCommit: pinBase }),
     };
     let access: WorktreeTurnAccess = {
-      getPinBase: () => pinBase,
+      getBaseCommit: () => pinBase,
       getBufferedHead: () => undefined,
       getOverlayFiles: () => new Map(),
       getRemovedPaths: () => new Set(),
@@ -177,7 +182,7 @@ function makeLocalHarness(
       appendChange: () => { throw new Error("read-only test"); },
       appendCommit: () => { throw new Error("read-only test"); },
     };
-    return new WorktreeSessionImpl(host, 5, access, USER);
+    return new WorktreeSessionImpl(host, 5, access, async () => USER);
   };
   return { cache, gitStore, session };
 }
@@ -545,6 +550,34 @@ describe("commit and diff", () => {
 
     await turn.barrier();
     expect(impl.storage.gadgets.get(id)!.headCommit).toBe(commit);
+    // The write was the epoch's first modification: the barrier pinned the worktree at its
+    // accepted commit, declared on the step's message alongside the advancement.
+    expect(impl.storage.chatMeta.get(1)!.codeBase!.pins).toEqual(
+        [{ gadgetId: id, baseCommit: c1, mergedCommit: c1 }]);
+  }));
+
+  it("commit() on an untouched worktree pins it, so the advancement is a revertable change",
+      () => withImpl(async impl => {
+    addChat(impl, 1);
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    let { id, session, turn } = await createWorktreeSession(impl, 1, c1);
+    expect(impl.storage.chatMeta.get(1)!.codeBase).toBeUndefined();
+
+    // No writes: the commit's tree is the accepted commit's, parented on the head.
+    let commit = await session.commit("empty");
+    expect(await impl.gitStore.commitTree(commit)).toBe(await impl.gitStore.commitTree(c1));
+    await turn.barrier();
+    expect(impl.storage.gadgets.get(id)!.headCommit).toBe(commit);
+    expect(impl.storage.chatMeta.get(1)!.codeBase!.pins).toEqual(
+        [{ gadgetId: id, baseCommit: c1, mergedCommit: c1 }]);
+    let step = [...impl.storage.chats.list()].at(-1)!;
+    expect(step.pins).toEqual([{ gadgetId: id, baseCommit: c1 }]);
+    expect(step.worktreeCommits).toEqual([{ worktreeId: id, commit, previousHead: c1 }]);
+
+    // Reverting the step rolls the head back and unpins.
+    await impl.revertChanges(1, step.sequence, USER);
+    expect(impl.storage.gadgets.get(id)!.headCommit).toBe(c1);
+    expect(impl.storage.chatMeta.get(1)!.codeBase!.pins).toEqual([]);
   }));
 
   it("explicit commits squash out accepts' auto-commits", () => withImpl(async impl => {
@@ -558,7 +591,8 @@ describe("commit and diff", () => {
     await turn.barrier();
 
     // An accept auto-commits the (clean-after-commit... make it dirty first) overlay and
-    // re-pins. Note the pin advanced through an auto-commit while the head stayed `first`.
+    // advances the accepted commit. Note it advanced through an auto-commit while the head
+    // stayed `first`.
     await session.writeFile("a.txt", "three\n");
     await turn.barrier();
     await impl.mergeChanges(1, USER_META, "client-user");
@@ -566,11 +600,12 @@ describe("commit and diff", () => {
     expect(record.headCommit).toBe(first);
     expect(record.pinBase).not.toBe(first);
 
-    // A new turn (fresh overlay over the re-pin): the next explicit commit's parent is the
-    // last explicit commit -- the auto-commit never appears in explicit history.
+    // A new turn (fresh overlay over the unpinned worktree, which resolves against the
+    // advanced accepted commit): the next explicit commit's parent is the last explicit commit
+    // -- the auto-commit never appears in explicit history.
     let turn2 = makeTurn(impl, 1);
-    turn2.pins.set(id, record.pinBase);
     let session2 = turn2.session(id);
+    expect(await session2.readFile("a.txt")).toBe("three\n");
     await session2.writeFile("a.txt", "four\n");
     let second = await session2.commit("second");
     let [info] = await impl.gitStore.readCommitLog(second, { depth: 1 });
@@ -578,6 +613,9 @@ describe("commit and diff", () => {
     expect(await impl.readFileAtCommit(second, "a.txt")).toBe("four\n");
     await turn2.barrier();
     expect(impl.storage.gadgets.get(id)!.headCommit).toBe(second);
+    // ...and the write re-pinned the worktree at the advanced accepted commit.
+    expect(impl.storage.chatMeta.get(1)!.codeBase!.pins).toEqual(
+        [{ gadgetId: id, baseCommit: record.pinBase, mergedCommit: record.pinBase }]);
   }));
 
   it("an edited executable keeps its mode; untouched special entries ride through",
@@ -620,6 +658,8 @@ describe("commit and diff", () => {
     // Against an explicit commit id (here the same base, spelled out).
     expect(await session.diff(c1)).toBe(diff);
     await expect(session.diff("feed".repeat(10))).rejects.toThrow(/not known/);
+    // Only full ids: knowing one is the capability to read the commit, and a prefix is guessable.
+    await expect(session.diff(c1.slice(0, 8))).rejects.toThrow(/not a full git commit id/);
   }));
 
   it("diff() reports EOF-newline changes with git's no-newline markers", () => withImpl(async impl => {
@@ -694,6 +734,187 @@ describe("commit and diff", () => {
     expect(pulls).toEqual(
         [{ oids: [ghostOid], hints: expect.objectContaining({ referencedBy: ghostTree }) }]);
   });
+
+  it("structuredDiff() returns numbered hunks per changed file", () => withImpl(async impl => {
+    addChat(impl, 1);
+    let c1 = await commitFiles(impl, {
+      "a.txt": "one\ntwo\n",
+      "b.txt": "bee\n",
+      "long.txt": "1\n2\n3\n4\n5\n6\n7\n8\n",
+      "same.txt": "unchanged\n",
+    });
+    let { session } = await createWorktreeSession(impl, 1, c1);
+
+    await session.writeFile("a.txt", "one!\ntwo\n");
+    await session.deleteFile("b.txt");
+    await session.writeFile("c.txt", "sea\n");
+    await session.writeFile("empty.txt", "");
+    await session.writeFile("long.txt", "1\n2\n3\n4\n4.5\n5\n6\n7\n8\n");
+
+    let result = await session.structuredDiff();
+    expect(result).toEqual({
+      files: [
+        { path: "a.txt", status: "modified", oldKind: "file", newKind: "file",
+          hunks: [{ header: "@@ -1,2 +1,2 @@", lines: [
+          { kind: "removed", text: "one", oldLineNumber: 1 },
+          { kind: "added", text: "one!", newLineNumber: 1 },
+          { kind: "context", text: "two", oldLineNumber: 2, newLineNumber: 2 },
+        ] }] },
+        { path: "b.txt", status: "removed", oldKind: "file",
+          hunks: [{ header: "@@ -1,1 +0,0 @@", lines: [
+          { kind: "removed", text: "bee", oldLineNumber: 1 },
+        ] }] },
+        { path: "c.txt", status: "added", newKind: "file",
+          hunks: [{ header: "@@ -0,0 +1,1 @@", lines: [
+          { kind: "added", text: "sea", newLineNumber: 1 },
+        ] }] },
+        // An empty file has no lines to diff, but its addition still shows.
+        { path: "empty.txt", status: "added", newKind: "file", hunks: [] },
+        // Context is limited to 3 lines, so the hunk starts mid-file.
+        { path: "long.txt", status: "modified", oldKind: "file", newKind: "file",
+          hunks: [{ header: "@@ -2,6 +2,7 @@", lines: [
+          { kind: "context", text: "2", oldLineNumber: 2, newLineNumber: 2 },
+          { kind: "context", text: "3", oldLineNumber: 3, newLineNumber: 3 },
+          { kind: "context", text: "4", oldLineNumber: 4, newLineNumber: 4 },
+          { kind: "added", text: "4.5", newLineNumber: 5 },
+          { kind: "context", text: "5", oldLineNumber: 5, newLineNumber: 6 },
+          { kind: "context", text: "6", oldLineNumber: 6, newLineNumber: 7 },
+          { kind: "context", text: "7", oldLineNumber: 7, newLineNumber: 8 },
+        ] }] },
+      ],
+      errors: [],
+    });
+
+    // Headers are spelled exactly as the rendered diff spells them.
+    let diffLines = (await session.diff()).split("\n");
+    for (let file of result.files) {
+      for (let hunk of file.hunks) expect(diffLines).toContain(hunk.header);
+    }
+
+    // Against an explicit commit id, with the same id rules as diff().
+    expect(await session.structuredDiff(c1)).toEqual(result);
+    await expect(session.structuredDiff(c1.slice(0, 8))).rejects.toThrow(/not a full git commit id/);
+
+    // After committing, HEAD matches the worktree.
+    await session.commit("changes");
+    expect(await session.structuredDiff()).toEqual({ files: [], errors: [] });
+  }));
+
+  it("structuredDiff() reports EOF-newline markers as unnumbered context",
+      () => withImpl(async impl => {
+    addChat(impl, 1);
+    let c1 = await commitFiles(impl, { "a.txt": "one" });
+    let { session } = await createWorktreeSession(impl, 1, c1);
+    await session.writeFile("a.txt", "one\n");
+
+    expect(await session.structuredDiff()).toEqual({
+      files: [{ path: "a.txt", status: "modified", oldKind: "file", newKind: "file",
+                hunks: [{ header: "@@ -1,1 +1,1 @@", lines: [
+        { kind: "removed", text: "one", oldLineNumber: 1 },
+        { kind: "context", text: "\\ No newline at end of file" },
+        { kind: "added", text: "one", newLineNumber: 1 },
+      ] }] }],
+      errors: [],
+    });
+  }));
+
+  it("structuredDiff() reports special entries as errors", () => withImpl(async impl => {
+    addChat(impl, 1);
+    await loadFixtureRepo(impl);
+    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    let { session } = await createWorktreeSession(impl, 1, c1);
+
+    let result = await session.structuredDiff(COMMIT_1);
+    expect(result.errors).toEqual(expect.arrayContaining([
+      { file: "link.md", error: "link.md is a symlink to README.md" },
+      { file: "vendored", error: "vendored is a submodule (gitlink) pointing at commit " +
+                                 "1111111111111111111111111111111111111111" },
+    ]));
+    expect(result.files).toContainEqual({ path: "a.txt", status: "added", newKind: "file", hunks: [
+      { header: "@@ -0,0 +1,1 @@", lines: [{ kind: "added", text: "one", newLineNumber: 1 }] },
+    ] });
+    expect(result.files.find(file => file.path === "README.md")?.status).toBe("removed");
+    // Every path lands in exactly one of the two lists.
+    let errorPaths = result.errors.map(error => error.file);
+    expect(result.files.some(file => errorPaths.includes(file.path))).toBe(false);
+  }));
+
+  it("diffs report executable-bit changes, with or without content changes",
+      () => withImpl(async impl => {
+    addChat(impl, 1);
+    // Two commits holding the same blobs, differing only in the files' modes.
+    let scriptOid = await impl.gitCache.putFromGatekeeper(
+        999, "blob", new TextEncoder().encode("#!/bin/sh\n"));
+    let toolOid = await impl.gitCache.putFromGatekeeper(
+        999, "blob", new TextEncoder().encode("tool\n"));
+    let commitWithModes = async (entries: { mode: string, name: string, oid: string }[]) => {
+      let tree = await impl.gitCache.putFromGatekeeper(999, "tree", treePayload(entries));
+      return await impl.gitCache.putFromGatekeeper(
+          999, "commit", commitPayload(tree, [], JSON.stringify(entries)));
+    };
+    let plain = await commitWithModes([
+      { mode: "100644", name: "script.sh", oid: scriptOid },
+      { mode: "100755", name: "tool", oid: toolOid },
+    ]);
+    let modesFlipped = await commitWithModes([
+      { mode: "100755", name: "script.sh", oid: scriptOid },
+      { mode: "100644", name: "tool", oid: toolOid },
+    ]);
+    let toolOnly = await commitWithModes([{ mode: "100644", name: "tool", oid: toolOid }]);
+    let { session } = await createWorktreeSession(impl, 1, modesFlipped);
+    // An edit keeps the base's mode, so this is a content change on top of the mode change.
+    await session.writeFile("tool", "tool v2\n");
+    let toolHunks = [{ header: "@@ -1,1 +1,1 @@", lines: [
+      { kind: "removed", text: "tool", oldLineNumber: 1 },
+      { kind: "added", text: "tool v2", newLineNumber: 1 },
+    ] }];
+    let toolDiff = formatUnifiedDiff("tool", "tool\n", "tool v2\n", true, true);
+
+    // Mode changes: a "modified" file whose kinds differ, with or without hunks.
+    expect(await session.structuredDiff(plain)).toEqual({
+      files: [
+        { path: "script.sh", status: "modified", oldKind: "file", newKind: "executable",
+          hunks: [] },
+        { path: "tool", status: "modified", oldKind: "executable", newKind: "file",
+          hunks: toolHunks },
+      ],
+      errors: [],
+    });
+    expect(await session.diff(plain)).toBe([
+      "diff --git a/script.sh b/script.sh\nold mode 100644\nnew mode 100755",
+      "diff --git a/tool b/tool\nold mode 100755\nnew mode 100644",
+      toolDiff,
+    ].join("\n"));
+
+    // An added executable names its kind; an unchanged mode gets no mode lines.
+    let scriptHunks = [{ header: "@@ -0,0 +1,1 @@", lines: [
+      { kind: "added", text: "#!/bin/sh", newLineNumber: 1 },
+    ] }];
+    expect((await session.structuredDiff(toolOnly)).files).toEqual([
+      { path: "script.sh", status: "added", newKind: "executable", hunks: scriptHunks },
+      { path: "tool", status: "modified", oldKind: "file", newKind: "file", hunks: toolHunks },
+    ]);
+    expect(await session.diff(toolOnly)).toBe([
+      "diff --git a/script.sh b/script.sh\nnew file mode 100755",
+      formatUnifiedDiff("script.sh", "", "#!/bin/sh\n", false, true),
+      toolDiff,
+    ].join("\n"));
+
+    // So does a removed one.
+    await session.deleteFile("script.sh");
+    expect((await session.structuredDiff(modesFlipped)).files).toEqual([
+      { path: "script.sh", status: "removed", oldKind: "executable", hunks: [
+        { header: "@@ -1,1 +0,0 @@",
+          lines: [{ kind: "removed", text: "#!/bin/sh", oldLineNumber: 1 }] },
+      ] },
+      { path: "tool", status: "modified", oldKind: "file", newKind: "file", hunks: toolHunks },
+    ]);
+    expect(await session.diff(modesFlipped)).toBe([
+      "diff --git a/script.sh b/script.sh\ndeleted file mode 100755",
+      formatUnifiedDiff("script.sh", "#!/bin/sh\n", "", true, false),
+      toolDiff,
+    ].join("\n"));
+  }));
 });
 
 describe("worktree binding description", () => {

@@ -29,6 +29,13 @@ interface ExecutionContext<Props = unknown> {
   readonly exports: Cloudflare.Exports;
 }
 
+// Also missing from @cloudflare/workers-types: the persistent-stub API, ctx.restore() and the
+// [restore]() method it invokes to rebuild the target.
 interface DurableObjectState<Props = unknown> {
   readonly exports: Cloudflare.Exports;
+  restore<T>(params: unknown): Promise<T>;
+}
+
+declare namespace CloudflareWorkersModule {
+  export const restore: unique symbol;
 }

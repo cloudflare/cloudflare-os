@@ -64,20 +64,19 @@ export function toTranscriptEvents(history: readonly AiChatMessage[]): Transcrip
       continue;
     }
     if (message.type === "agentCallback") {
-      // agent.ts replays a received callback as a user message naming self.<methodName>()
-      // and the callback args, so it is model input too.
-      events.push({
-        type: "message",
-        role: "user",
-        content: `A callback was received: \`self.${message.methodName}()\`\n` +
-          `Arguments: ${message.argsSummary}`,
-        metadata,
-      });
+      // agent.ts replays a received call as a user message naming the method and, when the
+      // arguments are still bound in the agent's env, their binding name and summary. A message
+      // with no bindingName predates durable calls and its arguments are gone.
+      const call = `A callback was received: \`self.${message.methodName}()\`.`;
+      const content = message.bindingName === undefined
+        ? `${call} Its arguments are no longer available.`
+        : `${call} Arguments (\`env.${message.bindingName}\`):\n${message.argsSummary}`;
+      events.push({ type: "message", role: "user", content, metadata });
       continue;
     }
     if (message.type === "agentNudge") {
-      // agent.ts replays a system-generated nudge as a user message so the model is
-      // prompted to continue.
+      // Obsolete message type, no longer emitted; agent.ts still replays it from old chat logs
+      // as a user message.
       events.push({ type: "message", role: "user", content: message.text, metadata });
       continue;
     }

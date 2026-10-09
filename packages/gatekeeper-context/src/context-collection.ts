@@ -16,7 +16,7 @@ import {
   readArtifactRepoDocuments, type ArtifactContextDocument,
 } from "./artifact-sync.js";
 import {
-  isSkillManifestPath, parseSkillManifest, type SkillIndexEntry,
+  isSkillManifestPath, parseSkillManifest, updateSkillManifestName, type SkillIndexEntry,
 } from "./agent-skill.js";
 import { obsContext } from "./observability.js";
 import {
@@ -67,6 +67,15 @@ function baseName(path: string): string {
   return i < 0 ? path : path.slice(i + 1);
 }
 
+function dirName(path: string): string {
+  let i = path.lastIndexOf("/");
+  return i < 0 ? "" : path.slice(0, i);
+}
+
+function joinPath(dir: string, name: string): string {
+  return dir ? `${dir}/${name}` : name;
+}
+
 // Lowercased file extension (without the dot), or "" if none.
 function extOf(path: string): string {
   let b = baseName(path);
@@ -91,6 +100,15 @@ function contextRecord(document: ContextDocument): ContextRecord & { body: Uint8
     description: truncateContextDescription(document.description),
     body: encodeStoredContextBody(document.contentType, document.body),
   };
+}
+
+function contextRecordSize(record: ContextRecord): number {
+  let bodyBytes = record.body instanceof Uint8Array
+    ? record.body.byteLength
+    : new TextEncoder().encode(record.body).byteLength;
+  return bodyBytes + new TextEncoder().encode(
+    JSON.stringify({ ...record, body: "" }),
+  ).byteLength;
 }
 
 // Old records that predate git-based collections won't have `content` set in storage.
@@ -134,6 +152,13 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
   // Set when an artifact refresh operation is in flight. Additional refresh requests should
   // await this promise when set instead of kicking off additional concurrent refreshes.
   #artifactRefresh?: Promise<void>;
+
+  #assertRecordSize(record: ContextRecord): void {
+    let byteLength = contextRecordSize(record);
+    if (byteLength > MAX_DOCUMENT_BODY_BYTES) {
+      throw new Error(`Document is too large (${byteLength} bytes; max ${MAX_DOCUMENT_BODY_BYTES}).`);
+    }
+  }
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -369,9 +394,10 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     };
   }
 
-  async putContextDocument(
+  async #writeContextDocument(
       path: string,
-      doc: { description: string; body: string; contentType?: string }): Promise<void> {
+      doc: { description: string; body: string; contentType?: string },
+      createOnly: boolean): Promise<void> {
     this.#assertWebWritable();
     validateDocumentPath(path);
     let contentType = doc.contentType || contentTypeFromPath(path);
@@ -379,15 +405,12 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       path, name: baseName(path), description: doc.description, contentType, body: doc.body,
       lastUpdated: new Date(),
     });
-    let byteLength = record.body.byteLength + new TextEncoder().encode(
-      JSON.stringify({ ...record, body: "" }),
-    ).byteLength;
-    if (byteLength > MAX_DOCUMENT_BODY_BYTES) {
-      throw new Error(`Document is too large (${byteLength} bytes; max ${MAX_DOCUMENT_BODY_BYTES}).`);
-    }
+    this.#assertRecordSize(record);
 
     this.storage.transaction(() => {
-      let isNew = !this.storage.documents.get(path);
+      let existing = this.storage.documents.get(path);
+      if (createOnly && existing) throw new Error(`Document already exists: ${path}`);
+      let isNew = !existing;
       // Use the file name from the path as the display name.
       this.#putDocument(record);
 
@@ -397,6 +420,47 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       this.storage.metadata.put(meta);
     });
     await this.#propagate();
+  }
+
+  async putContextDocument(
+      path: string,
+      doc: { description: string; body: string; contentType?: string }): Promise<void> {
+    await this.#writeContextDocument(path, doc, false);
+  }
+
+  async createContextSkill(
+      path: string,
+      doc: { description: string; body: string; contentType?: string }): Promise<void> {
+    if (!isSkillManifestPath(path)) throw new Error("Skill manifest filename must be SKILL.md.");
+    parseSkillManifest(path, doc.body);
+    let directory = dirName(path);
+    let directoryOccupied = !!(directory && this.storage.documents.get(directory));
+    if (directory && !directoryOccupied) {
+      for (let record of this.storage.documents.list({ prefix: directory + "/" })) {
+        directoryOccupied = record.path.length > 0;
+        break;
+      }
+    }
+    if (directoryOccupied) {
+      throw new Error(`Skill directory already exists: ${directory}`);
+    }
+    let parentDirectory = dirName(directory);
+    if (parentDirectory) {
+      let parentExists = false;
+      for (let record of this.storage.documents.list({ prefix: parentDirectory + "/" })) {
+        parentExists = record.path.length > 0;
+        break;
+      }
+      if (!parentExists) throw new Error(`Directory not found: ${parentDirectory}`);
+      let ancestor = parentDirectory;
+      while (ancestor) {
+        if (this.storage.documents.get(joinPath(ancestor, "SKILL.md"))) {
+          throw new Error("Cannot create a skill inside another skill.");
+        }
+        ancestor = dirName(ancestor);
+      }
+    }
+    await this.#writeContextDocument(path, doc, true);
   }
 
   async deleteContextDocument(path: string): Promise<void> {
@@ -417,12 +481,48 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     await this.#propagate();
   }
 
-  async moveContextDocument(from: string, to: string): Promise<void> {
+  async deleteContextDocumentTree(path: string): Promise<void> {
     this.#assertWebWritable();
-    validateDocumentPath(from);
-    validateDocumentPath(to);
-    if (from === to) return;
+    validateDocumentPath(path);
+    let paths = [...this.storage.documents.list({ prefix: path + "/" })]
+      .map(record => record.path);
+    if (this.storage.documents.get(path)) paths.unshift(path);
+    if (paths.length === 0) throw new Error(`Document not found: ${path}`);
 
+    await this.#deleteContextDocuments(paths);
+  }
+
+  async deleteContextSkill(manifestPath: string): Promise<void> {
+    this.#assertWebWritable();
+    validateDocumentPath(manifestPath);
+    if (!isSkillManifestPath(manifestPath)) throw new Error("Skill manifest filename must be SKILL.md.");
+    let manifest = this.storage.documents.get(manifestPath);
+    if (!manifest) throw new Error(`Document not found: ${manifestPath}`);
+
+    let directory = dirName(manifestPath);
+    let paths = directory
+      ? [...this.storage.documents.list({ prefix: directory + "/" })].map(record => record.path)
+      : [manifestPath];
+    if (!paths.includes(manifestPath)) throw new Error(`Document not found: ${manifestPath}`);
+    await this.#deleteContextDocuments(paths);
+  }
+
+  async #deleteContextDocuments(paths: string[]): Promise<void> {
+    this.storage.transaction(() => {
+      for (let documentPath of paths) this.#deleteDocument(documentPath);
+
+      let meta = this.getMetadata();
+      meta.documentCount = Math.max(0, meta.documentCount - paths.length);
+      meta.lastUpdated = new Date();
+      this.storage.metadata.put(meta);
+    });
+    await this.#propagate();
+  }
+
+  async #moveContextDocuments(
+      from: string,
+      to: string,
+      transform?: (record: ContextRecord, newPath: string) => Partial<ContextRecord>): Promise<void> {
     // Reject moving a folder into one of its own descendants.
     if (to.startsWith(from + "/")) {
       throw new Error("Cannot move a folder into itself.");
@@ -449,12 +549,15 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       }
     }
 
+    await this.#applyDocumentMoves(moves, transform);
+  }
+
+  async #applyDocumentMoves(
+      moves: { record: ContextRecord; newPath: string }[],
+      transform?: (record: ContextRecord, newPath: string) => Partial<ContextRecord>): Promise<void> {
     this.storage.transaction(() => {
+      for (let m of moves) this.#deleteDocument(m.record.path);
       for (let m of moves) {
-        this.#deleteDocument(m.record.path);
-      }
-      for (let m of moves) {
-        // Update the file name and content type for the new path.
         let contentType = extOf(m.record.path) !== extOf(m.newPath)
           ? contentTypeFromPath(m.newPath)
           : m.record.contentType;
@@ -464,6 +567,7 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
           name: baseName(m.newPath),
           contentType,
           lastUpdated: new Date(),
+          ...transform?.(m.record, m.newPath),
         };
         this.#putDocument(record);
       }
@@ -473,6 +577,135 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       this.storage.metadata.put(meta);
     });
     await this.#propagate();
+  }
+
+  async #moveContextSkill(
+      manifestPath: string,
+      destinationDirectory: string,
+      updatedBody?: string): Promise<void> {
+    let manifest = this.storage.documents.get(manifestPath);
+    if (!manifest) throw new Error(`Document not found: ${manifestPath}`);
+    let sourceDirectory = dirName(manifestPath);
+    let moves: { record: ContextRecord; newPath: string }[] = [];
+    if (sourceDirectory) {
+      let sourcePrefix = sourceDirectory + "/";
+      let destinationPrefix = destinationDirectory + "/";
+      for (let record of this.storage.documents.list({ prefix: sourcePrefix })) {
+        moves.push({
+          record,
+          newPath: destinationPrefix + record.path.slice(sourcePrefix.length),
+        });
+      }
+    } else {
+      moves.push({ record: manifest, newPath: joinPath(destinationDirectory, "SKILL.md") });
+    }
+    if (!moves.some(move => move.record.path === manifestPath)) {
+      throw new Error(`Document not found: ${manifestPath}`);
+    }
+
+    for (let move of moves) {
+      validateDocumentPath(move.newPath);
+    }
+
+    if (updatedBody !== undefined) {
+      let manifestMove = moves.find(move => move.record.path === manifestPath);
+      if (manifestMove) {
+        let updatedRecord: ContextRecord = {
+          ...manifestMove.record,
+          path: manifestMove.newPath,
+          name: baseName(manifestMove.newPath),
+          body: encodeStoredContextBody(manifestMove.record.contentType, updatedBody),
+          lastUpdated: new Date(),
+        };
+        this.#assertRecordSize(updatedRecord);
+      }
+    }
+
+    let movedFrom = new Set(moves.map(move => move.record.path));
+    let occupied = this.storage.documents.get(destinationDirectory);
+    if (occupied && !movedFrom.has(occupied.path)) {
+      throw new Error(`Destination already exists: ${destinationDirectory}`);
+    }
+    for (let record of this.storage.documents.list({ prefix: destinationDirectory + "/" })) {
+      if (!movedFrom.has(record.path)) {
+        throw new Error(`Destination already exists: ${destinationDirectory}`);
+      }
+    }
+
+    await this.#applyDocumentMoves(moves, (record) =>
+      updatedBody !== undefined && record.path === manifestPath
+        ? { body: encodeStoredContextBody(record.contentType, updatedBody) }
+        : {});
+  }
+
+  async moveContextDocument(from: string, to: string): Promise<void> {
+    this.#assertWebWritable();
+    validateDocumentPath(from);
+    validateDocumentPath(to);
+    if (from === to) return;
+
+    await this.#moveContextDocuments(from, to);
+  }
+
+  async moveContextSkill(manifestPath: string, directoryPath: string): Promise<void> {
+    this.#assertWebWritable();
+    validateDocumentPath(manifestPath);
+    if (directoryPath) validateDocumentPath(directoryPath);
+    if (!isSkillManifestPath(manifestPath)) throw new Error("Skill manifest filename must be SKILL.md.");
+
+    let manifest = this.storage.documents.get(manifestPath);
+    if (!manifest) throw new Error(`Document not found: ${manifestPath}`);
+    let body = decodeStoredContextBody(manifest.contentType, manifest.body);
+    let skill = parseSkillManifest(manifestPath, body);
+    let sourceDirectory = dirName(manifestPath);
+    let currentParent = dirName(sourceDirectory);
+    if (currentParent === directoryPath) return;
+    if (sourceDirectory && (
+      directoryPath === sourceDirectory
+      || directoryPath.startsWith(sourceDirectory + "/")
+    )) {
+      throw new Error("Cannot move a skill into itself.");
+    }
+    if (directoryPath) {
+      let targetExists = false;
+      for (let record of this.storage.documents.list({ prefix: directoryPath + "/" })) {
+        targetExists = record.path.length > 0;
+        break;
+      }
+      if (!targetExists) throw new Error(`Directory not found: ${directoryPath}`);
+      let ancestor = directoryPath;
+      while (ancestor) {
+        if (this.storage.documents.get(joinPath(ancestor, "SKILL.md"))) {
+          throw new Error("Cannot move a skill inside another skill.");
+        }
+        ancestor = dirName(ancestor);
+      }
+    }
+    let destinationDirectory = joinPath(
+      directoryPath,
+      sourceDirectory ? baseName(sourceDirectory) : skill.name,
+    );
+    validateDocumentPath(destinationDirectory);
+    await this.#moveContextSkill(manifestPath, destinationDirectory);
+  }
+
+  async renameContextSkill(manifestPath: string, newName: string): Promise<void> {
+    this.#assertWebWritable();
+    validateDocumentPath(manifestPath);
+    if (!isSkillManifestPath(manifestPath)) throw new Error("Skill manifest filename must be SKILL.md.");
+
+    let manifest = this.storage.documents.get(manifestPath);
+    if (!manifest) throw new Error(`Document not found: ${manifestPath}`);
+    let body = decodeStoredContextBody(manifest.contentType, manifest.body);
+    let updatedBody = updateSkillManifestName(body, newName);
+    // Validate the rewritten manifest before mutating storage.
+    parseSkillManifest(manifestPath, updatedBody);
+
+    let sourceDirectory = dirName(manifestPath);
+    let parentDirectory = dirName(sourceDirectory);
+    let destinationDirectory = joinPath(parentDirectory, newName);
+    validateDocumentPath(destinationDirectory);
+    await this.#moveContextSkill(manifestPath, destinationDirectory, updatedBody);
   }
 
   // --- Artifact-backed projection ---

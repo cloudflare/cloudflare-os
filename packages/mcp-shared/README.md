@@ -104,6 +104,11 @@ way, saying it may or may not have taken effect.
 So the cost of a network blip is a call someone has to stage again, deliberately. That is the trade
 this module makes everywhere: an approval is never spent twice without a person saying so.
 
+A failed call can always be discarded. The Workshop keeps a failed approval pending until the user
+retries or discards it, and a call the agent awaits blocks its chat until then, so `reject` accepts a
+`failed` record instead of refusing it. Discarding keeps the failure on record for the Gadget to
+collect, so an unknown outcome is still reported as unknown, and rules out any further attempt.
+
 ## Limits
 
 Fixed rather than configurable.

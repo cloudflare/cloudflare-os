@@ -118,7 +118,7 @@ All occurrences of `http://localhost:8787/gatekeeper/email` in the doc above wil
    - **Custom address**: `*@yourdomain.com` (catch-all) or specific addresses like `gadget-*@yourdomain.com`
    - **Action**: Send to a Worker
    - **Worker**: Select the deployed `gatekeeper-email` worker
-3. Alternatively, you can configure this in your wrangler.jsonc for deployment.
+3. Alternatively, you can configure this in your Worker config for deployment.
 
 ### How It Fits Together
 

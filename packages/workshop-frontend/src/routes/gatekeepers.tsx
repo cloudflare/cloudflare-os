@@ -25,6 +25,7 @@ import { GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
 import { useDocumentTitle } from '../useDocumentTitle'
 import { useSiteName } from '../ServerConfigContext'
 import { AccountsSubscriberAdapter } from '../accountsSubscriber'
+import { openConnectWindow } from '../connectHandoff'
 
 export const Route = createFileRoute('/gatekeepers')({
   component: ConnectorsPage,
@@ -576,8 +577,7 @@ function ConnectorsPage() {
         // If the gatekeeper provides a management UI, its nav entry should appear without a reload.
         refreshGatekeeperApps(authenticatedApi)
       } else {
-        const { url } = await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns)
-        window.open(url, '_blank', 'noopener,noreferrer')
+        openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns))
       }
       handleCloseModal()
     } catch (err) {
@@ -592,15 +592,13 @@ function ConnectorsPage() {
     if (!modalTarget || modalTarget.kind !== 'manage') return
     setEnsuringResourceUrlPatterns((prev) => [...new Set([...prev, ...resourceUrlPatterns])])
     try {
-      const result = await authenticatedApi.ensureAccountResources(
+      const flow = await authenticatedApi.ensureAccountResources(
         modalTarget.accountId,
         resourceUrlPatterns,
       )
-      if (result.url) {
-        window.open(result.url, '_blank', 'noopener,noreferrer')
-      }
-      // On success the new grant arrives via subscribeConnectedAccounts(); the toggle reflects it
-      // once `grantedResourceUrlPatterns` updates.
+      if (flow) openConnectWindow(flow)
+      // The popup redeems the ticket itself; the new grant arrives via subscribeConnectedAccounts(),
+      // and the toggle reflects it once `grantedResourceUrlPatterns` updates.
     } catch (err) {
       console.error('Failed to expand account access:', err)
       toasts.add({ title: 'Failed to request additional access', variant: 'error' })
@@ -633,8 +631,7 @@ function ConnectorsPage() {
   const handleReconnect = async (accountId: number) => {
     setReconnectingAccountId(accountId)
     try {
-      const { url } = await authenticatedApi.reconnectAccount(accountId)
-      window.open(url, '_blank', 'noopener,noreferrer')
+      openConnectWindow(await authenticatedApi.reconnectAccount(accountId))
     } catch (err) {
       console.error('Failed to reconnect account:', err)
       toasts.add({ title: 'Failed to reconnect account', variant: 'error' })

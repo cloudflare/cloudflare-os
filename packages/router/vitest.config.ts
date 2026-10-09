@@ -1,5 +1,6 @@
 import { defineConfig } from 'vitest/config'
 import { cloudflareTest } from '@cloudflare/vitest-pool-workers'
+import { COMPATIBILITY_DATE } from '@gadgets/scripts/worker-config'
 
 /**
  * Tests run inside workerd (via vitest-pool-workers) so they exercise the same runtime APIs as
@@ -10,7 +11,7 @@ export default defineConfig({
   plugins: [
     cloudflareTest({
       miniflare: {
-        compatibilityDate: '2026-09-04',
+        compatibilityDate: COMPATIBILITY_DATE,
         compatibilityFlags: ['nodejs_compat'],
       },
     }),

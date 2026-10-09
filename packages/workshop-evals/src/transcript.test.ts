@@ -84,6 +84,7 @@ it("keeps every model-visible input in the trajectory", () => {
     type: "agentCallback",
     methodName: "run",
     argsSummary: "[1]",
+    bindingName: "run_ARGS",
   }, {
     chatId: 1,
     sequence: 4,
@@ -112,11 +113,36 @@ it("keeps every model-visible input in the trajectory", () => {
     { type: "message", role: "user", content: "Build it" },
     { type: "message", role: "assistant", content: "Working" },
     { type: "message", role: "user", content: "Gadget-authored prompt" },
-    { type: "message", role: "user", content: expect.stringMatching(/self\.run\(\).*\[1\]/s) },
+    {
+      type: "message",
+      role: "user",
+      content: expect.stringMatching(/self\.run\(\).*env\.run_ARGS.*\[1\]/s),
+    },
     { type: "message", role: "assistant", content: "Handling callback" },
     { type: "message", role: "user", content: "Callbacks are still open" },
     { type: "message", role: "assistant", content: "Continuing" },
   ]);
+});
+
+it("replays a callback from before durable calls without its arguments", () => {
+  const history: AiChatMessage[] = [{
+    chatId: 1,
+    sequence: 1,
+    timestamp: new Date(1),
+    author: agent,
+    type: "agentCallback",
+    methodName: "run",
+    argsSummary: "[1]",
+  }];
+
+  expect(toTranscriptEvents(history)).toMatchObject([{
+    type: "message",
+    role: "user",
+    content: expect.stringMatching(/self\.run\(\).*no longer available/s),
+  }]);
+  expect(toTranscriptEvents(history)[0]).not.toMatchObject({
+    content: expect.stringContaining("[1]"),
+  });
 });
 
 it("stamps canonical sequence and timestamp metadata on every event", () => {

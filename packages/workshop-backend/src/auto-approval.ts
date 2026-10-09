@@ -3,10 +3,11 @@
 // concurrent drains (the DO's input gate is open across the apply await) can't double-apply the
 // same action. The apply is injected, keeping this constructible over a mock storage in tests.
 
-import type { Collection, NonUniqueIndex } from "@gadgets/typed-storage";
+import type { Collection, NonUniqueIndex, Singleton } from "@gadgets/typed-storage";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
+import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { createWorkshopLogger } from "./observability";
-import type { ActionRecord, AutoApproveTagRecord } from "./overseer.js";
+import type { ActionRecord, AutoApproveTagRecord } from "./storage-schema/overseer-storage.js";
 
 const logger = createWorkshopLogger("workshop.auto.approval");
 
@@ -14,6 +15,24 @@ export interface AutoApprovalStorage {
   actions: Collection<ActionRecord, number>
       & { pendingByGatekeeper: NonUniqueIndex<ActionRecord, number> };
   autoApproveTags: Collection<AutoApproveTagRecord>;
+
+  /** The restricted-data latch (see makeOverseerStorage). While set, nothing auto-approves. */
+  containsRestrictedData: Singleton<boolean>;
+}
+
+/**
+ * The single authority on whether an action may be applied without a human: the enabling rule if
+ * the author marked the action `autoApprovable`, the user enabled a rule for its `actionKind` on
+ * this gatekeeper, and the workspace has not latched restricted mode; else undefined.
+ */
+export function autoApprovalRule(
+    storage: AutoApprovalStorage, gatekeeperId: number, description: ActionDescription)
+    : AutoApproveTagRecord | undefined {
+  if (description.autoApprovable !== true) return undefined;
+  let tag = description.actionKind?.tag;
+  if (tag === undefined) return undefined;
+  if (storage.containsRestrictedData.get()) return undefined;
+  return storage.autoApproveTags.get(`${gatekeeperId}:${tag}`);
 }
 
 /**
@@ -26,26 +45,33 @@ export type ApplyPendingActionFn = (
     autoApproved: boolean) => Promise<void>;
 
 export class AutoApprovalDrainer {
-  // Per-gatekeeper single-flight state. Key present => a drain is running for that gatekeeper; the
-  // value is a "rerun" flag, set when another drain is requested while one is in flight, so work
-  // submitted during a drain isn't lost.
-  #draining = new Map<number, boolean>();
+  // Per-gatekeeper single-flight state: the running drain, and whether another was requested while
+  // it ran, so work submitted during a drain isn't lost. Coalesced callers share the running
+  // drain's promise, so it settles only after the rerun they requested.
+  #draining = new Map<number, Promise<void>>();
+  #rerun = new Set<number>();
 
   constructor(
       private storage: AutoApprovalStorage,
       private applyPendingAction: ApplyPendingActionFn) {}
 
-  async drain(gatekeeperId: number): Promise<void> {
-    if (this.#draining.has(gatekeeperId)) {
-      this.#draining.set(gatekeeperId, true);  // ask the running drain to loop again
-      return;
+  drain(gatekeeperId: number): Promise<void> {
+    let running = this.#draining.get(gatekeeperId);
+    if (running) {
+      this.#rerun.add(gatekeeperId);
+      return running;
     }
-    this.#draining.set(gatekeeperId, false);
+    running = this.#drainWhileRequested(gatekeeperId);
+    this.#draining.set(gatekeeperId, running);
+    return running;
+  }
+
+  async #drainWhileRequested(gatekeeperId: number): Promise<void> {
     try {
       do {
-        this.#draining.set(gatekeeperId, false);
+        this.#rerun.delete(gatekeeperId);
         await this.#drainOnce(gatekeeperId);
-      } while (this.#draining.get(gatekeeperId));
+      } while (this.#rerun.has(gatekeeperId));
     } finally {
       this.#draining.delete(gatekeeperId);
     }
@@ -56,8 +82,8 @@ export class AutoApprovalDrainer {
   // applying -- it is never skipped ahead of. This preserves in-order application and the
   // invariant that nothing is silently applied past a human gate.
   //
-  // Eligibility requires BOTH signals: the author's `autoApprovable` verdict on the action AND a
-  // user-enabled rule for the action's type on this gatekeeper.
+  // Eligibility is `autoApprovalRule()`: the author's `autoApprovable` verdict, a user-enabled
+  // rule for the action's kind, and no restricted-data latch.
   async #drainOnce(gatekeeperId: number): Promise<void> {
     // Materialize before applying: the index yields lazily in ascending id order, and applying
     // mutates it mid-iteration. Actions created after this snapshot trigger their own drain(),
@@ -67,11 +93,8 @@ export class AutoApprovalDrainer {
     for (let record of pending) {
       if (record.type !== "action") continue;
 
-      let tag = record.description.actionKind?.tag;
-      let rule = tag !== undefined
-          ? this.storage.autoApproveTags.get(`${gatekeeperId}:${tag}`)
-          : undefined;
-      if (record.description.autoApprovable !== true || rule === undefined) {
+      let rule = autoApprovalRule(this.storage, gatekeeperId, record.description);
+      if (rule === undefined) {
         // A manual gate. Stop rather than skipping ahead to any later auto-eligible action.
         return;
       }

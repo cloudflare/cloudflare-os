@@ -1,6 +1,6 @@
 /** Durable collaborator admission and per-collection observer exclusion. */
 
-import { createLogger } from "@gadgets/backend-utils/logger";
+import { createLogger } from "@gadgets/observability/logger";
 import { generateNonce } from "./connect-nonce";
 import type { KvScannable } from "./kv";
 import { perStorage } from "./per-storage";

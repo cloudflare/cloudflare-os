@@ -14,11 +14,12 @@
 //
 // We use real git formats (rather than a git-shaped custom encoding) so that gadget code can
 // later be exported to and imported from real git repositories, and so agents can eventually
-// "mount" arbitrary repos through gatekeeper-gated push/pull. isomorphic-git provides the object
-// codec; we use only its plumbing (writeBlob/writeTree/writeCommit/read*/log), which operates
-// against a gitdir containing nothing but `objects/**`. The porcelain is off-limits:
-// `git.commit` requires HEAD/index/config, and `git.merge` cannot represent the merge behavior
-// we want (see `threeWayMerge`).
+// "mount" arbitrary repos through gatekeeper-gated push/pull. isomorphic-git provides most of the
+// object codec; we use only its plumbing (writeBlob/writeTree/read*), which operates against a
+// gitdir containing nothing but `objects/**`. Commits are written by our own encoder instead
+// (`encodeGitCommit()` in git-codec.ts), which can add the headers isomorphic-git's cannot. The
+// porcelain is off-limits: `git.commit` requires HEAD/index/config, and `git.merge` cannot
+// represent the merge behavior we want (see `threeWayMerge`).
 //
 // Storage notes:
 // - Loose objects only, one collection record per object, keyed by oid. isomorphic-git never
@@ -27,51 +28,44 @@
 // - No object exceeds ~2MB today (records hold single source files, small trees, and commit
 //   headers). If large blobs ever appear, chunking records or spilling to R2 is a change local
 //   to the fs shim below.
-// - No GC. Dangling objects are only created by accepted merges, imports, and migration -- never
-//   by in-flight chats -- and are cheap. If GC is ever needed, the roots are enumerable: gadget
-//   records, blueprint gadget records, live chats' pinned commits, the pin declarations in chat
-//   logs and compaction checkpoints (closed epochs are reconstructed from them), and the
-//   `observedCommit` stamps on chats' readFile tool calls (which nothing else roots -- a future
-//   GC must either root them or the agent's elision path must tolerate a missing commit by
-//   eliding unconditionally).
+// - No GC. Dangling objects are only created by accepted merges, imports, migration, loading
+//   a blueprint's release (whose objects are stored whether or not anything comes to refer to
+//   them), and the merge commits of a chat that is then discarded (an update from mainline
+//   commits the chat's files and the merge result, see updateChatFromMainline, and applying a
+//   blueprint commits its merge, see applyBlueprint) -- never by a chat's edits -- and are
+//   cheap. If GC is ever needed, the roots are
+//   enumerable: gadget records (their heads and the blueprint releases they follow), blueprint
+//   gadget records (the commits they exported and the releases minted from those), live chats'
+//   pinned commits, the pin declarations in chat logs and compaction checkpoints (closed epochs
+//   are reconstructed from them), and the `observedOid` blob stamps (and legacy `observedCommit`
+//   stamps) on chats' readFile tool calls (which nothing else roots -- a future GC must either
+//   root them or the agent's replay must tolerate a missing object by eliding the read).
 
 import {
+  Errors,
+  hashBlob,
   readBlob,
   readCommit,
   readTree,
   writeBlob,
-  writeCommit,
   writeTree,
-  log,
+  type CommitObject,
   type PromiseFsClient,
   type TreeEntry,
 } from "isomorphic-git";
 import diff3Merge from "diff3";
-import { collection, type Collection } from "@gadgets/typed-storage";
+import type { Collection } from "@gadgets/typed-storage";
 import type { AiChatAuthorInfo, CommitIdentity, CommitInfo } from "@gadgets/workshop-shared/api";
-
-// =======================================================================================
-// Storage schema
-
-/**
- * One git loose object: `data` is the zlib-deflated object exactly as git would store it under
- * `.git/objects/xx/yyyy...`, and `oid` is its 40-hex SHA-1 name. Content-addressed, hence
- * immutable and idempotent to rewrite.
- */
-export interface GitObjectRecord {
-  oid: string;
-  data: Uint8Array;
-}
-
-/**
- * Typed-storage schema for a git object store collection. Shared between `makeOverseerStorage()`
- * and tests so both bind the identical schema.
- */
-export function gitObjectsCollection() {
-  return collection<GitObjectRecord>()({
-    primaryKey: "oid",
-  });
-}
+import { MAX_FILE_TEXT_LENGTH } from "@gadgets/workshop-shared/code-change";
+import type { GitObjectRecord } from "./storage-schema/overseer-storage";
+import { MAX_GIT_OBJECT_SIZE } from "./git-cache";
+import {
+  encodeGitCommit,
+  encodeLooseObject,
+  gitObjectOid,
+  signatureSafe,
+  type GitCommitHeader,
+} from "./git-codec";
 
 // =======================================================================================
 // fs shim
@@ -202,6 +196,9 @@ export interface WriteCommitOptions {
 
   /** Author and committer timestamp. Recorded in UTC (timezone offset 0). */
   timestamp: Date;
+
+  /** Further headers, written after `committer` in the order given (see `GitCommit.headers`). */
+  headers?: readonly GitCommitHeader[];
 }
 
 // A parsed-but-unwritten tree: file contents at the leaves, subtrees within.
@@ -218,10 +215,12 @@ type TreeNode = Map<string, TreeNode | string>;
  * Construct one per Overseer instance and reuse it: it carries isomorphic-git's parse cache.
  */
 export class GitStore {
+  #objects: Collection<GitObjectRecord, string>;
   #fs: PromiseFsClient;
   #cache: object = {};
 
   constructor(objects: Collection<GitObjectRecord, string>) {
+    this.#objects = objects;
     this.#fs = makeGitObjectsFs(objects);
   }
 
@@ -232,19 +231,7 @@ export class GitStore {
    */
   async writeFilesAsCommit(
       files: ReadonlyMap<string, string>, options: WriteCommitOptions): Promise<string> {
-    let tree = await this.#writeTreeNode(buildTreeNode(files));
-    let when = { timestamp: Math.floor(options.timestamp.getTime() / 1000), timezoneOffset: 0 };
-    return await writeCommit({
-      fs: this.#fs,
-      gitdir: GITDIR,
-      commit: {
-        message: options.message,
-        tree,
-        parent: [...options.parents],
-        author: { ...options.author, ...when },
-        committer: { ...(options.committer ?? options.author), ...when },
-      },
-    });
+    return await this.writeCommitForTree(await this.#writeTreeNode(buildTreeNode(files)), options);
   }
 
   /**
@@ -263,88 +250,80 @@ export class GitStore {
   }
 
   /**
-   * Reads a commit's tree as a `path -> blob oid` map (flattened like `readCommitFiles`, but
-   * without touching blob content). Content addressing makes this the cheap way to ask which
-   * files differ between two commits -- see `changedPaths`.
+   * Like `readCommitFiles()`, but returns undefined if the store does not hold the commit with
+   * its whole tree. A blueprint release's ancestors arrive as commits alone, most of them, so
+   * holding a commit says nothing about holding its files.
    */
-  async commitFileOids(oid: string): Promise<Map<string, string>> {
-    let { commit } = await readCommit({ fs: this.#fs, gitdir: GITDIR, oid, cache: this.#cache });
-    let out = new Map<string, string>();
-    await this.#collectTreeOids(commit.tree, "", out);
-    return out;
-  }
-
-  /**
-   * The set of file paths whose content differs between two commits' trees (added, removed, or
-   * changed), compared by oid -- equal subtrees short-circuit without descending, and no blob
-   * content is ever read. `undefined` on either side means an empty tree, so a one-sided call
-   * lists a commit's whole tree.
-   */
-  async changedPaths(a: string | undefined, b: string | undefined): Promise<Set<string>> {
-    let changed = new Set<string>();
-    if (a === b) return changed;
-    let treeOf = async (oid: string | undefined) => oid === undefined ? undefined
-        : (await readCommit({ fs: this.#fs, gitdir: GITDIR, oid, cache: this.#cache }))
-            .commit.tree;
-    await this.#diffTrees(await treeOf(a), await treeOf(b), "", changed);
-    return changed;
-  }
-
-  // Accumulates the paths that differ between two trees (either may be absent = empty) into
-  // `out`. Entries are matched by name; a name that is a blob on one side and a tree on the
-  // other contributes every path under both sides.
-  async #diffTrees(aOid: string | undefined, bOid: string | undefined, prefix: string,
-                   out: Set<string>): Promise<void> {
-    if (aOid === bOid) return;
-    let entriesOf = async (oid: string | undefined) => {
-      if (oid === undefined) return new Map<string, TreeEntry>();
-      let { tree } = await readTree({ fs: this.#fs, gitdir: GITDIR, oid, cache: this.#cache });
-      return new Map(tree.map(entry => [entry.path, entry]));
-    };
-    let aEntries = await entriesOf(aOid);
-    let bEntries = await entriesOf(bOid);
-    for (let name of new Set([...aEntries.keys(), ...bEntries.keys()])) {
-      let a = aEntries.get(name);
-      let b = bEntries.get(name);
-      if (a?.oid === b?.oid && a?.type === b?.type) continue;
-      let path = prefix + name;
-      if (a?.type === "tree" || b?.type === "tree") {
-        // Descend the tree side(s); a blob opposite a tree is one more difference at `path`.
-        await this.#diffTrees(a?.type === "tree" ? a.oid : undefined,
-                              b?.type === "tree" ? b.oid : undefined, `${path}/`, out);
-        if (a?.type === "blob" || b?.type === "blob") out.add(path);
-      } else {
-        out.add(path);
-      }
+  async readCommitFilesIfHeld(oid: string): Promise<Map<string, string> | undefined> {
+    try {
+      return await this.readCommitFiles(oid);
+    } catch (err) {
+      if (err instanceof Errors.NotFoundError) return undefined;
+      throw err;
     }
   }
 
   /**
    * Walks the commit graph from `oid` (the commit itself first, then its ancestry), returning up
-   * to `depth` commits' metadata. Traversal order for merge commits follows git log's default
-   * (reverse chronological).
+   * to `depth` commits' metadata, each commit once. Traversal order for merge commits follows
+   * git log's default (reverse chronological).
    */
   async readCommitLog(oid: string, options: { depth?: number } = {}): Promise<CommitInfo[]> {
-    let entries = await log({
-      fs: this.#fs,
-      gitdir: GITDIR,
-      ref: oid,
-      depth: options.depth,
-      cache: this.#cache,
-    });
-    return entries.map(entry => ({
-      oid: entry.oid,
-      parents: entry.commit.parent,
-      message: entry.commit.message,
-      author: { name: entry.commit.author.name, email: entry.commit.author.email },
-      timestamp: new Date(entry.commit.author.timestamp * 1000),
-    }));
+    // Not isomorphic-git's `log()`, which forgets a commit once it has listed it. One that two
+    // parents of a merge both lead to is listed twice unless it is older than every commit
+    // between, which commits written in the same second are not. A gadget that has merged
+    // releases of blueprints has such commits: the releases that those were built on.
+    let entries: CommitInfo[] = [];
+    let reached = new Set([oid]);
+    let tips = [{ oid, commit: await this.readCommitObject(oid) }];
+    while (tips.length > 0) {
+      // The newest by commit date, as git orders them, and of several the first reached.
+      let next = tips.reduce((newest, tip) =>
+          tip.commit.committer.timestamp > newest.commit.committer.timestamp ? tip : newest);
+      tips.splice(tips.indexOf(next), 1);
+      entries.push({
+        oid: next.oid,
+        parents: next.commit.parent,
+        message: next.commit.message,
+        author: { name: next.commit.author.name, email: next.commit.author.email },
+        timestamp: new Date(next.commit.author.timestamp * 1000),
+      });
+      if (entries.length === options.depth) break;
+
+      for (let parent of next.commit.parent) {
+        if (reached.has(parent)) continue;
+        reached.add(parent);
+        tips.push({ oid: parent, commit: await this.readCommitObject(parent) });
+      }
+    }
+    return entries;
   }
 
   /** The tree oid of a commit. */
   async commitTree(oid: string): Promise<string> {
+    return (await this.readCommitObject(oid)).tree;
+  }
+
+  /**
+   * Reads a commit object's parsed headers and message. Unlike `readCommitLog()`, carries the
+   * committer and timezone offsets, and never touches any other object.
+   */
+  async readCommitObject(oid: string): Promise<CommitObject> {
     let { commit } = await readCommit({ fs: this.#fs, gitdir: GITDIR, oid, cache: this.#cache });
-    return commit.tree;
+    return commit;
+  }
+
+  /**
+   * Walks a commit's first-parent chain, the commit itself first. A first parent is the same
+   * line's previous state and any other is something merged into it, so this is a gadget's own
+   * history, or one blueprint's releases. Reads commit objects only.
+   */
+  async *firstParentChain(oid: string): AsyncGenerator<{ oid: string, commit: CommitObject }> {
+    for (let next: string | undefined = oid; next !== undefined;) {
+      let commit: CommitObject = await this.readCommitObject(next);
+      yield { oid: next, commit };
+      next = commit.parent[0];
+    }
   }
 
   /**
@@ -379,24 +358,40 @@ export class GitStore {
    */
   async writeChangedTree(
       treeBase: string, changes: ReadonlyMap<string, string | null>): Promise<string> {
-    return await this.#rebuildTree(await this.commitTree(treeBase), buildChangeNode(changes), "")
+    let baseTree = await this.commitTree(treeBase);
+    // No changes: the base's tree, by oid. Rebuilding reads each tree it descends into, and this
+    // store holds only what has been pulled -- a worktree committed untouched may never have
+    // needed its base's root tree locally (a commit object can arrive alone, e.g. via
+    // env.GIT.readCommit()).
+    if (changes.size === 0) return baseTree;
+    return await this.#rebuildTree(baseTree, buildChangeNode(changes), "")
         ?? await writeTree({ fs: this.#fs, gitdir: GITDIR, tree: [] });
   }
 
-  /** The commit half of `writeChangedFilesAsCommit`: writes a commit for an existing tree oid. */
+  /**
+   * The commit half of `writeChangedFilesAsCommit`: writes a commit for an existing tree oid.
+   *
+   * Every commit the store writes is written here, by `encodeGitCommit()`, which throws on a name
+   * or email that a signature cannot hold rather than let it add header lines. (isomorphic-git's
+   * writer, which this replaces, writes them as given, and cannot write an extra header.) The
+   * ids are those isomorphic-git wrote for the same commits.
+   */
   async writeCommitForTree(tree: string, options: WriteCommitOptions): Promise<string> {
-    let when = { timestamp: Math.floor(options.timestamp.getTime() / 1000), timezoneOffset: 0 };
-    return await writeCommit({
-      fs: this.#fs,
-      gitdir: GITDIR,
-      commit: {
-        message: options.message,
-        tree,
-        parent: [...options.parents],
-        author: { ...options.author, ...when },
-        committer: { ...(options.committer ?? options.author), ...when },
-      },
+    let signature = ({ name, email }: CommitIdentity) =>
+        ({ name, email, timestamp: options.timestamp, utcOffsetMinutes: 0 });
+    let payload = encodeGitCommit({
+      tree,
+      parents: options.parents,
+      author: signature(options.author),
+      committer: signature(options.committer ?? options.author),
+      headers: options.headers,
+      message: options.message,
     });
+    let oid = await gitObjectOid("commit", payload);
+    if (this.#objects.get(oid) === undefined) {
+      this.#objects.put({ oid, data: encodeLooseObject("commit", payload) });
+    }
+    return oid;
   }
 
   // Rebuilds one tree level for writeChangedFilesAsCommit: base entries are copied through
@@ -463,25 +458,6 @@ export class GitStore {
     }
     // isomorphic-git sorts entries into git's canonical tree order itself.
     return await writeTree({ fs: this.#fs, gitdir: GITDIR, tree: entries });
-  }
-
-  // The oid-level analog of #collectTreeFiles: flattens a tree to `path -> blob oid` without
-  // reading any blob. Applies the same mode restriction, so the two views can never disagree
-  // about which paths exist.
-  async #collectTreeOids(
-      treeOid: string, prefix: string, out: Map<string, string>): Promise<void> {
-    let { tree } = await readTree(
-        { fs: this.#fs, gitdir: GITDIR, oid: treeOid, cache: this.#cache });
-    for (let entry of tree) {
-      let path = prefix + entry.path;
-      if (entry.type === "tree") {
-        await this.#collectTreeOids(entry.oid, `${path}/`, out);
-      } else if (entry.type === "blob" && (entry.mode === "100644" || entry.mode === "100755")) {
-        out.set(path, entry.oid);
-      } else {
-        throw new Error(`unsupported tree entry at ${path}: mode ${entry.mode}`);
-      }
-    }
   }
 
   async #collectTreeFiles(
@@ -568,6 +544,16 @@ function buildTreeNode(files: ReadonlyMap<string, string>): TreeNode {
   return root;
 }
 
+/**
+ * The oid a blob holding `text` (UTF-8) has or would have -- git's content address, computed
+ * without writing anything. Equal text always yields an equal oid, so this is how content the
+ * agent knows from a chat's session is compared against a committed file without reading the
+ * committed blob (see the agent's read-before-edit stamps).
+ */
+export async function blobOid(text: string): Promise<string> {
+  return (await hashBlob({ object: new TextEncoder().encode(text) })).oid;
+}
+
 /** Compares two flattened file maps for identical content. */
 export function filesEqual(
     a: ReadonlyMap<string, string>, b: ReadonlyMap<string, string>): boolean {
@@ -598,6 +584,25 @@ export interface MergeResult {
    * markers; delete-vs-modify conflicts keep the modified content with no markers.
    */
   conflictPaths: string[];
+
+  /**
+   * Paths that both sides changed where a version of the file, or what merging them would
+   * produce, is too large to hold (see `tooLargeToHold()`), in sorted order. These are not
+   * merged and are absent from `files`, so a result with any is not a merge: callers refuse it.
+   */
+  tooLargePaths: string[];
+}
+
+/**
+ * Whether a file's text is too large to hold as a gadget's file: longer than a chat's file may
+ * be (`MAX_FILE_TEXT_LENGTH`; an edit that leaves a file longer is refused), or a blob larger
+ * than the git cache reads back (`MAX_GIT_OBJECT_SIZE`).
+ */
+export function tooLargeToHold(text: string): boolean {
+  if (text.length > MAX_FILE_TEXT_LENGTH) return true;
+  // A UTF-16 code unit takes at most three bytes of UTF-8, so only a long text needs encoding.
+  return text.length * 3 > MAX_GIT_OBJECT_SIZE &&
+      new TextEncoder().encode(text).byteLength > MAX_GIT_OBJECT_SIZE;
 }
 
 /**
@@ -618,7 +623,9 @@ export interface MergeResult {
  * - deleted on one side, changed on the other: the changed content survives, reported as a
  *   conflict;
  * - changed on both sides (including both-added): line merged via diff3, conflicting hunks
- *   marked.
+ *   marked -- unless any of the three versions, or the merged text, is too large to hold, in
+ *   which case the file is reported in `tooLargePaths` instead. A file taken whole from one
+ *   side is no larger than it was there, so it is never checked.
  */
 export function threeWayMerge(
     base: ReadonlyMap<string, string>,
@@ -627,6 +634,7 @@ export function threeWayMerge(
     labels: MergeLabels = {}): MergeResult {
   let files = new Map<string, string>();
   let conflictPaths: string[] = [];
+  let tooLargePaths: string[] = [];
 
   let allPaths = [...new Set([...base.keys(), ...ours.keys(), ...theirs.keys()])].toSorted();
   for (let path of allPaths) {
@@ -649,14 +657,23 @@ export function threeWayMerge(
       conflictPaths.push(path);
     } else {
       // Changed on both sides (b === undefined means both-added with different content; diff3
-      // against an empty base marks the entirety of both sides as conflicting).
+      // against an empty base marks the entirety of both sides as conflicting). A conflicted
+      // result holds both sides and the base, so it can be too large where none of them is.
+      if ([b ?? "", o, t].some(tooLargeToHold)) {
+        tooLargePaths.push(path);
+        continue;
+      }
       let merged = mergeText(b ?? "", o, t, labels);
+      if (tooLargeToHold(merged.text)) {
+        tooLargePaths.push(path);
+        continue;
+      }
       files.set(path, merged.text);
       if (!merged.clean) conflictPaths.push(path);
     }
   }
 
-  return { files, conflictPaths };
+  return { files, conflictPaths, tooLargePaths };
 }
 
 // A zero-width boundary after every "\n"; split() then keeps each terminator with its line.
@@ -715,13 +732,18 @@ function mergeText(base: string, ours: string, theirs: string, labels: MergeLabe
 
 /**
  * Derives a git commit identity from a chat author: the display name becomes the commit name,
- * and the profile ID the email. Profile IDs are typically email addresses; in username/password
- * mode they may be bare usernames, which become `<username>@localhost`. (A placeholder
- * convention until users can customize their commit identity.)
+ * and the email is the author's preferred `commitEmail` if set, else the profile ID. Profile IDs
+ * are typically email addresses; in username/password mode they may be bare usernames, which
+ * become `<username>@localhost`.
+ *
+ * The characters a commit's signature cannot hold are dropped (see `signatureSafe()`), so that a
+ * display name with a line break in it neither fails the commit nor writes header lines of its
+ * own into it.
  */
 export function commitIdentityForAuthor(author: AiChatAuthorInfo): CommitIdentity {
   return {
-    name: author.name,
-    email: author.id.includes("@") ? author.id : `${author.id}@localhost`,
+    name: signatureSafe(author.name),
+    email: signatureSafe(author.commitEmail ??
+        (author.id.includes("@") ? author.id : `${author.id}@localhost`)),
   };
 }

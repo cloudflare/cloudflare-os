@@ -13,6 +13,7 @@ import './styles.css'
 import FrontendErrorBoundary from './FrontendErrorBoundary'
 import { installWorkshopErrorReporting, reportIssue } from './errorReporting'
 import { applySiteFavicon, cacheBustSiteLogoUrl } from './siteLogoUtils'
+import { getBackendHost } from './connectHandoff';
 
 // ---------------------------------------------------------------------------
 // Dev auto-login: if VITE_DEV_AUTO_LOGIN=true, automatically create/login
@@ -81,15 +82,6 @@ const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T> => {
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 };
-
-function getBackendHost(): string {
-  // Only the Vite dev server is hosted separately from the backend. Built assets are served from
-  // the same origin in both production and run-local mode.
-  if (import.meta.env.DEV) {
-    return import.meta.env.VITE_BACKEND_HOST?.trim() || 'localhost:8787';
-  }
-  return window.location.host;
-}
 
 function startConnection(): RpcStub<PublicApi> {
   lastConnectTime = Date.now();

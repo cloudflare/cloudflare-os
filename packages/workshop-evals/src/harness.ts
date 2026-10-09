@@ -11,7 +11,7 @@ import { measureHistory, toTranscriptEvents } from "./transcript.js";
 import {
   openLocalEvalTarget, type LocalEvalTarget, type LocalModelAccess,
 } from "./target.js";
-import { EvalVerifier } from "./verifier.js";
+import { agentReplies, EvalVerifier } from "./verifier.js";
 
 class EvalDeadlineError extends Error {}
 
@@ -84,15 +84,10 @@ export function createWorkshopHarness(
             unrecordedPrompt = undefined;
           }
           if (result.history.length > 0) history = result.history;
-          const cumulativeCost = result.usage.observedCumulativeChatCostUsd ??
-            usage.observedCumulativeChatCostUsd;
-          usage = {};
-          if (result.usage.lastStepTokens !== undefined) {
-            usage.lastStepTokens = result.usage.lastStepTokens;
-          }
-          if (cumulativeCost !== undefined) {
-            usage.observedCumulativeChatCostUsd = cumulativeCost;
-          }
+          // Cost, token totals and steps cover the whole chat so far, so a turn that reports none
+          // keeps the last ones. The last step's tokens are the turn's own.
+          const { lastStepTokens: _, ...totals } = usage;
+          usage = { ...totals, ...result.usage };
           const verificationStartedAt = Date.now();
           const verificationDeadline = verificationStartedAt + verificationBudget;
           if (result.outcome.status !== "completed" || signal?.aborted) {
@@ -108,7 +103,8 @@ export function createWorkshopHarness(
             });
             break;
           }
-          const verifier = new EvalVerifier(opened.session, result.workpieces);
+          const replies = agentReplies(result.history, previousSequence);
+          const verifier = new EvalVerifier(opened.session, result.workpieces, replies);
           let checks: EvalCheck[];
           try {
             checks = await beforeDeadline(
@@ -116,7 +112,7 @@ export function createWorkshopHarness(
                 "Eval verification exceeded its time budget", signal);
           } catch (error) {
             checks = [...verifier.results(), {
-              id: "verifier.timeout",
+              id: "verifier.incomplete",
               pass: false,
               evidence: error instanceof Error ? error.message : String(error),
             }];
@@ -177,14 +173,14 @@ export function createWorkshopHarness(
               throw error;
             }
 
-            const afterAccept = new EvalVerifier(session, result.workpieces);
+            const afterAccept = new EvalVerifier(session, result.workpieces, replies);
             try {
               checks.push(...await beforeDeadline(
                   () => afterAccept.collect(verifyAfterAccept), verificationDeadline,
                   "Post-accept verification exceeded its time budget", signal));
             } catch (error) {
               checks.push(...afterAccept.results(), {
-                id: "post-accept-verifier.timeout",
+                id: "post-accept-verifier.incomplete",
                 pass: false,
                 evidence: error instanceof Error ? error.message : String(error),
               });
@@ -225,9 +221,8 @@ export function createWorkshopHarness(
         turns.every(turn => turn.outcome.status === "completed") &&
         checks.length > 0 && checks.every(check => check.pass);
       const usageMetadata: Record<string, JsonValue> = {};
-      if (usage.lastStepTokens !== undefined) usageMetadata.lastStepTokens = usage.lastStepTokens;
-      if (usage.observedCumulativeChatCostUsd !== undefined) {
-        usageMetadata.observedCumulativeChatCostUsd = usage.observedCumulativeChatCostUsd;
+      for (const [key, value] of Object.entries(usage)) {
+        if (value !== undefined) usageMetadata[key] = value;
       }
       const events: TranscriptEvent[] = toTranscriptEvents(history);
       if (unrecordedPrompt !== undefined) {

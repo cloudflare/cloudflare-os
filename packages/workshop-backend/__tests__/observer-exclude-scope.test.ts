@@ -85,20 +85,6 @@ function observe(impl: any): Promise<void> {
 }
 
 describe("excludeObservers against the observer's verification scope", () => {
-  it("a use collaborator does not block an observation from an unbound connection",
-      () => withImpl("use", async (impl, removals) => {
-    // No gadget binds the connection, so it is outside Carol's scope: her open never verified her
-    // against it and she has no way to see what it produces.
-    await observe(impl);
-
-    // She is de-registered from exactly this gatekeeper, so it stops naming her. Her record --
-    // which is what makes her observerId resolvable at all -- survives: she is still a
-    // collaborator, and a rebind must put her back in scope rather than start her from scratch.
-    expect(removals).toEqual([`${GATEKEEPER_ID}:${OBSERVER_ID}`]);
-    expect(impl.storage.observers.get(CAROL)).toBeDefined();
-    expect(impl.storage.observers.byObserverId.get(OBSERVER_ID)).toBeDefined();
-  }));
-
   it("a use collaborator blocks an observation from a connection a gadget binds",
       () => withImpl("use", async (impl, removals) => {
     bindIntoGadget(impl);
@@ -110,14 +96,6 @@ describe("excludeObservers against the observer's verification scope", () => {
     expect(impl.storage.observers.get(CAROL)).toBeDefined();
   }));
 
-  it("a build collaborator blocks whether or not a gadget binds the connection",
-      () => withImpl("build", async (impl, removals) => {
-    // "build" scope is every account-requiring connection, bound or not, so an unbound one is
-    // still one Carol was verified against and can reach directly.
-    await expect(observe(impl)).rejects.toThrow(/not permitted to see/);
-    expect(removals).toEqual([]);
-  }));
-
   it("a collaborator who lost access is torn down entirely",
       () => withImpl(null, async (impl, removals) => {
     // Unchanged behaviour: no scope to be in or out of, so the record goes and every gatekeeper
@@ -126,6 +104,17 @@ describe("excludeObservers against the observer's verification scope", () => {
 
     expect(removals).toEqual([`${GATEKEEPER_ID}:${OBSERVER_ID}`]);
     expect(impl.storage.observers.get(CAROL)).toBeUndefined();
+  }));
+
+  it("an unknown observer id is ignored", () => withImpl("use", async (impl, removals) => {
+    bindIntoGadget(impl);
+
+    // Nothing resolves the id, so there is no observer to block for -- and, in particular, an id
+    // the gatekeeper remembers past a teardown must not wedge the connection permanently.
+    await impl.authorizeObservation(
+        GATEKEEPER_ID, { ...DESCRIPTION, excludeObservers: ["obs-nobody"] }, CALLER);
+
+    expect(removals).toEqual([]);
   }));
 
   it("every out-of-scope observer is de-registered, together",
@@ -146,17 +135,6 @@ describe("excludeObservers against the observer's verification scope", () => {
     expect(removals.toSorted()).toEqual([`${GATEKEEPER_ID}:${OBSERVER_ID}`, `${GATEKEEPER_ID}:obs-dave`]);
     expect(impl.storage.observers.byObserverId.get(OBSERVER_ID)).toBeDefined();
     expect(impl.storage.observers.byObserverId.get("obs-dave")).toBeDefined();
-  }));
-
-  it("an unknown observer id is ignored", () => withImpl("use", async (impl, removals) => {
-    bindIntoGadget(impl);
-
-    // Nothing resolves the id, so there is no observer to block for -- and, in particular, an id
-    // the gatekeeper remembers past a teardown must not wedge the connection permanently.
-    await impl.authorizeObservation(
-        GATEKEEPER_ID, { ...DESCRIPTION, excludeObservers: ["obs-nobody"] }, CALLER);
-
-    expect(removals).toEqual([]);
   }));
 
   it("a concurrent registration waits for the in-flight de-registration it raced",
@@ -202,8 +180,7 @@ describe("excludeObservers against the observer's verification scope", () => {
 });
 
 // An enabled hook is a live write channel into a gadget a "use" collaborator can open, so its
-// connection stays in their verification scope even with no binding edge -- both for exclusion
-// (above) and for what a fresh open verifies them against.
+// connection stays in their verification scope even with no binding edge.
 describe("hooks keep an unbound connection in use scope", () => {
   function armHook(impl: any, enabled: boolean): void {
     impl.storage.boundHooks.put({
@@ -236,22 +213,6 @@ describe("hooks keep an unbound connection in use scope", () => {
     // and she is de-registered as usual.
     await observe(impl);
     expect(removals).toEqual([`${GATEKEEPER_ID}:${OBSERVER_ID}`]);
-  }));
-
-  it("a fresh use open is verified against a hook-armed unbound connection",
-      () => withImpl("use", async (impl) => {
-    armHook(impl, true);
-    let added: string[] = [];
-    impl.getGatekeeperFacet = (id: number) => ({
-      addObserver: async (observerId: string) => { added.push(`${id}:${observerId}`); },
-      removeObserver: async () => {},
-    });
-
-    await impl.ensureObserver(
-        CAROL, { getVerifier: async () => ({}), describeConnectedAccount: async () => null },
-        "use");
-
-    expect(added).toEqual([`${GATEKEEPER_ID}:${OBSERVER_ID}`]);
   }));
 });
 

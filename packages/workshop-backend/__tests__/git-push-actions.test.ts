@@ -15,8 +15,8 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
-import { concatBytes, decodePackBytes, encodeLooseObject, gitObjectOid }
-  from "../src/git-codec";
+import { concatBytes, encodeLooseObject, gitObjectOid } from "../src/git-codec";
+import { decodePack } from "./git-cache-fixtures";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -27,10 +27,24 @@ declare module "cloudflare:workers" {
 const GATEKEEPER = 7;
 const USER = { type: "user" as const, id: "alice@example.com", name: "Alice" };
 
+// Every scenario starts with the gatekeeper's record in place: submitAction refuses an action
+// naming a connection the workspace no longer has.
 async function inOverseer(name: string, fn: (impl: any) => Promise<void>): Promise<void> {
   let stub = env.TEST_OVERSEER.getByName(name);
   await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
-    await fn((instance as unknown as { impl: any }).impl);
+    let impl = (instance as unknown as { impl: any }).impl;
+    impl.storage.gatekeepers.put({
+      id: GATEKEEPER,
+      resourceTitle: "Remote repository",
+      class: {} as any,
+      creationSpec: {
+        type: "gatekeeper",
+        vendorId: "testvendor",
+        resourceUrl: "https://example.com/repo",
+        typeUrlPattern: "https://*",
+      },
+    });
+    await fn(impl);
   });
 }
 
@@ -111,7 +125,7 @@ describe("push authorization through the Overseer chokepoints", () => {
       });
       await impl.applyPendingAction(record, USER, false);
 
-      expect((await decodePackBytes(sawPack!, { maxObjectSize: 1 << 20 }))).toHaveLength(1);
+      expect(await decodePack(sawPack!)).toHaveLength(1);
       expect(impl.storage.actions.get(record.id)!.state).toBe("approved");
       expect(marksOf(impl, record.id)).toStrictEqual([]);
       let meta = impl.storage.gitObjectMetadata.get(head)!;
@@ -134,6 +148,20 @@ describe("push authorization through the Overseer chokepoints", () => {
       expect(Array.from(impl.storage.gitObjectMetadata.byPendingPushAction.list()))
           .toStrictEqual([]);
       expect(impl.storage.gitObjectMetadata.get(root)?.pendingPush ?? []).toStrictEqual([]);
+    });
+  });
+
+  it("refuses a push while the workspace is restricted, queuing nothing", async () => {
+    await inOverseer("push-restricted", async impl => {
+      let { head } = await seedPushableHistory(impl);
+      impl.storage.containsRestrictedData.put(true);
+
+      // Proven ancestry does not help: the commits cannot be reviewed as text by the approver.
+      await expect(impl.submitAction(GATEKEEPER, 1, pushDescription([head]), { from: "user" }))
+          .rejects.toThrow(/git push cannot be reviewed as of yet/);
+      expect(Array.from(impl.storage.actions.list())).toStrictEqual([]);
+      expect(Array.from(impl.storage.gitObjectMetadata.byPendingPushAction.list()))
+          .toStrictEqual([]);
     });
   });
 

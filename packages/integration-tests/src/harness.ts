@@ -5,7 +5,8 @@
 // harness at the package and plug in a handler module", not a forked copy of this file. Per-vendor
 // suites in consumer repos use this as-is.
 
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "jsonc-parser";
@@ -17,7 +18,15 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // Sibling of this package, whether that's `packages/` in this repo or `public/packages/` when a repo
 // vendors this one as a submodule.
 const WORKSHOP_DIR = resolve(HERE, "../../workshop-backend");
-const REPO_ROOT = resolve(HERE, "../../..");
+
+// wrangler treats an inline config as living at `<root>/wrangler.jsonc`, so it loads that directory's
+// .dev.vars (or .env) -- and lets those values override the config's own vars of the same name. A
+// developer's local settings (say CF_AI_GATEWAY_*) at the repo root would then make suites behave
+// differently on their machine than in CI, up to sending real AI traffic. So every harness boots
+// from a directory that holds no var files. Nothing else resolves against it: readWorkerConfig makes
+// the paths wrangler reads absolute, and it only collects wrangler's per-run scratch. Configs must
+// not declare `secrets` either: that makes wrangler fold process.env over the vars the same way.
+const HARNESS_ROOT = resolve(HERE, "../.wrangler/harness-root");
 
 /** Directory of the bundled fixture gatekeeper. See fixtures/gatekeeper-test/README-ish comments. */
 export const TEST_GATEKEEPER_DIR = resolve(HERE, "../fixtures/gatekeeper-test");
@@ -37,6 +46,8 @@ const WORKER_CONFIG = z.looseObject({
   name: z.string(),
   main: z.string(),
   account_id: z.string().optional(),
+  alias: z.record(z.string(), z.string()).optional(),
+  define: z.record(z.string(), z.string()).optional(),
   ai: z.looseObject({
     binding: z.string(),
     remote: z.boolean().optional(),
@@ -81,12 +92,6 @@ function readWorkerConfig(dir: string): WorkerConfig {
   const config = parsed.data;
   config.build = { ...config.build, cwd: dir };
   config.main = join(dir, config.main);
-
-  // Local-dev var files (.dev.vars/.env at the harness root) must not leak into tests: a
-  // developer's local settings (say CF_AI_GATEWAY_*) would make suites behave differently on
-  // their machine than in CI -- up to sending real AI traffic. Declaring an empty required-secrets
-  // list makes wrangler exclude every such key that is not already a config var.
-  config.secrets = { required: [] };
   return config;
 }
 
@@ -109,7 +114,8 @@ function workshopConfig(
   }));
 
   // No CF_ACCESS_AUD, so /api takes the unauthenticated path and password signup is available.
-  config.vars = { ...config.vars, ADMINS: [ADMIN_USERNAME] };
+  // PUBLIC_BASE_URL mirrors run-dev-server.ts; only connect handoffs read it, as their target origin.
+  config.vars = { ...config.vars, ADMINS: [ADMIN_USERNAME], PUBLIC_BASE_URL: "http://workshop.test" };
 
   // Most integration tests need no Gadget execution. Keep the loader only for tests that exercise
   // executeCode or a generated Gadget server.
@@ -134,14 +140,20 @@ export type Harness = {
    */
   fetchWorker(name: string, ...args: Parameters<TestHarness["fetch"]>)
       : ReturnType<TestHarness["fetch"]>;
+  /**
+   * Deploy another build of the Workshop over the running one, as releasing a new version does.
+   * `patchWorkshop` takes the place of the patch the harness was started with.
+   *
+   * Storage and `url` are kept. Every Worker restarts, which breaks the RPC sessions open at the
+   * time, so only a suite that started its own harness should call this.
+   */
+  redeployWorkshop(patchWorkshop?: (config: WorkerConfig) => void): Promise<void>;
 };
 
 export async function startHarness(opts: {
   gatekeepers: GatekeeperSpec[];
   patchWorkshop?: (config: WorkerConfig) => void;
   enableGadgetExecution?: boolean;
-  /** Defaults to this repo's root. Override when a gatekeeper lives outside it. */
-  root?: string;
 }): Promise<Harness> {
   // Each gatekeeper's config is read (and patched) exactly once; the service binding below points at
   // the name the booted worker will actually carry, patches included.
@@ -151,21 +163,74 @@ export async function startHarness(opts: {
     return { binding: gk.binding, name: config.name, config };
   });
 
-  const server = createTestHarness({
-    root: opts.root ?? REPO_ROOT,
+  mkdirSync(HARNESS_ROOT, { recursive: true });
+  const options = (patchWorkshop?: (config: WorkerConfig) => void) => ({
+    root: HARNESS_ROOT,
     // workshop-backend is primary, so unrouted requests (e.g. /api) go to it.
     workers: [
-      { config: workshopConfig(gatekeepers, opts.enableGadgetExecution ?? false,
-          opts.patchWorkshop) },
+      { config: workshopConfig(gatekeepers, opts.enableGadgetExecution ?? false, patchWorkshop) },
       ...gatekeepers.map(({ config }) => ({ config })),
     ],
   });
+  const server = createTestHarness(options(opts.patchWorkshop));
 
   const { url } = await server.listen();
   return {
     server,
     url,
     fetchWorker: (name, ...args) => server.getWorker(name).fetch(...args),
+    redeployWorkshop: patchWorkshop => server.update(options(patchWorkshop)),
+  };
+}
+
+// Takes the place of the module the Workshop's build generates its bundled blueprints into.
+const BUNDLED_BLUEPRINTS_MODULE = resolve(HERE, "../fixtures/bundled-blueprints.ts");
+
+/** A blueprint for a Workshop to ship with. See bundleBlueprints(). */
+export type BundledBlueprintSpec = {
+  blueprintId: string;
+  title: string;
+  /** The `BlueprintMetadata.version` it installs as. */
+  version: number;
+  /** Its files, by path. */
+  files: Record<string, string>;
+};
+
+/**
+ * A Workshop patch (for `patchWorkshop`, or `Harness.redeployWorkshop()`) that builds the Workshop
+ * with `blueprints` as its bundled blueprints, in place of the ones this repo ships. The Workshop
+ * installs them on its first `/api` request, and again when a redeploy changes them.
+ *
+ * The Workshop's build compiles the repo's own blueprints into a generated module. This has
+ * wrangler resolve that module to a fixture instead, which takes the list from a `define`.
+ */
+export function bundleBlueprints(blueprints: BundledBlueprintSpec[])
+    : (config: WorkerConfig) => void {
+  // Each in the shape of an entry of workshop-backend's `src/generated/bundled-blueprints.ts`.
+  const entries = blueprints.map(({ blueprintId, title, version, files }) => {
+    const sorted = Object.entries(files).toSorted(([a], [b]) => a < b ? -1 : 1);
+    return {
+      blueprintId,
+      title,
+      description: "",
+      output: { id: "fixture", noun: "Fixture", plural: "Fixtures", icon: "appWindow" },
+      author: { type: "user", id: "bundled@gadgets-test.example", name: "Bundled" },
+      revision: 1,
+      created: new Date(0).toISOString(),
+      version,
+      lastUpdated: new Date(0).toISOString(),
+      bindings: {},
+      contentHash: createHash("sha256").update(JSON.stringify([version, sorted])).digest("hex"),
+      files: sorted,
+    };
+  });
+  return config => {
+    // Keyed by the specifier exactly as the Workshop's source imports it, which is all that
+    // wrangler matches an alias on.
+    config.alias = {
+      ...config.alias, "./generated/bundled-blueprints.js": BUNDLED_BLUEPRINTS_MODULE,
+    };
+    config.define = { ...config.define, TEST_BUNDLED_BLUEPRINTS: JSON.stringify(entries) };
   };
 }
 
@@ -176,13 +241,11 @@ export async function startHarness(opts: {
 export const RESTART_SETTLE_MS = 400;
 
 /**
- * Wait out a restart a test triggered but doesn't otherwise observe.
+ * Give a scheduled workspace restart time to land.
  *
  * Widening a collaborator's verification scope severs every session on the workspace by aborting
- * the DO ~100ms later, i.e. after the test body has returned. An abort that lands with no client
- * left on the workspace crashes the local workerd, and a suite's tests share one harness, so the
- * crash fails whichever siblings are mid-flight rather than the test that caused it. Call this
- * before the triggering test drops its connection.
+ * the DO ~100ms later. A test that asserts a change did not restart the workspace waits this long
+ * first, so a wrongful restart lands before its assertions rather than after the test.
  */
 export function settleRestart(): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, RESTART_SETTLE_MS));
@@ -196,3 +259,39 @@ export function startTestGatekeeperHarness(options: { enableGadgetExecution?: bo
     enableGadgetExecution: options.enableGadgetExecution,
   });
 }
+
+/** POST `body` to the fixture gatekeeper's `/control/<route>`: its JSON reply, or undefined for 204. */
+export async function testControl<T = unknown>(harness: Harness, route: string, body: object)
+    : Promise<T> {
+  const response = await harness.fetchWorker(TEST_GATEKEEPER_WORKER,
+      `http://gatekeeper-test.test/control/${route}`, { method: "POST", body: JSON.stringify(body) });
+  if (!response.ok) {
+    throw new Error(`/control/${route} failed with ${response.status}: ${await response.text()}`);
+  }
+  return (response.status === 204 ? undefined : await response.json()) as T;
+}
+
+const TEST_ACTION_STATE = z.object({
+  pending: z.array(z.object({ id: z.number(), value: z.number() })),
+  value: z.number().optional(),
+  applyCount: z.number(),
+});
+
+/** The fixture's held and applied test actions for account `label`. */
+export async function testActionState(harness: Harness, label: string) {
+  return TEST_ACTION_STATE.parse(await testControl(harness, "action-state", { label }));
+}
+
+/** A gadget server whose `value-hook` restore writes each requested value through `binding`. */
+export const hookServer = (binding: string) =>
+  `import { DurableObject, RpcTarget, restore } from "cloudflare:workers";
+export class Gadget extends DurableObject {
+  async [restore](params) {
+    if (params.type !== "value-hook") throw new TypeError("Unknown restore type: " + params.type);
+    return new ValueHook(this.env.${binding});
+  }
+}
+class ValueHook extends RpcTarget {
+  constructor(thing) { super(); this.thing = thing; }
+  async onValueRequested(value) { await this.thing.writeValue(value); }
+}`;

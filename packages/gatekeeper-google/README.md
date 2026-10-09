@@ -8,7 +8,7 @@ This package provides Google OAuth integration for Gadgets. It serves two purpos
   which becomes the user's identity.
   The sign-in grant is transient (discarded right after the email is read).
 - **Connections:** when a user connects Google (or signs in and later connects it), the scopes for
-  the selected resources (Gmail, Docs, Sheets, Drive, Calendar, or BigQuery — see below) are requested
+  the selected resources (Gmail, Docs, Sheets, Slides, Drive, Calendar, or BigQuery — see below) are requested
   so gadgets can access those APIs on the user's behalf.
 
 A single Google OAuth client is used for both. Set it up as follows.
@@ -29,7 +29,7 @@ If you're running this project locally and want to use Google API integrations, 
 
 ### Step 2: Enable Required APIs
 
-You'll need to enable the Google APIs that you want to use. Currently supported: Gmail, Google Docs, Google Sheets, Google Drive, Google Calendar, and BigQuery.
+You'll need to enable the Google APIs that you want to use. Currently supported: Gmail, Google Docs, Google Sheets, Google Slides, Google Drive, Google Calendar, Google Chat, and BigQuery.
 
 1. In the left sidebar, go to **APIs & Services** > **Library** (or [click here](https://console.cloud.google.com/apis/library))
 2. Search for "Gmail API"
@@ -44,14 +44,19 @@ You'll need to enable the Google APIs that you want to use. Currently supported:
 11. Go back to the Library, search for "Google Sheets API"
 12. Click on **Google Sheets API** in the results
 13. Click **Enable**
-14. Go back to the Library, search for "Google Calendar API"
-15. Click on **Google Calendar API** in the results
+14. Go back to the Library, search for "Google Slides API"
+15. Click on **Google Slides API** in the results
 16. Click **Enable**
-17. Go back to the Library, search for "BigQuery API"
-18. Click on **BigQuery API** in the results
+17. Go back to the Library, search for "Google Calendar API"
+18. Click on **Google Calendar API** in the results
 19. Click **Enable**
+20. Go back to the Library, search for "BigQuery API"
+21. Click on **BigQuery API** in the results
+22. Click **Enable**
+23. For Chat, enable **Google Chat API**, plus **People API** so direct messages and group chats can be named when Chat omits a participant's name, and so a whole-account Chat connection can search the organization's directory and confirm that everyone in a conversation it starts belongs to the organization.
+24. On the Google Chat API's **Configuration** tab, set an app name, avatar URL, and description, turn off **Interactive features**, and click **Save**. Reads work without this, but Google refuses every Chat send, edit, and reaction until a Chat app is configured.
 
-The Google Drive API powers the Docs and Sheets resource pickers, Drive discovery, and Drive scope checks. Native document or spreadsheet content opened from a Drive binding is read through the Google Docs or Google Sheets API. Direct Google Doc reads and edits still go through the Docs API, and direct spreadsheet reads go through the Sheets API.
+The Google Drive API powers the Docs, Sheets, and Slides resource pickers, Drive discovery, and Drive scope checks. Native document, spreadsheet, or presentation content opened from a Drive binding is read through the Google Docs, Google Sheets, or Google Slides API. Direct Google Doc reads and edits still go through the Docs API, direct spreadsheet reads go through the Sheets API, and direct presentation reads and edits go through the Slides API.
 
 ### Step 3: Configure the OAuth Consent Screen
 
@@ -74,12 +79,13 @@ included). Across all resource types, the gatekeeper can request:
 
 - `openid`, `userinfo.profile`, and `userinfo.email` to identify the connected account.
 - `gmail.modify` for Gmail thread reads, organization, replies, forwards, and sending. This single scope already includes label access and sending.
-- `documents` for direct Google Docs reads and edits; `documents.readonly` for native Docs opened from account-wide or exact-file Drive bindings.
-- `drive.metadata.readonly` for the Docs and Sheets pickers, account-wide Drive discovery, exact-file metadata, and native-file scope checks.
-- `drive.readonly` for the shared-drive picker and scope lookup, metadata search, and native Docs or Sheets reads within one shared drive. This restricted scope conveys account-wide file content and remains after the account expands consent, but Google accepts nothing narrower for `drives.list`/`drives.get` and accepts this Drive scope for the native APIs. The gatekeeper still enforces the shared-drive binding boundary.
-- `spreadsheets.readonly` to read metadata and bounded cell ranges from directly selected spreadsheets or native Sheets opened from account-wide or exact-file Drive bindings.
+- `documents` for direct Google Docs reads and edits; `documents.readonly` for native Docs opened from account-wide, folder, or exact-file Drive bindings.
+- `drive.metadata.readonly` for the Docs, Sheets, Slides, and folder pickers, account-wide Drive discovery, exact-file metadata, folder descendant proofs, and native-file scope checks. Google classifies this as a restricted scope, so every Drive resource here needs restricted-scope verification.
+- `spreadsheets.readonly` to read metadata and bounded cell ranges from directly selected spreadsheets or native Sheets opened from account-wide, folder, or exact-file Drive bindings.
+- `presentations` to read and edit directly selected presentations, and to render slide thumbnails; `presentations.readonly` to read and render native Slides opened from account-wide, folder, or exact-file Drive bindings. Google counts each thumbnail as an expensive read, limited to 60 a minute per user and 300 per project.
 - `calendar.calendarlist.readonly` so the resource picker can list calendars.
 - `calendar.events` to manage selected calendar and check calendar availability.
+- `chat.spaces.readonly`, `chat.messages`, and `chat.memberships.readonly` for every Chat resource. A whole-account Chat connection adds `chat.users.readstate.readonly` for its unread-only search, and `chat.spaces.create` and `directory.readonly` to start direct messages and group chats with people in the connected account's Workspace directory. Starting a conversation is its own approval kind, separate from sending in an existing one, and people outside the organization can't be added to a new conversation.
 - `bigquery` for BigQuery dry-runs and queries. This is intentionally broader than `bigquery.readonly` because dry-runs use `jobs.insert`; the gatekeeper enforces read-only SQL and resource scope checks before running queries.
 
 ### Step 4: Test Users
@@ -136,15 +142,46 @@ User — see Step 4.)
 2. Create or open a gadget.
 3. Navigate to the **Connections** tab.
 4. Click **+ New Connection**.
-5. Choose a Google resource type: Gmail, Google Doc, Google Spreadsheet, Google Drive Account, Google Workspace Shared Drive, Google Drive File, Google Calendar, or BigQuery.
+5. Choose a Google resource type: Gmail, Google Doc, Google Spreadsheet, Google Slides Presentation, Google Drive Account, Google Drive Folder, Google Drive File, Google Calendar, or BigQuery.
 6. If prompted, connect a Google account.
 7. You should be redirected to Google's consent screen in a new tab.
 8. The consent screen acts extra-scary since this is an "unverified" test app.
 9. After granting access, the tab closes, and you're back to Gadgets.
-10. Use the picker to choose the mailbox scope, document, shared drive, Drive file, project, dataset, or table to connect. (The Google Drive Account resource covers the whole account, so it has no picker.)
+10. Use the picker to choose the mailbox scope, document, presentation, folder, Drive file, project, dataset, or table to connect. (The Google Drive Account resource covers the whole account, so it has no picker.)
 11. Create the connection. Ask the agent what it can do, or ask it to write a gadget using the new binding.
 
 You can also see your connected accounts and add and remove them in the settings (accessed through the account menu in the upper-right).
+
+## Google Chat and Gmail new-message hooks (optional)
+
+Gadgets can watch a Chat conversation for new messages (see `docs/google-chat-capabilities.md`),
+and a Gmail inbox, label or thread for new mail (`subscribeNewMessages()` in `src/types.d.ts`).
+Google delivers both through Pub/Sub, Chat's by Workspace Events and Gmail's by `users.watch`, so
+this needs a public URL and these steps in the same Cloud project as the OAuth client:
+
+1. Enable the **Google Workspace Events API**, the **Cloud Pub/Sub API**, and the **Gmail API**.
+2. Create a Pub/Sub topic, and grant both `chat-api-push@system.gserviceaccount.com` and
+   `gmail-api-push@system.gserviceaccount.com` the **Pub/Sub Publisher** role on it.
+3. Create a service account for push authentication (it needs no roles).
+4. Create a **push** subscription on the topic with endpoint
+   `${BASE_URL}/pubsub` (e.g. `https://example.com/gatekeeper/google/pubsub`), **Enable
+   authentication** with the service account from step 3, and audience set to that same endpoint.
+5. Set both values for this worker (in `.env` locally):
+
+   ```bash
+   PUBSUB_TOPIC=projects/your-project/topics/your-topic
+   PUBSUB_PUSH_SERVICE_ACCOUNT=your-push-account@your-project.iam.gserviceaccount.com
+   ```
+
+If the deployment sits behind Cloudflare Access, add a bypass for `/gatekeeper/google/pubsub`;
+the worker instead accepts only pushes whose Google-signed token names that endpoint as audience
+and `PUBSUB_PUSH_SERVICE_ACCOUNT` as sender. That token proves a push came through the push
+subscription, not who published to the topic, so the topic's Pub/Sub principals are trusted with
+hooked messages: anyone who can subscribe to it reads them all, and anyone who can publish to it
+can inject messages into hooks. Grant those roles to no one beyond step 2. A Gmail push carries
+only a mailbox address and a history ID, so a forged one can only make the worker read that
+mailbox's new history with the connected account's own credentials. Without these settings hooks
+are refused and everything else works as before.
 
 ## Worker Preview OAuth callbacks
 
@@ -166,23 +203,89 @@ result and state. Normal deployments should omit these settings and continue usi
 Deploy the relay-capable stable Worker before enabling the fixed redirect on previews. Wrangler
 stores baseline and Preview secrets separately, so provision the same signing value in both places.
 
+## Known limitations
+
+Very large Google Docs can exceed Durable Objects' 2 MB value limit after Markdown conversion,
+causing tab listing, content reads, and edits to fail.
+
+A Google Slides presentation's slide summaries come from one response capped at 10 MiB. It holds
+the text of every slide's shapes and speaker notes, but no styles or geometry: about 4 KiB a slide
+on a live deck, so a presentation needs thousands of slides to exceed it. Slide content is read
+one slide at a time, capped at 2 MiB each. While changes await approval, reads also fetch the
+slides they address, so each can be checked as approving it would: slide content reads the other
+slides of any batch touching a slide it shows, since a batch applies all or none, and the
+summaries read every slide a queued batch changes, since they hold no tables or grouped shapes.
+Large batches awaiting approval therefore cost reads more requests against Google's per-user quota.
+
+## Google Slides edits
+
+A directly bound presentation accepts four changes, each queued for approval: `updateSlides()`,
+`duplicateSlide()`, `deleteSlide()`, and `moveSlides()`. Changes are journaled with the kit's
+`ActionJournal`, and apply in the order they were queued.
+
+`updateSlides()` takes up to 50 changes applied together: find-and-replace or whole-text
+replacement in shapes, table cells, and speaker notes, text and paragraph formatting (including
+bullets), shapes and their fill, outline and vertical alignment, moving, resizing, rotating,
+stacking and deleting elements, alt text, images by public `https:` URL, and tables with their
+rows, columns and cell fills. Elements a batch creates get IDs the gatekeeper mints: later changes
+in the batch can address one by its `ref`, and later batches by the ID returned for it. An image
+URL is never fetched by the gatekeeper: Google downloads it when the change is applied, so nothing
+is read from it before approval.
+
+A batch is queued as one of three action kinds, which share everything but which ones a user may
+let apply without asking: "Slide text edits" (only text edits), "Slide formatting and layout"
+(only formatting text, paragraphs and shapes, and moving or stacking elements, setting no link or
+font, since Google keeps their whole strings), and every other batch, mixed ones included, which
+always waits for approval.
+
+Reads show queued changes as if applied, by replaying them over Slides' own JSON before it is
+projected; thumbnails show the presentation as saved. Each change is replayed as Google documents
+its request, and one the replay cannot follow exactly is refused instead: a bullet list started
+right after another list item, which Google may join to that list; table rows or columns inserted
+or deleted beside a merged cell; and deleting a grouped element that would leave its group with
+one. The replay makes no claim about what Google renders: autofit, wrapping, the box Google fits
+an image to, the size it gives a new table, and the formatting new table rows and columns take
+appear once applied. A replacement takes the style of the text it replaces, and text left
+unchanged at either end of a match is not rewritten, so it keeps its own. A slide number or other
+AutoText can only be replaced whole.
+
+Each approved change is one `batchUpdate`, planned against a fresh read and pinned to its revision
+with `requiredRevisionId`, so a change applies only to the text it was planned against: one that
+no longer applies fails without writing, and a concurrent edit makes Google refuse the write so it
+is planned again. A write whose response is lost may have been committed, so it is only ever
+resent as first sent, at the same revision. If that is refused, a read decides whether it landed,
+counting only what the write would have changed: an element it created that it does not also
+delete, an element it deleted that was there before, and text it edited. If the read cannot tell,
+as for a batch that only formats or moves elements, the change is marked as having an unknown
+outcome and never retried.
+
+Google returns a presentation's revision only to an account that can edit it, so a view-only
+account can read a presentation but every change to it fails. A queued change is stored in one
+Durable Object value, so each is capped at 100 KiB.
+
 ## Google Drive read-only bindings
 
 Drive exposes three permanent resource URL forms:
 
-- `https://drive.google.com/drive/my-drive` selects everything the connected account can read in Drive. Despite the `my-drive` URL it is not limited to My Drive: listings set `includeItemsFromAllDrives`, so shared-drive items the account has accessed come back too, and reads by ID are not scope-checked at all, so anything the account's token resolves is inside this grant. Listings stay on `corpora=user` rather than `allDrives`, which Google flags as much less efficient and allows to return `incompleteSearch`, so a shared drive the account belongs to but has never touched may be readable by ID without appearing in a listing. It is the broadest of the three by design; bind a shared drive or a file if that is too much.
-- `https://drive.google.com/drive/folders/<driveId>` selects one Google Workspace shared drive, where the organization rather than an individual owns the files.
+- `https://drive.google.com/drive/my-drive` selects everything the connected account can read in Drive. Despite the `my-drive` URL it is not limited to My Drive: any ID the account token resolves is in scope. Listings use `corpora=user`, which Google defines as My Drive items the account created or opened plus items shared directly with it, so a shared drive's contents may be readable by ID without appearing in a listing. Bind a folder or file when this authority is too broad.
+- `https://drive.google.com/drive/folders/<folderId>` selects one folder or shared-drive root.
 - `https://drive.google.com/file/d/<fileId>/view` selects one file by its immutable ID.
 
-Despite the `/folders/` URL, the second resource is a Google Workspace shared drive, not an individual folder. Google uses a shared drive's ID for its root folder too. The gatekeeper confirms the ID with `drives.get`, so it rejects ordinary folder IDs.
+The folder picker is one search over `corpora=allDrives`, which spans My Drive, "Shared with me", and every shared drive the account is a member of. It runs on the baseline `drive.metadata.readonly` grant and asks for no broader scope. It returns a single provider page of suggestions, so it is an interactive search rather than an exhaustive enumeration: a known folder or shared-drive root that does not surface can still be connected by supplying its `https://drive.google.com/drive/folders/<folderId>` URL, which opens the picker prefilled. Folders whose children the account cannot list are not offered, and a search Google reports as incomplete fails rather than presenting partial results as complete.
 
-The agent-facing `GoogleDriveSession` reports the binding scope, lists entries, runs structured searches, and fetches one entry by ID. Listing and search return disposable RPC cursors. A parent filter means direct children only, never recursive descendants. For a native Google Doc or Sheet, `openGoogleDoc()` or `openGoogleSheet()` returns an independently disposable, read-only nested session. Docs expose metadata for any tab count, but Markdown content requires exactly one tab; Sheets expose spreadsheet metadata and bounded A1 range reads. The API does not expose raw Drive `q` strings, file writes, shortcut traversal, arbitrary download or export, or Workers AI extraction. One caveat: the `fullTextContains` search filter compiles to Drive's `fullText contains`, which matches a file's indexed body text, description, and OCR text. Results carry metadata alone, but repeated queries remain a content oracle over files the agent cannot otherwise read.
+A folder URL carrying `?resourcekey=` is not supported: the key is dropped, and the binding then fails with a Drive 404 for anyone whose access to that folder comes from the link rather than from a direct grant. Google requires resource keys only for items shared by link before September 2021, and only for link-access users — an owner or anyone granted access directly is unaffected, even when the URL they paste happens to carry a key. Such a folder needs direct access to connect.
 
-Every native open re-fetches Drive metadata, enforces the immutable account, shared-drive, or exact-file scope, authorizes the metadata observation, and then checks the exact MIME type. A folder, shortcut, non-native blob, wrong native type, or out-of-scope file cannot mint a content capability. Direct Google Doc bindings retain their existing editing API; Drive-opened Docs do not expose it.
+The agent-facing `GoogleDriveReadSession` covers account and exact-file bindings. `GoogleDriveFolderSession` is positioned at the selected root and exposes only its current folder's direct children: `list()`, provider-side structured `search()`, `getEntry()`, native Doc/Sheet/Slides opens, and `openFolder()` for one live direct child. Listing and search return disposable RPC cursors; child folders and native content sessions are independently disposable capabilities. There is no built-in recursive folder search, traversal pager, raw Drive `q`, file write, shortcut traversal, arbitrary download/export, or Workers AI extraction.
 
-Account-wide and exact-file Drive bindings request `documents.readonly` and `spreadsheets.readonly` in addition to `drive.metadata.readonly`. An older metadata-only connection is therefore prompted to expand consent before it is treated as granting either resource. Shared-drive bindings remain on `drive.readonly`, which Google accepts for native Docs and Sheets reads, so they do not request redundant scopes.
+`openGoogleSlides()` returns a `GooglePresentationReadSession`: the same `getPresentation()`, `getSlides()`, and `getSlideThumbnail()` a directly bound presentation offers, read through the same code, but with no change methods and no queued changes to show. A folder binding re-proves the presentation is a live direct child before and after each read, the thumbnail render included, as it does for Docs and Sheets.
 
-Account and shared-drive bindings use per-file observer tracking because individual shared-drive items can carry narrower ACLs. They remember every file ID whose metadata or native content a workspace has read. Before each collaborator opens the workspace, the gatekeeper requires that their own account explicitly consented to a Drive resource — a Drive grant is never inferred from held OAuth scopes — and rechecks all remembered IDs with fresh batched `files.get` calls. Before a new result page or native child capability is disclosed, it checks the file ID against every existing observer and excludes observers who cannot access it. Exact-file bindings perform the same fresh check for their single file on each share attempt. Google batch requests contain at most 100 `files.get` subrequests, and a binding is capped at 2,000 distinct file IDs; attempting to cross the limit refuses the read and asks the user to bind a narrower scope. There is deliberately no cached access verdict, so revoked access fails closed on the next open.
+Every folder operation revalidates the selected root and the root-to-current path. A root carrying a `driveId` uses `corpora=drive`; other folders use `corpora=user`. That drive corpus requires membership of the shared drive, so a folder shared directly with a non-member connects and then fails every listing with `teamDriveMembershipRequired` — such a folder needs drive membership, not just folder access. Listing and search always carry a direct-parent predicate, so indexed content, descriptions, and OCR match only immediate children. `search()` accepts up to 50 `childFolderIds` to search inside named direct child folders instead of the positioned one: each is proved a listable direct child in a single batched check, revalidated on every page, and one request then covers them all, so polling many sibling folders no longer costs a request each. That request names every folder in one query, which is what the cap bounds, and it records every named folder as an observation — so one that later stops being listable fails collaborator admission for the whole set, where opening folders individually keeps each disclosure independent. `openFolder()` appends one validated direct-child edge to a new capability without changing the parent capability.
+
+Account, folder, and exact-file Drive bindings request `drive.metadata.readonly`, `documents.readonly`, `spreadsheets.readonly`, and `presentations.readonly`. A broader `drive.readonly` or `drive` grant the account already holds covers those requirements, and so does `presentations` for `presentations.readonly`, but neither broader Drive grant is ever requested here. When a Drive resource gains a scope, an account connected before it reads that resource as ungranted unless a scope it already holds covers the new one, and the Workshop prompts the user to expand it. So `presentations.readonly` re-prompts every Drive connection made before Drive-native Slides that holds none of `presentations`, `drive.readonly`, or `drive`. Until such an account re-consents, its existing Drive bindings keep listing and reading Docs and Sheets, `openGoogleSlides()` still opens a presentation but every read from it fails with Google's insufficient-scope 403, and that account cannot be admitted as a collaborator on a Drive binding, since admission requires a current Drive grant. A re-consent reaches open bindings without restarting them, since a 403 makes the token cache reload the stored token.
+
+Drive observations are typed as files or listable folders. A folder operation observes its positioned folder path plus each disclosed direct child, and native reads observe the file independently. Before a collaborator opens the workspace, the gatekeeper requires their own explicit Drive resource consent and rechecks remembered units with fresh batched metadata reads; folder units must still be live listable folders. Hidden rejected candidates are not disclosed or remembered.
+
+A search that exhausts with no match is owner-relative and cannot be verified against a file. That read is audited, withheld from current observers, and permanently closes later sharing only after the positioned folder path is revalidated. Intermediate empty provider pages do not trigger the restriction.
 
 ## Troubleshooting
 

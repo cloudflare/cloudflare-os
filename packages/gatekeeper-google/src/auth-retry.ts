@@ -103,10 +103,12 @@ export async function fetchWithAuthRetry(
   let method = (init.method ?? "GET").toUpperCase();
   let retries = opts.retries ?? 3;
   let idempotent = method === "GET" || opts.idempotent === true;
-  // A request can only be replayed if its body can be sent again. A string body (what every call
-  // site uses today) re-serializes fine; a stream is consumed by the first attempt, so retrying it
-  // would send an empty or errored body. Nothing to replay is likewise fine.
-  let replayable = init.body === undefined || init.body === null || typeof init.body === "string";
+  // A request can only be replayed if its body can be sent again. A string or byte-array body
+  // (what the call sites use today) re-serializes fine; a stream is consumed by the first
+  // attempt, so retrying it would send an empty or errored body. Nothing to replay is likewise
+  // fine.
+  let replayable = init.body === undefined || init.body === null ||
+    typeof init.body === "string" || init.body instanceof Uint8Array;
 
   // One-shot each: a 401 buys one refreshed retry, a 403 one reloaded retry.
   let refreshed = false;
@@ -146,18 +148,22 @@ export async function fetchWithAuthRetry(
       // Deliberately does not touch `attempt`: the refresh is one-shot, so it can add at most one
       // request to the budget rather than doubling it.
       refreshed = true;
-      await response.body?.cancel();
       // Naming the rejected token lets the authority collapse a concurrent burst of 401s into a
       // single token exchange — see AccessTokenRequest.
-      token = await getAccessToken({ forceRefresh: true, staleToken: token });
-      continue;
+      let fresh = await releasingOnFailure(response, getAccessToken({ forceRefresh: true, staleToken: token }));
+      // A provider that cannot refresh (a fixed token) hands back the one just rejected.
+      if (fresh !== token) {
+        token = fresh;
+        await response.body?.cancel();
+        continue;
+      }
     }
 
     if (response.status === 403 && !reloaded && replayable) {
       // Also one-shot, and it replays only on a token that really changed: an unchanged one means
       // the grant itself is insufficient, and re-sending it would just 403 again.
       reloaded = true;
-      let stored = await getAccessToken({ reloadStored: true });
+      let stored = await releasingOnFailure(response, getAccessToken({ reloadStored: true }));
       if (stored !== token) {
         token = stored;
         await response.body?.cancel();
@@ -174,6 +180,16 @@ export async function fetchWithAuthRetry(
     }
 
     return response;
+  }
+}
+
+/** Await `token`, cancelling the rejected response's body if it fails. */
+async function releasingOnFailure(response: Response, token: Promise<string>): Promise<string> {
+  try {
+    return await token;
+  } catch (error) {
+    await response.body?.cancel();
+    throw error;
   }
 }
 

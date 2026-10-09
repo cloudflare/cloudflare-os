@@ -102,8 +102,9 @@ export type CodeChange = { [gadgetId: number]: [path: string, change: FileChange
 // Content model
 
 /**
- * One gadget's file contents: `path -> text`, the same flattened shape
- * Overseer.getCodeAtCommit() returns.
+ * One workpiece's file contents: `path -> text`, with nested directories flattened to `/`-joined
+ * paths. For a worktree this holds only the paths a chat has touched -- a base tree is never
+ * materialized whole (see Overseer.readFilesAtCommit()).
  */
 export type GadgetFiles = Map<string, string>;
 
@@ -293,6 +294,32 @@ export function composeCodeChange(a: CodeChange, b: CodeChange): CodeChange {
     files.set(path, composeFileChange(gadgetId, path, aChange, bChange));
   }
   return makeCodeChange(gadgets);
+}
+
+/**
+ * Composes one epoch of a chat's batches of changes, in log order, into a single change over
+ * the epoch's pin bases. A batch's `pins` re-root the gadgets they name: whatever was composed
+ * for such a gadget before the batch is dropped, since its content restarts at the pinned
+ * commit's tree, and the batch's own `change` then applies over that tree. `seed` is the
+ * change accumulated before the first batch, such as a compaction checkpoint's
+ * `proposedChange`; a re-root drops the gadget's part of it like any other.
+ *
+ * Returns undefined when nothing is left, never an empty change. That is not to say that
+ * nothing is proposed: a re-root can leave a gadget's whole proposal in its pin.
+ */
+export function composeEpochChanges(
+    batches: Iterable<{change?: CodeChange, pins?: readonly {gadgetId: number}[]}>,
+    seed?: CodeChange): CodeChange | undefined {
+  let composed = seed ?? {};
+  for (let {change, pins} of batches) {
+    if (pins !== undefined && pins.length > 0) {
+      let rerooted = new Set(pins.map(pin => pin.gadgetId));
+      composed = Object.fromEntries(
+          gadgetEntries(composed).filter(([gadgetId]) => !rerooted.has(gadgetId)));
+    }
+    if (change !== undefined) composed = composeCodeChange(composed, change);
+  }
+  return Object.keys(composed).length > 0 ? composed : undefined;
 }
 
 function composeFileChange(

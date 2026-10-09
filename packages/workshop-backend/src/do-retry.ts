@@ -30,14 +30,32 @@ export function isDoResetError(e: unknown): boolean {
   return flags.durableObjectReset === true || flags.retryable === true;
 }
 
+/**
+ * True for the runtime's loop-limit rejection ("Subrequest depth limit exceeded. This request
+ * looped back into the Workers runtime too many times."). The runtime spends a loop counter on
+ * Durable Object calls and refuses a call once it is exhausted. An object's outgoing channels can
+ * hold an exhausted counter with nothing recursing, and then every call it makes is refused. The
+ * counter is held by the calling object's instance, so restarting that object clears it. The
+ * runtime gives the error no flag or code, hence the message match -- on the start of the
+ * message, so that the text quoted inside another error (one echoing a caller-supplied value,
+ * say) does not count. The sibling "passed through too many Workers stages" message is a
+ * different counter, which a restart does not help, and is deliberately not matched.
+ */
+export function isLoopLimitError(e: unknown): boolean {
+  return e instanceof Error && typeof e.message === "string" && e.message.startsWith(
+      "Subrequest depth limit exceeded. This request looped back into the Workers runtime");
+}
+
 /** Wraps a DO stub so every method call observes DO-reset rejections for telemetry
  * (`user_do.reset.surfaced`, with the method name as the operation) and rethrows them
  * unchanged. Otherwise transparent. Pass the caller's logger so the log attributes the reset
  * to the component (and context, e.g. gadgetId) that observed it; defaults to the Worker's.
  * A surfaced reset may still be absorbed by `retryOnDoReset` at the call site (correlate with
- * `user_do.reset.recovered`). */
+ * `user_do.reset.recovered`). `onRejection`, if given, is called with every rejection of a
+ * wrapped call (not only resets) before it is rethrown. */
 export function wrapDoStubForTelemetry<T extends { id: DurableObjectId }>(
-    stub: T, log: ReturnType<typeof createWorkshopLogger> = logger): T {
+    stub: T, log: ReturnType<typeof createWorkshopLogger> = logger,
+    onRejection?: (e: unknown) => void): T {
   return new Proxy(stub, {
     get(target, prop) {
       const value = Reflect.get(target, prop) as unknown;
@@ -62,6 +80,7 @@ export function wrapDoStubForTelemetry<T extends { id: DurableObjectId }>(
                 error: e,
               });
             }
+            onRejection?.(e);
             throw e;
           }
         })();

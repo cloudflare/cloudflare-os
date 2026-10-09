@@ -49,7 +49,7 @@ import {
 } from "./attachments/useComposerAttachments";
 import { CapturedConsoleLogsPrompt } from "./CapturedConsoleLogsPrompt";
 import ComposerAddMenu from "./ComposerAddMenu";
-import { ComposerModelSelector } from "./ComposerModelSelector";
+import { ComposerModelSelector, type SelectedModel } from "./ComposerModelSelector";
 import { useComposerDraft } from "./draft/useComposerDraft";
 import { buildComposerSubmission } from "./composerSubmission";
 import {
@@ -122,7 +122,7 @@ export const ChatComposer = ({
   ) => Promise<void> | void;
   isAgentActive: boolean;
   models: AiChatAuthorInfo[];
-  selectedModel: string | null;
+  selectedModel: SelectedModel;
   onModelChange: (modelId: string | null) => void;
   pendingConsoleLogCount?: number;
   consoleLogPreview?: string;
@@ -169,7 +169,7 @@ export const ChatComposer = ({
     removeAttachment,
   } = useComposerAttachments({
     getOverseer,
-    modelId: selectedModel,
+    modelId: selectedModel?.id ?? null,
     onError: (message) => toasts.add({ title: message, variant: "error" }),
   });
   const {
@@ -488,7 +488,7 @@ export const ChatComposer = ({
       const { message, capsules: capsuleSpecifiers, formats: formatRefs } =
         submissionResult.submission;
 
-      await onSend(message, selectedModel,
+      await onSend(message, selectedModel?.id ?? null,
           capsuleSpecifiers,
           readyAttachments.length ? readyAttachments : undefined,
           formatRefs);

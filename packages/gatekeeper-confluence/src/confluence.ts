@@ -19,6 +19,7 @@ import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import {
   type AccountDescription,
   type ApprovalQueue,
+  type ConnectHandoff,
   type Gatekeeper,
   type GatekeeperConnectCallback,
   type GatekeeperConnectOptions,
@@ -31,6 +32,8 @@ import {
   type SupportedResource,
   type VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
+import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
+import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 import {
   CONFLUENCE_SCOPES,
   ConfluenceApi,
@@ -128,7 +131,17 @@ type Env = Cloudflare.Env & {
   CLIENT_SECRET?: string;
 };
 
-type StoredNonce = { value: string; expiresAt: number; stage: "initiation" | "oauth" };
+type StoredNonce = {
+  value: string;
+  expiresAt: number;
+  stage: "initiation" | "oauth";
+  /**
+   * Set when this flow reconnects an existing account, so its grant is staged rather than made
+   * live. The mode travels with the flow instead of living on the account: committing one
+   * reconnect while another is in flight must not change how that other flow lands.
+   */
+  reconnect?: true;
+};
 type StoredGrant = { accessToken: string; refreshToken?: string; expiresAt: number };
 
 const getBaseUrl = (env: Env): string => env.BASE_URL || "http://localhost:8787/gatekeeper/confluence";
@@ -164,13 +177,6 @@ const PAGE_RESOURCE: SupportedResource = {
   description: "Read and edit a specific Confluence page or blog post (and its child pages).",
 };
 const SUPPORTED_RESOURCES = [SITE_RESOURCE, SPACE_RESOURCE, PAGE_RESOURCE];
-
-const htmlResponse = (body: string): Response =>
-  new Response(body, { headers: { "Content-Type": "text/html; charset=utf-8" } });
-
-const SELF_CLOSING_HTML = `<!DOCTYPE html>
-<html lang="en"><body><script>window.close();</script>
-<p>Authorization complete. You may close this tab and return to Cloudflare OS.</p></body></html>`;
 
 const page = (title: string, color: string, message: string): string => `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>${title}</title></head>
@@ -225,8 +231,9 @@ export default {
       if (colonIdx < 0) return new Response("Error: malformed state",
         { headers: { "content-type": "text/plain; charset=utf-8" } });
       const stub = ctx.exports.UserAccount.get(ctx.exports.UserAccount.idFromString(state.slice(0, colonIdx)));
-      if (!await stub.acceptAuthCode(code, state.slice(colonIdx + 1))) return htmlResponse(INVALID_LINK_HTML);
-      return htmlResponse(SELF_CLOSING_HTML);
+      const handoff = await stub.acceptAuthCode(code, state.slice(colonIdx + 1));
+      if (!handoff) return htmlResponse(INVALID_LINK_HTML);
+      return htmlResponse(connectHandoffPageHtml(handoff));
     }
     return new Response("Not Found", { status: 404 });
   },
@@ -284,9 +291,11 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   async prepareReconnect(initiationNonce: string) {
-    this.ctx.storage.kv.put<boolean>("reconnecting", true);
     this.ctx.storage.kv.put<StoredNonce>("nonce", {
-      value: initiationNonce, expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS, stage: "initiation",
+      value: initiationNonce,
+      expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS,
+      stage: "initiation",
+      reconnect: true,
     });
   }
 
@@ -298,16 +307,23 @@ export class UserAccount extends DurableObject<Env> {
     }
     const oauthNonce = generateNonce();
     this.ctx.storage.kv.put<StoredNonce>("nonce", {
-      value: oauthNonce, expiresAt: Date.now() + OAUTH_NONCE_LIFETIME_MS, stage: "oauth",
+      value: oauthNonce,
+      expiresAt: Date.now() + OAUTH_NONCE_LIFETIME_MS,
+      stage: "oauth",
+      reconnect: stored.reconnect,
     });
     return { oauthNonce };
   }
 
-  async acceptAuthCode(code: string, oauthNonce: string): Promise<boolean> {
+  /**
+   * Finishes the OAuth code exchange and returns the handoff for the page the browser lands on, or
+   * null when the callback's nonce doesn't match.
+   */
+  async acceptAuthCode(code: string, oauthNonce: string): Promise<ConnectHandoff | null> {
     const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || stored.stage !== "oauth" || Date.now() >= stored.expiresAt ||
         !constantTimeEqual(stored.value, oauthNonce)) {
-      return false;
+      return null;
     }
     this.ctx.storage.kv.delete("nonce");
 
@@ -319,22 +335,36 @@ export class UserAccount extends DurableObject<Env> {
 
     const grant = await exchangeAuthCode(
       code, this.env.CLIENT_ID, this.env.CLIENT_SECRET, getBaseUrl(this.env) + "/oauth");
-    this.#storeGrant(grant);
-    await this.#refreshSitesAndIdentity(grant.accessToken);
 
-    if (this.ctx.storage.kv.get<boolean>("reconnecting")) {
-      this.ctx.storage.kv.delete("reconnecting");
-      await callback.credentialsRestored(new Date(grant.expiresAt));
+    let handoff: ConnectHandoff;
+    if (stored.reconnect) {
+      // The reconnect URL is a bearer capability, so the new grant is only staged until the Workshop
+      // has confirmed the browser that finished the flow is the owner's (see commitReconnect). Bound
+      // gadgets keep reading the current token meanwhile.
+      const stageId = stageCredentials(this.ctx.storage.kv, grant, Date.now());
+      // No expiry is reported: the access token is refreshed transparently from the rotating
+      // refresh token, and GatekeeperConnectCallback says not to report a token-cache expiry.
+      handoff = await callback.reconnectComplete(stageId);
     } else {
+      this.#storeGrant(grant);
+      await this.#refreshSitesAndIdentity(grant.accessToken);
       try {
         const props: GatekeeperUserImplProps = { userObjectId: this.ctx.id.toString() };
-        await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }), new Date(grant.expiresAt));
+        handoff = await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }));
       } catch (err) {
         this.ctx.storage.kv.delete("grant");
         throw err;
       }
     }
-    return true;
+    return handoff;
+  }
+
+  /** Makes the grant staged under `stageId` live; see GatekeeperUser.commitReconnect. */
+  async commitReconnect(stageId: string): Promise<void> {
+    const grant = commitStagedCredentials<StoredGrant>(this.ctx.storage.kv, Date.now(), stageId);
+    if (!grant) throw new Error("No reconnect is awaiting confirmation. Please try again.");
+    this.#storeGrant(grant);
+    await this.#refreshSitesAndIdentity(grant.accessToken);
   }
 
   #storeGrant(grant: StoredGrant) {
@@ -371,7 +401,7 @@ export class UserAccount extends DurableObject<Env> {
       const next = await refreshAccessToken(grant.refreshToken, this.env.CLIENT_ID, this.env.CLIENT_SECRET);
       this.#storeGrant(next); // rotating refresh token: always persist the new one
       const callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
-      callback?.credentialsRestored(new Date(next.expiresAt)).catch(() => {});
+      callback?.credentialsRestored().catch(() => {});
       return next.accessToken;
     } catch (err) {
       if (err instanceof ConfluenceApiError && (err.isAuthError || err.status === 400 || err.status === 403)) {
@@ -498,6 +528,10 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     const initiationNonce = generateNonce();
     await this.#userAccount().prepareReconnect(initiationNonce);
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
+  }
+
+  async commitReconnect(stageId: string): Promise<void> {
+    await this.#userAccount().commitReconnect(stageId);
   }
 
   @skipRpcValidation()
@@ -1051,6 +1085,9 @@ class ContentSessionImpl extends RpcTarget implements ConfluenceContentSession {
     }
     const create = this.#store.createActionFor(this.#contentId)?.action;
     const spaceKey = await this.#spaceKey(create);
+    // The description names the parent's space, read from the parent itself.
+    await authorizeConfluenceObservation(this.#approvalQueue, this.#observe, this.#sets(),
+      observation("Read Confluence parent page", "Read the space of the page a child page is created under."));
     const provisionalId = this.#store.nextProvisionalId();
     await this.#stage({
       type: "createContent", provisionalId, kind: "page",

@@ -13,6 +13,198 @@ import {
 The exported symbols carry their exact contracts in JSDoc. This guide covers the choices and
 sequencing that span more than one symbol.
 
+## Connect flows
+
+These sequences compose Layer-1 leaves; the kit ships no connect assembly. The conformance account
+in [`__tests__/workerd/conformance/gatekeeper.ts`](__tests__/workerd/conformance/gatekeeper.ts) is
+the executable reference. Production gatekeepers stage and commit reconnects; GitLab also fences
+each connect on its connection generation, as the variants below do, and GitHub does not yet.
+`disposeMintIfSafe`, `revokeLiveGrantBestEffort`, and `toGrant`
+are gatekeeper-owned placeholders, not kit exports; `client` is an `OAuthClient` (see
+[OAuth token endpoint](#oauth-token-endpoint)).
+
+Every browser connect flow must claim its OAuth nonce before exchanging the provider code. An
+expired or replayed callback must not mint a grant. When the attempt advances to OAuth, store the
+PKCE verifier and the exact redirect URI with it, and capture the account's connection generation
+so a disconnect or newer connect cannot be overwritten during the exchange:
+
+```ts
+type ConnectAttempt = { codeVerifier: string; redirectUri: string; startedUnder: string };
+
+const pkce = await createPkce();
+const state = advanceToOAuth<ConnectAttempt>(kv, linkNonce, Date.now(), {
+  codeVerifier: pkce.codeVerifier,
+  redirectUri,
+  startedUnder: this.#creds.connectionGeneration(),
+});
+if (state === null) throw new Error("This connect link has expired. Start again.");
+const authorize = client.authorizationUrl({
+  redirectUri, state, scopes, codeChallenge: pkce.codeChallenge,
+});
+
+const claim = claimOAuth<ConnectAttempt>(kv, oauthNonce, Date.now());
+if (claim === null) throw new Error("This connect attempt has expired. Start again.");
+
+const grant = toGrant(await client.exchangeCode({
+  code, redirectUri: claim.redirectUri, codeVerifier: claim.codeVerifier,
+}));
+```
+
+The handshake holds one OAuth nonce, so a second `advanceToOAuth` invalidates the first unclaimed
+callback. A claimed attempt can still race with a connection change. Use `startedUnder` in the
+matching initial or reconnect path below.
+
+### Initial connect
+
+An initial connect may persist its complete grant in the new account before calling
+`callback.complete(user, expiresAt)`. Fence that write, then return the handoff as the final browser
+response:
+
+```ts
+try {
+  this.#creds.connect(grant, { ifGeneration: claim.startedUnder });
+} catch (error) {
+  if (!isConnectionSuperseded(error)) throw error;
+  await disposeMintIfSafe(grant);
+  throw new Error("This account's connection changed. Start again.", { cause: error });
+}
+
+const handoff = await callback.complete(user, credentialsRefreshabilityExpiry);
+return htmlResponse(connectHandoffPageHtml(handoff));
+```
+
+Without `ifGeneration`, `connect()` writes unconditionally. That remains appropriate for a pasted
+token or form submission with no round trip to fence.
+
+Call `complete()` at most once per account. Each call stages another Workshop ticket, and an
+unredeemed ticket revokes the account, so a second call can destroy the connection the first made,
+even one that threw or lost its reply. A flow that claimed a single-use nonce reaches `complete()`
+once already. A flow whose link or form has no single-use nonce records the attempt: refuse when
+`isConnectAttempted(kv)` (early, to skip provider work, and again where the live credential is
+written), then mark it in that same synchronous section:
+
+```ts
+if (isConnectAttempted(kv)) return refuse();
+this.#creds.connect(grant);
+markConnectAttempted(kv);
+const handoff = await callback.complete(user, credentialsRefreshabilityExpiry);
+```
+
+RPC rejection does not prove that `complete()` failed. Workshop may already hold a pending handoff,
+or a sign-in may already have linked the account, so a blind rollback can delete credentials the
+Workshop is about to activate. The kit has no mechanism for this. An account that keeps its grant
+must decide locally when the flow is dead, clear it only if the credential identity it wrote is
+still current, and apply provider cleanup only when that cannot invalidate an alias or successor.
+Workshop revokes a staged connect whose ticket is never redeemed.
+
+### Reconnect and `ensureResources`
+
+A reconnect or resource expansion must not write the new grant live. Stage the complete canonical
+grant together with the generation under which the flow started, report that exact stage, and wait
+for Workshop to call `commitReconnect(stageId)`:
+
+```ts
+type ReconnectStage = { grant: Grant; startedUnder: string };
+
+if (this.#creds.connectionGeneration() !== claim.startedUnder) {
+  await disposeMintIfSafe(grant);
+  throw new Error("This account's connection changed while reconnecting. Start again.");
+}
+
+const displaced = discardStagedCredentials<ReconnectStage>(this.ctx.storage.kv);
+const stageId = stageCredentials(
+  this.ctx.storage.kv,
+  { grant, startedUnder: claim.startedUnder },
+  Date.now(),
+);
+if (displaced !== null) await disposeMintIfSafe(displaced.grant);
+
+const handoff = await callback.reconnectComplete(stageId, credentialsRefreshabilityExpiry);
+return htmlResponse(connectHandoffPageHtml(handoff));
+```
+
+Workshop then calls the account's `commitReconnect(stageId)`:
+
+```ts
+const staged = commitStagedCredentials<ReconnectStage>(
+  this.ctx.storage.kv,
+  Date.now(),
+  stageId,
+);
+if (staged === null) throw new Error("This reconnect stage is no longer available.");
+const retired = this.#creds.stored();
+try {
+  this.#creds.connect(staged.grant, { ifGeneration: staged.startedUnder });
+} catch (error) {
+  if (!isConnectionSuperseded(error)) throw error;
+  await disposeMintIfSafe(staged.grant);
+  throw new Error("This account's connection changed. Start again.", { cause: error });
+}
+if (retired !== undefined) await disposeMintIfSafe(retired);
+```
+
+No account or resource read may use staged data. A mismatched stage id leaves the newer stage
+intact; only an exact, live stage is consumed. Workshop owns the opaque completion ticket and passes
+its recorded stage id to `commitReconnect`. The stage TTL controls how long the grant is committable.
+The optional `expiresAt` passed to `complete()` or `reconnectComplete()` is a separate absolute
+estimate of when the credentials stop being refreshable, not the access-token or stage expiry.
+
+An RPC rejection from `reconnectComplete()` is ambiguous: Workshop may already hold the `stageId`, so
+the stage must stay committable. Nothing expires it locally — `commitStagedCredentials` refuses it
+once the TTL passes, but the record survives until the next stage replaces it.
+
+`disposeMintIfSafe` belongs to the gatekeeper and must not throw. It revokes only when the provider
+guarantees cleanup cannot invalidate live or successor credentials. For grant-wide revocation, it
+is a no-op. Capture a live grant or stage before synchronous replacement, then dispose it only after
+the successor is live.
+
+Fence rejection reports too: carry the identity of the credentials used by an in-flight provider
+call, and ignore its rejection after a successor is live.
+
+Teardown captures first, clears locally, and only then awaits provider cleanup. A revoke or account
+deletion clears everything the account owns:
+
+```ts
+const live = this.#creds.stored();
+const staged = discardStagedCredentials<ReconnectStage>(this.ctx.storage.kv);
+await this.ctx.storage.deleteAlarm();
+await this.ctx.storage.deleteAll();
+if (staged !== null) await disposeMintIfSafe(staged.grant);
+if (live !== undefined) await revokeLiveGrantBestEffort(live);
+```
+
+`deleteAll` removes the stored Workshop callback, the expiry latch, and the provider keys a
+selective sequence would miss, so both captures above must be synchronous and precede it. A provider
+await placed before the local clear leaves `commitReconnect` a window to re-arm an account being
+deleted.
+
+A path that keeps the account clears selectively instead. Repointing a connection at a new endpoint
+discards the stage, deletes the nonce, and calls `CredentialCoordinator.clear()`, leaving the
+callback and the alarm in place.
+
+`discardStagedCredentials` returns what it dropped and ignores the stage TTL, so an abandoned grant
+is still reachable. A gatekeeper that will not keep an unconfirmed grant at rest can retain the
+`stageId` under its own key, arm its own alarm, and pass that id back:
+`discardStagedCredentials(kv, stageId)` drops only that stage, so a newer flow's stage survives the
+cleanup its predecessor scheduled. No gatekeeper retains stage ids today, so that argument has no
+consumer yet. The kit owns no cleanup protocol either. The marker, the alarm, and whether to call
+the provider at all stay with the gatekeeper, and a dropped grant goes to `disposeMintIfSafe`, never
+to the live keys.
+
+`revokeLiveGrantBestEffort` is also gatekeeper-owned and must not throw. Use the provider's
+connection-specific revocation when it has one. Omit remote revocation when the provider cannot
+target this connection without invalidating a separate live connection; local teardown still
+removes the Workshop's authority.
+
+Neither helper may decide the RPC outcome. Not throwing is not the same as returning: bound the
+provider call with `AbortSignal.timeout`, or hand it to `ctx.waitUntil` once the local write is
+durable. Each disposal above sits on the path of a reply someone awaits, and `commitReconnect`'s
+cannot be retried because Workshop spends the handoff ticket before calling it. A reply lost behind
+a hung revocation leaves the new grant live while the account stays marked unrestored.
+
+See [`docs/connect-handoff.md`](../../docs/connect-handoff.md) for Workshop's ticket, popup nonce,
+and redemption protocol.
+
 ## Credentials
 
 An OAuth-shaped provider needs both halves of the credential API:
@@ -50,13 +242,19 @@ Both methods stay thin because the coordinator owns the atomic credential, ident
 triple, refresh fencing, and rejection verdicts:
 
 ```ts
+#refresh = oauthRefresh<Grant>(this.#client, {
+  refreshToken: grant => grant.refreshToken,
+  merge: mergeOAuthTokens,
+  expiredMessage: "Reconnect the Vendor account in the Workshop.",
+});
+
 async getCredentials(): Promise<CredentialsWithIdentity<PublicGrant>> {
   const { creds, identity, generation } = await this.#creds.snapshot(
-    grant => refreshAtProvider(grant),
+    this.#refresh,
     { notify: () => this.#notify() },
   );
   return {
-    creds: { token: creds.token, expiresAt: creds.expiresAt },
+    creds: { token: creds.accessToken, expiresAt: creds.expiresAt },
     identity,
     generation,
   };
@@ -64,7 +262,7 @@ async getCredentials(): Promise<CredentialsWithIdentity<PublicGrant>> {
 
 reportCredentialsRejected(identity: string) {
   return this.#creds.adjudicateRejection(identity, {
-    refresh: grant => refreshAtProvider(grant),
+    refresh: this.#refresh,
     notify: () => this.#notify(),
   });
 }
@@ -83,21 +281,31 @@ reportCredentialsRejected(identity: string) {
 Project credentials before returning them. Refresh material must not cross the account RPC
 boundary.
 
-`refreshAtProvider` owns a classification the kit cannot make: throw `CredentialsExpiredError` only
-when the provider proves the *grant* is dead — `invalid_grant` from the token endpoint, a revoked
-refresh token, or provider-specific evidence of the same. Let transport, malformed-response, and
-5xx failures travel unchanged, and do not treat a bare `invalid_token`: that is RFC 6750 for the
-presented access token, which a refresh recovers. Treating either an outage or a recoverable token
+The refresh owns a classification the coordinator cannot make: throw `CredentialsExpiredError` only
+when the provider proves the *grant* is dead. `oauthRefresh` carries that classification in its
+`isGrantDeath` option, which defaults to `isInvalidGrant` — an RFC 6749 `invalid_grant` below HTTP
+500, other than 429. A supplied predicate replaces that default, so widen it by composing,
+`error => isInvalidGrant(error) || …`, and only for provider-specific evidence of the same, such as
+a revoked refresh token reported another way. Key it on `oauthError`, not a bare status, which a
+proxy or WAF page carries too. Let transport, malformed-response, and 5xx failures travel
+unchanged, and never read a bare `invalid_token` as that proof: it is RFC 6750 for the presented
+access token, which a refresh recovers. Treating either an outage or a recoverable token
 rejection as grant death destroys healthy authority and prompts an unnecessary reconnect.
 
 It also owes the *complete* canonical record, not the provider's response. Providers routinely omit
 values that did not change — an unchanged rotating refresh token, granted scopes, provider metadata
 — and the coordinator replaces the stored record wholesale, so anything absent is lost and the next
-refresh fails after the first successful rotation:
+refresh fails after the first successful rotation. `mergeOAuthTokens` keeps those values but
+replaces `expiresAt`, since a carried-forward past expiry would refresh on every read. A grant with
+other provider-reported fields extends it, picking each field rather than spreading the response:
 
 ```ts
-const response = await exchangeRefreshToken(grant);
-return { ...grant, ...response, refreshToken: response.refreshToken ?? grant.refreshToken };
+merge: (grant, tokens) => ({
+  ...mergeOAuthTokens(grant, tokens),
+  instanceUrl: typeof tokens.raw.instance_url === "string"
+    ? tokens.raw.instance_url
+    : grant.instanceUrl,
+}),
 ```
 
 Omit `adjudicateRejection`'s `refresh` callback when rejection of a current credential proves the
@@ -114,44 +322,6 @@ Every credential replacement re-arms the expiry latch. This includes `connect()`
 refresh, and rejection healing. A legacy-layout migration does not re-arm it because it replaces no
 credentials. `clearCredentialExpiryLatch` remains available for accounts that manage credentials
 without `CredentialCoordinator`.
-
-`claimOAuth()` consumes its nonce *before* the provider token exchange, so a revoke or a newer
-reconnect can land while that exchange is in flight. Unfenced, the older completion overwrites it.
-Capture the connection when the attempt starts and hand it back at the end:
-
-```ts
-// Starting the attempt: `advanceToOAuth` carries arbitrary metadata through the callback.
-const state = advanceToOAuth(kv, linkNonce, Date.now(),
-  { startedUnder: this.#creds.connectionGeneration() });
-if (state === null) throw new Error("This connect link has expired. Start again.");
-
-// Completing it. Both handshake calls return null for an expired or replayed nonce, and the claim
-// is checked before the exchange: minting first would leave a live grant nothing here can revoke.
-const claim = claimOAuth<{ startedUnder: string }>(kv, oauthNonce, Date.now());
-if (claim === null) throw new Error("This connect attempt has expired. Start again.");
-
-const grant = await exchangeCode(code);
-try {
-  this.#creds.connect(grant, { ifGeneration: claim.startedUnder });
-} catch (error) {
-  if (!isConnectionSuperseded(error)) throw error;
-  // Never stored, so this mint is yours to dispose — but only where revoking one token cannot
-  // revoke the whole grant; see "Revoke discarded token rotations" below.
-  await revokeAtProvider(grant);
-  // Either a `clear()` or a newer winning `connect()` moves the generation, so report the change
-  // rather than asserting which one happened.
-  throw new Error("This account's connection changed while connecting. Start again.");
-}
-```
-
-Without `ifGeneration`, `connect()` writes unconditionally. Fencing is opt-in because a flow with
-no round trip — a pasted token, a form submission — has no window to fence and would have to
-invent a generation to pass.
-
-This closes the window between the claim and the write. It does not order two attempts that both
-reach the exchange: the handshake holds one nonce, so a second attempt reaching `advanceToOAuth`
-invalidates the first's callback, but an attempt that already claimed will still win if it
-completes first.
 
 ### 3. Run facet calls through `CredentialSource`
 
@@ -202,6 +372,14 @@ grant, so where a reconnect reuses one grant per (user, client) the disposal kil
 that just won. For such a provider omit `discardMint` and order refresh against connect and clear in
 the account itself — the kit supplies no primitive for that.
 
+Where it can, `discardMint` is `mint => client.revoke({ token: mint.refreshToken!, tokenTypeHint:
+"refresh_token" })`. The coordinator awaits it inside the refresh single-flight, which the client's
+`timeoutMs` bounds. The recipe assumes every refresh rotates. `mergeOAuthTokens` carries an
+unrotated refresh token forward, so on a provider that may not rotate, the mint holds the token the
+refresh started from: revoking it disposes of more than the mint, and kills a winner handed the same
+token back. The mint added only a short-lived access token there, so such a provider omits
+`discardMint`.
+
 Errors from `discardMint` are logged and do not replace the winning operation. It cannot recover a
 crash between provider rotation and storage; the user must reconnect in that case.
 
@@ -221,9 +399,12 @@ defineActions(definitions, {
 ```
 
 An `"authority"` kind must be staged with the authority the operation ran under. For the common
-connection fence that is the `CredentialRead` **the staging operation itself ran under** — `CredentialSource.run()` passes it as the operation's second argument, and it is
-structurally an `ActionFence`, so `{ fence: read }` works verbatim. `submit` refuses the call
-without one, and refuses a fence on a kind declared `"none"`. The kit never interprets the value, so a provider that wants an action to survive re-authorization of the same account stores its own stable account id instead and passes that at apply.
+connection fence, that is the `CredentialRead` **the staging operation itself ran under**.
+`CredentialSource.run()` passes it as the operation's second argument, and it is structurally an
+`ActionFence`, so `{ fence: read }` works verbatim. `submit` refuses the call without one, and
+refuses a fence on a kind declared `"none"`. The kit never interprets the value, so a provider that
+wants an action to survive re-authorization of the same account stores its own stable account id
+instead and passes that at apply.
 
 The read has to be the operation's own. A second `read()` taken inside the submit path can land
 after a reconnect and would pin old-connection data to the new connection — which is why the kit
@@ -236,6 +417,54 @@ staged under one and applied under the other fails terminally on every attempt. 
 entry check, so a reconnect may still land between it and the provider call. A handler that must
 not run under a replaced connection compares `ctx.fence` with the `CredentialRead` passed to the
 same `run` callback that issues the request.
+
+## OAuth token endpoint
+
+`OAuthClient` in `./oauth-client` makes the token-endpoint calls behind a connect flow and a
+refresh: authorization URLs with PKCE, code exchange, refresh, and RFC 7009 revocation. Every
+request refuses redirects, is bounded in time and size, and reports a rejection as
+`OAuthResponseError`, whose message carries no provider text beyond a validated `error` code;
+transport, abort, and oversize failures propagate unchanged. The `oauth-client with the connect
+handshake and CredentialCoordinator` suite in
+[`__tests__/workerd/oauth-client.test.ts`](__tests__/workerd/oauth-client.test.ts) is the
+executable reference.
+
+```ts
+#client = new OAuthClient({
+  label: "Vendor",
+  client: { method: "basic", id: this.env.CLIENT_ID, secret: this.env.CLIENT_SECRET },
+  authorizationEndpoint: "https://vendor.example/oauth/authorize",
+  tokenEndpoint: "https://vendor.example/oauth/token",
+});
+```
+
+- Pass `redirectUri` per call, from what the connect attempt stored. It is deliberately not client
+  configuration: under `PreviewOAuth` it depends on the deployment, and the exchange must repeat the
+  exact URI the authorization used.
+- Pick fields explicitly. A `claimOAuth` claim also carries the nonce's own `value` and `expiresAt`,
+  and `OAuthTokens.raw` is whatever the provider sent, so spreading either into a grant stores
+  nonce or provider data as credentials. `OAuthTokens.expiresAt` is absolute epoch milliseconds,
+  anchored at the request's start, and feeds `CredentialCoordinator`'s `expiresAt` unchanged.
+- Only a refresh can prove grant death. `invalid_client`, `unauthorized_client`, `invalid_scope`,
+  429, and 5xx are rethrown: with one static client they are operator or provider faults, and
+  treating them as death would expire every user at once. A deleted dynamically registered client
+  is the kind of evidence that justifies widening `isGrantDeath`. An `invalid_grant` answering
+  `exchangeCode` is a failed connect.
+- A response with no `expires_in` and a client with no `defaultExpiresIn` leave `expiresAt` absent,
+  so the grant refreshes only when a rejection is adjudicated. A lifetime within the coordinator's
+  `refreshSkewMs` refreshes on every read.
+
+When a provider does not fit, step down one rung at a time:
+
+1. `oauthRefresh` with `mergeOAuthTokens`.
+2. The client's own methods, with `params`, `headers`, and `bodyEncoding`, plus
+   `searchParams.append` on the returned authorization `URL` for a repeated parameter. They classify
+   nothing, so the caller decides which failures prove grant death, composing `isInvalidGrant`.
+3. `client.request()` with `parseTokenResponse`, for a request or response shaped outside RFC 6749
+   (Slack nests user tokens under `authed_user`). `request()` reserves no parameters and does not
+   require an `access_token`; the parser does.
+4. A native `RefreshCredentials<Grant>`, keeping every other leaf. A non-RFC revocation, such as a
+   JSON body or a `DELETE`, stays hand-written.
 
 ## Storage
 
@@ -326,6 +555,38 @@ provider" warning survives.
 substitutes for a provider idempotency key derived from the stable `ActionContext.id`, which is
 what makes a retry safe in the first place.
 
+### Describe with `buildDescription`
+
+Write `describe` with `buildDescription` from `@gadgets/gatekeeper-kit/action-description`. The
+approver vouches for the text they read, so every piece of content the action will send that came
+from the workspace — a body, a field value, an identifier, serialized arguments — goes in a field
+(`inline`, `verbatim`, `json`, `list`, or `file`). Fields travel as `ActionDescription.fields`,
+which approval surfaces show as literal text, so nothing in a value renders as Markdown. A value a
+field cannot show exactly, such as one with invisible characters, is shown as escaped JSON instead.
+Prose is for the gatekeeper's own summary: never interpolate agent- or provider-supplied text into
+it, since such text can open an HTML block the chat hides. Put the value in a field, or pass a mere
+label through `codeSpan` or `plainInline`. Spread `finish()` into the presentation and never set
+`descriptionIsComplete` by hand: the builder sets it only when every field was shown in full under
+its 96 KiB budget, and leaves the key off after truncating or omitting one, or when prose alone
+overflows it. An incomplete description is still submitted, and the approver is told part of the
+action isn't shown.
+
+```ts
+describe: payload => ({
+  title: `Comment on issue ${payload.issueId}`,
+  ...buildDescription("Posts a comment on an issue.")
+    .inline("Issue", payload.issueId)
+    .verbatim("Comment", payload.body)
+    .finish(),
+  implementsRevert: false,
+}),
+```
+
+Bytes the approver cannot read as text — an agent-supplied file, git objects — cannot be complete.
+Name a file with `file(label, {name, mediaType, size, sha256, origin})`: `origin: "agent"` leaves
+the flag off, while `origin: "provider"`, for bytes re-sent unchanged from the same provider such as
+a forwarded attachment, keeps it on.
+
 Store action file bytes with `ActionFileStore`. Put only the bounded `ActionFileReference` in the
 action payload. Journal records must stay small, and approval text must describe the same bytes that
 will be applied.
@@ -368,8 +629,8 @@ forge structure in the text a human approves against.
 Nothing in the kit can enforce this — no code sits between a session method and its return value.
 Skipping it fails silently: reads keep working, the Workshop records no observation, and the
 strategy's derived `excludeObservers` never reaches the overseer, so owner-only data goes to every
-admitted collaborator. Authorizing after the fetch is what makes the description name the bytes
-actually disclosed; authorizing before it would describe a read that may still fail.
+admitted collaborator. Authorizing after the fetch makes the description name the bytes actually
+disclosed; authorizing before it would describe a read that may still fail.
 
 `ObservationGate` is the only path to `authorizeObservation`. It takes a duplicate of the stub it
 guards and owns that dup, so a session holds two owners — its own approval queue for staging
@@ -385,12 +646,12 @@ actions, and the gate over `queue.dup()` — and releases both when the session 
 }
 ```
 
-The gate only needs `ObservationAuthorizer`, the read-only capability, so a catalog or
-slash-command handler — which receives exactly that — constructs one from its own
-`authorizer.dup()`. Gate leases (`lease()`) are independent owners in the same way.
+The gate only needs `ObservationAuthorizer`, the read-only capability, so a slash-command
+handler — which receives exactly that — constructs one from its own `authorizer.dup()`. Gate
+leases (`lease()`) are independent owners in the same way.
 
 Every gatekeeper must implement the three observer methods, and `GatekeeperUser.getVerifier()`
-alongside them — that capability is what `aclObservers` and `trackedCollectionObservers` call to check a
+alongside them. `aclObservers` and `trackedCollectionObservers` call that capability to check a
 collaborator, and `asVerifier` casts it to the vendor's own interface. Select one strategy:
 
 - `privateObservers` rejects collaborators.
@@ -542,6 +803,8 @@ The kit supplies defaults where they apply across consumers:
 | `maxTrackedCollections` | 1000 |
 | `maxObservers` | 10 |
 | `remotePageSize` | 100 |
+| `OAuthClient` `timeoutMs` | 30 000 ms |
+| `OAuthClient` `maxResponseBytes` | 64 KiB |
 
 The kit requires values where no general default is safe:
 
@@ -555,6 +818,33 @@ refusing valid reads once later pages reveal new collections. `maxObservers` mus
 subrequest ceiling because every observer costs a verifier call on each read. `remotePageSize`
 cannot exceed the provider's page cap.
 
+## Git
+
+`git-transport`, `git-objects`, and `git-diff` implement the worktree contract in
+`plans/worktrees.md` §3 for any smart-HTTP host. The gatekeeper supplies a fetch callback that adds
+the URL, credentials, and timeouts; the kit owns the framing. Two rules of the framing are easy to
+break from the outside and fail late when broken:
+
+- **Never send a `have`.** A `have` asserts full reachability of that commit, but every pull here
+  is filtered or shallow, so the workspace cache holds commits whose blobs or ancestors it lacks.
+  Sending one makes upload-pack withhold objects a later fault will `want`. `buildGitFetchRequest`
+  sends an empty have list and `done`; do not build a fetch request another way to "save bytes".
+- **At most one `filter` line.** upload-pack accepts a single filter-spec — a second `filter` line
+  is not merged, and GitHub rejects the request outright. Combining hints is spelled in the
+  filter-spec grammar or not at all; `filterSpecForHints` is the one place that chooses, and its
+  limits are documented on it (`blob:limit` and `tree:0` are known to work on GitHub; `combine:`
+  is not).
+
+Every ref update goes through `pushGitRefUpdate` with the *queue-time* old sha, so receive-pack's
+compare-and-swap protects a branch that moved between approval and apply; a rejected update is a
+`GitRefUpdateRejectedError` whose `reason` is the server's own line, which the gatekeeper passes
+through rather than matching on. Advertise every commit id a read hands out — `advertiseCommits`
+for a single read, and for a listing a `PageHookCursor` whose hook is `advertisePages` — except
+those served from the cache while queued for push, which both take as `withhold`: advertising one
+of those would record a pull-routing hint for an object the remote does not have. A session's
+`SessionGitCache` (`./cursors`) does both over its own lazily fetched cache stub, with `withhold`
+given once at construction.
+
 ## Other module boundaries
 
 - Use `withAuthRetry` only for token flows without `CredentialSource`. Otherwise,
@@ -562,14 +852,19 @@ cannot exceed the provider's page cap.
 - Use `isNoAccessError` or `probeAccess` for observer ACL checks. Do not use `isNoAccessError` as
   `CredentialSource.isAuthError`; it accepts 403 and 404.
 - Use `readTextCapped` for every textual, JSON, or error body — a provider can return more bytes
-  than the Worker can hold. It decodes UTF-8 and buffers, so binary downloads and streaming
-  protocols (SSE, Git) need their own byte-preserving limit instead.
+  than the Worker can hold — and for a connect form read before its nonce is checked. It decodes
+  UTF-8 and buffers, so binary downloads and streaming protocols (SSE, Git) need their own
+  byte-preserving limit instead.
 - Use `normalizeVendorEndpoint` for user-supplied provider base URLs. It validates that one URL and
   is not a fetch policy: fetch with `redirect: "manual"`, or re-validate each `Location` and drop
   origin-scoped headers when the origin changes, or a redirect carries `Authorization` off the
   allowlisted host.
 - Use `PreviewOAuth` when previews must share one stable callback registered with the OAuth
   provider.
+- Use `OAuthClient` for OAuth 2.0 token-endpoint calls rather than a hand-written `fetch`. It is
+  stateless and classifies nothing as grant death on its own, so a refresh still goes through
+  `CredentialCoordinator` via `oauthRefresh`, and the two modules share no state with
+  `PreviewOAuth`.
 - Every callback the kit invokes must throw display-safe errors. `discardMint`, the rejection heal,
   and the expiry notification all log what they catch, so a thrown token, header, or response body
   lands in the deployment's logs.

@@ -5,6 +5,7 @@
   "description": "Building blocks for gatekeepers: connect-flow, credential, action, observation, and simulation primitives. Not a deployable Worker.",
   "type": "module",
   "exports": {
+    "./action-description": "./src/action-description.ts",
     "./action-files": "./src/action-files.ts",
     "./actions": "./src/actions.ts",
     "./auth-retry": "./src/auth-retry.ts",
@@ -13,14 +14,21 @@
     "./connect-nonce": "./src/connect-nonce.ts",
     "./connect-pages": "./src/connect-pages.ts",
     "./credential-expiry": "./src/credential-expiry.ts",
+    "./credential-stage": "./src/credential-stage.ts",
     "./credentials": "./src/credentials.ts",
     "./cursors": "./src/cursors.ts",
     "./endpoint": "./src/endpoint.ts",
+    "./git-diff": "./src/git-diff.ts",
+    "./git-objects": "./src/git-objects.ts",
+    "./git-transport": "./src/git-transport.ts",
     "./http-errors": "./src/http-errors.ts",
     "./observers": "./src/observers.ts",
+    "./oauth-client": "./src/oauth-client.ts",
     "./preview-oauth": "./src/preview-oauth.ts",
     "./response-body": "./src/response-body.ts",
-    "./simulation": "./src/simulation.ts"
+    "./serial-queue": "./src/serial-queue.ts",
+    "./simulation": "./src/simulation.ts",
+    "./single-flight": "./src/single-flight.ts"
   },
   "scripts": {
     "test:run": "vitest run && vitest run -c vitest.worker.config.ts",
@@ -28,9 +36,10 @@
     "test:watch:workerd": "vitest -c vitest.worker.config.ts"
   },
   "dependencies": {
-    "@gadgets/backend-utils": "workspace:*",
+    "@gadgets/observability": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
-    "jose": "^6.2.8"
+    "diff": "catalog:",
+    "jose": "^6.2.12"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "catalog:",

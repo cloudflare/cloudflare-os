@@ -131,7 +131,7 @@ export function useActionHistory(
   }, [active, loadMore])
 
   const entries = useMemo(
-    () => Array.from(state.byId.values()).sort((a, b) => b.id - a.id),
+    () => Array.from(state.byId.values()).toSorted((a, b) => b.id - a.id),
     [state.byId])
 
   const session = sessionRef.current

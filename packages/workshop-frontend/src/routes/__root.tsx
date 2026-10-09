@@ -7,12 +7,14 @@ import { AuthenticatedApi } from '@gadgets/workshop-shared/api'
 import { useRpcStub, useConnectionLost } from '../RpcContext'
 import { useAuth, CF_ACCESS_MODE } from '../useAuth'
 import { AuthProvider } from '../AuthContext'
+import { HANDOFF_PATH } from '../connectHandoff'
 import { FeatureFlagsProvider } from '../FeatureFlagsContext'
 import Header from '../components/Header'
 import AppShell from '../components/AppShell/AppShell'
 import LoginPage from '../LoginPage'
 import OnboardingWizard from '../OnboardingWizard'
 import AccountSelectionModal from '../components/billing/AccountSelectionModal'
+import { NotificationBridge } from '../features/notifications/NotificationBridge'
 
 export const Route = createRootRoute({
   component: RootComponent,
@@ -27,11 +29,14 @@ function RootComponent() {
   // Routes that don't require auth (public routes)
   const isSignup = pathname === '/signup'
   const isBlueprint = pathname.startsWith('/blueprint/')
+  // The connect / sign-in handoff popup needs no shell and must not wait on auth: a sign-in popup
+  // has no session, and ConnectHandoffPage runs its own useAuth for connects.
+  const isHandoff = pathname === HANDOFF_PATH
 
-  // A standalone (no app shell) render is used only for signed-out visitors of public routes.
-  // Signed-in users get the full app chrome so public pages (esp. the blueprint detail) feel
-  // native — sidebar and all — instead of floating on a bare page.
-  const standalone = isSignup || (isBlueprint && !isAuthenticated)
+  // A standalone (no app shell) render is used for the handoff popup and for signed-out visitors
+  // of public routes. Signed-in users get the full app chrome so public pages (esp. the blueprint
+  // detail) feel native — sidebar and all — instead of floating on a bare page.
+  const standalone = isSignup || isHandoff || (isBlueprint && !isAuthenticated)
 
   // The workspace editor renders fullscreen (no app chrome). /gadget/ is the legacy URL, kept
   // here so the chrome doesn't flash in during the redirect to /workspace/.
@@ -86,7 +91,7 @@ function RootComponent() {
 
   // Signed-out visitors of public routes render without the auth wrapper / app shell.
   if (standalone) {
-    const showHeader = !isSignup
+    const showHeader = !isSignup && !isHandoff
     return (
       <TooltipProvider>
         <Toasty>
@@ -110,6 +115,7 @@ function RootComponent() {
       <FeatureFlagsProvider>
         <TooltipProvider>
           <Toasty>
+            <NotificationBridge authenticatedApi={authenticatedApi} />
             <AuthenticatedShell
               authenticatedApi={authenticatedApi}
               isWorkspaceEditor={isWorkspaceEditor}

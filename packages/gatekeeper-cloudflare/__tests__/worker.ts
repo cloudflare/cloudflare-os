@@ -5,7 +5,7 @@
 // `ctx.exports.X({props})` is only reachable through `ctx.facets`, which is the same way the overseer
 // instantiates a gatekeeper in production.
 
-import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
+import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type { GatekeeperUserVerifier, GitCache, GitObjectType, GitOid }
   from "@gadgets/workshop-shared/gatekeeper";
 import type { CloudflareObservabilityGatekeeper } from "../src/cloudflare.js";
@@ -19,9 +19,10 @@ type GatekeeperProps = {
   workerName?: string;
 };
 
-type TestExports = {
+export type TestExports = {
   CloudflareObservabilityGatekeeper(options: { props: GatekeeperProps }):
     DurableObjectClass<CloudflareObservabilityGatekeeper>;
+  TestConnectCallback(options: { props: { label: string } }): Fetcher<TestConnectCallback>;
 };
 
 /**
@@ -58,6 +59,16 @@ class TestVerifier extends RpcTarget {
   async hasObservabilityAccess(): Promise<boolean> {
     if (typeof this.outcome === "string") throw new Error(this.outcome);
     return this.outcome;
+  }
+}
+
+/** The labels of the `TestConnectCallback`s notified of credential expiry, in arrival order. */
+export const expiryNotices: string[] = [];
+
+/** Stands in for the Workshop's connect callback, which an account stores to report expiry. */
+export class TestConnectCallback extends WorkerEntrypoint<Env, { label: string }> {
+  async credentialsExpired(): Promise<void> {
+    expiryNotices.push(this.ctx.props.label);
   }
 }
 

@@ -1,4 +1,4 @@
-import { createObservabilityContext } from "@gadgets/backend-utils/observability-context";
+import { createObservabilityContext } from "@gadgets/observability/observability-context";
 
 /** Observability fields emitted by the Linear gatekeeper. */
 export type LinearObservabilityFields = { vendorId: string };

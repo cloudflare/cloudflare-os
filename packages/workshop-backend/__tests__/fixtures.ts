@@ -6,8 +6,8 @@ import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type { Collection, Singleton } from "@gadgets/typed-storage";
 import type { Overseer } from "@gadgets/workshop-shared/api";
-import { OverseerDurableObject, makeOverseerStorage } from "../src/overseer.js";
-import type { ActionRecord } from "../src/overseer.js";
+import { OverseerDurableObject } from "../src/overseer.js";
+import { makeOverseerStorage, type ActionRecord } from "../src/storage-schema/overseer-storage.js";
 import { makeMockStorage } from "./mock-storage.js";
 
 /**
@@ -89,6 +89,8 @@ export async function openFakeOverseer(
       joinOutputsFanout: () => () => {},
       ensureObserver: async () => {},
       syncOutputsTo: async () => {},
+      recordGadgetAnalytics: () => {},
+      wrapUserDo: (stub: unknown) => stub,
       // What open() consults for a non-owner's role: the permission-graph lookup and observer
       // verification in one. The sharing manager is still reached, but only to redeem a share key,
       // which these tests never pass.
@@ -103,7 +105,7 @@ export async function openFakeOverseer(
         }),
       },
       storage: Object.assign(storage, {
-        prohibitAllSharing: { get: () => false },
+        containsRestrictedData: { get: () => false },
         title: { get: () => "Test Workspace" },
       }),
       ...opts.impl,

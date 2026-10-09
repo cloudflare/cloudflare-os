@@ -6,7 +6,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import ts from "typescript6";
 import {
-  DOCS_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX, stripTypeModulePrefix,
+  DOCS_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX, SLIDES_TYPES_MODULE_PREFIX,
+  stripTypeModulePrefix,
 } from "../src/type-bundle";
 
 const SOURCE_DIR = join(dirname(fileURLToPath(import.meta.url)), "../src");
@@ -78,6 +79,7 @@ function driveBundle(): string {
   return [
     source("docs-read-types.txt"),
     source("sheets-types.txt"),
+    source("slides-read-types.txt"),
     stripTypeModulePrefix(source("drive-types.txt"), DRIVE_TYPES_MODULE_PREFIX),
   ].join("\n");
 }
@@ -89,6 +91,13 @@ describe("embedded agent declarations", () => {
 
   it("compiles the exact Google Drive agent declaration bundle without module dependencies", () => {
     expect(compileAgentTypes(driveBundle())).toEqual([]);
+  });
+
+  it("compiles the exact Google Slides agent declaration bundle without module dependencies", () => {
+    expect(compileAgentTypes([
+      source("slides-read-types.txt"),
+      stripTypeModulePrefix(source("slides-types.txt"), SLIDES_TYPES_MODULE_PREFIX),
+    ].join("\n"))).toEqual([]);
   });
 
   it("declares the flattened tab contract on the canonical read session", () => {
@@ -130,8 +139,12 @@ describe("embedded agent declarations", () => {
     expect(driveTypes).toContain(
       "openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetReadSession>",
     );
+    expect(driveTypes).toContain(
+      "openGoogleSlides(fileId: string): Promise<GooglePresentationReadSession>",
+    );
     expect(driveTypes).not.toContain("GoogleDocSession>");
     expect(driveTypes).not.toContain("GoogleSpreadsheetSession>");
+    expect(driveTypes).not.toContain("GooglePresentationSession>");
     expect(driveTypes).toContain("export interface GoogleDriveReadSession");
   });
 });

@@ -37,22 +37,24 @@ type WorkerInput =
 const BUILT = ["dist", "node_modules"];
 
 /**
- * `FORMAT_BLUEPRINTS_DIR` may point outside the workspace, so this can be a `../` path. Resolved
- * exactly as `workshop-backend/scripts/build-format-blueprints.ts` resolves it. When it is unset
- * the default lands inside the `packages/workshop-backend` entry below, and the duplicate coverage
- * is harmless.
+ * The blueprint set a deployment points the build at instead of the bundled one, when it does.
+ * `BUNDLED_BLUEPRINTS_DIR` may point outside the workspace, so this can be a `../` path. Resolved
+ * exactly as `workshop-backend/scripts/build-bundled-blueprints.ts` resolves it: against that
+ * package's root. Unset, the build reads `packages/bundled-blueprints/blueprints`, which the entry
+ * for that package below already covers.
  *
  * Read here only to build the watch-mode lists; a cached `vp run` strips it, and the suite it runs
  * (`vitest run`) never consults these exports.
  */
-const formatBlueprintsDir = relative(
-  WORKSPACE_DIR,
-  resolve(
-    WORKSPACE_DIR,
-    "packages/workshop-backend",
-    process.env.FORMAT_BLUEPRINTS_DIR ?? "format-blueprints",
-  ),
-).replaceAll("\\", "/");
+const externalBlueprintsDir: WorkerInput[] = process.env.BUNDLED_BLUEPRINTS_DIR
+  ? [{
+    kind: "dir",
+    path: relative(
+      WORKSPACE_DIR,
+      resolve(WORKSPACE_DIR, "packages/workshop-backend", process.env.BUNDLED_BLUEPRINTS_DIR),
+    ).replaceAll("\\", "/"),
+  }]
+  : [];
 
 const WORKER_INPUTS: WorkerInput[] = [
   // Split in two so the one nested exclusion, `src/generated`, stays a direct child of its entry.
@@ -60,13 +62,18 @@ const WORKER_INPUTS: WorkerInput[] = [
   { kind: "dir", path: "packages/workshop-backend", excludeDirs: [...BUILT, "src", ".wrangler"] },
   { kind: "dir", path: "packages/workshop-backend/src", excludeDirs: ["generated"] },
   { kind: "dir", path: "packages/workshop-shared", excludeDirs: BUILT },
-  { kind: "dir", path: "packages/backend-utils", excludeDirs: BUILT },
+  { kind: "dir", path: "packages/observability", excludeDirs: BUILT },
   { kind: "dir", path: "packages/error-reporting", excludeDirs: BUILT },
+  // Bundled into the fixture gatekeeper.
+  { kind: "dir", path: "packages/gatekeeper-kit", excludeDirs: BUILT },
   // `typed-storage` is the one package that emits: wrangler loads its `dist/index.js`, so `dist` is
   // output here like anywhere else, and it is the package's config -- not just its source -- that
   // decides what gets emitted.
   { kind: "dir", path: "packages/typed-storage", excludeDirs: BUILT },
-  { kind: "dir", path: formatBlueprintsDir },
+  // The bundled blueprints, the libraries the blueprint build inlines into their archives, and the
+  // build itself: an edit to any of them changes the generated module the Worker ships.
+  { kind: "dir", path: "packages/bundled-blueprints", excludeDirs: BUILT },
+  ...externalBlueprintsDir,
   // The fixture gatekeeper the harness boots beside the Workshop. Split for the same reason the
   // backend is: `build:test-gatekeeper` validates this fixture into its own `.wrangler`, which is
   // a grandchild of `fixtures/` and so cannot be a direct-child exclusion there.
@@ -99,19 +106,23 @@ export const FORCE_RERUN_TRIGGERS: string[] = WORKER_INPUTS.flatMap(entry => {
 });
 
 /**
- * Whether an absolute path is one of the inputs above.
+ * Whether a workspace-relative, `/`-separated path is one of the inputs above. This form also
+ * serves the eval cache key (`scripts/evals/eval-keys.ts`), which matches the paths of a git tree.
  *
  * Plain string operations rather than the `picomatch` the globs are matched with: it is a
  * transitive dependency here, not resolvable from this package, and the shapes the table can
  * produce are a prefix and a first-segment check.
  */
-export function isWorkerInput(absolutePath: string): boolean {
-  const path = resolve(absolutePath).replaceAll("\\", "/");
+export function isWorkerInputPath(path: string): boolean {
   return WORKER_INPUTS.some(entry => {
-    const root = absolute(entry.path);
-    if (entry.kind === "file") return path === root;
-    if (!path.startsWith(`${root}/`)) return false;
-    const [firstSegment] = path.slice(root.length + 1).split("/");
+    if (entry.kind === "file") return path === entry.path;
+    if (!path.startsWith(`${entry.path}/`)) return false;
+    const [firstSegment] = path.slice(entry.path.length + 1).split("/");
     return !entry.excludeDirs?.includes(firstSegment);
   });
+}
+
+/** Whether an absolute path is one of the inputs above. */
+export function isWorkerInput(absolutePath: string): boolean {
+  return isWorkerInputPath(relative(WORKSPACE_DIR, resolve(absolutePath)).replaceAll("\\", "/"));
 }

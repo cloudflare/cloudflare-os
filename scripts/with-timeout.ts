@@ -17,10 +17,19 @@
 // completed test file, and a wedged one goes quiet. The total cap is the backstop for a command
 // that stays chatty while looping forever.
 //
+// It runs as two processes. When a task fails, vp's fast-fail SIGKILLs the direct child of every
+// other running task; were that child the watchdog, its tree would run on unbounded, and on Linux
+// vp waits for it with no timeout. So the process vp spawns is a front that re-runs this file with
+// `--lifeline` as the watchdog (the back, `supervise`), holding an IPC channel to it, and the back
+// kills the tree when that channel drops, however the front died. The back stays the command's
+// output reader, since an orphaned vitest dies on its first write to a dead pipe and its forks
+// escape the tree walk. The front forwards no signal: Ctrl-C already reaches the back and the tree,
+// and a second copy would cut the grace period short.
+//
 // Exit codes: 124 when a threshold fired (GNU `timeout`'s, and distinct from any vitest code), the
 // child's own code otherwise, or `128 + signal` when the child or this wrapper was signalled.
 //
-// `TESTS_WITH_TIMEOUT_DISABLE=<anything>` switches both watchdogs off, leaving only the stdio piping
+// `TESTS_WITH_TIMEOUT_DISABLE=<anything>` switches both watchdogs off, leaving the stdio piping
 // and signal relay: for a CI whose job-level timeout already bounds a wedge, or a deliberately
 // unsupervised local run. A wedge is then killed anonymously by whatever is outside, with no
 // surviving-tree listing to name the culprit. Under vp the variable reaches a cached task only
@@ -28,6 +37,7 @@
 
 import { execFile, spawn } from "node:child_process";
 import { constants } from "node:os";
+import { fileURLToPath } from "node:url";
 import { resolveBinEntry } from "./bin-entry.ts";
 import { collectTree, killProcessTreeEscalating } from "./kill-process-tree.ts";
 
@@ -36,6 +46,9 @@ const TIMED_OUT_EXIT_CODE = 124;
 
 /** How long a signalled tree gets to exit on its own before the SIGKILL. */
 const KILL_GRACE_MS = 5_000;
+
+/** Marks the back's invocation by the front (see the header). Internal, not part of the CLI. */
+const LIFELINE_FLAG = "--lifeline";
 
 const USAGE = "usage: with-timeout.ts --idle <secs> --max <secs> -- <command> [args...]";
 
@@ -127,110 +140,170 @@ function exitCodeForSignal(signal: NodeJS.Signals): number {
   return 128 + (constants.signals[signal] ?? 0);
 }
 
-const { idleMs, maxMs, argv } = parseArgs(process.argv.slice(2));
-// After `parseArgs`, so a malformed invocation fails with the usage error even when disabled.
-const watchdogsDisabled = Boolean(process.env.TESTS_WITH_TIMEOUT_DISABLE);
-const [command, commandArgs] = resolveCommand(argv);
-const startedAt = Date.now();
+/** The front (see the header): runs the back over the lifeline and exits with its status. */
+function holdLifeline(args: string[]): void {
+  const back = spawn(process.execPath, [fileURLToPath(import.meta.url), LIFELINE_FLAG, ...args], {
+    stdio: ["inherit", "inherit", "inherit", "ipc"],
+  });
 
-// A reader that goes away must not take the watchdog down with it: an unhandled EPIPE on our own
-// stdio is an uncaught exception, and this process would exit 1 with the wedged tree still running.
-// There is nowhere to report a failure to write to stderr anyway.
-for (const stream of [process.stdout, process.stderr]) stream.on("error", () => {});
-
-const child = spawn(command, commandArgs, { stdio: ["inherit", "pipe", "pipe"] });
-
-// Set as soon as a threshold or a signal takes over, so the child's own `close` -- which follows
-// the kill -- does not report an exit status over the one already chosen.
-let terminating = false;
-let idleTimer: NodeJS.Timeout | undefined;
-let maxTimer: NodeJS.Timeout | undefined;
-
-function clearTimers(): void {
-  clearTimeout(idleTimer);
-  clearTimeout(maxTimer);
-}
-
-// Also the reset on every output chunk (see `forward`), so the disabled check lives here rather
-// than only at the initial arm.
-function armIdleTimer(): void {
-  clearTimeout(idleTimer);
-  if (terminating || watchdogsDisabled) return;
-  idleTimer = setTimeout(() => { void onThreshold("no output", idleMs); }, idleMs);
-}
-
-// Straight through to this process's own streams, resetting the idle timer on every chunk. vp
-// captures a task's output rather than handing over the TTY -- it has to, to render its per-task
-// tree and replay a cache hit -- so interposing this pipe costs nothing the run was not paying.
-//
-// `pipe` rather than a write per chunk so a slow reader applies backpressure to the child instead
-// of accumulating in here; the `data` listener beside it is only the idle reset. `end: false`
-// because this process's own stdio must outlive the child -- the diagnostic is written after it.
-function forward(source: NodeJS.ReadableStream, sink: NodeJS.WritableStream): void {
-  source.on("data", () => armIdleTimer());
-  source.pipe(sink, { end: false });
-}
-
-async function onThreshold(reason: string, thresholdMs: number): Promise<void> {
-  if (terminating || child.pid === undefined) return;
-  terminating = true;
-  clearTimers();
-  const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
-  process.stderr.write(
-      `\nwith-timeout: ${reason} for ${thresholdMs / 1000}s -- killing the process tree\n` +
-      `  command: ${argv.join(" ")}\n` +
-      `  cwd: ${process.cwd()}\n` +
-      `  elapsed: ${elapsed}s\n` +
-      await describeTree(child.pid));
-  await killProcessTreeEscalating(child.pid, { graceMs: KILL_GRACE_MS });
-  await flushOutput();
-  process.exit(TIMED_OUT_EXIT_CODE);
-}
-
-// A second signal gives up the rest of the grace period and escalates now. Bounding the Ctrl-C path
-// matters as much as bounding the run: the reported hang ended with the contributor interrupting
-// it, and a tree that ignores the interrupt is what left vp escalating to SIGKILL on its own.
-const force = new AbortController();
-let signalled = false;
-
-async function onSignal(signal: NodeJS.Signals): Promise<void> {
-  if (signalled) {
-    force.abort();
-    return;
+  // A signalled front reports `128 + signal`, whatever the back's teardown ends on.
+  let signalled: NodeJS.Signals | undefined;
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.on(signal, () => {
+      signalled ??= signal;
+      if (back.connected) back.disconnect();
+    });
   }
-  signalled = true;
-  terminating = true;
-  clearTimers();
-  if (child.pid !== undefined) {
-    await killProcessTreeEscalating(
-        child.pid, { graceMs: KILL_GRACE_MS, forceSignal: force.signal });
-  }
-  await flushOutput();
-  process.exit(exitCodeForSignal(signal));
-}
 
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.on(signal, () => { void onSignal(signal); });
-}
+  back.on("error", error => {
+    process.stderr.write(`with-timeout: could not start the watchdog: ${error.message}\n`);
+    process.exit(127);
+  });
 
-child.on("error", error => {
-  process.stderr.write(`with-timeout: could not start ${argv.join(" ")}: ${error.message}\n`);
-  process.exit(127);
-});
-
-// `close` rather than `exit`: it fires once the piped stdio has been drained too, so nothing the
-// child printed on its way out is dropped.
-child.on("close", (code, signal) => {
-  if (terminating) return;
-  clearTimers();
-  void flushOutput().then(() => {
+  // `exit` rather than `close`: the back's stdio is inherited, so there is no pipe here to drain.
+  back.on("exit", (code, signal) => {
+    if (signalled) process.exit(exitCodeForSignal(signalled));
     process.exit(signal ? exitCodeForSignal(signal) : code ?? 1);
   });
-});
+}
 
-if (child.stdout) forward(child.stdout, process.stdout);
-if (child.stderr) forward(child.stderr, process.stderr);
-if (!watchdogsDisabled) {
-  armIdleTimer();
-  maxTimer = setTimeout(() => { void onThreshold("still running", maxMs); }, maxMs);
+/** The back (see the header): the watchdog itself, run by the front with `--lifeline`. */
+function supervise(args: string[]): void {
+  const { idleMs, maxMs, argv } = parseArgs(args);
+  // After `parseArgs`, so a malformed invocation fails with the usage error even when disabled.
+  const watchdogsDisabled = Boolean(process.env.TESTS_WITH_TIMEOUT_DISABLE);
+  const [command, commandArgs] = resolveCommand(argv);
+  const startedAt = Date.now();
+
+  // A reader that goes away must not take the watchdog down with it: an unhandled EPIPE on our own
+  // stdio is an uncaught exception, and this process would exit 1 with the wedged tree still
+  // running. There is nowhere to report a failure to write to stderr anyway.
+  for (const stream of [process.stdout, process.stderr]) stream.on("error", () => {});
+
+  // The command inherits neither the channel (close-on-exec) nor `NODE_CHANNEL_FD` (deleted).
+  const child = spawn(command, commandArgs, { stdio: ["inherit", "pipe", "pipe"] });
+
+  // Set as soon as a threshold, a signal or the lifeline takes over, so the child's own `close` --
+  // which follows the kill -- does not report an exit status over the one already chosen.
+  let terminating = false;
+  let idleTimer: NodeJS.Timeout | undefined;
+  let maxTimer: NodeJS.Timeout | undefined;
+
+  function clearTimers(): void {
+    clearTimeout(idleTimer);
+    clearTimeout(maxTimer);
+  }
+
+  // Also the reset on every output chunk (see `forward`), so the disabled check lives here rather
+  // than only at the initial arm.
+  function armIdleTimer(): void {
+    clearTimeout(idleTimer);
+    if (terminating || watchdogsDisabled) return;
+    idleTimer = setTimeout(() => { void onThreshold("no output", idleMs); }, idleMs);
+  }
+
+  // Straight through to this process's own streams, resetting the idle timer on every chunk. vp
+  // captures a task's output rather than handing over the TTY -- it has to, to render its per-task
+  // tree and replay a cache hit -- so interposing this pipe costs nothing the run was not paying.
+  //
+  // `pipe` rather than a write per chunk so a slow reader applies backpressure to the child instead
+  // of accumulating in here; the `data` listener beside it is only the idle reset. `end: false`
+  // because this process's own stdio must outlive the child -- the diagnostic is written after it.
+  function forward(source: NodeJS.ReadableStream, sink: NodeJS.WritableStream): void {
+    source.on("data", () => armIdleTimer());
+    source.pipe(sink, { end: false });
+  }
+
+  async function onThreshold(reason: string, thresholdMs: number): Promise<void> {
+    if (terminating || child.pid === undefined) return;
+    terminating = true;
+    clearTimers();
+    const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1);
+    process.stderr.write(
+        `\nwith-timeout: ${reason} for ${thresholdMs / 1000}s -- killing the process tree\n` +
+        `  command: ${argv.join(" ")}\n` +
+        `  cwd: ${process.cwd()}\n` +
+        `  elapsed: ${elapsed}s\n` +
+        await describeTree(child.pid));
+    await killProcessTreeEscalating(child.pid, { graceMs: KILL_GRACE_MS });
+    await flushOutput();
+    process.exit(TIMED_OUT_EXIT_CODE);
+  }
+
+  // A second signal gives up the rest of the grace period and escalates now. Bounding the Ctrl-C
+  // path matters as much as bounding the run: the reported hang ended with the contributor
+  // interrupting it, and a tree that ignores the interrupt is what left vp escalating to SIGKILL on
+  // its own.
+  const force = new AbortController();
+  let signalled = false;
+  let lifelineLost = false;
+
+  async function onSignal(signal: NodeJS.Signals): Promise<void> {
+    if (signalled) {
+      force.abort();
+      return;
+    }
+    signalled = true;
+    // On Ctrl-C the front's disconnect can land first; that teardown is this signal's.
+    if (lifelineLost) return;
+    terminating = true;
+    clearTimers();
+    if (child.pid !== undefined) {
+      await killProcessTreeEscalating(
+          child.pid, { graceMs: KILL_GRACE_MS, forceSignal: force.signal });
+    }
+    await flushOutput();
+    process.exit(exitCodeForSignal(signal));
+  }
+
+  // The front is gone or signalled, and reports any status itself, so this one is only nonzero.
+  async function onLifelineLost(): Promise<void> {
+    lifelineLost = true;
+    if (terminating || child.pid === undefined) return;
+    terminating = true;
+    clearTimers();
+    await killProcessTreeEscalating(
+        child.pid, { graceMs: KILL_GRACE_MS, forceSignal: force.signal });
+    await flushOutput();
+    process.exit(1);
+  }
+
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.on(signal, () => { void onSignal(signal); });
+  }
+
+  // Unref'd so only the child holds this process open.
+  process.channel?.unref();
+  process.on("disconnect", () => { void onLifelineLost(); });
+
+  child.on("error", error => {
+    process.stderr.write(`with-timeout: could not start ${argv.join(" ")}: ${error.message}\n`);
+    process.exit(127);
+  });
+
+  // `close` rather than `exit`: it fires once the piped stdio has been drained too, so nothing the
+  // child printed on its way out is dropped.
+  child.on("close", (code, signal) => {
+    if (terminating) return;
+    clearTimers();
+    void flushOutput().then(() => {
+      process.exit(signal ? exitCodeForSignal(signal) : code ?? 1);
+    });
+  });
+
+  if (child.stdout) forward(child.stdout, process.stdout);
+  if (child.stderr) forward(child.stderr, process.stderr);
+  if (!watchdogsDisabled) {
+    armIdleTimer();
+    maxTimer = setTimeout(() => { void onThreshold("still running", maxMs); }, maxMs);
+  }
+}
+
+const args = process.argv.slice(2);
+if (args[0] !== LIFELINE_FLAG) {
+  holdLifeline(args);
+} else if (!process.channel) {
+  fail(`${LIFELINE_FLAG} is internal: it is how the front runs the watchdog over an IPC channel`);
+} else {
+  supervise(args.slice(1));
 }
