@@ -369,10 +369,10 @@ planned again. A write whose response is lost may have been committed, so it is 
 first sent, at the same revision. If that is refused, a read decides whether it landed, counting
 only what the write would have changed: an element it created that it does not also delete, an
 element it deleted that was there before, text it edited, a table it adds or deletes rows or columns
-of, by its size and its cells' positions, spans and text, and a theme colour or a background other
-than a picture it set that the page did not already have (every picture reads alike). If the read
-cannot tell, as for a batch that only formats or moves elements or sets a picture, the change is
-marked as having an unknown outcome and never retried.
+of, by its size and its cells' positions, spans and text, a theme colour it set, and a background
+other than a picture it left a page with, that the page did not already have (every picture reads
+alike). If the read cannot tell, as for a batch that only formats or moves elements or leaves a page
+a picture, the change is marked as having an unknown outcome and never retried.
 
 Google returns a presentation's revision only to an account that can edit it, so a view-only
 account can read a presentation but every change to it fails. A queued change is stored in one

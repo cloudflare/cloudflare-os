@@ -1434,12 +1434,18 @@ describe("Google Slides backgrounds and theme", () => {
     expect(provider.batches[1]).toEqual(provider.batches[0]);
   });
 
-  // Every picture reads as "picture", so a collaborator's would read as the batch's own.
-  it("records an unknown outcome for a dropped picture background, whatever picture the page has after", async () => {
+  // Every picture reads as "picture", so a collaborator's would read as the batch's own, even
+  // where an earlier change in the batch sets the page a colour or its inherited background.
+  it.each([
+    { name: "alone", first: [] },
+    { name: "after a colour", first: [{ op: "setBackground", slideId: "s1", background: "#00ff00" }] },
+    { name: "after an inherited one", first: [{ op: "setBackground", slideId: "s1", background: null }] },
+  ])("records an unknown outcome for a dropped picture background set $name, whatever picture the page has after", async ({ first }) => {
     let provider = new SlidesProvider(deck()).install();
     provider.slide("s1").pageProperties = { pageBackgroundFill: RED };
     let slides = gatekeeper();
     let { actionId } = await slides.queued("updateSlides", [
+      ...first,
       { op: "setBackground", slideId: "s1", background: { imageUrl: PICTURE_URL } },
     ]);
     dropNextWrite(provider, d => {
