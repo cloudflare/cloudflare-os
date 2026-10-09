@@ -13,6 +13,7 @@
 
 import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
+import { HookDeliveryQueue, disposeStubs } from "@gadgets/gatekeeper-kit/hook-delivery-queue";
 import { SingleFlight } from "@gadgets/gatekeeper-kit/single-flight";
 import type {
   ApprovalQueue, HookController, HookInitiator, HookTargetMetadata,
@@ -20,13 +21,15 @@ import type {
 import { fetchWithAuthRetry, type AccessTokenProvider } from "./auth-retry";
 import { ChatApiError, chatApiFailure, type ChatMessageRaw } from "./chat-api";
 import type { ChatMessageHook } from "./chat-types";
-import { HOUR_MS, HookDeliveryQueue, MINUTE_MS, disposeStubs } from "./hook-delivery-queue";
 import { obsContext } from "./observability";
 import type { PushHooksEnv } from "./pubsub-push";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.google.chat-hooks", vendorId: "google" });
 
 type Env = Cloudflare.Env & PushHooksEnv;
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
 
 export type ChatMessageHookTarget = RpcTarget & ChatMessageHook;
 
@@ -92,7 +95,7 @@ const subscriptionKey = (authority: string) => `sub:${authority}`;
 export class ChatHookDriver extends DurableObject<Env> {
   /** Subscription creations in flight, by account, which concurrent enables and renewals join. */
   #subscribing = new SingleFlight();
-  #queue = new HookDeliveryQueue<ChatMessageRaw>(this.ctx.storage, () => {
+  #queue = new HookDeliveryQueue<ChatMessageRaw>(this.ctx.storage.kv, () => {
     logger.warn("dropped a Chat message after repeated delivery failures", { event: "chat.hooks.delivery.dropped" });
   });
 

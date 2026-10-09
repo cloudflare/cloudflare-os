@@ -11,12 +11,12 @@
 
 import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
+import { HookDeliveryQueue, disposeStubs } from "@gadgets/gatekeeper-kit/hook-delivery-queue";
 import { SingleFlight } from "@gadgets/gatekeeper-kit/single-flight";
 import type {
   ApprovalQueue, HookController, HookInitiator, HookTargetMetadata,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { GmailApi, GmailApiError } from "./google-api";
-import { HOUR_MS, HookDeliveryQueue, MINUTE_MS, disposeStubs } from "./hook-delivery-queue";
 import { obsContext } from "./observability";
 import type { PushHooksEnv } from "./pubsub-push";
 import type { GmailMessageHook } from "./types";
@@ -24,6 +24,9 @@ import type { GmailMessageHook } from "./types";
 const logger = obsContext.createLogger({ component: "gatekeeper.google.gmail-hooks", vendorId: "google" });
 
 type Env = Cloudflare.Env & PushHooksEnv;
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
 
 export type GmailMessageHookTarget = RpcTarget & GmailMessageHook;
 
@@ -124,7 +127,7 @@ class MailboxChangedError extends Error {
  */
 export class GmailHookDriver extends DurableObject<Env> {
   #watching = new SingleFlight();
-  #queue = new HookDeliveryQueue<string>(this.ctx.storage, () => {
+  #queue = new HookDeliveryQueue<string>(this.ctx.storage.kv, () => {
     logger.warn("dropped a Gmail message after repeated delivery failures", { event: "gmail.hooks.delivery.dropped" });
   });
 
