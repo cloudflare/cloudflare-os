@@ -363,16 +363,16 @@ regular weight, so the text is no longer bold unless the change says so. A slide
 AutoText can only be replaced whole.
 
 Each approved change is one `batchUpdate`, planned against a fresh read and pinned to its revision
-with `requiredRevisionId`, so a change applies only to the text it was planned against: one that
-no longer applies fails without writing, and a concurrent edit makes Google refuse the write so it
-is planned again. A write whose response is lost may have been committed, so it is only ever
-resent as first sent, at the same revision. If that is refused, a read decides whether it landed,
-counting only what the write would have changed: an element it created that it does not also
-delete, an element it deleted that was there before, text it edited, a table it adds or deletes
-rows or columns of, by its size and its cells' positions, spans and text, and a background or
-theme colour it set that the page did not already have. If the read cannot tell, as for a batch
-that only formats or moves elements, the change is marked as having an unknown outcome and never
-retried.
+with `requiredRevisionId`, so a change applies only to the text it was planned against: one that no
+longer applies fails without writing, and a concurrent edit makes Google refuse the write so it is
+planned again. A write whose response is lost may have been committed, so it is only ever resent as
+first sent, at the same revision. If that is refused, a read decides whether it landed, counting
+only what the write would have changed: an element it created that it does not also delete, an
+element it deleted that was there before, text it edited, a table it adds or deletes rows or columns
+of, by its size and its cells' positions, spans and text, and a theme colour or a background other
+than a picture it set that the page did not already have (every picture reads alike). If the read
+cannot tell, as for a batch that only formats or moves elements or sets a picture, the change is
+marked as having an unknown outcome and never retried.
 
 Google returns a presentation's revision only to an account that can edit it, so a view-only
 account can read a presentation but every change to it fails. A queued change is stored in one

@@ -456,8 +456,8 @@ function cellsOf(slide: RestSlide, id: string): string | undefined {
  * Whether a read taken after a lost response shows a design batch landed. Only what the batch
  * would have changed counts, where it would leave it: which elements exist, the cells of a table
  * it adds or deletes rows or columns of, text, found where later changes to its table move it, and
- * the backgrounds and theme colours it sets. A batch with none of those, such as one that only
- * formats or moves elements, cannot be shown to have landed.
+ * the theme colours and backgrounds other than pictures it sets. A batch with none of those, such
+ * as one that only formats or moves elements or sets a picture, cannot be shown to have landed.
  */
 function designLanded(
   changes: readonly DesignChange[], steps: readonly (DesignStep | null)[],
@@ -482,7 +482,9 @@ function designLanded(
     if (moved) witness(slide => textIfThere(slide, moved));
     const lines = tableLinesOf(change);
     if (lines) witness(slide => cellsOf(slide, lines.elementId));
-    if (change.op === "setBackground") {
+    // Every picture reads as "picture", so one a collaborator set would pass for the batch's own.
+    let background = change.op === "setBackground" ? change.background : undefined;
+    if (background === null || typeof background === "string") {
       witness(held => backgroundOf(held.pageProperties?.pageBackgroundFill) ?? "inherited");
     }
     if (change.op === "setThemeColors") {

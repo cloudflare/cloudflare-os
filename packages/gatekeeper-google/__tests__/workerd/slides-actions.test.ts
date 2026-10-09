@@ -1420,7 +1420,6 @@ describe("Google Slides backgrounds and theme", () => {
 
   it.each([
     { name: "a slide's colour", changes: [{ op: "setBackground", slideId: "s1", background: "#ff0000" }] },
-    { name: "a layout's picture", changes: [{ op: "setBackground", layoutId: "layout-title", background: { imageUrl: PICTURE_URL } }] },
     { name: "no master background", changes: [{ op: "setBackground", masterId: "master-1", background: "none" }] },
     { name: "theme colours", changes: [{ op: "setThemeColors", masterId: "master-1", colors: { ACCENT6: "#000000" } }] },
   ])("finds a lost batch that only sets $name landed", async ({ changes }) => {
@@ -1433,6 +1432,24 @@ describe("Google Slides backgrounds and theme", () => {
 
     expect(provider.batches).toHaveLength(2);
     expect(provider.batches[1]).toEqual(provider.batches[0]);
+  });
+
+  // Every picture reads as "picture", so a collaborator's would read as the batch's own.
+  it("records an unknown outcome for a dropped picture background, whatever picture the page has after", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    provider.slide("s1").pageProperties = { pageBackgroundFill: RED };
+    let slides = gatekeeper();
+    let { actionId } = await slides.queued("updateSlides", [
+      { op: "setBackground", slideId: "s1", background: { imageUrl: PICTURE_URL } },
+    ]);
+    dropNextWrite(provider, d => {
+      d.slides![0].pageProperties = {
+        pageBackgroundFill: { stretchedPictureFill: { contentUrl: "https://example.com/other.png", size: {} } },
+      };
+    });
+
+    expect(await slides.apply(actionId!)).toContain("may or may not have taken effect");
+    expect(provider.batches).toHaveLength(2);
   });
 
   it("finds a lost reset to the inherited background landed", async () => {
