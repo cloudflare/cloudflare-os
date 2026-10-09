@@ -20,6 +20,27 @@ export const mobileLoginAttempt = (search: string): { state: string; publicKey: 
   return { state: states[0], publicKey: keys[0] }
 }
 
+/** Keep only a validated native login attempt when navigating between authentication pages. */
+export const mobileLoginSearch = (search: string): {
+  cfos_mobile_state?: string
+  cfos_mobile_key?: string
+} => {
+  const attempt = mobileLoginAttempt(search)
+  return attempt ? {
+    [STATE_PARAMETER]: attempt.state,
+    [KEY_PARAMETER]: attempt.publicKey,
+  } : {}
+}
+
+/** Build an authentication-page destination without forwarding unrelated or invalid search data. */
+export const mobileLoginDestination = (pathname: string, search: string): string => {
+  const preserved = mobileLoginSearch(search)
+  const params = new URLSearchParams()
+  for (const [name, value] of Object.entries(preserved)) params.set(name, value)
+  const query = params.toString()
+  return query ? `${pathname}?${query}` : pathname
+}
+
 /**
  * Post the sealed handoff to this install without putting it in the request URL. The install's
  * backend responds with the custom-scheme redirect that completes native authentication.

@@ -1,5 +1,4 @@
 import { useState, FormEvent } from "react";
-import { Link } from "@tanstack/react-router";
 import { RpcStub } from "capnweb";
 import { PublicApi } from "@gadgets/workshop-shared/api";
 import { Hexagon } from "@phosphor-icons/react";
@@ -10,6 +9,9 @@ import { useDocumentTitle } from "./useDocumentTitle";
 import OAuthButtons from "./components/auth/OAuthButtons";
 import SiteLogo from "./components/SiteLogo";
 import { useConnectionLost } from "./RpcContext";
+import {
+  mobileLoginDestination,
+} from "./features/mobile-login/MobileLoginHandoff";
 
 interface SignupPageProps {
   rpcStub: RpcStub<PublicApi>;
@@ -26,6 +28,10 @@ export default function SignupPage({ rpcStub }: SignupPageProps) {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const handleSignupSuccess = () => {
+    window.location.href = mobileLoginDestination("/", window.location.search);
+  };
 
   const usernameError =
     username && !/^[a-z0-9_-]+$/i.test(username)
@@ -66,7 +72,7 @@ export default function SignupPage({ rpcStub }: SignupPageProps) {
       );
       if (token) {
         localStorage.setItem("authToken", token);
-        window.location.href = "/";
+        handleSignupSuccess();
       } else {
         setError("Username already exists");
       }
@@ -211,16 +217,23 @@ export default function SignupPage({ rpcStub }: SignupPageProps) {
                 <div className="h-px flex-1 bg-kumo-line" />
               </div>
             )}
-            <OAuthButtons rpcStub={rpcStub} vendors={authVendors} />
+            <OAuthButtons
+              rpcStub={rpcStub}
+              vendors={authVendors}
+              onSuccess={handleSignupSuccess}
+            />
           </div>
         )}
 
         {passwordAuthEnabled && (
           <p className="text-center text-sm text-kumo-subtle mt-6">
             Already have an account?{" "}
-            <Link to="/" className="text-kumo-brand hover:underline font-medium">
+            <a
+              href={mobileLoginDestination("/", window.location.search)}
+              className="text-kumo-brand hover:underline font-medium"
+            >
               Sign in
-            </Link>
+            </a>
           </p>
         )}
       </div>

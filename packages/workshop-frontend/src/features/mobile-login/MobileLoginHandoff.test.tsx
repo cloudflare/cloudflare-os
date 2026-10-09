@@ -6,7 +6,12 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import type { AuthenticatedApi, MobileHandoff } from '@gadgets/workshop-shared/api'
-import { MobileLoginHandoff, mobileLoginAttempt } from './MobileLoginHandoff'
+import {
+  MobileLoginHandoff,
+  mobileLoginAttempt,
+  mobileLoginDestination,
+  mobileLoginSearch,
+} from './MobileLoginHandoff'
 
 const state = 'abcdefab-0000-0000-0000-000000000001'
 const publicKey = 'A'.repeat(87)
@@ -59,6 +64,17 @@ describe('native mobile login handoff', () => {
     expect(mobileLoginAttempt(`?cfos_mobile_state=${state}`)).toBeNull()
     expect(mobileLoginAttempt(`?cfos_mobile_state=${state}&cfos_mobile_key=bad`)).toBeNull()
     expect(mobileLoginAttempt(`?cfos_mobile_state=${state.toUpperCase()}&cfos_mobile_key=${publicKey}`)).toBeNull()
+  })
+
+  it('preserves only a validated attempt across authentication pages', () => {
+    const search = `?unrelated=value&cfos_mobile_state=${state}&cfos_mobile_key=${publicKey}`
+    expect(mobileLoginSearch(search)).toEqual({
+      cfos_mobile_state: state,
+      cfos_mobile_key: publicKey,
+    })
+    expect(mobileLoginDestination('/signup', search))
+      .toBe(`/signup?cfos_mobile_state=${state}&cfos_mobile_key=${publicKey}`)
+    expect(mobileLoginDestination('/', `?cfos_mobile_state=${state}&cfos_mobile_key=bad`)).toBe('/')
   })
 
   it('posts only an encrypted handoff to this installation for native completion', async () => {
