@@ -19,7 +19,7 @@ export type SpreadsheetSheetInfo = {
 
 /** Metadata about the connected spreadsheet. */
 export type SpreadsheetInfo = {
-  /** Stable Google spreadsheet ID. Empty until a spreadsheet made with createExternalResource is created. */
+  /** Stable Google spreadsheet ID. */
   id: string;
   /** Spreadsheet title. */
   title: string;
@@ -29,6 +29,11 @@ export type SpreadsheetInfo = {
   timeZone?: string;
   /** Worksheets in display order. */
   sheets: SpreadsheetSheetInfo[];
+  /**
+   * The first queued change that no longer applies. It and the changes queued after it are not
+   * shown.
+   */
+  queuedChangeConflict?: string;
 };
 
 /** How values read from cells should be represented. */
@@ -46,9 +51,22 @@ export type SpreadsheetRange = {
   range: string;
   /** Rectangular rows of values. Blank cells are `null`. */
   values: SpreadsheetCellValue[][];
+  /**
+   * A1 names (no sheet, such as `B3`) of cells in this range whose value is not known until queued
+   * changes apply, such as a queued formula's result. They read `null`.
+   */
+  pendingCells?: string[];
+  /**
+   * The first queued change that no longer applies. It and the changes queued after it are not
+   * shown.
+   */
+  queuedChangeConflict?: string;
 };
 
-/** Read-only access to one Google spreadsheet. */
+/**
+ * Read-only access to one Google spreadsheet. With changes queued, reads show them as entered (see
+ * `pendingCells`).
+ */
 export interface GoogleSpreadsheetReadSession {
   /** Return spreadsheet metadata and its worksheet list. */
   getSpreadsheet(): Promise<SpreadsheetInfo>;
@@ -72,30 +90,3 @@ export interface GoogleSpreadsheetReadSession {
     options?: { valueMode?: SpreadsheetValueMode },
   ): Promise<SpreadsheetRange[]>;
 }
-
-/** The access provided by a directly bound Google spreadsheet, which is read-only. */
-export type GoogleSpreadsheetSession = GoogleSpreadsheetReadSession;
-
-/**
- * A value to enter in a cell. A string starting with `=` is a formula; any other string is text
- * exactly as given, never read as a number or date. `null` clears the cell; an empty string is
- * refused in its favour, as is a number that is not finite.
- */
-export type SheetCellInput = string | number | boolean | null;
-
-/** One change to a spreadsheet's cells. */
-export type SheetChange =
-  /** Enter values in every cell of a range. */
-  | {
-      op: "writeCells";
-      /** A bounded A1 range that names its sheet, such as `'Sales 2026'!A1:C3`. */
-      range: string;
-      /** One array per row of the range, each with one value per column: exactly its shape. */
-      values: SheetCellInput[][];
-    }
-  /** Clear the contents of every cell of a range, keeping their formatting. */
-  | {
-      op: "clearRange";
-      /** A bounded A1 range that names its sheet, such as `'Sales 2026'!A1:C3`. */
-      range: string;
-    };
