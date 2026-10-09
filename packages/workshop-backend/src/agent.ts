@@ -589,14 +589,14 @@ export interface AgentHooks {
   consumeCapturedConnectionRequests(chatId: number): AiChatMessageBody[];
 
   /**
-   * Mint a gatekeeper for a new resource of a creatable type through one of the initiator's
-   * connected accounts, and queue the creation for the user's approval. Unlike requestConnection,
-   * nothing waits on the user: the gatekeeper simulates the resource until the creation applies.
-   * Throws an agent-readable message when the request can't be met.
+   * Mint a gatekeeper simulating a new resource of a creatable type, and queue the creation for
+   * the user's approval. Unlike requestConnection, nothing waits on the user: the gatekeeper
+   * simulates the resource until the creation applies. Throws an agent-readable message when the
+   * request can't be met.
    */
   createExternalResource(
-      chatId: number, input: Extract<AiToolCall, {toolName: "createExternalResource"}>["input"],
-      initiator: AiChatAuthorInfo): Promise<{gatekeeperId: WorkpieceId}>;
+      chatId: number, input: Extract<AiToolCall, {toolName: "createExternalResource"}>["input"])
+      : Promise<{gatekeeperId: WorkpieceId}>;
 
   /**
    * Blueprint hooks for the agent.
@@ -1270,7 +1270,7 @@ Ask the user to connect a gatekeeper resource (e.g. a ClickHouse cluster, a GitH
 `.trim();
 
 let CREATE_EXTERNAL_RESOURCE_TOOL_DESCRIPTION = `
-Create a new external resource (e.g. a new document) through one of the user's connected accounts, for resource types listConnectableResources marks creatable; requestConnection is for resources that already exist. The resource is immediately available as \`env.<bindingName>\` and your turn continues. It is created at the provider only once the user approves the creation; until then it is simulated, and changes you make to it apply after the creation.
+Create a new external resource (e.g. a new document), for resource types listConnectableResources marks creatable; requestConnection is for resources that already exist. The resource is immediately available as \`env.<bindingName>\` and your turn continues. It is created at the provider, in an account the user chooses, only once they approve the creation; until then it is simulated, and changes you make to it apply after the creation.
 `.trim();
 
 // =======================================================================================
@@ -3869,11 +3869,6 @@ async function runAgentPass(
               "Name under which the new resource appears in your env. Must be a JavaScript " +
               "identifier not already in use; style: ALL_CAPS_WITH_UNDERSCORES.",
         }),
-        accountId: Type.Optional(Type.Number({
-          description:
-              "Which of the user's accounts for this vendor creates the resource. Needed only " +
-              "when several are connected; the error then lists them.",
-        })),
       }),
       execute: async (toolCallId, input) => {
         try {
@@ -3882,7 +3877,7 @@ async function runAgentPass(
             throw new Error(`There is already a binding named "${input.bindingName}" in your ` +
                 `env. Choose a different name.`);
           }
-          let output = await hooks.createExternalResource(chatId, input, initiator);
+          let output = await hooks.createExternalResource(chatId, input);
           chatBindings.set(input.bindingName, {type: "workpiece", id: output.gatekeeperId});
           // Recorded so replay can re-bind without creating again (see the replay path above).
           return toolResult(jsonToolResultText(output), {output} as Partial<AiToolCall>);

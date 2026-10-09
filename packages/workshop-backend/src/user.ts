@@ -47,6 +47,7 @@ export type ProvidedAccountInfo = {
 // shape keeps the methods' declared return types (e.g. createAccount's Fetcher<GatekeeperUser>)
 // usable directly, the way the runtime stub actually behaves.
 type AccountCreatorStub = Required<Pick<GatekeeperVendor, "createAccount">>;
+type ResourceCreatorStub = Required<Pick<GatekeeperVendor, "createResource">>;
 type SingletonAccountStub = Required<Pick<GatekeeperUser, "getSingletonGatekeeperClass" | "startAppUi">>;
 
 function areCredentialsValid(record: ConnectedAccountRecord): boolean {
@@ -1895,37 +1896,28 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let account = this.storage.connectedAccounts.get(accountId);
     if (!account) throw new Error("No such account.");
     let {class: cls, resource} = await account.account.getGatekeeperClassFor(url);
-    await this.#assertResourceEnabled(account, resource);
+    await this.#assertResourceEnabled(account.vendorId, resource);
     return {class: cls, vendorId: account.vendorId, typeUrlPattern: resource.urlPattern};
   }
 
   /**
-   * Mint a gatekeeper class for a new resource of a creatable type through one of this user's
-   * connected accounts for `vendorId` (see GatekeeperUser.createResource()); `accountId` picks one
-   * when there are several. Creates nothing: the returned `action` is the creation to queue.
+   * Mint a gatekeeper class simulating a new resource of a creatable type (see
+   * GatekeeperVendor.createResource()). It belongs to no account; the returned `action` is the
+   * creation to queue.
    */
-  async createResourceGatekeeper(vendorId: string, resourceUrlPattern: string, title: string,
-                                 accountId?: number)
-      : Promise<{class: DurableObjectClass<Gatekeeper<any>>, vendorId: string,
-                  typeUrlPattern: string, action: ActionDescription}> {
-    let accounts = [...this.#connectedAccountRecords()].filter(a => a.vendorId === vendorId);
-    let account = accountId === undefined && accounts.length === 1
-        ? accounts[0] : accounts.find(a => a.id === accountId);
-    if (!account) {
-      throw new Error(accounts.length === 0
-          ? `No "${vendorId}" account is connected. Ask the user to connect one first.`
-          : `Pass accountId to choose a "${vendorId}" account: ` + accounts.map(a =>
-              `${a.id} (${a.description.uniqueName ?? a.description.displayName})`).join(", "));
-    }
-    // Optional on GatekeeperUser; viewed as required like the stub aliases at the top of this file.
-    let {class: cls, resource, action} = await (account.account as unknown as
-        Required<Pick<GatekeeperUser, "createResource">>).createResource(resourceUrlPattern, title);
+  async createResourceGatekeeper(vendorId: string, resourceUrlPattern: string, title: string)
+      : Promise<{class: DurableObjectClass<Gatekeeper<any>>, typeUrlPattern: string,
+                  action: ActionDescription}> {
+    let vendor = this.vendors.get(vendorId);
+    if (!vendor) throw new Error(`Unknown vendor "${vendorId}".`);
+    let {class: cls, resource, action} = await (vendor as unknown as ResourceCreatorStub)
+        .createResource(resourceUrlPattern, title);
     if (!resource.creatable) {
       throw new Error(`"${resource.title}" resources can't be created. ` +
           "listConnectableResources marks the types that can.");
     }
-    await this.#assertResourceEnabled(account, resource);
-    return {class: cls, vendorId: account.vendorId, typeUrlPattern: resource.urlPattern, action};
+    await this.#assertResourceEnabled(vendorId, resource);
+    return {class: cls, typeUrlPattern: resource.urlPattern, action};
   }
 
   // Block whole gatekeepers + disabled resources at the core-side chokepoints where a gatekeeper
@@ -1934,15 +1926,15 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // gatekeeper an admin set to "disabled" is blocked here too. Blocking here prevents minting a
   // capability to a disabled resource even if the request bypasses the (separately filtered)
   // picker/agent listings.
-  async #assertResourceEnabled(account: ConnectedAccountRecord, resource: SupportedResource) {
+  async #assertResourceEnabled(vendorId: string, resource: SupportedResource) {
     let config = await readAdminConfig(this.env);
-    let vendorId = account.vendorId.toLowerCase();
-    if (config.disabledGatekeepers.includes(vendorId) ||
-        ambientGatekeeperMode(config, vendorId) === "disabled") {
+    let normalized = vendorId.toLowerCase();
+    if (config.disabledGatekeepers.includes(normalized) ||
+        ambientGatekeeperMode(config, normalized) === "disabled") {
       throw new Error(
-          `The "${account.vendorId}" gatekeeper is disabled on this deployment by an administrator.`);
+          `The "${vendorId}" gatekeeper is disabled on this deployment by an administrator.`);
     }
-    if (isResourceDisabled(config, vendorId, resource.urlPattern)) {
+    if (isResourceDisabled(config, normalized, resource.urlPattern)) {
       throw new Error(
           `The "${resource.title}" resource is disabled on this deployment by an administrator.`);
     }
@@ -1951,7 +1943,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   /**
    * Mint a verifier from one of THIS user's connected accounts, identified by accountId. The
    * overseer passes the returned verifier to a gatekeeper's `addObserver()` so the gatekeeper can
-   * check whether this user is allowed to observe the data read through it. Returns null if the
+   * check whether this user is allowed to observe the data read through it, or to its
+   * `applyCreation()` to create the resource in this account. Returns null if the
    * account no longer exists (or never existed). Throws if the account belongs to a different
    * vendor (not a legitimate UI state — only reachable by bypassing client-side filtering).
    *

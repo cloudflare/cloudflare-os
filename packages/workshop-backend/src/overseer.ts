@@ -4,7 +4,7 @@ import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, Work
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
-import { type AgentCatalog, Gatekeeper, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
+import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
@@ -511,6 +511,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
         description: record.description,
         resolvedBy: record.resolvedBy,
         autoApproved: record.autoApproved,
+        creation: record.action === "create" || undefined,
       };
     case "bindHook":
       return {
@@ -4713,20 +4714,23 @@ class OverseerImpl implements AgentHooks {
   // gate was cleared: this is the single chokepoint where an action transitions to "approved", so
   // requiring them here guarantees the audit log always records the resolving user and whether it
   // was applied automatically. For an auto-approval, `resolvedBy` is the user who enabled the rule.
+  // A creation also needs `creator`: the verifier of the account the approver chose to create it in.
   async applyPendingAction(record: ActionRecord & {type: "action"},
-                           resolvedBy: AiChatAuthorInfo, autoApproved: boolean): Promise<void> {
+                           resolvedBy: AiChatAuthorInfo, autoApproved: boolean,
+                           creator?: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     let id = record.gatekeeperId;
     // A created resource exists only once its creation applies, and that stays pending until then.
-    if (record.action !== "create" && [...this.storage.actions.pendingByGatekeeper.get(id)]
-        .some(queued => queued.type === "action" && queued.action === "create")) {
+    if (record.action !== "create" && this.#creationPending(id)) {
       throw new Error("This resource doesn't exist yet. Approve its creation first.");
     }
     let gatekeeper = await this.getGatekeeperFacet(record.gatekeeperId);
     let created: {class: GatekeeperClass, resourceUrl: string} | undefined;
     if (record.action === "create") {
-      // applyCreation is optional on Gatekeeper; createResource()'s gatekeepers implement it.
+      if (!creator) throw new Error("Choose one of your accounts to create this resource in.");
+      // applyCreation is optional on Gatekeeper; GatekeeperVendor.createResource()'s gatekeepers
+      // implement it.
       created = await (gatekeeper as unknown as Fetcher<Gatekeeper<any> &
-          Required<Pick<Gatekeeper<any>, "applyCreation">>>).applyCreation();
+          Required<Pick<Gatekeeper<any>, "applyCreation">>>).applyCreation(creator);
     } else {
       // The apply-time cache stub is scoped to the gatekeeper AND to this action (approval can
       // happen long after the session that queued it, so the queue-time stub is gone) -- the
@@ -8499,30 +8503,34 @@ class OverseerImpl implements AgentHooks {
     return result;
   }
 
-  // Mint a gatekeeper for a new resource through the initiator's account and queue its creation.
+  // Mint a gatekeeper simulating a new resource, tied to no account, and queue its creation.
   // Unlike addGatekeeper(), this publishes without restarting collaborator sessions: a restart now
   // would abort this turn before its tool call is recorded, and until the creation applies there
   // is no real resource to verify anyone against -- the simulated one holds only what was written
   // through this workspace, which no current collaborator is excluded from
   // (#enforceExcludeObservers). applyPendingAction restarts once the resource is real.
   async createExternalResource(
-      chatId: number, input: Extract<AiToolCall, {toolName: "createExternalResource"}>["input"],
-      initiator: AiChatAuthorInfo): Promise<{gatekeeperId: WorkpieceId}> {
-    // User DOs are named by user identifier, and `initiator.id` is one (see
-    // listAvailableBlueprints).
-    let minted = await this.users.get(this.users.idFromName(initiator.id)).createResourceGatekeeper(
-        input.vendorId, input.resourceUrlPattern, input.title, input.accountId);
+      chatId: number, input: Extract<AiToolCall, {toolName: "createExternalResource"}>["input"])
+      : Promise<{gatekeeperId: WorkpieceId}> {
+    let minted = await this.#ownerUserStub().createResourceGatekeeper(
+        input.vendorId, input.resourceUrlPattern, input.title);
     let id = this.allocateWorkpieceId();
     this.storage.gatekeepers.put({
       id,
       class: minted.class,
       resourceTitle: input.title,
-      creationSpec: {type: "gatekeeper", vendorId: minted.vendorId,
+      creationSpec: {type: "gatekeeper", vendorId: input.vendorId,
                      typeUrlPattern: minted.typeUrlPattern},
     });
     await this.submitAction(id, "create", minted.action, {from: "agent", chatId})
         .catch(error => { this.removeGatekeeper(id); throw error; });
     return {gatekeeperId: id};
+  }
+
+  // Whether the gatekeeper's resource is still simulated: its creation is pending.
+  #creationPending(id: WorkpieceId): boolean {
+    return [...this.storage.actions.pendingByGatekeeper.get(id)]
+        .some(queued => queued.type === "action" && queued.action === "create");
   }
 
   // --- Blueprint hooks for the agent ---
@@ -8844,7 +8852,10 @@ class OverseerImpl implements AgentHooks {
       if (!observerVendorId(gk)) continue;
       result.push(gk);
     }
-    return result;
+    // A simulated resource has no account behind it to verify anyone against. Approving its
+    // creation restarts every session (see applyPendingAction), so verification happens then.
+    // (Filtered after the listing: reading another index mid-listing would end it.)
+    return result.filter(gk => !this.#creationPending(gk.id));
   }
 
   listObserverRequirements(role: CollaboratorRole): ObserverBindingNeed[] {
@@ -10775,7 +10786,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     };
   }
 
-  async approveAction(id: number): Promise<void> {
+  async approveAction(id: number, accountId?: number): Promise<void> {
     let action = this.impl.storage.actions.get(id);
     if (!action) {
       throw new Error(`No such action: ${id}`);
@@ -10794,7 +10805,11 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // Resolve the approver's identity before applying, so a failed profile fetch can't leave the
     // action applied in the world but still "pending" in storage.
     let profile = await this.#getClientProfile();
-    await this.impl.applyPendingAction(action, profile, false);
+    // A creation is made in the account the approver chose, whose verifier carries its authority.
+    let vendorId = gatekeeperVendorId(this.impl.storage.gatekeepers.get(action.gatekeeperId));
+    let creator = action.action === "create" && accountId !== undefined && vendorId
+        ? await this.#clientUser.getVerifier(accountId, vendorId) ?? undefined : undefined;
+    await this.impl.applyPendingAction(action, profile, false, creator);
 
     // If this was an awaited agent action, resume only after all awaited actions in the turn are
     // approved. If applyPendingAction throws, the action stays pending and the turn stays suspended.
