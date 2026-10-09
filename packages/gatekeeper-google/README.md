@@ -254,7 +254,12 @@ summaries read every slide a queued batch changes, since they hold no tables or 
 Large batches awaiting approval therefore cost reads more requests against Google's per-user quota.
 
 The simulated presentation was recorded from an English-locale account, so until it is created it
-reads with locale `en` and English layout names, which Google may translate for the created one.
+reads with locale `en` and English layout names. Google translates those names: a presentation a
+Spanish-language account made in the editor read locale `es-419` and layout names such as
+`Título y cuerpo`, with the recording's object IDs, placeholders and geometry. One created through
+the API in a non-English account has not been checked, so an approver's presentation may name its
+layouts differently from what the agent saw before approval, including in an approval card queued
+then. `createSlide()` takes a layout's ID, never its name.
 
 ## Google Slides reads
 

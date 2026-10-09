@@ -87,7 +87,8 @@ async function record(title: string): Promise<Recording> {
       `?fields=${encodeURIComponent(fields)}`);
     let pages = async (ids: string[], fields: string) =>
       Object.fromEntries(await Promise.all(ids.map(async id => [id, await read(fields, id)] as const)));
-    // The offered layouts, picked by their PredefinedLayout name: display names are localized.
+    // The offered layouts, picked by their PredefinedLayout name rather than by object ID, which the
+    // recording exists to check. Their display names would not do either: Google translates them.
     let { layouts: named = [] } = await read("layouts(objectId,layoutProperties(name))") as
       { layouts?: { objectId: string; layoutProperties?: { name?: string } }[] };
     let offered = new Set(named.filter(layout => OFFERED_LAYOUTS.includes(layout.layoutProperties?.name ?? ""))
