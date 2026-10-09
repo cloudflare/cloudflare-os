@@ -156,7 +156,9 @@ export interface GitHubRepo {
    *   or pushed to;
    * - `comment`: a comment was posted on an issue or pull request, or on a pull request's diff;
    * - `review`: a pull request review was submitted with a verdict or a summary;
-   * - `push`: a branch was pushed to, created, or deleted.
+   * - `push`: a branch was pushed to, created, or deleted;
+   * - `tag`: a tag was created, moved, or deleted. GitHub reports nothing when a push changes
+   *   more than three tags at once.
    *
    * The connected account's own comments and reviews are never delivered. Every other event is,
    * whoever caused it, including the writes a hook queues once they are approved. The hook starts
@@ -754,7 +756,8 @@ export type GitHubEvent =
   | GitHubPullRequestEvent
   | GitHubCommentEvent
   | GitHubReviewEvent
-  | GitHubPushEvent;
+  | GitHubPushEvent
+  | GitHubTagEvent;
 
 /** The kinds of `GitHubEvent`, which `GitHubSubscribeOptions.events` picks among. */
 export type GitHubEventKind = GitHubEvent["kind"];
@@ -818,7 +821,7 @@ export type GitHubReviewEvent = GitHubEventBase & {
   pullRequest: GitHubPullRequest;
 }
 
-/** A branch was pushed to, created, or deleted. Tag pushes are not delivered. */
+/** A branch was pushed to, created, or deleted. A tag's changes are `GitHubTagEvent`s. */
 export type GitHubPushEvent = GitHubEventBase & {
   kind: "push";
   /** The branch's name, without `refs/heads/`. */
@@ -830,6 +833,22 @@ export type GitHubPushEvent = GitHubEventBase & {
   /** Whether the push rewrote the branch's history. */
   forced: boolean;
   /** The repository, to read what was pushed (e.g. `listCommits({ ref: after })`) and queue writes. */
+  repo: GitHubRepo;
+}
+
+/**
+ * A tag was created, moved, or deleted. `before` and `after` name what the tag pointed to: a
+ * commit, or for an annotated tag, its tag object.
+ */
+export type GitHubTagEvent = GitHubEventBase & {
+  kind: "tag";
+  /** The tag's name, without `refs/tags/`. */
+  tag: string;
+  /** What it pointed to before the push; absent when the push created it. */
+  before?: string;
+  /** What it points to after the push; absent when the push deleted it. */
+  after?: string;
+  /** The repository, to read what the tag marks (e.g. `listCommits({ ref: tag })`) and queue writes. */
   repo: GitHubRepo;
 }
 

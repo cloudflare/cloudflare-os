@@ -87,8 +87,8 @@ You can also see your connected accounts and add and remove them in the settings
 
 ## Event hooks (optional)
 
-Gadgets can subscribe to a repository's issue, pull request, comment, review and push events, or
-to one issue's or pull request's (`subscribe()` in `src/types.d.ts`). GitHub delivers them through
+Gadgets can subscribe to a repository's issue, pull request, comment, review, push and tag events,
+or to one issue's or pull request's (`subscribe()` in `src/types.d.ts`). GitHub delivers them through
 a repository webhook, so this needs a public URL:
 
 1. Set `WEBHOOK_ORIGIN` on this worker to the public origin GitHub should deliver to, e.g.

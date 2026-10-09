@@ -394,6 +394,40 @@ it("delivers branch pushes with the repository, but not tag pushes", async () =>
   expect(advertised).toEqual([HEAD]);
 });
 
+it("delivers tag pushes as tag events, to hooks that watch for tags", async () => {
+  const github = new FakeGitHub();
+  const account = await connectAccount();
+  const releaser = binding(account);
+  expect((await releaser.subscribe({ events: ["tag"] })).description).toMatch(
+    /^Call this hook with each tag event in acme\/widgets,/);
+  await releaser.enable();
+  // GitHub reports tags in its push events.
+  expect([...github.webhooks.values()].map(webhook => webhook.events)).toEqual([["push"]]);
+
+  await github.deliver("push", { ref: "refs/tags/v1.0", before: ZERO, after: HEAD, repository, sender: ADA });
+  await github.deliver("push", { ref: "refs/heads/main", before: BASE, after: HEAD, repository, sender: ADA });
+  await github.deliver("push", { ref: "refs/tags/v0.9", before: BASE, after: ZERO, repository, sender: ADA });
+  await settled(account);
+
+  const { received, observations, advertised } = await releaser.read();
+  expect(received).toHaveLength(2);
+  expect(received).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      kind: "tag", tag: "v1.0", before: undefined, after: HEAD, actor: expect.objectContaining({ login: "ada" }),
+    }),
+    expect.objectContaining({ kind: "tag", tag: "v0.9", before: BASE, after: undefined }),
+  ]));
+  expect(observations.toSorted((a, b) => a.title.localeCompare(b.title))).toEqual([{
+    title: "GitHub push of tag v0.9 in acme/widgets",
+    description: "Receive a push by `@ada` of tag `v0.9` in acme/widgets, deleting it.",
+  }, {
+    title: "GitHub push of tag v1.0 in acme/widgets",
+    description: `Receive a push by \`@ada\` of tag \`v1.0\` in acme/widgets, creating it at \`${HEAD}\`.`,
+  }]);
+  // An annotated tag names its tag object rather than a commit.
+  expect(advertised).toEqual([]);
+});
+
 it("gives a hook on one issue only that issue's events", async () => {
   const github = new FakeGitHub();
   const account = await connectAccount();

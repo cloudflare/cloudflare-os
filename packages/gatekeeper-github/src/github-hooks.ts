@@ -94,6 +94,7 @@ export type GitHubWebhookEvent = {
   | { kind: "comment"; number: number; subject: WebhookSubject; diffComment: WebhookJson }
   | { kind: "review"; number: number; subject: WebhookSubject; review: WebhookJson }
   | { kind: "push"; branch: string; before?: string; after?: string; forced: boolean }
+  | { kind: "tag"; tag: string; before?: string; after?: string }
 );
 
 @validateRpc()
@@ -127,6 +128,7 @@ const WEBHOOK_EVENTS: Record<GitHubEventKind, string[]> = {
   comment: ["issue_comment", "pull_request_review_comment"],
   review: ["pull_request_review"],
   push: ["push"],
+  tag: ["push"],
 };
 
 const DISCONNECTED = "This GitHub account has been disconnected.";
@@ -389,7 +391,7 @@ export class GitHubHookDriver extends DurableObject<Env> {
 function watches({ number, events, viewerId }: Registration, event: GitHubWebhookEvent,
                  senderId: number | undefined): boolean {
   if (!events.includes(event.kind)) return false;
-  if (number !== undefined && (event.kind === "push" || event.number !== number)) return false;
+  if (number !== undefined && !("number" in event && event.number === number)) return false;
   // Never hand the account's own comments and reviews back to it, which a hook would answer.
   return !((event.kind === "comment" || event.kind === "review") && senderId === viewerId);
 }
@@ -479,8 +481,8 @@ const PULL_REQUEST_ACTIONS = new Map<unknown, GitHubPullRequestEvent["action"]>(
 /**
  * The event a delivery reports, if it is one a hook can receive (an issue opened, closed or
  * reopened; a pull request opened, closed, merged, reopened, marked ready or pushed to; a new
- * comment or diff comment; a review with a verdict or a summary; or a branch push), with when it
- * happened and who caused it.
+ * comment or diff comment; a review with a verdict or a summary; or a branch or tag push), with
+ * when it happened and who caused it.
  */
 function parseWebhookEvent(name: string, id: string, payload: WebhookPayload):
     { event: GitHubWebhookEvent; at: number; senderId?: number } | undefined {
@@ -540,20 +542,20 @@ function parseWebhookEvent(name: string, id: string, payload: WebhookPayload):
       };
     case "push": {
       const { ref, before, after, forced } = payload;
-      if (typeof ref !== "string" || !ref.startsWith("refs/heads/")) return undefined;
-      if (typeof before !== "string" || typeof after !== "string") return undefined;
+      if (typeof ref !== "string" || typeof before !== "string" || typeof after !== "string") return undefined;
+      // Git's all-zero id stands for no object: the push created or deleted the ref.
+      const moved = { ...before === ZERO_OID ? {} : { before }, ...after === ZERO_OID ? {} : { after } };
       // Seconds since the epoch, in a push's payload alone.
       const pushedAt = payload.repository?.pushed_at;
-      return {
-        event: {
-          ...base, kind: "push", branch: ref.slice("refs/heads/".length), forced: forced === true,
-          // Git's all-zero id stands for no commit: the push created or deleted the branch.
-          ...before === ZERO_OID ? {} : { before },
-          ...after === ZERO_OID ? {} : { after },
-        },
-        at: typeof pushedAt === "number" ? pushedAt * 1000 : NaN,
-        senderId,
-      };
+      const at = typeof pushedAt === "number" ? pushedAt * 1000 : NaN;
+      if (ref.startsWith("refs/heads/")) {
+        const branch = ref.slice("refs/heads/".length);
+        return { event: { ...base, kind: "push", branch, forced: forced === true, ...moved }, at, senderId };
+      }
+      if (ref.startsWith("refs/tags/")) {
+        return { event: { ...base, kind: "tag", tag: ref.slice("refs/tags/".length), ...moved }, at, senderId };
+      }
+      return undefined;
     }
     default:
       return undefined;

@@ -1015,12 +1015,19 @@ const EVENT_KIND_NAMES: Record<GitHubEventKind, string> = {
   comment: "comment",
   review: "review",
   push: "push",
+  tag: "tag",
 };
 
 /** E.g. "issue, comment and push". */
 function listEventKinds(kinds: GitHubEventKind[], conjunction: "and" | "or"): string {
   const names = kinds.map(kind => EVENT_KIND_NAMES[kind]);
   return names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} ${conjunction} ${names.at(-1)}`;
+}
+
+/** What a push did to a branch or tag, e.g. "moving it from `a` to `b`". */
+function refChange(before: string | undefined, after: string | undefined): string {
+  if (after === undefined) return "deleting it";
+  return `${before === undefined ? "creating it at" : `moving it from ${codeSpan(before)} to`} ${codeSpan(after)}`;
 }
 
 function eventReview(review: GitHubPullRequestReviewResponse): GitHubEventReview {
@@ -3731,7 +3738,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     if (webhookOrigin(this.env) === undefined) throw new Error(HOOKS_NOT_CONFIGURED);
     const { owner, repo, userObjectId } = this.ctx.props;
     const watchable: GitHubEventKind[] = target === undefined
-      ? ["issue", "pullRequest", "comment", "review", "push"]
+      ? ["issue", "pullRequest", "comment", "review", "push", "tag"]
       : target.kind === "issue" ? ["issue", "comment"] : ["pullRequest", "comment", "review"];
     const events = [...new Set(options?.events ?? watchable)];
     if (events.length === 0 || events.some(kind => !watchable.includes(kind))) {
@@ -3792,8 +3799,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     if (stored.repoId !== pin.id) return;
     // An issue or pull request binding's hooks watch only that one, whatever their parameters say.
     const scope = issueNumber ?? number;
-    // A push concerns no one issue or pull request.
-    if (scope !== undefined && (stored.kind === "push" || stored.number !== scope)) return;
+    // A push or a tag concerns no one issue or pull request.
+    if (scope !== undefined && !("number" in stored && stored.number === scope)) return;
     const onPullRequest = stored.kind === "pullRequest" || stored.kind === "review"
       || (stored.kind === "comment" && stored.subject.pullRequest);
     if (resourceKind === "issue" && onPullRequest) return;
@@ -3908,9 +3915,6 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       }
       case "push": {
         const { branch, before, after, forced } = stored;
-        const moved = after === undefined
-          ? "deleting it"
-          : `${before === undefined ? "creating it at" : `moving it from ${codeSpan(before)} to`} ${codeSpan(after)}`;
         return {
           event: {
             kind: "push", id, actor, branch, before, after, forced,
@@ -3918,9 +3922,24 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
           },
           observation: {
             title: sanitizeTitle(`GitHub push to ${branch} in ${where}`),
-            description: `Receive a push${by} to branch ${codeSpan(branch)} of ${where}, ${moved}.`,
+            description: `Receive a push${by} to branch ${codeSpan(branch)} of ${where}, ${refChange(before, after)}.`,
           },
           commitIds: [before, after].filter(commit => commit !== undefined),
+        };
+      }
+      case "tag": {
+        const { tag, before, after } = stored;
+        return {
+          event: {
+            kind: "tag", id, actor, tag, before, after,
+            repo: held(new GitHubRepoSessionImpl(this, approvalQueue.dup())),
+          },
+          observation: {
+            title: sanitizeTitle(`GitHub push of tag ${tag} in ${where}`),
+            description: `Receive a push${by} of tag ${codeSpan(tag)} in ${where}, ${refChange(before, after)}.`,
+          },
+          // An annotated tag names its tag object, which is no commit to advertise.
+          commitIds: [],
         };
       }
     }
