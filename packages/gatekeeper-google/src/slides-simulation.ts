@@ -15,7 +15,7 @@ import type { TaggedAction } from "@gadgets/gatekeeper-kit/actions";
 import {
   replaySimulation, type SimulationResult, type SimulationStep,
 } from "@gadgets/gatekeeper-kit/simulation";
-import type { RestPageElement, RestSlide } from "./slides-api";
+import type { RestPage, RestPageElement, RestSlide, RestText } from "./slides-api";
 import { designDeck, type DesignChange } from "./slides-design";
 import { ChangeConflict } from "./slides-text";
 
@@ -24,6 +24,16 @@ export type SlideLabel = { number: number; title?: string };
 
 /** An `updateSlides()` batch. `slides` labels each slide a change is on. */
 export type DesignBatch = { changes: DesignChange[]; slides: Record<string, SlideLabel> };
+
+/**
+ * A placeholder a created slide gets from its layout: the ID the gatekeeper minted for it, the
+ * layout placeholder it maps to (`type` and `index`, which Google matches it by, and that
+ * placeholder's ID, which Google records as its parent), and the shape and geometry it starts with.
+ */
+export type CreatedPlaceholder = {
+  objectId: string; type: string; index: number; parentObjectId: string;
+  shapeType?: string; size?: RestPageElement["size"]; transform?: RestPageElement["transform"];
+};
 
 /**
  * The payload of each kind of queued change. A batch is queued as `editText` when it only edits
@@ -43,6 +53,16 @@ export type SlidesActions = {
   moveSlides: {
     slideIds: string[]; after: string | null; slides: SlideLabel[]; afterSlide?: SlideLabel;
   };
+  /**
+   * `layout` is the layout's display name; an absent `after` adds the slide at the end, `null`
+   * at the start.
+   */
+  createSlide: {
+    newSlideId: string; layoutId: string; layout: string; after?: string | null;
+    placeholders: CreatedPlaceholder[]; afterSlide?: SlideLabel;
+  };
+  /** `slides` labels `slideIds` in presentation order. */
+  skipSlides: { slideIds: string[]; skipped: boolean; slides: SlideLabel[] };
 };
 
 /** A queued change, as the journal stores it. */
@@ -62,13 +82,14 @@ export function mintObjectId(): string {
   return `gk${crypto.randomUUID().replaceAll("-", "")}`;
 }
 
-function requireSlide(order: readonly string[], id: string): void {
+/** Throws `ChangeConflict` if `order` no longer has the slide `id`. */
+export function requireSlide(order: readonly string[], id: string): void {
   if (!order.includes(id)) throw new ChangeConflict(`slide "${id}" no longer exists`);
 }
 
-/** Throws `ChangeConflict` if a slide already has the ID a copy is to take. */
+/** Throws `ChangeConflict` if a slide already has the ID a copy or new slide is to take. */
 export function requireNewSlide(order: readonly string[], id: string): void {
-  if (order.includes(id)) throw new ChangeConflict(`a slide with the copy's ID "${id}" already exists`);
+  if (order.includes(id)) throw new ChangeConflict(`a slide with the new slide's ID "${id}" already exists`);
 }
 
 /** The order after moving `slideIds`, kept in their current order, to follow `after`. */
@@ -88,13 +109,17 @@ export function movedOrder(
 
 // An element added to the source after the copy was queued has no minted ID, so Google names it
 // at random when it makes the copy. It is left out: any name shown for it would let an edit to the
-// copy preview that its apply then cannot find.
+// copy preview that its apply then cannot find. A copied line connects to the copies of the shapes
+// its source connects to.
 function duplicated(slide: RestSlide, newSlideId: string, objectIds: Record<string, string>) {
   let rename = (elements: RestPageElement[] | undefined): RestPageElement[] | undefined =>
     elements?.flatMap(element => {
       let objectId = element.objectId && objectIds[element.objectId];
       if (!objectId) return [];
-      let group = element.elementGroup;
+      let { elementGroup: group, line } = element;
+      for (let connection of [line?.lineProperties?.startConnection, line?.lineProperties?.endConnection]) {
+        if (connection?.connectedObjectId) connection.connectedObjectId = objectIds[connection.connectedObjectId];
+      }
       return [{
         ...element,
         objectId,
@@ -105,6 +130,60 @@ function duplicated(slide: RestSlide, newSlideId: string, objectIds: Record<stri
   copy.objectId = newSlideId;
   copy.pageElements = rename(copy.pageElements);
   return copy;
+}
+
+/**
+ * The placeholders a slide made from `layout` gets, each with a minted ID so a queued edit can
+ * name it. A live probe showed Google instantiates every placeholder on the layout, slide number
+ * included, in the layout's order, each at its layout placeholder's size and transform.
+ */
+export function instantiatedPlaceholders(layout: RestPage): CreatedPlaceholder[] {
+  return (layout.pageElements ?? []).flatMap(({ objectId, size, transform, shape }) => {
+    let { type, index = 0 } = shape?.placeholder ?? {};
+    if (!objectId || !type) return [];
+    return [{
+      objectId: mintObjectId(), type, index, parentObjectId: objectId,
+      ...(shape?.shapeType ? { shapeType: shape.shapeType } : {}),
+      ...(size ? { size } : {}), ...(transform ? { transform } : {}),
+    }];
+  });
+}
+
+// A slide-number placeholder's text, as Google gives a new slide's; `reordered()` sets the number.
+const SLIDE_NUMBER_TEXT: RestText = {
+  textElements: [
+    { endIndex: 2, paragraphMarker: { style: { direction: "LEFT_TO_RIGHT" } } },
+    { endIndex: 1, autoText: { type: "SLIDE_NUMBER", content: "", style: {} } },
+    { startIndex: 1, endIndex: 2, textRun: { content: "\n", style: {} } },
+  ],
+};
+
+// Every placeholder but a slide number's is empty, and there are no speaker notes: Google names
+// the notes shape only when it creates the slide.
+function created(
+  newSlideId: string, layoutId: string, placeholders: readonly CreatedPlaceholder[],
+): RestSlide {
+  return {
+    objectId: newSlideId,
+    pageElements: placeholders.map(({ objectId, type, index, parentObjectId, shapeType, size, transform }) => ({
+      objectId,
+      ...(size ? { size } : {}),
+      ...(transform ? { transform } : {}),
+      // Google omits a zero index.
+      shape: {
+        ...(shapeType ? { shapeType } : {}),
+        placeholder: { type, ...(index ? { index } : {}), parentObjectId },
+        ...(type === "SLIDE_NUMBER" ? { text: structuredClone(SLIDE_NUMBER_TEXT) } : {}),
+      },
+    })),
+    slideProperties: { layoutObjectId: layoutId },
+  };
+}
+
+// Google omits a false `isSkipped`, so a replayed read matches a fresh one.
+function withSkipped(slide: RestSlide, skipped: boolean): RestSlide {
+  let { isSkipped: _, ...properties } = slide.slideProperties ?? {};
+  return { ...slide, slideProperties: skipped ? { ...properties, isSkipped: true } : properties };
 }
 
 // Google renders a slide number as the slide's position, so a slide that moves shows a new one.
@@ -149,6 +228,25 @@ export function applyChange(deck: Deck, action: SlidesAction): Deck {
       let { slideIds, after } = action.payload;
       return reordered(deck, movedOrder(order, slideIds, after));
     }
+    case "createSlide": {
+      let { newSlideId, layoutId, after, placeholders } = action.payload;
+      requireNewSlide(order, newSlideId);
+      if (typeof after === "string") requireSlide(order, after);
+      let at = after === undefined ? order.length : after === null ? 0 : order.indexOf(after) + 1;
+      let next = new Map(slides);
+      next.set(newSlideId, created(newSlideId, layoutId, placeholders));
+      return reordered(deck, order.toSpliced(at, 0, newSlideId), next);
+    }
+    case "skipSlides": {
+      let { slideIds, skipped } = action.payload;
+      let next = new Map(slides);
+      for (let id of slideIds) {
+        requireSlide(order, id);
+        let slide = slides.get(id);
+        if (slide) next.set(id, withSkipped(slide, skipped));
+      }
+      return { order, slides: next };
+    }
   }
 }
 
@@ -177,7 +275,8 @@ export function replayChanges(
  * each queued duplicate of one copies (back to its original), and every slide of a batch touching
  * one, since a batch applies all or none. A conflict on a slide reached only through an earlier
  * change, or on one no change links to `ids`, is not found, so the read shows the changes after
- * it, as approving them in order would apply them.
+ * it, as approving them in order would apply them. A slide a queued `createSlide` adds is not
+ * Google's yet, so none is fetched for it: replay makes it whole.
  */
 export function slidesToFetch(ids: readonly string[], changes: readonly QueuedChange[]): Set<string> {
   let needed = new Set(ids);

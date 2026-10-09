@@ -217,11 +217,25 @@ slides of any batch touching a slide it shows, since a batch applies all or none
 summaries read every slide a queued batch changes, since they hold no tables or grouped shapes.
 Large batches awaiting approval therefore cost reads more requests against Google's per-user quota.
 
+## Google Slides reads
+
+`getSlides()` reads each element as the Slides editor shows it: its box and rotation, and what it
+sets rather than inherits. Shapes carry their text and its formatting (links to URLs or to slides,
+font weight, paragraph indents and bullets), and their fill, its opacity, and their outline with its
+dash. Tables carry their cells, column widths, row heights and borders, collapsed to one `border`
+when every edge matches. A table's `size` is nominal, 3,000,000 EMU square on every live read, so
+its box is its columns and rows added up; a row's height is the least it may have, since Google
+draws it taller to fit its text and reports that nowhere. Lines carry their ends, computed from
+their transform, arrowheads, and the elements they connect; videos their YouTube or Drive ID; and
+images and Sheets charts their source URL and spreadsheet. The `contentUrl` an image or chart also
+has is a bearer URL, like a thumbnail's, so it is never read. `getPresentation()` lists the
+presentation's layouts with their placeholders, for `createSlide()`.
+
 ## Google Slides edits
 
-A directly bound presentation accepts four changes, each queued for approval: `updateSlides()`,
-`duplicateSlide()`, `deleteSlide()`, and `moveSlides()`. Changes are journaled with the kit's
-`ActionJournal`, and apply in the order they were queued.
+A directly bound presentation accepts six changes, each queued for approval: `updateSlides()`,
+`duplicateSlide()`, `deleteSlide()`, `moveSlides()`, `createSlide()`, and `setSlidesSkipped()`.
+Changes are journaled with the kit's `ActionJournal`, and apply in the order they were queued.
 
 `updateSlides()` takes up to 50 changes applied together: find-and-replace or whole-text
 replacement in shapes, table cells, and speaker notes, text and paragraph formatting (including
@@ -238,6 +252,19 @@ let apply without asking: "Slide text edits" (only text edits), "Slide formattin
 font, since Google keeps their whole strings), and every other batch, mixed ones included, which
 always waits for approval.
 
+`createSlide()` adds a slide made from one of the presentation's layouts, at the start, the end, or
+after a given slide. The gatekeeper mints the slide's ID and one for each placeholder it gets from
+the layout, read from the layout's page when the change is queued, so later changes can fill the
+placeholders before it is approved. Reads show the new slide with every placeholder on the layout,
+at the layout's size and position, empty but for a slide number's, as a live probe showed Google
+makes them (`instantiatedPlaceholders()` in `slides-simulation.ts`).
+Google names a new slide's speaker notes only as it creates the slide, so they cannot be edited
+until it is approved. Adding a slide always waits for approval.
+
+`setSlidesSkipped()` skips slides, leaving them out when presenting, or shows them again. It is
+the "Skipping slides" kind, which a user may let apply without asking: it destroys nothing, and
+is undone the same way.
+
 Reads show queued changes as if applied, by replaying them over Slides' own JSON before it is
 projected; thumbnails show the presentation as saved. Each change is replayed as Google documents
 its request, and one the replay cannot follow exactly is refused instead: a bullet list started
@@ -245,15 +272,18 @@ right after another list item, which Google may join to that list; table rows or
 or deleted beside a merged cell; deleting a grouped element that would leave its group with one;
 rotating a video, which Google cannot shear; and new text filling a list item whose bullet is
 styled apart from its text, which Google would restyle to match. The replay makes no claim about
-what Google renders: shrinking text to fit, wrapping, the box Google fits an image to, the size it
-gives a new table, and the formatting new table rows and columns take appear once applied. It
-does follow Google in turning a shape's autofit off once its text changes, fixing the font sizes
-and line spacings the text sets at what the autofit had shrunk them to. A replacement takes the
-style of the text it replaces, and text left unchanged at either end of a match is not rewritten,
-so it keeps its own. Formatting a whole list paragraph also updates its bullet's style in replay,
-which later replacements use when checking whether they can keep that style. Setting a font sets
-it at regular weight, so the text is no longer bold unless the change says so. A slide number or
-other AutoText can only be replaced whole.
+what Google renders: shrinking text to fit, wrapping, the box Google fits an image to, the borders
+around new or deleted table rows and columns, and the formatting new rows and columns take appear
+once applied. Table rows and columns are sized as live reads show Google sizing them: a new table
+shares its box evenly, a new row or column copies the one beside it, every column then narrows so
+the table keeps its width, and the lines a deletion leaves keep theirs. It does follow Google in
+turning a shape's autofit off once its text changes, fixing the font sizes and line spacings the
+text sets at what the autofit had shrunk them to. A replacement takes the style of the text it
+replaces, and text left unchanged at either end of a match is not rewritten, so it keeps its own.
+Formatting a whole list paragraph also updates its bullet's style in replay, which later
+replacements use when checking whether they can keep that style. Setting a font sets it at
+regular weight, so the text is no longer bold unless the change says so. A slide number or other
+AutoText can only be replaced whole.
 
 Each approved change is one `batchUpdate`, planned against a fresh read and pinned to its revision
 with `requiredRevisionId`, so a change applies only to the text it was planned against: one that

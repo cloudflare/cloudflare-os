@@ -22,6 +22,16 @@ export type SlideSummary = {
   hasSpeakerNotes: boolean;
 };
 
+/** A layout a slide can be made from. */
+export type SlideLayout = {
+  /** Layout object ID. Pass it to `createSlide()`. */
+  id: string;
+  /** Display name, such as `Title and body`, as `SlideSummary.layout` shows it. */
+  name: string;
+  /** The placeholders the layout holds, by type such as `TITLE` or `BODY`, in drawing order. */
+  placeholders: string[];
+};
+
 /** Metadata about the connected presentation and the slides it contains. */
 export type PresentationInfo = {
   /** Stable Google presentation ID. */
@@ -34,6 +44,8 @@ export type PresentationInfo = {
   pageSize: SlideSize;
   /** Every slide, in presentation order. */
   slides: SlideSummary[];
+  /** Every layout the presentation's masters hold. */
+  layouts: SlideLayout[];
   /**
    * Set when a change queued for approval no longer applies to the presentation: why. Neither it
    * nor any change queued after it is reflected.
@@ -91,15 +103,27 @@ export type TextFormat = {
   fontFamily?: string;
   /** Font size in points. */
   fontSize?: number;
+  /** Font weight from 100 to 900, when not the regular 400. Bold text shows at 700 or more. */
+  fontWeight?: number;
   /** Text colour. */
   color?: SlideColor;
   /** Highlight colour behind the text. */
   highlight?: SlideColor;
-  /** The URL the text links to. */
-  link?: string;
+  /** What the text links to. */
+  link?: TextLink;
   /** Text raised or lowered from the line. */
   baseline?: "superscript" | "subscript";
 };
+
+/**
+ * A link's target: a URL, a slide by ID or by zero-based position, or a slide relative to the one
+ * being presented.
+ */
+export type TextLink =
+  | string
+  | { slideId: string }
+  | { slideIndex: number }
+  | { relative: "next" | "previous" | "first" | "last" };
 
 /**
  * The formatting of `text.slice(start, end)`. A range may run on across a paragraph break when the
@@ -116,6 +140,12 @@ export type ParagraphFormat = {
   spaceAbove?: number;
   /** Space below the paragraph, in points. */
   spaceBelow?: number;
+  /** Indent of the paragraph's start edge, in points. */
+  indentStart?: number;
+  /** Indent of the paragraph's end edge, in points. */
+  indentEnd?: number;
+  /** Indent of the paragraph's first line, in points from the text box's edge, not `indentStart`. */
+  indentFirstLine?: number;
 };
 
 /** A paragraph, `text.slice(start, end)` without its newline, and its formatting. */
@@ -150,9 +180,17 @@ export type TableCell = FormattedText & {
   columnSpan?: number;
   /** Background colour set on the cell, or `"none"` for transparent. */
   fill?: SlideColor | "none";
+  /** How opaque `fill` is, from 0 to 1, when less than 1. */
+  fillOpacity?: number;
   /** Where the cell's text sits vertically, when set on the cell. */
   contentAlignment?: "top" | "middle" | "bottom";
 };
+
+/**
+ * A dash pattern, such as `DOT`, `DASH`, `DASH_DOT`, `LONG_DASH` or `LONG_DASH_DOT`; a solid line
+ * has none.
+ */
+export type DashStyle = string;
 
 /**
  * A shape, text box, or placeholder. An empty placeholder's text is `""`; the prompt text its
@@ -166,13 +204,21 @@ export type ShapeElement = SlideElementBase & FormattedText & {
   placeholder?: string;
   /** Fill colour set on the shape, or `"none"` for no fill; absent when it takes its default. */
   fill?: SlideColor | "none";
+  /** How opaque `fill` is, from 0 to 1, when less than 1. */
+  fillOpacity?: number;
   /** Outline set on the shape (weight in points), or `"none"`; absent when it takes its default. */
-  outline?: { color?: SlideColor; weight?: number } | "none";
+  outline?: { color?: SlideColor; weight?: number; dash?: DashStyle } | "none";
   /** Where the shape's text sits vertically, when set on the shape. */
   contentAlignment?: "top" | "middle" | "bottom";
 };
 
-/** A table. */
+/** One edge of a table cell: its colour, weight in points, and dash pattern; `"none"` if hidden. */
+export type TableBorder = { color?: SlideColor; weight?: number; dash?: DashStyle } | "none";
+
+/**
+ * A table. Its `bounds` are its columns' widths and rows' heights added up, so a row drawn taller
+ * to fit its text makes the table taller than `bounds` say.
+ */
 export type TableElement = SlideElementBase & {
   kind: "table";
   /** Number of rows. */
@@ -181,6 +227,24 @@ export type TableElement = SlideElementBase & {
   columns: number;
   /** Cells by row, then column. */
   cells: (TableCell | null)[][];
+  /** Each column's width in points. */
+  columnWidths?: number[];
+  /**
+   * Each row's height in points: the least it may have, since Google draws a row taller to fit
+   * its text, and reports that height nowhere.
+   */
+  rowHeights?: number[];
+  /**
+   * The border every cell edge has, when all have the same. Neither `border` nor `borders` is set
+   * while a queued change to the table's rows or columns leaves its borders unknown.
+   */
+  border?: TableBorder;
+  /**
+   * Each cell edge's border, when they differ: `horizontal[r][c]` is the edge above row `r`'s
+   * column `c` (`r` up to `rows`, for the bottom edge), and `vertical[r][c]` the edge left of it
+   * (`c` up to `columns`). An edge inside a merged cell is `null`.
+   */
+  borders?: { horizontal: (TableBorder | null)[][]; vertical: (TableBorder | null)[][] };
 };
 
 /** A group of page elements that move together. */
@@ -197,14 +261,70 @@ export type WordArtElement = SlideElementBase & {
   text: string;
 };
 
-/** A page element whose content is not text, such as an image or a chart. */
-export type OtherElement = SlideElementBase & {
-  kind: "image" | "video" | "line" | "sheetsChart" | "other";
+/** A picture. */
+export type ImageElement = SlideElementBase & {
+  kind: "image";
+  /** The URL the picture was inserted from, when Google kept one. */
+  sourceUrl?: string;
 };
+
+/** A point on the slide, in points from its top-left corner. */
+export type SlidePoint = { x: number; y: number };
+
+/** The element a line's end is attached to, and which of its connection sites, numbered by Google. */
+export type LineConnection = { elementId: string; site: number };
+
+/** A line, arrow or connector, drawn from `start` to `end`. */
+export type LineElement = SlideElementBase & {
+  kind: "line";
+  /** Whether the line runs straight, bends at right angles, or curves between its ends. */
+  category?: "straight" | "bent" | "curved";
+  /** Where the line starts, absent when Google reports no place for it. */
+  start?: SlidePoint;
+  /** Where the line ends. */
+  end?: SlidePoint;
+  /** The arrowhead at `start`, such as `FILL_ARROW`, `STEALTH_ARROW` or `OPEN_CIRCLE`; absent for none. */
+  startArrow?: string;
+  /** The arrowhead at `end`, as for `startArrow`. */
+  endArrow?: string;
+  /** Line colour, as set on the line. */
+  color?: SlideColor;
+  /** Weight in points, as set on the line. */
+  weight?: number;
+  dash?: DashStyle;
+  /** The element `start` is attached to, which moving that element moves it with. */
+  startConnection?: LineConnection;
+  /** The element `end` is attached to. */
+  endConnection?: LineConnection;
+};
+
+/** A video. */
+export type VideoElement = SlideElementBase & {
+  kind: "video";
+  /** Where the video is: on YouTube, or a Google Drive file. */
+  source?: "youtube" | "drive";
+  /** The YouTube video ID or Drive file ID. */
+  videoId?: string;
+  /** A URL of the video. */
+  url?: string;
+};
+
+/** A chart from a Google Sheets spreadsheet, drawn as it was when last refreshed. */
+export type SheetsChartElement = SlideElementBase & {
+  kind: "sheetsChart";
+  /** The spreadsheet holding the chart. */
+  spreadsheetId?: string;
+  /** The chart's ID in that spreadsheet. */
+  chartId?: number;
+};
+
+/** A page element of another kind, which the gatekeeper does not read. */
+export type OtherElement = SlideElementBase & { kind: "other" };
 
 /** One element on a slide. */
 export type SlideElement =
-  ShapeElement | TableElement | GroupElement | WordArtElement | OtherElement;
+  | ShapeElement | TableElement | GroupElement | WordArtElement | ImageElement | LineElement
+  | VideoElement | SheetsChartElement | OtherElement;
 
 /** One slide's content. */
 export type Slide = SlideSummary & {

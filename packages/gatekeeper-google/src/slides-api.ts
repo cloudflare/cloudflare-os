@@ -17,12 +17,16 @@ const LAYOUT_FIELDS = "layouts(objectId,layoutProperties(displayName))";
 // Styles and geometry, most of a deck's JSON, are left out: 65 KiB for a live 16-slide deck,
 // against 780 KiB with them.
 const SUMMARY_FIELDS =
-  `presentationId,title,locale,pageSize,${LAYOUT_FIELDS},` +
+  "presentationId,title,locale,pageSize," +
+  "layouts(objectId,layoutProperties(displayName),pageElements(shape(placeholder(type))))," +
   `slides(objectId,pageElements(objectId,shape(placeholder(type),${TEXT_FIELDS})),` +
   "slideProperties(layoutObjectId,isSkipped,notesPage(notesProperties(speakerNotesObjectId)," +
   `pageElements(objectId,shape(${TEXT_FIELDS})))))`;
 // Google returns `revisionId` only to an account that can edit the presentation.
 const OUTLINE_FIELDS = `presentationId,title,revisionId,${LAYOUT_FIELDS},slides(objectId)`;
+// What a new slide takes from its layout: each placeholder's type, index, shape and geometry.
+const LAYOUT_PAGE_FIELDS =
+  "objectId,pageElements(objectId,size,transform,shape(shapeType,placeholder(type,index)))";
 const SLIDE_FIELDS =
   "objectId,pageElements," +
   "slideProperties(layoutObjectId,isSkipped,notesPage(notesProperties,pageElements))";
@@ -122,6 +126,33 @@ export type RestTableCellProperties = {
   contentAlignment?: string;
 };
 
+/** A `TableCellLocation`; Google omits a zero index. */
+export type RestCellLocation = { rowIndex?: number; columnIndex?: number };
+
+/** A cell edge's `TableBorderProperties`. */
+export type RestBorderProperties = {
+  tableBorderFill?: { solidFill?: RestSolidFill }; weight?: RestDimension; dashStyle?: string;
+};
+
+/** One row of a table's cell edges: the edges along one line of the grid. */
+export type RestBorderRow = {
+  tableBorderCells?: { location?: RestCellLocation; tableBorderProperties?: RestBorderProperties }[];
+};
+
+/** The end of a line attached to an element's connection site. */
+export type RestLineConnection = { connectedObjectId?: string; connectionSiteIndex?: number };
+
+/** A line's `LineProperties`, as far as the gatekeeper reads them. */
+export type RestLineProperties = {
+  lineFill?: { solidFill?: RestSolidFill };
+  weight?: RestDimension;
+  dashStyle?: string;
+  startArrow?: string;
+  endArrow?: string;
+  startConnection?: RestLineConnection;
+  endConnection?: RestLineConnection;
+};
+
 /** A `PageElement`, as far as the gatekeeper reads one. */
 export type RestPageElement = {
   objectId?: string;
@@ -131,31 +162,40 @@ export type RestPageElement = {
   description?: string;
   shape?: {
     shapeType?: string;
-    placeholder?: { type?: string };
+    /** Google omits `index` when it is 0; `parentObjectId` is the layout placeholder it inherits from. */
+    placeholder?: { type?: string; index?: number; parentObjectId?: string };
     text?: RestText;
     shapeProperties?: RestShapeProperties;
   };
   table?: {
     rows?: number;
     columns?: number;
+    tableColumns?: { columnWidth?: RestDimension }[];
     tableRows?: {
+      rowHeight?: RestDimension;
       tableCells?: {
-        location?: { rowIndex?: number; columnIndex?: number };
+        location?: RestCellLocation;
         rowSpan?: number;
         columnSpan?: number;
         text?: RestText;
         tableCellProperties?: RestTableCellProperties;
       }[];
     }[];
+    horizontalBorderRows?: RestBorderRow[];
+    verticalBorderRows?: RestBorderRow[];
   };
   elementGroup?: { children?: RestPageElement[] };
-  image?: unknown;
-  video?: unknown;
-  line?: unknown;
-  sheetsChart?: unknown;
+  /** `contentUrl`, on images and charts, is a bearer URL, so it is never read. */
+  image?: { sourceUrl?: string };
+  video?: { source?: string; id?: string; url?: string };
+  line?: { lineCategory?: string; lineProperties?: RestLineProperties };
+  sheetsChart?: { spreadsheetId?: string; chartId?: number };
   wordArt?: { renderedText?: string };
   speakerSpotlight?: unknown;
 };
+
+/** A `Page` of any kind, as far as its elements. */
+export type RestPage = { objectId?: string; pageElements?: RestPageElement[] };
 
 /** A slide `Page`. */
 export type RestSlide = {
@@ -178,7 +218,9 @@ export type RestPresentation = {
   locale?: string;
   revisionId?: string;
   pageSize?: { width?: RestDimension; height?: RestDimension };
-  layouts?: { objectId?: string; layoutProperties?: { displayName?: string } }[];
+  layouts?: {
+    objectId?: string; layoutProperties?: { displayName?: string }; pageElements?: RestPageElement[];
+  }[];
   slides?: RestSlide[];
 };
 
@@ -266,6 +308,14 @@ export class GoogleSlidesApi {
       pagePath(presentationId, slideId), { fields: SLIDE_FIELDS }, "get slide", MAX_SLIDE_BYTES);
     if (slide.objectId !== slideId) throw new Error("Google Slides returned a different slide");
     return slide;
+  }
+
+  /** Fetch a layout's placeholders, as far as a slide made from it takes them. */
+  async getLayout(presentationId: string, layoutId: string): Promise<RestPage> {
+    let layout = await this.#get<RestPage>(
+      pagePath(presentationId, layoutId), { fields: LAYOUT_PAGE_FIELDS }, "get layout", MAX_SLIDE_BYTES);
+    if (layout.objectId !== layoutId) throw new Error("Google Slides returned a different layout");
+    return layout;
   }
 
   /** Fetch full pages of the slides among `ids` that `order`, the deck's slide IDs, still has. */

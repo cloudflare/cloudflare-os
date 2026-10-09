@@ -17,8 +17,9 @@ import type {
 import { designDeck, type DesignStep } from "./slides-design";
 import { prepareChanges } from "./slides-design-input";
 import {
-  batchSlides, conflictReason, mintObjectId, movedOrder, replayChanges, slidesToFetch,
-  type Deck, type QueuedChange, type SlideLabel, type SlidesAction, type SlidesActions,
+  batchSlides, conflictReason, instantiatedPlaceholders, mintObjectId, movedOrder, replayChanges,
+  slidesToFetch, type Deck, type QueuedChange, type SlideLabel, type SlidesAction,
+  type SlidesActions,
 } from "./slides-simulation";
 import { elementIdsOf } from "./slides-target";
 import { ChangeConflict } from "./slides-text";
@@ -268,8 +269,8 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
   }
 
   /**
-   * The slide order and the content of `ids`, with queued changes applied. A slide that no longer
-   * exists, or never did, is absent from `deck.order`.
+   * The slide order and the content of `ids`, with queued changes applied, and `saved`, the slide
+   * order Google has. A slide that no longer exists, or never did, is absent from `deck.order`.
    */
   async #simulated(ids: readonly string[]) {
     return this.#changes.snapshot(async changes => {
@@ -280,6 +281,7 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
         // Google reports the revision only to an account that can edit the presentation.
         editable: outline.revisionId !== undefined,
         layouts: layoutNames(outline),
+        saved: order,
         ...replayed({
           order, slides: await this.#api.getSlides(this.#presentationId, slidesToFetch(ids, changes), order),
         }, changes),
@@ -292,24 +294,14 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
    * the account may not make.
    */
   async #prepare(ids: readonly string[], purpose: string) {
-    let simulated = await this.#read(
+    return preparable(ids, await this.#read(
       () => this.#simulated(ids),
       ({ title }) => ({
         title: "Read Google Slides slides to change them",
-        description: `Read ${ids.length} slide(s) in "${title}" to ${purpose}.`,
-      }));
-    // Reported after authorization, since it reveals which slides exist.
-    let missing = ids.find(id => !simulated.deck.order.includes(id));
-    if (missing !== undefined) throw noSlide(missing, simulated.title);
-    if (!simulated.editable) {
-      throw new Error(
-        `The connected Google account can view "${simulated.title}" but not edit it, so no change ` +
-        "to it can be queued.");
-    }
-    if (simulated.conflict) {
-      throw new Error(`${simulated.conflict} No more changes can be queued until it is rejected.`);
-    }
-    return simulated;
+        description: ids.length === 0
+          ? `Read the slide order of "${title}" to ${purpose}.`
+          : `Read ${ids.length} slide(s) in "${title}" to ${purpose}.`,
+      })));
   }
 
   async getPresentation(): Promise<PresentationInfo> {
@@ -385,11 +377,12 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
           `Render an image of ${index < 0 ? "a slide" : `slide ${index + 1}`} in "${title}".`,
       }));
     if (thumbnail) return { mimeType: "image/png", ...thumbnail };
-    let queuedCopy = await this.#changes.snapshot(async changes => changes.some(({ action }) =>
-      action.kind === "duplicateSlide" && action.payload.newSlideId === slideId));
-    if (queuedCopy) {
-      throw new Error(
-        `Slide "${slideId}" is a copy awaiting approval, so it cannot be rendered until it exists.`);
+    let queued = await this.#changes.snapshot(async changes => changes.find(({ action }) =>
+      (action.kind === "duplicateSlide" || action.kind === "createSlide") &&
+      action.payload.newSlideId === slideId)?.action.kind);
+    if (queued) {
+      throw new Error(`Slide "${slideId}" is ${queued === "createSlide" ? "a new slide" : "a copy"} ` +
+        "awaiting approval, so it cannot be rendered until it exists.");
     }
     throw noSlide(slideId, title);
   }
@@ -398,7 +391,15 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
     let { changes: prepared, refs } = prepareChanges(changes);
     let ids = [...new Set(changes.map(change => change.slideId))];
     return this.#changes.queue(batchKind(prepared), async () => {
-      let { deck } = await this.#prepare(ids, "queue changes to them");
+      let { deck, saved } = await this.#prepare(ids, "queue changes to them");
+      // Google names a new slide's notes shape itself, as it creates the slide, so until then an
+      // edit has nothing to address. A queued copy has its source's.
+      let unborn = prepared.find(change => change.op === "editText" && change.elementId === undefined &&
+        !saved.includes(change.slideId) && !deck.slides.get(change.slideId)?.slideProperties?.notesPage);
+      if (unborn) {
+        throw new Error(`Slide "${unborn.slideId}" is awaiting approval to be added, and Google gives it ` +
+          "speaker notes only then. Edit its notes once it is approved.");
+      }
       let existing = new Set(ids.flatMap(id => elementIdsOf(deck.slides.get(id)?.pageElements)));
       let shadowing = Object.keys(refs).find(ref => existing.has(ref));
       if (shadowing !== undefined) {
@@ -482,6 +483,69 @@ export class GooglePresentationSessionImpl extends RpcTarget implements GooglePr
       };
     });
   }
+
+  async createSlide(layoutId: string, after?: string | null): Promise<string> {
+    return this.#changes.queue("createSlide", async () => {
+      let ids = typeof after === "string" ? [after] : [];
+      // The layout's page is fetched under the same approval as the slides, since it is only
+      // read to copy its placeholders into the change.
+      let { page, ...simulated } = await this.#read(
+        async () => {
+          let read = await this.#simulated(ids);
+          return {
+            ...read,
+            page: read.layouts.has(layoutId)
+              ? await this.#api.getLayout(this.#presentationId, layoutId)
+              : undefined,
+          };
+        },
+        ({ title, layouts }) => ({
+          title: "Read Google Slides slides to change them",
+          description: `Read the slide order of "${title}" and the placeholders of its layout ` +
+            `"${layouts.get(layoutId) ?? layoutId}" to queue adding a slide.`,
+        }));
+      let { title, layouts, deck } = preparable(ids, simulated);
+      let layout = layouts.get(layoutId);
+      if (page === undefined || layout === undefined) {
+        throw new Error(`No layout with ID "${layoutId}" in "${title}". Call getPresentation() for layout IDs.`);
+      }
+      // Minted here rather than by Google, so changes queued to the slide can name it and them.
+      let newSlideId = mintObjectId();
+      return {
+        payload: {
+          newSlideId,
+          layoutId,
+          layout,
+          ...(after === undefined ? {} : { after }),
+          placeholders: instantiatedPlaceholders(page),
+          ...(typeof after === "string" ? { afterSlide: labelOf(deck, after) } : {}),
+        },
+        result: newSlideId,
+      };
+    });
+  }
+
+  async setSlidesSkipped(slideIds: string[], skipped: boolean): Promise<void> {
+    if (slideIds.length === 0 || slideIds.length > MAX_SLIDES_PER_MOVE) {
+      throw new Error(`Skip or unskip between 1 and ${MAX_SLIDES_PER_MOVE} slides at a time.`);
+    }
+    if (new Set(slideIds).size !== slideIds.length) throw new Error("A slide is listed twice.");
+    await this.#changes.queue("skipSlides", async () => {
+      let { deck } = await this.#prepare(slideIds, skipped ? "queue skipping them" : "queue unskipping them");
+      if (slideIds.every(id => (deck.slides.get(id)?.slideProperties?.isSkipped === true) === skipped)) {
+        throw new Error(skipped ? "Those slides are already skipped." : "None of those slides is skipped.");
+      }
+      let listed = new Set(slideIds);
+      return {
+        payload: {
+          slideIds,
+          skipped,
+          slides: deck.order.filter(id => listed.has(id)).map(id => labelOf(deck, id)),
+        },
+        result: undefined,
+      };
+    });
+  }
 }
 
 /** What a read-only presentation reads through: nothing is ever queued against it. */
@@ -526,6 +590,27 @@ export class GooglePresentationReadSessionImpl extends RpcTarget
   getSlideThumbnail(slideId: string, size?: SlideThumbnailSize): Promise<SlideThumbnail> {
     return this.#session.getSlideThumbnail(slideId, size);
   }
+}
+
+/**
+ * `simulated`, if a change to `ids` may be queued over it: refuses a slide that is absent, a
+ * conflict blocking the queue, or an account that may not edit. Called only after authorization,
+ * since its errors reveal which slides exist.
+ */
+function preparable<T extends { title: string; editable: boolean; deck: Deck; conflict?: string }>(
+  ids: readonly string[], simulated: T,
+): T {
+  let missing = ids.find(id => !simulated.deck.order.includes(id));
+  if (missing !== undefined) throw noSlide(missing, simulated.title);
+  if (!simulated.editable) {
+    throw new Error(
+      `The connected Google account can view "${simulated.title}" but not edit it, so no change ` +
+      "to it can be queued.");
+  }
+  if (simulated.conflict) {
+    throw new Error(`${simulated.conflict} No more changes can be queued until it is rejected.`);
+  }
+  return simulated;
 }
 
 function noSlide(id: string, title: string): Error {

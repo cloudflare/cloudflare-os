@@ -97,7 +97,7 @@ class SlidesProvider {
         return Response.json({ ...deck, ...(this.editable ? { revisionId: `r${this.revision}` } : {}) });
       }
       let pageId = url.pathname.match(/^\/v1\/presentations\/deck-1\/pages\/([^/]+)$/)?.[1];
-      let page = this.deck.slides!.find(s => s.objectId === pageId);
+      let page = [...this.deck.slides!, ...this.deck.layouts ?? []].find(s => s.objectId === pageId);
       return page ? Response.json(page) : new Response(null, { status: 404 });
     }));
     return this;
@@ -223,6 +223,35 @@ class SlidesProvider {
       let at = order.slice(0, insertionIndex).filter(id => !moving.has(id)).length;
       staying.splice(at, 0, ...slideObjectIds.map((id: string) => slides[order.indexOf(id)]));
       deck.slides = staying;
+    } else if (request.createSlide) {
+      // Every layout placeholder is copied, as a live probe showed Google does.
+      let { objectId, insertionIndex = slides.length, slideLayoutReference, placeholderIdMappings = [] } =
+        request.createSlide;
+      let layout = deck.layouts!.find(l => l.objectId === slideLayoutReference.layoutId);
+      let placeholders = layout?.pageElements!.filter(e => e.shape?.placeholder) ?? [];
+      let parentOf = (mapped: { type: string; index?: number }) => placeholders.find(e =>
+        e.shape!.placeholder!.type === mapped.type && (e.shape!.placeholder!.index ?? 0) === (mapped.index ?? 0));
+      if (!layout || JSON.stringify(deck).includes(`"objectId":"${objectId}"`) || insertionIndex > slides.length ||
+        placeholderIdMappings.some((m: BatchRequest) => !parentOf(m.layoutPlaceholder))) throw new Invalid();
+      slides.splice(insertionIndex, 0, {
+        objectId,
+        pageElements: placeholders.map(({ objectId: parentObjectId, size, transform, shape }) => ({
+          objectId: placeholderIdMappings.find((m: BatchRequest) => parentOf(m.layoutPlaceholder)?.objectId ===
+            parentObjectId)?.objectId ?? `${objectId}_${++this.#copies}`,
+          size, transform,
+          shape: { shapeType: shape!.shapeType, placeholder: { ...shape!.placeholder, parentObjectId } },
+        })),
+        slideProperties: {
+          layoutObjectId: layout.objectId,
+          notesPage: { notesProperties: { speakerNotesObjectId: `${objectId}-notes` }, pageElements: [] },
+        },
+      });
+    } else if (request.updateSlideProperties) {
+      let { objectId, slideProperties, fields } = request.updateSlideProperties;
+      let page = slides.find(s => s.objectId === objectId);
+      if (!page || fields !== "isSkipped") throw new Invalid();
+      if (slideProperties.isSkipped) page.slideProperties!.isSkipped = true;
+      else delete page.slideProperties!.isSkipped;
     } else if (request.insertTableRows || request.deleteTableRow) {
       let { tableObjectId, cellLocation: { rowIndex } } = request.insertTableRows ?? request.deleteTableRow;
       let grid = slides.flatMap(s => s.pageElements ?? []).find(e => e.objectId === tableObjectId)?.table;
@@ -325,6 +354,30 @@ function deck() {
     ], { notes: text(["Mention the outlook"]) }),
     slide("s3", [shape("t3", text(["Thanks"]), { placeholder: "TITLE" })], { notes: null }),
   ]);
+}
+
+// 30 pt by 20 pt from the corner, 500 pt by 50 pt.
+const BOX = {
+  size: { width: { magnitude: 6_350_000, unit: "EMU" }, height: { magnitude: 635_000, unit: "EMU" } },
+  transform: { scaleX: 1, scaleY: 1, translateX: 381_000, translateY: 254_000, unit: "EMU" },
+} as const;
+
+/** `deck()` with its layouts as a layout page reads: each element with its ID, shape and geometry. */
+function layoutDeck() {
+  return {
+    ...deck(),
+    layouts: [
+      { objectId: "layout-title", layoutProperties: { displayName: "Title slide" }, pageElements: [
+        { objectId: "lt-title", ...BOX, shape: { shapeType: "TEXT_BOX", placeholder: { type: "CENTERED_TITLE" } } },
+      ] },
+      { objectId: "layout-title-body", layoutProperties: { displayName: "Title and body" }, pageElements: [
+        { objectId: "ltb-rule", ...BOX, shape: { shapeType: "RECTANGLE" } },
+        { objectId: "ltb-title", ...BOX, shape: { shapeType: "TEXT_BOX", placeholder: { type: "TITLE" } } },
+        { objectId: "ltb-body", ...BOX, shape: { shapeType: "TEXT_BOX", placeholder: { type: "BODY" } } },
+        { objectId: "ltb-body2", shape: { shapeType: "TEXT_BOX", placeholder: { type: "BODY", index: 1 } } },
+      ] },
+    ],
+  };
 }
 
 /**
@@ -708,6 +761,7 @@ describe("Google Slides changes", () => {
     expect(await slides.autoApprovable()).toEqual([
       { tag: "editSlidesText", label: "Slide text edits" },
       { tag: "formatSlides", label: "Slide formatting and layout" },
+      { tag: "skipSlides", label: "Skipping slides" },
     ]);
   });
 
@@ -924,5 +978,137 @@ describe("Google Slides design changes", () => {
     let outcome = await slides.call("updateSlides", [{ ...BADGE, ref: "b2" }]);
     expect(outcome.error).toContain('The ref "b2" is also an element\'s ID');
     expect(outcome.actionId).toBeUndefined();
+  });
+});
+
+describe("Google Slides new and skipped slides", () => {
+  it("adds a slide from a layout, lets later edits fill its placeholders, and creates it as previewed", async () => {
+    let provider = new SlidesProvider(layoutDeck()).install();
+    let slides = gatekeeper();
+
+    let create = await slides.queued("createSlide", "layout-title-body", "s1");
+    let newId = create.value as string;
+
+    expect(create.action).toMatchObject({
+      title: "Add a slide",
+      autoApprovable: false,
+      descriptionIsComplete: true,
+      description: 'Adds a slide with the layout "Title and body" after slide 1 ("Q3 review").',
+    });
+    expect(create.observations).toEqual([
+      'Read the slide order of "Quarterly review" and the placeholders of its layout "Title and ' +
+        'body" to queue adding a slide.',
+    ]);
+    let [added] = await slides.slides(newId);
+    expect(added).toMatchObject({ index: 1, layout: "Title and body", skipped: false, speakerNotes: "" });
+    expect(added.elements.map(e => [(e as ShapeElement).placeholder, (e as ShapeElement).text]))
+      .toEqual([["TITLE", ""], ["BODY", ""], ["BODY", ""]]);
+    expect(added.elements[0].bounds).toEqual({ x: 30, y: 20, width: 500, height: 50 });
+    let ids = added.elements.map(e => e.id);
+    expect((await slides.outline()).slides.map(s => s.id)).toEqual(["s1", newId, "s2", "s3"]);
+
+    let edit = await slides.edit([{ slideId: newId, elementId: ids[0], replace: "Agenda" }]);
+    expect((await slides.outline()).slides[1].title).toBe("Agenda");
+    let notes = await slides.callEdit([{ slideId: newId, replace: "Say hello" }]);
+    expect(notes.error).toContain("speaker notes only then");
+    expect(notes.actionId).toBeUndefined();
+
+    expect(await slides.apply(create.actionId!)).toBeNull();
+    expect(await slides.apply(edit.actionId!)).toBeNull();
+
+    expect(provider.batches[0]).toEqual({
+      requiredRevisionId: "r1",
+      requests: [{
+        createSlide: {
+          objectId: newId,
+          insertionIndex: 1,
+          slideLayoutReference: { layoutId: "layout-title-body" },
+          placeholderIdMappings: [
+            { layoutPlaceholder: { type: "TITLE", index: 0 }, objectId: ids[0] },
+            { layoutPlaceholder: { type: "BODY", index: 0 }, objectId: ids[1] },
+            { layoutPlaceholder: { type: "BODY", index: 1 }, objectId: ids[2] },
+          ],
+        },
+      }],
+    });
+    expect(provider.text(newId, ids[0])).toBe("Agenda\n");
+    let [saved] = await slides.slides(newId);
+    expect({ ...saved, elements: saved.elements.slice(1) })
+      .toEqual({ ...added, title: "Agenda", elements: added.elements.slice(1) });
+  });
+
+  it("adds a slide at the start or the end, and refuses an unknown layout or slide", async () => {
+    let provider = new SlidesProvider(layoutDeck()).install();
+    let slides = gatekeeper();
+
+    let first = await slides.queued("createSlide", "layout-title", null);
+    let last = await slides.queued("createSlide", "layout-title");
+
+    expect(first.action!.description)
+      .toBe('Adds a slide with the layout "Title slide" at the start of the presentation.');
+    expect(last.action!.description)
+      .toBe('Adds a slide with the layout "Title slide" at the end of the presentation.');
+    let order = [first.value, "s1", "s2", "s3", last.value];
+    expect((await slides.outline()).slides.map(s => s.id)).toEqual(order);
+    expect((await slides.call("createSlide", "layout-gone")).error).toContain('No layout with ID "layout-gone"');
+    expect((await slides.call("createSlide", "layout-title", "s9")).error).toContain('No slide with ID "s9"');
+
+    expect(await slides.apply(first.actionId!)).toBeNull();
+    expect(await slides.apply(last.actionId!)).toBeNull();
+
+    expect(provider.batches.map(b => b.requests[0].createSlide.insertionIndex)).toEqual([0, undefined]);
+    expect(provider.deck.slides!.map(s => s.objectId)).toEqual(order);
+  });
+
+  it("fails a new slide without writing once the slide it follows or its layout is gone", async () => {
+    let provider = new SlidesProvider(layoutDeck()).install();
+    let slides = gatekeeper();
+    let afterS3 = await slides.queued("createSlide", "layout-title", "s3");
+    provider.edit(d => { d.slides!.pop(); });
+
+    expect((await slides.outline()).queuedChangeConflict).toContain('slide "s3" no longer exists');
+    expect(await slides.apply(afterS3.actionId!)).toContain("This change no longer applies");
+
+    let atEnd = await slides.queued("createSlide", "layout-title");
+    provider.edit(d => { d.layouts = d.layouts!.filter(l => l.objectId !== "layout-title"); });
+
+    expect(await slides.apply(atEnd.actionId!)).toContain('layout "layout-title" no longer exists');
+    expect(provider.batches).toEqual([]);
+  });
+
+  it("skips and unskips slides as previewed, writing only the slides that change", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+
+    let skip = await slides.queued("setSlidesSkipped", ["s3", "s1"], true);
+
+    expect(skip.action).toMatchObject({
+      title: "Skip 2 slides",
+      autoApprovable: true,
+      actionKind: { tag: "skipSlides", label: "Skipping slides" },
+      description: 'Skips slide 1 ("Q3 review"), slide 3 ("Thanks"), leaving them out when presenting.',
+    });
+    expect((await slides.outline()).slides.map(s => s.skipped)).toEqual([true, false, true]);
+    expect((await slides.slides("s1"))[0].skipped).toBe(true);
+    expect((await slides.call("setSlidesSkipped", ["s1", "s3"], true)).error)
+      .toBe("Those slides are already skipped.");
+    expect((await slides.call("setSlidesSkipped", ["s2"], false)).error).toBe("None of those slides is skipped.");
+    expect((await slides.call("setSlidesSkipped", ["s2", "s2"], true)).error).toBe("A slide is listed twice.");
+    let unskip = await slides.queued("setSlidesSkipped", ["s1", "s2"], false);
+    expect(unskip.action!.title).toBe("Stop skipping 2 slides");
+    expect((await slides.outline()).slides.map(s => s.skipped)).toEqual([false, false, true]);
+
+    expect(await slides.apply(skip.actionId!)).toBeNull();
+    expect(await slides.apply(unskip.actionId!)).toBeNull();
+
+    let update = (objectId: string, isSkipped: boolean) =>
+      ({ updateSlideProperties: { objectId, slideProperties: { isSkipped }, fields: "isSkipped" } });
+    // s2 was never skipped, so unskipping writes only s1.
+    expect(provider.batches.map(b => b.requests)).toEqual([
+      [update("s3", true), update("s1", true)],
+      [update("s1", false)],
+    ]);
+    expect(provider.deck.slides!.map(s => s.slideProperties!.isSkipped)).toEqual([undefined, undefined, true]);
+    expect((await slides.outline()).slides.map(s => s.skipped)).toEqual([false, false, true]);
   });
 });

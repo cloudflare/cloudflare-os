@@ -90,9 +90,18 @@ export function presentation(slides: NonNullable<RestPresentation["slides"]>): R
       width: { magnitude: 9_144_000, unit: "EMU" },
       height: { magnitude: 5_143_500, unit: "EMU" },
     },
+    // Through the summary mask, a layout's elements carry only their placeholder.
     layouts: [
-      { objectId: "layout-title", layoutProperties: { displayName: "Title slide" } },
-      { objectId: "layout-title-body", layoutProperties: { displayName: "Title and body" } },
+      { objectId: "layout-title", layoutProperties: { displayName: "Title slide" }, pageElements: [
+        { shape: { placeholder: { type: "CENTERED_TITLE" } } },
+        { shape: { placeholder: { type: "SUBTITLE" } } },
+      ] },
+      { objectId: "layout-title-body", layoutProperties: { displayName: "Title and body" }, pageElements: [
+        { shape: {} },
+        { shape: { placeholder: { type: "TITLE" } } },
+        { shape: { placeholder: { type: "BODY" } } },
+        { shape: { placeholder: { type: "BODY" } } },
+      ] },
     ],
     slides,
   };
