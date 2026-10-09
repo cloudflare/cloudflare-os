@@ -6,7 +6,7 @@ const MAX_FORM_BYTES = 20_000;
 
 /**
  * Accept a sealed handoff posted to its own installation. A real HTTP redirect, rather than
- * JavaScript navigation to a custom scheme, completes the iOS authentication session.
+ * JavaScript navigation to a custom scheme, completes the native authentication session.
  */
 export async function mobileLoginCallback(req: Request): Promise<Response> {
   const headers = {
