@@ -4440,9 +4440,10 @@ function ChatInterface({
   const { alwaysApproveTag, isTagAutoApproved } =
     useAlwaysApproveTag(overseer, setProcessingActions, onAutoApproveChange);
 
-  const resolveAction = useResolveAction(overseer, setProcessingActions, (actionId, state) => {
-    if (applyOptimisticActionState(actionId, state)) forceUpdate();
-  });
+  const { resolveAction, creationAccountModal } =
+    useResolveAction(overseer, setProcessingActions, (actionId, state) => {
+      if (applyOptimisticActionState(actionId, state)) forceUpdate();
+    });
 
   // Handle enabling/disabling a bound hook from the chat thread.
   const handleToggleHook = async (actionId: number, hookId: number, enabled: boolean) => {
@@ -5103,14 +5104,14 @@ function ChatInterface({
         )}
         <ResolveButton
           tone="deny"
-          onClick={() => void resolveAction(msg.actionId, "deny")}
+          onClick={() => void resolveAction(log, "deny")}
           disabled={isProc}
           describedBy={describedBy}
         />
         <ResolveButton
           tone="approve"
           variant={isBlocking ? "filled" : "quiet"}
-          onClick={() => void resolveAction(msg.actionId, "approve")}
+          onClick={() => void resolveAction(log, "approve")}
           disabled={isProc}
           describedBy={describedBy}
         />
@@ -6665,6 +6666,8 @@ function ChatInterface({
           }}
         />
       )}
+
+      {creationAccountModal}
 
       {/* Accept flow for an agent connection request: pre-seeds the gatekeeper modal and, on
           creation, finalizes the request so the agent resumes. */}

@@ -195,7 +195,7 @@ export default function Activity({
     return groups
   }, [history.entries])
 
-  const resolveAction = useResolveAction(overseer, setProcessingActions)
+  const { resolveAction, creationAccountModal } = useResolveAction(overseer, setProcessingActions)
 
   const handleToggleHook = async (hookId: number, enabled: boolean) => {
     setTogglingHooks(previous => new Set(previous).add(hookId))
@@ -255,8 +255,8 @@ export default function Activity({
                   expanded={expandedActionId === record.id}
                   processing={processingActions.has(record.id)}
                   onToggle={() => toggleExpanded(record.id)}
-                  onApprove={() => void resolveAction(record.id, 'approve')}
-                  onReject={() => void resolveAction(record.id, 'deny')}
+                  onApprove={() => void resolveAction(record, 'approve')}
+                  onReject={() => void resolveAction(record, 'deny')}
                   onAlwaysApprove={
                     autoApproveTarget &&
                     !isTagAutoApproved(autoApproveTarget.gatekeeperId, autoApproveTarget.actionKind.tag)
@@ -465,6 +465,7 @@ export default function Activity({
           }}
         />
       )}
+      {creationAccountModal}
     </div>
   )
 }

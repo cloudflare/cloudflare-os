@@ -34,7 +34,7 @@ export default function ActivityNotifications({
 }: ActivityNotificationsProps) {
   const [open, setOpen] = useState(false)
   const [processing, setProcessing] = useState<Set<number>>(new Set())
-  const resolveAction = useResolveAction(overseer, setProcessing)
+  const { resolveAction, creationAccountModal } = useResolveAction(overseer, setProcessing)
   const { status, pending } = useActions(overseer)
   // While restricted each request's approve/deny buttons name the shared notice and their own
   // request text as their description: both follow the controls in DOM order.
@@ -137,13 +137,13 @@ export default function ActivityNotifications({
                       <ResolveButton
                         tone="deny"
                         disabled={isProcessing}
-                        onClick={() => void resolveAction(action.id, 'deny')}
+                        onClick={() => void resolveAction(action, 'deny')}
                         describedBy={describedBy}
                       />
                       <ResolveButton
                         tone="approve"
                         disabled={isProcessing}
-                        onClick={() => void resolveAction(action.id, 'approve')}
+                        onClick={() => void resolveAction(action, 'approve')}
                         describedBy={describedBy}
                       />
                     </div>
@@ -178,6 +178,7 @@ export default function ActivityNotifications({
           </button>
         </div>
       </Popover.Content>
+      {creationAccountModal}
     </Popover>
   )
 }
