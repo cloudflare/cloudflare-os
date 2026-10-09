@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { type Ast, CellError, parseFormula, serializeAst, tokenize, unwrapParens } from "../files/lib/formula.ts";
+import { type Ast, CellError, cycleReferenceToken, formulaCursorInQuote, formulaReferences, parseFormula, serializeAst, shiftFormulaReferences, tokenize, unwrapParens } from "../files/lib/formula.ts";
 
 describe("the formula tokenizer", () => {
   it("reads numbers, strings, operators, references and quoted sheet names", () => {
@@ -17,6 +17,10 @@ describe("the formula tokenizer", () => {
       { t: "op", v: "&" }, { t: "str", v: 'a"b' }, { t: "op", v: "&" },
       { t: "word", v: "'Owner''s Sheet'!A1" }, { t: "op", v: "&" }, { t: "word", v: "'Owner''s Sheet'!B2" },
     ]);
+  });
+
+  it("keeps an escaped apostrophe followed by a bang inside a string", () => {
+    expect(parseFormula(String.raw`'don\'!t'`)).toEqual({ k: "str", v: "don'!t" });
   });
 });
 
@@ -92,5 +96,39 @@ describe("the formula parser", () => {
       const ast: Ast = parseFormula(src);
       expect(parseFormula(serializeAst(ast)), src).toEqual(ast);
     }
+  });
+});
+
+describe("formula references in editing and copied cells", () => {
+  it("excludes quoted text, function names, identifier suffixes and out-of-grid references", () => {
+    const formula = String.raw`="A1" & 'B2' & 'don\'!t C3' & LOG10(D4) + ABC5 + A50001 + ZZ50000 + named.E6`;
+    expect([...formulaReferences(formula)].map((reference) => reference.text)).toEqual(["D4", "ZZ50000"]);
+    expect(formulaCursorInQuote('="A1"', 3)).toBe(true);
+    expect(formulaCursorInQuote('="A1"+B2', 7)).toBe(false);
+  });
+
+  it("identifies qualified references and whole ranges without treating prefixes as endpoints", () => {
+    const formula = "=Q1!B2 + 'Owner''s Sheet'!$C$3:D4 + Q1.A2!E5";
+    const references = [...formulaReferences(formula)];
+    expect(references.map((reference) => reference.text)).toEqual(["Q1!B2", "'Owner''s Sheet'!$C$3:D4", "Q1.A2!E5"]);
+    expect(references.every((reference) => formula.slice(reference.start, reference.end) === reference.text)).toBe(true);
+    expect([...formulaReferences(formula, true)].map((reference) => reference.text)).toEqual(["Q1!B2", "'Owner''s Sheet'!$C$3", "D4", "Q1.A2!E5"]);
+  });
+
+  it("cycles only the qualified endpoint through absolute and mixed locks", () => {
+    let reference = "Q1!B2";
+    for (const expected of ["Q1!$B$2", "Q1!B$2", "Q1!$B2", "Q1!B2"]) {
+      reference = cycleReferenceToken(reference);
+      expect(reference).toBe(expected);
+    }
+    expect(cycleReferenceToken("'Owner''s Sheet'!B2")).toBe("'Owner''s Sheet'!$B$2");
+    expect(cycleReferenceToken("LOG10")).toBe("LOG10");
+  });
+
+  it("shifts unlocked components without changing literals, function names or sheet prefixes", () => {
+    const formula = String.raw`="A1" & 'B2' & 'don\'!t C3' & LOG10(D4) + Q1!B2 + Q1.A2!C3 + 'Q1'!D4 + $A$1 + $A1 + A$1 + A1:B2`;
+    expect(shiftFormulaReferences(formula, 1, 1)).toBe(String.raw`="A1" & 'B2' & 'don\'!t C3' & LOG10(E5) + Q1!C3 + Q1.A2!D4 + 'Q1'!E5 + $A$1 + $A2 + B$1 + B2:C3`);
+    expect(shiftFormulaReferences("=(A1+B1)*C1", 1, 0)).toBe("=(A2+B2)*C2");
+    expect(shiftFormulaReferences("=A1+$A1+A$1+$A$1", -1, -1)).toBe("=#REF!+#REF!+#REF!+$A$1");
   });
 });

@@ -51,7 +51,7 @@ import type {
   Structure,
   SubscriberEvent,
 } from "./lib/protocol.ts";
-import { type Ast, CellError, ERR, isErr, parseFormula, serializeAst, tokenize, unwrapParens } from "./lib/formula.ts";
+import { type Ast, CellError, ERR, cycleReferenceToken, formulaCursorInQuote, formulaReferences, isErr, parseFormula, serializeAst, shiftFormulaReferences, tokenize, unwrapParens } from "./lib/formula.ts";
 
 // The bindings the Workshop's iframe bootstrap defines before this module runs: the RPC stub to
 // this gadget's Durable Object, and Cap'n Web's RpcTarget for the callbacks it is handed.
@@ -2115,7 +2115,7 @@ function pivotSourceRange() {
 function pivotFields(pivot: SheetPivot): PivotField[] { const range = parseChartRange(pivot.sourceRange, model.sheets[pivot.sourceSheetId]); if (!range || !model.sheets[pivot.sourceSheetId]) return [];
 const fields: PivotField[] = [], used = new Set<string>();
 for (let column = range.c1; column <= range.c2; column++) {
-  let name = pivotDisplay(pivotCellValue(pivot.sourceSheetId, range.r1, column));
+  let name = pivotDisplay(pivotCellValue(pivot.sourceSheetId, range.r1, column)).slice(0, 8192);
   if (name === "(Blank)") name = `Column ${colToLetter(column)}`;
   // Generated names are reserved too, so headers `A`, `A (2)`, `A` stay distinct.
   let unique = name; for (let count = 2; used.has(unique); count++) unique = `${name} (${count})`;
@@ -2185,7 +2185,7 @@ if (pivot.showColumnTotals !== false) {
   columnKeys.forEach((key, index) => put(totalRow, index + 1, finishAggregate(columnTotals.get(key) || aggregateState(), pivot.aggregate), totalFmt));
   if (pivot.showRowTotals !== false) put(totalRow, columnKeys.length + 1, finishAggregate(grandTotal, pivot.aggregate), totalFmt);
 }
-return { cells, rows: Math.max(20, rowKeys.length + 4), cols: Math.max(8, columnKeys.length + 3) }; }
+return { cells, rows: Math.min(50000, Math.max(20, rowKeys.length + 4)), cols: Math.min(702, Math.max(8, columnKeys.length + 3)) }; }
 function refreshPivot(sheetId: string, save = true) { const sheet = model.sheets[sheetId]; if (!sheet?.pivot) return;
 const output = buildPivotOutput(sheet.pivot);
 if (JSON.stringify(output.cells) === JSON.stringify(model.cells[sheetId] || {})) return;
@@ -2261,8 +2261,9 @@ const list = el("div", { class: "pivot-filter-values" });
 const note = el("div", { class: "pivot-note" });
 const apply = () => {
   const next = chosen.size === options.length ? [] : (chosen.size ? [...chosen] : ["__PIVOT_NONE__"]);
-  if (next.length > MAX_FILTER_SELECTIONS) {
-    saveStatus.set("bad", `Select at most ${MAX_FILTER_SELECTIONS} values, or clear the filter instead`);
+  const oversizedValue = next.some((value) => value.length > 8192);
+  if (next.length > MAX_FILTER_SELECTIONS || oversizedValue) {
+    saveStatus.set("bad", oversizedValue ? "Selected pivot values are limited to 8,192 characters" : `Select at most ${MAX_FILTER_SELECTIONS} values, or clear the filter instead`);
     chosen.clear(); for (const value of pivot.filterValues?.length ? pivot.filterValues : options) chosen.add(value);
     render(); return;
   }
@@ -2827,7 +2828,7 @@ return true; }
 // The next row in `step` direction that the filter shows; stays put when none remains, so the
 // keyboard never lands on (and edits) a hidden record.
 function nextVisibleRow(row: number, step: number) { const sheet = curSheet();
-if (!sheet?.filter) return row + step;
+if (!sheet?.filter) return Math.max(0, Math.min(sheet.rows - 1, row + step));
 for (let candidate = row + step; candidate >= 0 && candidate < sheet.rows; candidate += step) if (rowPassesFilter(candidate)) return candidate;
 return row; }
 function hasCellData(row: number, column: number) { const value = cellRaw(rcToRef(row, column));
@@ -3030,6 +3031,9 @@ apply.addEventListener("click", () => {
   // outright, so a selection it would not keep is refused here instead of silently changing.
   if (selected.length !== checks.length && selected.length > MAX_FILTER_SELECTIONS) {
     saveStatus.set("bad", `Select at most ${MAX_FILTER_SELECTIONS} values, or deselect fewer values instead`); return;
+  }
+  if (selected.length !== checks.length && selected.some((token) => token.length > 8194)) {
+    saveStatus.set("bad", "Selected filter values are limited to 8,192 characters"); return;
   }
   closeCtx();
   if (selected.length === checks.length) delete current.criteria[column];
@@ -3426,6 +3430,11 @@ function clampRC(r: number, c: number): RC {
   return { r: Math.max(0, Math.min(sh.rows - 1, r)), c: Math.max(0, Math.min(sh.cols - 1, c)) };
 }
 function moveActive(r: number, c: number, extend = false, preserveExtra = false) { const p = clampRC(r, c);
+if (!rowPassesFilter(p.r)) {
+  const direction = r < focus.r ? -1 : 1;
+  const next = nextVisibleRow(p.r, direction);
+  p.r = rowPassesFilter(next) ? next : nextVisibleRow(p.r, -direction);
+}
 focus = { r: p.r, c: p.c };
 if (!extend) { anchor = { r: p.r, c: p.c }; if (!preserveExtra) extraRanges = []; }
 updateSelectionUI();
@@ -3527,15 +3536,6 @@ for (let index = 1; index < cursor; index++) {
   else if (char === ")" && stack.length) stack.pop();
 }
 return stack.length ? stack[stack.length - 1] : null; }
-function formulaCursorInQuote(value: string, cursor: number) { let quote = null;
-for (let index = 1; index < cursor; index++) {
-  const char = value[index];
-  if (quote) {
-    if (char === "\\" && value[index + 1] === quote) { index++; continue; }
-    if (char === quote) { if (value[index + 1] === quote) { index++; continue; } quote = null; }
-  } else if (char === '"' || char === "'") quote = char;
-}
-return !!quote; }
 // Arrow keys pick grid references only in "point mode": right after a reference chosen through
 // the grid, or with the caret just after an operator, separator or `(`. Elsewhere they move the
 // caret, so an existing formula can be edited as text.
@@ -3689,38 +3689,14 @@ function renderFormulaPickHighlight() {
   });
   positionFormulaRangeHandle();
 }
-// Cell references in editor text, optionally sheet-qualified. Bounded on both sides so a function
-// name such as `LOG10` (letters and digits followed by `(`) or the tail of an identifier is not one.
-const SHEET_PREFIX_SOURCE = "(?:(?:'(?:[^'\\\\]|''|\\\\')+'|[A-Za-z_][A-Za-z0-9_.]*)!)?";
-const CELL_SOURCE = "(?<![A-Za-z0-9_.$])\\$?[A-Z]{1,3}\\$?[1-9]\\d*(?![A-Za-z0-9_]|\\s*\\()";
-const ENDPOINT_SOURCE = SHEET_PREFIX_SOURCE + CELL_SOURCE;
-const REFERENCE_SOURCE = `${ENDPOINT_SOURCE}(?::${ENDPOINT_SOURCE})?`;
-function formulaReferenceBoundsAtCaret(value: string, caret: number) { const pattern = new RegExp(REFERENCE_SOURCE, "gi");
-for (const match of value.matchAll(pattern)) {
-  if (formulaCursorInQuote(value, match.index)) continue;
-  const start = match.index, end = start + match[0].length;
-  if (caret >= start && caret <= end) return { start, end };
+function formulaReferenceBoundsAtCaret(value: string, caret: number) {
+  for (const { start, end } of formulaReferences(value)) if (caret >= start && caret <= end) return { start, end };
+  return null;
 }
-return null; }
-function cycleReferenceToken(text: string) { // A sheet name such as `Q1` looks like a cell; only the endpoint after `!` cycles.
-const bang = text.lastIndexOf("!");
-const prefix = text.slice(0, bang + 1);
-return prefix + text.slice(bang + 1).replace(/(?<![A-Z0-9_])(\$?)([A-Z]{1,3})(\$?)([1-9]\d*)(?![A-Z0-9_])/gi, (match, fixedColumn, column, fixedRow, row) => {
-  const state = { column: !!fixedColumn, row: !!fixedRow };
-  let next;
-  if (!state.column && !state.row) next = { column: true, row: true };
-  else if (state.column && state.row) next = { column: false, row: true };
-  else if (!state.column && state.row) next = { column: true, row: false };
-  else next = { column: false, row: false };
-  return (next.column ? "$" : "") + column.toUpperCase() + (next.row ? "$" : "") + row;
-}); }
-function formulaEndpointBoundsAtCaret(value: string, caret: number) { const pattern = new RegExp(ENDPOINT_SOURCE, "gi");
-for (const match of value.matchAll(pattern)) {
-  if (formulaCursorInQuote(value, match.index)) continue;
-  const start = match.index, end = start + match[0].length;
-  if (caret >= start && caret <= end) return { start, end };
+function formulaEndpointBoundsAtCaret(value: string, caret: number) {
+  for (const { start, end } of formulaReferences(value, true)) if (caret >= start && caret <= end) return { start, end };
+  return null;
 }
-return null; }
 function currentFormulaReferenceBounds() {
   if (!editing || !cellEditor.value.startsWith("=")) return null;
   const caret = cellEditor.selectionStart ?? cellEditor.value.length;
@@ -3753,12 +3729,12 @@ function syncFormulaPickFromCaret() {
   const start = cellEditor.selectionStart ?? cellEditor.value.length;
   const end = cellEditor.selectionEnd ?? start;
   let bounds = formulaReferenceBoundsAtCaret(cellEditor.value, start === end ? start : Math.min(start + 1, end));
-  if (bounds && cellEditor.value[bounds.start] !== "'" && formulaCursorInQuote(cellEditor.value, bounds.start + 1)) bounds = null; // text inside a string literal
   if (!bounds) {
     const span = activeFormulaArgumentSpans(cellEditor.value, start).find((item) => start >= item.start && start <= item.end);
     if (span) {
       const raw = cellEditor.value.slice(span.start, span.end), leading = raw.length - raw.trimStart().length, trimmed = raw.trim();
-      if (new RegExp(`^${REFERENCE_SOURCE}$`, "i").test(trimmed)) bounds = { start: span.start + leading, end: span.start + leading + trimmed.length };
+      const match = formulaReferences("=" + trimmed).next().value;
+      if (match?.start === 1 && match.end === trimmed.length + 1) bounds = { start: span.start + leading, end: span.start + leading + trimmed.length };
     }
   }
   const reference = formulaReferenceFromBounds(cellEditor.value, bounds);
@@ -3766,6 +3742,7 @@ function syncFormulaPickFromCaret() {
   else { formulaPick = null; formulaPickGestureComplete = false; renderFormulaPickHighlight(); }
 }
 function updatePickedFormulaRange(r1: number, c1: number, r2 = r1, c2 = c1, reset = false) { if (!editing || !cellEditor.value.startsWith("=")) return;
+if (formulaCursorInQuote(cellEditor.value, cellEditor.selectionStart ?? cellEditor.value.length)) return;
 if (!formulaPick || reset) {
   let start = cellEditor.selectionStart ?? cellEditor.value.length;
   let end = cellEditor.selectionEnd ?? start;
@@ -3844,15 +3821,13 @@ function beginAdditionalFormulaReference() {
   clearFormulaPick(); cellEditor.setSelectionRange(insertion, insertion); formulaInput.value = cellEditor.value; formulaInput.setSelectionRange(insertion, insertion);
 }
 function formulaReferenceAtCell(row: number, column: number) { const value = cellEditor.value;
-const pattern = new RegExp(REFERENCE_SOURCE, "gi");
 const matches: FormulaPick[] = [];
-for (const match of value.matchAll(pattern)) {
-  if (formulaCursorInQuote(value, match.index)) continue;
-  const parts = match[0].split(":");
+for (const match of formulaReferences(value)) {
+  const parts = match.text.split(":");
   const first = localFormulaPosition(parts[0]), last = localFormulaPosition(parts[1] || parts[0]);
   if (!first || !last) continue;
   const range = { r1: Math.min(first.r, last.r), r2: Math.max(first.r, last.r), c1: Math.min(first.c, last.c), c2: Math.max(first.c, last.c) };
-  if (row >= range.r1 && row <= range.r2 && column >= range.c1 && column <= range.c2) matches.push({ ...range, textStart: match.index, textEnd: match.index + match[0].length });
+  if (row >= range.r1 && row <= range.r2 && column >= range.c1 && column <= range.c2) matches.push({ ...range, textStart: match.start, textEnd: match.end });
 }
 matches.sort((a, b) => (a.r2 - a.r1 + 1) * (a.c2 - a.c1 + 1) - (b.r2 - b.r1 + 1) * (b.c2 - b.c1 + 1));
 return matches[0] || null; }
@@ -3866,6 +3841,7 @@ if (moveCaret) {
 renderFormulaPickHighlight(); updateFormulaAssist(); }
 function startFormulaMousePick(row: number, column: number, event: MouseEvent) { const modifier = event.ctrlKey || event.metaKey;
 const caret = cellEditor.selectionStart ?? cellEditor.value.length;
+if (formulaCursorInQuote(cellEditor.value, caret)) return;
 // A range selected for an inner function must not remain the active resize
 // target after the caret moves into an outer function or sibling argument.
 if (formulaPick && (caret < formulaPick.textStart || caret > formulaPick.textEnd)) clearFormulaPick();
@@ -4333,13 +4309,14 @@ switch (e.key) {
     if (e.key.length === 1 && !meta && !e.altKey) { e.preventDefault(); startEdit(rcToRef(focus.r, focus.c), true, e.key); }
 } }
 gridScroll.addEventListener("keydown", handleGridKeydown);
-function jumpEdge(r: number, c: number, dr: number) { const sh = curSheet();
-let nr = r + dr;
+function jumpEdge(r: number, c: number, dr: number) {
+let nr = nextVisibleRow(r, dr);
 const has = (rr: number) => { const v = cellRaw(rcToRef(rr, c)); return v !== "" && v != null; };
-if (nr < 0 || nr >= sh.rows) return r;
-if (has(r) && has(nr)) { while (nr + dr >= 0 && nr + dr < sh.rows && has(nr + dr)) nr += dr; return nr; }
-while (nr >= 0 && nr < sh.rows && !has(nr)) nr += dr;
-if (nr < 0 || nr >= sh.rows) return dr > 0 ? sh.rows - 1 : 0;
+if (nr === r) return r;
+if (has(r) && has(nr)) {
+  for (;;) { const next = nextVisibleRow(nr, dr); if (next === nr || !has(next)) return nr; nr = next; }
+}
+while (!has(nr)) { const next = nextVisibleRow(nr, dr); if (next === nr) return nr; nr = next; }
 return nr; }
 function jumpEdgeCol(r: number, c: number, dc: number): number {
   const sh = curSheet();
@@ -4354,10 +4331,24 @@ function jumpEdgeCol(r: number, c: number, dc: number): number {
 function moveWithinSelection(dir: number, mode: "h" | "v"): void {
   const rng = selRange();
   const single = rng.r1 === rng.r2 && rng.c1 === rng.c2;
-  if (single) { if (mode === "h") moveActive(focus.r, focus.c + dir); else moveActive(focus.r + dir, focus.c); return; }
+  if (single) { if (mode === "h") moveActive(focus.r, focus.c + dir); else moveActive(nextVisibleRow(focus.r, dir), focus.c); return; }
   let { r, c } = focus;
-  if (mode === "h") { c += dir; if (c > rng.c2) { c = rng.c1; r++; if (r > rng.r2) r = rng.r1; } if (c < rng.c1) { c = rng.c2; r--; if (r < rng.r1) r = rng.r2; } }
-  else { r += dir; if (r > rng.r2) { r = rng.r1; c++; if (c > rng.c2) c = rng.c1; } if (r < rng.r1) { r = rng.r2; c--; if (c < rng.c1) c = rng.c2; } }
+  const advanceRow = () => {
+    for (let attempts = 0; attempts <= rng.r2 - rng.r1; attempts++) {
+      r += dir;
+      if (r > rng.r2 || r < rng.r1) {
+        r = dir > 0 ? rng.r1 : rng.r2;
+        if (mode === "v") { c += dir; if (c > rng.c2) c = rng.c1; else if (c < rng.c1) c = rng.c2; }
+      }
+      if (rowPassesFilter(r)) return true;
+    }
+    return false;
+  };
+  if (mode === "h") {
+    c += dir;
+    if (c > rng.c2 || c < rng.c1) { c = dir > 0 ? rng.c1 : rng.c2; if (!advanceRow()) return; }
+    else if (!rowPassesFilter(r) && !advanceRow()) return;
+  } else if (!advanceRow()) return;
   focus = { r, c }; updateSelectionUI(); scrollActiveIntoView(); presence.schedule();
 }
 function deleteSelectionContents() {
@@ -4456,31 +4447,10 @@ gridScroll.addEventListener("paste", (e) => {
   pasteWithoutFormattingPending = false; clearTimeout(pasteModeTimer);
   pasteText(text, { keepFormatting, token });
 });
-// Applies `rewrite` to the parts of a formula outside string literals and quoted sheet names, so
-// text such as `="A1"` is never mistaken for a reference.
-function rewriteFormulaOutsideQuotes(value: string, rewrite: (segment: string) => string) { let result = value[0], segment = "", quote = null;
-for (let index = 1; index < value.length; index++) {
-  const char = value[index];
-  if (quote) {
-    result += char;
-    if ((char === "\\" || char === quote) && value[index + 1] === quote) result += value[++index];
-    else if (char === quote) quote = null;
-  } else if (char === '"' || char === "'") { result += rewrite(segment) + char; segment = ""; quote = char; }
-  else segment += char;
-}
-return result + rewrite(segment); }
 function shiftedCopyFormula(value: string, sourceRef: string | null, targetRef: string, isCut: boolean) { if (isCut || !value?.startsWith("=") || !sourceRef) return value;
 const source = parseRef(sourceRef), target = parseRef(targetRef);
 if (!source || !target) return value;
-const rowDelta = target.r - source.r, colDelta = target.c - source.c;
-// `(?!!)` leaves an unquoted sheet name such as `Q1!` alone.
-return rewriteFormulaOutsideQuotes(value, (segment) => segment.replace(/(?<![A-Z0-9_])(\$?)([A-Z]{1,2})(\$?)([1-9]\d*)(?![A-Z0-9_!])/gi, (match, fixedColumn, letters, fixedRow, rowText) => {
-  let row = Number(rowText) - 1, column = letterToCol(letters);
-  if (!fixedRow) row += rowDelta;
-  if (!fixedColumn) column += colDelta;
-  if (row < 0 || column < 0) return "#REF!";
-  return fixedColumn + colToLetter(column) + fixedRow + (row + 1);
-})); }
+return shiftFormulaReferences(value, target.r - source.r, target.c - source.c); }
 // A cut source is only removed while it still holds what was cut; an edit made in between wins.
 function cutSourceUnchanged(sheetId: string, snapshot: ClipboardCell) { const current = model.cells[sheetId]?.[snapshot.sourceRef];
 return (current?.value ?? null) === snapshot.value && JSON.stringify(current?.fmt ?? null) === JSON.stringify(snapshot.fmt ?? null); }
@@ -4495,7 +4465,12 @@ const clipboard = copyFallback;
 const useSnapshot = clipboard && (token ? token === clipboard.token
   : !clipboard.cut && clipboard.tsv.replace(/\r/g, "") === normalized) ? clipboard : null;
 const moving = !!useSnapshot?.cut;
-const moves = new Map<string, { sheetId: string; ref: string; snapshot: ClipboardCell }>(); // source ref -> where its snapshot was pasted
+const moves = new Map<string, { sheetId: string; ref: string }>();
+// Validate before writing any destinations: overlapping moves overwrite other source positions.
+const unchangedSources = new Set<string>();
+if (moving && useSnapshot) for (const row of useSnapshot.cells) for (const snapshot of row) {
+  if (snapshot && cutSourceUnchanged(useSnapshot.sheetId, snapshot)) unchangedSources.add(snapshot.sourceRef);
+}
 const rows = normalized.split("\n");
 if (rows.length > 1 && rows[rows.length - 1] === "") rows.pop();
 const values = rows.map((row) => row.split("\t"));
@@ -4519,9 +4494,11 @@ for (const target of targetRanges) {
     if (row > target.r2 && targetRanges.length > 1 || column > target.c2 && targetRanges.length > 1) continue;
     if (row >= curSheet().rows || column >= curSheet().cols) continue;
     const sourceRow = i % sourceHeight, sourceColumn = j % sourceWidth;
-    const ref = rcToRef(row, column); destinationRefs.add(activeSheetId + "!" + ref);
+    const ref = rcToRef(row, column);
     const snapshot = useSnapshot?.cells[sourceRow]?.[sourceColumn];
-    if (moving && snapshot?.sourceRef && !moves.has(snapshot.sourceRef)) moves.set(snapshot.sourceRef, { sheetId: activeSheetId, ref, snapshot });
+    if (moving && snapshot && moves.has(snapshot.sourceRef)) continue;
+    destinationRefs.add(activeSheetId + "!" + ref);
+    if (moving && snapshot) moves.set(snapshot.sourceRef, { sheetId: activeSheetId, ref });
     if (useSnapshot && keepFormatting) {
       recordCell(activeSheetId, ref);
       if (snapshot && snapshot.value != null) {
@@ -4540,21 +4517,28 @@ for (const target of targetRanges) {
   }
 }
 if (moving && useSnapshot) {
-  // Only sources whose snapshot was actually pasted are cleared (a discontiguous destination
-  // may have received part of the block), and their comments travel with them.
+  // Clear only unchanged sources that were actually pasted, never an overlapping destination.
+  for (const sourceRef of moves.keys()) {
+    if (unchangedSources.has(sourceRef) && !destinationRefs.has(useSnapshot.sheetId + "!" + sourceRef)) clearStoredCell(useSnapshot.sheetId, sourceRef);
+  }
+  // Remap the original comments in one pass, independently of clearing cells. In an overlapping
+  // A1:B1 -> B1:C1 move, B1's original comment belongs at C1 even though B1 remains populated.
   const sourceSheet = model.sheets[useSnapshot.sheetId];
   let movedComments = false;
-  for (const [sourceRef, destination] of moves) {
-    const { snapshot } = destination;
-    if (destinationRefs.has(useSnapshot.sheetId + "!" + sourceRef) || !cutSourceUnchanged(useSnapshot.sheetId, snapshot)) continue;
-    clearStoredCell(useSnapshot.sheetId, sourceRef);
-    const comments = sourceSheet?.comments?.filter((comment) => comment.ref === sourceRef) || [];
-    if (comments.length) {
-      sourceSheet.comments = (sourceSheet.comments || []).filter((comment) => comment.ref !== sourceRef);
-      const targetSheet = model.sheets[destination.sheetId];
-      (targetSheet.comments || (targetSheet.comments = [])).push(...comments.map((comment) => ({ ...comment, ref: destination.ref })));
+  if (sourceSheet?.comments) {
+    const remaining: SheetComment[] = [];
+    for (const comment of sourceSheet.comments) {
+      const destination = unchangedSources.has(comment.ref) ? moves.get(comment.ref) : null;
+      if (!destination || destination.sheetId === useSnapshot.sheetId && destination.ref === comment.ref) { remaining.push(comment); continue; }
+      const moved = { ...comment, ref: destination.ref };
+      if (destination.sheetId === useSnapshot.sheetId) remaining.push(moved);
+      else {
+        const targetSheet = model.sheets[destination.sheetId];
+        (targetSheet.comments || (targetSheet.comments = [])).push(moved);
+      }
       movedComments = true;
     }
+    sourceSheet.comments = remaining;
   }
   if (movedComments) { queueStructure(); renderChartPanel(); refreshToolbarState(); }
   copyFallback = null;
@@ -4602,7 +4586,7 @@ formulaInput.addEventListener("keydown", (e) => {
   if (editing && formulaInput.value.startsWith("=") && e.key === "," && !formulaCursorInQuote(formulaInput.value, caret)) {
     e.preventDefault(); cellEditor.setSelectionRange(formulaInput.selectionStart, formulaInput.selectionEnd); insertFormulaComma(); return;
   }
-  if (editing && formulaInput.value.startsWith("=") && e.key === ")" && formulaInput.value[caret] === ")") {
+  if (editing && formulaInput.value.startsWith("=") && e.key === ")" && formulaInput.value[caret] === ")" && !formulaCursorInQuote(formulaInput.value, caret)) {
     e.preventDefault();
     const next = caret + 1;
     formulaInput.setSelectionRange(next, next);
@@ -4610,6 +4594,14 @@ formulaInput.addEventListener("keydown", (e) => {
     syncFormulaPickFromCaret();
     updateFormulaAssist();
     return;
+  }
+  if (editing && formulaInput.value.startsWith("=") && ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
+    cellEditor.setSelectionRange(caret, formulaInput.selectionEnd ?? caret);
+    if (formulaPointModeActive()) {
+      e.preventDefault();
+      const directions: Record<string, [number, number]> = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
+      moveFormulaPickByKeyboard(directions[e.key][0], directions[e.key][1], e.shiftKey); return;
+    }
   }
   if (editing && formulaAssistItems.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) { e.preventDefault(); moveFormulaSuggestion(e.key === "ArrowDown" ? 1 : -1); return; }
   if (editing && formulaAssistItems.length && (e.key === "Tab" || e.key === "Enter")) {

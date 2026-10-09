@@ -41,14 +41,15 @@ A lightweight, persistent spreadsheet Gadget with a familiar grid interface, for
 - Highlight a data range and use the chart toolbar button to create a line, pie, area, or stacked bar chart. The right-side settings panel controls chart type, range, titles, headers, labels, and legend; it can be collapsed at any time. Drag a chart by its header to reposition it. **Copy SVG** uses a rich clipboard format that may not be accepted by every destination.
 - Select a cell and use the comment toolbar button or right-click → **Comment** to add a comment in place. Comment markers reveal text on hover. The layered right sidebar shows top-level **Charts**, **Pivot tables**, and **Comments** destinations when available, with back navigation into their lists and details.
 - Select a table including its header row and use the pivot toolbar button or right-click → **Create pivot table**. The result is generated on a new sheet with distinct pivot styling and automatically sized columns; configure row, column, value, aggregation, and optional multi-value filters from the Pivot tables section of the sidebar.
-- Right-click the grid for cut/copy/paste, **Paste without formatting**, and row or column actions. Menu paste works for cells copied or cut inside the spreadsheet; browser security requires Ctrl/Cmd+V for content copied from another application. Pasted blocks expand from the active cell, repeat across compatible selected ranges, preserve internal formatting when requested, adjust copied relative formulas, and move cells only after an internal cut is pasted.
+- Pivot field names use up to 8,192 header characters plus a unique duplicate suffix. Selected pivot/filter values retain all 8,192 characters; longer computed values cannot be selected as criteria. Pivot output, including totals and spare grid space, stays within worksheet dimensions.
+- Right-click the grid for cut/copy/paste, **Paste without formatting**, and row or column actions. Menu paste works for cells copied or cut inside the spreadsheet; browser security requires Ctrl/Cmd+V for content copied from another application. Copied blocks repeat across compatible selected ranges, preserve internal formatting when requested, and adjust relative formula references without changing quoted text or sheet names. Whole-row/column copies retain stored blank-result formulas and formatting without tiling their trimmed axis. An internal cut moves each pasted source once, moves its comments even when source and destination overlap, and clears a source only if it has not changed since Cut.
 - Double-click a sheet tab to rename it; right-click it to duplicate or delete it.
 
 ## Keyboard shortcuts
 
 | Shortcut | Action |
 | --- | --- |
-| Arrow keys | Move the active cell |
+| Arrow keys | Move the active cell, skipping filtered-out rows |
 | Shift + Arrow | Extend the selection |
 | Enter / F2 | Edit the active cell |
 | Tab / Shift + Tab | Move right / left |
@@ -62,7 +63,7 @@ A lightweight, persistent spreadsheet Gadget with a familiar grid interface, for
 | Ctrl/Cmd + I | Italic |
 | Ctrl/Cmd + U | Underline |
 | Ctrl/Cmd + A | Select the whole sheet |
-| Ctrl/Cmd + Arrow | Jump across populated or empty regions |
+| Ctrl/Cmd + Arrow | Jump across visible populated or empty regions |
 | Alt + Enter | Insert a line break while editing |
 
 ## Programmatic population

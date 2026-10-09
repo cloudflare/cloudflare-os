@@ -1151,6 +1151,14 @@ describe("Workspace Sheets document snapshots", () => {
     }})}}});
     const document = await fixture.getDocument();
     expect(document.sheets.sheet.pivot).toMatchObject({rowField: label, columnField: label, valueField: label, filterField: label, filterValues: [value]});
+    const duplicate = label + " (2)", lastDuplicate = label + " (702)";
+    await fixture.applyOperation({structure: {sheets: {sheet: sheet("Sheet", {pivot: {
+      sourceSheetId: "sheet", sourceRange: "A1:B10", rowField: duplicate, columnField: lastDuplicate,
+      valueField: duplicate, filterField: lastDuplicate, filterValues: [value],
+    }})}}});
+    expect((await fixture.getDocument()).sheets.sheet.pivot).toMatchObject({
+      rowField: duplicate, columnField: lastDuplicate, valueField: duplicate, filterField: lastDuplicate, filterValues: [value],
+    });
   });
 
   it("keeps 500 filter selections but rejects an oversized selection rather than truncating it", async () => {
@@ -1164,6 +1172,25 @@ describe("Workspace Sheets document snapshots", () => {
       row: 0, endRow: 10, columns: [0], criteria: {0: [...tokens, "s:one-too-many"]},
     }})}}});
     expect((await fixture.getDocument()).sheets.sheet.filter?.criteria).toEqual({});
+  });
+
+  it("preserves full-length typed filter tokens through persistence and export", async () => {
+    const fixture = inMemoryGadget();
+    const prefix = "V".repeat(8191), selected = prefix + "x", excluded = prefix + "y";
+    const token = "s:" + selected;
+    await fixture.applyOperation({
+      structure: {sheets: {sheet: sheet("Sheet", {rows: 3, cols: 1, filter: {
+        row: 0, endRow: 2, columns: [0], criteria: {0: [token]},
+      }})}},
+      sheetReplacements: [{sheetId: "sheet", cells: {A1: cell("Header"), A2: cell(selected), A3: cell(excluded)}}],
+    });
+    const document = await fixture.getDocument();
+    expect(document.sheets.sheet.filter?.criteria[0]).toEqual([token]);
+    const {entries} = await readZip(exportXlsx(document));
+    const worksheet = text(entries, "xl/worksheets/sheet1.xml");
+    expect(worksheet).toContain('<row r="2"><c r="A2"');
+    expect(worksheet).toContain('<row r="3" hidden="1"><c r="A3"');
+    expect(worksheet).toContain(`<filter val="${selected}"/>`);
   });
 
   it("rejects every part of a stale revision operation without broadcasting", async () => {

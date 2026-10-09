@@ -366,6 +366,10 @@ function sheetMeta(s: Partial<SheetMeta> & Pick<SheetMeta, "id">): SheetMeta {
   };
 }
 
+// Headers keep the cell value limit plus the longest uniqueness suffix (` (702)`) the client
+// can add across the sheet's supported 702 columns.
+const MAX_PIVOT_FIELD_LENGTH = 8198;
+
 function sanitizePivot(value: unknown): SheetPivot | null {
   if (!value || typeof value !== "object") return null;
   const pivot = value as Record<string, unknown>;
@@ -377,14 +381,14 @@ function sanitizePivot(value: unknown): SheetPivot | null {
     sourceSheetId: String(pivot.sourceSheetId || "").slice(0, 80),
     // Shape only; applyOperationLocked bounds it against the source sheet.
     sourceRange: /^([A-Z]+[1-9]\d*):([A-Z]+[1-9]\d*)$/.test(String(pivot.sourceRange || "").toUpperCase()) ? String(pivot.sourceRange).toUpperCase() : "",
-    // Fields are keyed by their header cell's text, so they share the cell value limit.
-    rowField: String(pivot.rowField || "").slice(0, 8192),
-    columnField: String(pivot.columnField || "").slice(0, 8192),
-    valueField: String(pivot.valueField || "").slice(0, 8192),
+    // Fields are keyed by the client's full unique header name, including duplicate suffixes.
+    rowField: String(pivot.rowField || "").slice(0, MAX_PIVOT_FIELD_LENGTH),
+    columnField: String(pivot.columnField || "").slice(0, MAX_PIVOT_FIELD_LENGTH),
+    valueField: String(pivot.valueField || "").slice(0, MAX_PIVOT_FIELD_LENGTH),
     aggregate: aggregate === "sum" || aggregate === "count" || aggregate === "average" || aggregate === "min" || aggregate === "max" ? aggregate : "sum",
     showRowTotals: pivot.showRowTotals !== false,
     showColumnTotals: pivot.showColumnTotals !== false,
-    filterField: String(pivot.filterField || "").slice(0, 8192),
+    filterField: String(pivot.filterField || "").slice(0, MAX_PIVOT_FIELD_LENGTH),
     // Compared exactly to cell values, so they keep the cell limit; an oversized set is dropped
     // whole rather than trimmed into a different filter.
     filterValues: filterValues.length <= MAX_FILTER_SELECTIONS ? filterValues : [],
@@ -440,8 +444,8 @@ function sanitizeFilter(value: unknown, rows: number, cols: number): SheetFilter
       const col = Number(column);
       if (col < 0 || col >= cols || !Array.isArray(values)) continue;
       // Trimming a selection would change which rows it hides; an oversized one is dropped whole.
-      // (Values are compared to cell values, which the server caps at 8,192 characters.)
-      const clean = [...new Set(values.map((item: unknown) => String(item).slice(0, 8192)))];
+      // Each token has a two-character type prefix in addition to its cell's 8,192 characters.
+      const clean = [...new Set(values.map((item: unknown) => String(item).slice(0, 8194)))];
       if (clean.length && clean.length <= MAX_FILTER_SELECTIONS) criteria[col] = clean;
     }
   }
