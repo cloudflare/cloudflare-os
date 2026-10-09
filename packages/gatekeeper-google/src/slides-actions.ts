@@ -26,7 +26,7 @@ import {
   movedOrder, requireNewSlide, type Deck, type DesignBatch, type SlideLabel, type SlidesActions,
 } from "./slides-simulation";
 import { elementIdsOf, locate, textOfTarget, type TextAddress } from "./slides-target";
-import { ChangeConflict } from "./slides-text";
+import { ChangeConflict, projectedText, richTextOf } from "./slides-text";
 import type { ShapeOutline, TextFormatChange } from "./slides-types";
 
 /** What an approved change is written with. */
@@ -364,17 +364,22 @@ function addressAfter(address: TextAddress, later: readonly DesignChange[]): Tex
   return { ...address, cell };
 }
 
-// A table's rows and columns, or undefined if the slide has no table `id`.
-function sizeOf(slide: RestSlide, id: string): string | undefined {
+/**
+ * The text of a table's cells, row by row, or undefined if the slide has no table `id`. Its size
+ * alone could match a table a collaborator changed some other way.
+ */
+function cellsOf(slide: RestSlide, id: string): string | undefined {
   let table = locate(slide.pageElements, id)?.element.table;
-  return table && `${table.rows ?? 0}×${table.columns ?? 0}`;
+  return table && JSON.stringify(table.tableRows?.map(row =>
+    row.tableCells?.map(cell => projectedText(richTextOf(cell.text).segments))));
 }
 
 /**
  * Whether a read taken after a lost response shows a design batch landed. Only what the batch
- * would have changed counts, where it would leave it: which elements exist, a table's size, and
- * text, found where later changes to its table move it. A batch with none of those, such as one
- * that only formats or moves elements, cannot be shown to have landed.
+ * would have changed counts, where it would leave it: which elements exist, the cells of a table
+ * it adds or deletes rows or columns of, and text, found where later changes to its table move it.
+ * A batch with none of those, such as one that only formats or moves elements, cannot be shown
+ * to have landed.
  */
 function designLanded(
   changes: readonly DesignChange[], steps: readonly (DesignStep | null)[],
@@ -394,7 +399,7 @@ function designLanded(
     }
     const moved = change.op === "editText" && addressAfter(change, changes.slice(i + 1));
     if (moved) witness(slide => textIfThere(slide, moved));
-    if ("at" in change) witness(slide => sizeOf(slide, change.elementId));
+    if ("at" in change) witness(slide => cellsOf(slide, change.elementId));
     return evidence;
   });
   return checks.length > 0 && checks.every(Boolean);

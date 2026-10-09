@@ -639,26 +639,40 @@ describe("Google Slides changes", () => {
     expect(await slides.apply(actionId!)).toContain("may or may not have taken effect");
   });
 
-  it("takes a table's size as evidence that a batch's rows and columns landed", async () => {
+  it("finds a lost batch landed by the cells of a table it only adds rows to", async () => {
     let provider = new SlidesProvider(deck()).install();
     let slides = gatekeeper();
-    let rows = await slides.queued("updateSlides", [
+    let { actionId } = await slides.queued("updateSlides", [
       { op: "insertTableRows", slideId: "s2", elementId: "tb2", at: 2 },
     ]);
     provider.nextFailure = "lost";
-    expect(await slides.apply(rows.actionId!)).toBeNull();
 
-    // A collaborator types the edit's text where the new row would move it, which the table's
-    // size does not bear out.
-    provider = new SlidesProvider(deck()).install();
-    slides = gatekeeper();
-    let { actionId } = await slides.queued("updateSlides", [
-      { op: "editText", slideId: "s2", elementId: "tb2", cell: { row: 0, column: 0 }, replace: "Area" },
-      { op: "insertTableRows", slideId: "s2", elementId: "tb2", at: 0 },
-    ]);
+    expect(await slides.apply(actionId!)).toBeNull();
+  });
+
+  // A collaborator's change matches part of the batch, but not the table it would leave.
+  it.each([
+    {
+      name: "types the edit's text where the new row would move it",
+      changes: [
+        { op: "editText", slideId: "s2", elementId: "tb2", cell: { row: 0, column: 0 }, replace: "Area" },
+        { op: "insertTableRows", slideId: "s2", elementId: "tb2", at: 0 },
+      ],
+      collaborated: [["Region", "Sales"], ["Area", "4"]],
+    },
+    {
+      name: "deletes a different row",
+      changes: [{ op: "deleteTableRows", slideId: "s2", elementId: "tb2", at: 0 }],
+      collaborated: [["Region", "Sales"]],
+    },
+  ])("records an unknown outcome for a dropped batch when a collaborator $name", async ({ changes, collaborated }) => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    let { actionId } = await slides.queued("updateSlides", changes);
     dropNextWrite(provider, d => {
-      d.slides![1].pageElements![2] = table("tb2", [["Region", "Sales"], ["Area", "4"]]);
+      d.slides![1].pageElements![2] = table("tb2", collaborated);
     });
+
     expect(await slides.apply(actionId!)).toContain("may or may not have taken effect");
   });
 
