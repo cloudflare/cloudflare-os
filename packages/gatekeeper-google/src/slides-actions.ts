@@ -369,9 +369,9 @@ function addressAfter(address: TextAddress, later: readonly DesignChange[]): Tex
 /**
  * Whether a read taken after a lost response shows a design batch landed. Only what the batch
  * would have changed counts: an element it created that survives it, an element it deleted that
- * was there before it, and text it left reading differently, found where later changes to its
- * table moved it. A batch with none of those, such as one that only formats or moves elements,
- * cannot be shown to have landed.
+ * was there before it, and text that reads differently where the batch leaves it, after later
+ * changes to its table move it, from what was there before. A batch with none of those, such as
+ * one that only formats or moves elements, cannot be shown to have landed.
  */
 function designLanded(
   changes: readonly DesignChange[], steps: readonly (DesignStep | null)[],
@@ -386,7 +386,7 @@ function designLanded(
     let moved = change.op === "editText" && addressAfter(change, changes.slice(i + 1));
     if (moved) {
       let text = textIfThere(slideOf(planned, change.slideId), moved);
-      if (text !== undefined && text !== textIfThere(slideOf(before, change.slideId), change)) {
+      if (text !== undefined && text !== textIfThere(slideOf(before, change.slideId), moved)) {
         evidence.push(textIfThere(slideOf(after, change.slideId), moved) === text);
       }
     }

@@ -626,6 +626,19 @@ describe("Google Slides changes", () => {
     expect(await slides.apply(actionId!)).toContain("may or may not have taken effect");
   });
 
+  // The cell moves down onto one that already reads as the edit leaves it.
+  it("records an unknown outcome for a dropped batch whose moved cell lands on text it matches", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    let { actionId } = await slides.queued("updateSlides", [
+      { op: "editText", slideId: "s2", elementId: "tb2", cell: { row: 0, column: 0 }, replace: "EMEA" },
+      { op: "insertTableRows", slideId: "s2", elementId: "tb2", at: 0 },
+    ]);
+    dropNextWrite(provider);
+
+    expect(await slides.apply(actionId!)).toContain("may or may not have taken effect");
+  });
+
   it("asks for a restart only when rejecting a change that later ones were built on", async () => {
     new SlidesProvider(deck()).install();
     let slides = gatekeeper();
