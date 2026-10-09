@@ -88,15 +88,16 @@ it.concurrent("creating a gadget keeps each request a prefix of the next", async
   expectEachRequestExtendsThePrevious(model.requests);
 });
 
-// Compaction rewrites the chat's history anyway, so the system prompt then lists the gadgets as
-// they are.
-it.concurrent("after compaction, the system prompt lists the workspace's gadgets as they are",
+// Compaction rewrites the chat's history anyway, so it lists the gadgets as they are, and the
+// turns after it keep that list.
+it.concurrent("a compaction lists the workspace's gadgets afresh, and later turns keep that list",
     async () => {
   const model = models.script([
     // Over 85% of the scripted model's input budget, so turn 2 compacts first.
     { text: "First reply.", usage: { prompt_tokens: 195_000, completion_tokens: 1, total_tokens: 195_001 } },
     { text: "Summary of the first turn." },
     { text: "Second reply." },
+    { text: "Third reply." },
   ]);
   const [owner] = nextUsernames("promptcompact");
   using publicApi = connect(harness.url);
@@ -116,4 +117,10 @@ it.concurrent("after compaction, the system prompt lists the workspace's gadgets
   expect(systemPromptOf(first)).not.toContain("Meeting notes");
   expect(JSON.stringify(resumed)).toContain("<prior_conversation");
   expect(systemPromptOf(resumed)).toContain("Meeting notes");
+
+  (await ws.createGadget("Shopping list", undefined, "LIST"))[Symbol.dispose]();
+  await ws.sendChatMessage(chatId, "Third question", SCRIPTED_MODEL_ID);
+  await waitFor("the third turn's request", async () => model.requests.length === 4 || null);
+  await waitForIdleChat(ws, chatId);
+  expect(systemPromptOf(model.requests[3])).toEqual(systemPromptOf(resumed));
 });

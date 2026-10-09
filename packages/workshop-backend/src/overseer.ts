@@ -6850,8 +6850,7 @@ class OverseerImpl implements AgentHooks {
     return this.storage.chatContext.get(chatId) || {chatId};
   }
 
-  setChatWorkspacePrompt(
-      chatId: number, workspacePrompt: NonNullable<AiChatAgentContext["workspacePrompt"]>): void {
+  setChatWorkspacePrompt(chatId: number, workspacePrompt: string): void {
     // The list is built asynchronously, so the chat could have been deleted meanwhile. Don't
     // resurrect its per-chat storage (see prepareChatBindings).
     if (this.storage.chatMeta.get(chatId)) {

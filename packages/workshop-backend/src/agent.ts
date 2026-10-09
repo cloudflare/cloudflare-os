@@ -304,8 +304,7 @@ export interface AgentHooks {
   getChatAgentContext(chatId: number): AiChatAgentContext;
 
   /** Records the chat's AiChatAgentContext.workspacePrompt. */
-  setChatWorkspacePrompt(
-      chatId: number, workspacePrompt: NonNullable<AiChatAgentContext["workspacePrompt"]>): void;
+  setChatWorkspacePrompt(chatId: number, workspacePrompt: string): void;
 
   /**
    * The step's persistence barrier: in one storage transaction, persist the step's chat
@@ -2859,6 +2858,8 @@ async function runAgentPass(
   // system-prompt-blocks.ts), so the static prefix stays cached when the project-specific part
   // changes.
   let systemPromptSlots: [string, string];
+  // The regular agent's list of the workspace's gadgets, built for this pass.
+  let systemPromptWorkspace: string | undefined;
 
   if (agentContext.spawnerConfig) {
     // This is a spawned agent. Build an appropriate system prompt. Spawned agents see only the
@@ -2900,12 +2901,7 @@ async function runAgentPass(
     // have to call a tool to list files at the start of every thread. In order to avoid cache
     // misses, we list the gadgets and files as of the start of the thread (or of its latest
     // compaction), even if they change during it (see AiChatAgentContext.workspacePrompt).
-    let saved = agentContext.workspacePrompt;
-    if (saved?.compactedTo !== checkpoint?.compactedTo) saved = undefined;
-    let systemPromptWorkspace: string;
-    if (saved !== undefined) {
-      systemPromptWorkspace = saved.text;
-    } else if (gadgetInfos.length == 0) {
+    if (gadgetInfos.length == 0) {
       systemPromptWorkspace =
           "As of the start of this session, this workspace contained no gadgets. You can use " +
           "connected resources and executeCode without one. Use `createGadget` tool only when the " +
@@ -2973,9 +2969,9 @@ async function runAgentPass(
       }
       systemPromptWorkspace = `# This workspace's gadgets\n\n${sections.join("\n\n")}`;
     }
-    if (saved === undefined) {
-      hooks.setChatWorkspacePrompt(
-          chatId, {compactedTo: checkpoint?.compactedTo, text: systemPromptWorkspace});
+    let savedWorkspace = checkpoint ? checkpoint.workspacePrompt : agentContext.workspacePrompt;
+    if (checkpoint === undefined && savedWorkspace === undefined) {
+      hooks.setChatWorkspacePrompt(chatId, systemPromptWorkspace);
     }
 
     // Named in the prompt because the request that should trigger them ("make me a doc") may
@@ -3006,7 +3002,7 @@ async function runAgentPass(
     systemPromptSlots = [
       SYSTEM_PROMPT,
       (standardFormats ? `${standardFormats}\n\n` : "") +
-          `${systemPromptWorkspace}${systemPromptConnections}` +
+          `${savedWorkspace ?? systemPromptWorkspace}${systemPromptConnections}` +
           (alwaysAvailableResourcesPrompt ? `\n\n${alwaysAvailableResourcesPrompt}` : ""),
     ];
   }
@@ -3079,6 +3075,7 @@ async function runAgentPass(
           chatId,
           compactedTo,
           summary,
+          workspacePrompt: systemPromptWorkspace,
           ...buildCompactionState(
               chatMessages,
               compactedTo,

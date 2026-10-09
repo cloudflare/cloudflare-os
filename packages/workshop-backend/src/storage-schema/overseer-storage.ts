@@ -596,15 +596,12 @@ export type AiChatAgentContext = {
    * rebuilt each turn: nothing the chat does changes it, so it costs a cache miss only when
    * someone outside the chat changes it.
    *
-   * Compaction replaces the older history anyway, so the first turn after it lists the gadgets
-   * afresh and saves that list instead.
+   * Compaction replaces the older history anyway, so each compaction lists the gadgets afresh and
+   * saves that list in its CompactionCheckpoint, for the turns after it. The list saved here is
+   * for the turns before the first compaction, so each part of the chat's history keeps the list
+   * it was sent with.
    */
-  workspacePrompt?: {
-    /** The `compactedTo` of the compaction checkpoint the list was built after; absent if none. */
-    compactedTo?: number;
-    /** The list, as the system prompt shows it. */
-    text: string;
-  };
+  workspacePrompt?: string;
 };
 
 /**
@@ -630,6 +627,14 @@ export type CompactionCheckpoint = {
 
   /** The summary the model wrote. We send it as one user message before the retained messages. */
   summary: string;
+
+  /**
+   * The list of the workspace's gadgets that the system prompt shows after this checkpoint, built
+   * when the chat compacted (see AiChatAgentContext.workspacePrompt). Absent on checkpoints of
+   * spawned agents, whose prompt has no such list, and on checkpoints written before this field
+   * existed; turns after those list the gadgets afresh.
+   */
+  workspacePrompt?: string;
 
   /**
    * The chat's named bindings. Retained messages and the summary refer to these names as
