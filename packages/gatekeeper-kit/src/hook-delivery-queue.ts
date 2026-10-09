@@ -121,7 +121,8 @@ export class HookDeliveryQueue<Message> {
                  deliver: (hookKey: string, message: Message) => Promise<void>): Promise<void> {
     try {
       await deliver(key.slice(4, key.indexOf(":", 4)), pending.message);
-      this.#kv.put<Finished>(key, { deliveredAt: Date.now() });
+      // A row deleted meanwhile, as when its driver forgets every hook, stays deleted.
+      if (this.#kv.get(key) !== undefined) this.#kv.put<Finished>(key, { deliveredAt: Date.now() });
     } catch {
       // Retry only a message still pending: disabling the hook during this attempt finished it.
       const row = this.#kv.get<Row<Message>>(key);

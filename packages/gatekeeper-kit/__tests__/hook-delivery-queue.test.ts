@@ -63,6 +63,24 @@ describe("HookDeliveryQueue", () => {
     expect(deliver.mock.calls).toEqual([["b", "for b"]]);
   });
 
+  it("neither retries nor revives a message whose row went during its attempt", async () => {
+    const kv = fakeKv();
+    const queue = new HookDeliveryQueue<string>(kv, () => {});
+    queue.enqueue("cancelled", "m1", "message", Date.now());
+    queue.enqueue("forgotten", "m1", "message", Date.now());
+
+    await queue.run(Date.now(), async hookKey => {
+      if (hookKey === "cancelled") {
+        queue.cancel(hookKey);
+        throw new Error("the gadget failed");
+      }
+      kv.delete("msg:forgotten:m1");
+    });
+
+    expect(kv.keys()).toEqual(["msg:cancelled:m1"]);
+    expect(queue.nextDue()).toBe(Date.now() + DELIVERED_RETENTION_MS);
+  });
+
   it("starts at most MAX_DELIVERIES_PER_RUN deliveries, oldest first", async () => {
     const queue = new HookDeliveryQueue<number>(fakeKv(), () => {});
     for (let i = MAX_DELIVERIES_PER_RUN; i >= 0; i--) queue.enqueue("hook", `m${i}`, i, Date.now() - i);
