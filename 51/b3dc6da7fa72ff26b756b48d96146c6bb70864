@@ -1,0 +1,34 @@
+packages/workshop-frontend/src/workspaceSearch.test.tsx
+  s_dd2417a6d5bd82::t_d88a6c47080a2e 4,29-32
+  s_dd2417a6d5bd82::t_c3cae2ba496a5e 1-3,5-28,33-109
+packages/workshop-frontend/src/workspaceSearch.ts
+  s_dd2417a6d5bd82::t_cc637044441492 48
+  s_dd2417a6d5bd82::t_e29503db341ace 4-6,11-22,27-32
+  s_dd2417a6d5bd82::t_71249bb9ff6d86 7-10
+  s_dd2417a6d5bd82::t_4f7c3eae7cee6a 1-3,33-47,49-53
+  s_dd2417a6d5bd82::t_a8fd27c7bef0c0 23-26
+packages/workshop-frontend/src/routes/workspace.$id.tsx
+  s_dd2417a6d5bd82::t_dcbe80f61972e9 5-7
+  s_dd2417a6d5bd82::t_c79065ed9f3763 3,11-12
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_dd2417a6d5bd82::t_71249bb9ff6d86 441-442,445
+  s_dd2417a6d5bd82::t_4f7c3eae7cee6a 66,443-444,448,492,1005,1131,1153,1267,1283
+  s_dd2417a6d5bd82::t_5e5d8ae10d3ea8 2,446,451
+  s_dd2417a6d5bd82::t_65342520a972e5 1009,1143,1164,1272,1291
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "51b3dc6da7fa72ff26b756b48d96146c6bb70864",
+  "prompts": {},
+  "sessions": {
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

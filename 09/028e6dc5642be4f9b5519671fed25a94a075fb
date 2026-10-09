@@ -1,0 +1,23 @@
+packages/workshop-backend/__tests__/chat-changes.test.ts
+  s_0c2ab7edd98432::t_0a13af50c57307 1495-1496,1499
+  s_0c2ab7edd98432::t_5b3d01947ddb7b 1509,1513,1515
+packages/workshop-backend/src/overseer.ts
+  s_0c2ab7edd98432::t_b5fda0f953618d 3010
+  s_0c2ab7edd98432::t_8707b388913dd5 2007-2010
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "09028e6dc5642be4f9b5519671fed25a94a075fb",
+  "prompts": {},
+  "sessions": {
+    "s_0c2ab7edd98432": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5a56be55-d294-47df-b436-2527e0afbfa4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
