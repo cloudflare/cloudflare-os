@@ -11,7 +11,9 @@
 // One `GitHubHookDriver` per connected account holds its enabled hooks and its webhooks. It adds a
 // webhook to a repository when the first hook there is enabled and deletes it with the last,
 // verifies each delivery's signature, queues each event once for every hook that watches for it,
-// and retries failed deliveries from its alarm. Disconnecting the account deletes its webhooks.
+// and retries failed deliveries from its alarm. Hourly, it checks each webhook on GitHub, restoring
+// one that someone has changed and asking GitHub to redeliver what GitHub failed to deliver.
+// Disconnecting the account deletes its webhooks.
 
 import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
@@ -29,7 +31,7 @@ import {
   GitHubApiError, withAccountApi,
   type GitHubApi, type GitHubIssueCommentResponse, type GitHubIssueResponse,
   type GitHubPullRequestResponse, type GitHubPullRequestReviewResponse, type GitHubSimpleUser,
-  type PinnedRepo,
+  type GitHubWebhookDeliveryResponse, type PinnedRepo,
 } from "./github-api";
 import { getBasePath, webhookOrigin, type Env } from "./github-env";
 import { obsContext } from "./observability";
@@ -133,6 +135,24 @@ const WEBHOOK_EVENTS: Record<GitHubEventKind, string[]> = {
 
 const DISCONNECTED = "This GitHub account has been disconnected.";
 
+const HOUR_MS = 60 * 60 * 1000;
+/** How often the driver checks its webhooks on GitHub (see #checkWebhook). */
+const CHECK_INTERVAL_MS = HOUR_MS;
+/** How far back a check reads a webhook's deliveries: two checks' worth, so none falls between. */
+const DELIVERY_LOOKBACK_MS = 2 * CHECK_INTERVAL_MS;
+/**
+ * How many redeliveries one check may ask GitHub for, oldest first; the rest wait for the next
+ * check, and are lost if they age out of its lookback first. One that fails again is asked for
+ * again at the next check, until GitHub stops allowing it after three days: that keeps failures
+ * recoverable through an outage, for this many requests an hour at most.
+ */
+const MAX_REDELIVERIES_PER_CHECK = 20;
+/**
+ * The statuses the worker refuses a delivery with for good (see handleWebhookRequest() and
+ * ingest()), which a redelivery would only repeat.
+ */
+const FINAL_REFUSALS = new Set([400, 404, 413]);
+
 type Registration = Omit<GitHubHookProps, "key" | "userObjectId" | "delivery">;
 type Capabilities = {
   delivery: RpcStub<GitHubHookDelivery>;
@@ -147,9 +167,9 @@ const webhookKey = (repoId: number) => `webhook:${repoId}`;
 
 /**
  * One per connected account, named by its `UserAccount` id. Storage: `account` (that id), `secret`
- * (the HMAC key its webhooks sign deliveries with), `webhook:` per repository, `reg:`/`caps:` per
- * hook, the delivery queue's `msg:` rows, and `revoked` once the account is disconnected, which
- * refuses everything for good.
+ * (the HMAC key its webhooks sign deliveries with), `webhook:` per repository, `checkAt` (when to
+ * next check them on GitHub), `reg:`/`caps:` per hook, the delivery queue's `msg:` rows, and
+ * `revoked` once the account is disconnected, which refuses everything for good.
  *
  * Every `await` here opens the input gate, so each storage write after one re-reads what it
  * depends on.
@@ -181,6 +201,7 @@ export class GitHubHookDriver extends DurableObject<Env> {
       kv.put(capabilitiesKey(key), capabilities);
       disposeStubs(replaced);
     });
+    await this.#reschedule();
   }
 
   async unregister(key: string): Promise<void> {
@@ -198,7 +219,8 @@ export class GitHubHookDriver extends DurableObject<Env> {
       const remaining = this.#registrations(repo).map(([, other]) => other);
       if (remaining.length > 0) {
         // Narrowed to what the remaining hooks watch. Best effort, since disabling must not fail:
-        // until the next enable succeeds, deliveries no hook watches are only filtered out here.
+        // until an enable or the hourly check narrows it, deliveries no hook watches are only
+        // filtered out here.
         await this.#ensureWebhook(repo, remaining).catch((error: unknown) => {
           logger.warn("failed to narrow a GitHub webhook's events", { event: "hooks.webhook.narrow.failed", error });
         });
@@ -208,6 +230,7 @@ export class GitHubHookDriver extends DurableObject<Env> {
       await this.#removeWebhook(kv.get<string>("account")!, webhook);
       kv.delete(webhookKey(repo.id));
     });
+    await this.#reschedule();
   }
 
   /**
@@ -281,11 +304,16 @@ export class GitHubHookDriver extends DurableObject<Env> {
     return 204;
   }
 
-  /** Deliver each queued event whose (re)try time has come, and forget finished ones. */
+  /**
+   * The driver's one alarm, which #wakeBy() and #reschedule() set for the earliest time either of
+   * these is due:
+   * - checking its webhooks on GitHub, hourly while it has any;
+   * - delivering each queued event whose (re)try time has come, and forgetting finished ones.
+   */
   async alarm(): Promise<void> {
+    if ((this.ctx.storage.kv.get<number>("checkAt") ?? Infinity) <= Date.now()) await this.#checkWebhooks();
     await this.#queue.run(Date.now(), (hookKey, event) => this.#deliver(hookKey, event));
-    const next = this.#queue.nextDue();
-    if (next !== undefined) await this.ctx.storage.setAlarm(next);
+    await this.#reschedule();
   }
 
   async #deliver(hookKey: string, event: GitHubWebhookEvent): Promise<void> {
@@ -304,6 +332,78 @@ export class GitHubHookDriver extends DurableObject<Env> {
     }
   }
 
+  /** Check each webhook on GitHub (see #checkWebhook), within one budget of redeliveries. */
+  async #checkWebhooks(): Promise<void> {
+    const kv = this.ctx.storage.kv;
+    kv.put("checkAt", Date.now() + CHECK_INTERVAL_MS);
+    const account = kv.get<string>("account");
+    const url = this.#webhookUrl();
+    if (account === undefined || url === undefined) return;
+    let budget = MAX_REDELIVERIES_PER_CHECK;
+    for (const webhook of this.#webhooks()) {
+      try {
+        budget -= await this.#checkWebhook(account, url, webhook, budget);
+      } catch (error) {
+        // Tried again at the next check.
+        logger.warn("failed to check a GitHub webhook", { event: "hooks.webhook.check.failed", error });
+      }
+    }
+  }
+
+  /**
+   * Bring `webhook` back to what its hooks need if it no longer matches: deleted, deactivated,
+   * pointed elsewhere, subscribed to other events, or signing with another secret, which GitHub
+   * never shows but which fails deliveries here with 401. Then ask GitHub to redeliver, oldest
+   * first and at most `budget`, what it failed to deliver lately, as it never does itself.
+   * @returns How many redeliveries it asked for.
+   */
+  async #checkWebhook(account: string, url: string, { id, repo }: Webhook, budget: number): Promise<number> {
+    const read = await this.#api(account, repo, async api => {
+      try {
+        const found = await api.getRepoWebhook(repo.owner, repo.repo, id);
+        const since = Date.now() - DELIVERY_LOOKBACK_MS;
+        return { found, deliveries: await api.listRepoWebhookDeliveries(repo.owner, repo.repo, id, since) };
+      } catch (error) {
+        // Deleted, and its deliveries with it.
+        if (error instanceof GitHubApiError && error.status === 404) return undefined;
+        throw error;
+      }
+    });
+    const failed = read === undefined ? [] : undelivered(read.deliveries);
+    const events = webhookEvents(this.#registrations(repo).map(([, registration]) => registration));
+    const intact = read !== undefined && read.found.active === true && read.found.config.url === url
+      && sameEvents(read.found.events ?? [], events)
+      // By each delivery's latest attempt, so a 401 since redelivered successfully doesn't count.
+      && !failed.some(({ status_code }) => status_code === 401);
+    if (!intact) {
+      await this.#webhookChanges.run(async () => {
+        // Removed or replaced while this check read it.
+        if (this.ctx.storage.kv.get<Webhook>(webhookKey(repo.id))?.id !== id) return;
+        await this.#ensureWebhook(repo, this.#registrations(repo).map(([, registration]) => registration));
+        logger.info("reconfigured a GitHub webhook that no longer matched its hooks", {
+          event: "hooks.webhook.reconfigured",
+        });
+      });
+    }
+    if (read === undefined) return 0;
+    const { deliveries } = read;
+    if (deliveries.length > 0 && !deliveries.some(delivered)) {
+      logger.error("GitHub failed every recent delivery to this deployment", {
+        event: "hooks.webhook.deliveries.failing",
+        deliveryStatuses: [...new Set(deliveries.map(({ status_code }) => status_code))],
+      });
+    }
+    const redeliveries = failed.slice(0, budget);
+    if (redeliveries.length > 0) {
+      await this.#api(account, repo, async api => {
+        for (const { id: deliveryId } of redeliveries) {
+          await api.redeliverRepoWebhookDelivery(repo.owner, repo.repo, id, deliveryId);
+        }
+      });
+    }
+    return redeliveries.length;
+  }
+
   /**
    * Give `repo` this driver's webhook, configured as it must be for `registrations`, the hooks it
    * serves: the recorded one, which an admin may have edited or deleted since; or a new one; or,
@@ -313,16 +413,14 @@ export class GitHubHookDriver extends DurableObject<Env> {
   async #ensureWebhook(repo: PinnedRepo, registrations: Registration[]): Promise<void> {
     const kv = this.ctx.storage.kv;
     const account = kv.get<string>("account")!;
-    const origin = webhookOrigin(this.env);
-    if (origin === undefined) throw new Error(HOOKS_NOT_CONFIGURED);
-    const url = `${origin}${getBasePath(this.env)}/webhook/${this.ctx.id}`;
+    const url = this.#webhookUrl();
+    if (url === undefined) throw new Error(HOOKS_NOT_CONFIGURED);
     let secret = kv.get<string>("secret");
     if (secret === undefined) {
       secret = hex(crypto.getRandomValues(new Uint8Array(32)).buffer);
       kv.put("secret", secret);
     }
-    const events = [...new Set(registrations.flatMap(({ events: kinds }) => kinds.flatMap(kind => WEBHOOK_EVENTS[kind])))];
-    const config = { url, secret, events };
+    const config = { url, secret, events: webhookEvents(registrations) };
     const recorded = kv.get<Webhook>(webhookKey(repo.id));
     let id: number;
     try {
@@ -372,6 +470,17 @@ export class GitHubHookDriver extends DurableObject<Env> {
     return withAccountApi(UserAccount.get(UserAccount.idFromString(account)), fn, { repo });
   }
 
+  /** Where this driver's webhooks deliver, unless this deployment has not configured hooks. */
+  #webhookUrl(): string | undefined {
+    const origin = webhookOrigin(this.env);
+    return origin === undefined ? undefined : `${origin}${getBasePath(this.env)}/webhook/${this.ctx.id}`;
+  }
+
+  /** The webhooks this driver has added, one per repository. */
+  #webhooks(): Webhook[] {
+    return [...this.ctx.storage.kv.list<Webhook>({ prefix: "webhook:" })].map(([, webhook]) => webhook);
+  }
+
   /** The enabled hooks on `repo`, by their storage key. */
   #registrations(repo: Pick<PinnedRepo, "id">): [string, Registration][] {
     return [...this.ctx.storage.kv.list<Registration>({ prefix: "reg:" })]
@@ -381,6 +490,26 @@ export class GitHubHookDriver extends DurableObject<Env> {
   async #wakeBy(time: number): Promise<void> {
     const current = await this.ctx.storage.getAlarm();
     if (current === null || time < current) await this.ctx.storage.setAlarm(time);
+  }
+
+  /**
+   * Set the alarm for the earliest of the next delivery due and, while this driver has webhooks,
+   * their next check; or clear it, if neither is pending.
+   */
+  async #reschedule(): Promise<void> {
+    const kv = this.ctx.storage.kv;
+    const times: number[] = [];
+    const due = this.#queue.nextDue();
+    if (due !== undefined) times.push(due);
+    if (this.#webhooks().length > 0) {
+      let checkAt = kv.get<number>("checkAt");
+      if (checkAt === undefined) kv.put("checkAt", checkAt = Date.now() + CHECK_INTERVAL_MS);
+      times.push(checkAt);
+    } else {
+      kv.delete("checkAt");
+    }
+    if (times.length > 0) await this.ctx.storage.setAlarm(Math.min(...times));
+    else await this.ctx.storage.deleteAlarm();
   }
 }
 
@@ -394,6 +523,29 @@ function watches({ number, events, viewerId }: Registration, event: GitHubWebhoo
   if (number !== undefined && !("number" in event && event.number === number)) return false;
   // Never hand the account's own comments and reviews back to it, which a hook would answer.
   return !((event.kind === "comment" || event.kind === "review") && senderId === viewerId);
+}
+
+/** The webhook events GitHub must deliver for `registrations`. */
+function webhookEvents(registrations: Registration[]): string[] {
+  return [...new Set(registrations.flatMap(({ events }) => events.flatMap(kind => WEBHOOK_EVENTS[kind])))];
+}
+
+const sameEvents = (actual: readonly string[], expected: readonly string[]) =>
+  actual.length === expected.length && expected.every(event => actual.includes(event));
+
+const delivered = ({ status_code }: GitHubWebhookDeliveryResponse) => status_code >= 200 && status_code < 300;
+
+/**
+ * What to ask GitHub to redeliver, oldest first: each delivery whose latest attempt failed, unless
+ * the worker refused it for good. `deliveries` are newest first. A redelivery of something already
+ * received is harmless: ingest() collapses it.
+ */
+function undelivered(deliveries: GitHubWebhookDeliveryResponse[]): GitHubWebhookDeliveryResponse[] {
+  const latest = new Map<string, GitHubWebhookDeliveryResponse>();
+  for (const delivery of deliveries) if (!latest.has(delivery.guid)) latest.set(delivery.guid, delivery);
+  return [...latest.values()]
+    .filter(delivery => !delivered(delivery) && !FINAL_REFUSALS.has(delivery.status_code))
+    .toReversed();
 }
 
 /** Why GitHub refused to add a webhook, in terms the user can act on. */

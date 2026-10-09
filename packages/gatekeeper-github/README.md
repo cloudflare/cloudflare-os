@@ -105,10 +105,17 @@ which is deleted when the last of them is disabled, or when the account is disco
 webhook signs its deliveries with a secret only GitHub and this deployment hold; a delivery of a
 payload already received, or of an event more than a day old, is ignored; and an event is
 delivered only while the account can still read the repository, since a webhook outlives its
-creator's access. The repository's other admins can see the webhook, though not its secret, and
-editing or deleting it stops the deliveries until a hook on the repository is next enabled, which
-restores it. GitHub does not retry a delivery that fails, but a delivery that reaches the worker is
-retried until the gadget's hook accepts it, eight attempts in all.
+creator's access.
+
+The repository's other admins can see the webhook, though not its secret. Every hour the worker
+checks each webhook on GitHub, and restores one that someone has deleted, deactivated, pointed
+elsewhere, or given other events or another secret: to stop the deliveries, disable the hooks. The
+same check moves them to a new `WEBHOOK_ORIGIN` within the hour. GitHub
+never retries a failed delivery itself, so the same check asks it to redeliver what it failed to
+deliver in the past two hours, up to 20 an hour for each account, and a delivery that reaches the
+worker is retried until the gadget's hook accepts it, eight attempts in all. When every recent delivery failed,
+as when Cloudflare Access turns GitHub away, the check logs `hooks.webhook.deliveries.failing` with
+the statuses GitHub got.
 
 For local development, GitHub cannot reach `localhost`: run a tunnel to the dev server (e.g.
 `cloudflared tunnel --url http://localhost:8787`) and set `WEBHOOK_ORIGIN` to its origin in the

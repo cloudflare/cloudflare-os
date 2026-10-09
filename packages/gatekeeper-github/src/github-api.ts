@@ -171,11 +171,33 @@ export type GitHubRepoWebhookConfig = {
 /** A repository webhook, as GitHub reports one (never with its secret). */
 export type GitHubRepoWebhookResponse = {
   id: number;
+  active?: boolean;
+  events?: string[];
   config: { url?: string };
+};
+
+/** One attempt at a webhook delivery, as the webhook's delivery log lists it. */
+export type GitHubWebhookDeliveryResponse = {
+  id: number;
+  /** The delivery's `X-GitHub-Delivery` id, which every redelivery of it keeps. */
+  guid: string;
+  delivered_at: string;
+  /** The HTTP status the attempt was answered with. */
+  status_code: number;
 };
 
 function webhookBody({ url, secret, events }: GitHubRepoWebhookConfig) {
   return { active: true, events, config: { url, secret, content_type: "json", insecure_ssl: "0" } };
+}
+
+/** Bounds one read of a webhook's delivery log, at 100 attempts a page. */
+const MAX_DELIVERY_PAGES = 10;
+
+/** The `cursor` of the page a `Link` header names as the next, if any. */
+function nextCursor(headers: Headers): string | undefined {
+  const next = headers.get("Link")?.split(",").find(link => /;\s*rel="next"/.test(link));
+  const url = next?.match(/<([^>]+)>/)?.[1];
+  return (url && URL.parse(url)?.searchParams.get("cursor")) || undefined;
 }
 
 /** A commit author/committer identity as recorded in the git commit object itself. */
@@ -671,6 +693,42 @@ export class GitHubApi {
       "PATCH", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/hooks/${hookId}`,
       { body: webhookBody(webhook) },
     )).data;
+  }
+
+  /** A repository webhook, which GitHub shows only to a repository admin. */
+  async getRepoWebhook(owner: string, repo: string, hookId: number): Promise<GitHubRepoWebhookResponse> {
+    return (await this.#request<GitHubRepoWebhookResponse>(
+      "GET", `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/hooks/${hookId}`,
+    )).data;
+  }
+
+  /**
+   * A webhook's delivery attempts since `since` (in ms since the epoch), newest first, as GitHub
+   * lists them. GitHub keeps three days of them.
+   */
+  async listRepoWebhookDeliveries(
+    owner: string, repo: string, hookId: number, since: number,
+  ): Promise<GitHubWebhookDeliveryResponse[]> {
+    const path = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/hooks/${hookId}/deliveries`;
+    const deliveries: GitHubWebhookDeliveryResponse[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < MAX_DELIVERY_PAGES; page++) {
+      const { data, headers } = await this.#request<GitHubWebhookDeliveryResponse[]>(
+        "GET", path, { query: { per_page: 100, cursor } });
+      const recent = data.filter(delivery => Date.parse(delivery.delivered_at) >= since);
+      deliveries.push(...recent);
+      cursor = nextCursor(headers);
+      if (cursor === undefined || recent.length < data.length) break;
+    }
+    return deliveries;
+  }
+
+  /** Asks GitHub to make a webhook delivery again, which it does in its own time. */
+  async redeliverRepoWebhookDelivery(owner: string, repo: string, hookId: number, deliveryId: number): Promise<void> {
+    await this.#request<void>(
+      "POST",
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/hooks/${hookId}/deliveries/${deliveryId}/attempts`,
+    );
   }
 
   /**
