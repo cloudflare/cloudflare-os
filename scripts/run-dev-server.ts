@@ -4,8 +4,8 @@
 // then launches `wrangler dev` with all discovered workers.
 //
 // Flags:
-//   --use-workers-ai-binding   Include the Workers AI binding in
-//                               workshop-backend (requires Cloudflare login).
+//   --use-workers-ai-binding   Include the Workers AI binding in workshop-backend and in the
+//                               gatekeepers that declare one (requires Cloudflare login).
 //   --port PORT                 Listen on PORT instead of 8787. Overrides VITE_BACKEND_HOST.
 //
 // Env:
@@ -521,6 +521,12 @@ for (const gk of gatekeepers) {
     if (process.env[name] !== undefined) {
       config.vars[name] = process.env[name];
     }
+  }
+
+  // Workers AI always runs remotely, which needs a Cloudflare login, so it stays opt-in here too.
+  if (config.ai) {
+    if (useWorkersAi) config.ai.remote = true;
+    else delete config.ai;
   }
 
   const outPath = join(gk.dir, "wrangler.dev.jsonc");

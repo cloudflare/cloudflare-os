@@ -77,12 +77,20 @@ own models** is on: a user can still add a model under any provider that is on, 
 through the deployment's Gateway. Turn that switch off to make the listed models the only ones.
 An admin session can turn on any provider the Gateway serves.
 
+The **Web Search** gatekeeper (`packages/gatekeeper-websearch`) spends money outside these
+controls. Each search spends the deployment account's AI Gateway credits, through its `default`
+gateway, and the free daily allowance and top-up flow do not apply to it. Every new deploy
+installs it, and under the default mode, **Optional**, any user can turn it on. On a public
+server, set it to **Disabled** in the admin Gatekeepers panel unless you accept that spend. A
+change applies to each workspace when it next opens; uninstalling the Worker stops searches at once.
+
 When using `CF_AI_GATEWAY*` in local development, start the server with
 `pnpm run dev-server -- --use-workers-ai-binding` so the server has a `WORKERS_AI` binding for
 the webFetch tool's document-to-Markdown conversion and for the gateway transport above (without
 it, gateway traffic falls back to HTTPS with `CF_AI_GATEWAY_API_TOKEN`). If your dev Gateway
 lives in a different account than the binding, also set `CF_AI_GATEWAY_USE_BINDING=false` — keep
 `--use-workers-ai-binding` on, since the Markdown conversion still needs the binding.
+The same flag gives the Web Search gatekeeper its own `AI` binding, which it needs for every search.
 
 Each gatekeeper's OAuth app must be registered with that gatekeeper's redirect URI (replace the host
 with `PUBLIC_BASE_URL`):
