@@ -1520,6 +1520,7 @@ scheduleSave(); }
 // Structure is saved as a whole-workbook snapshot, so `ackedStructure` (what the server last held)
 // lets a remote update be merged with the local changes still pending.
 let ackedStructure: Structure | null = null;
+let ackedStructureRevision = -1;
 let inFlightStructure: Structure | null = null; // structure sent in the save awaiting its response
 function structureSnapshot(): Structure { return { title: model.title, sheetOrder: model.sheetOrder.slice(), sheets: JSON.parse(JSON.stringify(model.sheets)) }; }
 function queueStructure() {
@@ -1663,7 +1664,11 @@ async function sendPendingOperation(): Promise<SaveOutcome> {
   if (pendingStructure === null && pendingReplacements.size === 0) wholesaleBaseRevision = null;
 
   model.revision = Math.max(model.revision, result.revision || 0);
-  if (sentStructure) ackedStructure = sentStructure;
+  // A delayed reply must not replace a newer structure already received from a peer.
+  if (sentStructure && result.structure && result.revision >= ackedStructureRevision) {
+    ackedStructure = result.structure;
+    ackedStructureRevision = result.revision;
+  }
   // Only our own next commit certifies a snapshot built while this call was in flight. A later
   // remote revision does not certify the replacement's older cells.
   if ((pendingStructure !== null || pendingReplacements.size) && wholesaleBaseRevision === sentRevision
@@ -2137,6 +2142,8 @@ function buildPivotOutput(pivot: SheetPivot): PivotOutput { const range = parseC
 if (!range || !fields.length) return { cells: {}, rows: 20, cols: 8 };
 const byName = new Map(fields.map((field) => [field.name, field.column]));
 const rowColumn = byName.get(pivot.rowField), columnColumn = byName.get(pivot.columnField), valueColumn = byName.get(pivot.valueField);
+const missingField = [pivot.rowField, pivot.columnField, pivot.valueField, pivot.filterField].find((field) => field && !byName.has(field));
+if (missingField) return { cells: { A1: { value: `Pivot field not found: ${missingField.slice(0, 200)}. Select a current source field.`, fmt: { b: true }, version: 1 } }, rows: 20, cols: 8 };
 const records = [];
 for (let row = range.r1 + 1; row <= range.r2; row++) {
   if (pivot.filterField) {
@@ -2610,8 +2617,12 @@ return node; }
 function renderLineChartSvg(chart: SheetChart, data: ChartData) { const svg = svgNode("svg", { viewBox: "0 0 520 270", role: "img", "aria-label": chart.title || "Line chart" });
 const left = 54, top = 18, right = chart.legend ? 118 : 24, bottom = 48;
 const width = 520 - left - right, height = 270 - top - bottom;
-const all = data.series.flatMap((series) => series.values.filter((value) => value != null));
-let min = Math.min(...all), max = Math.max(...all);
+let min = Infinity, max = -Infinity;
+for (const series of data.series) for (const value of series.values) {
+  if (value == null) continue;
+  if (value < min) min = value;
+  if (value > max) max = value;
+}
 if (chart.type === "area") { min = Math.min(0, min); max = Math.max(0, max); }
 if (min === max) { min -= Math.abs(min || 1) * .5; max += Math.abs(max || 1) * .5; }
 const y = (value: number) => top + height - (value - min) / (max - min) * height;
@@ -3588,7 +3599,7 @@ function updateFormulaAssist() {
     return;
   }
   const token = /([A-Za-z][A-Za-z0-9_.]*)$/.exec(before);
-  if (token) {
+  if (token && !formulaCursorInQuote(cellEditor.value, cursor)) {
     const start = cursor - token[1].length, previous = before[start - 1] || "";
     if (start === 1 || "(,+-*/^&=<>".includes(previous)) {
       const query = token[1].toUpperCase();
@@ -4887,7 +4898,7 @@ function applyRemoteOperation(event: OperationEvent): void {
   if (!event || event.senderId === clientId) return;
   applyingRemote = true;
   model.revision = Math.max(model.revision, event.revision || 0);
-  if (event.structure) applyStructure(event.structure);
+  if (event.structure) applyStructure(event.structure, event.revision);
   for (const up of event.upserts || []) {
     const cells = model.cells[up.sheetId] || (model.cells[up.sheetId] = {});
     cells[up.ref] = { ...up.cell };
@@ -4906,8 +4917,9 @@ function applyRemoteOperation(event: OperationEvent): void {
 // Remote structure replaces the model wholesale (last writer wins on the server). Local changes
 // that are still pending are diffed against `ackedStructure` and replayed on top, per sheet field,
 // so a remote chart and a local comment on the same sheet both survive.
-function applyStructure(s: Structure) { // A structure awaiting its save response is local too: the server applies it after this remote
+function applyStructure(s: Structure, revision: number) { // A structure awaiting its save response is local too: the server applies it after this remote
 // one, so it must be replayed here as well (and re-saved merged, since the server holds only ours).
+if (revision < ackedStructureRevision) return;
 const localSource = pendingStructure || inFlightStructure;
 const local = localSource ? localStructureChanges(localSource) : null;
 if (s.title != null && document.activeElement !== titleInput) { model.title = s.title; titleInput.value = s.title; }
@@ -4917,6 +4929,7 @@ for (const id of model.sheetOrder) model.sheets[id] = { ...model.sheets[id], ...
 const added = new Set(local?.added);
 for (const id of Object.keys(model.sheets)) if (!model.sheetOrder.includes(id) && !added.has(id)) { delete model.sheets[id]; delete model.cells[id]; }
 ackedStructure = { title: model.title, sheetOrder: model.sheetOrder.slice(), sheets: JSON.parse(JSON.stringify(Object.fromEntries(model.sheetOrder.map((id) => [id, model.sheets[id]])))) };
+ackedStructureRevision = revision;
 if (!local) return;
 if (local.title != null) { model.title = local.title; if (document.activeElement !== titleInput) titleInput.value = local.title; }
 for (const id of local.removed) {
@@ -4964,6 +4977,7 @@ function applySnapshot(doc: SheetsDocument): void {
   model.cells = doc.cells || {};
   for (const id of model.sheetOrder) if (!model.cells[id]) model.cells[id] = {};
   ackedStructure = structureSnapshot();
+  ackedStructureRevision = doc.revision;
   titleInput.value = model.title;
   if (!activeSheetId || !model.sheets[activeSheetId]) activeSheetId = model.sheetOrder[0];
   applyingRemote = false;
