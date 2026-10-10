@@ -354,6 +354,41 @@ describe("accounts going away", () => {
     expect(subscriptionsOf(x).map(([type]) => type)).toEqual(["oauth.revoke"]);
   });
 
+  it("ends a disabled hook's subscription though a disconnect overtook the disabling", async () => {
+    const x = new FakeX().install();
+    const account = await seedAccount(x);
+    const watchingBob = binding({ userObjectId: account, resourceKind: "profile", username: "bob" });
+    await watchingBob.subscribe([["subscribePosts"]]);
+    await watchingBob.enable();
+    // Another hook's enable holds the driver's changes while X makes its subscription.
+    const mentions = binding({ userObjectId: account, resourceKind: "account" });
+    await mentions.subscribe([["subscribeMentions"]]);
+    let subscribing = false;
+    let release!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    x.on("POST", /^\/2\/activity\/subscriptions$/, async request => {
+      if (JSON.parse(request.body!).event_type !== "post.mention.create") return undefined;
+      subscribing = true;
+      await released;
+      return undefined;
+    });
+    const enabling = mentions.tryEnable();
+    await vi.waitFor(() => expect(subscribing).toBe(true));
+    // Disabled, so its registration is gone, but its cleanup waits behind the enable...
+    const disabling = watchingBob.disable();
+    await vi.waitFor(() => runInDurableObject(driver(account), (_instance, state) =>
+      expect([...state.storage.kv.list({ prefix: "reg:" })]).toEqual([])));
+    // ...when the disconnect, finding no registration, clears the driver.
+    const revoking = sharedHooks().user(account, "revoke");
+    await vi.waitFor(() => runInDurableObject(driver(account), (_instance, state) =>
+      expect(state.storage.kv.get("revoked")).toBe(true)));
+    release();
+    failure(await enabling);
+    await disabling;
+    unwrap(await revoking);
+    expect(subscriptionsOf(x).map(([type]) => type)).toEqual(["oauth.revoke"]);
+  });
+
   it("subscribes again after the user revoked the app, adopting what X kept", async () => {
     const { x, account } = await watchingMentions();
     await x.deliver("oauth.revoke", undefined, { user_id: ALICE.id, app_id: "1", date_time: new Date().toISOString() });

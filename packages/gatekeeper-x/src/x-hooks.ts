@@ -210,12 +210,14 @@ export class XHookDriver extends DurableObject<Env> {
   async unregister(key: string): Promise<void> {
     const kv = this.ctx.storage.kv;
     const registration = kv.get<Registration>(registrationKey(key));
+    // Read now: a disconnect while this waits behind other changes deletes it.
+    const account = kv.get<string>("account");
     disposeStubs(kv.get<Capabilities>(capabilitiesKey(key)));
     kv.delete(registrationKey(key));
     kv.delete(capabilitiesKey(key));
     this.#queue.cancel(key);
     await this.#reschedule();
-    if (!registration) return;
+    if (!registration || account === undefined) return;
     await this.#changes.run(async () => {
       // Another of this account's hooks still needs the subscription.
       if (this.#registrations().some(other => subjectOf(other) === subjectOf(registration)
@@ -223,7 +225,7 @@ export class XHookDriver extends DurableObject<Env> {
       // Best effort, since disabling must not fail: until X stops delivering, nothing here queues
       // what no hook watches for.
       await this.#router(subjectOf(registration))
-        .unwatch(subjectOf(registration), EVENT_TYPES[registration.kind], kv.get<string>("account")!)
+        .unwatch(subjectOf(registration), EVENT_TYPES[registration.kind], account)
         .catch((error: unknown) => {
           logger.warn("failed to unsubscribe from X events", { event: "hooks.subscription.unwatch.failed", error });
         });
