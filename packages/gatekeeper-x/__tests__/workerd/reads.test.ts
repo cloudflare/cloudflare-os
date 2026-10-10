@@ -162,6 +162,19 @@ describe("what a read discloses", () => {
     expect(await exclusions(name)).toEqual([["observer"]]);
   });
 
+  it("withholds posts whose authors X didn't say were public", async () => {
+    const { x, props, name } = await observed();
+    // A 200 that failed to hydrate the author expansion, as X may answer.
+    const post = x.post(CAROL, "for followers only, @alice");
+    const unhydrated = { data: [post], errors: [{ title: "Partial Error", resource_id: CAROL.id }], meta: { result_count: 1 } };
+    x.on("GET", /\/mentions/, () => json(unhydrated));
+    x.on("GET", new RegExp(`^/2/tweets/${post.id}\\b`), () => json({ ...unhydrated, data: post }));
+    const [page] = unwrap(await hooks().run(name, props, [["listMentions"]], { pages: 1 })) as XPostInfo[][];
+    expect(page[0].author.protected).toBe(false);
+    unwrap(await hooks().run(name, props, [["getPost", post.id], ["getInfo"]]));
+    expect(await exclusions(name)).toEqual([["observer"], ["observer"]]);
+  });
+
   it("shares private reads with an observer connected as the same X user", async () => {
     const { x, props, name } = await observed(ALICE);
     x.bookmarks.add(`${ALICE.id}:${x.post(BOB, "saved").id}`);

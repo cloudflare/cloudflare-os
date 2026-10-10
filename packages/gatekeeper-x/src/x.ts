@@ -139,7 +139,8 @@ async function fetchIdentity(accessToken: string): Promise<StoredIdentity> {
     username: user.username,
     name: user.name ?? user.username,
     ...(user.profile_image_url ? { profileImageUrl: user.profile_image_url } : {}),
-    protected: user.protected === true,
+    // It decides what observers may see, so an account X didn't say is public is treated as protected.
+    protected: user.protected !== false,
     verified: user.verified === true,
     ...(user.subscription_type ? { subscriptionType: user.subscription_type } : {}),
     fetchedAt: Date.now(),

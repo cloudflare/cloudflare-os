@@ -182,7 +182,7 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
     let description: ResourceDescription;
     switch (props.resourceKind) {
       case "post": {
-        const post = await fetchPost(this.#sessionHost, props.postId);
+        const { info: post } = await fetchPost(this.#sessionHost, props.postId);
         description = {
           url: post.url ?? postUrl(props.postId), title: `Post by @${post.author.username}`,
           snippet: snippet(post.text), suggestedBindingName: "X_POST", tsType: "XPost",
