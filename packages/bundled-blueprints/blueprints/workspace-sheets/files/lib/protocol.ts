@@ -44,9 +44,11 @@ export interface FilterSort {
 }
 
 /**
- * A sheet's filter region: zero-based header/end rows and columns, selected displayed cell values
+ * A sheet's filter region: zero-based header/end rows and columns, selected evaluated-value tokens
  * by column, and the original row identities retained while sorting so clearing sort restores them.
- * Missing criteria select every value; `sort: null` means the original ordering.
+ * Tokens are `s:<text>`, `n:<number>`, `b:1`/`b:0`, `e:<formula error>`, or `z:` for blanks;
+ * `x:__none__` selects nothing. Missing or empty criteria select every value; `sort: null` denotes
+ * the original ordering. For example, filtering text Complete requires `s:Complete`, not `Complete`.
  */
 export interface SheetFilter {
   row: number;

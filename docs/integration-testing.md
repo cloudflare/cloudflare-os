@@ -139,8 +139,8 @@ Type-only exports are fine (they erase). Anything else has to stay module-privat
 
 `packages/workshop-evals` runs model-driven tasks against a local Workshop using the same integration
 harness. The `sheets` task asks the agent to configure the bundled `format.spreadsheet` blueprint
-without replacing its implementation. It checks quoted-sheet and single-quoted formulas, absolute
-references, filters, charts, comments, and the actual streamed XLSX export, then repeats the checks
+without replacing its implementation. It checks source cell values in both the document and XLSX,
+quoted-sheet and single-quoted formulas, absolute references, filters, charts, and comments, then repeats the checks
 after accepting and reloading the Gadget. `EvalVerifier.exportFile()` reads an export from the same
 chat branch used by RPC checks and disposes the client after consuming the stream.
 

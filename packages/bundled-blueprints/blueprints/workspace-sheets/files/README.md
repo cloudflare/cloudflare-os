@@ -172,6 +172,60 @@ Omitting an existing sheet from `sheetOrder` deletes it and its stored cells. Ad
 
 Formatting keys accepted by the server are `b` (bold), `i` (italic), `u` (underline), `s` (strikethrough), `c` (text color), `bg` (fill color), `a` (`l`, `c`, or `r` alignment), `nf` (number format), `d` (decimal places), `fs` (font size), and `wrap`. Colors must be hexadecimal strings such as `#1d1d20`.
 
+### Populate and filter a table
+
+Filter row and column indices are zero-based. `row` is the header row, `endRow` is the last
+data row, and `rowOrder` lists the original data-row indices for reversible sorting.
+`criteria` is keyed by column index and selects **evaluated-value tokens**, not the displayed
+label or formatted text. For example, `Complete` is `s:Complete`, and a currency-formatted
+number 10 is `n:10`, not `s:$10.00`.
+
+The token prefixes are `s:` for text, `n:` for numbers, `b:1`/`b:0` for booleans, `e:` followed
+by a formula error such as `e:#DIV/0!`, and `z:` for blanks. Omitted criteria or an empty array
+select every value; `x:__none__` selects none. Use multiple tokens to select multiple values.
+
+This complete example populates A1:C4 while preserving cells outside the table and shows only
+the two Complete rows:
+
+```js
+const doc = await gadget.getDocument();
+const sheetId = doc.sheetOrder[0];
+const rows = [
+  ["Region", "Sales", "Status"],
+  ["East", "10", "Complete"],
+  ["West", "20", "Complete"],
+  ["East", "30", "Cancelled"],
+];
+const cells = { ...doc.cells[sheetId] };
+rows.forEach((row, r) => row.forEach((value, c) => {
+  cells[String.fromCharCode(65 + c) + (r + 1)] = { value, fmt: null, version: 0 };
+}));
+const result = await gadget.applyOperation({
+  senderId: "filtered-sales",
+  baseRevision: doc.revision,
+  structure: {
+    sheetOrder: doc.sheetOrder,
+    sheets: {
+      ...doc.sheets,
+      [sheetId]: {
+        ...doc.sheets[sheetId],
+        filter: {
+          row: 0, endRow: 3, columns: [0, 1, 2],
+          criteria: { 2: ["s:Complete"] },
+          rowOrder: [1, 2, 3], sort: null,
+        },
+      },
+    },
+  },
+  sheetReplacements: [{ sheetId, cells }],
+});
+```
+
+If `result.staleRevision` is true, re-read the document before rebuilding and retrying this
+operation. The stale operation writes nothing. Supplying the plain label `Complete` instead
+of `s:Complete` would match no rows.
+
+
 ## Architecture
 
 Both sides are built on the shared gadget libraries in `packages/bundled-blueprints/libraries`, which the build

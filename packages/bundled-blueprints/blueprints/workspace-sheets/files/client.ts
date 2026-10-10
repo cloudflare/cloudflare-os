@@ -4013,8 +4013,8 @@ for (let index = 1; index < value.length; index++) {
     continue;
   }
   if (char === '"' || char === "'") { quote = char; continue; }
-  if (/[A-Za-z_]/.test(char)) {
-    let end = index + 1; while (end < value.length && /[A-Za-z0-9_.]/.test(value[end])) end++;
+  if (/[A-Za-z_$]/.test(char)) {
+    let end = index + 1; while (end < value.length && /[A-Za-z0-9_.$]/.test(value[end])) end++;
     const name = value.slice(index, end).toUpperCase();
     let next = end; while (next < value.length && /\s/.test(value[next])) next++;
     if (FUNCTIONS[name] && !["TRUE", "FALSE"].includes(name) && value[next] !== "(" && value[next] !== "!") return null;
@@ -4562,12 +4562,14 @@ if (moving && useSnapshot) {
       const destination = unchangedSources.has(comment.ref) ? moves.get(comment.ref) : null;
       if (!destination || destination.sheetId === useSnapshot.sheetId && destination.ref === comment.ref) { remaining.push(comment); continue; }
       recordComment(useSnapshot.sheetId, comment.id);
-      if (destination.sheetId !== useSnapshot.sheetId) recordComment(destination.sheetId, comment.id);
       const moved = { ...comment, ref: destination.ref };
       if (destination.sheetId === useSnapshot.sheetId) remaining.push(moved);
       else {
         const targetSheet = model.sheets[destination.sheetId];
-        (targetSheet.comments || (targetSheet.comments = [])).push(moved);
+        const targetComments = targetSheet.comments || (targetSheet.comments = []);
+        while (targetComments.some((existing) => existing.id === moved.id)) moved.id = "comment_" + Math.random().toString(36).slice(2, 10);
+        recordComment(destination.sheetId, moved.id);
+        targetComments.push(moved);
       }
       movedComments = true;
     }
@@ -4854,6 +4856,9 @@ function duplicateSheet(id: string) { if (editing && !commitEdit("none")) return
 const src = model.sheets[id];
 const nid = "s_" + Math.random().toString(36).slice(2, 8);
 model.sheets[nid] = { ...JSON.parse(JSON.stringify(src)), id: nid, name: src.name + " copy" };
+// Comment history follows identities across sheets; a copy must get its own.
+const copiedComments = model.sheets[nid].comments;
+if (copiedComments) for (const comment of copiedComments) comment.id = "comment_" + Math.random().toString(36).slice(2, 10);
 model.cells[nid] = JSON.parse(JSON.stringify(model.cells[id] || {}));
 const idx = model.sheetOrder.indexOf(id);
 model.sheetOrder.splice(idx + 1, 0, nid);
