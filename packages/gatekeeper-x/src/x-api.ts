@@ -33,12 +33,15 @@ export class XApiError extends Error {
   readonly status: number;
   /** X's problem `type` URI, when it sent one. */
   readonly problemType?: string;
+  /** X's problem `title`, such as `DuplicateSubscription`, when it sent one. */
+  readonly problemTitle?: string;
 
-  constructor(status: number, message: string, problemType?: string) {
+  constructor(status: number, message: string, problemType?: string, problemTitle?: string) {
     super(message);
     this.name = "XApiError";
     this.status = status;
     this.problemType = problemType;
+    this.problemTitle = problemTitle;
   }
 
   /** X refused the credentials, as opposed to the request. */
@@ -124,7 +127,7 @@ export function errorForResponse(response: Response, body: unknown): XApiError {
     const when = resetAt ? ` It resets at ${new Date(resetAt).toISOString().slice(11, 16)} UTC.` : "";
     return new XRateLimitError(`X's rate limit for this request is used up for this account.${when}`, resetAt);
   }
-  return new XApiError(response.status, describeProblem(first, response.status), type);
+  return new XApiError(response.status, describeProblem(first, response.status), type, first?.title);
 }
 
 /**

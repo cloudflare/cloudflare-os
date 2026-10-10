@@ -1,5 +1,7 @@
 // TypeScript API exposed to Gadgets by the X gatekeeper. X was formerly called Twitter, and a
 // "post" was formerly called a "tweet".
+
+import type { RpcStub } from "cloudflare:workers";
 //
 // Four resource granularities are offered:
 //   1. X Account (whole account)  -> `XAccountSession`: the connected account's timelines,
@@ -281,6 +283,13 @@ export interface XPost {
   hide(): Promise<void>;
   /** Unhide this reply. */
   unhide(): Promise<void>;
+
+  /**
+   * Have `hook.receivePost()` called with each direct reply to this post, which must be the
+   * connected account's own. Replies to replies are not delivered. See
+   * `XAccountSession.subscribeMentions()` for how hooks work.
+   */
+  subscribeReplies(hook: RpcStub<XPostHook>): Promise<void>;
 }
 
 /**
@@ -295,6 +304,14 @@ export interface XProfile {
 
   /** The user's posts, newest first, up to their most recent 3,200. */
   listPosts(options?: XTimelineOptions): Promise<Cursor<XPostInfo>>;
+
+  /**
+   * Have `hook.receivePost()` called with each post this user publishes, including their replies,
+   * quotes and reposts. A protected account's posts are never delivered. See
+   * `XAccountSession.subscribeMentions()` for how hooks work; through an "X Profile" grant the
+   * delivered event carries no `post` capability, since the grant can't act.
+   */
+  subscribePosts(hook: RpcStub<XPostHook>): Promise<void>;
 }
 
 /**
@@ -420,4 +437,84 @@ export interface XAccountSession {
 
   /** Create a List owned by the connected account. Lists are public unless `private` is set. */
   createList(name: string, options?: { description?: string; private?: boolean }): Promise<XList>;
+
+  /**
+   * Have `hook.receivePost()` called with each post that @mentions the connected account. Replies
+   * that only carry the account's handle because they answer one of its posts are not mentions;
+   * see `subscribeReplies()`.
+   *
+   * The connected account's own posts are never delivered, so a hook can't answer itself. Posts by
+   * protected accounts are never delivered either. The hook starts disabled, and nothing is
+   * delivered until the user enables it. Every call creates a distinct hook. X bills each
+   * delivered post as a post read. This throws if push notifications aren't set up on this
+   * deployment.
+   *
+   * `hook` must be a persistent stub: from `executeCode`, create it with
+   * `env.MY_GADGET[restore](params)` on the Gadget's binding; inside the Gadget, with
+   * `this.ctx.restore(params)`. The Gadget's `[restore]()` receives those `params` for every
+   * delivery, so they can tell its subscriptions apart. The restored target is a separate object;
+   * pass it what it needs from `[restore]()`, such as `this`, the Gadget.
+   *
+   * @example
+   * // server.js
+   * import { DurableObject, RpcTarget, restore } from "cloudflare:workers";
+   * export class Gadget extends DurableObject {
+   *   async [restore](params) {
+   *     if (params.type === "mentions") return new Mentions();
+   *     throw new TypeError(`Unknown restore type: ${params.type}`);
+   *   }
+   * }
+   * class Mentions extends RpcTarget {
+   *   async receivePost(event) {
+   *     if (/question/i.test(event.info.text)) {
+   *       await event.post?.reply({ text: "Thanks! We'll get back to you shortly." });
+   *     }
+   *   }
+   * }
+   *
+   * // executeCode
+   * import { restore } from "cloudflare:workers";
+   * export default async function(self, env) {
+   *   const hook = await env.MY_GADGET[restore]({ type: "mentions" });
+   *   await env.X.subscribeMentions(hook);
+   * }
+   */
+  subscribeMentions(hook: RpcStub<XPostHook>): Promise<void>;
+
+  /**
+   * Have `hook.receivePost()` called with each direct reply to any of the connected account's
+   * posts. Replies to replies are not delivered. See `subscribeMentions()` for how hooks work.
+   */
+  subscribeReplies(hook: RpcStub<XPostHook>): Promise<void>;
 }
+
+/** Implemented by a gadget to hear of posts as they are published; see `subscribeMentions()`. */
+export interface XPostHook {
+  /**
+   * Called with each post the hook watches for. The event's `post` capability can read and queue
+   * actions for approval, and is released when this call returns. A post may arrive more than once
+   * or out of order, so key any work on `event.id` to keep it idempotent. One this throws for is
+   * retried with backoff, eight attempts in all, and disabling the hook ends its retries. A post can
+   * also be missed, as when X can't reach this deployment, so a gadget that must see every one
+   * should also read now and then.
+   */
+  receivePost(event: XPostEvent): Promise<void>;
+}
+
+/** One post delivered to an `XPostHook`. */
+export type XPostEvent = {
+  /** X's ID for this event, the same for every delivery of it. */
+  id: string;
+  /**
+   * Why it was delivered: it mentions the connected account, it replies to a watched post, or a
+   * watched user posted it.
+   */
+  reason: "mention" | "reply" | "post";
+  /** The post as published. */
+  info: XPostInfo;
+  /**
+   * The post, to reply to or act on. Absent through an "X Profile" grant, which can't act. For a
+   * reply delivered through an "X Post" grant, it reaches that conversation only.
+   */
+  post?: XPost;
+};

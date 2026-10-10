@@ -5,7 +5,7 @@
 // capabilities gadgets hold (x-sessions.ts). Every X request runs through the account's credential
 // source, and every read draws on the connection's daily read limit.
 
-import { DurableObject, type RpcStub } from "cloudflare:workers";
+import { DurableObject, RpcTarget, restore, type RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import type {
   ActionKind,
@@ -13,12 +13,15 @@ import type {
   Gatekeeper,
   GatekeeperUserVerifier,
   GitCache,
+  HookDescription,
   ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { ActionFileStore, type ActionFileReference } from "@gadgets/gatekeeper-kit/action-files";
 import { ActionJournal, type ActionSubmitter } from "@gadgets/gatekeeper-kit/actions";
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
-import { ObservationGate, trackedCollectionObservers } from "@gadgets/gatekeeper-kit/observers";
+import {
+  ObservationGate, escapeObservationValue, trackedCollectionObservers,
+} from "@gadgets/gatekeeper-kit/observers";
 import { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
 import type { XAccountSession, XList, XPost, XProfile } from "./types";
 import TYPES_CODE from "./types.txt";
@@ -37,8 +40,14 @@ import {
 } from "./x-actions";
 import { XApi, XApiError, XCreditsError, XRateLimitError, type XEnvelope } from "./x-api";
 import { accountSource, withinReadLimit, type StoredIdentity, type XVerifierApi } from "./x-credentials";
-import { ACCOUNT_URL, VENDOR_ID, type Env, type ResourceKind, type XGatekeeperImplProps } from "./x-env";
-import { toUserInfo, type WireUser } from "./x-normalize";
+import { ACCOUNT_URL, VENDOR_ID, webhookUrl, type Env, type ResourceKind, type XGatekeeperImplProps } from "./x-env";
+import {
+  HOOKS_NOT_CONFIGURED, type XActivityEvent, type XHookDelivery, type XHookParams, type XPostHookTarget,
+} from "./x-hooks";
+import {
+  indexIncludes, mentionsProtectedAuthor, toPostInfo, toUserInfo, toUserSummary,
+  type WireIncludes, type WirePost, type WireUser,
+} from "./x-normalize";
 import {
   OWNER_COLLECTION,
   SessionContext,
@@ -52,6 +61,21 @@ import {
   type XSessionHost,
 } from "./x-sessions";
 import { listUrl, postUrl } from "./x-urls";
+
+/** What a hook's delivery stub restores to: the binding's facet, narrowed to delivering. */
+@validateRpc()
+class XHookDeliveryImpl extends RpcTarget implements XHookDelivery {
+  readonly #deliver: XHookDelivery["deliver"];
+
+  constructor(deliver: XHookDelivery["deliver"]) {
+    super();
+    this.#deliver = deliver;
+  }
+
+  deliver(callback: RpcStub<XPostHookTarget>, approvalQueue: RpcStub<ApprovalQueue>, event: XActivityEvent): Promise<void> {
+    return this.#deliver(callback, approvalQueue, event);
+  }
+}
 
 const logger = obsContext.createLogger({ component: "gatekeeper.x", vendorId: VENDOR_ID });
 
@@ -165,6 +189,7 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
     allocate: kind => this.#refs.allocate(sequence => `~${sequence}`, { kind }),
     submit: (queue, kind, payload) => this.#submit(queue, kind, payload),
     captureImage: bytes => this.#captureImage(bytes),
+    bindHook: (queue, params, hook, description) => this.#bindHook(queue, params, hook, description),
   };
 
   async describe(): Promise<ResourceDescription> {
@@ -173,7 +198,7 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
       const me = await this.#me();
       return {
         url: ACCOUNT_URL, title: `@${me.username}`, snippet: me.name,
-        suggestedBindingName: "X", tsType: "XAccountSession",
+        suggestedBindingName: "X", tsType: "XAccountSession", hookTsType: "XPostHook",
       };
     }
     // Describing a post, List or profile costs a read, so it is fetched once and kept.
@@ -185,7 +210,7 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
         const post = await fetchPost(this.#sessionHost, props.postId);
         description = {
           url: post.url ?? postUrl(props.postId), title: `Post by @${post.author.username}`,
-          snippet: snippet(post.text), suggestedBindingName: "X_POST", tsType: "XPost",
+          snippet: snippet(post.text), suggestedBindingName: "X_POST", tsType: "XPost", hookTsType: "XPostHook",
         };
         break;
       }
@@ -205,7 +230,7 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
           url: user.url, title: `@${user.username}`,
           snippet: `${user.name} · ${user.followersCount.toLocaleString("en-US")} ` +
             `follower${user.followersCount === 1 ? "" : "s"}`,
-          suggestedBindingName: "X_PROFILE", tsType: "XProfile",
+          suggestedBindingName: "X_PROFILE", tsType: "XProfile", hookTsType: "XPostHook",
         };
         break;
       }
@@ -282,6 +307,101 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
 
   async removeObserver(id: string): Promise<void> {
     await this.#observers.removeObserver(id);
+  }
+
+  /** What a hook's delivery stub restores to: this binding, narrowed to delivering to it. */
+  [restore](params: XHookParams): XHookDelivery {
+    return new XHookDeliveryImpl((callback, approvalQueue, event) =>
+      this.#deliverHookEvent(params, callback, approvalQueue, event));
+  }
+
+  // -- hooks -------------------------------------------------------------------------------
+
+  /**
+   * Binds `hook` to the posts `params` names. Nothing is stored until the user enables it: the
+   * controller carries everything, including a persistent stub to this binding to deliver through.
+   */
+  async #bindHook(queue: RpcStub<ApprovalQueue>, params: XHookParams, hook: RpcStub<XPostHookTarget>,
+                  description: HookDescription): Promise<void> {
+    if (webhookUrl(this.env) === undefined) throw new Error(HOOKS_NOT_CONFIGURED);
+    const me = await this.#me();
+    using delivery: RpcStub<XHookDelivery> = await this.ctx.restore(params);
+    const controller = this.ctx.exports.XHookController({ props: {
+      ...params, key: crypto.randomUUID(), userObjectId: this.ctx.props.userObjectId, viewerId: me.id, delivery,
+    } });
+    // @ts-expect-error Workers currently widens the controller's hook type across bindHook RPC.
+    await queue.bindHook(controller, hook, description);
+  }
+
+  /**
+   * Delivers one post to one firing of a hook on this binding, if the binding admits it. The
+   * driver's filters only spare firings; this is the check, and the binding's own scope beats the
+   * stub's parameters.
+   */
+  async #deliverHookEvent(params: XHookParams, callback: RpcStub<XPostHookTarget>,
+                          approvalQueue: RpcStub<ApprovalQueue>, event: XActivityEvent): Promise<void> {
+    const props = this.ctx.props;
+    if (event.kind !== params.kind) return;
+    const me = await this.#me();
+    let info = toPostInfo(event.post as unknown as WirePost, indexIncludes(event.includes as WireIncludes | undefined));
+    switch (params.kind) {
+      case "mention":
+        if (props.resourceKind !== "account" || event.userId !== me.id || info.author.id === me.id) return;
+        break;
+      case "reply": {
+        if (event.userId !== me.id || info.author.id === me.id) return;
+        const parent = info.replyTo?.postId;
+        if (props.resourceKind === "post") {
+          // A Post binding reaches its conversation alone: the watched post was in it when bound.
+          if (params.postId === undefined || params.conversationId !== info.conversationId) return;
+        } else if (props.resourceKind !== "account") {
+          return;
+        }
+        if (params.postId !== undefined && parent !== params.postId) return;
+        break;
+      }
+      case "post":
+        if (props.resourceKind === "profile") {
+          if (this.ctx.storage.kv.get<string>(PROFILE_USER_KEY) !== params.userId) return;
+        } else if (props.resourceKind !== "account") {
+          return;
+        }
+        if (event.userId !== params.userId || info.author.id !== params.userId) return;
+        break;
+    }
+
+    // X may deliver a post without its author's profile. One cached read names them, and the
+    // post is delivered regardless if it can't.
+    if (!info.author.username) {
+      try {
+        const author = await readUser(this.#sessionHost, { id: info.author.id });
+        info = { ...info, author: toUserSummary(author), url: postUrl(info.id, author.username) };
+      } catch (error) {
+        logger.warn("failed to read an X post's author for a hook", { event: "hooks.delivery.author.failed", error });
+      }
+    }
+
+    const who = info.author.username ? `@${escapeObservationValue(info.author.username)}` : "an X user";
+    const gate = new ObservationGate(approvalQueue.dup(), this.#observers);
+    let post: XPostImpl | undefined;
+    try {
+      await gate.authorize({
+        title: "Receive an X post",
+        description: params.kind === "mention" ? `Received a post by ${who} mentioning the connected account.`
+          : params.kind === "reply" ? `Received a reply by ${who} to the connected account's post.`
+          : `Received a new post by ${who}.`,
+      }, mentionsProtectedAuthor([info]) ? { kind: "collections", ids: [OWNER_COLLECTION] } : { kind: "baseline" });
+      // A Profile binding can't act, and a Post binding reaches only its conversation.
+      if (props.resourceKind !== "profile") {
+        const conversation = info.conversationId;
+        post = new XPostImpl(new SessionContext(this.#sessionHost, approvalQueue.dup(), gate.lease()), info.id,
+          props.resourceKind === "post" ? async () => conversation : undefined);
+      }
+    } finally {
+      gate[Symbol.dispose]();
+    }
+    // The capability is released when receivePost() returns.
+    await callback.receivePost({ id: event.id, reason: params.kind, info, ...(post ? { post } : {}) });
   }
 
   // -- the connection ----------------------------------------------------------------------
