@@ -724,15 +724,17 @@ with `media.media_ids` and `made_with_ai`.
 Each read is classified before it is authorized:
 
 - **Owner-private** if it comes from an inherently private source — bookmarks, likes,
-  `isMuted()`, a private List's details, posts or members — or returns any post written by a
-  protected account (including all the connected account's own posts when it is protected).
+  `isMuted()`, a private List's details, posts or members, and a protected connected account's
+  follow graph, whether read as its follow lists or edge by edge as the `relationship` a profile
+  read reports — or returns any post written by a protected account (including all the
+  connected account's own posts when it is protected).
   Privacy is X's, never the simulated value: a pending change that would make a private List
   public leaves it owner-private until X has made it public. And missing evidence is not
   privacy's absence: a post whose author X did not expand, or expanded without `protected` (a
   200 can omit expansions it failed to hydrate), counts as a protected account's, as does a
   connected account whose identity X returned without it.
 - **Public** otherwise: public posts, every profile (X shows protected accounts' profiles; only
-  their posts are hidden), public Lists, followers and following.
+  their posts are hidden), public Lists, and an unprotected account's followers and following.
 
 Owner-private reads authorize against one synthetic collection, `owner`; public reads use the
 `baseline` scope; the kit's `trackedCollectionObservers` does the bookkeeping.

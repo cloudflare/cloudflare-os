@@ -586,8 +586,11 @@ export class XUserImpl extends RpcTarget implements XUser {
 
   async getInfo(): Promise<XUserInfo> {
     const info = await profileInfo(this.#ctx, await readUser(this.#ctx.host, this.#target), true);
+    // The relationship is one edge of the connected account's follow graph, which is private to it
+    // when it is protected, as `listFollowing` and `listFollowers` treat the whole graph.
+    const restricted = info.relationship !== undefined && (await this.#ctx.host.me()).protected;
     await this.#ctx.gate.authorize(
-      { title: "Read an X profile", description: `Read the profile of ${who(info)}.` }, BASELINE);
+      { title: "Read an X profile", description: `Read the profile of ${who(info)}.` }, restricted ? OWNER : BASELINE);
     return info;
   }
 
