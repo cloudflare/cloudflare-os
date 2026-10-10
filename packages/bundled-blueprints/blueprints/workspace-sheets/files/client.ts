@@ -532,7 +532,7 @@ interface TextBounds { start: number; end: number }
 interface FormulaPick extends Range { textStart: number; textEnd: number; picked?: boolean }
 interface FormulaDiagnosis { message: string; segment: string | null }
 interface ClipboardCell { value: string | null; fmt: CellFmt | null; sourceRef: string }
-interface ClipboardSnapshot { tsv: string; cells: (ClipboardCell | null)[][]; refs: (string | null)[][]; trimmed: "rows" | "columns" | null; sheetId: string; cut: boolean; token: string }
+interface ClipboardSnapshot { tsv: string; cells: (ClipboardCell | null)[][]; refs: (string | null)[][]; trimmed: "rows" | "columns" | null; sheetId: string; cut: boolean; cancelled: boolean; token: string }
 interface CutRangeMove extends RC { sheetId: string; rowDelta: number; columnDelta: number }
 interface StructureChanges { title: string | null; sheetOrder: string[] | null; added: string[]; removed: string[]; sheets: Record<string, Partial<SheetMeta>> }
 
@@ -3651,19 +3651,19 @@ function clearFormulaPick() {
   gridTable.querySelectorAll("td.formula-ref").forEach((cell) => cell.classList.remove("formula-ref", "formula-ref-top", "formula-ref-bottom", "formula-ref-left", "formula-ref-right"));
 }
 function formulaRangeText(r1: number, c1: number, r2: number, c2: number, original: string) {
-  const endpoints = original.split(":");
+  const endpoints = Array.from(formulaReferences("=" + original, true), (reference) => reference.text);
   const endpoint = (row: number, column: number, text: string) => {
     const bang = text.lastIndexOf("!"), prefix = text.slice(0, bang + 1);
     const locks = /^(\$?)[A-Z]+(\$?)\d+$/i.exec(text.slice(bang + 1));
     return prefix + (locks?.[1] || "") + colToLetter(column) + (locks?.[2] || "") + (row + 1);
   };
-  const first = endpoint(Math.min(r1, r2), Math.min(c1, c2), endpoints[0]);
-  const last = endpoint(Math.max(r1, r2), Math.max(c1, c2), endpoints[1] || endpoints[0]);
+  const first = endpoint(Math.min(r1, r2), Math.min(c1, c2), endpoints[0] || "");
+  const last = endpoint(Math.max(r1, r2), Math.max(c1, c2), endpoints[1] || endpoints[0] || "");
   return first === last ? first : first + ":" + last;
 }
-function localFormulaPosition(ref: string) { const bang = ref.indexOf("!");
+function localFormulaPosition(ref: string) { const bang = ref.lastIndexOf("!");
 if (bang >= 0) {
-  const sheetName = ref.slice(0, bang).replace(/^'|'$/g, "").replace(/''/g, "'");
+  const sheetName = ref.slice(0, bang).replace(/^'|'$/g, "").replace(/\\'|''/g, "'");
   if (sheetName.toLowerCase() !== curSheet().name.toLowerCase()) return null;
   ref = ref.slice(bang + 1);
 }
@@ -3756,7 +3756,8 @@ function cycleAbsoluteReference() {
   return true;
 }
 function formulaReferenceFromBounds(value: string, bounds: TextBounds | null) { if (!bounds) return null;
-const text = value.slice(bounds.start, bounds.end), parts = text.split(":");
+const parts = Array.from(formulaReferences("=" + value.slice(bounds.start, bounds.end), true), (reference) => reference.text);
+if (!parts.length) return null;
 const first = localFormulaPosition(parts[0]), last = localFormulaPosition(parts[1] || parts[0]);
 if (!first || !last) return null;
 return {
@@ -3863,11 +3864,8 @@ function beginAdditionalFormulaReference() {
 function formulaReferenceAtCell(row: number, column: number) { const value = cellEditor.value;
 const matches: FormulaPick[] = [];
 for (const match of formulaReferences(value)) {
-  const parts = match.text.split(":");
-  const first = localFormulaPosition(parts[0]), last = localFormulaPosition(parts[1] || parts[0]);
-  if (!first || !last) continue;
-  const range = { r1: Math.min(first.r, last.r), r2: Math.max(first.r, last.r), c1: Math.min(first.c, last.c), c2: Math.max(first.c, last.c) };
-  if (row >= range.r1 && row <= range.r2 && column >= range.c1 && column <= range.c2) matches.push({ ...range, textStart: match.start, textEnd: match.end });
+  const range = formulaReferenceFromBounds(value, match);
+  if (range && row >= range.r1 && row <= range.r2 && column >= range.c1 && column <= range.c2) matches.push(range);
 }
 matches.sort((a, b) => (a.r2 - a.r1 + 1) * (a.c2 - a.c1 + 1) - (b.r2 - b.r1 + 1) * (b.c2 - b.c1 + 1));
 return matches[0] || null; }
@@ -4455,7 +4453,7 @@ function prepareClipboard(cut = false) {
     return cell && ref ? { value: cell.value, fmt: cell.fmt, sourceRef: ref } : (ref ? { value: null, fmt: null, sourceRef: ref } : null);
   }));
   const tsv = refs.map((row) => row.map(clipboardCellText).join("\t")).join("\n");
-  copyFallback = { tsv, cells, refs, trimmed, sheetId: activeSheetId, cut, token: Math.random().toString(36).slice(2) };
+  copyFallback = { tsv, cells, refs, trimmed, sheetId: activeSheetId, cut, cancelled: false, token: Math.random().toString(36).slice(2) };
   return tsv;
 }
 function requestGridClipboard(cut = false) {
@@ -4483,6 +4481,10 @@ function writeGridClipboard(event: ClipboardEvent, cut: boolean) {
 gridScroll.addEventListener("copy", (event) => writeGridClipboard(event, false));
 gridScroll.addEventListener("cut", (event) => writeGridClipboard(event, true));
 function clearCopyMarquee() { copyFallback = null; }
+function invalidateMissingCutSource() {
+  // Retain the token so a native paste cannot reinterpret a cancelled cut as an external copy.
+  if (copyFallback?.cut && !model.sheets[copyFallback.sheetId]) copyFallback.cancelled = true;
+}
 
 let pasteWithoutFormattingPending = false;
 let pasteModeTimer: number | undefined;
@@ -4593,10 +4595,12 @@ recordCell(sheetId, ref);
 const baseVersion = existing.version || 0;
 delete cells[ref]; queueCellOp(sheetId, ref, null, null, baseVersion); }
 function pasteText(text: string, { keepFormatting = true, token = null }: { keepFormatting?: boolean; token?: string | null } = {}) { const normalized = text.replace(/\r/g, "");
+invalidateMissingCutSource();
 // Text equality identifies a copy; a cut (which deletes its source) needs the token.
 const clipboard = copyFallback;
 const useSnapshot = clipboard && (token ? token === clipboard.token
   : !clipboard.cut && clipboard.tsv.replace(/\r/g, "") === normalized) ? clipboard : null;
+if (useSnapshot?.cut && useSnapshot.cancelled) { saveStatus.set("bad", "Cannot paste a cut from a deleted sheet; copy or cut again"); return; }
 const moving = !!useSnapshot?.cut;
 const moves = new Map<string, { sheetId: string; ref: string }>();
 // Validate before writing any destinations: overlapping moves overwrite other source positions.
@@ -5005,6 +5009,7 @@ function deleteSheet(id: string) { if (model.sheetOrder.length <= 1 || (editing 
 const idx = model.sheetOrder.indexOf(id);
 model.sheetOrder.splice(idx, 1);
 delete model.sheets[id]; delete model.cells[id];
+invalidateMissingCutSource();
 if (activeSheetId === id) activeSheetId = model.sheetOrder[Math.max(0, idx - 1)];
 queueStructure();
 switchSheet(activeSheetId); }
@@ -5094,7 +5099,7 @@ const added = new Set(local?.added);
 for (const id of Object.keys(model.sheets)) if (!model.sheetOrder.includes(id) && !added.has(id)) { delete model.sheets[id]; delete model.cells[id]; }
 ackedStructure = { title: model.title, sheetOrder: model.sheetOrder.slice(), sheets: JSON.parse(JSON.stringify(Object.fromEntries(model.sheetOrder.map((id) => [id, model.sheets[id]])))) };
 ackedStructureRevision = revision;
-if (!local) return;
+if (!local) { invalidateMissingCutSource(); return; }
 if (local.title != null) { model.title = local.title; if (document.activeElement !== titleInput) titleInput.value = local.title; }
 for (const id of local.removed) {
   const index = model.sheetOrder.indexOf(id);
@@ -5111,6 +5116,7 @@ if (local.sheetOrder) {
 }
 pendingStructure = structureSnapshot();
 if (pendingReplacements.size === 0) wholesaleBaseRevision = model.revision;
+invalidateMissingCutSource();
 }
 function localStructureChanges(snapshot: Structure, remote?: Structure): StructureChanges { const base: Structure = ackedStructure || { title: snapshot.title, sheetOrder: [], sheets: {} };
 const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
@@ -5142,6 +5148,7 @@ function applySnapshot(doc: SheetsDocument): void {
   model.sheets = doc.sheets || {};
   model.cells = doc.cells || {};
   for (const id of model.sheetOrder) if (!model.cells[id]) model.cells[id] = {};
+  invalidateMissingCutSource();
   ackedStructure = structureSnapshot();
   ackedStructureRevision = doc.revision;
   titleInput.value = model.title;
