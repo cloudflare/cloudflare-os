@@ -1,0 +1,33 @@
+docs/integration-testing.md
+  s_74eb0b1cbb84f7::t_0ab9fd5e31772a 17,19-21,65-80
+packages/gatekeeper-github/vite.config.ts
+  s_74eb0b1cbb84f7::t_fb6c23dc179899 2,11,15-40
+packages/integration-tests/README.md
+  s_74eb0b1cbb84f7::t_6122f61623c5c2 62-70
+packages/integration-tests/__tests__/github-fake.ts
+  s_74eb0b1cbb84f7::t_23edbeb2ae46ec 1-224
+packages/integration-tests/__tests__/github-hooks-off.test.ts
+  s_74eb0b1cbb84f7::t_564498eae03073 1-105
+packages/integration-tests/__tests__/github-hooks.test.ts
+  s_74eb0b1cbb84f7::t_18cfcd20803bf9 1-142
+packages/integration-tests/package.json
+  s_74eb0b1cbb84f7::t_61113bb87d5c45 15
+packages/integration-tests/vite.config.ts
+  s_74eb0b1cbb84f7::t_951f11ad6bf7fb 41-43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8c5864721bdbcd769f01f115ff85b58cf3fbe82d",
+  "prompts": {},
+  "sessions": {
+    "s_74eb0b1cbb84f7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_edf458c69ffepVeVZFxEZXzOIj",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
