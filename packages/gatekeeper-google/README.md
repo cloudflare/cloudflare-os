@@ -56,7 +56,7 @@ You'll need to enable the Google APIs that you want to use. Currently supported:
 23. For Chat, enable **Google Chat API**, plus **People API** so direct messages and group chats can be named when Chat omits a participant's name, and so a whole-account Chat connection can search the organization's directory and confirm that everyone in a conversation it starts belongs to the organization.
 24. On the Google Chat API's **Configuration** tab, set an app name, avatar URL, and description, turn off **Interactive features**, and click **Save**. Reads work without this, but Google refuses every Chat send, edit, and reaction until a Chat app is configured.
 
-The Google Drive API powers the Docs, Sheets, and Slides resource pickers, Drive discovery, and Drive scope checks. Native document, spreadsheet, or presentation content opened from a Drive binding is read through the Google Docs, Google Sheets, or Google Slides API. Direct Google Doc reads and edits still go through the Docs API, direct spreadsheet reads go through the Sheets API, and direct presentation reads and edits go through the Slides API.
+The Google Drive API powers the Docs, Sheets, and Slides resource pickers, Drive discovery, and Drive scope checks. Native document, spreadsheet, or presentation content opened from a Drive binding is read through the Google Docs, Google Sheets, or Google Slides API. Direct Google Doc reads and edits still go through the Docs API, direct spreadsheet reads and edits go through the Sheets API, and direct presentation reads and edits go through the Slides API.
 
 ### Step 3: Configure the OAuth Consent Screen
 
@@ -81,7 +81,7 @@ included). Across all resource types, the gatekeeper can request:
 - `gmail.modify` for Gmail thread reads, organization, replies, forwards, and sending. This single scope already includes label access and sending.
 - `documents` for direct Google Docs reads, edits, and creation; `documents.readonly` for native Docs opened from account-wide, folder, or exact-file Drive bindings.
 - `drive.metadata.readonly` for the Docs, Sheets, Slides, and folder pickers, account-wide Drive discovery, exact-file metadata, folder descendant proofs, and native-file scope checks. Google classifies this as a restricted scope, so every Drive resource here needs restricted-scope verification.
-- `spreadsheets` to read metadata and bounded cell ranges from directly selected spreadsheets, and to create spreadsheets. Google Sheets bindings are read-only; the read-write scope is requested because Google's `spreadsheets.create` accepts no read-only scope. The switch from `spreadsheets.readonly` retracted every existing Sheets grant, including one derived from `drive.readonly`: owners re-consent the next time they connect a spreadsheet, and collaborators observing an existing Sheets binding are asked to grant read-write `spreadsheets` the next time they open its workspace.
+- `spreadsheets` to read metadata and bounded cell ranges from directly selected spreadsheets, edit them with approval, and create spreadsheets. The switch from `spreadsheets.readonly` retracted every existing Sheets grant, including one derived from `drive.readonly`: owners re-consent the next time they connect a spreadsheet, and collaborators observing an existing Sheets binding are asked to grant read-write `spreadsheets` the next time they open its workspace. A `spreadsheets` grant covers the Drive resources' `spreadsheets.readonly`.
 - `spreadsheets.readonly` to read native Sheets opened from account-wide, folder, or exact-file Drive bindings.
 - `presentations` to read, edit, and create directly selected presentations, and to render slide thumbnails; `presentations.readonly` to read and render native Slides opened from account-wide, folder, or exact-file Drive bindings. Google counts each thumbnail as an expensive read, limited to 60 a minute per user and 300 per project.
 - `calendar.calendarlist.readonly` so the resource picker can list calendars.
@@ -210,7 +210,7 @@ Google Docs, Sheets and Slides are creatable resource types: an agent can ask fo
 `createExternalResource`, giving a one-line title (trimmed, at most 256 characters), and its binding
 works at once, before anything exists at Google. Until the creation is approved the gatekeeper
 simulates an empty file: a Doc reads as one empty tab and queues edits as usual, a spreadsheet as
-one empty `Sheet1` of 1000 × 26 cells, and a presentation as the one Google creates, a 16:9 deck
+one empty `Sheet1` of 1000 × 26 cells, which takes no change until it exists, and a presentation as the one Google creates, a 16:9 deck
 with a title slide, which queues changes as usual. Of the default theme's layouts it offers only
 five (title slide, section header, title and body, title only, and blank); the others become
 available once the presentation exists. Nothing reaches Google and no account is involved.
@@ -354,6 +354,54 @@ unknown outcome and never retried.
 Google returns a presentation's revision only to an account that can edit it, so a view-only
 account can read a presentation but every change to it fails. A queued change is stored in one
 Durable Object value, so each is capped at 100 KiB.
+
+## Google Sheets edits
+
+A directly bound spreadsheet accepts `updateSheet()`, which queues up to 50 changes for approval
+as one batch, applied all or none and in order: `writeCells` enters values in every cell of a
+bounded A1 range that names its sheet, such as `'Sales 2026'!A1:C3`, and `clearRange` clears a
+range's contents, keeping its formatting. Batches are journaled with the kit's `ActionJournal`, and
+apply in the order they were queued. A spreadsheet opened from a Drive binding has no change method.
+
+Input is literal and typed, so nothing depends on the spreadsheet's locale: a string starting with
+`=` is a formula, any other string is text exactly as given, never read as a number or date,
+numbers and booleans are entered as such, and `null` clears a cell. Text starting with `=` cannot
+be written as text. A batch of only literal values and clears is queued as "Sheet value edits",
+which a user may let apply without asking; a batch with any formula always waits for approval.
+A formula naming `IMPORTRANGE`, which reads another spreadsheet and so escapes the binding, or
+`IMPORTDATA`, `IMPORTHTML`, `IMPORTXML`, `IMPORTFEED` or `IMAGE`, which make Google fetch a URL, is
+refused in any letter case, outside string literals. Formulas the spreadsheet already holds are
+not inspected, and one of its named functions could wrap a refused function, which is why every
+formula needs approval.
+
+Reads show queued changes as entered and never guess what Google computes. Formula-mode reads are
+exact, and raw reads are exact for literal values. A queued formula's result, and in formatted
+reads a queued number or boolean, whose display depends on number format and locale, read `null`,
+and their cells are listed in the range's `pendingCells`. Formulas elsewhere keep their saved results, even when
+they depend on queued cells. Google tidies the references in a formula as it is entered: column
+letters upper-cased, a sheet named by its title as the spreadsheet spells and quotes it, a range of
+one cell collapsed to that cell. A queued formula is shown, approved and written already tidied, but
+with its whitespace as typed, which Google may later drop. A queued change that no longer applies,
+such as one writing to a sheet since shrunk, is reported as `queuedChangeConflict`, and it and the
+changes queued after it are not shown.
+
+Sheets has no revision to pin a write to, so each approved batch is planned against a fresh read
+and guarded by a digest of what it overwrites: the cells it writes, as entered, and the title and
+size of each sheet it addresses, ignoring whitespace in formulas. Cells that changes queued before
+it write are expected to hold what those enter, so a batch built on one that was rejected or failed
+fails too. A change whose cells or sheet changed since it was queued fails without writing; a collaborator's edit between that read and the write is not caught, and formatting is
+not guarded. Each batch also creates a developer-metadata marker whose ID is minted at queue time,
+which Google stores at most once, so a write whose response is lost is found by its marker or
+resent exactly as first sent. A lost write that cannot be resent, because its cells changed in the
+meantime or Google refused the resend, or that three sends leave unfound, is marked as having an
+unknown outcome. A marker is visible only to the Google Cloud project of this deployment's OAuth
+client, leaves no Drive revision, and is deleted by the next write.
+
+A change is refused when it is queued if the connected account can only view the spreadsheet, or
+if it writes outside a sheet's grid or into a protected range the account cannot edit. A change
+addresses at most 10,000 cells and a batch 20,000, a cell holds at most 50,000 characters, and a
+queued batch is capped at 100 KiB. Google allows 60 write requests a minute per user; a write over
+that quota stays pending.
 
 ## Google Drive read-only bindings
 
