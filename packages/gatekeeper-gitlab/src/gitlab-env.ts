@@ -27,6 +27,12 @@ export type Env = Cloudflare.Env & PreviewOAuthEnv & {
   /** Optional Cloudflare Access service token, attached to every Worker→GitLab request (secrets). */
   CF_ACCESS_CLIENT_ID?: string;
   CF_ACCESS_CLIENT_SECRET?: string;
+  /**
+   * The public origin GitLab delivers webhooks to, such as `https://gadgets.example.com`: the
+   * deployment's own, or a tunnel's in local development. GitLab hooks are refused while it is
+   * unset.
+   */
+  WEBHOOK_ORIGIN?: string;
 };
 
 export const VENDOR_ID = "gitlab";
@@ -106,6 +112,20 @@ export function gitlabInstance(env: Env): GitLabInstance {
     apiOrigin: env.GITLAB_API_URL ? instanceOrigin("GITLAB_API_URL", env.GITLAB_API_URL) : instanceUrl(env),
     headers,
   };
+}
+
+/**
+ * The origin GitLab delivers webhooks to, or undefined when this deployment has not configured
+ * GitLab hooks.
+ * @throws If `WEBHOOK_ORIGIN` is not an `https` origin.
+ */
+export function webhookOrigin(env: Env): string | undefined {
+  if (env.WEBHOOK_ORIGIN === undefined) return undefined;
+  const origin = URL.parse(env.WEBHOOK_ORIGIN);
+  if (origin?.protocol !== "https:" || origin.href !== `${origin.origin}/`) {
+    throw new Error("WEBHOOK_ORIGIN must be an https origin, such as https://gadgets.example.com.");
+  }
+  return origin.origin;
 }
 
 /** The OAuth application's credentials; throws when they are not configured. */

@@ -2,7 +2,7 @@
 // misconfiguration fails -- by name, at the first request, rather than as a login redirect.
 
 import { describe, expect, it } from "vitest";
-import { gitlabInstance, instanceUrl } from "../src/gitlab-env";
+import { gitlabInstance, instanceUrl, webhookOrigin } from "../src/gitlab-env";
 
 const env = (vars: Record<string, string | undefined>) => vars as never;
 
@@ -59,5 +59,25 @@ describe("gitlabInstance", () => {
     expect(() => instanceUrl(env({ GITLAB_URL: "https://example.com/?x=1" }))).toThrow(/must be an origin/);
     // A bare trailing slash is the same origin.
     expect(instanceUrl(env({ GITLAB_URL: "https://gitlab.example.com/" }))).toBe("https://gitlab.example.com");
+  });
+});
+
+describe("webhookOrigin", () => {
+  it("leaves GitLab hooks off until a deployment sets it", () => {
+    expect(webhookOrigin(env({}))).toBeUndefined();
+  });
+
+  it("accepts an https origin, with or without a trailing slash", () => {
+    expect(webhookOrigin(env({ WEBHOOK_ORIGIN: "https://gadgets.example.com" }))).toBe("https://gadgets.example.com");
+    expect(webhookOrigin(env({ WEBHOOK_ORIGIN: "https://Gadgets.Example.com/" }))).toBe("https://gadgets.example.com");
+  });
+
+  it.each([
+    "http://gadgets.example.com",
+    "https://gadgets.example.com/gatekeeper/gitlab",
+    "https://user:secret@gadgets.example.com",
+    "gadgets.example.com",
+  ])("refuses %s, which webhooks would not reach safely", origin => {
+    expect(() => webhookOrigin(env({ WEBHOOK_ORIGIN: origin }))).toThrow("WEBHOOK_ORIGIN must be an https origin");
   });
 });

@@ -168,6 +168,8 @@ export type GitLabNoteResponse = {
   updated_at: string;
   /** GitLab-generated activity ("added label ~bug"), never a person's words. */
   system: boolean;
+  /** An internal note, which only the project's Reporters and above see. */
+  internal?: boolean;
   noteable_iid?: number | null;
   resolvable?: boolean;
   resolved?: boolean;
@@ -272,6 +274,69 @@ export type GitLabCompareResponse = {
   compare_timeout: boolean;
   compare_same_ref: boolean;
 };
+
+/** The project webhook triggers this gatekeeper turns on, each for some of a hook's event kinds. */
+export const WEBHOOK_TRIGGERS = [
+  "issues_events", "merge_requests_events", "note_events", "push_events", "tag_push_events",
+] as const;
+
+export type GitLabWebhookTrigger = (typeof WEBHOOK_TRIGGERS)[number];
+
+/** A project webhook as this gatekeeper configures one: JSON deliveries, signed with `signingToken`. */
+export type GitLabProjectWebhookConfig = {
+  url: string;
+  /** A Standard Webhooks signing token: `whsec_` and the base64 of a 32-byte key. */
+  signingToken: string;
+  /** The triggers to turn on; every other one is turned off. */
+  triggers: readonly GitLabWebhookTrigger[];
+};
+
+/** A project webhook, as GitLab reports one (never with its tokens). */
+export type GitLabProjectWebhookResponse = {
+  id: number;
+  url: string;
+  enable_ssl_verification?: boolean;
+  /** Unless blank, what GitLab sends in place of each payload, rendered from it. */
+  custom_webhook_template?: string | null;
+  /** Unless blank, the branches whose pushes alone are delivered. */
+  push_events_branch_filter?: string | null;
+  confidential_issues_events?: boolean;
+  confidential_note_events?: boolean;
+  /** `"executable"`, `"temporarily_disabled"`, or `"disabled"` once GitLab has given up on it. */
+  alert_status?: string;
+  /** Whether it has a signing token: absent before GitLab 19.0, which cannot sign deliveries. */
+  signing_token_present?: boolean;
+} & Partial<Record<GitLabWebhookTrigger, boolean>>;
+
+/** One attempt at a webhook delivery, as the webhook's delivery log lists it. */
+export type GitLabWebhookEventResponse = {
+  id: number;
+  /** The webhook's URL at the time: GitLab resends an attempt only while it still is. */
+  url: string;
+  /** What GitLab sent, among it the delivery's `webhook-id`, which a retry or resend repeats. */
+  request_headers?: Record<string, string> | null;
+  /** The status the attempt was answered with, or `"internal error"` when it got no answer. */
+  response_status: string | number;
+  created_at: string;
+};
+
+/** Bounds one read of a webhook's delivery log, at 20 attempts a page, the most GitLab serves. */
+const MAX_WEBHOOK_EVENT_PAGES = 10;
+
+function webhookBody({ url, signingToken, triggers }: GitLabProjectWebhookConfig) {
+  return {
+    url,
+    signing_token: signingToken,
+    ...Object.fromEntries(WEBHOOK_TRIGGERS.map(trigger => [trigger, triggers.includes(trigger)])),
+    confidential_issues_events: false,
+    confidential_note_events: false,
+    // GitLab's own payloads, not a template's, and every branch's pushes: `all_branches` blanks
+    // any branch filter.
+    custom_webhook_template: "",
+    branch_filter_strategy: "all_branches",
+    enable_ssl_verification: true,
+  };
+}
 
 /**
  * A failed GitLab request. `status` is the HTTP status. `isAuthError` marks a 401 that means the
@@ -758,6 +823,60 @@ export class GitLabApi {
     return await this.#get<GitLabProjectResponse>(`/projects/${id}`);
   }
 
+  // -- project webhooks, by numeric project id: GitLab answers only its Maintainers and Owners
+
+  /** The project's webhooks, first page only: GitLab.com allows a project 100. */
+  async listProjectWebhooks(projectId: number): Promise<GitLabProjectWebhookResponse[]> {
+    return await this.#get<GitLabProjectWebhookResponse[]>(`/projects/${projectId}/hooks`, { per_page: 100 });
+  }
+
+  async getProjectWebhook(projectId: number, hookId: number): Promise<GitLabProjectWebhookResponse> {
+    return await this.#get<GitLabProjectWebhookResponse>(`/projects/${projectId}/hooks/${hookId}`);
+  }
+
+  /**
+   * A webhook's delivery attempts since `since` (in ms since the epoch), newest first, as GitLab
+   * lists them. GitLab keeps seven days of them (from 17.3).
+   */
+  async listProjectWebhookEvents(projectId: number, hookId: number, since: number): Promise<GitLabWebhookEventResponse[]> {
+    const events: GitLabWebhookEventResponse[] = [];
+    for (let page: number | null = 1, read = 0; page !== null && read < MAX_WEBHOOK_EVENT_PAGES; read++) {
+      const { items, nextPage }: GitLabPage<GitLabWebhookEventResponse> = await this.#getPage(
+        `/projects/${projectId}/hooks/${hookId}/events`, {}, page, 20);
+      const recent = items.filter(event => Date.parse(event.created_at) >= since);
+      events.push(...recent);
+      page = recent.length < items.length ? null : nextPage;
+    }
+    return events;
+  }
+
+  /**
+   * Has GitLab make a webhook delivery again, with its `webhook-id`, while the call waits (from
+   * 17.4). GitLab allows each user five a minute on a project.
+   */
+  async resendProjectWebhookEvent(projectId: number, hookId: number, eventId: number): Promise<void> {
+    await this.#request<unknown>("POST", `/projects/${projectId}/hooks/${hookId}/events/${eventId}/resend`);
+  }
+
+  async createProjectWebhook(projectId: number, webhook: GitLabProjectWebhookConfig): Promise<GitLabProjectWebhookResponse> {
+    return (await this.#request<GitLabProjectWebhookResponse>("POST", `/projects/${projectId}/hooks`,
+      { body: webhookBody(webhook) })).data;
+  }
+
+  /** Configures an existing webhook as createProjectWebhook() configures a new one. */
+  async updateProjectWebhook(projectId: number, hookId: number, webhook: GitLabProjectWebhookConfig): Promise<GitLabProjectWebhookResponse> {
+    return (await this.#request<GitLabProjectWebhookResponse>("PUT", `/projects/${projectId}/hooks/${hookId}`,
+      { body: webhookBody(webhook) })).data;
+  }
+
+  /**
+   * Deletes a webhook. A 404 is not an error, though it means either that the webhook is gone or
+   * that the account may no longer manage it: GitLab answers a non-Maintainer the same.
+   */
+  async deleteProjectWebhook(projectId: number, hookId: number): Promise<void> {
+    await this.#request<void>("DELETE", `/projects/${projectId}/hooks/${hookId}`, { okStatuses: [404] });
+  }
+
   /**
    * A user's effective membership of a project -- direct, inherited through ancestor groups, or
    * through a group the project is shared with -- or null when they have none. This, not the
@@ -979,6 +1098,12 @@ export class GitLabApi {
 
   async listMergeRequestDiscussions(projectPath: string, iid: number, page: number, perPage: number): Promise<GitLabPage<GitLabDiscussionResponse>> {
     return await this.listDiscussions(projectPath, "merge_requests", iid, page, perPage);
+  }
+
+  /** One discussion on an issue or merge request, with every note in it. */
+  async getDiscussion(projectPath: string, kind: "issues" | "merge_requests", iid: number, discussionId: string): Promise<GitLabDiscussionResponse> {
+    return await this.#get<GitLabDiscussionResponse>(
+      `/projects/${encodeProjectPath(projectPath)}/${kind}/${iid}/discussions/${encodeURIComponent(discussionId)}`);
   }
 
   /** Reply within an existing discussion. */
@@ -1231,10 +1356,22 @@ export function gitRepoPath(projectPath: string): string {
  * as too old.
  */
 export function supportsReviewerState(version: string): boolean {
+  return versionAtLeast(version, 19, 2);
+}
+
+/**
+ * Whether an instance at `version` signs webhook deliveries, which a hook's events must be: GitLab
+ * 19.0 added signing tokens, and earlier versions ignore one without an error.
+ */
+export function supportsSigningTokens(version: string): boolean {
+  return versionAtLeast(version, 19, 0);
+}
+
+/** Whether `version` is at least `major.minor`; one that does not parse counts as too old. */
+function versionAtLeast(version: string, major: number, minor: number): boolean {
   const match = /^(\d+)\.(\d+)/.exec(version);
   if (match === null) return false;
-  const major = Number(match[1]);
-  return major > 19 || (major === 19 && Number(match[2]) >= 2);
+  return Number(match[1]) > major || (Number(match[1]) === major && Number(match[2]) >= minor);
 }
 
 /** Fields a `PUT` on an issue or merge request may change. */

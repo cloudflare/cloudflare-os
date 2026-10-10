@@ -4,7 +4,7 @@
 // test-only bindings are declared by augmenting that.
 
 import type { TestHooks } from "./workerd/worker.js";
-import type { UserAccount } from "../src/gitlab.js";
+import type { GitLabHookDriver, UserAccount } from "../src/gitlab.js";
 
 declare global {
   namespace Cloudflare {
@@ -13,6 +13,7 @@ declare global {
       // from the generated `worker-configuration.d.ts`.
       TEST_HOOKS: DurableObjectNamespace<TestHooks>;
       USER_ACCOUNT: DurableObjectNamespace<UserAccount>;
+      GITLAB_HOOK_DRIVER: DurableObjectNamespace<GitLabHookDriver>;
     }
   }
 }

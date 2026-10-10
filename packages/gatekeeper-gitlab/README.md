@@ -112,6 +112,64 @@ endpoint ignores the reviewer state without an error, so on them the gatekeeper 
 `requestChanges` review rather than post it as a plain comment. Comment and approve reviews work
 on every version.
 
+## Event hooks (optional)
+
+Gadgets can subscribe to a project's issue, merge request, comment, review, push and tag events,
+or to one issue's or merge request's (`subscribe()` in `src/types.d.ts`). GitLab delivers them
+through a project webhook, so this needs GitLab 19.0 or later and a URL GitLab can reach:
+
+1. Set `WEBHOOK_ORIGIN` on this worker to the public origin GitLab should deliver to, e.g.
+   `https://gadgets.example.com`. Without it, hooks are refused and everything else works as
+   before. A self-hosted instance must be allowed to send webhooks there.
+2. If the deployment sits behind Cloudflare Access, add a bypass for
+   `/gatekeeper/gitlab/webhook/*`; the worker accepts only deliveries signed with a webhook's
+   signing token instead.
+
+Enabling a hook adds a webhook to the project, delivering to
+`${WEBHOOK_ORIGIN}/gatekeeper/gitlab/webhook/<id>`, so GitLab allows it only if the connected
+account is a Maintainer or Owner of the project. An account's hooks on one project share its
+webhook, which is deleted when the last of them is disabled, or when the account is disconnected.
+Each webhook signs its deliveries with its own signing token, which only GitLab and this deployment
+hold (Standard Webhooks, which GitLab added in 19.0; the older secret token is sent in the clear,
+so it is not used): a delivery whose signature or timestamp doesn't check out is refused, as is one
+naming a project other than the one whose webhook signed it, and one GitLab repeats is ignored. A
+project's Maintainers can still have GitLab sign anything, through a custom template, so a comment
+is delivered as GitLab has it, read back by its id. An event is delivered only while the account
+can still read the issue, merge request or repository it concerns, which the project alone doesn't
+show: a Guest of a private project reads it, but not its merge requests or code. The webhook never
+asks for confidential issues or internal comments.
+
+The project's other Maintainers can see the webhook, though not its token. Every hour the worker
+checks each webhook on GitLab, and restores one that someone has deleted, pointed elsewhere,
+switched to unverified TLS, or given a custom template, a branch filter for pushes, other triggers
+or another token: to stop the deliveries, disable the hooks. The same check moves them to a new
+`WEBHOOK_ORIGIN` within the hour, and replaces a webhook GitLab has disabled for good after 40
+failed deliveries, which editing would not revive. GitLab never retries a failed delivery itself,
+so the same check has it resend what it failed to deliver in the past two hours: up to 20 an hour
+for each account, shared among its projects so that busy ones can't crowd out the rest, and five
+for any one project, since GitLab allows only five resends a minute. Failures beyond that, or older
+than two hours, are lost. So is what a template mangled, since GitLab resends a delivery as it
+first sent it, and what a branch filter held back. A delivery that reaches the worker is retried
+until the gadget's hook accepts it, eight attempts in all. When every recent delivery failed, as
+when Cloudflare Access turns GitLab away, the check logs `hooks.webhook.deliveries.failing` with
+the statuses GitLab got.
+
+For local development, GitLab cannot reach `localhost`: run a tunnel to the dev server (e.g.
+`cloudflared tunnel --url http://localhost:8787`) and set `WEBHOOK_ORIGIN` to its origin in the
+root `.dev.vars`.
+
+What this relies on GitLab for is checked against GitLab itself by `pnpm test:contract`
+(`__tests__/contract`), which the `gitlab-contract` workflow runs weekly and on demand once the
+`CONTRACT_GITLAB_TOKEN` secret and `CONTRACT_GITLAB_PROJECT` variable name a disposable private
+project:
+- a reader without access gets a 404;
+- a webhook keeps the settings the hourly check compares;
+- an attempt's log names its delivery, which a resend repeats;
+- a resend is signed with the current signing token, and refused once the URL changes;
+- the log is newest first;
+- the account is the sender of what it does;
+- each event's payload parses.
+
 ## Worker Preview OAuth callbacks
 
 A Worker Preview's hostname cannot be registered with the GitLab application, so a deployment

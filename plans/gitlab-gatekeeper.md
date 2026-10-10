@@ -655,6 +655,11 @@ queue, no caching, no OAuth.
 | `#~N` provisional references | `#~N` (issue) and `!~N` (MR) | GitLab reference grammar |
 | `GitHubPullRequestRevision {baseSha, headSha, mergeBaseSha?}` | `GitLabMergeRequestRevision` same names, same meanings | mapped from `diff_refs` via `revisionFromDiffRefs` (see locked decision) |
 | `GitHubPullRequestDiffFile`/`Hunk`/`Line` | `GitLabDiffFile`/`Hunk`/`Line` = kit's `GitDiffFile`/…, with no `"copied"` status | shared; GitLab never reports a copy |
+| `subscribe(hook, {events})`; event kinds `issue`, `pullRequest`, `comment`, `review`, `push`, `tag` | same; `mergeRequest` for `pullRequest` | vocabulary. Needs GitLab 19.0+, whose signing tokens are what makes a delivery verifiable (the older secret token is a plaintext header), and Maintainer, probed with `GET /projects/:id/hooks` so admins and custom roles pass |
+| `GitHubIssueEvent.info` / `GitHubPullRequestEvent.info`, from the payload | the same details types, read through the REST normalizers at delivery | GitLab's payloads are not REST-shaped (authors as bare ids, no comment count), so `info` is "as GitLab reports it when the event is delivered" |
+| `GitHubReviewEvent.review {id, author, decision, bodyMarkdown, commitId?, submittedAt?, url}` | `GitLabReviewEvent.decision` | no review object: an `approval`, or from 19.3 a reviewer's new state (`requested_changes`, `reviewed`); a summary arrives as its own `comment` event |
+| `GitHubEventSubject {repo, id, url, title}` | `GitLabEventSubject` adds `kind: "issue" \| "mergeRequest"` | issue #42 and MR !42 are different objects, so the number alone is ambiguous |
+| `GitHubPushEvent.forced` | dropped | GitLab's push payload has no force indicator |
 
 Everything else — `Cursor<T>`, page options, `listBranches`/`listTags`/`resolveRef`/`getCommit`/
 `listCommits`/`push` on the project, `getDetails`/`setTitle`/`setBody`/`addLabels`/

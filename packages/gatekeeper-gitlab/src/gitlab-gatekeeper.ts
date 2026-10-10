@@ -8,7 +8,7 @@
 // `push` binds its expected old head at queue time and applies through receive-pack's
 // compare-and-swap, and reads of a branch with queued pushes show the world as if they had landed.
 
-import { DurableObject, RpcStub } from "cloudflare:workers";
+import { DurableObject, RpcStub, RpcTarget, restore } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import {
   type ApprovalQueue,
@@ -18,10 +18,12 @@ import {
   type GitCache,
   type GitOid,
   type GitPullHints,
+  type ObservationDescription,
   type ResourceDescription,
   stripTrailingSlashes,
 } from "@gadgets/workshop-shared/gatekeeper";
-import { ArrayCursor } from "@gadgets/gatekeeper-kit/cursors";
+import { codeSpan, sanitizeTitle } from "@gadgets/gatekeeper-kit/action-description";
+import { ArrayCursor, SessionGitCache } from "@gadgets/gatekeeper-kit/cursors";
 import {
   MAX_DIFF_BLOB_BYTES,
   changedPathsBetweenTrees,
@@ -44,11 +46,13 @@ import {
   GitLabApiError,
   lineCode,
   supportsReviewerState,
+  supportsSigningTokens,
   type GitLabApprovalsResponse,
   type GitLabDiffResponse,
   type GitLabDiscussionResponse,
   type GitLabDraftNoteResponse,
   type GitLabMergeRequestResponse,
+  type GitLabNoteResponse,
   type GitLabPage,
   type GitLabPositionRequest,
   type GitLabSimpleUser,
@@ -83,15 +87,24 @@ import { describeGitLabAction } from "./gitlab-descriptions";
 import {
   VENDOR_ID,
   instanceUrl as instanceUrlOf,
+  webhookOrigin,
   withAccountApi,
   type Env,
   type GitLabGatekeeperImplProps,
 } from "./gitlab-env";
 import {
+  HOOKS_NOT_CONFIGURED,
+  type GitLabEventHookTarget,
+  type GitLabHookDelivery,
+  type GitLabHookParams,
+} from "./gitlab-hooks";
+import type { GitLabEventTarget, GitLabWebhookEvent } from "./gitlab-webhook-events";
+import {
   actorFromUser,
   actorFromUsername,
   branchNameMatchesSearch,
   commentTargetFromPosition,
+  commitIdsOfMergeRequestSummary,
   diffAnchor,
   diffLinePositions,
   discussionCommentFromNote,
@@ -142,6 +155,9 @@ import type {
   GitLabDiffThread,
   GitLabDiffThreadComment,
   GitLabDiscussionEntry,
+  GitLabEvent,
+  GitLabEventKind,
+  GitLabEventSubject,
   GitLabIssue,
   GitLabIssueDetails,
   GitLabIssueFilter,
@@ -150,6 +166,7 @@ import type {
   GitLabIssueSummary,
   GitLabMergeRequest,
   GitLabMergeRequestDetails,
+  GitLabMergeRequestEvent,
   GitLabMergeRequestFilter,
   GitLabMergeRequestMergeOptions,
   GitLabMergeRequestReviewDraft,
@@ -159,6 +176,7 @@ import type {
   GitLabProject,
   GitLabProjectMetadata,
   GitLabProjectRef,
+  GitLabSubscribeOptions,
   GitLabTagSummary,
 } from "./types";
 import TYPES_CODE from "./types.txt";
@@ -253,6 +271,41 @@ function reviewedHeadMoved(realId: string, reviewedSha: string, liveSha?: string
     "changed. Re-read the diff and review it again.";
 }
 
+/** `#42` for an issue, `!42` for a merge request: how GitLab writes a reference to either. */
+function issuableReference(kind: EntityKind, id: string): string {
+  return `${kind === "issue" ? "#" : "!"}${id}`;
+}
+
+const EVENT_KIND_NAMES: Record<GitLabEventKind, string> = {
+  issue: "issue",
+  mergeRequest: "merge request",
+  comment: "comment",
+  review: "review",
+  push: "push",
+  tag: "tag",
+};
+
+/** E.g. "issue, comment and push". */
+function listEventKinds(kinds: GitLabEventKind[], conjunction: "and" | "or"): string {
+  const names = kinds.map(kind => EVENT_KIND_NAMES[kind]);
+  return names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} ${conjunction} ${names.at(-1)}`;
+}
+
+const MERGE_REQUEST_ACTION_WORDS: Record<GitLabMergeRequestEvent["action"], string> = {
+  opened: "opened",
+  closed: "closed",
+  merged: "merged",
+  reopened: "reopened",
+  readyForReview: "marked ready",
+  pushed: "pushed to",
+};
+
+/** What a push did to a branch or tag, e.g. "moving it from `a` to `b`". */
+function refChange(before: string | undefined, after: string | undefined): string {
+  if (after === undefined) return "deleting it";
+  return `${before === undefined ? "creating it at" : `moving it from ${codeSpan(before)} to`} ${codeSpan(after)}`;
+}
+
 @validateRpc()
 export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImplProps>
   implements Gatekeeper<GitLabProject | GitLabIssue | GitLabMergeRequest> {
@@ -340,9 +393,12 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     this.ctx.storage.kv.put<Cached<T>>(key, { fetchedAt: Date.now(), value, generation });
   }
 
-  /** TTL cache: GitLab's REST API does not reliably answer conditional requests, so there is no ETag path. */
-  async #cached<T>(key: string, ttlMs: number, loader: () => Promise<T>): Promise<T> {
-    const cached = this.#loadCached<T>(key, ttlMs);
+  /**
+   * TTL cache: GitLab's REST API does not reliably answer conditional requests, so there is no ETag
+   * path. With `fresh`, always asks GitLab, and caches the answer.
+   */
+  async #cached<T>(key: string, ttlMs: number, loader: () => Promise<T>, fresh = false): Promise<T> {
+    const cached = fresh ? undefined : this.#loadCached<T>(key, ttlMs);
     if (cached !== undefined) return cached;
     const generation = this.#cacheGeneration();
     const value = await loader();
@@ -509,6 +565,12 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       normalizeProjectMetadata(this.#instanceUrl(), await this.#withApi(api => api.getProject(this.#projectPath()))));
   }
 
+  /** The project's numeric id, which its webhook and the events that webhook delivers name it by. */
+  async #getProjectId(fresh = false): Promise<number> {
+    return await this.#cached(this.#cacheKey("project-id", this.#projectPath()), ENTITY_CACHE_TTL_MS, async () =>
+      (await this.#withApi(api => api.getProject(this.#projectPath()))).id, fresh);
+  }
+
   /** A fork's project ref, for a merge request whose source project is not this one. */
   async #projectRefById(id: number): Promise<GitLabProjectRef> {
     return await this.#cached(this.#cacheKey("project-by-id", String(id)), ENTITY_CACHE_TTL_MS, async () => {
@@ -531,17 +593,17 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   // -- issues and merge requests ----------------------------------------------------------
 
-  async #getRemoteIssueDetails(realId: string): Promise<GitLabIssueDetails> {
+  async #getRemoteIssueDetails(realId: string, fresh = false): Promise<GitLabIssueDetails> {
     return await this.#cached(this.#cacheKey("issue", realId), ENTITY_CACHE_TTL_MS, async () =>
       normalizeIssueDetails(this.#instanceUrl(), this.#projectPath(),
-        await this.#withApi(api => api.getIssue(this.#projectPath(), Number(realId)))));
+        await this.#withApi(api => api.getIssue(this.#projectPath(), Number(realId)))), fresh);
   }
 
   /**
    * The raw merge request, retried once when `diff_refs` is still empty (GitLab computes it
    * asynchronously after creation); the revision reads fall back to `/merge_base` if it stays so.
    */
-  async #getRawMergeRequest(realId: string): Promise<GitLabMergeRequestResponse> {
+  async #getRawMergeRequest(realId: string, fresh = false): Promise<GitLabMergeRequestResponse> {
     return await this.#cached(this.#cacheKey("mr-raw", realId), ENTITY_CACHE_TTL_MS, async () => {
       let mr = await this.#withApi(api => api.getMergeRequest(this.#projectPath(), Number(realId)));
       if (!mr.diff_refs && mr.state === "opened") {
@@ -549,7 +611,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         mr = await this.#withApi(api => api.getMergeRequest(this.#projectPath(), Number(realId)));
       }
       return mr;
-    });
+    }, fresh);
   }
 
   /**
@@ -557,7 +619,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * user): the merge request is still readable without them, but an empty list would claim
    * nobody approved.
    */
-  async #getApprovers(realId: string): Promise<GitLabSimpleUser[] | null> {
+  async #getApprovers(realId: string, fresh = false): Promise<GitLabSimpleUser[] | null> {
     return await this.#cached(this.#cacheKey("mr-approvals", realId), ENTITY_CACHE_TTL_MS, async () => {
       try {
         return (await this.#withApi(api => api.getMergeRequestApprovals(this.#projectPath(), Number(realId))))
@@ -566,16 +628,16 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         if (error instanceof GitLabApiError && (error.status === 404 || error.status === 403)) return null;
         throw error;
       }
-    });
+    }, fresh);
   }
 
-  async #getRemoteMergeRequestDetails(realId: string): Promise<GitLabMergeRequestDetails> {
+  async #getRemoteMergeRequestDetails(realId: string, fresh = false): Promise<GitLabMergeRequestDetails> {
     return await this.#cached(this.#cacheKey("mr", realId), ENTITY_CACHE_TTL_MS, async () => {
-      const raw = this.#getRawMergeRequest(realId);
+      const raw = this.#getRawMergeRequest(realId, fresh);
       const [mr, approvers, sourceProject] = await Promise.all([
-        raw, this.#getApprovers(realId), raw.then(fetched => this.#sourceProjectRef(fetched))]);
+        raw, this.#getApprovers(realId, fresh), raw.then(fetched => this.#sourceProjectRef(fetched))]);
       return normalizeMergeRequestDetails(this.#instanceUrl(), this.#projectPath(), mr, approvers, sourceProject);
-    });
+    }, fresh);
   }
 
   async #getIssueDetails(logicalId: string): Promise<GitLabIssueDetails> {
@@ -1242,6 +1304,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
           snippet: project.description ?? `GitLab project ${project.path}`,
           suggestedBindingName: "GITLAB_PROJECT",
           tsType: "GitLabProject",
+          hookTsType: "GitLabEventHook",
         };
       }
       case "issue": {
@@ -1252,6 +1315,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
           snippet: textSnippet(issue.bodyMarkdown, `${issue.state} issue in ${issue.project.path}`),
           suggestedBindingName: "GITLAB_ISSUE",
           tsType: "GitLabIssue",
+          hookTsType: "GitLabEventHook",
         };
       }
       case "mergeRequest": {
@@ -1262,6 +1326,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
           snippet: textSnippet(mr.bodyMarkdown, `${mr.state} merge request in ${mr.project.path}`),
           suggestedBindingName: "GITLAB_MERGE_REQUEST",
           tsType: "GitLabMergeRequest",
+          hookTsType: "GitLabEventHook",
         };
       }
     }
@@ -1286,6 +1351,275 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       case "mergeRequest":
         return new GitLabMergeRequestImpl(this, queue, String(props.iid));
     }
+  }
+
+  // -- event hooks ------------------------------------------------------------------------
+
+  [restore]({ target }: GitLabHookParams): GitLabHookDelivery {
+    return new GitLabHookDeliveryImpl((callback, approvalQueue, event) =>
+      this.#deliverHookEvent(target, callback, approvalQueue, event));
+  }
+
+  /**
+   * Binds `hook` to events in the bound project, or with `target` on one issue or merge request in
+   * it (see `GitLabProject.subscribe()`), first checking that the instance signs webhook deliveries
+   * and that the account may add the webhook that will deliver them.
+   */
+  async bindEventHook(
+    approvalQueue: RpcStub<ApprovalQueue>, target: { kind: EntityKind; id: string } | undefined,
+    hook: RpcStub<GitLabEventHookTarget>, options: GitLabSubscribeOptions | undefined,
+  ): Promise<void> {
+    if (webhookOrigin(this.env) === undefined) throw new Error(HOOKS_NOT_CONFIGURED);
+    const path = this.#projectPath();
+    const watchable: GitLabEventKind[] = target === undefined
+      ? ["issue", "mergeRequest", "comment", "review", "push", "tag"]
+      : target.kind === "issue" ? ["issue", "comment"] : ["mergeRequest", "comment", "review"];
+    const events = [...new Set(options?.events ?? watchable)];
+    if (events.length === 0 || events.some(kind => !watchable.includes(kind))) {
+      throw new TypeError(`This can only watch for ${listEventKinds(watchable, "or")} events.`);
+    }
+    let watched: GitLabEventTarget | undefined;
+    if (target !== undefined) {
+      const iid = Number(target.id.startsWith("~") ? this.#resolveProvisionalId(target.id) : target.id);
+      if (!Number.isSafeInteger(iid) || iid < 1) {
+        throw new Error(`${issuableReference(target.kind, target.id)} can't be watched until it is created on GitLab.`);
+      }
+      watched = { kind: target.kind, iid };
+    }
+    const [version, projectId, viewer] = await Promise.all([
+      this.#getVersion(), this.#getProjectId(), this.#getViewer()]);
+    if (!supportsSigningTokens(version)) {
+      throw new Error(`GitLab hooks need GitLab 19.0 or later, which signs webhook deliveries, and ${this.#instanceUrl()} ` +
+        `runs ${version}.`);
+    }
+    try {
+      // Answered only for those who may manage the project's webhooks.
+      await this.#withApi(api => api.listProjectWebhooks(projectId));
+    } catch (error) {
+      if (!(error instanceof GitLabApiError && (error.status === 403 || error.status === 404))) throw error;
+      throw new Error(`GitLab delivers events to a webhook, which only a Maintainer or Owner of ${path} ` +
+        "can add, and the connected account is not one.", { cause: error });
+    }
+
+    const params: GitLabHookParams = watched === undefined ? {} : { target: watched };
+    using delivery: RpcStub<GitLabHookDelivery> = await this.ctx.restore(params);
+    const controller = this.ctx.exports.GitLabHookController({ props: {
+      ...params,
+      key: crypto.randomUUID(),
+      userObjectId: this.#props().userObjectId,
+      project: { id: projectId, path },
+      events,
+      viewerId: viewer.id,
+      delivery,
+    } });
+    const where = watched === undefined
+      ? path
+      : `${watched.kind === "issue" ? "issue" : "merge request"} ${issuableReference(watched.kind, String(watched.iid))} in ${path}`;
+    // @ts-expect-error Workers currently widens the controller's hook type across bindHook RPC.
+    await approvalQueue.bindHook(controller, hook, {
+      title: sanitizeTitle(`Watch ${where} on GitLab`),
+      description: `Call this hook with each ${listEventKinds(events, "and")} event in ${where}, ` +
+        "letting it read each one and queue changes there for approval. Enabling it adds a " +
+        "webhook to the project on GitLab, unless an earlier hook there already has.",
+    });
+  }
+
+  /**
+   * Delivers one event to one firing of a hook on this binding, or (`target`) on one issue or merge
+   * request in it, if the binding admits the event: in the bound project, and its issue or merge
+   * request, while the account can still read them. The driver's own filters only spare firings.
+   */
+  async #deliverHookEvent(
+    target: GitLabEventTarget | undefined, callback: RpcStub<GitLabEventHookTarget>,
+    approvalQueue: RpcStub<ApprovalQueue>, stored: GitLabWebhookEvent,
+  ): Promise<void> {
+    const { resourceKind, iid } = this.#props();
+    // An issue or merge request binding's hooks watch only that one, whatever their parameters say.
+    const scope = resourceKind === "project" ? target : { kind: resourceKind, iid };
+    // A push or a tag concerns no one issue or merge request.
+    if (scope !== undefined &&
+        !("target" in stored && stored.target.kind === scope.kind && stored.target.iid === scope.iid)) {
+      return;
+    }
+
+    // Released when receiveEvent() returns, or here if it is never called.
+    const capabilities: Disposable[] = [];
+    const gitCache = new SessionGitCache(approvalQueue, { withhold: commit => this.isSimulatedCommitId(commit) });
+    let event: GitLabEvent;
+    try {
+      // The webhook outlives the account's access to the project, and its connection, so every
+      // delivery asks GitLab afresh, never the cache, as the account: a revoked account is refused
+      // even moments after a delivery that succeeded.
+      if (stored.projectId !== await this.#getProjectId(true)) return;
+      const built = await this.#hookEvent(stored, approvalQueue, capabilities);
+      if (!built) return;
+      event = built.event;
+      await approvalQueue.authorizeObservation(built.observation);
+      if (built.commitIds.length > 0) await gitCache.advertise(built.commitIds);
+    } catch (error) {
+      for (const capability of capabilities) capability[Symbol.dispose]();
+      // 403 for what the account's role no longer covers, such as a Guest's merge requests.
+      if (!(error instanceof GitLabApiError && (error.status === 404 || error.status === 403))) throw error;
+      // Nothing to retry, and nothing else would tell why the hook went quiet.
+      logger.warn("dropped a GitLab event the account can no longer read", { event: "hooks.delivery.unreadable" });
+      return;
+    } finally {
+      gitCache.dispose();
+    }
+    await callback.receiveEvent(event);
+  }
+
+  /**
+   * The event a hook receives for `stored`, with capabilities on `approvalQueue` (each also pushed
+   * to `capabilities`), the observation delivering it makes, and the commits it names. An issue's
+   * or merge request's details are read now, as the webhook's payload does not carry them in the
+   * shape the REST API does, and a comment as GitLab has it (see #readNote); a review or push is
+   * taken from the (signed) payload, once the account has read what it tells of. Reading the
+   * project is not enough: a Guest of a private project reads it, and its issues, but not its
+   * merge requests or repository. Undefined for a comment that is not to be delivered.
+   */
+  async #hookEvent(stored: GitLabWebhookEvent, approvalQueue: RpcStub<ApprovalQueue>, capabilities: Disposable[]):
+      Promise<{ event: GitLabEvent; observation: ObservationDescription; commitIds: GitOid[] } | undefined> {
+    const path = this.#projectPath();
+    const { id, actor } = stored;
+    const by = actor ? ` by ${codeSpan(`@${actor.username}`)}` : "";
+    const held = <T extends Disposable>(capability: T): T => (capabilities.push(capability), capability);
+    const issue = (number: string) => held(new GitLabIssueImpl(this, approvalQueue.dup(), number));
+    const mergeRequest = (number: string) => held(new GitLabMergeRequestImpl(this, approvalQueue.dup(), number));
+    const project = () => held(new GitLabProjectSessionImpl(this, approvalQueue.dup()));
+    switch (stored.kind) {
+      case "issue": {
+        // Afresh too: one cached just before the event would describe the issue before it.
+        const info = await this.#getRemoteIssueDetails(String(stored.target.iid), true);
+        return {
+          event: { kind: "issue", id, actor, action: stored.action, info, issue: issue(info.id) },
+          observation: {
+            title: sanitizeTitle(`GitLab issue #${info.id} ${stored.action}: ${info.title}`),
+            description: `Receive issue #${info.id} in ${path}, ${stored.action}${by}: its title, ` +
+              "description, author, assignees, and labels.",
+          },
+          commitIds: [],
+        };
+      }
+      case "mergeRequest": {
+        const info = await this.#getRemoteMergeRequestDetails(String(stored.target.iid), true);
+        const action = MERGE_REQUEST_ACTION_WORDS[stored.action];
+        return {
+          event: { kind: "mergeRequest", id, actor, action: stored.action, info, mergeRequest: mergeRequest(info.id) },
+          observation: {
+            title: sanitizeTitle(`GitLab merge request !${info.id} ${action}: ${info.title}`),
+            description: `Receive merge request !${info.id} in ${path}, ${action}${by}: its title, ` +
+              "description, author, assignees, reviewers, approvals, labels, branches, and merge status.",
+          },
+          commitIds: commitIdsOfMergeRequestSummary(info),
+        };
+      }
+      case "comment": {
+        const [title, note] = await Promise.all([this.#readTitle(stored.target), this.#readNote(stored)]);
+        if (!note) return undefined;
+        const subject = this.#eventSubject(stored.target, title);
+        const author = actorFromUser(this.#instanceUrl(), note.author);
+        const entry = discussionCommentFromNote(this.#instanceUrl(), subject.url, note);
+        const { kind: _, ...posted } = entry;
+        // As `readDiffThreads()` tells a diff comment from the rest: by its position in the diff.
+        const comment = note.position
+          ? { ...posted, threadId: stored.discussionId, target: commentTargetFromPosition(note.position) }
+          : entry;
+        const on = `${note.position ? "the diff of " : ""}${subject.kind === "issue" ? "issue" : "merge request"}`;
+        const reference = issuableReference(subject.kind, subject.id);
+        return {
+          event: {
+            kind: "comment", id, actor: author, subject, comment,
+            ...subject.kind === "issue" ? { issue: issue(subject.id) } : { mergeRequest: mergeRequest(subject.id) },
+          },
+          observation: {
+            title: sanitizeTitle(`GitLab comment on ${reference}: ${subject.title}`),
+            description: `Read a new comment${author ? ` by ${codeSpan(`@${author.username}`)}` : ""} on ${on} ` +
+              `${reference} in ${path}.`,
+          },
+          commitIds: [],
+        };
+      }
+      case "review": {
+        const subject = this.#eventSubject(stored.target, await this.#readTitle(stored.target));
+        return {
+          event: { kind: "review", id, actor, subject, decision: stored.decision, mergeRequest: mergeRequest(subject.id) },
+          observation: {
+            title: sanitizeTitle(`GitLab review of !${subject.id}: ${subject.title}`),
+            description: `Read a review${by} of merge request !${subject.id} in ${path}: its decision.`,
+          },
+          commitIds: [],
+        };
+      }
+      case "push": {
+        const { branch, before, after } = stored;
+        await this.#readRepository();
+        return {
+          event: { kind: "push", id, actor, branch, before, after, project: project() },
+          observation: {
+            title: sanitizeTitle(`GitLab push to ${branch} in ${path}`),
+            description: `Receive a push${by} to branch ${codeSpan(branch)} of ${path}, ${refChange(before, after)}.`,
+          },
+          commitIds: [before, after].filter(commit => commit !== undefined),
+        };
+      }
+      case "tag": {
+        const { tag, before, after } = stored;
+        await this.#readRepository();
+        return {
+          event: { kind: "tag", id, actor, tag, before, after, project: project() },
+          observation: {
+            title: sanitizeTitle(`GitLab push of tag ${tag} in ${path}`),
+            description: `Receive a push${by} of tag ${codeSpan(tag)} in ${path}, ${refChange(before, after)}.`,
+          },
+          // An annotated tag names its tag object, which is no commit to advertise.
+          commitIds: [],
+        };
+      }
+    }
+  }
+
+  /**
+   * The title of the issue or merge request `target`, read afresh as the account, which throws
+   * GitLab's refusal once it can no longer read it.
+   */
+  async #readTitle({ kind, iid }: GitLabEventTarget): Promise<string> {
+    return kind === "issue"
+      ? (await this.#getRemoteIssueDetails(String(iid), true)).title
+      : (await this.#getRawMergeRequest(String(iid), true)).title;
+  }
+
+  /**
+   * The comment a comment event names, as GitLab has it now: a custom template lets the project's
+   * Maintainers have GitLab sign any payload, so a payload's words and author prove nothing.
+   * Undefined if GitLab no longer has it, or it is not a person's, is internal, or is the account's
+   * own, which a hook would answer.
+   */
+  async #readNote({ target, noteId, discussionId }: Extract<GitLabWebhookEvent, { kind: "comment" }>):
+      Promise<GitLabNoteResponse | undefined> {
+    const [discussion, viewer] = await Promise.all([
+      this.#withApi(api => api.getDiscussion(this.#projectPath(), target.kind === "issue" ? "issues" : "merge_requests",
+        target.iid, discussionId)),
+      this.#getViewer(),
+    ]);
+    const note = discussion.notes.find(found => found.id === noteId);
+    if (!note || note.system || note.internal || note.author?.id === viewer.id) {
+      logger.info("dropped a GitLab comment event that GitLab's record of the comment does not bear out", {
+        event: "hooks.delivery.unconfirmed",
+      });
+      return undefined;
+    }
+    return note;
+  }
+
+  /** Throws GitLab's refusal unless the account can read the project's repository now. */
+  async #readRepository(): Promise<void> {
+    await this.#withApi(api => api.listBranches(this.#projectPath(), { page: 1, perPage: 1 }));
+  }
+
+  #eventSubject({ kind, iid }: GitLabEventTarget, title: string): GitLabEventSubject {
+    const id = String(iid);
+    return { kind, project: this.#projectRef(), id, url: this.#noteableUrl(kind, id), title };
   }
 
   /**
@@ -2996,5 +3330,21 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       results.push(summary);
     }
     return results;
+  }
+}
+
+/** What a hook's delivery stub restores to: the binding's facet, narrowed to delivering. */
+@validateRpc()
+class GitLabHookDeliveryImpl extends RpcTarget implements GitLabHookDelivery {
+  readonly #deliver: GitLabHookDelivery["deliver"];
+
+  constructor(deliver: GitLabHookDelivery["deliver"]) {
+    super();
+    this.#deliver = deliver;
+  }
+
+  deliver(callback: RpcStub<GitLabEventHookTarget>, approvalQueue: RpcStub<ApprovalQueue>,
+          event: GitLabWebhookEvent): Promise<void> {
+    return this.#deliver(callback, approvalQueue, event);
   }
 }
