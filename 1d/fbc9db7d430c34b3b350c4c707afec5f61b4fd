@@ -1,0 +1,19 @@
+packages/gatekeeper-google/src/sheets.ts
+  s_f8f4e8eafb49cb::t_cdc114f2d813d2 60-67,488
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1dfbc9db7d430c34b3b350c4c707afec5f61b4fd",
+  "prompts": {},
+  "sessions": {
+    "s_f8f4e8eafb49cb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "96d8cda6-efce-42a7-8834-fd3434ebce3b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
