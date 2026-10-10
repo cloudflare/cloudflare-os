@@ -1,0 +1,10 @@
+// Type-checks the live contract checks (`__tests__/contract`), which run in Node: Node's types on
+// top of the Workers ones the sources they import are checked with.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["./worker-configuration.d.ts", "node"]
+  },
+  "include": ["__tests__/contract"],
+  "exclude": []
+}

@@ -95,11 +95,10 @@ import {
 import {
   HOOKS_NOT_CONFIGURED,
   type GitLabEventHookTarget,
-  type GitLabEventTarget,
   type GitLabHookDelivery,
   type GitLabHookParams,
-  type GitLabWebhookEvent,
 } from "./gitlab-hooks";
+import type { GitLabEventTarget, GitLabWebhookEvent } from "./gitlab-webhook-events";
 import {
   actorFromUser,
   actorFromUsername,

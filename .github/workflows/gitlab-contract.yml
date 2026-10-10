@@ -1,0 +1,72 @@
+# Checks against GitLab itself what the GitLab gatekeeper's hooks rely on GitLab for, which the
+# fakes in the regular suites can only assume: see packages/gatekeeper-gitlab/__tests__/contract.
+#
+# It needs a disposable private project, with at least one commit, on GitLab 19.0 or later,
+# named by its path in the CONTRACT_GITLAB_PROJECT variable, and the CONTRACT_GITLAB_TOKEN secret:
+# an access token with the `api` scope of an account that maintains it. The instance is gitlab.com
+# unless the CONTRACT_GITLAB_URL variable names another. Without the project and token it does
+# nothing. Each run leaves closed issues and merge requests behind, and uploads the payloads
+# GitLab sent, names replaced, for fixtures.
+name: GitLab contract
+
+on:
+  schedule:
+    - cron: "41 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Runs share the one project.
+concurrency:
+  group: gitlab-contract
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "24.19.0"
+
+jobs:
+  contract:
+    name: GitLab contract checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CONTRACT_GITLAB_TOKEN: ${{ secrets.CONTRACT_GITLAB_TOKEN }}
+      CONTRACT_GITLAB_PROJECT: ${{ vars.CONTRACT_GITLAB_PROJECT }}
+      CONTRACT_GITLAB_URL: ${{ vars.CONTRACT_GITLAB_URL }}
+    steps:
+      - name: Skip without a contract project
+        if: env.CONTRACT_GITLAB_TOKEN == '' || env.CONTRACT_GITLAB_PROJECT == ''
+        run: echo "::notice::CONTRACT_GITLAB_TOKEN or CONTRACT_GITLAB_PROJECT is not set, so the GitLab contract checks were skipped."
+
+      - name: Check out repository
+        if: env.CONTRACT_GITLAB_TOKEN != '' && env.CONTRACT_GITLAB_PROJECT != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Enable Corepack
+        if: env.CONTRACT_GITLAB_TOKEN != '' && env.CONTRACT_GITLAB_PROJECT != ''
+        run: corepack enable
+
+      - name: Set up Vite+, Node.js and dependencies
+        if: env.CONTRACT_GITLAB_TOKEN != '' && env.CONTRACT_GITLAB_PROJECT != ''
+        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: true
+          run-install: true
+
+      - name: Check GitLab's contract
+        if: env.CONTRACT_GITLAB_TOKEN != '' && env.CONTRACT_GITLAB_PROJECT != ''
+        run: pnpm --filter @gadgets/gitlab-gatekeeper test:contract
+        env:
+          CONTRACT_GITLAB_PAYLOADS_DIR: ${{ runner.temp }}/gitlab-contract-payloads
+
+      - name: Keep GitLab's payloads
+        if: always() && env.CONTRACT_GITLAB_TOKEN != '' && env.CONTRACT_GITLAB_PROJECT != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gitlab-contract-payloads
+          path: ${{ runner.temp }}/gitlab-contract-payloads
+          if-no-files-found: ignore

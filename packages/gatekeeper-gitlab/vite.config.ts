@@ -18,6 +18,8 @@ export default {
     ...config.run,
     tasks: {
       ...config.run.tasks,
+      // The contract checks run in Node rather than workerd, so they are checked with Node's types.
+      build: { ...config.run.tasks.build, command: ["tsc", "tsc -p tsconfig.contract.json"] },
       /**
        * The validated entrypoint `@gadgets/integration-tests` boots this gatekeeper from, built
        * before its test files start; see gatekeeper-github's task of the same name.

@@ -158,6 +158,18 @@ For local development, GitLab cannot reach `localhost`: run a tunnel to the dev 
 `cloudflared tunnel --url http://localhost:8787`) and set `WEBHOOK_ORIGIN` to its origin in the
 root `.dev.vars`.
 
+What this relies on GitLab for is checked against GitLab itself by `pnpm test:contract`
+(`__tests__/contract`), which the `gitlab-contract` workflow runs weekly and on demand once the
+`CONTRACT_GITLAB_TOKEN` secret and `CONTRACT_GITLAB_PROJECT` variable name a disposable private
+project:
+- a reader without access gets a 404;
+- a webhook keeps the settings the hourly check compares;
+- an attempt's log names its delivery, which a resend repeats;
+- a resend is signed with the current signing token, and refused once the URL changes;
+- the log is newest first;
+- the account is the sender of what it does;
+- each event's payload parses.
+
 ## Worker Preview OAuth callbacks
 
 A Worker Preview's hostname cannot be registered with the GitLab application, so a deployment
