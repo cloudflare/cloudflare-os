@@ -318,6 +318,16 @@ describe("accounts going away", () => {
     expect(failure(await late.trySubscribe([["subscribeMentions"]]))).toMatch(/Reconnect the X account/);
   });
 
+  it("refuses a hook bound before the account was disconnected and enabled after", async () => {
+    const x = new FakeX().install();
+    const account = await seedAccount(x);
+    const hook = binding({ userObjectId: account, resourceKind: "profile", username: "bob" });
+    await hook.subscribe([["subscribePosts"]]);
+    unwrap(await sharedHooks().user(account, "revoke"));
+    expect(failure(await hook.tryEnable())).toBe("This X account has been disconnected.");
+    expect(x.subscriptions.size).toBe(0);
+  });
+
   it("undoes the subscription of a hook enabled as the account is disconnected", async () => {
     const x = new FakeX().install();
     const account = await seedAccount(x);

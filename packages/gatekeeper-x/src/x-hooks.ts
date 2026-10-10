@@ -237,8 +237,12 @@ export class XHookDriver extends DurableObject<Env> {
   async revoke(): Promise<void> {
     const kv = this.ctx.storage.kv;
     const account = kv.get<string>("account");
-    // Never used: a hook enabled from now on fails for want of the account.
-    if (account === undefined) return;
+    // Fenced even if no hook was ever enabled: one already bound could be enabled later, and a
+    // subscription to a user's posts takes the app's token, not the gone account's.
+    if (account === undefined) {
+      kv.put("revoked", true);
+      return;
+    }
     const watched = new Map<string, Registration>();
     for (const [key, value] of Array.from(kv.list())) {
       if (key.startsWith("reg:")) {
