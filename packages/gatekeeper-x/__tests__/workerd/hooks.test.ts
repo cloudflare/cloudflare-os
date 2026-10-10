@@ -172,6 +172,24 @@ describe("subscribing", () => {
     expect(mentions()).toHaveLength(0);
   });
 
+  it("adopts a subscription X made though its answer was lost, among more than X lists at once", async () => {
+    const x = new FakeX().install();
+    x.subscriptionsPerPage = 2;
+    for (const userId of ["2001", "2002"]) {
+      const id = x.id();
+      x.subscriptions.set(id, { subscription_id: id, event_type: "post.create", filter: { user_id: userId }, by: "app" });
+    }
+    const account = await seedAccount(x);
+    const hook = binding({ userObjectId: account, resourceKind: "account" });
+    await hook.subscribe([["subscribeMentions"]]);
+    x.loseAnswer("POST", /^\/2\/activity\/subscriptions$/,
+      request => JSON.parse(request.body!).event_type === "post.mention.create");
+    failure(await hook.tryEnable());
+    // X refuses the retry as a duplicate, and the lookup must find the one it has.
+    await hook.enable();
+    expect(subscriptionsOf(x).filter(([type]) => type === "post.mention.create")).toHaveLength(1);
+  });
+
   it("keeps a subscription X failed to delete, and deletes it again from the alarm", async () => {
     const { x, hook } = await watchingMentions();
     let outage = true;

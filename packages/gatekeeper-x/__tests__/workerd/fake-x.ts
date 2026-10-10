@@ -74,6 +74,8 @@ export class FakeX {
   readonly webhooks = new Map<string, { id: string; url: string; valid: boolean }>();
   /** The app's X Activity API subscriptions, by ID. */
   readonly subscriptions = new Map<string, FakeSubscription>();
+  /** How many subscriptions X lists in one page. */
+  subscriptionsPerPage = 1000;
   /** Each published post's text as sent, before its links were shortened: what duplicates compare. */
   readonly #sentTexts = new Map<string, string>();
   #nextId = 1_900_000_000_000_000_000n;
@@ -92,11 +94,14 @@ export class FakeX {
     return this;
   }
 
-  /** Acts on the next matching request as X would, then loses the answer, as a reset connection does. */
-  loseAnswer(method: string, pattern: RegExp): this {
+  /**
+   * Acts on the next matching request (that `when` accepts) as X would, then loses the answer, as a
+   * reset connection does.
+   */
+  loseAnswer(method: string, pattern: RegExp, when: (request: FakeRequest) => boolean = () => true): this {
     let lost = false;
     return this.on(method, pattern, request => {
-      if (lost) return undefined;
+      if (lost || !when(request)) return undefined;
       lost = true;
       this.#builtIn(request);
       throw new TypeError("connection reset");
@@ -243,7 +248,12 @@ export class FakeX {
         return json({ data: { subscription: echoed } });
       }
       if (caller !== "app") return problem(403, "This endpoint requires an OAuth2 app-only bearer token.");
-      if (method === "GET" && !id) return json({ data: [...this.subscriptions.values()] });
+      if (method === "GET" && !id) {
+        const userId = url.searchParams.get("user_id");
+        const listed = [...this.subscriptions.values()]
+          .filter(subscription => userId === null || subscription.filter.user_id === userId);
+        return json({ data: listed.slice(0, this.subscriptionsPerPage) });
+      }
       if (method === "DELETE" && id) {
         if (!this.subscriptions.delete(id)) return problem(404, "Subscription not found");
         return json({ data: { deleted: true } });

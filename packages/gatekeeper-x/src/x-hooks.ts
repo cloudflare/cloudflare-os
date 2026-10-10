@@ -461,8 +461,9 @@ function subscriptionIdOf(data: SubscriptionResponse): string {
 
 /** The ID of this app's subscription to `eventType` for `userId`, if X has one. */
 async function findSubscription(env: Env, eventType: string, userId: string): Promise<string | undefined> {
+  // Narrowed to the user: X lists at most 1,000 subscriptions a page, and an app may hold 1,500.
   const listed = await appApi(env).get<{ subscription_id?: string; event_type?: string; filter?: { user_id?: string } }[]>(
-    "/2/activity/subscriptions");
+    "/2/activity/subscriptions", { user_id: userId });
   return (listed.data ?? []).find(subscription =>
     subscription.event_type === eventType && subscription.filter?.user_id === userId)?.subscription_id;
 }

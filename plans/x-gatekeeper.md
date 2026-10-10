@@ -1109,7 +1109,7 @@ departed from the design above:
 ### PR B as built
 
 PR B is implemented on `dancarter/x-gatekeeper-hooks`, stacked on `dancarter/github-hooks` for the
-kit's `HookDeliveryQueue` and the hook contract, which are not on `main` yet (23 workerd hook tests).
+kit's `HookDeliveryQueue` and the hook contract, which are not on `main` yet (26 workerd hook tests).
 It follows `gatekeeper-github`'s hooks rather than §9 where the two differ:
 
 - **Three Durable Objects, not two.** A per-account `XHookDriver` holds the account's enabled hooks
@@ -1129,8 +1129,9 @@ It follows `gatekeeper-github`'s hooks rather than §9 where the two differ:
   connected as other X users if that read fails (the reads' `authorsUnverified` fence).
 - **Unverified X behaviour, handled defensively:** the duplicate-subscription refusal (any 409, or
   "duplicate" in its type, title or message, adopts the existing subscription through
-  `GET /2/activity/subscriptions`); the shapes of `GET`/`POST /2/webhooks`; and whether a delivery
-  batches events (`data` may be an object or an array).
+  `GET /2/activity/subscriptions`, narrowed by `user_id` since X lists at most 1,000 a page); the
+  shapes of `GET`/`POST /2/webhooks`; and whether a delivery batches events (`data` may be an
+  object or an array).
 - **Not done:** recovering missed deliveries through `POST /2/webhooks/replay`; re-checking
   subscriptions at X (the registry checks the webhook hourly, but a subscription X drops without an
   `oauth.revoke` stays recorded until a hook is enabled again); and counting delivered events
