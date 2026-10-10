@@ -1,6 +1,7 @@
 import { env } from "cloudflare:test";
 import { APPLY_OUTCOME_UNKNOWN_MESSAGE } from "@gadgets/gatekeeper-kit/actions";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { MARKER_RETENTION_MS, type MarkerEntry } from "../../src/sheets-actions";
 import { a1Of, enteredOf, parseRange, type EnteredValue, type Rect } from "../../src/sheets-model";
 import type { SpreadsheetInfo, SpreadsheetRange, SpreadsheetValueMode } from "../../src/sheets-read-types";
 import type { SheetMeta } from "../../src/sheets-simulation";
@@ -302,7 +303,11 @@ function gatekeeper() {
     apply: (actionId: number) => hooks().applySheets(facet, actionId),
     reject: (actionId: number) => hooks().rejectSheets(facet, actionId),
     autoApprovable: () => hooks().sheetsAutoApprovable(facet),
-    seedMarkers: (ids: number[]) => hooks().seedSheetsMarkers(facet, ids),
+    seedMarkers: (entries: (MarkerEntry | number)[]) => hooks().seedSheetsMarkers(facet, entries),
+    markers: () => hooks().sheetsMarkers(facet),
+    /** Moves each stored marker's last send back by the retention window, as if it had passed. */
+    passWindow: async () => hooks().seedSheetsMarkers(facet, (await hooks().sheetsMarkers(facet)).map(entry =>
+      typeof entry === "number" ? entry : { ...entry, sentAt: entry.sentAt - MARKER_RETENTION_MS })),
     orphan: (actionId: number) => hooks().orphanSheetsClaim(facet, actionId),
   };
 }
@@ -679,7 +684,7 @@ describe("Google Sheets changes", () => {
     expect(provider.get("Sales!B2")).toBe(6);
   });
 
-  it("records an unknown outcome for a dropped write it can no longer resend, and deletes its marker later", async () => {
+  it("records an unknown outcome for a dropped write it can no longer resend, holding later changes until it can no longer land", async () => {
     let provider = budget();
     let sheets = gatekeeper();
     let first = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
@@ -689,14 +694,22 @@ describe("Google Sheets changes", () => {
     expect(await sheets.apply(first.actionId!)).toBe(APPLY_OUTCOME_UNKNOWN_MESSAGE);
     expect(provider.batches).toHaveLength(1);
     expect(provider.commits).toBe(0);
-    let lost = provider.batches[0][0].createDeveloperMetadata.developerMetadata.metadataId;
+    let lost = markerOf(provider.batches[0]);
+    let [entry] = await sheets.markers() as MarkerEntry[];
+    expect(entry).toEqual({ id: lost, sentAt: expect.any(Number), unknown: true });
 
-    // Rejected, it no longer blocks the next change, whose batch deletes the lost marker.
+    // Rejected, it no longer blocks queueing, but its write may still land over the next change's.
     await sheets.reject(first.actionId!);
     let second = await sheets.queued([{ op: "writeCells", range: "Sales!B3", values: [[7]] }]);
+    expect(await sheets.apply(second.actionId!)).toBe(
+      "An earlier change's outcome is still unknown, and it could still land until " +
+      `${new Date(entry.sentAt + MARKER_RETENTION_MS).toISOString()}. Apply this one after that.`);
+    expect(provider.batches).toHaveLength(1);
+
+    await sheets.passWindow();
     expect(await sheets.apply(second.actionId!)).toBeNull();
-    expect(provider.batches[1]).toContainEqual(
-      { deleteDeveloperMetadata: { dataFilter: { developerMetadataLookup: { metadataId: lost } } } });
+    expect(deletedBy(provider.batches[1])).toEqual([lost]);
+    expect(provider.get("Sales!B3")).toBe(7);
   });
 
   it("neither replays nor resends a change whose activation died applying it", async () => {
@@ -712,7 +725,7 @@ describe("Google Sheets changes", () => {
     expect(provider.get("Sales!B2")).toBe(4);
   });
 
-  it("deletes each batch's marker in the next batch, leaving only the latest", async () => {
+  it("keeps each batch's marker while a send of it could still commit, then deletes it in the next batch", async () => {
     let provider = budget();
     let sheets = gatekeeper();
     let first = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
@@ -721,33 +734,58 @@ describe("Google Sheets changes", () => {
 
     expect(await sheets.apply(first.actionId!)).toBeNull();
     expect(await sheets.apply(second.actionId!)).toBeNull();
+    await sheets.passWindow();
     expect(await sheets.apply(third.actionId!)).toBeNull();
 
     let [one, two, three] = provider.batches.map(markerOf);
-    expect(provider.batches.map(deletedBy)).toEqual([[], [one], [two]]);
-    expect(provider.batches[1].slice(0, 2)).toEqual([
+    expect(provider.batches.map(deletedBy)).toEqual([[], [], [one, two]]);
+    expect(provider.batches[2].slice(0, 3)).toEqual([
       expect.objectContaining({ createDeveloperMetadata: expect.anything() }),
       { deleteDeveloperMetadata: { dataFilter: { developerMetadataLookup: { metadataId: one } } } },
+      { deleteDeveloperMetadata: { dataFilter: { developerMetadataLookup: { metadataId: two } } } },
     ]);
     expect([...provider.markers.keys()]).toEqual([three]);
+    expect(await sheets.markers()).toEqual([{ id: three, sentAt: expect.any(Number) }]);
   });
 
-  it("keeps the 20 newest markers to delete, dropping the oldest", async () => {
+  it("deletes the markers a stored list of bare IDs names, as last sent long ago", async () => {
     let provider = budget();
     let sheets = gatekeeper();
-    let earlier = Array.from({ length: 20 }, (_, i) => i + 1);
-    await sheets.seedMarkers(earlier);
+    await sheets.seedMarkers([1, 2, 3]);
+    let { actionId } = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
+
+    expect(await sheets.apply(actionId!)).toBeNull();
+
+    expect(provider.batches.map(deletedBy)).toEqual([[1, 2, 3]]);
+    expect(await sheets.markers()).toEqual([{ id: markerOf(provider.batches[0]), sentAt: expect.any(Number) }]);
+  });
+
+  it("stores every marker a send could still commit, and of the rest the 20 most recently sent", async () => {
+    let provider = budget();
+    let sheets = gatekeeper();
+    let old = Array.from({ length: 25 }, (_, i) => i + 1);
+    let recent = Array.from({ length: 30 }, (_, i) => ({ id: 101 + i, sentAt: Date.now() }));
+    await sheets.seedMarkers([...old, ...recent]);
     let first = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
     provider.nextFailure = "dropped";
     provider.afterNextBatch = () => provider.set("Sales!B2", 5);
 
     expect(await sheets.apply(first.actionId!)).toBe(APPLY_OUTCOME_UNKNOWN_MESSAGE);
+
+    let lost = markerOf(provider.batches[0]);
+    expect(deletedBy(provider.batches[0])).toEqual(old);
+    // Its outcome unknown, the batch may not have deleted the old markers, so they are kept.
+    expect(await sheets.markers()).toEqual([
+      ...old.slice(5).map(id => ({ id, sentAt: 0 })),
+      ...recent,
+      { id: lost, sentAt: expect.any(Number), unknown: true },
+    ]);
+
     await sheets.reject(first.actionId!);
     let second = await sheets.queued([{ op: "writeCells", range: "Sales!B3", values: [[7]] }]);
+    await sheets.passWindow();
     expect(await sheets.apply(second.actionId!)).toBeNull();
-
-    let [lost] = provider.batches.map(markerOf);
-    expect(provider.batches.map(deletedBy)).toEqual([earlier, [...earlier.slice(1), lost]]);
+    expect(deletedBy(provider.batches[1])).toEqual([...old.slice(5), ...recent.map(({ id }) => id), lost]);
   });
 
   it.each([

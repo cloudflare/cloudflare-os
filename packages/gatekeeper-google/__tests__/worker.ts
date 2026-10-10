@@ -7,6 +7,7 @@ import { TestGitCache } from "./test-git-cache";
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import type { GoogleAccessToken } from "../src/google-api";
 import type { GoogleDocSession, GoogleDocTab } from "../src/docs-types";
+import type { MarkerEntry } from "../src/sheets-actions";
 import type { SpreadsheetInfo, SpreadsheetRange } from "../src/sheets-read-types";
 import type { GoogleSpreadsheetSession } from "../src/sheets-types";
 import type { PresentationInfo, Slide } from "../src/slides-read-types";
@@ -421,9 +422,14 @@ export class TestHooks extends DurableObject<Env> {
     await (this.#sheets(facetName) as unknown as TestGoogleSheetsGatekeeper).claimTestAction(actionId);
   }
 
-  /** Stores the IDs of markers earlier batches left, as if those batches had applied. */
-  async seedSheetsMarkers(facetName: string, ids: number[]): Promise<void> {
-    await (this.#sheets(facetName) as unknown as TestGoogleSheetsGatekeeper).seedTestMarkers(ids);
+  /** Stores the markers earlier batches left, as entries or bare IDs. */
+  async seedSheetsMarkers(facetName: string, entries: (MarkerEntry | number)[]): Promise<void> {
+    await (this.#sheets(facetName) as unknown as TestGoogleSheetsGatekeeper).seedTestMarkers(entries);
+  }
+
+  /** The markers earlier batches left, as stored. */
+  async sheetsMarkers(facetName: string): Promise<(MarkerEntry | number)[]> {
+    return (this.#sheets(facetName) as unknown as TestGoogleSheetsGatekeeper).testMarkers();
   }
 }
 
@@ -455,8 +461,12 @@ type TestGoogleSlidesGatekeeper = GoogleSlidesGatekeeperImpl & { claimTestAction
 
 type TestGoogleSheetsGatekeeper = GoogleSheetsGatekeeperImpl & {
   claimTestAction(id: number): void;
-  seedTestMarkers(ids: number[]): void;
+  seedTestMarkers(entries: (MarkerEntry | number)[]): void;
+  testMarkers(): (MarkerEntry | number)[];
 };
+
+// The key `GoogleSheetsGatekeeperImpl` keeps its markers under.
+const SHEETS_MARKERS_KEY = "sheets:staleMarkers";
 
 (GoogleSheetsGatekeeperImpl.prototype as TestGoogleSheetsGatekeeper).claimTestAction = function(
   id: number,
@@ -467,8 +477,12 @@ type TestGoogleSheetsGatekeeper = GoogleSheetsGatekeeperImpl & {
 };
 
 (GoogleSheetsGatekeeperImpl.prototype as TestGoogleSheetsGatekeeper).seedTestMarkers = function(
-  ids: number[],
+  entries: (MarkerEntry | number)[],
 ): void {
-  // The key `GoogleSheetsGatekeeperImpl` keeps them under.
-  (this as unknown as TestDurableObjectState).ctx.storage.kv.put("sheets:staleMarkers", ids);
+  (this as unknown as TestDurableObjectState).ctx.storage.kv.put(SHEETS_MARKERS_KEY, entries);
+};
+
+(GoogleSheetsGatekeeperImpl.prototype as TestGoogleSheetsGatekeeper).testMarkers = function(
+): (MarkerEntry | number)[] {
+  return (this as unknown as TestDurableObjectState).ctx.storage.kv.get(SHEETS_MARKERS_KEY) ?? [];
 };

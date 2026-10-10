@@ -16,10 +16,14 @@
  * resent only exactly as first sent. Once a send's outcome is unknown, the change either is found
  * to have landed or is recorded as unknown, and is never planned again.
  *
- * Markers cost no write of their own: each batch deletes those of earlier batches, so the latest
- * one lingers, visible only to this app's Google Cloud project, until the next change applies. A
- * batch's own marker is recorded before it is sent, so one whose activation dies mid-apply is
- * deleted too.
+ * Markers cost no write of their own: a batch deletes those of earlier batches once no send of
+ * theirs can still commit, `MARKER_RETENTION_MS` after it was last sent; a marker deleted sooner
+ * would let a send given up on commit its batch a second time, after its resend did. Until then
+ * markers linger, visible only to this app's Google Cloud project. A batch's marker is recorded,
+ * its outcome unknown, before each send, so one whose activation dies mid-apply is kept and
+ * deleted like any other. While a batch whose outcome is unknown could still land, later batches
+ * stay pending: landing after a later batch's guard was checked, it would overwrite its cells
+ * unseen.
  */
 
 import {
@@ -40,14 +44,30 @@ import { ChangeConflict } from "./slides-text";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.google.sheets", vendorId: "google" });
 
+/**
+ * A marker a batch created or may yet create: when that batch was last sent, and whether its
+ * outcome is unknown, as it is from just before each send until the batch is found to have landed
+ * or been refused.
+ */
+export type MarkerEntry = { id: number; sentAt: number; unknown?: true };
+
+/**
+ * How long after a batch's last send its marker is kept. Google lets a request run for up to 180
+ * seconds (https://developers.google.com/workspace/sheets/api/limits), well past the client's
+ * 30-second timeout, so a send given up on may still commit until then; the window leaves a margin.
+ */
+export const MARKER_RETENTION_MS = 10 * 60 * 1000;
+
 /** What an approved change is written with, and where the markers it leaves are kept. */
 export type SheetsHost = {
   api: GoogleSheetsApi;
   spreadsheetId: string;
   /** Whether the change with this action ID was applied. */
   applied(id: number): boolean;
-  /** IDs of markers earlier batches left, which the next batch deletes. */
-  markers: { read(): number[]; write(ids: number[]): void };
+  /** The markers batches left, each deleted by a later batch once no send of it can still commit. */
+  markers: { read(): MarkerEntry[]; write(entries: MarkerEntry[]): void };
+  /** The current time, in milliseconds since the epoch. */
+  now(): number;
 };
 
 // What a user may let apply without asking: a batch that only enters literal values and clears
@@ -122,6 +142,15 @@ async function markerFound(host: SheetsHost, { id, token }: SheetBatch["marker"]
 
 /** Writes `batch`, as the module comment describes. */
 async function write(host: SheetsHost, batch: SheetBatch): Promise<void> {
+  let { marker } = batch;
+  let unsettled = host.markers.read().find(entry =>
+    entry.id !== marker.id && entry.unknown && host.now() < entry.sentAt + MARKER_RETENTION_MS);
+  if (unsettled) {
+    throw new Error(
+      "An earlier change's outcome is still unknown, and it could still land until " +
+      `${new Date(unsettled.sentAt + MARKER_RETENTION_MS).toISOString()}. Apply this one after that.`);
+  }
+
   let requests: unknown[] | undefined;
   try {
     requests = await guarded(host, batch);
@@ -137,8 +166,10 @@ async function write(host: SheetsHost, batch: SheetBatch): Promise<void> {
       "it was queued.");
   }
 
-  let { marker } = batch;
-  let stale = host.markers.read().filter(id => id !== marker.id);
+  let now = host.now();
+  let stale = host.markers.read()
+    .filter(entry => entry.id !== marker.id && entry.sentAt + MARKER_RETENTION_MS <= now)
+    .map(entry => entry.id);
   let sent = [
     {
       createDeveloperMetadata: {
@@ -154,19 +185,31 @@ async function write(host: SheetsHost, batch: SheetBatch): Promise<void> {
     })),
     ...requests,
   ];
-  // Recorded before the first send, so the marker is deleted by a later batch whatever becomes of
-  // this one; deleting one never created changes nothing.
-  host.markers.write([...host.markers.read().filter(id => id !== marker.id), marker.id]);
-  let landed = () => host.markers.write(host.markers.read().filter(id => !stale.includes(id)));
+  // This batch's entry, replacing any earlier one, without those of the markers `deleted`.
+  let sentAt = now;
+  let record = (unknown: boolean, deleted: readonly number[] = []) => host.markers.write([
+    ...host.markers.read().filter(({ id }) => id !== marker.id && !deleted.includes(id)),
+    { id: marker.id, sentAt, ...(unknown ? { unknown } : {}) },
+  ]);
+  // Recorded before each send, so the marker is deleted by a later batch whatever becomes of this
+  // one, and no later batch is written while this one could still land; deleting a marker never
+  // created changes nothing.
+  let send = () => {
+    sentAt = host.now();
+    record(true);
+    return host.api.batchUpdate(host.spreadsheetId, sent);
+  };
+  let landed = () => record(false, stale);
 
   try {
-    await host.api.batchUpdate(host.spreadsheetId, sent);
+    await send();
     return landed();
   } catch (error) {
     if (error instanceof SheetsWriteRefused) {
+      if (error.status === 400 && await markerFound(host, marker)) return landed();
       // Nothing was applied. A 401, 403 or 429 may pass, so the action stays pending.
+      record(false);
       if (error.status !== 400) throw error;
-      if (await markerFound(host, marker)) return landed();
       throw new ActionApplyError(
         "Google Sheets refused this change as invalid [http=400]. It may write to a protected range " +
         "or outside a sheet's grid.");
@@ -183,7 +226,7 @@ async function write(host: SheetsHost, batch: SheetBatch): Promise<void> {
     let unchanged = await guarded(host, batch).then(Boolean, () => false);
     if (!unchanged) break;
     try {
-      await host.api.batchUpdate(host.spreadsheetId, sent);
+      await send();
       return landed();
     } catch (error) {
       // Refused, perhaps because the first send has committed its marker since.

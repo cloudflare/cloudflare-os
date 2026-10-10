@@ -395,7 +395,9 @@ which Google stores at most once, so a write whose response is lost is found by 
 resent exactly as first sent. A lost write that cannot be resent, because its cells changed in the
 meantime or Google refused the resend, or that three sends leave unfound, is marked as having an
 unknown outcome. A marker is visible only to the Google Cloud project of this deployment's OAuth
-client, leaves no Drive revision, and is deleted by the next write.
+client, leaves no Drive revision, and is deleted by the first write at least ten minutes after its
+batch was last sent, since a send given up on may commit until then. While a write with an unknown
+outcome could still land, later changes stay pending.
 
 A change is refused when it is queued if the connected account can only view the spreadsheet, or
 if it writes outside a sheet's grid or into a protected range the account cannot edit. A change

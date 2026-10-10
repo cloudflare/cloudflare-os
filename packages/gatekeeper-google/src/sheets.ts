@@ -15,7 +15,9 @@ import type { GoogleVerifierApi } from "./google-verifier-types";
 import { Mutex } from "./mutex";
 import { ReadGate } from "./read-gate";
 import { nativeFileUrl } from "./resources";
-import { batchKind, SHEETS_ACTIONS } from "./sheets-actions";
+import {
+  batchKind, MARKER_RETENTION_MS, SHEETS_ACTIONS, type MarkerEntry,
+} from "./sheets-actions";
 import {
   BlankSpreadsheet, GoogleSheetsApi, type SheetProtection, type SpreadsheetMetadata,
   type SpreadsheetReader,
@@ -40,8 +42,8 @@ import SHEETS_TYPES_CODE from "./sheets-types.txt";
 
 // A queued change is one Durable Object KV value, which may not exceed 128 KiB serialized.
 const MAX_CHANGE_BYTES = 100 * 1024;
-// The markers earlier batches left, which the next batch deletes. Outside the journal's
-// `sheets:action:` prefix and its counter.
+// The markers batches left, each deleted by a later batch once no send of it can still commit.
+// Outside the journal's `sheets:action:` prefix and its counter.
 const STALE_MARKERS_KEY = "sheets:staleMarkers";
 const MAX_STALE_MARKERS = 20;
 
@@ -55,6 +57,19 @@ function checkQueuedSize(value: unknown): void {
     throw new Error(`This change is too large to queue (${bytes} bytes, limit ` +
       `${MAX_CHANGE_BYTES}). Split it up.`);
   }
+}
+
+/**
+ * The markers to store: every one a send could still commit, and of the rest the
+ * `MAX_STALE_MARKERS` most recently sent. The first part is bounded too: Google takes at most 60
+ * write requests a minute from a user, so about 600 markers at most are sent within the window, a
+ * few tens of KB, under the 128 KiB a stored value may hold.
+ */
+function retainedMarkers(entries: readonly MarkerEntry[], now: number): MarkerEntry[] {
+  let open = (entry: MarkerEntry) => now < entry.sentAt + MARKER_RETENTION_MS;
+  let closed = new Set(entries.filter(entry => !open(entry))
+    .toSorted((a, b) => a.sentAt - b.sentAt).slice(-MAX_STALE_MARKERS));
+  return entries.filter(entry => open(entry) || closed.has(entry));
 }
 
 // A developer metadata ID is a positive 32-bit integer, 0 asking Google to pick one: a random
@@ -137,9 +152,12 @@ export class GoogleSheetsGatekeeperImpl
     spreadsheetId: this.#spreadsheetId,
     applied: id => this.#journal.get(id)?.state === "applied" || this.#journal.wasApplied(id),
     markers: {
-      read: () => this.ctx.storage.kv.get<number[]>(STALE_MARKERS_KEY) ?? [],
-      write: ids => this.ctx.storage.kv.put(STALE_MARKERS_KEY, ids.slice(-MAX_STALE_MARKERS)),
+      // A bare ID is a marker last sent long ago.
+      read: () => (this.ctx.storage.kv.get<(MarkerEntry | number)[]>(STALE_MARKERS_KEY) ?? [])
+        .map(entry => typeof entry === "number" ? { id: entry, sentAt: 0 } : entry),
+      write: entries => this.ctx.storage.kv.put(STALE_MARKERS_KEY, retainedMarkers(entries, Date.now())),
     },
+    now: () => Date.now(),
   });
   #reads = new ReadGate();
   #preparing = new SerialTaskQueue();
