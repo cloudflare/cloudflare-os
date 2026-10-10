@@ -537,6 +537,23 @@ export function parseResourceUrl(url: string): ResourceTarget {
     throw new Error(`Google resource URLs must use https, not ${parsed.protocol}`);
   }
 
+  try {
+    return parseByHost(parsed);
+  } catch (error) {
+    // A bare % survives URL parsing but makes decodeURIComponent throw a raw URIError.
+    // Report it like every other rejection, quoting only host+path.
+    if (error instanceof URIError) {
+      throw new Error(
+        `Malformed percent-escape in resource URL: ${describeUrl(parsed)}`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+}
+
+/** Dispatches a parsed URL to its host's parser. */
+function parseByHost(parsed: URL): ResourceTarget {
   switch (parsed.hostname) {
     case "mail.google.com": return parseGmailUrl(parsed);
     case "docs.google.com": return parseDocsUrl(parsed);
