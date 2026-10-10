@@ -215,6 +215,7 @@ Each gatekeeper package contains instructions for how to set it up:
 * [Home Assistant](packages/gatekeeper-homeassistant/README.md)
 * [Slack API](packages/gatekeeper-slack/README.md)
 * [Spotify](packages/gatekeeper-spotify/README.md)
+* [X API](packages/gatekeeper-x/README.md)
 * [ZoomInfo API](packages/gatekeeper-zoominfo/README.md)
 
 ## Developing
