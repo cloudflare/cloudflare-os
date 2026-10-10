@@ -1137,8 +1137,8 @@ It follows `gatekeeper-github`'s hooks rather than §9 where the two differ:
   object or an array).
 - **Not done:** recovering missed deliveries through `POST /2/webhooks/replay`; re-checking
   subscriptions at X (the registry checks the webhook hourly, but a subscription X drops without an
-  `oauth.revoke` stays recorded until a hook is enabled again); and counting delivered events
-  against the daily read limit (they are billed regardless, so the README says so).
+  `oauth.revoke` stays recorded, and the hooks relying on it hear nothing); and counting delivered
+  events against the daily read limit (they are billed regardless, so the README says so).
 
 Still to do: live checkpoints 0 and 1 (an X app with credits), and live checkpoint 2 for PR B, which
 waits on the app's bearer token.
