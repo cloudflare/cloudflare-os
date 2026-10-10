@@ -161,10 +161,11 @@ const CHECK_INTERVAL_MS = HOUR_MS;
 /** How far back a check reads a webhook's deliveries: two checks' worth, so none falls between. */
 const DELIVERY_LOOKBACK_MS = 2 * CHECK_INTERVAL_MS;
 /**
- * How many resends one check may have GitLab make for an account, oldest first, and for one
- * project: GitLab allows a user five a minute on a project. The rest wait for the next check, and
- * are lost if they age out of its lookback first. One that fails again is resent again at the next
- * check, which keeps a failure recoverable through an outage, for this many requests an hour.
+ * How many resends one check may have GitLab make for an account, shared fairly among its projects
+ * and oldest first within each, and for one project: GitLab allows a user five a minute on a
+ * project. The rest wait for the next check, and are lost if they age out of its lookback first.
+ * One that fails again is resent again at the next check, which keeps a failure recoverable
+ * through an outage, for this many requests an hour.
  */
 const MAX_RESENDS_PER_CHECK = 20;
 const MAX_RESENDS_PER_PROJECT = 5;
@@ -350,20 +351,36 @@ export class GitLabHookDriver extends DurableObject<Env> {
     }
   }
 
-  /** Check each webhook on GitLab (see #checkWebhook), within one budget of resends. */
+  /**
+   * Check each webhook on GitLab (see #checkWebhook), then have GitLab resend what it failed to
+   * deliver to them, sharing one budget among them so that busy projects can't starve the rest.
+   */
   async #checkWebhooks(): Promise<void> {
     const kv = this.ctx.storage.kv;
     kv.put("checkAt", Date.now() + CHECK_INTERVAL_MS);
     const account = kv.get<string>("account");
     const url = this.#webhookUrl();
     if (account === undefined || url === undefined) return;
-    let budget = MAX_RESENDS_PER_CHECK;
+    const checked: { webhook: Webhook; failed: GitLabWebhookEventResponse[] }[] = [];
     for (const webhook of this.#webhooks()) {
       try {
-        budget -= await this.#checkWebhook(account, url, webhook, Math.min(budget, MAX_RESENDS_PER_PROJECT));
+        checked.push({ webhook, failed: await this.#checkWebhook(account, url, webhook) });
       } catch (error) {
         // Tried again at the next check.
         logger.warn("failed to check a GitLab webhook", { event: "hooks.webhook.check.failed", error });
+      }
+    }
+    const shares = fairShares(checked.map(({ failed }) => Math.min(failed.length, MAX_RESENDS_PER_PROJECT)),
+      MAX_RESENDS_PER_CHECK);
+    for (const [i, { webhook: { id, project }, failed }] of checked.entries()) {
+      if (shares[i] === 0) continue;
+      try {
+        await this.#api(account, async api => {
+          for (const event of failed.slice(0, shares[i])) await api.resendProjectWebhookEvent(project.id, id, event.id);
+        });
+      } catch (error) {
+        // The rest are resent at the next check, while it still reads them.
+        logger.warn("failed to have GitLab resend to a webhook", { event: "hooks.webhook.resend.failed", error });
       }
     }
   }
@@ -373,12 +390,12 @@ export class GitLabHookDriver extends DurableObject<Env> {
    * after repeated failures, pointed elsewhere, not verifying this deployment's certificate, sending
    * a custom template's rendering in place of each payload, filtering pushes by branch, given other
    * triggers, or signing with another token, which GitLab never shows but which fails deliveries
-   * here with 401. Then have GitLab resend, oldest first and at most `budget`, what it failed to
-   * deliver lately, as it never does itself. What a template or a branch filter cost meanwhile is
-   * lost: GitLab resends a delivery as it first sent it, and never sent what the filter held back.
-   * @returns How many resends it had GitLab make.
+   * here with 401. What a template or a branch filter cost meanwhile is lost: GitLab resends a
+   * delivery as it first sent it, and never sent what the filter held back.
+   * @returns What GitLab failed to deliver to it lately, oldest first, to have it resend, as it
+   *   never does itself; nothing while GitLab sends it nothing.
    */
-  async #checkWebhook(account: string, url: string, { id, project }: Webhook, budget: number): Promise<number> {
+  async #checkWebhook(account: string, url: string, { id, project }: Webhook): Promise<GitLabWebhookEventResponse[]> {
     const read = await this.#api(account, async api => {
       try {
         const found = await api.getProjectWebhook(project.id, id);
@@ -414,7 +431,7 @@ export class GitLabHookDriver extends DurableObject<Env> {
         });
       });
     }
-    if (read === undefined) return 0;
+    if (read === undefined) return [];
     const deliveries = read.events.filter(event => event.url === url);
     if (deliveries.length > 0 && !deliveries.some(delivered)) {
       logger.error("GitLab failed every recent delivery to this deployment", {
@@ -422,15 +439,9 @@ export class GitLabHookDriver extends DurableObject<Env> {
         deliveryStatuses: [...new Set(deliveries.map(event => String(event.response_status)))],
       });
     }
-    // GitLab sends nothing while it holds a webhook back after failures, and revives it itself.
-    if (disabled || read.found.alert_status === "temporarily_disabled") return 0;
-    const resends = failed.slice(0, budget);
-    if (resends.length > 0) {
-      await this.#api(account, async api => {
-        for (const event of resends) await api.resendProjectWebhookEvent(project.id, id, event.id);
-      });
-    }
-    return resends.length;
+    // GitLab sends nothing while it holds a webhook back after failures, and revives it itself; a
+    // webhook disabled for good was just replaced, and its log with it.
+    return disabled || read.found.alert_status === "temporarily_disabled" ? [] : failed;
   }
 
   /**
@@ -587,6 +598,25 @@ function undelivered(events: GitLabWebhookEventResponse[]): GitLabWebhookEventRe
   return [...latest.values()]
     .filter(event => !delivered(event) && !FINAL_REFUSALS.has(Number(event.response_status)))
     .toReversed();
+}
+
+/**
+ * Split `budget` among `demands` max-min fairly: one each in turn while any wants more, so one that
+ * wants many can't crowd out one that wants a few.
+ */
+function fairShares(demands: number[], budget: number): number[] {
+  const shares = demands.map(() => 0);
+  for (let left = budget, gave = true; gave && left > 0;) {
+    gave = false;
+    for (const [i, demand] of demands.entries()) {
+      if (left > 0 && shares[i] < demand) {
+        shares[i]++;
+        left--;
+        gave = true;
+      }
+    }
+  }
+  return shares;
 }
 
 /** Why GitLab refused to add a webhook, in terms the user can act on. */

@@ -8,13 +8,16 @@ import type { HookDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { afterEach, expect, it, vi } from "vitest";
 import * as fx from "../fixtures/gitlab-docs.js";
 import type { GitLabSubscribeOptions } from "../../src/types.js";
-import { FakeGitLab, WEB, json, seedAccount, unwrap } from "./fake-gitlab.js";
+import { FakeGitLab, type FakeRequest, WEB, json, seedAccount, unwrap } from "./fake-gitlab.js";
 import type { GatekeeperProps } from "./worker.js";
 
 const PROJECT = "group/sub/project";
-const P = encodeURIComponent(PROJECT);
 const PROJECT_ID = 15;
 const HOOKS = `/api/v4/projects/${PROJECT_ID}/hooks`;
+/** The id of each project the fake serves, by path: most tests use only the first. */
+const PROJECT_IDS: Record<string, number> = {
+  [PROJECT]: PROJECT_ID, "group/gadgets": 16, "group/gizmos": 17, "group/widgets": 18, "group/sprockets": 19,
+};
 const HEAD = "b".repeat(40);
 const BASE = "a".repeat(40);
 const ZERO = "0".repeat(40);
@@ -29,7 +32,8 @@ type WebhookSettings = {
   branch_filter_strategy: string;
 };
 type Webhook = {
-  id: number; url: string; signingToken?: string; triggers: string[]; alertStatus?: string; settings: WebhookSettings;
+  id: number; projectId: number; url: string; signingToken?: string; triggers: string[]; alertStatus?: string;
+  settings: WebhookSettings;
 };
 
 /** A new webhook's settings, until a request names them. */
@@ -54,7 +58,11 @@ const user = (username: string, id: number) => ({
 const ADA = user("ada", 7);
 const BOB = user("bob", 8);
 
-const projectPayload = { id: PROJECT_ID, name: "Project", path_with_namespace: PROJECT, web_url: `${WEB}/${PROJECT}` };
+/** A project as a webhook payload names it. */
+const projectPayloadOf = (path: string) => ({
+  id: PROJECT_IDS[path], name: "Project", path_with_namespace: path, web_url: `${WEB}/${path}`,
+});
+const projectPayload = projectPayloadOf(PROJECT);
 
 /** How GitLab reports an issue's or merge request's event, under `X-Gitlab-Event`. */
 function issueHook(action: string, iid: number, sender = BOB): Row {
@@ -114,19 +122,19 @@ function pushHook(kind: "push" | "tag_push", ref: string, before: string, head: 
 }
 
 /** The REST shapes of the issue and merge request whose events are delivered. */
-function issueRest(iid: number, state = "opened"): Row {
+function issueRest(iid: number, state = "opened", path = PROJECT): Row {
   return {
-    ...fx.issueResponse.data, iid, project_id: PROJECT_ID, title: "Crash on start", state,
-    closed_at: state === "closed" ? CREATED : null, web_url: `${WEB}/${PROJECT}/-/issues/${iid}`, labels: ["bug"],
+    ...fx.issueResponse.data, iid, project_id: PROJECT_IDS[path], title: "Crash on start", state,
+    closed_at: state === "closed" ? CREATED : null, web_url: `${WEB}/${path}/-/issues/${iid}`, labels: ["bug"],
   };
 }
 
-function mergeRequestRest(iid: number, state = "opened"): Row {
+function mergeRequestRest(iid: number, state = "opened", path = PROJECT): Row {
   return {
-    ...fx.mergeRequestResponse.data, iid, state, project_id: PROJECT_ID, source_project_id: PROJECT_ID,
-    target_project_id: PROJECT_ID, title: "Fix the crash", source_branch: "fix", target_branch: "main",
+    ...fx.mergeRequestResponse.data, iid, state, project_id: PROJECT_IDS[path], source_project_id: PROJECT_IDS[path],
+    target_project_id: PROJECT_IDS[path], title: "Fix the crash", source_branch: "fix", target_branch: "main",
     sha: HEAD, diff_refs: { base_sha: BASE, head_sha: HEAD, start_sha: BASE },
-    web_url: `${WEB}/${PROJECT}/-/merge_requests/${iid}`,
+    web_url: `${WEB}/${path}/-/merge_requests/${iid}`,
   };
 }
 
@@ -141,6 +149,22 @@ const storedEvent = (kind: "issue" | "mergeRequest", iid: number) => ({
 });
 
 const notFound = () => json({ message: "404 Not found" }, { status: 404 });
+const forbidden = () => json({ message: "403 Forbidden" }, { status: 403 });
+
+/** The project path and the iid a request for one of its issues or merge requests names. */
+function projectItem(request: FakeRequest): [string, number] {
+  const [, path, iid] = /projects\/([^/]+)\/(?:issues|merge_requests)\/(\d+)/.exec(request.url.pathname)!;
+  return [decodeURIComponent(path), Number(iid)];
+}
+
+/** The ids of the project and webhook a webhook request names: the webhook's is NaN for a listing. */
+function hookIds(request: FakeRequest): { projectId: number; hookId: number } {
+  const [, projectId, hookId] = /projects\/(\d+)\/hooks(?:\/(\d+))?/.exec(request.url.pathname)!;
+  return { projectId: Number(projectId), hookId: Number(hookId) };
+}
+
+/** Any project's webhooks, as a pattern of their path that captures the project's id. */
+const ANY_HOOKS = String.raw`^/api/v4/projects/(\d+)/hooks`;
 
 const TRIGGERS: Record<string, string> = {
   "Issue Hook": "issues_events", "Merge Request Hook": "merge_requests_events", "Note Hook": "note_events",
@@ -160,7 +184,7 @@ async function sign(signingToken: string, id: string, timestamp: string, body: s
 }
 
 /**
- * GitLab, as far as hooks use it: the instance's version, the project and who may manage its
+ * GitLab, as far as hooks use it: the instance's version, the projects and who may manage their
  * webhooks, the viewer, the issue and merge request REST reads, and webhooks that sign what they
  * deliver.
  */
@@ -174,7 +198,7 @@ class FakeGitLabHooks {
   signs = true;
   readonly webhooks = new Map<number, Webhook>();
   readonly deleted: number[] = [];
-  /** Each issue's and merge request's state by iid, `"opened"` unless set. */
+  /** Each issue's and merge request's state by iid, in every project, `"opened"` unless set. */
   readonly states = { issue: new Map<number, string>(), mergeRequest: new Map<number, string>() };
   /** Each merge request's approvals by iid, the fixture's unless set. */
   readonly approvals = new Map<number, Row[]>();
@@ -182,6 +206,8 @@ class FakeGitLabHooks {
   readonly log: Delivery[] = [];
   /** The logged attempts the driver had resent, by id. */
   readonly resends: number[] = [];
+  /** While set, how many more resends GitLab makes before refusing them, as a rate limit would. */
+  resendsAllowed: number | undefined;
   /** While set, deliveries fail with this status without reaching the worker. */
   failDeliveriesWith: number | undefined;
   #nextDeliveryId = 1;
@@ -197,36 +223,40 @@ class FakeGitLabHooks {
     this.gitlab
       .on("GET", /^\/api\/v4\/user$/, () => json({ ...ADA, web_url: `${WEB}/ada`, confirmed_at: CREATED }))
       .on("GET", /^\/api\/v4\/metadata$/, () => json({ version: this.version }))
-      .on("GET", new RegExp(`^/api/v4/projects/${P}$`), () => this.readable
-        ? json({ ...fx.projectResponse.data, id: PROJECT_ID, path_with_namespace: PROJECT, web_url: `${WEB}/${PROJECT}` })
-        : notFound())
-      .on("GET", new RegExp(`^/api/v4/projects/${P}/issues/(\\d+)\\?`), request => {
-        const iid = Number(/issues\/(\d+)/.exec(request.url.pathname)![1]);
-        return this.readable ? json(issueRest(iid, this.states.issue.get(iid))) : notFound();
+      .on("GET", /^\/api\/v4\/projects\/([^/]+)$/, request => {
+        const path = decodeURIComponent(request.url.pathname.slice("/api/v4/projects/".length));
+        return this.readable && path in PROJECT_IDS
+          ? json({ ...fx.projectResponse.data, id: PROJECT_IDS[path], path_with_namespace: path, web_url: `${WEB}/${path}` })
+          : notFound();
       })
-      .on("GET", new RegExp(`^/api/v4/projects/${P}/merge_requests/(\\d+)\\?`), request => {
-        const iid = Number(/merge_requests\/(\d+)/.exec(request.url.pathname)![1]);
-        return this.readable ? json(mergeRequestRest(iid, this.states.mergeRequest.get(iid))) : notFound();
+      .on("GET", /^\/api\/v4\/projects\/[^/]+\/issues\/\d+\?/, request => {
+        const [path, iid] = projectItem(request);
+        return this.readable ? json(issueRest(iid, this.states.issue.get(iid), path)) : notFound();
       })
-      .on("GET", new RegExp(`^/api/v4/projects/${P}/merge_requests/\\d+/approvals$`), request => {
-        const iid = Number(/merge_requests\/(\d+)/.exec(request.url.pathname)![1]);
+      .on("GET", /^\/api\/v4\/projects\/[^/]+\/merge_requests\/\d+\?/, request => {
+        const [path, iid] = projectItem(request);
+        return this.readable ? json(mergeRequestRest(iid, this.states.mergeRequest.get(iid), path)) : notFound();
+      })
+      .on("GET", /^\/api\/v4\/projects\/[^/]+\/merge_requests\/\d+\/approvals$/, request => {
+        const [, iid] = projectItem(request);
         return json({ ...fx.approvalsResponse.data, approved_by: this.approvals.get(iid) ?? fx.approvalsResponse.data.approved_by });
       })
-      .on("GET", new RegExp(`^${HOOKS}\\?`), () => this.maintainer
-        ? json([...this.webhooks.values()].map(webhook => this.#reported(webhook)))
-        : json({ message: "403 Forbidden" }, { status: 403 }))
-      .on("POST", new RegExp(`^${HOOKS}$`), request => {
-        if (!this.maintainer) return json({ message: "403 Forbidden" }, { status: 403 });
-        const webhook = this.#configured(this.#nextId++, request.body!);
+      .on("GET", new RegExp(`${ANY_HOOKS}\\?`), request => this.maintainer
+        ? json([...this.webhooks.values()].filter(webhook => webhook.projectId === hookIds(request).projectId)
+          .map(webhook => this.#reported(webhook)))
+        : forbidden())
+      .on("POST", new RegExp(`${ANY_HOOKS}$`), request => {
+        if (!this.maintainer) return forbidden();
+        const webhook = this.#configured(hookIds(request).projectId, this.#nextId++, request.body!);
         this.webhooks.set(webhook.id, webhook);
         return json(this.#reported(webhook), { status: 201 });
       })
-      .on("GET", new RegExp(`^${HOOKS}/(\\d+)$`), request => {
-        const webhook = this.webhooks.get(Number(/hooks\/(\d+)/.exec(request.url.pathname)![1]));
+      .on("GET", new RegExp(`${ANY_HOOKS}/(\\d+)$`), request => {
+        const webhook = this.#webhook(request);
         return webhook ? json(this.#reported(webhook)) : notFound();
       })
-      .on("GET", new RegExp(`^${HOOKS}/(\\d+)/events\\?`), request => {
-        const hookId = Number(/hooks\/(\d+)/.exec(request.url.pathname)![1]);
+      .on("GET", new RegExp(`${ANY_HOOKS}/(\\d+)/events\\?`), request => {
+        const { hookId } = hookIds(request);
         const page = Number(request.url.searchParams.get("page") ?? 1);
         const perPage = Number(request.url.searchParams.get("per_page") ?? 20);
         const newestFirst = this.log.filter(delivery => delivery.hookId === hookId).toReversed();
@@ -239,38 +269,50 @@ class FakeGitLabHooks {
           },
         })), { headers: { "x-next-page": more ? String(page + 1) : "" } });
       })
-      .on("POST", new RegExp(`^${HOOKS}/\\d+/events/\\d+/resend$`), async request => {
+      .on("POST", new RegExp(`${ANY_HOOKS}/\\d+/events/\\d+/resend$`), async request => {
         const [, hookId, deliveryId] = /hooks\/(\d+)\/events\/(\d+)/.exec(request.url.pathname)!.map(Number);
         const delivery = this.log.find(logged => logged.id === deliveryId && logged.hookId === hookId)!;
-        const webhook = this.webhooks.get(hookId);
+        const webhook = this.#webhook(request);
         if (webhook?.url !== delivery.url) {
           return json({ message: "The hook URL has changed. This log entry cannot be retried." }, { status: 422 });
+        }
+        if (this.resendsAllowed !== undefined) {
+          if (this.resendsAllowed === 0) return json({ message: "429 Too Many Requests" }, { status: 429 });
+          this.resendsAllowed--;
         }
         this.resends.push(deliveryId);
         return json({ response_status: await this.#attempt(webhook, delivery.webhookId, delivery.event, delivery.body) });
       })
-      .on("PUT", new RegExp(`^${HOOKS}/(\\d+)$`), request => {
-        const id = Number(/hooks\/(\d+)/.exec(request.url.pathname)![1]);
-        if (!this.webhooks.has(id)) return notFound();
-        const webhook = this.#configured(id, request.body!, this.webhooks.get(id));
-        this.webhooks.set(id, webhook);
+      .on("PUT", new RegExp(`${ANY_HOOKS}/(\\d+)$`), request => {
+        const existing = this.#webhook(request);
+        if (!existing) return notFound();
+        const webhook = this.#configured(existing.projectId, existing.id, request.body!, existing);
+        this.webhooks.set(webhook.id, webhook);
         return json(this.#reported(webhook));
       })
-      .on("DELETE", new RegExp(`^${HOOKS}/(\\d+)$`), async request => {
-        const id = Number(/hooks\/(\d+)/.exec(request.url.pathname)![1]);
+      .on("DELETE", new RegExp(`${ANY_HOOKS}/(\\d+)$`), async request => {
         if (this.stallDeletes) {
           this.stalledDeletes++;
           while (this.stallDeletes) await scheduler.wait(1);
         }
-        if (!this.webhooks.delete(id)) return notFound();
-        this.deleted.push(id);
+        const webhook = this.#webhook(request);
+        if (!webhook) return notFound();
+        this.webhooks.delete(webhook.id);
+        this.deleted.push(webhook.id);
         return new Response(null, { status: 204 });
       });
     this.gitlab.install();
   }
 
+  /** The webhook a request names, unless it is on another project than the request names. */
+  #webhook(request: FakeRequest): Webhook | undefined {
+    const { projectId, hookId } = hookIds(request);
+    const webhook = this.webhooks.get(hookId);
+    return webhook?.projectId === projectId ? webhook : undefined;
+  }
+
   /** `existing` as GitLab keeps it once `body` is applied, which changes only what it names. */
-  #configured(id: number, body: string, existing?: Webhook): Webhook {
+  #configured(projectId: number, id: number, body: string, existing?: Webhook): Webhook {
     const config = JSON.parse(body) as Row;
     const settings = Object.fromEntries(Object.entries(existing?.settings ?? DEFAULT_SETTINGS)
       .map(([key, value]) => [key, key in config ? config[key] : value])) as WebhookSettings;
@@ -285,7 +327,7 @@ class FakeGitLabHooks {
     const signingToken = this.signs && typeof config.signing_token === "string" ? config.signing_token
       : existing?.signingToken;
     return {
-      id, url: String(config.url), ...signingToken === undefined ? {} : { signingToken },
+      id, projectId, url: String(config.url), ...signingToken === undefined ? {} : { signingToken },
       triggers: [...triggers].toSorted(),
       ...existing?.alertStatus === undefined ? {} : { alertStatus: existing.alertStatus }, settings,
     };
@@ -300,17 +342,30 @@ class FakeGitLabHooks {
   }
 
   /**
-   * Deliver one event as GitLab would: to each of the project's webhooks with its trigger on,
-   * signed with its signing token, at `sentAt`.
+   * Deliver one event as GitLab would: to each webhook with its trigger on that is on the project
+   * the payload names, or on project `to`, signed with its signing token, at `sentAt`.
    */
-  async deliver(event: string, payload: object, { id = crypto.randomUUID(), sentAt = Date.now(), signingToken }: {
-    id?: string; sentAt?: number; signingToken?: string;
+  async deliver(event: string, payload: Row, { id = crypto.randomUUID(), sentAt = Date.now(), signingToken, to }: {
+    id?: string; sentAt?: number; signingToken?: string; to?: number;
   } = {}): Promise<number[]> {
     const body = JSON.stringify(payload);
+    const projectId = to ?? (payload.project as { id?: number } | undefined)?.id ?? PROJECT_ID;
     // GitLab sends nothing while it holds a webhook back after failures.
-    const subscribed = [...this.webhooks.values()].filter(webhook =>
+    const subscribed = [...this.webhooks.values()].filter(webhook => webhook.projectId === projectId &&
       webhook.triggers.includes(TRIGGERS[event]) && (webhook.alertStatus ?? "executable") === "executable");
     return await Promise.all(subscribed.map(webhook => this.#attempt(webhook, id, event, body, { sentAt, signingToken })));
+  }
+
+  /** How many attempts the driver had resent to each project's webhook, by the project's path. */
+  resentTo(): Record<string, number> {
+    const resent: Record<string, number> = {};
+    for (const deliveryId of this.resends) {
+      const { hookId } = this.log.find(delivery => delivery.id === deliveryId)!;
+      const { projectId } = this.webhooks.get(hookId)!;
+      const path = Object.keys(PROJECT_IDS).find(candidate => PROJECT_IDS[candidate] === projectId)!;
+      resent[path] = (resent[path] ?? 0) + 1;
+    }
+    return resent;
   }
 
   /** Log `count` deliveries to a webhook that succeeded, as a busy project's would. */
@@ -430,6 +485,7 @@ it("adds the webhook once a hook is enabled, and delivers the events it watches 
   await triage.enable();
   expect([...gitlab.webhooks.values()]).toEqual([{
     id: 100,
+    projectId: PROJECT_ID,
     url: `https://gadgets.test/gatekeeper/gitlab/webhook/${env.GITLAB_HOOK_DRIVER.idFromName(account)}`,
     signingToken: expect.stringMatching(/^whsec_[A-Za-z0-9+/]{43}=$/),
     // Only what its hooks watch, so GitLab doesn't deliver the push below at all.
@@ -671,8 +727,8 @@ it("refuses deliveries that aren't signed with the webhook's signing token, or r
   });
   expect(elsewhere.status).toBe(404);
   // Signed, but for a project this webhook isn't on, or not JSON at all.
-  expect(await gitlab.deliver("Issue Hook", { ...issueHook("open", 42), project: { ...projectPayload, id: 999 } }))
-    .toEqual([404]);
+  expect(await gitlab.deliver("Issue Hook", { ...issueHook("open", 42), project: { ...projectPayload, id: 999 } },
+    { to: PROJECT_ID })).toEqual([404]);
   const id = crypto.randomUUID();
   const timestamp = String(Math.floor(Date.now() / 1000));
   const garbled = await SELF.fetch(url, {
@@ -834,7 +890,8 @@ it("adopts the webhook an earlier attempt left on the project", async () => {
   const account = await connectAccount();
   const url = `https://gadgets.test/gatekeeper/gitlab/webhook/${env.GITLAB_HOOK_DRIVER.idFromName(account)}`;
   gitlab.webhooks.set(5, {
-    id: 5, url, signingToken: `whsec_${btoa("l".repeat(32))}`, triggers: ["push_events"], settings: { ...DEFAULT_SETTINGS },
+    id: 5, projectId: PROJECT_ID, url, signingToken: `whsec_${btoa("l".repeat(32))}`, triggers: ["push_events"],
+    settings: { ...DEFAULT_SETTINGS },
   });
   const triage = binding(account);
   await triage.subscribe();
@@ -863,8 +920,8 @@ it("has GitLab resend, at its next hourly check, what GitLab failed to deliver",
     await gitlab.deliver("Issue Hook", issueHook("open", 42));
     gitlab.failDeliveriesWith = undefined;
     // Refused for good: it's for a project this webhook isn't on.
-    expect(await gitlab.deliver("Issue Hook", { ...issueHook("open", 43), project: { ...projectPayload, id: 999 } }))
-      .toEqual([404]);
+    expect(await gitlab.deliver("Issue Hook", { ...issueHook("open", 43), project: { ...projectPayload, id: 999 } },
+      { to: PROJECT_ID })).toEqual([404]);
     // A busy hour since, which leaves the failure past the first page of the webhook's delivery log.
     gitlab.logDelivered(webhookId, 25);
   });
@@ -896,6 +953,90 @@ it("has GitLab resend at most five deliveries to a project at each check, as Git
 
   expect(gitlab.resends).toHaveLength(7);
   expect((await triage.read()).received).toHaveLength(7);
+});
+
+it("shares a check's resends among the account's projects, the rest waiting for the next", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const paths = Object.keys(PROJECT_IDS);
+  const hooks = paths.map(projectPath => binding(account, { projectPath }));
+  for (const hook of hooks) {
+    await hook.subscribe();
+    await hook.enable();
+  }
+  // Checked last, the quiet project fails two deliveries, the four busy ones six each.
+  const failures = Object.fromEntries(paths.map(path => [path, path === "group/sprockets" ? 2 : 6]));
+  const { at, alarm } = clock(account);
+
+  await at(0, async () => {
+    gitlab.failDeliveriesWith = 503;
+    for (const path of paths) {
+      for (let iid = 1; iid <= failures[path]; iid++) {
+        await gitlab.deliver("Issue Hook", { ...issueHook("open", iid), project: projectPayloadOf(path) });
+      }
+    }
+    gitlab.failDeliveriesWith = undefined;
+  });
+  await at(HOUR, alarm);
+  // At most five to a project, as GitLab allows, and among the twenty the quiet project's two,
+  // which the busy ones, checked first, would otherwise have taken.
+  expect(gitlab.resentTo()).toEqual({
+    [PROJECT]: 5, "group/gadgets": 5, "group/gizmos": 4, "group/widgets": 4, "group/sprockets": 2,
+  });
+  await at(2 * HOUR, alarm);
+  // The busy ones' last six, still within the next check's reach.
+  expect(gitlab.resentTo()).toEqual({
+    [PROJECT]: 6, "group/gadgets": 6, "group/gizmos": 6, "group/widgets": 6, "group/sprockets": 2,
+  });
+
+  for (const [i, hook] of hooks.entries()) expect((await hook.read()).received).toHaveLength(failures[paths[i]]);
+});
+
+it("resends at the next check what GitLab refused to resend", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+  const { at, alarm } = clock(account);
+
+  await at(0, async () => {
+    gitlab.failDeliveriesWith = 503;
+    for (let iid = 1; iid <= 3; iid++) await gitlab.deliver("Issue Hook", issueHook("open", iid));
+    gitlab.failDeliveriesWith = undefined;
+  });
+  // GitLab resends the first, then refuses, and the check asks no more of it this time.
+  gitlab.resendsAllowed = 1;
+  await at(HOUR, alarm);
+  expect(gitlab.resends).toHaveLength(1);
+  gitlab.resendsAllowed = undefined;
+  await at(2 * HOUR, alarm);
+  expect(gitlab.resends).toHaveLength(3);
+
+  expect((await triage.read()).received).toHaveLength(3);
+});
+
+it.each<[string, (gitlab: FakeGitLabHooks, webhookId: number) => void, number]>([
+  ["older than the two hours a check reads back", () => {}, 2 * HOUR + 60_000],
+  ["behind the 200 newer attempts a check reads at most", (gitlab, webhookId) => gitlab.logDelivered(webhookId, 200), HOUR],
+])("recovers no failed delivery %s", async (_, then, checkedAt) => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+  const [{ id: webhookId }] = gitlab.webhooks.values();
+  const { at, alarm } = clock(account);
+
+  await at(0, async () => {
+    gitlab.failDeliveriesWith = 503;
+    await gitlab.deliver("Issue Hook", issueHook("open", 42));
+    gitlab.failDeliveriesWith = undefined;
+    then(gitlab, webhookId);
+  });
+  await at(checkedAt, alarm);
+
+  expect(gitlab.resends).toEqual([]);
 });
 
 it.each<[string, (gitlab: FakeGitLabHooks, webhook: Webhook) => void]>([
@@ -973,6 +1114,8 @@ it("recreates a webhook GitLab gave up on, and leaves one it holds back to GitLa
   await at(2 * HOUR, alarm);
   expect(gitlab.deleted).toEqual([webhook.id]);
   expect([...gitlab.webhooks.values()]).toEqual([expect.objectContaining({ id: webhook.id + 1, triggers: webhook.triggers })]);
+  // Nor would GitLab resend what it failed to deliver, its delivery log gone with the webhook.
+  expect(gitlab.gitlab.count("POST", /\/resend$/)).toBe(0);
   expect(await gitlab.deliver("Issue Hook", issueHook("open", 43))).toEqual([204]);
 });
 

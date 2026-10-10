@@ -141,12 +141,14 @@ switched to unverified TLS, or given a custom template, a branch filter for push
 or another token: to stop the deliveries, disable the hooks. The same check moves them to a new
 `WEBHOOK_ORIGIN` within the hour, and replaces a webhook GitLab has disabled for good after 40
 failed deliveries, which editing would not revive. GitLab never retries a failed delivery itself,
-so the same check has it resend what it failed to deliver in the past two hours: up to five
-deliveries to a project an hour, since GitLab allows only five resends a minute, and 20 for each
-account. What a template mangled or a branch filter held back is lost, since GitLab resends a
-delivery as it first sent it. A delivery that reaches the worker is retried until the gadget's hook
-accepts it, eight attempts in all. When every recent delivery failed, as when Cloudflare Access
-turns GitLab away, the check logs `hooks.webhook.deliveries.failing` with the statuses GitLab got.
+so the same check has it resend what it failed to deliver in the past two hours: up to 20 an hour
+for each account, shared among its projects so that busy ones can't crowd out the rest, and five
+for any one project, since GitLab allows only five resends a minute. Failures beyond that, or older
+than two hours, are lost. So is what a template mangled, since GitLab resends a delivery as it
+first sent it, and what a branch filter held back. A delivery that reaches the worker is retried
+until the gadget's hook accepts it, eight attempts in all. When every recent delivery failed, as
+when Cloudflare Access turns GitLab away, the check logs `hooks.webhook.deliveries.failing` with
+the statuses GitLab got.
 
 For local development, GitLab cannot reach `localhost`: run a tunnel to the dev server (e.g.
 `cloudflared tunnel --url http://localhost:8787`) and set `WEBHOOK_ORIGIN` to its origin in the
