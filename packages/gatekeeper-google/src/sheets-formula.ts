@@ -3,11 +3,12 @@
  * references, names and the rest.
  *
  * Nothing here evaluates a formula. It finds the functions a formula calls, so that those reaching
- * outside the spreadsheet are refused, and writes references the way Google stores them once
- * entered, so the approver and a simulated read see the text Google keeps.
+ * outside the spreadsheet are refused, writes references the way Google stores them once entered,
+ * so the approver and a simulated read see the text Google keeps, and rewrites them as Google does
+ * when rows, columns or sheets change, telling whether the cells a reference covers changed.
  */
 
-import { columnNumber, quoteSheetTitle } from "./sheets-model";
+import { columnLetters, columnNumber, quoteSheetTitle } from "./sheets-model";
 
 /** One end of a reference as typed: a column, a row or a cell, each part optionally `$`-anchored. */
 export type RefCorner = {
@@ -39,10 +40,10 @@ export type FormulaToken =
   | {
       /**
        * `string` is a `"…"` literal, `quoted` an apostrophe-quoted name that prefixes no reference,
-       * `name` a function, named range or other identifier, `space` a run of whitespace, and
-       * `other` one character of anything else.
+       * `name` a function, named range or other identifier, `error` an error literal such as
+       * `#REF!`, `space` a run of whitespace, and `other` one character of anything else.
        */
-      kind: "string" | "quoted" | "name" | "number" | "space" | "other";
+      kind: "string" | "quoted" | "name" | "error" | "number" | "space" | "other";
       text: string;
     };
 
@@ -73,6 +74,7 @@ const REFERENCE = new RegExp(
 );
 const CORNER = /^(\$?([A-Za-z]*))(\$?([0-9]*))$/;
 const STRING = /"(?:[^"]|"")*"?/y;
+const ERROR = /#(?:NULL!|DIV\/0!|VALUE!|REF!|NAME\?|NUM!|N\/A|ERROR!)/iy;
 const QUOTED = /'(?:[^']|'')*('?)/y;
 const BARE_PREFIX = /[\p{L}_][\p{L}\p{N}_.]*!/uy;
 const NAME = /[\p{L}_][\p{L}\p{N}_.]*/uy;
@@ -111,6 +113,8 @@ function reference(formula: string, at: number, prefix = ""): FormulaReference |
 function nextToken(formula: string, at: number): FormulaToken {
   let character = formula[at];
   if (character === '"') return { kind: "string", text: matchAt(STRING, formula, at)! };
+  let error = character === "#" ? matchAt(ERROR, formula, at) : undefined;
+  if (error !== undefined) return { kind: "error", text: error };
   // A reference starts only where no name continues, so `2A1` holds no reference, and `X'S'!A1`
   // none that a sheet prefix could merge with the name into another sheet's.
   let boundary = at === 0 || !NAME_CHARACTER.test(formula[at - 1]);
@@ -204,4 +208,188 @@ export function canonicalFormula(
  */
 export function compactFormula(formula: string): string {
   return tokenize(formula).filter(token => token.kind !== "space").map(token => token.text).join("");
+}
+
+/**
+ * A change to a spreadsheet's structure, as formulas are rewritten through it. Sheets are named by
+ * their titles when the change was made.
+ */
+export type RewriteStep =
+  | {
+      kind: "insert" | "delete";
+      /** The sheet whose rows or columns change. */
+      title: string;
+      /** Whether rows or columns change. */
+      axis: "rows" | "columns";
+      /** The zero-based first line inserted, or deleted. Inserted lines go before this one. */
+      start: number;
+      /** How many lines are inserted or deleted. */
+      count: number;
+    }
+  | { kind: "rename"; from: string; to: string }
+  | { kind: "deleteSheet"; title: string }
+  | {
+      kind: "duplicate";
+      /** The sheet copied. */
+      title: string;
+      /** The copy's title. */
+      newTitle: string;
+    };
+
+/** A formula rewritten through one `RewriteStep`. */
+export type RewrittenFormula = {
+  /** The formula as Google writes it after the step. */
+  text: string;
+  /** Whether some reference covers cells other than before the step: more, fewer, or none. */
+  cellsChanged: boolean;
+  /** Whether some reference no longer refers to anything: `#REF!`, or a deleted sheet. */
+  broken: boolean;
+};
+
+type LineStep = Extract<RewriteStep, { kind: "insert" | "delete" }>;
+
+function sameTitle(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+function lineOf(end: RefCorner, axis: LineStep["axis"]): number | undefined {
+  if (axis === "rows") return end.row === undefined ? undefined : Number(end.row) - 1;
+  return end.column === undefined ? undefined : columnNumber(end.column) - 1;
+}
+
+function movedCorner(end: RefCorner, axis: LineStep["axis"], line: number): string {
+  let [, column, , row] = end.text.match(CORNER)!;
+  return axis === "rows"
+    ? column + (row.startsWith("$") ? "$" : "") + (line + 1)
+    : (column.startsWith("$") ? "$" : "") + columnLetters(line) + row;
+}
+
+/**
+ * `ref` as Google rewrites it when `step` inserts or deletes lines of the sheet it refers
+ * to. Only the step's axis moves: a reference spanning all of that axis, such as `A:C` under a row
+ * change, keeps its text but gains or loses cells.
+ */
+function moveReference(ref: FormulaReference, step: LineStep): RewrittenFormula {
+  let lines = ref.corners.map(end => lineOf(end, step.axis));
+  let bounded = lines.filter(line => line !== undefined);
+  if (bounded.length === 0) return { text: ref.text, cellsChanged: true, broken: false };
+  // An open end, such as `A2:A`, runs to the last line whatever the sheet's size.
+  let first = Math.min(...bounded);
+  let last = bounded.length < lines.length ? Infinity : Math.max(...bounded);
+  let moved: [number, number];
+  let cellsChanged: boolean;
+  if (step.kind === "insert") {
+    let move = (line: number) => line >= step.start ? line + step.count : line;
+    moved = [move(first), move(last)];
+    cellsChanged = first < step.start && step.start <= last;
+  } else {
+    let deletedLast = step.start + step.count - 1;
+    if (first >= step.start && last <= deletedLast) {
+      return { text: "#REF!", cellsChanged: true, broken: true };
+    }
+    moved = [
+      first < step.start ? first : first <= deletedLast ? step.start : first - step.count,
+      last < step.start ? last : last <= deletedLast ? step.start - 1 : last - step.count,
+    ];
+    cellsChanged = first <= deletedLast && last >= step.start;
+  }
+  if (moved[0] === first && moved[1] === last) return { text: ref.text, cellsChanged, broken: false };
+
+  let corners = ref.corners.map((end, i) => {
+    let line = lines[i];
+    if (line === undefined) return end.text;
+    let to = line === first ? moved[0] : moved[1];
+    return to === line ? end.text : movedCorner(end, step.axis, to);
+  });
+  let body = ref.corners.map(end => end.text).join(":");
+  let prefix = ref.text.slice(0, ref.text.length - body.length);
+  // Two cell corners that meet name one cell, which Google writes alone; whole rows and columns
+  // and open ranges keep both ends.
+  let collapses = ref.corners.length === 2 &&
+    ref.corners.every(end => end.column !== undefined && end.row !== undefined) &&
+    corners[0].toUpperCase() === corners[1].toUpperCase();
+  return { text: prefix + (collapses ? corners[0] : corners.join(":")), cellsChanged, broken: false };
+}
+
+function rewriteReference(
+  ref: FormulaReference, step: RewriteStep, onTarget: boolean,
+): RewrittenFormula {
+  let unchanged = { text: ref.text, cellsChanged: false, broken: false };
+  let body = ref.corners.map(end => end.text).join(":");
+  let names = (title: string) => ref.sheet !== undefined && sameTitle(ref.sheet, title);
+  let follows = (title: string) => ref.sheet === undefined ? onTarget : names(title);
+  switch (step.kind) {
+    case "insert":
+    case "delete":
+      return follows(step.title) ? moveReference(ref, step) : unchanged;
+    case "rename":
+      return names(step.from) ? { ...unchanged, text: `${quoteSheetTitle(step.to)}!${body}` } : unchanged;
+    case "deleteSheet":
+      return follows(step.title) ? { ...unchanged, cellsChanged: true, broken: true } : unchanged;
+    case "duplicate":
+      return onTarget && names(step.title)
+        ? { ...unchanged, text: `${quoteSheetTitle(step.newTitle)}!${body}` } : unchanged;
+  }
+}
+
+/**
+ * `formula` as Google rewrites it through `step`, with whether the cells its references cover
+ * changed. `onTarget` says the formula is on the sheet the step changes: for an insert or delete,
+ * the sheet whose lines change, which its unqualified references then follow; for `deleteSheet`,
+ * the deleted sheet; for `duplicate`, the copy, whose references naming the sheet copied name the
+ * copy instead (a duplicate changes no formula anywhere else). A reference names a sheet by its
+ * title, ignoring case.
+ *
+ * Inserting lines moves the bounds at or after them, and grows a range they land inside. Deleting
+ * lines turns a reference wholly inside them, sheet prefix included, into `#REF!`, moves a bound
+ * inside them to their edge and a bound after them back, and writes a range of cells that becomes
+ * one cell as that cell. A rename re-quotes each reference to the sheet with its new title. A
+ * deleted sheet leaves the text as it is, though its references no longer refer to anything.
+ * String literals are never touched.
+ */
+export function rewriteFormula(formula: string, step: RewriteStep, onTarget: boolean): RewrittenFormula {
+  let cellsChanged = false;
+  let broken = false;
+  let text = tokenize(formula).map(token => {
+    if (token.kind !== "reference") return token.text;
+    let rewritten = rewriteReference(token, step, onTarget);
+    cellsChanged ||= rewritten.cellsChanged;
+    broken ||= rewritten.broken;
+    return rewritten.text;
+  }).join("");
+  return { text, cellsChanged, broken };
+}
+
+/**
+ * Functions whose result depends on where cells are, or on references they build or take apart,
+ * so that a structural change can alter it though every reference keeps its cells.
+ */
+export const STRUCTURE_SENSITIVE_FUNCTIONS: ReadonlySet<string> = new Set([
+  "ROW", "COLUMN", "ROWS", "COLUMNS", "OFFSET", "INDIRECT", "ADDRESS", "CELL", "SHEET", "SHEETS",
+  "FORMULATEXT", "LAMBDA", "LET",
+  // Its query names the data's columns by letter in a string, which Google never rewrites.
+  "QUERY",
+]);
+
+const CONSTANTS: ReadonlySet<string> = new Set(["TRUE", "FALSE"]);
+
+/**
+ * Whether a structural change could alter what `formula` computes in ways its references do not
+ * show: it calls one of `STRUCTURE_SENSITIVE_FUNCTIONS` (in any case, in a name or any of its
+ * dot-separated parts), or uses a name that is neither a function call nor `TRUE` or `FALSE`, such
+ * as a named range or a `LET` or `LAMBDA` name, whose cells its text does not show. So does a `:`
+ * outside a reference, as in `A1 : A3` or `B1:INDEX(...)`: the range it makes can grow or shrink
+ * while each of its ends only moves.
+ */
+export function structureSensitive(formula: string): boolean {
+  let tokens = tokenize(formula);
+  return tokens.some((token, i) => {
+    if (token.kind === "other" && token.text === ":") return true;
+    if (token.kind !== "name") return false;
+    let name = token.text.toUpperCase();
+    if (name.split(".").some(part => STRUCTURE_SENSITIVE_FUNCTIONS.has(part))) return true;
+    // A run of whitespace is one token, so the token after it is the next of substance.
+    let next = tokens[i + 1]?.kind === "space" ? tokens[i + 2] : tokens[i + 1];
+    return next?.text !== "(" && !CONSTANTS.has(name);
+  });
 }

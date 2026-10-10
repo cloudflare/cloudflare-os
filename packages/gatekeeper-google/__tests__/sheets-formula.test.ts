@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
-  canonicalFormula, compactFormula, refusedFunction, tokenize, type FormulaReference,
+  STRUCTURE_SENSITIVE_FUNCTIONS, canonicalFormula, compactFormula, refusedFunction, rewriteFormula,
+  structureSensitive, tokenize, type FormulaReference, type RewriteStep,
 } from "../src/sheets-formula";
-import { findSheet } from "../src/sheets-model";
-import { FORMULA_CANONICALIZATION, FORMULA_SHEETS, WHITESPACE_DRIFT, sheet } from "./sheets-fixture";
+import { columnNumber, findSheet } from "../src/sheets-model";
+import {
+  FORMULA_CANONICALIZATION, FORMULA_SHEETS, SHEET_TITLE_QUOTING, WHITESPACE_DRIFT, sheet,
+} from "./sheets-fixture";
 
 const sheets = FORMULA_SHEETS.map((title, id) => sheet(id, title));
 const titleOf = (name: string) => findSheet(sheets, name)?.title;
@@ -130,5 +133,244 @@ describe("Sheets compact formulas", () => {
     let [stored, later] = WHITESPACE_DRIFT;
     expect(compactFormula(stored)).toBe(compactFormula(later));
     expect(compactFormula("=IF( A1 , \"a  b\" , 'Probe Tab'!A1 )")).toBe("=IF(A1,\"a  b\",'Probe Tab'!A1)");
+  });
+});
+
+const insertRows = (title: string, before: number, count = 1): RewriteStep =>
+  ({ kind: "insert", title, axis: "rows", start: before - 1, count });
+const deleteRows = (title: string, first: number, last = first): RewriteStep =>
+  ({ kind: "delete", title, axis: "rows", start: first - 1, count: last - first + 1 });
+const insertColumns = (title: string, before: string, count = 1): RewriteStep =>
+  ({ kind: "insert", title, axis: "columns", start: columnNumber(before) - 1, count });
+const deleteColumns = (title: string, first: string, last = first): RewriteStep => ({
+  kind: "delete", title, axis: "columns",
+  start: columnNumber(first) - 1, count: columnNumber(last) - columnNumber(first) + 1,
+});
+
+/** A formula, a step, the text Google wrote after it, and whether its cells changed or broke. */
+type Rewrite = [formula: string, step: RewriteStep, text: string, cellsChanged: boolean, broken?: boolean];
+
+/** Formulas on the sheet "Rw" whose rows or columns change, and the text Google wrote after. */
+const ON_SHEET: Rewrite[] = [
+  ["=A2:A5", insertRows("Rw", 2), "=A3:A6", false],
+  ["=A2:A5", insertRows("Rw", 5), "=A2:A6", true],
+  ["=A2:A5", insertRows("Rw", 6), "=A2:A5", false],
+  ["=A1:A2", insertRows("Rw", 2), "=A1:A3", true],
+  ["=A2:A", insertRows("Rw", 2), "=A3:A", false],
+  ["=A:C", insertRows("Rw", 2), "=A:C", true],
+  ["=3:5", insertRows("Rw", 2), "=4:6", false],
+  ["=B3:3", insertRows("Rw", 2), "=B4:4", false],
+  ["=A2:A5", deleteRows("Rw", 2), "=A2:A4", true],
+  ["=A1:A2", deleteRows("Rw", 2), "=A1", true],
+  ["=A2:B2", deleteRows("Rw", 2), "=#REF!", true, true],
+  ["=2:2", deleteRows("Rw", 2), "=#REF!", true, true],
+  ["=B2:C3", deleteRows("Rw", 2), "=B2:C2", true],
+  ["=A2:A5", deleteRows("Rw", 2, 5), "=#REF!", true, true],
+  ["=A6", deleteRows("Rw", 2, 5), "=A2", false],
+  ["=B3:3", deleteRows("Rw", 3), "=#REF!", true, true],
+  ["=A2:A5", deleteRows("Rw", 4, 7), "=A2:A3", true],
+  ["=3:5", deleteRows("Rw", 4, 7), "=3:3", true],
+  ["=A5", deleteRows("Rw", 4, 7), "=#REF!", true, true],
+  ["=A6", deleteRows("Rw", 4, 7), "=#REF!", true, true],
+  ["=A:C", insertColumns("Rw", "A"), "=B:D", false],
+  ["=B3:3", insertColumns("Rw", "A"), "=C3:3", false],
+  ["=$A$2", insertColumns("Rw", "A"), "=$B$2", false],
+  ["=A:C", insertColumns("Rw", "B"), "=A:D", true],
+  ["=A2:B2", insertColumns("Rw", "B"), "=A2:C2", true],
+  ["=A:C", deleteColumns("Rw", "A"), "=A:B", true],
+  ["=B3:3", deleteColumns("Rw", "A"), "=A3:3", false],
+  ["=A2:B2", deleteColumns("Rw", "A"), "=A2", true],
+  ["=A2", deleteColumns("Rw", "A"), "=#REF!", true, true],
+  ["=A1:A3", deleteColumns("Rw", "A"), "=#REF!", true, true],
+  ["=A:A", deleteColumns("Rw", "A"), "=#REF!", true, true],
+  ["=A:C", deleteColumns("Rw", "A", "C"), "=#REF!", true, true],
+  // Formulas in rows 3 and 5 of a sheet whose rows 1 and 2 are deleted.
+  ["=SUM(A1:A3)", deleteRows("Rw", 1, 2), "=SUM(A1)", true],
+  ["=A1", deleteRows("Rw", 1, 2), "=#REF!", true, true],
+  ["=ROW()", deleteRows("Rw", 1, 2), "=ROW()", false],
+];
+
+/**
+ * Formulas on another sheet, referring to "Rw" or to "O" (10 rows, 4 columns), and the text Google
+ * wrote after.
+ */
+const ELSEWHERE: Rewrite[] = [
+  ["=Rw!A5", deleteRows("Rw", 2, 5), "=#REF!", true, true],
+  ["=SUM(Rw!A2:A5,Rw!A10)", deleteRows("Rw", 2, 5), "=SUM(#REF!,Rw!A6)", true, true],
+  ['=Rw!A1&"Rw!A1"', { kind: "rename", from: "Rw", to: "Rw 2" }, `='Rw 2'!A1&"Rw!A1"`, false],
+  ["=Rw!A1", { kind: "rename", from: "Rw", to: "It's x" }, "='It''s x'!A1", false],
+  ["=Rw!A1", { kind: "rename", from: "Rw", to: "AB12" }, "='AB12'!A1", false],
+  ["=Rw!A1+1", { kind: "deleteSheet", title: "Rw" }, "=Rw!A1+1", true, true],
+  ['=INDIRECT("Rw!A3")', insertRows("Rw", 2), '=INDIRECT("Rw!A3")', false],
+  ["=ROW(Rw!A3)", insertRows("Rw", 2), "=ROW(Rw!A4)", false],
+  ["=LAMBDA(x, x + Rw!A3)(1)", insertRows("Rw", 2), "=LAMBDA(x, x + Rw!A4)(1)", false],
+  ["=LET(r, Rw!A3, r * 2)", insertRows("Rw", 2), "=LET(r, Rw!A4, r * 2)", false],
+
+  ["=O!A2:A", deleteRows("O", 1, 3), "=O!A1:A", true],
+  ["=O!A2:B", deleteRows("O", 1, 3), "=O!A1:B", true],
+  ["=O!C3:C", deleteRows("O", 1, 3), "=O!C1:C", true],
+  ["=O!B2:C", deleteRows("O", 1, 3), "=O!B1:C", true],
+  ["=O!B2:2", deleteRows("O", 1, 3), "=#REF!", true, true],
+  ["=O!2:3", deleteRows("O", 1, 3), "=#REF!", true, true],
+  ["=O!A:A", deleteRows("O", 1, 3), "=O!A:A", true],
+
+  ["=O!A2:A", deleteRows("O", 5, 6), "=O!A2:A", true],
+  ["=O!A2:B", deleteRows("O", 5, 6), "=O!A2:B", true],
+  ["=O!C3:C", deleteRows("O", 5, 6), "=O!C3:C", true],
+  ["=O!B2:C", deleteRows("O", 5, 6), "=O!B2:C", true],
+  ["=O!B2:2", deleteRows("O", 5, 6), "=O!B2:2", false],
+  ["=O!2:3", deleteRows("O", 5, 6), "=O!2:3", false],
+  ["=O!A:A", deleteRows("O", 5, 6), "=O!A:A", true],
+
+  ["=O!A2:B", insertColumns("O", "B"), "=O!A2:C", true],
+  ["=O!B2:2", insertColumns("O", "B"), "=O!C2:2", false],
+  ["=O!C3:C", insertColumns("O", "B"), "=O!D3:D", false],
+  ["=O!B2:C", insertColumns("O", "B"), "=O!C2:D", false],
+  ["=O!A2:A", insertColumns("O", "B"), "=O!A2:A", false],
+  ["=O!A:A", insertColumns("O", "B"), "=O!A:A", false],
+  ["=O!2:3", insertColumns("O", "B"), "=O!2:3", true],
+
+  ["=O!A2:B", deleteColumns("O", "B"), "=O!A2:A", true],
+  ["=O!C3:C", deleteColumns("O", "B"), "=O!B3:B", false],
+  ["=O!B2:C", deleteColumns("O", "B"), "=O!B2:B", true],
+  ["=O!B2:2", deleteColumns("O", "B"), "=O!B2:2", true],
+
+  ["=O!A2:A", deleteColumns("O", "A"), "=#REF!", true, true],
+  ["=O!A:A", deleteColumns("O", "A"), "=#REF!", true, true],
+  ["=O!A2:B", deleteColumns("O", "A"), "=O!A2:A", true],
+  ["=O!B2:2", deleteColumns("O", "A"), "=O!A2:2", false],
+  ["=O!B2:C", deleteColumns("O", "A"), "=O!A2:B", false],
+
+  ["=O!A2:B", deleteColumns("O", "A", "B"), "=#REF!", true, true],
+  ["=O!B2:2", deleteColumns("O", "A", "B"), "=O!A2:2", true],
+  ["=O!C3:C", deleteColumns("O", "A", "B"), "=O!A3:A", false],
+  ["=O!B2:C", deleteColumns("O", "A", "B"), "=O!A2:A", true],
+
+  // A row added after the last of the 10: open and whole-column ranges take it in.
+  ["=O!A2:A", insertRows("O", 11), "=O!A2:A", true],
+  ["=O!A2:B", insertRows("O", 11), "=O!A2:B", true],
+  ["=O!C3:C", insertRows("O", 11), "=O!C3:C", true],
+  ["=O!B2:C", insertRows("O", 11), "=O!B2:C", true],
+  ["=O!B2:2", insertRows("O", 11), "=O!B2:2", false],
+  ["=O!2:3", insertRows("O", 11), "=O!2:3", false],
+  ["=O!A:A", insertRows("O", 11), "=O!A:A", true],
+];
+
+/** The rows of `ON_SHEET` whose formula is one reference. */
+const SINGLE_REFERENCES = ON_SHEET.filter(([formula]) => tokenize(formula.slice(1)).length === 1);
+
+/** A duplicate of "F" titled "F copy". */
+const DUPLICATE: RewriteStep = { kind: "duplicate", title: "F", newTitle: "F copy" };
+
+const UNCHANGED = { cellsChanged: false, broken: false };
+
+describe("Sheets formulas through structural changes", () => {
+  it.each(ON_SHEET)("rewrites %s on the sheet through %j", (formula, step, text, cellsChanged, broken = false) => {
+    expect(rewriteFormula(formula, step, true)).toEqual({ text, cellsChanged, broken });
+  });
+
+  it.each(ELSEWHERE)("rewrites %s through %j", (formula, step, text, cellsChanged, broken = false) => {
+    expect(rewriteFormula(formula, step, false)).toEqual({ text, cellsChanged, broken });
+  });
+
+  it("rewrites a reference naming the sheet from elsewhere as one on the sheet, ignoring case", () => {
+    expect(SINGLE_REFERENCES.length).toBeGreaterThan(20);
+    for (let [formula, step, text, cellsChanged, broken = false] of SINGLE_REFERENCES) {
+      let body = formula.slice(1);
+      let after = text === "=#REF!" ? text : `=Rw!${text.slice(1)}`;
+      expect(rewriteFormula(`=Rw!${body}`, step, false), formula).toEqual({ text: after, cellsChanged, broken });
+      expect(rewriteFormula(`='rw'!${body}`, step, false).text, formula)
+        .toBe(text === "=#REF!" ? text : `='rw'!${text.slice(1)}`);
+    }
+  });
+
+  it("leaves unqualified references off the sheet, and references to other sheets, as they are", () => {
+    for (let [formula, step] of ON_SHEET) {
+      expect(rewriteFormula(formula, step, false), formula).toEqual({ text: formula, ...UNCHANGED });
+    }
+    for (let [formula, step] of SINGLE_REFERENCES) {
+      let other = `=Sales!${formula.slice(1)}`;
+      expect(rewriteFormula(other, step, true), other).toEqual({ text: other, ...UNCHANGED });
+    }
+    expect(rewriteFormula("=SUM(A1:A3, Rw!A1:A3)", deleteRows("Rw", 1), false))
+      .toEqual({ text: "=SUM(A1:A3, Rw!A1:A2)", cellsChanged: true, broken: false });
+  });
+
+  it("moves anchored corners, either end of a range typed bottom-up, and long column names", () => {
+    expect(rewriteFormula("=$A$2:$B$5", deleteRows("Rw", 3), true).text).toBe("=$A$2:$B$4");
+    expect(rewriteFormula("=B3:A2", insertRows("Rw", 3), true))
+      .toEqual({ text: "=B4:A2", cellsChanged: true, broken: false });
+    expect(rewriteFormula("=$A$1:A2", deleteRows("Rw", 2), true).text).toBe("=$A$1:A1");
+    expect(rewriteFormula("=A:C", insertColumns("Rw", "AA", 2), true).text).toBe("=A:C");
+    expect(rewriteFormula("=Z1", insertColumns("Rw", "A", 2), true).text).toBe("=AB1");
+  });
+
+  it("never touches string literals, INDIRECT text or error literals", () => {
+    let formula = '=IF(ISERROR(#REF!), "A1:A3 Rw!B2", INDIRECT("Rw!A3")) & #N/A';
+    for (let step of [insertRows("Rw", 1), deleteRows("Rw", 1, 5), deleteColumns("Rw", "A", "C")]) {
+      expect(rewriteFormula(formula, step, true)).toEqual({ text: formula, ...UNCHANGED });
+    }
+    expect(rewriteFormula('="Rw!A1"', { kind: "rename", from: "Rw", to: "X" }, true).text).toBe('="Rw!A1"');
+  });
+
+  it("quotes a renamed sheet as Google quotes it, to and from quoted titles", () => {
+    expect(rewriteFormula("='Probe Tab'!A1:B2 + 'probe tab'!C3", { kind: "rename", from: "Probe Tab", to: "Sales" }, false))
+      .toEqual({ text: "=Sales!A1:B2 + Sales!C3", ...UNCHANGED });
+    expect(rewriteFormula("='It''s'!A1 + Rw!A1", { kind: "rename", from: "It's", to: "Rw 2" }, false).text)
+      .toBe("='Rw 2'!A1 + Rw!A1");
+    for (let [title, quoted] of Object.entries(SHEET_TITLE_QUOTING)) {
+      expect(rewriteFormula("=rw!B2:C3", { kind: "rename", from: "Rw", to: title }, false).text, title)
+        .toBe(`=${quoted}!B2:C3`);
+    }
+    // An unqualified reference follows its sheet whatever its title.
+    expect(rewriteFormula("=A1", { kind: "rename", from: "Rw", to: "X" }, true).text).toBe("=A1");
+  });
+
+  it("points a copy's references to the sheet copied at the copy, and nothing else", () => {
+    expect(rewriteFormula("=F!B1", DUPLICATE, true)).toEqual({ text: "='F copy'!B1", ...UNCHANGED });
+    expect(rewriteFormula("=B1 + Rw!A1 + f!C2:C", DUPLICATE, true).text).toBe("=B1 + Rw!A1 + 'F copy'!C2:C");
+    expect(rewriteFormula("=F!B1", DUPLICATE, false)).toEqual({ text: "=F!B1", ...UNCHANGED });
+  });
+
+  it("breaks references to a deleted sheet, unqualified ones on it included", () => {
+    let step: RewriteStep = { kind: "deleteSheet", title: "Rw" };
+    expect(rewriteFormula("=A1", step, true)).toEqual({ text: "=A1", cellsChanged: true, broken: true });
+    expect(rewriteFormula("=A1 + Sales!A1", step, false)).toEqual({ text: "=A1 + Sales!A1", ...UNCHANGED });
+  });
+
+  it("reads error literals as single tokens", () => {
+    expect(tokenize("=#REF!+#DIV/0!&#n/a").filter(token => token.kind === "error").map(token => token.text))
+      .toEqual(["#REF!", "#DIV/0!", "#n/a"]);
+  });
+});
+
+describe("Sheets structure-sensitive formulas", () => {
+  it("flags each listed function in any case and behind a prefix", () => {
+    expect(STRUCTURE_SENSITIVE_FUNCTIONS.size).toBe(14);
+    for (let name of STRUCTURE_SENSITIVE_FUNCTIONS) {
+      expect(structureSensitive(`=1 + ${name}(A1)`), name).toBe(true);
+      expect(structureSensitive(`=1 + ${name.toLowerCase()} (A1)`), name).toBe(true);
+      expect(structureSensitive(`=_xlfn.${name}(A1)`), name).toBe(true);
+    }
+  });
+
+  it("flags names that are not function calls", () => {
+    expect(structureSensitive("=MyRange * 2")).toBe(true);
+    expect(structureSensitive("=SUM(Totals)")).toBe(true);
+    expect(structureSensitive("=Sales!Totals")).toBe(true);
+  });
+
+  it("leaves calls, constants, references, error literals and strings alone", () => {
+    expect(structureSensitive("=SUM(A1:B2) + IF(TRUE, 1, false) + NORM.DIST(1, 0, 1, TRUE)")).toBe(false);
+    expect(structureSensitive("='It''s'!A1 + Sales!B2:B + #REF! + #N/A + #DIV/0!")).toBe(false);
+    expect(structureSensitive('="ROW(" & "MyRange"')).toBe(false);
+    expect(structureSensitive("=ROWSUM(1)")).toBe(false);
+  });
+
+  it("flags a range whose ends are not one reference, and QUERY's lettered columns", () => {
+    expect(structureSensitive("=SUM( A1 : A3 )")).toBe(true);
+    expect(structureSensitive("=SUM(B1:INDEX(A5:A10, 1))")).toBe(true);
+    expect(structureSensitive('=QUERY(Data!A1:C10, "select B where A > 1")')).toBe(true);
+    expect(structureSensitive('="A1 : A3" & SUM(A1:A3)')).toBe(false);
   });
 });
