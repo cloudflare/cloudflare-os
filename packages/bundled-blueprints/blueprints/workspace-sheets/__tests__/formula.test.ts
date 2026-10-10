@@ -126,6 +126,22 @@ describe("formula references in editing and copied cells", () => {
     expect([...formulaReferences(formula, true)].map((reference) => reference.text)).toEqual(["Q1!B2", "'Owner''s Sheet'!$C$3", "D4", "Q1.A2!E5"]);
   });
 
+  it("keeps whitespace-separated ranges together for editing and cut preflight", () => {
+    const range = "'Source'!$A1 \t:\r\nB$2";
+    const formula = `=SUM(${range})`;
+    expect([...formulaReferences(formula)]).toEqual([{ start: 5, end: 5 + range.length, text: range }]);
+    expect([...formulaReferences(formula, true)].map((reference) => reference.text)).toEqual(["'Source'!$A1", "B$2"]);
+    expect(shiftFormulaReferences(formula, 1, 1)).toBe("=SUM('Source'!$A2 \t:\r\nC$2)");
+  });
+
+  it("preserves literal backslashes and escaped apostrophes in sheet identities", () => {
+    const range = String.raw`'C:\Data'!A1 : 'D:\Owner\'s Data'!$B$2`;
+    const formula = `=SUM(${range})`;
+    expect([...formulaReferences(formula)].map((reference) => reference.text)).toEqual([range]);
+    expect(shiftFormulaReferences(formula, 1, 1)).toBe(String.raw`=SUM('C:\Data'!B2 : 'D:\Owner\'s Data'!$B$2)`);
+    expect(parseFormula(range)).toEqual({ k: "range", a: String.raw`'C:\Data'!A1`, b: String.raw`'D:\Owner''s Data'!$B$2` });
+  });
+
   it("cycles only the qualified endpoint through absolute and mixed locks", () => {
     let reference = "Q1!B2";
     for (const expected of ["Q1!$B$2", "Q1!B$2", "Q1!$B2", "Q1!B2"]) {

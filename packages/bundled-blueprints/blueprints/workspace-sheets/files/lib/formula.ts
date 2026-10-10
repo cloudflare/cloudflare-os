@@ -205,10 +205,10 @@ export function serializeAst(node: Ast): string {
 
 // Editor and copy/fill references share the grid's 702-column and 50,000-row bounds. A function
 // name, identifier suffix, sheet prefix or quoted string must never become an editable reference.
-const SHEET_PREFIX_SOURCE = "(?:(?:'(?:[^'\\\\]|''|\\\\')+'|[A-Za-z_][A-Za-z0-9_.]*)!)?";
+const SHEET_PREFIX_SOURCE = "(?:(?:'(?:\\\\'|''|[^'])+'|[A-Za-z_][A-Za-z0-9_.]*)!)?";
 const CELL_SOURCE = "(?<![A-Za-z0-9_.$])\\$?[A-Z]{1,2}\\$?[1-9]\\d*(?![A-Za-z0-9_!]|\\s*\\()";
 const ENDPOINT_SOURCE = SHEET_PREFIX_SOURCE + CELL_SOURCE;
-const REFERENCE_SOURCE = `${ENDPOINT_SOURCE}(?::${ENDPOINT_SOURCE})?`;
+const REFERENCE_SOURCE = `${ENDPOINT_SOURCE}(?:\\s*:\\s*${ENDPOINT_SOURCE})?`;
 const ENDPOINT_PATTERN = new RegExp(ENDPOINT_SOURCE, "gi");
 const REFERENCE_PATTERN = new RegExp(REFERENCE_SOURCE, "gi");
 
