@@ -168,6 +168,8 @@ export type GitLabNoteResponse = {
   updated_at: string;
   /** GitLab-generated activity ("added label ~bug"), never a person's words. */
   system: boolean;
+  /** An internal note, which only the project's Reporters and above see. */
+  internal?: boolean;
   noteable_iid?: number | null;
   resolvable?: boolean;
   resolved?: boolean;

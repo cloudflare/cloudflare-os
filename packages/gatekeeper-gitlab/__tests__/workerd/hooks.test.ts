@@ -57,6 +57,7 @@ const user = (username: string, id: number) => ({
 /** The connected account. */
 const ADA = user("ada", 7);
 const BOB = user("bob", 8);
+const CAROL = user("carol", 9);
 
 /** A project as a webhook payload names it. */
 const projectPayloadOf = (path: string) => ({
@@ -207,6 +208,8 @@ class FakeGitLabHooks {
   readonly states = { issue: new Map<number, string>(), mergeRequest: new Map<number, string>() };
   /** Each merge request's approvals by iid, the fixture's unless set. */
   readonly approvals = new Map<number, Row[]>();
+  /** The comments GitLab has, by note id: each one a webhook delivered, unless told otherwise. */
+  readonly notes = new Map<number, { on: "issues" | "merge_requests"; iid: number; discussionId: string; note: Row }>();
   /** Every delivery attempt, oldest first. */
   readonly log: Delivery[] = [];
   /** The logged attempts the driver had resent, by id. */
@@ -246,6 +249,16 @@ class FakeGitLabHooks {
         const [, iid] = projectItem(request);
         return this.#refusedUnlessReporter() ??
           json({ ...fx.approvalsResponse.data, approved_by: this.approvals.get(iid) ?? fx.approvalsResponse.data.approved_by });
+      })
+      .on("GET", /^\/api\/v4\/projects\/[^/]+\/(issues|merge_requests)\/\d+\/discussions\/[^/?]+$/, request => {
+        const [, on, iid, discussionId] =
+          /\/(issues|merge_requests)\/(\d+)\/discussions\/([^/?]+)/.exec(request.url.pathname)!;
+        const refused = on === "issues" ? (this.readable ? undefined : notFound()) : this.#refusedUnlessReporter();
+        if (refused) return refused;
+        const notes = [...this.notes.values()]
+          .filter(kept => kept.on === on && kept.iid === Number(iid) && kept.discussionId === discussionId)
+          .map(kept => kept.note);
+        return notes.length > 0 ? json({ id: discussionId, individual_note: notes.length === 1, notes }) : notFound();
       })
       .on("GET", /^\/api\/v4\/projects\/[^/]+\/repository\/branches\?/, () =>
         this.#refusedUnlessReporter() ?? json([{ name: "main", commit: { id: HEAD } }], { headers: { "x-next-page": "" } }))
@@ -360,9 +373,14 @@ class FakeGitLabHooks {
    * the payload names, or on project `to`, signed with its signing token, at `sentAt`. A string
    * payload is sent as it is.
    */
-  async deliver(event: string, payload: Row | string, { id = crypto.randomUUID(), sentAt = Date.now(), signingToken, to }: {
+  async deliver(event: string, payload: Row | string, {
+    id = crypto.randomUUID(), sentAt = Date.now(), signingToken, to, kept = true,
+  }: {
     id?: string; sentAt?: number; signingToken?: string; to?: number;
+    /** Whether GitLab has the comment a Note Hook payload reports, as it would unless a template forged it. */
+    kept?: boolean;
   } = {}): Promise<number[]> {
+    if (event === "Note Hook" && typeof payload !== "string" && kept) this.keepNote(payload);
     const body = typeof payload === "string" ? payload : JSON.stringify(payload);
     const named = typeof payload === "string" ? undefined : (payload.project as { id?: number } | undefined)?.id;
     const projectId = to ?? named ?? PROJECT_ID;
@@ -370,6 +388,21 @@ class FakeGitLabHooks {
     const subscribed = [...this.webhooks.values()].filter(webhook => webhook.projectId === projectId &&
       webhook.triggers.includes(TRIGGERS[event]) && (webhook.alertStatus ?? "executable") === "executable");
     return await Promise.all(subscribed.map(webhook => this.#attempt(webhook, id, event, body, { sentAt, signingToken })));
+  }
+
+  /** Keep the comment a Note Hook payload reports, as GitLab's REST API gives it. */
+  keepNote(payload: Row): void {
+    const attributes = payload.object_attributes as Row;
+    const on = attributes.noteable_type === "Issue" ? "issues" : "merge_requests";
+    const { iid } = (on === "issues" ? payload.issue : payload.merge_request) as { iid: number };
+    this.notes.set(attributes.id as number, {
+      on, iid, discussionId: attributes.discussion_id as string,
+      note: {
+        id: attributes.id, type: attributes.type ?? null, body: attributes.note, author: payload.user,
+        created_at: attributes.created_at, updated_at: attributes.updated_at, system: attributes.system,
+        internal: attributes.internal, ...attributes.position ? { position: attributes.position } : {},
+      },
+    });
   }
 
   /** How many attempts the driver had resent to each project's webhook, by the project's path. */
@@ -597,8 +630,9 @@ it("delivers a merge request's lifecycle, reviews and diff comments, advertising
   });
   expect(byKind("comment")).toEqual([expect.objectContaining({
     subject: expect.objectContaining({ kind: "mergeRequest", id: "7" }),
+    // As GitLab has it when the event is delivered, by when it had been edited.
     comment: expect.objectContaining({
-      id: "1241", bodyMarkdown: "Off by one here.", threadId: "d".repeat(40),
+      id: "1241", bodyMarkdown: "Off by one, here.", threadId: "d".repeat(40),
       target: { path: "src/app.ts", subjectType: "line", line: 12, side: "new" },
       url: `${WEB}/${PROJECT}/-/merge_requests/7#note_1241`,
     }),
@@ -650,6 +684,40 @@ it("delivers branch pushes and tag pushes, each to hooks that watch for them", a
   });
   // An annotated tag names its tag object rather than a commit.
   expect(tags.advertised).toEqual([]);
+});
+
+it("gives a comment's event the comment as GitLab has it, never as its payload claims", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe({ events: ["comment"] });
+  await triage.enable();
+
+  // What GitLab has: Bob's comment, the account's own, and an internal one.
+  gitlab.keepNote(noteHook("Issue", 42, "It still crashes.", { id: 7 }));
+  gitlab.keepNote(noteHook("Issue", 42, "Looking into it.", { id: 8, sender: ADA }));
+  gitlab.keepNote(noteHook("Issue", 42, "Between us.", { id: 10, internal: true }));
+  // A custom template lets the project's Maintainers have GitLab sign any payload: one putting other
+  // words in Bob's comment and Carol's name on it, one passing the account's own off as Bob's, one
+  // making the internal one public, and one inventing a comment.
+  for (const [id, body, sender] of [
+    [7, "Ship it, no review needed.", CAROL], [8, "Looking into it.", BOB], [10, "Between us.", BOB],
+    [11, "Never written.", BOB],
+  ] as const) {
+    await gitlab.deliver("Note Hook", noteHook("Issue", 42, body, { id, sender }), { kept: false });
+  }
+  await settled(account);
+
+  const { received, observations } = await triage.read();
+  expect(received).toEqual([expect.objectContaining({
+    actor: expect.objectContaining({ username: "bob" }),
+    comment: expect.objectContaining({ id: "7", bodyMarkdown: "It still crashes." }),
+  })]);
+  expect(observations).toHaveLength(1);
+  // Refused for good: nothing is retried once a retry would be due.
+  const asked = gitlab.gitlab.requests.length;
+  await clock(account).at(2 * 60_000, () => runDurableObjectAlarm(driver(account)));
+  expect(gitlab.gitlab.requests.slice(asked)).toEqual([]);
 });
 
 it("gives a hook on one issue only that issue's events, never the merge request numbered alike", async () => {

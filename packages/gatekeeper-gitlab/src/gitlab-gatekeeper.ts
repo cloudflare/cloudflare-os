@@ -1453,6 +1453,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       // even moments after a delivery that succeeded.
       if (stored.projectId !== await this.#getProjectId(true)) return;
       const built = await this.#hookEvent(stored, approvalQueue, capabilities);
+      if (!built) return;
       event = built.event;
       await approvalQueue.authorizeObservation(built.observation);
       if (built.commitIds.length > 0) await gitCache.advertise(built.commitIds);
@@ -1473,12 +1474,13 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * The event a hook receives for `stored`, with capabilities on `approvalQueue` (each also pushed
    * to `capabilities`), the observation delivering it makes, and the commits it names. An issue's
    * or merge request's details are read now, as the webhook's payload does not carry them in the
-   * shape the REST API does; a comment, review or push is taken from the (signed) payload, once
-   * the account has read what it tells of. Reading the project is not enough: a Guest of a private
-   * project reads it, and its issues, but not its merge requests or repository.
+   * shape the REST API does, and a comment as GitLab has it (see #readNote); a review or push is
+   * taken from the (signed) payload, once the account has read what it tells of. Reading the
+   * project is not enough: a Guest of a private project reads it, and its issues, but not its
+   * merge requests or repository. Undefined for a comment that is not to be delivered.
    */
   async #hookEvent(stored: GitLabWebhookEvent, approvalQueue: RpcStub<ApprovalQueue>, capabilities: Disposable[]):
-      Promise<{ event: GitLabEvent; observation: ObservationDescription; commitIds: GitOid[] }> {
+      Promise<{ event: GitLabEvent; observation: ObservationDescription; commitIds: GitOid[] } | undefined> {
     const path = this.#projectPath();
     const { id, actor } = stored;
     const by = actor ? ` by ${codeSpan(`@${actor.username}`)}` : "";
@@ -1514,8 +1516,10 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         };
       }
       case "comment": {
-        const subject = this.#eventSubject(stored.target, await this.#readTitle(stored.target));
-        const note = stored.note as GitLabNoteResponse;
+        const [title, note] = await Promise.all([this.#readTitle(stored.target), this.#readNote(stored)]);
+        if (!note) return undefined;
+        const subject = this.#eventSubject(stored.target, title);
+        const author = actorFromUser(this.#instanceUrl(), note.author);
         const entry = discussionCommentFromNote(this.#instanceUrl(), subject.url, note);
         const { kind: _, ...posted } = entry;
         // As `readDiffThreads()` tells a diff comment from the rest: by its position in the diff.
@@ -1526,12 +1530,13 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         const reference = issuableReference(subject.kind, subject.id);
         return {
           event: {
-            kind: "comment", id, actor, subject, comment,
+            kind: "comment", id, actor: author, subject, comment,
             ...subject.kind === "issue" ? { issue: issue(subject.id) } : { mergeRequest: mergeRequest(subject.id) },
           },
           observation: {
             title: sanitizeTitle(`GitLab comment on ${reference}: ${subject.title}`),
-            description: `Read a new comment${by} on ${on} ${reference} in ${path}.`,
+            description: `Read a new comment${author ? ` by ${codeSpan(`@${author.username}`)}` : ""} on ${on} ` +
+              `${reference} in ${path}.`,
           },
           commitIds: [],
         };
@@ -1583,6 +1588,29 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     return kind === "issue"
       ? (await this.#getRemoteIssueDetails(String(iid), true)).title
       : (await this.#getRawMergeRequest(String(iid), true)).title;
+  }
+
+  /**
+   * The comment a comment event names, as GitLab has it now: a custom template lets the project's
+   * Maintainers have GitLab sign any payload, so a payload's words and author prove nothing.
+   * Undefined if GitLab no longer has it, or it is not a person's, is internal, or is the account's
+   * own, which a hook would answer.
+   */
+  async #readNote({ target, noteId, discussionId }: Extract<GitLabWebhookEvent, { kind: "comment" }>):
+      Promise<GitLabNoteResponse | undefined> {
+    const [discussion, viewer] = await Promise.all([
+      this.#withApi(api => api.getDiscussion(this.#projectPath(), target.kind === "issue" ? "issues" : "merge_requests",
+        target.iid, discussionId)),
+      this.#getViewer(),
+    ]);
+    const note = discussion.notes.find(found => found.id === noteId);
+    if (!note || note.system || note.internal || note.author?.id === viewer.id) {
+      logger.info("dropped a GitLab comment event that GitLab's record of the comment does not bear out", {
+        event: "hooks.delivery.unconfirmed",
+      });
+      return undefined;
+    }
+    return note;
   }
 
   /** Throws GitLab's refusal unless the account can read the project's repository now. */

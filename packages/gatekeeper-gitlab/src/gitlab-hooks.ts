@@ -84,13 +84,6 @@ export type GitLabHookProps = GitLabHookParams & {
   delivery: RpcStub<GitLabHookDelivery>;
 };
 
-/**
- * A comment a webhook delivered, in the shape GitLab's REST API gives a note (see
- * `parseWebhookEvent`). Authenticated by the delivery's signature, it crosses RPC unvalidated, and
- * the facet reads it as that REST type.
- */
-export type WebhookJson = Record<string, unknown>;
-
 /** One event a webhook delivered, as the driver queues it for each hook and the facet delivers it. */
 export type GitLabWebhookEvent = {
   /** The delivery's `webhook-id`, the same for each delivery of one event. */
@@ -100,7 +93,8 @@ export type GitLabWebhookEvent = {
 } & (
   | { kind: "issue"; action: GitLabIssueEvent["action"]; target: GitLabEventTarget }
   | { kind: "mergeRequest"; action: GitLabMergeRequestEvent["action"]; target: GitLabEventTarget }
-  | { kind: "comment"; target: GitLabEventTarget; note: WebhookJson; discussionId: string }
+  /** Named only: the facet reads the comment from GitLab, which a payload need not match. */
+  | { kind: "comment"; target: GitLabEventTarget; noteId: number; discussionId: string }
   | { kind: "review"; target: GitLabEventTarget; decision: GitLabReviewDecision }
   | { kind: "push"; branch: string; before?: string; after?: string }
   | { kind: "tag"; tag: string; before?: string; after?: string }
@@ -793,20 +787,10 @@ function parseWebhookEvent(name: string, id: string, projectId: number, payload:
       if (!kind || typeof noteable?.iid !== "number" || attributes.action !== "create") return undefined;
       if (attributes.system === true || attributes.internal === true) return undefined;
       if (typeof attributes.id !== "number" || typeof attributes.discussion_id !== "string") return undefined;
-      const { username, name: displayName, avatar_url } = payload.user ?? {};
-      const note = {
-        id: attributes.id,
-        type: attributes.type ?? null,
-        body: attributes.note ?? "",
-        author: { id: senderId, username, name: displayName, avatar_url },
-        created_at: attributes.created_at,
-        updated_at: attributes.updated_at,
-        system: false,
-        ...attributes.position ? { position: attributes.position } : {},
-      };
       return {
         event: {
-          ...base, kind: "comment", target: { kind, iid: noteable.iid }, note, discussionId: attributes.discussion_id,
+          ...base, kind: "comment", target: { kind, iid: noteable.iid }, noteId: attributes.id,
+          discussionId: attributes.discussion_id,
         },
         senderId,
       };
