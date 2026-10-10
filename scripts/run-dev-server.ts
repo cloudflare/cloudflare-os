@@ -503,8 +503,9 @@ const PASSTHROUGH_GATEKEEPER_VARS: Record<string, string[]> = {
   // The instance a self-hosted GitLab gatekeeper talks to, and the Access service token for one
   // behind Cloudflare Access; unset, it talks to gitlab.com.
   "gatekeeper-gitlab": ["GITLAB_URL", "GITLAB_API_URL", "CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET"],
-  // Each connection's daily read limit; unset, the in-code default.
-  "gatekeeper-x": ["X_DAILY_READ_LIMIT"],
+  // Each connection's daily read limit, unset for the in-code default; and a tunnel's public origin
+  // with the X app's app-only bearer token, for push notifications, which are refused without both.
+  "gatekeeper-x": ["X_DAILY_READ_LIMIT", "WEBHOOK_ORIGIN", "X_APP_BEARER_TOKEN"],
 };
 
 for (const gk of gatekeepers) {

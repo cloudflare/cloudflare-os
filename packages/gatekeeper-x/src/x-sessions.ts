@@ -6,7 +6,8 @@
 
 import { RpcTarget, type RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
-import type { ApprovalQueue } from "@gadgets/workshop-shared/gatekeeper";
+import type { ApprovalQueue, HookDescription } from "@gadgets/workshop-shared/gatekeeper";
+import { sanitizeTitle } from "@gadgets/gatekeeper-kit/action-description";
 import type { ActionFileReference } from "@gadgets/gatekeeper-kit/action-files";
 import type { ActionSubmitter } from "@gadgets/gatekeeper-kit/actions";
 import {
@@ -22,6 +23,7 @@ import {
 import { MAX_THREAD_POSTS, validateDraft, type StoredDraft, type XActions } from "./x-actions";
 import type { StoredIdentity } from "./x-credentials";
 import { XCursor, type XPage } from "./x-cursor";
+import type { XHookParams, XPostHookTarget } from "./x-hooks";
 import {
   authorsUnverified, indexIncludes, isMutedStatus, mentionsProtectedAuthor, toListInfo, toPostInfo, toUserInfo,
   type WireList, type WirePost, type WireUser,
@@ -70,6 +72,9 @@ export type XSessionHost = {
   allocate(kind: "post" | "list"): string;
   submit<K extends keyof XActions>(queue: ActionSubmitter, kind: K, payload: XActions[K]): Promise<number>;
   captureImage(bytes: Uint8Array): Promise<ActionFileReference>;
+  /** Binds `hook` to the posts `params` names; see `XAccountSession.subscribeMentions()`. */
+  bindHook(queue: RpcStub<ApprovalQueue>, params: XHookParams, hook: RpcStub<XPostHookTarget>,
+           description: HookDescription): Promise<void>;
 };
 
 /**
@@ -157,6 +162,17 @@ function withProtectedAuthors(post: XPostInfo): XPostInfo {
 
 function countOf(count: number, noun: string, plural = `${noun}s`): string {
   return `${count} ${count === 1 ? noun : plural}`;
+}
+
+/** What every hook's description ends with: what enabling it allows, and what it costs. */
+const HOOK_TERMS = "X bills each delivered post as a post read.";
+
+function hookDescription(title: string, watching: string, canAct: boolean): HookDescription {
+  return {
+    title: sanitizeTitle(title),
+    description: `Call this hook with each ${watching}, letting it read the post` +
+      `${canAct ? " and queue a reply or other actions for approval" : ""}. ${HOOK_TERMS}`,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -517,6 +533,16 @@ export class XPostImpl extends RpcTarget implements XPost {
     await this.#ctx.host.submit(this.#ctx.queue, "hide", { post: await this.#reply(), hidden: false });
   }
 
+  async subscribeReplies(hook: RpcStub<XPostHookTarget>): Promise<void> {
+    const { id, info } = await this.#target();
+    if (isProvisional(id)) throw new Error("This post can't be watched until it is published.");
+    const me = await this.#ctx.host.me();
+    // X reports replies only to the account's own posts.
+    if (info.author.id !== me.id) throw new Error("Only replies to the connected account's own posts can be watched.");
+    await this.#ctx.host.bindHook(this.#ctx.queue, { kind: "reply", postId: id, conversationId: info.conversationId },
+      hook, hookDescription("Hear of replies to a post on X", `direct reply to ${info.url ?? "the post"}`, true));
+  }
+
   /**
    * The post an action targets, read to describe it to the approver: not an observation. The
    * action keeps it, and a read simulating the action can show it (a pending repost among the
@@ -591,6 +617,21 @@ export class XProfileImpl extends RpcTarget implements XProfile {
   async listPosts(options?: XTimelineOptions): Promise<Cursor<XPostInfo>> {
     return await profilePosts(this.#ctx, await this.#resolve(), options);
   }
+
+  async subscribePosts(hook: RpcStub<XPostHookTarget>): Promise<void> {
+    await subscribeToPosts(this.#ctx, await this.#resolve(), hook, false);
+  }
+}
+
+/** Binds `hook` to `user`'s posts; only an account binding's events carry a capability to act. */
+async function subscribeToPosts(ctx: SessionContext, user: WireUser, hook: RpcStub<XPostHookTarget>,
+                                canAct: boolean): Promise<void> {
+  if (user.id === (await ctx.host.me()).id) {
+    throw new Error("The connected account's own posts can't be watched: a hook would hear of the posts it made.");
+  }
+  const name = user.username ? `@${user.username}` : "an X user";
+  await ctx.host.bindHook(ctx.queue, { kind: "post", userId: user.id }, hook,
+    hookDescription(`Hear of new posts by ${name} on X`, `post ${name} publishes`, canAct));
 }
 
 @validateRpc()
@@ -620,6 +661,10 @@ export class XUserImpl extends RpcTarget implements XUser {
 
   async listPosts(options?: XTimelineOptions): Promise<Cursor<XPostInfo>> {
     return await profilePosts(this.#ctx, await readUser(this.#ctx.host, this.#target), options);
+  }
+
+  async subscribePosts(hook: RpcStub<XPostHookTarget>): Promise<void> {
+    await subscribeToPosts(this.#ctx, await readUser(this.#ctx.host, this.#target), hook, true);
   }
 
   async isMuted(): Promise<boolean> {
@@ -999,6 +1044,18 @@ export class XAccountSessionImpl extends RpcTarget implements XAccountSession {
       submittedAt: Date.now(),
     });
     return new XListImpl(this.#ctx.dup(), ref);
+  }
+
+  async subscribeMentions(hook: RpcStub<XPostHookTarget>): Promise<void> {
+    const me = await this.#ctx.host.me();
+    await this.#ctx.host.bindHook(this.#ctx.queue, { kind: "mention" }, hook,
+      hookDescription(`Hear of posts mentioning @${me.username} on X`, `post that mentions @${me.username}`, true));
+  }
+
+  async subscribeReplies(hook: RpcStub<XPostHookTarget>): Promise<void> {
+    const me = await this.#ctx.host.me();
+    await this.#ctx.host.bindHook(this.#ctx.queue, { kind: "reply" }, hook,
+      hookDescription(`Hear of replies to @${me.username}'s posts on X`, `direct reply to a post by @${me.username}`, true));
   }
 
   async #publish(drafts: XPostDraft[]): Promise<XPost[]> {

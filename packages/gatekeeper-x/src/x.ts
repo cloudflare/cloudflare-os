@@ -78,6 +78,7 @@ import {
   type XGatekeeperImplProps,
 } from "./x-env";
 import { XListConfiguratorUI, XPlaceholderConfiguratorUI } from "./x-configurators";
+import { handleWebhookRequest } from "./x-hooks";
 import type { WireUser } from "./x-normalize";
 import { parseXUrl } from "./x-urls";
 import { obsContext } from "./observability";
@@ -89,6 +90,7 @@ import X_POST_CONFIGURATOR_HTML from "./generated/x-post-configurator-ui.txt";
 import X_PROFILE_CONFIGURATOR_HTML from "./generated/x-profile-configurator-ui.txt";
 
 export { XGatekeeperImpl } from "./x-gatekeeper";
+export { XActivityRouter, XHookController, XHookDriver, XWebhookRegistry } from "./x-hooks";
 export {
   XAccountSessionImpl, XListImpl, XPostImpl, XProfileImpl, XUserImpl,
 } from "./x-sessions";
@@ -211,6 +213,8 @@ export default {
 
     const relPath = url.pathname.slice(basePath.length);
     const path = relPath.slice(1).split("/");
+
+    if (relPath === "/webhook") return await handleWebhookRequest(req, env, ctx.exports);
 
     if (path.length === 2 && path[0].length === 64 && path[1].length === NONCE_BYTES * 2) {
       if (!env.CLIENT_ID || !env.CLIENT_SECRET) return htmlResponse(NOT_CONFIGURED_HTML);
@@ -646,6 +650,13 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async revoke(): Promise<void> {
+    // Hooks first, so the subscriptions nothing else watches stop being delivered and billed. Best
+    // effort: a disconnect must not fail on them.
+    try {
+      await this.ctx.exports.XHookDriver.getByName(this.ctx.props.userObjectId).revoke();
+    } catch (error) {
+      logger.warn("failed to cancel a disconnected X account's hooks", { event: "hooks.revoke.failed", error });
+    }
     await this.#account().revoke();
   }
 

@@ -1069,6 +1069,14 @@
             "XGatekeeperImpl"
           ],
           "tag": "v0"
+        },
+        {
+          "new_sqlite_classes": [
+            "XHookDriver",
+            "XActivityRouter",
+            "XWebhookRegistry"
+          ],
+          "tag": "v1"
         }
       ],
       "modules": [

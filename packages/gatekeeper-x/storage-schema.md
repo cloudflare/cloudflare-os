@@ -36,3 +36,38 @@ One per binding.
 | `verdict:<xUserId>` | `number` | When an observer's X account last proved it can see the bound post or List; trusted for an hour. |
 | `housekeptAt` | `number` | When housekeeping last ran. |
 | `observer:*`, `observed:*` | kit observer tracker | Admitted observers, and the collections (`owner`) reads have disclosed. |
+
+A hook stores nothing in the facet: until it is enabled, everything it needs lives in its
+`XHookController`'s props, including a persistent stub to the facet minted by `ctx.restore()`, whose
+`[restore]()` target delivers with the binding's re-checks.
+
+## XHookDriver
+
+One per connected account, named by its `UserAccount` id.
+
+| Key | Value | Notes |
+|---|---|---|
+| `account` | `string` | The `UserAccount` id. |
+| `reg:<hook key>` | `{ kind, postId?, conversationId?, userId?, viewerId }` | An enabled hook: what it watches for, and the connected X user, whose own posts are never delivered back to it. |
+| `caps:<hook key>` | `{ delivery, initiator }` | The facet's delivery stub and the overseer's initiator. Disposed when replaced, unregistered or revoked. |
+| `msg:<hook key>:<event id>` | kit `HookDeliveryQueue` rows | Each event queued for a hook, retried with backoff; finished rows are kept a day, deduplicating X's `event_uuid`. |
+| `revoked` | `true` | The account was disconnected: nothing more is registered or delivered. |
+
+## XActivityRouter
+
+One per X user, named by the user's ID.
+
+| Key | Value | Notes |
+|---|---|---|
+| `sub:<event type>` | `{ id, deleting? }` | The subscription X delivers this user's `post.mention.create`, `post.reply.create` or `post.create` events through. Forgotten for the private two when X reports `oauth.revoke`, since X deleted them. Once nothing watches it, kept until X confirms deleting it: `deleting` marks one X failed to delete, deleted again from the alarm every 15 minutes, or before a new watcher subscribes afresh. |
+| `watch:<event type>:<account id>` | `true` | An account whose driver watches for the event; the last to go ends the subscription. |
+| `unconfirmed:<event type>` | `{ userId }` | A subscription request whose outcome X never reported. X may have made it, so the alarm looks for it 15 minutes later: one X has is recorded under `sub:`, and ended there unless a hook watches it. |
+
+## XWebhookRegistry
+
+One per deployment, named `deployment`.
+
+| Key | Value | Notes |
+|---|---|---|
+| `webhook` | `{ id, url }` | The webhook X delivers to, checked hourly: revalidated if X marked it invalid, registered again if X lost it. |
+| `revokeSubscribed` | `true` | The app-wide `oauth.revoke` subscription exists. Until it does, every hook enabled and every hourly check tries again. |

@@ -20,7 +20,17 @@ export type Env = Cloudflare.Env & PreviewOAuthEnv & {
    * to `DEFAULT_DAILY_READ_LIMIT`.
    */
   X_DAILY_READ_LIMIT?: string;
+  /** The public https origin X delivers push notifications to. Unset, hooks are refused. */
+  WEBHOOK_ORIGIN?: string;
+  /**
+   * The X app's app-only bearer token, which X's webhook endpoints take and nothing else does.
+   * Unset, hooks are refused.
+   */
+  X_APP_BEARER_TOKEN?: string;
 };
+
+/** The header X signs each webhook delivery in, with the app's OAuth 2.0 client secret. */
+export const SIGNATURE_HEADER = "X-Twitter-Webhooks-Signature-OAuth2";
 
 /** Where the Worker sends API requests. */
 export const X_API_ORIGIN = "https://api.x.com";
@@ -53,6 +63,20 @@ export function getBasePath(env: Env): string {
 /** The OAuth callback registered with the X app. */
 export function getRedirectUri(env: Env): string {
   return `${getBaseUrl(env)}/oauth`;
+}
+
+/**
+ * The URL X delivers push notifications to, or undefined when this deployment has not configured
+ * them: that takes both `WEBHOOK_ORIGIN` and `X_APP_BEARER_TOKEN`.
+ * @throws If `WEBHOOK_ORIGIN` is not an https origin without a port, the only kind X accepts.
+ */
+export function webhookUrl(env: Env): string | undefined {
+  if (env.WEBHOOK_ORIGIN === undefined || !env.X_APP_BEARER_TOKEN) return undefined;
+  const origin = URL.parse(env.WEBHOOK_ORIGIN);
+  if (origin?.protocol !== "https:" || origin.port !== "" || origin.href !== `${origin.origin}/`) {
+    throw new Error("WEBHOOK_ORIGIN must be an https origin without a port, such as https://gadgets.example.com.");
+  }
+  return `${origin.origin}${getBasePath(env)}/webhook`;
 }
 
 /**
