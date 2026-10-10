@@ -31,6 +31,7 @@ import {
   providedRefs,
   revert,
   type RevertOutcome,
+  type SendAttempt,
   type XAction,
   type XActionHost,
   type XActions,
@@ -147,8 +148,8 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
       delete: id => this.ctx.storage.kv.delete(`${PROGRESS_PREFIX}${id}`),
     },
     attempts: {
-      get: key => this.ctx.storage.kv.get<{ at: number }>(`${ATTEMPT_PREFIX}${key}`),
-      put: (key, at) => this.ctx.storage.kv.put(`${ATTEMPT_PREFIX}${key}`, { at }),
+      get: key => this.ctx.storage.kv.get<SendAttempt>(`${ATTEMPT_PREFIX}${key}`),
+      put: (key, attempt) => this.ctx.storage.kv.put(`${ATTEMPT_PREFIX}${key}`, attempt),
       delete: key => this.ctx.storage.kv.delete(`${ATTEMPT_PREFIX}${key}`),
     },
     invalidate: async () => this.#cache.invalidateAll(),

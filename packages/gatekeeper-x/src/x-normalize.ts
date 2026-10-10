@@ -38,7 +38,8 @@ export type WirePost = {
 };
 
 type WireEntities = {
-  urls?: { url?: string; expanded_url?: string; unwound_url?: string; title?: string }[];
+  /** `media_key` marks the link X adds to a post for its attached media. */
+  urls?: { url?: string; expanded_url?: string; unwound_url?: string; title?: string; media_key?: string }[];
   mentions?: { username?: string }[];
   hashtags?: { tag?: string }[];
 };
@@ -281,6 +282,30 @@ export function toPostInfo(post: WirePost, includes: Includes): XPostInfo {
     replySettings,
     ...(post.lang && post.lang !== "und" ? { lang: post.lang } : {}),
     possiblySensitive: post.possibly_sensitive === true,
+  };
+}
+
+/** What a post carries of the draft it was sent from, as reconciliation compares them. */
+export type SentContent = {
+  text: string;
+  /** The post it replies to. */
+  replyTo?: string;
+  /** Its links as written, not where they redirect. */
+  links: string[];
+  mediaIds: string[];
+  poll: boolean;
+};
+
+/** What X kept of the draft a post was sent from: the fields reconciliation compares with it. */
+export function sentContent(post: WirePost): SentContent {
+  const entities = post.note_tweet?.entities ?? post.note_post?.entities ?? post.entities ?? {};
+  return {
+    text: fullText(post),
+    replyTo: references(post).find(ref => ref.type === "replied_to")?.id,
+    links: (entities.urls ?? []).flatMap(link => link.media_key ? [] : link.expanded_url ?? link.url ?? []),
+    // A media key is the media's type and ID: `3_<id>` for an image.
+    mediaIds: (post.attachments?.media_keys ?? []).map(key => key.slice(key.indexOf("_") + 1)),
+    poll: (post.attachments?.poll_ids?.length ?? 0) > 0,
   };
 }
 

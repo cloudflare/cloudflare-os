@@ -1064,12 +1064,16 @@ departed from the design above:
   offered again without re-reading -- with exactly one X request per `next()`. Search continues with
   `next_token`; every other listing with `pagination_token`.
 - **Reconciliation is inline.** The kit's `ActionOutcomeUnknownError` is terminal, so it cannot carry
-  "check, then post". A send instead writes an attempt marker (`attempt:<id>:<index>`, the send's
-  time) before `POST /2/tweets`; a lost answer or a 5xx leaves the action pending with a plain
-  error, and the next apply first reads the account's posts since the attempt (minus 10 s,
-  `max_results=5`) and binds a match on `comparableText` and the reply parent. While a marker or
-  thread progress exists, `reject` is refused ("it may already be on X"). A terminal refusal part-way
-  through a thread names the posts already published.
+  "check, then post". A send instead writes an attempt marker (`attempt:<id>:<index>`: the send's
+  time and the media IDs it attached) before `POST /2/tweets`; a lost answer or a 5xx leaves the
+  action pending with a plain error, and the next apply first reads the account's posts dated from
+  10 s before the attempt to 5 minutes after it (`max_results=100`). It binds a post only when
+  exactly one matches the draft's reply parent, `comparableText`, link destinations
+  (`expanded_url`, through `comparableUrl`), poll and media IDs. None sends again; more than one,
+  or a window too full for one page, ends the action with `ActionOutcomeUnknownError`, since
+  binding the wrong post would have a revert delete it. While a marker or thread progress exists,
+  `reject` is refused ("it may already be on X"). A terminal failure part-way through a thread
+  names the posts already published.
 - **Revocation is narrower than §3.** A grant is revoked only when it provably shares no
   authorization with a live one: another X user's (a refused reconnect), a first connect the
   Workshop never took, and what a disconnect leaves. A same-user reconnect's leftover is dropped
