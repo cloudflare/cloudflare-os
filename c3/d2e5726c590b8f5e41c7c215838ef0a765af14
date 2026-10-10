@@ -6,6 +6,7 @@ packages/gatekeeper-google/__tests__/sheets-plan.test.ts
   s_010272bf0842e6::t_4ef0fe7984cfd9 39-49
   s_010272bf0842e6::t_c0a6b751a5197f 543-547
   s_010272bf0842e6::t_1b2cd1ebf9ed23 583
+  s_f8f4e8eafb49cb::t_c1486ee12e8f5b 401,405
 packages/gatekeeper-google/src/sheets-input.ts
   s_010272bf0842e6::t_9c6b37dba02f86 7-8,18-27,29-36,39-44,57-64,67-68,70-72,125-241,252-258,264-267
 packages/gatekeeper-google/__tests__/sheets-structure.test.ts
@@ -33,6 +34,11 @@ packages/gatekeeper-google/__tests__/workerd/sheets-actions.test.ts
   s_010272bf0842e6::t_07fb22104bd2b4 1397,1399,1403-1404
   s_010272bf0842e6::t_d9f4f4d100128e 290-292,294,299-301,306-344,347-351,361-362,375-408,411-419,421-424,426,429-464
   s_010272bf0842e6::t_fec3c11774e69f 579,1059,1465-1467,1470-1480
+  s_f8f4e8eafb49cb::t_7d746db4c0f4be 425,427-428
+  s_f8f4e8eafb49cb::t_df502ce3e40e2c 1292,1374
+  s_f8f4e8eafb49cb::t_dacd36785eef7e 1463,1468-1469
+  s_f8f4e8eafb49cb::t_cd2c0018fc33bf 571-576,832,1214,1291,1373
+  s_f8f4e8eafb49cb::t_a95c5faee1d6bc 4,24,50,95,202,212-214,216-225,234,345-346,409-410
 packages/gatekeeper-google/src/sheets.ts
   s_010272bf0842e6::t_0d10d4818d17d7 24-25
   s_010272bf0842e6::t_e179d0a2b46955 34-35
@@ -47,6 +53,8 @@ packages/gatekeeper-google/src/sheets.ts
   s_010272bf0842e6::t_903a9278f90d0d 27-28
   s_010272bf0842e6::t_e7a04efa0aad4c 59,315-321,453-455,457-459,466-467,469-471,473-479,493-494,510-511,525-531,547-548
   s_010272bf0842e6::t_5f4e993663c22b 22
+  s_f8f4e8eafb49cb::t_9e363b113ac49d 523
+  s_f8f4e8eafb49cb::t_72ed57250d1627 51-53,55-57
 packages/gatekeeper-google/src/sheets-types.d.ts
   s_010272bf0842e6::t_ba03bc91a29680 132-137,140-143,146-150,158-165
   s_010272bf0842e6::t_baa7ef69e3d67f 79,99
@@ -65,6 +73,8 @@ packages/gatekeeper-google/src/sheets-plan.ts
   s_010272bf0842e6::t_e6a14ca9735d81 201
   s_010272bf0842e6::t_9ae6e9c8062349 487,530-531
   s_010272bf0842e6::t_56ccf883579520 710,717,720,724
+  s_f8f4e8eafb49cb::t_e45060443c06fb 18,20
+  s_f8f4e8eafb49cb::t_9e363b113ac49d 19,711-713
 packages/gatekeeper-google/__tests__/types.test.ts
   s_010272bf0842e6::t_9051168ef61678 200-214
 packages/gatekeeper-google/__tests__/workerd/sheets-session.test.ts
@@ -74,6 +84,8 @@ packages/gatekeeper-google/__tests__/workerd/sheets-session.test.ts
   s_010272bf0842e6::t_88a6d45126721f 224-272
   s_010272bf0842e6::t_328c3a17cef52e 110-116
   s_010272bf0842e6::t_ce85a2fc768340 80,117-120,174-175,273-274
+  s_f8f4e8eafb49cb::t_dacd36785eef7e 15
+  s_f8f4e8eafb49cb::t_7d746db4c0f4be 223
 packages/gatekeeper-google/src/sheets-api.ts
   s_010272bf0842e6::t_45f424d71212bc 371-373,375-376
   s_010272bf0842e6::t_3077aad61be45f 404
@@ -82,6 +94,7 @@ packages/gatekeeper-google/src/sheets-api.ts
   s_010272bf0842e6::t_e197d368427b72 103-105
   s_010272bf0842e6::t_b3301a91f5e799 282-284
   s_010272bf0842e6::t_55a7c36caf5861 21-24,50-52,262,274-281
+  s_f8f4e8eafb49cb::t_d52955523848f8 195-203,370,374,377-394,397-403,405-413
 packages/gatekeeper-google/src/sheets-structure.ts
   s_010272bf0842e6::t_fa1eacd66d1fae 77-82,89
   s_010272bf0842e6::t_f9aa45adb9d5e0 31,39
@@ -93,10 +106,14 @@ packages/gatekeeper-google/__tests__/sheets-simulation.test.ts
   s_010272bf0842e6::t_49399cf355af0f 38-47
   s_010272bf0842e6::t_6ac098dc3e31c2 157,159,161-163,165-166,221-226,230-231,233-236,329-345
   s_010272bf0842e6::t_f25bf73db63e42 37,420-431
+  s_f8f4e8eafb49cb::t_decfdbf6d5c05a 355,359,370-371
+  s_f8f4e8eafb49cb::t_e1ae4a08de0d65 327
 packages/gatekeeper-google/__tests__/sheets-fixture.ts
   s_010272bf0842e6::t_f95d985e88417b 8-9
   s_010272bf0842e6::t_9e52ebe216cd80 183-200
   s_010272bf0842e6::t_4910dca1a52edc 17-20,22-29
+  s_f8f4e8eafb49cb::t_dacd36785eef7e 108-121
+  s_f8f4e8eafb49cb::t_7d746db4c0f4be 107
 packages/gatekeeper-google/src/sheets-actions.ts
   s_010272bf0842e6::t_df163db968428b 80,82-83
   s_010272bf0842e6::t_02e96e3441bb4b 169-170
@@ -109,6 +126,7 @@ packages/gatekeeper-google/src/sheets-actions.ts
   s_010272bf0842e6::t_49204e7de068f7 298
   s_010272bf0842e6::t_f947218653fb9a 91,99-107
   s_010272bf0842e6::t_5e1b8f2b2e5619 41-42,219,320,322-323,327,335-337
+  s_f8f4e8eafb49cb::t_9e363b113ac49d 132
 packages/gatekeeper-google/src/sheets-simulation.ts
   s_010272bf0842e6::t_89bd6d6a314e53 10-14,23-27,33,45-48,52-75,78-80,83-87,90-96,99-106,112,131-149,154,175-181,183-203,207-215,217-276,280-281,286-289,292-296,302-344,346-360,362-383,388-389,394-430
   s_010272bf0842e6::t_c4ed6a9073b7ef 182
@@ -118,6 +136,11 @@ packages/gatekeeper-google/src/sheets-simulation.ts
   s_010272bf0842e6::t_7f8d3cb2e92982 216
   s_010272bf0842e6::t_978d293455db03 345
   s_010272bf0842e6::t_d82985610854dd 431-463,471
+  s_f8f4e8eafb49cb::t_dacd36785eef7e 390
+  s_f8f4e8eafb49cb::t_7d746db4c0f4be 32,385
+  s_f8f4e8eafb49cb::t_9e363b113ac49d 29,384,386-387,391-393,467-469,472,474-493
+packages/gatekeeper-google/__tests__/sheets-apply.test.ts
+  s_f8f4e8eafb49cb::t_dacd36785eef7e 134
 ---
 {
   "schema_version": "authorship/3.0.0",
@@ -129,6 +152,14 @@ packages/gatekeeper-google/src/sheets-simulation.ts
       "agent_id": {
         "tool": "claude",
         "id": "890bd2c4-bc81-47c2-9055-2c1fae3caf90",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_f8f4e8eafb49cb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "96d8cda6-efce-42a7-8834-fd3434ebce3b",
         "model": "claude-opus-5-5"
       },
       "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
