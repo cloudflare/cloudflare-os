@@ -533,6 +533,7 @@ interface FormulaPick extends Range { textStart: number; textEnd: number; picked
 interface FormulaDiagnosis { message: string; segment: string | null }
 interface ClipboardCell { value: string | null; fmt: CellFmt | null; sourceRef: string }
 interface ClipboardSnapshot { tsv: string; cells: (ClipboardCell | null)[][]; refs: (string | null)[][]; trimmed: "rows" | "columns" | null; sheetId: string; cut: boolean; token: string }
+interface CutRangeMove extends RC { sheetId: string; rowDelta: number; columnDelta: number }
 interface StructureChanges { title: string | null; sheetOrder: string[] | null; added: string[]; removed: string[]; sheets: Record<string, Partial<SheetMeta>> }
 
 // A1 <-> (row, col) — both zero-based internally.
@@ -4504,9 +4505,18 @@ function formulaReferenceSheetId(ref: string, defaultSheetId: string): string {
   const name = ref.slice(0, bang).replace(/^'|'$/g, "").replace(/\\'|''/g, "'").toLowerCase();
   return model.sheetOrder.find((id) => model.sheets[id].name.toLowerCase() === name) || "";
 }
+function indexCutRangeMoves(cutSheetId: string, moves: Map<string, { sheetId: string; ref: string }>, unchangedSources: Set<string>): Map<string, CutRangeMove> {
+  const index = new Map<string, CutRangeMove>();
+  for (const [ref, target] of moves) {
+    if (!unchangedSources.has(ref) || target.sheetId === cutSheetId && target.ref === ref) continue;
+    const source = parseRef(ref), destination = parseRef(target.ref);
+    if (source && destination) index.set(ref, { ...source, sheetId: target.sheetId, rowDelta: destination.r - source.r, columnDelta: destination.c - source.c });
+  }
+  return index;
+}
 // The formula grammar has rectangles, not unions of independently moved cells. Accept a range
 // only when no cells move, or every cell follows the same translation to the same sheet.
-function formulaRangesFollowCut(value: string, formulaSheetId: string, cutSheetId: string, moves: Map<string, { sheetId: string; ref: string }>, unchangedSources: Set<string>): boolean {
+function formulaRangesFollowCut(value: string, formulaSheetId: string, cutSheetId: string, moves: Map<string, CutRangeMove>, checks: Map<string, boolean>): boolean {
   for (const reference of formulaReferences(value)) {
     const endpoints = [...formulaReferences("=" + reference.text, true)];
     if (endpoints.length !== 2) continue;
@@ -4516,18 +4526,30 @@ function formulaRangesFollowCut(value: string, formulaSheetId: string, cutSheetI
     const last = parseRef(endpoints[1].text.slice(endpoints[1].text.lastIndexOf("!") + 1));
     if (!first || !last) continue;
     const r1 = Math.min(first.r, last.r), r2 = Math.max(first.r, last.r), c1 = Math.min(first.c, last.c), c2 = Math.max(first.c, last.c);
+    const lastSheetId = formulaReferenceSheetId(endpoints[1].text, sheetId);
+    const area = (r2 - r1 + 1) * (c2 - c1 + 1), key = `${r1}:${r2}:${c1}:${c2}:${lastSheetId}`;
+    const checked = checks.get(key);
+    if (checked !== undefined) { if (!checked) return false; continue; }
     let count = 0, targetSheetId = "", rowDelta = 0, columnDelta = 0;
-    let coherent = formulaReferenceSheetId(endpoints[1].text, sheetId) === sheetId;
-    for (const [ref, target] of moves) {
-      if (!unchangedSources.has(ref) || target.sheetId === cutSheetId && target.ref === ref) continue;
-      const source = parseRef(ref), destination = parseRef(target.ref);
-      if (!source || !destination || source.r < r1 || source.r > r2 || source.c < c1 || source.c > c2) continue;
-      const dr = destination.r - source.r, dc = destination.c - source.c;
-      if (count === 0) { targetSheetId = target.sheetId; rowDelta = dr; columnDelta = dc; }
-      else if (target.sheetId !== targetSheetId || dr !== rowDelta || dc !== columnDelta) coherent = false;
+    let coherent = lastSheetId === sheetId;
+    const includeMove = (move: CutRangeMove) => {
+      if (count === 0) { targetSheetId = move.sheetId; rowDelta = move.rowDelta; columnDelta = move.columnDelta; }
+      else if (move.sheetId !== targetSheetId || move.rowDelta !== rowDelta || move.columnDelta !== columnDelta) coherent = false;
       count++;
+    };
+    // Small ranges use direct lookups; a huge range visits only the indexed cut. No coordinates
+    // are reparsed here, and identical ranges in other formulas reuse their checked result.
+    if (area <= moves.size) {
+      for (let row = r1; row <= r2; row++) for (let column = c1; column <= c2; column++) {
+        const move = moves.get(rcToRef(row, column));
+        if (move) includeMove(move);
+      }
+    } else for (const move of moves.values()) {
+      if (move.r >= r1 && move.r <= r2 && move.c >= c1 && move.c <= c2) includeMove(move);
     }
-    if (count && (!coherent || count !== (r2 - r1 + 1) * (c2 - c1 + 1))) return false;
+    const valid = count === 0 || coherent && count === area;
+    checks.set(key, valid);
+    if (!valid) return false;
   }
   return true;
 }
@@ -4597,16 +4619,19 @@ if (moving && useSnapshot) {
     const snapshot = useSnapshot.cells[i]?.[j];
     if (snapshot && moves.has(snapshot.sourceRef)) continue;
     const ref = rcToRef(row, column);
+    if (destinationRefs.has(activeSheetId + "!" + ref)) { saveStatus.set("bad", "Cut destinations overlap; select non-overlapping targets"); return; }
     destinationRefs.add(activeSheetId + "!" + ref);
     if (snapshot) moves.set(snapshot.sourceRef, { sheetId: activeSheetId, ref });
   }
+  const rangeMoves = indexCutRangeMoves(useSnapshot.sheetId, moves, unchangedSources);
+  const rangeChecks = new Map<string, boolean>();
   let safe = true;
   for (const row of useSnapshot.cells) for (const snapshot of row) {
-    if (snapshot?.value?.startsWith("=") && moves.has(snapshot.sourceRef) && !formulaRangesFollowCut(snapshot.value, useSnapshot.sheetId, useSnapshot.sheetId, moves, unchangedSources)) safe = false;
+    if (snapshot?.value?.startsWith("=") && moves.has(snapshot.sourceRef) && !formulaRangesFollowCut(snapshot.value, useSnapshot.sheetId, useSnapshot.sheetId, rangeMoves, rangeChecks)) safe = false;
   }
   for (const sheetId of model.sheetOrder) for (const [ref, cell] of Object.entries(model.cells[sheetId] || {})) {
     if (destinationRefs.has(sheetId + "!" + ref) || sheetId === useSnapshot.sheetId && unchangedSources.has(ref) && moves.has(ref)) continue;
-    if (cell.value?.startsWith("=") && !formulaRangesFollowCut(cell.value, sheetId, useSnapshot.sheetId, moves, unchangedSources)) safe = false;
+    if (cell.value?.startsWith("=") && !formulaRangesFollowCut(cell.value, sheetId, useSnapshot.sheetId, rangeMoves, rangeChecks)) safe = false;
   }
   if (!safe) { saveStatus.set("bad", "Cannot cut part of a referenced range; move the whole range together"); return; }
 }

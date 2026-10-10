@@ -49,6 +49,7 @@ A lightweight, persistent spreadsheet Gadget with a familiar grid interface, for
 - Internal clipboard dimensions come from the copied cells, not their TSV display text: embedded newlines and tabs remain within their cells and cannot overwrite neighboring rows or columns.
 - Cut/paste remaps references to moved cells in formulas throughout the workbook, including absolute and mixed references. References to cells that stay put retain their original targets; a formula moved to another sheet gets explicit sheet qualifiers where needed. Undo/redo restores these dependency changes together with the moved cells and comments.
 - A cut that would split a referenced range or move its cells by different offsets is rejected before changing cells, comments, history, or pending saves. The formula grammar cannot represent a fragmented range; move the whole referenced rectangle together instead. The cut remains available to retry, and ordinary copy/paste is unaffected.
+- Cut/paste also rejects overlapping destinations before clearing any sources. Select non-overlapping paste targets and retry the retained cut. Range preflight parses each cut translation once, checks small ranges with direct cell lookups, and reuses results for identical ranges.
 - Double-click a sheet tab to rename it; right-click it to duplicate or delete it.
 
 ## Keyboard shortcuts
