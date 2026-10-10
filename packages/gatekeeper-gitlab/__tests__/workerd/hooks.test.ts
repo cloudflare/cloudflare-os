@@ -21,7 +21,14 @@ const ZERO = "0".repeat(40);
 const CREATED = new Date().toISOString();
 
 type Row = Record<string, unknown>;
-type Webhook = { id: number; url: string; signingToken?: string; triggers: string[] };
+type Webhook = { id: number; url: string; signingToken?: string; triggers: string[]; alertStatus?: string };
+/** One attempt at a delivery, as GitLab logs it. */
+type Delivery = {
+  id: number; hookId: number; webhookId: string; event: string; body: string; url: string; status: string;
+  createdAt: number;
+};
+
+const HOUR = 3_600_000;
 
 const user = (username: string, id: number) => ({
   id, username, name: username[0].toUpperCase() + username.slice(1),
@@ -151,6 +158,13 @@ class FakeGitLabHooks {
   signs = true;
   readonly webhooks = new Map<number, Webhook>();
   readonly deleted: number[] = [];
+  /** Every delivery attempt, oldest first. */
+  readonly log: Delivery[] = [];
+  /** The logged attempts the driver had resent, by id. */
+  readonly resends: number[] = [];
+  /** While set, deliveries fail with this status without reaching the worker. */
+  failDeliveriesWith: number | undefined;
+  #nextDeliveryId = 1;
   /**
    * While set, a webhook DELETE stalls, counted in `stalledDeletes`. Polled rather than awaited:
    * a promise settled from the test would carry the test's I/O context into the driver.
@@ -182,6 +196,34 @@ class FakeGitLabHooks {
         this.webhooks.set(webhook.id, webhook);
         return json(this.#reported(webhook), { status: 201 });
       })
+      .on("GET", new RegExp(`^${HOOKS}/(\\d+)$`), request => {
+        const webhook = this.webhooks.get(Number(/hooks\/(\d+)/.exec(request.url.pathname)![1]));
+        return webhook ? json(this.#reported(webhook)) : notFound();
+      })
+      .on("GET", new RegExp(`^${HOOKS}/(\\d+)/events\\?`), request => {
+        const hookId = Number(/hooks\/(\d+)/.exec(request.url.pathname)![1]);
+        const page = Number(request.url.searchParams.get("page") ?? 1);
+        const perPage = Number(request.url.searchParams.get("per_page") ?? 20);
+        const newestFirst = this.log.filter(delivery => delivery.hookId === hookId).toReversed();
+        const more = page * perPage < newestFirst.length;
+        return json(newestFirst.slice((page - 1) * perPage, page * perPage).map(delivery => ({
+          id: delivery.id, url: delivery.url, response_status: delivery.status,
+          created_at: new Date(delivery.createdAt).toISOString(),
+          request_headers: {
+            "X-Gitlab-Event": delivery.event, "Idempotency-Key": delivery.webhookId, "webhook-id": delivery.webhookId,
+          },
+        })), { headers: { "x-next-page": more ? String(page + 1) : "" } });
+      })
+      .on("POST", new RegExp(`^${HOOKS}/\\d+/events/\\d+/resend$`), async request => {
+        const [, hookId, deliveryId] = /hooks\/(\d+)\/events\/(\d+)/.exec(request.url.pathname)!.map(Number);
+        const delivery = this.log.find(logged => logged.id === deliveryId && logged.hookId === hookId)!;
+        const webhook = this.webhooks.get(hookId);
+        if (webhook?.url !== delivery.url) {
+          return json({ message: "The hook URL has changed. This log entry cannot be retried." }, { status: 422 });
+        }
+        this.resends.push(deliveryId);
+        return json({ response_status: await this.#attempt(webhook, delivery.webhookId, delivery.event, delivery.body) });
+      })
       .on("PUT", new RegExp(`^${HOOKS}/(\\d+)$`), request => {
         const id = Number(/hooks\/(\d+)/.exec(request.url.pathname)![1]);
         if (!this.webhooks.has(id)) return notFound();
@@ -211,9 +253,9 @@ class FakeGitLabHooks {
     };
   }
 
-  #reported({ id, url, signingToken, triggers }: Webhook): Row {
+  #reported({ id, url, signingToken, triggers, alertStatus = "executable" }: Webhook): Row {
     return {
-      id, url, alert_status: "executable", enable_ssl_verification: true,
+      id, url, alert_status: alertStatus, enable_ssl_verification: true,
       ...Object.fromEntries(triggers.map(trigger => [trigger, true])),
       ...this.version.startsWith("18.") ? {} : { signing_token_present: signingToken !== undefined },
     };
@@ -227,20 +269,48 @@ class FakeGitLabHooks {
     id?: string; sentAt?: number; signingToken?: string;
   } = {}): Promise<number[]> {
     const body = JSON.stringify(payload);
-    const timestamp = String(Math.floor(sentAt / 1000));
-    const subscribed = [...this.webhooks.values()].filter(webhook => webhook.triggers.includes(TRIGGERS[event]));
-    return await Promise.all(subscribed.map(async webhook => {
+    // GitLab sends nothing while it holds a webhook back after failures.
+    const subscribed = [...this.webhooks.values()].filter(webhook =>
+      webhook.triggers.includes(TRIGGERS[event]) && (webhook.alertStatus ?? "executable") === "executable");
+    return await Promise.all(subscribed.map(webhook => this.#attempt(webhook, id, event, body, { sentAt, signingToken })));
+  }
+
+  /** Log `count` deliveries to a webhook that succeeded, as a busy project's would. */
+  logDelivered(hookId: number, count: number): void {
+    const { url } = this.webhooks.get(hookId)!;
+    for (let i = 0; i < count; i++) {
+      this.log.push({
+        id: this.#nextDeliveryId++, hookId, webhookId: crypto.randomUUID(), event: "Issue Hook", body: "{}", url,
+        status: "204", createdAt: Date.now(),
+      });
+    }
+  }
+
+  /** One attempt at a delivery, signed with its timestamp, and logged as GitLab logs it. */
+  async #attempt(webhook: Webhook, id: string, event: string, body: string, { sentAt = Date.now(), signingToken }: {
+    sentAt?: number; signingToken?: string;
+  } = {}): Promise<number> {
+    // Somewhere other than this deployment, which answers for itself.
+    let status = this.failDeliveriesWith ?? (webhook.url.startsWith("https://gadgets.test/") ? undefined : 502);
+    if (status === undefined) {
       const token = signingToken ?? webhook.signingToken;
+      const timestamp = String(Math.floor(sentAt / 1000));
       const headers: Record<string, string> = {
         "Content-Type": "application/json", "X-Gitlab-Event": event, "webhook-id": id, "webhook-timestamp": timestamp,
       };
       if (token !== undefined) headers["webhook-signature"] = await sign(token, id, timestamp, body);
-      return (await SELF.fetch(webhook.url, { method: "POST", headers, body })).status;
-    }));
+      status = (await SELF.fetch(webhook.url, { method: "POST", headers, body })).status;
+    }
+    this.log.push({
+      id: this.#nextDeliveryId++, hookId: webhook.id, webhookId: id, event, body, url: webhook.url,
+      status: String(status), createdAt: Date.now(),
+    });
+    return status;
   }
 }
 
-const connectAccount = () => seedAccount();
+/** A connected account, whose token outlives the hours these tests move the clock on by. */
+const connectAccount = () => seedAccount({ expiresInMs: 7 * 24 * HOUR });
 
 let nextScenario = 0;
 
@@ -281,6 +351,25 @@ async function after(ms: number, account: string): Promise<void> {
   } finally {
     vi.useRealTimers();
   }
+}
+
+/**
+ * Each step at a set time from now, with the driver's alarm run by hand: the runtime never runs
+ * one on a faked clock.
+ */
+function clock(account: string) {
+  const start = Date.now();
+  return {
+    at: async <T>(offset: number, step: () => Promise<T>): Promise<T> => {
+      vi.setSystemTime(start + offset);
+      try {
+        return await step();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+    alarm: () => runDurableObjectAlarm(driver(account)),
+  };
 }
 
 afterEach(() => {
@@ -715,6 +804,168 @@ it("adopts the webhook an earlier attempt left on the project", async () => {
   await gitlab.deliver("Issue Hook", issueHook("open", 42));
   await settled(account);
   expect((await triage.read()).received).toHaveLength(1);
+});
+
+it("has GitLab resend, at its next hourly check, what GitLab failed to deliver", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+  const [{ id: webhookId }] = gitlab.webhooks.values();
+  const { at, alarm } = clock(account);
+
+  await at(0, async () => {
+    gitlab.failDeliveriesWith = 503;
+    await gitlab.deliver("Issue Hook", issueHook("open", 42));
+    gitlab.failDeliveriesWith = undefined;
+    // Refused for good: it's for a project this webhook isn't on.
+    expect(await gitlab.deliver("Issue Hook", { ...issueHook("open", 43), project: { ...projectPayload, id: 999 } }))
+      .toEqual([404]);
+    // A busy hour since, which leaves the failure past the first page of the webhook's delivery log.
+    gitlab.logDelivered(webhookId, 25);
+  });
+  await at(HOUR, alarm);
+
+  expect(gitlab.resends).toHaveLength(1);
+  expect((await triage.read()).received).toEqual([expect.objectContaining({ info: expect.objectContaining({ id: "42" }) })]);
+  // Delivered at last, it isn't resent again.
+  await at(2 * HOUR, alarm);
+  expect(gitlab.resends).toHaveLength(1);
+});
+
+it("has GitLab resend at most five deliveries to a project at each check, as GitLab allows", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+  const { at, alarm } = clock(account);
+
+  await at(0, async () => {
+    gitlab.failDeliveriesWith = 503;
+    for (let iid = 1; iid <= 7; iid++) await gitlab.deliver("Issue Hook", issueHook("open", iid));
+    gitlab.failDeliveriesWith = undefined;
+  });
+  await at(HOUR, alarm);
+  expect(gitlab.resends).toHaveLength(5);
+  await at(2 * HOUR, alarm);
+
+  expect(gitlab.resends).toHaveLength(7);
+  expect((await triage.read()).received).toHaveLength(7);
+});
+
+it.each<[string, (gitlab: FakeGitLabHooks, webhook: Webhook) => void]>([
+  ["deletes it", (gitlab, webhook) => { gitlab.webhooks.delete(webhook.id); }],
+  ["points it elsewhere", (_gitlab, webhook) => { webhook.url = "https://elsewhere.example/hook"; }],
+  ["turns on another of its triggers", (_gitlab, webhook) => { webhook.triggers = [...webhook.triggers, "push_events"]; }],
+  ["turns on confidential issues", (_gitlab, webhook) => { webhook.triggers = [...webhook.triggers, "confidential_issues_events"]; }],
+  ["removes its signing token", (_gitlab, webhook) => { webhook.signingToken = undefined; }],
+])("restores its webhook at the next hourly check when someone %s", async (_, change) => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe({ events: ["issue"] });
+  await triage.enable();
+  const [webhook] = gitlab.webhooks.values();
+  const configured = { ...webhook };
+  change(gitlab, webhook);
+
+  await clock(account).at(HOUR, () => runDurableObjectAlarm(driver(account)));
+  expect([...gitlab.webhooks.values()]).toEqual([{ ...configured, id: expect.any(Number) }]);
+  expect(await gitlab.deliver("Issue Hook", issueHook("open", 42))).toEqual([204]);
+  await settled(account);
+  expect((await triage.read()).received).toHaveLength(1);
+});
+
+it("never has GitLab resend what it sent while someone had pointed the webhook elsewhere", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+  const [webhook] = gitlab.webhooks.values();
+  const { at, alarm } = clock(account);
+
+  // Not this deployment's to answer, or GitLab's to resend once the URL is restored.
+  webhook.url = `${WEB}/elsewhere`;
+  await at(0, async () => expect(await gitlab.deliver("Issue Hook", issueHook("open", 42))).not.toEqual([204]));
+  await at(HOUR, alarm);
+
+  expect(gitlab.webhooks.get(webhook.id)?.url).toMatch(/^https:\/\/gadgets\.test\//);
+  expect(gitlab.gitlab.count("POST", /\/resend$/)).toBe(0);
+});
+
+it("recreates a webhook GitLab gave up on, and leaves one it holds back to GitLab", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+  const [webhook] = gitlab.webhooks.values();
+  const { at, alarm } = clock(account);
+  await at(0, async () => {
+    gitlab.failDeliveriesWith = 503;
+    await gitlab.deliver("Issue Hook", issueHook("open", 42));
+    gitlab.failDeliveriesWith = undefined;
+  });
+
+  // Held back after four failures, it is revived by GitLab, which sends nothing meanwhile.
+  webhook.alertStatus = "temporarily_disabled";
+  await at(HOUR, alarm);
+  expect(gitlab.gitlab.requests.filter(request => request.method !== "GET")).toEqual(
+    gitlab.gitlab.requests.filter(request => request.method === "POST" && request.url.pathname === HOOKS));
+  expect(gitlab.resends).toEqual([]);
+  // Disabled for good after forty, it is revived by nothing an edit does.
+  webhook.alertStatus = "disabled";
+  await at(2 * HOUR, alarm);
+  expect(gitlab.deleted).toEqual([webhook.id]);
+  expect([...gitlab.webhooks.values()]).toEqual([expect.objectContaining({ id: webhook.id + 1, triggers: webhook.triggers })]);
+  expect(await gitlab.deliver("Issue Hook", issueHook("open", 43))).toEqual([204]);
+});
+
+it("restores its webhook's signing token, has GitLab resend what the wrong one signed, then leaves it", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+  const [{ id, signingToken }] = gitlab.webhooks.values();
+  const { at, alarm } = clock(account);
+
+  gitlab.webhooks.get(id)!.signingToken = `whsec_${btoa("o".repeat(32))}`;
+  await at(HOUR / 2, async () => expect(await gitlab.deliver("Issue Hook", issueHook("open", 42))).toEqual([401]));
+  await at(HOUR, alarm);
+  expect(gitlab.webhooks.get(id)?.signingToken).toBe(signingToken);
+  expect(gitlab.resends).toHaveLength(1);
+  expect((await triage.read()).received).toHaveLength(1);
+
+  // The next check still reads the refused attempt, which a successful resend has superseded.
+  gitlab.gitlab.requests.length = 0;
+  await at(2 * HOUR, alarm);
+  expect(gitlab.gitlab.requests.filter(request => request.method !== "GET")).toEqual([]);
+});
+
+it("changes nothing on GitLab while its webhook is intact, and stops checking with its last hook", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+  const [{ id }] = gitlab.webhooks.values();
+  const webhookRequests = () => gitlab.gitlab.requests.splice(0)
+    .filter(request => request.url.pathname.startsWith(HOOKS)).map(request => request.method);
+  webhookRequests();
+
+  await clock(account).at(HOUR, () => runDurableObjectAlarm(driver(account)));
+  // The check reads what GitLab has, and writes nothing.
+  const checked = webhookRequests();
+  expect(checked.length).toBeGreaterThan(0);
+  expect(checked.filter(method => method !== "GET")).toEqual([]);
+  await triage.disable();
+  expect(webhookRequests()).toEqual(["DELETE"]);
+  expect(gitlab.webhooks.has(id)).toBe(false);
+  expect(await runInDurableObject(driver(account), (_instance, state) => state.storage.getAlarm())).toBeNull();
 });
 
 it("delivers nothing once the account can no longer read the project", async () => {

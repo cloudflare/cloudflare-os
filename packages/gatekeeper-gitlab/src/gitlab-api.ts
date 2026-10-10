@@ -302,6 +302,21 @@ export type GitLabProjectWebhookResponse = {
   signing_token_present?: boolean;
 } & Partial<Record<GitLabWebhookTrigger, boolean>>;
 
+/** One attempt at a webhook delivery, as the webhook's delivery log lists it. */
+export type GitLabWebhookEventResponse = {
+  id: number;
+  /** The webhook's URL at the time: GitLab resends an attempt only while it still is. */
+  url: string;
+  /** What GitLab sent, among it the delivery's `webhook-id`, which a retry or resend repeats. */
+  request_headers?: Record<string, string> | null;
+  /** The status the attempt was answered with, or `"internal error"` when it got no answer. */
+  response_status: string | number;
+  created_at: string;
+};
+
+/** Bounds one read of a webhook's delivery log, at 20 attempts a page, the most GitLab serves. */
+const MAX_WEBHOOK_EVENT_PAGES = 10;
+
 function webhookBody({ url, signingToken, triggers }: GitLabProjectWebhookConfig) {
   return {
     url,
@@ -804,6 +819,34 @@ export class GitLabApi {
   /** The project's webhooks, first page only: GitLab.com allows a project 100. */
   async listProjectWebhooks(projectId: number): Promise<GitLabProjectWebhookResponse[]> {
     return await this.#get<GitLabProjectWebhookResponse[]>(`/projects/${projectId}/hooks`, { per_page: 100 });
+  }
+
+  async getProjectWebhook(projectId: number, hookId: number): Promise<GitLabProjectWebhookResponse> {
+    return await this.#get<GitLabProjectWebhookResponse>(`/projects/${projectId}/hooks/${hookId}`);
+  }
+
+  /**
+   * A webhook's delivery attempts since `since` (in ms since the epoch), newest first, as GitLab
+   * lists them. GitLab keeps seven days of them (from 17.3).
+   */
+  async listProjectWebhookEvents(projectId: number, hookId: number, since: number): Promise<GitLabWebhookEventResponse[]> {
+    const events: GitLabWebhookEventResponse[] = [];
+    for (let page: number | null = 1, read = 0; page !== null && read < MAX_WEBHOOK_EVENT_PAGES; read++) {
+      const { items, nextPage }: GitLabPage<GitLabWebhookEventResponse> = await this.#getPage(
+        `/projects/${projectId}/hooks/${hookId}/events`, {}, page, 20);
+      const recent = items.filter(event => Date.parse(event.created_at) >= since);
+      events.push(...recent);
+      page = recent.length < items.length ? null : nextPage;
+    }
+    return events;
+  }
+
+  /**
+   * Has GitLab make a webhook delivery again, with its `webhook-id`, while the call waits (from
+   * 17.4). GitLab allows each user five a minute on a project.
+   */
+  async resendProjectWebhookEvent(projectId: number, hookId: number, eventId: number): Promise<void> {
+    await this.#request<unknown>("POST", `/projects/${projectId}/hooks/${hookId}/events/${eventId}/resend`);
   }
 
   async createProjectWebhook(projectId: number, webhook: GitLabProjectWebhookConfig): Promise<GitLabProjectWebhookResponse> {

@@ -19,7 +19,9 @@
 // One `GitLabHookDriver` per connected account holds its enabled hooks and its webhooks. It adds a
 // webhook to a project when the first hook there is enabled and deletes it with the last, verifies
 // each delivery's signature, queues each event once for every hook that watches for it, and
-// retries failed deliveries from its alarm. Disconnecting the account deletes its webhooks.
+// retries failed deliveries from its alarm. Hourly, it checks each webhook on GitLab, restoring one
+// that someone has changed and having GitLab resend what GitLab failed to deliver. Disconnecting
+// the account deletes its webhooks.
 
 import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
@@ -31,7 +33,10 @@ import type {
   ApprovalQueue, HookController, HookInitiator, HookTargetMetadata,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { EntityKind } from "./gitlab-action-types";
-import { GitLabApiError, type GitLabApi, type GitLabWebhookTrigger } from "./gitlab-api";
+import {
+  GitLabApiError, WEBHOOK_TRIGGERS as MANAGED_TRIGGERS,
+  type GitLabApi, type GitLabProjectWebhookResponse, type GitLabWebhookEventResponse, type GitLabWebhookTrigger,
+} from "./gitlab-api";
 import { getBasePath, instanceUrl, webhookOrigin, withAccountApi, type Env } from "./gitlab-env";
 import { actorFromUsername } from "./gitlab-normalize";
 import { obsContext } from "./observability";
@@ -150,6 +155,25 @@ const WEBHOOK_TRIGGERS: Record<GitLabEventKind, GitLabWebhookTrigger[]> = {
 const DISCONNECTED = "This GitLab account has been disconnected.";
 const SIGNING_UNSUPPORTED = "GitLab hooks need GitLab 19.0 or later, which signs webhook deliveries.";
 
+const HOUR_MS = 60 * 60 * 1000;
+/** How often the driver checks its webhooks on GitLab (see #checkWebhook). */
+const CHECK_INTERVAL_MS = HOUR_MS;
+/** How far back a check reads a webhook's deliveries: two checks' worth, so none falls between. */
+const DELIVERY_LOOKBACK_MS = 2 * CHECK_INTERVAL_MS;
+/**
+ * How many resends one check may have GitLab make for an account, oldest first, and for one
+ * project: GitLab allows a user five a minute on a project. The rest wait for the next check, and
+ * are lost if they age out of its lookback first. One that fails again is resent again at the next
+ * check, which keeps a failure recoverable through an outage, for this many requests an hour.
+ */
+const MAX_RESENDS_PER_CHECK = 20;
+const MAX_RESENDS_PER_PROJECT = 5;
+/**
+ * The statuses the worker refuses a delivery with for good (see handleWebhookRequest() and
+ * ingest()), which a resend would only repeat.
+ */
+const FINAL_REFUSALS = new Set([400, 404, 413]);
+
 type Registration = Omit<GitLabHookProps, "key" | "userObjectId" | "delivery">;
 type Capabilities = {
   delivery: RpcStub<GitLabHookDelivery>;
@@ -164,9 +188,9 @@ const webhookKey = (projectId: number) => `webhook:${projectId}`;
 
 /**
  * One per connected account, named by its `UserAccount` id. Storage: `account` (that id), `secret`
- * (the signing token its webhooks sign deliveries with), `webhook:` per project, `reg:`/`caps:` per
- * hook, the delivery queue's `msg:` rows, and `revoked` once the account is disconnected, which
- * refuses everything for good.
+ * (the signing token its webhooks sign deliveries with), `webhook:` per project, `checkAt` (when
+ * to next check them on GitLab), `reg:`/`caps:` per hook, the delivery queue's `msg:` rows, and
+ * `revoked` once the account is disconnected, which refuses everything for good.
  *
  * Every `await` here opens the input gate, so each storage write after one re-reads what it
  * depends on.
@@ -198,6 +222,7 @@ export class GitLabHookDriver extends DurableObject<Env> {
       kv.put(capabilitiesKey(key), capabilities);
       disposeStubs(replaced);
     });
+    await this.#reschedule();
   }
 
   async unregister(key: string): Promise<void> {
@@ -215,7 +240,8 @@ export class GitLabHookDriver extends DurableObject<Env> {
       const remaining = this.#registrations(project).map(([, other]) => other);
       if (remaining.length > 0) {
         // Narrowed to what the remaining hooks watch. Best effort, since disabling must not fail:
-        // until the next enable narrows it, deliveries no hook watches are only filtered out here.
+        // until an enable or the hourly check narrows it, deliveries no hook watches are only
+        // filtered out here.
         await this.#ensureWebhook(project, remaining).catch((error: unknown) => {
           logger.warn("failed to narrow a GitLab webhook's triggers", { event: "hooks.webhook.narrow.failed", error });
         });
@@ -225,6 +251,7 @@ export class GitLabHookDriver extends DurableObject<Env> {
       await this.#removeWebhook(kv.get<string>("account")!, webhook);
       kv.delete(webhookKey(project.id));
     });
+    await this.#reschedule();
   }
 
   /**
@@ -294,11 +321,17 @@ export class GitLabHookDriver extends DurableObject<Env> {
     return 204;
   }
 
-  /** Deliver each queued event whose (re)try time has come, and forget finished ones. */
+  /**
+   * The driver's one alarm, which #wakeBy() and #reschedule() set for the earliest time either of
+   * these is due:
+   * - checking its webhooks on GitLab, hourly while it has any;
+   * - delivering each queued event whose (re)try time has come, and forgetting finished ones.
+   */
   async alarm(): Promise<void> {
+    if ((this.ctx.storage.kv.get<number>("checkAt") ?? Infinity) <= Date.now()) await this.#checkWebhooks();
+    // After the check, so what its resends queued is delivered in this same run.
     await this.#queue.run(Date.now(), (hookKey, event) => this.#deliver(hookKey, event));
-    const next = this.#queue.nextDue();
-    if (next !== undefined) await this.ctx.storage.setAlarm(next);
+    await this.#reschedule();
   }
 
   async #deliver(hookKey: string, event: GitLabWebhookEvent): Promise<void> {
@@ -315,6 +348,86 @@ export class GitLabHookDriver extends DurableObject<Env> {
     } finally {
       disposeStubs(capabilities);
     }
+  }
+
+  /** Check each webhook on GitLab (see #checkWebhook), within one budget of resends. */
+  async #checkWebhooks(): Promise<void> {
+    const kv = this.ctx.storage.kv;
+    kv.put("checkAt", Date.now() + CHECK_INTERVAL_MS);
+    const account = kv.get<string>("account");
+    const url = this.#webhookUrl();
+    if (account === undefined || url === undefined) return;
+    let budget = MAX_RESENDS_PER_CHECK;
+    for (const webhook of this.#webhooks()) {
+      try {
+        budget -= await this.#checkWebhook(account, url, webhook, Math.min(budget, MAX_RESENDS_PER_PROJECT));
+      } catch (error) {
+        // Tried again at the next check.
+        logger.warn("failed to check a GitLab webhook", { event: "hooks.webhook.check.failed", error });
+      }
+    }
+  }
+
+  /**
+   * Bring `webhook` back to what its hooks need if it no longer matches: deleted, disabled for good
+   * after repeated failures, pointed elsewhere, given other triggers, or signing with another
+   * token, which GitLab never shows but which fails deliveries here with 401. Then have GitLab
+   * resend, oldest first and at most `budget`, what it failed to deliver lately, as it never does
+   * itself.
+   * @returns How many resends it had GitLab make.
+   */
+  async #checkWebhook(account: string, url: string, { id, project }: Webhook, budget: number): Promise<number> {
+    const read = await this.#api(account, async api => {
+      try {
+        const found = await api.getProjectWebhook(project.id, id);
+        const since = Date.now() - DELIVERY_LOOKBACK_MS;
+        return { found, events: await api.listProjectWebhookEvents(project.id, id, since) };
+      } catch (error) {
+        // Deleted, and its delivery log with it.
+        if (error instanceof GitLabApiError && error.status === 404) return undefined;
+        throw error;
+      }
+    });
+    // What GitLab sent this URL: an attempt from before someone redirected the webhook is not ours.
+    const failed = read === undefined ? [] : undelivered(read.events.filter(event => event.url === url));
+    const disabled = read?.found.alert_status === "disabled";
+    const triggers = webhookTriggers(this.#registrations(project).map(([, registration]) => registration));
+    const intact = read !== undefined && !disabled && read.found.url === url && read.found.signing_token_present === true &&
+      read.found.enable_ssl_verification !== false && configuredTriggers(read.found).join() === triggers.toSorted().join() &&
+      // By each delivery's latest attempt, so a 401 since resent successfully doesn't count.
+      !failed.some(event => Number(event.response_status) === 401);
+    if (!intact) {
+      await this.#webhookChanges.run(async () => {
+        // Removed or replaced while this check read it.
+        if (this.ctx.storage.kv.get<Webhook>(webhookKey(project.id))?.id !== id) return;
+        if (disabled) {
+          // Editing a webhook GitLab gave up on does not revive it; a new one starts afresh.
+          await this.#removeWebhook(account, { id, project });
+          this.ctx.storage.kv.delete(webhookKey(project.id));
+        }
+        await this.#ensureWebhook(project, this.#registrations(project).map(([, registration]) => registration));
+        logger.info("reconfigured a GitLab webhook that no longer matched its hooks", {
+          event: "hooks.webhook.reconfigured",
+        });
+      });
+    }
+    if (read === undefined) return 0;
+    const deliveries = read.events.filter(event => event.url === url);
+    if (deliveries.length > 0 && !deliveries.some(delivered)) {
+      logger.error("GitLab failed every recent delivery to this deployment", {
+        event: "hooks.webhook.deliveries.failing",
+        deliveryStatuses: [...new Set(deliveries.map(event => String(event.response_status)))],
+      });
+    }
+    // GitLab sends nothing while it holds a webhook back after failures, and revives it itself.
+    if (disabled || read.found.alert_status === "temporarily_disabled") return 0;
+    const resends = failed.slice(0, budget);
+    if (resends.length > 0) {
+      await this.#api(account, async api => {
+        for (const event of resends) await api.resendProjectWebhookEvent(project.id, id, event.id);
+      });
+    }
+    return resends.length;
   }
 
   /**
@@ -390,6 +503,11 @@ export class GitLabHookDriver extends DurableObject<Env> {
     return origin === undefined ? undefined : `${origin}${getBasePath(this.env)}/webhook/${this.ctx.id}`;
   }
 
+  /** The webhooks this driver has added, one per project. */
+  #webhooks(): Webhook[] {
+    return [...this.ctx.storage.kv.list<Webhook>({ prefix: "webhook:" })].map(([, webhook]) => webhook);
+  }
+
   /** The enabled hooks on `project`, by their storage key. */
   #registrations(project: Pick<GitLabProjectPin, "id">): [string, Registration][] {
     return [...this.ctx.storage.kv.list<Registration>({ prefix: "reg:" })]
@@ -399,6 +517,26 @@ export class GitLabHookDriver extends DurableObject<Env> {
   async #wakeBy(time: number): Promise<void> {
     const current = await this.ctx.storage.getAlarm();
     if (current === null || time < current) await this.ctx.storage.setAlarm(time);
+  }
+
+  /**
+   * Set the alarm for the earliest of the next delivery due and, while this driver has webhooks,
+   * their next check; or clear it, if neither is pending.
+   */
+  async #reschedule(): Promise<void> {
+    const kv = this.ctx.storage.kv;
+    const times: number[] = [];
+    const due = this.#queue.nextDue();
+    if (due !== undefined) times.push(due);
+    if (this.#webhooks().length > 0) {
+      let checkAt = kv.get<number>("checkAt");
+      if (checkAt === undefined) kv.put("checkAt", checkAt = Date.now() + CHECK_INTERVAL_MS);
+      times.push(checkAt);
+    } else {
+      kv.delete("checkAt");
+    }
+    if (times.length > 0) await this.ctx.storage.setAlarm(Math.min(...times));
+    else await this.ctx.storage.deleteAlarm();
   }
 }
 
@@ -420,6 +558,32 @@ function watches({ target, events, viewerId }: Registration, event: GitLabWebhoo
 /** The webhook triggers GitLab must deliver for `registrations`. */
 function webhookTriggers(registrations: Registration[]): GitLabWebhookTrigger[] {
   return [...new Set(registrations.flatMap(({ events }) => events.flatMap(kind => WEBHOOK_TRIGGERS[kind])))];
+}
+
+/** The triggers a webhook has on among those this driver manages, sorted; never a confidential one. */
+function configuredTriggers(webhook: GitLabProjectWebhookResponse): string[] {
+  if (webhook.confidential_issues_events || webhook.confidential_note_events) return ["confidential"];
+  return MANAGED_TRIGGERS.filter(trigger => webhook[trigger] === true).toSorted();
+}
+
+/** Whether an attempt was delivered: GitLab counts a redirect as delivered too. */
+const delivered = (event: GitLabWebhookEventResponse) =>
+  Number(event.response_status) >= 200 && Number(event.response_status) < 400;
+
+/**
+ * What to have GitLab resend, oldest first: each delivery whose latest attempt failed, unless the
+ * worker refused it for good. `events` are newest first. A resend of something already received
+ * is harmless: ingest() collapses it by its `webhook-id`.
+ */
+function undelivered(events: GitLabWebhookEventResponse[]): GitLabWebhookEventResponse[] {
+  const latest = new Map<string, GitLabWebhookEventResponse>();
+  for (const event of events) {
+    const delivery = event.request_headers?.["webhook-id"] ?? event.request_headers?.["Idempotency-Key"] ?? String(event.id);
+    if (!latest.has(delivery)) latest.set(delivery, event);
+  }
+  return [...latest.values()]
+    .filter(event => !delivered(event) && !FINAL_REFUSALS.has(Number(event.response_status)))
+    .toReversed();
 }
 
 /** Why GitLab refused to add a webhook, in terms the user can act on. */
