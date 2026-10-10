@@ -377,20 +377,48 @@ formula needs approval.
 Reads show queued changes as entered and never guess what Google computes. Formula-mode reads are
 exact, and raw reads are exact for literal values. A queued formula's result, and in formatted
 reads a queued number or boolean, whose display depends on number format and locale, read `null`,
-and their cells are listed in the range's `pendingCells`. Formulas elsewhere keep their saved results, even when
-they depend on queued cells. Google tidies the references in a formula as it is entered: column
+and their cells are listed in the range's `pendingCells`. Formulas elsewhere keep their saved
+results, even when they depend on queued cells. Google tidies the references in a formula as it is entered: column
 letters upper-cased, a sheet named by its title as the spreadsheet spells and quotes it, a range of
 one cell collapsed to that cell. A queued formula is shown, approved and written already tidied, but
 with its whitespace as typed, which Google may later drop. A queued change that no longer applies,
 such as one writing to a sheet since shrunk, is reported as `queuedChangeConflict`, and it and the
 changes queued after it are not shown.
 
+The same batch can change a spreadsheet's structure: `addSheet`, `renameSheet`, `duplicateSheet`
+and `deleteSheet` act on its sheets, and `insertRows`, `deleteRows`, `insertColumns` and
+`deleteColumns` on a sheet's rows and columns. A change names its sheet by ID, or by the `ref` an
+earlier change of the batch gave a sheet it adds or copies; ranges name sheets by title, including
+titles the batch gives. The gatekeeper mints the ID of each sheet a batch adds, and `updateSheet()`
+returns each `ref` mapped to it. A batch with any structural change always waits for approval.
+Every default is sent explicitly, so the approver sees what will be made: a new sheet has Google's
+1,000 rows and 26 columns and comes last, and a copy is titled `Copy of <title>` and placed right
+after its source (Google would put it first, under a name of its own choosing). Changes are refused
+when queued that would delete the last visible sheet, every row or column of a sheet, or every one
+of its unfrozen ones, delete a sheet of more than 50,000 cells, whose content the guard below could
+not cover (delete it in Google Sheets instead), grow a sheet past 18,278 columns or the spreadsheet
+past 10,000,000 cells, or change or copy a sheet holding a protected range the account cannot edit. Reads show the
+queued structure: sheets, rows and columns where the changes put them, cells moved with their rows
+and columns, and formulas rewritten as Google rewrites them, references shifted, grown, shrunk or
+turned into `#REF!`, and sheet titles requoted. A formula's value is shown only while every
+reference it holds keeps exactly its cells; one whose reference grows, shrinks or breaks, or that
+calls a position-dependent function such as `ROW`, `OFFSET` or `INDIRECT`, or `QUERY`, whose query
+names columns by letter, or uses a name such as a named range, reads `null` and is listed in
+`pendingCells`, as are cells a queued formula enters. Cells of inserted rows and columns and of
+added sheets read as empty. Deleting a sheet leaves the formulas that refer to it as written, as
+Google does; they read `#REF!` once it applies, and stay so even if a later sheet takes the title.
+One thing is not simulated: the cells an array formula such as `SORT` or `SEQUENCE` fills read as
+the values Google last computed, moved with their rows and columns, although Google recomputes them.
+
 Sheets has no revision to pin a write to, so each approved batch is planned against a fresh read
-and guarded by a digest of what it overwrites: the cells it writes, as entered, and the title and
-size of each sheet it addresses, ignoring whitespace in formulas. Cells that changes queued before
-it write are expected to hold what those enter, so a batch built on one that was rejected or failed
-fails too. A change whose cells or sheet changed since it was queued fails without writing; a collaborator's edit between that read and the write is not caught, and formatting is
-not guarded. Each batch also creates a developer-metadata marker whose ID is minted at queue time,
+and guarded by a digest of what it overwrites or removes: the cells it writes and the rows,
+columns and sheets it deletes, as entered, and the title and size of each sheet it addresses,
+ignoring whitespace in formulas. Cells that changes queued before it write are expected to hold what
+those enter, and sheets those restructure to have the shape they leave, so a batch built on one that
+was rejected or failed fails too, as does a batch with a formula when any structural change queued
+before it was not applied. A batch guards at most 50,000 cells. A change whose cells or sheet
+changed since it was queued fails without writing; a collaborator's edit between that read and the
+write is not caught, and formatting is not guarded. Each batch also creates a developer-metadata marker whose ID is minted at queue time,
 which Google stores at most once, so a write whose response is lost is found by its marker or
 resent exactly as first sent. A lost write that cannot be resent, because its cells changed in the
 meantime or Google refused the resend, or that three sends leave unfound, is marked as having an
