@@ -307,9 +307,10 @@ export interface XProfile {
 
   /**
    * Have `hook.receivePost()` called with each post this user publishes, including their replies,
-   * quotes and reposts. A protected account's posts are never delivered. See
-   * `XAccountSession.subscribeMentions()` for how hooks work; through an "X Profile" grant the
-   * delivered event carries no `post` capability, since the grant can't act.
+   * quotes and reposts. A protected account's posts are never delivered, and the connected
+   * account's own can't be watched. See `XAccountSession.subscribeMentions()` for how hooks work;
+   * through an "X Profile" grant the delivered event carries no `post` capability, since the grant
+   * can't act.
    */
   subscribePosts(hook: RpcStub<XPostHook>): Promise<void>;
 }

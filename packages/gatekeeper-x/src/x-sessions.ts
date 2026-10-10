@@ -602,6 +602,9 @@ export class XProfileImpl extends RpcTarget implements XProfile {
 /** Binds `hook` to `user`'s posts; only an account binding's events carry a capability to act. */
 async function subscribeToPosts(ctx: SessionContext, user: WireUser, hook: RpcStub<XPostHookTarget>,
                                 canAct: boolean): Promise<void> {
+  if (user.id === (await ctx.host.me()).id) {
+    throw new Error("The connected account's own posts can't be watched: a hook would hear of the posts it made.");
+  }
   const name = user.username ? `@${user.username}` : "an X user";
   await ctx.host.bindHook(ctx.queue, { kind: "post", userId: user.id }, hook,
     hookDescription(`Hear of new posts by ${name} on X`, `post ${name} publishes`, canAct));

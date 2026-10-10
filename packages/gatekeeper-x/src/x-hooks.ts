@@ -153,13 +153,13 @@ export function repliedTo(post: ActivityJson): string | undefined {
 export function watches(registration: Registration, event: XActivityEvent): boolean {
   if (registration.kind !== event.kind || event.userId !== subjectOf(registration)) return false;
   const author = event.post.author_id;
+  // Never hand the account's own posts back to it, or a hook could answer itself.
+  if (author === registration.viewerId) return false;
   switch (registration.kind) {
     case "mention":
+      return true;
     case "reply":
-      // Never hand the account's own posts back to it, or a hook could answer itself.
-      if (author === registration.viewerId) return false;
-      return registration.kind === "mention" || registration.postId === undefined
-        || repliedTo(event.post) === registration.postId;
+      return registration.postId === undefined || repliedTo(event.post) === registration.postId;
     case "post":
       return author === registration.userId;
   }

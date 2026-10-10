@@ -70,8 +70,9 @@ with `VITE_BACKEND_HOST=127.0.0.1:8787`, so the callback the gatekeeper sends ma
 
 Gadgets can hear of posts as they happen: `XAccountSession.subscribeMentions()` and
 `subscribeReplies()`, `XPost.subscribeReplies()` for one of the account's own posts, and
-`XProfile.subscribePosts()` / `XUser.subscribePosts()` for a user's new posts. X delivers them
-through the X Activity API to one webhook per deployment, `{WEBHOOK_ORIGIN}/gatekeeper/x/webhook`.
+`XProfile.subscribePosts()` / `XUser.subscribePosts()` for another user's new posts. No hook hears
+of the account's own posts, so none can answer itself. X delivers them through the X Activity API
+to one webhook per deployment, `{WEBHOOK_ORIGIN}/gatekeeper/x/webhook`.
 
 They are off until the deployment sets both of these on the worker, outside the deploy wizard:
 

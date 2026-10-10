@@ -831,8 +831,8 @@ the account's posts), `XPost.subscribeReplies(hook)` for the account's own posts
   GitHub pipeline: `initiator.startHook()`, re-check the binding's scope in the facet (the bound
   conversation for a Post binding), classify (§7), observe, `receivePost`.
 - `oauth.revoke` is routed by the revoking user's ID to every `UserAccount` connected as that X
-  user, each calling `credentialsExpired()`. Mentions and replies the connected account authored
-  are dropped, so a hook can't answer itself. Billing is per delivered event (a post read each).
+  user, each calling `credentialsExpired()`. Posts the connected account authored are dropped from
+  every hook, and its own posts can't be watched, so a hook can't answer itself. Billing is per delivered event (a post read each).
   XAA never delivers protected accounts' posts, and `post.reply.create` fires only for *direct*
   replies to the subscribed user's own posts — both said in the hook JSDoc.
 

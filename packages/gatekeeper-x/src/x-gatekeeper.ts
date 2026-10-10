@@ -345,12 +345,14 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
     if (event.kind !== params.kind) return;
     const me = await this.#me();
     let info = toPostInfo(event.post as unknown as WirePost, indexIncludes(event.includes as WireIncludes | undefined));
+    // The account's own posts are never delivered back to it, so a hook can't answer itself.
+    if (info.author.id === me.id) return;
     switch (params.kind) {
       case "mention":
-        if (props.resourceKind !== "account" || event.userId !== me.id || info.author.id === me.id) return;
+        if (props.resourceKind !== "account" || event.userId !== me.id) return;
         break;
       case "reply": {
-        if (event.userId !== me.id || info.author.id === me.id) return;
+        if (event.userId !== me.id) return;
         const parent = info.replyTo?.postId;
         if (props.resourceKind === "post") {
           // A Post binding reaches its conversation alone: the watched post was in it when bound.

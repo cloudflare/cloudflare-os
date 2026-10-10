@@ -8,6 +8,7 @@ import { SELF, env, runDurableObjectAlarm, runInDurableObject } from "cloudflare
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../../src/x";
 import type { Env } from "../../src/x-env";
+import { watches } from "../../src/x-hooks";
 import type { XPostInfo } from "../../src/types";
 import { ALICE, BOB, FakeX, failure, hmacBase64, json, hooks as sharedHooks, seedAccount, unwrap } from "./fake-x";
 import type { GatekeeperProps, Step } from "./worker";
@@ -127,6 +128,20 @@ describe("subscribing", () => {
     expect((await hook.subscribe([["subscribePosts"]])).title).toBe("Hear of new posts by @bob on X");
     await hook.enable();
     expect(subscriptionsOf(x)).toContainEqual(["post.create", BOB.id, "app"]);
+  });
+
+  it("won't watch the connected account's own posts, which a hook could answer itself", async () => {
+    const x = new FakeX().install();
+    const account = await seedAccount(x);
+    const viaAccount = binding({ userObjectId: account, resourceKind: "account" });
+    expect(failure(await viaAccount.trySubscribe([["getUser", "alice"], ["subscribePosts"]])))
+      .toMatch(/own posts can't be watched/);
+    const viaProfile = binding({ userObjectId: account, resourceKind: "profile", username: "alice" });
+    expect(failure(await viaProfile.trySubscribe([["subscribePosts"]]))).toMatch(/own posts can't be watched/);
+    // Nor would a driver queue them for a post hook, should one exist.
+    const event = { id: "evt", kind: "post" as const, userId: ALICE.id, post: { id: "1", author_id: ALICE.id } };
+    expect(watches({ kind: "post", userId: ALICE.id, viewerId: ALICE.id }, event)).toBe(false);
+    expect(watches({ kind: "post", userId: ALICE.id, viewerId: BOB.id }, event)).toBe(true);
   });
 
   it("watches replies only to the account's own posts", async () => {
