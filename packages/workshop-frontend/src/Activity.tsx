@@ -805,8 +805,9 @@ function HistoryRow({
             )}
             {record.type === 'bindHook' && record.hookId !== undefined && (
               <HookToggle
+                hookTitle={record.description.title}
                 enabled={record.enabled}
-                disabled={togglingHook}
+                pending={togglingHook}
                 onToggle={enabled => onToggleHook(record.hookId!, enabled)}
               />
             )}

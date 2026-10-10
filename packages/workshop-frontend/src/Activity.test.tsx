@@ -2,7 +2,7 @@
 /* eslint-disable react/react-in-jsx-scope */
 
 import { act } from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ConnectedAccountsSubscriber } from '@gadgets/workshop-shared/api'
 import type { AccountDescription, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
 
@@ -19,7 +19,9 @@ vi.mock('./useAlwaysApproveTag', () => ({
 const auth = vi.hoisted(() => ({ authenticatedApi: {} as Record<string, unknown> }))
 vi.mock('./AuthContext', () => ({ useAuthenticatedApi: () => auth }))
 
-import { entry, flushFrames, makeOverseer, makeTestRoot } from './action-test-harness'
+import {
+  clickHookSwitch, deferred, entry, flushFrames, hookSwitch, makeOverseer, makeTestRoot,
+} from './action-test-harness'
 import Activity from './Activity'
 
 const view = makeTestRoot()
@@ -141,35 +143,96 @@ describe('Activity creation approval', () => {
 })
 
 describe('Activity hook toggles', () => {
-  it('says why a hook could not be enabled', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+  const TITLE = 'Watch acme/widgets on GitHub'
+  const refusal = "GitHub refused to add a webhook to acme/widgets: only the repository's admins can."
+  const bound = (enabled: boolean) => entry(1, {
+    type: 'bindHook', state: 'approved', hookId: 7, enabled,
+    description: { title: TITLE, description: 'Call this hook with each issue event.' },
+  })
+
+  beforeEach(() => {
     addToast.mockClear()
-    const refusal = "GitHub refused to add a webhook to acme/widgets: only the repository's admins can."
+    // Each failure is logged as well as shown.
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+  })
+
+  /** The history log with the hook's record expanded, whose enable/disable calls the test answers. */
+  async function renderHookRecord(enabled = false) {
     const server = makeOverseer()
-    Object.assign(server.overseer as object, { enableHook: async () => { throw new Error(refusal) } })
+    const enableHook = vi.fn<(id: number) => Promise<void>>(async () => {})
+    const disableHook = vi.fn<(id: number) => Promise<void>>(async () => {})
+    Object.assign(server.overseer as object, { enableHook, disableHook })
     await view.render(
       <Activity overseer={server.overseer} restricted={false} view="history" onViewChange={() => {}} />,
     )
     await server.resolveSubscription()
-    await server.resolvePage({
-      entries: [entry(1, {
-        type: 'bindHook', hookId: 7, enabled: false,
-        description: { title: 'Watch acme/widgets on GitHub', description: 'Call this hook with each issue event.' },
-      })],
-    })
+    await server.resolvePage({ entries: [bound(enabled)] })
     flushFrames()
-
     const row = [...document.querySelectorAll('button[aria-expanded]')]
-      .find(button => button.textContent?.includes('Watch acme/widgets on GitHub'))
+      .find(button => button.textContent?.includes(TITLE))
     if (!(row instanceof HTMLElement)) throw new Error('No hook row rendered')
     await act(async () => row.click())
-    // The checkbox the switch forwards its clicks to. jsdom has no PointerEvent, which the switch
-    // forwards them with.
-    const toggle = document.querySelector('[aria-label="Enable hook"]')?.nextElementSibling
-    if (!(toggle instanceof HTMLInputElement)) throw new Error('No hook toggle rendered')
-    await act(async () => toggle.click())
+    return { server, enableHook, disableHook }
+  }
 
-    expect(addToast).toHaveBeenCalledExactlyOnceWith(
-      { title: 'Failed to enable hook', description: refusal, variant: 'error' })
+  const isOn = () => hookSwitch(TITLE).getAttribute('aria-checked') === 'true'
+
+  it('turns a hook on and off, showing each change once the log records it', async () => {
+    const { server, enableHook, disableHook } = await renderHookRecord()
+    expect(hookSwitch(TITLE).getAttribute('role')).toBe('switch')
+
+    await clickHookSwitch(TITLE)
+    expect(enableHook).toHaveBeenCalledExactlyOnceWith(7)
+    // The switch shows the record, which the server's update of it changes.
+    expect(isOn()).toBe(false)
+    await server.emit(bound(true))
+    expect(isOn()).toBe(true)
+
+    await clickHookSwitch(TITLE)
+    expect(disableHook).toHaveBeenCalledExactlyOnceWith(7)
+    await server.emit(bound(false))
+    expect(isOn()).toBe(false)
+    expect(addToast).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['enabled', false, 'enableHook', new Error(refusal), refusal],
+    ['enabled', false, 'enableHook', new Error('Peer closed WebSocket: 1006 '), undefined],
+    ['disabled', true, 'disableHook', new Error(refusal), refusal],
+    ['disabled', true, 'disableHook', new Error('Peer closed WebSocket: 1006 '), undefined],
+  ] as const)(
+    'says why a hook could not be %s, though not a dropped connection’s transport message, and leaves it as it was',
+    async (done, enabled, method, failure, description) => {
+      const calls = await renderHookRecord(enabled)
+      calls[method].mockRejectedValueOnce(failure)
+
+      await clickHookSwitch(TITLE)
+
+      expect(addToast).toHaveBeenCalledExactlyOnceWith({
+        title: `Failed to ${done === 'enabled' ? 'enable' : 'disable'} hook`, description, variant: 'error',
+      })
+      expect(isOn()).toBe(enabled)
+    })
+
+  it('holds the switch busy while a change is in flight, and lets a failed one be retried', async () => {
+    const { server, enableHook } = await renderHookRecord()
+    const first = deferred()
+    enableHook.mockReturnValueOnce(first.promise)
+
+    await clickHookSwitch(TITLE)
+    expect(hookSwitch(TITLE).disabled).toBe(true)
+    expect(hookSwitch(TITLE).getAttribute('aria-busy')).toBe('true')
+    await clickHookSwitch(TITLE)
+    expect(enableHook).toHaveBeenCalledOnce()
+
+    await first.reject(new Error(refusal))
+    expect(isOn()).toBe(false)
+    expect(hookSwitch(TITLE).disabled).toBe(false)
+    expect(hookSwitch(TITLE).hasAttribute('aria-busy')).toBe(false)
+
+    await clickHookSwitch(TITLE)
+    expect(enableHook).toHaveBeenCalledTimes(2)
+    await server.emit(bound(true))
+    expect(isOn()).toBe(true)
   })
 })
