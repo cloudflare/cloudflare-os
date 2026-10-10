@@ -482,6 +482,7 @@ const SHARED_GATEKEEPER_CREDS: Record<string, { id: string; secret: string }> = 
   "gatekeeper-slack": { id: "SLACK_CLIENT_ID", secret: "SLACK_CLIENT_SECRET" },
   "gatekeeper-linear": { id: "LINEAR_CLIENT_ID", secret: "LINEAR_CLIENT_SECRET" },
   "gatekeeper-spotify": { id: "SPOTIFY_CLIENT_ID", secret: "SPOTIFY_CLIENT_SECRET" },
+  "gatekeeper-x": { id: "X_CLIENT_ID", secret: "X_CLIENT_SECRET" },
 };
 
 // Deployment-configured vars a gatekeeper reads that its committed `wrangler.jsonc` deliberately
@@ -502,6 +503,8 @@ const PASSTHROUGH_GATEKEEPER_VARS: Record<string, string[]> = {
   // The instance a self-hosted GitLab gatekeeper talks to, and the Access service token for one
   // behind Cloudflare Access; unset, it talks to gitlab.com.
   "gatekeeper-gitlab": ["GITLAB_URL", "GITLAB_API_URL", "CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET"],
+  // Each connection's daily read limit; unset, the in-code default.
+  "gatekeeper-x": ["X_DAILY_READ_LIMIT"],
 };
 
 for (const gk of gatekeepers) {

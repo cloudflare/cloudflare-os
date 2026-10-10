@@ -1018,6 +1018,80 @@
         "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/supabase"
       }
     },
+    "gatekeeper-x": {
+      "bindings": [
+        {
+          "name": "CLIENT_ID",
+          "text": "$SECRET(CLIENT_ID)",
+          "type": "secret_text"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "text": "$SECRET(CLIENT_SECRET)",
+          "type": "secret_text"
+        }
+      ],
+      "compatibilityDate": "2026-09-04",
+      "compatibilityFlags": [
+        "allow_irrevocable_stub_storage",
+        "nodejs_als"
+      ],
+      "inputs": [
+        {
+          "consoleUrl": "https://console.x.com",
+          "help": "X bills every API request to this app's prepaid credits, so the app's owner pays for every user's reads and posts. Posts containing a link cost more than other posts.",
+          "kind": "secret",
+          "label": "OAuth 2.0 Client ID",
+          "name": "CLIENT_ID",
+          "redirectUriTemplate": "{PUBLIC_BASE_URL}/gatekeeper/x/oauth",
+          "setupSteps": [
+            "In the X Developer Console, create a Project and an App.",
+            "Under User authentication settings, enable OAuth 2.0 with the type \"Web App, Automated App or Bot\" and the permission \"Read and write\".",
+            "Set the Callback URI to the value below, and give the app a website URL.",
+            "Buy credits and set a spending limit: X bills every request this app makes.",
+            "X requires its prior approval before an app posts AI-generated replies; replies drafted by agents are sent only once a user approves each one, but the obligation is the app owner's.",
+            "Copy the OAuth 2.0 Client ID and Client Secret here."
+          ]
+        },
+        {
+          "kind": "secret",
+          "label": "OAuth 2.0 Client Secret",
+          "name": "CLIENT_SECRET"
+        }
+      ],
+      "installable": true,
+      "kind": "gatekeeper",
+      "mainModule": "x.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "UserAccount",
+            "XGatekeeperImpl"
+          ],
+          "tag": "v0"
+        }
+      ],
+      "modules": [
+        {
+          "name": "x.js",
+          "r2Key": "blobs/modules/333bf2bc83e34163225a668eaf2545dcc98705a10aaf0b41cbc74554214a132c",
+          "sha256": "333bf2bc83e34163225a668eaf2545dcc98705a10aaf0b41cbc74554214a132c",
+          "size": 54,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "shortName": "x",
+      "vars": {
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/x"
+      }
+    },
     "gatekeeper-zoominfo": {
       "bindings": [
         {
