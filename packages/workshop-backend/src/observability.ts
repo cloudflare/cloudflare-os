@@ -11,6 +11,7 @@ export type WorkshopObservabilityFields = {
   chatId: number;
   claimedType: string;
   commitCount: number;
+  credentialKind: "workshop" | "cloudflare-access";
   durableObjectId: string;
   durationMs: number;
   eventName: string;

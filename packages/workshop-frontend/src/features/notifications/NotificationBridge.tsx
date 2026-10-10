@@ -8,10 +8,11 @@ import type {
   UserNotification,
 } from "@gadgets/workshop-shared/api";
 import { logRpcFailure } from "../../rpcErrors";
+import { nativeApp } from "../native-app/nativeApp";
 
 const DEVICE_REGISTRATION_EVENT = "cloudflare-os:notification-device-registration";
 
-type NativeNotificationWindow = Window & {
+type LegacyNativeNotificationWindow = Window & {
   __CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__?: string;
   __CLOUDFLARE_OS_REQUEST_NOTIFICATION_DEVICE_REGISTRATION__?: () => void;
   webkit?: { messageHandlers?: { cloudflareOSNotificationReady?: {
@@ -60,24 +61,31 @@ export const NotificationBridge = ({
 
   useEffect(() => {
     let lastRegistered: string | undefined;
-    let nativeWindow = window as NativeNotificationWindow;
+    let legacyWindow = window as LegacyNativeNotificationWindow;
+    let notifications = nativeApp()?.notifications;
+    let reportRegistration = (outcome: "ready" | "failed") => {
+      if (notifications) {
+        notifications.registrationFinished(outcome);
+      } else {
+        legacyWindow.webkit?.messageHandlers?.cloudflareOSNotificationReady
+          ?.postMessage({ type: outcome });
+      }
+    };
     let register = async (deviceRegistrationId: string | undefined) => {
       if (!deviceRegistrationId || deviceRegistrationId === lastRegistered) return;
       lastRegistered = deviceRegistrationId;
       // The native handle is single-use. Claim it before awaiting so an Effect restart cannot
       // submit it concurrently or retry it after the central exchange consumed it.
-      if (nativeWindow.__CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__ ===
+      if (legacyWindow.__CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__ ===
           deviceRegistrationId) {
-        delete nativeWindow.__CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__;
+        delete legacyWindow.__CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__;
       }
       try {
         await authenticatedApi.registerNotificationDevice(deviceRegistrationId);
-        nativeWindow.webkit?.messageHandlers?.cloudflareOSNotificationReady
-          ?.postMessage({ type: "ready" });
+        reportRegistration("ready");
       } catch (error) {
         lastRegistered = undefined;
-        nativeWindow.webkit?.messageHandlers?.cloudflareOSNotificationReady
-          ?.postMessage({ type: "failed" });
+        reportRegistration("failed");
         logRpcFailure("Failed to register notification device:", error);
       }
     };
@@ -85,14 +93,20 @@ export const NotificationBridge = ({
       void register(eventDeviceRegistration(event));
     };
 
-    let injected = nativeWindow.__CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__;
+    // The legacy globals remain only for the currently distributed TestFlight build. New shells
+    // expose notification controls through the same versioned object as navigation and login.
+    let injected = notifications?.currentDeviceRegistration() ??
+      legacyWindow.__CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__;
     void register(injected);
     window.addEventListener(DEVICE_REGISTRATION_EVENT, onDeviceRegistration);
     // Each id costs a central registration, and this Effect reruns on every reconnect: ask at most
     // once per mount, and not at all when native already injected one.
     if (!askedNative.current) {
       askedNative.current = true;
-      if (!injected) nativeWindow.__CLOUDFLARE_OS_REQUEST_NOTIFICATION_DEVICE_REGISTRATION__?.();
+      if (!injected) {
+        if (notifications) notifications.requestDeviceRegistration();
+        else legacyWindow.__CLOUDFLARE_OS_REQUEST_NOTIFICATION_DEVICE_REGISTRATION__?.();
+      }
     }
     return () => window.removeEventListener(DEVICE_REGISTRATION_EVENT, onDeviceRegistration);
   }, [authenticatedApi]);

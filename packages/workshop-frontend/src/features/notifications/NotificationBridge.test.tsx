@@ -140,6 +140,29 @@ describe("NotificationBridge", () => {
     Reflect.deleteProperty(window, "webkit");
   });
 
+  it("uses notification controls on the versioned native bridge", async () => {
+    let request = vi.fn<() => void>();
+    let finished = vi.fn<(outcome: "ready" | "failed") => void>();
+    Object.assign(window, {
+      cloudflareOSNative: {
+        version: 1,
+        isAvailable: () => true,
+        loginReady: () => {},
+        returnToInstalls: () => {},
+        notifications: {
+          currentDeviceRegistration: () => "registration-2",
+          requestDeviceRegistration: request,
+          registrationFinished: finished,
+        },
+      },
+    });
+    await render();
+    expect(authenticatedApi.registerNotificationDevice).toHaveBeenCalledWith("registration-2");
+    expect(finished).toHaveBeenCalledWith("ready");
+    expect(request).not.toHaveBeenCalled();
+    Reflect.deleteProperty(window, "cloudflareOSNative");
+  });
+
   it("asks the native app for a registration once, not again on reconnect", async () => {
     let request = vi.fn<() => void>();
     Object.assign(window, { __CLOUDFLARE_OS_REQUEST_NOTIFICATION_DEVICE_REGISTRATION__: request });

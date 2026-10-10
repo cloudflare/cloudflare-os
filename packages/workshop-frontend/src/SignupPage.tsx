@@ -10,6 +10,10 @@ import { useDocumentTitle } from "./useDocumentTitle";
 import OAuthButtons from "./components/auth/OAuthButtons";
 import SiteLogo from "./components/SiteLogo";
 import { useConnectionLost } from "./RpcContext";
+import {
+  deviceSessionDestination,
+  deviceSessionSearch,
+} from "./features/native-app/DeviceSessionHandoff";
 
 interface SignupPageProps {
   rpcStub: RpcStub<PublicApi>;
@@ -26,6 +30,10 @@ export default function SignupPage({ rpcStub }: SignupPageProps) {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const handleSignupSuccess = () => {
+    window.location.href = deviceSessionDestination("/", window.location.search);
+  };
 
   const usernameError =
     username && !/^[a-z0-9_-]+$/i.test(username)
@@ -66,7 +74,7 @@ export default function SignupPage({ rpcStub }: SignupPageProps) {
       );
       if (token) {
         localStorage.setItem("authToken", token);
-        window.location.href = "/";
+        handleSignupSuccess();
       } else {
         setError("Username already exists");
       }
@@ -211,14 +219,22 @@ export default function SignupPage({ rpcStub }: SignupPageProps) {
                 <div className="h-px flex-1 bg-kumo-line" />
               </div>
             )}
-            <OAuthButtons rpcStub={rpcStub} vendors={authVendors} />
+            <OAuthButtons
+              rpcStub={rpcStub}
+              vendors={authVendors}
+              onSuccess={handleSignupSuccess}
+            />
           </div>
         )}
 
         {passwordAuthEnabled && (
           <p className="text-center text-sm text-kumo-subtle mt-6">
             Already have an account?{" "}
-            <Link to="/" className="text-kumo-brand hover:underline font-medium">
+            <Link
+              to="/"
+              search={deviceSessionSearch(window.location.search)}
+              className="text-kumo-brand hover:underline font-medium"
+            >
               Sign in
             </Link>
           </p>

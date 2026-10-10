@@ -63,6 +63,52 @@ email and is then discarded by the gatekeeper. To use a gatekeeper's capabilitie
 or Cloudflare AI Gateway billing, the user explicitly **connects** it afterward (which requests the
 full scopes and persists the connection).
 
+## Native app return after installation sign-in
+
+The native Cloudflare OS shell uses a system authentication session, rather than an embedded web
+view, to sign in to an installation. This is required for identity-provider and security-key flows
+that reject or cannot complete in embedded browsers. The app opens the installation with a fresh
+opaque `cfos_native_state` value and a fresh, non-extractable P-256 key pair, passing only the
+public key as `cfos_native_key`.
+
+Once the browser is authenticated, the Workshop presents an explicit **Continue in Cloudflare
+OS** confirmation. It does not mint a transfer merely because a specially formed URL was loaded.
+After confirmation:
+
+1. `AuthenticatedApi.beginDeviceSessionHandoff()` stages an encrypted transfer in the authenticated
+   user's Durable Object. Page JavaScript receives only the Durable Object id, never the encrypted
+   envelope or its credential.
+2. The page performs a same-origin, top-level form POST containing that id and the opaque state to
+   `/api/device-session/callback`. The endpoint rejects fetches, frames, cross-origin requests,
+   duplicate fields, and malformed values.
+3. The endpoint atomically consumes the staged record and returns a `303` to the fixed claimed HTTPS
+   app link `https://os.cloudflare.app/oauthredirect?cfos_callback=install-connected&…`. The native
+   app verifies the state, decrypts the envelope with its per-attempt private key, and validates the
+   credential before storing it in platform secure storage. A web page cannot claim this callback;
+   the app-domain association controls which installed native app receives it.
+
+The transfer is server-enforced as single-use and expires after two minutes, independently of the
+credential encrypted inside it. A password or gatekeeper-authenticated installation gets a new
+Workshop device session which remains unusable until the callback consumes the transfer and which
+the server expires after 30 days. A Cloudflare Access installation transfers its current Access
+JWT; that credential retains the Access policy and JWT `exp` chosen by the installation's Access
+configuration. The native app cannot refresh or extend it, and the user must complete Access again
+after it expires. The app also needs to preserve any Access binding cookie required by that
+installation's policy.
+
+The encrypted wire payload is a documented `DeviceSessionTransfer`: a discriminated credential,
+plus the two-minute transfer deadline. It uses ephemeral P-256 ECDH, HKDF-SHA-256, and AES-GCM with
+the opaque state as additional authenticated data. There is no central native-login relay, poller,
+or cross-install session store; each installation owns and consumes its transfers.
+
+Inside an installation's embedded web view, the native shell exposes the versioned
+`window.cloudflareOSNative` capability. The Workshop calls `loginReady()` only after its normal
+authenticated shell is mounted, and offers **Back to installs** through `returnToInstalls()`.
+Notification enrollment is an optional capability on the same object. The legacy notification
+globals remain temporarily as a fallback for the currently distributed TestFlight build; new
+navigation and login behavior uses only the versioned object. These native hooks are available in
+every installation and are not conditioned on Cloudflare Access mode.
+
 ## Configuration
 
 ```
