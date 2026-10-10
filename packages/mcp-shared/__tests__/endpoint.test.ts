@@ -27,8 +27,10 @@ describe("validateCustomEndpoint", () => {
     for (const host of [
       "localhost", "app.localhost", "127.0.0.1", "0.0.0.0", "10.1.2.3", "192.168.0.5", "172.16.9.9",
       "169.254.169.254", "metadata.google.internal", "thing.internal",
-      // IPv6 loopback and unique-local, which a URL renders bracketed.
-      "[::1]", "[fd00::1]", "[fc00::1]",
+      // Carrier-grade NAT, which some networks route to infrastructure of their own.
+      "100.64.0.1", "100.127.255.254",
+      // IPv6 loopback, unspecified, unique-local and link-local, which a URL renders bracketed.
+      "[::1]", "[::]", "[fd00::1]", "[fc00::1]", "[fe80::1]", "[febf::1]",
     ]) {
       expect(validateCustomEndpoint(env(), `https://${host}/mcp`).ok, host).toBe(false);
     }
@@ -43,7 +45,9 @@ describe("validateCustomEndpoint", () => {
   });
 
   it("does not mistake ordinary hosts for encoded addresses", () => {
-    for (const host of ["mcp.example.com", "8x8.com", "0x.example.com", "mcp.internal.example.com"]) {
+    for (const host of ["mcp.example.com", "8x8.com", "0x.example.com", "mcp.internal.example.com",
+      // Addresses outside the ranges above, which must still be accepted.
+      "100.63.0.1", "100.128.0.1", "[2606:4700::1111]"]) {
       expect(isBlockedHost(host), host).toBe(false);
     }
   });
