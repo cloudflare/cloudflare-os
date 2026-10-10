@@ -64,6 +64,9 @@ export type ListTarget = { id: string; info: XListInfo };
 /** What a send recorded just before it went to X: when, and for a post the media it attached. */
 export type SendAttempt = { at: number; mediaIds?: string[] };
 
+/** A List's details, as an update changes and a revert restores them. */
+export type ListDetails = { name: string; description: string; private: boolean };
+
 /** What each kind of action stores. */
 export type XActions = {
   /** A post, or a thread of posts each replying to the one before. */
@@ -107,7 +110,7 @@ export type XActions = {
     list: ListTarget;
     changes: { name?: string; description?: string; private?: boolean };
     /** The List as it was just before the change, recorded when applied: what a revert restores. */
-    previous?: { name: string; description: string; private: boolean };
+    previous?: ListDetails;
     appliedAt?: number;
   };
   deleteList: { list: ListTarget; appliedAt?: number };
@@ -131,6 +134,11 @@ export type XActionHost = {
   releaseImages(drafts: readonly StoredDraft[]): void;
   /** Posts a thread has published so far, so a retry resumes rather than reposting. */
   progress: { get(id: number): string[]; put(id: number, ids: string[]): void; delete(id: number): void };
+  /**
+   * A List's details from just before an update first went to X, so a retry after X applied it
+   * but lost the answer still records what to restore.
+   */
+  previous: { get(id: number): ListDetails | undefined; put(id: number, details: ListDetails): void; delete(id: number): void };
   /** A send whose outcome X never reported, keyed by action and post index (0 for a List). */
   attempts: {
     get(key: string): SendAttempt | undefined; put(key: string, attempt: SendAttempt): void; delete(key: string): void;
@@ -828,17 +836,17 @@ export const actions = defineActions<XActionHost, XActions>({
       return { title: sanitizeTitle(`Change the X List "${payload.list.info.name}"`), ...builder.finish(), implementsRevert: true };
     },
     dependsOn: payload => isProvisional(payload.list.id) ? [payload.list.id] : [],
-    apply: async (payload, host) => {
+    apply: async (payload, host, ctx) => {
       const id = listId(host, payload.list);
-      const before = requireData(await host.read<WireList>(1, api => api.get<WireList>(`/2/lists/${id}`, LIST_FIELDS)), "List");
+      let previous = host.previous.get(ctx.id);
+      if (previous === undefined) {
+        const before = requireData(await host.read<WireList>(1, api => api.get<WireList>(`/2/lists/${id}`, LIST_FIELDS)), "List");
+        previous = { name: before.name ?? "", description: before.description ?? "", private: before.private === true };
+        host.previous.put(ctx.id, previous);
+      }
       await toggle(host, api => api.put(`/2/lists/${id}`, payload.changes), "change this List");
-      return {
-        action: {
-          ...payload,
-          previous: { name: before.name ?? "", description: before.description ?? "", private: before.private === true },
-          appliedAt: Date.now(),
-        },
-      };
+      host.previous.delete(ctx.id);
+      return { action: { ...payload, previous, appliedAt: Date.now() } };
     },
   },
 

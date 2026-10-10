@@ -350,6 +350,19 @@ describe("Lists", () => {
     expect(t.x.lists.get("5")).toMatchObject({ name: "Old", description: "before", private: false });
   });
 
+  it("restores a List's original details though the change's first answer was lost", async () => {
+    const t = await setup();
+    t.x.lists.set("5", { id: "5", name: "Old", description: "before", private: false, owner_id: ALICE.id });
+    await t.run([["getList", "5"], ["update", { name: "New" }]]);
+    t.x.loseAnswer("PUT", /^\/2\/lists\/5$/);
+    const [{ actionId }] = await t.submitted();
+    failure(await t.apply(actionId));
+    expect(t.x.lists.get("5")).toMatchObject({ name: "New" });
+    unwrap(await t.apply(actionId));
+    unwrap(await t.revert(actionId));
+    expect(t.x.lists.get("5")).toMatchObject({ name: "Old", description: "before" });
+  });
+
   it("changes only Lists the account owns", async () => {
     const t = await setup();
     t.x.lists.set("6", { id: "6", name: "Bob's", owner_id: BOB.id });
