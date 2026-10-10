@@ -1071,9 +1071,10 @@ departed from the design above:
   action pending with a plain error, and the next apply first reads the account's posts dated from
   10 s before the attempt to 5 minutes after it (`max_results=100`). It binds a post only when
   exactly one matches the draft's reply parent, `comparableText`, link destinations
-  (`expanded_url`, through `comparableUrl`), poll and media IDs. None sends again; more than one,
-  or a window too full for one page, ends the action with `ActionOutcomeUnknownError`, since
-  binding the wrong post would have a revert delete it. A duplicate refusal says the send made
+  (`expanded_url`, through `comparableUrl`), poll and media IDs. None sends again. More than one,
+  one X dated before the send began (by its snowflake ID, to the millisecond), which may have been
+  there already, or a window too full for one page ends the action with
+  `ActionOutcomeUnknownError`, since binding the wrong post would have a revert delete it. A duplicate refusal says the send made
   nothing, so it is reconciled only against an earlier send X never confirmed, never against posts
   that were already there; a first send refused that way fails. While a marker or thread progress
   exists, `reject` is refused ("it may already be on X"). A terminal failure part-way through a
