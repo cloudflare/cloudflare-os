@@ -4498,6 +4498,39 @@ function shiftedCopyFormula(value: string, sourceRef: string | null, targetRef: 
 const source = parseRef(sourceRef), target = parseRef(targetRef);
 if (!source || !target) return value;
 return shiftFormulaReferences(value, target.r - source.r, target.c - source.c); }
+function formulaReferenceSheetId(ref: string, defaultSheetId: string): string {
+  const bang = ref.lastIndexOf("!");
+  if (bang < 0) return defaultSheetId;
+  const name = ref.slice(0, bang).replace(/^'|'$/g, "").replace(/\\'|''/g, "'").toLowerCase();
+  return model.sheetOrder.find((id) => model.sheets[id].name.toLowerCase() === name) || "";
+}
+// The formula grammar has rectangles, not unions of independently moved cells. Accept a range
+// only when no cells move, or every cell follows the same translation to the same sheet.
+function formulaRangesFollowCut(value: string, formulaSheetId: string, cutSheetId: string, moves: Map<string, { sheetId: string; ref: string }>, unchangedSources: Set<string>): boolean {
+  for (const reference of formulaReferences(value)) {
+    const endpoints = [...formulaReferences("=" + reference.text, true)];
+    if (endpoints.length !== 2) continue;
+    const sheetId = formulaReferenceSheetId(endpoints[0].text, formulaSheetId);
+    if (sheetId !== cutSheetId) continue;
+    const first = parseRef(endpoints[0].text.slice(endpoints[0].text.lastIndexOf("!") + 1));
+    const last = parseRef(endpoints[1].text.slice(endpoints[1].text.lastIndexOf("!") + 1));
+    if (!first || !last) continue;
+    const r1 = Math.min(first.r, last.r), r2 = Math.max(first.r, last.r), c1 = Math.min(first.c, last.c), c2 = Math.max(first.c, last.c);
+    let count = 0, targetSheetId = "", rowDelta = 0, columnDelta = 0;
+    let coherent = formulaReferenceSheetId(endpoints[1].text, sheetId) === sheetId;
+    for (const [ref, target] of moves) {
+      if (!unchangedSources.has(ref) || target.sheetId === cutSheetId && target.ref === ref) continue;
+      const source = parseRef(ref), destination = parseRef(target.ref);
+      if (!source || !destination || source.r < r1 || source.r > r2 || source.c < c1 || source.c > c2) continue;
+      const dr = destination.r - source.r, dc = destination.c - source.c;
+      if (count === 0) { targetSheetId = target.sheetId; rowDelta = dr; columnDelta = dc; }
+      else if (target.sheetId !== targetSheetId || dr !== rowDelta || dc !== columnDelta) coherent = false;
+      count++;
+    }
+    if (count && (!coherent || count !== (r2 - r1 + 1) * (c2 - c1 + 1))) return false;
+  }
+  return true;
+}
 // Cuts follow cell identities, not relative offsets. Resolve against the original sheet before
 // rebasing a moved formula, and retain lock flags for subsequent copies and fills.
 function remapCutFormula(value: string, formulaSourceSheetId: string, formulaTargetSheetId: string, cutSheetId: string, moves: Map<string, { sheetId: string; ref: string }>, unchangedSources: Set<string>): string {
@@ -4506,10 +4539,7 @@ function remapCutFormula(value: string, formulaSourceSheetId: string, formulaTar
     let replacement = "", end = 0, referencedSheetId = formulaSourceSheetId, resultSheetId = formulaTargetSheetId;
     for (const endpoint of formulaReferences("=" + reference.text, true)) {
       const bang = endpoint.text.lastIndexOf("!");
-      if (bang >= 0) {
-        const name = endpoint.text.slice(0, bang).replace(/^'|'$/g, "").replace(/\\'|''/g, "'").toLowerCase();
-        referencedSheetId = model.sheetOrder.find((id) => model.sheets[id].name.toLowerCase() === name) || "";
-      }
+      referencedSheetId = formulaReferenceSheetId(endpoint.text, referencedSheetId);
       const body = endpoint.text.slice(bang + 1), position = parseRef(body);
       const sourceRef = position ? rcToRef(position.r, position.c) : "";
       const destination = referencedSheetId === cutSheetId && unchangedSources.has(sourceRef) ? moves.get(sourceRef) : undefined;
@@ -4558,6 +4588,28 @@ const sourceHeight = useSnapshot?.cells.length ?? values!.length;
 const sourceWidth = Math.max(1, ...(useSnapshot?.cells ?? values!).map((row) => row.length));
 const targetRanges = selectionRanges();
 const destinationRefs = new Set();
+if (moving && useSnapshot) {
+  // Build the exact clipped, single-use move map before touching destinations or history.
+  for (const target of targetRanges) for (let i = 0; i < sourceHeight; i++) for (let j = 0; j < sourceWidth; j++) {
+    const row = target.r1 + i, column = target.c1 + j;
+    if (row > target.r2 && targetRanges.length > 1 || column > target.c2 && targetRanges.length > 1) continue;
+    if (row >= curSheet().rows || column >= curSheet().cols) continue;
+    const snapshot = useSnapshot.cells[i]?.[j];
+    if (snapshot && moves.has(snapshot.sourceRef)) continue;
+    const ref = rcToRef(row, column);
+    destinationRefs.add(activeSheetId + "!" + ref);
+    if (snapshot) moves.set(snapshot.sourceRef, { sheetId: activeSheetId, ref });
+  }
+  let safe = true;
+  for (const row of useSnapshot.cells) for (const snapshot of row) {
+    if (snapshot?.value?.startsWith("=") && moves.has(snapshot.sourceRef) && !formulaRangesFollowCut(snapshot.value, useSnapshot.sheetId, useSnapshot.sheetId, moves, unchangedSources)) safe = false;
+  }
+  for (const sheetId of model.sheetOrder) for (const [ref, cell] of Object.entries(model.cells[sheetId] || {})) {
+    if (destinationRefs.has(sheetId + "!" + ref) || sheetId === useSnapshot.sheetId && unchangedSources.has(ref) && moves.has(ref)) continue;
+    if (cell.value?.startsWith("=") && !formulaRangesFollowCut(cell.value, sheetId, useSnapshot.sheetId, moves, unchangedSources)) safe = false;
+  }
+  if (!safe) { saveStatus.set("bad", "Cannot cut part of a referenced range; move the whole range together"); return; }
+}
 beginBatch();
 for (const target of targetRanges) {
   const targetHeight = target.r2 - target.r1 + 1, targetWidth = target.c2 - target.c1 + 1;
@@ -4577,9 +4629,8 @@ for (const target of targetRanges) {
     const sourceRow = i % sourceHeight, sourceColumn = j % sourceWidth;
     const ref = rcToRef(row, column);
     const snapshot = useSnapshot?.cells[sourceRow]?.[sourceColumn];
-    if (moving && snapshot && moves.has(snapshot.sourceRef)) continue;
+    if (moving && snapshot && moves.get(snapshot.sourceRef)?.ref !== ref) continue;
     destinationRefs.add(activeSheetId + "!" + ref);
-    if (moving && snapshot) moves.set(snapshot.sourceRef, { sheetId: activeSheetId, ref });
     if (useSnapshot && keepFormatting) {
       recordCell(activeSheetId, ref);
       if (snapshot && snapshot.value != null) {
