@@ -112,15 +112,16 @@ it('shows a change at once, holds the switch busy while it is in flight, and let
 
   await clickHookSwitch(TITLE)
   expect(isOn()).toBe(true)
-  expect(hookSwitch(TITLE).disabled).toBe(true)
+  expect(hookSwitch(TITLE).getAttribute('aria-disabled')).toBe('true')
   expect(hookSwitch(TITLE).getAttribute('aria-busy')).toBe('true')
   // A second click while the first is in flight changes nothing.
   await clickHookSwitch(TITLE)
   expect(overseer.enableHook).toHaveBeenCalledOnce()
+  expect(overseer.disableHook).not.toHaveBeenCalled()
 
   await first.reject(new Error(refusal))
   expect(isOn()).toBe(false)
-  expect(hookSwitch(TITLE).disabled).toBe(false)
+  expect(hookSwitch(TITLE).hasAttribute('aria-disabled')).toBe(false)
   expect(hookSwitch(TITLE).hasAttribute('aria-busy')).toBe(false)
 
   await clickHookSwitch(TITLE)

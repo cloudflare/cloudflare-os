@@ -145,8 +145,7 @@ export function hookSwitch(title: string): HTMLButtonElement {
 
 /**
  * Flip the switch of the hook titled `title`, as a click would: through the checkbox the switch
- * forwards its clicks to, since jsdom has no PointerEvent to forward them with. A disabled
- * checkbox ignores the click, as the switch would.
+ * forwards its clicks to, since jsdom has no PointerEvent to forward them with.
  */
 export async function clickHookSwitch(title: string): Promise<void> {
   const checkbox = hookSwitch(title).nextElementSibling

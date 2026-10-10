@@ -215,19 +215,20 @@ describe('Activity hook toggles', () => {
     })
 
   it('holds the switch busy while a change is in flight, and lets a failed one be retried', async () => {
-    const { server, enableHook } = await renderHookRecord()
+    const { server, enableHook, disableHook } = await renderHookRecord()
     const first = deferred()
     enableHook.mockReturnValueOnce(first.promise)
 
     await clickHookSwitch(TITLE)
-    expect(hookSwitch(TITLE).disabled).toBe(true)
+    expect(hookSwitch(TITLE).getAttribute('aria-disabled')).toBe('true')
     expect(hookSwitch(TITLE).getAttribute('aria-busy')).toBe('true')
     await clickHookSwitch(TITLE)
     expect(enableHook).toHaveBeenCalledOnce()
+    expect(disableHook).not.toHaveBeenCalled()
 
     await first.reject(new Error(refusal))
     expect(isOn()).toBe(false)
-    expect(hookSwitch(TITLE).disabled).toBe(false)
+    expect(hookSwitch(TITLE).hasAttribute('aria-disabled')).toBe(false)
     expect(hookSwitch(TITLE).hasAttribute('aria-busy')).toBe(false)
 
     await clickHookSwitch(TITLE)

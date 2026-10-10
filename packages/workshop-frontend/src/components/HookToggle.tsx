@@ -5,7 +5,7 @@ interface HookToggleProps {
   /** The hook's title, which names the switch; whether it is on is the switch's own state. */
   hookTitle: string
   enabled: boolean
-  /** While a change is in flight: the switch is disabled and marked busy. */
+  /** While a change is in flight: the switch ignores input and says it is busy. */
   pending?: boolean
   onToggle: (enabled: boolean) => void
   size?: 'sm' | 'base' | 'lg'
@@ -18,10 +18,15 @@ export function HookToggle({ hookTitle, enabled, pending = false, onToggle, size
       <span className="inline-flex items-center">
         <Switch
           checked={enabled}
-          disabled={pending}
+          // Not `disabled`, which would take focus from a keyboard user mid-change: the switch
+          // stays focusable, ignores itself while busy, and says so.
+          aria-disabled={pending || undefined}
           transitioning={pending}
+          className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
           size={size}
-          onCheckedChange={(checked) => onToggle(checked)}
+          onCheckedChange={(checked) => {
+            if (!pending) onToggle(checked)
+          }}
           aria-label={`Hook: ${hookTitle}`}
         />
       </span>
