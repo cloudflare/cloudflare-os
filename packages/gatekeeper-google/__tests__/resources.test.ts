@@ -50,6 +50,13 @@ describe("resource declarations", () => {
     );
   });
 
+  it("advertises Sheets value, tab, row, column and formatting changes", () => {
+    expect(GOOGLE_SHEETS_RESOURCE.description).toBe(
+      "Read the values and formatting of a spreadsheet you choose, and change its values, tabs, " +
+      "rows, columns, and formatting, with your approval.",
+    );
+  });
+
   it("has a distinct pattern per resource", () => {
     let patterns = SUPPORTED_RESOURCES.map(r => r.urlPattern);
     expect(new Set(patterns).size).toBe(patterns.length);

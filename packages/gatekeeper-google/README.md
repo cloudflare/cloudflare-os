@@ -81,7 +81,7 @@ included). Across all resource types, the gatekeeper can request:
 - `gmail.modify` for Gmail thread reads, organization, replies, forwards, and sending. This single scope already includes label access and sending.
 - `documents` for direct Google Docs reads, edits, and creation; `documents.readonly` for native Docs opened from account-wide, folder, or exact-file Drive bindings.
 - `drive.metadata.readonly` for the Docs, Sheets, Slides, and folder pickers, account-wide Drive discovery, exact-file metadata, folder descendant proofs, and native-file scope checks. Google classifies this as a restricted scope, so every Drive resource here needs restricted-scope verification.
-- `spreadsheets` to read metadata and bounded cell ranges from directly selected spreadsheets, edit them with approval, and create spreadsheets. The switch from `spreadsheets.readonly` retracted every existing Sheets grant, including one derived from `drive.readonly`: owners re-consent the next time they connect a spreadsheet, and collaborators observing an existing Sheets binding are asked to grant read-write `spreadsheets` the next time they open its workspace. A `spreadsheets` grant covers the Drive resources' `spreadsheets.readonly`.
+- `spreadsheets` to read metadata, bounded cell ranges and their formatting from directly selected spreadsheets, edit their values, sheets, rows, columns and formatting with approval, and create spreadsheets. The switch from `spreadsheets.readonly` retracted every existing Sheets grant, including one derived from `drive.readonly`: owners re-consent the next time they connect a spreadsheet, and collaborators observing an existing Sheets binding are asked to grant read-write `spreadsheets` the next time they open its workspace. A `spreadsheets` grant covers the Drive resources' `spreadsheets.readonly`.
 - `spreadsheets.readonly` to read native Sheets opened from account-wide, folder, or exact-file Drive bindings.
 - `presentations` to read, edit, and create directly selected presentations, and to render slide thumbnails; `presentations.readonly` to read and render native Slides opened from account-wide, folder, or exact-file Drive bindings. Google counts each thumbnail as an expensive read, limited to 60 a minute per user and 300 per project.
 - `calendar.calendarlist.readonly` so the resource picker can list calendars.
@@ -410,6 +410,26 @@ Google does; they read `#REF!` once it applies, and stay so even if a later shee
 One thing is not simulated: the cells an array formula such as `SORT` or `SEQUENCE` fills read as
 the values Google last computed, moved with their rows and columns, although Google recomputes them.
 
+`formatCells` formats every cell of a range, keeping its contents: bold, italic, underline,
+strikethrough, font size, text and fill colour (`#rrggbb` or a theme colour such as `ACCENT1`),
+number format (a type and an optional pattern in Google's syntax), horizontal and vertical
+alignment, wrapping, and borders along the range's edges and between its rows and columns. A field
+set to `null` is reset to the default, and a border set to `null` is removed; fields left out are
+kept. A batch of only `formatCells` changes is queued as "Sheet formatting", which a user may let
+apply without asking; mixed with any other change it waits for approval. `readFormats()`, which a
+spreadsheet opened from a Drive binding offers too, reads the formatting set on up to 10,000 cells
+of a range, never their values, and shows queued formatting merged in queue order. Cells of rows
+and columns a queued change inserts, whose formatting Google inherits from a neighbour in ways that
+differ between rows and columns, read `null` and are listed in `pendingCells`. A border along a
+range's outer edge removes the facing border of the cell beside it, since Google gives an edge one
+owner, and reads show that. A formatted value read of a cell whose number format a queued change
+sets or resets reads `null` too, listed in that range's `pendingCells`, unless a queued change
+leaves the cell empty: a format such as `;;;` can hide what a blank-looking cell holds. Google accepts
+any font size and number pattern, so the gatekeeper's checks are the only ones: a font size is an
+integer from 1 to 400, and a pattern holds 1 to 200 characters and no control characters.
+Formatting is not guarded: a collaborator's formatting change made after a batch is queued is
+overwritten when it applies.
+
 Sheets has no revision to pin a write to, so each approved batch is planned against a fresh read
 and guarded by a digest of what it overwrites or removes: the cells it writes and the rows,
 columns and sheets it deletes, as entered, and the title and size of each sheet it addresses,
@@ -418,8 +438,8 @@ those enter, and sheets those restructure to have the shape they leave, so a bat
 was rejected or failed fails too, as does a batch with a formula when any structural change queued
 before it was not applied. A batch guards at most 50,000 cells. A change whose cells or sheet
 changed since it was queued fails without writing; a collaborator's edit between that read and the
-write is not caught, and formatting is not guarded. Each batch also creates a developer-metadata marker whose ID is minted at queue time,
-which Google stores at most once, so a write whose response is lost is found by its marker or
+write is not caught. Each batch also creates a developer-metadata marker whose ID is minted at queue
+time, which Google stores at most once, so a write whose response is lost is found by its marker or
 resent exactly as first sent. A lost write that cannot be resent, because its cells changed in the
 meantime or Google refused the resend, or that three sends leave unfound, is marked as having an
 unknown outcome. A marker is visible only to the Google Cloud project of this deployment's OAuth
