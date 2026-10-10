@@ -82,7 +82,7 @@ describe('native app bridge', () => {
     act(() => root.unmount())
   })
 
-  it('does not reuse a prior confirmed identity while a new session is pending', async () => {
+  it('reports login again only after the reconnected session confirms its identity', async () => {
     const loginReady = vi.fn<() => void>()
     const nextIdentity = pendingWhoami()
     vi.stubGlobal('cloudflareOSNative', {
@@ -91,7 +91,7 @@ describe('native app bridge', () => {
       loginReady,
       returnToInstalls: vi.fn<() => void>(),
     })
-    const firstApi = apiWithWhoami(async () => user)
+    const firstApi = apiWithWhoami(async () => ({ ...user }))
     const nextApi = apiWithWhoami(() => nextIdentity.promise)
     const root = createRoot(document.createElement('div'))
     await act(async () => root.render(
@@ -107,7 +107,8 @@ describe('native app bridge', () => {
       </AuthProvider>
     ))
     expect(loginReady).toHaveBeenCalledOnce()
-    await act(async () => nextIdentity.resolve(user))
+    // A real RPC call materializes a fresh profile object for the new connection.
+    await act(async () => nextIdentity.resolve({ ...user }))
     expect(loginReady).toHaveBeenCalledTimes(2)
     act(() => root.unmount())
   })

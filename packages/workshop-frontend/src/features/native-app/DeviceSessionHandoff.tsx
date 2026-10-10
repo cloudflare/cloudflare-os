@@ -1,7 +1,7 @@
 import { Button } from '@cloudflare/kumo'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { RpcStub } from 'capnweb'
-import type { AuthenticatedApi } from '@gadgets/workshop-shared/api'
+import type { AiChatAuthorInfo, AuthenticatedApi, DeviceSessionHandoffStart } from '@gadgets/workshop-shared/api'
 
 const STATE_PARAMETER = 'cfos_native_state'
 const KEY_PARAMETER = 'cfos_native_key'
@@ -48,12 +48,12 @@ export const deviceSessionDestination = (pathname: string, search: string): stri
 }
 
 /** Navigate the browser through the single-use callback without exposing its response to script. */
-export const submitDeviceSession = (state: string, handoffId: string): void => {
+export const submitDeviceSession = (state: string, start: DeviceSessionHandoffStart): void => {
   const form = document.createElement('form')
   form.method = 'POST'
   form.action = '/api/device-session/callback'
   form.style.display = 'none'
-  for (const [name, value] of Object.entries({ state, handoffId })) {
+  for (const [name, value] of Object.entries({ state, ...start })) {
     const input = document.createElement('input')
     input.name = name
     input.value = value
@@ -76,17 +76,35 @@ export const DeviceSessionHandoff = ({
   const attempt = deviceSessionAttempt(window.location.search)
   const [working, setWorking] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [identity, setIdentity] = useState<{
+    api: RpcStub<AuthenticatedApi>
+    user: AiChatAuthorInfo | null
+    failed: boolean
+  } | null>(null)
+  const confirmedUser = identity?.api === authenticatedApi && identity.user?.type === 'user'
+    ? identity.user : null
+  const identityFailed = identity?.api === authenticatedApi && identity.failed
+
+  useEffect(() => {
+    let cancelled = false
+    authenticatedApi.whoami().then(user => {
+      if (!cancelled) setIdentity({ api: authenticatedApi, user, failed: user.type !== 'user' })
+    }).catch(() => {
+      if (!cancelled) setIdentity({ api: authenticatedApi, user: null, failed: true })
+    })
+    return () => { cancelled = true }
+  }, [authenticatedApi])
 
   const continueInApp = async () => {
-    if (!attempt || working) return
+    if (!attempt || !confirmedUser || working) return
     setWorking(true)
     setError(null)
     try {
-      const { handoffId } = await authenticatedApi.beginDeviceSessionHandoff(
+      const start = await authenticatedApi.beginDeviceSessionHandoff(
         attempt.publicKey,
         attempt.state,
       )
-      submitDeviceSession(attempt.state, handoffId)
+      submitDeviceSession(attempt.state, start)
     } catch {
       setError('Could not prepare this device session. Try again.')
       setWorking(false)
@@ -118,9 +136,21 @@ export const DeviceSessionHandoff = ({
             ? 'This browser will close and return to the app.'
             : 'Continue only if you started this sign-in from the Cloudflare OS app.'}
         </p>
+        {!working && identityFailed && (
+          <p role="alert" className="text-sm text-kumo-danger">
+            Could not confirm your account. Return to the app and try again.
+          </p>
+        )}
+        {!working && !identityFailed && (
+          <p className="text-sm text-kumo-subtle">
+            {confirmedUser
+              ? `Signed in as ${confirmedUser.name} (${confirmedUser.id}) on ${window.location.host}.`
+              : 'Checking your account…'}
+          </p>
+        )}
         {error && <p role="alert" className="text-sm text-kumo-danger">{error}</p>}
-        {!working && (
-          <Button variant="primary" onClick={() => { void continueInApp() }}>
+        {!working && !identityFailed && (
+          <Button variant="primary" disabled={!confirmedUser} onClick={() => { void continueInApp() }}>
             Continue in Cloudflare OS
           </Button>
         )}

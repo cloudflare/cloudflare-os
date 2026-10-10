@@ -58,9 +58,9 @@ export const NotificationBridge = ({
   addToast.current = toasts.add;
   const router = useRouter();
   const askedNative = useRef(false);
+  const claimedRegistrations = useRef(new Set<string>());
 
   useEffect(() => {
-    let lastRegistered: string | undefined;
     let legacyWindow = window as LegacyNativeNotificationWindow;
     let notifications = nativeApp()?.notifications;
     let reportRegistration = (outcome: "ready" | "failed") => {
@@ -72,10 +72,10 @@ export const NotificationBridge = ({
       }
     };
     let register = async (deviceRegistrationId: string | undefined) => {
-      if (!deviceRegistrationId || deviceRegistrationId === lastRegistered) return;
-      lastRegistered = deviceRegistrationId;
-      // The native handle is single-use. Claim it before awaiting so an Effect restart cannot
-      // submit it concurrently or retry it after the central exchange consumed it.
+      if (!deviceRegistrationId || claimedRegistrations.current.has(deviceRegistrationId)) return;
+      // The native handle is single-use, including across authenticatedApi reconnects. A failed
+      // exchange may already have consumed it, so native must issue a fresh id for any retry.
+      claimedRegistrations.current.add(deviceRegistrationId);
       if (legacyWindow.__CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__ ===
           deviceRegistrationId) {
         delete legacyWindow.__CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__;
@@ -84,7 +84,6 @@ export const NotificationBridge = ({
         await authenticatedApi.registerNotificationDevice(deviceRegistrationId);
         reportRegistration("ready");
       } catch (error) {
-        lastRegistered = undefined;
         reportRegistration("failed");
         logRpcFailure("Failed to register notification device:", error);
       }
