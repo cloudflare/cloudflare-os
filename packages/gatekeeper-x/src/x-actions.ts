@@ -358,7 +358,7 @@ async function findPublished(host: XActionHost, draft: StoredDraft, replyTo: str
     text: draft.text, replyTo, links: extractUrls(draft.text), mediaIds: attempt.mediaIds ?? [],
     poll: draft.poll !== undefined,
   });
-  const matches = (envelope.data ?? []).filter(post => contentKey(sentContent(post)) === wanted);
+  const matches = (envelope.data ?? []).filter(candidate => contentKey(sentContent(candidate)) === wanted);
   // A further page could hold another match, so it leaves the answer as open as two matches do.
   if (matches.length > 1 || envelope.meta?.next_token !== undefined) throw unresolved("posts");
   return matches[0]?.id;

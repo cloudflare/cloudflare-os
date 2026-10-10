@@ -124,9 +124,9 @@ describe("mentionsProtectedAuthor", () => {
   });
 });
 
-describe("authorsUnverified", () => {
-  const unverified = (posts: WirePost[], includes?: WireIncludes) => authorsUnverified(posts, indexIncludes(includes));
+const unverified = (posts: WirePost[], includes?: WireIncludes) => authorsUnverified(posts, indexIncludes(includes));
 
+describe("authorsUnverified", () => {
   it("accepts posts whose authors, and the authors they quote, X described", () => {
     expect(unverified([tweetSpelling.post], tweetSpelling.includes)).toBe(false);
     expect(unverified([postSpelling.post], postSpelling.includes)).toBe(false);
