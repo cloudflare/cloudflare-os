@@ -747,7 +747,8 @@ Owner-private reads authorize against one synthetic collection, `owner`; public 
 | X Profile | C | — (a public profile needs only an X account) | same — for a protected user's posts |
 
 `XVerifier` is a `WorkerEntrypoint` over the observer's own `UserAccount`. `getXUserId()` answers
-from the stored identity — no call, no cost. `canViewPost(id)` / `canViewList(id)` ask X with the
+from the stored identity, once the connection's credentials prove usable — no call unless the
+access token needs refreshing, and null for a grant X refused for good. `canViewPost(id)` / `canViewList(id)` ask X with the
 observer's token through `probeAccess` (401/403/404 → `false`; anything else throws, so the open
 fails loudly). Each probe costs a read, so positive verdicts are cached per (observer, resource)
 for an hour; negatives never are.

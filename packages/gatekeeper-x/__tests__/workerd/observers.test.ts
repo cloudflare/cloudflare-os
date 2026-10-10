@@ -5,7 +5,9 @@
 
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ALICE, BOB, CAROL, FakeX, accountStub, failure, hooks, seedAccount, unwrap } from "./fake-x";
+import { generateNonce } from "@gadgets/gatekeeper-kit/connect-nonce";
+import { scopesFor } from "../../src/x-env";
+import { ALICE, BOB, CAROL, FakeX, accountStub, failure, hooks, json, seedAccount, unwrap } from "./fake-x";
 import type { GatekeeperProps } from "./worker";
 
 afterEach(() => {
@@ -27,6 +29,15 @@ describe("admission", () => {
     const gone = await seedAccount(x, BOB);
     await runInDurableObject(accountStub(gone), async (_instance, state) => state.storage.kv.delete("identity"));
     expect(failure(await hooks().addObserver(crypto.randomUUID(), props, "bob", gone))).toMatch(/X connection has expired/);
+  });
+
+  it("refuses an observer whose grant X refused for good, though its identity remains", async () => {
+    const x = new FakeX().install();
+    const props: GatekeeperProps = { userObjectId: await seedAccount(x), resourceKind: "account" };
+    const dead = await seedAccount(x, BOB, { expiresInMs: 0 });
+    await hooks().installCallback(dead, generateNonce(), scopesFor());
+    x.on("POST", /^\/2\/oauth2\/token/, () => json({ error: "invalid_grant", error_description: "Token was revoked." }, { status: 400 }));
+    expect(failure(await hooks().addObserver(crypto.randomUUID(), props, "bob", dead))).toMatch(/X connection has expired/);
   });
 
   it("refuses another X user once the workspace has read the account's private data", async () => {
