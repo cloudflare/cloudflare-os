@@ -1,0 +1,21 @@
+packages/gatekeeper-google/src/read-gate.ts
+  s_010272bf0842e6::t_290f0fb52b5242 1-25
+packages/gatekeeper-google/src/slides.ts
+  s_010272bf0842e6::t_290f0fb52b5242 11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c2ccb718245a7f8693702611ce39a714c336aced",
+  "prompts": {},
+  "sessions": {
+    "s_010272bf0842e6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "890bd2c4-bc81-47c2-9055-2c1fae3caf90",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
