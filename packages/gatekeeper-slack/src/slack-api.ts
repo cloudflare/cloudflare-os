@@ -341,7 +341,8 @@ type SlackApiOptions = {
 export class SlackApi {
   #getToken: () => Promise<string>;
   #options: SlackApiOptions;
-  #workspace?: Promise<string>;
+  #workspaceSelection?: Promise<string>;
+  #workspaceAccess?: { token: string; promise: Promise<string> };
   // Per-client cache for author and mention resolution.
   #userCache = new Map<string, SlackUser>();
   // Empty string records a failed workspace-host lookup.
@@ -420,16 +421,48 @@ export class SlackApi {
     return info.teamId;
   }
 
-  /** Resolves and verifies this session's workspace once; unselected org tokens fail closed. */
-  async workspaceTeamId(): Promise<string> {
-    return this.#workspace ??= (async () => {
+  async #selectedWorkspaceTeamId(): Promise<string> {
+    let selection = this.#workspaceSelection ??= (async () => {
       let teamId = await this.#options.teamId?.();
       if (!isWorkspaceId(teamId)) throw new Error("Select a Slack workspace for this connection.");
-      if (!(await this.hasWorkspaceAccess(teamId))) {
-        throw new SlackApiError("team_access_not_granted", 200);
-      }
       return teamId;
     })();
+    try {
+      return await selection;
+    } catch (error) {
+      if (this.#workspaceSelection === selection) this.#workspaceSelection = undefined;
+      throw error;
+    }
+  }
+
+  async #workspaceForToken(token: string): Promise<string> {
+    if (this.#workspaceAccess?.token === token) return this.#workspaceAccess.promise;
+    let check = {
+      token,
+      promise: (async () => {
+        let teamId = await this.#selectedWorkspaceTeamId();
+        // All pages of the access proof use the credential that will make the read. The
+        // unbound client avoids recursively checking membership for its own metadata calls.
+        let api = new SlackApi(async () => token, { installation: this.#options.installation });
+        if (!(await api.hasWorkspaceAccess(teamId))) {
+          throw new SlackApiError("team_access_not_granted", 200);
+        }
+        return teamId;
+      })(),
+    };
+    this.#workspaceAccess = check;
+    try {
+      return await check.promise;
+    } catch (error) {
+      // Do not let an older check's failure evict a newer credential's access proof.
+      if (this.#workspaceAccess === check) this.#workspaceAccess = undefined;
+      throw error;
+    }
+  }
+
+  /** Keep the workspace pinned, but recheck its authority whenever credentials change. */
+  async workspaceTeamId(): Promise<string> {
+    return this.#workspaceForToken(await this.#getToken());
   }
 
   // Org auth.test describes the enterprise host, not necessarily the selected workspace.
@@ -466,6 +499,9 @@ export class SlackApi {
 
     for (let attempt = 0; ; attempt++) {
       let token = await this.#getToken();
+      // Workspace tokens ignore team_id on some reads. Check the actual outgoing credential,
+      // including retries, rather than relying on the token used when parameters were built.
+      if (this.#options.teamId) await this.#workspaceForToken(token);
       let response = await fetch(url.toString(), {
         headers: { "Authorization": `Bearer ${token}` },
       });

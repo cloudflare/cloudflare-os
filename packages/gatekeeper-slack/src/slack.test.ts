@@ -65,7 +65,11 @@ beforeEach(() => {
     return { teamId, name: teamId, domain: teamId.toLowerCase() };
   });
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 
 describe("Slack resource binding identity", () => {
   it("retains the workspace from workspace and conversation URLs", async () => {
@@ -119,6 +123,31 @@ describe("Slack resource binding identity", () => {
     await binding.describe();
     workspaces = [{ id: "TONE", name: "One" }];
     await expect(binding.describe()).rejects.toMatchObject({ code: "team_access_not_granted" });
+  });
+
+  it("revalidates a long-lived cursor when its cached account credential reaches the refresh window", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    let ctx = context({ userObjectId: "account", teamId: "TONE" });
+    let account = ctx.exports.UserAccount.get();
+    let currentToken = { token: "org-token", expires: new Date(Date.now() + 60 * 60 * 1000) };
+    let getAccessToken = vi.spyOn(account, "getAccessToken").mockImplementation(async () => currentToken);
+    let read = vi.fn(async () => Response.json({ ok: true,
+      members: [{ id: "WSELF", name: "ddr" }], response_metadata: { next_cursor: "next-page" } }));
+    vi.stubGlobal("fetch", read);
+    let queue = { dup() { return this; }, authorizeObservation: vi.fn(async () => undefined) };
+    let session = await new SlackWorkspaceGatekeeperImpl(ctx as never, {} as never)
+        .startSession(queue as never);
+    let cursor = await session.listUsers();
+    expect(await cursor.next()).toMatchObject([{ id: "WSELF" }]);
+    installation = { teamId: "TTWO", isEnterpriseInstall: false };
+    workspaces = [{ id: "TTWO", name: "Two" }];
+    currentToken = { token: "workspace-token", expires: new Date(Date.now() + 12 * 60 * 60 * 1000) };
+    vi.setSystemTime(Date.now() + 2 * 60 * 60 * 1000);
+    await expect(cursor.next()).rejects.toMatchObject({ code: "team_access_not_granted" });
+    expect(getAccessToken).toHaveBeenCalledTimes(2);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(queue.authorizeObservation).toHaveBeenCalledTimes(1);
+    expect(ctx.storage.kv.get("boundTeamId")).toBe("TONE");
   });
 
   it("commits org metadata only when the staged reconnect is committed", async () => {

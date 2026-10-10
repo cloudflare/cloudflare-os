@@ -61,6 +61,35 @@ function mockSlack(org = true) {
 
 const api = (teamId = "TONE") => new SlackApi(async () => "test-token").forWorkspace(teamId);
 
+function mockCredentialChange() {
+  mockSlack();
+  let token = "org-token";
+  let fetchSlack = fetch;
+  vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+    if (new Headers(init?.headers).get("Authorization") !== "Bearer workspace-token") {
+      return fetchSlack(input, init);
+    }
+    let url = new URL(input);
+    requests.push(url);
+    switch (url.pathname.split("/").pop()) {
+      case "auth.test":
+        return Response.json({ ok: true, team_id: "TTWO", user_id: "WSELF", is_enterprise_install: false });
+      case "team.info":
+        return Response.json({ ok: true, team: { id: "TTWO", name: "Two", domain: "ttwo" } });
+      // Slack ignores team_id on these endpoints for workspace-installed credentials.
+      case "users.list":
+        return Response.json({ ok: true, members: [{ id: "WFOREIGN", name: "foreign" }] });
+      case "users.conversations":
+        return Response.json({ ok: true, channels: [{ id: "DFOREIGN", is_im: true }] });
+      default: throw new Error("Unexpected workspace-token request");
+    }
+  }));
+  return {
+    client: new SlackApi(async () => token).forWorkspace("TONE"),
+    reconnect: () => { token = "workspace-token"; },
+  };
+}
+
 describe("Slack org installations", () => {
   it("retains enterprise identity while keeping the per-user token", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ ok: true, team: null,
@@ -104,6 +133,126 @@ describe("Slack org installations", () => {
     mockSlack(false);
     await api().listUsers(undefined, 10);
     expect(requests.some(url => url.pathname.endsWith("auth.teams.list"))).toBe(false);
+  });
+
+  it.each(["users", "conversations"])("rechecks changed credentials before listing %s", async resource => {
+    let { client, reconnect } = mockCredentialChange();
+    let read = () => resource === "users" ? client.listUsers(undefined, 10) :
+        client.listUserConversations(["im"], undefined, 10);
+    await read();
+    let method = resource === "users" ? "users.list" : "users.conversations";
+    let before = requests.filter(url => url.pathname.endsWith(method)).length;
+    reconnect();
+    await expect(read()).rejects.toMatchObject({ code: "team_access_not_granted" });
+    expect(requests.filter(url => url.pathname.endsWith(method))).toHaveLength(before);
+  });
+
+  it("checks the actual read credential even when it changes during workspace validation", async () => {
+    let { client, reconnect } = mockCredentialChange();
+    let fetchSlack = fetch;
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      let response = await fetchSlack(input, init);
+      let url = new URL(input);
+      if (url.pathname.endsWith("auth.teams.list") && url.searchParams.has("cursor")) reconnect();
+      return response;
+    });
+    await expect(client.listUsers(undefined, 10)).rejects.toMatchObject({ code: "team_access_not_granted" });
+    expect(requests.some(url => url.pathname.endsWith("users.list"))).toBe(false);
+  });
+
+  it("rechecks replacement credentials before retrying a rate-limited read", async () => {
+    let { client, reconnect } = mockCredentialChange();
+    let fetchSlack = fetch;
+    let reads = 0;
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      if (input.includes("users.list") && reads++ === 0) {
+        reconnect();
+        return Response.json({ ok: false, error: "ratelimited" },
+            { status: 429, headers: { "Retry-After": "0.001" } });
+      }
+      return fetchSlack(input, init);
+    });
+    await expect(client.listUsers(undefined, 10)).rejects.toMatchObject({ code: "team_access_not_granted" });
+    expect(reads).toBe(1);
+  });
+
+  it("coalesces concurrent access checks and reuses only the same credential's proof", async () => {
+    mockSlack();
+    let fetchSlack = fetch;
+    let started = Promise.withResolvers<void>();
+    let release = Promise.withResolvers<void>();
+    let checks = 0;
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      if (input.includes("auth.test")) {
+        checks++;
+        started.resolve();
+        await release.promise;
+      }
+      return fetchSlack(input, init);
+    });
+    let token = "first-token";
+    let selectWorkspace = vi.fn(async () => "TONE");
+    let client = new SlackApi(async () => token, { teamId: selectWorkspace });
+    let concurrent = Promise.all([client.workspaceTeamId(), client.workspaceTeamId()]);
+    await started.promise;
+    expect(checks).toBe(1);
+    release.resolve();
+    expect(await concurrent).toEqual(["TONE", "TONE"]);
+    await client.listUsers(undefined, 10);
+    expect(checks).toBe(1);
+    token = "rotated-token";
+    await client.listUsers(undefined, 10);
+    expect(checks).toBe(2);
+    expect(selectWorkspace).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not evict a newer credential's proof when an older concurrent check fails", async () => {
+    mockSlack();
+    let fetchSlack = fetch;
+    let started = Promise.withResolvers<void>();
+    let release = Promise.withResolvers<void>();
+    let currentChecks = 0;
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      if (input.includes("auth.test")) {
+        if (new Headers(init?.headers).get("Authorization") === "Bearer old-token") {
+          started.resolve();
+          await release.promise;
+          throw new Error("old check failed");
+        }
+        currentChecks++;
+      }
+      return fetchSlack(input, init);
+    });
+    let token = "old-token";
+    let client = new SlackApi(async () => token).forWorkspace("TONE");
+    let old = expect(client.workspaceTeamId()).rejects.toThrow("old check failed");
+    await started.promise;
+    token = "current-token";
+    expect(await client.workspaceTeamId()).toBe("TONE");
+    release.resolve();
+    await old;
+    expect(await client.workspaceTeamId()).toBe("TONE");
+    expect(currentChecks).toBe(1);
+  });
+
+  it.each(["network", "rate-limit"])("retries workspace checks after a %s failure without repinning", async failure => {
+    mockSlack();
+    let fetchSlack = fetch;
+    let failing = true;
+    let selectWorkspace = vi.fn(async () => "TONE");
+    vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+      if (failing && input.includes("auth.test")) {
+        if (failure === "network") throw new Error("temporary failure");
+        return Response.json({ ok: false, error: "ratelimited" },
+            { status: 429, headers: { "Retry-After": "0.001" } });
+      }
+      return fetchSlack(input, init);
+    });
+    let client = new SlackApi(async () => "token", { teamId: selectWorkspace });
+    await expect(client.listUsers(undefined, 10)).rejects.toThrow();
+    failing = false;
+    await expect(client.listUsers(undefined, 10)).resolves.toMatchObject({ items: [{ id: "WSELF" }] });
+    expect(selectWorkspace).toHaveBeenCalledTimes(1);
   });
 
   it("does not collapse a workspace installation inside an enterprise into an org account", async () => {

@@ -69,6 +69,12 @@ URL. On first use, they recover a stored workspace ID, a thread's permalink work
 eligible workspace, then persist that selection separately from credentials. A subsequent reconnect
 cannot silently switch a pinned binding to another workspace.
 
+The access proof is cached separately from that workspace selection and keyed to the access
+token. Every outgoing bound read, including rate-limit retries, checks the exact credential it
+will use. Replacement credentials must demonstrate access to the pinned workspace before any
+data request is sent. Failed checks are evicted so transient failures can recover without
+changing the selected workspace; concurrent checks using the same credential are coalesced.
+
 If a legacy org binding has several eligible workspaces and no recoverable selection, it fails
 closed: add the resource again and choose its workspace. Old resource URLs containing an `E…` ID
 also need to be replaced with a selected `T…` workspace URL.
