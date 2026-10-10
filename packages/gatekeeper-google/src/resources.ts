@@ -49,7 +49,9 @@ export const GOOGLE_DOC_RESOURCE: SupportedResource = {
 export const GOOGLE_SHEETS_RESOURCE: SupportedResource = {
   urlPattern: "https://docs.google.com/spreadsheets/d/:spreadsheetId/*",
   title: "Google Spreadsheet",
-  description: "Read and, with your approval, edit values in a spreadsheet you choose.",
+  description:
+    "Read the values and formatting of a spreadsheet you choose, and change its values, tabs, " +
+    "rows, columns, and formatting, with your approval.",
   grantable: true,
   creatable: true,
 };
