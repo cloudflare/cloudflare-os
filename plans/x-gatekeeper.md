@@ -1057,7 +1057,7 @@ Nothing remains open except the `types.d.ts` review.
 
 ## As built (2026-10-10)
 
-PR A is implemented in `packages/gatekeeper-x` (182 Node tests, 79 workerd tests). Where the build
+PR A is implemented in `packages/gatekeeper-x` (183 Node tests, 87 workerd tests). Where the build
 departed from the design above:
 
 - **`XCursor`, not the kit's `TokenCursor`.** `TokenCursor` fills a short page by fetching up to
