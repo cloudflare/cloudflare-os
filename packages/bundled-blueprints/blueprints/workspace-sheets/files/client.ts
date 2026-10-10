@@ -4498,6 +4498,40 @@ function shiftedCopyFormula(value: string, sourceRef: string | null, targetRef: 
 const source = parseRef(sourceRef), target = parseRef(targetRef);
 if (!source || !target) return value;
 return shiftFormulaReferences(value, target.r - source.r, target.c - source.c); }
+// Cuts follow cell identities, not relative offsets. Resolve against the original sheet before
+// rebasing a moved formula, and retain lock flags for subsequent copies and fills.
+function remapCutFormula(value: string, formulaSourceSheetId: string, formulaTargetSheetId: string, cutSheetId: string, moves: Map<string, { sheetId: string; ref: string }>, unchangedSources: Set<string>): string {
+  let result = "", start = 0;
+  for (const reference of formulaReferences(value)) {
+    let replacement = "", end = 0, referencedSheetId = formulaSourceSheetId, resultSheetId = formulaTargetSheetId;
+    for (const endpoint of formulaReferences("=" + reference.text, true)) {
+      const bang = endpoint.text.lastIndexOf("!");
+      if (bang >= 0) {
+        const name = endpoint.text.slice(0, bang).replace(/^'|'$/g, "").replace(/\\'|''/g, "'").toLowerCase();
+        referencedSheetId = model.sheetOrder.find((id) => model.sheets[id].name.toLowerCase() === name) || "";
+      }
+      const body = endpoint.text.slice(bang + 1), position = parseRef(body);
+      const sourceRef = position ? rcToRef(position.r, position.c) : "";
+      const destination = referencedSheetId === cutSheetId && unchangedSources.has(sourceRef) ? moves.get(sourceRef) : undefined;
+      let text = endpoint.text;
+      if (destination || bang < 0 && referencedSheetId && referencedSheetId !== resultSheetId) {
+        const sheetId = destination?.sheetId || referencedSheetId;
+        const ref = parseRef(destination?.ref || sourceRef);
+        const locks = /^(\$?)[A-Z]+(\$?)\d+$/i.exec(body);
+        if (ref && locks) {
+          const prefix = sheetId === resultSheetId && bang < 0 ? "" : "'" + model.sheets[sheetId].name.replace(/'/g, "''") + "'!";
+          text = prefix + locks[1] + colToLetter(ref.c) + locks[2] + (ref.r + 1);
+        }
+      }
+      resultSheetId = destination?.sheetId || referencedSheetId;
+      replacement += reference.text.slice(end, endpoint.start - 1) + text;
+      end = endpoint.end - 1;
+    }
+    result += value.slice(start, reference.start) + replacement + reference.text.slice(end);
+    start = reference.end;
+  }
+  return result + value.slice(start);
+}
 // A cut source is only removed while it still holds what was cut; an edit made in between wins.
 function cutSourceUnchanged(sheetId: string, snapshot: ClipboardCell) { const current = model.cells[sheetId]?.[snapshot.sourceRef];
 return (current?.value ?? null) === snapshot.value && JSON.stringify(current?.fmt ?? null) === JSON.stringify(snapshot.fmt ?? null); }
@@ -4518,10 +4552,10 @@ const unchangedSources = new Set<string>();
 if (moving && useSnapshot) for (const row of useSnapshot.cells) for (const snapshot of row) {
   if (snapshot && cutSourceUnchanged(useSnapshot.sheetId, snapshot)) unchangedSources.add(snapshot.sourceRef);
 }
-const rows = normalized.split("\n");
-if (!useSnapshot && rows.length > 1 && rows[rows.length - 1] === "") rows.pop();
-const values = rows.map((row) => row.split("\t"));
-const sourceHeight = values.length, sourceWidth = Math.max(1, ...values.map((row) => row.length));
+// Internal cells may contain TSV delimiters; only external clipboard text determines dimensions.
+const values = useSnapshot ? null : normalized.replace(/\n$/, "").split("\n").map((row) => row.split("\t"));
+const sourceHeight = useSnapshot?.cells.length ?? values!.length;
+const sourceWidth = Math.max(1, ...(useSnapshot?.cells ?? values!).map((row) => row.length));
 const targetRanges = selectionRanges();
 const destinationRefs = new Set();
 beginBatch();
@@ -4558,7 +4592,7 @@ for (const target of targetRanges) {
       const value = snapshot && snapshot.value != null ? shiftedCopyFormula(snapshot.value, snapshot.sourceRef, ref, useSnapshot.cut) : "";
       setCellValue(ref, value === "" ? null : value);
     } else {
-      const value = values[sourceRow]?.[sourceColumn] ?? "";
+      const value = values![sourceRow]?.[sourceColumn] ?? "";
       setCellValue(ref, value === "" ? null : value);
     }
   }
@@ -4567,6 +4601,17 @@ if (moving && useSnapshot) {
   // Clear only unchanged sources that were actually pasted, never an overlapping destination.
   for (const sourceRef of moves.keys()) {
     if (unchangedSources.has(sourceRef) && !destinationRefs.has(useSnapshot.sheetId + "!" + sourceRef)) clearStoredCell(useSnapshot.sheetId, sourceRef);
+  }
+  // The complete map is known only after all destinations are written. Both moved formulas and
+  // formulas elsewhere in the workbook must follow references into cells actually removed.
+  for (const sheetId of model.sheetOrder) for (const [ref, cell] of Object.entries(model.cells[sheetId] || {})) {
+    if (!cell.value?.startsWith("=")) continue;
+    const formulaSourceSheetId = destinationRefs.has(sheetId + "!" + ref) ? useSnapshot.sheetId : sheetId;
+    const value = remapCutFormula(cell.value, formulaSourceSheetId, sheetId, useSnapshot.sheetId, moves, unchangedSources);
+    if (value === cell.value) continue;
+    recordCell(sheetId, ref);
+    cell.value = value;
+    queueCellOp(sheetId, ref, value, cell.fmt, cell.version || 0);
   }
   // Remap the original comments in one pass, independently of clearing cells. In an overlapping
   // A1:B1 -> B1:C1 move, B1's original comment belongs at C1 even though B1 remains populated.
