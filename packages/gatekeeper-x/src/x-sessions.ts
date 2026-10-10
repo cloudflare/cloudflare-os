@@ -706,10 +706,17 @@ export class XListImpl extends RpcTarget implements XList {
     const name = escapeObservationValue(list.name);
     const { host } = this.#ctx;
     if (isProvisional(id)) {
+      // The List isn't on X yet, but the profiles of the members pending actions add were read from it.
       const added = overlayMembers([], host.pending(), id, ref => host.resolve(ref), true);
+      const gate = this.#ctx.gate.lease();
       return new XCursor<XUserInfo>({
-        fetchPage: async () => ({ items: added, observation: { title: "", description: "" }, scope: BASELINE }),
-        authorize: async () => {},
+        fetchPage: async () => ({
+          items: added,
+          observation: { title: "Read an X List's members", description: `Read ${countOf(added.length, "member")} of the List "${name}".` },
+          scope: list.private ? OWNER : BASELINE,
+        }),
+        authorize: page => gate.authorize(page.observation, page.scope),
+        dispose: () => gate[Symbol.dispose](),
       });
     }
     return usersCursor(this.#ctx, size, {
