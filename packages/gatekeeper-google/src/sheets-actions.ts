@@ -8,7 +8,8 @@
  * cells as they were to be by then: with the rows, columns, sheets and values the changes queued
  * before it leave, which must therefore have been applied. A change that no longer applies, or
  * whose cells a collaborator has edited, fails without writing. The guard leaves a window: a
- * collaborator's edit landing between that read and the write is overwritten.
+ * collaborator's edit landing between that read and the write is overwritten. Formatting is not
+ * guarded, so a collaborator's formatting of cells a batch formats is overwritten whenever it lands.
  *
  * Every write is one atomic `batchUpdate`, which also creates a marker, a developer metadata
  * entry with an ID and token minted when the change was queued. Google refuses a second entry with
@@ -36,7 +37,8 @@ import { SheetsWriteRefused, type GoogleSheetsApi } from "./sheets-api";
 import { cellName, columnLetters, isFormula, rectName } from "./sheets-model";
 import { guardDigest, guardFits, guardOf, planSheet } from "./sheets-plan";
 import { gridOf, type PlannedChange, type SheetBatch, type SheetsActions } from "./sheets-simulation";
-import type { SheetCellInput } from "./sheets-types";
+import type { SheetBorder, SheetNumberFormat } from "./sheets-read-types";
+import type { SheetCellInput, SheetFormatChange } from "./sheets-types";
 import { ChangeConflict } from "./slides-text";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.google.sheets", vendorId: "google" });
@@ -54,11 +56,18 @@ export type SheetsHost = {
 // What a user may let apply without asking: a batch that only enters literal values and clears
 // cells. A formula can compute anything from the spreadsheet, so any batch with one needs approval.
 const EDIT_SHEET_VALUES: ActionKind = { tag: "editSheetValues", label: "Sheet value edits" };
+// What a user may let apply without asking: a batch that only formats cells, leaving their
+// contents, rows, columns and sheets as they are.
+const FORMAT_SHEETS: ActionKind = { tag: "formatSheets", label: "Sheet formatting" };
 
-/** The kind a batch is queued as, so approving a kind approves no more than it says. */
+/**
+ * The kind a batch is queued as, so approving a kind approves no more than it says: a batch mixing
+ * kinds of change is `updateSheet`, which a user cannot let apply without asking.
+ */
 export function batchKind(
   changes: readonly { op: string; values?: SheetCellInput[][] }[],
-): "editSheetValues" | "updateSheet" {
+): keyof SheetsActions {
+  if (changes.every(change => change.op === "formatCells")) return "formatSheets";
   let literal = changes.every(change => change.op === "clearRange" ||
     (change.op === "writeCells" && change.values!.every(row => !row.some(isFormula))));
   return literal ? "editSheetValues" : "updateSheet";
@@ -201,6 +210,73 @@ async function write(host: SheetsHost, batch: SheetBatch): Promise<void> {
 
 type Field = (label: string, text: string, kind: "inline" | "verbatim") => void;
 
+type FormatField = keyof Omit<SheetFormatChange, "borders">;
+
+// How each field reads set, and reset: "bold", "default bold". Booleans read set to false too.
+const FORMAT_WORDS: Record<FormatField, { set: (value: never) => string; reset: string }> = {
+  bold: { set: (on: boolean) => on ? "bold" : "not bold", reset: "default bold" },
+  italic: { set: (on: boolean) => on ? "italic" : "not italic", reset: "default italic" },
+  underline: { set: (on: boolean) => on ? "underlined" : "not underlined", reset: "default underline" },
+  strikethrough: {
+    set: (on: boolean) => on ? "struck through" : "not struck through", reset: "default strikethrough",
+  },
+  fontSize: { set: (size: number) => `${size.toLocaleString("en-US")} pt`, reset: "default font size" },
+  textColor: { set: (color: string) => `text colour ${color}`, reset: "default text colour" },
+  fillColor: { set: (color: string) => `fill ${color}`, reset: "default fill" },
+  numberFormat: {
+    set: (format: SheetNumberFormat) =>
+      `number format ${format.type}${format.pattern === undefined ? "" : " (pattern below)"}`,
+    reset: "default number format",
+  },
+  horizontalAlignment: {
+    set: (align: string) => align === "CENTER" ? "centred" : `aligned ${align.toLowerCase()}`,
+    reset: "default horizontal alignment",
+  },
+  verticalAlignment: {
+    set: (align: string) => align === "MIDDLE" ? "vertically centred" : `aligned to the ${align.toLowerCase()}`,
+    reset: "default vertical alignment",
+  },
+  wrap: {
+    set: (wrap: string) => wrap === "WRAP" ? "wrapped" : wrap === "CLIP" ? "clipped" : "overflowing",
+    reset: "default wrapping",
+  },
+};
+
+const BORDER_SIDES = {
+  top: "top", bottom: "bottom", left: "left", right: "right",
+  innerHorizontal: "inner horizontal", innerVertical: "inner vertical",
+} as const;
+
+const BORDER_STYLES: Record<SheetBorder["style"], string> = {
+  SOLID: "solid", SOLID_MEDIUM: "medium solid", SOLID_THICK: "thick solid", DOTTED: "dotted",
+  DASHED: "dashed", DOUBLE: "double",
+};
+
+/**
+ * What `format` sets, in prose: "bold, 14 pt, a solid top border". The input checks allow every
+ * value but a number pattern only from a fixed set or shape, which prose shows exactly, so `field`
+ * adds only the pattern.
+ */
+function formatWords(format: SheetFormatChange, field: Field): string {
+  let words = (Object.keys(FORMAT_WORDS) as FormatField[]).flatMap(name => {
+    let value = format[name];
+    if (value === undefined) return [];
+    if (value === null) return [FORMAT_WORDS[name].reset];
+    if (name === "numberFormat" && typeof value === "object" && value.pattern !== undefined) {
+      field("Number format", value.pattern, "verbatim");
+    }
+    return [FORMAT_WORDS[name].set(value as never)];
+  });
+  for (let [side, name] of Object.entries(BORDER_SIDES) as [keyof typeof BORDER_SIDES, string][]) {
+    let border = format.borders?.[side];
+    if (border === undefined) continue;
+    words.push(border === null
+      ? `no ${name} border`
+      : `a ${BORDER_STYLES[border.style]} ${name} border${border.color === undefined ? "" : ` in ${border.color}`}`);
+  }
+  return words.join(", ");
+}
+
 // Lines by their names: "row 5", "rows 5 to 6", "column C", "columns C to D".
 function band(axis: "rows" | "columns", start: number, count: number): string {
   let name = (position: number) => axis === "rows" ? String(position + 1) : columnLetters(position);
@@ -233,6 +309,8 @@ function describeChange(change: PlannedChange, titles: Map<number, string>, fiel
       if (formulas.length > 0) field("Formulas", formulas.join("\n"), "verbatim");
       return `${where}, set ${cells} to the values below`;
     }
+    case "formatCells":
+      return `In ${named(change.sheetId)}, format ${rectName(change.rect)}: ${formatWords(change.format, field)}`;
     case "addSheet":
       titles.set(change.sheetId, change.title);
       return `Add a sheet ${named(change.sheetId, "Title")} of ${plural(change.rowCount, "row")} and ` +
@@ -288,10 +366,11 @@ function sheetBatch(kind?: ActionKind): ActionDefinition<SheetBatch, SheetsHost>
         : `Makes ${lines.length} changes, all or none of which are applied:\n\n` +
           lines.map((line, i) => `${i + 1}. ${line}`).join("\n"));
       for (let [label, text, shape] of fields) builder[shape](label, text);
+      let verb = changes.every(change => change.op === "formatCells") ? "Format" : "Edit";
       return {
         title: sanitizeTitle(changes.every(change => change.op === "addSheet")
           ? ids.length === 1 ? `Add the sheet ${sheetName(sheets[ids[0]], ids[0])}` : `Add ${ids.length} sheets`
-          : ids.length === 1 ? `Edit ${sheetName(sheets[ids[0]], ids[0])}` : `Edit ${ids.length} sheets`),
+          : ids.length === 1 ? `${verb} ${sheetName(sheets[ids[0]], ids[0])}` : `${verb} ${ids.length} sheets`),
         ...builder.finish(),
         implementsRevert: false,
       };
@@ -303,5 +382,6 @@ function sheetBatch(kind?: ActionKind): ActionDefinition<SheetBatch, SheetsHost>
 /** The Sheets change set, bound once per spreadsheet's journal. */
 export const SHEETS_ACTIONS = defineActions<SheetsHost, SheetsActions>({
   editSheetValues: sheetBatch(EDIT_SHEET_VALUES),
+  formatSheets: sheetBatch(FORMAT_SHEETS),
   updateSheet: sheetBatch(),
 }, { fence: "none", vendorId: "google" });

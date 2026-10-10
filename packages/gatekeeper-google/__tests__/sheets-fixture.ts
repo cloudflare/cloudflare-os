@@ -185,3 +185,49 @@ export const STRUCTURE_REFUSALS = {
 
 /** The size Google gives a sheet added with none. */
 export const NEW_SHEET_SIZE = { rowCount: 1000, columnCount: 26 };
+
+/**
+ * `userEnteredFormat` as a scratch spreadsheet read a cell back after one `repeatCell`: each colour
+ * in both its legacy and its style form, the theme colour resolved in the legacy form, a component
+ * of 0.5 stored as 127/255, and the components of black left out.
+ */
+export const FORMAT_READBACK = {
+  textFormat: {
+    foregroundColor: { red: 0.49803922 },
+    foregroundColorStyle: { rgbColor: { red: 0.49803922 } },
+    fontSize: 14,
+    bold: true,
+    italic: true,
+  },
+  backgroundColor: { red: 0.25882354, green: 0.52156866, blue: 0.95686275 },
+  backgroundColorStyle: { themeColor: "ACCENT1" },
+  numberFormat: { type: "CURRENCY", pattern: "\"$\"#,##0.00" },
+  horizontalAlignment: "RIGHT",
+  verticalAlignment: "MIDDLE",
+  wrapStrategy: "WRAP",
+  borders: {
+    top: { style: "SOLID_MEDIUM", width: 2, color: { red: 1 }, colorStyle: { rgbColor: { red: 1 } } },
+    bottom: { style: "DASHED", width: 1, color: {}, colorStyle: { rgbColor: {} } },
+  },
+};
+
+/**
+ * One sheet of a format read's answer, in the shape Google returns it: each range's cells from
+ * its first row and column, which are left out when 0, and a cell with no format set as `{}`.
+ */
+export function formatSheet(
+  properties: { sheetId: number; title: string; index?: number; rowCount?: number; columnCount?: number },
+  data: { startRow: number; startColumn: number; formats: (object | undefined)[][] }[],
+) {
+  let { sheetId, title, index = 0, rowCount = 20, columnCount = 6 } = properties;
+  return {
+    properties: { sheetId, title, index, gridProperties: { rowCount, columnCount } },
+    data: data.map(({ startRow, startColumn, formats }) => ({
+      ...(startRow ? { startRow } : {}),
+      ...(startColumn ? { startColumn } : {}),
+      rowData: formats.map(row => ({
+        values: row.map(format => format ? { userEnteredFormat: format } : {}),
+      })),
+    })),
+  };
+}

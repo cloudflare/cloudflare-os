@@ -13,6 +13,7 @@ import type { GoogleSpreadsheetSession } from "../../src/sheets-types";
 import { GoogleSlidesApi } from "../../src/slides-api";
 import type { GooglePresentationSession } from "../../src/slides-types";
 import { buildTab } from "../doc-fixture";
+import { formatSheet } from "../sheets-fixture";
 import { presentation, shape, slide, text } from "../slides-fixture";
 
 const DOC_MIME = "application/vnd.google-apps.document";
@@ -222,6 +223,10 @@ describe("Drive nested native sessions", () => {
 
     await expect(Promise.resolve(sheet.readRange("A:A")))
       .rejects.toThrow(/Invalid or unbounded A1 range/);
+    await expect(Promise.resolve(sheet.readFormats("A:A")))
+      .rejects.toThrow(/Invalid or unbounded A1 range/);
+    await expect(Promise.resolve(sheet.readFormats("A1:CV101")))
+      .rejects.toThrow("readFormats may request at most 10,000 cells.");
     expect(providerUrls.some(url => new URL(url).hostname === "sheets.googleapis.com"))
       .toBe(false);
   });
@@ -498,6 +503,14 @@ describe("folder-scoped native sessions", () => {
           valueRanges: url.searchParams.getAll("ranges").map(range => ({ range, values: [["x"]] })),
         });
       }
+      // A format read: the one bold cell A1.
+      if (url.hostname === "sheets.googleapis.com" && url.searchParams.has("ranges")) {
+        return Response.json({
+          sheets: [formatSheet({ sheetId: 0, title: "Sheet1" }, [
+            { startRow: 0, startColumn: 0, formats: [[{ textFormat: { bold: true } }]] },
+          ])],
+        });
+      }
       if (url.hostname === "slides.googleapis.com") return slidesResponse(url);
       return Response.json({
         spreadsheetId: "sheet-1",
@@ -542,6 +555,23 @@ describe("folder-scoped native sessions", () => {
     expect((await sheet.readRanges(["A1:A1", "B1:B1"])).map(r => r.range))
       .toEqual(["A1:A1", "B1:B1"]);
 
+    // Formats are read with `spreadsheets.get` and an A1 range, which the read-only grant allows,
+    // and a mask that asks for no cell's value.
+    const fetched = vi.mocked(fetch);
+    const before = fetched.mock.calls.length;
+    expect(await sheet.readFormats("A1:B1"))
+      .toEqual({ range: "Sheet1!A1:B1", formats: [[{ bold: true }, null]] });
+    const formatUrls = fetched.mock.calls.slice(before)
+      .map(([input]) => new URL(input instanceof Request ? input.url : input.toString()))
+      .filter(url => url.hostname === "sheets.googleapis.com");
+    expect(formatUrls.map(url => [url.pathname, url.searchParams.getAll("ranges")]))
+      .toEqual([["/v4/spreadsheets/sheet-1", ["A1:B1"]]]);
+    let mask = formatUrls[0].searchParams.get("fields") ?? "";
+    expect(mask).toContain("userEnteredFormat(");
+    for (let field of ["formattedValue", "effectiveValue", "userEnteredValue", "hyperlink", "note"]) {
+      expect(mask).not.toContain(field);
+    }
+
     // The capability itself has no write method, whatever a caller sends it.
     const writable = sheet as unknown as GoogleSpreadsheetSession;
     await expect(Promise.resolve(writable.updateSheet([
@@ -580,6 +610,7 @@ describe("folder-scoped native sessions", () => {
     await expect(Promise.resolve(sheet.getSpreadsheet())).rejects.toThrow(OUTSIDE);
     await expect(Promise.resolve(sheet.readRange("A1:A1"))).rejects.toThrow(OUTSIDE);
     await expect(Promise.resolve(sheet.readRanges(["A1:A1", "B1:B1"]))).rejects.toThrow(OUTSIDE);
+    await expect(Promise.resolve(sheet.readFormats("A1:B1"))).rejects.toThrow(OUTSIDE);
     expect(nativeCalls).toEqual([]);
   });
 

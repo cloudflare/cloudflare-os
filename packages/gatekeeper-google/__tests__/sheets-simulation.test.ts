@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { SheetArea } from "../src/sheets-api";
+import type { BaseFormats } from "../src/sheets-format";
+import type { Rect } from "../src/sheets-model";
 import { planSheet } from "../src/sheets-plan";
 import type { SpreadsheetCellValue, SpreadsheetValueMode } from "../src/sheets-read-types";
 import {
   applyChange, basePiecesOf, baseValues, conflictReason, enteredContent, formulaAt, gridOf,
-  overlayRange, rangesToFetch, replayChanges, resolveArea, simulatedRange,
+  overlayRange, rangesToFetch, replayChanges, resolveArea, simulatedFormats, simulatedRange,
   type Grid, type PlannedChange, type QueuedChange, type SheetMeta, type SheetsAction,
 } from "../src/sheets-simulation";
 import { positionOf } from "../src/sheets-structure";
+import type { SheetFormatChange } from "../src/sheets-types";
+import { ChangeConflict } from "../src/slides-text";
 import { grid, rect, sheet } from "./sheets-fixture";
 
 function queued(id: number, changes: PlannedChange[], kind: SheetsAction["kind"] = "updateSheet"): QueuedChange {
@@ -429,5 +433,198 @@ describe("Sheets ranges read with structure queued", () => {
       [4, 4, [{ kind: "base", start: 0, length: 20 }], [{ kind: "base", start: 0, length: 6 }]],
     ]);
     expect(g.log).toEqual([]);
+  });
+});
+
+/** A `formatCells` change, as queued. */
+const format = (sheetId: number, at: Rect, value: SheetFormatChange): PlannedChange =>
+  ({ op: "formatCells", sheetId, rect: at, format: value });
+
+/** No cell Google holds has formatting. */
+const UNFORMATTED: BaseFormats = () => null;
+
+/** Only A1 of sheet 0 has formatting. */
+const FORMATTED_A1: BaseFormats = (sheetId, row, column) =>
+  sheetId === 0 && row === 0 && column === 0 ? { bold: true, fontSize: 10, wrap: "CLIP" } : null;
+
+/** Every cell has a top and a left border. */
+const BORDERED: BaseFormats = () => ({ borders: { top: { style: "SOLID" }, left: { style: "DASHED" } } });
+
+/** The formatting `rect` of sheet `sheetId` of `g` reads with, over `base`. */
+const formatsOf = (g: Grid, sheetId: number, at: Rect, base = UNFORMATTED) => simulatedFormats(
+  g, { sheetId, rect: at, rows: at.endRow - at.startRow, columns: at.endColumn - at.startColumn }, base);
+
+describe("Sheets queued formatting", () => {
+  it("merges queued formatting over each cell's own, a later change over an earlier", () => {
+    let g = replayed(grid([SALES]), [
+      queued(1, [format(0, rect(0, 0, 1, 2), { fontSize: 12, italic: true })]),
+      queued(2, [format(0, rect(0, 0), { italic: null, wrap: null, textColor: "#ff0000" })]),
+    ]);
+    expect(formatsOf(g, 0, rect(0, 0, 1, 3), FORMATTED_A1)).toEqual({
+      range: "Sales!A1:C1",
+      formats: [[{ bold: true, fontSize: 12, textColor: "#ff0000" }, { fontSize: 12, italic: true }, null]],
+    });
+  });
+
+  it("draws a range's outer borders on its edge cells, and inner ones on both cells they divide", () => {
+    let thick = { style: "SOLID_THICK", color: "#ff0000" } as const;
+    let g = applyChange(grid([SALES]), queued(1, [format(0, rect(1, 1, 2, 2), {
+      borders: {
+        top: { style: "SOLID" }, bottom: { style: "DASHED" }, left: { style: "DOTTED" }, right: { style: "DOUBLE" },
+        innerHorizontal: { style: "SOLID_MEDIUM" }, innerVertical: thick,
+      },
+    })]).action);
+    let medium = { style: "SOLID_MEDIUM" };
+    expect(formatsOf(g, 0, rect(1, 1, 2, 2)).formats).toEqual([
+      [
+        { borders: { top: { style: "SOLID" }, bottom: medium, left: { style: "DOTTED" }, right: thick } },
+        { borders: { top: { style: "SOLID" }, bottom: medium, left: thick, right: { style: "DOUBLE" } } },
+      ],
+      [
+        { borders: { top: medium, bottom: { style: "DASHED" }, left: { style: "DOTTED" }, right: thick } },
+        { borders: { top: medium, bottom: { style: "DASHED" }, left: thick, right: { style: "DOUBLE" } } },
+      ],
+    ]);
+    // As a scratch spreadsheet read A5:B6 after inner borders alone: each shared edge on both sides.
+    let inner = applyChange(grid([SALES]), queued(1, [format(0, rect(4, 0, 2, 2), {
+      borders: { innerHorizontal: { style: "SOLID" }, innerVertical: { style: "DOTTED" } },
+    })]).action);
+    let solid = { style: "SOLID" };
+    let dotted = { style: "DOTTED" };
+    expect(formatsOf(inner, 0, rect(4, 0, 2, 2))).toEqual({
+      range: "Sales!A5:B6",
+      formats: [
+        [{ borders: { bottom: solid, right: dotted } }, { borders: { bottom: solid, left: dotted } }],
+        [{ borders: { top: solid, right: dotted } }, { borders: { top: solid, left: dotted } }],
+      ],
+    });
+  });
+
+  it("removes a border given as null, and reads a cell left with no formatting as null", () => {
+    let g = applyChange(grid([SALES]), queued(1, [format(0, rect(0, 0, 1, 2), { borders: { top: null, left: null } })]).action);
+    expect(formatsOf(g, 0, rect(0, 0, 1, 2), BORDERED).formats)
+      .toEqual([[null, { borders: { left: { style: "DASHED" } } }]]);
+  });
+
+  it("removes the facing border of a cell beside an outer edge a queued change draws or removes", () => {
+    // As a scratch spreadsheet showed: an edge has one owner, so B2's top border took B1's bottom.
+    let solid = { style: "SOLID" } as const;
+    let framed: BaseFormats = () => ({ borders: { top: solid, bottom: solid, left: solid, right: solid } });
+    let g = applyChange(grid([SALES]), queued(1, [
+      format(0, rect(1, 1, 2, 2), { bold: true, borders: { top: { style: "DOTTED" }, left: null } }),
+    ]).action);
+    let all = { borders: { top: solid, bottom: solid, left: solid, right: solid } };
+    expect(formatsOf(g, 0, rect(0, 0, 4, 4), framed)).toEqual({
+      range: "Sales!A1:D4",
+      formats: [
+        [all, { borders: { top: solid, left: solid, right: solid } }, { borders: { top: solid, left: solid, right: solid } }, all],
+        [{ borders: { top: solid, bottom: solid, left: solid } },
+          { bold: true, borders: { top: { style: "DOTTED" }, bottom: solid, right: solid } },
+          { bold: true, borders: { top: { style: "DOTTED" }, bottom: solid, left: solid, right: solid } }, all],
+        [{ borders: { top: solid, bottom: solid, left: solid } },
+          { bold: true, borders: { top: solid, bottom: solid, right: solid } }, { bold: true, ...all }, all],
+        [all, all, all, all],
+      ],
+    });
+    // Neither inner borders, nor an edge along the sheet's own, have a neighbour outside.
+    let edge = applyChange(grid([SALES]), queued(1, [format(0, rect(0, 0, 2, 2), {
+      borders: { top: { style: "SOLID" }, left: { style: "SOLID" }, innerHorizontal: { style: "DOTTED" } },
+    })]).action);
+    expect(formatsOf(edge, 0, rect(0, 0, 3, 3), framed).formats[2]).toEqual([all, all, all]);
+  });
+
+  it("lets a later change's border on a shared edge replace an earlier one's", () => {
+    let g = replayed(grid([SALES]), [
+      queued(1, [format(0, rect(1, 0), { borders: { top: { style: "SOLID" } } })]),
+      queued(2, [format(0, rect(0, 0), { borders: { bottom: { style: "DASHED" } } })]),
+    ]);
+    expect(formatsOf(g, 0, rect(0, 0, 2, 1))).toEqual({
+      range: "Sales!A1:A2",
+      formats: [[{ borders: { bottom: { style: "DASHED" } } }], [null]],
+    });
+  });
+
+  it("moves queued formatting with its lines, copies it with its sheet, and drops it with them", () => {
+    let bold = format(0, rect(1, 0), { bold: true });
+    let g = replayed(grid([SALES, COSTS]), [
+      queued(1, [bold, format(1, rect(0, 0), { italic: true })]),
+      queued(2, [insertRows(0, 1)]),
+      queued(3, [{ op: "duplicateSheet", sheetId: 0, newSheetId: 8, title: "Sales copy", index: 2 }]),
+    ]);
+    expect(formatsOf(g, 0, rect(0, 0, 3, 1)))
+      .toEqual({ range: "Sales!A1:A3", formats: [[null], [null], [{ bold: true }]], pendingCells: ["A1"] });
+    expect(formatsOf(g, 8, rect(2, 0)).formats).toEqual([[{ bold: true }]]);
+    let pruned = replayed(g, [
+      queued(4, [deleteRows(0, 3), { op: "deleteSheet", sheetId: 1, rowCount: 20, columnCount: 6 }]),
+    ]);
+    expect(formatsOf(pruned, 0, rect(0, 0, 3, 1)).formats).toEqual([[null], [null], [null]]);
+    expect(formatsOf(pruned, 8, rect(2, 0)).formats).toEqual([[{ bold: true }]]);
+    expect([...pruned.formats.keys()]).toEqual(["8:b1:b0"]);
+  });
+
+  it("reads inserted lines pending even when formatted, and an added sheet's cells as formatted", () => {
+    let g = planSheet(grid([SALES]), [
+      insertRows(0, 2),
+      { op: "insertColumns", sheetId: 0, start: 0, count: 1 },
+      format(0, rect(0, 0, 3, 2), { bold: true }),
+      { op: "addSheet", sheetId: 3, title: "Q4", index: 1, rowCount: 2, columnCount: 2 },
+      format(3, rect(0, 0), { italic: true }),
+    ]).grid;
+    expect(formatsOf(g, 0, rect(0, 0, 3, 2))).toEqual({
+      range: "Sales!A1:B3",
+      formats: [[null, { bold: true }], [null, null], [null, { bold: true }]],
+      pendingCells: ["A1", "A2", "B2", "A3"],
+    });
+    expect(formatsOf(g, 3, rect(0, 0, 1, 2)))
+      .toEqual({ range: "'Q4'!A1:B1", formats: [[{ italic: true }, null]] });
+  });
+
+  it("refuses formatting outside a sheet's grid when it replays", () => {
+    expect(() => planSheet(grid([SALES]), [format(0, rect(19, 5, 2, 1), { bold: true })]))
+      .toThrow(new ChangeConflict('change 1 (formatCells): F21 is outside "Sales"'));
+    expect(() => planSheet(grid([SALES]), [format(4, rect(0, 0), { bold: true })]))
+      .toThrow(new ChangeConflict("change 1 (formatCells): the spreadsheet has no sheet with ID 4"));
+  });
+});
+
+describe("Sheets formatted values with a number format queued", () => {
+  // B2:D2 take a currency format; E2 has its number format reset; F2 is left as it is.
+  let g = applyChange(grid([SALES], { "0:1:1": 5, "0:1:2": "text" }), queued(1, [
+    { op: "formatCells", sheetId: 0, rect: rect(1, 1, 1, 3), format: { numberFormat: { type: "CURRENCY" } } },
+    { op: "formatCells", sheetId: 0, rect: rect(1, 4), format: { numberFormat: null, bold: true } },
+  ]).action);
+  let read = { range: "Sales!B2:F2", values: [["$5.00", "text", "", 0.25, 7]] };
+
+  it("reads a formatted value pending once a queued change sets or resets its number format", () => {
+    expect(overlayRange(read, 0, rect(1, 1, 1, 5), g)).toEqual({
+      range: "Sales!B2:F2", values: [[null, null, null, null, 7]], pendingCells: ["B2", "C2", "D2", "E2"],
+    });
+  });
+
+  it("knows a cell reads blank in any format only when a queued change empties it", () => {
+    // A format such as ";;;" can hide what a cell Google reads as "" holds.
+    let emptied = applyChange(g, queued(2, [{ op: "clearRange", sheetId: 0, rect: rect(1, 3) }]).action);
+    expect(overlayRange(read, 0, rect(1, 1, 1, 5), emptied)).toEqual({
+      range: "Sales!B2:F2", values: [[null, null, null, null, 7]], pendingCells: ["B2", "C2", "E2"],
+    });
+  });
+
+  it("leaves raw and formula reads as they are", () => {
+    let raw = { range: "Sales!B2:F2", values: [[5, "text", null, 0.25, 7]] };
+    expect(overlayRange(raw, 0, rect(1, 1, 1, 5), g, "raw")).toEqual(raw);
+    expect(overlayRange(raw, 0, rect(1, 1, 1, 5), g, "formula")).toEqual(raw);
+  });
+
+  it("does the same where queued structure moves the cells", () => {
+    let moved = applyChange(g, queued(2, [insertRows(0, 1)]).action);
+    let piece = { sheetId: 0, rect: rect(1, 1, 1, 5) };
+    let base = (values: SpreadsheetCellValue[][]) =>
+      ({ shown: baseValues([piece], [values]), formulas: baseValues([piece], [[[5, "text", null, 0.25, 7]]]) });
+    let area = { sheetId: 0, rect: rect(2, 1, 1, 5), rows: 1, columns: 5 };
+    expect(simulatedRange(moved, area, base([["$5.00", "text", null, "25%", 7]]))).toEqual({
+      range: "Sales!B3:F3", values: [[null, null, null, null, 7]], pendingCells: ["B3", "C3", "D3", "E3"],
+    });
+    expect(simulatedRange(moved, area, base([[5, "text", null, 0.25, 7]]), "raw").values)
+      .toEqual([[5, "text", null, 0.25, 7]]);
   });
 });

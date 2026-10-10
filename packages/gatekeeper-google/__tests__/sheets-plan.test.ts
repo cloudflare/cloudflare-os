@@ -145,6 +145,35 @@ describe("Sheets change requests", () => {
     expect(() => planSheet(grid([SHEETS[1]]), planned))
       .toThrow("change 1 (clearRange): the spreadsheet has no sheet with ID 0");
   });
+
+  it("formats a range with a repeatCell and then an updateBorders, its sheet as the batch leaves it", () => {
+    let format = { bold: true, fontSize: null, borders: { top: { style: "SOLID", color: "#ff0000" } } } as const;
+    let { planned, requests } = plan([
+      { op: "renameSheet", sheetId: 0, title: "Sales 2026" },
+      { op: "insertRows", sheetId: 0, at: 21, count: 5 },
+      { op: "formatCells", range: "'sales 2026'!B24:C25", format },
+    ]);
+    expect(planned[2]).toEqual({ op: "formatCells", sheetId: 0, rect: rect(23, 1, 2, 2), format });
+    let range = { sheetId: 0, startRowIndex: 23, endRowIndex: 25, startColumnIndex: 1, endColumnIndex: 3 };
+    expect(requests.slice(2)).toEqual([
+      {
+        repeatCell: {
+          range,
+          cell: { userEnteredFormat: { textFormat: { bold: true } } },
+          fields: "userEnteredFormat(textFormat(bold,fontSize))",
+        },
+      },
+      { updateBorders: { range, top: { style: "SOLID", colorStyle: { rgbColor: { red: 1, green: 0, blue: 0 } } } } },
+    ]);
+  });
+
+  it("refuses formatting a sheet the spreadsheet has no tab for, or cells outside its grid", () => {
+    expect(refused([{ op: "formatCells", range: "Nope!A1", format: { bold: true } }]))
+      .toThrow('Change 1 (formatCells): the spreadsheet has no sheet named "Nope". Call getSpreadsheet() for sheet titles.');
+    expect(refused([{ op: "formatCells", range: "Sales!A20:A21", format: { bold: true } }]))
+      .toThrow('Change 1 (formatCells): "Sales" has 20 rows and 6 columns, so A21 is outside it. ' +
+        "insertRows with at: 21 adds rows.");
+  });
 });
 
 describe("Sheets structural change requests", () => {
@@ -461,6 +490,8 @@ describe("Sheets guarded cells", () => {
       { op: "renameSheet", sheetId: 7, title: "Other" },
       { op: "insertRows", sheetId: 7, at: 1 },
     ])).toEqual([]);
+    // Formatting is not guarded.
+    expect(cellsOf([{ op: "formatCells", range: "Sales!A1:B2", format: { bold: true } }])).toEqual([]);
   });
 
   it("lists cells once, and refuses more than 50,000", () => {
@@ -509,6 +540,9 @@ describe("Sheets batches built on queued changes", () => {
     expect(after([{ op: "clearRange", range: "'It''s'!Z99" }])).toEqual([2]);
     expect(after([{ op: "renameSheet", sheetId: 7, title: "Other" }])).toEqual([2]);
     expect(after([{ op: "addSheet", title: "Q4" }])).toEqual([]);
+    // Formatting builds on structure, but not on the values it formats, which it does not guard.
+    expect(after([{ op: "formatCells", range: "'It''s'!A1", format: { italic: true } }])).toEqual([2]);
+    expect(after([{ op: "formatCells", range: "Sales!A1:B5", format: { italic: true } }])).toEqual([]);
   });
 
   it("builds a batch with a formula on every structural change queued before it, on any sheet", () => {
@@ -549,6 +583,12 @@ describe("Sheets protected ranges", () => {
       .toThrow("Change 1 (clearRange): B1 is in the protected range Sales!A1:B2, which the connected account may not edit.");
     expect(check([{ op: "clearRange", range: "Sales!B2:C3" }])).not.toThrow();
     expect(check([{ op: "clearRange", range: "'It''s'!A1:Z9" }])).not.toThrow();
+  });
+
+  it("refuses formatting a cell the account may not edit, as it refuses writing one", () => {
+    expect(check([{ op: "formatCells", range: "Sales!A2", format: { bold: true } }]))
+      .toThrow("Change 1 (formatCells): A2 is in the protected range Sales!A1:B2, which the connected account may not edit.");
+    expect(check([{ op: "formatCells", range: "Sales!B2:F20", format: { bold: true } }])).not.toThrow();
   });
 
   it("checks the cells Google holds, so cells of rows queued changes insert are not protected", () => {

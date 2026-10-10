@@ -227,6 +227,34 @@ sheet.updateSheet([{ op: "addSheet" }]);
     );
   });
 
+  it.each([
+    ["vendor", vendorBundle],
+    ["Drive", driveBundle],
+  ] as const)("declares the format read types once in the flat %s bundle", (_name, bundle) => {
+    const names = topLevelNames(bundle());
+    const formatNames = [
+      "SheetColor", "SheetBorderStyle", "SheetBorder", "SheetNumberFormat", "SheetCellFormat",
+      "SpreadsheetFormats",
+    ];
+    // Slides declares colours, borders and text formats of its own in the same flat scope.
+    expect(names).toContain("SlideColor");
+    for (const name of formatNames) expect(names.filter(candidate => candidate === name)).toEqual([name]);
+    expect(compileAgentTypes(bundle() + `
+declare const sheet: GoogleSpreadsheetReadSession;
+const read: Promise<SpreadsheetFormats> = sheet.readFormats("'Sales 2026'!A1:C3");
+const format: SheetCellFormat | null = null! as SpreadsheetFormats["formats"][number][number];
+const border: SheetBorder = { style: "SOLID_MEDIUM", color: "#ff0000" };
+const set: SheetCellFormat = {
+  bold: true, fontSize: 14, textColor: "ACCENT1", fillColor: "#ffffff", wrap: "CLIP",
+  numberFormat: { type: "CURRENCY", pattern: '"$"#,##0.00' }, borders: { top: border },
+};
+// @ts-expect-error A border has a style.
+const unstyled: SheetBorder = { color: "#000000" };
+// @ts-expect-error Wrapping is named as the agent names it.
+const legacy: SheetCellFormat = { wrap: "OVERFLOW_CELL" };
+`).filter(message => !message.includes("'cloudflare:workers'"))).toEqual([]);
+  });
+
   it("hands out only read-only native sessions from Drive", () => {
     const driveTypes = source("drive-types.d.ts");
     expect(driveTypes).toContain(

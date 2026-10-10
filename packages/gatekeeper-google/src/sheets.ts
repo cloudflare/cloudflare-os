@@ -17,20 +17,23 @@ import { ReadGate } from "./read-gate";
 import { nativeFileUrl } from "./resources";
 import { batchKind, SHEETS_ACTIONS } from "./sheets-actions";
 import {
-  BlankSpreadsheet, GoogleSheetsApi, validateRanges, type SheetArea, type SpreadsheetReader,
+  BlankSpreadsheet, GoogleSheetsApi, parseFormatRange, validateRanges, type SheetArea,
+  type SpreadsheetMetadata, type SpreadsheetReader,
 } from "./sheets-api";
-import { isCellChange, prepareChanges } from "./sheets-input";
+import type { BaseFormats } from "./sheets-format";
+import { isRangeChange, prepareChanges } from "./sheets-input";
 import { findSheet, parseRange, type Rect } from "./sheets-model";
 import {
   checkProtections, guardAfter, guardCells, guardDigest, guardedSheets, resolveChanges, sheetLabels,
 } from "./sheets-plan";
 import type {
-  GoogleSpreadsheetReadSession, SpreadsheetInfo, SpreadsheetRange, SpreadsheetValueMode,
+  GoogleSpreadsheetReadSession, SpreadsheetFormats, SpreadsheetInfo, SpreadsheetRange,
+  SpreadsheetValueMode,
 } from "./sheets-read-types";
 import {
   basePiecesOf, baseValues, conflictReason, enteredContent, gridOf, overlayRange, rangesToFetch,
-  replayChanges, resolveArea, simulatedRange, type Grid, type PlannedChange, type QueuedChange,
-  type SheetBatch, type SheetsAction, type SheetsActions,
+  replayChanges, resolveArea, simulatedFormats, simulatedRange, type Grid, type PlannedChange,
+  type QueuedChange, type SheetBatch, type SheetsAction, type SheetsActions, type SimulatedArea,
 } from "./sheets-simulation";
 import type { GoogleSpreadsheetSession, SheetChange } from "./sheets-types";
 import { SHEETS_TYPES_MODULE_PREFIX, stripTypeModulePrefix } from "./type-bundle";
@@ -39,6 +42,8 @@ import SHEETS_TYPES_CODE from "./sheets-types.txt";
 
 // A queued change is one Durable Object KV value, which may not exceed 128 KiB serialized.
 const MAX_CHANGE_BYTES = 100 * 1024;
+// A format read's result, in UTF-16 units of its JSON: Google's own answer is capped at 5 MiB.
+const MAX_FORMATS_READ_LENGTH = 5 * 1024 * 1024;
 // The markers earlier batches left, which the next batch deletes. Outside the journal's
 // `sheets:action:` prefix and its counter.
 const STALE_MARKERS_KEY = "sheets:staleMarkers";
@@ -293,6 +298,21 @@ function overlaid(
   });
 }
 
+/** Whether any of `pending` might move rows, columns or sheets, as only changes to ranges cannot. */
+function mayMoveCells(pending: readonly QueuedChange[]): boolean {
+  return pending.some(({ action }) => action.payload.changes.some(change => !isRangeChange(change)));
+}
+
+/**
+ * `read`, Google's formats for `rect` of sheet `sheetId` padded to its size, by cell of the
+ * spreadsheet Google holds.
+ */
+function formatsOf(read: SpreadsheetFormats, sheetId: number, rect: Rect): BaseFormats {
+  return (sheet, row, column) => sheet === sheetId
+    ? read.formats[row - rect.startRow]?.[column - rect.startColumn] ?? null
+    : null;
+}
+
 /** A read refused for what it found, which is reported only once the read is authorized. */
 class RefusedRead extends Error {
   constructor(readonly refusal: Error) {
@@ -390,11 +410,9 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     if (pending.length === 0) return this.#reader.readRanges(this.#spreadsheetId, ranges, mode);
     // A malformed range is refused before anything is fetched.
     let parsed = ranges.map(range => parseRange(range));
-    let structural = pending.some(({ action }) =>
-      action.payload.changes.some(change => !isCellChange(change)));
     let shown: SpreadsheetRange[];
     let conflict: string | undefined;
-    if (structural) {
+    if (mayMoveCells(pending)) {
       validateRanges(ranges);
       let replay = replayed(gridOf(await this.#api.getMetadata(this.#spreadsheetId)), pending);
       conflict = replay.conflict;
@@ -473,6 +491,77 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
       });
     if (read instanceof RefusedRead) throw read.refusal;
     return read;
+  }
+
+  async readFormats(range: string): Promise<SpreadsheetFormats> {
+    let read = await this.#read(
+      () => this.#changes.snapshot(pending => this.#simulatedFormats(range, pending))
+        .catch((error: unknown) => {
+          if (error instanceof RefusedRead) return error;
+          throw error;
+        }),
+      result => {
+        if (result instanceof RefusedRead) {
+          return {
+            title: "Read Google Sheets formatting",
+            description: "Looked up a range in the connected spreadsheet with the queued changes " +
+              "applied.",
+          };
+        }
+        let cellCount = result.formats.reduce((sum, row) => sum + row.length, 0);
+        return {
+          title: `Read Google Sheets formatting of ${result.range}`,
+          description: `Read the formatting of ${cellCount.toLocaleString()} cell(s) in the ` +
+            "connected spreadsheet.",
+        };
+      });
+    if (read instanceof RefusedRead) throw read.refusal;
+    // Queued formatting is repeated across every cell it covers, so the result can outgrow what
+    // Google returned.
+    if (JSON.stringify(read).length > MAX_FORMATS_READ_LENGTH) {
+      throw new Error("The formatting of this range is too large to read at once. Request fewer cells.");
+    }
+    return read;
+  }
+
+  /**
+   * The formatting of `range` as Google holds it, and, once queued changes move rows, columns or
+   * sheets, as those changes leave it.
+   */
+  async #simulatedFormats(
+    range: string, pending: readonly QueuedChange[],
+  ): Promise<SpreadsheetFormats> {
+    if (pending.length === 0) return this.#reader.readFormats(this.#spreadsheetId, range);
+    // A malformed range is refused before anything is fetched.
+    let parsed = parseFormatRange(range);
+    let metadata: SpreadsheetMetadata;
+    let read: SpreadsheetFormats | undefined;
+    if (mayMoveCells(pending)) {
+      metadata = await this.#api.getMetadata(this.#spreadsheetId);
+    } else {
+      [metadata, read] = await Promise.all([
+        this.#api.getMetadata(this.#spreadsheetId),
+        this.#api.readFormats(this.#spreadsheetId, range),
+      ]);
+    }
+    let { grid, conflict } = replayed(gridOf(metadata), pending);
+    let area: SimulatedArea;
+    let pieces: SheetArea[];
+    try {
+      area = resolveArea(grid, parsed);
+      pieces = grid.log.length > 0 ? rangesToFetch(grid, [area]) : [];
+    } catch (error) {
+      // These name the spreadsheet's sheets and sizes, so they wait for the read's authorization.
+      throw new RefusedRead(error as Error);
+    }
+    // With no row, column or sheet moved, every cell is where Google holds it, so the range is
+    // read as named. Otherwise the cells it shows are read by grid range, since its title or
+    // bounds may name nothing Google holds.
+    let base = grid.log.length > 0
+      ? await this.#api.readFormatAreas(this.#spreadsheetId, pieces)
+      : formatsOf(read ?? await this.#api.readFormats(this.#spreadsheetId, range), area.sheetId, parsed.rect);
+    let shown = simulatedFormats(grid, area, base);
+    return conflict ? { ...shown, queuedChangeConflict: conflict } : shown;
   }
 
   async updateSheet(changes: SheetChange[]): Promise<Record<string, number>> {
@@ -570,5 +659,9 @@ export class GoogleSpreadsheetReadSessionImpl extends RpcTarget
     ranges: string[], options?: { valueMode?: SpreadsheetValueMode },
   ): Promise<SpreadsheetRange[]> {
     return this.#session.readRanges(ranges, options);
+  }
+
+  readFormats(range: string): Promise<SpreadsheetFormats> {
+    return this.#session.readFormats(range);
   }
 }

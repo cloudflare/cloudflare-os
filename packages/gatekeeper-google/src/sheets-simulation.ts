@@ -12,6 +12,11 @@
  * reference in it keeps exactly its cells and nothing in it depends on where cells are; otherwise
  * it reads null and pending too. Cells of inserted lines and added sheets read blank.
  *
+ * Queued formatting is recorded by cell, as entered input is, and merged over the formatting the
+ * cell has. What Google decides is left pending: the formatting of inserted lines, a border beside
+ * one a queued change draws, and, in a formatted read, a value in a number format a queued change
+ * sets.
+ *
  * Apply re-runs the same functions over a fresh read, so the preview and the write cannot disagree
  * about which cells a change writes.
  */
@@ -21,16 +26,19 @@ import {
   replaySimulation, type SimulationResult, type SimulationStep,
 } from "@gadgets/gatekeeper-kit/simulation";
 import type { SheetArea } from "./sheets-api";
+import { mergeFormat, type BaseFormats, type FormatEntry } from "./sheets-format";
 import {
   rewriteFormula, structureSensitive, tokenize, type RewriteStep, type RewrittenFormula,
 } from "./sheets-formula";
 import type { LineOp } from "./sheets-input";
 import { a1Of, cellName, findSheet, isFormula, shownValue, type Rect } from "./sheets-model";
 import { cellKey, planSheet } from "./sheets-plan";
-import type { SpreadsheetCellValue, SpreadsheetRange, SpreadsheetValueMode } from "./sheets-read-types";
+import type {
+  SpreadsheetCellValue, SpreadsheetFormats, SpreadsheetRange, SpreadsheetValueMode,
+} from "./sheets-read-types";
 import { baseIndexOf, baseLines, basePieces, linesAt, type Lines } from "./sheets-structure";
 import { ChangeConflict } from "./slides-text";
-import type { SheetCellInput } from "./sheets-types";
+import type { SheetCellInput, SheetFormatChange } from "./sheets-types";
 
 /** A sheet as the spreadsheet's metadata describes it. */
 export type SheetMeta = {
@@ -68,13 +76,14 @@ export type StructuralStep =
 
 /**
  * What a read fetched, with queued changes applied: the sheets, sorted by index; what queued
- * changes entered in cells, keyed by `cellKey` from `sheets-plan.ts` with the identities of the
- * cell's row and column, so an entry moves with its lines; and every change to rows, columns or
- * sheets replayed, in order.
+ * changes entered in cells, and set on their formatting, keyed by `cellKey` from `sheets-plan.ts`
+ * with the identities of the cell's row and column, so an entry moves with its lines; and every
+ * change to rows, columns or sheets replayed, in order.
  */
 export type Grid = {
   sheets: readonly SimSheet[];
   cells: ReadonlyMap<string, Entry>;
+  formats: ReadonlyMap<string, FormatEntry>;
   log: readonly StructuralStep[];
 };
 
@@ -86,6 +95,7 @@ export type Grid = {
 export type PlannedChange =
   | { op: "writeCells"; sheetId: number; rect: Rect; values: SheetCellInput[][] }
   | { op: "clearRange"; sheetId: number; rect: Rect }
+  | { op: "formatCells"; sheetId: number; rect: Rect; format: SheetFormatChange }
   | { op: "addSheet"; sheetId: number; title: string; index: number; rowCount: number; columnCount: number }
   | { op: "renameSheet"; sheetId: number; title: string }
   | { op: "duplicateSheet"; sheetId: number; newSheetId: number; title: string; index: number }
@@ -112,11 +122,13 @@ export type SheetBatch = {
 
 /**
  * The payload of each kind of queued change. A batch is queued as `editSheetValues` when it only
- * enters literal values and clears cells, and `updateSheet` otherwise; they differ in nothing but
- * which kinds a user may let apply without asking.
+ * enters literal values and clears cells, `formatSheets` when it only formats cells, and
+ * `updateSheet` otherwise; they differ in nothing but which kinds a user may let apply without
+ * asking.
  */
 export type SheetsActions = {
   editSheetValues: SheetBatch;
+  formatSheets: SheetBatch;
   updateSheet: SheetBatch;
 };
 
@@ -135,6 +147,7 @@ export function gridOf(metadata: { sheets: readonly SheetMeta[] }): Grid {
       }))
       .toSorted((a, b) => a.index - b.index),
     cells: new Map(),
+    formats: new Map(),
     log: [],
   };
 }
@@ -272,11 +285,24 @@ export function formulaAt(grid: Grid, sheetId: number, formula: string, from: nu
   };
 }
 
+type Shown = { value: SpreadsheetCellValue; pending: boolean };
+
+/**
+ * `shown`, the cell keyed `key` as `mode` reads it, made pending when a formatted read would show
+ * it in a number format a queued change sets or resets, which only Google can display. That holds
+ * for a cell that reads blank too, since a format such as `;;;` hides what a cell holds; only a
+ * cell a queued change empties is known to read blank.
+ */
+function displayed(shown: Shown, grid: Grid, key: string, mode: SpreadsheetValueMode = "formatted"): Shown {
+  if (mode !== "formatted" || grid.formats.get(key)?.set.numberFormat === undefined) return shown;
+  return grid.cells.get(key)?.input === null ? shown : { value: null, pending: true };
+}
+
 /**
  * `read`, Google's values for `rect` of sheet `sheetId` padded to its size, showing what queued
  * changes entered in its cells as `mode` reads them, and listing the cells that read null because
- * only Google can work their value out. For a grid whose log is empty, where every cell is where
- * Google holds it.
+ * only Google can work their value out, or, in a formatted read, display it in a number format a
+ * queued change sets. For a grid whose log is empty, where every cell is where Google holds it.
  */
 export function overlayRange(
   read: SpreadsheetRange, sheetId: number, rect: Rect, grid: Grid, mode?: SpreadsheetValueMode,
@@ -287,10 +313,12 @@ export function overlayRange(
   let columns = linesAt(sheet.columns, rect.startColumn, rect.endColumn);
   let pendingCells: string[] = [];
   let values = read.values.map((line, r) => line.map((value, c) => {
-    let entry = rows[r] === undefined || columns[c] === undefined
-      ? undefined : grid.cells.get(cellKey(sheetId, rows[r], columns[c]));
-    if (!entry) return value;
-    let shown = shownValue(entry.input, mode);
+    let row = rows[r];
+    let column = columns[c];
+    if (row === undefined || column === undefined) return value;
+    let key = cellKey(sheetId, row, column);
+    let entry = grid.cells.get(key);
+    let shown = displayed(entry ? shownValue(entry.input, mode) : { value, pending: false }, grid, key, mode);
     if (shown.pending) pendingCells.push(cellName(rect.startRow + r, rect.startColumn + c));
     return shown.value;
   }));
@@ -434,7 +462,11 @@ function cellValues(
   let pendingCells: string[] = [];
   let values = Array.from({ length: size.rows }, (_row, r) => Array.from({ length: size.columns }, (_column, c) => {
     if (r >= rows.length || c >= columns.length) return null;
-    let { value, pending } = cellValue(grid, sheet, rows[r], columns[c], base, mode);
+    let row = rows[r];
+    let column = columns[c];
+    let shown = cellValue(grid, sheet, row, column, base, mode);
+    let { value, pending } = row === undefined || column === undefined
+      ? shown : displayed(shown, grid, cellKey(sheet.id, row, column), mode);
     if (pending) pendingCells.push(cellName(rect.startRow + r, rect.startColumn + c));
     return value;
   }));
@@ -454,6 +486,51 @@ export function simulatedRange(
   return {
     range: a1Of(sheet.title, area.rect),
     values,
+    ...(pendingCells.length > 0 ? { pendingCells } : {}),
+  };
+}
+
+const NEW_LINE = /^n(\d+)\./;
+
+// Whether the line with `identity` is one a queued insert of rows or columns made, rather than one
+// of a sheet a queued change added.
+function insertedLine(grid: Grid, identity: string): boolean {
+  let match = identity.match(NEW_LINE);
+  return match !== null && grid.log[Number(match[1])]?.kind === "insert";
+}
+
+/**
+ * `area` of `grid` as a format read returns it, from `base`, the formats of the cells of the
+ * spreadsheet Google holds that `basePiecesOf` gives for it, or, for a grid whose log is empty,
+ * of the area itself: what queued changes set merged over what each cell has, and cells moved
+ * with their lines. Cells of added sheets start with no formatting. Cells of inserted lines read
+ * null and pending, since Google gives an inserted row the formatting of the row beside it but not
+ * its borders, and an inserted column its borders as well.
+ */
+export function simulatedFormats(grid: Grid, area: SimulatedArea, base: BaseFormats): SpreadsheetFormats {
+  let sheet = sheetOf(grid, area.sheetId);
+  let { rect } = area;
+  let rows = linesAt(sheet.rows, rect.startRow, rect.endRow);
+  let columns = linesAt(sheet.columns, rect.startColumn, rect.endColumn);
+  let pendingCells: string[] = [];
+  let formats = Array.from({ length: area.rows }, (_row, r) => Array.from({ length: area.columns }, (_column, c) => {
+    let row = rows[r];
+    let column = columns[c];
+    if (row === undefined || column === undefined) return null;
+    let entry = grid.formats.get(cellKey(sheet.id, row, column));
+    if (insertedLine(grid, row) || insertedLine(grid, column)) {
+      pendingCells.push(cellName(rect.startRow + r, rect.startColumn + c));
+      return null;
+    }
+    let baseRow = baseIndexOf(row);
+    let baseColumn = baseIndexOf(column);
+    let held = sheet.source === undefined || baseRow === undefined || baseColumn === undefined
+      ? null : base(sheet.source, baseRow, baseColumn);
+    return mergeFormat(held, entry);
+  }));
+  return {
+    range: a1Of(sheet.title, rect),
+    formats,
     ...(pendingCells.length > 0 ? { pendingCells } : {}),
   };
 }

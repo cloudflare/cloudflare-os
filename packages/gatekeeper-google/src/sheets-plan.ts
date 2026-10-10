@@ -4,25 +4,29 @@
  *
  * Queueing, replay and apply all run `planSheet`, so the cells a read previews and the batch an
  * approval writes come from the same code. Values are sent typed, so Google parses nothing by
- * locale: text stays text, and only input starting with `=` is a formula. Changes apply in order,
+ * locale: text stays text, and only input starting with `=` is a formula. Formatting is sent with
+ * a field mask naming each field a change gives, so a field reset clears only that field and a
+ * field left out is kept. Changes apply in order,
  * as Google applies a batch's requests, so a change addresses the spreadsheet as the changes
  * before it leave it.
  */
 
 import type { SheetArea, SheetProtection } from "./sheets-api";
+import { colorStyle, wrapStrategy, type BorderSide, type FormatEntry } from "./sheets-format";
 import { canonicalFormula, compactFormula } from "./sheets-formula";
 import {
-  isCellChange, MAX_CELL_LENGTH, MAX_COLUMNS, MAX_SPREADSHEET_CELLS, MAX_TITLE_LENGTH, type LineOp,
-  type PreparedChange,
+  isCellChange, isRangeChange, MAX_CELL_LENGTH, MAX_COLUMNS, MAX_SPREADSHEET_CELLS, MAX_TITLE_LENGTH,
+  type LineOp, type PreparedChange,
 } from "./sheets-input";
 import { a1Of, cellName, columnLetters, findSheet, isFormula, type Rect } from "./sheets-model";
+import type { SheetBorder, SheetColor } from "./sheets-read-types";
 import type {
   Entry, Grid, PlannedChange, QueuedChange, SheetMeta, SimSheet, StructuralStep,
 } from "./sheets-simulation";
 import {
-  baseIndexOf, deleteLines, insertLines, lineCount, linesAt, positionOf, type Lines,
+  baseIndexOf, deleteLines, insertLines, lineAt, lineCount, linesAt, positionOf, type Lines,
 } from "./sheets-structure";
-import type { SheetCellInput, SheetTarget } from "./sheets-types";
+import type { SheetCellInput, SheetFormatChange, SheetTarget } from "./sheets-types";
 import { ChangeConflict } from "./slides-text";
 
 /** The rows of a sheet added with none given, as in Google Sheets. */
@@ -75,10 +79,19 @@ function cellsOf(sheets: readonly SheetMeta[]): number {
 }
 
 /** A grid being changed in place, which no one else holds. */
-type Working = { sheets: SimSheet[]; cells: Map<string, Entry>; log: StructuralStep[] };
+type Working = {
+  sheets: SimSheet[]; cells: Map<string, Entry>; formats: Map<string, FormatEntry>; log: StructuralStep[];
+};
 
 function working(grid: Grid): Working {
-  return { sheets: [...grid.sheets], cells: new Map(grid.cells), log: [...grid.log] };
+  return {
+    sheets: [...grid.sheets], cells: new Map(grid.cells), formats: new Map(grid.formats), log: [...grid.log],
+  };
+}
+
+// What is kept by cell: entered input and formatting.
+function byCell(work: Working): Map<string, unknown>[] {
+  return [work.cells, work.formats];
 }
 
 // `sheets` with `sheet` placed at its index and those from there on one along, as Google inserts one.
@@ -119,11 +132,131 @@ function cellData(value: SheetCellInput) {
   }
 }
 
+type FormatField = keyof Omit<SheetFormatChange, "borders">;
+
+// Where Sheets' `CellFormat` holds each field a change sets, in the order the mask names them.
+const FORMAT_PATHS: Record<FormatField, string> = {
+  bold: "textFormat.bold",
+  italic: "textFormat.italic",
+  underline: "textFormat.underline",
+  strikethrough: "textFormat.strikethrough",
+  fontSize: "textFormat.fontSize",
+  textColor: "textFormat.foregroundColorStyle",
+  fillColor: "backgroundColorStyle",
+  numberFormat: "numberFormat",
+  horizontalAlignment: "horizontalAlignment",
+  verticalAlignment: "verticalAlignment",
+  wrap: "wrapStrategy",
+};
+
+function formatValue(field: FormatField, value: NonNullable<SheetFormatChange[FormatField]>): unknown {
+  switch (field) {
+    case "textColor":
+    case "fillColor":
+      return colorStyle(value as SheetColor);
+    case "wrap":
+      return wrapStrategy(value as NonNullable<SheetFormatChange["wrap"]>);
+    default:
+      return value;
+  }
+}
+
+function borderValue(border: SheetBorder | null) {
+  return border === null ? { style: "NONE" } : { style: border.style, colorStyle: colorStyle(border.color ?? "#000000") };
+}
+
 /**
- * Applies `change` to `work`, recording `by` in the cells it enters, and returns its request.
+ * The requests that set `format` on `range`: a `repeatCell` for every field but the borders, whose
+ * mask names each field given, so one given as `null` is reset to the default, and an
+ * `updateBorders`, which removes a border given as `null`.
+ */
+export function formatRequests(range: ReturnType<typeof gridRange>, format: SheetFormatChange): unknown[] {
+  let requests: unknown[] = [];
+  let userEnteredFormat: Record<string, unknown> = {};
+  let text: Record<string, unknown> = {};
+  let paths: string[] = [];
+  let textPaths: string[] = [];
+  for (let field of Object.keys(FORMAT_PATHS) as FormatField[]) {
+    let value = format[field];
+    if (value === undefined) continue;
+    let [group, name] = FORMAT_PATHS[field].split(".");
+    if (name === undefined) {
+      paths.push(group);
+      if (value !== null) userEnteredFormat[group] = formatValue(field, value);
+    } else {
+      textPaths.push(name);
+      if (value !== null) text[name] = formatValue(field, value);
+    }
+  }
+  if (textPaths.length > 0) {
+    paths.unshift(`textFormat(${textPaths.join(",")})`);
+    if (Object.keys(text).length > 0) userEnteredFormat.textFormat = text;
+  }
+  if (paths.length > 0) {
+    requests.push({ repeatCell: { range, cell: { userEnteredFormat }, fields: `userEnteredFormat(${paths.join(",")})` } });
+  }
+  if (format.borders) {
+    requests.push({
+      updateBorders: {
+        range,
+        ...Object.fromEntries(Object.entries(format.borders).flatMap(([side, border]) =>
+          border === undefined ? [] : [[side, borderValue(border)]])),
+      },
+    });
+  }
+  return requests;
+}
+
+/**
+ * Records in `work` what `format` sets on each cell of `rect` of `sheet`: a border along the
+ * range's edge on the cells of that edge, and one between its rows or columns on both cells it
+ * divides. An edge has one owner, so a cell beside an outer edge whose border changes loses its own
+ * border on that side, as Google removes it.
+ */
+function recordFormat(work: Working, sheet: SimSheet, rect: Rect, format: SheetFormatChange): void {
+  let { borders = {}, ...set } = format;
+  let rows = linesAt(sheet.rows, rect.startRow, rect.endRow);
+  let columns = linesAt(sheet.columns, rect.startColumn, rect.endColumn);
+  let update = (row: string, column: string, change: (entry: FormatEntry) => FormatEntry) => {
+    let key = cellKey(sheet.id, row, column);
+    work.formats.set(key, change(work.formats.get(key) ?? { set: {}, borders: {} }));
+  };
+  rows.forEach((row, r) => columns.forEach((column, c) => {
+    let sides: FormatEntry["borders"] = {};
+    let edge = (side: BorderSide, outer: boolean, inner: "innerHorizontal" | "innerVertical") => {
+      let border = outer ? borders[side] : borders[inner];
+      if (border !== undefined) sides[side] = border;
+    };
+    edge("top", r === 0, "innerHorizontal");
+    edge("bottom", r === rows.length - 1, "innerHorizontal");
+    edge("left", c === 0, "innerVertical");
+    edge("right", c === columns.length - 1, "innerVertical");
+    update(row!, column!, entry => ({
+      set: { ...entry.set, ...set },
+      borders: { ...entry.borders, ...sides },
+    }));
+  }));
+  let beside = (rowAt: number, columnAt: number, side: BorderSide) => {
+    let row = rowAt < 0 ? undefined : lineAt(sheet.rows, rowAt);
+    let column = columnAt < 0 ? undefined : lineAt(sheet.columns, columnAt);
+    if (row === undefined || column === undefined) return;
+    update(row, column, entry => ({ ...entry, borders: { ...entry.borders, [side]: null } }));
+  };
+  for (let column = rect.startColumn; column < rect.endColumn; column++) {
+    if (borders.top !== undefined) beside(rect.startRow - 1, column, "bottom");
+    if (borders.bottom !== undefined) beside(rect.endRow, column, "top");
+  }
+  for (let row = rect.startRow; row < rect.endRow; row++) {
+    if (borders.left !== undefined) beside(row, rect.startColumn - 1, "right");
+    if (borders.right !== undefined) beside(row, rect.endColumn, "left");
+  }
+}
+
+/**
+ * Applies `change` to `work`, recording `by` in the cells it enters, and returns its requests.
  * Throws what `conflict` makes for a change that does not apply.
  */
-function applyOne(work: Working, change: PlannedChange, by: number, conflict: (reason: string) => Error): unknown {
+function applyOne(work: Working, change: PlannedChange, by: number, conflict: (reason: string) => Error): unknown[] {
   let find = (id: number) => work.sheets.find(sheet => sheet.id === id);
   let existing = (id: number) => {
     let sheet = find(id);
@@ -141,20 +274,25 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
 
   switch (change.op) {
     case "writeCells":
-    case "clearRange": {
+    case "clearRange":
+    case "formatCells": {
       let sheet = existing(change.sheetId);
       let { rect } = change;
       let outside = outsideCell(sheet, rect);
       if (outside !== undefined) throw conflict(`${outside} is outside "${sheet.title}"`);
+      let range = gridRange(change.sheetId, rect);
+      if (change.op === "formatCells") {
+        recordFormat(work, sheet, rect, change.format);
+        return formatRequests(range, change.format);
+      }
       let rows = linesAt(sheet.rows, rect.startRow, rect.endRow);
       let columns = linesAt(sheet.columns, rect.startColumn, rect.endColumn);
       rows.forEach((row, r) => columns.forEach((column, c) => {
         let input = change.op === "writeCells" ? change.values[r][c] : null;
         work.cells.set(cellKey(sheet.id, row!, column!), { input, at: work.log.length, by });
       }));
-      let range = gridRange(change.sheetId, rect);
       // Cells of `range` that `rows` leaves out are cleared, so a clear sends none.
-      return change.op === "clearRange"
+      return [change.op === "clearRange"
         ? { updateCells: { range, fields: "userEnteredValue" } }
         : {
             updateCells: {
@@ -162,7 +300,7 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
               rows: change.values.map(row => ({ values: row.map(cellData) })),
               fields: "userEnteredValue",
             },
-          };
+          }];
     }
     case "addSheet": {
       let { sheetId, title, index, rowCount, columnCount } = change;
@@ -174,7 +312,7 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
         rows: insertLines([], 0, rowCount, lines), columns: insertLines([], 0, columnCount, lines),
       });
       work.log.push({ kind: "add", sheetId, title });
-      return { addSheet: { properties: { sheetId, title, index, gridProperties: { rowCount, columnCount } } } };
+      return [{ addSheet: { properties: { sheetId, title, index, gridProperties: { rowCount, columnCount } } } }];
     }
     case "renameSheet": {
       let sheet = existing(change.sheetId);
@@ -182,7 +320,7 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
       if (other && other.id !== sheet.id) throw conflict(`the spreadsheet already has a sheet titled "${other.title}"`);
       work.sheets = work.sheets.map(candidate => candidate.id === sheet.id ? { ...candidate, title: change.title } : candidate);
       work.log.push({ kind: "rename", sheetId: sheet.id, from: sheet.title, to: change.title });
-      return { updateSheetProperties: { properties: { sheetId: sheet.id, title: change.title }, fields: "title" } };
+      return [{ updateSheetProperties: { properties: { sheetId: sheet.id, title: change.title }, fields: "title" } }];
     }
     case "duplicateSheet": {
       let source = existing(change.sheetId);
@@ -195,15 +333,17 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
       });
       // The copy holds what is queued for the original, and its cells move with its own lines. The
       // keys added name the copy, so the loop skips them.
-      for (let [key, entry] of work.cells) {
-        let [sheetId, row, column] = key.split(":");
-        if (Number(sheetId) === source.id) work.cells.set(cellKey(newSheetId, row, column), entry);
+      for (let map of byCell(work)) {
+        for (let [key, entry] of map) {
+          let [sheetId, row, column] = key.split(":");
+          if (Number(sheetId) === source.id) map.set(cellKey(newSheetId, row, column), entry);
+        }
       }
       work.log.push({ kind: "duplicate", sheetId: source.id, title: source.title, newSheetId, newTitle: title });
       // Google picks a localized name, and the first position, for a copy given neither.
-      return {
+      return [{
         duplicateSheet: { sourceSheetId: source.id, newSheetId, insertSheetIndex: index, newSheetName: title },
-      };
+      }];
     }
     case "deleteSheet": {
       let sheet = existing(change.sheetId);
@@ -211,11 +351,13 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
         throw conflict(`"${sheet.title}" is the spreadsheet's only visible sheet`);
       }
       work.sheets = removed(work.sheets, sheet);
-      for (let key of work.cells.keys()) {
-        if (Number(key.split(":")[0]) === sheet.id) work.cells.delete(key);
+      for (let map of byCell(work)) {
+        for (let key of map.keys()) {
+          if (Number(key.split(":")[0]) === sheet.id) map.delete(key);
+        }
       }
       work.log.push({ kind: "deleteSheet", sheetId: sheet.id, title: sheet.title });
-      return { deleteSheet: { sheetId: sheet.id } };
+      return [{ deleteSheet: { sheetId: sheet.id } }];
     }
     default: {
       let sheet = existing(change.sheetId);
@@ -238,7 +380,7 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
         // New lines take the formatting of the line before them; Google refuses lines added after
         // the last unless they do.
         work.sheets = work.sheets.map(candidate => candidate.id === sheet.id ? withLines(candidate, axis, next) : candidate);
-        return { insertDimension: { range, inheritFromBefore: change.start > 0 } };
+        return [{ insertDimension: { range, inheritFromBefore: change.start > 0 } }];
       }
       if (change.start + change.count > count) {
         throw conflict(`"${sheet.title}" has ${plural(count, noun)}, so ${band(axis, change.start, change.count)} ` +
@@ -247,14 +389,16 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
       if (change.count >= count) throw conflict(`it would delete every ${noun} of "${sheet.title}"`);
       let deleted = new Set(linesAt(lines, change.start, change.start + change.count));
       let part = axis === "rows" ? 1 : 2;
-      for (let key of work.cells.keys()) {
-        let parts = key.split(":");
-        if (Number(parts[0]) === sheet.id && deleted.has(parts[part])) work.cells.delete(key);
+      for (let map of byCell(work)) {
+        for (let key of map.keys()) {
+          let parts = key.split(":");
+          if (Number(parts[0]) === sheet.id && deleted.has(parts[part])) map.delete(key);
+        }
       }
       next = deleteLines(lines, change.start, change.count);
       work.log.push({ kind: "delete", sheetId: sheet.id, title: sheet.title, axis, start: change.start, count: change.count });
       work.sheets = work.sheets.map(candidate => candidate.id === sheet.id ? withLines(candidate, axis, next) : candidate);
-      return { deleteDimension: { range } };
+      return [{ deleteDimension: { range } }];
     }
   }
 }
@@ -326,6 +470,7 @@ export function resolveChanges(
       switch (change.op) {
         case "writeCells":
         case "clearRange":
+        case "formatCells":
           return resolveCells(work, change, label);
         case "addSheet": {
           let index = change.index ?? work.sheets.length;
@@ -383,7 +528,8 @@ export function resolveChanges(
 }
 
 function resolveCells(
-  work: Working, change: Extract<PreparedChange, { op: "writeCells" | "clearRange" }>, label: string,
+  work: Working, change: Extract<PreparedChange, { op: "writeCells" | "clearRange" | "formatCells" }>,
+  label: string,
 ): PlannedChange {
   let sheet = findSheet(work.sheets, change.sheet);
   if (!sheet) {
@@ -399,6 +545,7 @@ function resolveCells(
       `${plural(sheet.columnCount, "column")}, so ${outside} is outside it. ${hint}.`);
   }
   if (change.op === "clearRange") return { op: change.op, sheetId: sheet.id, rect: change.rect };
+  if (change.op === "formatCells") return { op: change.op, sheetId: sheet.id, rect: change.rect, format: change.format };
   let titleOf = (name: string) => findSheet(work.sheets, name)?.title;
   let values = change.values.map((row, r) => row.map((value, c) => {
     if (!isFormula(value)) return value;
@@ -464,7 +611,7 @@ export function planSheet(
 ): { grid: Grid; requests: unknown[] } {
   if (changes.length === 0) return { grid, requests: [] };
   let work = working(grid);
-  let requests = changes.map((change, i) => applyOne(work, change, by, unexpected(i, change)));
+  let requests = changes.flatMap((change, i) => applyOne(work, change, by, unexpected(i, change)));
   return { grid: work, requests };
 }
 
@@ -590,7 +737,7 @@ export function guardFits(sheets: readonly SheetMeta[], cells: readonly SheetAre
 
 // The sheets a change to rows, columns or sheets acts on or creates.
 function structuralSheets(change: PlannedChange): number[] {
-  if (isCellChange(change)) return [];
+  if (isRangeChange(change)) return [];
   return change.op === "duplicateSheet" ? [change.sheetId, change.newSheetId] : [change.sheetId];
 }
 
@@ -657,8 +804,8 @@ function protectionName(protection: SheetProtection, title: string): string {
 }
 
 /**
- * Refuses a change writing a cell Google holds that is in a protected range the connected account
- * may not edit, and that the range does not leave editable, and any change to the rows, columns or
+ * Refuses a change writing or formatting a cell Google holds that is in a protected range the
+ * connected account may not edit, and that the range does not leave editable, and any change to the rows, columns or
  * tab of a sheet holding such a range. Cells of lines queued changes insert are not protected.
  * Throws `Error`.
  */
@@ -676,7 +823,7 @@ export function checkProtections(
     let protections = locked.filter(protection => protection.area.sheetId === source);
     if (sheet && source !== undefined && protections.length > 0) {
       let title = metadata.sheets.find(candidate => candidate.id === source)?.title ?? sheet.title;
-      if (!isCellChange(change)) {
+      if (!isRangeChange(change)) {
         throw new Error(`${label}: "${sheet.title}" holds ${protectionName(protections[0], title)}, which ` +
           "the connected account may not edit, so its rows, columns and tab cannot be changed.");
       }
