@@ -277,7 +277,9 @@ class FakeGitHub {
     const [contentType, sent] = webhook.contentType === "form"
       ? ["application/x-www-form-urlencoded", `payload=${encodeURIComponent(body)}`]
       : ["application/json", body];
-    const status = this.failDeliveriesWith ?? (await SELF.fetch(webhook.url, {
+    // Somewhere other than this deployment, which has no such path.
+    const elsewhere = webhook.url.startsWith("https://gadgets.test/") ? undefined : 404;
+    const status = this.failDeliveriesWith ?? elsewhere ?? (await SELF.fetch(webhook.url, {
       method: "POST",
       headers: {
         "Content-Type": contentType, "X-GitHub-Event": event, "X-GitHub-Delivery": guid,
@@ -936,6 +938,60 @@ it("restores its webhook's payload encoding, and has GitHub redeliver what it re
   expect(await github.redeliver()).toEqual([204]);
   await settled(account);
   expect((await triage.read()).received).toEqual([expect.objectContaining({ info: expect.objectContaining({ id: "42" }) })]);
+});
+
+it("goes on redelivering what was refused before the webhook's repair, until all of it is delivered", async () => {
+  const github = new FakeGitHub();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+  const [webhook] = github.webhooks.values();
+  const { at, alarm } = clock(account);
+
+  // More refused as malformed than one check redelivers.
+  await at(0, async () => {
+    webhook.contentType = "form";
+    for (let number = 1; number <= 25; number++) await github.deliver("issues", issues("opened", number));
+  });
+  await at(HOUR, alarm);
+  expect(github.pendingRedeliveries()).toEqual({ [REPO]: 20 });
+  await github.redeliver();
+  await settled(account);
+  // The webhook sends JSON by the next check, where the rest are still the encoding's refusals.
+  await at(2 * HOUR, alarm);
+  expect(github.pendingRedeliveries()).toEqual({ [REPO]: 5 });
+  await github.redeliver();
+  await settled(account);
+
+  expect((await triage.read()).received).toHaveLength(25);
+});
+
+it("has GitHub redeliver what another receiver refused while the webhook pointed there", async () => {
+  const github = new FakeGitHub();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+  const [webhook] = github.webhooks.values();
+  const { at, alarm } = clock(account);
+
+  await at(0, async () => {
+    webhook.url = "https://elsewhere.example/hook";
+    expect(await github.deliver("issues", issues("opened", 42))).toEqual([404]);
+  });
+  await at(HOUR, alarm);
+  expect(github.webhooks.get(webhook.id)?.url).toMatch(/^https:\/\/gadgets\.test\//);
+  expect(await github.redeliver()).toEqual([204]);
+  await settled(account);
+  expect((await triage.read()).received).toEqual([expect.objectContaining({ info: expect.objectContaining({ id: "42" }) })]);
+
+  // Refused here since the repair, for good: it's for a repository this webhook isn't on.
+  await at(HOUR + 60_000, async () =>
+    expect(await github.deliver("issues", { ...issues("opened", 43), repository: { ...repository, id: 999 } }))
+      .toEqual([404]));
+  await at(2 * HOUR, alarm);
+  expect(github.pendingRedeliveries()).toEqual({});
 });
 
 it("restores its webhook's secret, has GitHub redeliver what the wrong one signed, then leaves it", async () => {

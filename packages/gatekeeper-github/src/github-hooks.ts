@@ -150,13 +150,10 @@ const DELIVERY_LOOKBACK_MS = 2 * CHECK_INTERVAL_MS;
 const MAX_REDELIVERIES_PER_CHECK = 20;
 /**
  * The statuses the worker refuses a delivery with for good (see handleWebhookRequest() and
- * ingest()), which a redelivery would only repeat. A 400 is one only while the webhook sends JSON:
- * a delivery refused as malformed while it sent form-encoded payloads is worth redelivering once it
- * sends JSON again, since GitHub builds a redelivery from the webhook's current configuration, as
- * it signs one with the current secret.
+ * ingest()), which a redelivery would only repeat -- unless the refusal came before the check last
+ * repaired the webhook (see undelivered()).
  */
 const FINAL_REFUSALS = new Set([400, 404, 413]);
-const FINAL_REFUSALS_WHEN_FORM_ENCODED = new Set([404, 413]);
 
 type Registration = Omit<GitHubHookProps, "key" | "userObjectId" | "delivery">;
 type Capabilities = {
@@ -169,12 +166,14 @@ type Webhook = { id: number; repo: PinnedRepo };
 const registrationKey = (key: string) => `reg:${key}`;
 const capabilitiesKey = (key: string) => `caps:${key}`;
 const webhookKey = (repoId: number) => `webhook:${repoId}`;
+const repairedKey = (repoId: number) => `repaired:${repoId}`;
 
 /**
  * One per connected account, named by its `UserAccount` id. Storage: `account` (that id), `secret`
- * (the HMAC key its webhooks sign deliveries with), `webhook:` per repository, `checkAt` (when to
- * next check them on GitHub), `reg:`/`caps:` per hook, the delivery queue's `msg:` rows, and
- * `revoked` once the account is disconnected, which refuses everything for good.
+ * (the HMAC key its webhooks sign deliveries with), per repository `webhook:` and `repaired:` (when
+ * the check last restored its configuration), `checkAt` (when to next check them on GitHub),
+ * `reg:`/`caps:` per hook, the delivery queue's `msg:` rows, and `revoked` once the account is
+ * disconnected, which refuses everything for good.
  *
  * Every `await` here opens the input gate, so each storage write after one re-reads what it
  * depends on.
@@ -234,6 +233,7 @@ export class GitHubHookDriver extends DurableObject<Env> {
       // The repository's last hook: rather than leave GitHub delivering there, remove the webhook.
       await this.#removeWebhook(kv.get<string>("account")!, webhook);
       kv.delete(webhookKey(repo.id));
+      kv.delete(repairedKey(repo.id));
     });
     await this.#reschedule();
   }
@@ -398,20 +398,19 @@ export class GitHubHookDriver extends DurableObject<Env> {
         throw error;
       }
     });
-    const formEncoded = read !== undefined && read.found.config.content_type !== "json";
-    const failed = read === undefined ? []
-      : undelivered(read.deliveries, formEncoded ? FINAL_REFUSALS_WHEN_FORM_ENCODED : FINAL_REFUSALS);
     const events = webhookEvents(this.#registrations(repo).map(([, registration]) => registration));
     const intact = read !== undefined && read.found.active === true && read.found.config.url === url
-      && !formEncoded && String(read.found.config.insecure_ssl) === "0"
+      && read.found.config.content_type === "json" && String(read.found.config.insecure_ssl) === "0"
       && sameEvents(read.found.events ?? [], events)
       // By each delivery's latest attempt, so a 401 since redelivered successfully doesn't count.
-      && !failed.some(({ status_code }) => status_code === 401);
+      && !undelivered(read.deliveries).some(({ status_code }) => status_code === 401);
     if (!intact) {
       await this.#webhookChanges.run(async () => {
+        const kv = this.ctx.storage.kv;
         // Removed or replaced while this check read it.
-        if (this.ctx.storage.kv.get<Webhook>(webhookKey(repo.id))?.id !== id) return;
+        if (kv.get<Webhook>(webhookKey(repo.id))?.id !== id) return;
         await this.#ensureWebhook(repo, this.#registrations(repo).map(([, registration]) => registration));
+        kv.put(repairedKey(repo.id), Date.now());
         logger.info("reconfigured a GitHub webhook that no longer matched its hooks", {
           event: "hooks.webhook.reconfigured",
         });
@@ -425,7 +424,7 @@ export class GitHubHookDriver extends DurableObject<Env> {
         deliveryStatuses: [...new Set(deliveries.map(({ status_code }) => status_code))],
       });
     }
-    return failed;
+    return undelivered(deliveries, this.ctx.storage.kv.get<number>(repairedKey(repo.id)));
   }
 
   /**
@@ -561,15 +560,20 @@ const delivered = ({ status_code }: GitHubWebhookDeliveryResponse) => status_cod
 
 /**
  * What to ask GitHub to redeliver, oldest first: each delivery whose latest attempt failed, unless
- * the worker refused it for good, with one of `finalRefusals`. `deliveries` are newest first. A
- * redelivery of something already received is harmless: ingest() collapses it.
+ * the worker refused it for good. A refusal made before `repairedAt`, when the check last restored
+ * the webhook's configuration, may have been the misconfiguration's -- a form-encoded payload's
+ * 400, or another receiver's 404 -- so it is redelivered with the rest until it leaves the
+ * lookback, since GitHub sends, encodes and signs a redelivery as the webhook is configured now.
+ * `deliveries` are newest first. A redelivery of something already received is harmless: ingest()
+ * collapses it.
  */
-function undelivered(deliveries: GitHubWebhookDeliveryResponse[], finalRefusals: ReadonlySet<number>):
+function undelivered(deliveries: GitHubWebhookDeliveryResponse[], repairedAt = -Infinity):
     GitHubWebhookDeliveryResponse[] {
   const latest = new Map<string, GitHubWebhookDeliveryResponse>();
   for (const delivery of deliveries) if (!latest.has(delivery.guid)) latest.set(delivery.guid, delivery);
   return [...latest.values()]
-    .filter(delivery => !delivered(delivery) && !finalRefusals.has(delivery.status_code))
+    .filter(delivery => !delivered(delivery) &&
+      (!FINAL_REFUSALS.has(delivery.status_code) || Date.parse(delivery.delivered_at) < repairedAt))
     .toReversed();
 }
 
