@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../../src/x";
 import type { Env } from "../../src/x-env";
 import type { XPostInfo } from "../../src/types";
-import { ALICE, BOB, FakeX, failure, hmacBase64, hooks as sharedHooks, seedAccount, unwrap } from "./fake-x";
+import { ALICE, BOB, FakeX, failure, hmacBase64, json, hooks as sharedHooks, seedAccount, unwrap } from "./fake-x";
 import type { GatekeeperProps, Step } from "./worker";
 
 // The registry is one per deployment and a router one per X user, so each test starts from a
@@ -153,6 +153,29 @@ describe("subscribing", () => {
     expect(mentions()).toHaveLength(1);
     await second.disable();
     expect(mentions()).toHaveLength(0);
+  });
+
+  it("keeps a subscription X failed to delete, and deletes it again from the alarm", async () => {
+    const { x, hook } = await watchingMentions();
+    let outage = true;
+    x.on("DELETE", /^\/2\/activity\/subscriptions\//, () => outage ? json({ title: "Service Unavailable" }, { status: 503 }) : undefined);
+    await hook.disable();
+    const mentions = () => subscriptionsOf(x).filter(([type]) => type === "post.mention.create");
+    expect(mentions()).toHaveLength(1);
+    outage = false;
+    expect(await runDurableObjectAlarm(env.X_ACTIVITY_ROUTER.getByName(ALICE.id))).toBe(true);
+    expect(mentions()).toHaveLength(0);
+  });
+
+  it("subscribes afresh when a hook needs a subscription X may have deleted", async () => {
+    const { x, account, hook } = await watchingMentions();
+    // X deletes it, but the answer is lost.
+    x.loseAnswer("DELETE", /^\/2\/activity\/subscriptions\//);
+    await hook.disable();
+    const again = binding({ userObjectId: account, resourceKind: "account" });
+    await again.subscribe([["subscribeMentions"]]);
+    await again.enable();
+    expect(subscriptionsOf(x).filter(([type]) => type === "post.mention.create")).toHaveLength(1);
   });
 });
 

@@ -1111,7 +1111,8 @@ It follows `gatekeeper-github`'s hooks rather than §9 where the two differ:
 - **Three Durable Objects, not two.** A per-account `XHookDriver` holds the account's enabled hooks
   and the delivery queue, as GitHub's driver does, so disconnecting the account cancels everything
   of its in one call. The `XActivityRouter` per X user holds only the subscriptions and which
-  accounts watch each, and fans events out to their drivers. `XWebhookRegistry` is as planned.
+  accounts watch each, and fans events out to their drivers; a subscription nothing watches is kept
+  until X confirms deleting it, retried from the router's alarm. `XWebhookRegistry` is as planned.
 - **Hooks are bound GitHub's way.** `subscribe*()` mints a `ctx.restore()` delivery stub into an
   `XHookController` loopback entrypoint, nothing is stored until the user enables the hook, each
   delivery takes a fresh firing from `startHook()`, and the facet re-checks every event against the
