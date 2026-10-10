@@ -134,3 +134,19 @@ type 'function or ExportedHandler'.
 ```
 
 Type-only exports are fine (they erase). Anything else has to stay module-private.
+
+## Workshop agent evals
+
+`packages/workshop-evals` runs model-driven tasks against a local Workshop using the same integration
+harness. The `sheets` task asks the agent to configure the bundled `format.spreadsheet` blueprint
+without replacing its implementation. It checks source cell values in both the document and XLSX,
+quoted-sheet and single-quoted formulas, absolute references, filters, charts, and comments, then repeats the checks
+after accepting and reloading the Gadget. `EvalVerifier.exportFile()` reads an export from the same
+chat branch used by RPC checks and disposes the client after consuming the stream.
+
+Run only this task with `pnpm --filter @gadgets/workshop-evals evals evals/sheets.eval.ts`. Model access
+requires either `CF_AI_GATEWAY` with `CF_AI_GATEWAY_ACCOUNT_ID` (and the appropriate gateway token),
+or `CLOUDFLARE_ACCOUNT_ID` with `CLOUDFLARE_API_TOKEN`. Use a clean checkout or explicitly set
+`WORKSHOP_EVAL_COMMIT` to the full commit SHA when exercising local changes. This model-driven task
+is separate from the package's deterministic `test:run` suite.
+

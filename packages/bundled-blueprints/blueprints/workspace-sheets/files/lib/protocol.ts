@@ -37,7 +37,84 @@ export type CellMap = Record<string, Cell>;
 /** Column widths or row heights in pixels, keyed by zero-based index (as a string). */
 export type Dims = Record<string, number>;
 
-/** A sheet's structure: identity, name, size and sizing metadata. */
+/** A filter's active sort; column is zero-based and direction is its current ordering. */
+export interface FilterSort {
+  column: number;
+  direction: "asc" | "desc";
+}
+
+/**
+ * A sheet's filter region: zero-based header/end rows and columns, selected evaluated-value tokens
+ * by column, and the original row identities retained while sorting so clearing sort restores them.
+ * Tokens are `s:<text>`, `n:<number>`, `b:1`/`b:0`, `e:<formula error>`, or `z:` for blanks;
+ * `x:__none__` selects nothing. Missing or empty criteria select every value; `sort: null` denotes
+ * the original ordering. For example, filtering text Complete requires `s:Complete`, not `Complete`.
+ */
+export interface SheetFilter {
+  row: number;
+  endRow: number;
+  columns: number[];
+  criteria: Record<string, string[]>;
+  rowOrder: number[];
+  sort: FilterSort | null;
+}
+
+/** The chart renderers supported by the Sheets client and workbook exporter. */
+export type ChartType = "line" | "pie" | "area" | "stackedBar";
+
+/**
+ * A floating chart anchored in sheet coordinates (CSS pixels). `range` is an A1 reference or range;
+ * the header/label flags control how its first row and column are interpreted. An empty range is
+ * an invalid or oversized selection and renders no data, rather than walking an unbounded range.
+ */
+export interface SheetChart {
+  id: string;
+  type: ChartType;
+  range: string;
+  title: string;
+  xAxisTitle: string;
+  yAxisTitle: string;
+  legend: boolean;
+  firstRowHeaders: boolean;
+  firstColLabels: boolean;
+  smooth: boolean;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** A cell comment, including its stable id, A1 anchor, creation time in milliseconds and resolution state. */
+export interface SheetComment {
+  id: string;
+  ref: string;
+  text: string;
+  createdAt: number;
+  resolved: boolean;
+}
+
+/** The aggregation functions supported by a pivot table. */
+export type PivotAggregate = "sum" | "count" | "average" | "min" | "max";
+
+/**
+ * A pivot table's source and layout. Field identifiers are exact header cell text (up to the cell
+ * value limit), not abbreviated labels. Filter values are exact displayed cell values; an empty
+ * list means every value. `sourceRange` is an A1 range on `sourceSheetId`, or empty when invalid.
+ */
+export interface SheetPivot {
+  sourceSheetId: string;
+  sourceRange: string;
+  rowField: string;
+  columnField: string;
+  valueField: string;
+  aggregate: PivotAggregate;
+  showRowTotals: boolean;
+  showColumnTotals: boolean;
+  filterField: string;
+  filterValues: string[];
+}
+
+/** A sheet's structure and feature metadata; optional feature fields accommodate older stored workbooks. */
 export interface SheetMeta {
   id: string;
   name: string;
@@ -47,6 +124,10 @@ export interface SheetMeta {
   rowHeights: Dims;
   frozenRows: number;
   frozenCols: number;
+  filter?: SheetFilter | null;
+  charts?: SheetChart[];
+  comments?: SheetComment[];
+  pivot?: SheetPivot | null;
 }
 
 /** The `meta` record the server stores: everything about the workbook except the cells. */
@@ -63,7 +144,7 @@ export interface SheetsDocument extends DocumentMeta {
   cells: Record<string, CellMap>;
 }
 
-/** The workbook structure as a client sends it: last-writer-wins, applied wholesale; anything omitted keeps its stored value. */
+/** The workbook structure as a client sends it: applied wholesale; omitted fields keep their stored values, while null/empty feature fields clear them. */
 export interface StructureUpdate {
   title?: string;
   sheetOrder?: string[];
@@ -95,6 +176,8 @@ export interface SheetReplacement {
 /** What a client sends to `applyOperation`: any combination of a structure snapshot, sheet replacements and per-cell edits. */
 export interface Operation {
   senderId?: string;
+  /** Reject the entire operation without mutation if this snapshot revision differs from the server's; omit for per-cell version checks only. */
+  baseRevision?: number;
   structure?: StructureUpdate | null;
   cellOps?: CellOp[];
   sheetReplacements?: SheetReplacement[];
@@ -153,6 +236,8 @@ export interface OperationResult extends Partial<OperationEvent> {
   status: OperationStatus;
   revision: number;
   conflicts: CellConflict[];
+  /** True when baseRevision rejected the whole operation; revision is authoritative and no event was committed. */
+  staleRevision?: boolean;
 }
 
 /** How a subscriber introduces itself: the id its events carry, and how to draw it. */

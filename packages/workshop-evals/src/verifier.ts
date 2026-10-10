@@ -88,6 +88,17 @@ export class EvalVerifier {
     }
   }
 
+  /** Read a real Gadget export from the same provisional branch used by functional checks. */
+  async exportFile(gadgetTitle: string, formatId: string): Promise<Uint8Array> {
+    const opened = await this.#session.openGadget(resolveGadget(this.workpieces, gadgetTitle));
+    try {
+      const stream = await opened.client.export(formatId, opened.chatId);
+      return new Uint8Array(await new Response(stream).arrayBuffer());
+    } finally {
+      opened.client[Symbol.dispose]();
+    }
+  }
+
   /**
    * Runs `verify` and returns its checks. Throws instead when a check failed while the Workshop
    * connection dropped, since that failure says nothing about the agent's work.

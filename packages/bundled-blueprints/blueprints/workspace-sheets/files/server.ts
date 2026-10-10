@@ -17,7 +17,11 @@ import type {
   OperationEvent,
   OperationResult,
   PresenceUpdate,
+  SheetChart,
+  SheetComment,
+  SheetFilter,
   SheetMeta,
+  SheetPivot,
   SheetsDocument,
   SheetsPresenceEvent,
   SubscriberCallbacks,
@@ -51,8 +55,8 @@ const DEFAULT_COLS = 26;
 //   "cells:<id>"    -> { "A1": { value, fmt, version }, ... }
 //
 // Cell content uses per-cell optimistic concurrency (like Docs blocks).
-// Structure (sheet list, names, dimensions, column widths, row heights, title)
-// is last-writer-wins metadata applied wholesale when a client sends it.
+// Structure (sheet list, names, dimensions, sizing and feature metadata) is applied wholesale.
+// Snapshot-based operations may require baseRevision to match before any part is written.
 // ---------------------------------------------------------------------------
 export class Gadget extends DurableObject<unknown, unknown> {
   declare subscribers: SubscriberRegistry<SubscriberCallbacks, CollaboratorInfo>;
@@ -127,6 +131,11 @@ export class Gadget extends DurableObject<unknown, unknown> {
 
   async applyOperationLocked(operation: Operation): Promise<LockedOutcome> {
     const meta = await this.loadMeta();
+    // Structure and replacement payloads may have been built from an earlier snapshot. Reject
+    // the entire operation before touching storage so they cannot erase another client's edits.
+    if (operation.baseRevision !== undefined && operation.baseRevision !== meta.revision) {
+      return { result: { status: "conflict", revision: meta.revision, conflicts: [], staleRevision: true } };
+    }
     let changed = false;
 
     // --- Structure (last-writer-wins) ------------------------------------
@@ -146,7 +155,19 @@ export class Gadget extends DurableObject<unknown, unknown> {
           rowHeights: incoming.rowHeights ?? existing.rowHeights,
           frozenRows: incoming.frozenRows ?? existing.frozenRows,
           frozenCols: incoming.frozenCols ?? existing.frozenCols,
+          filter: Object.prototype.hasOwnProperty.call(incoming, "filter") ? incoming.filter : existing.filter,
+          charts: Object.prototype.hasOwnProperty.call(incoming, "charts") ? incoming.charts : existing.charts,
+          comments: Object.prototype.hasOwnProperty.call(incoming, "comments") ? incoming.comments : existing.comments,
+          pivot: Object.prototype.hasOwnProperty.call(incoming, "pivot") ? incoming.pivot : existing.pivot,
         });
+      }
+      // A pivot's range lives on its source sheet, which may appear later in the order.
+      for (const sheet of Object.values(nextSheets)) {
+        if (!sheet.pivot) continue;
+        const source = nextSheets[sheet.pivot.sourceSheetId];
+        sheet.pivot.sourceRange = source ? sanitizeRange(sheet.pivot.sourceRange, source.rows, source.cols, false) : "";
+      }
+      for (const id of order) {
         if (!(await this.ctx.storage.get("cells:" + id))) {
           await this.ctx.storage.put("cells:" + id, {});
         }
@@ -299,6 +320,22 @@ function clampInt(v: unknown, lo: number, hi: number, dflt: number): number {
   return Math.max(lo, Math.min(hi, n));
 }
 
+// Clients walk chart and pivot ranges cell by cell, so a range outside the sheet or beyond this
+// many cells would hang every client that opens the workbook. It is clamped to the sheet and
+// rejected (empty) when still too large.
+const MAX_RANGE_CELLS = 200000;
+function sanitizeRange(text: unknown, rows: number, cols: number, allowSingle: boolean): string {
+  const match = /^([A-Z]+)([1-9]\d*)(?::([A-Z]+)([1-9]\d*))?$/.exec(String(text || "").toUpperCase());
+  if (!match || (!match[3] && !allowSingle)) return "";
+  const first = parseCsvCellRef(match[1] + match[2]);
+  const last = match[3] ? parseCsvCellRef(match[3] + match[4]) : first;
+  if (!first || !last) return "";
+  const top = Math.min(first.row, last.row), left = Math.min(first.column, last.column);
+  const bottom = Math.min(Math.max(first.row, last.row), rows - 1), right = Math.min(Math.max(first.column, last.column), cols - 1);
+  if (top > bottom || left > right || (bottom - top + 1) * (right - left + 1) > MAX_RANGE_CELLS) return "";
+  return csvCellRef(top, left) + (match[3] ? ":" + csvCellRef(bottom, right) : "");
+}
+
 function sanitizeDims(dims: unknown): Dims {
   const out: Dims = {};
   if (dims && typeof dims === "object") {
@@ -312,16 +349,121 @@ function sanitizeDims(dims: unknown): Dims {
 }
 
 function sheetMeta(s: Partial<SheetMeta> & Pick<SheetMeta, "id">): SheetMeta {
+  const rows = clampInt(s.rows, 1, 50000, DEFAULT_ROWS), cols = clampInt(s.cols, 1, 702, DEFAULT_COLS);
   return {
     id: String(s.id),
     name: String(s.name || "Sheet").slice(0, 60),
-    rows: clampInt(s.rows, 1, 50000, DEFAULT_ROWS),
-    cols: clampInt(s.cols, 1, 702, DEFAULT_COLS),
+    rows,
+    cols,
     colWidths: sanitizeDims(s.colWidths),
     rowHeights: sanitizeDims(s.rowHeights),
     frozenRows: clampInt(s.frozenRows, 0, 50, 0),
     frozenCols: clampInt(s.frozenCols, 0, 50, 0),
+    filter: sanitizeFilter(s.filter, rows, cols),
+    charts: sanitizeCharts(s.charts, rows, cols),
+    comments: sanitizeComments(s.comments),
+    pivot: sanitizePivot(s.pivot),
   };
+}
+
+// Headers keep the cell value limit plus the longest uniqueness suffix (` (702)`) the client
+// can add across the sheet's supported 702 columns.
+const MAX_PIVOT_FIELD_LENGTH = 8198;
+
+function sanitizePivot(value: unknown): SheetPivot | null {
+  if (!value || typeof value !== "object") return null;
+  const pivot = value as Record<string, unknown>;
+  const aggregate = pivot.aggregate;
+  const filterValues = Array.isArray(pivot.filterValues)
+    ? [...new Set(pivot.filterValues.map((item: unknown) => String(item).slice(0, 8192)))]
+    : (pivot.filterValue ? [String(pivot.filterValue).slice(0, 8192)] : []);
+  return {
+    sourceSheetId: String(pivot.sourceSheetId || "").slice(0, 80),
+    // Shape only; applyOperationLocked bounds it against the source sheet.
+    sourceRange: /^([A-Z]+[1-9]\d*):([A-Z]+[1-9]\d*)$/.test(String(pivot.sourceRange || "").toUpperCase()) ? String(pivot.sourceRange).toUpperCase() : "",
+    // Fields are keyed by the client's full unique header name, including duplicate suffixes.
+    rowField: String(pivot.rowField || "").slice(0, MAX_PIVOT_FIELD_LENGTH),
+    columnField: String(pivot.columnField || "").slice(0, MAX_PIVOT_FIELD_LENGTH),
+    valueField: String(pivot.valueField || "").slice(0, MAX_PIVOT_FIELD_LENGTH),
+    aggregate: aggregate === "sum" || aggregate === "count" || aggregate === "average" || aggregate === "min" || aggregate === "max" ? aggregate : "sum",
+    showRowTotals: pivot.showRowTotals !== false,
+    showColumnTotals: pivot.showColumnTotals !== false,
+    filterField: String(pivot.filterField || "").slice(0, MAX_PIVOT_FIELD_LENGTH),
+    // Compared exactly to cell values, so they keep the cell limit; an oversized set is dropped
+    // whole rather than trimmed into a different filter.
+    filterValues: filterValues.length <= MAX_FILTER_SELECTIONS ? filterValues : [],
+  };
+}
+
+function sanitizeComments(comments: unknown): SheetComment[] {
+  if (!Array.isArray(comments)) return [];
+  return comments.slice(0, 2000).map((value: unknown, index): SheetComment => {
+    const comment = value as Partial<Record<keyof SheetComment, unknown>> | null | undefined;
+    return {
+      id: String(comment?.id || "comment_" + index).slice(0, 80),
+      ref: /^[A-Z]+[1-9]\d*$/.test(String(comment?.ref || "").toUpperCase()) ? String(comment?.ref).toUpperCase() : "A1",
+      text: String(comment?.text || "").slice(0, 4000),
+      createdAt: Math.max(0, Math.round(Number(comment?.createdAt)) || Date.now()),
+      resolved: comment?.resolved === true,
+    };
+  }).filter((comment) => comment.text.trim());
+}
+
+function sanitizeCharts(charts: unknown, rows: number, cols: number): SheetChart[] {
+  if (!Array.isArray(charts)) return [];
+  return charts.slice(0, 50).map((value: unknown, index): SheetChart => {
+    const chart = value as Partial<Record<keyof SheetChart, unknown>> | null | undefined;
+    return {
+      id: String(chart?.id || "chart_" + index).slice(0, 80),
+      type: chart?.type === "line" || chart?.type === "pie" || chart?.type === "area" || chart?.type === "stackedBar" ? chart.type : "line",
+      range: sanitizeRange(chart?.range, rows, cols, true),
+      title: String(chart?.title || "").slice(0, 200),
+      xAxisTitle: String(chart?.xAxisTitle || "").slice(0, 120),
+      yAxisTitle: String(chart?.yAxisTitle || "").slice(0, 120),
+      legend: chart?.legend !== false,
+      firstRowHeaders: chart?.firstRowHeaders !== false,
+      firstColLabels: chart?.firstColLabels !== false,
+      smooth: chart?.smooth === true,
+      x: clampInt(chart?.x, 48, 5000, 96),
+      y: clampInt(chart?.y, 28, 5000, 44),
+      width: clampInt(chart?.width, 280, 1200, 520),
+      height: clampInt(chart?.height, 200, 900, 320),
+    };
+  });
+}
+const MAX_FILTER_SELECTIONS = 500; // the client's filter menu refuses larger selections
+
+function sanitizeFilter(value: unknown, rows: number, cols: number): SheetFilter | null {
+  if (!value || typeof value !== "object") return null;
+  const filter = value as Record<string, unknown>;
+  const row = clampInt(filter.row, 0, Math.max(0, rows - 1), 0);
+  const criteria: SheetFilter["criteria"] = {};
+  if (filter.criteria && typeof filter.criteria === "object") {
+    for (const [column, values] of Object.entries(filter.criteria as Record<string, unknown>)) {
+      if (!/^\d+$/.test(column)) continue;
+      const col = Number(column);
+      if (col < 0 || col >= cols || !Array.isArray(values)) continue;
+      // Trimming a selection would change which rows it hides; an oversized one is dropped whole.
+      // Each token has a two-character type prefix in addition to its cell's 8,192 characters.
+      const clean = [...new Set(values.map((item: unknown) => String(item).slice(0, 8194)))];
+      if (clean.length && clean.length <= MAX_FILTER_SELECTIONS) criteria[col] = clean;
+    }
+  }
+  const endRow = clampInt(filter.endRow, row, Math.max(row, rows - 1), rows - 1);
+  const columns = Array.isArray(filter.columns)
+    ? [...new Set(filter.columns.map(Number).filter((column) => Number.isInteger(column) && column >= 0 && column < cols))].slice(0, cols)
+    : Array.from({ length: cols }, (_, column) => column);
+  const expectedRows = Math.max(0, endRow - row);
+  const incomingOrder = Array.isArray(filter.rowOrder) ? filter.rowOrder.map(Number) : [];
+  const rowOrder = incomingOrder.length === expectedRows && incomingOrder.every(Number.isFinite)
+    ? incomingOrder.map((value) => Math.round(value))
+    : Array.from({ length: expectedRows }, (_, index) => row + 1 + index);
+  const incomingSort = filter.sort && typeof filter.sort === "object" ? filter.sort as Record<string, unknown> : {};
+  const sortColumn = Number(incomingSort.column);
+  const sort: SheetFilter["sort"] = Number.isInteger(sortColumn) && columns.includes(sortColumn) && (incomingSort.direction === "asc" || incomingSort.direction === "desc")
+    ? { column: sortColumn, direction: incomingSort.direction }
+    : null;
+  return { row, endRow, columns, criteria, rowOrder, sort };
 }
 
 const FMT_KEYS = new Set(["b", "i", "u", "s", "c", "bg", "a", "nf", "d", "fs", "wrap"]);
@@ -377,7 +519,7 @@ function csvSheetIds(document: SheetsDocument): string[] {
 }
 
 export class ExportHandler extends WorkerEntrypoint {
-  async getExportFormats(gadget: GadgetStub): Promise<ExportFormat[]> {
+  async getExportFormats(gadget: Pick<GadgetStub, "getDocument">): Promise<ExportFormat[]> {
     const document = await gadget.getDocument();
     const sheetIds = csvSheetIds(document);
     return [XLSX_FORMAT, ...sheetIds.map((sheetId): ExportFormat => ({
@@ -389,7 +531,7 @@ export class ExportHandler extends WorkerEntrypoint {
     }))];
   }
 
-  async export(gadget: GadgetStub, id: string): Promise<ReadableStream<Uint8Array>> {
+  async export(gadget: Pick<GadgetStub, "getDocument">, id: string): Promise<ReadableStream<Uint8Array>> {
     if (id === XLSX_FORMAT.id) {
       const document = await gadget.getDocument();
       return workbookToXlsx(document);

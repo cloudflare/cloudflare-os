@@ -33,10 +33,23 @@ export function tokenize(src: string): Token[] {
   while (i < n) {
     const ch = src[i];
     if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") { i++; continue; }
-    if (ch === '"') {
+    // Single quotes denote text unless the closing quote is followed by a sheet separator.
+    const singleQuotedSheet = ch === "'" && (() => {
+      for (let j = i + 1; j < n; j++) {
+        if (src[j] === "\\" && src[j + 1] === "'") { j++; continue; }
+        if (src[j] === "'") {
+          if (src[j + 1] === "'") { j++; continue; }
+          return src[j + 1] === "!";
+        }
+      }
+      return false;
+    })();
+    if (ch === '"' || (ch === "'" && !singleQuotedSheet)) {
+      const quote = ch;
       let j = i + 1, str = "";
       while (j < n) {
-        if (src[j] === '"') { if (src[j + 1] === '"') { str += '"'; j += 2; continue; } j++; break; }
+        if (src[j] === quote) { if (src[j + 1] === quote) { str += quote; j += 2; continue; } j++; break; }
+        if (src[j] === "\\" && src[j + 1] === quote) { str += quote; j += 2; continue; }
         str += src[j++];
       }
       tokens.push({ t: "str", v: str }); i = j; continue;
@@ -59,7 +72,11 @@ export function tokenize(src: string): Token[] {
       let j = i, word = "";
       if (ch === "'") { // 'Sheet Name'!Ref
         j++;
-        while (j < n && src[j] !== "'") word += src[j++];
+        while (j < n) {
+          if ((src[j] === "\\" || src[j] === "'") && src[j + 1] === "'") { word += "''"; j += 2; continue; }
+          if (src[j] === "'") break;
+          word += src[j++];
+        }
         j++; word = "'" + word + "'";
       } else {
         while (j < n && /[A-Za-z0-9_$.]/.test(src[j])) word += src[j++];
@@ -148,6 +165,7 @@ export function parseFormula(src: string): Ast {
     throw ERR.VALUE();
   }
   const ast = parseExpr(0);
+  if (pos !== tokens.length) throw ERR.VALUE();
   return ast;
 }
 const BP: Record<string, { lbp: number; right?: boolean }> = {
@@ -172,7 +190,7 @@ export function unwrapParens(node: Ast): Ast {
 export function serializeAst(node: Ast): string {
   switch (node.k) {
     case "num": return String(node.v);
-    case "str": return '"' + node.v.replace(/"/g, '""') + '"';
+    case "str": return '"' + node.v.replace(/"/g, '\\"') + '"';
     case "bool": return node.v ? "TRUE" : "FALSE";
     case "ref": return node.ref;
     case "range": return node.a + ":" + node.b;
@@ -183,4 +201,78 @@ export function serializeAst(node: Ast): string {
     case "call": return node.name + "(" + node.args.map(serializeAst).join(",") + ")";
   }
   return "";
+}
+
+// Editor and copy/fill references share the grid's 702-column and 50,000-row bounds. A function
+// name, identifier suffix, sheet prefix or quoted string must never become an editable reference.
+const SHEET_PREFIX_SOURCE = "(?:(?:'(?:\\\\'|''|[^'])+'|[A-Za-z_][A-Za-z0-9_.]*)!)?";
+const CELL_SOURCE = "(?<![A-Za-z0-9_.$])\\$?[A-Z]{1,2}\\$?[1-9]\\d*(?![A-Za-z0-9_!]|\\s*\\()";
+const ENDPOINT_SOURCE = SHEET_PREFIX_SOURCE + CELL_SOURCE;
+const REFERENCE_SOURCE = `${ENDPOINT_SOURCE}(?:\\s*:\\s*${ENDPOINT_SOURCE})?`;
+const ENDPOINT_PATTERN = new RegExp(ENDPOINT_SOURCE, "gi");
+const REFERENCE_PATTERN = new RegExp(REFERENCE_SOURCE, "gi");
+
+export function formulaCursorInQuote(value: string, cursor: number): boolean {
+  let quote: string | null = null;
+  for (let index = 1; index < cursor; index++) {
+    const char = value[index];
+    if (quote) {
+      if (char === "\\" && value[index + 1] === quote) { index++; continue; }
+      if (char === quote) { if (value[index + 1] === quote) { index++; continue; } quote = null; }
+    } else if (char === '"' || char === "'") quote = char;
+  }
+  return !!quote;
+}
+
+export function* formulaReferences(value: string, endpoints = false): Generator<{ start: number; end: number; text: string }> {
+  const pattern = endpoints ? ENDPOINT_PATTERN : REFERENCE_PATTERN;
+  let cursor = 1, quote: string | null = null;
+  for (const match of value.matchAll(pattern)) {
+    while (cursor < match.index) {
+      const char = value[cursor++];
+      if (quote) {
+        if (char === "\\" && value[cursor] === quote) { cursor++; continue; }
+        if (char === quote) { if (value[cursor] === quote) cursor++; else quote = null; }
+      } else if (char === '"' || char === "'") quote = char;
+    }
+    if (quote) continue;
+    let inBounds = true;
+    for (const endpoint of match[0].matchAll(ENDPOINT_PATTERN)) {
+      const row = /\$?([1-9]\d*)$/.exec(endpoint[0]);
+      if (!row || Number(row[1]) > 50000) { inBounds = false; break; }
+    }
+    if (inBounds) yield { start: match.index, end: match.index + match[0].length, text: match[0] };
+  }
+}
+
+export function cycleReferenceToken(text: string): string {
+  const bang = text.lastIndexOf("!"), prefix = text.slice(0, bang + 1);
+  return prefix + text.slice(bang + 1).replace(/^(\$?)([A-Z]{1,2})(\$?)([1-9]\d*)$/i, (_, fixedColumn, column, fixedRow, row) => {
+    if (!fixedColumn && !fixedRow) return "$" + column.toUpperCase() + "$" + row;
+    if (fixedColumn && fixedRow) return column.toUpperCase() + "$" + row;
+    if (!fixedColumn && fixedRow) return "$" + column.toUpperCase() + row;
+    return column.toUpperCase() + row;
+  });
+}
+
+export function shiftFormulaReferences(value: string, rowDelta: number, columnDelta: number): string {
+  let result = "", start = 0;
+  for (const reference of formulaReferences(value, true)) {
+    const bang = reference.text.lastIndexOf("!"), prefix = reference.text.slice(0, bang + 1);
+    const match = /^(\$?)([A-Z]{1,2})(\$?)([1-9]\d*)$/i.exec(reference.text.slice(bang + 1));
+    if (!match) continue;
+    let column = 0;
+    for (const letter of match[2].toUpperCase()) column = column * 26 + letter.charCodeAt(0) - 64;
+    column = column - 1 + (match[1] ? 0 : columnDelta);
+    const row = Number(match[4]) - 1 + (match[3] ? 0 : rowDelta);
+    let replacement = "#REF!";
+    if (row >= 0 && column >= 0) {
+      let letters = "";
+      for (let index = column + 1; index > 0; index = Math.floor((index - 1) / 26)) letters = String.fromCharCode(65 + (index - 1) % 26) + letters;
+      replacement = prefix + match[1] + letters + match[3] + (row + 1);
+    }
+    result += value.slice(start, reference.start) + replacement;
+    start = reference.end;
+  }
+  return result + value.slice(start);
 }

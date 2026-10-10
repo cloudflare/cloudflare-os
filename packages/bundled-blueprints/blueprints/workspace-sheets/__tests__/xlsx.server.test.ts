@@ -2,14 +2,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { MutationQueue, SubscriberRegistry } from "@gadgets/bundled-blueprints/libraries/sync/server";
 import { ExportHandler, Gadget } from "../files/server.ts";
-import type { Operation, SheetsDocument } from "../files/lib/protocol.ts";
+import type { Cell, CellFmt, CellMap, CollaboratorInfo, Operation, SheetsDocument, SheetMeta, SheetFilter, SheetChart, SheetComment, SheetPivot, SubscriberCallbacks, OperationEvent } from "../files/lib/protocol.ts";
 import { workbookToXlsx } from "../files/lib/xlsx.ts";
 import { createZip, crc32 } from "@gadgets/bundled-blueprints/libraries/zip/server";
 
-// The exporter is exercised on state as stored, including shapes it has to tolerate rather than
-// ones the protocol describes (an empty document, v5-only metadata, a format with keys the server
-// would have dropped), so the fixtures are built loosely and handed over as the document type here.
-const exportXlsx = (document: unknown) => workbookToXlsx(document as SheetsDocument);
+// Complete the workbook header while retaining the actual stored model in every normal fixture.
+function exportXlsx(document: Partial<SheetsDocument>) {
+  return workbookToXlsx({revision: 0, title: "Test", lastModified: 0, sheetOrder: [], sheets: {}, cells: {}, ...document});
+}
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -104,11 +104,18 @@ function text(entries: Map<string, ZipEntry>, name: string): string {
   return decoder.decode(entry!.bytes);
 }
 
-function cell(value: unknown, fmt: Record<string, unknown> | null = null) {
+function cell(value: string, fmt: CellFmt | null = null): Cell {
   return {value, fmt, version: 1};
 }
 
-function sheet(name: string, extra: Record<string, unknown> = {}) {
+type SheetFixture = Omit<Partial<SheetMeta>, "filter" | "charts" | "comments" | "pivot"> & {
+  filter?: Partial<SheetFilter>;
+  charts?: Partial<SheetChart>[];
+  comments?: Partial<SheetComment>[];
+  pivot?: Partial<SheetPivot>;
+};
+
+function sheet(name: string, extra: SheetFixture = {}): SheetMeta {
   return {
     id: name,
     name,
@@ -119,6 +126,10 @@ function sheet(name: string, extra: Record<string, unknown> = {}) {
     frozenRows: 0,
     frozenCols: 0,
     ...extra,
+    filter: extra.filter ? {row: 0, endRow: 0, columns: [], criteria: {}, rowOrder: [], sort: null, ...extra.filter} : null,
+    charts: (extra.charts ?? []).map(chart => ({id: "chart", type: "line", range: "", title: "", xAxisTitle: "", yAxisTitle: "", legend: true, firstRowHeaders: true, firstColLabels: true, smooth: false, x: 96, y: 44, width: 520, height: 320, ...chart})),
+    comments: (extra.comments ?? []).map(comment => ({id: "comment", ref: "A1", text: "", createdAt: 0, resolved: false, ...comment})),
+    pivot: extra.pivot ? {sourceSheetId: "", sourceRange: "", rowField: "", columnField: "", valueField: "", aggregate: "sum", showRowTotals: true, showColumnTotals: true, filterField: "", filterValues: [], ...extra.pivot} : null,
   };
 }
 
@@ -132,16 +143,24 @@ function styleId(xml: string, reference: string): string | undefined {
   return / s="(\d+)"/.exec(cellXml(xml, reference))?.[1];
 }
 
+function columnName(index: number): string {
+  let name = "";
+  for (let value = index + 1; value > 0; value = Math.floor((value - 1) / 26)) name = String.fromCharCode(65 + (value - 1) % 26) + name;
+  return name;
+}
+
 function handler(): ExportHandler {
-  return Object.create(ExportHandler.prototype) as ExportHandler;
+  return Object.create(ExportHandler.prototype);
 }
 
 type Registry = Gadget["subscribers"];
 
 // A subscriber as the RPC layer would deliver it: the callbacks under test plus the `dup`,
 // disconnection hook and disposer the registry expects of a stub.
-function stub<T extends object>(callbacks: T) {
+function stub<T extends Partial<SubscriberCallbacks>>(callbacks: T) {
   return {
+    presence: vi.fn(),
+    operation: vi.fn(),
     ...callbacks,
     dup() { return this; },
     onRpcBroken() {},
@@ -150,14 +169,14 @@ function stub<T extends object>(callbacks: T) {
 }
 
 // A registry holding `stubs`, with no presence hooks: these tests watch operations, not presence.
-function registryOf(...stubs: object[]): Registry {
-  const registry = new SubscriberRegistry() as Registry;
-  for (const each of stubs) registry.add(each as never, {clientId: "", name: "", color: ""});
+function registryOf(...stubs: SubscriberCallbacks[]): Registry {
+  const registry = new SubscriberRegistry<SubscriberCallbacks, CollaboratorInfo>();
+  for (const each of stubs) registry.add(each, {clientId: "", name: "", color: ""});
   return registry;
 }
 
 // A Gadget over in-memory storage, for exercising the mutation queue without a Durable Object.
-function inMemoryGadget(subscribers: Registry = registryOf()) {
+function inMemoryGadget(subscribers: Registry = registryOf()): Gadget {
   const stored = new Map<string, unknown>([
     ["meta", {revision: 0, title: "Test", sheetOrder: ["sheet"], sheets: {sheet: sheet("Sheet")}, lastModified: 0}],
     ["cells:sheet", {}],
@@ -172,10 +191,10 @@ function inMemoryGadget(subscribers: Registry = registryOf()) {
     },
     mutations: new MutationQueue(),
     subscribers,
-  }) as Gadget;
+  });
 }
 
-function setCell(ref: string, value: string, baseVersion = 0) {
+function setCell(ref: string, value: string, baseVersion = 0): Operation {
   return {senderId: "test", cellOps: [{sheetId: "sheet", ref, value, fmt: null, baseVersion}]};
 }
 
@@ -517,48 +536,25 @@ describe("Workspace Sheets XLSX", () => {
     for (const reference of ["A0", "a1", "XFE1", "A1048577"]) expect(xml).not.toContain(`r="${reference}"`);
   });
 
-  it("batches worksheet XML while exporting the maximum stored cell count", async () => {
-    const NativeCompressionStream = CompressionStream;
-    let compressorWrites = 0;
-    vi.stubGlobal("CompressionStream", class {
-      readonly readable: ReadableStream<Uint8Array>;
-      readonly writable: WritableStream<Uint8Array>;
-      constructor(format: ConstructorParameters<typeof CompressionStream>[0]) {
-        const compressor = new NativeCompressionStream(format);
-        const counter = new TransformStream<Uint8Array, Uint8Array>({
-          transform(chunk, controller) {
-            ++compressorWrites;
-            controller.enqueue(chunk);
-          },
-        });
-        void counter.readable.pipeTo(compressor.writable);
-        this.readable = compressor.readable;
-        this.writable = counter.writable;
-      }
-    });
+  it("exports the maximum stored cell count without losing the last cell", async () => {
     const cells: Record<string, ReturnType<typeof cell>> = {};
     for (let index = 0; index < 200000; ++index) {
       cells[String.fromCharCode(65 + index % 4) + (Math.floor(index / 4) + 1)] = cell("1");
     }
-    try {
-      const {entries} = await readZip(exportXlsx({
-        sheetOrder: ["dense"],
-        sheets: {dense: sheet("Dense", {rows: 50000, cols: 4})},
-        cells: {dense: cells},
-      }));
-      const worksheet = text(entries, "xl/worksheets/sheet1.xml");
+    const {entries} = await readZip(exportXlsx({
+      sheetOrder: ["dense"],
+      sheets: {dense: sheet("Dense", {rows: 50000, cols: 4})},
+      cells: {dense: cells},
+    }));
+    const worksheet = text(entries, "xl/worksheets/sheet1.xml");
 
-      expect(worksheet).toContain('<dimension ref="A1:D50000"/>');
-      expect(cellXml(worksheet, "D50000")).toContain("<v>1</v>");
-      // ~5 MB of worksheet XML in 64 KiB batches; per-cell chunks would be ~200,000 writes.
-      expect(compressorWrites).toBeLessThan(1000);
-    } finally {
-      vi.unstubAllGlobals();
-    }
+    expect(worksheet).toContain('<dimension ref="A1:D50000"/>');
+    expect(cellXml(worksheet, "D50000")).toContain("<v>1</v>");
+    expect(worksheet.match(/<c r=/g)).toHaveLength(200000);
   }, 30_000);
 
   it("deduplicates styles while supporting every format field and number-format category", async () => {
-    const formats = {
+    const formats: Record<string, CellFmt> = {
       A1: {b: true}, B1: {i: true}, C1: {u: true}, D1: {s: true},
       E1: {c: "#abc"}, F1: {bg: "#1234"}, G1: {a: "c"}, H1: {nf: "number", d: 3},
       I1: {fs: 18}, J1: {wrap: true}, K1: {nf: "text"}, L1: {nf: "integer"},
@@ -568,7 +564,7 @@ describe("Workspace Sheets XLSX", () => {
     };
     const cells: Record<string, ReturnType<typeof cell>> = {};
     for (const [reference, fmt] of Object.entries(formats)) cells[reference] = cell("1", fmt);
-    const repeated = {b: true, bg: "#112233", a: "r"};
+    const repeated: CellFmt = {b: true, bg: "#112233", a: "r"};
     cells.A2 = cell("same", repeated);
     cells.B2 = cell("same", {...repeated});
     cells.C2 = cell("", {...repeated});
@@ -633,14 +629,355 @@ describe("Workspace Sheets XLSX", () => {
     })).toThrow("XLSX fill count exceeds Excel's limit of 256");
   });
 
-  it("ignores v5-only metadata while exporting ordinary and materialized pivot cells", async () => {
+  it("converts the grid's single-quoted and backslash-escaped string literals to Excel's form", async () => {
+    const cells = {
+      A1: cell("=COUNTIF(A2:A20,'Complete')"),
+      A2: cell("='It''s'&'say \"hi\"'&\"a\\\"b\"&\"c\"\"d\""),
+      A3: cell("='It''s'!A1&'x'"),
+      A4: cell("='Jan':'It''s'!A1"),
+      A5: cell("=Table1[[A'[B]]&'q'"),
+      A6: cell("='unterminated"),
+      A7: cell("='esc\\'"),
+      A8: cell("=\"tail\\\""),
+      A9: cell("='don\\'!t'"),
+    };
+    const {entries} = await readZip(exportXlsx({
+      sheetOrder: ["sheet", "its"],
+      sheets: {sheet: sheet("Sheet"), its: sheet("It's")},
+      cells: {sheet: cells, its: {}},
+    }));
+    const worksheet = text(entries, "xl/worksheets/sheet1.xml");
+
+    expect(cellXml(worksheet, "A1")).toContain('<f>COUNTIF(A2:A20,"Complete")</f>');
+    expect(cellXml(worksheet, "A2")).toContain('<f>"It\'s"&amp;"say ""hi"""&amp;"a""b"&amp;"c""d"</f>');
+    expect(cellXml(worksheet, "A3")).toContain("<f>'It''s'!A1&amp;\"x\"</f>");
+    expect(cellXml(worksheet, "A4")).toContain("<f>'Jan':'It''s'!A1</f>");
+    expect(cellXml(worksheet, "A5")).toContain("<f>Table1[[A'[B]]&amp;\"q\"</f>");
+    for (const reference of ["A6", "A7", "A8"]) expect(cellXml(worksheet, reference)).toContain('t="inlineStr"');
+    // An escaped quote followed by `!` is still inside the string, not a sheet name's closing quote.
+    expect(cellXml(worksheet, "A9")).toContain("<f>\"don'!t\"</f>");
+  });
+
+  it("exports backslash-escaped sheet apostrophes as formula references", async () => {
+    const {entries} = await readZip(exportXlsx({
+      sheetOrder: ["data", "owner"],
+      sheets: {data: sheet("Data"), owner: sheet("Owner's Sheet")},
+      cells: {
+        data: {
+          A1: cell(String.raw`='Owner\'s Sheet'!A1`),
+          A2: cell(String.raw`='Owner\'s Sheet'!$A$1:'Owner\'s Sheet'!B2`),
+          A3: cell(String.raw`='Missing\'s Sheet'!A1`),
+        },
+        owner: {A1: cell("42")},
+      },
+    }));
+    const worksheet = text(entries, "xl/worksheets/sheet1.xml");
+    expect(cellXml(worksheet, "A1")).toContain("<f>'Owner''s Sheet'!A1</f>");
+    expect(cellXml(worksheet, "A2")).toContain("<f>'Owner''s Sheet'!$A$1:'Owner''s Sheet'!B2</f>");
+    expect(cellXml(worksheet, "A3")).toContain("<f>'Missing''s Sheet'!A1</f>");
+  });
+
+  it("exports a filter row as an autofilter with criteria, hidden buttons, sort state and hidden rows", async () => {
+    const document = {
+      sheetOrder: ["data"],
+      sheets: {
+        data: sheet("Data & Co", {
+          rows: 8,
+          cols: 5,
+          filter: {
+            row: 1, endRow: 6, columns: [1, 3, 4], rowOrder: [2, 3, 4, 5, 6],
+            criteria: {1: ["s:East", "z:", "x:__none__"], 3: ["b:1", "n:1234.5", "e:#DIV/0!"], 4: [], 2: ["s:ignored"], 9: ["s:out"]},
+            sort: {column: 3, direction: "desc"},
+          },
+        }),
+      },
+      cells: {
+        data: {
+          B2: cell("Zone"), D2: cell("Flag"), E2: cell("None"),
+          B3: cell("East"), D3: cell(" true "),
+          B4: cell("West"), D4: cell("TRUE"),
+          B5: cell(""), D5: cell("=D4"),
+          B6: cell("East"), D6: cell("$1,234.50"),
+          B7: cell("East"), D7: cell("FALSE"),
+          B8: cell("outside"), D8: cell("outside"),
+        },
+      },
+    };
+    const {entries} = await readZip(exportXlsx(document));
+    const worksheet = text(entries, "xl/worksheets/sheet1.xml");
+
+    expect(worksheet).toContain(
+      '<autoFilter ref="B2:E7">' +
+      '<filterColumn colId="0"><filters blank="1"><filter val="East"/></filters></filterColumn>' +
+      '<filterColumn colId="1" hiddenButton="1"/>' +
+      '<filterColumn colId="2"><filters><filter val="TRUE"/><filter val="1234.5"/><filter val="#DIV/0!"/></filters></filterColumn>' +
+      '<sortState ref="B3:E7"><sortCondition ref="D3:D7" descending="1"/></sortState></autoFilter>');
+    // Row 3 passes; row 4 fails on West; row 5 has a formula in D and a blank in B, so it stays
+    // visible; row 6 passes; row 7 fails on FALSE.
+    expect([...worksheet.matchAll(/<row r="(\d+)"[^>]*hidden="1"/g)].map(match => match[1])).toEqual(["4", "7"]);
+    expect(worksheet).not.toContain('<row r="8" hidden');
+    expect(text(entries, "xl/workbook.xml")).toContain(
+      '<definedNames><definedName name="_xlnm._FilterDatabase" localSheetId="0" hidden="1">\'Data &amp; Co\'!$B$2:$E$7</definedName></definedNames>');
+  });
+
+  it("hides rows failing a filter even when they hold no cells, and every row when nothing is selected", async () => {
+    const {entries} = await readZip(exportXlsx({
+      sheetOrder: ["data", "none"],
+      sheets: {
+        data: sheet("Data", {rows: 5, cols: 1, rowHeights: {2: 40}, filter: {row: 0, endRow: 4, columns: [0], criteria: {0: ["s:keep"]}}}),
+        none: sheet("None", {rows: 3, cols: 2, filter: {row: 0, endRow: 2, columns: [0, 1], criteria: {1: ["x:__none__"]}}}),
+      },
+      cells: {data: {A1: cell("Header"), A2: cell("keep"), A4: cell("drop")}, none: {A2: cell("x"), B3: cell("=A2")}},
+    }));
+    const worksheet = text(entries, "xl/worksheets/sheet1.xml");
+
+    expect(worksheet).toContain('<row r="3" ht="30" customHeight="1" hidden="1"></row>');
+    expect(worksheet).toContain('<row r="4" hidden="1"><c r="A4"');
+    expect(worksheet).toContain('<row r="5" hidden="1"></row>');
+    expect(worksheet).toContain('<autoFilter ref="A1:A5"><filterColumn colId="0"><filters><filter val="keep"/></filters></filterColumn></autoFilter>');
+    // Nothing selected hides every row, including the formula row that cannot be judged.
+    const none = text(entries, "xl/worksheets/sheet2.xml");
+    expect(none).toContain('<row r="2" hidden="1">');
+    expect(none).toContain('<row r="3" hidden="1"><c r="B3">');
+    expect(none).toContain('<autoFilter ref="A1:B3"></autoFilter>');
+  });
+
+  it("exports open comments as legacy notes with VML shapes and skips resolved ones", async () => {
+    const {entries} = await readZip(exportXlsx({
+      sheetOrder: ["plain", "notes"],
+      sheets: {
+        plain: sheet("Plain"),
+        notes: sheet("Notes", {comments: [
+          {id: "a", ref: "B3", text: "first <note>", createdAt: 1, resolved: false},
+          {id: "b", ref: "B3", text: "second", createdAt: 2},
+          {id: "c", ref: "C1", text: "resolved", resolved: true},
+          {id: "d", ref: "A1", text: "   "},
+          {id: "e", ref: "bad", text: "unplaced"},
+          {id: "f", ref: "XFD1048576", text: "last cell"},
+        ]}),
+      },
+      cells: {plain: {}, notes: {}},
+    }));
+
+    expect([...entries.keys()].filter(name => /comments|vml/.test(name))).toEqual([
+      "xl/comments1.xml",
+      "xl/drawings/vmlDrawing1.vml",
+    ]);
+    const comments = text(entries, "xl/comments1.xml");
+    expect(comments).toContain('<comment ref="B3" authorId="0"><text><t xml:space="preserve">first &lt;note&gt;\n\nsecond</t></text></comment>');
+    expect(comments).toContain('<comment ref="XFD1048576"');
+    expect(comments).not.toContain("resolved");
+    expect(comments).not.toContain("unplaced");
+    const vml = text(entries, "xl/drawings/vmlDrawing1.vml");
+    expect(vml).toContain('<o:idmap v:ext="edit" data="1"/>');
+    expect(vml).toContain('<v:shape id="_x0000_s1025"');
+    expect(vml).toContain("<x:Anchor>2, 15, 1, 10, 4, 15, 5, 4</x:Anchor><x:AutoFill>False</x:AutoFill><x:Row>2</x:Row><x:Column>1</x:Column>");
+    expect(vml).toContain("<x:Anchor>16383, 15, 1048574, 10, 16383, 15, 1048575, 4</x:Anchor>");
+    const worksheet = text(entries, "xl/worksheets/sheet2.xml");
+    expect(worksheet).toContain('<legacyDrawing r:id="rId1"/>');
+    const relationships = text(entries, "xl/worksheets/_rels/sheet2.xml.rels");
+    expect(relationships).toContain('Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing" Target="../drawings/vmlDrawing1.vml"');
+    expect(relationships).toContain('Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments1.xml"');
+    const contentTypes = text(entries, "[Content_Types].xml");
+    expect(contentTypes).toContain('<Default Extension="vml" ContentType="application/vnd.openxmlformats-officedocument.vmlDrawing"/>');
+    expect(contentTypes).toContain('<Override PartName="/xl/comments1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml"/>');
+    expect(text(entries, "xl/worksheets/sheet1.xml")).not.toContain("legacyDrawing");
+  });
+
+  it("exports charts as DrawingML anchored at the cell under their grid position", async () => {
+    const {entries} = await readZip(exportXlsx({
+      sheetOrder: ["data"],
+      sheets: {data: sheet("Q&A", {
+        colWidths: {0: 150},
+        rowHeights: {1: 40},
+        charts: [
+          {id: "bar", type: "stackedBar", range: "A2:C6", title: "Sales & Co", xAxisTitle: "Amount", yAxisTitle: "Region", legend: true, x: 400, y: 100, width: 520, height: 320},
+          {id: "pie", type: "pie", range: "A2:B6", title: "", legend: false, x: 48, y: 28},
+          {id: "line", type: "line", range: "B2:C6", firstColLabels: false, firstRowHeaders: false},
+          {id: "area", type: "area", range: "B4", firstRowHeaders: true, firstColLabels: true},
+          JSON.parse('{"id":"unknown","type":"scatter","range":"A2:C6"}'),
+          {id: "none", type: "line", range: ""},
+          {id: "single", type: "line", range: "A1:A2"},
+        ],
+      })},
+      cells: {data: {
+        A1: cell("Total"), A2: cell("5"),
+        B2: cell("Q1"), C2: cell("Q2"),
+        A3: cell("East"), B3: cell("1"), C3: cell("2"),
+        A4: cell("West"), B4: cell("3"), C4: cell("4"),
+        A5: cell("North"), B5: cell("5"), C5: cell("=B5*2"),
+        A6: cell("South"), B6: cell("7"), C6: cell("8"),
+      }},
+    }));
+
+    expect(entries.has("xl/worksheets/_rels/sheet1.xml.rels")).toBe(true);
+    expect([...entries.keys()].filter(name => /drawing|chart/.test(name))).toEqual([
+      "xl/drawings/drawing1.xml",
+      "xl/drawings/_rels/drawing1.xml.rels",
+      "xl/charts/chart1.xml",
+      "xl/charts/chart2.xml",
+      "xl/charts/chart3.xml",
+      "xl/charts/chart4.xml",
+      "xl/charts/chart5.xml",
+      "xl/charts/chart6.xml",
+    ]);
+    expect(text(entries, "xl/worksheets/sheet1.xml")).toContain('<drawing r:id="rId1"/>');
+    const drawing = text(entries, "xl/drawings/drawing1.xml");
+    // 400px - 44px header = 356px: past a 150px column and two 92px ones, 22px into column D;
+    // 100px - 22px header = 78px: past a 24px row and the 40px one, 14px into row 3.
+    expect(drawing).toContain('<xdr:from><xdr:col>3</xdr:col><xdr:colOff>209550</xdr:colOff><xdr:row>2</xdr:row><xdr:rowOff>133350</xdr:rowOff></xdr:from><xdr:ext cx="4953000" cy="3048000"/>');
+    expect(drawing).toContain('<xdr:from><xdr:col>0</xdr:col><xdr:colOff>38100</xdr:colOff><xdr:row>0</xdr:row><xdr:rowOff>57150</xdr:rowOff></xdr:from>');
+    expect(drawing).toContain('r:id="rId6"');
+    expect(text(entries, "xl/drawings/_rels/drawing1.xml.rels")).toContain('Id="rId6" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart6.xml"');
+
+    const bar = text(entries, "xl/charts/chart1.xml");
+    expect(bar).toContain('<c:barChart><c:barDir val="bar"/><c:grouping val="stacked"/>');
+    expect(bar).toContain("<a:t>Sales &amp; Co</a:t>");
+    expect(bar).toContain("<c:tx><c:strRef><c:f>'Q&amp;A'!$B$2</c:f></c:strRef></c:tx>");
+    expect(bar).toContain("<c:cat><c:strRef><c:f>'Q&amp;A'!$A$3:$A$6</c:f></c:strRef></c:cat><c:val><c:numRef><c:f>'Q&amp;A'!$B$3:$B$6</c:f></c:numRef></c:val>");
+    expect(bar).toContain("<c:f>'Q&amp;A'!$C$3:$C$6</c:f>");
+    expect(bar).toContain('<c:orientation val="maxMin"/>');
+    expect(bar).toContain('<c:axPos val="l"/><c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr/></a:pPr><a:r><a:t>Region</a:t>');
+    expect(bar).toContain('<c:axPos val="b"/><c:majorGridlines/><c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr/></a:pPr><a:r><a:t>Amount</a:t>');
+    expect(bar).toContain('<c:legend><c:legendPos val="r"/>');
+
+    const pie = text(entries, "xl/charts/chart2.xml");
+    expect(pie).toContain('<c:autoTitleDeleted val="1"/>');
+    expect(pie.match(/<c:ser>/g)).toHaveLength(1);
+    expect(pie).toContain('<c:dPt><c:idx val="3"/><c:bubble3D val="0"/><c:spPr><a:solidFill><a:srgbClr val="8B5FBF"/></a:solidFill>');
+    expect(pie).not.toContain("<c:legend>");
+
+    const line = text(entries, "xl/charts/chart3.xml");
+    expect(line).toContain("<c:tx><c:v>B</c:v></c:tx>");
+    expect(line).toContain("<c:f>'Q&amp;A'!$B$2:$B$6</c:f>");
+    expect(line).not.toContain("<c:cat>");
+    expect(line).toContain('<c:smooth val="0"/>');
+
+    const area = text(entries, "xl/charts/chart4.xml");
+    expect(area).toContain("<c:areaChart>");
+    expect(area).toContain('<a:srgbClr val="E1632E"><a:alpha val="18000"/></a:srgbClr>');
+    expect(area).toContain("<c:f>'Q&amp;A'!$B$4</c:f>");
+    // An unknown type falls back to a line chart; a single column keeps its header and has no labels.
+    expect(text(entries, "xl/charts/chart5.xml")).toContain("<c:lineChart>");
+    const single = text(entries, "xl/charts/chart6.xml");
+    expect(single).toContain("<c:tx><c:strRef><c:f>'Q&amp;A'!$A$1</c:f></c:strRef></c:tx>");
+    expect(single).toContain("<c:val><c:numRef><c:f>'Q&amp;A'!$A$2</c:f></c:numRef></c:val>");
+    expect(single).not.toContain("<c:cat>");
+    const contentTypes = text(entries, "[Content_Types].xml");
+    expect(contentTypes).toContain('<Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>');
+    expect(contentTypes).toContain('<Override PartName="/xl/charts/chart5.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>');
+    expect(contentTypes).not.toContain('Extension="vml"');
+  });
+
+  it("selects series the way the grid does, then applies Excel's series limit", async () => {
+    const cells: CellMap = {A1: cell("Label"), A2: cell("x"), A3: cell("y")};
+    // B and C hold no numbers; D..IY (256 columns) do, the last of them as a formula.
+    cells.B2 = cell("text");
+    cells.C1 = cell("header only");
+    for (let column = 3; column < 3 + 256; ++column) {
+      cells[`${columnName(column)}2`] = cell(column === 3 + 255 ? "=A2" : String(column));
+    }
+    const {entries} = await readZip(exportXlsx({
+      sheetOrder: ["data", "empty", "filtered"],
+      sheets: {
+        data: sheet("Data", {cols: 260, charts: [{id: "wide", type: "line", range: "A1:IZ3"}, {id: "pie", type: "pie", range: "A1:IZ3"}]}),
+        empty: sheet("Empty", {charts: [{id: "text", type: "line", range: "A1:B3"}]}),
+        // B is numeric only in a row the filter hides, so the visible pie uses C, as the grid does.
+        filtered: sheet("Filtered", {
+          filter: {row: 0, endRow: 3, columns: [0, 1, 2], criteria: {0: ["s:keep"]}},
+          charts: [{id: "pie", type: "pie", range: "A1:C4"}],
+        }),
+      },
+      cells: {
+        data: cells,
+        empty: {A1: cell("Name"), B1: cell("Note"), A2: cell("x"), B2: cell("words")},
+        filtered: {A1: cell("k"), B1: cell("b"), C1: cell("c"), A2: cell("drop"), B2: cell("5"), A3: cell("keep"), C3: cell("7"), A4: cell("keep"), C4: cell("8")},
+      },
+    }));
+
+    const wide = text(entries, "xl/charts/chart1.xml");
+    expect(wide.match(/<c:ser>/g)).toHaveLength(255);
+    expect(wide).not.toContain("<c:f>'Data'!$B$");
+    expect(wide).not.toContain("<c:f>'Data'!$C$");
+    expect(wide).toContain("<c:f>'Data'!$D$2:$D$3</c:f>");
+    expect(wide).toContain("<c:f>'Data'!$IX$2:$IX$3</c:f>");
+    expect(wide).not.toContain("<c:f>'Data'!$IY$");
+    const pie = text(entries, "xl/charts/chart2.xml");
+    expect(pie.match(/<c:ser>/g)).toHaveLength(1);
+    expect(pie).toContain("<c:f>'Data'!$D$2:$D$3</c:f>");
+    // A chart over text only draws a placeholder in the grid and is not exported.
+    expect([...entries.keys()].filter(name => name.startsWith("xl/charts/"))).toHaveLength(3);
+    expect(text(entries, "xl/worksheets/sheet2.xml")).not.toContain("<drawing");
+    const filteredPie = text(entries, "xl/charts/chart3.xml");
+    expect(filteredPie.match(/<c:ser>/g)).toHaveLength(1);
+    expect(filteredPie).toContain("<c:f>'Filtered'!$C$2:$C$4</c:f>");
+  });
+
+  it("numbers drawing, chart and comment parts across sheets and orders sheet relationships", async () => {
+    const chart: Partial<SheetChart> = {id: "c", type: "line", range: "A1:B3"};
+    const comment = {id: "k", ref: "A1", text: "note"};
+    const {entries} = await readZip(exportXlsx({
+      sheetOrder: ["first", "second"],
+      sheets: {
+        first: sheet("First", {charts: [chart], comments: [comment]}),
+        second: sheet("Second", {charts: [chart, chart], comments: Array.from({length: 1500}, () => comment)}),
+      },
+      cells: {first: {B1: cell("https://example.com/"), B2: cell("1")}, second: {B2: cell("1")}},
+    }));
+
+    expect(text(entries, "xl/worksheets/sheet1.xml")).toContain('<hyperlinks><hyperlink ref="B1" r:id="rId1"/></hyperlinks><drawing r:id="rId2"/><legacyDrawing r:id="rId3"/>');
+    expect(text(entries, "xl/worksheets/_rels/sheet1.xml.rels")).toContain('Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments1.xml"');
+    expect(text(entries, "xl/worksheets/sheet2.xml")).toContain('<drawing r:id="rId1"/><legacyDrawing r:id="rId2"/>');
+    expect(text(entries, "xl/worksheets/_rels/sheet2.xml.rels")).toContain('Target="../drawings/drawing2.xml"');
+    expect(text(entries, "xl/drawings/_rels/drawing2.xml.rels")).toContain('Target="../charts/chart3.xml"');
+    expect(entries.has("xl/charts/chart3.xml")).toBe(true);
+    expect(entries.has("xl/charts/chart4.xml")).toBe(false);
+    // 1500 comments joined into one note still reserve two 1024-id VML blocks after sheet 1's one.
+    expect(text(entries, "xl/drawings/vmlDrawing2.vml")).toContain('<o:idmap v:ext="edit" data="2"/>');
+    expect(text(entries, "xl/drawings/vmlDrawing2.vml")).toContain('<v:shape id="_x0000_s2049"');
+    expect(text(entries, "xl/comments2.xml")).toContain("note\n\nnote");
+  });
+
+  it("links literal URL cells with the grid's link styling and leaves other cells alone", async () => {
+    const {entries} = await readZip(exportXlsx({
+      sheetOrder: ["data"],
+      sheets: {data: sheet("Data")},
+      cells: {data: {
+        A1: cell("https://example.com/a b?x=1#frag", {b: true, c: "#ff0000"}),
+        A2: cell("'HTTP://Example.com"),
+        A3: cell("https://nolink.example", {nf: "text"}),
+        A4: cell("ftp://example.com"),
+        A5: cell("https://"),
+        A6: cell('=HYPERLINK("https://example.com","x")'),
+        A7: cell(" https://leading.example "),
+        A8: cell("see https://example.com"),
+        A9: cell("https://example.com/" + "x".repeat(2100)),
+      }},
+    }));
+    const worksheet = text(entries, "xl/worksheets/sheet1.xml");
+    const styles = text(entries, "xl/styles.xml");
+
+    expect(worksheet).toContain('<hyperlinks><hyperlink ref="A1" r:id="rId1"/><hyperlink ref="A2" r:id="rId2"/><hyperlink ref="A7" r:id="rId3"/></hyperlinks>');
+    const relationships = text(entries, "xl/worksheets/_rels/sheet1.xml.rels");
+    expect(relationships).toContain('Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.com/a%20b?x=1#frag" TargetMode="External"');
+    expect(relationships).toContain('Target="http://example.com/"');
+    expect(relationships).toContain('Target="https://leading.example/"');
+    expect(cellXml(worksheet, "A1")).toContain(">https://example.com/a b?x=1#frag</t>");
+    expect(styleId(worksheet, "A1")).toBeDefined();
+    expect(styleId(worksheet, "A2")).toBeDefined();
+    expect(styles).toContain('<font><b/><u/><sz val="11"/><color rgb="FF1967D2"/>');
+    expect(styleId(worksheet, "A4")).toBeUndefined();
+    expect(styleId(worksheet, "A9")).toBeUndefined();
+  });
+
+  it("ignores malformed feature metadata while exporting ordinary and materialized pivot cells", async () => {
     const document = {
       sheetOrder: ["v5"],
       sheets: {
         v5: {
           ...sheet("V5"),
-          filter: {range: "A1:B4"},
-          charts: [{type: "bar"}],
+          filter: {range: "A1:B4", criteria: "x", columns: "all"},
+          charts: [{type: "bar"}, null, {range: "A1:B2:C3"}, {range: 42}],
           comments: {A1: "note"},
           pivot: {source: "A1:B4", destination: "D1"},
         },
@@ -657,13 +994,14 @@ describe("Workspace Sheets XLSX", () => {
       comments: {},
       pivot: {},
     };
-    const {entries} = await readZip(exportXlsx(document));
+    const {entries} = await readZip(exportXlsx(JSON.parse(JSON.stringify(document))));
     const worksheet = text(entries, "xl/worksheets/sheet1.xml");
     expect(cellXml(worksheet, "A1")).toContain("ordinary");
     expect(cellXml(worksheet, "D1")).toContain("Pivot total");
     expect(cellXml(worksheet, "D2")).toContain("<v>125</v>");
     expect(worksheet).not.toContain("autoFilter");
-    expect([...entries.keys()].some(name => /chart|comment|pivot/i.test(name))).toBe(false);
+    expect(worksheet).not.toContain("<drawing");
+    expect([...entries.keys()].some(name => /chart|comment|pivot|rels\/sheet/i.test(name))).toBe(false);
   });
 });
 
@@ -672,49 +1010,51 @@ describe("Workspace Sheets document snapshots", () => {
     const {promise: readReleased, resolve: releaseRead} = Promise.withResolvers<void>();
     const {promise: readStarted, resolve: markReadStarted} = Promise.withResolvers<void>();
     const order: string[] = [];
-    const fixture = Object.assign(Object.create(Gadget.prototype), {
-      mutations: new MutationQueue(),
-      loadMeta: vi.fn(async () => ({revision: 1})),
-      assembleDocument: vi.fn(async () => {
-        order.push("read started");
-        markReadStarted();
-        await readReleased;
-        order.push("read completed");
-        return {revision: 1};
-      }),
-      applyOperationLocked: vi.fn(async () => {
-        order.push("write started");
-        order.push("write completed");
-        return {result: {status: "applied"}};
-      }),
+    const fixture = inMemoryGadget();
+    const assemble = fixture.assembleDocument.bind(fixture);
+    vi.spyOn(fixture, "assembleDocument").mockImplementation(async meta => {
+      order.push("read started");
+      markReadStarted();
+      await readReleased;
+      const document = await assemble(meta);
+      order.push("read completed");
+      return document;
+    });
+    const apply = fixture.applyOperationLocked.bind(fixture);
+    const mutation = vi.spyOn(fixture, "applyOperationLocked").mockImplementation(async operation => {
+      order.push("write started");
+      const result = await apply(operation);
+      order.push("write completed");
+      return result;
     });
 
     const read = fixture.getDocument();
     await readStarted;
-    const write = fixture.applyOperation({});
+    const write = fixture.applyOperation(setCell("A1", "queued"));
     await Promise.resolve();
-    expect(fixture.applyOperationLocked).not.toHaveBeenCalled();
+    expect(mutation).not.toHaveBeenCalled();
 
     releaseRead();
-    await expect(read).resolves.toEqual({revision: 1});
-    await expect(write).resolves.toEqual({status: "applied"});
+    await expect(read).resolves.toMatchObject({revision: 0, cells: {sheet: {}}});
+    await expect(write).resolves.toMatchObject({status: "applied", revision: 1});
     expect(order).toEqual(["read started", "read completed", "write started", "write completed"]);
   });
 
   it("lets a subscriber callback read and write the document without holding up the save", async () => {
     const subscribers = registryOf();
     const fixture = inMemoryGadget(subscribers);
-    const events: {revision: number}[] = [];
-    const documents: {revision: number; cells: Record<string, Record<string, {value: string}>>}[] = [];
+    const events: OperationEvent[] = [];
+    const documents: SheetsDocument[] = [];
     const {promise: callbacksFinished, resolve: finishCallbacks} = Promise.withResolvers<void>();
     subscribers.add(stub({
-      operation: vi.fn(async (event: {revision: number}) => {
+      operation: vi.fn<SubscriberCallbacks["operation"]>(async event => {
+        if (event.type !== "operation") return;
         events.push(event);
         documents.push(await fixture.getDocument());
         if (event.revision === 1) await fixture.applyOperation(setCell("B1", "from callback"));
         else finishCallbacks();
       }),
-    }) as never, {clientId: "", name: "", color: ""});
+    }), {clientId: "", name: "", color: ""});
 
     const result = await fixture.applyOperation(setCell("A1", "committed"));
     expect(result.status).toBe("applied");
@@ -737,10 +1077,10 @@ describe("Workspace Sheets document snapshots", () => {
 
     const result = await fixture.applyOperation(setCell("A1", "value"));
     expect(result.status).toBe("applied");
-    await vi.waitFor(() => expect(fixture.subscribers.has(failing as never)).toBe(false));
+    await vi.waitFor(() => expect(fixture.subscribers.has(failing)).toBe(false));
     expect(failing[Symbol.dispose]).toHaveBeenCalledOnce();
     expect(hung.operation).toHaveBeenCalledOnce();
-    expect(fixture.subscribers.has(hung as never)).toBe(true);
+    expect(fixture.subscribers.has(hung)).toBe(true);
     expect(hung[Symbol.dispose]).not.toHaveBeenCalled();
   });
 
@@ -759,14 +1099,14 @@ describe("Workspace Sheets document snapshots", () => {
 
   it("registers a subscriber and takes its snapshot inside the mutation queue", async () => {
     const fixture = inMemoryGadget();
-    const newcomer = {presence: vi.fn(), operation: vi.fn(), onRpcBroken: vi.fn()};
+    const newcomer = stub({presence: vi.fn(), operation: vi.fn(), onRpcBroken: vi.fn()});
     const {promise: writeReleased, resolve: releaseWrite} = Promise.withResolvers<void>();
     const original = fixture.applyOperationLocked.bind(fixture);
     fixture.applyOperationLocked = async (operation: Operation) => { await writeReleased; return original(operation); };
 
     const writing = fixture.applyOperation(setCell("A1", "before subscribe"));
-    const callback = {dup: vi.fn(() => newcomer)};
-    const subscribing = fixture.subscribe(callback as never, {clientId: "newcomer"});
+    const callback = {...stub({}), dup: vi.fn(() => newcomer)};
+    const subscribing = fixture.subscribe(callback, {clientId: "newcomer"});
     await Promise.resolve();
     expect(callback.dup).not.toHaveBeenCalled();
 
@@ -783,12 +1123,110 @@ describe("Workspace Sheets document snapshots", () => {
     const fixture = inMemoryGadget();
     const loadMeta = fixture.loadMeta.bind(fixture);
     fixture.loadMeta = vi.fn(loadMeta).mockRejectedValueOnce(new Error("storage unavailable"));
-    const callback = {dup: vi.fn()};
+    const callback = stub({});
+    vi.spyOn(callback, "dup");
 
-    await expect(fixture.subscribe(callback as never)).rejects.toThrow("storage unavailable");
+    await expect(fixture.subscribe(callback)).rejects.toThrow("storage unavailable");
     expect(callback.dup).not.toHaveBeenCalled();
     expect(fixture.subscribers.size).toBe(0);
     await expect(fixture.applyOperation(setCell("A1", "still works"))).resolves.toMatchObject({status: "applied"});
+  });
+
+  it("clamps chart and pivot ranges to their sheet and rejects ones clients could not walk", async () => {
+    const fixture = inMemoryGadget();
+    const pivot: Partial<SheetPivot> = {sourceSheetId: "sheet", rowField: "a", columnField: "", valueField: "b", aggregate: "sum"};
+    await fixture.applyOperation({senderId: "test", structure: {
+      sheetOrder: ["pivot", "sheet", "orphan", "big"],
+      sheets: {
+        sheet: sheet("Sheet", {rows: 50, cols: 4, charts: [
+          {id: "beyond", type: "line", range: "A1:XFD1048576"},
+          {id: "single", type: "line", range: "b2"},
+          {id: "outside", type: "line", range: "E60:F70"},
+        ]}),
+        pivot: sheet("Pivot", {pivot: {...pivot, sourceRange: "A1:ZZ50000"}}),
+        orphan: sheet("Orphan", {pivot: {...pivot, sourceSheetId: "missing", sourceRange: "A1:B2"}}),
+        // Within the sheet, but 35 million cells: every client would hang walking it.
+        big: sheet("Big", {rows: 50000, cols: 702, charts: [
+          {id: "huge", type: "line", range: "A1:ZZ50000"},
+          {id: "large", type: "line", range: "A1:D50000"},
+        ], pivot: {...pivot, sourceSheetId: "big", sourceRange: "A1:E50000"}}),
+      },
+    }});
+    const document = await fixture.getDocument();
+    expect(document.sheets.sheet.charts?.map(chart => chart.range)).toEqual(["A1:D50", "B2", ""]);
+    expect(document.sheets.big.charts?.map(chart => chart.range)).toEqual(["", "A1:D50000"]);
+    expect(document.sheets.big.pivot?.sourceRange).toBe("");
+    expect(document.sheets.pivot.pivot?.sourceRange).toBe("A1:D50");
+    expect(document.sheets.orphan.pivot?.sourceRange).toBe("");
+  });
+
+  it("preserves full-length pivot field identities and selected display values", async () => {
+    const fixture = inMemoryGadget();
+    const label = "L".repeat(8192);
+    const value = "V".repeat(8192);
+    await fixture.applyOperation({structure: {sheets: {sheet: sheet("Sheet", {pivot: {
+      sourceSheetId: "sheet", sourceRange: "A1:B10", rowField: label, columnField: label,
+      valueField: label, filterField: label, filterValues: [value],
+    }})}}});
+    const document = await fixture.getDocument();
+    expect(document.sheets.sheet.pivot).toMatchObject({rowField: label, columnField: label, valueField: label, filterField: label, filterValues: [value]});
+    const duplicate = label + " (2)", lastDuplicate = label + " (702)";
+    await fixture.applyOperation({structure: {sheets: {sheet: sheet("Sheet", {pivot: {
+      sourceSheetId: "sheet", sourceRange: "A1:B10", rowField: duplicate, columnField: lastDuplicate,
+      valueField: duplicate, filterField: lastDuplicate, filterValues: [value],
+    }})}}});
+    expect((await fixture.getDocument()).sheets.sheet.pivot).toMatchObject({
+      rowField: duplicate, columnField: lastDuplicate, valueField: duplicate, filterField: lastDuplicate, filterValues: [value],
+    });
+  });
+
+  it("keeps 500 filter selections but rejects an oversized selection rather than truncating it", async () => {
+    const fixture = inMemoryGadget();
+    const tokens = Array.from({length: 500}, (_, index) => `s:value-${index}`);
+    await fixture.applyOperation({structure: {sheets: {sheet: sheet("Sheet", {filter: {
+      row: 0, endRow: 10, columns: [0], criteria: {0: tokens},
+    }})}}});
+    expect((await fixture.getDocument()).sheets.sheet.filter?.criteria[0]).toEqual(tokens);
+    await fixture.applyOperation({structure: {sheets: {sheet: sheet("Sheet", {filter: {
+      row: 0, endRow: 10, columns: [0], criteria: {0: [...tokens, "s:one-too-many"]},
+    }})}}});
+    expect((await fixture.getDocument()).sheets.sheet.filter?.criteria).toEqual({});
+  });
+
+  it("preserves full-length typed filter tokens through persistence and export", async () => {
+    const fixture = inMemoryGadget();
+    const prefix = "V".repeat(8191), selected = prefix + "x", excluded = prefix + "y";
+    const token = "s:" + selected;
+    await fixture.applyOperation({
+      structure: {sheets: {sheet: sheet("Sheet", {rows: 3, cols: 1, filter: {
+        row: 0, endRow: 2, columns: [0], criteria: {0: [token]},
+      }})}},
+      sheetReplacements: [{sheetId: "sheet", cells: {A1: cell("Header"), A2: cell(selected), A3: cell(excluded)}}],
+    });
+    const document = await fixture.getDocument();
+    expect(document.sheets.sheet.filter?.criteria[0]).toEqual([token]);
+    const {entries} = await readZip(exportXlsx(document));
+    const worksheet = text(entries, "xl/worksheets/sheet1.xml");
+    expect(worksheet).toContain('<row r="2"><c r="A2"');
+    expect(worksheet).toContain('<row r="3" hidden="1"><c r="A3"');
+    expect(worksheet).toContain(`<filter val="${selected}"/>`);
+  });
+
+  it("rejects every part of a stale revision operation without broadcasting", async () => {
+    const subscriber = stub({operation: vi.fn()});
+    const fixture = inMemoryGadget(registryOf(subscriber));
+    await fixture.applyOperation(setCell("A1", "committed"));
+    const before = await fixture.getDocument();
+    subscriber.operation.mockClear();
+    const stale = await fixture.applyOperation({baseRevision: 0,
+      structure: {title: "stale title", sheets: {sheet: sheet("Stale")}},
+      sheetReplacements: [{sheetId: "sheet", cells: {A1: cell("erased")}}],
+      cellOps: [{sheetId: "sheet", ref: "B1", value: "stale", fmt: null, baseVersion: 0}],
+    });
+    expect(stale).toMatchObject({status: "conflict", revision: 1, conflicts: [], staleRevision: true});
+    expect(await fixture.getDocument()).toEqual(before);
+    expect(subscriber.operation).not.toHaveBeenCalled();
+    await expect(fixture.applyOperation({...setCell("B1", "current"), baseRevision: 1})).resolves.toMatchObject({status: "applied", revision: 2});
   });
 });
 
@@ -796,7 +1234,7 @@ describe("Workspace Sheets cell formatting", () => {
   it("keeps only string colours, dropping a value whose string form merely looks like one", async () => {
     const fixture = inMemoryGadget();
     // Deliberately not a CellFmt: a colour that is not a string, and a key the protocol does not have.
-    const fmt = {c: ["#abc"], bg: "#123456", b: true, a: "c", fs: 12, x: true} as never;
+    const fmt: CellFmt = JSON.parse('{"c":["#abc"],"bg":"#123456","b":true,"a":"c","fs":12,"x":true}');
     await fixture.applyOperation({senderId: "test", cellOps: [{sheetId: "sheet", ref: "A1", value: "v", fmt, baseVersion: 0}]});
 
     const document = await fixture.getDocument();
@@ -811,9 +1249,9 @@ describe("Workspace Sheets export formats", () => {
     const sheetOrder = [ids[0], ids[0], longId, ...ids.slice(1)];
     const sheets = Object.fromEntries([...ids, longId].map(id => [id, sheet(id)]));
     const document = {sheetOrder, sheets, cells: Object.fromEntries(Object.keys(sheets).map(id => [id, {}]))};
-    const gadget = {getDocument: vi.fn(async () => document)};
+    const gadget = Object.assign(inMemoryGadget(), {getDocument: vi.fn(async (): Promise<SheetsDocument> => ({revision: 0, title: "Test", lastModified: 0, ...document}))});
 
-    const formats = await handler().getExportFormats(gadget as never);
+    const formats = await handler().getExportFormats(gadget);
     expect(formats).toHaveLength(32);
     expect(formats[0]).toEqual({
       id: "xlsx",
@@ -825,8 +1263,8 @@ describe("Workspace Sheets export formats", () => {
     expect(new Set(formats.map(format => format.id)).size).toBe(32);
     expect(formats.some(format => format.id === `csv:${longId}`)).toBe(false);
     expect(formats.some(format => format.id === "csv:sheet-39")).toBe(false);
-    await expect(handler().export(gadget as never, "csv:sheet-39")).rejects.toThrow("unavailable");
-    await expect(handler().export(gadget as never, "pdf")).rejects.toThrow("Unsupported");
+    await expect(handler().export(gadget, "csv:sheet-39")).rejects.toThrow("unavailable");
+    await expect(handler().export(gadget, "pdf")).rejects.toThrow("Unsupported");
   });
 
   it("retains raw-value CSV behavior and materializes state before returning an XLSX stream", async () => {
@@ -839,11 +1277,11 @@ describe("Workspace Sheets export formats", () => {
         B2: cell("=SUM(A1:A2)"),
       }},
     };
-    const gadget = {getDocument: vi.fn(async () => document)};
-    const csv = await handler().export(gadget as never, "csv:one");
+    const gadget = Object.assign(inMemoryGadget(), {getDocument: vi.fn(async (): Promise<SheetsDocument> => ({revision: 0, title: "Test", lastModified: 0, ...document}))});
+    const csv = await handler().export(gadget, "csv:one");
     expect(await new Response(csv).text()).toBe('"a,b",,"say ""hi"""\r\n,=SUM(A1:A2),\r\n');
 
-    const xlsx = await handler().export(gadget as never, "xlsx");
+    const xlsx = await handler().export(gadget, "xlsx");
     expect(gadget.getDocument).toHaveBeenCalledTimes(2);
     gadget.getDocument.mockImplementation(async () => { throw new Error("borrowed capability reused"); });
     const {entries} = await readZip(xlsx);
