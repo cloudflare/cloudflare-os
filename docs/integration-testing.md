@@ -14,12 +14,11 @@ There are two kinds of suite:
 A consumer repo is one that vendors this repo as a `public/` submodule and consumes the toolkit as a
 workspace dependency (`public/packages/integration-tests` in its `pnpm-workspace.yaml`).
 
-No such suite lives in this repo, and nothing here depends on one existing. The second column is
-described anyway because it is what the toolkit is parameterised *for*: the harness takes a list of
+The second column is what the toolkit is parameterised *for*: the harness takes a list of
 gatekeepers and the interceptor takes pluggable handler modules precisely so a suite can be added
-outside this repo without forking either. Where this doc describes a per-vendor suite, take it as the
-worked example of that shape — one gatekeeper run unmodified against its vendor's mocked endpoints —
-rather than as something you will find here.
+outside this repo without forking either. One such suite does live here, for GitHub's event hooks
+(see "A real gatekeeper for its hooks" below): `__tests__/github-hooks*.test.ts` boot the real
+`gatekeeper-github`, unmodified, against the GitHub that `__tests__/github-fake.ts` answers.
 
 ## What these tests are
 
@@ -62,6 +61,22 @@ for per-vendor coverage.** Testing actual gatekeepers is the expected trajectory
 harness takes a *list* of gatekeepers and the interceptor takes *pluggable* handler modules: a future
 `gatekeeper-google` suite is "add `google-handlers.ts`, point the harness at the package" — the same
 shape a consumer repo's per-vendor suite takes, with production code unmodified.
+
+### A real gatekeeper for its hooks
+
+A gatekeeper's event hooks run through the whole system — a gadget subscribes, the Workshop records
+the hook and enables it, the gatekeeper adds a webhook, a signed delivery runs the gadget, its write
+waits for approval, and removing the connection has to clean all of it up — so they are tested with
+the real `gatekeeper-github` rather than the fixture. Only GitHub is faked: its OAuth token endpoint,
+the REST calls the gatekeeper makes, and webhooks that deliver back through the gatekeeper's own
+route, signed with the secret it configured.
+
+It is booted from a validated tree built before the test files start, as the Workshop's is:
+`@gadgets/github-gatekeeper#build:integration-worker` writes it into that package's
+`.wrangler/validate`, the `test` task depends on it, and `githubGatekeeper()` deletes the config's
+`build` so no file rebuilds it under its siblings. It is not in `src/worker-inputs.ts`, because that
+table also keys the eval cache, which this gatekeeper doesn't reach: watch mode reruns a hook suite
+on an edit there only once something else triggers the rerun, which rebuilds it.
 
 ### Storage isolation is by convention, because the alternative is worse
 

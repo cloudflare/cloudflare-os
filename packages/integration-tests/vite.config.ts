@@ -38,7 +38,9 @@ export default {
           ...VITEST_TOOL_SCRATCH_EXCLUSIONS,
           ...WRANGLER_RUNTIME_SCRATCH_EXCLUSIONS,
         ]),
-        dependsOn: ['build:test-gatekeeper'],
+        // The real gatekeepers the hook suites boot, validated into their own packages' trees,
+        // which are tracked here for the same reason the fixture's is.
+        dependsOn: ['build:test-gatekeeper', '@gadgets/github-gatekeeper#build:integration-worker'],
       },
     },
   },
