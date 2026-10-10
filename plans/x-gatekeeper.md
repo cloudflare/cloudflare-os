@@ -1105,7 +1105,7 @@ departed from the design above:
 ### PR B as built
 
 PR B is implemented on `dancarter/x-gatekeeper-hooks`, stacked on `dancarter/github-hooks` for the
-kit's `HookDeliveryQueue` and the hook contract, which are not on `main` yet (17 workerd hook tests).
+kit's `HookDeliveryQueue` and the hook contract, which are not on `main` yet (23 workerd hook tests).
 It follows `gatekeeper-github`'s hooks rather than §9 where the two differ:
 
 - **Three Durable Objects, not two.** A per-account `XHookDriver` holds the account's enabled hooks
@@ -1120,8 +1120,9 @@ It follows `gatekeeper-github`'s hooks rather than §9 where the two differ:
   binding's observer gate and calling `receivePost`.
 - **The event is `XPostEvent { id, reason, info, post? }`**, delivered to `XPostHook.receivePost`,
   with an `XPost` capability for account and Post bindings (confined to the conversation for a Post
-  binding) and none for a Profile binding. A post X delivers without its author is completed with one
-  cached user read.
+  binding) and none for a Profile binding. A post X delivers without its author, or without saying
+  whether they are protected, is completed with one cached user read, and kept from observers
+  connected as other X users if that read fails (the reads' `authorsUnverified` fence).
 - **Unverified X behaviour, handled defensively:** the duplicate-subscription refusal (any 409, or
   "duplicate" in its type, title or message, adopts the existing subscription through
   `GET /2/activity/subscriptions`); the shapes of `GET`/`POST /2/webhooks`; and whether a delivery

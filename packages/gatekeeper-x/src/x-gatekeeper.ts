@@ -46,7 +46,7 @@ import {
   HOOKS_NOT_CONFIGURED, type XActivityEvent, type XHookDelivery, type XHookParams, type XPostHookTarget,
 } from "./x-hooks";
 import {
-  indexIncludes, mentionsProtectedAuthor, toPostInfo, toUserInfo, toUserSummary,
+  authorsUnverified, indexIncludes, mentionsProtectedAuthor, toPostInfo, toUserInfo,
   type WireIncludes, type WirePost, type WireUser,
 } from "./x-normalize";
 import {
@@ -344,7 +344,10 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
     const props = this.ctx.props;
     if (event.kind !== params.kind) return;
     const me = await this.#me();
-    let info = toPostInfo(event.post as unknown as WirePost, indexIncludes(event.includes as WireIncludes | undefined));
+    const wire = event.post as unknown as WirePost;
+    const delivered = event.includes as WireIncludes | undefined;
+    let includes = indexIncludes(delivered);
+    let info = toPostInfo(wire, includes);
     // The account's own posts are never delivered back to it, so a hook can't answer itself.
     if (info.author.id === me.id) return;
     switch (params.kind) {
@@ -373,12 +376,15 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
         break;
     }
 
-    // X may deliver a post without its author's profile. One cached read names them, and the
-    // post is delivered regardless if it can't.
-    if (!info.author.username) {
+    // X may deliver a post without its author's profile, or without saying whether they are
+    // protected. One cached read fills that in; the post is delivered regardless if it can't, kept
+    // from observers connected as other X users (`authorsUnverified`).
+    const listed = includes.users.get(info.author.id);
+    if (!listed?.username || typeof listed.protected !== "boolean") {
       try {
         const author = await readUser(this.#sessionHost, { id: info.author.id });
-        info = { ...info, author: toUserSummary(author), url: postUrl(info.id, author.username) };
+        includes = indexIncludes({ ...delivered, users: [...delivered?.users ?? [], author] });
+        info = toPostInfo(wire, includes);
       } catch (error) {
         logger.warn("failed to read an X post's author for a hook", { event: "hooks.delivery.author.failed", error });
       }
@@ -393,7 +399,8 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
         description: params.kind === "mention" ? `Received a post by ${who} mentioning the connected account.`
           : params.kind === "reply" ? `Received a reply by ${who} to the connected account's post.`
           : `Received a new post by ${who}.`,
-      }, mentionsProtectedAuthor([info]) ? { kind: "collections", ids: [OWNER_COLLECTION] } : { kind: "baseline" });
+      }, authorsUnverified([wire], includes) || mentionsProtectedAuthor([info])
+        ? { kind: "collections", ids: [OWNER_COLLECTION] } : { kind: "baseline" });
       // A Profile binding can't act, and a Post binding reaches only its conversation.
       if (props.resourceKind !== "profile") {
         const conversation = info.conversationId;

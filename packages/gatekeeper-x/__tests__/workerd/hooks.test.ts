@@ -45,6 +45,8 @@ function binding(props: GatekeeperProps) {
     enable: async () => unwrap(await hooks.enableHook()),
     tryEnable: async () => await hooks.enableHook(),
     disable: async () => unwrap(await hooks.disableHook()),
+    /** Admits an observer connected through `observerAccount`, as "observer". */
+    observe: async (observerAccount: string) => unwrap(await hooks.addObserver(name, props, "observer", observerAccount)),
     behave: (behavior: { failures?: number; reply?: string }) => hooks.setHookBehavior(behavior),
     read: async () => await hooks.readHook() as {
       received: { id: string; reason: string; info: XPostInfo }[];
@@ -221,6 +223,17 @@ describe("delivering", () => {
     await x.deliver("post.mention.create", ALICE.id, mention);
     await settled(account);
     expect((await hook.read()).received[0].info.author).toMatchObject({ id: BOB.id, username: "bob" });
+  });
+
+  it("keeps a post whose author can't be looked up from observers connected as other X users", async () => {
+    const { x, account, hook } = await watchingMentions();
+    await hook.observe(await seedAccount(x, BOB));
+    x.on("GET", new RegExp(`^/2/users/${BOB.id}\\b`), () => json({ title: "Service Unavailable" }, { status: 503 }));
+    await x.deliver("post.mention.create", ALICE.id, x.post(BOB, "hi @alice"));
+    await settled(account);
+    const { received, observations } = await hook.read();
+    expect(received).toHaveLength(1);
+    expect(observations.map(observation => observation.excludeObservers)).toEqual([["observer"]]);
   });
 
   it("delivers each event once, never the account's own posts, and nothing too old to tell from a replay", async () => {
