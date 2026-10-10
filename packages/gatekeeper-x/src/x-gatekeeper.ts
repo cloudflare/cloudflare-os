@@ -44,7 +44,7 @@ import { XApi, XApiError, XCreditsError, XRateLimitError, type XEnvelope } from 
 import { accountSource, withinReadLimit, type StoredIdentity, type XVerifierApi } from "./x-credentials";
 import { ACCOUNT_URL, VENDOR_ID, webhookUrl, type Env, type ResourceKind, type XGatekeeperImplProps } from "./x-env";
 import {
-  HOOKS_NOT_CONFIGURED, type XActivityEvent, type XHookDelivery, type XHookParams, type XPostHookTarget,
+  HOOKS_NOT_CONFIGURED, repliedTo, type XActivityEvent, type XHookDelivery, type XHookParams, type XPostHookTarget,
 } from "./x-hooks";
 import {
   authorsUnverified, indexIncludes, mentionsProtectedAuthor, toPostInfo, toUserInfo,
@@ -355,6 +355,8 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
     const delivered = event.includes as WireIncludes | undefined;
     let includes = indexIncludes(delivered);
     let info = toPostInfo(wire, includes);
+    // X may name a reply's parent only in `in_reply_to_tweet_id`, which the driver reads too.
+    const parent = repliedTo(event.post);
     // The account's own posts are never delivered back to it, so a hook can't answer itself.
     if (info.author.id === me.id) return;
     switch (params.kind) {
@@ -363,7 +365,6 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
         break;
       case "reply": {
         if (event.userId !== me.id) return;
-        const parent = info.replyTo?.postId;
         if (props.resourceKind === "post") {
           // A Post binding reaches its conversation alone: the watched post was in it when bound.
           if (params.postId === undefined || params.conversationId !== info.conversationId) return;
@@ -395,6 +396,11 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
       } catch (error) {
         logger.warn("failed to read an X post's author for a hook", { event: "hooks.delivery.author.failed", error });
       }
+    }
+
+    if (parent !== undefined && info.replyTo === undefined) {
+      const userId = typeof event.post.in_reply_to_user_id === "string" ? event.post.in_reply_to_user_id : "";
+      info = { ...info, replyTo: { postId: parent, userId } };
     }
 
     const who = info.author.username ? `@${escapeObservationValue(info.author.username)}` : "an X user";

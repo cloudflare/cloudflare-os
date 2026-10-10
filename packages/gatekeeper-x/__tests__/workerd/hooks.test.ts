@@ -288,6 +288,20 @@ describe("delivering", () => {
     expect(capabilities).toEqual([true]);
   });
 
+  it("recognizes a reply X delivers with only its direct parent field", async () => {
+    const x = new FakeX().install();
+    const account = await seedAccount(x);
+    const root = x.post(ALICE, "Announcing something");
+    const hook = binding({ userObjectId: account, resourceKind: "post", postId: root.id });
+    await hook.subscribe([["subscribeReplies"]]);
+    await hook.enable();
+    const reply = x.post(BOB, "Congratulations", { conversation_id: root.conversation_id, in_reply_to_user_id: ALICE.id });
+    await x.deliver("post.reply.create", ALICE.id, { ...reply, in_reply_to_tweet_id: root.id }, { includes: { users: [BOB] } });
+    await settled(account);
+    expect((await hook.read()).received.map(event => [event.info.id, event.info.replyTo]))
+      .toEqual([[reply.id, { postId: root.id, userId: ALICE.id }]]);
+  });
+
   it("delivers a Profile binding's posts with nothing to act with", async () => {
     const x = new FakeX().install();
     const account = await seedAccount(x);
