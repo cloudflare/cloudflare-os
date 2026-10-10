@@ -190,6 +190,24 @@ describe("what a read discloses", () => {
     expect(await exclusions(name)).toEqual([["observer"], undefined]);
   });
 
+  it("decides a List's privacy afresh for each page", async () => {
+    const { x, props, name } = await observed();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    x.lists.set("77", { id: "77", name: "Open", private: false, owner_id: ALICE.id, member_count: 2 });
+    x.listMembers.set("77", new Set([BOB.id, CAROL.id]));
+    let pages = 0;
+    x.on("GET", /^\/2\/lists\/77\/members/, () => {
+      // Made private while the cursor is open, and the List as cached gone stale.
+      if (++pages === 2) {
+        x.lists.get("77")!.private = true;
+        vi.setSystemTime(Date.now() + 16 * 60 * 1000);
+      }
+      return undefined;
+    });
+    unwrap(await hooks().run(name, props, [["getList", "77"], ["listMembers", { pageSize: 1 }]], { pages: 2 }));
+    expect(await exclusions(name)).toEqual([undefined, ["observer"]]);
+  });
+
   it("shares private reads with an observer connected as the same X user", async () => {
     const { x, props, name } = await observed(ALICE);
     x.bookmarks.add(`${ALICE.id}:${x.post(BOB, "saved").id}`);
@@ -203,6 +221,15 @@ describe("what a read discloses", () => {
     const list = unwrap(await hooks().run(name, props, [["getList", "77"], ["getInfo"]])) as XListInfo;
     expect(list).toMatchObject({ name: "Secret", private: true });
     expect(await exclusions(name)).toEqual([["observer"]]);
+  });
+
+  it("withholds a List whose privacy X didn't report", async () => {
+    const { x, props, name } = await observed();
+    // A 200 that failed to hydrate the List's `private` field.
+    x.lists.set("78", { id: "78", name: "Unclear", owner_id: ALICE.id, member_count: 0 });
+    expect(unwrap(await hooks().run(name, props, [["getList", "78"], ["getInfo"]]))).toMatchObject({ private: true });
+    unwrap(await hooks().run(name, props, [["listOwnedLists"]], { pages: 1 }));
+    expect(await exclusions(name)).toEqual([["observer"], ["observer"]]);
   });
 
   it("keeps withholding a private List while a change making it public waits", async () => {
@@ -242,6 +269,33 @@ describe("pending actions in reads", () => {
     expect(bookmarks.map(item => item.id)).toEqual([post.id]);
     const bob = unwrap(await hooks().run(name, props, [["getUser", "bob"], ["getInfo"]])) as XUserInfo;
     expect(bob.relationship).toEqual({ following: true, followedBy: false });
+  });
+
+  it("shows a pending repost among the account's posts, unless reposts are excluded", async () => {
+    const { x, props, name } = await setup();
+    const post = x.post(BOB, "worth sharing");
+    unwrap(await hooks().run(name, props, [["getPost", post.id], ["repost"]]));
+    const [page] = unwrap(await hooks().run(name, props, [["listMyPosts"]], { pages: 1 })) as XPostInfo[][];
+    expect(page).toEqual([expect.objectContaining({
+      id: post.id, author: expect.objectContaining({ username: "alice" }),
+      repostOf: expect.objectContaining({ id: post.id, text: "worth sharing", author: expect.objectContaining({ username: "bob" }) }),
+    })]);
+    const [withoutReposts] = unwrap(await hooks().run(name, props, [["listMyPosts", { excludeReposts: true }]], { pages: 1 })) as XPostInfo[][];
+    expect(withoutReposts).toEqual([]);
+  });
+
+  it("authorizes the profiles of a pending List's members, which were read from X", async () => {
+    const { props, name } = await setup();
+    unwrap(await hooks().run(name, props, [["createList", "Friends"]]));
+    unwrap(await hooks().run(name, props, [["getList", "~1"], ["addMember", "bob"]]));
+    await hooks().refuseObservations(name, true);
+    expect(failure(await hooks().run(name, props, [["getList", "~1"], ["listMembers"]], { pages: 1 })))
+      .toMatch(/refused this observation/);
+    await hooks().refuseObservations(name, false);
+    const [members] = unwrap(await hooks().run(name, props, [["getList", "~1"], ["listMembers"]], { pages: 1 })) as XUserInfo[][];
+    expect(members.map(member => member.username)).toEqual(["bob"]);
+    expect((await hooks().queueLog(name)).observations.at(-1))
+      .toEqual({ title: "Read an X List's members", description: 'Read 1 member of the List "Friends".' });
   });
 
   it("refuses a post X would refuse before it is queued", async () => {

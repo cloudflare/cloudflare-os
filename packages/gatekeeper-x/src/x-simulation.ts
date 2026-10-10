@@ -10,6 +10,7 @@ import type { XListInfo, XPostInfo, XUserInfo, XUserSummary } from "./types";
 import type { StoredDraft, XAction } from "./x-actions";
 import type { StoredIdentity } from "./x-credentials";
 import { comparableText, extractMentions, extractUrls } from "./x-text";
+import { postUrl } from "./x-urls";
 
 /** The journal's pending entries, in submission order. */
 export type Pending = readonly JournalEntry<XAction>[];
@@ -60,6 +61,24 @@ function synthesize(draft: StoredDraft, ref: string, me: StoredIdentity, submitt
     metrics: { likes: 0, reposts: 0, replies: 0, quotes: 0, bookmarks: 0, impressions: 0 },
     replySettings: draft.replySettings ?? "everyone",
     possiblySensitive: false,
+  };
+}
+
+/**
+ * A pending repost of `source` as the account's timeline shows it until X makes it. Nothing gives
+ * a repost an ID before then, so the row takes the reposted post's: what every action on a repost
+ * targets anyway.
+ */
+function synthesizeRepost(id: string, source: XPostInfo, me: StoredIdentity): XPostInfo {
+  const url = source.url ?? postUrl(id, source.author.username || undefined);
+  return {
+    ...source,
+    id,
+    url,
+    text: `RT @${source.author.username}: ${source.text}`,
+    author: meSummary(me),
+    createdAt: new Date(),
+    repostOf: { id, url, text: source.text, author: source.author, createdAt: source.createdAt },
   };
 }
 
@@ -115,7 +134,7 @@ export type PostOverlay =
   /** Others' posts: only deletions can touch them. */
   | { kind: "others" }
   /** The connected account's own timeline. */
-  | { kind: "mine"; excludeReplies?: boolean }
+  | { kind: "mine"; excludeReplies?: boolean; excludeReposts?: boolean }
   /** Direct replies to one post. */
   | { kind: "replies"; parentId: string }
   /** One conversation. */
@@ -138,12 +157,20 @@ export function overlayPosts(items: readonly XPostInfo[], pending: Pending, over
     case "others":
       break;
     case "mine": {
-      const undone = toggles(pending, action => action.kind === "repost"
-        ? { key: resolve(action.payload.post.id), on: action.payload.on, value: null } : undefined);
-      result = result.filter(post => !(post.repostOf && undone.get(post.repostOf.id)?.on === false));
+      const reposts = toggles<XPostInfo>(pending, action => action.kind === "repost"
+        ? { key: resolve(action.payload.post.id), on: action.payload.on, value: action.payload.post.info } : undefined);
+      result = result.filter(post => !(post.repostOf && reposts.get(post.repostOf.id)?.on === false));
       if (newestPage) {
         added = pendingPosts(pending, me, resolve)
           .filter(post => !(overlay.excludeReplies && post.replyTo));
+        if (!overlay.excludeReposts) {
+          const shown = new Set(result.flatMap(post => post.repostOf ? [post.repostOf.id] : []));
+          // A repost of a post not yet on X shows once that post is.
+          added.push(...[...reposts]
+            .filter(([id, state]) => state.on && !isProvisional(id) && !shown.has(id) && !gone.has(id))
+            .map(([id, state]) => synthesizeRepost(id, state.value, me))
+            .toReversed());
+        }
       }
       break;
     }

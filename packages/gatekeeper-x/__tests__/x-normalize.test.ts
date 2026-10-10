@@ -207,4 +207,9 @@ describe("toListInfo", () => {
       memberCount: 3, followerCount: 0,
     });
   });
+
+  it("takes a List X didn't say is public for a private one", () => {
+    expect(toListInfo({ id: "9", name: "Friends", private: false }, indexIncludes(undefined)).private).toBe(false);
+    expect(toListInfo({ id: "9", name: "Friends" }, indexIncludes(undefined)).private).toBe(true);
+  });
 });

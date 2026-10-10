@@ -708,8 +708,12 @@ export class XVerifier extends WorkerEntrypoint<Env, XVerifierProps> implements 
   }
 
   async getXUserId(): Promise<string | null> {
+    const account = this.#account();
     try {
-      return (await this.#account().getIdentity()).id;
+      // The identity outlives the grant, so it speaks for the observer only while the connection's
+      // credentials still work: a grant X refused for good answers null.
+      await account.getCredentials();
+      return (await account.getIdentity()).id;
     } catch {
       return null;
     }

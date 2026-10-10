@@ -33,6 +33,7 @@ import {
   imageHandles,
   providedRefs,
   revert,
+  type ListDetails,
   type RevertOutcome,
   type SendAttempt,
   type XAction,
@@ -105,6 +106,7 @@ const HOUSEKEEPING_KEY = "housekeptAt";
 const VERDICT_PREFIX = "verdict:";
 const PROGRESS_PREFIX = "progress:";
 const ATTEMPT_PREFIX = "attempt:";
+const PREVIOUS_PREFIX = "previous:";
 
 /** Which action tags each kind of binding can submit, for the auto-approval catalog. */
 const BINDING_ACTIONS: Record<ResourceKind, (tag: string) => boolean> = {
@@ -170,6 +172,11 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
       get: id => this.ctx.storage.kv.get<string[]>(`${PROGRESS_PREFIX}${id}`) ?? [],
       put: (id, ids) => this.ctx.storage.kv.put(`${PROGRESS_PREFIX}${id}`, ids),
       delete: id => this.ctx.storage.kv.delete(`${PROGRESS_PREFIX}${id}`),
+    },
+    previous: {
+      get: id => this.ctx.storage.kv.get<ListDetails>(`${PREVIOUS_PREFIX}${id}`),
+      put: (id, details) => this.ctx.storage.kv.put(`${PREVIOUS_PREFIX}${id}`, details),
+      delete: id => this.ctx.storage.kv.delete(`${PREVIOUS_PREFIX}${id}`),
     },
     attempts: {
       get: key => this.ctx.storage.kv.get<SendAttempt>(`${ATTEMPT_PREFIX}${key}`),
@@ -484,8 +491,8 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
   }
 
   /**
-   * Retires applied actions too old to revert, and drops thread progress and send attempts left
-   * by actions no longer waiting. Runs at most every few hours, against apply and reject.
+   * Retires applied actions too old to revert, and drops the thread progress, send attempts and
+   * List snapshots left by actions no longer waiting. Runs at most every few hours, from apply.
    */
   async #housekeep(): Promise<void> {
     const kv = this.ctx.storage.kv;
@@ -505,7 +512,7 @@ export class XGatekeeperImpl extends DurableObject<Env, XGatekeeperImplProps> im
 
         const waiting = new Set(this.#journal.listPending().map(({ id }) => id));
         const leftovers: string[] = [];
-        for (const prefix of [PROGRESS_PREFIX, ATTEMPT_PREFIX]) {
+        for (const prefix of [PROGRESS_PREFIX, ATTEMPT_PREFIX, PREVIOUS_PREFIX]) {
           for (const [key] of kv.list({ prefix })) {
             if (!waiting.has(Number.parseInt(key.slice(prefix.length), 10))) leftovers.push(key);
           }

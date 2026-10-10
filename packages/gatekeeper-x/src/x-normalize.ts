@@ -309,7 +309,10 @@ export function sentContent(post: WirePost): SentContent {
   };
 }
 
-/** A List, with its owner resolved from `includes`. */
+/**
+ * A List, with its owner resolved from `includes`. One X didn't say is public counts as private: a
+ * 200 can omit a field it failed to hydrate, and privacy decides what observers may see.
+ */
 export function toListInfo(list: WireList, includes: Includes): XListInfo {
   const created = date(list.created_at);
   return {
@@ -317,7 +320,7 @@ export function toListInfo(list: WireList, includes: Includes): XListInfo {
     url: listUrl(list.id),
     name: list.name ?? "",
     description: list.description ?? "",
-    private: list.private === true,
+    private: list.private !== false,
     owner: toUserSummary(includes.users.get(list.owner_id ?? ""), list.owner_id),
     memberCount: list.member_count ?? 0,
     followerCount: list.follower_count ?? 0,

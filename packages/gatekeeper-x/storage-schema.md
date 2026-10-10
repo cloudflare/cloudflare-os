@@ -30,6 +30,7 @@ One per binding.
 | `refs:seq:provisional`, `refs:prov:<~N>`, `refs:kind:<~N>` | kit `ProvisionalIds` | Temporary IDs of posts and Lists not yet created, and the IDs X assigned them. |
 | `progress:<actionId>` | `string[]` | The posts a thread has published so far, so a retry resumes rather than reposting. |
 | `attempt:<actionId>:<index>` | `{ at, mediaIds? }` | A send whose outcome X never reported: a post's, by its index in the thread, with the media it attached, or a List creation's, at index 0. Before sending again the next apply binds the one post or owned List from around `at` that matches what was sent; a rejection is refused while one exists. Leftovers are swept with housekeeping. |
+| `previous:<actionId>` | `{ name, description, private }` | A List's details read just before an update first went to X, so a retry after X applied the change but lost the answer still records what a revert restores. Deleted once applied; leftovers are swept with housekeeping. |
 | `images:<handle>:*`, `imageAllocations:<handle>`, `imageAllocations:totalBytes` | kit `ActionFileStore` | Images captured for pending posts: 5 MiB each, 64 MiB together. Released once posted; swept when unreferenced for an hour. |
 | `cache:@x:*` | kit `KvTtlCache` | Reads, partitioned by connection generation and invalidated after every action decision. |
 | `verdict:<xUserId>` | `number` | When an observer's X account last proved it can see the bound post or List; trusted for an hour. |

@@ -173,8 +173,11 @@ type PostListing = {
   overlay: PostOverlay;
   /** Whether pending posts may join the first page. */
   newestFirst: boolean;
-  /** Whether the source itself is private to the account, whatever its posts. */
-  privateSource?: boolean;
+  /**
+   * Whether the source itself is private to the account, whatever its posts; asked again for each
+   * page where that can change.
+   */
+  privateSource?: boolean | (() => Promise<boolean>);
   title: string;
   describe(count: number): string;
   /** Caches the newest page under this key, so a gadget polling it does not pay every time. */
@@ -197,11 +200,14 @@ function postsCursor(ctx: SessionContext, size: number, listing: PostListing): C
       const items = overlayPosts(fetched, host.pending(), listing.overlay, {
         me, resolve: id => host.resolve(id), newestPage: token === undefined && listing.newestFirst,
       });
+      const privateSource = typeof listing.privateSource === "function"
+        ? await listing.privateSource()
+        : listing.privateSource === true;
       return {
         items,
         nextToken: envelope.meta?.next_token,
         observation: { title: listing.title, description: listing.describe(items.length) },
-        scope: postScope(items, listing.privateSource || authorsUnverified(wire, includes)),
+        scope: postScope(items, privateSource || authorsUnverified(wire, includes)),
       };
     },
     authorize: page => gate.authorize(page.observation, page.scope),
@@ -558,7 +564,9 @@ async function profilePosts(ctx: SessionContext, user: WireUser, options: XTimel
     request: (api, _me, token) => api.get<WirePost[]>(`/2/users/${user.id}/tweets`, {
       ...POST_FIELDS, ...query, ...pageQuery(size, token, { min: 5, max: 100 }),
     }),
-    overlay: mine ? { kind: "mine", excludeReplies: options?.excludeReplies } : { kind: "others" },
+    overlay: mine
+      ? { kind: "mine", excludeReplies: options?.excludeReplies, excludeReposts: options?.excludeReposts }
+      : { kind: "others" },
     newestFirst: newestFirst(options),
     title: `Read ${name}'s X posts`,
     describe: count => `Read ${countOf(count, "post")} by ${name}.`,
@@ -720,7 +728,7 @@ export class XListImpl extends RpcTarget implements XList {
 
   async listPosts(options?: XPageOptions): Promise<Cursor<XPostInfo>> {
     const size = pageSize(options);
-    const { info: list, restricted } = await readList(this.#ctx, this.#id);
+    const { info: list } = await readList(this.#ctx, this.#id);
     const id = this.#ctx.host.resolve(this.#id);
     if (isProvisional(id)) return pendingCursor([]);
     const name = escapeObservationValue(list.name);
@@ -730,7 +738,8 @@ export class XListImpl extends RpcTarget implements XList {
       }),
       overlay: { kind: "others" },
       newestFirst: false,
-      privateSource: restricted,
+      // For each page: a cursor can outlive the List being public.
+      privateSource: async () => (await readList(this.#ctx, id)).restricted,
       title: "Read an X List's posts",
       describe: count => `Read ${countOf(count, "post")} from the List "${name}".`,
       cacheKey: `list-posts:${id}`,
@@ -739,15 +748,22 @@ export class XListImpl extends RpcTarget implements XList {
 
   async listMembers(options?: XPageOptions): Promise<Cursor<XUserInfo>> {
     const size = pageSize(options);
-    const { info: list, restricted } = await readList(this.#ctx, this.#id);
+    const { info: list } = await readList(this.#ctx, this.#id);
     const id = this.#ctx.host.resolve(this.#id);
     const name = escapeObservationValue(list.name);
     const { host } = this.#ctx;
     if (isProvisional(id)) {
+      // The List isn't on X yet, but the profiles of the members pending actions add were read from it.
       const added = overlayMembers([], host.pending(), id, ref => host.resolve(ref), true);
+      const gate = this.#ctx.gate.lease();
       return new XCursor<XUserInfo>({
-        fetchPage: async () => ({ items: added, observation: { title: "", description: "" }, scope: BASELINE }),
-        authorize: async () => {},
+        fetchPage: async () => ({
+          items: added,
+          observation: { title: "Read an X List's members", description: `Read ${countOf(added.length, "member")} of the List "${name}".` },
+          scope: list.private ? OWNER : BASELINE,
+        }),
+        authorize: page => gate.authorize(page.observation, page.scope),
+        dispose: () => gate[Symbol.dispose](),
       });
     }
     return usersCursor(this.#ctx, size, {
@@ -756,7 +772,8 @@ export class XListImpl extends RpcTarget implements XList {
       }),
       relationship: false,
       overlay: (users, newestPage) => overlayMembers(users, host.pending(), id, ref => host.resolve(ref), newestPage),
-      privateSource: () => restricted,
+      // For each page: a cursor can outlive the List being public.
+      privateSource: async () => (await readList(this.#ctx, id)).restricted,
       title: "Read an X List's members",
       describe: count => `Read ${countOf(count, "member")} of the List "${name}".`,
     });

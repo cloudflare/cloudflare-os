@@ -732,7 +732,8 @@ Each read is classified before it is authorized:
   public leaves it owner-private until X has made it public. And missing evidence is not
   privacy's absence: a post whose author X did not expand, or expanded without `protected` (a
   200 can omit expansions it failed to hydrate), counts as a protected account's, as does a
-  connected account whose identity X returned without it.
+  connected account whose identity X returned without it; a List X returned without `private`
+  counts as private.
 - **Public** otherwise: public posts, every profile (X shows protected accounts' profiles; only
   their posts are hidden), public Lists, and an unprotected account's followers and following.
 
@@ -747,7 +748,8 @@ Owner-private reads authorize against one synthetic collection, `owner`; public 
 | X Profile | C | — (a public profile needs only an X account) | same — for a protected user's posts |
 
 `XVerifier` is a `WorkerEntrypoint` over the observer's own `UserAccount`. `getXUserId()` answers
-from the stored identity — no call, no cost. `canViewPost(id)` / `canViewList(id)` ask X with the
+from the stored identity, once the connection's credentials prove usable — no call unless the
+access token needs refreshing, and null for a grant X refused for good. `canViewPost(id)` / `canViewList(id)` ask X with the
 observer's token through `probeAccess` (401/403/404 → `false`; anything else throws, so the open
 fails loudly). Each probe costs a read, so positive verdicts are cached per (observer, resource)
 for an hour; negatives never are.
@@ -1055,7 +1057,7 @@ Nothing remains open except the `types.d.ts` review.
 
 ## As built (2026-10-10)
 
-PR A is implemented in `packages/gatekeeper-x` (182 Node tests, 79 workerd tests). Where the build
+PR A is implemented in `packages/gatekeeper-x` (183 Node tests, 87 workerd tests). Where the build
 departed from the design above:
 
 - **`XCursor`, not the kit's `TokenCursor`.** `TokenCursor` fills a short page by fetching up to
@@ -1071,9 +1073,11 @@ departed from the design above:
   exactly one matches the draft's reply parent, `comparableText`, link destinations
   (`expanded_url`, through `comparableUrl`), poll and media IDs. None sends again; more than one,
   or a window too full for one page, ends the action with `ActionOutcomeUnknownError`, since
-  binding the wrong post would have a revert delete it. While a marker or thread progress exists,
-  `reject` is refused ("it may already be on X"). A terminal failure part-way through a thread
-  names the posts already published. `x.list.manage`'s creation is reconciled the same way, since
+  binding the wrong post would have a revert delete it. A duplicate refusal says the send made
+  nothing, so it is reconciled only against an earlier send X never confirmed, never against posts
+  that were already there; a first send refused that way fails. While a marker or thread progress
+  exists, `reject` is refused ("it may already be on X"). A terminal failure part-way through a
+  thread names the posts already published. `x.list.manage`'s creation is reconciled the same way, since
   `POST /2/lists` has no idempotency key either: against every page of the account's owned Lists
   (X cannot filter them by date), on name, description, privacy and a `created_at` in the window.
 - **Revocation is narrower than §3.** A grant is revoked only when it provably shares no
