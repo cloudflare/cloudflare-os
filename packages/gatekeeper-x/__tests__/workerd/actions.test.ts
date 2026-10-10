@@ -164,6 +164,31 @@ describe("publishing", () => {
     unwrap(await t.reject(actionId));
   });
 
+  it("fails a first send X refuses as a duplicate, binding no post that was already there", async () => {
+    const t = await setup();
+    const earlier = t.x.post(ALICE, "Same words");
+    await t.run([["createPost", { text: "Same words" }]]);
+    const [{ actionId }] = await t.submitted();
+    expect(failure(await t.apply(actionId))).toBe("X refused this post as a duplicate of one posted recently.");
+    expect(failure(await t.attempt([["getPost", "~1"], ["getInfo"]]))).toMatch(/may have been rejected/);
+    expect(t.x.posts.has(earlier.id)).toBe(true);
+  });
+
+  it("binds the post an unconfirmed send made when X refuses the next as its duplicate", async () => {
+    const t = await setup();
+    await t.run([["createPost", { text: "Slow to show" }]]);
+    t.x.loseAnswer("POST", /^\/2\/tweets$/);
+    // X's timeline lags: the post is missing from the first two looks.
+    let lagging = 2;
+    t.x.on("GET", new RegExp(`^/2/users/${ALICE.id}/tweets`), () => lagging-- > 0 ? json({ meta: { result_count: 0 } }) : undefined);
+    const [{ actionId }] = await t.submitted();
+    expect(failure(await t.apply(actionId))).toMatch(/did not confirm whether this post was published/);
+    unwrap(await t.apply(actionId));
+    const posts = postsBy(t.x, ALICE.id);
+    expect(posts).toHaveLength(1);
+    expect(await t.run([["getPost", "~1"], ["getInfo"]])).toMatchObject({ id: posts[0].id });
+  });
+
   it("won't let a post X may have made be rejected, and posts it on the next approval if it didn't", async () => {
     const t = await setup();
     await t.run([["createPost", { text: "Maybe" }]]);
