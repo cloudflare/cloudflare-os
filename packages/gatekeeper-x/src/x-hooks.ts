@@ -486,19 +486,24 @@ type Webhook = { id: string; url: string; valid?: boolean };
 export class XWebhookRegistry extends DurableObject<Env> {
   #changes = new SerialTaskQueue();
 
-  /** The webhook's ID, registering it first if this deployment has none at its current URL. */
+  /**
+   * The webhook's ID, registering it first if this deployment has none at its current URL. Every
+   * call finishes what an earlier one left undone.
+   */
   async webhookId(): Promise<string> {
     return await this.#changes.run(async () => {
       const url = webhookUrl(this.env);
       if (url === undefined) throw new Error(HOOKS_NOT_CONFIGURED);
       const kv = this.ctx.storage.kv;
-      const stored = kv.get<Webhook>("webhook");
-      if (stored?.url === url) return stored.id;
-      const webhook = await this.#register(url);
-      kv.put("webhook", { id: webhook.id, url });
-      kv.delete("revokeSubscribed");
-      await this.#subscribeToRevocations(webhook.id);
+      let webhook = kv.get<Webhook>("webhook");
+      if (webhook?.url !== url) {
+        webhook = { id: (await this.#register(url)).id, url };
+        kv.put("webhook", webhook);
+        kv.delete("revokeSubscribed");
+      }
+      // Scheduled before the step that can fail, so the hourly check also retries it.
       if (await this.ctx.storage.getAlarm() === null) await this.ctx.storage.setAlarm(Date.now() + CHECK_INTERVAL_MS);
+      await this.#subscribeToRevocations(webhook.id);
       return webhook.id;
     });
   }

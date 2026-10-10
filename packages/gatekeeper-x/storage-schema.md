@@ -68,4 +68,4 @@ One per deployment, named `deployment`.
 | Key | Value | Notes |
 |---|---|---|
 | `webhook` | `{ id, url }` | The webhook X delivers to, checked hourly: revalidated if X marked it invalid, registered again if X lost it. |
-| `revokeSubscribed` | `true` | The app-wide `oauth.revoke` subscription exists. |
+| `revokeSubscribed` | `true` | The app-wide `oauth.revoke` subscription exists. Until it does, every hook enabled and every hourly check tries again. |

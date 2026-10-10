@@ -327,6 +327,23 @@ describe("accounts going away", () => {
 });
 
 describe("the deployment's webhook", () => {
+  it("finishes its setup on the next enable, and schedules its check, when the first failed part-way", async () => {
+    const x = new FakeX().install();
+    const account = await seedAccount(x);
+    const hook = binding({ userObjectId: account, resourceKind: "account" });
+    await hook.subscribe([["subscribeMentions"]]);
+    let outage = true;
+    x.on("POST", /^\/2\/activity\/subscriptions$/, request =>
+      outage && JSON.parse(request.body!).event_type === "oauth.revoke" ? json({ title: "Service Unavailable" }, { status: 503 }) : undefined);
+    failure(await hook.tryEnable());
+    expect([...x.webhooks.values()].map(webhook => webhook.url)).toEqual([WEBHOOK]);
+    expect(await runInDurableObject(env.X_WEBHOOK_REGISTRY.getByName("deployment"), (_instance, state) =>
+      state.storage.getAlarm())).not.toBeNull();
+    outage = false;
+    await hook.enable();
+    expect(subscriptionsOf(x)).toEqual([["oauth.revoke", null, "app"], ["post.mention.create", ALICE.id, ALICE.id]]);
+  });
+
   it("is revalidated, or registered again, by the hourly check", async () => {
     const { x } = await watchingMentions();
     const registry = env.X_WEBHOOK_REGISTRY.getByName("deployment");
