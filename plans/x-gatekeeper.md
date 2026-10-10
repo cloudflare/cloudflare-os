@@ -732,7 +732,8 @@ Each read is classified before it is authorized:
   public leaves it owner-private until X has made it public. And missing evidence is not
   privacy's absence: a post whose author X did not expand, or expanded without `protected` (a
   200 can omit expansions it failed to hydrate), counts as a protected account's, as does a
-  connected account whose identity X returned without it.
+  connected account whose identity X returned without it; a List X returned without `private`
+  counts as private.
 - **Public** otherwise: public posts, every profile (X shows protected accounts' profiles; only
   their posts are hidden), public Lists, and an unprotected account's followers and following.
 

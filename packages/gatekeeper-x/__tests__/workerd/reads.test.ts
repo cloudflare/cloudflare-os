@@ -223,6 +223,15 @@ describe("what a read discloses", () => {
     expect(await exclusions(name)).toEqual([["observer"]]);
   });
 
+  it("withholds a List whose privacy X didn't report", async () => {
+    const { x, props, name } = await observed();
+    // A 200 that failed to hydrate the List's `private` field.
+    x.lists.set("78", { id: "78", name: "Unclear", owner_id: ALICE.id, member_count: 0 });
+    expect(unwrap(await hooks().run(name, props, [["getList", "78"], ["getInfo"]]))).toMatchObject({ private: true });
+    unwrap(await hooks().run(name, props, [["listOwnedLists"]], { pages: 1 }));
+    expect(await exclusions(name)).toEqual([["observer"], ["observer"]]);
+  });
+
   it("keeps withholding a private List while a change making it public waits", async () => {
     const { x, props, name } = await observed();
     x.lists.set("77", { id: "77", name: "Secret", private: true, owner_id: ALICE.id, member_count: 1 });
