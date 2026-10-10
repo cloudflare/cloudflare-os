@@ -1,0 +1,25 @@
+packages/gatekeeper-x/__tests__/workerd/fake-x.ts
+  s_6e159c0858b8f9::t_a467db7815001d 77-78,97-101,104,251-256
+packages/gatekeeper-x/__tests__/workerd/hooks.test.ts
+  s_6e159c0858b8f9::t_afd9914a9392b7 175-192
+packages/gatekeeper-x/src/x-hooks.ts
+  s_6e159c0858b8f9::t_ceb08f34ed9e3a 464,466
+plans/x-gatekeeper.md
+  s_6e159c0858b8f9::t_04fb145a79a9f0 1112,1132-1134
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cdbbd51f3204559987ee7a5bdced74a48a690e6f",
+  "prompts": {},
+  "sessions": {
+    "s_6e159c0858b8f9": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_eda3e264bffecsUpurXN1ZDw8a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
