@@ -183,6 +183,10 @@ only a mailbox address and a history ID, so a forged one can only make the worke
 mailbox's new history with the connected account's own credentials. Without these settings hooks
 are refused and everything else works as before.
 
+Disconnecting a Google account drops its hooks from the mailbox's and each space's driver, so
+nothing goes on reading or renewing with credentials that are gone; a watch or subscription no
+hook uses any more lapses, as when the hooks are disabled.
+
 ## Worker Preview OAuth callbacks
 
 Deployments using Worker Preview hostnames can register one stable Google callback and relay the

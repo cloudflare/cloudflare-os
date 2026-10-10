@@ -109,6 +109,7 @@ function mockGmail(): MockGmail {
     const token = new Headers(init.headers).get("Authorization") ?? "";
     const otherAccount = gmail.otherAccountTokens.has(token);
     if (url.href === "https://www.googleapis.com/oauth2/v3/certs") return json(jwks);
+    if (url.href === "https://oauth2.googleapis.com/revoke" && method === "POST") return new Response(null);
     if (url.href === "https://www.googleapis.com/oauth2/v3/userinfo") {
       return json(otherAccount
         ? {sub: "other-subject", email: OTHER_ACCOUNT}
@@ -261,6 +262,17 @@ async function later(ms: number): Promise<void> {
 
 const receivedIds = async (connection: {hooks: DurableObjectStub<TestHooks>}) =>
   (await connection.hooks.readGmailHook()).received.map(info => info.id).toSorted();
+
+/** Disconnect a connection's Google account, as the Workshop does through `GatekeeperUser.revoke()`. */
+const disconnect = (connection: {props: {userObjectId: string}}) =>
+  (testEnv.UserAccount.get(testEnv.UserAccount.idFromString(connection.props.userObjectId)) as unknown as
+    {revoke(): Promise<void>}).revoke();
+
+/** The hooks the mailbox's driver holds, and those with a delivery still to (re)try. */
+const driverHooks = () => runInDurableObject(driver(), (_instance: unknown, state: DurableObjectState) => ({
+  registered: [...state.storage.kv.list({prefix: "reg:"})].length,
+  pending: [...state.storage.kv.list<{at?: number}>({prefix: "msg:"})].filter(([, row]) => row.at !== undefined).length,
+}));
 
 it("delivers each new inbox message once, and the hook's reply is queued for approval", async () => {
   const gmail = mockGmail();
@@ -436,6 +448,48 @@ it("retries a failing hook, and disabling it ends the retries even if it is re-e
   await later(MINUTE);
   expect(await ada.hooks.readGmailHook()).toMatchObject({failures: 0, received: [{id: retried}]});
 });
+
+it("drops a disconnected account's hooks on the mailbox, while another account's go on", async () => {
+  const gmail = mockGmail();
+  const ada = await connect();
+  const bob = await connect();
+  await enable(ada);
+  await enable(bob);
+
+  await disconnect(ada);
+  const message = arrive(gmail);
+  await push(gmail);
+  await settled();
+
+  expect(await receivedIds(bob)).toEqual([message]);
+  expect(await receivedIds(ada)).toEqual([]);
+  // Nothing is left to try for the disconnected account, whose credentials are gone.
+  expect(await driverHooks()).toEqual({registered: 1, pending: 0});
+});
+
+it.each([["succeeds", 0], ["fails", 1]])(
+  "ends a delivery for good once its account is disconnected while the hook holds it, and the hook then %s",
+  async (_, failures) => {
+    const gmail = mockGmail();
+    const ada = await connect();
+    await enable(ada);
+    await ada.hooks.setGmailHookBehavior({held: true, failures});
+    const message = arrive(gmail);
+    await push(gmail);
+    await vi.waitFor(async () => expect((await ada.hooks.readGmailHook()).holding).toBe(true), {timeout: 5_000});
+
+    await disconnect(ada);
+    await ada.hooks.setGmailHookBehavior({held: false});
+    await vi.waitFor(async () => expect((await ada.hooks.readGmailHook()).holding).toBe(false));
+    // Past when a retry, and then the hourly history read, would be due.
+    gmail.requests.length = 0;
+    await later(MINUTE);
+    await later(HOUR);
+
+    expect(await receivedIds(ada)).toEqual(failures === 0 ? [message] : []);
+    expect(await driverHooks()).toEqual({registered: 0, pending: 0});
+    expect(gmail.requests).toEqual([]);
+  });
 
 it("refuses a mailbox that now reports another address, retrying its history read only hourly", async () => {
   const gmail = mockGmail();

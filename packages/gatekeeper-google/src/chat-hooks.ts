@@ -102,6 +102,8 @@ export class ChatHookDriver extends DurableObject<Env> {
   async register(key: string, registration: Registration, capabilities: Capabilities): Promise<void> {
     const subscription = this.ctx.storage.kv.get<Subscription>(subscriptionKey(registration.authority));
     if (!subscription || subscription.expireTime <= Date.now()) await this.#subscribe(registration);
+    // Recorded first, so that disconnecting the account reaches every hook it registers.
+    await this.#account(registration.userObjectId).trackHookDriver({ kind: "chat", name: registration.spaceName });
     const replaced = this.ctx.storage.kv.get<Capabilities>(capabilitiesKey(key));
     this.ctx.storage.kv.put(registrationKey(key), registration);
     this.ctx.storage.kv.put(capabilitiesKey(key), capabilities);
@@ -115,6 +117,18 @@ export class ChatHookDriver extends DurableObject<Env> {
     this.ctx.storage.kv.delete(registrationKey(key));
     this.ctx.storage.kv.delete(capabilitiesKey(key));
     this.#queue.cancel(key);
+  }
+
+  /**
+   * Drop the hooks of an account being disconnected (see UserAccount.revoke()). A subscription no
+   * hook uses then lapses, as on disabling.
+   */
+  async forgetAccount(userObjectId: string): Promise<void> {
+    // Listed up front, as unregistering deletes from the listing.
+    const registrations = [...this.#registrations()];
+    for (const [regKey, registration] of registrations) {
+      if (registration.userObjectId === userObjectId) await this.unregister(regKey.slice("reg:".length));
+    }
   }
 
   /** Queue the new messages a subscription reported for each hook of its account they match. */
@@ -222,8 +236,12 @@ export class ChatHookDriver extends DurableObject<Env> {
   }
 
   #tokens(userObjectId: string): AccessTokenProvider {
-    const account = this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(userObjectId));
+    const account = this.#account(userObjectId);
     return async opts => (await account.getAccessToken(opts)).token;
+  }
+
+  #account(userObjectId: string) {
+    return this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(userObjectId));
   }
 
   async #wakeBy(time: number): Promise<void> {

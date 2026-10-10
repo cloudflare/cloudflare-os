@@ -147,6 +147,8 @@ export class GmailHookDriver extends DurableObject<Env> {
     } else if (kv.get("syncAt") === undefined) {
       kv.put("syncAt", Date.now() + SAFETY_SYNC_INTERVAL_MS);
     }
+    // Recorded first, so that disconnecting the account reaches every hook it registers.
+    await this.#account(registration.userObjectId).trackHookDriver({ kind: "gmail", name: registration.mailbox });
     const replaced = kv.get<Capabilities>(capabilitiesKey(key));
     kv.put<Registration>(registrationKey(key), { ...registration, since: profile.historyId });
     kv.put(capabilitiesKey(key), capabilities);
@@ -165,6 +167,13 @@ export class GmailHookDriver extends DurableObject<Env> {
     if (this.#registrations().length === 0) {
       kv.delete("cursor");
       kv.delete("syncAt");
+    }
+  }
+
+  /** Drop the hooks of an account being disconnected (see UserAccount.revoke()). */
+  async forgetAccount(userObjectId: string): Promise<void> {
+    for (const [regKey, registration] of this.#registrations()) {
+      if (registration.userObjectId === userObjectId) await this.unregister(regKey.slice("reg:".length));
     }
   }
 
@@ -351,8 +360,12 @@ export class GmailHookDriver extends DurableObject<Env> {
   }
 
   #api({ mailbox, userObjectId }: Pick<Registration, "mailbox" | "userObjectId">): GmailApi {
-    const account = this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(userObjectId));
+    const account = this.#account(userObjectId);
     return new GmailApi(mailbox, async opts => (await account.getAccessToken(opts)).token);
+  }
+
+  #account(userObjectId: string) {
+    return this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(userObjectId));
   }
 
   /** Watch the mailbox, joining any watch already in flight. */
