@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  indexIncludes, isMutedStatus, mentionsProtectedAuthor, toListInfo, toPostInfo, toUserInfo,
+  authorsUnverified, indexIncludes, isMutedStatus, mentionsProtectedAuthor, toListInfo, toPostInfo, toUserInfo,
   type WireIncludes, type WirePost, type WireUser,
 } from "../src/x-normalize";
 
@@ -121,6 +121,34 @@ describe("mentionsProtectedAuthor", () => {
     expect(mentionsProtectedAuthor([plain])).toBe(false);
     expect(mentionsProtectedAuthor([plain, quoting])).toBe(true);
     expect(mentionsProtectedAuthor([byBob])).toBe(true);
+  });
+});
+
+describe("authorsUnverified", () => {
+  const unverified = (posts: WirePost[], includes?: WireIncludes) => authorsUnverified(posts, indexIncludes(includes));
+
+  it("accepts posts whose authors, and the authors they quote, X described", () => {
+    expect(unverified([tweetSpelling.post], tweetSpelling.includes)).toBe(false);
+    expect(unverified([postSpelling.post], postSpelling.includes)).toBe(false);
+    expect(unverified([])).toBe(false);
+  });
+
+  it("flags an author X did not expand, or expanded without saying whether it is protected", () => {
+    expect(unverified([{ id: "7", text: "hi", author_id: "1" }])).toBe(true);
+    expect(unverified([{ id: "7", text: "hi" }], { users: [alice] })).toBe(true);
+    expect(unverified([{ id: "7", text: "hi", author_id: "3" }], { users: [{ id: "3", username: "carol" }] })).toBe(true);
+  });
+
+  it("flags a quoted post X expanded without its author", () => {
+    expect(unverified([tweetSpelling.post], { ...tweetSpelling.includes, users: [alice] })).toBe(true);
+    // A quote X did not expand discloses nothing of the quoted post, nor does a reply of its parent.
+    expect(unverified([tweetSpelling.post], { users: [alice] })).toBe(false);
+  });
+
+  it("flags a repost X did not expand, since its own text quotes the original", () => {
+    const repost: WirePost = { id: "9", text: "RT @bob: …", author_id: "1", referenced_tweets: [{ type: "retweeted", id: "80" }] };
+    expect(unverified([repost], { users: [alice] })).toBe(true);
+    expect(unverified([repost], tweetSpelling.includes)).toBe(false);
   });
 });
 

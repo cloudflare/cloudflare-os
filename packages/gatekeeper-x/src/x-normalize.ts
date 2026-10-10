@@ -306,3 +306,20 @@ export function mentionsProtectedAuthor(posts: readonly XPostInfo[]): boolean {
     || post.repostOf?.author.protected === true
     || post.quoteOf?.author.protected === true);
 }
+
+/**
+ * Whether X left unsaid whether an author whose words these posts disclose is protected: an author
+ * it did not expand, or expanded without `protected`. That covers each post's author, the author
+ * of a reposted post (a repost's own text quotes it), and the author of a quoted post X expanded.
+ * A 200 can omit expansions it failed to hydrate, so `toUserSummary`'s public default is no
+ * evidence, and such posts are treated as a protected account's (plans/x-gatekeeper.md §7).
+ */
+export function authorsUnverified(posts: readonly WirePost[], includes: Includes): boolean {
+  const verified = (authorId: string | undefined): boolean =>
+    typeof includes.users.get(authorId ?? "")?.protected === "boolean";
+  return posts.some(post => !verified(post.author_id) || references(post).some(ref => {
+    if (ref.type === "replied_to") return false;
+    const target = includes.posts.get(ref.id);
+    return target === undefined ? ref.type === "retweeted" : !verified(target.author_id);
+  }));
+}

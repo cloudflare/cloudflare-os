@@ -727,7 +727,10 @@ Each read is classified before it is authorized:
   `isMuted()`, a private List's details, posts or members — or returns any post written by a
   protected account (including all the connected account's own posts when it is protected).
   Privacy is X's, never the simulated value: a pending change that would make a private List
-  public leaves it owner-private until X has made it public.
+  public leaves it owner-private until X has made it public. And missing evidence is not
+  privacy's absence: a post whose author X did not expand, or expanded without `protected` (a
+  200 can omit expansions it failed to hydrate), counts as a protected account's, as does a
+  connected account whose identity X returned without it.
 - **Public** otherwise: public posts, every profile (X shows protected accounts' profiles; only
   their posts are hidden), public Lists, followers and following.
 
