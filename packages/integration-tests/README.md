@@ -68,6 +68,11 @@ without `WEBHOOK_ORIGIN` gets. GitHub is `__tests__/github-fake.ts`, a handler m
 interceptor. The gatekeeper boots from the tree `vp run -F @gadgets/github-gatekeeper
 build:integration-worker` validates, which the `test` task and `test:prebuild` build first.
 
+`gitlab-hooks.test.ts` and `gitlab-hooks-off.test.ts` do the same for `gatekeeper-gitlab`. Its
+webhooks sign deliveries with a signing token, as GitLab 19.0 and later do. GitLab is
+`__tests__/gitlab-fake.ts`, whose REST shapes are the gatekeeper's own documented fixtures, and
+the gatekeeper boots from `vp run -F @gadgets/gitlab-gatekeeper build:integration-worker`.
+
 ## An upgrade: Google's hooks
 
 `__tests__/google-hooks-upgrade.test.ts` enables Gmail and Chat hooks under the release of

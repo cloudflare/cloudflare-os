@@ -53,6 +53,7 @@ export default {
         dependsOn: [
           'build:test-gatekeeper', 'build:upgrade-base',
           '@gadgets/github-gatekeeper#build:integration-worker',
+          '@gadgets/gitlab-gatekeeper#build:integration-worker',
           '@gadgets/google-gatekeeper#build:integration-worker',
         ],
       },
