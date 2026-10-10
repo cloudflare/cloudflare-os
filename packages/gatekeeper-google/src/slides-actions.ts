@@ -21,10 +21,11 @@ import { obsContext } from "./observability";
 import { SlidesWriteRefused, type GoogleSlidesApi, type RestSlide } from "./slides-api";
 import { designDeck, type DesignChange, type DesignStep } from "./slides-design";
 import { CREATES } from "./slides-design-input";
-import { slideIds } from "./slides-model";
+import { mastersOf, slideIds } from "./slides-model";
 import type { SlideBounds } from "./slides-read-types";
 import {
-  movedOrder, requireNewSlide, type Deck, type DesignBatch, type SlideLabel, type SlidesActions,
+  movedOrder, newSlidePlace, requireNewSlide, requirePlaceholders, requireSlide, type Deck,
+  type DesignBatch, type SlideLabel, type SlidesActions,
 } from "./slides-simulation";
 import { elementIdsOf, locate, textOfTarget, type TextAddress } from "./slides-target";
 import { ChangeConflict, projectedText, richTextOf } from "./slides-text";
@@ -36,11 +37,13 @@ const logger = obsContext.createLogger({ component: "gatekeeper.google.slides", 
 export type SlidesHost = { api: GoogleSlidesApi; presentationId: string };
 
 // What a user may let apply without asking: a batch that only edits text, or one that only changes
-// how existing text and elements look, in shapes and table cells alike. Setting a link or font does
-// not count, since Google keeps the whole string, and anything that creates or deletes, changes a
-// table's rows, columns or cell fills, or sets alt text needs approval.
+// how existing text and elements look, in shapes and table cells alike, and skipping slides or
+// showing them again, which destroys nothing and is undone the same way. Setting a link or font
+// does not count, since Google keeps the whole string, and anything that creates or deletes,
+// changes a table's rows, columns or cell fills, or sets alt text needs approval.
 const EDIT_SLIDES_TEXT: ActionKind = { tag: "editSlidesText", label: "Slide text edits" };
 const FORMAT_SLIDES: ActionKind = { tag: "formatSlides", label: "Slide formatting and layout" };
+const SKIP_SLIDES: ActionKind = { tag: "skipSlides", label: "Skipping slides" };
 const FORMATTING = new Set<DesignChange["op"]>([
   "formatText", "formatParagraphs", "updateShape", "setBounds", "arrange",
 ]);
@@ -56,8 +59,11 @@ export function batchKind(changes: readonly DesignChange[]): "editText" | "forma
 // Planning against a fresh read, and resending a batch whose response was lost.
 const MAX_ATTEMPTS = 3;
 
-/** A fresh read: the revision to pin a write to, the slide order, and the slides it fetched. */
-type Fresh = Deck & { revisionId: string };
+/**
+ * A fresh read: the revision to pin a write to, the slide order, the slides it fetched, the
+ * masters of every slide and layout, and which slides are skipped.
+ */
+type Fresh = Deck & { revisionId: string; skipped: ReadonlySet<string> };
 
 type Plan = {
   requests: unknown[];
@@ -77,7 +83,9 @@ async function readFresh(host: SlidesHost, ids: readonly string[]): Promise<Fres
   // Read after the outline: a slide changed since then has also moved the revision this write is
   // pinned to, so Google refuses it rather than applying it against what changed.
   let slides = await host.api.getSlides(host.presentationId, ids, order);
-  return { revisionId, order, slides };
+  let skipped = new Set(outline.slides?.flatMap(({ objectId, slideProperties }) =>
+    objectId && slideProperties?.isSkipped ? [objectId] : []));
+  return { revisionId, order, slides, ...mastersOf(outline), skipped };
 }
 
 function noLongerApplies(error: unknown): never {
@@ -89,7 +97,7 @@ function noLongerApplies(error: unknown): never {
 
 /** Writes the plan for `ids`, as the module comment describes. */
 async function write(
-  host: SlidesHost, ids: readonly string[], plan: (fresh: Fresh) => Plan,
+  host: SlidesHost, ids: readonly string[], plan: (fresh: Fresh) => Plan | Promise<Plan>,
 ): Promise<void> {
   // Set once a dispatch's outcome is unknown; from then on only this batch is ever sent.
   let sent: (Plan & { revisionId: string }) | undefined;
@@ -99,7 +107,7 @@ async function write(
       let fresh = await readFresh(host, ids);
       let planned: Plan;
       try {
-        planned = plan(fresh);
+        planned = await plan(fresh);
       } catch (error) {
         noLongerApplies(error);
       }
@@ -536,6 +544,69 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
           },
         }],
         landed: later => movedOrder(later.order, ids, after).every((id, i) => later.order[i] === id),
+      };
+    }),
+  },
+
+  createSlide: {
+    delivery: "continue-with-simulation",
+    claimBeforeApply: true,
+    describe: ({ layout, after, afterSlide }) => {
+      let where = after === undefined ? "at the end of the presentation"
+        : afterSlide ? `after ${slideName(afterSlide)}` : "at the start of the presentation";
+      return {
+        title: sanitizeTitle("Add a slide"),
+        description: `Adds a slide with the layout "${plainInline(layout, 60)}" ${where}.`,
+        descriptionIsComplete: true,
+        implementsRevert: false,
+      };
+    },
+    apply: (payload, host) => write(host, [], async fresh => {
+      let { newSlideId, layoutId, after, placeholders } = payload;
+      let { at } = newSlidePlace(fresh, payload);
+      // The layout may have lost a placeholder the change maps since it was queued.
+      requirePlaceholders(await host.api.getLayout(host.presentationId, layoutId), placeholders);
+      return {
+        requests: [{
+          createSlide: {
+            objectId: newSlideId,
+            // Without an index, Google adds the slide at the end.
+            ...(after === undefined ? {} : { insertionIndex: at }),
+            slideLayoutReference: { layoutId },
+            placeholderIdMappings: placeholders.map(({ objectId, type, index }) =>
+              ({ layoutPlaceholder: { type, index }, objectId })),
+          },
+        }],
+        landed: later => later.order.includes(newSlideId),
+      };
+    }),
+  },
+
+  skipSlides: {
+    kind: SKIP_SLIDES,
+    autoApprovable: true,
+    delivery: "continue-with-simulation",
+    claimBeforeApply: true,
+    describe: ({ skipped, slides }) => {
+      let names = slides.map(slideName).join(", ");
+      let verb = skipped ? "Skip" : "Stop skipping";
+      return {
+        title: sanitizeTitle(slides.length === 1 ? `${verb} ${names}` : `${verb} ${slides.length} slides`),
+        description: skipped
+          ? `Skips ${names}, leaving ${slides.length === 1 ? "it" : "them"} out when presenting.`
+          : `Stops skipping ${names}, showing ${slides.length === 1 ? "it" : "them"} again when presenting.`,
+        descriptionIsComplete: true,
+        implementsRevert: false,
+      };
+    },
+    // Planned from the outline alone, which says which slides are skipped.
+    apply: ({ slideIds: ids, skipped }, host) => write(host, [], fresh => {
+      for (let id of ids) requireSlide(fresh.order, id);
+      return {
+        requests: ids.filter(id => fresh.skipped.has(id) !== skipped).map(objectId => ({
+          updateSlideProperties: { objectId, slideProperties: { isSkipped: skipped }, fields: "isSkipped" },
+        })),
+        landed: later => ids.every(id => later.order.includes(id) && later.skipped.has(id) === skipped),
       };
     }),
   },

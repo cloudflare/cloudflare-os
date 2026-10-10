@@ -583,6 +583,29 @@ export type AiChatAgentContext = {
    * that).
    */
   alwaysAvailableCapsuleIds?: WorkpieceId[];
+
+  /**
+   * The part of the agent's system prompt that lists the workspace's gadgets, each with its files
+   * and bindings, saved when the chat's first turn built it.
+   *
+   * Later turns reuse the saved text instead of listing the gadgets again. Otherwise the system
+   * prompt would change whenever the agent created a gadget or added a file, and so would the
+   * start of every later request: the model provider could no longer reuse its cached copy of the
+   * conversation, and would charge to process all of it again. The agent doesn't need the list
+   * updated for changes made in this chat: it knows what it changed from its own tool calls, and
+   * the user's code edits reach it as observeUserChanges results. Changes made elsewhere (a gadget
+   * created, renamed or deleted outside this chat, or a binding merged from another chat) show only
+   * after the next compaction or in a new chat; tool calls still see the current state. The rest
+   * of the system prompt (output formats, vendors to connect, always-available resources) is still
+   * rebuilt each turn: nothing the chat does changes it, so it costs a cache miss only when
+   * someone outside the chat changes it.
+   *
+   * Compaction replaces the older history anyway, so each compaction lists the gadgets afresh and
+   * saves that list in its CompactionCheckpoint, for the turns after it. The list saved here is
+   * for the turns before the first compaction, so each part of the chat's history keeps the list
+   * it was sent with.
+   */
+  workspacePrompt?: string;
 };
 
 /**
@@ -609,6 +632,14 @@ export type CompactionCheckpoint = {
 
   /** The summary the model wrote. We send it as one user message before the retained messages. */
   summary: string;
+
+  /**
+   * The list of the workspace's gadgets that the system prompt shows after this checkpoint, built
+   * when the chat compacted (see AiChatAgentContext.workspacePrompt). Absent on checkpoints of
+   * spawned agents, whose prompt has no such list, and on checkpoints written before this field
+   * existed; turns after those list the gadgets afresh.
+   */
+  workspacePrompt?: string;
 
   /**
    * The chat's named bindings. Retained messages and the summary refer to these names as

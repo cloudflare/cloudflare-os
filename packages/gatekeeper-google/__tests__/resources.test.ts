@@ -3,9 +3,10 @@ import {
   BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_CHAT_RESOURCE,
   GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE, GOOGLE_DOC_RESOURCE,
   GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE,
-  GOOGLE_SHEETS_RESOURCE, IDENTITY_SCOPES, LEGACY_GRANTED_RESOURCE_URL_PATTERNS,
-  RESOURCE_BY_KIND, RESOURCE_SCOPES, SCOPE_DERIVED_RESOURCE_URL_PATTERNS, SUPPORTED_RESOURCES,
-  grantedResourceUrlPatterns, hasDriveResourceGrant, parseResourceUrl,
+  GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE, IDENTITY_SCOPES,
+  LEGACY_GRANTED_RESOURCE_URL_PATTERNS, RESOURCE_BY_KIND, RESOURCE_SCOPES,
+  SCOPE_DERIVED_RESOURCE_URL_PATTERNS, SUPPORTED_RESOURCES, creatableKind,
+  grantedResourceUrlPatterns, hasDriveResourceGrant, nativeFileUrl, parseResourceUrl,
   recordedResourceUrlPatterns, resourceUrlPatternsToOAuthScopes, resourcesCoveredByScopes,
   validateResourceUrlPatterns,
 } from "../src/resources";
@@ -292,10 +293,39 @@ describe("resourcesCoveredByScopes", () => {
       "https://www.googleapis.com/auth/spreadsheets",
       "https://www.googleapis.com/auth/presentations",
     ])).toEqual(folderIntent);
+    // Sheets needs the read-write `spreadsheets` scope, which only `drive` subsumes.
     expect(resourcesCoveredByScopes(
       [GOOGLE_DOC_RESOURCE.urlPattern, GOOGLE_SHEETS_RESOURCE.urlPattern],
       ["https://www.googleapis.com/auth/drive.readonly"],
-    )).toEqual([GOOGLE_SHEETS_RESOURCE.urlPattern]);
+    )).toEqual([]);
+  });
+});
+
+describe("creatable resources", () => {
+  it("creates exactly Docs, Sheets and Slides", () => {
+    expect(creatableKind(GOOGLE_DOC_RESOURCE.urlPattern)).toBe("doc");
+    expect(creatableKind(GOOGLE_SHEETS_RESOURCE.urlPattern)).toBe("sheets");
+    expect(creatableKind(GOOGLE_SLIDES_RESOURCE.urlPattern)).toBe("slides");
+    expect(SUPPORTED_RESOURCES.filter(resource => resource.creatable))
+      .toEqual([GOOGLE_DOC_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE]);
+    for (let pattern of [GMAIL_RESOURCE.urlPattern, GOOGLE_DRIVE_FILE_RESOURCE.urlPattern, "nonsense"]) {
+      expect(() => creatableKind(pattern)).toThrow(
+        "Google can create only these resource types: " +
+        "Google Doc (https://docs.google.com/document/d/:docId/*), " +
+        "Google Spreadsheet (https://docs.google.com/spreadsheets/d/:spreadsheetId/*), " +
+        "Google Slides Presentation (https://docs.google.com/presentation/d/:presentationId/*).");
+    }
+  });
+
+  // A created file's URL becomes its binding's resource URL, so it must parse back to the same
+  // file; a file not yet created gets one that cannot be bound at all.
+  it.each([
+    ["doc", { kind: "doc", documentId: "abc" }],
+    ["sheets", { kind: "sheets", spreadsheetId: "abc" }],
+    ["slides", { kind: "slides", presentationId: "abc" }],
+  ] as const)("round-trips a created %s's URL", (kind, target) => {
+    expect(parseResourceUrl(nativeFileUrl(kind, "abc"))).toEqual(target);
+    expect(() => parseResourceUrl(nativeFileUrl(kind))).toThrow();
   });
 });
 

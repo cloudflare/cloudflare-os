@@ -16,7 +16,7 @@ import {
   textStyleChange, restyled,
 } from "./slides-format";
 import {
-  EMU_PER_POINT, localBox, matrixFor, matrixOf, placementOf, transformOf, type Placement,
+  EMU_PER_POINT, localBox, matrixFor, matrixOf, placementOf, tableLinesOf, transformOf, type Placement,
 } from "./slides-geometry";
 import type { SlideBounds } from "./slides-read-types";
 import type { Deck } from "./slides-simulation";
@@ -94,7 +94,7 @@ export function designDeck(
     }
   });
   return {
-    deck: edited.size === 0 ? deck : { order: deck.order, slides: new Map([...deck.slides, ...edited]) },
+    deck: edited.size === 0 ? deck : { ...deck, slides: new Map([...deck.slides, ...edited]) },
     steps,
   };
 }
@@ -480,10 +480,18 @@ function createTable(
   let { slideId, id, rows, columns, bounds, cells = [] } = change;
   requireNewElement(slide, id);
   let placement = bounds ? placed(bounds) : {};
+  // Google shares the size it is given evenly among the columns and rows, as live reads show, even
+  // into rows too short for their text, which it then draws taller.
   let tableRows = Array.from({ length: rows }, (_row, row) => ({
+    ...(bounds ? { rowHeight: pointsDimension(bounds.height / rows) } : {}),
     tableCells: Array.from({ length: columns }, (_cell, column) => emptyCell(row, column)),
   }));
-  (slide.pageElements ??= []).push({ objectId: id, ...placement, table: { rows, columns, tableRows } });
+  let tableColumns = bounds
+    ? Array.from({ length: columns }, () => ({ columnWidth: pointsDimension(bounds.width / columns) }))
+    : undefined;
+  (slide.pageElements ??= []).push({
+    objectId: id, ...placement, table: { rows, columns, ...(tableColumns ? { tableColumns } : {}), tableRows },
+  });
   let requests: unknown[] = [{
     createTable: { objectId: id, elementProperties: { pageObjectId: slideId, ...placement }, rows, columns },
   }];
@@ -544,6 +552,13 @@ function reindexed(table: Table): void {
   }));
 }
 
+// Google redraws the edges around new or removed lines by rules it does not document, so a read
+// shows no borders until the change is applied.
+function unsetBorders(table: Table): void {
+  delete table.horizontalBorderRows;
+  delete table.verticalBorderRows;
+}
+
 function insertTableLines(
   slide: RestSlide,
   change: Extract<DesignChange, { op: "insertTableRows" | "insertTableColumns" }>,
@@ -558,10 +573,14 @@ function insertTableLines(
   if (merged) {
     throw new ChangeConflict(`the ${axis} beside them holds a merged cell, at ${cellName(merged)}`);
   }
+  unsetBorders(table);
   let reference = at < size ? at : size - 1;
   if (axis === "row") {
     let columns = table.columns ?? 0;
+    // A new row is as tall as the row it is inserted beside, as live reads show.
+    let rowHeight = table.tableRows?.[reference]?.rowHeight;
     table.tableRows = (table.tableRows ?? []).toSpliced(at, 0, ...Array.from({ length: count }, () => ({
+      ...(rowHeight ? { rowHeight: { ...rowHeight } } : {}),
       tableCells: Array.from({ length: columns }, (_, column) => emptyCell(0, column)),
     })));
     table.rows = size + count;
@@ -574,6 +593,14 @@ function insertTableLines(
         },
       }],
     };
+  }
+  let { widths } = tableLinesOf(table);
+  if (widths) {
+    // A new column is as wide as the column it is inserted beside, and then every column narrows
+    // in proportion so the table keeps its width, as live reads show.
+    let grown = widths.toSpliced(at, 0, ...Array.from({ length: count }, () => widths[reference]));
+    let scale = widths.reduce((a, b) => a + b, 0) / grown.reduce((a, b) => a + b, 0);
+    table.tableColumns = grown.map(width => ({ columnWidth: { magnitude: width * scale, unit: "EMU" } }));
   }
   table.tableRows?.forEach((row, rowIndex) => {
     let cells = row.tableCells ?? [];
@@ -608,6 +635,7 @@ function deleteTableLines(
   if (count >= size) throw new ChangeConflict(`that is every ${axis}; delete the table instead`);
   let merged = mergedAcross(table, axis, at, at + count);
   if (merged) throw new ChangeConflict(`a merged cell, at ${cellName(merged)}, is in them`);
+  unsetBorders(table);
   let requests = Array.from({ length: count }, () => axis === "row"
     ? { deleteTableRow: { tableObjectId: elementId, cellLocation: { rowIndex: at, columnIndex: 0 } } }
     : { deleteTableColumn: { tableObjectId: elementId, cellLocation: { rowIndex: 0, columnIndex: at } } });
@@ -624,6 +652,8 @@ function deleteTableLines(
         return [{ ...cell, location: { ...cell.location, columnIndex: column - count } }];
       });
     }
+    // The remaining columns keep their widths, as live reads show, so the table narrows.
+    table.tableColumns?.splice(at, count);
     table.columns = size - count;
   }
   return { requests };

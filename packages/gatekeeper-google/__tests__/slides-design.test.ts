@@ -13,7 +13,11 @@ const pt = (magnitude: number) => ({ magnitude, unit: "PT" as const });
 /** Runs `changes` over the slides as `updateSlides()` would queue them. */
 function run(pages: RestSlide[], changes: SlideChange[]) {
   let { changes: prepared, refs } = prepareChanges(changes);
-  let deck = { order: pages.map(page => page.objectId!), slides: new Map(pages.map(page => [page.objectId!, page])) };
+  let deck = {
+    order: pages.map(page => page.objectId!),
+    slides: new Map(pages.map(page => [page.objectId!, page])),
+    masters: new Map(),
+  };
   let { deck: next, steps } = designDeck(deck, prepared);
   return {
     refs,
@@ -96,7 +100,7 @@ describe("Slides design changes", () => {
     let { changes } = prepareChanges([
       { op: "formatText", slideId: "s1", elementId: "box", range: { start: 0, end: 4 }, format: { italic: true } },
     ]);
-    let deck = { order: ["s1"], slides: new Map([["s1", page]]) };
+    let deck = { order: ["s1"], slides: new Map([["s1", page]]), masters: new Map() };
     expect(() => designDeck(deck, [{ ...changes[0], before: "Bolder" }]))
       .toThrow("change 1 (formatText): the text has changed since this change was made");
   });
@@ -127,9 +131,10 @@ describe("Slides design changes", () => {
     expect(() => run([page], [
       { op: "formatParagraphs", slideId: "s1", elementId: "box", find: "New", bullets: "bullet" },
     ])).toThrow("the paragraph before is a list item");
+    // The item keeps the indents Google leaves where its bullet was.
     expect(run([page], [
       { op: "formatParagraphs", slideId: "s1", elementId: "box", find: "Item", bullets: "none" },
-    ]).read().elements[0]).not.toHaveProperty("paragraphs");
+    ]).read().elements[0]).toMatchObject({ paragraphs: [{ start: 6, end: 10, indentStart: 0, indentFirstLine: 0 }] });
   });
 
   it("starts a new list each time, so text cannot join a paragraph to the list it left", () => {
@@ -234,7 +239,11 @@ describe("Slides design changes", () => {
       { op: "createShape", slideId: "s1", ref: "new", shapeType: "TEXT_BOX", bounds: { x: 0, y: 0, width: 10, height: 10 } },
       { op: "setBounds", slideId: "s1", elementId: "new", bounds: { x: 5 } },
     ])).toThrow("change 2 (setBounds): an element created in the same batch cannot be moved");
-    let positioned = slide("s1", [{ ...table("grid", [["A"]]), ...turned("grid", 50, 50, 20, 20), shape: undefined }]);
+    // Google places a table by its columns and rows; its `size` is nominal.
+    let grid = table("grid", [["A"]]);
+    grid.table = { ...grid.table, tableColumns: [{ columnWidth: pt(20) }],
+      tableRows: grid.table!.tableRows!.map(row => ({ ...row, rowHeight: pt(20) })) };
+    let positioned = slide("s1", [{ ...grid, ...turned("grid", 50, 50, 20, 20), shape: undefined }]);
     expect(() => run([positioned], [{ op: "setBounds", slideId: "s1", elementId: "grid", bounds: { width: 40 } }]))
       .toThrow("a table can only be moved");
   });
@@ -272,6 +281,50 @@ describe("Slides design changes", () => {
       { deleteTableRow: { tableObjectId: "grid", cellLocation: { rowIndex: 1, columnIndex: 0 } } },
       { deleteTableRow: { tableObjectId: "grid", cellLocation: { rowIndex: 1, columnIndex: 0 } } },
     ]);
+  });
+
+  // Read back live: new lines copy the one beside them, new columns then all narrow so the table
+  // keeps its width, and lines left by a deletion keep theirs.
+  it("sizes a table's rows and columns as Google does when they change, and drops its borders", () => {
+    let edge = { tableBorderProperties: { tableBorderFill: { solidFill: { color: { rgbColor: {} } } }, weight: pt(1) } };
+    let laidOut = () => {
+      let grid = table("grid", [["A", "B"], ["C", "D"]]);
+      grid.table = {
+        ...grid.table,
+        tableColumns: [{ columnWidth: pt(50) }, { columnWidth: pt(70) }],
+        tableRows: grid.table!.tableRows!.map((row, i) => ({ ...row, rowHeight: pt(20 + i) })),
+        horizontalBorderRows: Array.from({ length: 3 }, (_, rowIndex) => ({ tableBorderCells: [0, 1].map(
+          columnIndex => ({ location: { rowIndex, columnIndex }, ...edge })) })),
+        verticalBorderRows: Array.from({ length: 2 }, (_, rowIndex) => ({ tableBorderCells: [0, 1, 2].map(
+          columnIndex => ({ location: { rowIndex, columnIndex }, ...edge })) })),
+      };
+      return slide("s1", [{ ...grid, transform: { scaleX: 1, scaleY: 1, unit: "EMU" } }]);
+    };
+    let after = (change: SlideChange) => run([laidOut()], [change]).read().elements[0] as TableElement;
+
+    expect(after({ op: "formatTableCells", slideId: "s1", elementId: "grid", fill: "ACCENT1" })).toMatchObject({
+      bounds: { width: 120, height: 41 }, columnWidths: [50, 70], rowHeights: [20, 21],
+      border: { color: "#000000", weight: 1 },
+    });
+    let rowAdded = after({ op: "insertTableRows", slideId: "s1", elementId: "grid", at: 1, count: 2 });
+    expect(rowAdded).toMatchObject({ columnWidths: [50, 70], rowHeights: [20, 21, 21, 21] });
+    expect(rowAdded).not.toHaveProperty("border");
+    expect(rowAdded).not.toHaveProperty("borders");
+    expect(after({ op: "insertTableColumns", slideId: "s1", elementId: "grid", at: 2 }))
+      .toMatchObject({ bounds: { width: 120 }, columnWidths: [31.58, 44.21, 44.21] });
+    expect(after({ op: "deleteTableRows", slideId: "s1", elementId: "grid", at: 0 })).toMatchObject({ rowHeights: [21] });
+    expect(after({ op: "deleteTableColumns", slideId: "s1", elementId: "grid", at: 0 }))
+      .toMatchObject({ bounds: { width: 70 }, columnWidths: [70] });
+  });
+
+  it("shares a new table's size evenly among its columns and rows, as Google does", () => {
+    let { read } = run([slide("s1", [])], [
+      { op: "createTable", slideId: "s1", rows: 20, columns: 3, bounds: { x: 10, y: 20, width: 300, height: 40 } },
+    ]);
+    expect(read().elements[0]).toMatchObject({
+      bounds: { x: 10, y: 20, width: 300, height: 40 },
+      columnWidths: [100, 100, 100], rowHeights: Array.from({ length: 20 }, () => 2),
+    });
   });
 
   it("refuses table changes that cut through a merged cell", () => {
@@ -341,7 +394,7 @@ describe("Slides design changes", () => {
       runs: [{ content, style: { bold: false } }],
       marker: { bullet: { listId: "l", bulletStyle: { bold: false } } },
     }))))]);
-    let deck = { order: ["s1"], slides: new Map([["s1", page]]) };
+    let deck = { order: ["s1"], slides: new Map([["s1", page]]), masters: new Map() };
     let { changes } = prepareChanges([
       { op: "formatText", slideId: "s1", elementId: "box", find: "A\n", format: { bold: true } },
       { op: "editText", slideId: "s1", elementId: "box", find: "A", replace: "X\nY" },

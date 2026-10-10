@@ -6,7 +6,8 @@ import { z } from "zod";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { openAgentSession } from "../src/agent-session.js";
 import { startTestGatekeeperHarness, TEST_VENDOR_ID, type Harness } from "../src/harness.js";
-import { SCRIPTED_MODEL_ID, scriptedModelRouter } from "../src/mock-model.js";
+import { SCRIPTED_MODEL_ID, scriptedModelRouter, systemPromptOf } from "../src/mock-model.js";
+import { connect, nextUsernames, signUp, waitFor, waitForIdleChat } from "../src/rpc-client.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 
 let harness: Harness;
@@ -64,4 +65,62 @@ it.concurrent("each request starts with the whole request before it", async () =
   expect((await session.runTurn("Is it the same now?")).outcome).toEqual({ status: "completed" });
   expect(model.requests).toHaveLength(3);
   expectEachRequestExtendsThePrevious(model.requests);
+});
+
+// The system prompt lists the workspace's gadgets as the chat first saw them. The agent knows of a
+// gadget it created from its own tool call.
+it.concurrent("creating a gadget keeps each request a prefix of the next", async () => {
+  const model = models.script([
+    { toolCall: { id: "create", name: "createGadget",
+                  arguments: { title: "Meeting notes", bindingName: "NOTES" } } },
+    { text: "I created it." },
+    { text: "It is there." },
+  ]);
+  await using session = await openAgentSession(harness.url, {
+    modelId: SCRIPTED_MODEL_ID,
+    userModel: model.userModel,
+  });
+
+  expect((await session.runTurn("Make a notes gadget.")).outcome).toEqual({ status: "completed" });
+  await session.acceptChanges();
+  expect((await session.runTurn("Is it there?")).outcome).toEqual({ status: "completed" });
+  expect(model.requests).toHaveLength(3);
+  expectEachRequestExtendsThePrevious(model.requests);
+});
+
+// Compaction rewrites the chat's history anyway, so it lists the gadgets as they are, and the
+// turns after it keep that list.
+it.concurrent("a compaction lists the workspace's gadgets afresh, and later turns keep that list",
+    async () => {
+  const model = models.script([
+    // Over 85% of the scripted model's input budget, so turn 2 compacts first.
+    { text: "First reply.", usage: { prompt_tokens: 195_000, completion_tokens: 1, total_tokens: 195_001 } },
+    { text: "Summary of the first turn." },
+    { text: "Second reply." },
+    { text: "Third reply." },
+  ]);
+  const [owner] = nextUsernames("promptcompact");
+  using publicApi = connect(harness.url);
+  using api = await signUp(publicApi, owner!);
+  await api.addModel(model.userModel.profile, model.userModel.config);
+  using ws = await api.newGadget();
+
+  const chatId = await ws.newChat("First question", SCRIPTED_MODEL_ID);
+  await waitFor("the first model request", async () => model.requests.length === 1 || null);
+  await waitForIdleChat(ws, chatId);
+  (await ws.createGadget("Meeting notes", undefined, "NOTES"))[Symbol.dispose]();
+  await ws.sendChatMessage(chatId, "Second question", SCRIPTED_MODEL_ID);
+  await waitFor("the summary and resumed requests", async () => model.requests.length === 3 || null);
+  await waitForIdleChat(ws, chatId);
+
+  const [first, , resumed] = model.requests;
+  expect(systemPromptOf(first)).not.toContain("Meeting notes");
+  expect(JSON.stringify(resumed)).toContain("<prior_conversation");
+  expect(systemPromptOf(resumed)).toContain("Meeting notes");
+
+  (await ws.createGadget("Shopping list", undefined, "LIST"))[Symbol.dispose]();
+  await ws.sendChatMessage(chatId, "Third question", SCRIPTED_MODEL_ID);
+  await waitFor("the third turn's request", async () => model.requests.length === 4 || null);
+  await waitForIdleChat(ws, chatId);
+  expect(systemPromptOf(model.requests[3])).toEqual(systemPromptOf(resumed));
 });

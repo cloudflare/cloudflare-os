@@ -6933,6 +6933,14 @@ class OverseerImpl implements AgentHooks {
     return this.storage.chatContext.get(chatId) || {chatId};
   }
 
+  setChatWorkspacePrompt(chatId: number, workspacePrompt: string): void {
+    // The list is built asynchronously, so the chat could have been deleted meanwhile. Don't
+    // resurrect its per-chat storage (see prepareChatBindings).
+    if (this.storage.chatMeta.get(chatId)) {
+      this.storage.chatContext.put({...this.getChatAgentContext(chatId), workspacePrompt});
+    }
+  }
+
   // Summarize the workspace's gadgets for the agent: each gadget's identity and named bindings.
   // Used to build the system prompt. Gadgets still provisional to a chat other than `forChatId`
   // are omitted: they belong to that chat's proposed changes and don't exist from any other

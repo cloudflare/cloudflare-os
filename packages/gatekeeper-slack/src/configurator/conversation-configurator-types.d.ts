@@ -6,12 +6,13 @@ export type ConfiguratorOption = {
 };
 
 export type ConversationConfiguratorValues = {
+  teamId?: string | null;
   conversationId?: string | null;
 };
 
 export interface ConversationConfiguratorRpc {
-  /** The connected workspace's team ID, used to build the canonical conversation URL. */
-  getTeamId(): Promise<string>;
+  /** Workspaces granted to the app and joined by this user. */
+  listWorkspaces(query: string): Promise<ConfiguratorOption[]>;
   /** Search the channels and direct messages the connected user can access. */
-  listConversations(query: string): Promise<ConfiguratorOption[]>;
+  listConversations(teamId: string, query: string): Promise<ConfiguratorOption[]>;
 }

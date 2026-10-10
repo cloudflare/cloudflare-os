@@ -24,6 +24,7 @@
     "**/*.ts",
     "../packages/workshop-backend/scripts/*.ts",
     "../packages/gatekeeper-*/build-app.ts",
+    "../packages/gatekeeper-*/scripts/*.ts",
     "../cloudflare.config.ts",
     "../packages/*/cloudflare.config.ts",
     "../packages/integration-tests/fixtures/*/cloudflare.config.ts"

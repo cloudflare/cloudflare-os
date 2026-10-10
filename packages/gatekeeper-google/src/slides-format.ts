@@ -5,13 +5,13 @@
  */
 
 import type {
-  RestColor, RestDimension, RestOpaqueColor, RestParagraphStyle, RestPropertyState, RestShapeProperties,
-  RestSolidFill, RestText, RestTextStyle,
+  RestBorderProperties, RestColor, RestDimension, RestOpaqueColor, RestParagraphStyle,
+  RestPropertyState, RestShapeProperties, RestSolidFill, RestText, RestTextStyle,
 } from "./slides-api";
 import { emu, points } from "./slides-geometry";
 import type {
-  FormattedParagraph, FormattedRange, ParagraphFormat, ShapeElement, SlideColor, TableCell,
-  TextFormat,
+  DashStyle, FormattedParagraph, FormattedRange, ParagraphFormat, ShapeElement, SlideColor,
+  TableBorder, TableCell, TextFormat, TextLink,
 } from "./slides-read-types";
 import type { ShapeOutline, TextFormatChange } from "./slides-types";
 
@@ -29,6 +29,11 @@ export const ALIGNMENTS: Record<string, NonNullable<ParagraphFormat["alignment"]
 export const CONTENT_ALIGNMENTS: Record<string, NonNullable<ShapeElement["contentAlignment"]>> = {
   TOP: "top", MIDDLE: "middle", BOTTOM: "bottom",
 };
+const RELATIVE_LINKS: Record<string, "next" | "previous" | "first" | "last"> = {
+  NEXT_SLIDE: "next", PREVIOUS_SLIDE: "previous", FIRST_SLIDE: "first", LAST_SLIDE: "last",
+};
+// What Google stores for text at the regular weight, which is not read as a weight it sets.
+const REGULAR_WEIGHT = 400;
 
 /** A colour as agents read it; undefined for none. */
 export function colorOf(color: RestOpaqueColor | undefined): SlideColor | undefined {
@@ -47,14 +52,26 @@ export function formatOf(style: RestTextStyle | undefined): TextFormat {
   for (let key of BOOLEAN_STYLES) if (style[key] !== undefined) format[key] = style[key];
   if (style.fontFamily) format.fontFamily = style.fontFamily;
   if (style.fontSize?.magnitude) format.fontSize = points(emu(style.fontSize));
+  let weight = style.weightedFontFamily?.weight;
+  if (weight && weight !== REGULAR_WEIGHT) format.fontWeight = weight;
   let color = colorOf(style.foregroundColor?.opaqueColor);
   if (color) format.color = color;
   let highlight = colorOf(style.backgroundColor?.opaqueColor);
   if (highlight) format.highlight = highlight;
-  if (style.link?.url) format.link = style.link.url;
+  let link = linkOf(style.link);
+  if (link !== undefined) format.link = link;
   let baseline = BASELINES[style.baselineOffset ?? ""];
   if (baseline) format.baseline = baseline;
   return format;
+}
+
+function linkOf(link: RestTextStyle["link"]): TextLink | undefined {
+  if (link?.url) return link.url;
+  if (link?.pageObjectId) return { slideId: link.pageObjectId };
+  let relative = RELATIVE_LINKS[link?.relativeLink ?? ""];
+  if (relative) return { relative };
+  // Google omits a zero index, so a link to the first slide by position is `{}`.
+  return link ? { slideIndex: link.slideIndex ?? 0 } : undefined;
 }
 
 function paragraphFormatOf(style: RestParagraphStyle | undefined): ParagraphFormat {
@@ -62,8 +79,9 @@ function paragraphFormatOf(style: RestParagraphStyle | undefined): ParagraphForm
   let alignment = ALIGNMENTS[style?.alignment ?? ""];
   if (alignment) format.alignment = alignment;
   if (style?.lineSpacing) format.lineSpacing = style.lineSpacing;
-  if (style?.spaceAbove) format.spaceAbove = points(emu(style.spaceAbove));
-  if (style?.spaceBelow) format.spaceBelow = points(emu(style.spaceBelow));
+  for (let key of ["spaceAbove", "spaceBelow", "indentStart", "indentEnd", "indentFirstLine"] as const) {
+    if (style?.[key]) format[key] = points(emu(style[key]));
+  }
   return format;
 }
 
@@ -119,21 +137,39 @@ export function fillOf(fill: Fill | undefined): SlideColor | "none" | undefined 
   return colorOf(fill?.solidFill?.color);
 }
 
+/** A fill and, when it has a colour that is not opaque, its opacity. */
+function fillPropertiesOf(fill: Fill | undefined): Pick<TableCell, "fill" | "fillOpacity"> {
+  let read = fillOf(fill);
+  if (read === undefined) return {};
+  let alpha = read === "none" ? 1 : fill?.solidFill?.alpha ?? 1;
+  return { fill: read, ...(alpha < 1 ? { fillOpacity: alpha } : {}) };
+}
+
+/** A dash pattern as agents read it: none for a solid line. */
+export function dashOf(dashStyle: string | undefined): { dash?: DashStyle } {
+  return dashStyle && dashStyle !== "SOLID" ? { dash: dashStyle } : {};
+}
+
+/** A line weight in points as agents read it: none when Google gives none. */
+export function weightOf(weight: RestDimension | undefined): { weight?: number } {
+  return weight?.magnitude ? { weight: points(emu(weight)) } : {};
+}
+
 /** A shape's fill, outline and content alignment, as far as the shape sets them. */
 export function shapePropertiesOf(
   properties: RestShapeProperties | undefined,
-): Pick<ShapeElement, "fill" | "outline" | "contentAlignment"> {
-  let read: Pick<ShapeElement, "fill" | "outline" | "contentAlignment"> = {};
-  let fill = fillOf(properties?.shapeBackgroundFill);
-  if (fill) read.fill = fill;
+): Pick<ShapeElement, "fill" | "fillOpacity" | "outline" | "contentAlignment"> {
+  let read: Pick<ShapeElement, "fill" | "fillOpacity" | "outline" | "contentAlignment"> =
+    fillPropertiesOf(properties?.shapeBackgroundFill);
   let outline = properties?.outline;
   if (outline?.propertyState === "NOT_RENDERED") {
     read.outline = "none";
   } else if (outline && outline.propertyState !== "INHERIT") {
     let color = colorOf(outline.outlineFill?.solidFill?.color);
-    let weight = outline.weight?.magnitude ? points(emu(outline.weight)) : undefined;
-    if (color || weight) {
-      read.outline = { ...(color ? { color } : {}), ...(weight ? { weight } : {}) };
+    let weight = weightOf(outline.weight);
+    let dash = dashOf(outline.dashStyle);
+    if (color || weight.weight || dash.dash) {
+      read.outline = { ...(color ? { color } : {}), ...weight, ...dash };
     }
   }
   let contentAlignment = CONTENT_ALIGNMENTS[properties?.contentAlignment ?? ""];
@@ -144,10 +180,23 @@ export function shapePropertiesOf(
 /** A table cell's fill and content alignment, as far as the cell sets them. */
 export function cellPropertiesOf(
   properties: { tableCellBackgroundFill?: Fill; contentAlignment?: string } | undefined,
-): Pick<TableCell, "fill" | "contentAlignment"> {
-  let fill = fillOf(properties?.tableCellBackgroundFill);
+): Pick<TableCell, "fill" | "fillOpacity" | "contentAlignment"> {
   let contentAlignment = CONTENT_ALIGNMENTS[properties?.contentAlignment ?? ""];
-  return { ...(fill ? { fill } : {}), ...(contentAlignment ? { contentAlignment } : {}) };
+  return {
+    ...fillPropertiesOf(properties?.tableCellBackgroundFill),
+    ...(contentAlignment ? { contentAlignment } : {}),
+  };
+}
+
+/**
+ * A table cell edge as agents read it: `"none"` when transparent, which Google stores as a fill
+ * with no colour, as a live read shows.
+ */
+export function borderOf(properties: RestBorderProperties): TableBorder {
+  let solidFill = properties.tableBorderFill?.solidFill;
+  if (!solidFill || solidFill.alpha === 0) return "none";
+  let color = colorOf(solidFill?.color);
+  return { ...(color ? { color } : {}), ...weightOf(properties.weight), ...dashOf(properties.dashStyle) };
 }
 
 /** The theme colours a `SlideColor` may name. */

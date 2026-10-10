@@ -83,8 +83,8 @@ function paragraphsIn(text: string, range: { startIndex: number; endIndex: numbe
 /** The tab a single-tab document has, and the one the tab-agnostic tests exercise. */
 const MAIN_TAB = "tab-1";
 
-/** A batch either carries the edit and its marker, or deletes a marker on its own. */
-type BatchKind = "content" | "cleanup";
+/** A batch either carries the edit and its marker, or deletes a marker on its own; or a create. */
+type BatchKind = "content" | "cleanup" | "create";
 
 class DocsModel {
   cleanupFailures = 0;
@@ -96,6 +96,18 @@ class DocsModel {
   /** Full `documents.get` calls, excluding the lightweight revision probe. */
   documentFetches = 0;
   revisionProbes = 0;
+  /** Every provider request, of any kind. */
+  fetches = 0;
+  /** The body of each `documents.create` call. */
+  readonly creates: unknown[] = [];
+  /**
+   * How many create calls to refuse with a 403, and full reads to answer with a 404, as a read
+   * racing a new document's propagation can. Neither is retried by the client.
+   */
+  createFailures = 0;
+  readFailures = 0;
+  /** The bearer token of each Docs request, which names the account it was made as. */
+  readonly authorizations: string[] = [];
   driveFetches = 0;
   /** Drive's modification time for the document. */
   driveModifiedTime = "2026-01-02T03:04:05Z";
@@ -223,6 +235,7 @@ class DocsModel {
 
   async fetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
     let url = new URL(input instanceof Request ? input.url : input.toString());
+    this.fetches++;
     if (url.hostname === "www.googleapis.com") {
       this.driveFetches++;
       if (this.driveFailure === "malformed") {
@@ -239,10 +252,28 @@ class DocsModel {
     if (url.hostname !== "docs.googleapis.com") {
       throw new Error(`Unexpected provider request: ${url}`);
     }
+    this.authorizations.push(new Headers(init?.headers).get("Authorization") ?? "");
+    if (url.pathname === "/v1/documents") {
+      if (init?.method !== "POST") throw new Error("documents.create must be a POST");
+      await this.#hold("create");
+      this.creates.push(JSON.parse(String(init.body)));
+      if (this.createFailures > 0) {
+        this.createFailures--;
+        return Response.json(
+          { error: { code: 403, message: "The caller does not have permission", status: "PERMISSION_DENIED" } },
+          { status: 403 });
+      }
+      return Response.json({ documentId: "doc-1" });
+    }
     if (!url.pathname.endsWith(":batchUpdate")) {
       let fields = url.searchParams.get("fields");
-      if (fields === null) this.documentFetches++;
-      else if (fields === "revisionId") this.revisionProbes++;
+      if (fields === null) {
+        this.documentFetches++;
+        if (this.readFailures > 0) {
+          this.readFailures--;
+          return Response.json({ error: { code: 404, message: "not found" } }, { status: 404 });
+        }
+      } else if (fields === "revisionId") this.revisionProbes++;
       return Response.json(this.#document());
     }
 
@@ -1944,5 +1975,174 @@ describe("Google Doc edits stored before tab support", () => {
 
   it("resolves a record that names a live tab", () => {
     expect(googleDocActionTab(snapshot, { ...storedAppend, tabId: MAIN_TAB }).title).toBe("Main");
+  });
+});
+
+const DOC_PATTERN = "https://docs.google.com/document/d/:docId/*";
+const CREATED_DOC_URL = "https://docs.google.com/document/d/doc-1/edit";
+
+/** The bearer token the test worker's `UserAccount` named `userName` hands out. */
+function tokenOf(userName: string): string {
+  return `Bearer test-access-token:${env.USER_ACCOUNT.idFromName(userName)}`;
+}
+
+describe("creating a Google Doc", () => {
+  it("simulates a blank document, then creates it and applies the edit queued against it", async () => {
+    let docs = new DocsModel();
+    docs.install();
+
+    let created = await hooks().createResource("create-doc", DOC_PATTERN, "Plan");
+    expect(created).toMatchObject({
+      action: {
+        title: "Create Google Doc: Plan",
+        fields: [{ label: "Title", kind: "inline", value: "Plan" }],
+        implementsRevert: false,
+      },
+    });
+    expect(await hooks().describe("create-doc"))
+      .toMatchObject({ title: "Plan", url: "https://docs.google.com/document/" });
+    expect(await hooks().readContent("create-doc")).toBe("\n");
+    expect((await hooks().listTabs("create-doc")).map(tab => tab.id)).toEqual(["t.0"]);
+    let actionId = await hooks().submitAppend("create-doc", "added");
+    expect(await hooks().readContent("create-doc")).toBe("added\n");
+    expect(await hooks().applyAction("create-doc", actionId)).toMatch(/doesn't exist yet/);
+    expect(docs.fetches).toBe(0);
+
+    expect(await hooks().applyCreation("create-doc")).toEqual({ resourceUrl: CREATED_DOC_URL });
+    expect(docs.creates).toEqual([{ title: "Plan" }]);
+    await hooks().adoptCreated("create-doc");
+
+    // The model's only tab is "tab-1", so the edit replays only if it was moved off "t.0".
+    expect(await hooks().readContent("create-doc")).toBe("added\n");
+    expect(await hooks().describe("create-doc"))
+      .toMatchObject({ title: "Test document", url: CREATED_DOC_URL });
+    expect(await hooks().applyAction("create-doc", actionId)).toBeNull();
+    expect(docs.text()).toBe("added");
+    expect(await hooks().applyCreation("create-doc"))
+      .toEqual({ error: "This Google Doc already exists." });
+  });
+
+  it("moves an edit queued after creation, before the restart, onto the created tab", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    await hooks().createResource("create-doc-late-edit", DOC_PATTERN, "Plan");
+
+    expect(await hooks().applyCreation("create-doc-late-edit"))
+      .toEqual({ resourceUrl: CREATED_DOC_URL });
+    let actionId = await hooks().submitAppend("create-doc-late-edit", "late");
+    await hooks().adoptCreated("create-doc-late-edit");
+
+    expect(await hooks().applyAction("create-doc-late-edit", actionId)).toBeNull();
+    expect(docs.text()).toBe("late");
+    expect(docs.markerTabIds).toEqual([MAIN_TAB]);
+  });
+
+  it("binds the same document when an approval is retried after a lost success", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    await hooks().createResource("create-doc-retry", DOC_PATTERN, "Plan");
+
+    expect(await hooks().applyCreation("create-doc-retry")).toEqual({ resourceUrl: CREATED_DOC_URL });
+    expect(await hooks().applyCreation("create-doc-retry")).toEqual({ resourceUrl: CREATED_DOC_URL });
+    expect(docs.creates).toHaveLength(1);
+  });
+
+  it("creates one document for two concurrent approvals", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    await hooks().createResource("create-doc-concurrent", DOC_PATTERN, "Plan");
+    let create = docs.hold("create");
+
+    let first = hooks().applyCreation("create-doc-concurrent");
+    await create.reached;
+    let second = hooks().applyCreation("create-doc-concurrent");
+    await scheduler.wait(5);
+    create.release();
+
+    expect(await first).toEqual({ resourceUrl: CREATED_DOC_URL });
+    expect(await second).toEqual({ resourceUrl: CREATED_DOC_URL });
+    expect(docs.creates).toHaveLength(1);
+  });
+
+  it("does not create again when reading the new document back fails", async () => {
+    let docs = new DocsModel();
+    docs.readFailures = 1;
+    docs.install();
+    await hooks().createResource("create-doc-readback", DOC_PATTERN, "Plan");
+
+    expect(await hooks().applyCreation("create-doc-readback"))
+      .toEqual({ error: "Google Docs get document failed [http=404]" });
+    expect(await hooks().applyCreation("create-doc-readback")).toEqual({ resourceUrl: CREATED_DOC_URL });
+    expect(docs.creates).toHaveLength(1);
+  });
+
+  it("creates again after Google refused the create", async () => {
+    let docs = new DocsModel();
+    docs.createFailures = 1;
+    docs.install();
+    await hooks().createResource("create-doc-refused", DOC_PATTERN, "Plan");
+
+    expect(await hooks().applyCreation("create-doc-refused"))
+      .toEqual({ error: "Google Docs create document failed [http=403]" });
+    expect(await hooks().applyCreation("create-doc-refused")).toEqual({ resourceUrl: CREATED_DOC_URL });
+    expect(docs.creates).toHaveLength(2);
+  });
+
+  // What the first approval completing would have done: the document is already in user-a's Drive.
+  it("binds the first approver's account when a different approver retries", async () => {
+    let docs = new DocsModel();
+    docs.readFailures = 1;
+    docs.install();
+    await hooks().createResource("create-doc-approvers", DOC_PATTERN, "Plan");
+
+    expect(await hooks().applyCreation("create-doc-approvers", "user-a")).toHaveProperty("error");
+    expect(await hooks().applyCreation("create-doc-approvers", "user-b"))
+      .toEqual({ resourceUrl: CREATED_DOC_URL });
+    expect(docs.creates).toHaveLength(1);
+    await hooks().adoptCreated("create-doc-approvers");
+    await hooks().readContent("create-doc-approvers");
+
+    expect(new Set(docs.authorizations)).toEqual(new Set([tokenOf("user-a")]));
+  });
+});
+
+describe("appending to an empty Google Doc", () => {
+  it("fills the empty paragraph instead of following it", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    let actionId = await hooks().submitAppend("empty-doc-append", "added");
+
+    expect(await hooks().readContent("empty-doc-append")).toBe("added\n");
+    expect(await hooks().applyAction("empty-doc-append", actionId)).toBeNull();
+    expect(docs.text()).toBe("added");
+    expect(await hooks().readContent("empty-doc-append")).toBe("added\n");
+  });
+
+  // The replace leaves the simulation empty, but the real tab keeps its final, now empty, paragraph.
+  it("fills the paragraph a pending replace emptied", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "hello");
+    docs.install();
+    let replaceId = await hooks().submitReplace("emptied-doc-append", "hello\n", "");
+    let appendId = await hooks().submitAppend("emptied-doc-append", "added");
+    let preview = await hooks().readContent("emptied-doc-append");
+
+    expect(preview).toBe("added\n");
+    expect(await hooks().applyAction("emptied-doc-append", replaceId)).toBeNull();
+    expect(await hooks().applyAction("emptied-doc-append", appendId)).toBeNull();
+    expect(docs.text()).toBe("added");
+    expect(await hooks().readContent("emptied-doc-append")).toBe(preview);
+  });
+
+  // A chip with no label renders as nothing, yet its paragraph is not empty: the append follows it.
+  it("follows a paragraph whose only content is an unlabelled chip", async () => {
+    let docs = new DocsModel();
+    docs.setBody(MAIN_TAB, buildTab([{ runs: [{ date: "" }, "\n"] }]).body);
+    docs.install();
+    let actionId = await hooks().submitAppend("chip-doc-append", "added");
+
+    expect(await hooks().readContent("chip-doc-append")).toBe("\n\nadded\n");
+    expect(await hooks().applyAction("chip-doc-append", actionId)).toBeNull();
+    expect(docs.text()).toBe("\nadded");
   });
 });

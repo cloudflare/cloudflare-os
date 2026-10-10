@@ -303,6 +303,9 @@ export function makeStoredAssistantMessage(message: AssistantMessage): StoredAss
 export interface AgentHooks {
   getChatAgentContext(chatId: number): AiChatAgentContext;
 
+  /** Records the chat's AiChatAgentContext.workspacePrompt. */
+  setChatWorkspacePrompt(chatId: number, workspacePrompt: string): void;
+
   /**
    * The step's persistence barrier: in one storage transaction, persist the step's chat
    * messages (`msgs`, the tool-call record among them), validate and append each buffered
@@ -649,7 +652,7 @@ You are a helpful assistant who helps users get things done. You can answer ques
 
 # Workspaces
 
-You are working within a "workspace". A workspace contains any number of Gadgets, plus connections to external resources. Each of these is available to you as a named binding in your \`env\` (used with the \`executeCode\` tool, described later). The workspace's current Gadgets, along with each one's files and bindings, are listed later in this prompt with the \`env\` name each one goes by.
+You are working within a "workspace". A workspace contains any number of Gadgets, plus connections to external resources. Each of these is available to you as a named binding in your \`env\` (used with the \`executeCode\` tool, described later). The workspace's Gadgets as of the start of this session, along with each one's files and bindings, are listed later in this prompt with the \`env\` name each one goes by.
 
 A new workspace contains no Gadgets. You can answer questions, read connected resources, and perform one-off tasks with \`executeCode\` without creating a Gadget. Create one (via the \`createGadget\` tool) only when the user's request or established context clearly calls for a new application or saved output. An empty workspace or a task that needs code is not by itself a reason to create one.
 
@@ -2891,6 +2894,8 @@ async function runAgentPass(
   // system-prompt-blocks.ts), so the static prefix stays cached when the project-specific part
   // changes.
   let systemPromptSlots: [string, string];
+  // The regular agent's list of the workspace's gadgets, built for this pass.
+  let systemPromptWorkspace: string | undefined;
 
   if (agentContext.spawnerConfig) {
     // This is a spawned agent. Build an appropriate system prompt. Spawned agents see only the
@@ -2930,16 +2935,13 @@ async function runAgentPass(
 
     // Let's include each gadget's list of files in the system prompt so that the agent doesn't
     // have to call a tool to list files at the start of every thread. In order to avoid cache
-    // misses, we specifically list the files that existed at the start of the thread even if the
-    // agent adds or removes files during the thread. (An unpinned gadget's list can still change
-    // between turns if mainline moves -- a cache miss, but files rarely churn concurrently to a
-    // chat within the cache TTL.)
-    let systemPromptWorkspace: string;
+    // misses, we list the gadgets and files as of the start of the thread (or of its latest
+    // compaction), even if they change during it (see AiChatAgentContext.workspacePrompt).
     if (gadgetInfos.length == 0) {
       systemPromptWorkspace =
-          "This workspace does not contain any gadgets yet. You can use connected resources " +
-          "and executeCode without one. Use `createGadget` tool only when the task calls for a new " +
-          "application or saved output, before writing that gadget's files.";
+          "As of the start of this session, this workspace contained no gadgets. You can use " +
+          "connected resources and executeCode without one. Use `createGadget` tool only when the " +
+          "task calls for a new application or saved output, before writing that gadget's files.";
     } else {
       let sections: string[] = [];
       for (let info of gadgetInfos) {
@@ -3003,6 +3005,10 @@ async function runAgentPass(
       }
       systemPromptWorkspace = `# This workspace's gadgets\n\n${sections.join("\n\n")}`;
     }
+    let savedWorkspace = checkpoint ? checkpoint.workspacePrompt : agentContext.workspacePrompt;
+    if (checkpoint === undefined && savedWorkspace === undefined) {
+      hooks.setChatWorkspacePrompt(chatId, systemPromptWorkspace);
+    }
 
     // Named in the prompt because the request that should trigger them ("make me a doc") may
     // not look trigger the agent to browse blueprints.
@@ -3032,7 +3038,7 @@ async function runAgentPass(
     systemPromptSlots = [
       SYSTEM_PROMPT,
       (standardFormats ? `${standardFormats}\n\n` : "") +
-          `${systemPromptWorkspace}${systemPromptConnections}` +
+          `${savedWorkspace ?? systemPromptWorkspace}${systemPromptConnections}` +
           (alwaysAvailableResourcesPrompt ? `\n\n${alwaysAvailableResourcesPrompt}` : ""),
     ];
   }
@@ -3104,6 +3110,7 @@ async function runAgentPass(
           chatId,
           compactedTo,
           summary,
+          workspacePrompt: systemPromptWorkspace,
           ...buildCompactionState(
               chatMessages,
               compactedTo,
