@@ -477,13 +477,14 @@ const driver = (account: string) => env.GITLAB_HOOK_DRIVER.getByName(account);
 
 /**
  * Wait until the account's driver has no delivery due: its own alarm runs them, and forcing that
- * alarm here as well would deliver one event twice from two concurrent alarm() calls.
+ * alarm here as well would deliver one event twice from two concurrent alarm() calls. A loaded CI
+ * runner can take longer than vi.waitFor's default second to get through a check's resends.
  */
 const settled = (account: string) => vi.waitFor(() => runInDurableObject(driver(account), (_instance, state) => {
   const due = [...state.storage.kv.list<{ at?: number }>({ prefix: "msg:" })]
     .filter(([, row]) => row.at !== undefined && row.at <= Date.now());
   if (due.length > 0) throw new Error(`${due.length} deliveries due`);
-}));
+}), { timeout: 10_000, interval: 25 });
 
 /** Run the driver's alarm at `ms` from now, on a faked clock the runtime itself never wakes for. */
 async function after(ms: number, account: string): Promise<void> {
