@@ -156,14 +156,21 @@ jobs:
           CLOUDFLARE_GATEWAY_ID: ${{ secrets.CF_AI_GATEWAY_NAME }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
           # Paths outside the checkout are denied, not prompted: nobody can answer a prompt in CI.
-          # BONK_MODEL is a repository variable, shared by every Bonk workflow.
-          OPENCODE_CONFIG_CONTENT: '{"permission":{"external_directory":{"*":"deny","/home/runner/work/**":"allow"},"question":"deny","doom_loop":"deny"},"provider":{"cloudflare-ai-gateway":{"models":{"${{ vars.BONK_MODEL }}":{}}}}}'
+          # BONK_MODEL is a repository variable, shared by every Bonk workflow. opencode gives a
+          # model its bundled catalog does not list no variants, then silently ignores `variant`,
+          # so the entry declares the model a reasoning one, with a date late enough for opencode
+          # to offer `xhigh`. That applies to whatever BONK_MODEL names, so the variable must
+          # name a reasoning model that supports `xhigh`.
+          OPENCODE_CONFIG_CONTENT: '{"permission":{"external_directory":{"*":"deny","/home/runner/work/**":"allow"},"question":"deny","doom_loop":"deny"},"provider":{"cloudflare-ai-gateway":{"models":{"${{ vars.BONK_MODEL }}":{"reasoning":true,"release_date":"2026-09-29"}}}}}'
         with:
           oidc_base_url: https://ask-bonk.cloudflare-exponent.workers.dev/auth
           model: "cloudflare-ai-gateway/${{ vars.BONK_MODEL }}"
-          variant: "high"
+          variant: "xhigh"
           forks: "false"
           permissions: write
           token_permissions: NO_PUSH
           agent: bonk
+          # The model declaration in OPENCODE_CONFIG_CONTENT is needed only while this version's
+          # catalog lacks BONK_MODEL under the gateway. Re-check it when bumping: delete it if
+          # `opencode models cloudflare-ai-gateway --verbose` shows the model's variants without it.
           opencode_version: 1.18.33
