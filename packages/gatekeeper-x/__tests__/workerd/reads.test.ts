@@ -175,6 +175,21 @@ describe("what a read discloses", () => {
     expect(await exclusions(name)).toEqual([["observer"], ["observer"]]);
   });
 
+  it("withholds a protected account's relationships, as it does its follow lists", async () => {
+    const x = new FakeX().install();
+    const props: GatekeeperProps = {
+      userObjectId: await seedAccount(x, ALICE, { identity: { protected: true } }), resourceKind: "account",
+    };
+    const name = crypto.randomUUID();
+    unwrap(await hooks().addObserver(name, props, "observer", await seedAccount(x, BOB)));
+    x.following.add(`${ALICE.id}:${BOB.id}`);
+    const bob = unwrap(await hooks().run(name, props, [["getUser", "bob"], ["getInfo"]])) as XUserInfo;
+    expect(bob.relationship).toEqual({ following: true, followedBy: false });
+    // Its own profile carries no relationship, so it stays public.
+    unwrap(await hooks().run(name, props, [["getUser", "alice"], ["getInfo"]]));
+    expect(await exclusions(name)).toEqual([["observer"], undefined]);
+  });
+
   it("shares private reads with an observer connected as the same X user", async () => {
     const { x, props, name } = await observed(ALICE);
     x.bookmarks.add(`${ALICE.id}:${x.post(BOB, "saved").id}`);
