@@ -291,8 +291,14 @@ export class GitHubHookDriver extends DurableObject<Env> {
     // window, by its own timestamps.
     const id = hex(await crypto.subtle.digest("SHA-256", body));
     const parsed = parseWebhookEvent(name, id, payload);
+    if (!parsed) return 204;
     const now = Date.now();
-    if (!parsed || parsed.at < now - DELIVERED_RETENTION_MS) return 204;
+    if (!Number.isFinite(parsed.at)) {
+      // Nothing would stop its replay once its dedupe row is forgotten.
+      logger.warn("refused a GitHub event with no usable timestamp", { event: "hooks.delivery.untimed" });
+      return 204;
+    }
+    if (parsed.at < now - DELIVERED_RETENTION_MS) return 204;
     const { event, senderId } = parsed;
     let queued = false;
     for (const [regKey, registration] of this.#registrations({ id: repoId })) {
@@ -697,9 +703,10 @@ function parseWebhookEvent(name: string, id: string, payload: WebhookPayload):
       if (typeof ref !== "string" || typeof before !== "string" || typeof after !== "string") return undefined;
       // Git's all-zero id stands for no object: the push created or deleted the ref.
       const moved = { ...before === ZERO_OID ? {} : { before }, ...after === ZERO_OID ? {} : { after } };
-      // Seconds since the epoch, in a push's payload alone.
+      // Seconds since the epoch in a push's payload, though the schema also allows a date string.
       const pushedAt = payload.repository?.pushed_at;
-      const at = typeof pushedAt === "number" ? pushedAt * 1000 : NaN;
+      const at = typeof pushedAt === "number" ? pushedAt * 1000
+        : typeof pushedAt === "string" ? Date.parse(pushedAt) : NaN;
       if (ref.startsWith("refs/heads/")) {
         const branch = ref.slice("refs/heads/".length);
         return { event: { ...base, kind: "push", branch, forced: forced === true, ...moved }, at, senderId };

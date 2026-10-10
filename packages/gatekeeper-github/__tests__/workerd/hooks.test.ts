@@ -73,6 +73,11 @@ const storedIssueEvent = (number: number) => ({
   id: "e".repeat(64), repoId: REPO_ID, actor: null, kind: "issue", action: "opened", number, issue: issue(number),
 });
 
+/** A push, as GitHub delivers one: its repository carries `pushed_at`, in seconds, in this event alone. */
+const push = (ref: string, before: string, after: string, extra: Row = {}) => ({
+  ref, before, after, repository: { ...repository, pushed_at: Math.floor(Date.now() / 1000) }, ...extra,
+});
+
 async function hmac(secret: string, body: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
@@ -325,7 +330,7 @@ it("adds the webhook once a hook is enabled, and delivers the events it watches 
   expect(await github.deliver("ping", { zen: "Keep it logically awesome.", repository })).toEqual([204]);
   expect(await github.deliver("issues", issues("opened", 42))).toEqual([204]);
   expect(await github.deliver("issues", issues("labeled", 42))).toEqual([204]);
-  expect(await github.deliver("push", { ref: "refs/heads/main", before: BASE, after: HEAD, repository })).toEqual([]);
+  expect(await github.deliver("push", push("refs/heads/main", BASE, HEAD))).toEqual([]);
   await settled(account);
 
   const { received, observations } = await triage.read();
@@ -460,8 +465,8 @@ it("delivers branch pushes with the repository, but not tag pushes", async () =>
   await deployer.subscribe({ events: ["push"] });
   await deployer.enable();
 
-  await github.deliver("push", { ref: "refs/heads/release/1.0", before: ZERO, after: HEAD, forced: false, repository, sender: ADA });
-  await github.deliver("push", { ref: "refs/tags/v1.0", before: ZERO, after: HEAD, repository, sender: ADA });
+  await github.deliver("push", push("refs/heads/release/1.0", ZERO, HEAD, { forced: false, sender: ADA }));
+  await github.deliver("push", push("refs/tags/v1.0", ZERO, HEAD, { sender: ADA }));
   await settled(account);
 
   const { received, observations, advertised } = await deployer.read();
@@ -487,9 +492,9 @@ it("delivers tag pushes as tag events, to hooks that watch for tags", async () =
   // GitHub reports tags in its push events.
   expect([...github.webhooks.values()].map(webhook => webhook.events)).toEqual([["push"]]);
 
-  await github.deliver("push", { ref: "refs/tags/v1.0", before: ZERO, after: HEAD, repository, sender: ADA });
-  await github.deliver("push", { ref: "refs/heads/main", before: BASE, after: HEAD, repository, sender: ADA });
-  await github.deliver("push", { ref: "refs/tags/v0.9", before: BASE, after: ZERO, repository, sender: ADA });
+  await github.deliver("push", push("refs/tags/v1.0", ZERO, HEAD, { sender: ADA }));
+  await github.deliver("push", push("refs/heads/main", BASE, HEAD, { sender: ADA }));
+  await github.deliver("push", push("refs/tags/v0.9", BASE, ZERO, { sender: ADA }));
   await settled(account);
 
   const { received, observations, advertised } = await releaser.read();
@@ -526,7 +531,7 @@ it("gives a hook on one issue only that issue's events", async () => {
 
   await github.deliver("issues", issues("closed", 43));
   await github.deliver("issue_comment", comment(43, "Elsewhere."));
-  await github.deliver("push", { ref: "refs/heads/main", before: BASE, after: HEAD, repository });
+  await github.deliver("push", push("refs/heads/main", BASE, HEAD));
   await github.deliver("issues", issues("reopened", 42));
   await github.deliver("issue_comment", comment(42, "Here."));
   await settled(account);
@@ -638,6 +643,25 @@ it("delivers an event once, however often its payload is delivered, and never on
   await settled(account);
 
   expect((await triage.read()).received).toEqual([expect.objectContaining({ info: expect.objectContaining({ id: "42" }) })]);
+});
+
+it("refuses a push a day old, or one with no timestamp to tell its age by", async () => {
+  const github = new FakeGitHub();
+  const account = await connectAccount();
+  const deployer = binding(account);
+  await deployer.subscribe({ events: ["push"] });
+  await deployer.enable();
+  const pushedAt = (value: unknown) => push("refs/heads/main", BASE, HEAD, { repository: { ...repository, pushed_at: value } });
+
+  await github.deliver("push", pushedAt(Math.floor(Date.now() / 1000) - 7 * 24 * 3600));
+  // Without one, nothing would stop a replay once the payload's dedupe row was forgotten.
+  await github.deliver("push", { ...push("refs/heads/a", BASE, HEAD), repository });
+  await github.deliver("push", pushedAt(null));
+  // The schema allows a date string too, which a push carrying one is dated by.
+  await github.deliver("push", { ...pushedAt(new Date().toISOString()), ref: "refs/heads/b" });
+  await settled(account);
+
+  expect((await deployer.read()).received).toEqual([expect.objectContaining({ kind: "push", branch: "b" })]);
 });
 
 it.each([
