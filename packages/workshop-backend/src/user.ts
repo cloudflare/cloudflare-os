@@ -1,5 +1,5 @@
 import { RpcStub } from "capnweb";
-import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, UserNotification, type DeviceSessionCredential, type DeviceSessionHandoff, type DeviceSessionHandoffStart } from '@gadgets/workshop-shared/api';
+import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, UserNotification, type DeviceSessionHandoffStart } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
@@ -22,6 +22,7 @@ import { CONNECT_FLOW_LIFETIME_MS, handoffTargetOrigin, hashPresentedSecret, has
 import { deliver, registerDevice } from "./notification-service.js";
 import {
   DEVICE_HANDOFF_LIFETIME_MS, isDeviceHandoffState, sealDeviceSessionHandoff,
+  type DeviceSessionCredential, type DeviceSessionHandoff,
 } from "./auth/device-session-handoff.js";
 
 const logger = createWorkshopLogger("workshop.user");
@@ -244,11 +245,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       throw createAuthError(AUTH_ERROR_CODES.invalidSessionToken);
     }
     const now = Date.now();
-    if (session.pendingUntil || (session.expiresAt && session.expiresAt.getTime() <= now)) {
-      if ((session.expiresAt?.getTime() ?? Infinity) <= now ||
-          (session.pendingUntil?.getTime() ?? Infinity) <= now) {
-        this.storage.sessions.delete(tokenId);
-      }
+    if ((session.expiresAt && session.expiresAt.getTime() <= now) ||
+        (session.pendingUntil && session.pendingUntil.getTime() <= now)) {
+      this.storage.sessions.delete(tokenId);
+      throw createAuthError(AUTH_ERROR_CODES.invalidSessionToken);
+    }
+    if (session.pendingUntil) {
       throw createAuthError(AUTH_ERROR_CODES.invalidSessionToken);
     }
     this.#syncDirectory();
@@ -300,10 +302,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       if (existing.publicKey !== publicKey) {
         throw new Error("This device sign-in state is already bound to another key.");
       }
-      return { handoffId: this.ctx.id.toString() };
+      // Reissue only the one-use ticket; a retry must not mint another credential or session.
+      const { secret, hash: ticketHash } = await newSecretToken();
+      this.storage.pendingDeviceHandoffs.put({ ...existing, ticketHash });
+      return { userDoId: this.ctx.id.toString(), ticket: secret.toHex() };
     }
     if (existing) this.#dropPendingDeviceHandoff(existing);
 
+    const { secret: ticket, hash: ticketHash } = await newSecretToken();
     const now = Date.now();
     const handoffExpiresAt = now + DEVICE_HANDOFF_LIFETIME_MS;
     let credential: DeviceSessionCredential;
@@ -333,6 +339,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
     this.storage.pendingDeviceHandoffs.put({
       stateHash,
+      ticketHash,
       publicKey,
       handoff,
       expiresAt: new Date(handoffExpiresAt),
@@ -343,12 +350,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       event: "auth.device_handoff.staged",
       credentialKind: credential.kind,
     });
-    return { handoffId: this.ctx.id.toString() };
+    return { userDoId: this.ctx.id.toString(), ticket: ticket.toHex() };
   }
 
   /** Consume a staged handoff once and activate its pending Workshop device session, if any. */
-  async consumeDeviceSessionHandoff(state: string): Promise<DeviceSessionHandoff | null> {
+  async consumeDeviceSessionHandoff(state: string, ticket: string): Promise<DeviceSessionHandoff | null> {
     if (!isDeviceHandoffState(state)) return null;
+    const presentedHash = hashPresentedSecret(ticket);
+    if (!presentedHash) return null;
     const stateHash = await hashSecret(new TextEncoder().encode(state));
     const pending = this.storage.pendingDeviceHandoffs.get(stateHash);
     if (!pending) return null;
@@ -357,6 +366,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       await this.#armHandoffSweep();
       return null;
     }
+    if (pending.ticketHash !== await presentedHash) return null;
     this.storage.pendingDeviceHandoffs.delete(stateHash);
     if (pending.sessionTokenId) {
       const session = this.storage.sessions.get(pending.sessionTokenId);

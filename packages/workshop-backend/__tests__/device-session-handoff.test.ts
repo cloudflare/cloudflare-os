@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { DeviceSessionTransfer } from "@gadgets/workshop-shared/api";
 import {
   DEVICE_HANDOFF_LIFETIME_MS,
   sealDeviceSessionHandoff,
+  type DeviceSessionTransfer,
 } from "../src/auth/device-session-handoff";
 
 const state = "ABCDEFab-0000-0000-0000-000000000001";
@@ -20,6 +20,10 @@ describe("device session handoff encryption", () => {
     const sealed = await sealDeviceSessionHandoff(
         appPublic, state, { kind: "cloudflare-access", token: "sensitive-jwt" });
     expect(JSON.stringify(sealed)).not.toContain("sensitive-jwt");
+    expect(sealed.publicKey).toHaveLength(87);
+    expect(sealed.salt).toHaveLength(43);
+    expect(sealed.iv).toHaveLength(16);
+    expect(Object.values(sealed).every(value => !value.includes("="))).toBe(true);
     const serverPublic = await crypto.subtle.importKey(
         "raw", Uint8Array.fromBase64(sealed.publicKey, { alphabet: "base64url" }),
         { name: "ECDH", namedCurve: "P-256" }, false, []);

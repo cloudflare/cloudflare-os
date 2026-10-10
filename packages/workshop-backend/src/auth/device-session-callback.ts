@@ -1,22 +1,23 @@
-import type { DeviceSessionHandoff } from "@gadgets/workshop-shared/api";
-import { isDeviceHandoffState } from "./device-session-handoff.js";
+import { isDeviceHandoffState, type DeviceSessionHandoff } from "./device-session-handoff.js";
 
 const CALLBACK_URL = "https://os.cloudflare.app/oauthredirect";
-const HANDOFF_ID = /^[0-9a-f]{64}$/;
+const LOWER_HEX_64 = /^[0-9a-f]{64}$/;
 
 type ConsumeDeviceHandoff = (
-  handoffId: string,
+  userDoId: string,
   state: string,
+  ticket: string,
 ) => Promise<DeviceSessionHandoff | null>;
 
 /**
- * Consume a staged transfer only from a same-origin top-level form navigation, then deliver its
- * encrypted envelope to the native app's claimed HTTPS callback. Page JavaScript never receives
- * the envelope or a credential, and the staged transfer is spent before the redirect leaves.
+ * Check browser navigation metadata and a one-use ticket before delivering the envelope to the
+ * claimed HTTPS callback. Access installations additionally pass the verified user's DO id;
+ * navigation headers alone do not authenticate a direct Worker request.
  */
 export async function deviceSessionCallback(
     req: Request,
     consume: ConsumeDeviceHandoff,
+    expectedUserDoId?: string,
 ): Promise<Response> {
   const headers = {
     "Cache-Control": "no-store",
@@ -36,16 +37,22 @@ export async function deviceSessionCallback(
   } catch {
     return new Response("Invalid device session request.", { status: 400, headers });
   }
-  const handoffIds = form.getAll("handoffId");
+  const userDoIds = form.getAll("userDoId");
   const states = form.getAll("state");
-  const handoffId = handoffIds.length === 1 ? handoffIds[0] : null;
+  const tickets = form.getAll("ticket");
+  const userDoId = userDoIds.length === 1 ? userDoIds[0] : null;
   const state = states.length === 1 ? states[0] : null;
-  if (typeof handoffId !== "string" || !HANDOFF_ID.test(handoffId) ||
-      typeof state !== "string" || !isDeviceHandoffState(state)) {
+  const ticket = tickets.length === 1 ? tickets[0] : null;
+  if (typeof userDoId !== "string" || !LOWER_HEX_64.test(userDoId) ||
+      typeof state !== "string" || !isDeviceHandoffState(state) ||
+      typeof ticket !== "string" || !LOWER_HEX_64.test(ticket)) {
     return new Response("Invalid device session request.", { status: 400, headers });
   }
+  if (expectedUserDoId !== undefined && userDoId !== expectedUserDoId) {
+    return new Response("Invalid device session owner.", { status: 403, headers });
+  }
 
-  const handoff = await consume(handoffId, state);
+  const handoff = await consume(userDoId, state, ticket);
   if (!handoff) {
     return new Response("This device session request has expired.", { status: 410, headers });
   }

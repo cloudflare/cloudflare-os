@@ -6,10 +6,11 @@
 
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type {
-  AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput, DeviceSessionHandoff,
+  AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput,
   GadgetMetadata, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import type { AccountDescription, GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
+import type { DeviceSessionHandoff } from "../auth/device-session-handoff.js";
 
 export type ConnectedAccountRecord = {
   id: number;
@@ -75,6 +76,7 @@ export type LoginSessionRecord = {
  */
 export type PendingDeviceHandoffRecord = {
   stateHash: string;
+  ticketHash: string;
   publicKey: string;
   handoff: DeviceSessionHandoff;
   expiresAt: Date;

@@ -151,11 +151,6 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     }
     const result = await this.#user.stageDeviceSessionHandoff(
         publicKey, state, this.accessSession?.jwt);
-    logger.info("device session requested", {
-      event: "auth.device_handoff.requested",
-      durableObjectId: this.#userId.toString(),
-      credentialKind: this.accessSession ? "cloudflare-access" : "workshop",
-    });
     return result;
   }
   setOwnDisplayName(name: string): Promise<void> {
@@ -891,14 +886,26 @@ export default {
     }
 
     if (url.pathname === "/api/device-session/callback") {
-      return deviceSessionCallback(req, async (handoffId, state) => {
+      let expectedUserDoId: string | undefined;
+      if (env.CF_ACCESS_AUD) {
+        const payload = await verifyCfAccessJwt(req, env);
+        if (typeof payload?.email !== "string" || payload.email.length === 0) {
+          return new Response("Invalid CF access JWT.", {
+            status: 403,
+            headers: { "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" },
+          });
+        }
+        expectedUserDoId = ctx.exports.UserDurableObject.idFromName(payload.email).toString();
+      }
+      return deviceSessionCallback(req, async (userDoId, state, ticket) => {
+        let id: DurableObjectId;
         try {
-          const id = ctx.exports.UserDurableObject.idFromString(handoffId);
-          return await ctx.exports.UserDurableObject.get(id).consumeDeviceSessionHandoff(state);
+          id = ctx.exports.UserDurableObject.idFromString(userDoId);
         } catch {
           return null;
         }
-      });
+        return await ctx.exports.UserDurableObject.get(id).consumeDeviceSessionHandoff(state, ticket);
+      }, expectedUserDoId);
     }
 
     if (url.pathname === "/api") {

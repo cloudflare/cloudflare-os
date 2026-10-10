@@ -1,8 +1,36 @@
-import type {
-  DeviceSessionCredential,
-  DeviceSessionHandoff,
-  DeviceSessionTransfer,
-} from "@gadgets/workshop-shared/api";
+/** Credential encrypted for the native app. The native wire format is documented in oauth-signin.md. */
+export type DeviceSessionCredential =
+  | {
+      kind: "workshop";
+      /** `<user-id>:<standard-base64-secret>`, accepted by `PublicApi.authenticate()`. */
+      token: string;
+      /** Server-enforced expiry of this install-local session, in Unix milliseconds. */
+      expiresAt: number;
+    }
+  | {
+      kind: "cloudflare-access";
+      /** Access application JWT; its `exp` bounds this credential's lifetime. */
+      token: string;
+    };
+
+/** Plaintext encrypted for one device-session transfer. */
+export type DeviceSessionTransfer = {
+  credential: DeviceSessionCredential;
+  /** Deadline for consuming the transfer, independent of the credential's own lifetime. */
+  expiresAt: number;
+};
+
+/** Envelope delivered only through the claimed native-app HTTPS callback. */
+export type DeviceSessionHandoff = {
+  /** Ephemeral P-256 public key, uncompressed and unpadded base64url encoded. */
+  publicKey: string;
+  /** Random HKDF salt, unpadded base64url encoded. */
+  salt: string;
+  /** AES-GCM nonce, unpadded base64url encoded. */
+  iv: string;
+  /** AES-GCM ciphertext and tag, unpadded base64url encoded. */
+  ciphertext: string;
+};
 
 const CONTEXT = new TextEncoder().encode("cloudflare-os-device-session-v1");
 const OPAQUE_STATE = /^[A-Za-z0-9._~-]{16,512}$/;
@@ -64,9 +92,9 @@ export async function sealDeviceSessionHandoff(
   return {
     publicKey: new Uint8Array(
         await crypto.subtle.exportKey("raw", ephemeral.publicKey) as ArrayBuffer)
-        .toBase64({ alphabet: "base64url" }),
-    salt: salt.toBase64({ alphabet: "base64url" }),
-    iv: iv.toBase64({ alphabet: "base64url" }),
-    ciphertext: new Uint8Array(ciphertext).toBase64({ alphabet: "base64url" }),
+        .toBase64({ alphabet: "base64url", omitPadding: true }),
+    salt: salt.toBase64({ alphabet: "base64url", omitPadding: true }),
+    iv: iv.toBase64({ alphabet: "base64url", omitPadding: true }),
+    ciphertext: new Uint8Array(ciphertext).toBase64({ alphabet: "base64url", omitPadding: true }),
   };
 }

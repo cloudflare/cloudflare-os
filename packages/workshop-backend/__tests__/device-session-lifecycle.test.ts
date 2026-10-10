@@ -1,10 +1,8 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import type {
-  DeviceSessionHandoff,
-  DeviceSessionTransfer,
-} from "@gadgets/workshop-shared/api";
+import type { DeviceSessionHandoff, DeviceSessionTransfer } from
+  "../src/auth/device-session-handoff";
 import type { UserDurableObject } from "../src/user";
 
 declare module "cloudflare:workers" {
@@ -16,7 +14,9 @@ declare module "cloudflare:workers" {
 type UserInternals = UserDurableObject & {
   storage: {
     pendingDeviceHandoffs: {
-      list(): Iterable<{ stateHash: string; handoff: DeviceSessionHandoff; expiresAt: Date }>;
+      list(): Iterable<{
+        stateHash: string; ticketHash: string; handoff: DeviceSessionHandoff; expiresAt: Date;
+      }>;
       put(record: unknown): void;
     };
     sessions: {
@@ -86,12 +86,17 @@ describe("device session lifecycle", () => {
 
     const first = await user.stageDeviceSessionHandoff(publicKey, state);
     const second = await user.stageDeviceSessionHandoff(publicKey, state);
-    expect(second).toEqual(first);
+    expect(second.userDoId).toBe(first.userDoId);
+    expect(second.ticket).not.toBe(first.ticket);
+    expect(second.ticket).toMatch(/^[0-9a-f]{64}$/);
     const staged = await runInDurableObject(user, (instance: UserDurableObject) => {
       const internals = instance as UserInternals;
       expect([...internals.storage.pendingDeviceHandoffs.list()]).toHaveLength(1);
       expect([...internals.storage.sessions.list()]).toHaveLength(1);
-      return [...internals.storage.pendingDeviceHandoffs.list()][0].handoff;
+      const [pending] = [...internals.storage.pendingDeviceHandoffs.list()];
+      expect(pending.ticketHash).toMatch(/^[0-9a-f]{64}$/);
+      expect(pending.ticketHash).not.toBe(second.ticket);
+      return pending.handoff;
     });
     const transfer = await decrypt(staged, key);
     expect(transfer.credential.kind).toBe("workshop");
@@ -99,8 +104,9 @@ describe("device session lifecycle", () => {
     const [, token] = transfer.credential.token.split(":");
     expect(await authResult(user, token)).toBe("invalid");
 
-    expect(await user.consumeDeviceSessionHandoff(state)).toEqual(staged);
-    expect(await user.consumeDeviceSessionHandoff(state)).toBeNull();
+    expect(await user.consumeDeviceSessionHandoff(state, first.ticket)).toBeNull();
+    expect(await user.consumeDeviceSessionHandoff(state, second.ticket)).toEqual(staged);
+    expect(await user.consumeDeviceSessionHandoff(state, second.ticket)).toBeNull();
     expect(await authResult(user, token)).toBe("ok");
 
     await runInDurableObject(user, (instance: UserDurableObject) => {
@@ -115,7 +121,7 @@ describe("device session lifecycle", () => {
     const user = env.TEST_USER.getByName(`device-session-${++counter}`);
     await user.authenticateFromCfAccess("bob@example.com", true);
     const { publicKey } = await appKey();
-    await user.stageDeviceSessionHandoff(publicKey, state);
+    const start = await user.stageDeviceSessionHandoff(publicKey, state);
     await runInDurableObject(user, (instance: UserDurableObject) => {
       const internals = instance as UserInternals;
       const [pending] = [...internals.storage.pendingDeviceHandoffs.list()];
@@ -124,7 +130,7 @@ describe("device session lifecycle", () => {
         expiresAt: new Date(Date.now() - 1),
       });
     });
-    expect(await user.consumeDeviceSessionHandoff(state)).toBeNull();
+    expect(await user.consumeDeviceSessionHandoff(state, start.ticket)).toBeNull();
     await runInDurableObject(user, (instance: UserDurableObject) => {
       const internals = instance as UserInternals;
       expect([...internals.storage.sessions.list()]).toHaveLength(0);
@@ -137,7 +143,8 @@ describe("device session lifecycle", () => {
     await user.authenticateFromCfAccess("access-user@example.com", true);
     const { key, publicKey } = await appKey();
     const start = await user.stageDeviceSessionHandoff(publicKey, state, "access.jwt.value");
-    expect(start.handoffId).toMatch(/^[0-9a-f]{64}$/);
+    expect(start.userDoId).toMatch(/^[0-9a-f]{64}$/);
+    expect(start.ticket).toMatch(/^[0-9a-f]{64}$/);
 
     const staged = await runInDurableObject(user, (instance: UserDurableObject) => {
       const internals = instance as UserInternals;
@@ -148,7 +155,8 @@ describe("device session lifecycle", () => {
       kind: "cloudflare-access",
       token: "access.jwt.value",
     });
-    expect(await user.consumeDeviceSessionHandoff(state)).toEqual(staged);
-    expect(await user.consumeDeviceSessionHandoff(state)).toBeNull();
+    expect(await user.consumeDeviceSessionHandoff(state, "0".repeat(64))).toBeNull();
+    expect(await user.consumeDeviceSessionHandoff(state, start.ticket)).toEqual(staged);
+    expect(await user.consumeDeviceSessionHandoff(state, start.ticket)).toBeNull();
   });
 });

@@ -446,43 +446,12 @@ export type UserDirectoryRecord = {
   name: string;
 };
 
-/** Credential carried inside a device-session transfer's encrypted plaintext. */
-export type DeviceSessionCredential =
-  | {
-      /** An install-local Workshop session, enforced by the install until `expiresAt`. */
-      kind: "workshop";
-      token: string;
-      expiresAt: number;
-    }
-  | {
-      /** A Cloudflare Access application token, whose JWT `exp` bounds its lifetime. */
-      kind: "cloudflare-access";
-      token: string;
-    };
-
-/** Plaintext wire contract encrypted for one native-app device-session transfer. */
-export type DeviceSessionTransfer = {
-  credential: DeviceSessionCredential;
-  /** Deadline for consuming this transfer, independent of the credential's own lifetime. */
-  expiresAt: number;
-};
-
-/** Encrypted material delivered only through the claimed native-app HTTPS callback. */
-export type DeviceSessionHandoff = {
-  /** Ephemeral server P-256 public key, uncompressed and base64url encoded. */
-  publicKey: string;
-  /** Random HKDF salt, base64url encoded. */
-  salt: string;
-  /** AES-GCM nonce, base64url encoded. */
-  iv: string;
-  /** AES-GCM ciphertext and tag, base64url encoded. */
-  ciphertext: string;
-};
-
-/** Opaque handle posted by the browser to consume a staged device-session transfer. */
+/** Routing identity and one-use proof posted by the authenticated browser to redeem a transfer. */
 export type DeviceSessionHandoffStart = {
-  /** Durable Object identifier for the authenticated user who owns the staged transfer. */
-  handoffId: string;
+  /** Durable Object identifier for the staging user; this value is not secret. */
+  userDoId: string;
+  /** Single-use 256-bit secret in lowercase hex; only its hash is stored server-side. */
+  ticket: string;
 };
 
 /** Top-level API exposed to the user after they have authenticated. */
