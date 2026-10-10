@@ -5,7 +5,7 @@
 // as X would hold them. A test injects a failure with `on()`, whose routes answer before the
 // built-in ones, latest first. Anything unrouted, or sent anywhere but X, fails the test.
 
-import { env, runInDurableObject } from "cloudflare:test";
+import { SELF, env, runInDurableObject } from "cloudflare:test";
 import { vi } from "vitest";
 import { generateNonce } from "@gadgets/gatekeeper-kit/connect-nonce";
 import type { StoredIdentity } from "../../src/x-credentials";
@@ -26,6 +26,18 @@ export function json(data: unknown, init: ResponseInit = {}): Response {
 function problem(status: number, detail: string, type = "about:blank"): Response {
   return json({ title: "Problem", detail, type, status }, { status });
 }
+
+/** The app-only bearer token, `X_APP_BEARER_TOKEN` in vitest.worker.config.ts. */
+export const APP_TOKEN = "test-app-token";
+
+/** The event types only the filtered user's own token may subscribe to. */
+const PRIVATE_EVENTS = new Set(["post.mention.create", "post.reply.create"]);
+
+export type FakeSubscription = {
+  subscription_id: string; event_type: string; filter: { user_id?: string }; webhook_id?: string; tag?: string;
+  /** Who made it: "app", or the user whose token did. */
+  by: string;
+};
 
 export const ALICE: WireUser = {
   id: "1001", username: "alice", name: "Alice", verified: false, protected: false,
@@ -55,6 +67,10 @@ export class FakeX {
   readonly muting = new Set<string>();
   readonly hidden = new Set<string>();
   readonly media = new Map<string, { type: string; altText?: string }>();
+  /** The app's webhooks, by ID. */
+  readonly webhooks = new Map<string, { id: string; url: string; valid: boolean }>();
+  /** The app's X Activity API subscriptions, by ID. */
+  readonly subscriptions = new Map<string, FakeSubscription>();
   #nextId = 1_900_000_000_000_000_000n;
   #nextGrant = 100;
   #routes: Array<{ method: string; pattern: RegExp; handler: Handler }> = [];
@@ -78,6 +94,32 @@ export class FakeX {
   /** A fresh ID, as X issues them. */
   id(): string {
     return String(this.#nextId++);
+  }
+
+  /**
+   * Delivers one event to the registered webhook, as X does: the X Activity API's envelope, signed
+   * with the app's client secret. Returns the status the worker answered.
+   */
+  async deliver(eventType: string, userId: string | undefined, payload: unknown, options: {
+    id?: string; createdAt?: string; includes?: unknown; secret?: string;
+  } = {}): Promise<number> {
+    const [webhook] = this.webhooks.values();
+    if (!webhook) throw new Error("fake X: no webhook is registered");
+    const body = JSON.stringify({
+      data: {
+        event_uuid: options.id ?? this.id(),
+        created_at: options.createdAt ?? new Date().toISOString(),
+        filter: userId === undefined ? {} : { user_id: userId },
+        event_type: eventType,
+        payload,
+        ...(options.includes === undefined ? {} : { includes: options.includes }),
+      },
+    });
+    const signature = await hmacBase64(options.secret ?? "test-client-secret", body);
+    const response = await SELF.fetch(webhook.url, {
+      method: "POST", body, headers: { "X-Twitter-Webhooks-Signature-OAuth2": `sha256=${signature}` },
+    });
+    return response.status;
   }
 
   /** Mints a token for `userId`, as a code exchange or refresh would. */
@@ -137,10 +179,62 @@ export class FakeX {
       return json({ revoked: true });
     }
 
-    const me = this.tokens.get(request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "");
-    if (me === undefined) return problem(401, "Unauthorized");
+    const token = request.headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
     let match: RegExpMatchArray | null;
     const body = () => JSON.parse(request.body ?? "{}") as Record<string, unknown>;
+
+    if (path === "/2/webhooks" || path.startsWith("/2/webhooks/")) {
+      if (token !== APP_TOKEN) return problem(403, "This endpoint requires an OAuth2 app-only bearer token.");
+      const id = path.split("/")[3];
+      if (method === "GET" && !id) return json({ data: [...this.webhooks.values()] });
+      if (method === "POST" && !id) {
+        const webhook = { id: this.id(), url: String(body().url), valid: true };
+        this.webhooks.set(webhook.id, webhook);
+        return json({ data: webhook });
+      }
+      const webhook = this.webhooks.get(id ?? "");
+      if (!webhook) return problem(404, "Webhook not found");
+      if (method === "PUT") {
+        webhook.valid = true;
+        return json({ data: { valid: true } });
+      }
+      if (method === "DELETE") {
+        this.webhooks.delete(webhook.id);
+        return json({ data: { deleted: true } });
+      }
+    }
+    if (path === "/2/activity/subscriptions" || path.startsWith("/2/activity/subscriptions/")) {
+      const caller = token === APP_TOKEN ? "app" : this.tokens.get(token);
+      if (caller === undefined) return problem(401, "Unauthorized");
+      const id = path.split("/")[4];
+      if (method === "POST" && !id) {
+        const { event_type: eventType, filter = {}, webhook_id: webhookId, tag } =
+          body() as { event_type: string; filter?: { user_id?: string }; webhook_id?: string; tag?: string };
+        if (PRIVATE_EVENTS.has(eventType) && caller !== filter.user_id) {
+          return problem(403, "Private events need the filtered user's own authorization.");
+        }
+        if ([...this.subscriptions.values()].some(existing =>
+            existing.event_type === eventType && existing.filter.user_id === filter.user_id)) {
+          return json({ title: "DuplicateSubscription", detail: "A matching subscription already exists.", type: "about:blank" },
+            { status: 409 });
+        }
+        const subscription: FakeSubscription = {
+          subscription_id: this.id(), event_type: eventType, filter, webhook_id: webhookId, tag, by: caller,
+        };
+        this.subscriptions.set(subscription.subscription_id, subscription);
+        const { by: _by, ...echoed } = subscription;
+        return json({ data: { subscription: echoed } });
+      }
+      if (caller !== "app") return problem(403, "This endpoint requires an OAuth2 app-only bearer token.");
+      if (method === "GET" && !id) return json({ data: [...this.subscriptions.values()] });
+      if (method === "DELETE" && id) {
+        if (!this.subscriptions.delete(id)) return problem(404, "Subscription not found");
+        return json({ data: { deleted: true } });
+      }
+    }
+
+    const me = this.tokens.get(token);
+    if (me === undefined) return problem(401, "Unauthorized");
 
     if (method === "GET" && path === "/2/users/me") return json({ data: this.users.get(me) });
     if (method === "GET" && (match = path.match(/^\/2\/users\/by\/username\/(\w+)$/))) {
@@ -351,6 +445,14 @@ export class FakeX {
       meta: { result_count: page.length, ...(next ? { next_token: next } : {}) },
     });
   }
+}
+
+/** `base64(HMAC-SHA256(secret, text))`, as X signs a delivery and answers a challenge. */
+export async function hmacBase64(secret: string, text: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(text)));
+  return btoa(String.fromCharCode(...mac));
 }
 
 export function identityOf(user: WireUser, extra: Partial<StoredIdentity> = {}): StoredIdentity {
