@@ -145,6 +145,16 @@ function postScope(posts: readonly XPostInfo[], restricted = false): Observation
   return restricted || mentionsProtectedAuthor(posts) ? OWNER : BASELINE;
 }
 
+/** `post` with every author it names taken as protected. */
+function withProtectedAuthors(post: XPostInfo): XPostInfo {
+  return {
+    ...post,
+    author: { ...post.author, protected: true },
+    ...(post.repostOf ? { repostOf: { ...post.repostOf, author: { ...post.repostOf.author, protected: true } } } : {}),
+    ...(post.quoteOf ? { quoteOf: { ...post.quoteOf, author: { ...post.quoteOf.author, protected: true } } } : {}),
+  };
+}
+
 function countOf(count: number, noun: string, plural = `${noun}s`): string {
   return `${count} ${count === 1 ? noun : plural}`;
 }
@@ -507,9 +517,14 @@ export class XPostImpl extends RpcTarget implements XPost {
     await this.#ctx.host.submit(this.#ctx.queue, "hide", { post: await this.#reply(), hidden: false });
   }
 
-  /** The post an action targets, read to describe it to the approver: not an observation. */
+  /**
+   * The post an action targets, read to describe it to the approver: not an observation. The
+   * action keeps it, and a read simulating the action can show it (a pending repost among the
+   * account's posts), so authors whose privacy X didn't report are kept as protected.
+   */
   async #target(): Promise<{ id: string; info: XPostInfo }> {
-    return { id: this.#ctx.host.resolve(this.#id), info: await this.#info() };
+    const { info, unverified } = await this.#read();
+    return { id: this.#ctx.host.resolve(this.#id), info: unverified ? withProtectedAuthors(info) : info };
   }
 
   async #reply(): Promise<{ id: string; info: XPostInfo }> {

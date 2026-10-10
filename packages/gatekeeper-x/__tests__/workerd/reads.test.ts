@@ -175,6 +175,15 @@ describe("what a read discloses", () => {
     expect(await exclusions(name)).toEqual([["observer"], ["observer"]]);
   });
 
+  it("withholds a pending repost of a post whose author X didn't describe", async () => {
+    const { x, props, name } = await observed();
+    const post = x.post(CAROL, "for followers only");
+    x.on("GET", new RegExp(`^/2/tweets/${post.id}\\b`), () => json({ data: post }));
+    unwrap(await hooks().run(name, props, [["getPost", post.id], ["repost"]]));
+    unwrap(await hooks().run(name, props, [["listMyPosts"]], { pages: 1 }));
+    expect(await exclusions(name)).toEqual([["observer"]]);
+  });
+
   it("withholds a protected account's relationships, as it does its follow lists", async () => {
     const x = new FakeX().install();
     const props: GatekeeperProps = {
