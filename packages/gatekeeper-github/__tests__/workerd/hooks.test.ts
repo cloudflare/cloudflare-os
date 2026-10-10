@@ -19,7 +19,13 @@ const ZERO = "0".repeat(40);
 const CREATED = new Date().toISOString();
 
 type Row = Record<string, unknown>;
-type Webhook = { id: number; url: string; secret: string; events: string[]; active: boolean };
+type Webhook = {
+  id: number; url: string; secret: string; events: string[]; active: boolean;
+  /** `"json"` or `"form"`, GitHub's `config.content_type`. */
+  contentType: string;
+  /** `"0"` to verify the receiver's certificate, GitHub's `config.insecure_ssl`. */
+  insecureSsl: string;
+};
 /** One attempt at a delivery, as GitHub logs it. */
 type Delivery = {
   id: number; hookId: number; guid: string; event: string; body: string; status_code: number; delivered_at: string;
@@ -142,15 +148,15 @@ class FakeGitHub {
       return Response.json([...this.webhooks.values()].map(({ id, url }) => ({ id, config: { url } })));
     }
     if (pathname === `${API}/hooks` && method === "POST") {
-      const { events, config, active } = await request.json<WebhookBody>();
+      const { config } = await request.clone().json<WebhookBody>();
       if ([...this.webhooks.values()].some(webhook => webhook.url === config.url)) {
         return Response.json({
           message: "Validation Failed", errors: [{ message: "Hook already exists on this repository" }],
         }, { status: 422 });
       }
       const id = this.#nextId++;
-      this.webhooks.set(id, { id, url: config.url, secret: config.secret, events, active });
-      return Response.json({ id, config: { url: config.url } }, { status: 201 });
+      this.webhooks.set(id, this.#configured(id, await request.json<WebhookBody>()));
+      return Response.json({ id, config: { url: this.webhooks.get(id)!.url } }, { status: 201 });
     }
     const id = Number(new RegExp(`^${API}/hooks/(\\d+)$`).exec(pathname)?.[1]);
     const webhook = this.webhooks.get(id);
@@ -158,13 +164,14 @@ class FakeGitHub {
       return Response.json({ message: "Not Found" }, { status: 404 });
     }
     if (webhook && method === "GET") {
-      const { url, events, active } = webhook;
-      return Response.json({ id, active, events, config: { url, content_type: "json", insecure_ssl: "0", secret: "********" } });
+      const { url, events, active, contentType, insecureSsl } = webhook;
+      return Response.json({
+        id, active, events, config: { url, content_type: contentType, insecure_ssl: insecureSsl, secret: "********" },
+      });
     }
     if (webhook && method === "PATCH") {
-      const { events, config, active } = await request.json<WebhookBody>();
-      this.webhooks.set(id, { id, url: config.url, secret: config.secret, events, active });
-      return Response.json({ id, config: { url: config.url } });
+      this.webhooks.set(id, this.#configured(id, await request.json<WebhookBody>()));
+      return Response.json({ id, config: { url: this.webhooks.get(id)!.url } });
     }
     const loggedBy = Number(new RegExp(`^${API}/hooks/(\\d+)/deliveries$`).exec(pathname)?.[1]);
     if (this.webhooks.has(loggedBy) && method === "GET") {
@@ -227,14 +234,28 @@ class FakeGitHub {
     }
   }
 
+  #configured(id: number, { events, config, active }: WebhookBody): Webhook {
+    return {
+      id, url: config.url, secret: config.secret, events, active, contentType: config.content_type,
+      insecureSsl: config.insecure_ssl,
+    };
+  }
+
+  /**
+   * One attempt at a delivery, encoded as the webhook is configured now: GitHub builds a
+   * redelivery from the webhook's current configuration, as it signs one with the current secret.
+   */
   async #attempt(webhook: Webhook, guid: string, event: string, body: string, secret = webhook.secret): Promise<number> {
+    const [contentType, sent] = webhook.contentType === "form"
+      ? ["application/x-www-form-urlencoded", `payload=${encodeURIComponent(body)}`]
+      : ["application/json", body];
     const status = this.failDeliveriesWith ?? (await SELF.fetch(webhook.url, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json", "X-GitHub-Event": event, "X-GitHub-Delivery": guid,
-        "X-Hub-Signature-256": `sha256=${await hmac(secret, body)}`,
+        "Content-Type": contentType, "X-GitHub-Event": event, "X-GitHub-Delivery": guid,
+        "X-Hub-Signature-256": `sha256=${await hmac(secret, sent)}`,
       },
-      body,
+      body: sent,
     })).status;
     this.log.push({
       id: this.#nextDeliveryId++, hookId: webhook.id, guid, event, body, status_code: status,
@@ -244,7 +265,9 @@ class FakeGitHub {
   }
 }
 
-type WebhookBody = { events: string[]; config: { url: string; secret: string }; active: boolean };
+type WebhookBody = {
+  events: string[]; config: { url: string; secret: string; content_type: string; insecure_ssl: string }; active: boolean;
+};
 
 async function unwrap<T>(pending: Promise<Outcome<T>>): Promise<T> {
   const result = await pending;
@@ -325,6 +348,8 @@ it("adds the webhook once a hook is enabled, and delivers the events it watches 
     // Only what its hooks watch, so GitHub doesn't deliver the push below at all.
     events: ["issues"],
     active: true,
+    contentType: "json",
+    insecureSsl: "0",
   }]);
 
   expect(await github.deliver("ping", { zen: "Keep it logically awesome.", repository })).toEqual([204]);
@@ -777,7 +802,7 @@ it("adopts the webhook an earlier attempt left on the repository", async () => {
   const github = new FakeGitHub();
   const account = await connectAccount();
   const url = `https://gadgets.test/gatekeeper/github/webhook/${env.GITHUB_HOOK_DRIVER.idFromName(account)}`;
-  github.webhooks.set(5, { id: 5, url, secret: "lost", events: ["push"], active: true });
+  github.webhooks.set(5, { id: 5, url, secret: "lost", events: ["push"], active: true, contentType: "json", insecureSsl: "0" });
   const triage = binding(account);
   await triage.subscribe();
 
@@ -800,9 +825,13 @@ it("has GitHub redeliver, at its next hourly check, what GitHub failed to delive
   github.failDeliveriesWith = 503;
   await github.deliver("issues", issues("opened", 42));
   github.failDeliveriesWith = undefined;
-  // Refused for good: it's for a repository this webhook isn't on.
+  // Refused for good: it's for a repository this webhook isn't on, or (from a webhook sending
+  // JSON, as this one does) was malformed.
   expect(await github.deliver("issues", { ...issues("opened", 43), repository: { ...repository, id: 999 } }))
     .toEqual([404]);
+  github.failDeliveriesWith = 400;
+  await github.deliver("issues", issues("opened", 44));
+  github.failDeliveriesWith = undefined;
   // A busy hour since, which leaves the failure past the first page of the webhook's delivery log.
   github.logDelivered(webhookId, 150);
   await after(HOUR, account);
@@ -820,6 +849,8 @@ it.each<[string, (github: FakeGitHub, webhook: Webhook) => void]>([
   ["deactivates it", (_github, webhook) => { webhook.active = false; }],
   ["points it elsewhere", (_github, webhook) => { webhook.url = "https://elsewhere.example/hook"; }],
   ["changes its events", (_github, webhook) => { webhook.events = ["*"]; }],
+  ["has it send form-encoded payloads", (_github, webhook) => { webhook.contentType = "form"; }],
+  ["stops it verifying this deployment's certificate", (_github, webhook) => { webhook.insecureSsl = "1"; }],
 ])("restores its webhook at the next hourly check when someone %s", async (_, change) => {
   const github = new FakeGitHub();
   const account = await connectAccount();
@@ -835,6 +866,26 @@ it.each<[string, (github: FakeGitHub, webhook: Webhook) => void]>([
   expect(await github.deliver("issues", issues("opened", 42))).toEqual([204]);
   await settled(account);
   expect((await triage.read()).received).toHaveLength(1);
+});
+
+it("restores its webhook's payload encoding, and has GitHub redeliver what it refused meanwhile", async () => {
+  const github = new FakeGitHub();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+  const [webhook] = github.webhooks.values();
+
+  // Signed, but form-encoded, so refused as malformed.
+  webhook.contentType = "form";
+  expect(await github.deliver("issues", issues("opened", 42))).toEqual([400]);
+  await after(HOUR, account);
+
+  expect(github.webhooks.get(webhook.id)).toMatchObject({ contentType: "json" });
+  // Refused for the encoding alone, which GitHub's redelivery now sends as JSON.
+  expect(await github.redeliver()).toEqual([204]);
+  await settled(account);
+  expect((await triage.read()).received).toEqual([expect.objectContaining({ info: expect.objectContaining({ id: "42" }) })]);
 });
 
 it("restores its webhook's secret, has GitHub redeliver what the wrong one signed, then leaves it", async () => {

@@ -149,9 +149,13 @@ const DELIVERY_LOOKBACK_MS = 2 * CHECK_INTERVAL_MS;
 const MAX_REDELIVERIES_PER_CHECK = 20;
 /**
  * The statuses the worker refuses a delivery with for good (see handleWebhookRequest() and
- * ingest()), which a redelivery would only repeat.
+ * ingest()), which a redelivery would only repeat. A 400 is one only while the webhook sends JSON:
+ * a delivery refused as malformed while it sent form-encoded payloads is worth redelivering once it
+ * sends JSON again, since GitHub builds a redelivery from the webhook's current configuration, as
+ * it signs one with the current secret.
  */
 const FINAL_REFUSALS = new Set([400, 404, 413]);
+const FINAL_REFUSALS_WHEN_FORM_ENCODED = new Set([404, 413]);
 
 type Registration = Omit<GitHubHookProps, "key" | "userObjectId" | "delivery">;
 type Capabilities = {
@@ -358,9 +362,10 @@ export class GitHubHookDriver extends DurableObject<Env> {
 
   /**
    * Bring `webhook` back to what its hooks need if it no longer matches: deleted, deactivated,
-   * pointed elsewhere, subscribed to other events, or signing with another secret, which GitHub
-   * never shows but which fails deliveries here with 401. Then ask GitHub to redeliver, oldest
-   * first and at most `budget`, what it failed to deliver lately, as it never does itself.
+   * pointed elsewhere, sending form-encoded payloads, not verifying this deployment's certificate,
+   * subscribed to other events, or signing with another secret, which GitHub never shows but which
+   * fails deliveries here with 401. Then ask GitHub to redeliver, oldest first and at most
+   * `budget`, what it failed to deliver lately, as it never does itself.
    * @returns How many redeliveries it asked for.
    */
   async #checkWebhook(account: string, url: string, { id, repo }: Webhook, budget: number): Promise<number> {
@@ -375,9 +380,12 @@ export class GitHubHookDriver extends DurableObject<Env> {
         throw error;
       }
     });
-    const failed = read === undefined ? [] : undelivered(read.deliveries);
+    const formEncoded = read !== undefined && read.found.config.content_type !== "json";
+    const failed = read === undefined ? []
+      : undelivered(read.deliveries, formEncoded ? FINAL_REFUSALS_WHEN_FORM_ENCODED : FINAL_REFUSALS);
     const events = webhookEvents(this.#registrations(repo).map(([, registration]) => registration));
     const intact = read !== undefined && read.found.active === true && read.found.config.url === url
+      && !formEncoded && String(read.found.config.insecure_ssl) === "0"
       && sameEvents(read.found.events ?? [], events)
       // By each delivery's latest attempt, so a 401 since redelivered successfully doesn't count.
       && !failed.some(({ status_code }) => status_code === 401);
@@ -543,14 +551,15 @@ const delivered = ({ status_code }: GitHubWebhookDeliveryResponse) => status_cod
 
 /**
  * What to ask GitHub to redeliver, oldest first: each delivery whose latest attempt failed, unless
- * the worker refused it for good. `deliveries` are newest first. A redelivery of something already
- * received is harmless: ingest() collapses it.
+ * the worker refused it for good, with one of `finalRefusals`. `deliveries` are newest first. A
+ * redelivery of something already received is harmless: ingest() collapses it.
  */
-function undelivered(deliveries: GitHubWebhookDeliveryResponse[]): GitHubWebhookDeliveryResponse[] {
+function undelivered(deliveries: GitHubWebhookDeliveryResponse[], finalRefusals: ReadonlySet<number>):
+    GitHubWebhookDeliveryResponse[] {
   const latest = new Map<string, GitHubWebhookDeliveryResponse>();
   for (const delivery of deliveries) if (!latest.has(delivery.guid)) latest.set(delivery.guid, delivery);
   return [...latest.values()]
-    .filter(delivery => !delivered(delivery) && !FINAL_REFUSALS.has(delivery.status_code))
+    .filter(delivery => !delivered(delivery) && !finalRefusals.has(delivery.status_code))
     .toReversed();
 }
 

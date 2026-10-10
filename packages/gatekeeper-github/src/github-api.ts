@@ -173,7 +173,8 @@ export type GitHubRepoWebhookResponse = {
   id: number;
   active?: boolean;
   events?: string[];
-  config: { url?: string };
+  /** Where and how it delivers: `content_type` `"json"` or `"form"`; `insecure_ssl` `"0"` verifies TLS. */
+  config: { url?: string; content_type?: string; insecure_ssl?: string | number };
 };
 
 /** One attempt at a webhook delivery, as the webhook's delivery log lists it. */
