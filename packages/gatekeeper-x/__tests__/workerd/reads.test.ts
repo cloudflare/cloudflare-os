@@ -114,6 +114,19 @@ describe("the daily read limit", () => {
     expect(failure(await hooks().run(crypto.randomUUID(), other, [["listReplies"]], { pages: 1 }))).toMatch(/used today's 50 reads/);
   });
 
+  it("settles a read begun before midnight against that day, not the next", async () => {
+    const { userObjectId } = await setup();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-10T23:59:59Z"));
+    const late = unwrap(await hooks().account(userObjectId, "reserveReads", 20)) as { day: string };
+    vi.setSystemTime(new Date("2026-10-11T00:00:01Z"));
+    const early = unwrap(await hooks().account(userObjectId, "reserveReads", 20)) as { day: string };
+    unwrap(await hooks().account(userObjectId, "settleReads", 20, 20, early.day));
+    // The read from before midnight returned nothing, which changes nothing about the new day.
+    unwrap(await hooks().account(userObjectId, "settleReads", 20, 0, late.day));
+    expect(await readsUsed(userObjectId)).toBe(20);
+  });
+
   it("resets at UTC midnight", async () => {
     const { userObjectId, props, name } = await setup();
     await setReadsUsed(userObjectId, 50, "2000-01-01");
@@ -173,6 +186,15 @@ describe("what a read discloses", () => {
     expect(page[0].author.protected).toBe(false);
     unwrap(await hooks().run(name, props, [["getPost", post.id], ["getInfo"]]));
     expect(await exclusions(name)).toEqual([["observer"], ["observer"]]);
+  });
+
+  it("withholds a pending repost of a post whose author X didn't describe", async () => {
+    const { x, props, name } = await observed();
+    const post = x.post(CAROL, "for followers only");
+    x.on("GET", new RegExp(`^/2/tweets/${post.id}\\b`), () => json({ data: post }));
+    unwrap(await hooks().run(name, props, [["getPost", post.id], ["repost"]]));
+    unwrap(await hooks().run(name, props, [["listMyPosts"]], { pages: 1 }));
+    expect(await exclusions(name)).toEqual([["observer"]]);
   });
 
   it("withholds a protected account's relationships, as it does its follow lists", async () => {

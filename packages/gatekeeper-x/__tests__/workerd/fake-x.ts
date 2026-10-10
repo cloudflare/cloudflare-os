@@ -42,6 +42,11 @@ export type FakeSubscription = {
   by: string;
 };
 
+/** The first snowflake ID X could issue at `time`, as X's IDs encode when they were made. */
+export function snowflakeAt(time: number): string {
+  return String((BigInt(time) - 1288834974657n) << 22n);
+}
+
 export const ALICE: WireUser = {
   id: "1001", username: "alice", name: "Alice", verified: false, protected: false,
   public_metrics: { followers_count: 10, following_count: 5, tweet_count: 3, listed_count: 0 },
@@ -78,7 +83,7 @@ export class FakeX {
   subscriptionsPerPage = 1000;
   /** Each published post's text as sent, before its links were shortened: what duplicates compare. */
   readonly #sentTexts = new Map<string, string>();
-  #nextId = 1_900_000_000_000_000_000n;
+  #lastId = 0n;
   #nextGrant = 100;
   #nextLink = 1;
   #routes: Array<{ method: string; pattern: RegExp; handler: Handler }> = [];
@@ -113,9 +118,11 @@ export class FakeX {
     return this.requests.filter(r => r.method === method && pattern.test(r.url.pathname + r.url.search)).length;
   }
 
-  /** A fresh ID, as X issues them. */
+  /** A fresh ID, as X issues them: a snowflake of the current time. */
   id(): string {
-    return String(this.#nextId++);
+    const now = BigInt(snowflakeAt(Date.now()));
+    this.#lastId = now > this.#lastId ? now : this.#lastId + 1n;
+    return String(this.#lastId);
   }
 
   /**

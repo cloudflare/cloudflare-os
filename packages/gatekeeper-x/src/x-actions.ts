@@ -327,14 +327,25 @@ const RECONCILE_WINDOW_MS = 5 * 60 * 1000;
 /** Most pages of owned Lists a reconciliation reads: X lets an account own at most 1,000 Lists. */
 const MAX_OWNED_LIST_PAGES = 10;
 
+/** X's epoch for snowflake IDs, in Unix milliseconds. */
+const SNOWFLAKE_EPOCH_MS = 1288834974657n;
+
 /**
- * The end of a reconciliation that more than one candidate could satisfy: binding the wrong one
- * would have a revert delete it, and sending again could make a second.
+ * When X made the post a snowflake ID names, to the millisecond and by X's clock: finer than
+ * `created_at`, which X reports to the second.
+ */
+function snowflakeTime(id: string): number {
+  return /^\d+$/.test(id) ? Number((BigInt(id) >> 22n) + SNOWFLAKE_EPOCH_MS) : Number.NaN;
+}
+
+/**
+ * The end of a reconciliation no candidate can be attributed by: binding the wrong one would have
+ * a revert delete it, and sending again could make a second.
  */
 function unresolved(things: "posts" | "Lists"): ActionOutcomeUnknownError {
-  return new ActionOutcomeUnknownError(`More than one of the account's ${things} from when this was ` +
-    "sent could be this one, so which, if any, this action made is unknown, and it won't be sent " +
-    `again. Check the account's ${things} on X, then reject this action to clear it.`);
+  return new ActionOutcomeUnknownError(`The account's ${things} from around when this was sent leave ` +
+    "it unknown whether this action made one, and which, so it won't be sent again. Check the " +
+    `account's ${things} on X, then reject this action to clear it.`);
 }
 
 /** One key per distinct content, however X rewrote its links and in whatever order it lists them. */
@@ -353,7 +364,8 @@ function contentKey(content: SentContent): string {
  * posting twice: among the account's posts dated around the attempt, the one with the draft's
  * reply parent, text, link destinations and poll, carrying the media the attempt uploaded.
  * @returns The post's ID, or `undefined` when none matches and the send may go again.
- * @throws ActionOutcomeUnknownError when more than one could match (`unresolved`).
+ * @throws ActionOutcomeUnknownError when more than one could match, or one from before the send
+ * (`unresolved`).
  */
 async function findPublished(host: XActionHost, draft: StoredDraft, replyTo: string | undefined,
                              attempt: SendAttempt): Promise<string | undefined> {
@@ -370,8 +382,10 @@ async function findPublished(host: XActionHost, draft: StoredDraft, replyTo: str
     poll: draft.poll !== undefined,
   });
   const matches = (envelope.data ?? []).filter(candidate => contentKey(sentContent(candidate)) === wanted);
-  // A further page could hold another match, so it leaves the answer as open as two matches do.
-  if (matches.length > 1 || envelope.meta?.next_token !== undefined) throw unresolved("posts");
+  // X dates what the send made after `at`. A match from before then may be a post that was already
+  // there, so it can neither be bound nor ruled out; nor can a match on a further page.
+  const earlier = matches.some(candidate => !(snowflakeTime(candidate.id) >= attempt.at));
+  if (matches.length > 1 || earlier || envelope.meta?.next_token !== undefined) throw unresolved("posts");
   return matches[0]?.id;
 }
 
