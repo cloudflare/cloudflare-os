@@ -25,6 +25,7 @@
     "capnweb-validate": "catalog:",
     "diff": "catalog:",
     "diff3": "0.0.3",
+    "es-module-lexer": "2.3.2",
     "isomorphic-git": "^1.42.2",
     "jose": "^6.2.12",
     "pako": "^3.0.2",

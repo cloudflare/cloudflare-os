@@ -2160,15 +2160,29 @@ export type UiBundle = {
 //  url: string;
 
   /**
-   * Returns the raw JS code to execute in the Gadget iframe.
+   * The code of `client.js` when it is the UI's only module, rewritten like `modules`.
    * TODO: For now we just return the code but we should switch to serving over HTTP as described
    *   above, for caching. Or... maybe we should actually serve over RPC, but also employ the
    *   Cache API in the browser? Or some other local storage?
    */
   jsCode: string;
+} | {
+  /**
+   * `client.js`, the UI's entry, then every other module it reaches through its imports, each
+   * with its relative imports rewritten to the internal keys the page's import map resolves (see
+   * `ui-page.ts`). Anyone who can use the gadget receives these, so nothing only `server.js`
+   * imports is ever included.
+   */
+  modules: UiModule[];
+};
 
-  // Other metadata could be placed here in the future, e.g. to specify what version of support
-  // libraries should be loaded.
+/** One module of a Gadget UI. */
+export type UiModule = {
+  /** The module's path in the gadget's file tree, with no `.` or `..` segments. */
+  path: string;
+
+  /** The module's code, with its relative imports rewritten. */
+  code: string;
 };
 
 /**
@@ -5214,7 +5228,8 @@ export interface GadgetClient extends WorkpieceClient {
    * Get the gadget's deployed UI code, to be run inside an iframe sandbox.
    *
    * Returns null if the gadget has no deployed UI code (e.g. if it's new, or if it's just an AI
-   * agent with no code).
+   * agent with no code). Throws, naming the file and line, when the UI's imports break the rules
+   * for UI code.
    */
   getUiBundle(chatId?: number): Promise<UiBundle | null>;
 
