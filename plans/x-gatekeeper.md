@@ -725,8 +725,9 @@ Each read is classified before it is authorized:
 
 - **Owner-private** if it comes from an inherently private source — bookmarks, likes,
   `isMuted()`, a private List's details, posts or members, and a protected connected account's
-  follow graph, whether read as its follow lists or edge by edge as the `relationship` a profile
-  read reports — or returns any post written by a protected account (including all the
+  follow graph, whether read as its follow lists, edge by edge as the `relationship` a profile
+  read reports, or in whose posts its home timeline shows — or returns any post written by a
+  protected account (including all the
   connected account's own posts when it is protected).
   Privacy is X's, never the simulated value: a pending change that would make a private List
   public leaves it owner-private until X has made it public. And missing evidence is not

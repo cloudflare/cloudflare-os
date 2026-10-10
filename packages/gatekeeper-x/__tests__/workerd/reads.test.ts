@@ -209,7 +209,10 @@ describe("what a read discloses", () => {
     expect(bob.relationship).toEqual({ following: true, followedBy: false });
     // Its own profile carries no relationship, so it stays public.
     unwrap(await hooks().run(name, props, [["getUser", "alice"], ["getInfo"]]));
-    expect(await exclusions(name)).toEqual([["observer"], undefined]);
+    // Its home timeline shows whom it follows, whatever the posts.
+    x.post(BOB, "public words");
+    unwrap(await hooks().run(name, props, [["listHomeTimeline"]], { pages: 1 }));
+    expect(await exclusions(name)).toEqual([["observer"], undefined, ["observer"]]);
   });
 
   it("decides a List's privacy afresh for each page", async () => {
