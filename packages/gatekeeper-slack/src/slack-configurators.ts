@@ -15,7 +15,6 @@ const PICKER_MAX_OPTIONS = 100;
 
 // Keep the SlackApi (and thus the token getter) off the public RpcTarget surface.
 const apiByTarget = new WeakMap<object, SlackApi>();
-const teamIdByTarget = new WeakMap<object, string>();
 
 function apiFor(target: object): SlackApi {
   let api = apiByTarget.get(target);
@@ -37,9 +36,10 @@ export class WorkspaceConfiguratorUI extends RpcTarget implements WorkspaceConfi
     apiByTarget.set(this, api);
   }
 
-  async getWorkspaceUrl(): Promise<string> {
-    let info = await apiFor(this).getWorkspaceInfo();
-    return `https://app.slack.com/client/${info.teamId}`;
+  async listWorkspaces(query: string): Promise<ConfiguratorOption[]> {
+    return (await apiFor(this).listWorkspaces())
+        .filter(team => optionMatches([team.id, team.name], query))
+        .map(team => ({ value: team.id, title: team.name, subtitle: team.id }));
   }
 }
 
@@ -50,18 +50,19 @@ export class ThreadConfiguratorUI extends RpcTarget implements ThreadConfigurato
 
 @validateRpc()
 export class ConversationConfiguratorUI extends RpcTarget implements ConversationConfiguratorRpc {
-  constructor(api: SlackApi, teamId: string) {
+  constructor(api: SlackApi) {
     super();
     apiByTarget.set(this, api);
-    teamIdByTarget.set(this, teamId);
   }
 
-  async getTeamId(): Promise<string> {
-    return teamIdByTarget.get(this) ?? "";
+  async listWorkspaces(query: string): Promise<ConfiguratorOption[]> {
+    return (await apiFor(this).listWorkspaces())
+        .filter(team => optionMatches([team.id, team.name], query))
+        .map(team => ({ value: team.id, title: team.name, subtitle: team.id }));
   }
 
-  async listConversations(query: string): Promise<ConfiguratorOption[]> {
-    let api = apiFor(this);
+  async listConversations(teamId: string, query: string): Promise<ConfiguratorOption[]> {
+    let api = apiFor(this).forWorkspace(teamId);
     let items: SlackConversationInfo[] = [];
     let cursor: string | undefined;
     for (let page = 0; page < PICKER_MAX_PAGES; page++) {

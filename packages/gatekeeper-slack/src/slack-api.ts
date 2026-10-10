@@ -15,6 +15,12 @@ const SLACK_REVOKE_URL = `${SLACK_API_BASE}/auth.revoke`;
 const RATE_LIMIT_MAX_RETRIES = 2;
 const RATE_LIMIT_MAX_WAIT_MS = 30_000;
 
+function nextPageCursor(cursor: string | undefined, seen: Set<string>): string | undefined {
+  if (cursor && seen.has(cursor)) throw new Error("Slack repeated a pagination cursor.");
+  if (cursor) seen.add(cursor);
+  return cursor;
+}
+
 /** A short-lived Slack access token and its expiry (token rotation issues 12-hour tokens). */
 export type SlackAccessToken = {
   token: string;
@@ -30,7 +36,25 @@ export type SlackOAuthGrant = {
   userId: string;
   teamId: string;
   teamName?: string;
+  isEnterpriseInstall: boolean;
+  enterpriseId?: string;
+  enterpriseName?: string;
 };
+
+/** Installation identity; the flag is absent on accounts saved before org-install support. */
+export type SlackInstallation = {
+  teamId: string;
+  isEnterpriseInstall?: boolean;
+  enterpriseId?: string;
+};
+
+/** A selectable workspace, not the enterprise containing it. */
+export type SlackWorkspace = { id: string; name: string };
+
+/** Slack workspace IDs begin with T; enterprise IDs must never be used as workspace selectors. */
+export function isWorkspaceId(id: string | undefined): id is string {
+  return typeof id === "string" && /^T[A-Z0-9]+$/.test(id);
+}
 
 /** The result of refreshing a rotating token. */
 export type SlackTokenRefresh = {
@@ -49,6 +73,8 @@ type SlackApiEnvelope = {
 
 type RawUser = {
   id: string;
+  team_id?: string;
+  enterprise_user?: { teams?: string[] };
   name?: string;
   real_name?: string;
   is_bot?: boolean;
@@ -64,6 +90,9 @@ type RawUser = {
 
 type RawConversation = {
   id: string;
+  team_id?: string;
+  context_team_id?: string;
+  shared_team_ids?: string[];
   name?: string;
   is_channel?: boolean;
   is_group?: boolean;
@@ -149,6 +178,9 @@ export async function exchangeAuthCode(
     userId: authedUser.id,
     teamId: data.team?.id ?? "",
     teamName: data.team?.name,
+    isEnterpriseInstall: data.is_enterprise_install === true,
+    enterpriseId: data.enterprise?.id,
+    enterpriseName: data.enterprise?.name,
   };
 }
 
@@ -259,7 +291,7 @@ const SLACK_ERROR_MESSAGES: Record<string, string> = {
 // a token that cannot demonstrate access is conservatively deemed to lack it.
 const ACCESS_ERROR_CODES = new Set([
   "channel_not_found", "not_in_channel", "no_permission", "access_denied",
-  "missing_scope", "not_allowed_token_type",
+  "missing_scope", "not_allowed_token_type", "team_access_not_granted",
 ]);
 
 // Slack error codes indicating the token itself is expired or revoked.
@@ -301,23 +333,96 @@ function slackApiError(code: string | undefined, status: number): SlackApiError 
 
 export type SlackConversationTypeFilter = SlackConversationKind;
 
+type SlackApiOptions = {
+  teamId?: () => Promise<string>;
+  installation?: () => Promise<SlackInstallation>;
+};
+
 export class SlackApi {
   #getToken: () => Promise<string>;
+  #options: SlackApiOptions;
+  #workspace?: Promise<string>;
   // Per-client cache for author and mention resolution.
   #userCache = new Map<string, SlackUser>();
   // Empty string records a failed workspace-host lookup.
   #host?: string;
 
-  constructor(getToken: () => Promise<string>) {
+  constructor(getToken: () => Promise<string>, options: SlackApiOptions = {}) {
     this.#getToken = getToken;
+    this.#options = options;
   }
 
-  // auth.test needs no extra scope, so permalink construction works for scoped tokens.
+  /** New request/session context with an immutable workspace selection. */
+  forWorkspace(teamId: string): SlackApi {
+    if (!isWorkspaceId(teamId)) throw new Error("Select a Slack workspace, not an enterprise.");
+    return new SlackApi(this.#getToken, { ...this.#options, teamId: async () => teamId });
+  }
+
+  /** Workspaces both granted to the app and joined by this user; walks every grant page. */
+  async listWorkspaces(): Promise<SlackWorkspace[]> {
+    let auth = await this.#call<SlackApiEnvelope & {
+      team_id?: string; user_id?: string; is_enterprise_install?: boolean;
+    }>("auth.test", {});
+    let saved = await this.#options.installation?.();
+    let orgInstall = saved?.isEnterpriseInstall ??
+        (auth.is_enterprise_install === true || !isWorkspaceId(auth.team_id));
+    if (!orgInstall) {
+      if (!isWorkspaceId(auth.team_id)) throw new Error("Slack returned no workspace identity.");
+      let info = await this.#readWorkspaceInfo({ team: auth.team_id });
+      return [{ id: info.teamId, name: info.name }];
+    }
+    if (!auth.user_id) throw new Error("Slack returned no user identity.");
+    let user = await this.#call<SlackApiEnvelope & { user?: RawUser }>(
+        "users.info", { user: auth.user_id });
+    let memberships = new Set(user.user?.enterprise_user?.teams ?? []);
+    let workspaces = new Map<string, SlackWorkspace>();
+    let cursor: string | undefined;
+    let seen = new Set<string>();
+    do {
+      let page = await this.#call<SlackApiEnvelope & { teams?: { id: string; name?: string }[] }>(
+          "auth.teams.list", { cursor, limit: 200 });
+      for (let team of page.teams ?? []) {
+        if (isWorkspaceId(team.id) && memberships.has(team.id)) {
+          workspaces.set(team.id, { id: team.id, name: team.name || team.id });
+        }
+      }
+      cursor = nextPageCursor(nextCursor(page), seen);
+    } while (cursor);
+    return [...workspaces.values()];
+  }
+
+  /** Workspace membership is checked with the caller's credentials, not an enterprise ID. */
+  async hasWorkspaceAccess(teamId: string): Promise<boolean> {
+    return isWorkspaceId(teamId) && (await this.listWorkspaces()).some(team => team.id === teamId);
+  }
+
+  /** Resolve a workspace permalink host without assuming the token has one workspace. */
+  async workspaceIdForDomain(domain: string): Promise<string> {
+    let info = await this.#readWorkspaceInfo({ domain });
+    if (!(await this.hasWorkspaceAccess(info.teamId))) {
+      throw new SlackApiError("team_access_not_granted", 200);
+    }
+    return info.teamId;
+  }
+
+  /** Resolves and verifies this session's workspace once; unselected org tokens fail closed. */
+  async workspaceTeamId(): Promise<string> {
+    return this.#workspace ??= (async () => {
+      let teamId = await this.#options.teamId?.();
+      if (!isWorkspaceId(teamId)) throw new Error("Select a Slack workspace for this connection.");
+      if (!(await this.hasWorkspaceAccess(teamId))) {
+        throw new SlackApiError("team_access_not_granted", 200);
+      }
+      return teamId;
+    })();
+  }
+
+  // Org auth.test describes the enterprise host, not necessarily the selected workspace.
   async #getWorkspaceHost(): Promise<string | undefined> {
     if (this.#host === undefined) {
       try {
-        let data = await this.#call<SlackApiEnvelope & { url?: string }>("auth.test", {});
-        this.#host = data.url ? new URL(data.url).host : "";
+        let info = await this.getWorkspaceInfo();
+        this.#host = info.domain ? `${info.domain}.slack.com` : "";
       } catch {
         this.#host = "";
       }
@@ -373,16 +478,17 @@ export class SlackApi {
     return data.user_id ?? "";
   }
 
-  /** The team the token belongs to, used by observer verification to confirm workspace membership. */
-  async authedTeamId(): Promise<string> {
-    let data = await this.#call<SlackApiEnvelope & { team_id?: string }>("auth.test", {});
-    return data.team_id ?? "";
+  async getWorkspaceInfo(): Promise<SlackWorkspaceInfo> {
+    return this.#readWorkspaceInfo({ team: await this.workspaceTeamId() });
   }
 
-  async getWorkspaceInfo(): Promise<SlackWorkspaceInfo> {
+  async #readWorkspaceInfo(params: { team?: string; domain?: string }): Promise<SlackWorkspaceInfo> {
     let data = await this.#call<SlackApiEnvelope & {
       team?: { id: string; name: string; domain: string };
-    }>("team.info", {});
+    }>("team.info", params);
+    if (!isWorkspaceId(data.team?.id) || (params.team && data.team.id !== params.team)) {
+      throw new Error("Slack returned an enterprise or a different workspace instead of the selected workspace.");
+    }
     return {
       teamId: data.team?.id ?? "",
       name: data.team?.name ?? "",
@@ -403,27 +509,50 @@ export class SlackApi {
     return user;
   }
 
-  /** `teamId` qualifies the account when the workspace host is unavailable; see uniqueName below. */
-  async getAccountDescription(userId: string, teamId: string): Promise<AccountDescription> {
-    let hostPromise = this.#getWorkspaceHost();
+  /** Direct profile lookup may not expand a workspace binding to the whole org directory. */
+  async getWorkspaceUser(userId: string): Promise<SlackUser> {
+    // users.info translates pre-Enterprise IDs to the user's canonical ID.
+    let canonical = await this.getUser(userId);
+    let cursor: string | undefined;
+    let seen = new Set<string>();
+    do {
+      let page = await this.listUsers(cursor, 200);
+      let user = page.items.find(item => item.id === canonical.id);
+      if (user) return user;
+      cursor = nextPageCursor(page.nextCursor, seen);
+    } while (cursor);
+    throw new SlackApiError("access_denied", 200);
+  }
+
+  /** Qualify workspace accounts by host and org accounts by enterprise ID, not a mutable handle. */
+  async getAccountDescription(userId: string, installation: SlackInstallation): Promise<AccountDescription> {
+    let auth = await this.#call<SlackApiEnvelope & {
+      url?: string; team_id?: string; enterprise_id?: string; is_enterprise_install?: boolean;
+    }>("auth.test", {});
     let data = await this.#call<SlackApiEnvelope & { user?: RawUser }>(
         "users.info", { user: userId });
     let profile = data.user?.profile;
     let handle = data.user?.name;
     // A Slack handle is unique only within a workspace, but the Workshop dedupes connected accounts
     // by uniqueName — so an unqualified handle would collapse two workspaces the same person
-    // connected into one account. Qualify it with the workspace, which is globally unique.
-    let workspace = (await hostPromise) || teamId;
+    // connected into one account. Org accounts instead use the global user and enterprise IDs.
+    let orgInstall = installation.isEnterpriseInstall ??
+        (auth.is_enterprise_install === true || !isWorkspaceId(auth.team_id));
+    // Workspace installs inside an Enterprise also have enterprise_id. Do not collapse them into
+    // an org account: their token authority is still workspace-specific.
+    let qualifier = orgInstall ? installation.enterpriseId || auth.enterprise_id : undefined;
+    qualifier ||= auth.url ? new URL(auth.url).host : installation.teamId;
+    let identity = orgInstall ? data.user?.id ?? userId : handle;
     return {
       displayName: profile?.real_name || profile?.display_name || handle,
-      uniqueName: handle && workspace ? `${handle}@${workspace}` : handle,
+      uniqueName: identity && qualifier ? `${identity}@${qualifier}` : handle,
       avatar: { url: profile?.image_192 || profile?.image_72 || profile?.image_48 || "" },
     };
   }
 
   async listUsers(cursor: string | undefined, limit: number): Promise<SlackPage<SlackUser>> {
     let data = await this.#call<SlackApiEnvelope & { members?: RawUser[] }>(
-        "users.list", { cursor, limit });
+        "users.list", { cursor, limit, team_id: await this.workspaceTeamId() });
     let items = (data.members ?? [])
         .filter(member => !member.deleted)
         .map(toUser);
@@ -439,7 +568,8 @@ export class SlackApi {
       : Promise<SlackPage<SlackConversationInfo>> {
     let data = await this.#call<SlackApiEnvelope & { channels?: RawConversation[] }>(
         "users.conversations",
-        { types: types.join(","), cursor, limit, exclude_archived: "false" });
+        { types: types.join(","), cursor, limit, exclude_archived: "false",
+          team_id: await this.workspaceTeamId() });
     let raws = data.channels ?? [];
     await this.#prefetchIds(raws.filter(raw => raw.is_im && raw.user).map(raw => raw.user!));
     let items = raws.map(raw => {
@@ -451,9 +581,13 @@ export class SlackApi {
   }
 
   async getConversationInfo(conversationId: string): Promise<SlackConversationInfo> {
+    let teamId = await this.workspaceTeamId();
     let data = await this.#call<SlackApiEnvelope & { channel?: RawConversation }>(
-        "conversations.info", { channel: conversationId });
-    if (!data.channel) throw new Error(`Slack conversation not found: ${conversationId}`);
+        "conversations.info", { channel: conversationId, client_context_team_id: teamId });
+    if (!data.channel || data.channel.id !== conversationId) {
+      throw new Error(`Slack conversation not found: ${conversationId}`);
+    }
+    await this.#assertConversationWorkspace(data.channel, teamId);
     let info = toConversationInfo(data.channel);
     if (data.channel.is_im && data.channel.user) {
       info.peer = await this.getUser(data.channel.user).catch(() => undefined);
@@ -461,11 +595,39 @@ export class SlackApi {
     return info;
   }
 
+  async #assertConversationWorkspace(channel: RawConversation, teamId: string): Promise<void> {
+    // Shared channels belong to several workspaces. Their host is not their access boundary.
+    if (channel.shared_team_ids?.length) {
+      if (channel.shared_team_ids.includes(teamId)) return;
+      throw new SlackApiError("access_denied", 200);
+    }
+    if (channel.team_id === teamId) return;
+    // DMs and older channel responses can omit workspace metadata. Prove membership through a
+    // workspace-scoped listing rather than treating an org token's visibility (or its requested
+    // context_team_id) as sufficient. This also handles shared channels hosted elsewhere.
+    let cursor: string | undefined;
+    let seen = new Set<string>();
+    do {
+      let page = await this.#call<SlackApiEnvelope & { channels?: RawConversation[] }>(
+          channel.is_im || channel.is_mpim ? "users.conversations" : "conversations.list",
+          { team_id: teamId, types: channel.is_im ? "im" : channel.is_mpim ? "mpim" :
+              "public_channel,private_channel", limit: 200, cursor, exclude_archived: "false" });
+      if (page.channels?.some(item => item.id === channel.id)) return;
+      cursor = nextPageCursor(nextCursor(page), seen);
+    } while (cursor);
+    throw new SlackApiError("access_denied", 200);
+  }
+
+  async #conversationParams(conversationId: string): Promise<{ channel: string; client_context_team_id: string }> {
+    await this.getConversationInfo(conversationId);
+    return { channel: conversationId, client_context_team_id: await this.workspaceTeamId() };
+  }
+
   async listConversationMembers(
       conversationId: string, cursor: string | undefined, limit: number)
       : Promise<SlackPage<string>> {
     let data = await this.#call<SlackApiEnvelope & { members?: string[] }>(
-        "conversations.members", { channel: conversationId, cursor, limit });
+        "conversations.members", { ...await this.#conversationParams(conversationId), cursor, limit });
     return { items: data.members ?? [], nextCursor: nextCursor(data) };
   }
 
@@ -473,7 +635,7 @@ export class SlackApi {
       conversationId: string, cursor: string | undefined, limit: number)
       : Promise<SlackPage<SlackMessage>> {
     let data = await this.#call<SlackApiEnvelope & { messages?: RawMessage[] }>(
-        "conversations.history", { channel: conversationId, cursor, limit });
+        "conversations.history", { ...await this.#conversationParams(conversationId), cursor, limit });
     let items = await this.#withPermalinks(conversationId, await this.#buildMessages(data.messages ?? []));
     return { items, nextCursor: nextCursor(data) };
   }
@@ -482,7 +644,7 @@ export class SlackApi {
       conversationId: string, threadTs: string, cursor: string | undefined, limit: number)
       : Promise<SlackPage<SlackMessage>> {
     let data = await this.#call<SlackApiEnvelope & { messages?: RawMessage[] }>(
-        "conversations.replies", { channel: conversationId, ts: threadTs, cursor, limit });
+        "conversations.replies", { ...await this.#conversationParams(conversationId), ts: threadTs, cursor, limit });
     let items = await this.#withPermalinks(conversationId, await this.#buildMessages(data.messages ?? []));
     return { items, nextCursor: nextCursor(data) };
   }
@@ -498,10 +660,14 @@ export class SlackApi {
     if (!Number.isFinite(page) || page < 1) page = 1;
     let data = await this.#call<SlackApiEnvelope & {
       messages?: { matches?: RawMessage[]; paging?: { pages?: number; page?: number } };
-    }>("search.messages", { query, count, page, sort: "timestamp" });
+    }>("search.messages", { query, count, page, sort: "timestamp", team_id: await this.workspaceTeamId() });
 
     let matches = (data.messages?.matches ?? [])
         .filter(match => !restrictChannelId || match.channel?.id === restrictChannelId);
+    for (let channelId of new Set(matches.map(match => match.channel?.id))) {
+      if (!channelId) throw new Error("Slack search returned a message without a conversation.");
+      await this.getConversationInfo(channelId);
+    }
     await this.#prefetchUsers(matches);
     let items: SlackSearchMatch[] = matches.map(match => ({
       message: this.#toMessage(match),
