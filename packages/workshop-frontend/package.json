@@ -6,7 +6,8 @@
     "dev": "vite",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "test:run": "vitest run"
+    "test:run": "vitest run",
+    "test:run:browser": "vitest run -c vitest.browser.config.ts"
   },
   "dependencies": {
     "@cloudflare/kumo": "^2.14.0",
@@ -51,7 +52,9 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^5.2.0",
+    "@vitest/browser-playwright": "catalog:",
     "jsdom": "^26.1.0",
+    "playwright": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vitest": "catalog:"

@@ -35,6 +35,10 @@ catalog:
   vite: 7.3.6
   vite-plus: ^1.0.0
   vitest: ^4.1.11
+  # Vitest's browser-mode provider, which must match vitest's version, and the Playwright it
+  # drives. Playwright's browsers are not dependencies: `playwright install chromium` fetches them.
+  '@vitest/browser-playwright': ^4.1.11
+  playwright: ^1.64.0
   wrangler: ^4.147.0
   zod: ^4.6.5
 
