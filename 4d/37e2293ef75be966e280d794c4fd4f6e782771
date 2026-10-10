@@ -1,5 +1,6 @@
 packages/gatekeeper-google/README.md
   s_010272bf0842e6::t_2a6e9cb940db61 413-432,441-442
+  s_010272bf0842e6::t_dc0365e66aa628 84
 packages/gatekeeper-google/__tests__/resources.test.ts
   s_010272bf0842e6::t_f50697be4309c1 53-59
 packages/gatekeeper-google/src/resources.ts
