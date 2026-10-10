@@ -1224,6 +1224,25 @@ it("delivers nothing once the account can no longer read the project", async () 
   expect(await triage.read()).toMatchObject({ received: [], observations: [] });
 });
 
+it("changes nothing while WEBHOOK_ORIGIN is unset: subscribe() refuses, and the webhook route is inert", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  // The worker's environment, which the test shares.
+  const shared = env as { WEBHOOK_ORIGIN?: string };
+  const origin = shared.WEBHOOK_ORIGIN;
+  delete shared.WEBHOOK_ORIGIN;
+  try {
+    await expect(binding(account).subscribe()).rejects.toThrow("GitLab hooks are not configured on this deployment.");
+    // Refused before reaching a driver: with the route on, a delivery missing its headers is a 400.
+    const url = `https://gadgets.test/gatekeeper/gitlab/webhook/${env.GITLAB_HOOK_DRIVER.idFromName(account)}`;
+    expect((await SELF.fetch(url, { method: "POST", body: "{}" })).status).toBe(404);
+    // Nothing was asked of GitLab.
+    expect(gitlab.gitlab.requests).toEqual([]);
+  } finally {
+    shared.WEBHOOK_ORIGIN = origin;
+  }
+});
+
 it("refuses to watch a project whose webhooks the account can't manage", async () => {
   const gitlab = new FakeGitLabHooks();
   gitlab.maintainer = false;
