@@ -1,0 +1,33 @@
+packages/workshop-frontend/src/Activity.test.tsx
+  s_74eb0b1cbb84f7::t_b4b90e7e59dc6f 5,22-24,146-153,155-160,162-164,169,172,175-236
+packages/workshop-frontend/src/Activity.tsx
+  s_74eb0b1cbb84f7::t_9905801ad9c11d 808,810
+packages/workshop-frontend/src/ChatInterface.actions.test.tsx
+  s_74eb0b1cbb84f7::t_1dcf0e97f5bdfb 49-51,405-411,418-419,422-424,426-429,431-494
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_74eb0b1cbb84f7::t_0a5375f2cf5bcd 4984,4986
+packages/workshop-frontend/src/Connections.test.tsx
+  s_74eb0b1cbb84f7::t_7eae7deec3ed9a 21,28-29,37,40-54,56,63-119,121-124,126-128
+packages/workshop-frontend/src/Connections.tsx
+  s_74eb0b1cbb84f7::t_acc862f8b3e9a1 432,434
+packages/workshop-frontend/src/action-test-harness.ts
+  s_74eb0b1cbb84f7::t_05a8273cf0b409 128-156
+packages/workshop-frontend/src/components/HookToggle.tsx
+  s_74eb0b1cbb84f7::t_060a989cf60ded 5-6,8-9,15,21-22,25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "62bbcba092ea297a43bbf50704eac7670289af94",
+  "prompts": {},
+  "sessions": {
+    "s_74eb0b1cbb84f7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_edf458c69ffepVeVZFxEZXzOIj",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
