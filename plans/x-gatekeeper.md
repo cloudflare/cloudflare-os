@@ -1089,5 +1089,33 @@ departed from the design above:
   such a link; `getGatekeeperClassFor` and the profile configurator both refuse it, so it fails
   closed. `configurator-url.test.ts` pins that.
 
-Still to do: live checkpoints 0 and 1 (an X app with credits), and PR B, which needs the kit's
-`hook-delivery-queue` -- at the time of writing only on the unmerged hooks branches, not `main`.
+### PR B as built
+
+PR B is implemented on `dancarter/x-gatekeeper-hooks`, stacked on `dancarter/github-hooks` for the
+kit's `HookDeliveryQueue` and the hook contract, which are not on `main` yet (17 workerd hook tests).
+It follows `gatekeeper-github`'s hooks rather than §9 where the two differ:
+
+- **Three Durable Objects, not two.** A per-account `XHookDriver` holds the account's enabled hooks
+  and the delivery queue, as GitHub's driver does, so disconnecting the account cancels everything
+  of its in one call. The `XActivityRouter` per X user holds only the subscriptions and which
+  accounts watch each, and fans events out to their drivers. `XWebhookRegistry` is as planned.
+- **Hooks are bound GitHub's way.** `subscribe*()` mints a `ctx.restore()` delivery stub into an
+  `XHookController` loopback entrypoint, nothing is stored until the user enables the hook, each
+  delivery takes a fresh firing from `startHook()`, and the facet re-checks every event against the
+  binding (the binding's scope beats the stub's parameters) before authorizing it through the
+  binding's observer gate and calling `receivePost`.
+- **The event is `XPostEvent { id, reason, info, post? }`**, delivered to `XPostHook.receivePost`,
+  with an `XPost` capability for account and Post bindings (confined to the conversation for a Post
+  binding) and none for a Profile binding. A post X delivers without its author is completed with one
+  cached user read.
+- **Unverified X behaviour, handled defensively:** the duplicate-subscription refusal (any 409, or
+  "duplicate" in its type, title or message, adopts the existing subscription through
+  `GET /2/activity/subscriptions`); the shapes of `GET`/`POST /2/webhooks`; and whether a delivery
+  batches events (`data` may be an object or an array).
+- **Not done:** recovering missed deliveries through `POST /2/webhooks/replay`; re-checking
+  subscriptions at X (the registry checks the webhook hourly, but a subscription X drops without an
+  `oauth.revoke` stays recorded until a hook is enabled again); and counting delivered events
+  against the daily read limit (they are billed regardless, so the README says so).
+
+Still to do: live checkpoints 0 and 1 (an X app with credits), and live checkpoint 2 for PR B, which
+waits on the app's bearer token.

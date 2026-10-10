@@ -66,6 +66,39 @@ Register `http://localhost:8787/gatekeeper/x/oauth` as a callback. If the consol
 `localhost`, register `http://127.0.0.1:8787/gatekeeper/x/oauth` instead and start the dev server
 with `VITE_BACKEND_HOST=127.0.0.1:8787`, so the callback the gatekeeper sends matches.
 
+## Push notifications
+
+Gadgets can hear of posts as they happen: `XAccountSession.subscribeMentions()` and
+`subscribeReplies()`, `XPost.subscribeReplies()` for one of the account's own posts, and
+`XProfile.subscribePosts()` / `XUser.subscribePosts()` for a user's new posts. X delivers them
+through the X Activity API to one webhook per deployment, `{WEBHOOK_ORIGIN}/gatekeeper/x/webhook`.
+
+They are off until the deployment sets both of these on the worker, outside the deploy wizard:
+
+- `WEBHOOK_ORIGIN`: the deployment's public https origin, with no port (X refuses ports). Behind
+  Cloudflare Access, add a bypass for `/gatekeeper/x/webhook`, which X calls directly; every
+  delivery is verified against the app's client secret.
+- `X_APP_BEARER_TOKEN` (a secret): the X app's app-only bearer token, from the Developer Console's
+  "Keys and tokens". X's webhook endpoints take only that token, and it subscribes to watched users'
+  public posts.
+
+Until both are set, `subscribe*()` refuses with "Push notifications aren't set up on this
+deployment." In development, `pnpm dev-server` passes both through from the shell or the root
+`.dev.vars`; point `WEBHOOK_ORIGIN` at a tunnel to the dev server.
+
+Costs and limits to know:
+
+- **X bills every delivered post as a post read**, whether or not a gadget acts on it, and the
+  connection's daily read limit cannot stop it. Disabling a hook, or disconnecting the account, ends
+  the subscription once no other hook needs it.
+- Subscriptions are per X user and event type, so a connection costs at most two (mentions and
+  replies), plus one per watched user, however many hooks share them. X's self-serve tier allows
+  1,500 per app.
+- X never delivers protected accounts' posts, and reports only *direct* replies to the account's
+  own posts.
+- A delivery X makes while this deployment is unreachable is lost: the gatekeeper does not yet ask
+  X to replay what it missed (`POST /2/webhooks/replay`).
+
 ## Obligations that come with an X app
 
 X's developer agreement puts these on the app's owner, not on Gadgets:
@@ -120,6 +153,11 @@ gatekeeper never retries on its own.
 An approval sent the post, and X's answer was lost. Approve it again: the gatekeeper first checks the
 account's recent posts and records the post if it landed, so it is never posted twice. Revert it
 afterwards if it shouldn't stay.
+
+### "Push notifications aren't set up on this deployment."
+
+The worker lacks `WEBHOOK_ORIGIN` or `X_APP_BEARER_TOKEN`; see [Push notifications](#push-notifications).
+A `WEBHOOK_ORIGIN` that isn't a bare https origin without a port is refused when a hook subscribes.
 
 ### The callback URI does not match
 
