@@ -447,20 +447,21 @@ async function publishOne(host: XActionHost, draft: StoredDraft, replyTo: string
     host.attempts.delete(attemptKey);
     return id;
   } catch (error) {
-    if (isOutcomeUnknown(error) || (error instanceof XApiError && error.isDuplicate)) {
-      const landed = await findPublished(host, draft, replyTo, attempt);
-      if (landed) {
-        host.attempts.delete(attemptKey);
-        return landed;
-      }
-      if (error instanceof XApiError && error.isDuplicate) {
-        host.attempts.delete(attemptKey);
-        throw new ActionApplyError("X refused this post as a duplicate of one posted recently.");
-      }
+    const duplicate = error instanceof XApiError && error.isDuplicate;
+    // A lost answer may hide the post this send made. A duplicate refusal says it made none, but
+    // an earlier send X never confirmed may have made the post X compared it with.
+    const unconfirmed = isOutcomeUnknown(error) ? attempt : duplicate ? prior : undefined;
+    const landed = unconfirmed && await findPublished(host, draft, replyTo, unconfirmed);
+    if (landed) {
+      host.attempts.delete(attemptKey);
+      return landed;
+    }
+    if (isOutcomeUnknown(error)) {
       throw new Error("X did not confirm whether this post was published. Approving it again first " +
         "checks the account's recent posts, so it is not posted twice.", { cause: error });
     }
     host.attempts.delete(attemptKey);
+    if (duplicate) throw new ActionApplyError("X refused this post as a duplicate of one posted recently.");
     refuse(error, "publish this post");
   }
 }
