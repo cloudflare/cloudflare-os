@@ -9,6 +9,7 @@ import { DriveApi } from "../../src/drive-api";
 import { GoogleDriveSessionImpl } from "../../src/google";
 import type { DriveSessionSearchQuery } from "../../src/drive-types";
 import { GoogleSheetsApi } from "../../src/sheets-api";
+import type { GoogleSpreadsheetSession } from "../../src/sheets-types";
 import { GoogleSlidesApi } from "../../src/slides-api";
 import type { GooglePresentationSession } from "../../src/slides-types";
 import { buildTab } from "../doc-fixture";
@@ -540,6 +541,12 @@ describe("folder-scoped native sessions", () => {
     expect((await sheet.readRange("A1:A1")).values).toEqual([["x"]]);
     expect((await sheet.readRanges(["A1:A1", "B1:B1"])).map(r => r.range))
       .toEqual(["A1:A1", "B1:B1"]);
+
+    // The capability itself has no write method, whatever a caller sends it.
+    const writable = sheet as unknown as GoogleSpreadsheetSession;
+    await expect(Promise.resolve(writable.updateSheet([
+      { op: "writeCells", range: "Sheet1!A1", values: [["changed"]] },
+    ]))).rejects.toThrow('The RPC receiver does not implement the method "updateSheet".');
   });
 
   // The capability was minted while the file was inside; the move is what revokes it, and it has to
