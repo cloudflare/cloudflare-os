@@ -40,6 +40,21 @@ describe("extraction", () => {
     expect(extractUrls("no links here")).toEqual([]);
   });
 
+  it("finds no domain DNS couldn't hold", () => {
+    expect(extractUrls(`${"a".repeat(63)}.com`)).toEqual([`${"a".repeat(63)}.com`]);
+    expect(extractUrls(`${"a".repeat(64)}.com`)).toEqual([]);
+  });
+
+  it("weighs long drafts in time linear in their length", () => {
+    // Each took seconds when a failed match could backtrack across the whole run.
+    for (const text of ["a.".repeat(50_000), "a-".repeat(50_000), `https://x.co/${".".repeat(100_000)}a`]) {
+      const started = performance.now();
+      weightedLength(text);
+      comparableText(text);
+      expect(performance.now() - started).toBeLessThan(1000);
+    }
+  });
+
   it("finds mentions, once each, ignoring email addresses", () => {
     expect(extractMentions("@jack hi @Jack, mail me at a@b.com or ask @bob_1")).toEqual(["jack", "bob_1"]);
     expect(extractMentions("@@double @this_handle_is_too_long")).toEqual([]);
