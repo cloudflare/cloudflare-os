@@ -1112,7 +1112,7 @@ departed from the design above:
 ### PR B as built
 
 PR B is implemented on `dancarter/x-gatekeeper-hooks`, stacked on `dancarter/github-hooks` for the
-kit's `HookDeliveryQueue` and the hook contract, which are not on `main` yet (28 workerd hook tests).
+kit's `HookDeliveryQueue` and the hook contract, which are not on `main` yet (30 workerd hook tests).
 It follows `gatekeeper-github`'s hooks rather than §9 where the two differ:
 
 - **Three Durable Objects, not two.** A per-account `XHookDriver` holds the account's enabled hooks

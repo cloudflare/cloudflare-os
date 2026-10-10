@@ -196,19 +196,29 @@ describe("subscribing", () => {
     await hook.subscribe([["subscribePosts"]]);
     x.loseAnswer("POST", /^\/2\/activity\/subscriptions$/, request => JSON.parse(request.body!).event_type === "post.create");
     // X lists it only on a later look, so enabling fails, and the hook is never enabled again.
-    let listing = false;
-    x.on("GET", /^\/2\/activity\/subscriptions/, () => listing ? undefined : json({ data: [] }));
+    let listing: "empty" | "errors" | "complete" = "empty";
+    x.on("GET", /^\/2\/activity\/subscriptions/, () => listing === "empty" ? json({ data: [] })
+      : listing === "errors" ? json({ errors: [{ title: "Internal Error", type: "about:blank" }] }) : undefined);
     failure(await hook.tryEnable());
     expect(subscriptionsOf(x)).toContainEqual(["post.create", BOB.id, "app"]);
-    listing = true;
-    expect(await runDurableObjectAlarm(env.X_ACTIVITY_ROUTER.getByName(BOB.id))).toBe(true);
+    // A listing that reports only errors proves nothing, so the alarm looks again later.
+    const router = env.X_ACTIVITY_ROUTER.getByName(BOB.id);
+    listing = "errors";
+    expect(await runDurableObjectAlarm(router)).toBe(true);
+    expect(subscriptionsOf(x)).toContainEqual(["post.create", BOB.id, "app"]);
+    listing = "complete";
+    expect(await runDurableObjectAlarm(router)).toBe(true);
     expect(subscriptionsOf(x).map(([type]) => type)).toEqual(["oauth.revoke"]);
   });
 
-  it("keeps a subscription X failed to delete, and deletes it again from the alarm", async () => {
+  it.each([
+    ["fails", () => json({ title: "Service Unavailable" }, { status: 503 })],
+    ["answers without deleting", () => json({ data: { deleted: false } })],
+    ["answers with only errors", () => json({ errors: [{ title: "Internal Error", type: "about:blank" }] })],
+  ])("keeps a subscription whose delete X %s, and deletes it again from the alarm", async (_label, answer) => {
     const { x, hook } = await watchingMentions();
     let outage = true;
-    x.on("DELETE", /^\/2\/activity\/subscriptions\//, () => outage ? json({ title: "Service Unavailable" }, { status: 503 }) : undefined);
+    x.on("DELETE", /^\/2\/activity\/subscriptions\//, () => outage ? answer() : undefined);
     await hook.disable();
     const mentions = () => subscriptionsOf(x).filter(([type]) => type === "post.mention.create");
     expect(mentions()).toHaveLength(1);

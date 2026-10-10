@@ -466,7 +466,10 @@ export class XActivityRouter extends DurableObject<Env> {
   /** Deletes a subscription at X, then forgets it; one X no longer has counts as deleted. */
   async #delete(eventType: string, subscription: Subscription): Promise<void> {
     try {
-      await appApi(this.env).delete(`/2/activity/subscriptions/${subscription.id}`);
+      const answer = await appApi(this.env).delete<{ deleted?: boolean }>(`/2/activity/subscriptions/${subscription.id}`);
+      // A 200 can still report errors instead: only X's word that it deleted it, or has none, will do.
+      const gone = answer.data?.deleted === true || (answer.errors ?? []).some(problem => /not-found/.test(problem.type ?? ""));
+      if (!gone) throw new XApiError(502, "X didn't confirm deleting the subscription.");
     } catch (error) {
       if (!(error instanceof XApiError && error.status === 404)) throw error;
     }
@@ -499,6 +502,8 @@ async function findSubscription(env: Env, eventType: string, userId: string): Pr
   // Narrowed to the user: X lists at most 1,000 subscriptions a page, and an app may hold 1,500.
   const listed = await appApi(env).get<{ subscription_id?: string; event_type?: string; filter?: { user_id?: string } }[]>(
     "/2/activity/subscriptions", { user_id: userId });
+  // A 200 can report errors in place of the listing, which then proves nothing either way.
+  if (listed.errors?.length) throw new XApiError(502, "X answered without listing the app's subscriptions.");
   return (listed.data ?? []).find(subscription =>
     subscription.event_type === eventType && subscription.filter?.user_id === userId)?.subscription_id;
 }
