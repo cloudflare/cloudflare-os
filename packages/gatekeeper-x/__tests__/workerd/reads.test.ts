@@ -262,6 +262,20 @@ describe("pending actions in reads", () => {
     expect(bob.relationship).toEqual({ following: true, followedBy: false });
   });
 
+  it("authorizes the profiles of a pending List's members, which were read from X", async () => {
+    const { props, name } = await setup();
+    unwrap(await hooks().run(name, props, [["createList", "Friends"]]));
+    unwrap(await hooks().run(name, props, [["getList", "~1"], ["addMember", "bob"]]));
+    await hooks().refuseObservations(name, true);
+    expect(failure(await hooks().run(name, props, [["getList", "~1"], ["listMembers"]], { pages: 1 })))
+      .toMatch(/refused this observation/);
+    await hooks().refuseObservations(name, false);
+    const [members] = unwrap(await hooks().run(name, props, [["getList", "~1"], ["listMembers"]], { pages: 1 })) as XUserInfo[][];
+    expect(members.map(member => member.username)).toEqual(["bob"]);
+    expect((await hooks().queueLog(name)).observations.at(-1))
+      .toEqual({ title: "Read an X List's members", description: 'Read 1 member of the List "Friends".' });
+  });
+
   it("refuses a post X would refuse before it is queued", async () => {
     const { props, name } = await setup();
     expect(failure(await hooks().run(name, props, [["createPost", { text: "a".repeat(281) }]])))
