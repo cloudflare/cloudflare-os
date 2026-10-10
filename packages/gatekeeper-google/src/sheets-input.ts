@@ -3,9 +3,11 @@
  * spreadsheet.
  */
 
+import { BORDER_STYLES, isSheetColor, NUMBER_FORMAT_TYPES, THEME_COLORS } from "./sheets-format";
 import { REFUSED_FUNCTIONS, refusedFunction } from "./sheets-formula";
 import { cellCount, cellName, columnNumber, isFormula, parseRange, type Rect } from "./sheets-model";
-import type { SheetCellInput, SheetChange, SheetTarget } from "./sheets-types";
+import type { SheetBorder, SheetColor } from "./sheets-read-types";
+import type { SheetCellInput, SheetChange, SheetFormatChange, SheetTarget } from "./sheets-types";
 
 /** The most changes one batch may make. */
 export const MAX_CHANGES = 50;
@@ -25,6 +27,10 @@ export const MAX_INSERTED_LINES = 1_000;
 export const MAX_COLUMNS = 18_278;
 /** Google's limit on the cells of a spreadsheet, and so on a sheet's rows. */
 export const MAX_SPREADSHEET_CELLS = 10_000_000;
+/** The largest font size a change may set, in points. */
+export const MAX_FONT_SIZE = 400;
+/** The longest number format pattern a change may set. */
+export const MAX_PATTERN_LENGTH = 200;
 
 /** The changes that insert or delete rows or columns. */
 export type LineOp = "insertRows" | "deleteRows" | "insertColumns" | "deleteColumns";
@@ -37,6 +43,7 @@ export type LineOp = "insertRows" | "deleteRows" | "insertColumns" | "deleteColu
 export type PreparedChange =
   | { op: "writeCells"; sheet: string; rect: Rect; values: SheetCellInput[][] }
   | { op: "clearRange"; sheet: string; rect: Rect }
+  | { op: "formatCells"; sheet: string; rect: Rect; format: SheetFormatChange }
   | { op: "addSheet"; title: string; ref?: string; index?: number; rowCount?: number; columnCount?: number }
   | { op: "renameSheet"; sheetId: SheetTarget; title: string }
   | { op: "duplicateSheet"; sheetId: SheetTarget; title?: string; ref?: string; index?: number }
@@ -54,6 +61,7 @@ function refuse(message: string): never {
 const FIELDS: Record<SheetChange["op"], readonly string[]> = {
   writeCells: ["range", "values"],
   clearRange: ["range"],
+  formatCells: ["range", "format"],
   addSheet: ["title", "ref", "index", "rowCount", "columnCount"],
   renameSheet: ["sheetId", "title"],
   duplicateSheet: ["sheetId", "title", "ref", "index"],
@@ -120,6 +128,115 @@ function checkValues(values: SheetCellInput[][], rect: Rect, range: string): She
     checkValue(value, cellName(rect.startRow + r, rect.startColumn + c));
     return value;
   }));
+}
+
+// "A, B or C".
+function listed(names: readonly string[]): string {
+  return `${names.slice(0, -1).join(", ")} or ${names.at(-1)}`;
+}
+
+function isOneOf<T>(value: unknown, allowed: readonly T[]): value is T {
+  return (allowed as readonly unknown[]).includes(value);
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// The fields of `given` named in `keys`, leaving out those it does not give.
+function declaredFields(given: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> {
+  return Object.fromEntries(keys.flatMap(key => given[key] === undefined ? [] : [[key, given[key]]]));
+}
+
+const COLORS = `#rrggbb or one of ${listed(THEME_COLORS)}`;
+const BORDER_SIDES = ["top", "bottom", "left", "right", "innerHorizontal", "innerVertical"] as const;
+const FORMAT_FIELDS = [
+  "bold", "italic", "underline", "strikethrough", "fontSize", "textColor", "fillColor", "numberFormat",
+  "horizontalAlignment", "verticalAlignment", "wrap", "borders",
+] as const;
+const CHOICES = {
+  horizontalAlignment: ["LEFT", "CENTER", "RIGHT"],
+  verticalAlignment: ["TOP", "MIDDLE", "BOTTOM"],
+  wrap: ["OVERFLOW", "WRAP", "CLIP"],
+} as const;
+// Characters that are not text: C0 and C1 controls.
+const CONTROL = /\p{Cc}/u;
+
+// A colour as reads return it: `#rrggbb` in lower case.
+function checkColor(name: string, color: unknown): SheetColor {
+  if (!isSheetColor(color)) refuse(`${name} must be a colour, ${COLORS}`);
+  return color.startsWith("#") ? color.toLowerCase() : color;
+}
+
+function checkBorder(name: string, border: unknown): SheetBorder {
+  if (!isObject(border)) refuse(`${name} must be a border with a style, or null`);
+  let { style, color } = declaredFields(border, ["style", "color"]);
+  if (!isOneOf(style, BORDER_STYLES)) refuse(`${name}.style must be ${listed(BORDER_STYLES)}`);
+  let shown = color === undefined ? undefined : checkColor(`${name}.color`, color);
+  // A border is black unless it names a colour, as reads show it.
+  return { style, ...(shown === undefined || shown === "#000000" ? {} : { color: shown }) };
+}
+
+function checkBorders(borders: unknown): NonNullable<SheetFormatChange["borders"]> {
+  if (!isObject(borders)) refuse("borders must be an object of the borders to draw or remove");
+  let given = Object.entries(declaredFields(borders, BORDER_SIDES));
+  if (given.length === 0) refuse(`borders must draw or remove at least one of ${listed(BORDER_SIDES)}`);
+  return Object.fromEntries(given.map(([side, border]) =>
+    [side, border === null ? null : checkBorder(`borders.${side}`, border)]));
+}
+
+function checkNumberFormat(numberFormat: unknown): NonNullable<SheetFormatChange["numberFormat"]> {
+  if (!isObject(numberFormat)) refuse("numberFormat must be an object with a type, or null");
+  let { type, pattern } = declaredFields(numberFormat, ["type", "pattern"]);
+  if (!isOneOf(type, NUMBER_FORMAT_TYPES)) refuse(`numberFormat.type must be ${listed(NUMBER_FORMAT_TYPES)}`);
+  if (pattern !== undefined) {
+    if (typeof pattern !== "string" || pattern.length === 0 || pattern.length > MAX_PATTERN_LENGTH) {
+      refuse(`numberFormat.pattern must be a string of 1 to ${MAX_PATTERN_LENGTH} characters; leave it ` +
+        "out for the type's default");
+    }
+    if (CONTROL.test(pattern)) refuse("numberFormat.pattern must not hold control characters");
+  }
+  return { type, ...(pattern === undefined ? {} : { pattern }) };
+}
+
+// One field of a format: what it sets, which `null` resets.
+function checkFormatField(field: (typeof FORMAT_FIELDS)[number], value: unknown): unknown {
+  if (value === null) {
+    // A border is removed through `borders`, side by side.
+    if (field === "borders") refuse("borders must be an object of the borders to draw or remove");
+    return null;
+  }
+  switch (field) {
+    case "bold":
+    case "italic":
+    case "underline":
+    case "strikethrough":
+      if (typeof value !== "boolean") refuse(`${field} must be true, false or null`);
+      return value;
+    case "fontSize":
+      if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > MAX_FONT_SIZE) {
+        refuse(`fontSize must be an integer from 1 to ${MAX_FONT_SIZE}, or null`);
+      }
+      return value;
+    case "textColor":
+    case "fillColor":
+      return checkColor(field, value);
+    case "numberFormat":
+      return checkNumberFormat(value);
+    case "borders":
+      return checkBorders(value);
+    default:
+      if (!isOneOf(value, CHOICES[field])) refuse(`${field} must be ${listed([...CHOICES[field], "null"])}`);
+      return value;
+  }
+}
+
+function checkFormat(format: unknown): SheetFormatChange {
+  if (!isObject(format)) refuse("format must be an object of the fields to set or reset");
+  let given = Object.entries(declaredFields(format, FORMAT_FIELDS));
+  if (given.length === 0) refuse(`format must set or reset at least one of ${listed(FORMAT_FIELDS)}`);
+  return Object.fromEntries(given.map(([field, value]) =>
+    [field, checkFormatField(field as (typeof FORMAT_FIELDS)[number], value)]));
 }
 
 function checkTitle(title: unknown): string {
@@ -192,7 +309,8 @@ function checkLines(
 function checkChange(change: SheetChange, refs: Refs, number: number): PreparedChange {
   switch (change.op) {
     case "writeCells":
-    case "clearRange": {
+    case "clearRange":
+    case "formatCells": {
       let { sheet, rect } = rangeOf(change.range);
       let cells = cellCount(rect);
       if (cells > MAX_CHANGE_CELLS) {
@@ -200,6 +318,7 @@ function checkChange(change: SheetChange, refs: Refs, number: number): PreparedC
           `most ${MAX_CHANGE_CELLS.toLocaleString("en-US")}`);
       }
       if (change.op === "clearRange") return { op: change.op, sheet, rect };
+      if (change.op === "formatCells") return { op: change.op, sheet, rect, format: checkFormat(change.format) };
       return { op: change.op, sheet, rect, values: checkValues(change.values, rect, change.range) };
     }
     case "addSheet": {
@@ -249,11 +368,21 @@ function inChange<T>(label: string, body: () => T): T {
   }
 }
 
-/** Whether a change enters values in cells, rather than changing rows, columns or sheets. */
+/** Whether a change enters values in cells, writing or clearing them. */
 export function isCellChange<C extends { op: string }>(
   change: C,
 ): change is Extract<C, { op: "writeCells" | "clearRange" }> {
   return change.op === "writeCells" || change.op === "clearRange";
+}
+
+/**
+ * Whether a change acts on a range of cells, their values or their formatting, rather than on
+ * rows, columns or sheets.
+ */
+export function isRangeChange<C extends { op: string }>(
+  change: C,
+): change is Extract<C, { op: "writeCells" | "clearRange" | "formatCells" }> {
+  return isCellChange(change) || change.op === "formatCells";
 }
 
 /** Checks `changes` as far as they can be without the spreadsheet. Throws `Error`. */
@@ -264,7 +393,7 @@ export function prepareChanges(changes: SheetChange[]): PreparedChange[] {
   let refs: Refs = new Map();
   let prepared = changes.map((given, i) => inChange(`Change ${i + 1} (${given.op})`, () =>
     checkChange(declared(given), refs, i + 1)));
-  let cells = prepared.reduce((total, change) => total + (isCellChange(change) ? cellCount(change.rect) : 0), 0);
+  let cells = prepared.reduce((total, change) => total + (isRangeChange(change) ? cellCount(change.rect) : 0), 0);
   if (cells > MAX_BATCH_CELLS) {
     throw new Error(`These changes address ${cells.toLocaleString("en-US")} cells; one batch may ` +
       `address at most ${MAX_BATCH_CELLS.toLocaleString("en-US")}.`);

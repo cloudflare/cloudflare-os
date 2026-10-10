@@ -1,14 +1,20 @@
 import type {
-  SpreadsheetCellValue, SpreadsheetInfo, SpreadsheetRange, SpreadsheetSheetInfo,
+  SpreadsheetCellValue, SpreadsheetFormats, SpreadsheetInfo, SpreadsheetRange, SpreadsheetSheetInfo,
   SpreadsheetValueMode,
 } from "./sheets-read-types";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import { readGoogleJson } from "./google-response";
-import { parseRange, validateRange, type Rect, type ValidatedRange } from "./sheets-model";
+import {
+  baseFormats, FORMAT_READ_FIELDS, type BaseFormats, type RestFormatSheet,
+} from "./sheets-format";
+import {
+  a1Of, cellCount, findSheet, parseRange, validateRange, type Rect, type ValidatedRange,
+} from "./sheets-model";
 
 const API_BASE = "https://sheets.googleapis.com/v4/spreadsheets";
 const MAX_RANGES = 20;
 const MAX_TOTAL_CELLS = 50_000;
+const MAX_FORMAT_CELLS = 10_000;
 // Bound the encoded JSON before decoding and parsing.
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
@@ -101,6 +107,18 @@ export function validateRanges(ranges: string[]): ValidatedRange[] {
     throw new Error(`A read may request at most ${MAX_TOTAL_CELLS.toLocaleString()} cells.`);
   }
   return validated;
+}
+
+/**
+ * Checks the range a format read asks for: a bounded A1 range of at most 10,000 cells. Throws
+ * `Error`.
+ */
+export function parseFormatRange(range: string): { sheet?: string; rect: Rect } {
+  let parsed = parseRange(range);
+  if (cellCount(parsed.rect) > MAX_FORMAT_CELLS) {
+    throw new Error(`readFormats may request at most ${MAX_FORMAT_CELLS.toLocaleString("en-US")} cells.`);
+  }
+  return parsed;
 }
 
 function valueRenderOption(mode: SpreadsheetValueMode | undefined): string {
@@ -315,6 +333,91 @@ export class GoogleSheetsApi {
     });
   }
 
+  /**
+   * The formatting of a bounded A1 range of at most 10,000 cells, padded to its size. It is read
+   * with `spreadsheets.get`, which a read-only grant allows.
+   */
+  async readFormats(spreadsheetId: string, range: string): Promise<SpreadsheetFormats> {
+    let { sheet: name, rect } = parseFormatRange(range);
+    let url = new URL(`${API_BASE}/${encodeURIComponent(spreadsheetId)}`);
+    url.searchParams.append("ranges", range);
+    url.searchParams.set("fields", FORMAT_READ_FIELDS);
+    // Each colour comes back in two forms, so a pretty-printed answer reaches the size cap early.
+    url.searchParams.set("prettyPrint", "false");
+    let result = await this.#request<{ sheets?: RestFormatSheet[] }>(url, "read formats");
+    let sheets = (result.sheets ?? []).map(sheet => ({
+      sheet,
+      title: sheet.properties?.title ?? "",
+      index: sheet.properties?.index ?? 0,
+      hidden: sheet.properties?.hidden,
+    }));
+    // Google returns the sheet the range is on, which is the first visible one when it names none.
+    let found = findSheet(sheets, name)?.sheet;
+    if (!found?.properties?.title) {
+      throw new Error("Google Sheets did not return the range it was asked for.");
+    }
+    let formats = baseFormats([found]);
+    let sheetId = found.properties.sheetId ?? 0;
+    let grid = found.properties.gridProperties;
+    let clipped = {
+      ...rect,
+      endRow: Math.min(rect.endRow, grid?.rowCount ?? rect.endRow),
+      endColumn: Math.min(rect.endColumn, grid?.columnCount ?? rect.endColumn),
+    };
+    return {
+      range: a1Of(found.properties.title, clipped),
+      formats: Array.from({ length: rect.endRow - rect.startRow }, (_row, r) =>
+        Array.from({ length: rect.endColumn - rect.startColumn }, (_column, c) =>
+          formats(sheetId, rect.startRow + r, rect.startColumn + c))),
+    };
+  }
+
+  /**
+   * The formatting of the cells of `areas`, each of which must lie within its sheet's grid. They
+   * are read by grid range with `spreadsheets:getByDataFilter`, which needs a grant that may edit
+   * the spreadsheet. Only the response size bounds the read, so callers bound how many cells they
+   * ask for.
+   */
+  async readFormatAreas(spreadsheetId: string, areas: readonly SheetArea[]): Promise<BaseFormats> {
+    if (areas.length === 0) return () => null;
+    let url = new URL(`${API_BASE}/${encodeURIComponent(spreadsheetId)}:getByDataFilter`);
+    url.searchParams.set("fields", FORMAT_READ_FIELDS);
+    // Each colour comes back in two forms, so a pretty-printed answer reaches the size cap early.
+    url.searchParams.set("prettyPrint", "false");
+    let response = await fetchWithAuthRetry(
+      url.toString(),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dataFilters: areas.map(({ sheetId, rect }) => ({
+            gridRange: {
+              sheetId,
+              startRowIndex: rect.startRow,
+              endRowIndex: rect.endRow,
+              startColumnIndex: rect.startColumn,
+              endColumnIndex: rect.endColumn,
+            },
+          })),
+          includeGridData: true,
+        }),
+      },
+      // A read, however it is sent.
+      this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS, idempotent: true },
+    );
+    let result = await readGoogleJson<{ sheets?: RestFormatSheet[] }>(response, {
+      provider: "Google Sheets", operation: "read formats", maxBytes: MAX_RESPONSE_BYTES,
+    });
+    let sheets = result.sheets ?? [];
+    // Each range's cells are placed by the position Google gives them, whichever order they come
+    // in, so a range is answered when its sheet holds data starting where it does.
+    let answered = areas.every(({ sheetId, rect }) => sheets.some(sheet =>
+      (sheet.properties?.sheetId ?? 0) === sheetId && (sheet.data ?? []).some(data =>
+        (data.startRow ?? 0) === rect.startRow && (data.startColumn ?? 0) === rect.startColumn)));
+    if (!answered) throw new Error("Google Sheets did not return every range it was asked for.");
+    return baseFormats(sheets);
+  }
+
   /** A developer metadata entry's value, or undefined if the spreadsheet has none with that ID. */
   async getDeveloperMetadata(
     spreadsheetId: string, metadataId: number,
@@ -363,7 +466,7 @@ export class GoogleSheetsApi {
 }
 
 /** The reads a spreadsheet session makes with no change queued. */
-export type SpreadsheetReader = Pick<GoogleSheetsApi, "getSpreadsheet" | "readRanges">;
+export type SpreadsheetReader = Pick<GoogleSheetsApi, "getSpreadsheet" | "readRanges" | "readFormats">;
 
 /**
  * A spreadsheet not yet created, read as the one createSpreadsheet() makes: one empty sheet. Makes
@@ -397,5 +500,23 @@ export class BlankSpreadsheet implements SpreadsheetReader {
       }
       return normalizeRange({}, range);
     });
+  }
+
+  /** No cell has formatting. */
+  async readFormats(_spreadsheetId: string, range: string): Promise<SpreadsheetFormats> {
+    let { title, rowCount, columnCount } = BLANK_SHEET;
+    let { sheet, rect } = parseFormatRange(range);
+    if (sheet !== undefined && sheet.toLowerCase() !== title.toLowerCase()) {
+      throw new Error(`No sheet named "${sheet}": a spreadsheet awaiting creation has only "${title}".`);
+    }
+    if (rect.endRow > rowCount || rect.endColumn > columnCount) {
+      throw new Error(`A1 range "${range}" exceeds the ${rowCount} rows and ${columnCount} columns ` +
+        `of "${title}".`);
+    }
+    return {
+      range: a1Of(title, rect),
+      formats: Array.from({ length: rect.endRow - rect.startRow }, () =>
+        Array.from({ length: rect.endColumn - rect.startColumn }, () => null)),
+    };
   }
 }

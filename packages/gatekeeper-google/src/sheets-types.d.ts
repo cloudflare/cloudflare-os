@@ -1,4 +1,6 @@
-import type { GoogleSpreadsheetReadSession } from "./sheets-read-types";
+import type {
+  GoogleSpreadsheetReadSession, SheetBorder, SheetColor, SheetNumberFormat,
+} from "./sheets-read-types";
 export type * from "./sheets-read-types";
 
 /**
@@ -13,6 +15,46 @@ export type SheetCellInput = string | number | boolean | null;
  * the same batch gave the sheet it adds.
  */
 export type SheetTarget = number | string;
+
+/**
+ * Formatting to set on every cell of a range, as `SheetCellFormat` names it. A field given is set,
+ * `null` resets it to the default, and a field left out is kept. At least one field is given.
+ */
+export type SheetFormatChange = {
+  bold?: boolean | null;
+  italic?: boolean | null;
+  underline?: boolean | null;
+  strikethrough?: boolean | null;
+  /** Font size in points: an integer from 1 to 400. */
+  fontSize?: number | null;
+  textColor?: SheetColor | null;
+  /** Background colour. */
+  fillColor?: SheetColor | null;
+  /**
+   * How numbers, dates and times display. A pattern holds 1 to 200 characters and no control
+   * characters; leave it out for the type's default.
+   */
+  numberFormat?: SheetNumberFormat | null;
+  horizontalAlignment?: "LEFT" | "CENTER" | "RIGHT" | null;
+  verticalAlignment?: "TOP" | "MIDDLE" | "BOTTOM" | null;
+  /** Whether text too long for a cell overflows into empty neighbours, wraps, or is cut off. */
+  wrap?: "OVERFLOW" | "WRAP" | "CLIP" | null;
+  /** Borders to draw, or with `null` remove. At least one is given. */
+  borders?: {
+    /** Along the range's top edge. */
+    top?: SheetBorder | null;
+    /** Along the range's bottom edge. */
+    bottom?: SheetBorder | null;
+    /** Along the range's left edge. */
+    left?: SheetBorder | null;
+    /** Along the range's right edge. */
+    right?: SheetBorder | null;
+    /** Between each two rows of the range. */
+    innerHorizontal?: SheetBorder | null;
+    /** Between each two columns of the range. */
+    innerVertical?: SheetBorder | null;
+  };
+};
 
 /** One change to a spreadsheet's cells, rows, columns or sheets. */
 export type SheetChange =
@@ -29,6 +71,14 @@ export type SheetChange =
       op: "clearRange";
       /** A bounded A1 range that names its sheet, such as `'Sales 2026'!A1:C3`. */
       range: string;
+    }
+  /** Format every cell of a range, keeping its contents. */
+  | {
+      op: "formatCells";
+      /** A bounded A1 range that names its sheet, such as `'Sales 2026'!A1:C3`. */
+      range: string;
+      /** What to set or reset. */
+      format: SheetFormatChange;
     }
   /** Add an empty sheet. */
   | {
@@ -137,17 +187,18 @@ export interface GoogleSpreadsheetSession extends GoogleSpreadsheetReadSession {
    * mapped to the ID of the sheet it names, the ID the sheet will have in the spreadsheet.
    *
    * The user may let a batch apply without asking only when it enters literal values and clears
-   * ranges; a batch with any formula, or any change to rows, columns or sheets, waits for
-   * approval. Formulas calling `IMPORTRANGE`, which reads another spreadsheet, or `IMPORTDATA`,
-   * `IMPORTHTML`, `IMPORTXML`, `IMPORTFEED` or `IMAGE`, which make Google fetch a URL, are
-   * refused.
+   * ranges, or, as "Sheet formatting", when it only formats cells with `formatCells`; a batch with
+   * any formula, any change to rows, columns or sheets, or formatting together with any other
+   * change, waits for approval. Formulas calling `IMPORTRANGE`, which reads another spreadsheet,
+   * or `IMPORTDATA`, `IMPORTHTML`, `IMPORTXML`, `IMPORTFEED` or `IMAGE`, which make Google fetch a
+   * URL, are refused.
    *
    * A batch makes at most 50 changes, a change addresses at most 10,000 cells and a batch 20,000,
    * and a cell holds at most 50,000 characters. A batch may overwrite or delete at most 50,000
    * cells that are already there. The batch as queued, values included, must also fit in 100 KiB,
-   * about 50,000 characters of text in all. Changes writing outside a sheet's grid, or into a
-   * range the connected account may not edit, are refused, queuing nothing, as is any change to the
-   * rows, columns or tab of a sheet holding a range the account may not edit.
+   * about 50,000 characters of text in all. Changes writing or formatting outside a sheet's grid,
+   * or in a range the connected account may not edit, are refused, queuing nothing, as is any
+   * change to the rows, columns or tab of a sheet holding a range the account may not edit.
    *
    * Reads show queued changes as entered: formula reads show a queued formula as its text, and raw
    * reads show queued literal values. A queued formula's result, and in formatted reads a queued
@@ -163,6 +214,13 @@ export interface GoogleSpreadsheetSession extends GoogleSpreadsheetReadSession {
    * of its references covers (growing, shrinking or deleting them, or deleting their sheet), or
    * when it uses `ROW`, `COLUMN`, `ROWS`, `COLUMNS`, `OFFSET`, `INDIRECT`, `ADDRESS`, `CELL`,
    * `SHEET`, `SHEETS`, `FORMULATEXT`, `LAMBDA`, `LET` or a named range.
+   *
+   * Queued formatting shows in `readFormats()`, merged over what each cell has; a border along a
+   * range's outer edge also removes the facing border of the cell beside it, as Google does. The
+   * formatting of inserted rows and columns reads `null` and is listed in `pendingCells`, as Google
+   * decides it. In formatted reads, a cell whose number format a queued change sets or resets reads
+   * `null` and is listed in `pendingCells`, unless a queued change leaves it empty. Formatting is applied as queued, over any formatting a collaborator gives the cells in
+   * the meantime.
    */
   updateSheet(changes: SheetChange[]): Promise<Record<string, number>>;
 }

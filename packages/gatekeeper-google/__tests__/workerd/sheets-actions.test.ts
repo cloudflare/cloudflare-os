@@ -3,9 +3,12 @@ import { ActionJournal, APPLY_OUTCOME_UNKNOWN_MESSAGE } from "@gadgets/gatekeepe
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SHEETS_ACTIONS } from "../../src/sheets-actions";
 import { GoogleSheetsApi } from "../../src/sheets-api";
+import type { RestCellFormat } from "../../src/sheets-format";
 import { rewriteFormula, type RewriteStep } from "../../src/sheets-formula";
 import { a1Of, parseRange, type Rect } from "../../src/sheets-model";
-import type { SpreadsheetInfo, SpreadsheetRange, SpreadsheetValueMode } from "../../src/sheets-read-types";
+import type {
+  SpreadsheetFormats, SpreadsheetInfo, SpreadsheetRange, SpreadsheetValueMode,
+} from "../../src/sheets-read-types";
 import type { SheetMeta, SheetsAction } from "../../src/sheets-simulation";
 import type { SheetCellInput, SheetChange } from "../../src/sheets-types";
 import { protectedRange, sheet as sheetMeta, spreadsheetMetadata, type FixtureGridRange } from "../sheets-fixture";
@@ -20,6 +23,7 @@ type ProviderSheet = SheetMeta & { protectedRanges?: ReturnType<typeof protected
 /** What a batch changes, committed only if every request applies. */
 type ProviderState = {
   cells: Map<string, SheetCellInput>;
+  formats: Map<string, RestCellFormat>;
   markers: Map<number, { metadataKey: string; metadataValue: string }>;
   sheets: ProviderSheet[];
 };
@@ -30,6 +34,50 @@ const MAX_SHEET_ID = 2 ** 31 - 1;
 
 const CHANGED = "This change no longer applies: cells it overwrites or deletes, or a sheet it changes, " +
   "changed since it was queued.";
+
+/** The kinds of change a user may let apply without asking. */
+const AUTO_APPROVABLE = [
+  { tag: "editSheetValues", label: "Sheet value edits" },
+  { tag: "formatSheets", label: "Sheet formatting" },
+];
+
+/** Fields of a cell's value, which no format read may ask for. */
+const VALUE_FIELDS = ["formattedValue", "effectiveValue", "userEnteredValue", "hyperlink", "note"];
+
+const BORDER_SIDES = ["top", "bottom", "left", "right", "innerHorizontal", "innerVertical"];
+
+/** The paths a field mask names: `a(b,c(d)),e` names `a.b`, `a.c.d` and `e`. */
+function maskPaths(mask: string, prefix = ""): string[] {
+  let parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i <= mask.length; i++) {
+    if (mask[i] === "(") depth++;
+    else if (mask[i] === ")") depth--;
+    else if (i === mask.length || (mask[i] === "," && depth === 0)) {
+      parts.push(mask.slice(start, i));
+      start = i + 1;
+    }
+  }
+  return parts.flatMap(part => {
+    let open = part.indexOf("(");
+    return open < 0 ? [prefix + part] : maskPaths(part.slice(open + 1, -1), `${prefix}${part.slice(0, open)}.`);
+  });
+}
+
+/** Sets `path` of `format` to `value`, or removes it when `value` is undefined, dropping emptied groups. */
+function setPath(format: Record<string, any>, path: string[], value: unknown): void {
+  let [head, ...rest] = path;
+  if (rest.length === 0) {
+    if (value === undefined) delete format[head];
+    else format[head] = structuredClone(value);
+    return;
+  }
+  let group = format[head] ?? {};
+  setPath(group, rest, value);
+  if (Object.keys(group).length > 0) format[head] = group;
+  else delete format[head];
+}
 
 /** The provider of the test running, whose requests `afterEach` checks. */
 let current: SheetsProvider | undefined;
@@ -43,6 +91,8 @@ let current: SheetsProvider | undefined;
 class SheetsProvider {
   title = "Budget";
   cells = new Map<string, SheetCellInput>();
+  /** What each cell has set of its formatting, as Google stores it. */
+  formats = new Map<string, RestCellFormat>();
   /** The results of formulas, by their text; any other formula computes 0. */
   results: Record<string, number> = {};
   markers = new Map<number, { metadataKey: string; metadataValue: string }>();
@@ -81,6 +131,8 @@ class SheetsProvider {
       }
       let path = url.pathname.replace("/v4/spreadsheets/sheet-1", "");
       if (path === ":batchUpdate") return this.#batch((await request.json() as { requests: BatchRequest[] }).requests);
+      if (path === ":getByDataFilter") return this.#formatsByDataFilter(url, await request.json());
+      if (path === "" && url.searchParams.has("ranges")) return this.#formatRead(url);
       if (path === "/values:batchGetByDataFilter") return this.#byDataFilter(await request.json());
       if (path === "/values:batchGet") return this.#batchGet(url);
       let metadataId = path.match(/^\/developerMetadata\/(\d+)$/)?.[1];
@@ -108,6 +160,101 @@ class SheetsProvider {
     let { sheet: title, rect } = parseRange(name);
     let id = this.sheets.find(s => s.title === title)!.id;
     return this.cells.get(key(id, rect.startRow, rect.startColumn)) ?? null;
+  }
+
+  /** A collaborator's formatting of one cell, named as in `Sales!B2`. */
+  setFormat(name: string, format: RestCellFormat): void {
+    let { sheet: title, rect } = parseRange(name);
+    let id = this.sheets.find(s => s.title === title)!.id;
+    this.formats.set(key(id, rect.startRow, rect.startColumn), format);
+  }
+
+  getFormat(name: string): RestCellFormat | undefined {
+    let { sheet: title, rect } = parseRange(name);
+    let id = this.sheets.find(s => s.title === title)!.id;
+    return this.formats.get(key(id, rect.startRow, rect.startColumn));
+  }
+
+  /** The `fields` masks of every format read. */
+  formatMasks: string[] = [];
+
+  /**
+   * The paths of a cell's formatting a format read's mask names, below `userEnteredFormat`. A
+   * format read must ask for no cell's value.
+   */
+  #formatPaths(fields: string): string[][] {
+    this.formatMasks.push(fields);
+    for (let field of VALUE_FIELDS) {
+      if (fields.includes(field)) this.violations.push(`a format read asks for ${field}`);
+    }
+    let prefix = "sheets.data.rowData.values.userEnteredFormat.";
+    return maskPaths(fields).flatMap(path => path.startsWith(prefix) ? [path.slice(prefix.length).split(".")] : []);
+  }
+
+  /** `sheet` with the formats of each of `rects`, as a format read returns it, only what `paths` name. */
+  #formatSheet(sheet: ProviderSheet, rects: Rect[], paths: string[][]) {
+    let masked = (format: RestCellFormat) => {
+      let shown: Record<string, any> = {};
+      for (let path of paths) setPath(shown, path, path.reduce<any>((at, part) => at?.[part], format));
+      return shown;
+    };
+    return {
+      properties: {
+        sheetId: sheet.id, title: sheet.title, index: sheet.index,
+        gridProperties: { rowCount: sheet.rowCount, columnCount: sheet.columnCount },
+      },
+      data: rects.map(rect => ({
+        startRow: rect.startRow,
+        startColumn: rect.startColumn,
+        rowData: Array.from({ length: rect.endRow - rect.startRow }, (_row, r) => ({
+          values: Array.from({ length: rect.endColumn - rect.startColumn }, (_column, c) => {
+            let format = this.formats.get(key(sheet.id, rect.startRow + r, rect.startColumn + c));
+            return format ? { userEnteredFormat: masked(format) } : {};
+          }),
+        })),
+      })),
+    };
+  }
+
+  /** `spreadsheets.get` with one A1 range and grid data. */
+  #formatRead(url: URL): Response {
+    let paths = this.#formatPaths(url.searchParams.get("fields") ?? "");
+    let ranges = url.searchParams.getAll("ranges");
+    if (ranges.length !== 1) this.violations.push(`a format read asks for ${ranges.length} ranges`);
+    let parsed = parseRange(ranges[0]);
+    let sheet = parsed.sheet === undefined
+      ? this.sheets.toSorted((a, b) => a.index - b.index).find(s => !s.hidden)
+      : this.sheets.find(s => s.title.toLowerCase() === parsed.sheet!.toLowerCase());
+    if (!sheet || parsed.rect.startRow >= sheet.rowCount || parsed.rect.startColumn >= sheet.columnCount) {
+      return Response.json({ error: { code: 400, status: "INVALID_ARGUMENT" } }, { status: 400 });
+    }
+    let rect = {
+      ...parsed.rect,
+      endRow: Math.min(parsed.rect.endRow, sheet.rowCount),
+      endColumn: Math.min(parsed.rect.endColumn, sheet.columnCount),
+    };
+    return Response.json({ sheets: [this.#formatSheet(sheet, [rect], paths)] });
+  }
+
+  /** `spreadsheets:getByDataFilter` by grid range, with grid data, each sheet once. */
+  #formatsByDataFilter(
+    url: URL, body: { dataFilters: { gridRange: Required<FixtureGridRange> }[]; includeGridData?: boolean },
+  ): Response {
+    let paths = this.#formatPaths(url.searchParams.get("fields") ?? "");
+    if (body.includeGridData !== true) this.violations.push("a format read leaves out grid data");
+    let bySheet = new Map<ProviderSheet, Rect[]>();
+    for (let { gridRange } of body.dataFilters) {
+      let sheet = this.sheets.find(s => s.id === gridRange.sheetId);
+      if (!sheet || gridRange.endRowIndex > sheet.rowCount || gridRange.endColumnIndex > sheet.columnCount) {
+        return Response.json({ error: { code: 400, status: "INVALID_ARGUMENT" } }, { status: 400 });
+      }
+      bySheet.set(sheet, [...bySheet.get(sheet) ?? [], {
+        startRow: gridRange.startRowIndex, endRow: gridRange.endRowIndex,
+        startColumn: gridRange.startColumnIndex, endColumn: gridRange.endColumnIndex,
+      }]);
+    }
+    // Not in the order asked.
+    return Response.json({ sheets: [...bySheet].map(([sheet, rects]) => this.#formatSheet(sheet, rects, paths)).toReversed() });
   }
 
   /** The `fields` masks of every metadata read. */
@@ -235,7 +382,8 @@ class SheetsProvider {
   /** Applies every request or none, as Google does. */
   #commit(requests: BatchRequest[]): boolean {
     let state: ProviderState = {
-      cells: new Map(this.cells), markers: new Map(this.markers), sheets: this.sheets.map(s => ({ ...s })),
+      cells: new Map(this.cells), formats: new Map(this.formats), markers: new Map(this.markers),
+      sheets: this.sheets.map(s => ({ ...s })),
     };
     try {
       for (let request of requests) this.#apply(request, state);
@@ -244,6 +392,7 @@ class SheetsProvider {
       throw error;
     }
     this.cells = state.cells;
+    this.formats = state.formats;
     this.markers = state.markers;
     this.sheets = state.sheets;
     this.commits++;
@@ -294,6 +443,29 @@ class SheetsProvider {
     }
   }
 
+  /** Throws, as Google refuses a range, unless `range` lies within `sheet`'s grid. */
+  #withinGrid(sheet: ProviderSheet, range: Required<FixtureGridRange>): void {
+    if (range.endRowIndex > sheet.rowCount || range.endColumnIndex > sheet.columnCount) {
+      throw new Invalid(`Range exceeds grid limits. Max rows: ${sheet.rowCount}, max columns: ${sheet.columnCount}`);
+    }
+  }
+
+  /** Sets what `change` makes of the formatting of each cell of `range`, on a copy of the one held. */
+  #reformat(
+    state: ProviderState, range: Required<FixtureGridRange>,
+    change: (format: Record<string, any>, row: number, column: number) => void,
+  ): void {
+    for (let row = range.startRowIndex; row < range.endRowIndex; row++) {
+      for (let column = range.startColumnIndex; column < range.endColumnIndex; column++) {
+        let cell = key(range.sheetId, row, column);
+        let format: Record<string, any> = structuredClone(state.formats.get(cell) ?? {});
+        change(format, row, column);
+        if (Object.keys(format).length > 0) state.formats.set(cell, format);
+        else state.formats.delete(cell);
+      }
+    }
+  }
+
   #apply(request: BatchRequest, state: ProviderState): void {
     let { cells, markers } = state;
     if (request.createDeveloperMetadata) {
@@ -317,6 +489,50 @@ class SheetsProvider {
             entered?.boolValue ?? null;
           if (value === null) cells.delete(key(sheet.id, row, column));
           else cells.set(key(sheet.id, row, column), value);
+        }
+      }
+    } else if (request.repeatCell) {
+      let { range, cell, fields } = request.repeatCell;
+      this.#withinGrid(this.#sheetOf(state, range.sheetId), range);
+      let paths = maskPaths(fields);
+      if (paths.some(path => !path.startsWith("userEnteredFormat."))) this.#violation(`repeatCell sets ${fields}`);
+      this.#reformat(state, range, format => {
+        for (let path of paths) {
+          let parts = path.split(".").slice(1);
+          // A field the mask names that the cell leaves out is reset.
+          setPath(format, parts, parts.reduce((at, part) => at?.[part], cell.userEnteredFormat));
+        }
+      });
+    } else if (request.updateBorders) {
+      let { range, ...given } = request.updateBorders;
+      this.#withinGrid(this.#sheetOf(state, range.sheetId), range);
+      let unknown = Object.keys(given).filter(side => !BORDER_SIDES.includes(side));
+      if (unknown.length > 0) this.#violation(`updateBorders sets ${unknown.join()}`);
+      // An outer edge borders the cells along it, and an inner one the cells on both its sides.
+      this.#reformat(state, range, (format, row, column) => {
+        let sides = {
+          top: row === range.startRowIndex ? given.top : given.innerHorizontal,
+          bottom: row === range.endRowIndex - 1 ? given.bottom : given.innerHorizontal,
+          left: column === range.startColumnIndex ? given.left : given.innerVertical,
+          right: column === range.endColumnIndex - 1 ? given.right : given.innerVertical,
+        };
+        for (let [side, border] of Object.entries(sides)) {
+          if (border !== undefined) setPath(format, ["borders", side], border.style === "NONE" ? undefined : border);
+        }
+      });
+      // An edge has one owner, so an outer edge set on the range clears the facing side beside it.
+      let sheet = this.#sheetOf(state, range.sheetId);
+      let beside = [
+        ["top", "bottom", { ...range, startRowIndex: range.startRowIndex - 1, endRowIndex: range.startRowIndex }],
+        ["bottom", "top", { ...range, startRowIndex: range.endRowIndex, endRowIndex: range.endRowIndex + 1 }],
+        ["left", "right", { ...range, startColumnIndex: range.startColumnIndex - 1, endColumnIndex: range.startColumnIndex }],
+        ["right", "left", { ...range, startColumnIndex: range.endColumnIndex, endColumnIndex: range.endColumnIndex + 1 }],
+      ] as const;
+      for (let [side, facing, neighbours] of beside) {
+        let inside = neighbours.startRowIndex >= 0 && neighbours.startColumnIndex >= 0 &&
+          neighbours.endRowIndex <= sheet.rowCount && neighbours.endColumnIndex <= sheet.columnCount;
+        if (given[side] !== undefined && inside) {
+          this.#reformat(state, neighbours, format => setPath(format, ["borders", facing], undefined));
         }
       }
     } else if (request.addSheet) {
@@ -357,6 +573,11 @@ class SheetsProvider {
           ? rewriteFormula(value, { kind: "duplicate", title: source.title, newTitle: title }, true).text
           : value);
       }
+      // A copy's own entries, visited as they are added, are on another sheet.
+      for (let [cell, format] of state.formats) {
+        let [sheetId, row, column] = cell.split(":").map(Number);
+        if (sheetId === source.id) state.formats.set(key(id, row, column), structuredClone(format));
+      }
     } else if (request.deleteSheet) {
       let sheet = this.#sheetOf(state, request.deleteSheet.sheetId);
       if (!sheet.hidden && state.sheets.filter(s => !s.hidden).length === 1) {
@@ -364,8 +585,10 @@ class SheetsProvider {
       }
       state.sheets = state.sheets.flatMap(s =>
         s.id === sheet.id ? [] : [s.index > sheet.index ? { ...s, index: s.index - 1 } : s]);
-      for (let cell of cells.keys()) {
-        if (Number(cell.split(":")[0]) === sheet.id) cells.delete(cell);
+      for (let held of [cells, state.formats]) {
+        for (let cell of held.keys()) {
+          if (Number(cell.split(":")[0]) === sheet.id) held.delete(cell);
+        }
       }
     } else if (request.insertDimension || request.deleteDimension) {
       this.#dimension(request, state);
@@ -394,7 +617,8 @@ class SheetsProvider {
       if (end > size) throw new Invalid("range.endIndex is past the grid");
       if (count >= size) throw new Invalid(`You can't delete all the ${rows ? "rows" : "columns"} on the sheet.`);
     }
-    state.cells = new Map([...state.cells].flatMap(([cell, value]) => {
+    // Formats move with their cells; inserted lines are left unformatted.
+    let moved = <T>(held: Map<string, T>) => new Map([...held].flatMap(([cell, value]) => {
       let [sheetId, row, column] = cell.split(":").map(Number);
       if (sheetId !== sheet.id) return [[cell, value] as const];
       let line = rows ? row : column;
@@ -402,6 +626,8 @@ class SheetsProvider {
       let to = line < start ? line : inserting ? line + count : line - count;
       return [[rows ? key(sheetId, to, column) : key(sheetId, row, to), value] as const];
     }));
+    state.cells = moved(state.cells);
+    state.formats = moved(state.formats);
     let grown = inserting ? count : -count;
     state.sheets = state.sheets.map(s => s.id !== sheet.id ? s
       : rows ? { ...s, rowCount: s.rowCount + grown } : { ...s, columnCount: s.columnCount + grown });
@@ -434,6 +660,11 @@ function gatekeeper() {
     },
     read: async (range: string, valueMode?: SpreadsheetValueMode) =>
       (await call("readRange", range, ...(valueMode ? [{ valueMode }] : []))).value as SpreadsheetRange,
+    formats: async (range: string) => {
+      let outcome = await call("readFormats", range);
+      if (outcome.error !== undefined) throw new Error(outcome.error);
+      return outcome.value as unknown as SpreadsheetFormats;
+    },
     info: async () => (await call("getSpreadsheet")).value as SpreadsheetInfo,
     apply: (actionId: number) => hooks().applySheets(facet, actionId),
     reject: (actionId: number) => hooks().rejectSheets(facet, actionId),
@@ -541,7 +772,7 @@ describe("Google Sheets changes", () => {
       descriptionIsComplete: true,
       fields: [{ label: "Values", kind: "text", value: '[6,"done"]' }],
     });
-    expect(await sheets.autoApprovable()).toEqual([{ tag: "editSheetValues", label: "Sheet value edits" }]);
+    expect(await sheets.autoApprovable()).toEqual(AUTO_APPROVABLE);
     expect(provider.get("Sales!B2")).toBe(4);
 
     expect(await sheets.apply(actionId!)).toBeNull();
@@ -616,7 +847,7 @@ describe("Google Sheets changes", () => {
       "Makes 2 changes, all or none of which are applied:\n\n" +
       '1. In "Sales", set D2:D3 to the values below\n' +
       '2. In "Q3 Plan", clear the contents of A1:B2, keeping their formatting');
-    expect(await sheets.autoApprovable()).toEqual([{ tag: "editSheetValues", label: "Sheet value edits" }]);
+    expect(await sheets.autoApprovable()).toEqual(AUTO_APPROVABLE);
 
     expect(await sheets.apply(actionId!)).toBeNull();
 
@@ -1024,7 +1255,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
       "Makes 2 changes, all or none of which are applied:\n\n" +
       '1. In "Sales", insert 2 rows before row 3\n' +
       '2. In "Sales", set A3:B4 to the values below');
-    expect(await sheets.autoApprovable()).toEqual([{ tag: "editSheetValues", label: "Sheet value edits" }]);
+    expect(await sheets.autoApprovable()).toEqual(AUTO_APPROVABLE);
     let previewed = await sheets.read("Sales!A1:C5", "formula");
     expect(previewed).toEqual({
       range: "Sales!A1:C5",
@@ -1350,5 +1581,249 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     expect([provider.get("Sales!B2"), provider.get("Sales!C2")]).toEqual([6, "done"]);
     await expect(actions.apply(stale)).rejects.toThrow(CHANGED);
     expect(provider.batches).toHaveLength(1);
+  });
+});
+
+describe("Google Sheets formatting", () => {
+  it("queues formatting alone as auto-approvable, shows it in reads, and writes it as Google accepts it", async () => {
+    let provider = budget();
+    provider.setFormat("Sales!B2", { textFormat: { italic: true }, numberFormat: { type: "NUMBER", pattern: "0.0" } });
+    let sheets = gatekeeper();
+
+    let { actionId, action, value } = await sheets.queued([{
+      op: "formatCells", range: "Sales!A1:B2",
+      format: {
+        bold: true, fontSize: 14, textColor: "#FF0000", fillColor: "ACCENT1",
+        numberFormat: { type: "CURRENCY", pattern: '"$"#,##0.00' }, horizontalAlignment: "RIGHT", wrap: "WRAP",
+        borders: { top: { style: "SOLID" } },
+      },
+    }]);
+
+    expect(value).toEqual({});
+    expect(action).toMatchObject({
+      title: 'Format "Sales"',
+      description: 'In "Sales", format A1:B2: bold, 14 pt, text colour #ff0000, fill ACCENT1, number format ' +
+        "CURRENCY (pattern below), aligned right, wrapped, a solid top border.",
+      autoApprovable: true,
+      actionKind: { tag: "formatSheets", label: "Sheet formatting" },
+      descriptionIsComplete: true,
+      fields: [{ label: "Number format", kind: "text", value: '"$"#,##0.00' }],
+    });
+    expect(await sheets.autoApprovable()).toEqual(AUTO_APPROVABLE);
+
+    let set = {
+      bold: true, fontSize: 14, textColor: "#ff0000", fillColor: "ACCENT1",
+      numberFormat: { type: "CURRENCY", pattern: '"$"#,##0.00' }, horizontalAlignment: "RIGHT", wrap: "WRAP",
+    };
+    let previewed = await sheets.formats("Sales!A1:B3");
+    // Nothing is beside the top edge of row 1, so no cell is pending.
+    expect(previewed).toEqual({
+      range: "Sales!A1:B3",
+      formats: [
+        [{ ...set, borders: { top: { style: "SOLID" } } }, { ...set, borders: { top: { style: "SOLID" } } }],
+        [set, { ...set, italic: true }],
+        [null, null],
+      ],
+    });
+    // Only Google can display a value in the number format the change sets; raw values are unaffected.
+    expect(await sheets.read("Sales!A1:C2")).toEqual({
+      range: "Sales!A1:C2", values: [[null, null, null], [null, null, "0"]], pendingCells: ["A1", "B1", "A2", "B2"],
+    });
+    expect(await sheets.read("Sales!A1:B2", "raw")).toEqual({
+      range: "Sales!A1:B2", values: [["Region", "Total"], ["EMEA", 4]],
+    });
+
+    expect(await sheets.apply(actionId!)).toBeNull();
+
+    let range = { sheetId: 0, startRowIndex: 0, endRowIndex: 2, startColumnIndex: 0, endColumnIndex: 2 };
+    expect(changeRequests(provider.batches[0])).toEqual([
+      {
+        repeatCell: {
+          range,
+          cell: {
+            userEnteredFormat: {
+              textFormat: { bold: true, fontSize: 14, foregroundColorStyle: { rgbColor: { red: 1, green: 0, blue: 0 } } },
+              backgroundColorStyle: { themeColor: "ACCENT1" },
+              numberFormat: { type: "CURRENCY", pattern: '"$"#,##0.00' },
+              horizontalAlignment: "RIGHT",
+              wrapStrategy: "WRAP",
+            },
+          },
+          fields: "userEnteredFormat(textFormat(bold,fontSize,foregroundColorStyle),backgroundColorStyle," +
+            "numberFormat,horizontalAlignment,wrapStrategy)",
+        },
+      },
+      { updateBorders: { range, top: { style: "SOLID", colorStyle: { rgbColor: { red: 0, green: 0, blue: 0 } } } } },
+    ]);
+    expect(provider.get("Sales!A1")).toBe("Region");
+    expect(await sheets.formats("Sales!A1:B3")).toEqual(previewed);
+    expect(provider.formatMasks.length).toBeGreaterThan(0);
+  });
+
+  it("resets fields and removes borders, and the facing border of the cells beside a changed outer edge", async () => {
+    let provider = budget();
+    provider.setFormat("Sales!B1", { borders: { bottom: { style: "DASHED" } } });
+    provider.setFormat("Sales!B2", {
+      textFormat: { bold: true, italic: true }, numberFormat: { type: "PERCENT" },
+      borders: { top: { style: "DASHED" }, bottom: { style: "SOLID" } },
+    });
+    let sheets = gatekeeper();
+
+    let { actionId, action } = await sheets.queued([{
+      op: "formatCells", range: "Sales!B2:C3",
+      format: {
+        bold: null, numberFormat: null,
+        borders: {
+          top: null, right: { style: "DOUBLE", color: "#00FF00" }, innerHorizontal: { style: "DOTTED", color: "ACCENT2" },
+        },
+      },
+    }]);
+
+    expect(action!.description).toBe(
+      'In "Sales", format B2:C3: default bold, default number format, no top border, a double right border ' +
+      "in #00ff00, a dotted inner horizontal border in ACCENT2.");
+    expect(action!.fields ?? []).toEqual([]);
+    let dotted = { style: "DOTTED", color: "ACCENT2" };
+    let double = { style: "DOUBLE", color: "#00ff00" };
+    let changed = [
+      [{ italic: true, borders: { bottom: dotted } }, { borders: { bottom: dotted, right: double } }],
+      [{ borders: { top: dotted } }, { borders: { top: dotted, right: double } }],
+    ];
+    // B2:C3's top edge takes B1's bottom border with it, as Google gives an edge one owner.
+    let around = {
+      range: "Sales!A1:D4",
+      formats: [
+        [null, null, null, null],
+        [null, ...changed[0], null],
+        [null, ...changed[1], null],
+        [null, null, null, null],
+      ],
+    };
+    expect(await sheets.formats("Sales!A1:D4")).toEqual(around);
+    // A number format reset is as unknown to the display as one set, blank cells included.
+    expect(await sheets.read("Sales!B2:C3")).toEqual({
+      range: "Sales!B2:C3", values: [[null, null], [null, null]], pendingCells: ["B2", "C2", "B3", "C3"],
+    });
+
+    expect(await sheets.apply(actionId!)).toBeNull();
+
+    let range = { sheetId: 0, startRowIndex: 1, endRowIndex: 3, startColumnIndex: 1, endColumnIndex: 3 };
+    expect(changeRequests(provider.batches[0])).toEqual([
+      { repeatCell: { range, cell: { userEnteredFormat: {} }, fields: "userEnteredFormat(textFormat(bold),numberFormat)" } },
+      {
+        updateBorders: {
+          range,
+          top: { style: "NONE" },
+          right: { style: "DOUBLE", colorStyle: { rgbColor: { red: 0, green: 1, blue: 0 } } },
+          innerHorizontal: { style: "DOTTED", colorStyle: { themeColor: "ACCENT2" } },
+        },
+      },
+    ]);
+    expect(provider.getFormat("Sales!B2")).toEqual({
+      textFormat: { italic: true }, borders: { bottom: { style: "DOTTED", colorStyle: { themeColor: "ACCENT2" } } },
+    });
+    expect((await sheets.formats("Sales!B2:C3")).formats).toEqual(changed);
+    expect(await sheets.formats("Sales!A1:D4")).toEqual(around);
+  });
+
+  it("queues formatting with any other change for approval, and names each sheet a formatting batch formats", async () => {
+    budget();
+    let sheets = gatekeeper();
+
+    let mixed = await sheets.queued([
+      { op: "writeCells", range: "Sales!A5", values: [["x"]] },
+      { op: "formatCells", range: "Sales!A5", format: { italic: true, verticalAlignment: "MIDDLE" } },
+    ]);
+    expect(mixed.action).toMatchObject({ title: 'Edit "Sales"', autoApprovable: false });
+    expect(mixed.action!.actionKind).toBeUndefined();
+    expect(mixed.action!.description).toContain(
+      "Makes 2 changes, all or none of which are applied:\n\n" +
+      '1. In "Sales", set A5 to the values below\n' +
+      '2. In "Sales", format A5: italic, vertically centred');
+
+    let formatting = await sheets.queued([
+      { op: "formatCells", range: "Sales!A1", format: { fillColor: null } },
+      {
+        op: "formatCells", range: "'Q3 Plan'!A1:B1",
+        format: { underline: true, strikethrough: false, horizontalAlignment: "CENTER", wrap: "CLIP", numberFormat: { type: "DATE" } },
+      },
+      {
+        op: "formatCells", range: "Sales!B1",
+        format: {
+          numberFormat: { type: "NUMBER", pattern: "0.0" },
+          borders: { innerVertical: { style: "SOLID_THICK" }, left: { style: "DASHED", color: "TEXT" } },
+        },
+      },
+    ]);
+    expect(formatting.action).toMatchObject({
+      title: "Format 2 sheets",
+      autoApprovable: true,
+      actionKind: { tag: "formatSheets", label: "Sheet formatting" },
+      fields: [{ label: "Change 3: Number format", kind: "text", value: "0.0" }],
+    });
+    expect(formatting.action!.description).toContain(
+      "Makes 3 changes, all or none of which are applied:\n\n" +
+      '1. In "Sales", format A1: default fill\n' +
+      '2. In "Q3 Plan", format A1:B1: underlined, not struck through, number format DATE, centred, clipped\n' +
+      '3. In "Sales", format B1: number format NUMBER (pattern below), a dashed left border in TEXT, a thick ' +
+      "solid inner vertical border");
+  });
+
+  it("formats cells where queued rows move them, reading inserted rows' formats pending", async () => {
+    let provider = budget();
+    provider.setFormat("Sales!A2", { textFormat: { bold: true } });
+    provider.setFormat("Sales!A3", { textFormat: { italic: true } });
+    let sheets = gatekeeper();
+
+    let rows = await sheets.queued([{ op: "insertRows", sheetId: 0, at: 3 }]);
+    expect(await sheets.formats("Sales!A2:A4")).toEqual({
+      range: "Sales!A2:A4", formats: [[{ bold: true }], [null], [{ italic: true }]], pendingCells: ["A3"],
+    });
+    // The rows around the inserted one are read by grid range, as no A1 range names them.
+    expect(provider.requests.some(url => url.pathname.endsWith(":getByDataFilter"))).toBe(true);
+
+    let format = await sheets.queued([{ op: "formatCells", range: "Sales!A4", format: { fontSize: 9 } }]);
+    expect(format.action).toMatchObject({ title: 'Format "Sales"', autoApprovable: true });
+    expect((await sheets.formats("Sales!A4")).formats).toEqual([[{ italic: true, fontSize: 9 }]]);
+
+    expect(await sheets.apply(rows.actionId!)).toBeNull();
+    expect(await sheets.apply(format.actionId!)).toBeNull();
+
+    expect(changeRequests(provider.batches[1])).toEqual([{
+      repeatCell: {
+        range: { sheetId: 0, startRowIndex: 3, endRowIndex: 4, startColumnIndex: 0, endColumnIndex: 1 },
+        cell: { userEnteredFormat: { textFormat: { fontSize: 9 } } },
+        fields: "userEnteredFormat(textFormat(fontSize))",
+      },
+    }]);
+    expect(provider.getFormat("Sales!A4")).toEqual({ textFormat: { italic: true, fontSize: 9 } });
+  });
+
+  it("fails formatting built on rows a rejected change was to insert, without writing", async () => {
+    let provider = budget();
+    let sheets = gatekeeper();
+    let rows = await sheets.queued([{ op: "insertRows", sheetId: 0, at: 3 }]);
+    let format = await sheets.queued([{ op: "formatCells", range: "Sales!A4", format: { bold: true } }]);
+
+    await sheets.reject(rows.actionId!);
+
+    expect(await sheets.apply(format.actionId!)).toBe(
+      `This change no longer applies: it builds on change ${rows.actionId}, which was not applied.`);
+    expect(provider.batches).toEqual([]);
+  });
+
+  it("copies queued formatting with the sheet a queued change duplicates", async () => {
+    let provider = budget();
+    provider.setFormat("Sales!A2", { textFormat: { italic: true } });
+    let sheets = gatekeeper();
+    let format = await sheets.queued([{ op: "formatCells", range: "Sales!A1", format: { bold: true } }]);
+    let copy = await sheets.queued([{ op: "duplicateSheet", sheetId: 0, title: "Copy" }]);
+
+    let previewed = await sheets.formats("Copy!A1:A2");
+    expect(previewed).toEqual({ range: "Copy!A1:A2", formats: [[{ bold: true }], [{ italic: true }]] });
+
+    expect(await sheets.apply(format.actionId!)).toBeNull();
+    expect(await sheets.apply(copy.actionId!)).toBeNull();
+    expect(await sheets.formats("Copy!A1:A2")).toEqual(previewed);
   });
 });
