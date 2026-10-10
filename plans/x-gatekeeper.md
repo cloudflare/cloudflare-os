@@ -724,10 +724,17 @@ with `media.media_ids` and `made_with_ai`.
 Each read is classified before it is authorized:
 
 - **Owner-private** if it comes from an inherently private source — bookmarks, likes,
-  `isMuted()`, a private List's details, posts or members — or returns any post written by a
-  protected account (including all the connected account's own posts when it is protected).
+  `isMuted()`, a private List's details, posts or members, and a protected connected account's
+  follow graph, whether read as its follow lists or edge by edge as the `relationship` a profile
+  read reports — or returns any post written by a protected account (including all the
+  connected account's own posts when it is protected).
+  Privacy is X's, never the simulated value: a pending change that would make a private List
+  public leaves it owner-private until X has made it public. And missing evidence is not
+  privacy's absence: a post whose author X did not expand, or expanded without `protected` (a
+  200 can omit expansions it failed to hydrate), counts as a protected account's, as does a
+  connected account whose identity X returned without it.
 - **Public** otherwise: public posts, every profile (X shows protected accounts' profiles; only
-  their posts are hidden), public Lists, followers and following.
+  their posts are hidden), public Lists, and an unprotected account's followers and following.
 
 Owner-private reads authorize against one synthetic collection, `owner`; public reads use the
 `baseline` scope; the kit's `trackedCollectionObservers` does the bookkeeping.
@@ -1048,7 +1055,7 @@ Nothing remains open except the `types.d.ts` review.
 
 ## As built (2026-10-10)
 
-PR A is implemented in `packages/gatekeeper-x` (171 Node tests, 69 workerd tests). Where the build
+PR A is implemented in `packages/gatekeeper-x` (182 Node tests, 79 workerd tests). Where the build
 departed from the design above:
 
 - **`XCursor`, not the kit's `TokenCursor`.** `TokenCursor` fills a short page by fetching up to
@@ -1057,12 +1064,18 @@ departed from the design above:
   offered again without re-reading -- with exactly one X request per `next()`. Search continues with
   `next_token`; every other listing with `pagination_token`.
 - **Reconciliation is inline.** The kit's `ActionOutcomeUnknownError` is terminal, so it cannot carry
-  "check, then post". A send instead writes an attempt marker (`attempt:<id>:<index>`, the send's
-  time) before `POST /2/tweets`; a lost answer or a 5xx leaves the action pending with a plain
-  error, and the next apply first reads the account's posts since the attempt (minus 10 s,
-  `max_results=5`) and binds a match on `comparableText` and the reply parent. While a marker or
-  thread progress exists, `reject` is refused ("it may already be on X"). A terminal refusal part-way
-  through a thread names the posts already published.
+  "check, then post". A send instead writes an attempt marker (`attempt:<id>:<index>`: the send's
+  time and the media IDs it attached) before `POST /2/tweets`; a lost answer or a 5xx leaves the
+  action pending with a plain error, and the next apply first reads the account's posts dated from
+  10 s before the attempt to 5 minutes after it (`max_results=100`). It binds a post only when
+  exactly one matches the draft's reply parent, `comparableText`, link destinations
+  (`expanded_url`, through `comparableUrl`), poll and media IDs. None sends again; more than one,
+  or a window too full for one page, ends the action with `ActionOutcomeUnknownError`, since
+  binding the wrong post would have a revert delete it. While a marker or thread progress exists,
+  `reject` is refused ("it may already be on X"). A terminal failure part-way through a thread
+  names the posts already published. `x.list.manage`'s creation is reconciled the same way, since
+  `POST /2/lists` has no idempotency key either: against every page of the account's owned Lists
+  (X cannot filter them by date), on name, description, privacy and a `created_at` in the window.
 - **Revocation is narrower than §3.** A grant is revoked only when it provably shares no
   authorization with a live one: another X user's (a refused reconnect), a first connect the
   Workshop never took, and what a disconnect leaves. A same-user reconnect's leftover is dropped

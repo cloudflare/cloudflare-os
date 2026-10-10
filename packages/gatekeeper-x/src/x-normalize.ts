@@ -38,7 +38,8 @@ export type WirePost = {
 };
 
 type WireEntities = {
-  urls?: { url?: string; expanded_url?: string; unwound_url?: string; title?: string }[];
+  /** `media_key` marks the link X adds to a post for its attached media. */
+  urls?: { url?: string; expanded_url?: string; unwound_url?: string; title?: string; media_key?: string }[];
   mentions?: { username?: string }[];
   hashtags?: { tag?: string }[];
 };
@@ -284,6 +285,30 @@ export function toPostInfo(post: WirePost, includes: Includes): XPostInfo {
   };
 }
 
+/** What a post carries of the draft it was sent from, as reconciliation compares them. */
+export type SentContent = {
+  text: string;
+  /** The post it replies to. */
+  replyTo?: string;
+  /** Its links as written, not where they redirect. */
+  links: string[];
+  mediaIds: string[];
+  poll: boolean;
+};
+
+/** What X kept of the draft a post was sent from: the fields reconciliation compares with it. */
+export function sentContent(post: WirePost): SentContent {
+  const entities = post.note_tweet?.entities ?? post.note_post?.entities ?? post.entities ?? {};
+  return {
+    text: fullText(post),
+    replyTo: references(post).find(ref => ref.type === "replied_to")?.id,
+    links: (entities.urls ?? []).flatMap(link => link.media_key ? [] : link.expanded_url ?? link.url ?? []),
+    // A media key is the media's type and ID: `3_<id>` for an image.
+    mediaIds: (post.attachments?.media_keys ?? []).map(key => key.slice(key.indexOf("_") + 1)),
+    poll: (post.attachments?.poll_ids?.length ?? 0) > 0,
+  };
+}
+
 /** A List, with its owner resolved from `includes`. */
 export function toListInfo(list: WireList, includes: Includes): XListInfo {
   const created = date(list.created_at);
@@ -305,4 +330,21 @@ export function mentionsProtectedAuthor(posts: readonly XPostInfo[]): boolean {
   return posts.some(post => post.author.protected
     || post.repostOf?.author.protected === true
     || post.quoteOf?.author.protected === true);
+}
+
+/**
+ * Whether X left unsaid whether an author whose words these posts disclose is protected: an author
+ * it did not expand, or expanded without `protected`. That covers each post's author, the author
+ * of a reposted post (a repost's own text quotes it), and the author of a quoted post X expanded.
+ * A 200 can omit expansions it failed to hydrate, so `toUserSummary`'s public default is no
+ * evidence, and such posts are treated as a protected account's (plans/x-gatekeeper.md §7).
+ */
+export function authorsUnverified(posts: readonly WirePost[], includes: Includes): boolean {
+  const verified = (authorId: string | undefined): boolean =>
+    typeof includes.users.get(authorId ?? "")?.protected === "boolean";
+  return posts.some(post => !verified(post.author_id) || references(post).some(ref => {
+    if (ref.type === "replied_to") return false;
+    const target = includes.posts.get(ref.id);
+    return target === undefined ? ref.type === "retweeted" : !verified(target.author_id);
+  }));
 }

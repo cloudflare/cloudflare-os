@@ -5,8 +5,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { generateNonce } from "@gadgets/gatekeeper-kit/connect-nonce";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
-import type { XListInfo, XPostInfo } from "../../src/types";
+import type { XListInfo, XPostDraft, XPostInfo } from "../../src/types";
 import { scopesFor } from "../../src/x-env";
+import type { WirePost } from "../../src/x-normalize";
 import { ALICE, BOB, FakeX, failure, hooks, json, reconnectAs, seedAccount, unwrap } from "./fake-x";
 import type { GatekeeperProps, Step } from "./worker";
 
@@ -68,7 +69,7 @@ describe("publishing", () => {
     expect(t.x.media.get(mediaId)).toEqual({ type: "image/png", altText: "A chart" });
     expect(t.x.requests.find(r => r.url.pathname === "/2/media/upload")?.form?.get("media_category")).toBe("tweet_image");
     const [first, second] = postsBy(t.x, ALICE.id);
-    expect(first).toMatchObject({ text: "One", attachments: { media_keys: [`3_${mediaId}`] } });
+    expect(first).toMatchObject({ text: expect.stringMatching(/^One https:\/\/t\.co\/\w+$/), attachments: { media_keys: [`3_${mediaId}`] } });
     expect(second).toMatchObject({ text: "Two", referenced_tweets: [{ type: "replied_to", id: first.id }] });
   });
 
@@ -103,6 +104,64 @@ describe("publishing", () => {
     const posts = postsBy(t.x, ALICE.id);
     expect(posts).toHaveLength(1);
     expect(await t.run([["getPost", "~1"], ["getInfo"]])).toMatchObject({ id: posts[0].id });
+  });
+
+  it("binds a post with images whose answer was lost, by the media it uploaded", async () => {
+    const t = await setup();
+    await t.run([["createPost", { text: "Chart at example.com", images: [{ data: PNG, mediaType: "image/png" }] }]]);
+    t.x.loseAnswer("POST", /^\/2\/tweets$/);
+    const [{ actionId }] = await t.submitted();
+    unwrap(await t.apply(actionId));
+    const posts = postsBy(t.x, ALICE.id);
+    expect(posts).toHaveLength(1);
+    // X records the bare domain with a scheme, and lists the image's own link beside it.
+    expect(posts[0].entities?.urls?.map(link => link.expanded_url))
+      .toEqual(["http://example.com", expect.stringMatching(/\/photo\/1$/)]);
+    expect(await t.run([["getPost", "~1"], ["getInfo"]])).toMatchObject({ id: posts[0].id });
+  });
+
+  it.each<[string, Partial<WirePost> & { text: string }, XPostDraft]>([
+    ["images", { text: "https://t.co/0", attachments: { media_keys: ["3_42"] } },
+      { text: "", images: [{ data: PNG, mediaType: "image/png" }] }],
+    ["links", { text: "Read this: https://t.co/0", entities: { urls: [{ url: "https://t.co/0", expanded_url: "https://example.com/a" }] } },
+      { text: "Read this: https://example.com/b" }],
+  ])("never binds an earlier post that differs only in its %s", async (_differs, earlier, draft) => {
+    const t = await setup();
+    const { id: earlierId } = t.x.post(ALICE, earlier.text, earlier);
+    await t.run([["createPost", draft]]);
+    let failed = false;
+    t.x.on("POST", /^\/2\/tweets$/, () => {
+      if (failed) return undefined;
+      failed = true;
+      return new Response("upstream error", { status: 503 });
+    });
+    const [{ actionId }] = await t.submitted();
+    expect(failure(await t.apply(actionId))).toMatch(/did not confirm whether this post was published/);
+    unwrap(await t.apply(actionId));
+    const [created] = postsBy(t.x, ALICE.id).filter(post => post.id !== earlierId);
+    expect(await t.run([["getPost", "~1"], ["getInfo"]])).toMatchObject({ id: created.id });
+    unwrap(await t.revert(actionId));
+    expect(t.x.posts.has(earlierId)).toBe(true);
+  });
+
+  it("leaves a send unresolved when more than one post could be it", async () => {
+    const t = await setup();
+    // The same words, posted moments before from elsewhere.
+    t.x.post(ALICE, "Twice");
+    await t.run([["createPost", { text: "Twice" }]]);
+    t.x.on("POST", /^\/2\/tweets$/, request => {
+      t.x.post(ALICE, JSON.parse(request.body!).text);
+      throw new TypeError("connection reset");
+    });
+    const [{ actionId }] = await t.submitted();
+    const message = failure(await t.apply(actionId));
+    expect(message).toMatch(/More than one of the account's posts from when this was sent could be this one/);
+    // For good: approving again asks X nothing and sends nothing, and rejecting clears it.
+    const requests = t.x.requests.length;
+    expect(failure(await t.apply(actionId))).toBe(message);
+    expect(t.x.requests).toHaveLength(requests);
+    expect(postsBy(t.x, ALICE.id)).toHaveLength(2);
+    unwrap(await t.reject(actionId));
   });
 
   it("won't let a post X may have made be rejected, and posts it on the next approval if it didn't", async () => {
@@ -246,6 +305,37 @@ describe("Lists", () => {
     expect([...t.x.listMembers.get(list.id)!]).toEqual([BOB.id]);
     unwrap(await t.revert(create.actionId));
     expect(t.x.lists.size).toBe(0);
+  });
+
+  it("binds a List X created though its answer was lost, rather than creating it twice", async () => {
+    const t = await setup();
+    await t.run([["createList", "Friends"]]);
+    t.x.loseAnswer("POST", /^\/2\/lists$/);
+    const [{ actionId }] = await t.submitted();
+    unwrap(await t.apply(actionId));
+    const lists = [...t.x.lists.values()];
+    expect(lists).toHaveLength(1);
+    expect(await t.run([["getList", "~1"], ["getInfo"]])).toMatchObject({ id: lists[0].id });
+  });
+
+  it("won't let a List X may have created be rejected, and creates it on the next approval if it didn't", async () => {
+    const t = await setup();
+    // A List of the same name from long ago is not the one this action created.
+    t.x.lists.set("5", { id: "5", name: "Friends", owner_id: ALICE.id, created_at: "2020-01-01T00:00:00.000Z" });
+    await t.run([["createList", "Friends"]]);
+    let failed = false;
+    t.x.on("POST", /^\/2\/lists$/, () => {
+      if (failed) return undefined;
+      failed = true;
+      return new Response("upstream error", { status: 503 });
+    });
+    const [{ actionId }] = await t.submitted();
+    expect(failure(await t.apply(actionId))).toMatch(/did not confirm whether this List was created/);
+    expect(failure(await t.reject(actionId))).toMatch(/never confirmed whether this List was created/);
+    unwrap(await t.apply(actionId));
+    expect([...t.x.lists.values()].map(list => list.name)).toEqual(["Friends", "Friends"]);
+    unwrap(await t.revert(actionId));
+    expect([...t.x.lists.keys()]).toEqual(["5"]);
   });
 
   it("restores a List's details on revert", async () => {

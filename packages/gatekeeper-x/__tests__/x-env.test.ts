@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
-  BASE_SCOPES, DEFAULT_DAILY_READ_LIMIT, RESOURCES, RESOURCE_SCOPES, dailyReadLimit, grantedResourcePatterns,
-  kindOfPattern, scopesFor, webhookUrl, type Env,
+  BASE_SCOPES, DEFAULT_DAILY_READ_LIMIT, RESOURCES, RESOURCE_SCOPES, dailyReadLimit, getRedirectUri,
+  grantedResourcePatterns, kindOfPattern, scopesFor, webhookUrl, type Env,
 } from "../src/x-env";
+
+describe("getRedirectUri", () => {
+  it("joins the base URL however many trailing slashes it was configured with", () => {
+    expect(getRedirectUri({ BASE_URL: "https://gadgets.example/gatekeeper/x//" } as Env))
+      .toBe("https://gadgets.example/gatekeeper/x/oauth");
+    expect(getRedirectUri({} as Env)).toBe("http://localhost:8787/gatekeeper/x/oauth");
+  });
+});
 
 describe("scopesFor", () => {
   it("asks for every resource's scopes when no resource types are named", () => {

@@ -25,7 +25,7 @@ import type { StoredIdentity } from "./x-credentials";
 import { XCursor, type XPage } from "./x-cursor";
 import type { XHookParams, XPostHookTarget } from "./x-hooks";
 import {
-  indexIncludes, isMutedStatus, mentionsProtectedAuthor, toListInfo, toPostInfo, toUserInfo,
+  authorsUnverified, indexIncludes, isMutedStatus, mentionsProtectedAuthor, toListInfo, toPostInfo, toUserInfo,
   type WireList, type WirePost, type WireUser,
 } from "./x-normalize";
 import {
@@ -142,8 +142,12 @@ function newestFirst(options: XTimeRangeOptions | undefined): boolean {
   return options?.untilId === undefined && options?.endTime === undefined;
 }
 
-function postScope(posts: readonly XPostInfo[], privateSource = false): ObservationScope {
-  return privateSource || mentionsProtectedAuthor(posts) ? OWNER : BASELINE;
+/**
+ * The scope a read disclosing `posts` needs: the owner's when `restricted` -- a private source, or
+ * authors whose privacy X did not report -- or when any post is a protected account's.
+ */
+function postScope(posts: readonly XPostInfo[], restricted = false): ObservationScope {
+  return restricted || mentionsProtectedAuthor(posts) ? OWNER : BASELINE;
 }
 
 function countOf(count: number, noun: string, plural = `${noun}s`): string {
@@ -188,7 +192,8 @@ function postsCursor(ctx: SessionContext, size: number, listing: PostListing): C
         ? await host.cached(`page:${listing.cacheKey}:${size}`, PAGE_TTL_MS, load)
         : await load();
       const includes = indexIncludes(envelope.includes);
-      const fetched = (envelope.data ?? []).map(post => toPostInfo(post, includes));
+      const wire = envelope.data ?? [];
+      const fetched = wire.map(post => toPostInfo(post, includes));
       const items = overlayPosts(fetched, host.pending(), listing.overlay, {
         me, resolve: id => host.resolve(id), newestPage: token === undefined && listing.newestFirst,
       });
@@ -196,7 +201,7 @@ function postsCursor(ctx: SessionContext, size: number, listing: PostListing): C
         items,
         nextToken: envelope.meta?.next_token,
         observation: { title: listing.title, description: listing.describe(items.length) },
-        scope: postScope(items, listing.privateSource),
+        scope: postScope(items, listing.privateSource || authorsUnverified(wire, includes)),
       };
     },
     authorize: page => gate.authorize(page.observation, page.scope),
@@ -248,11 +253,16 @@ function usersCursor(ctx: SessionContext, size: number, listing: UserListing): C
 // ---------------------------------------------------------------------------
 // Single reads. These authorize nothing: the method returning the data does.
 
+/** A read post, and whether X left unsaid if an author it discloses is protected (`authorsUnverified`). */
+export type PostRead = { info: XPostInfo; unverified: boolean };
+
 /** A post as X has it, cached, with no pending action replayed. */
-export async function fetchPost(host: XSessionHost, id: string): Promise<XPostInfo> {
+export async function fetchPost(host: XSessionHost, id: string): Promise<PostRead> {
   const envelope = await host.cached(`post:${id}`, POST_TTL_MS,
     () => host.read<WirePost>(1, api => api.get<WirePost>(`/2/tweets/${id}`, POST_FIELDS)));
-  return toPostInfo(requireData(envelope, "post"), indexIncludes(envelope.includes));
+  const post = requireData(envelope, "post");
+  const includes = indexIncludes(envelope.includes);
+  return { info: toPostInfo(post, includes), unverified: authorsUnverified([post], includes) };
 }
 
 /** A List as X has it, cached, with no pending action replayed. */
@@ -262,18 +272,19 @@ export async function fetchList(host: XSessionHost, id: string): Promise<XListIn
   return toListInfo(requireData(envelope, "List"), indexIncludes(envelope.includes));
 }
 
-async function readPost(ctx: SessionContext, id: string): Promise<XPostInfo> {
+async function readPost(ctx: SessionContext, id: string): Promise<PostRead> {
   const { host } = ctx;
   const resolved = host.resolve(id);
   if (isProvisional(resolved)) {
     const pending = pendingPost(resolved, host.pending(), await host.me(), ref => host.resolve(ref));
     if (!pending) throw new Error("No pending post has this temporary ID; it may have been rejected.");
-    return pending;
+    // The account's own draft: its author is the connected account, whose privacy is known.
+    return { info: pending, unverified: false };
   }
-  const info = await fetchPost(host, resolved);
+  const { info, unverified } = await fetchPost(host, resolved);
   const visible = overlayPost(info, host.pending(), ref => host.resolve(ref));
   if (!visible) throw new Error("This post has been deleted.");
-  return visible;
+  return { info: visible, unverified };
 }
 
 /** A user to look up: by handle, or by the ID X assigned them. */
@@ -289,18 +300,23 @@ export async function readUser(host: XSessionHost, target: UserTarget): Promise<
   return requireData(envelope, "user");
 }
 
-async function readList(ctx: SessionContext, id: string): Promise<XListInfo> {
+/**
+ * A List with pending actions replayed, and whether reading it is private to the account: X says
+ * the List is private, or a pending change makes it so. A pending change to public lifts nothing,
+ * since the List stays private on X until that change is approved.
+ */
+async function readList(ctx: SessionContext, id: string): Promise<{ info: XListInfo; restricted: boolean }> {
   const { host } = ctx;
   const resolved = host.resolve(id);
   if (isProvisional(resolved)) {
     const pending = pendingList(resolved, host.pending(), ref => host.resolve(ref));
     if (!pending) throw new Error("No pending List has this temporary ID; it may have been rejected.");
-    return pending;
+    return { info: pending, restricted: pending.private };
   }
   const info = await fetchList(host, resolved);
   const visible = overlayList(info, host.pending(), ref => host.resolve(ref));
   if (!visible) throw new Error("This List has been deleted.");
-  return visible;
+  return { info: visible, restricted: info.private || visible.private };
 }
 
 /** Captures a draft's images for the action that will upload them once approved. */
@@ -347,15 +363,19 @@ export class XPostImpl extends RpcTarget implements XPost {
   }
 
   /** The post, confined to its scope. Authorizes nothing. */
-  async #info(): Promise<XPostInfo> {
-    const info = await readPost(this.#ctx, this.#id);
+  async #read(): Promise<PostRead> {
+    const read = await readPost(this.#ctx, this.#id);
     if (this.#scope) {
       const allowed = this.#ctx.host.resolve(await this.#scope());
-      if (this.#ctx.host.resolve(info.conversationId) !== allowed) {
+      if (this.#ctx.host.resolve(read.info.conversationId) !== allowed) {
         throw new Error("This post isn't part of the conversation this capability was granted for.");
       }
     }
-    return info;
+    return read;
+  }
+
+  async #info(): Promise<XPostInfo> {
+    return (await this.#read()).info;
   }
 
   /** This post's conversation: what `getConversationPost` confines its posts to. */
@@ -368,9 +388,9 @@ export class XPostImpl extends RpcTarget implements XPost {
   }
 
   async getInfo(): Promise<XPostInfo> {
-    const info = await this.#info();
+    const { info, unverified } = await this.#read();
     await this.#ctx.gate.authorize(
-      { title: "Read an X post", description: `Read a post by ${who(info.author)}.` }, postScope([info]));
+      { title: "Read an X post", description: `Read a post by ${who(info.author)}.` }, postScope([info], unverified));
     return info;
   }
 
@@ -604,8 +624,11 @@ export class XUserImpl extends RpcTarget implements XUser {
 
   async getInfo(): Promise<XUserInfo> {
     const info = await profileInfo(this.#ctx, await readUser(this.#ctx.host, this.#target), true);
+    // The relationship is one edge of the connected account's follow graph, which is private to it
+    // when it is protected, as `listFollowing` and `listFollowers` treat the whole graph.
+    const restricted = info.relationship !== undefined && (await this.#ctx.host.me()).protected;
     await this.#ctx.gate.authorize(
-      { title: "Read an X profile", description: `Read the profile of ${who(info)}.` }, BASELINE);
+      { title: "Read an X profile", description: `Read the profile of ${who(info)}.` }, restricted ? OWNER : BASELINE);
     return info;
   }
 
@@ -684,17 +707,17 @@ export class XListImpl extends RpcTarget implements XList {
   }
 
   async getInfo(): Promise<XListInfo> {
-    const info = await readList(this.#ctx, this.#id);
+    const { info, restricted } = await readList(this.#ctx, this.#id);
     await this.#ctx.gate.authorize({
       title: "Read an X List",
       description: `Read the List "${escapeObservationValue(info.name)}".`,
-    }, info.private ? OWNER : BASELINE);
+    }, restricted ? OWNER : BASELINE);
     return info;
   }
 
   async listPosts(options?: XPageOptions): Promise<Cursor<XPostInfo>> {
     const size = pageSize(options);
-    const list = await readList(this.#ctx, this.#id);
+    const { info: list, restricted } = await readList(this.#ctx, this.#id);
     const id = this.#ctx.host.resolve(this.#id);
     if (isProvisional(id)) return pendingCursor([]);
     const name = escapeObservationValue(list.name);
@@ -704,7 +727,7 @@ export class XListImpl extends RpcTarget implements XList {
       }),
       overlay: { kind: "others" },
       newestFirst: false,
-      privateSource: list.private,
+      privateSource: restricted,
       title: "Read an X List's posts",
       describe: count => `Read ${countOf(count, "post")} from the List "${name}".`,
       cacheKey: `list-posts:${id}`,
@@ -713,7 +736,7 @@ export class XListImpl extends RpcTarget implements XList {
 
   async listMembers(options?: XPageOptions): Promise<Cursor<XUserInfo>> {
     const size = pageSize(options);
-    const list = await readList(this.#ctx, this.#id);
+    const { info: list, restricted } = await readList(this.#ctx, this.#id);
     const id = this.#ctx.host.resolve(this.#id);
     const name = escapeObservationValue(list.name);
     const { host } = this.#ctx;
@@ -730,7 +753,7 @@ export class XListImpl extends RpcTarget implements XList {
       }),
       relationship: false,
       overlay: (users, newestPage) => overlayMembers(users, host.pending(), id, ref => host.resolve(ref), newestPage),
-      privateSource: () => list.private,
+      privateSource: () => restricted,
       title: "Read an X List's members",
       describe: count => `Read ${countOf(count, "member")} of the List "${name}".`,
     });
@@ -767,7 +790,7 @@ export class XListImpl extends RpcTarget implements XList {
 
   /** The List an action targets, which the connected account must own: not an observation. */
   async #owned(): Promise<{ id: string; info: XListInfo }> {
-    const info = await readList(this.#ctx, this.#id);
+    const { info } = await readList(this.#ctx, this.#id);
     if (info.owner.id !== (await this.#ctx.host.me()).id) {
       throw new Error("Only Lists the connected account owns can be changed.");
     }
@@ -926,13 +949,14 @@ export class XAccountSessionImpl extends RpcTarget implements XAccountSession {
           ...LIST_FIELDS, ...pageQuery(size, token, { min: 1, max: 100 }),
         }));
         const includes = indexIncludes(envelope.includes);
-        const items = overlayOwnedLists((envelope.data ?? []).map(list => toListInfo(list, includes)),
-          host.pending(), ref => host.resolve(ref), token === undefined);
+        const fetched = (envelope.data ?? []).map(list => toListInfo(list, includes));
+        const items = overlayOwnedLists(fetched, host.pending(), ref => host.resolve(ref), token === undefined);
         return {
           items,
           nextToken: envelope.meta?.next_token,
           observation: { title: "List owned X Lists", description: `Read ${countOf(items.length, "owned List")}.` },
-          scope: items.some(list => list.private) ? OWNER : BASELINE,
+          // As `readList`: what X says is private stays so, whatever a pending change would make it.
+          scope: [...fetched, ...items].some(list => list.private) ? OWNER : BASELINE,
         } satisfies XPage<XListInfo>;
       },
       authorize: page => gate.authorize(page.observation, page.scope),

@@ -1,7 +1,7 @@
 // Configuration shared by every part of the X gatekeeper: the Worker's environment, X's endpoints,
 // the connectable resources with their URL patterns, and the OAuth scopes each one needs.
 
-import type { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
+import { stripTrailingSlashes, type SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import type { PreviewOAuthEnv } from "@gadgets/gatekeeper-kit/preview-oauth";
 
 /** The vendor id: the router's `/gatekeeper/x/` path segment, and the log attribution. */
@@ -50,8 +50,9 @@ export const ACCOUNT_URL = "https://x.com/settings/account";
 /** The default `X_DAILY_READ_LIMIT`: about $10 a day at X's post-read price. */
 export const DEFAULT_DAILY_READ_LIMIT = 2000;
 
+/** This Worker's public base URL, without a trailing slash. */
 export function getBaseUrl(env: Env): string {
-  return (env.BASE_URL || "http://localhost:8787/gatekeeper/x").replace(/\/+$/, "");
+  return stripTrailingSlashes(env.BASE_URL || "http://localhost:8787/gatekeeper/x");
 }
 
 export function getBasePath(env: Env): string {

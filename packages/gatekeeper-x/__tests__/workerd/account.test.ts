@@ -184,6 +184,13 @@ describe("identity", () => {
     expect(unwrap(await hooks().user(stale, "describe"))).toMatchObject({ uniqueName: "@alice" });
   });
 
+  it("takes an account X didn't say was public for a protected one", async () => {
+    const x = new FakeX().install();
+    const id = await seedAccount(x, ALICE, { identity: { fetchedAt: 0 } });
+    x.on("GET", /^\/2\/users\/me/, () => json({ data: { id: ALICE.id, username: "alice", name: "Alice" } }));
+    expect(unwrap(await hooks().account(id, "getIdentity"))).toMatchObject({ id: ALICE.id, protected: true });
+  });
+
   it("reports only the resource types the grant covers", async () => {
     const x = new FakeX().install();
     const id = await seedAccount(x, ALICE, { scopes: scopesFor([RESOURCES.profile.urlPattern]) });

@@ -11,6 +11,9 @@ import { generateNonce } from "@gadgets/gatekeeper-kit/connect-nonce";
 import type { StoredIdentity } from "../../src/x-credentials";
 import { getRedirectUri, scopesFor, type Env } from "../../src/x-env";
 import type { WireList, WirePost, WireUser } from "../../src/x-normalize";
+import { extractUrls } from "../../src/x-text";
+
+type WireLink = NonNullable<NonNullable<WirePost["entities"]>["urls"]>[number];
 
 export const API = "https://api.x.com";
 
@@ -71,8 +74,11 @@ export class FakeX {
   readonly webhooks = new Map<string, { id: string; url: string; valid: boolean }>();
   /** The app's X Activity API subscriptions, by ID. */
   readonly subscriptions = new Map<string, FakeSubscription>();
+  /** Each published post's text as sent, before its links were shortened: what duplicates compare. */
+  readonly #sentTexts = new Map<string, string>();
   #nextId = 1_900_000_000_000_000_000n;
   #nextGrant = 100;
+  #nextLink = 1;
   #routes: Array<{ method: string; pattern: RegExp; handler: Handler }> = [];
 
   install(): this {
@@ -84,6 +90,17 @@ export class FakeX {
   on(method: string, pattern: RegExp, handler: Handler): this {
     this.#routes.unshift({ method, pattern, handler });
     return this;
+  }
+
+  /** Acts on the next matching request as X would, then loses the answer, as a reset connection does. */
+  loseAnswer(method: string, pattern: RegExp): this {
+    let lost = false;
+    return this.on(method, pattern, request => {
+      if (lost) return undefined;
+      lost = true;
+      this.#builtIn(request);
+      throw new TypeError("connection reset");
+    });
   }
 
   /** How many recorded requests match. */
@@ -257,9 +274,11 @@ export class FakeX {
     }
     if (method === "GET" && (match = path.match(/^\/2\/users\/(\d+)\/(tweets|mentions|bookmarks|liked_tweets|timelines\/reverse_chronological)$/))) {
       const [, userId, kind] = match;
-      const since = url.searchParams.get("start_time");
+      const since = Date.parse(url.searchParams.get("start_time") ?? "");
+      const until = Date.parse(url.searchParams.get("end_time") ?? "");
       const posts = [...this.posts.values()].filter(post => {
-        if (since && (post.created_at ?? "") < since) return false;
+        const created = Date.parse(post.created_at ?? "");
+        if (created < since || created > until) return false;
         switch (kind) {
           case "tweets": return post.author_id === userId;
           case "mentions": return post.text?.includes(`@${this.users.get(userId)?.username}`) ?? false;
@@ -296,22 +315,34 @@ export class FakeX {
       const members = [...this.listMembers.get(match[1]) ?? []].flatMap(id => this.users.get(id) ?? []);
       return this.#page(url, members, "pagination_token");
     }
+    if (method === "GET" && (match = path.match(/^\/2\/lists\/(\d+)\/tweets$/))) {
+      const members = this.listMembers.get(match[1]) ?? new Set<string>();
+      const posts = [...this.posts.values()].filter(post => members.has(post.author_id ?? ""));
+      return this.#page(url, posts.toReversed(), "pagination_token", items => this.#includes(url, items).includes);
+    }
 
     // Writes, as the connected user.
     if (method === "POST" && path === "/2/tweets") {
       const { text, reply, media } = body() as { text: string; reply?: { in_reply_to_tweet_id: string }; media?: { media_ids: string[] } };
-      const recent = [...this.posts.values()].find(post => post.author_id === me && post.text === text);
+      const recent = [...this.posts.values()]
+        .find(post => post.author_id === me && (this.#sentTexts.get(post.id) ?? post.text) === text);
       if (recent && text) return problem(403, "You are not allowed to create a Tweet with duplicate content.");
       const parent = reply ? this.posts.get(reply.in_reply_to_tweet_id) : undefined;
       if (reply && !parent) return problem(400, "The Tweet you are replying to has been deleted.");
-      const post = this.post(this.users.get(me)!, text, {
+      const author = this.users.get(me)!;
+      const id = this.id();
+      const shortened = this.#shorten(text, `https://x.com/${author.username}/status/${id}/photo/1`, media?.media_ids);
+      const post = this.post(author, shortened.text, {
+        id,
         ...(parent ? {
           conversation_id: parent.conversation_id, in_reply_to_user_id: parent.author_id,
           referenced_tweets: [{ type: "replied_to", id: parent.id }],
         } : {}),
-        ...(media ? { attachments: { media_keys: media.media_ids.map(id => `3_${id}`) } } : {}),
+        ...(media ? { attachments: { media_keys: media.media_ids.map(mediaId => `3_${mediaId}`) } } : {}),
+        ...(shortened.urls.length ? { entities: { urls: shortened.urls } } : {}),
       });
-      return json({ data: { id: post.id, text } }, { status: 201 });
+      this.#sentTexts.set(id, text);
+      return json({ data: { id: post.id, text: post.text } }, { status: 201 });
     }
     if (method === "DELETE" && (match = path.match(/^\/2\/tweets\/(\d+)$/))) {
       const post = this.posts.get(match[1]);
@@ -347,7 +378,10 @@ export class FakeX {
     if (method === "POST" && path === "/2/lists") {
       const { name, description, private: isPrivate } = body() as { name: string; description?: string; private?: boolean };
       const id = this.id();
-      this.lists.set(id, { id, name, description: description ?? "", private: isPrivate === true, owner_id: me, member_count: 0, follower_count: 0 });
+      this.lists.set(id, {
+        id, name, description: description ?? "", private: isPrivate === true, owner_id: me, member_count: 0, follower_count: 0,
+        created_at: new Date().toISOString(),
+      });
       return json({ data: { id, name } });
     }
     if ((match = path.match(/^\/2\/lists\/(\d+)$/))) {
@@ -401,6 +435,26 @@ export class FakeX {
     }
     this.spentRefreshTokens.add(refreshToken);
     return json(this.grant(user));
+  }
+
+  /**
+   * A post's text as X keeps it: each link replaced by a t.co link and listed in `entities.urls`
+   * as written (a bare domain gaining `http://`), and attached media given a t.co link of its own.
+   */
+  #shorten(text: string, mediaUrl: string, mediaIds: string[] = []): { text: string; urls: WireLink[] } {
+    const urls: WireLink[] = [];
+    let shortened = text;
+    for (const url of extractUrls(text)) {
+      const short = `https://t.co/${this.#nextLink++}`;
+      shortened = shortened.replace(url, short);
+      urls.push({ url: short, expanded_url: /^https?:\/\//i.test(url) ? url : `http://${url}` });
+    }
+    if (mediaIds.length > 0) {
+      const short = `https://t.co/${this.#nextLink++}`;
+      shortened = `${shortened} ${short}`.trim();
+      urls.push({ url: short, expanded_url: mediaUrl, media_key: `3_${mediaIds[0]}` });
+    }
+    return { text: shortened, urls };
   }
 
   #visible(viewer: string, post: WirePost): boolean {

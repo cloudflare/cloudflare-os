@@ -29,7 +29,7 @@ One per binding.
 | `x:nextActionId`, `x:action:<id>`, `retained:x:action:<id>`, `applied:x:action:` | kit `ActionJournal` records of `XAction` | Pending, failed and retained (applied) actions. Applied actions are kept 30 days for revert, pruned at most every six hours. Every record is fenced on `pinnedUserId`. |
 | `refs:seq:provisional`, `refs:prov:<~N>`, `refs:kind:<~N>` | kit `ProvisionalIds` | Temporary IDs of posts and Lists not yet created, and the IDs X assigned them. |
 | `progress:<actionId>` | `string[]` | The posts a thread has published so far, so a retry resumes rather than reposting. |
-| `attempt:<actionId>:<index>` | `{ at }` | A send whose outcome X never reported. The next apply checks the account's posts since `at` before sending again; a rejection is refused while one exists. Leftovers are swept with housekeeping. |
+| `attempt:<actionId>:<index>` | `{ at, mediaIds? }` | A send whose outcome X never reported: a post's, by its index in the thread, with the media it attached, or a List creation's, at index 0. Before sending again the next apply binds the one post or owned List from around `at` that matches what was sent; a rejection is refused while one exists. Leftovers are swept with housekeeping. |
 | `images:<handle>:*`, `imageAllocations:<handle>`, `imageAllocations:totalBytes` | kit `ActionFileStore` | Images captured for pending posts: 5 MiB each, 64 MiB together. Released once posted; swept when unreferenced for an hour. |
 | `cache:@x:*` | kit `KvTtlCache` | Reads, partitioned by connection generation and invalidated after every action decision. |
 | `verdict:<xUserId>` | `number` | When an observer's X account last proved it can see the bound post or List; trusted for an hour. |

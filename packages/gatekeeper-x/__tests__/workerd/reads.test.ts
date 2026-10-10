@@ -162,6 +162,34 @@ describe("what a read discloses", () => {
     expect(await exclusions(name)).toEqual([["observer"]]);
   });
 
+  it("withholds posts whose authors X didn't say were public", async () => {
+    const { x, props, name } = await observed();
+    // A 200 that failed to hydrate the author expansion, as X may answer.
+    const post = x.post(CAROL, "for followers only, @alice");
+    const unhydrated = { data: [post], errors: [{ title: "Partial Error", resource_id: CAROL.id }], meta: { result_count: 1 } };
+    x.on("GET", /\/mentions/, () => json(unhydrated));
+    x.on("GET", new RegExp(`^/2/tweets/${post.id}\\b`), () => json({ ...unhydrated, data: post }));
+    const [page] = unwrap(await hooks().run(name, props, [["listMentions"]], { pages: 1 })) as XPostInfo[][];
+    expect(page[0].author.protected).toBe(false);
+    unwrap(await hooks().run(name, props, [["getPost", post.id], ["getInfo"]]));
+    expect(await exclusions(name)).toEqual([["observer"], ["observer"]]);
+  });
+
+  it("withholds a protected account's relationships, as it does its follow lists", async () => {
+    const x = new FakeX().install();
+    const props: GatekeeperProps = {
+      userObjectId: await seedAccount(x, ALICE, { identity: { protected: true } }), resourceKind: "account",
+    };
+    const name = crypto.randomUUID();
+    unwrap(await hooks().addObserver(name, props, "observer", await seedAccount(x, BOB)));
+    x.following.add(`${ALICE.id}:${BOB.id}`);
+    const bob = unwrap(await hooks().run(name, props, [["getUser", "bob"], ["getInfo"]])) as XUserInfo;
+    expect(bob.relationship).toEqual({ following: true, followedBy: false });
+    // Its own profile carries no relationship, so it stays public.
+    unwrap(await hooks().run(name, props, [["getUser", "alice"], ["getInfo"]]));
+    expect(await exclusions(name)).toEqual([["observer"], undefined]);
+  });
+
   it("shares private reads with an observer connected as the same X user", async () => {
     const { x, props, name } = await observed(ALICE);
     x.bookmarks.add(`${ALICE.id}:${x.post(BOB, "saved").id}`);
@@ -175,6 +203,21 @@ describe("what a read discloses", () => {
     const list = unwrap(await hooks().run(name, props, [["getList", "77"], ["getInfo"]])) as XListInfo;
     expect(list).toMatchObject({ name: "Secret", private: true });
     expect(await exclusions(name)).toEqual([["observer"]]);
+  });
+
+  it("keeps withholding a private List while a change making it public waits", async () => {
+    const { x, props, name } = await observed();
+    x.lists.set("77", { id: "77", name: "Secret", private: true, owner_id: ALICE.id, member_count: 1 });
+    x.listMembers.set("77", new Set([BOB.id]));
+    x.post(BOB, "listed");
+    unwrap(await hooks().run(name, props, [["getList", "77"], ["update", { private: false }]]));
+    const list = unwrap(await hooks().run(name, props, [["getList", "77"], ["getInfo"]])) as XListInfo;
+    // The gadget sees its change, but X has not made the List public yet.
+    expect(list.private).toBe(false);
+    unwrap(await hooks().run(name, props, [["getList", "77"], ["listMembers"]], { pages: 1 }));
+    unwrap(await hooks().run(name, props, [["getList", "77"], ["listPosts"]], { pages: 1 }));
+    unwrap(await hooks().run(name, props, [["listOwnedLists"]], { pages: 1 }));
+    expect(await exclusions(name)).toEqual([["observer"], ["observer"], ["observer"], ["observer"]]);
   });
 });
 
