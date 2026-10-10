@@ -1,0 +1,23 @@
+[
+  {
+    "name": "CLIENT_ID",
+    "kind": "secret",
+    "label": "OAuth 2.0 Client ID",
+    "help": "X bills every API request to this app's prepaid credits, so the app's owner pays for every user's reads and posts. Posts containing a link cost more than other posts.",
+    "consoleUrl": "https://console.x.com",
+    "setupSteps": [
+      "In the X Developer Console, create a Project and an App.",
+      "Under User authentication settings, enable OAuth 2.0 with the type \"Web App, Automated App or Bot\" and the permission \"Read and write\".",
+      "Set the Callback URI to the value below, and give the app a website URL.",
+      "Buy credits and set a spending limit: X bills every request this app makes.",
+      "X requires its prior approval before an app posts AI-generated replies; replies drafted by agents are sent only once a user approves each one, but the obligation is the app owner's.",
+      "Copy the OAuth 2.0 Client ID and Client Secret here."
+    ],
+    "redirectUriTemplate": "{PUBLIC_BASE_URL}/gatekeeper/x/oauth"
+  },
+  {
+    "name": "CLIENT_SECRET",
+    "kind": "secret",
+    "label": "OAuth 2.0 Client Secret"
+  }
+]
