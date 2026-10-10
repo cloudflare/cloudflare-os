@@ -1,12 +1,19 @@
 packages/gatekeeper-google/src/resources.ts
   s_010272bf0842e6::t_22f84ed742c5bb 46-47
   s_010272bf0842e6::t_1fa0842688c324 52
+  s_010272bf0842e6::t_34a036d52a3f77 52,231
 packages/gatekeeper-google/README.md
   s_010272bf0842e6::t_1fa0842688c324 59,358-404
   s_010272bf0842e6::t_4829c0511d9f80 84
   s_010272bf0842e6::t_c6442b0ddf78f9 213,405
+  s_010272bf0842e6::t_e3c6fc08a9a2ac 378-380,390-392,395-398
+  s_010272bf0842e6::t_76a5837fc72580 59
+  s_010272bf0842e6::t_c445448cde8981 358-377,381-389,393-394,399-404
+  s_010272bf0842e6::t_bda9496a98f133 405
 packages/gatekeeper-google/__tests__/resources.test.ts
   s_010272bf0842e6::t_1fa0842688c324 176-210
+  s_010272bf0842e6::t_995e11ed4639b0 176-210
+  s_010272bf0842e6::t_c323d1fed8041b 335
 ---
 {
   "schema_version": "authorship/3.0.0",
