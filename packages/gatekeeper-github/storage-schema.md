@@ -187,6 +187,9 @@ One per connected account, named by its `UserAccount` id; see `src/github-hooks.
 - `secret` -> the HMAC key every webhook of this driver signs its deliveries with.
 - `webhook:<repoId>` -> `{ id, repo: { owner, repo, id } }`, the webhook this driver added to the
   repository, from when its first hook is enabled until its last is disabled.
+- `repaired:<repoId>` -> when the hourly check last restored that webhook's configuration: what
+  GitHub failed to deliver before then is redelivered whatever the refusal, which may have been the
+  misconfiguration's. Deleted with the webhook.
 - `checkAt` -> when to next check the webhooks on GitHub, hourly while there are any.
 - `reg:<hookKey>` -> what one enabled hook watches: its repository, the issue or pull request it
   is narrowed to, its event kinds, and the account's GitHub user id.

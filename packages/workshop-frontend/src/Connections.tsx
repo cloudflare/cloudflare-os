@@ -429,8 +429,9 @@ export default function Connections({ overseer, gadget, chatId, authenticatedApi
                         </div>
                         <div className="ml-auto flex shrink-0 items-center gap-2">
                           <HookToggle
+                            hookTitle={hook.description.title}
                             enabled={hook.enabled}
-                            disabled={togglingHooks.has(hook.id)}
+                            pending={togglingHooks.has(hook.id)}
                             onToggle={(enabled) => handleToggleHook(hook.id, enabled)}
                           />
                           <Tooltip content="Delete hook" asChild>

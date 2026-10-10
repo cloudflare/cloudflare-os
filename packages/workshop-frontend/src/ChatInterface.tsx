@@ -4981,8 +4981,9 @@ function ChatInterface({
               {!isDeleted && (
                 <div className="ml-3 flex flex-shrink-0 items-center self-center">
                   <HookToggle
+                    hookTitle={log.description.title}
                     enabled={log.enabled}
-                    disabled={isProc}
+                    pending={isProc}
                     onToggle={(enabled) => handleToggleHook(msg.actionId, log.hookId!, enabled)}
                   />
                 </div>

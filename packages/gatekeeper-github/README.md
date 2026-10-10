@@ -109,17 +109,31 @@ creator's access.
 
 The repository's other admins can see the webhook, though not its secret. Every hour the worker
 checks each webhook on GitHub, and restores one that someone has deleted, deactivated, pointed
-elsewhere, or given other events or another secret: to stop the deliveries, disable the hooks. The
-same check moves them to a new `WEBHOOK_ORIGIN` within the hour. GitHub
-never retries a failed delivery itself, so the same check asks it to redeliver what it failed to
-deliver in the past two hours, up to 20 an hour for each account, and a delivery that reaches the
-worker is retried until the gadget's hook accepts it, eight attempts in all. When every recent delivery failed,
-as when Cloudflare Access turns GitHub away, the check logs `hooks.webhook.deliveries.failing` with
-the statuses GitHub got.
+elsewhere, switched to form-encoded payloads or unverified TLS, or given other events or another
+secret: to stop the deliveries, disable the hooks. The same check moves them to a new
+`WEBHOOK_ORIGIN` within the hour. GitHub never retries a failed delivery itself, so the same check
+asks it to redeliver what it failed to deliver in the past two hours: up to 20 an hour for each
+account, shared among its repositories so that a busy one can't crowd out the rest. That includes
+what was refused while the webhook was misconfigured, by this worker or by another receiver, as
+GitHub redelivers to the webhook as it is configured now. Failures beyond that, or older than two
+hours, are lost, as is anything another receiver accepted while the webhook pointed there. A
+delivery that reaches the worker is retried until the gadget's hook accepts it, eight attempts in
+all. When every recent delivery failed, as when Cloudflare Access turns GitHub away, the check logs
+`hooks.webhook.deliveries.failing` with the statuses GitHub got.
 
 For local development, GitHub cannot reach `localhost`: run a tunnel to the dev server (e.g.
 `cloudflared tunnel --url http://localhost:8787`) and set `WEBHOOK_ORIGIN` to its origin in the
 root `.dev.vars`.
+
+What this relies on GitHub for is checked against GitHub itself by `pnpm test:contract`
+(`__tests__/contract`), which the `github-contract` workflow runs weekly and on demand once the
+`CONTRACT_GITHUB_TOKEN` secret and `CONTRACT_GITHUB_REPO` variable name a disposable private
+repository:
+- a reader without access gets a 404, whatever ETag it sends;
+- a redelivery uses the webhook's current URL, encoding and secret;
+- the delivery log is newest first;
+- the account is the sender of what it does;
+- each event's payload parses.
 
 ## Using a GitHub App instead
 

@@ -53,8 +53,9 @@ import {
 import { getBasePath, getBaseUrl, webhookOrigin, type Env } from "./github-env";
 import {
   HOOKS_NOT_CONFIGURED, handleWebhookRequest,
-  type GitHubEventHookTarget, type GitHubHookDelivery, type GitHubHookParams, type GitHubWebhookEvent,
+  type GitHubEventHookTarget, type GitHubHookDelivery, type GitHubHookParams,
 } from "./github-hooks";
+import type { GitHubWebhookEvent } from "./github-webhook-events";
 import { assertIssueSearchResultsInRepo, buildIssueSearchQuery } from "./github-search";
 import {
   MAX_DIFF_BLOB_BYTES,
@@ -3806,8 +3807,15 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     if (resourceKind === "issue" && onPullRequest) return;
     if (resourceKind === "pull" && !onPullRequest) return;
     try {
-      // The webhook outlives the account's access to the repository, and its connection.
-      await this.#getRepoMetadata();
+      // The webhook outlives the account's access to the repository, and its connection, so every
+      // delivery asks GitHub afresh, never the cache: a revoked account is refused even moments
+      // after a delivery that succeeded. Asked by the repository's id, not its name, which a
+      // repository renamed since may have left to another; and with the last answer's ETag, so an
+      // unchanged repository answers 304, which costs no rate limit.
+      await this.#loadCachedWithEtag(this.#cacheKey("repo-access", String(pin.id)), 0, async etag => {
+        const result = await this.#withApi(api => api.getRepoByIdConditional(pin.id, { ifNoneMatch: etag }));
+        return result.status === 304 ? result : { ...result, data: true };
+      });
     } catch (error) {
       if (!(error instanceof GitHubApiError && error.status === 404)) throw error;
       // Nothing to retry, and nothing else would tell why the hook went quiet.

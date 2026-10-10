@@ -19,7 +19,15 @@ const ZERO = "0".repeat(40);
 const CREATED = new Date().toISOString();
 
 type Row = Record<string, unknown>;
-type Webhook = { id: number; url: string; secret: string; events: string[]; active: boolean };
+type Webhook = {
+  id: number; url: string; secret: string; events: string[]; active: boolean;
+  /** The name of the repository it is on, in `acme`. */
+  repo: string;
+  /** `"json"` or `"form"`, GitHub's `config.content_type`. */
+  contentType: string;
+  /** `"0"` to verify the receiver's certificate, GitHub's `config.insecure_ssl`. */
+  insecureSsl: string;
+};
 /** One attempt at a delivery, as GitHub logs it. */
 type Delivery = {
   id: number; hookId: number; guid: string; event: string; body: string; status_code: number; delivered_at: string;
@@ -37,6 +45,12 @@ const repository = {
   id: REPO_ID, name: REPO, full_name: `${OWNER}/${REPO}`, html_url: `https://github.com/${OWNER}/${REPO}`,
   default_branch: "main", owner: user(OWNER, 1),
 };
+
+/** A second repository of the account's, for what spans repositories. */
+const gizmos = {
+  ...repository, id: 4242, name: "gizmos", full_name: `${OWNER}/gizmos`, html_url: `https://github.com/${OWNER}/gizmos`,
+};
+const REPOSITORIES: Record<string, typeof repository> = { [REPO]: repository, gizmos };
 
 function issue(number: number, overrides: Row = {}): Row {
   return {
@@ -73,6 +87,11 @@ const storedIssueEvent = (number: number) => ({
   id: "e".repeat(64), repoId: REPO_ID, actor: null, kind: "issue", action: "opened", number, issue: issue(number),
 });
 
+/** A push, as GitHub delivers one: its repository carries `pushed_at`, in seconds, in this event alone. */
+const push = (ref: string, before: string, head: string, extra: Row = {}) => ({
+  ref, before, after: head, repository: { ...repository, pushed_at: Math.floor(Date.now() / 1000) }, ...extra,
+});
+
 async function hmac(secret: string, body: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
@@ -102,6 +121,12 @@ class FakeGitHub {
    */
   stallDeletes = false;
   stalledDeletes = 0;
+  /** How many repository reads GitHub answered 304, as it does a conditional read of an unchanged one. */
+  notModified = 0;
+  /** While set, the repository whose name this one had, renamed since, now names. */
+  nameReusedBy: typeof repository | undefined;
+  /** While set, GitHub agrees to this many more redeliveries, then refuses the rest with a 500. */
+  redeliveriesAllowed: number | undefined;
   #nextId = 100;
 
   constructor() {
@@ -114,48 +139,66 @@ class FakeGitHub {
     const { method } = request;
     this.requests.push(`${method} ${pathname}`);
     if (pathname === "/user") return Response.json(ADA);
-    if (pathname === API && !this.readable) return Response.json({ message: "Not Found" }, { status: 404 });
-    if (pathname === API) return Response.json({ ...repository, permissions: { admin: this.admin } });
-    if (pathname === `${API}/issues/42`) return Response.json(issue(42));
     if (pathname === "/applications/test-client/token" && method === "DELETE") {
       return new Response(null, { status: 204 });
     }
-    if (pathname.startsWith(`${API}/hooks`) && !this.admin) {
+    const byId = /^\/repositories\/(\d+)$/.exec(pathname);
+    if (byId) {
+      const repo = Object.values(REPOSITORIES).find(({ id }) => id === Number(byId[1]));
+      if (!repo) throw new Error(`test: unexpected fetch ${method} ${request.url}`);
+      return this.#repository(request, repo);
+    }
+    const [, name = "", rest = ""] = new RegExp(`^/repos/${OWNER}/([^/]+)(/.*)?$`).exec(pathname) ?? [];
+    const repo = REPOSITORIES[name];
+    if (!repo) throw new Error(`test: unexpected fetch ${method} ${request.url}`);
+    if (rest === "") return this.#repository(request, name === REPO && this.nameReusedBy || repo);
+    if (rest === "/issues/42") return Response.json(issue(42));
+    if (rest.startsWith("/hooks") && !this.admin) {
       return Response.json({ message: "Not Found" }, { status: 404 });
     }
-    if (pathname === `${API}/hooks` && method === "GET") {
-      return Response.json([...this.webhooks.values()].map(({ id, url }) => ({ id, config: { url } })));
+    const own = [...this.webhooks.values()].filter(webhook => webhook.repo === name);
+    if (rest === "/hooks" && method === "GET") {
+      return Response.json(own.map(({ id, url }) => ({ id, config: { url } })));
     }
-    if (pathname === `${API}/hooks` && method === "POST") {
-      const { events, config, active } = await request.json<WebhookBody>();
-      if ([...this.webhooks.values()].some(webhook => webhook.url === config.url)) {
+    if (rest === "/hooks" && method === "POST") {
+      const { config } = await request.clone().json<WebhookBody>();
+      if (own.some(webhook => webhook.url === config.url)) {
         return Response.json({
           message: "Validation Failed", errors: [{ message: "Hook already exists on this repository" }],
         }, { status: 422 });
       }
       const id = this.#nextId++;
-      this.webhooks.set(id, { id, url: config.url, secret: config.secret, events, active });
-      return Response.json({ id, config: { url: config.url } }, { status: 201 });
+      this.webhooks.set(id, this.#configured(id, name, await request.json<WebhookBody>()));
+      return Response.json({ id, config: { url: this.webhooks.get(id)!.url } }, { status: 201 });
     }
-    const id = Number(new RegExp(`^${API}/hooks/(\\d+)$`).exec(pathname)?.[1]);
-    const webhook = this.webhooks.get(id);
-    if (id && !webhook && (method === "GET" || method === "PATCH")) {
-      return Response.json({ message: "Not Found" }, { status: 404 });
+    const id = Number(/^\/hooks\/(\d+)/.exec(rest)?.[1]);
+    const webhook = own.find(found => found.id === id);
+    if (rest === `/hooks/${id}`) {
+      if (method === "DELETE") {
+        if (this.stallDeletes) {
+          this.stalledDeletes++;
+          while (this.stallDeletes) await scheduler.wait(1);
+        }
+        this.webhooks.delete(id);
+        this.deleted.push(id);
+        return new Response(null, { status: 204 });
+      }
+      if (!webhook) return Response.json({ message: "Not Found" }, { status: 404 });
+      if (method === "GET") {
+        const { url, events, active, contentType, insecureSsl } = webhook;
+        return Response.json({
+          id, active, events, config: { url, content_type: contentType, insecure_ssl: insecureSsl, secret: "********" },
+        });
+      }
+      if (method === "PATCH") {
+        this.webhooks.set(id, this.#configured(id, name, await request.json<WebhookBody>()));
+        return Response.json({ id, config: { url: this.webhooks.get(id)!.url } });
+      }
     }
-    if (webhook && method === "GET") {
-      const { url, events, active } = webhook;
-      return Response.json({ id, active, events, config: { url, content_type: "json", insecure_ssl: "0", secret: "********" } });
-    }
-    if (webhook && method === "PATCH") {
-      const { events, config, active } = await request.json<WebhookBody>();
-      this.webhooks.set(id, { id, url: config.url, secret: config.secret, events, active });
-      return Response.json({ id, config: { url: config.url } });
-    }
-    const loggedBy = Number(new RegExp(`^${API}/hooks/(\\d+)/deliveries$`).exec(pathname)?.[1]);
-    if (this.webhooks.has(loggedBy) && method === "GET") {
+    if (webhook && rest === `/hooks/${id}/deliveries` && method === "GET") {
       const perPage = Number(searchParams.get("per_page") ?? 30);
       const start = Number(searchParams.get("cursor") ?? 0);
-      const newestFirst = this.log.filter(({ hookId }) => hookId === loggedBy).toReversed();
+      const newestFirst = this.log.filter(({ hookId }) => hookId === id).toReversed();
       const next = start + perPage < newestFirst.length
         ? `<https://api.github.com${pathname}?per_page=${perPage}&cursor=${start + perPage}>; rel="next"`
         : undefined;
@@ -164,34 +207,52 @@ class FakeGitHub {
           ({ id: deliveryId, guid, status_code, delivered_at })),
         next === undefined ? {} : { headers: { Link: next } });
     }
-    const redelivery = new RegExp(`^${API}/hooks/(\\d+)/deliveries/(\\d+)/attempts$`).exec(pathname);
-    if (redelivery && method === "POST") {
-      this.#redeliveries.push(Number(redelivery[2]));
+    const redelivery = /^\/hooks\/\d+\/deliveries\/(\d+)\/attempts$/.exec(rest);
+    if (webhook && redelivery && method === "POST") {
+      if (this.redeliveriesAllowed !== undefined) {
+        if (this.redeliveriesAllowed === 0) return Response.json({ message: "Server Error" }, { status: 500 });
+        this.redeliveriesAllowed--;
+      }
+      this.#redeliveries.push(Number(redelivery[1]));
       return Response.json({}, { status: 202 });
     }
-    if (id && method === "DELETE") {
-      if (this.stallDeletes) {
-        this.stalledDeletes++;
-        while (this.stallDeletes) await scheduler.wait(1);
-      }
-      this.webhooks.delete(id);
-      this.deleted.push(id);
-      return new Response(null, { status: 204 });
-    }
     throw new Error(`test: unexpected fetch ${method} ${request.url}`);
+  }
+
+  /** A read of `repo`, conditional on its ETag. */
+  #repository(request: Request, repo: typeof repository): Response {
+    // An account that can't read the repository is refused whatever ETag it presents.
+    if (!this.readable && repo !== this.nameReusedBy) return Response.json({ message: "Not Found" }, { status: 404 });
+    const etag = `"repo-${repo.id}-${this.admin}"`;
+    if (request.headers.get("If-None-Match") === etag) {
+      this.notModified++;
+      return new Response(null, { status: 304, headers: { ETag: etag } });
+    }
+    return Response.json({ ...repo, permissions: { admin: this.admin } }, { headers: { ETag: etag } });
   }
 
   /**
    * Deliver one event as GitHub would: to each of the repository's webhooks that subscribes to it,
    * signed with its secret.
    */
-  async deliver(event: string, payload: object, { id = crypto.randomUUID(), secret }: {
+  async deliver(event: string, payload: Row, { id = crypto.randomUUID(), secret }: {
     id?: string; secret?: string;
   } = {}): Promise<number[]> {
     const body = JSON.stringify(payload);
-    const subscribed = [...this.webhooks.values()]
-      .filter(webhook => webhook.active && (event === "ping" || webhook.events.includes(event)));
+    const to = (payload.repository as { name?: string } | undefined)?.name ?? REPO;
+    const subscribed = [...this.webhooks.values()].filter(webhook => webhook.repo === to &&
+      webhook.active && (event === "ping" || webhook.events.includes(event)));
     return await Promise.all(subscribed.map(webhook => this.#attempt(webhook, id, event, body, secret)));
+  }
+
+  /** The redeliveries the driver has asked for and `redeliver()` hasn't made, by repository. */
+  pendingRedeliveries(): Record<string, number> {
+    const pending: Record<string, number> = {};
+    for (const deliveryId of this.#redeliveries) {
+      const { repo } = this.webhooks.get(this.log.find(({ id }) => id === deliveryId)!.hookId)!;
+      pending[repo] = (pending[repo] ?? 0) + 1;
+    }
+    return pending;
   }
 
   /** Make the redeliveries the driver asked for, as GitHub does in its own time: signed afresh. */
@@ -212,14 +273,30 @@ class FakeGitHub {
     }
   }
 
+  #configured(id: number, repo: string, { events, config, active }: WebhookBody): Webhook {
+    return {
+      id, repo, url: config.url, secret: config.secret, events, active, contentType: config.content_type,
+      insecureSsl: config.insecure_ssl,
+    };
+  }
+
+  /**
+   * One attempt at a delivery, encoded as the webhook is configured now: GitHub builds a
+   * redelivery from the webhook's current configuration, as it signs one with the current secret.
+   */
   async #attempt(webhook: Webhook, guid: string, event: string, body: string, secret = webhook.secret): Promise<number> {
-    const status = this.failDeliveriesWith ?? (await SELF.fetch(webhook.url, {
+    const [contentType, sent] = webhook.contentType === "form"
+      ? ["application/x-www-form-urlencoded", `payload=${encodeURIComponent(body)}`]
+      : ["application/json", body];
+    // Somewhere other than this deployment, which has no such path.
+    const elsewhere = webhook.url.startsWith("https://gadgets.test/") ? undefined : 404;
+    const status = this.failDeliveriesWith ?? elsewhere ?? (await SELF.fetch(webhook.url, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json", "X-GitHub-Event": event, "X-GitHub-Delivery": guid,
-        "X-Hub-Signature-256": `sha256=${await hmac(secret, body)}`,
+        "Content-Type": contentType, "X-GitHub-Event": event, "X-GitHub-Delivery": guid,
+        "X-Hub-Signature-256": `sha256=${await hmac(secret, sent)}`,
       },
-      body,
+      body: sent,
     })).status;
     this.log.push({
       id: this.#nextDeliveryId++, hookId: webhook.id, guid, event, body, status_code: status,
@@ -229,7 +306,9 @@ class FakeGitHub {
   }
 }
 
-type WebhookBody = { events: string[]; config: { url: string; secret: string }; active: boolean };
+type WebhookBody = {
+  events: string[]; config: { url: string; secret: string; content_type: string; insecure_ssl: string }; active: boolean;
+};
 
 async function unwrap<T>(pending: Promise<Outcome<T>>): Promise<T> {
   const result = await pending;
@@ -285,6 +364,25 @@ async function after(ms: number, account: string): Promise<void> {
   }
 }
 
+/**
+ * Each step at a set time from now, with the driver's alarm run by hand: the runtime never runs
+ * one on a faked clock.
+ */
+function clock(account: string) {
+  const start = Date.now();
+  return {
+    at: async (offset: number, step: () => Promise<unknown>) => {
+      vi.setSystemTime(start + offset);
+      try {
+        await step();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+    alarm: () => runDurableObjectAlarm(driver(account)),
+  };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -310,12 +408,15 @@ it("adds the webhook once a hook is enabled, and delivers the events it watches 
     // Only what its hooks watch, so GitHub doesn't deliver the push below at all.
     events: ["issues"],
     active: true,
+    repo: REPO,
+    contentType: "json",
+    insecureSsl: "0",
   }]);
 
   expect(await github.deliver("ping", { zen: "Keep it logically awesome.", repository })).toEqual([204]);
   expect(await github.deliver("issues", issues("opened", 42))).toEqual([204]);
   expect(await github.deliver("issues", issues("labeled", 42))).toEqual([204]);
-  expect(await github.deliver("push", { ref: "refs/heads/main", before: BASE, after: HEAD, repository })).toEqual([]);
+  expect(await github.deliver("push", push("refs/heads/main", BASE, HEAD))).toEqual([]);
   await settled(account);
 
   const { received, observations } = await triage.read();
@@ -450,8 +551,8 @@ it("delivers branch pushes with the repository, but not tag pushes", async () =>
   await deployer.subscribe({ events: ["push"] });
   await deployer.enable();
 
-  await github.deliver("push", { ref: "refs/heads/release/1.0", before: ZERO, after: HEAD, forced: false, repository, sender: ADA });
-  await github.deliver("push", { ref: "refs/tags/v1.0", before: ZERO, after: HEAD, repository, sender: ADA });
+  await github.deliver("push", push("refs/heads/release/1.0", ZERO, HEAD, { forced: false, sender: ADA }));
+  await github.deliver("push", push("refs/tags/v1.0", ZERO, HEAD, { sender: ADA }));
   await settled(account);
 
   const { received, observations, advertised } = await deployer.read();
@@ -477,9 +578,9 @@ it("delivers tag pushes as tag events, to hooks that watch for tags", async () =
   // GitHub reports tags in its push events.
   expect([...github.webhooks.values()].map(webhook => webhook.events)).toEqual([["push"]]);
 
-  await github.deliver("push", { ref: "refs/tags/v1.0", before: ZERO, after: HEAD, repository, sender: ADA });
-  await github.deliver("push", { ref: "refs/heads/main", before: BASE, after: HEAD, repository, sender: ADA });
-  await github.deliver("push", { ref: "refs/tags/v0.9", before: BASE, after: ZERO, repository, sender: ADA });
+  await github.deliver("push", push("refs/tags/v1.0", ZERO, HEAD, { sender: ADA }));
+  await github.deliver("push", push("refs/heads/main", BASE, HEAD, { sender: ADA }));
+  await github.deliver("push", push("refs/tags/v0.9", BASE, ZERO, { sender: ADA }));
   await settled(account);
 
   const { received, observations, advertised } = await releaser.read();
@@ -516,7 +617,7 @@ it("gives a hook on one issue only that issue's events", async () => {
 
   await github.deliver("issues", issues("closed", 43));
   await github.deliver("issue_comment", comment(43, "Elsewhere."));
-  await github.deliver("push", { ref: "refs/heads/main", before: BASE, after: HEAD, repository });
+  await github.deliver("push", push("refs/heads/main", BASE, HEAD));
   await github.deliver("issues", issues("reopened", 42));
   await github.deliver("issue_comment", comment(42, "Here."));
   await settled(account);
@@ -628,6 +729,25 @@ it("delivers an event once, however often its payload is delivered, and never on
   await settled(account);
 
   expect((await triage.read()).received).toEqual([expect.objectContaining({ info: expect.objectContaining({ id: "42" }) })]);
+});
+
+it("refuses a push a day old, or one with no timestamp to tell its age by", async () => {
+  const github = new FakeGitHub();
+  const account = await connectAccount();
+  const deployer = binding(account);
+  await deployer.subscribe({ events: ["push"] });
+  await deployer.enable();
+  const pushedAt = (value: unknown) => push("refs/heads/main", BASE, HEAD, { repository: { ...repository, pushed_at: value } });
+
+  await github.deliver("push", pushedAt(Math.floor(Date.now() / 1000) - 7 * 24 * 3600));
+  // Without one, nothing would stop a replay once the payload's dedupe row was forgotten.
+  await github.deliver("push", { ...push("refs/heads/a", BASE, HEAD), repository });
+  await github.deliver("push", pushedAt(null));
+  // The schema allows a date string too, which a push carrying one is dated by.
+  await github.deliver("push", { ...pushedAt(new Date().toISOString()), ref: "refs/heads/b" });
+  await settled(account);
+
+  expect((await deployer.read()).received).toEqual([expect.objectContaining({ kind: "push", branch: "b" })]);
 });
 
 it.each([
@@ -743,7 +863,9 @@ it("adopts the webhook an earlier attempt left on the repository", async () => {
   const github = new FakeGitHub();
   const account = await connectAccount();
   const url = `https://gadgets.test/gatekeeper/github/webhook/${env.GITHUB_HOOK_DRIVER.idFromName(account)}`;
-  github.webhooks.set(5, { id: 5, url, secret: "lost", events: ["push"], active: true });
+  github.webhooks.set(5, {
+    id: 5, url, secret: "lost", events: ["push"], active: true, repo: REPO, contentType: "json", insecureSsl: "0",
+  });
   const triage = binding(account);
   await triage.subscribe();
 
@@ -766,9 +888,13 @@ it("has GitHub redeliver, at its next hourly check, what GitHub failed to delive
   github.failDeliveriesWith = 503;
   await github.deliver("issues", issues("opened", 42));
   github.failDeliveriesWith = undefined;
-  // Refused for good: it's for a repository this webhook isn't on.
+  // Refused for good: it's for a repository this webhook isn't on, or (from a webhook sending
+  // JSON, as this one does) was malformed.
   expect(await github.deliver("issues", { ...issues("opened", 43), repository: { ...repository, id: 999 } }))
     .toEqual([404]);
+  github.failDeliveriesWith = 400;
+  await github.deliver("issues", issues("opened", 44));
+  github.failDeliveriesWith = undefined;
   // A busy hour since, which leaves the failure past the first page of the webhook's delivery log.
   github.logDelivered(webhookId, 150);
   await after(HOUR, account);
@@ -786,6 +912,8 @@ it.each<[string, (github: FakeGitHub, webhook: Webhook) => void]>([
   ["deactivates it", (_github, webhook) => { webhook.active = false; }],
   ["points it elsewhere", (_github, webhook) => { webhook.url = "https://elsewhere.example/hook"; }],
   ["changes its events", (_github, webhook) => { webhook.events = ["*"]; }],
+  ["has it send form-encoded payloads", (_github, webhook) => { webhook.contentType = "form"; }],
+  ["stops it verifying this deployment's certificate", (_github, webhook) => { webhook.insecureSsl = "1"; }],
 ])("restores its webhook at the next hourly check when someone %s", async (_, change) => {
   const github = new FakeGitHub();
   const account = await connectAccount();
@@ -803,6 +931,80 @@ it.each<[string, (github: FakeGitHub, webhook: Webhook) => void]>([
   expect((await triage.read()).received).toHaveLength(1);
 });
 
+it("restores its webhook's payload encoding, and has GitHub redeliver what it refused meanwhile", async () => {
+  const github = new FakeGitHub();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+  const [webhook] = github.webhooks.values();
+
+  // Signed, but form-encoded, so refused as malformed.
+  webhook.contentType = "form";
+  expect(await github.deliver("issues", issues("opened", 42))).toEqual([400]);
+  await after(HOUR, account);
+
+  expect(github.webhooks.get(webhook.id)).toMatchObject({ contentType: "json" });
+  // Refused for the encoding alone, which GitHub's redelivery now sends as JSON.
+  expect(await github.redeliver()).toEqual([204]);
+  await settled(account);
+  expect((await triage.read()).received).toEqual([expect.objectContaining({ info: expect.objectContaining({ id: "42" }) })]);
+});
+
+it("goes on redelivering what was refused before the webhook's repair, until all of it is delivered", async () => {
+  const github = new FakeGitHub();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+  const [webhook] = github.webhooks.values();
+  const { at, alarm } = clock(account);
+
+  // More refused as malformed than one check redelivers.
+  await at(0, async () => {
+    webhook.contentType = "form";
+    for (let number = 1; number <= 25; number++) await github.deliver("issues", issues("opened", number));
+  });
+  await at(HOUR, alarm);
+  expect(github.pendingRedeliveries()).toEqual({ [REPO]: 20 });
+  await github.redeliver();
+  await settled(account);
+  // The webhook sends JSON by the next check, where the rest are still the encoding's refusals.
+  await at(2 * HOUR, alarm);
+  expect(github.pendingRedeliveries()).toEqual({ [REPO]: 5 });
+  await github.redeliver();
+  await settled(account);
+
+  expect((await triage.read()).received).toHaveLength(25);
+});
+
+it("has GitHub redeliver what another receiver refused while the webhook pointed there", async () => {
+  const github = new FakeGitHub();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+  const [webhook] = github.webhooks.values();
+  const { at, alarm } = clock(account);
+
+  await at(0, async () => {
+    webhook.url = "https://elsewhere.example/hook";
+    expect(await github.deliver("issues", issues("opened", 42))).toEqual([404]);
+  });
+  await at(HOUR, alarm);
+  expect(github.webhooks.get(webhook.id)?.url).toMatch(/^https:\/\/gadgets\.test\//);
+  expect(await github.redeliver()).toEqual([204]);
+  await settled(account);
+  expect((await triage.read()).received).toEqual([expect.objectContaining({ info: expect.objectContaining({ id: "42" }) })]);
+
+  // Refused here since the repair, for good: it's for a repository this webhook isn't on.
+  await at(HOUR + 60_000, async () =>
+    expect(await github.deliver("issues", { ...issues("opened", 43), repository: { ...repository, id: 999 } }))
+      .toEqual([404]));
+  await at(2 * HOUR, alarm);
+  expect(github.pendingRedeliveries()).toEqual({});
+});
+
 it("restores its webhook's secret, has GitHub redeliver what the wrong one signed, then leaves it", async () => {
   const github = new FakeGitHub();
   const account = await connectAccount();
@@ -810,18 +1012,7 @@ it("restores its webhook's secret, has GitHub redeliver what the wrong one signe
   await triage.subscribe();
   await triage.enable();
   const [{ id, secret }] = github.webhooks.values();
-  // Each step at a set time from now, with the driver's alarm run by hand: the runtime never runs
-  // one on a faked clock.
-  const start = Date.now();
-  const at = async (offset: number, step: () => Promise<unknown>) => {
-    vi.setSystemTime(start + offset);
-    try {
-      await step();
-    } finally {
-      vi.useRealTimers();
-    }
-  };
-  const alarm = () => runDurableObjectAlarm(driver(account));
+  const { at, alarm } = clock(account);
 
   github.webhooks.get(id)!.secret = "chosen-by-another-admin";
   await at(HOUR / 2, async () => expect(await github.deliver("issues", issues("opened", 42))).toEqual([401]));
@@ -859,6 +1050,92 @@ it("changes nothing on GitHub while its webhook is intact, and stops checking wi
   expect(await runInDurableObject(driver(account), (_instance, state) => state.storage.getAlarm())).toBeNull();
 });
 
+it("shares a check's redeliveries among the account's repositories, the rest waiting for the next", async () => {
+  const github = new FakeGitHub();
+  const account = await connectAccount();
+  const busy = binding(account);
+  const quiet = binding(account, { repo: "gizmos" });
+  for (const hook of [busy, quiet]) {
+    await hook.subscribe();
+    await hook.enable();
+  }
+  const { at, alarm } = clock(account);
+
+  await at(0, async () => {
+    github.failDeliveriesWith = 503;
+    for (let number = 1; number <= 25; number++) await github.deliver("issues", issues("opened", number));
+    for (let number = 1; number <= 3; number++) {
+      await github.deliver("issues", { ...issues("opened", number), repository: gizmos });
+    }
+    github.failDeliveriesWith = undefined;
+  });
+  await at(HOUR, alarm);
+  // The quiet repository's three, and the rest of the twenty to the busy one, which, listed first,
+  // would otherwise have taken them all.
+  expect(github.pendingRedeliveries()).toEqual({ [REPO]: 17, gizmos: 3 });
+  await github.redeliver();
+  await settled(account);
+  await at(2 * HOUR, alarm);
+  // The busy one's last eight, still within the next check's reach.
+  expect(github.pendingRedeliveries()).toEqual({ [REPO]: 8 });
+  await github.redeliver();
+  await settled(account);
+
+  expect((await busy.read()).received).toHaveLength(25);
+  expect((await quiet.read()).received).toHaveLength(3);
+});
+
+it("asks again at the next check for the redeliveries GitHub refused to make", async () => {
+  const github = new FakeGitHub();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+  const { at, alarm } = clock(account);
+
+  await at(0, async () => {
+    github.failDeliveriesWith = 503;
+    for (let number = 1; number <= 3; number++) await github.deliver("issues", issues("opened", number));
+    github.failDeliveriesWith = undefined;
+  });
+  // GitHub agrees to the first, then fails, and the check asks no more of it this time.
+  github.redeliveriesAllowed = 1;
+  await at(HOUR, alarm);
+  expect(github.pendingRedeliveries()).toEqual({ [REPO]: 1 });
+  github.redeliveriesAllowed = undefined;
+  await github.redeliver();
+  await settled(account);
+  await at(2 * HOUR, alarm);
+  expect(github.pendingRedeliveries()).toEqual({ [REPO]: 2 });
+  await github.redeliver();
+  await settled(account);
+
+  expect((await triage.read()).received).toHaveLength(3);
+});
+
+it.each<[string, (github: FakeGitHub, webhookId: number) => void, number]>([
+  ["older than the two hours a check reads back", () => {}, 2 * HOUR + 60_000],
+  ["behind the thousand newer attempts a check reads at most", (github, webhookId) => github.logDelivered(webhookId, 1000), HOUR],
+])("recovers no failed delivery %s", async (_, then, checkedAt) => {
+  const github = new FakeGitHub();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+  const [{ id: webhookId }] = github.webhooks.values();
+  const { at, alarm } = clock(account);
+
+  await at(0, async () => {
+    github.failDeliveriesWith = 503;
+    await github.deliver("issues", issues("opened", 42));
+    github.failDeliveriesWith = undefined;
+    then(github, webhookId);
+  });
+  await at(checkedAt, alarm);
+
+  expect(github.pendingRedeliveries()).toEqual({});
+});
+
 it("delivers nothing once the account can no longer read the repository", async () => {
   const github = new FakeGitHub();
   const account = await connectAccount();
@@ -872,6 +1149,67 @@ it("delivers nothing once the account can no longer read the repository", async 
   await settled(account);
 
   expect(await triage.read()).toMatchObject({ received: [], observations: [] });
+});
+
+it("delivers nothing once the account can no longer read the repository, even just after a delivery", async () => {
+  const github = new FakeGitHub();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+
+  // The first delivery's access check keeps GitHub's ETag; the second asks GitHub again anyway,
+  // which answers an unchanged repository 304, costing no rate limit.
+  await github.deliver("issues", issues("opened", 42));
+  await settled(account);
+  await github.deliver("issues", issues("opened", 43));
+  await settled(account);
+  expect(github.notModified).toBe(1);
+  github.readable = false;
+  expect(await github.deliver("issues", issues("opened", 44))).toEqual([204]);
+  await settled(account);
+
+  const { received, observations } = await triage.read();
+  expect(received).toEqual([
+    expect.objectContaining({ info: expect.objectContaining({ id: "42" }) }),
+    expect.objectContaining({ info: expect.objectContaining({ id: "43" }) }),
+  ]);
+  expect(observations).toHaveLength(2);
+});
+
+it("asks after the repository by its id, which outlives a rename, not by a name since reused", async () => {
+  const github = new FakeGitHub();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+
+  // Renamed and out of the account's reach, while its old name now names a public repository.
+  github.readable = false;
+  github.nameReusedBy = { ...gizmos, id: 999, name: REPO, full_name: `${OWNER}/${REPO}` };
+  expect(await github.deliver("issues", issues("opened", 42))).toEqual([204]);
+  await settled(account);
+
+  expect(await triage.read()).toMatchObject({ received: [], observations: [] });
+});
+
+it("changes nothing while WEBHOOK_ORIGIN is unset: subscribe() refuses, and the webhook route is inert", async () => {
+  const github = new FakeGitHub();
+  const account = await connectAccount();
+  // The worker's environment, which the test shares.
+  const shared = env as { WEBHOOK_ORIGIN?: string };
+  const origin = shared.WEBHOOK_ORIGIN;
+  delete shared.WEBHOOK_ORIGIN;
+  try {
+    await expect(binding(account).subscribe()).rejects.toThrow("GitHub hooks are not configured on this deployment.");
+    // Refused before reaching a driver: with the route on, a delivery missing its headers is a 400.
+    const url = `https://gadgets.test/gatekeeper/github/webhook/${env.GITHUB_HOOK_DRIVER.idFromName(account)}`;
+    expect((await SELF.fetch(url, { method: "POST", body: "{}" })).status).toBe(404);
+    // Nothing was asked of GitHub.
+    expect(github.requests).toEqual([]);
+  } finally {
+    shared.WEBHOOK_ORIGIN = origin;
+  }
 });
 
 it("refuses to watch a repository whose webhooks the account can't manage", async () => {

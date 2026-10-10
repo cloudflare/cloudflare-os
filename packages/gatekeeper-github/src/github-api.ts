@@ -173,7 +173,8 @@ export type GitHubRepoWebhookResponse = {
   id: number;
   active?: boolean;
   events?: string[];
-  config: { url?: string };
+  /** Where and how it delivers: `content_type` `"json"` or `"form"`; `insecure_ssl` `"0"` verifies TLS. */
+  config: { url?: string; content_type?: string; insecure_ssl?: string | number };
 };
 
 /** One attempt at a webhook delivery, as the webhook's delivery log lists it. */
@@ -635,6 +636,17 @@ export class GitHubApi {
       undefined,
       options,
     );
+  }
+
+  /**
+   * The repository with GitHub id `id`, whatever it is named now. `/repositories/<id>` is where
+   * GitHub redirects a renamed repository's old path.
+   */
+  async getRepoByIdConditional(
+    id: number,
+    options: ConditionalRequestOptions = {},
+  ): Promise<ConditionalRequestResult<GitHubRepoResponse>> {
+    return await this.#conditionalGet<GitHubRepoResponse>(`/repositories/${id}`, undefined, options);
   }
 
   async listRepos(options: {
