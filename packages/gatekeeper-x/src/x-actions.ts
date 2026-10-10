@@ -61,8 +61,11 @@ export type PostTarget = { id: string; info: XPostInfo };
 /** The List an action targets. */
 export type ListTarget = { id: string; info: XListInfo };
 
-/** What a send recorded just before it went to X: when, and for a post the media it attached. */
-export type SendAttempt = { at: number; mediaIds?: string[] };
+/**
+ * What a send recorded just before it went to X: when; for a post, the media it attached; for a
+ * List, the Lists like it that were there before its first send, which can't be what it made.
+ */
+export type SendAttempt = { at: number; mediaIds?: string[]; existing?: string[] };
 
 /** A List's details, as an update changes and a revert restores them. */
 export type ListDetails = { name: string; description: string; private: boolean };
@@ -373,15 +376,11 @@ async function findPublished(host: XActionHost, draft: StoredDraft, replyTo: str
 }
 
 /**
- * Finds the List a create whose outcome X never reported made, so a retry binds it instead of
- * creating a second: the one owned List created around the attempt with the requested name,
- * description and privacy. X cannot filter owned Lists by date, so every page is read.
- * @returns The List's ID, or `undefined` when none matches and the create may go again.
- * @throws ActionOutcomeUnknownError when more than one could match (`unresolved`).
+ * The account's owned Lists with the name, description and privacy `payload` asks for. X can't
+ * filter owned Lists, so every page is read.
  */
-async function findCreatedList(host: XActionHost, payload: XActions["createList"], attempt: SendAttempt):
-    Promise<string | undefined> {
-  const matches: string[] = [];
+async function matchingLists(host: XActionHost, payload: XActions["createList"]): Promise<WireList[]> {
+  const matches: WireList[] = [];
   let token: string | undefined;
   for (let page = 0; page < MAX_OWNED_LIST_PAGES; page++) {
     const envelope = await host.read<WireList[]>(5, (api, me) => api.get<WireList[]>(`/2/users/${me.id}/owned_lists`, {
@@ -389,19 +388,32 @@ async function findCreatedList(host: XActionHost, payload: XActions["createList"
       max_results: 100,
       pagination_token: token,
     }));
-    for (const list of envelope.data ?? []) {
-      const created = Date.parse(list.created_at ?? "");
-      if (list.name === payload.name && (list.description ?? "") === (payload.description ?? "")
-          && (list.private === true) === (payload.private === true)
-          && created >= attempt.at - CLOCK_SKEW_MS && created <= attempt.at + RECONCILE_WINDOW_MS) {
-        matches.push(list.id);
-      }
-    }
+    matches.push(...(envelope.data ?? []).filter(list => list.name === payload.name
+      && (list.description ?? "") === (payload.description ?? "")
+      && (list.private === true) === (payload.private === true)));
     token = envelope.meta?.next_token;
-    if (token === undefined) break;
+    if (token === undefined) return matches;
   }
-  if (matches.length > 1 || token !== undefined) throw unresolved("Lists");
-  return matches[0];
+  throw new Error("X listed more owned Lists than an account can have.");
+}
+
+/**
+ * Finds the List a create whose outcome X never reported made, so a retry binds it instead of
+ * creating a second: the one matching List created around the attempt that wasn't there before
+ * the first send.
+ * @returns The List's ID, or `undefined` when none matches and the create may go again.
+ * @throws ActionOutcomeUnknownError when more than one could match (`unresolved`).
+ */
+async function findCreatedList(host: XActionHost, payload: XActions["createList"], attempt: SendAttempt):
+    Promise<string | undefined> {
+  const existing = new Set(attempt.existing);
+  const matches = (await matchingLists(host, payload)).filter(list => {
+    const created = Date.parse(list.created_at ?? "");
+    return !existing.has(list.id)
+      && created >= attempt.at - CLOCK_SKEW_MS && created <= attempt.at + RECONCILE_WINDOW_MS;
+  });
+  if (matches.length > 1) throw unresolved("Lists");
+  return matches[0]?.id;
 }
 
 /** Publishes one draft, replying to `replyTo` when given. */
@@ -791,7 +803,9 @@ export const actions = defineActions<XActionHost, XActions>({
       const prior = host.attempts.get(attemptKey);
       let createdId = prior && await findCreatedList(host, payload, prior);
       if (createdId === undefined) {
-        const attempt: SendAttempt = { at: Date.now() };
+        // Lists can share every detail, so those already there are noted before the first send.
+        const existing = prior?.existing ?? (await matchingLists(host, payload)).map(list => list.id);
+        const attempt: SendAttempt = { at: Date.now(), existing };
         host.attempts.put(attemptKey, attempt);
         try {
           const created = await host.write(api => api.post<{ id: string }>("/2/lists", {
