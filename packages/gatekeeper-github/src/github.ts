@@ -2612,12 +2612,11 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
 
 
 
-  /** With `ttlMs` 0, always asks GitHub, conditionally on the cached ETag. */
-  async #getRepoMetadata(ttlMs = ENTITY_CACHE_TTL_MS): Promise<GitHubRepoMetadata> {
+  async #getRepoMetadata(): Promise<GitHubRepoMetadata> {
     // "repo-v2": the stored shape gained `defaultBranch`, and etag revalidation can keep an
     // old-shaped entry alive past the TTL indefinitely, so a shape change needs a new key.
     const key = this.#cacheKey("repo-v2", this.ctx.props.owner, this.ctx.props.repo);
-    return await this.#loadCachedWithEtag<GitHubRepoMetadata>(key, ttlMs, async etag => {
+    return await this.#loadCachedWithEtag<GitHubRepoMetadata>(key, ENTITY_CACHE_TTL_MS, async etag => {
       const result = await this.#withApi(api =>
         api.getRepoConditional(this.ctx.props.owner, this.ctx.props.repo, { ifNoneMatch: etag })
       );
@@ -3809,9 +3808,13 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     try {
       // The webhook outlives the account's access to the repository, and its connection, so every
       // delivery asks GitHub afresh, never the cache: a revoked account is refused even moments
-      // after a delivery that succeeded. Asked with the cached ETag, an unchanged repository
-      // answers 304, which costs no rate limit.
-      await this.#getRepoMetadata(0);
+      // after a delivery that succeeded. Asked by the repository's id, not its name, which a
+      // repository renamed since may have left to another; and with the last answer's ETag, so an
+      // unchanged repository answers 304, which costs no rate limit.
+      await this.#loadCachedWithEtag(this.#cacheKey("repo-access", String(pin.id)), 0, async etag => {
+        const result = await this.#withApi(api => api.getRepoByIdConditional(pin.id, { ifNoneMatch: etag }));
+        return result.status === 304 ? result : { ...result, data: true };
+      });
     } catch (error) {
       if (!(error instanceof GitHubApiError && error.status === 404)) throw error;
       // Nothing to retry, and nothing else would tell why the hook went quiet.

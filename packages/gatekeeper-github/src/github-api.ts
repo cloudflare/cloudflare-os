@@ -638,6 +638,17 @@ export class GitHubApi {
     );
   }
 
+  /**
+   * The repository with GitHub id `id`, whatever it is named now. `/repositories/<id>` is where
+   * GitHub redirects a renamed repository's old path.
+   */
+  async getRepoByIdConditional(
+    id: number,
+    options: ConditionalRequestOptions = {},
+  ): Promise<ConditionalRequestResult<GitHubRepoResponse>> {
+    return await this.#conditionalGet<GitHubRepoResponse>(`/repositories/${id}`, undefined, options);
+  }
+
   async listRepos(options: {
     affiliation?: string;
     sort?: string;

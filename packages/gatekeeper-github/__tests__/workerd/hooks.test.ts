@@ -123,6 +123,8 @@ class FakeGitHub {
   stalledDeletes = 0;
   /** How many repository reads GitHub answered 304, as it does a conditional read of an unchanged one. */
   notModified = 0;
+  /** While set, the repository whose name this one had, renamed since, now names. */
+  nameReusedBy: typeof repository | undefined;
   /** While set, GitHub agrees to this many more redeliveries, then refuses the rest with a 500. */
   redeliveriesAllowed: number | undefined;
   #nextId = 100;
@@ -140,19 +142,16 @@ class FakeGitHub {
     if (pathname === "/applications/test-client/token" && method === "DELETE") {
       return new Response(null, { status: 204 });
     }
+    const byId = /^\/repositories\/(\d+)$/.exec(pathname);
+    if (byId) {
+      const repo = Object.values(REPOSITORIES).find(({ id }) => id === Number(byId[1]));
+      if (!repo) throw new Error(`test: unexpected fetch ${method} ${request.url}`);
+      return this.#repository(request, repo);
+    }
     const [, name = "", rest = ""] = new RegExp(`^/repos/${OWNER}/([^/]+)(/.*)?$`).exec(pathname) ?? [];
     const repo = REPOSITORIES[name];
     if (!repo) throw new Error(`test: unexpected fetch ${method} ${request.url}`);
-    // An account that can't read the repository is refused whatever ETag it presents.
-    if (rest === "" && !this.readable) return Response.json({ message: "Not Found" }, { status: 404 });
-    if (rest === "") {
-      const etag = `"repo-${name}-${this.admin}"`;
-      if (request.headers.get("If-None-Match") === etag) {
-        this.notModified++;
-        return new Response(null, { status: 304, headers: { ETag: etag } });
-      }
-      return Response.json({ ...repo, permissions: { admin: this.admin } }, { headers: { ETag: etag } });
-    }
+    if (rest === "") return this.#repository(request, name === REPO && this.nameReusedBy || repo);
     if (rest === "/issues/42") return Response.json(issue(42));
     if (rest.startsWith("/hooks") && !this.admin) {
       return Response.json({ message: "Not Found" }, { status: 404 });
@@ -218,6 +217,18 @@ class FakeGitHub {
       return Response.json({}, { status: 202 });
     }
     throw new Error(`test: unexpected fetch ${method} ${request.url}`);
+  }
+
+  /** A read of `repo`, conditional on its ETag. */
+  #repository(request: Request, repo: typeof repository): Response {
+    // An account that can't read the repository is refused whatever ETag it presents.
+    if (!this.readable && repo !== this.nameReusedBy) return Response.json({ message: "Not Found" }, { status: 404 });
+    const etag = `"repo-${repo.id}-${this.admin}"`;
+    if (request.headers.get("If-None-Match") === etag) {
+      this.notModified++;
+      return new Response(null, { status: 304, headers: { ETag: etag } });
+    }
+    return Response.json({ ...repo, permissions: { admin: this.admin } }, { headers: { ETag: etag } });
   }
 
   /**
@@ -1147,7 +1158,7 @@ it("delivers nothing once the account can no longer read the repository, even ju
   await triage.subscribe();
   await triage.enable();
 
-  // The first delivery caches the repository's metadata; the second asks GitHub again anyway,
+  // The first delivery's access check keeps GitHub's ETag; the second asks GitHub again anyway,
   // which answers an unchanged repository 304, costing no rate limit.
   await github.deliver("issues", issues("opened", 42));
   await settled(account);
@@ -1164,6 +1175,22 @@ it("delivers nothing once the account can no longer read the repository, even ju
     expect.objectContaining({ info: expect.objectContaining({ id: "43" }) }),
   ]);
   expect(observations).toHaveLength(2);
+});
+
+it("asks after the repository by its id, which outlives a rename, not by a name since reused", async () => {
+  const github = new FakeGitHub();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+
+  // Renamed and out of the account's reach, while its old name now names a public repository.
+  github.readable = false;
+  github.nameReusedBy = { ...gizmos, id: 999, name: REPO, full_name: `${OWNER}/${REPO}` };
+  expect(await github.deliver("issues", issues("opened", 42))).toEqual([204]);
+  await settled(account);
+
+  expect(await triage.read()).toMatchObject({ received: [], observations: [] });
 });
 
 it("changes nothing while WEBHOOK_ORIGIN is unset: subscribe() refuses, and the webhook route is inert", async () => {
