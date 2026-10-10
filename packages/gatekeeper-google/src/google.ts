@@ -15,7 +15,7 @@ import {
   BLANK_DOC_TAB_ID, BlankGoogleDoc, GoogleDocsApi, type GoogleDocReader, type GoogleDocsDocument,
   type GoogleDocsTab,
 } from "./docs-api";
-import { BlankSpreadsheet, GoogleSheetsApi, type SpreadsheetReader } from "./sheets-api";
+import { GoogleSheetsApi } from "./sheets-api";
 import { GoogleSlidesApi } from "./slides-api";
 import {
   boundProps, createFileOnce, creationAction, isSimulated, newFileTitle, UNCREATED_FILE_ID,
@@ -24,12 +24,13 @@ import {
 import {
   getGoogleSlidesTypesCode, GooglePresentationReadSessionImpl, type GoogleSlidesGatekeeperImplProps,
 } from "./slides";
+import {
+  getGoogleSheetsTypesCode, GoogleSpreadsheetReadSessionImpl, type GoogleSheetsGatekeeperImplProps,
+} from "./sheets";
 import type { GooglePresentationReadSession } from "./slides-read-types";
 import SLIDES_READ_TYPES_CODE from "./slides-read-types.txt";
-import type {
-  GoogleSpreadsheetReadSession, GoogleSpreadsheetSession, SpreadsheetInfo, SpreadsheetRange,
-  SpreadsheetValueMode,
-} from "./sheets-types";
+import type { GoogleSpreadsheetReadSession } from "./sheets-read-types";
+import SHEETS_READ_TYPES_CODE from "./sheets-read-types.txt";
 import {
   applyMarkdownEdit, assertMarkdownWriteComplexity, canonicalizeMarkdownForWrite,
   canonicalizeMarkdownReplacement,
@@ -42,7 +43,6 @@ import { outsideScope, readFolderRoot, type FolderLocation } from "./drive-folde
 import {
   DriveFolderSessionCore, DriveSessionCore, driveModifiedTime,
   GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE, requireDriveBindingScope,
-  unguardedNativeRead,
   type DriveBindingScope, type DriveCore, type NativeObservation, type NativeRead,
 } from "./drive-session";
 import type {
@@ -71,7 +71,6 @@ import DOCS_READ_TYPES_CODE from "./docs-read-types.txt";
 import DOCS_TYPES_CODE from "./docs-types.txt";
 import BIGQUERY_TYPES_CODE from "./bigquery-types.txt";
 import CALENDAR_TYPES_CODE from "./calendar-types.txt";
-import SHEETS_TYPES_CODE from "./sheets-types.txt";
 import DRIVE_TYPES_CODE from "./drive-types.txt";
 import {
   BigQueryConfiguratorUI,
@@ -147,7 +146,7 @@ function getDriveAgentTypesCode(): string {
 
 function getGoogleDriveTypesCode(): string {
   return googleDriveTypesCode ??= [
-    DOCS_READ_TYPES_CODE, SHEETS_TYPES_CODE, SLIDES_READ_TYPES_CODE, getDriveAgentTypesCode(),
+    DOCS_READ_TYPES_CODE, SHEETS_READ_TYPES_CODE, SLIDES_READ_TYPES_CODE, getDriveAgentTypesCode(),
   ].join("\n");
 }
 
@@ -158,6 +157,7 @@ export { GmailGatekeeperImpl } from "./gmail";
 export { GoogleChatGatekeeperImpl } from "./chat";
 export { ChatHookController, ChatHookDriver } from "./chat-hooks";
 export { GmailHookController, GmailHookDriver } from "./gmail-hooks";
+export { GoogleSheetsGatekeeperImpl } from "./sheets";
 export { GoogleSlidesGatekeeperImpl } from "./slides";
 import { handlePubSubPush, type PushHooksEnv } from "./pubsub-push";
 
@@ -426,8 +426,8 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
   async getTypeScriptTypes(): Promise<string> {
     return [
       stripTypeModulePrefix(TYPES_CODE, GMAIL_TYPES_MODULE_PREFIX), getGoogleDocTypesCode(),
-      SHEETS_TYPES_CODE, getGoogleSlidesTypesCode(), CALENDAR_TYPES_CODE, BIGQUERY_TYPES_CODE,
-      getDriveAgentTypesCode(), CHAT_TYPES_CODE,
+      getGoogleSheetsTypesCode(), getGoogleSlidesTypesCode(), CALENDAR_TYPES_CODE,
+      BIGQUERY_TYPES_CODE, getDriveAgentTypesCode(), CHAT_TYPES_CODE,
     ].join("\n");
   }
 }
@@ -2385,191 +2385,6 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
 }
 
 // =======================================================================================
-// Google Sheets Gatekeeper
-// =======================================================================================
-
-type GoogleSheetsGatekeeperImplProps = { userObjectId: string; spreadsheetId: string } | SimulatedFileProps;
-
-@validateRpc()
-export class GoogleSheetsGatekeeperImpl
-    extends DurableObject<Env, GoogleSheetsGatekeeperImplProps>
-    implements Gatekeeper<GoogleSpreadsheetSession> {
-  #creating = new Mutex();
-  #tokens = new AccessTokenCache(opts => {
-    let account = this.ctx.exports.UserAccount.get(
-      this.ctx.exports.UserAccount.idFromString(this.#bound.userObjectId),
-    );
-    return account.getAccessToken(opts);
-  });
-
-  /** The account and spreadsheet this binding reaches, which a spreadsheet not yet created has not. */
-  get #bound(): { userObjectId: string; spreadsheetId: string } {
-    return boundProps(this.ctx.props, "sheets");
-  }
-
-  async #getAccessToken(opts?: AccessTokenRequest): Promise<string> {
-    return this.#tokens.get(opts);
-  }
-
-  async describe(): Promise<ResourceDescription> {
-    let props = this.ctx.props;
-    if (isSimulated(props)) {
-      let { title } = props.creation;
-      return {
-        url: nativeFileUrl("sheets"),
-        title,
-        snippet: `Google Spreadsheet: ${title} (read-only; not created yet)`,
-        suggestedBindingName: "GOOGLE_SHEET",
-        tsType: "GoogleSpreadsheetSession",
-      };
-    }
-    let api = new GoogleSheetsApi(opts => this.#getAccessToken(opts));
-    let spreadsheet = await api.getSpreadsheet(props.spreadsheetId);
-    return {
-      url: nativeFileUrl("sheets", props.spreadsheetId),
-      title: spreadsheet.title,
-      snippet: `Google Spreadsheet: ${spreadsheet.title} (read-only)`,
-      suggestedBindingName: "GOOGLE_SHEET",
-      tsType: "GoogleSpreadsheetSession",
-    };
-  }
-
-  async getTypeScriptTypes(): Promise<string> {
-    return SHEETS_TYPES_CODE;
-  }
-
-  async getAutoApprovableActions(): Promise<ActionKind[]> {
-    return [];
-  }
-
-  async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GoogleSpreadsheetSession> {
-    let props = this.ctx.props;
-    let queue = approvalQueue.dup();
-    // A spreadsheet binding's scope is the one spreadsheet, so there is nothing to revalidate.
-    return new GoogleSpreadsheetSessionImpl(
-      isSimulated(props)
-        ? new BlankSpreadsheet(props.creation.title)
-        : new GoogleSheetsApi(opts => this.#getAccessToken(opts)),
-      isSimulated(props) ? UNCREATED_FILE_ID : props.spreadsheetId,
-      queue,
-      unguardedNativeRead(description => queue.authorizeObservation(description)),
-    );
-  }
-
-  async applyCreation(creator: Fetcher<GatekeeperUserVerifier>)
-      : Promise<{class: DurableObjectClass<Gatekeeper<any>>, resourceUrl: string}> {
-    return this.#creating.run(async () => {
-      let { userObjectId, fileId, resourceUrl } = await createFileOnce(this.ctx, creator, "sheets",
-          (title, tokens) => new GoogleSheetsApi(tokens).createSpreadsheet(title));
-      return {
-        class: this.ctx.exports.GoogleSheetsGatekeeperImpl({props: {userObjectId, spreadsheetId: fileId}}),
-        resourceUrl,
-      };
-    });
-  }
-
-  /** Read-only — no side-effecting actions. */
-  async applyAction(_action: number): Promise<void> {
-    throw new Error("Google Sheets is read-only and implements no actions.");
-  }
-  async rejectAction(_action: number): Promise<void> {
-    throw new Error("Google Sheets is read-only and implements no actions.");
-  }
-  revertAction(_action: number): Promise<void> {
-    throw new Error("Google Sheets is read-only and implements no actions.");
-  }
-
-  /**
-   * Observer tracking — strategy B (ACL check, single unit). Google applies sharing permissions at
-   * spreadsheet granularity, so an observer must be able to open this spreadsheet with their own
-   * account. The overseer re-runs this check on every open, catching revoked access.
-   */
-  async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
-    let verifier = user as unknown as Fetcher<GoogleVerifierApi>;
-    if (!(await verifier.hasSpreadsheetAccess(this.#bound.spreadsheetId))) {
-      throw new Error(
-        "This collaborator does not have access to the bound Google spreadsheet, so they cannot " +
-        "observe data this workspace read from it.",
-      );
-    }
-  }
-
-  async removeObserver(_id: string): Promise<void> {}
-}
-
-@validateRpc()
-class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpreadsheetSession {
-  #api: SpreadsheetReader;
-  #spreadsheetId: string;
-  #approvalQueue: RpcStub<ApprovalQueue>;
-  #read: NativeRead;
-
-  constructor(
-    api: SpreadsheetReader,
-    spreadsheetId: string,
-    approvalQueue: RpcStub<ApprovalQueue>,
-    read: NativeRead,
-  ) {
-    super();
-    this.#api = api;
-    this.#spreadsheetId = spreadsheetId;
-    this.#approvalQueue = approvalQueue;
-    this.#read = read;
-  }
-
-  [Symbol.dispose](): void {
-    this.#approvalQueue[Symbol.dispose]();
-  }
-
-  async getSpreadsheet(): Promise<SpreadsheetInfo> {
-    return this.#read(
-      () => this.#api.getSpreadsheet(this.#spreadsheetId),
-      spreadsheet => ({
-        title: "Read Google spreadsheet metadata",
-        description:
-          `Read metadata for "${spreadsheet.title}", including its ${spreadsheet.sheets.length} ` +
-          "worksheet(s).",
-      }));
-  }
-
-  async readRange(
-    range: string,
-    options?: { valueMode?: SpreadsheetValueMode },
-  ): Promise<SpreadsheetRange> {
-    return (await this.#readRanges([range], options))[0];
-  }
-
-  async readRanges(
-    ranges: string[],
-    options?: { valueMode?: SpreadsheetValueMode },
-  ): Promise<SpreadsheetRange[]> {
-    return this.#readRanges(ranges, options);
-  }
-
-  async #readRanges(
-    ranges: string[],
-    options?: { valueMode?: SpreadsheetValueMode },
-  ): Promise<SpreadsheetRange[]> {
-    return this.#read(
-      () => this.#api.readRanges(this.#spreadsheetId, ranges, options?.valueMode),
-      result => {
-        let cellCount = result.reduce(
-          (total, range) => total + range.values.reduce((sum, row) => sum + row.length, 0),
-          0,
-        );
-        return {
-          title: result.length === 1
-            ? `Read Google Sheets range ${result[0].range}`
-            : `Read ${result.length} Google Sheets ranges`,
-          description:
-            `Read ${cellCount.toLocaleString()} cell(s) from ${result.length} bounded range(s) ` +
-            "in the connected spreadsheet.",
-        };
-      });
-  }
-}
-
-// =======================================================================================
 // Google Calendar Gatekeeper
 // =======================================================================================
 
@@ -3378,7 +3193,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
   async openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetReadSession> {
     return this.#openNative(fileId, GOOGLE_SHEET_MIME_TYPE, "Google Sheet",
       (spreadsheetId, queue, read) =>
-        new GoogleSpreadsheetSessionImpl(this.#sheetsApi, spreadsheetId, queue, read));
+        new GoogleSpreadsheetReadSessionImpl(this.#sheetsApi, spreadsheetId, queue, read));
   }
 
   async openGoogleSlides(fileId: string): Promise<GooglePresentationReadSession> {

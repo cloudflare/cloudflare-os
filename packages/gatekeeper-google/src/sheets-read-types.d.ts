@@ -19,7 +19,7 @@ export type SpreadsheetSheetInfo = {
 
 /** Metadata about the connected spreadsheet. */
 export type SpreadsheetInfo = {
-  /** Stable Google spreadsheet ID. */
+  /** Stable Google spreadsheet ID. Empty until a spreadsheet made with createExternalResource is created. */
   id: string;
   /** Spreadsheet title. */
   title: string;

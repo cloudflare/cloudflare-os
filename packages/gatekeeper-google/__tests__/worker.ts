@@ -7,7 +7,8 @@ import { TestGitCache } from "./test-git-cache";
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import type { GoogleAccessToken } from "../src/google-api";
 import type { GoogleDocSession, GoogleDocTab } from "../src/docs-types";
-import type { GoogleSpreadsheetSession, SpreadsheetInfo, SpreadsheetRange } from "../src/sheets-types";
+import type { SpreadsheetInfo, SpreadsheetRange } from "../src/sheets-read-types";
+import type { GoogleSpreadsheetSession } from "../src/sheets-types";
 import type { PresentationInfo, Slide } from "../src/slides-read-types";
 import type { GooglePresentationSession } from "../src/slides-types";
 import GoogleWorker, {
@@ -39,6 +40,15 @@ type TestGoogleDocGatekeeper = GoogleDocGatekeeperImpl & {
 /** What one Slides session call returned or threw, and what it queued and observed. */
 type SlidesCall = {
   value?: string | PresentationInfo | Slide[] | Record<string, string>;
+  error?: string;
+  actionId?: number;
+  action?: ActionDescription;
+  observations: string[];
+};
+
+/** What one Sheets session call returned or threw, and what it queued and observed. */
+type SheetsCall = {
+  value?: SpreadsheetInfo | SpreadsheetRange | SpreadsheetRange[] | Record<string, number>;
   error?: string;
   actionId?: number;
   action?: ActionDescription;
@@ -336,6 +346,85 @@ export class TestHooks extends DurableObject<Env> {
   async orphanSlidesClaim(facetName: string, actionId: number): Promise<void> {
     await (this.#slides(facetName) as unknown as TestGoogleSlidesGatekeeper).claimTestAction(actionId);
   }
+
+  #sheets(facetName: string) {
+    let userObjectId = this.ctx.exports.UserAccount.idFromName("test-user").toString();
+    return this.ctx.facets.get<GoogleSheetsGatekeeperImpl>(facetName, () => ({
+      class: this.ctx.exports.GoogleSheetsGatekeeperImpl({
+        props: { userObjectId, spreadsheetId: "sheet-1" },
+      }),
+    }));
+  }
+
+  /**
+   * Calls one method of a fresh Sheets session, reporting what it queued and observed. `entered`
+   * is called once the method has run up to its first wait, before it settles.
+   */
+  async callSheets(
+    facetName: string, method: keyof GoogleSpreadsheetSession, args: unknown[],
+    entered?: () => void,
+  ): Promise<SheetsCall> {
+    let queue = new TestApprovalQueue();
+    using approvalQueue = new RpcStub<ApprovalQueue>(queue);
+    using session = await this.#sheets(facetName).startSession(
+      approvalQueue as unknown as ApprovalQueue,
+    ) as GoogleSpreadsheetSession & Disposable;
+    let outcome: { value?: SheetsCall["value"]; error?: string };
+    try {
+      let call = session[method] as (...args: unknown[]) => Promise<SheetsCall["value"]>;
+      // Handled below, once `entered` has run; this only keeps it from reporting as unhandled.
+      let calling = Promise.resolve(call(...args));
+      calling.catch(() => {});
+      if (entered) {
+        // Calls on one stub are delivered in order, and this one waits on nothing.
+        await session.updateSheet([]).catch(() => {});
+        await entered();
+      }
+      outcome = { value: await calling };
+    } catch (error) {
+      outcome = { error: error instanceof Error ? error.message : String(error) };
+    }
+    return { ...outcome, actionId: queue.actionId, action: queue.action, observations: queue.observations };
+  }
+
+  /** Applies a Sheets change. `entered` is called once the apply has run up to its first wait. */
+  async applySheets(
+    facetName: string, actionId: number, entered?: () => void,
+  ): Promise<string | null> {
+    let gatekeeper = this.#sheets(facetName);
+    let applying = Promise.resolve(gatekeeper.applyAction(actionId, new RpcStub(new TestGitCache())));
+    // Handled below, once `entered` has run; this only keeps it from reporting as unhandled.
+    applying.catch(() => {});
+    if (entered) {
+      // Calls on one stub are delivered in order, and this one waits on nothing.
+      await gatekeeper.getAutoApprovableActions();
+      await entered();
+    }
+    try {
+      await applying;
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async rejectSheets(facetName: string, actionId: number): Promise<{ restart?: boolean } | null> {
+    return await this.#sheets(facetName).rejectAction(actionId) ?? null;
+  }
+
+  async sheetsAutoApprovable(facetName: string): Promise<ActionKind[]> {
+    return this.#sheets(facetName).getAutoApprovableActions();
+  }
+
+  /** Leaves a Sheets change claimed, as an activation that died while applying it would. */
+  async orphanSheetsClaim(facetName: string, actionId: number): Promise<void> {
+    await (this.#sheets(facetName) as unknown as TestGoogleSheetsGatekeeper).claimTestAction(actionId);
+  }
+
+  /** Stores the IDs of markers earlier batches left, as if those batches had applied. */
+  async seedSheetsMarkers(facetName: string, ids: number[]): Promise<void> {
+    await (this.#sheets(facetName) as unknown as TestGoogleSheetsGatekeeper).seedTestMarkers(ids);
+  }
 }
 
 type TestDurableObjectState = { ctx: { storage: DurableObjectStorage } };
@@ -362,4 +451,24 @@ type TestGoogleSlidesGatekeeper = GoogleSlidesGatekeeperImpl & { claimTestAction
   // A second journal over the same storage claims it, so the live one never knew of the apply.
   let storage = (this as unknown as TestDurableObjectState).ctx.storage;
   new ActionJournal(storage.kv, { namespace: "slides" }).markClaimed(id);
+};
+
+type TestGoogleSheetsGatekeeper = GoogleSheetsGatekeeperImpl & {
+  claimTestAction(id: number): void;
+  seedTestMarkers(ids: number[]): void;
+};
+
+(GoogleSheetsGatekeeperImpl.prototype as TestGoogleSheetsGatekeeper).claimTestAction = function(
+  id: number,
+): void {
+  // A second journal over the same storage claims it, so the live one never knew of the apply.
+  let storage = (this as unknown as TestDurableObjectState).ctx.storage;
+  new ActionJournal(storage.kv, { namespace: "sheets" }).markClaimed(id);
+};
+
+(GoogleSheetsGatekeeperImpl.prototype as TestGoogleSheetsGatekeeper).seedTestMarkers = function(
+  ids: number[],
+): void {
+  // The key `GoogleSheetsGatekeeperImpl` keeps them under.
+  (this as unknown as TestDurableObjectState).ctx.storage.kv.put("sheets:staleMarkers", ids);
 };
