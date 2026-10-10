@@ -1,0 +1,35 @@
+packages/workshop-frontend/src/Activity.test.tsx
+  s_74eb0b1cbb84f7::t_7efcfdb3a0a79b 218,223,227,231
+packages/workshop-frontend/src/ChatInterface.actions.test.tsx
+  s_74eb0b1cbb84f7::t_b803e24c266b6f 475,481,485,489
+packages/workshop-frontend/src/Connections.test.tsx
+  s_74eb0b1cbb84f7::t_e5c609847d031c 115,120,124
+packages/workshop-frontend/src/action-test-harness.ts
+  s_a0621677aa027b::t_80c590493980b1 148
+packages/workshop-frontend/src/components/HookToggle.tsx
+  s_74eb0b1cbb84f7::t_d83c600e79f60a 8,21-23,25,27-29
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3e5cf9ea6ab6b051d8a8958bd8eab53ee14e1a6d",
+  "prompts": {},
+  "sessions": {
+    "s_74eb0b1cbb84f7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_edf458c69ffepVeVZFxEZXzOIj",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_a0621677aa027b": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ed9b3cd70ffezwXnN0F1p3USaM",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

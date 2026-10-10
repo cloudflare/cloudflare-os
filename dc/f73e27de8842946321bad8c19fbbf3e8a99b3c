@@ -1,0 +1,43 @@
+packages/gatekeeper-x/cloudflare.config.ts
+  s_6e159c0858b8f9::t_3c46f202d7a21f 21
+packages/gatekeeper-x/src/types.d.ts
+  s_6e159c0858b8f9::t_dce1e1d33e6833 3-4,286-292,307-314,440-501,503-520
+packages/gatekeeper-x/src/x-api.ts
+  s_6e159c0858b8f9::t_f1a3c8d766e958 36-37,39,44,130
+packages/gatekeeper-x/src/x-env.ts
+  s_6e159c0858b8f9::t_724db81961ff47 23-29,32-34,67-80
+packages/gatekeeper-x/src/x-gatekeeper.ts
+  s_6e159c0858b8f9::t_5daf9c2ba88669 8,16,22-24,43-50,65-79,192,201,213,233,312-406
+packages/gatekeeper-x/src/x-hooks.ts
+  s_6e159c0858b8f9::t_a201ae075c9fa0 1-629
+packages/gatekeeper-x/src/x-sessions.ts
+  s_6e159c0858b8f9::t_488067dd3b0dfd 9-10,26,75-77,153-163,499-508,576-587,616-619,987-998
+packages/gatekeeper-x/src/x.ts
+  s_6e159c0858b8f9::t_667ed0763c3f40 81,93,216-217,650-656
+packages/gatekeeper-x/worker-configuration.d.ts
+  s_6e159c0858b8f9::t_ffe0cffcb3c899 2,9,14488-14491
+packages/gatekeeper-x/wrangler.jsonc
+  s_6e159c0858b8f9::t_8d3dddaa7e6eb8 39-46
+scripts/generate-worker-types.ts
+  s_6e159c0858b8f9::t_9bb2329767bda5 9,110
+scripts/release/testdata/golden-manifest.json
+  s_6e159c0858b8f9::t_25c3c13c9fefed 1072-1079
+scripts/run-dev-server.ts
+  s_6e159c0858b8f9::t_a7ef9b1641b068 506-508
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "dcf73e27de8842946321bad8c19fbbf3e8a99b3c",
+  "prompts": {},
+  "sessions": {
+    "s_6e159c0858b8f9": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_eda3e264bffecsUpurXN1ZDw8a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
