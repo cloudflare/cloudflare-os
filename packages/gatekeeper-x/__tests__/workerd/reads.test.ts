@@ -190,6 +190,24 @@ describe("what a read discloses", () => {
     expect(await exclusions(name)).toEqual([["observer"], undefined]);
   });
 
+  it("decides a List's privacy afresh for each page", async () => {
+    const { x, props, name } = await observed();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    x.lists.set("77", { id: "77", name: "Open", private: false, owner_id: ALICE.id, member_count: 2 });
+    x.listMembers.set("77", new Set([BOB.id, CAROL.id]));
+    let pages = 0;
+    x.on("GET", /^\/2\/lists\/77\/members/, () => {
+      // Made private while the cursor is open, and the List as cached gone stale.
+      if (++pages === 2) {
+        x.lists.get("77")!.private = true;
+        vi.setSystemTime(Date.now() + 16 * 60 * 1000);
+      }
+      return undefined;
+    });
+    unwrap(await hooks().run(name, props, [["getList", "77"], ["listMembers", { pageSize: 1 }]], { pages: 2 }));
+    expect(await exclusions(name)).toEqual([undefined, ["observer"]]);
+  });
+
   it("shares private reads with an observer connected as the same X user", async () => {
     const { x, props, name } = await observed(ALICE);
     x.bookmarks.add(`${ALICE.id}:${x.post(BOB, "saved").id}`);
