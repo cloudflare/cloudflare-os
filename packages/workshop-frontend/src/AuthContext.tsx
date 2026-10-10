@@ -20,13 +20,17 @@ interface AuthProviderProps {
 }
 
 export function AuthProvider({ children, authenticatedApi, onLogout }: AuthProviderProps) {
-  const [currentUser, setCurrentUser] = useState<AiChatAuthorInfo | null>(null)
+  const [loadedUser, setLoadedUser] = useState<{
+    api: RpcStub<AuthenticatedApi>
+    info: AiChatAuthorInfo
+  } | null>(null)
   const [isAdmin, setIsAdmin] = useState(false)
+  const currentUser = loadedUser?.api === authenticatedApi ? loadedUser.info : null
 
   useEffect(() => {
     let cancelled = false
     authenticatedApi.whoami().then((info) => {
-      if (!cancelled) setCurrentUser(info)
+      if (!cancelled) setLoadedUser({ api: authenticatedApi, info })
     }).catch(() => {})
     return () => { cancelled = true }
   }, [authenticatedApi])
