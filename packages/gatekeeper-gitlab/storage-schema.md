@@ -39,8 +39,8 @@ One per connected account, named by its `UserAccount` id; see `src/gitlab-hooks.
 | Key | Value | Notes |
 |---|---|---|
 | `account` | `string` | The `UserAccount` id, whose token adds and deletes the webhooks. |
-| `secret` | `string` | The signing token every webhook of this driver signs its deliveries with: `whsec_` and the base64 of a 32-byte key (Standard Webhooks). |
 | `webhook:<projectId>` | `{ id, project: { id, path } }` | The webhook this driver added to the project, keyed by the project's numeric id, from when its first hook is enabled until its last is disabled. |
+| `secret:<projectId>` | `string` | The signing token the project's webhook signs its deliveries with: `whsec_` and the base64 of a 32-byte key (Standard Webhooks). Each project's is its own, so a delivery is verified as from the project it names. Recorded before the webhook is added, and deleted with it. |
 | `checkAt` | `number` | When to next check the webhooks on GitLab, hourly while there are any. |
 | `reg:<hookKey>` | `{ project, target?, events, viewerId }` | What one enabled hook watches: its project, the issue or merge request it is narrowed to, its event kinds, and the account's GitLab user id. |
 | `caps:<hookKey>` | `{ delivery, initiator }` | The facet's persistent delivery stub and the Workshop's `HookInitiator`. |

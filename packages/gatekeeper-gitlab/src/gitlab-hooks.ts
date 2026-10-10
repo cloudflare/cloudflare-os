@@ -186,12 +186,13 @@ type Webhook = { id: number; project: GitLabProjectPin };
 const registrationKey = (key: string) => `reg:${key}`;
 const capabilitiesKey = (key: string) => `caps:${key}`;
 const webhookKey = (projectId: number) => `webhook:${projectId}`;
+const secretKey = (projectId: number) => `secret:${projectId}`;
 
 /**
- * One per connected account, named by its `UserAccount` id. Storage: `account` (that id), `secret`
- * (the signing token its webhooks sign deliveries with), `webhook:` per project, `checkAt` (when
- * to next check them on GitLab), `reg:`/`caps:` per hook, the delivery queue's `msg:` rows, and
- * `revoked` once the account is disconnected, which refuses everything for good.
+ * One per connected account, named by its `UserAccount` id. Storage: `account` (that id), and per
+ * project `webhook:` and `secret:` (the signing token its webhook signs deliveries with), `checkAt`
+ * (when to next check them on GitLab), `reg:`/`caps:` per hook, the delivery queue's `msg:` rows,
+ * and `revoked` once the account is disconnected, which refuses everything for good.
  *
  * Every `await` here opens the input gate, so each storage write after one re-reads what it
  * depends on.
@@ -251,6 +252,7 @@ export class GitLabHookDriver extends DurableObject<Env> {
       // The project's last hook: rather than leave GitLab delivering there, remove the webhook.
       await this.#removeWebhook(kv.get<string>("account")!, webhook);
       kv.delete(webhookKey(project.id));
+      kv.delete(secretKey(project.id));
     });
     await this.#reschedule();
   }
@@ -284,8 +286,7 @@ export class GitLabHookDriver extends DurableObject<Env> {
    */
   async ingest(delivery: GitLabDelivery, delivered: ReadableStream<Uint8Array>): Promise<number> {
     const kv = this.ctx.storage.kv;
-    const secret = kv.get<string>("secret");
-    if (!secret || kv.get("revoked")) {
+    if (kv.get("account") === undefined || kv.get("revoked")) {
       await delivered.cancel();
       return 404;
     }
@@ -296,16 +297,22 @@ export class GitLabHookDriver extends DurableObject<Env> {
       if (error instanceof ResponseTooLargeError) return 413;
       throw error;
     }
-    if (!await verifySignature(secret, delivery, body)) return 401;
     let payload: WebhookPayload;
     try {
       payload = JSON.parse(new TextDecoder().decode(body));
     } catch {
       return 400;
     }
+    // Verified with the signing token of the project it names, which only that project's webhook
+    // holds: a custom template lets a project's Maintainers have GitLab sign any payload, but not
+    // as another project's.
     const projectId = payload?.project?.id ?? payload?.project_id;
-    // No longer this driver's webhook: every hook on the project has been disabled.
-    if (typeof projectId !== "number" || !kv.get(webhookKey(projectId))) return 404;
+    const secret = typeof projectId === "number" ? kv.get<string>(secretKey(projectId)) : undefined;
+    if (typeof projectId !== "number" || secret === undefined || !await verifySignature(secret, delivery, body)) {
+      return 401;
+    }
+    // A webhook still being added, or that failed to be: no hook watches it yet.
+    if (!kv.get(webhookKey(projectId))) return 404;
     // The signed id names the event, so a retry, a resend, or a replay inside the signature's
     // tolerance collapses into its first delivery.
     const parsed = parseWebhookEvent(delivery.event, delivery.id, projectId, payload, instanceUrl(this.env));
@@ -455,10 +462,11 @@ export class GitLabHookDriver extends DurableObject<Env> {
     const account = kv.get<string>("account")!;
     const url = this.#webhookUrl();
     if (url === undefined) throw new Error(HOOKS_NOT_CONFIGURED);
-    let secret = kv.get<string>("secret");
+    // Recorded first, so that the webhook's first delivery can be verified.
+    let secret = kv.get<string>(secretKey(project.id));
     if (secret === undefined) {
       secret = newSigningToken();
-      kv.put("secret", secret);
+      kv.put(secretKey(project.id), secret);
     }
     const config = { url, signingToken: secret, triggers: webhookTriggers(registrations) };
     const recorded = kv.get<Webhook>(webhookKey(project.id));

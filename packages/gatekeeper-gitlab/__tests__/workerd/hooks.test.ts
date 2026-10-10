@@ -343,13 +343,15 @@ class FakeGitLabHooks {
 
   /**
    * Deliver one event as GitLab would: to each webhook with its trigger on that is on the project
-   * the payload names, or on project `to`, signed with its signing token, at `sentAt`.
+   * the payload names, or on project `to`, signed with its signing token, at `sentAt`. A string
+   * payload is sent as it is.
    */
-  async deliver(event: string, payload: Row, { id = crypto.randomUUID(), sentAt = Date.now(), signingToken, to }: {
+  async deliver(event: string, payload: Row | string, { id = crypto.randomUUID(), sentAt = Date.now(), signingToken, to }: {
     id?: string; sentAt?: number; signingToken?: string; to?: number;
   } = {}): Promise<number[]> {
-    const body = JSON.stringify(payload);
-    const projectId = to ?? (payload.project as { id?: number } | undefined)?.id ?? PROJECT_ID;
+    const body = typeof payload === "string" ? payload : JSON.stringify(payload);
+    const named = typeof payload === "string" ? undefined : (payload.project as { id?: number } | undefined)?.id;
+    const projectId = to ?? named ?? PROJECT_ID;
     // GitLab sends nothing while it holds a webhook back after failures.
     const subscribed = [...this.webhooks.values()].filter(webhook => webhook.projectId === projectId &&
       webhook.triggers.includes(TRIGGERS[event]) && (webhook.alertStatus ?? "executable") === "executable");
@@ -726,9 +728,9 @@ it("refuses deliveries that aren't signed with the webhook's signing token, or r
     method: "POST", body: "{}", headers: { "X-Gitlab-Event": "Issue Hook" },
   });
   expect(elsewhere.status).toBe(404);
-  // Signed, but for a project this webhook isn't on, or not JSON at all.
+  // Signed, but not with the token of the project it names, or not JSON at all.
   expect(await gitlab.deliver("Issue Hook", { ...issueHook("open", 42), project: { ...projectPayload, id: 999 } },
-    { to: PROJECT_ID })).toEqual([404]);
+    { to: PROJECT_ID })).toEqual([401]);
   const id = crypto.randomUUID();
   const timestamp = String(Math.floor(Date.now() / 1000));
   const garbled = await SELF.fetch(url, {
@@ -800,6 +802,7 @@ it("shares one webhook among an account's hooks on a project, and deletes it wit
 
   await Promise.all([first.enable(), second.enable()]);
   expect(gitlab.webhooks.size).toBe(1);
+  const [{ signingToken }] = gitlab.webhooks.values();
   await first.disable();
   expect(gitlab.deleted).toEqual([]);
   await second.disable();
@@ -807,6 +810,8 @@ it("shares one webhook among an account's hooks on a project, and deletes it wit
 
   await first.enable();
   expect([...gitlab.webhooks.keys()]).toEqual([101]);
+  // The old webhook's signing token was forgotten with it.
+  expect(gitlab.webhooks.get(101)?.signingToken).not.toBe(signingToken);
   await gitlab.deliver("Issue Hook", issueHook("open", 42));
   await settled(account);
   expect((await first.read()).received).toHaveLength(1);
@@ -885,6 +890,30 @@ it("gives each account its own webhook on a project, and each its own events", a
   expect(await gitlab.deliver("Issue Hook", issueHook("reopen", 42))).toEqual([204, 401]);
 });
 
+it("takes from each project's webhook only that project's events, whatever its payload claims", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const triage = binding(account);
+  const gadgets = binding(account, { projectPath: "group/gadgets" });
+  for (const hook of [triage, gadgets]) {
+    await hook.subscribe({ events: ["issue"] });
+    await hook.enable();
+  }
+  const [ours, theirs] = gitlab.webhooks.values();
+  expect(ours.signingToken).not.toBe(theirs.signingToken);
+
+  // A custom template lets the first project's Maintainers have GitLab sign any payload: here one
+  // naming the second project, which the account can read and they may not.
+  const forged = { ...issueHook("open", 42), project: projectPayloadOf("group/gadgets") };
+  expect(await gitlab.deliver("Issue Hook", forged, { to: PROJECT_ID })).toEqual([401]);
+  expect(await gitlab.deliver("Issue Hook", { ...issueHook("open", 43), project: projectPayloadOf("group/gadgets") }))
+    .toEqual([204]);
+  await settled(account);
+
+  expect((await gadgets.read()).received).toEqual([expect.objectContaining({ info: expect.objectContaining({ id: "43" }) })]);
+  expect((await triage.read()).received).toEqual([]);
+});
+
 it("adopts the webhook an earlier attempt left on the project", async () => {
   const gitlab = new FakeGitLabHooks();
   const account = await connectAccount();
@@ -919,9 +948,8 @@ it("has GitLab resend, at its next hourly check, what GitLab failed to deliver",
     gitlab.failDeliveriesWith = 503;
     await gitlab.deliver("Issue Hook", issueHook("open", 42));
     gitlab.failDeliveriesWith = undefined;
-    // Refused for good: it's for a project this webhook isn't on.
-    expect(await gitlab.deliver("Issue Hook", { ...issueHook("open", 43), project: { ...projectPayload, id: 999 } },
-      { to: PROJECT_ID })).toEqual([404]);
+    // Refused for good: it isn't JSON.
+    expect(await gitlab.deliver("Issue Hook", "not json")).toEqual([400]);
     // A busy hour since, which leaves the failure past the first page of the webhook's delivery log.
     gitlab.logDelivered(webhookId, 25);
   });
