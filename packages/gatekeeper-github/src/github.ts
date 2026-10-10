@@ -2612,11 +2612,12 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
 
 
 
-  async #getRepoMetadata(): Promise<GitHubRepoMetadata> {
+  /** With `ttlMs` 0, always asks GitHub, conditionally on the cached ETag. */
+  async #getRepoMetadata(ttlMs = ENTITY_CACHE_TTL_MS): Promise<GitHubRepoMetadata> {
     // "repo-v2": the stored shape gained `defaultBranch`, and etag revalidation can keep an
     // old-shaped entry alive past the TTL indefinitely, so a shape change needs a new key.
     const key = this.#cacheKey("repo-v2", this.ctx.props.owner, this.ctx.props.repo);
-    return await this.#loadCachedWithEtag<GitHubRepoMetadata>(key, ENTITY_CACHE_TTL_MS, async etag => {
+    return await this.#loadCachedWithEtag<GitHubRepoMetadata>(key, ttlMs, async etag => {
       const result = await this.#withApi(api =>
         api.getRepoConditional(this.ctx.props.owner, this.ctx.props.repo, { ifNoneMatch: etag })
       );
@@ -3806,8 +3807,11 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     if (resourceKind === "issue" && onPullRequest) return;
     if (resourceKind === "pull" && !onPullRequest) return;
     try {
-      // The webhook outlives the account's access to the repository, and its connection.
-      await this.#getRepoMetadata();
+      // The webhook outlives the account's access to the repository, and its connection, so every
+      // delivery asks GitHub afresh, never the cache: a revoked account is refused even moments
+      // after a delivery that succeeded. Asked with the cached ETag, an unchanged repository
+      // answers 304, which costs no rate limit.
+      await this.#getRepoMetadata(0);
     } catch (error) {
       if (!(error instanceof GitHubApiError && error.status === 404)) throw error;
       // Nothing to retry, and nothing else would tell why the hook went quiet.

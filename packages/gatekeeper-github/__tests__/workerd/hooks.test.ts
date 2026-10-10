@@ -102,6 +102,8 @@ class FakeGitHub {
    */
   stallDeletes = false;
   stalledDeletes = 0;
+  /** How many repository reads GitHub answered 304, as it does a conditional read of an unchanged one. */
+  notModified = 0;
   #nextId = 100;
 
   constructor() {
@@ -114,8 +116,16 @@ class FakeGitHub {
     const { method } = request;
     this.requests.push(`${method} ${pathname}`);
     if (pathname === "/user") return Response.json(ADA);
+    // An account that can't read the repository is refused whatever ETag it presents.
     if (pathname === API && !this.readable) return Response.json({ message: "Not Found" }, { status: 404 });
-    if (pathname === API) return Response.json({ ...repository, permissions: { admin: this.admin } });
+    if (pathname === API) {
+      const etag = `"repo-${this.admin}"`;
+      if (request.headers.get("If-None-Match") === etag) {
+        this.notModified++;
+        return new Response(null, { status: 304, headers: { ETag: etag } });
+      }
+      return Response.json({ ...repository, permissions: { admin: this.admin } }, { headers: { ETag: etag } });
+    }
     if (pathname === `${API}/issues/42`) return Response.json(issue(42));
     if (pathname === "/applications/test-client/token" && method === "DELETE") {
       return new Response(null, { status: 204 });
@@ -872,6 +882,32 @@ it("delivers nothing once the account can no longer read the repository", async 
   await settled(account);
 
   expect(await triage.read()).toMatchObject({ received: [], observations: [] });
+});
+
+it("delivers nothing once the account can no longer read the repository, even just after a delivery", async () => {
+  const github = new FakeGitHub();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+
+  // The first delivery caches the repository's metadata; the second asks GitHub again anyway,
+  // which answers an unchanged repository 304, costing no rate limit.
+  await github.deliver("issues", issues("opened", 42));
+  await settled(account);
+  await github.deliver("issues", issues("opened", 43));
+  await settled(account);
+  expect(github.notModified).toBe(1);
+  github.readable = false;
+  expect(await github.deliver("issues", issues("opened", 44))).toEqual([204]);
+  await settled(account);
+
+  const { received, observations } = await triage.read();
+  expect(received).toEqual([
+    expect.objectContaining({ info: expect.objectContaining({ id: "42" }) }),
+    expect.objectContaining({ info: expect.objectContaining({ id: "43" }) }),
+  ]);
+  expect(observations).toHaveLength(2);
 });
 
 it("refuses to watch a repository whose webhooks the account can't manage", async () => {
