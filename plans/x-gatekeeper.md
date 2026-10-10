@@ -1055,7 +1055,7 @@ Nothing remains open except the `types.d.ts` review.
 
 ## As built (2026-10-10)
 
-PR A is implemented in `packages/gatekeeper-x` (171 Node tests, 69 workerd tests). Where the build
+PR A is implemented in `packages/gatekeeper-x` (182 Node tests, 79 workerd tests). Where the build
 departed from the design above:
 
 - **`XCursor`, not the kit's `TokenCursor`.** `TokenCursor` fills a short page by fetching up to
@@ -1073,7 +1073,9 @@ departed from the design above:
   or a window too full for one page, ends the action with `ActionOutcomeUnknownError`, since
   binding the wrong post would have a revert delete it. While a marker or thread progress exists,
   `reject` is refused ("it may already be on X"). A terminal failure part-way through a thread
-  names the posts already published.
+  names the posts already published. `x.list.manage`'s creation is reconciled the same way, since
+  `POST /2/lists` has no idempotency key either: against every page of the account's owned Lists
+  (X cannot filter them by date), on name, description, privacy and a `created_at` in the window.
 - **Revocation is narrower than §3.** A grant is revoked only when it provably shares no
   authorization with a live one: another X user's (a refused reconnect), a first connect the
   Workshop never took, and what a disconnect leaves. A same-user reconnect's leftover is dropped

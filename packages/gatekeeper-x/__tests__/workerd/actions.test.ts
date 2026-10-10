@@ -307,6 +307,37 @@ describe("Lists", () => {
     expect(t.x.lists.size).toBe(0);
   });
 
+  it("binds a List X created though its answer was lost, rather than creating it twice", async () => {
+    const t = await setup();
+    await t.run([["createList", "Friends"]]);
+    t.x.loseAnswer("POST", /^\/2\/lists$/);
+    const [{ actionId }] = await t.submitted();
+    unwrap(await t.apply(actionId));
+    const lists = [...t.x.lists.values()];
+    expect(lists).toHaveLength(1);
+    expect(await t.run([["getList", "~1"], ["getInfo"]])).toMatchObject({ id: lists[0].id });
+  });
+
+  it("won't let a List X may have created be rejected, and creates it on the next approval if it didn't", async () => {
+    const t = await setup();
+    // A List of the same name from long ago is not the one this action created.
+    t.x.lists.set("5", { id: "5", name: "Friends", owner_id: ALICE.id, created_at: "2020-01-01T00:00:00.000Z" });
+    await t.run([["createList", "Friends"]]);
+    let failed = false;
+    t.x.on("POST", /^\/2\/lists$/, () => {
+      if (failed) return undefined;
+      failed = true;
+      return new Response("upstream error", { status: 503 });
+    });
+    const [{ actionId }] = await t.submitted();
+    expect(failure(await t.apply(actionId))).toMatch(/did not confirm whether this List was created/);
+    expect(failure(await t.reject(actionId))).toMatch(/never confirmed whether this List was created/);
+    unwrap(await t.apply(actionId));
+    expect([...t.x.lists.values()].map(list => list.name)).toEqual(["Friends", "Friends"]);
+    unwrap(await t.revert(actionId));
+    expect([...t.x.lists.keys()]).toEqual(["5"]);
+  });
+
   it("restores a List's details on revert", async () => {
     const t = await setup();
     t.x.lists.set("5", { id: "5", name: "Old", description: "before", private: false, owner_id: ALICE.id });

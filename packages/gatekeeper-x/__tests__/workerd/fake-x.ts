@@ -284,7 +284,10 @@ export class FakeX {
     if (method === "POST" && path === "/2/lists") {
       const { name, description, private: isPrivate } = body() as { name: string; description?: string; private?: boolean };
       const id = this.id();
-      this.lists.set(id, { id, name, description: description ?? "", private: isPrivate === true, owner_id: me, member_count: 0, follower_count: 0 });
+      this.lists.set(id, {
+        id, name, description: description ?? "", private: isPrivate === true, owner_id: me, member_count: 0, follower_count: 0,
+        created_at: new Date().toISOString(),
+      });
       return json({ data: { id, name } });
     }
     if ((match = path.match(/^\/2\/lists\/(\d+)$/))) {
