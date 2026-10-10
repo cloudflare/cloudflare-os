@@ -294,6 +294,10 @@ export type GitLabProjectWebhookResponse = {
   id: number;
   url: string;
   enable_ssl_verification?: boolean;
+  /** Unless blank, what GitLab sends in place of each payload, rendered from it. */
+  custom_webhook_template?: string | null;
+  /** Unless blank, the branches whose pushes alone are delivered. */
+  push_events_branch_filter?: string | null;
   confidential_issues_events?: boolean;
   confidential_note_events?: boolean;
   /** `"executable"`, `"temporarily_disabled"`, or `"disabled"` once GitLab has given up on it. */
@@ -324,6 +328,9 @@ function webhookBody({ url, signingToken, triggers }: GitLabProjectWebhookConfig
     ...Object.fromEntries(WEBHOOK_TRIGGERS.map(trigger => [trigger, triggers.includes(trigger)])),
     confidential_issues_events: false,
     confidential_note_events: false,
+    // GitLab's own payloads, not a template's, and every branch's pushes: `all_branches` blanks
+    // any branch filter.
+    custom_webhook_template: "",
     branch_filter_strategy: "all_branches",
     enable_ssl_verification: true,
   };
@@ -854,7 +861,7 @@ export class GitLabApi {
       { body: webhookBody(webhook) })).data;
   }
 
-  /** Sets every trigger and the URL and signing token of an existing webhook to `webhook`'s. */
+  /** Configures an existing webhook as createProjectWebhook() configures a new one. */
   async updateProjectWebhook(projectId: number, hookId: number, webhook: GitLabProjectWebhookConfig): Promise<GitLabProjectWebhookResponse> {
     return (await this.#request<GitLabProjectWebhookResponse>("PUT", `/projects/${projectId}/hooks/${hookId}`,
       { body: webhookBody(webhook) })).data;

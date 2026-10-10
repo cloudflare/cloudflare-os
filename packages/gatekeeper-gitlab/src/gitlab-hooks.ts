@@ -370,10 +370,12 @@ export class GitLabHookDriver extends DurableObject<Env> {
 
   /**
    * Bring `webhook` back to what its hooks need if it no longer matches: deleted, disabled for good
-   * after repeated failures, pointed elsewhere, given other triggers, or signing with another
-   * token, which GitLab never shows but which fails deliveries here with 401. Then have GitLab
-   * resend, oldest first and at most `budget`, what it failed to deliver lately, as it never does
-   * itself.
+   * after repeated failures, pointed elsewhere, not verifying this deployment's certificate, sending
+   * a custom template's rendering in place of each payload, filtering pushes by branch, given other
+   * triggers, or signing with another token, which GitLab never shows but which fails deliveries
+   * here with 401. Then have GitLab resend, oldest first and at most `budget`, what it failed to
+   * deliver lately, as it never does itself. What a template or a branch filter cost meanwhile is
+   * lost: GitLab resends a delivery as it first sent it, and never sent what the filter held back.
    * @returns How many resends it had GitLab make.
    */
   async #checkWebhook(account: string, url: string, { id, project }: Webhook, budget: number): Promise<number> {
@@ -393,7 +395,8 @@ export class GitLabHookDriver extends DurableObject<Env> {
     const disabled = read?.found.alert_status === "disabled";
     const triggers = webhookTriggers(this.#registrations(project).map(([, registration]) => registration));
     const intact = read !== undefined && !disabled && read.found.url === url && read.found.signing_token_present === true &&
-      read.found.enable_ssl_verification !== false && configuredTriggers(read.found).join() === triggers.toSorted().join() &&
+      read.found.enable_ssl_verification !== false && !read.found.custom_webhook_template &&
+      !read.found.push_events_branch_filter && configuredTriggers(read.found).join() === triggers.toSorted().join() &&
       // By each delivery's latest attempt, so a 401 since resent successfully doesn't count.
       !failed.some(event => Number(event.response_status) === 401);
     if (!intact) {

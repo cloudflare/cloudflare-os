@@ -21,7 +21,23 @@ const ZERO = "0".repeat(40);
 const CREATED = new Date().toISOString();
 
 type Row = Record<string, unknown>;
-type Webhook = { id: number; url: string; signingToken?: string; triggers: string[]; alertStatus?: string };
+/** The rest of a webhook's configuration the driver sets, by GitLab's names. */
+type WebhookSettings = {
+  enable_ssl_verification: boolean;
+  custom_webhook_template: string | null;
+  push_events_branch_filter: string | null;
+  branch_filter_strategy: string;
+};
+type Webhook = {
+  id: number; url: string; signingToken?: string; triggers: string[]; alertStatus?: string; settings: WebhookSettings;
+};
+
+/** A new webhook's settings, until a request names them. */
+const DEFAULT_SETTINGS: WebhookSettings = {
+  enable_ssl_verification: true, custom_webhook_template: null, push_events_branch_filter: null,
+  branch_filter_strategy: "wildcard",
+};
+
 /** One attempt at a delivery, as GitLab logs it. */
 type Delivery = {
   id: number; hookId: number; webhookId: string; event: string; body: string; url: string; status: string;
@@ -236,7 +252,7 @@ class FakeGitLabHooks {
       .on("PUT", new RegExp(`^${HOOKS}/(\\d+)$`), request => {
         const id = Number(/hooks\/(\d+)/.exec(request.url.pathname)![1]);
         if (!this.webhooks.has(id)) return notFound();
-        const webhook = this.#configured(id, request.body!);
+        const webhook = this.#configured(id, request.body!, this.webhooks.get(id));
         this.webhooks.set(id, webhook);
         return json(this.#reported(webhook));
       })
@@ -253,18 +269,31 @@ class FakeGitLabHooks {
     this.gitlab.install();
   }
 
-  #configured(id: number, body: string): Webhook {
+  /** `existing` as GitLab keeps it once `body` is applied, which changes only what it names. */
+  #configured(id: number, body: string, existing?: Webhook): Webhook {
     const config = JSON.parse(body) as Row;
+    const settings = Object.fromEntries(Object.entries(existing?.settings ?? DEFAULT_SETTINGS)
+      .map(([key, value]) => [key, key in config ? config[key] : value])) as WebhookSettings;
+    // GitLab blanks the branch filter of a webhook that delivers every branch's pushes.
+    if (settings.branch_filter_strategy === "all_branches") settings.push_events_branch_filter = null;
+    const triggers = new Set(existing?.triggers);
+    for (const [key, on] of Object.entries(config)) {
+      if (!key.endsWith("_events")) continue;
+      if (on === true) triggers.add(key);
+      else triggers.delete(key);
+    }
+    const signingToken = this.signs && typeof config.signing_token === "string" ? config.signing_token
+      : existing?.signingToken;
     return {
-      id, url: String(config.url),
-      ...this.signs && typeof config.signing_token === "string" ? { signingToken: config.signing_token } : {},
-      triggers: Object.keys(config).filter(key => key.endsWith("_events") && config[key] === true).toSorted(),
+      id, url: String(config.url), ...signingToken === undefined ? {} : { signingToken },
+      triggers: [...triggers].toSorted(),
+      ...existing?.alertStatus === undefined ? {} : { alertStatus: existing.alertStatus }, settings,
     };
   }
 
-  #reported({ id, url, signingToken, triggers, alertStatus = "executable" }: Webhook): Row {
+  #reported({ id, url, signingToken, triggers, alertStatus = "executable", settings }: Webhook): Row {
     return {
-      id, url, alert_status: alertStatus, enable_ssl_verification: true,
+      id, url, alert_status: alertStatus, ...settings,
       ...Object.fromEntries(triggers.map(trigger => [trigger, true])),
       ...this.version.startsWith("18.") ? {} : { signing_token_present: signingToken !== undefined },
     };
@@ -405,12 +434,15 @@ it("adds the webhook once a hook is enabled, and delivers the events it watches 
     signingToken: expect.stringMatching(/^whsec_[A-Za-z0-9+/]{43}=$/),
     // Only what its hooks watch, so GitLab doesn't deliver the push below at all.
     triggers: ["issues_events"],
+    // GitLab's own payloads, for every branch's pushes, over verified TLS.
+    settings: {
+      enable_ssl_verification: true, custom_webhook_template: "", push_events_branch_filter: null,
+      branch_filter_strategy: "all_branches",
+    },
   }]);
   // Confidential issues and internal comments are never asked for.
   const [created] = gitlab.gitlab.requests.filter(request => request.method === "POST");
-  expect(JSON.parse(created.body!)).toMatchObject({
-    confidential_issues_events: false, confidential_note_events: false, enable_ssl_verification: true,
-  });
+  expect(JSON.parse(created.body!)).toMatchObject({ confidential_issues_events: false, confidential_note_events: false });
 
   expect(await gitlab.deliver("Issue Hook", issueHook("open", 42))).toEqual([204]);
   expect(await gitlab.deliver("Issue Hook", issueHook("update", 42))).toEqual([204]);
@@ -801,7 +833,9 @@ it("adopts the webhook an earlier attempt left on the project", async () => {
   const gitlab = new FakeGitLabHooks();
   const account = await connectAccount();
   const url = `https://gadgets.test/gatekeeper/gitlab/webhook/${env.GITLAB_HOOK_DRIVER.idFromName(account)}`;
-  gitlab.webhooks.set(5, { id: 5, url, signingToken: `whsec_${btoa("l".repeat(32))}`, triggers: ["push_events"] });
+  gitlab.webhooks.set(5, {
+    id: 5, url, signingToken: `whsec_${btoa("l".repeat(32))}`, triggers: ["push_events"], settings: { ...DEFAULT_SETTINGS },
+  });
   const triage = binding(account);
   await triage.subscribe();
 
@@ -870,6 +904,15 @@ it.each<[string, (gitlab: FakeGitLabHooks, webhook: Webhook) => void]>([
   ["turns on another of its triggers", (_gitlab, webhook) => { webhook.triggers = [...webhook.triggers, "push_events"]; }],
   ["turns on confidential issues", (_gitlab, webhook) => { webhook.triggers = [...webhook.triggers, "confidential_issues_events"]; }],
   ["removes its signing token", (_gitlab, webhook) => { webhook.signingToken = undefined; }],
+  ["turns off its TLS verification", (_gitlab, webhook) => { webhook.settings.enable_ssl_verification = false; }],
+  // A rendered template, rather than the payload, would reach the worker.
+  ["gives it a custom template", (_gitlab, webhook) => {
+    webhook.settings.custom_webhook_template = '{"event":"{{object_kind}}"}';
+  }],
+  ["filters its pushes by branch", (_gitlab, webhook) => {
+    webhook.settings.branch_filter_strategy = "wildcard";
+    webhook.settings.push_events_branch_filter = "main";
+  }],
 ])("restores its webhook at the next hourly check when someone %s", async (_, change) => {
   const gitlab = new FakeGitLabHooks();
   const account = await connectAccount();
@@ -877,7 +920,7 @@ it.each<[string, (gitlab: FakeGitLabHooks, webhook: Webhook) => void]>([
   await triage.subscribe({ events: ["issue"] });
   await triage.enable();
   const [webhook] = gitlab.webhooks.values();
-  const configured = { ...webhook };
+  const configured = structuredClone(webhook);
   change(gitlab, webhook);
 
   await clock(account).at(HOUR, () => runDurableObjectAlarm(driver(account)));
