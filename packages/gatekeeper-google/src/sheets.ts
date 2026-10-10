@@ -44,8 +44,6 @@ const MAX_CHANGE_BYTES = 100 * 1024;
 // `sheets:action:` prefix and its counter.
 const STALE_MARKERS_KEY = "sheets:staleMarkers";
 const MAX_STALE_MARKERS = 20;
-// Developer metadata IDs are positive 32-bit integers; 0 asks Google to pick one.
-const MAX_MARKER_ID = 2 ** 31 - 1;
 
 type Env = Cloudflare.Env;
 
@@ -57,6 +55,14 @@ function checkQueuedSize(value: unknown): void {
     throw new Error(`This change is too large to queue (${bytes} bytes, limit ` +
       `${MAX_CHANGE_BYTES}). Split it up.`);
   }
+}
+
+// A developer metadata ID is a positive 32-bit integer, 0 asking Google to pick one: a random
+// 31-bit number, drawn again while it is 0.
+function mintMarkerId(): number {
+  let id = 0;
+  while (id === 0) id = crypto.getRandomValues(new Uint32Array(1))[0] >>> 1;
+  return id;
 }
 
 let sheetsTypesCode: string | undefined;
@@ -479,10 +485,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
       }
       if (read.refusal) throw read.refusal;
       // Minted here, so every attempt to apply the batch carries the same marker.
-      let marker = {
-        id: crypto.getRandomValues(new Uint32Array(1))[0] % MAX_MARKER_ID + 1,
-        token: crypto.randomUUID(),
-      };
+      let marker = { id: mintMarkerId(), token: crypto.randomUUID() };
       return { payload: { ...read.batch!, marker }, result: {} };
     });
   }
