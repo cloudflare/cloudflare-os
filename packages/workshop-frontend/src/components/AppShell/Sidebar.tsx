@@ -22,7 +22,7 @@ import {
   SidebarWorkspacesLists,
 } from './SidebarWorkspaces'
 import SidebarUtilityStrip from './SidebarUtilityStrip'
-import { inMobileApp, returnToInstalls } from '../../features/mobile-login/mobileAppNavigation'
+import { inNativeApp, returnToInstalls } from '../../features/native-app/nativeApp'
 
 /**
  * The persistent left rail. Three pinned regions sandwich a single scrolling region of lists, so
@@ -202,7 +202,7 @@ export default function Sidebar({
       </SidebarWorkspacesProvider>
 
       <SidebarUtilityStrip collapsed={collapsed} />
-      {inMobileApp() && (
+      {inNativeApp() && (
         <button
           type="button"
           onClick={returnToInstalls}

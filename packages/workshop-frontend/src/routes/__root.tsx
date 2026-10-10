@@ -15,7 +15,11 @@ import LoginPage from '../LoginPage'
 import OnboardingWizard from '../OnboardingWizard'
 import AccountSelectionModal from '../components/billing/AccountSelectionModal'
 import { NotificationBridge } from '../features/notifications/NotificationBridge'
-import { MobileLoginHandoff, mobileLoginAttempt } from '../features/mobile-login/MobileLoginHandoff'
+import {
+  DeviceSessionHandoff,
+  hasDeviceSessionParameters,
+} from '../features/native-app/DeviceSessionHandoff'
+import { NativeAppBridge } from '../features/native-app/NativeAppBridge'
 
 export const Route = createRootRoute({
   component: RootComponent,
@@ -113,8 +117,8 @@ function RootComponent() {
   if (!authenticatedApi) return null
   // The native handoff is a dedicated destination: never render the Workshop home page
   // behind it while the browser is returning credentials to the app.
-  if (mobileLoginAttempt(window.location.search)) {
-    return <MobileLoginHandoff authenticatedApi={authenticatedApi} />
+  if (hasDeviceSessionParameters(window.location.search)) {
+    return <DeviceSessionHandoff authenticatedApi={authenticatedApi} />
   }
   return (
     <AuthProvider authenticatedApi={authenticatedApi} onLogout={logout}>
@@ -122,7 +126,7 @@ function RootComponent() {
         <TooltipProvider>
           <Toasty>
             <NotificationBridge authenticatedApi={authenticatedApi} />
-            <MobileLoginHandoff authenticatedApi={authenticatedApi} />
+            <NativeAppBridge />
             <AuthenticatedShell
               authenticatedApi={authenticatedApi}
               isWorkspaceEditor={isWorkspaceEditor}

@@ -1,4 +1,5 @@
 import { useState, FormEvent } from "react";
+import { Link } from "@tanstack/react-router";
 import { RpcStub } from "capnweb";
 import { PublicApi } from "@gadgets/workshop-shared/api";
 import { Hexagon } from "@phosphor-icons/react";
@@ -10,8 +11,9 @@ import OAuthButtons from "./components/auth/OAuthButtons";
 import SiteLogo from "./components/SiteLogo";
 import { useConnectionLost } from "./RpcContext";
 import {
-  mobileLoginDestination,
-} from "./features/mobile-login/MobileLoginHandoff";
+  deviceSessionDestination,
+  deviceSessionSearch,
+} from "./features/native-app/DeviceSessionHandoff";
 
 interface SignupPageProps {
   rpcStub: RpcStub<PublicApi>;
@@ -30,7 +32,7 @@ export default function SignupPage({ rpcStub }: SignupPageProps) {
   const [error, setError] = useState<string | null>(null);
 
   const handleSignupSuccess = () => {
-    window.location.href = mobileLoginDestination("/", window.location.search);
+    window.location.href = deviceSessionDestination("/", window.location.search);
   };
 
   const usernameError =
@@ -228,12 +230,13 @@ export default function SignupPage({ rpcStub }: SignupPageProps) {
         {passwordAuthEnabled && (
           <p className="text-center text-sm text-kumo-subtle mt-6">
             Already have an account?{" "}
-            <a
-              href={mobileLoginDestination("/", window.location.search)}
+            <Link
+              to="/"
+              search={deviceSessionSearch(window.location.search)}
               className="text-kumo-brand hover:underline font-medium"
             >
               Sign in
-            </a>
+            </Link>
           </p>
         )}
       </div>

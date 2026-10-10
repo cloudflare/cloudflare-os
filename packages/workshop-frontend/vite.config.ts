@@ -83,7 +83,7 @@ export default defineConfig(({ mode }) => {
       host: true,
       proxy: {
         '/api/client-errors': `http://${backendHost}`,
-        '/api/mobile-login/callback': `http://${backendHost}`,
+        '/api/device-session/callback': `http://${backendHost}`,
         '/blueprint-screenshot': `http://${backendHost}`,
         '/api/site-logo': `http://${backendHost}`,
       },

@@ -1,13 +1,13 @@
 import { RpcStub } from "capnweb";
-import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, UserNotification } from '@gadgets/workshop-shared/api';
+import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, UserNotification, type DeviceSessionCredential, type DeviceSessionHandoff, type DeviceSessionHandoffStart } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import {
   makeUserStorage, type BlueprintUserRecord, type CloudflareBilling, type ConnectedAccountRecord,
-  type GadgetRecord, type PendingConnectFlow, type PendingHandoffRecord, type UserAiModelRecord,
-  type UserStorage, type WorkspaceOutputEntry,
+  type GadgetRecord, type PendingConnectFlow, type PendingDeviceHandoffRecord,
+  type PendingHandoffRecord, type UserAiModelRecord, type UserStorage, type WorkspaceOutputEntry,
 } from "./storage-schema/user-storage.js";
 import { recordAnalytics } from "./analytics";
 import { createWorkshopLogger } from "./observability";
@@ -18,14 +18,20 @@ import { deleteBlueprintContent } from "./blueprint-archive.js";
 import { isReservedBlueprintKey, readBlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
 import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./admin-config.js";
 import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
-import { CONNECT_FLOW_LIFETIME_MS, handoffTargetOrigin, hashPresentedSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS } from "./connect-handoff.js";
+import { CONNECT_FLOW_LIFETIME_MS, handoffTargetOrigin, hashPresentedSecret, hashSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS } from "./connect-handoff.js";
 import { deliver, registerDevice } from "./notification-service.js";
+import {
+  DEVICE_HANDOFF_LIFETIME_MS, isDeviceHandoffState, sealDeviceSessionHandoff,
+} from "./auth/device-session-handoff.js";
 
 const logger = createWorkshopLogger("workshop.user");
 
 // How many workspaces one Outputs catch-up pass examines, bounding the Durable Objects a single
 // listOutputs() call wakes and how long it waits. The client calls again until catch-up is done.
 const OUTPUTS_BACKFILL_PAGE = 16;
+
+/** Server-enforced lifetime of a Workshop session issued to a native device. */
+export const DEVICE_SESSION_LIFETIME_MS = 30 * 24 * 60 * 60_000;
 
 /**
  * Metadata about an auto-provisioned account that provides an agent singleton and/or a management UI.
@@ -237,6 +243,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (!session) {
       throw createAuthError(AUTH_ERROR_CODES.invalidSessionToken);
     }
+    const now = Date.now();
+    if (session.pendingUntil || (session.expiresAt && session.expiresAt.getTime() <= now)) {
+      if ((session.expiresAt?.getTime() ?? Infinity) <= now ||
+          (session.pendingUntil?.getTime() ?? Infinity) <= now) {
+        this.storage.sessions.delete(tokenId);
+      }
+      throw createAuthError(AUTH_ERROR_CODES.invalidSessionToken);
+    }
     this.#syncDirectory();
   }
 
@@ -263,18 +277,103 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return isNew;
   }
 
-  async #newSessionToken(): Promise<string> {
+  async #newSessionToken(options: { expiresAt?: Date; pendingUntil?: Date } = {}): Promise<string> {
     let { secret, hash: tokenId } = await newSecretToken();
-    this.storage.sessions.put({ tokenId, created: new Date() });
+    this.storage.sessions.put({ tokenId, created: new Date(), ...options });
     return secret.toBase64();
   }
 
-  /** Mint an independent web session after an authenticated browser requests a mobile handoff. */
-  async createMobileSession(): Promise<string> {
+  /**
+   * Stage an idempotent, single-use transfer without returning encrypted credentials to page
+   * JavaScript. A Workshop session remains inactive until the HTTPS callback consumes the record;
+   * an Access token is already bounded by its JWT expiry and is stored only inside `handoff`.
+   */
+  async stageDeviceSessionHandoff(publicKey: string, state: string, accessJwt?: string)
+      : Promise<DeviceSessionHandoffStart> {
     if (!this.storage.created.get()) {
       throw createAuthError(AUTH_ERROR_CODES.invalidSessionToken);
     }
-    return this.#newSessionToken();
+    if (!isDeviceHandoffState(state)) throw new Error("Invalid device sign-in state.");
+    const stateHash = await hashSecret(new TextEncoder().encode(state));
+    const existing = this.storage.pendingDeviceHandoffs.get(stateHash);
+    if (existing && existing.expiresAt.getTime() > Date.now()) {
+      if (existing.publicKey !== publicKey) {
+        throw new Error("This device sign-in state is already bound to another key.");
+      }
+      return { handoffId: this.ctx.id.toString() };
+    }
+    if (existing) this.#dropPendingDeviceHandoff(existing);
+
+    const now = Date.now();
+    const handoffExpiresAt = now + DEVICE_HANDOFF_LIFETIME_MS;
+    let credential: DeviceSessionCredential;
+    let sessionTokenId: string | undefined;
+    let deviceSessionExpiresAt: number | undefined;
+    if (accessJwt) {
+      credential = { kind: "cloudflare-access", token: accessJwt };
+    } else {
+      const { secret, hash } = await newSecretToken();
+      sessionTokenId = hash;
+      deviceSessionExpiresAt = now + DEVICE_SESSION_LIFETIME_MS;
+      credential = {
+        kind: "workshop",
+        token: `${this.storage.profile.get().id}:${secret.toBase64()}`,
+        expiresAt: deviceSessionExpiresAt,
+      };
+    }
+    const handoff = await sealDeviceSessionHandoff(
+        publicKey, state, credential, handoffExpiresAt);
+    if (sessionTokenId && deviceSessionExpiresAt) {
+      this.storage.sessions.put({
+        tokenId: sessionTokenId,
+        created: new Date(now),
+        expiresAt: new Date(deviceSessionExpiresAt),
+        pendingUntil: new Date(handoffExpiresAt),
+      });
+    }
+    this.storage.pendingDeviceHandoffs.put({
+      stateHash,
+      publicKey,
+      handoff,
+      expiresAt: new Date(handoffExpiresAt),
+      sessionTokenId,
+    });
+    await this.#armHandoffSweep();
+    logger.info("device session handoff staged", {
+      event: "auth.device_handoff.staged",
+      credentialKind: credential.kind,
+    });
+    return { handoffId: this.ctx.id.toString() };
+  }
+
+  /** Consume a staged handoff once and activate its pending Workshop device session, if any. */
+  async consumeDeviceSessionHandoff(state: string): Promise<DeviceSessionHandoff | null> {
+    if (!isDeviceHandoffState(state)) return null;
+    const stateHash = await hashSecret(new TextEncoder().encode(state));
+    const pending = this.storage.pendingDeviceHandoffs.get(stateHash);
+    if (!pending) return null;
+    if (pending.expiresAt.getTime() <= Date.now()) {
+      this.#dropPendingDeviceHandoff(pending);
+      await this.#armHandoffSweep();
+      return null;
+    }
+    this.storage.pendingDeviceHandoffs.delete(stateHash);
+    if (pending.sessionTokenId) {
+      const session = this.storage.sessions.get(pending.sessionTokenId);
+      if (!session || !session.pendingUntil || session.pendingUntil.getTime() <= Date.now()) {
+        if (session) this.storage.sessions.delete(pending.sessionTokenId);
+        await this.#armHandoffSweep();
+        return null;
+      }
+      const { pendingUntil: _pendingUntil, ...active } = session;
+      this.storage.sessions.put(active);
+    }
+    await this.#armHandoffSweep();
+    logger.info("device session handoff consumed", {
+      event: "auth.device_handoff.consumed",
+      credentialKind: pending.sessionTokenId ? "workshop" : "cloudflare-access",
+    });
+    return pending.handoff;
   }
 
   async login(passwordHash: Uint8Array): Promise<string | null> {
@@ -1846,11 +1945,22 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     });
   }
 
-  // Arm the alarm for the soonest pending expiry (the alarm is used for nothing else).
+  #dropPendingDeviceHandoff(pending: PendingDeviceHandoffRecord): void {
+    this.storage.pendingDeviceHandoffs.delete(pending.stateHash);
+    if (pending.sessionTokenId) this.storage.sessions.delete(pending.sessionTokenId);
+  }
+
+  // Arm the alarm for the soonest pending handoff or expiring device session.
   async #armHandoffSweep(): Promise<void> {
     let next: number | undefined;
     let consider = (at: number) => { if (next === undefined || at < next) next = at; };
     for (let flow of this.storage.pendingConnectFlows.list()) consider(flow.expiresAt.getTime());
+    for (let pending of this.storage.pendingDeviceHandoffs.list()) {
+      consider(pending.expiresAt.getTime());
+    }
+    for (let session of this.storage.sessions.list()) {
+      if (session.expiresAt) consider(session.expiresAt.getTime());
+    }
     try {
       for (let pending of this.storage.pendingHandoffs.list()) consider(pending.expiresAt.getTime());
     } catch (err) {
@@ -1894,6 +2004,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     for (let pending of expired) {
       this.storage.pendingHandoffs.delete(pending.ticketHash);
       await this.#dropPendingConnect(pending);
+    }
+    for (let pending of Array.from(this.storage.pendingDeviceHandoffs.list())) {
+      if (pending.expiresAt.getTime() <= now) this.#dropPendingDeviceHandoff(pending);
+    }
+    for (let session of Array.from(this.storage.sessions.list())) {
+      if ((session.expiresAt?.getTime() ?? Infinity) <= now) {
+        this.storage.sessions.delete(session.tokenId);
+      }
     }
     await this.#armHandoffSweep();
   }

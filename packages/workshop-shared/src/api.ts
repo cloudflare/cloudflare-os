@@ -446,8 +446,29 @@ export type UserDirectoryRecord = {
   name: string;
 };
 
-/** Encrypted session material for one native-app sign-in attempt. Never contains plaintext credentials. */
-export type MobileHandoff = {
+/** Credential carried inside a device-session transfer's encrypted plaintext. */
+export type DeviceSessionCredential =
+  | {
+      /** An install-local Workshop session, enforced by the install until `expiresAt`. */
+      kind: "workshop";
+      token: string;
+      expiresAt: number;
+    }
+  | {
+      /** A Cloudflare Access application token, whose JWT `exp` bounds its lifetime. */
+      kind: "cloudflare-access";
+      token: string;
+    };
+
+/** Plaintext wire contract encrypted for one native-app device-session transfer. */
+export type DeviceSessionTransfer = {
+  credential: DeviceSessionCredential;
+  /** Deadline for consuming this transfer, independent of the credential's own lifetime. */
+  expiresAt: number;
+};
+
+/** Encrypted material delivered only through the claimed native-app HTTPS callback. */
+export type DeviceSessionHandoff = {
   /** Ephemeral server P-256 public key, uncompressed and base64url encoded. */
   publicKey: string;
   /** Random HKDF salt, base64url encoded. */
@@ -458,13 +479,25 @@ export type MobileHandoff = {
   ciphertext: string;
 };
 
+/** Opaque handle posted by the browser to consume a staged device-session transfer. */
+export type DeviceSessionHandoffStart = {
+  /** Durable Object identifier for the authenticated user who owns the staged transfer. */
+  handoffId: string;
+};
+
 /** Top-level API exposed to the user after they have authenticated. */
 export interface AuthenticatedApi extends RpcTarget {
   /** Get profile info for the user who is logged in. */
   whoami(): Promise<AiChatAuthorInfo>;
 
-  /** Encrypt a short-lived, install-local web session to the native app's ephemeral public key. */
-  createMobileHandoff(publicKey: string, state: string): Promise<MobileHandoff>;
+  /**
+   * Stage a two-minute, single-use device-session transfer for a native app. The state is an
+   * opaque 16–512 character URL-safe value and the key is an uncompressed P-256 public key encoded
+   * as unpadded base64url. The encrypted credential remains server-side until the browser confirms
+   * the transfer through the fixed, claimed HTTPS callback.
+   */
+  beginDeviceSessionHandoff(publicKey: string, state: string)
+    : Promise<DeviceSessionHandoffStart>;
 
   /** Set the user's own display name, seen in chats, etc. */
   setOwnDisplayName(name: string): Promise<void>;

@@ -65,23 +65,49 @@ full scopes and persists the connection).
 
 ## Native app return after installation sign-in
 
-A native Cloudflare OS shell opens a user's install in a system authentication session with a
-fresh `?cfos_mobile_state=<uuid>` and per-attempt P-256 public key. After
-`AuthenticatedApi.whoami()` confirms a user session, the Workshop backend seals a two-minute
-session handoff to that public key. The frontend posts only the ciphertext to **that
-installation's** `/api/mobile-login/callback`, which validates its shape and replies with a fixed
-`cloudflare-os://install-connected` HTTP redirect. The native app receives the redirect through
-its authentication-session completion handler, checks the pending state, decrypts the handoff,
-verifies the credential in an isolated web view, and only then persists it in secure storage with
-the install. The browser should close automatically; **Return to app** is a retry control, not a
-required step. There is no central native-login relay, poller, or cross-install session store.
-This is separate from the gatekeeper OAuth callback described above.
+The native Cloudflare OS shell uses a system authentication session, rather than an embedded web
+view, to sign in to an installation. This is required for identity-provider and security-key flows
+that reject or cannot complete in embedded browsers. The app opens the installation with a fresh
+opaque `cfos_native_state` value and a fresh, non-extractable P-256 key pair, passing only the
+public key as `cfos_native_key`.
 
-Inside an install's embedded web view, the native shell exposes a versioned
-`window.cloudflareOSNative` capability. The Workshop uses that capability to confirm the restored
-session and to offer **Back to installs** without relying on URL parameters or browser storage.
-Both the native bridge and the encrypted handoff are available in every installation; they are not
-conditioned on Cloudflare Access mode.
+Once the browser is authenticated, the Workshop presents an explicit **Continue in Cloudflare
+OS** confirmation. It does not mint a transfer merely because a specially formed URL was loaded.
+After confirmation:
+
+1. `AuthenticatedApi.beginDeviceSessionHandoff()` stages an encrypted transfer in the authenticated
+   user's Durable Object. Page JavaScript receives only the Durable Object id, never the encrypted
+   envelope or its credential.
+2. The page performs a same-origin, top-level form POST containing that id and the opaque state to
+   `/api/device-session/callback`. The endpoint rejects fetches, frames, cross-origin requests,
+   duplicate fields, and malformed values.
+3. The endpoint atomically consumes the staged record and returns a `303` to the fixed claimed HTTPS
+   app link `https://os.cloudflare.app/oauthredirect?cfos_callback=install-connected&…`. The native
+   app verifies the state, decrypts the envelope with its per-attempt private key, and validates the
+   credential before storing it in platform secure storage. A web page cannot claim this callback;
+   the app-domain association controls which installed native app receives it.
+
+The transfer is server-enforced as single-use and expires after two minutes, independently of the
+credential encrypted inside it. A password or gatekeeper-authenticated installation gets a new
+Workshop device session which remains unusable until the callback consumes the transfer and which
+the server expires after 30 days. A Cloudflare Access installation transfers its current Access
+JWT; that credential retains the Access policy and JWT `exp` chosen by the installation's Access
+configuration. The native app cannot refresh or extend it, and the user must complete Access again
+after it expires. The app also needs to preserve any Access binding cookie required by that
+installation's policy.
+
+The encrypted wire payload is a documented `DeviceSessionTransfer`: a discriminated credential,
+plus the two-minute transfer deadline. It uses ephemeral P-256 ECDH, HKDF-SHA-256, and AES-GCM with
+the opaque state as additional authenticated data. There is no central native-login relay, poller,
+or cross-install session store; each installation owns and consumes its transfers.
+
+Inside an installation's embedded web view, the native shell exposes the versioned
+`window.cloudflareOSNative` capability. The Workshop calls `loginReady()` only after its normal
+authenticated shell is mounted, and offers **Back to installs** through `returnToInstalls()`.
+Notification enrollment is an optional capability on the same object. The legacy notification
+globals remain temporarily as a fallback for the currently distributed TestFlight build; new
+navigation and login behavior uses only the versioned object. These native hooks are available in
+every installation and are not conditioned on Cloudflare Access mode.
 
 ## Configuration
 
