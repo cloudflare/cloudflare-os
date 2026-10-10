@@ -842,7 +842,8 @@ export const actions = defineActions<XActionHost, XActions>({
       let previous = host.previous.get(ctx.id);
       if (previous === undefined) {
         const before = requireData(await host.read<WireList>(1, api => api.get<WireList>(`/2/lists/${id}`, LIST_FIELDS)), "List");
-        previous = { name: before.name ?? "", description: before.description ?? "", private: before.private === true };
+        // Privacy X didn't report is restored as private, the safe way to be wrong.
+        previous = { name: before.name ?? "", description: before.description ?? "", private: before.private !== false };
         host.previous.put(ctx.id, previous);
       }
       await toggle(host, api => api.put(`/2/lists/${id}`, payload.changes), "change this List");
