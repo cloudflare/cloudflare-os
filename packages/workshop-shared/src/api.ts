@@ -964,7 +964,8 @@ export type AdminResource = {
  * Provisioning mode for an auto-provisioning ("ambient") gatekeeper — one that mints a connected
  * account with no OAuth flow (VendorDescription.autoProvisionsAccount), e.g. the Context Library:
  *   - 'disabled': not available; no account is provisioned and any existing one is dormant.
- *   - 'optional': users opt in from the Connectors page; not forced on anyone (the default).
+ *   - 'optional': users opt in from the Connectors page; not forced on anyone (the default for
+ *                 every vendor but Web Search, which defaults to 'enabled').
  *   - 'enabled':  auto-provisioned for every user (forced); they can't remove it.
  */
 export const AMBIENT_GATEKEEPER_MODES = ['disabled', 'optional', 'enabled'] as const;
@@ -1986,7 +1987,7 @@ export type GadgetMetadata = {
    * True when the gadget has observed data marked `containsRestrictedData` (see
    * `ObservationDescription`). It can still be shared, with collaborators verified per
    * gatekeeper (if `ownerInvitesOnly` is also set, only the owner can add them), but can no longer
-   * fetch from the public web, and every action requires manual approval.
+   * reach the public web, and every action requires manual approval.
    */
   containsRestrictedData?: boolean;
 

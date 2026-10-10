@@ -1251,7 +1251,7 @@ export type ObservationDescription = {
    * - Every collaborator must pass this gatekeeper's `addObserver()` to open the gadget, so a
    *   gatekeeper whose `addObserver()` always throws makes the gadget effectively unshareable
    *   once it has made one of these observations.
-   * - Once observed, the gadget enters a restricted mode: no public-web fetches, and every action
+   * - Once observed, the gadget enters a restricted mode: no public-web requests, and every action
    *   requires manual approval -- auto-approval rules are suspended. The approver is shown the
    *   action's full `description` and is responsible for checking it contains none of the
    *   restricted data. An action whose description is not complete
@@ -1277,6 +1277,14 @@ export type ObservationDescription = {
    * requires each recipient to be granted access individually.
    */
   ownerInvitesOnly?: boolean;
+
+  /**
+   * If true, then this observation sends text the caller chose, such as a search query, to a
+   * third party on the public web. The overseer refuses it once the workspace has observed
+   * restricted data (see `containsRestrictedData`), as it refuses the agent's web fetches, so the
+   * gatekeeper must send nothing until authorizeObservation() returns.
+   */
+  reachesPublicWeb?: boolean;
 
   /**
    * If present, then this observation includes data that must not be revealed to the given

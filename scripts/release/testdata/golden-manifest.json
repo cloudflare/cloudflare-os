@@ -1012,6 +1012,52 @@
         "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/supabase"
       }
     },
+    "gatekeeper-websearch": {
+      "bindings": [
+        {
+          "name": "AI",
+          "type": "ai"
+        }
+      ],
+      "compatibilityDate": "2026-09-04",
+      "compatibilityFlags": [
+        "allow_irrevocable_stub_storage"
+      ],
+      "inputs": [],
+      "installable": true,
+      "kind": "gatekeeper",
+      "mainModule": "websearch.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "WebSearchGatekeeper"
+          ],
+          "tag": "v1"
+        }
+      ],
+      "modules": [
+        {
+          "name": "websearch.js",
+          "r2Key": "blobs/modules/ad0447137dd2a06fd9da6d2a6774f64fbc1f69a778aadd2f4d15dc2ac9a68705",
+          "sha256": "ad0447137dd2a06fd9da6d2a6774f64fbc1f69a778aadd2f4d15dc2ac9a68705",
+          "size": 62,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "preinstall": true,
+      "shortName": "websearch",
+      "singleton": true,
+      "vars": {
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/websearch"
+      }
+    },
     "gatekeeper-zoominfo": {
       "bindings": [
         {

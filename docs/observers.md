@@ -34,7 +34,8 @@ The mechanism is a per-user, gatekeeper-mediated check — "this data may be sha
 people who *also* have access to it". (Maximally sensitive data gets an extra layer: an
 observation marked **`containsRestrictedData`**
 (`ObservationDescription.containsRestrictedData` in `packages/workshop-shared/src/gatekeeper.ts`)
-puts the workspace into a restricted mode — no web fetches, and every action requires manual
+puts the workspace into a restricted mode — no public-web requests (web fetches, or observations
+marked `reachesPublicWeb`), and every action requires manual
 approval (auto-approval rules are suspended), the approver checking the action text for restricted
 data. An action whose description is not complete (`ActionDescription.descriptionIsComplete`)
 is accepted and flagged to the approver; only git pushes are refused. Its coverage rests on admission: nobody can open the workspace without being verified
@@ -106,7 +107,7 @@ The check works as follows:
 | Session restart when verification scope widens | `overseer.ts` (`#restartIfSessionsAffected`, `joinSession`, `scheduleAccessRestart`) |
 | Server `openGadget` path | `packages/workshop-backend/src/server.ts` |
 | Role resolution / permission graph | `packages/workshop-backend/src/sharing.ts` (`getEffectiveRole`, `computeEffectiveRoles`) |
-| `containsRestrictedData` enforcement | `overseer.ts` (`authorizeObservation` sets `containsRestrictedData`; `getWebFetchEnv`, `submitAction`) |
+| `containsRestrictedData` enforcement | `overseer.ts` (`authorizeObservation` sets `containsRestrictedData` and refuses `reachesPublicWeb`; `#assertPublicWebAllowed` from `getWebFetchEnv` and `authorizeObservation`; `submitAction`) |
 | `ownerInvitesOnly` enforcement | `overseer.ts` (`authorizeObservation` sets `ownerInvitesOnly` and restarts the workspace if anyone lost access); `sharing.ts` (`computeEffectiveRoles` counts only direct owner grants; the `ownerInvitesOnly` hook in `redeemShareKey`, `addCollaborator`, `createShareLink`, `newShareLinkKey`) |
 | Observation recording | `overseer.ts` `authorizeObservation()`; `ApprovalQueueImpl` |
 | Gatekeeper storage record | `overseer-storage.ts` `GatekeeperRecord` (has `creationSpec.vendorId`) |
@@ -676,7 +677,8 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    at every `open()`, so nobody can be in the workspace without having passed the producing
    gatekeeper's `addObserver()`, and anything that widens what they must pass restarts every live
    session (see "Restarting when verification scope widens"). Setting `containsRestrictedData` also
-   puts the workspace into a restricted mode: no web fetches, and every action requires manual
+   puts the workspace into a restricted mode: no public-web requests (web fetches, or observations
+   marked `reachesPublicWeb`), and every action requires manual
    approval (auto-approval rules are suspended), the approver checking the action text for
    restricted data. An action whose description is not complete
    (`ActionDescription.descriptionIsComplete`) is accepted and flagged to the approver; only git
@@ -787,7 +789,7 @@ its resource types.
 
 - **A — Private-only.** Non-owner observers are refused: `addObserver()` unconditionally throws.
   For data that must additionally never leak back out, the `containsRestrictedData` restricted
-  mode (no web fetches, and every action requires manual approval — auto-approval rules are
+  mode (no public-web requests, and every action requires manual approval — auto-approval rules are
   suspended — the approver checking the action text for restricted data) is available separately;
   combined with strategy A it makes the workspace effectively private once sensitive data is
   observed.
