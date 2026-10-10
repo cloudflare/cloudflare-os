@@ -1,9 +1,12 @@
 import { env } from "cloudflare:test";
-import { APPLY_OUTCOME_UNKNOWN_MESSAGE } from "@gadgets/gatekeeper-kit/actions";
+import { ActionJournal, APPLY_OUTCOME_UNKNOWN_MESSAGE } from "@gadgets/gatekeeper-kit/actions";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { SHEETS_ACTIONS } from "../../src/sheets-actions";
+import { GoogleSheetsApi } from "../../src/sheets-api";
+import { rewriteFormula, type RewriteStep } from "../../src/sheets-formula";
 import { a1Of, parseRange, type Rect } from "../../src/sheets-model";
 import type { SpreadsheetInfo, SpreadsheetRange, SpreadsheetValueMode } from "../../src/sheets-read-types";
-import type { SheetMeta } from "../../src/sheets-simulation";
+import type { SheetMeta, SheetsAction } from "../../src/sheets-simulation";
 import type { SheetCellInput, SheetChange } from "../../src/sheets-types";
 import { protectedRange, sheet as sheetMeta, spreadsheetMetadata, type FixtureGridRange } from "../sheets-fixture";
 
@@ -14,12 +17,28 @@ class Invalid extends Error {}
 /** A sheet of the fake spreadsheet, and the ranges it protects. */
 type ProviderSheet = SheetMeta & { protectedRanges?: ReturnType<typeof protectedRange>[] };
 
+/** What a batch changes, committed only if every request applies. */
+type ProviderState = {
+  cells: Map<string, SheetCellInput>;
+  markers: Map<number, { metadataKey: string; metadataValue: string }>;
+  sheets: ProviderSheet[];
+};
+
 const key = (sheetId: number, row: number, column: number) => `${sheetId}:${row}:${column}`;
+
+const MAX_SHEET_ID = 2 ** 31 - 1;
+
+const CHANGED = "This change no longer applies: cells it overwrites or deletes, or a sheet it changes, " +
+  "changed since it was queued.";
+
+/** The provider of the test running, whose requests `afterEach` checks. */
+let current: SheetsProvider | undefined;
 
 /**
  * Google Sheets as far as these tests need it: metadata honouring its field mask, value reads in
  * each mode, data-filter reads answered out of order, developer metadata, Drive's `canEdit`, and
- * an atomic `batchUpdate` of the requests the gatekeeper sends.
+ * an atomic `batchUpdate` of the requests the gatekeeper sends, changes to rows, columns and sheets
+ * included, rewriting formulas as Google does and refusing what Google refuses.
  */
 class SheetsProvider {
   title = "Budget";
@@ -43,6 +62,8 @@ class SheetsProvider {
    * answers 429 and `forbidden` 403, committing nothing.
    */
   nextFailure?: "lost" | "dropped" | "inflight" | "quota" | "forbidden";
+  /** Requests Google would refuse that the gatekeeper should never send, whatever the spreadsheet holds. */
+  violations: string[] = [];
   #inflight?: BatchRequest[];
 
   constructor(public sheets: ProviderSheet[], cells: Record<string, SheetCellInput> = {}) {
@@ -134,26 +155,44 @@ class SheetsProvider {
 
   #batchGet(url: URL): Response {
     let mode = url.searchParams.get("valueRenderOption")!;
+    let ranges = url.searchParams.getAll("ranges").map(range => {
+      let parsed = parseRange(range);
+      let sheet = parsed.sheet === undefined
+        ? this.sheets.toSorted((a, b) => a.index - b.index).find(s => !s.hidden)
+        : this.sheets.find(s => s.title.toLowerCase() === parsed.sheet!.toLowerCase());
+      return sheet && { sheet, rect: parsed.rect };
+    });
+    // Google refuses a range naming a sheet it does not have, or lying wholly outside its grid.
+    if (ranges.some(range => !range || range.rect.startRow >= range.sheet.rowCount ||
+      range.rect.startColumn >= range.sheet.columnCount)) {
+      return Response.json({ error: { code: 400, status: "INVALID_ARGUMENT" } }, { status: 400 });
+    }
     return Response.json({
-      valueRanges: url.searchParams.getAll("ranges").map(range => {
-        let parsed = parseRange(range);
-        let sheet = parsed.sheet === undefined
-          ? this.sheets.find(s => !s.hidden)!
-          : this.sheets.find(s => s.title.toLowerCase() === parsed.sheet!.toLowerCase())!;
-        let { rect, values } = this.#values(sheet, parsed.rect, mode);
+      valueRanges: ranges.map(range => {
+        let { sheet } = range!;
+        let { rect, values } = this.#values(sheet, range!.rect, mode);
         return { range: a1Of(sheet.title, rect), majorDimension: "ROWS", ...(values ? { values } : {}) };
       }),
     });
   }
 
+  /** The grid ranges of every data-filter read, in the order asked. */
+  dataFilterReads: { mode: string; gridRanges: Required<FixtureGridRange>[] }[] = [];
+
   #byDataFilter(body: { dataFilters: { gridRange: Required<FixtureGridRange> }[]; valueRenderOption: string }): Response {
-    expect(body.valueRenderOption).toBe("FORMULA");
-    let answers = body.dataFilters.map(({ gridRange }) => {
-      let sheet = this.sheets.find(s => s.id === gridRange.sheetId)!;
+    let mode = body.valueRenderOption;
+    this.dataFilterReads.push({ mode, gridRanges: body.dataFilters.map(({ gridRange }) => gridRange) });
+    let sheets = body.dataFilters.map(({ gridRange }) => this.sheets.find(s => s.id === gridRange.sheetId));
+    if (body.dataFilters.some(({ gridRange }, i) => !sheets[i] || gridRange.startRowIndex >= sheets[i].rowCount ||
+      gridRange.startColumnIndex >= sheets[i].columnCount)) {
+      return Response.json({ error: { code: 400, status: "INVALID_ARGUMENT" } }, { status: 400 });
+    }
+    let answers = body.dataFilters.map(({ gridRange }, i) => {
+      let sheet = sheets[i]!;
       let { rect, values } = this.#values(sheet, {
         startRow: gridRange.startRowIndex, endRow: gridRange.endRowIndex,
         startColumn: gridRange.startColumnIndex, endColumn: gridRange.endColumnIndex,
-      }, "FORMULA");
+      }, mode);
       return {
         valueRange: { range: a1Of(sheet.title, rect), majorDimension: "ROWS", ...(values ? { values } : {}) },
         // Echoed with its zero fields left out.
@@ -195,24 +234,68 @@ class SheetsProvider {
 
   /** Applies every request or none, as Google does. */
   #commit(requests: BatchRequest[]): boolean {
-    let cells = new Map(this.cells);
-    let markers = new Map(this.markers);
+    let state: ProviderState = {
+      cells: new Map(this.cells), markers: new Map(this.markers), sheets: this.sheets.map(s => ({ ...s })),
+    };
     try {
-      for (let request of requests) this.#apply(request, cells, markers);
+      for (let request of requests) this.#apply(request, state);
     } catch (error) {
       if (error instanceof Invalid) return false;
       throw error;
     }
-    this.cells = cells;
-    this.markers = markers;
+    this.cells = state.cells;
+    this.markers = state.markers;
+    this.sheets = state.sheets;
     this.commits++;
     return true;
   }
 
-  #apply(
-    request: BatchRequest, cells: Map<string, SheetCellInput>,
-    markers: Map<number, { metadataKey: string; metadataValue: string }>,
-  ): void {
+  /** Refuses a request the gatekeeper should never send, recording it for `afterEach`. */
+  #violation(reason: string): never {
+    this.violations.push(reason);
+    throw new Invalid(reason);
+  }
+
+  #sheetOf(state: ProviderState, sheetId: number): ProviderSheet {
+    let sheet = state.sheets.find(s => s.id === sheetId);
+    if (!sheet) throw new Invalid(`No grid with id: ${sheetId}`);
+    return sheet;
+  }
+
+  #newSheetId(state: ProviderState, sheetId: unknown): number {
+    if (typeof sheetId !== "number" || !Number.isInteger(sheetId) || sheetId < 0 || sheetId > MAX_SHEET_ID) {
+      this.#violation(`sheet ID ${String(sheetId)} is not a non-negative 32-bit integer`);
+    }
+    if (state.sheets.some(s => s.id === sheetId)) throw new Invalid(`Sheet with id ${sheetId} already exists.`);
+    return sheetId;
+  }
+
+  #checkTitle(state: ProviderState, title: unknown, except?: number): string {
+    if (typeof title !== "string" || title.length === 0) this.#violation("a sheet has no title");
+    if (title.length > 100) this.#violation("a sheet title is over 100 characters");
+    if (state.sheets.some(s => s.id !== except && s.title.toLowerCase() === title.toLowerCase())) {
+      throw new Invalid(`A sheet with the name "${title}" already exists.`);
+    }
+    return title;
+  }
+
+  // Places `sheet` at its index, moving those from there on one along.
+  #place(state: ProviderState, sheet: ProviderSheet): void {
+    if (sheet.index > state.sheets.length) throw new Invalid("index is past the last sheet");
+    state.sheets = [...state.sheets.map(s => s.index >= sheet.index ? { ...s, index: s.index + 1 } : s), sheet];
+  }
+
+  // Rewrites every formula through `step`, as Google does; `onTarget` says whether a formula on a
+  // sheet is on the step's target.
+  #rewrite(state: ProviderState, step: RewriteStep, onTarget: (sheetId: number) => boolean): void {
+    for (let [cell, value] of state.cells) {
+      if (typeof value !== "string" || !value.startsWith("=")) continue;
+      state.cells.set(cell, rewriteFormula(value, step, onTarget(Number(cell.split(":")[0]))).text);
+    }
+  }
+
+  #apply(request: BatchRequest, state: ProviderState): void {
+    let { cells, markers } = state;
     if (request.createDeveloperMetadata) {
       let { metadataId, metadataKey, metadataValue, location, visibility } =
         request.createDeveloperMetadata.developerMetadata;
@@ -222,8 +305,8 @@ class SheetsProvider {
       markers.delete(request.deleteDeveloperMetadata.dataFilter.developerMetadataLookup.metadataId);
     } else if (request.updateCells) {
       let { range, rows, fields } = request.updateCells;
-      let sheet = this.sheets.find(s => s.id === range.sheetId);
-      if (!sheet || fields !== "userEnteredValue" || range.endRowIndex > sheet.rowCount ||
+      let sheet = this.#sheetOf(state, range.sheetId);
+      if (fields !== "userEnteredValue" || range.endRowIndex > sheet.rowCount ||
         range.endColumnIndex > sheet.columnCount) throw new Invalid();
       for (let row = range.startRowIndex; row < range.endRowIndex; row++) {
         for (let column = range.startColumnIndex; column < range.endColumnIndex; column++) {
@@ -236,9 +319,95 @@ class SheetsProvider {
           else cells.set(key(sheet.id, row, column), value);
         }
       }
+    } else if (request.addSheet) {
+      let { sheetId, title, index, gridProperties } = request.addSheet.properties;
+      if (index === undefined || gridProperties?.rowCount === undefined || gridProperties.columnCount === undefined) {
+        this.#violation("addSheet leaves its index or size to Google");
+      }
+      this.#place(state, {
+        id: this.#newSheetId(state, sheetId), title: this.#checkTitle(state, title), index,
+        rowCount: gridProperties.rowCount, columnCount: gridProperties.columnCount,
+      });
+    } else if (request.updateSheetProperties) {
+      let { properties, fields } = request.updateSheetProperties;
+      if (fields !== "title" || Object.keys(properties).join() !== "sheetId,title") {
+        this.#violation("updateSheetProperties changes more than a title");
+      }
+      let sheet = this.#sheetOf(state, properties.sheetId);
+      let title = this.#checkTitle(state, properties.title, sheet.id);
+      state.sheets = state.sheets.map(s => s.id === sheet.id ? { ...s, title } : s);
+      this.#rewrite(state, { kind: "rename", from: sheet.title, to: title }, () => false);
+    } else if (request.duplicateSheet) {
+      let { sourceSheetId, newSheetId, insertSheetIndex, newSheetName } = request.duplicateSheet;
+      // Google names a copy given no name in the user's language, and puts one given no index first.
+      if (insertSheetIndex === undefined || newSheetName === undefined) {
+        this.#violation("duplicateSheet leaves the copy's name or position to Google");
+      }
+      let source = this.#sheetOf(state, sourceSheetId);
+      let id = this.#newSheetId(state, newSheetId);
+      let title = this.#checkTitle(state, newSheetName);
+      let { protectedRanges: _protectedRanges, hidden: _hidden, ...copied } = source;
+      this.#place(state, { ...copied, id, title, index: insertSheetIndex });
+      let copies = [...cells].flatMap(([cell, value]) => {
+        let [sheetId, row, column] = cell.split(":").map(Number);
+        return sheetId === source.id ? [[key(id, row, column), value] as const] : [];
+      });
+      for (let [cell, value] of copies) {
+        cells.set(cell, typeof value === "string" && value.startsWith("=")
+          ? rewriteFormula(value, { kind: "duplicate", title: source.title, newTitle: title }, true).text
+          : value);
+      }
+    } else if (request.deleteSheet) {
+      let sheet = this.#sheetOf(state, request.deleteSheet.sheetId);
+      if (!sheet.hidden && state.sheets.filter(s => !s.hidden).length === 1) {
+        throw new Invalid("You can't remove all the visible sheets in a document.");
+      }
+      state.sheets = state.sheets.flatMap(s =>
+        s.id === sheet.id ? [] : [s.index > sheet.index ? { ...s, index: s.index - 1 } : s]);
+      for (let cell of cells.keys()) {
+        if (Number(cell.split(":")[0]) === sheet.id) cells.delete(cell);
+      }
+    } else if (request.insertDimension || request.deleteDimension) {
+      this.#dimension(request, state);
     } else {
-      throw new Invalid();
+      this.#violation(`unexpected request ${Object.keys(request).join()}`);
     }
+  }
+
+  /** Inserts or deletes rows or columns, moving cells and rewriting formulas as Google does. */
+  #dimension(request: BatchRequest, state: ProviderState): void {
+    let inserting = request.insertDimension !== undefined;
+    let { range, inheritFromBefore } = request.insertDimension ?? request.deleteDimension;
+    let sheet = this.#sheetOf(state, range.sheetId);
+    let rows = range.dimension === "ROWS";
+    if (!rows && range.dimension !== "COLUMNS") this.#violation(`unknown dimension ${range.dimension}`);
+    let size = rows ? sheet.rowCount : sheet.columnCount;
+    let { startIndex: start, endIndex: end } = range;
+    let count = end - start;
+    if (!(count > 0) || start < 0) this.#violation("a dimension range is empty");
+    if (inserting) {
+      if (start > size) throw new Invalid(`range.startIndex is larger than current grid size (${size})`);
+      if (start === size && inheritFromBefore !== true) {
+        this.#violation(`range.startIndex must be less than the grid size (${size}) if inheritFromBefore is false.`);
+      }
+    } else {
+      if (end > size) throw new Invalid("range.endIndex is past the grid");
+      if (count >= size) throw new Invalid(`You can't delete all the ${rows ? "rows" : "columns"} on the sheet.`);
+    }
+    state.cells = new Map([...state.cells].flatMap(([cell, value]) => {
+      let [sheetId, row, column] = cell.split(":").map(Number);
+      if (sheetId !== sheet.id) return [[cell, value] as const];
+      let line = rows ? row : column;
+      if (!inserting && line >= start && line < end) return [];
+      let to = line < start ? line : inserting ? line + count : line - count;
+      return [[rows ? key(sheetId, to, column) : key(sheetId, row, to), value] as const];
+    }));
+    let grown = inserting ? count : -count;
+    state.sheets = state.sheets.map(s => s.id !== sheet.id ? s
+      : rows ? { ...s, rowCount: s.rowCount + grown } : { ...s, columnCount: s.columnCount + grown });
+    this.#rewrite(state, {
+      kind: inserting ? "insert" : "delete", title: sheet.title, axis: rows ? "rows" : "columns", start, count,
+    }, sheetId => sheetId === sheet.id);
   }
 }
 
@@ -275,11 +444,12 @@ function gatekeeper() {
 }
 
 function budget(sheets: ProviderSheet[] = [sheetMeta(0, "Sales"), sheetMeta(7, "Q3 Plan", { index: 1, rowCount: 10, columnCount: 4 })]) {
-  return new SheetsProvider(sheets, {
+  current = new SheetsProvider(sheets, {
     "Sales!A1": "Region", "Sales!B1": "Total",
     "Sales!A2": "EMEA", "Sales!B2": 4, "Sales!C2": "=B2*2",
     "Sales!A3": "APAC", "Sales!B3": 5,
   }).install();
+  return current;
 }
 
 /** The marker a batch creates. */
@@ -298,8 +468,58 @@ function cellRequests(batch: BatchRequest[]): BatchRequest[] {
   return batch.filter(request => request.updateCells);
 }
 
+/** The requests of a batch that change the spreadsheet, without its marker requests. */
+function changeRequests(batch: BatchRequest[]): BatchRequest[] {
+  return batch.filter(request => !request.createDeveloperMetadata && !request.deleteDeveloperMetadata);
+}
+
+/** How many value reads the provider has answered. */
+function valueReads(provider: SheetsProvider): number {
+  return provider.requests.filter(url => url.pathname.includes("/values:")).length;
+}
+
+/** Durable Object KV held in memory, as far as a journal uses it. */
+function memoryKv() {
+  let entries = new Map<string, unknown>();
+  return {
+    get: <T>(name: string) => entries.get(name) as T | undefined,
+    put: <T>(name: string, value: T) => void entries.set(name, structuredClone(value)),
+    delete: (name: string) => void entries.delete(name),
+    list: <T>({ prefix, startAfter, limit }: { prefix: string; startAfter?: string; limit?: number }) =>
+      [...entries]
+        .filter(([name]) => name.startsWith(prefix) && (startAfter === undefined || name > startAfter))
+        .toSorted(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+        .slice(0, limit ?? Infinity) as [string, T][],
+  };
+}
+
+async function sha256(text: string): Promise<string> {
+  let digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
+  return Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * A batch writing `[id, "done"]` to Sales!B2:C2 as a queue that guarded only cells it wrote
+ * journaled it: its guard a digest of the title and size of each sheet it writes to and of
+ * `entered`, those cells as entered, naming no cells.
+ */
+async function cellsOnlyBatch(id: number, entered: SheetCellInput[]) {
+  return {
+    changes: [{
+      op: "writeCells" as const, sheetId: 0, rect: { startRow: 1, endRow: 2, startColumn: 1, endColumn: 3 },
+      values: [[id, "done"]],
+    }],
+    sheets: { 0: "Sales" },
+    marker: { id, token: `token-${id}` },
+    guard: { sha256: await sha256(JSON.stringify([[[0, "Sales", 20, 6]], [entered]])), after: [] },
+  };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
+  let violations = current?.violations ?? [];
+  current = undefined;
+  expect(violations).toEqual([]);
 });
 
 describe("Google Sheets changes", () => {
@@ -464,8 +684,7 @@ describe("Google Sheets changes", () => {
     provider.set("Sales!C3", "edited");
 
     expect(await sheets.apply(actionId!)).toBe(
-      "This change no longer applies: cells it overwrites, or a sheet it writes to, changed since it " +
-      "was queued.");
+      CHANGED);
     expect(provider.batches).toEqual([]);
     expect(provider.get("Sales!C3")).toBe("edited");
   });
@@ -479,8 +698,7 @@ describe("Google Sheets changes", () => {
     provider.set("Sales!B2", 5);
 
     expect(await sheets.apply(blocked.actionId!)).toBe(
-      "This change no longer applies: cells it overwrites, or a sheet it writes to, changed since it " +
-      "was queued.");
+      CHANGED);
     expect(provider.batches).toEqual([]);
     expect(provider.get("Sales!B2")).toBe(5);
 
@@ -515,13 +733,11 @@ describe("Google Sheets changes", () => {
 
     provider.set("Sales!B2", "edited");
     expect(await sheets.apply(failed.actionId!)).toBe(
-      "This change no longer applies: cells it overwrites, or a sheet it writes to, changed since it " +
-      "was queued.");
+      CHANGED);
     await sheets.reject(rejected.actionId!);
 
     expect(await sheets.apply(later.actionId!)).toBe(
-      `This change no longer applies: it overwrites cells change ${failed.actionId} writes, which was ` +
-      "not applied.");
+      `This change no longer applies: it builds on change ${failed.actionId}, which was not applied.`);
     expect(provider.batches).toEqual([]);
     expect(provider.get("Sales!B2")).toBe("edited");
   });
@@ -535,8 +751,7 @@ describe("Google Sheets changes", () => {
 
     provider.set("Sales!B2", "edited");
     expect(await sheets.apply(second.actionId!)).toBe(
-      "This change no longer applies: cells it overwrites, or a sheet it writes to, changed since it " +
-      "was queued.");
+      CHANGED);
     expect(provider.get("Sales!B2")).toBe("edited");
   });
 
@@ -716,7 +931,7 @@ describe("Google Sheets changes", () => {
 
     expect(await sheets.apply(actionId!)).toBe(
       "Google Sheets refused this change as invalid [http=400]. It may write to a protected range or " +
-      "outside a sheet's grid.");
+      "outside a sheet's grid, or leave a sheet with fewer rows or columns than Google allows.");
     expect(provider.commits).toBe(0);
   });
 
@@ -789,5 +1004,351 @@ describe("Google Sheets changes", () => {
     expect(outcome.actionId).toBeUndefined();
     expect(outcome.observations).toEqual([]);
     expect(provider.requests).toEqual([]);
+  });
+});
+
+describe("Google Sheets changes to rows, columns and sheets", () => {
+  it("inserts rows and writes into them in one batch, landing where the read previewed", async () => {
+    let provider = budget();
+    provider.results["=B2*2"] = 8;
+    let sheets = gatekeeper();
+
+    let { actionId, action, value } = await sheets.queued([
+      { op: "insertRows", sheetId: 0, at: 3, count: 2 },
+      { op: "writeCells", range: "Sales!A3:B4", values: [["LATAM", 2], ["ANZ", 3]] },
+    ]);
+
+    expect(value).toEqual({});
+    expect(action).toMatchObject({ title: 'Edit "Sales"', autoApprovable: false });
+    expect(action!.description).toContain(
+      "Makes 2 changes, all or none of which are applied:\n\n" +
+      '1. In "Sales", insert 2 rows before row 3\n' +
+      '2. In "Sales", set A3:B4 to the values below');
+    expect(await sheets.autoApprovable()).toEqual([{ tag: "editSheetValues", label: "Sheet value edits" }]);
+    let previewed = await sheets.read("Sales!A1:C5", "formula");
+    expect(previewed).toEqual({
+      range: "Sales!A1:C5",
+      values: [
+        ["Region", "Total", null], ["EMEA", 4, "=B2*2"], ["LATAM", 2, null], ["ANZ", 3, null], ["APAC", 5, null],
+      ],
+    });
+    // The formula's reference keeps its cell, so its saved result still holds.
+    expect(await sheets.read("Sales!A2:C5", "raw")).toEqual({
+      range: "Sales!A2:C5", values: [["EMEA", 4, 8], ["LATAM", 2, null], ["ANZ", 3, null], ["APAC", 5, null]],
+    });
+    expect((await sheets.info()).sheets[0]).toEqual({ id: 0, title: "Sales", index: 0, rowCount: 22, columnCount: 6 });
+
+    expect(await sheets.apply(actionId!)).toBeNull();
+
+    expect(changeRequests(provider.batches[0])).toEqual([
+      { insertDimension: { range: { sheetId: 0, dimension: "ROWS", startIndex: 2, endIndex: 4 }, inheritFromBefore: true } },
+      {
+        updateCells: {
+          range: { sheetId: 0, startRowIndex: 2, endRowIndex: 4, startColumnIndex: 0, endColumnIndex: 2 },
+          rows: [
+            { values: [{ userEnteredValue: { stringValue: "LATAM" } }, { userEnteredValue: { numberValue: 2 } }] },
+            { values: [{ userEnteredValue: { stringValue: "ANZ" } }, { userEnteredValue: { numberValue: 3 } }] },
+          ],
+          fields: "userEnteredValue",
+        },
+      },
+    ]);
+    expect(await sheets.read("Sales!A1:C5", "formula")).toEqual(previewed);
+  });
+
+  it("reads queued rows in every mode, a saved formula whose range grows pending", async () => {
+    let provider = budget();
+    provider.set("Sales!D2", "=SUM(B2:B3)");
+    provider.results["=B2*2"] = 8;
+    provider.results["=SUM(B2:B3)"] = 9;
+    let sheets = gatekeeper();
+    let { actionId } = await sheets.queued([{ op: "insertRows", sheetId: 0, at: 3 }]);
+    let blank = [null, null, null, null];
+
+    expect(await sheets.read("Sales!A2:D4", "formula")).toEqual({
+      range: "Sales!A2:D4", values: [["EMEA", 4, "=B2*2", "=SUM(B2:B4)"], blank, ["APAC", 5, null, null]],
+    });
+    expect(await sheets.read("Sales!A2:D4", "raw")).toEqual({
+      range: "Sales!A2:D4", values: [["EMEA", 4, 8, null], blank, ["APAC", 5, null, null]], pendingCells: ["D2"],
+    });
+    expect(await sheets.read("Sales!A2:D4")).toEqual({
+      range: "Sales!A2:D4", values: [["EMEA", "4", "8", null], blank, ["APAC", "5", null, null]], pendingCells: ["D2"],
+    });
+    // Clipped to the sheet as the queued rows leave it, as Google clips a range.
+    expect(await sheets.read("Sales!A20:A23", "raw")).toEqual({ range: "Sales!A20:A21", values: [[null], [null], [null], [null]] });
+    // Each refusal tells what the spreadsheet holds, so it comes only after the read is authorized.
+    let outside = await sheets.call("readRange", "Sales!A22");
+    expect(outside.error).toBe("Range (Sales!A22) exceeds grid limits. Max rows: 21, max columns: 6");
+    expect(outside.observations).toEqual([
+      "Looked up 1 range(s) in the connected spreadsheet with the queued changes applied."]);
+    let missing = await sheets.call("readRange", "Nope!A1");
+    expect(missing.error).toBe('The spreadsheet has no sheet named "Nope" with the queued changes applied.');
+    expect(missing.observations).toHaveLength(1);
+
+    expect(await sheets.apply(actionId!)).toBeNull();
+    expect(provider.get("Sales!D2")).toBe("=SUM(B2:B4)");
+    expect(provider.get("Sales!A4")).toBe("APAC");
+  });
+
+  it("returns the IDs it mints for the sheets a batch adds, which Google honours", async () => {
+    let provider = budget();
+    let sheets = gatekeeper();
+
+    let { actionId, action, value } = await sheets.queued([
+      { op: "addSheet", title: "Q4", ref: "q4" },
+      { op: "writeCells", range: "q4!A1", values: [["Forecast"]] },
+      { op: "insertRows", sheetId: "q4", at: 1001, count: 5 },
+    ]);
+
+    let q4 = (value as Record<string, number>).q4;
+    expect(value).toEqual({ q4: expect.any(Number) });
+    expect(Number.isInteger(q4) && q4 >= 1 && q4 <= MAX_SHEET_ID && q4 !== 7).toBe(true);
+    expect(action).toMatchObject({ title: 'Edit "Q4"', autoApprovable: false });
+    expect(action!.description).toContain(
+      '1. Add a sheet "Q4" of 1,000 rows and 26 columns at position 3\n' +
+      '2. In "Q4", set A1 to the values below\n' +
+      '3. In "Q4", add 5 rows after row 1000');
+    expect((await sheets.info()).sheets).toContainEqual({ id: q4, title: "Q4", index: 2, rowCount: 1005, columnCount: 26 });
+    // Google holds nothing of a sheet a queued change adds, so reading it fetches no values.
+    let reads = valueReads(provider);
+    expect(await sheets.read("'Q4'!A1:B2", "raw")).toEqual({ range: "'Q4'!A1:B2", values: [["Forecast", null], [null, null]] });
+    expect(valueReads(provider)).toBe(reads);
+
+    expect(await sheets.apply(actionId!)).toBeNull();
+
+    expect(changeRequests(provider.batches[0])).toEqual([
+      { addSheet: { properties: { sheetId: q4, title: "Q4", index: 2, gridProperties: { rowCount: 1000, columnCount: 26 } } } },
+      {
+        updateCells: {
+          range: { sheetId: q4, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 1 },
+          rows: [{ values: [{ userEnteredValue: { stringValue: "Forecast" } }] }],
+          fields: "userEnteredValue",
+        },
+      },
+      { insertDimension: { range: { sheetId: q4, dimension: "ROWS", startIndex: 1000, endIndex: 1005 }, inheritFromBefore: true } },
+    ]);
+    expect(provider.sheets.find(s => s.id === q4)).toMatchObject({ title: "Q4", index: 2, rowCount: 1005, columnCount: 26 });
+    expect(provider.get("Q4!A1")).toBe("Forecast");
+  });
+
+  it("writes to a sheet by the title an earlier change of the batch renames it to", async () => {
+    let provider = budget();
+    provider.set("Sales!E2", "='Q3 Plan'!A1");
+    provider.results["='Q3 Plan'!A1"] = 3;
+    let sheets = gatekeeper();
+
+    let { actionId, action } = await sheets.queued([
+      { op: "renameSheet", sheetId: 7, title: "Q3 Final" },
+      { op: "writeCells", range: "'q3 final'!A1", values: [["=sales!b2*2"]] },
+    ]);
+
+    expect(action).toMatchObject({
+      title: 'Edit "Q3 Plan"',
+      fields: [
+        { label: "Change 2: Values", kind: "text", value: '["=Sales!B2*2"]' },
+        { label: "Change 2: Formulas", kind: "text", value: "A1: =Sales!B2*2" },
+      ],
+    });
+    expect(action!.description).toContain(
+      '1. Rename "Q3 Plan" to "Q3 Final"\n2. In "Q3 Final", set A1 to the values below');
+    expect((await sheets.info()).sheets.map(s => s.title)).toEqual(["Sales", "Q3 Final"]);
+    expect(await sheets.read("'Q3 Final'!A1", "formula")).toEqual({ range: "'Q3 Final'!A1", values: [["=Sales!B2*2"]] });
+    // A rename leaves a reference's cells as they were, so the saved result holds.
+    expect(await sheets.read("Sales!E2", "formula")).toEqual({ range: "Sales!E2", values: [["='Q3 Final'!A1"]] });
+    expect(await sheets.read("Sales!E2", "raw")).toEqual({ range: "Sales!E2", values: [[3]] });
+    expect((await sheets.call("readRange", "'Q3 Plan'!A1")).error).toBe(
+      'The spreadsheet has no sheet named "Q3 Plan" with the queued changes applied.');
+
+    expect(await sheets.apply(actionId!)).toBeNull();
+
+    expect(changeRequests(provider.batches[0])[0]).toEqual(
+      { updateSheetProperties: { properties: { sheetId: 7, title: "Q3 Final" }, fields: "title" } });
+    expect(provider.get("'Q3 Final'!A1")).toBe("=Sales!B2*2");
+    expect(provider.get("Sales!E2")).toBe("='Q3 Final'!A1");
+  });
+
+  it("names the sheets a batch only adds", async () => {
+    budget();
+    let sheets = gatekeeper();
+    let one = await sheets.queued([{ op: "addSheet", title: "Q4" }]);
+    expect(one.action).toMatchObject({ title: 'Add the sheet "Q4"' });
+    let two = await sheets.queued([{ op: "addSheet", title: "Q5" }, { op: "addSheet", title: "Q6" }]);
+    expect(two.action).toMatchObject({ title: "Add 2 sheets" });
+  });
+
+  it("describes every change to rows, columns and sheets, and sends each as Google accepts it", async () => {
+    let provider = budget();
+    let sheets = gatekeeper();
+
+    let { actionId, action, value } = await sheets.queued([
+      { op: "addSheet", title: "Q4", ref: "q4", rowCount: 5, columnCount: 3 },
+      { op: "renameSheet", sheetId: 7, title: "Plan_B" },
+      { op: "duplicateSheet", sheetId: 0 },
+      { op: "insertRows", sheetId: "q4", at: 6, count: 2 },
+      { op: "insertRows", sheetId: 0, at: 2 },
+      { op: "deleteRows", sheetId: 0, at: 5, count: 2 },
+      { op: "insertColumns", sheetId: 7, at: "E" },
+      { op: "deleteColumns", sheetId: 7, at: "b", count: 2 },
+      { op: "deleteColumns", sheetId: 0, at: "F" },
+      { op: "deleteRows", sheetId: 0, at: 1 },
+      { op: "deleteSheet", sheetId: "q4" },
+      { op: "insertColumns", sheetId: 0, at: "A", count: 3 },
+    ]);
+
+    // Q4, It's, Sales and the copy of Sales.
+    expect(action).toMatchObject({ title: "Edit 4 sheets", autoApprovable: false });
+    expect(action!.description).toContain(
+      "Makes 12 changes, all or none of which are applied:\n\n" +
+      '1. Add a sheet "Q4" of 5 rows and 3 columns at position 3\n' +
+      '2. Rename "Q3 Plan" to "PlanB"\n' +
+      '3. Copy "Sales" as "Copy of Sales" at position 2\n' +
+      '4. In "Q4", add 2 rows after row 5\n' +
+      '5. In "Sales", insert 1 row before row 2\n' +
+      '6. In "Sales", delete rows 5 to 6\n' +
+      '7. In "PlanB", add 1 column after column D\n' +
+      '8. In "PlanB", delete columns B to C\n' +
+      '9. In "Sales", delete column F\n' +
+      '10. In "Sales", delete row 1\n' +
+      '11. Delete the sheet "Q4" (7 rows, 3 columns) and everything on it\n' +
+      '12. In "Sales", insert 3 columns before column A');
+    // The prose drops the underscore, so the title is also given exactly.
+    expect(action!.fields).toEqual([
+      { label: "Change 2: New title", kind: "inline", value: "Plan_B" },
+      { label: "Change 7: Sheet", kind: "inline", value: "Plan_B" },
+      { label: "Change 8: Sheet", kind: "inline", value: "Plan_B" },
+    ]);
+    let shown = (await sheets.info()).sheets.map(s => [s.title, s.index, s.rowCount, s.columnCount]);
+    expect(shown).toEqual([["Sales", 0, 18, 8], ["Copy of Sales", 1, 20, 6], ["Plan_B", 2, 10, 3]]);
+    // Sales's old row 2 is its second row, three columns along; the copy keeps the original's.
+    expect(await sheets.read("Sales!D2:F2", "formula")).toEqual({ range: "Sales!D2:F2", values: [["EMEA", 4, "=E2*2"]] });
+    expect(await sheets.read("'Copy of Sales'!A2:C2", "formula"))
+      .toEqual({ range: "'Copy of Sales'!A2:C2", values: [["EMEA", 4, "=B2*2"]] });
+
+    expect(await sheets.apply(actionId!)).toBeNull();
+
+    let sent = changeRequests(provider.batches[0]);
+    let q4 = (value as Record<string, number>).q4;
+    let copy = sent[2].duplicateSheet?.newSheetId;
+    expect(sent).toEqual([
+      { addSheet: { properties: { sheetId: q4, title: "Q4", index: 2, gridProperties: { rowCount: 5, columnCount: 3 } } } },
+      { updateSheetProperties: { properties: { sheetId: 7, title: "Plan_B" }, fields: "title" } },
+      { duplicateSheet: { sourceSheetId: 0, newSheetId: copy, insertSheetIndex: 1, newSheetName: "Copy of Sales" } },
+      { insertDimension: { range: { sheetId: q4, dimension: "ROWS", startIndex: 5, endIndex: 7 }, inheritFromBefore: true } },
+      { insertDimension: { range: { sheetId: 0, dimension: "ROWS", startIndex: 1, endIndex: 2 }, inheritFromBefore: true } },
+      { deleteDimension: { range: { sheetId: 0, dimension: "ROWS", startIndex: 4, endIndex: 6 } } },
+      { insertDimension: { range: { sheetId: 7, dimension: "COLUMNS", startIndex: 4, endIndex: 5 }, inheritFromBefore: true } },
+      { deleteDimension: { range: { sheetId: 7, dimension: "COLUMNS", startIndex: 1, endIndex: 3 } } },
+      { deleteDimension: { range: { sheetId: 0, dimension: "COLUMNS", startIndex: 5, endIndex: 6 } } },
+      { deleteDimension: { range: { sheetId: 0, dimension: "ROWS", startIndex: 0, endIndex: 1 } } },
+      { deleteSheet: { sheetId: q4 } },
+      { insertDimension: { range: { sheetId: 0, dimension: "COLUMNS", startIndex: 0, endIndex: 3 }, inheritFromBefore: false } },
+    ]);
+    expect(provider.sheets.toSorted((a, b) => a.index - b.index).map(s => [s.title, s.index, s.rowCount, s.columnCount]))
+      .toEqual(shown);
+    expect(provider.get("Sales!F2")).toBe("=E2*2");
+    expect(provider.get("'Copy of Sales'!C2")).toBe("=B2*2");
+  });
+
+  it("reports a queued deleteSheet whose sheet a collaborator deleted, and fails it without writing", async () => {
+    let provider = budget();
+    let sheets = gatekeeper();
+    let { actionId, action } = await sheets.queued([{ op: "deleteSheet", sheetId: 7 }]);
+
+    expect(action).toMatchObject({
+      title: 'Edit "Q3 Plan"',
+      description: 'Delete the sheet "Q3 Plan" (10 rows, 4 columns) and everything on it.',
+      autoApprovable: false,
+    });
+    expect((await sheets.info()).sheets.map(s => s.title)).toEqual(["Sales"]);
+
+    provider.sheets = provider.sheets.filter(s => s.id !== 7);
+
+    let conflict = `Queued change ${actionId} no longer applies, so it and the changes queued after it ` +
+      "are not shown: change 1 (deleteSheet): the spreadsheet has no sheet with ID 7.";
+    expect((await sheets.info()).queuedChangeConflict).toBe(conflict);
+    expect(await sheets.read("Sales!A1")).toEqual({ range: "Sales!A1", values: [["Region"]], queuedChangeConflict: conflict });
+    expect(await sheets.apply(actionId!)).toBe(
+      "This change no longer applies: change 1 (deleteSheet): the spreadsheet has no sheet with ID 7.");
+    expect(provider.batches).toEqual([]);
+  });
+
+  it("refuses to delete rows a collaborator edited since they were queued, and deletes them otherwise", async () => {
+    let provider = budget();
+    let sheets = gatekeeper();
+    let edited = await sheets.queued([{ op: "deleteRows", sheetId: 0, at: 3 }]);
+    expect(edited.action!.description).toBe('In "Sales", delete row 3.');
+
+    provider.set("Sales!F3", "note");
+    expect(await sheets.apply(edited.actionId!)).toBe(CHANGED);
+    expect(provider.batches).toEqual([]);
+    await sheets.reject(edited.actionId!);
+
+    provider.set("Sales!A4", "ANZ");
+    let unedited = await sheets.queued([{ op: "deleteRows", sheetId: 0, at: 2, count: 2 }]);
+    expect(unedited.action!.description).toBe('In "Sales", delete rows 2 to 3.');
+    provider.set("Sales!F9", "elsewhere");
+    expect(await sheets.apply(unedited.actionId!)).toBeNull();
+    expect(provider.sheets[0].rowCount).toBe(18);
+    expect([provider.get("Sales!A1"), provider.get("Sales!A2"), provider.get("Sales!F7")])
+      .toEqual(["Region", "ANZ", "elsewhere"]);
+  });
+
+  it("fails a batch built on a rejected change to rows, without writing", async () => {
+    let provider = budget();
+    let sheets = gatekeeper();
+    let inserted = await sheets.queued([{ op: "insertRows", sheetId: 0, at: 2 }]);
+    let written = await sheets.queued([{ op: "writeCells", range: "Sales!A2", values: [["new"]] }]);
+
+    expect(await sheets.reject(inserted.actionId!)).toEqual({ restart: true });
+    expect(await sheets.apply(written.actionId!)).toBe(
+      `This change no longer applies: it builds on change ${inserted.actionId}, which was not applied.`);
+    expect(provider.batches).toEqual([]);
+    expect(provider.get("Sales!A2")).toBe("EMEA");
+  });
+
+  it("refuses any change to the rows, columns or tab of a sheet holding a range the account may not edit", async () => {
+    budget([
+      sheetMeta(0, "Sales", {
+        protectedRanges: [
+          protectedRange(2, { sheetId: 0, startRowIndex: 4, endRowIndex: 6, startColumnIndex: 0, endColumnIndex: 2 }, {
+            requestingUserCanEdit: false,
+          }),
+        ],
+      } as Partial<ProviderSheet>),
+      sheetMeta(7, "Q3 Plan", { index: 1, rowCount: 10, columnCount: 4 }),
+    ]);
+    let sheets = gatekeeper();
+
+    for (let change of [
+      { op: "insertRows", sheetId: 0, at: 21 },
+      { op: "renameSheet", sheetId: 0, title: "Sales 2026" },
+    ] satisfies SheetChange[]) {
+      let outcome = await sheets.update([change]);
+      expect(outcome.error).toBe(
+        `Change 1 (${change.op}): "Sales" holds the protected range Sales!A5:B6, which the connected account may ` +
+        "not edit, so its rows, columns and tab cannot be changed.");
+      expect(outcome.actionId).toBeUndefined();
+    }
+    expect((await sheets.update([{ op: "insertRows", sheetId: 7, at: 11 }])).actionId).toEqual(expect.any(Number));
+  });
+
+  it("applies a batch queued before guards named their cells, guarding the cells it writes", async () => {
+    let provider = budget();
+    let journal = new ActionJournal<SheetsAction>(memoryKv(), { namespace: "sheets" });
+    let markers: number[] = [];
+    let actions = SHEETS_ACTIONS.bind(journal, {
+      api: new GoogleSheetsApi(async () => "access-token"),
+      spreadsheetId: "sheet-1",
+      applied: () => true,
+      markers: { read: () => markers, write: ids => { markers = ids; } },
+    });
+    let submitter = { submitAction: async () => {} };
+    let stale = await actions.submit(submitter, "editSheetValues", await cellsOnlyBatch(5, [4, "=B2*2"]));
+    let fresh = await actions.submit(submitter, "editSheetValues", await cellsOnlyBatch(6, [4, "=B2*2"]));
+
+    await actions.apply(fresh);
+    expect([provider.get("Sales!B2"), provider.get("Sales!C2")]).toEqual([6, "done"]);
+    await expect(actions.apply(stale)).rejects.toThrow(CHANGED);
+    expect(provider.batches).toHaveLength(1);
   });
 });

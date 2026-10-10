@@ -4,22 +4,42 @@
  *
  * Queueing, replay and apply all run `planSheet`, so the cells a read previews and the batch an
  * approval writes come from the same code. Values are sent typed, so Google parses nothing by
- * locale: text stays text, and only input starting with `=` is a formula.
+ * locale: text stays text, and only input starting with `=` is a formula. Changes apply in order,
+ * as Google applies a batch's requests, so a change addresses the spreadsheet as the changes
+ * before it leave it.
  */
 
+import type { SheetArea, SheetProtection } from "./sheets-api";
 import { canonicalFormula, compactFormula } from "./sheets-formula";
-import { MAX_CELL_LENGTH, type PreparedChange } from "./sheets-input";
-import { cellName, findSheet, isFormula, type Rect } from "./sheets-model";
-import type { Grid, PlannedChange, SheetMeta } from "./sheets-simulation";
-import type { SheetCellInput } from "./sheets-types";
+import {
+  isCellChange, MAX_CELL_LENGTH, MAX_COLUMNS, MAX_SPREADSHEET_CELLS, MAX_TITLE_LENGTH, type LineOp,
+  type PreparedChange,
+} from "./sheets-input";
+import { a1Of, cellName, columnLetters, findSheet, isFormula, type Rect } from "./sheets-model";
+import type {
+  Entry, Grid, PlannedChange, QueuedChange, SheetMeta, SimSheet, StructuralStep,
+} from "./sheets-simulation";
+import {
+  baseIndexOf, deleteLines, insertLines, lineCount, linesAt, positionOf, type Lines,
+} from "./sheets-structure";
+import type { SheetCellInput, SheetTarget } from "./sheets-types";
 import { ChangeConflict } from "./slides-text";
+
+/** The rows of a sheet added with none given, as in Google Sheets. */
+export const DEFAULT_ROW_COUNT = 1000;
+/** The columns of a sheet added with none given, as in Google Sheets. */
+export const DEFAULT_COLUMN_COUNT = 26;
+/** The most cells a batch may overwrite or delete, which its guard covers. */
+export const MAX_GUARDED_CELLS = 50_000;
+/** The most cells a sheet deleted here may have, so the guard can cover them. */
+export const MAX_DELETED_SHEET_CELLS = 50_000;
 
 function plural(count: number, noun: string): string {
   return `${count.toLocaleString("en-US")} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-/** The key of a zero-based cell in `Grid.cells`. */
-export function cellKey(sheetId: number, row: number, column: number): string {
+/** The key in `Grid.cells` of a cell, by its sheet and the identities of its row and column. */
+export function cellKey(sheetId: number, row: string, column: string): string {
   return `${sheetId}:${row}:${column}`;
 }
 
@@ -32,40 +52,50 @@ function outsideCell(sheet: SheetMeta, rect: Rect): string | undefined {
   return undefined;
 }
 
-/**
- * Finds the sheet each change names in `grid`, and writes its formulas' references as Google
- * stores them. Throws `Error` for a sheet the spreadsheet has no tab for, or cells outside a
- * sheet's grid.
- */
-export function resolveChanges(grid: Grid, prepared: readonly PreparedChange[]): PlannedChange[] {
-  let titleOf = (name: string) => findSheet(grid.sheets, name)?.title;
-  return prepared.map((change, i) => {
-    let label = `Change ${i + 1} (${change.op})`;
-    let sheet = findSheet(grid.sheets, change.sheet);
-    if (!sheet) {
-      throw new Error(`${label}: the spreadsheet has no sheet named "${change.sheet}". Call ` +
-        "getSpreadsheet() for sheet titles.");
-    }
-    let outside = outsideCell(sheet, change.rect);
-    if (outside !== undefined) {
-      throw new Error(`${label}: "${sheet.title}" has ${plural(sheet.rowCount, "row")} and ` +
-        `${plural(sheet.columnCount, "column")}, so ${outside} is outside it.`);
-    }
-    if (change.op === "clearRange") return { op: change.op, sheetId: sheet.id, rect: change.rect };
-    let values = change.values.map((row, r) => row.map((value, c) => {
-      if (!isFormula(value)) return value;
-      let formula = canonicalFormula(value, titleOf);
-      // Quoting a sheet's title can lengthen a formula past what a cell holds.
-      if (formula.length > MAX_CELL_LENGTH) {
-        let cell = cellName(change.rect.startRow + r, change.rect.startColumn + c);
-        throw new Error(`${label}: the formula for ${cell} runs to ` +
-          `${formula.length.toLocaleString("en-US")} characters once its references are written ` +
-          `as Google stores them; a cell holds at most ${MAX_CELL_LENGTH.toLocaleString("en-US")}.`);
-      }
-      return formula;
-    }));
-    return { op: change.op, sheetId: sheet.id, rect: change.rect, values };
-  });
+type Axis = "rows" | "columns";
+
+function axisOf(op: LineOp): Axis {
+  return op === "insertRows" || op === "deleteRows" ? "rows" : "columns";
+}
+
+function lineName(axis: Axis, position: number): string {
+  return axis === "rows" ? String(position + 1) : columnLetters(position);
+}
+
+// Lines by their names: "row 5", "rows 5 to 6", "column C".
+function band(axis: Axis, start: number, count: number): string {
+  let noun = axis === "rows" ? "row" : "column";
+  return count === 1
+    ? `${noun} ${lineName(axis, start)}`
+    : `${noun}s ${lineName(axis, start)} to ${lineName(axis, start + count - 1)}`;
+}
+
+function cellsOf(sheets: readonly SheetMeta[]): number {
+  return sheets.reduce((total, sheet) => total + sheet.rowCount * sheet.columnCount, 0);
+}
+
+/** A grid being changed in place, which no one else holds. */
+type Working = { sheets: SimSheet[]; cells: Map<string, Entry>; log: StructuralStep[] };
+
+function working(grid: Grid): Working {
+  return { sheets: [...grid.sheets], cells: new Map(grid.cells), log: [...grid.log] };
+}
+
+// `sheets` with `sheet` placed at its index and those from there on one along, as Google inserts one.
+function placed(sheets: readonly SimSheet[], sheet: SimSheet): SimSheet[] {
+  return [...sheets.map(other => other.index >= sheet.index ? { ...other, index: other.index + 1 } : other), sheet]
+    .toSorted((a, b) => a.index - b.index);
+}
+
+function removed(sheets: readonly SimSheet[], gone: SimSheet): SimSheet[] {
+  return sheets.flatMap(other => other.id === gone.id ? []
+    : [other.index > gone.index ? { ...other, index: other.index - 1 } : other]);
+}
+
+function withLines(sheet: SimSheet, axis: Axis, lines: Lines): SimSheet {
+  return axis === "rows"
+    ? { ...sheet, rows: lines, rowCount: lineCount(lines) }
+    : { ...sheet, columns: lines, columnCount: lineCount(lines) };
 }
 
 /** Sheets' `GridRange` for `rect` of sheet `sheetId`. */
@@ -90,60 +120,599 @@ function cellData(value: SheetCellInput) {
 }
 
 /**
- * Applies `changes` to `grid` in order. Returns the grid with what they enter, and the Sheets
- * requests that enter it; `grid` itself when there are none. Throws `ChangeConflict` for a sheet
- * that is gone, or cells outside a sheet's grid.
+ * Applies `change` to `work`, recording `by` in the cells it enters, and returns its request.
+ * Throws what `conflict` makes for a change that does not apply.
  */
-export function planSheet(
-  grid: Grid, changes: readonly PlannedChange[],
-): { grid: Grid; requests: unknown[] } {
-  if (changes.length === 0) return { grid, requests: [] };
-  let cells = new Map(grid.cells);
-  let requests = changes.map((change, i) => {
-    let conflict = (reason: string) => new ChangeConflict(`change ${i + 1} (${change.op}): ${reason}`);
-    let sheet = grid.sheets.find(candidate => candidate.id === change.sheetId);
-    if (!sheet) throw conflict(`the spreadsheet has no sheet with ID ${change.sheetId}`);
-    let { rect } = change;
-    let outside = outsideCell(sheet, rect);
-    if (outside !== undefined) throw conflict(`${outside} is outside "${sheet.title}"`);
-    for (let row = rect.startRow; row < rect.endRow; row++) {
-      for (let column = rect.startColumn; column < rect.endColumn; column++) {
-        let value = change.op === "writeCells"
-          ? change.values[row - rect.startRow][column - rect.startColumn] : null;
-        cells.set(cellKey(change.sheetId, row, column), value);
-      }
+function applyOne(work: Working, change: PlannedChange, by: number, conflict: (reason: string) => Error): unknown {
+  let find = (id: number) => work.sheets.find(sheet => sheet.id === id);
+  let existing = (id: number) => {
+    let sheet = find(id);
+    if (!sheet) throw conflict(`the spreadsheet has no sheet with ID ${id}`);
+    return sheet;
+  };
+  let unused = (id: number, title: string, index: number) => {
+    if (find(id)) throw conflict(`the spreadsheet already has a sheet with ID ${id}`);
+    let other = findSheet(work.sheets, title);
+    if (other) throw conflict(`the spreadsheet already has a sheet titled "${other.title}"`);
+    if (index > work.sheets.length) {
+      throw conflict(`position ${index} is past the spreadsheet's ${plural(work.sheets.length, "sheet")}`);
     }
-    let range = gridRange(change.sheetId, rect);
-    // Cells of `range` that `rows` leaves out are cleared, so a clear sends none.
-    return change.op === "clearRange"
-      ? { updateCells: { range, fields: "userEnteredValue" } }
-      : {
-          updateCells: {
-            range,
-            rows: change.values.map(row => ({ values: row.map(cellData) })),
-            fields: "userEnteredValue",
-          },
-        };
-  });
-  return { grid: { sheets: grid.sheets, cells }, requests };
+  };
+
+  switch (change.op) {
+    case "writeCells":
+    case "clearRange": {
+      let sheet = existing(change.sheetId);
+      let { rect } = change;
+      let outside = outsideCell(sheet, rect);
+      if (outside !== undefined) throw conflict(`${outside} is outside "${sheet.title}"`);
+      let rows = linesAt(sheet.rows, rect.startRow, rect.endRow);
+      let columns = linesAt(sheet.columns, rect.startColumn, rect.endColumn);
+      rows.forEach((row, r) => columns.forEach((column, c) => {
+        let input = change.op === "writeCells" ? change.values[r][c] : null;
+        work.cells.set(cellKey(sheet.id, row!, column!), { input, at: work.log.length, by });
+      }));
+      let range = gridRange(change.sheetId, rect);
+      // Cells of `range` that `rows` leaves out are cleared, so a clear sends none.
+      return change.op === "clearRange"
+        ? { updateCells: { range, fields: "userEnteredValue" } }
+        : {
+            updateCells: {
+              range,
+              rows: change.values.map(row => ({ values: row.map(cellData) })),
+              fields: "userEnteredValue",
+            },
+          };
+    }
+    case "addSheet": {
+      let { sheetId, title, index, rowCount, columnCount } = change;
+      unused(sheetId, title, index);
+      // An added sheet's lines are all new, so none of its cells is read from Google.
+      let lines = work.log.length;
+      work.sheets = placed(work.sheets, {
+        id: sheetId, title, index, rowCount, columnCount,
+        rows: insertLines([], 0, rowCount, lines), columns: insertLines([], 0, columnCount, lines),
+      });
+      work.log.push({ kind: "add", sheetId, title });
+      return { addSheet: { properties: { sheetId, title, index, gridProperties: { rowCount, columnCount } } } };
+    }
+    case "renameSheet": {
+      let sheet = existing(change.sheetId);
+      let other = findSheet(work.sheets, change.title);
+      if (other && other.id !== sheet.id) throw conflict(`the spreadsheet already has a sheet titled "${other.title}"`);
+      work.sheets = work.sheets.map(candidate => candidate.id === sheet.id ? { ...candidate, title: change.title } : candidate);
+      work.log.push({ kind: "rename", sheetId: sheet.id, from: sheet.title, to: change.title });
+      return { updateSheetProperties: { properties: { sheetId: sheet.id, title: change.title }, fields: "title" } };
+    }
+    case "duplicateSheet": {
+      let source = existing(change.sheetId);
+      let { newSheetId, title, index } = change;
+      unused(newSheetId, title, index);
+      work.sheets = placed(work.sheets, {
+        id: newSheetId, title, index, rowCount: source.rowCount, columnCount: source.columnCount,
+        rows: source.rows, columns: source.columns,
+        ...(source.source === undefined ? {} : { source: source.source }),
+      });
+      // The copy holds what is queued for the original, and its cells move with its own lines. The
+      // keys added name the copy, so the loop skips them.
+      for (let [key, entry] of work.cells) {
+        let [sheetId, row, column] = key.split(":");
+        if (Number(sheetId) === source.id) work.cells.set(cellKey(newSheetId, row, column), entry);
+      }
+      work.log.push({ kind: "duplicate", sheetId: source.id, title: source.title, newSheetId, newTitle: title });
+      // Google picks a localized name, and the first position, for a copy given neither.
+      return {
+        duplicateSheet: { sourceSheetId: source.id, newSheetId, insertSheetIndex: index, newSheetName: title },
+      };
+    }
+    case "deleteSheet": {
+      let sheet = existing(change.sheetId);
+      if (!sheet.hidden && work.sheets.filter(candidate => !candidate.hidden).length === 1) {
+        throw conflict(`"${sheet.title}" is the spreadsheet's only visible sheet`);
+      }
+      work.sheets = removed(work.sheets, sheet);
+      for (let key of work.cells.keys()) {
+        if (Number(key.split(":")[0]) === sheet.id) work.cells.delete(key);
+      }
+      work.log.push({ kind: "deleteSheet", sheetId: sheet.id, title: sheet.title });
+      return { deleteSheet: { sheetId: sheet.id } };
+    }
+    default: {
+      let sheet = existing(change.sheetId);
+      let axis = axisOf(change.op);
+      let lines = axis === "rows" ? sheet.rows : sheet.columns;
+      let count = lineCount(lines);
+      let noun = axis === "rows" ? "row" : "column";
+      let range = {
+        sheetId: sheet.id, dimension: axis === "rows" ? "ROWS" : "COLUMNS",
+        startIndex: change.start, endIndex: change.start + change.count,
+      };
+      let next: Lines;
+      if (change.op === "insertRows" || change.op === "insertColumns") {
+        if (change.start > count) {
+          throw conflict(`"${sheet.title}" has ${plural(count, noun)}, so none can be inserted before ` +
+            `${noun} ${lineName(axis, change.start)}`);
+        }
+        next = insertLines(lines, change.start, change.count, work.log.length);
+        work.log.push({ kind: "insert", sheetId: sheet.id, title: sheet.title, axis, start: change.start, count: change.count });
+        // New lines take the formatting of the line before them; Google refuses lines added after
+        // the last unless they do.
+        work.sheets = work.sheets.map(candidate => candidate.id === sheet.id ? withLines(candidate, axis, next) : candidate);
+        return { insertDimension: { range, inheritFromBefore: change.start > 0 } };
+      }
+      if (change.start + change.count > count) {
+        throw conflict(`"${sheet.title}" has ${plural(count, noun)}, so ${band(axis, change.start, change.count)} ` +
+          "cannot be deleted");
+      }
+      if (change.count >= count) throw conflict(`it would delete every ${noun} of "${sheet.title}"`);
+      let deleted = new Set(linesAt(lines, change.start, change.start + change.count));
+      let part = axis === "rows" ? 1 : 2;
+      for (let key of work.cells.keys()) {
+        let parts = key.split(":");
+        if (Number(parts[0]) === sheet.id && deleted.has(parts[part])) work.cells.delete(key);
+      }
+      next = deleteLines(lines, change.start, change.count);
+      work.log.push({ kind: "delete", sheetId: sheet.id, title: sheet.title, axis, start: change.start, count: change.count });
+      work.sheets = work.sheets.map(candidate => candidate.id === sheet.id ? withLines(candidate, axis, next) : candidate);
+      return { deleteDimension: { range } };
+    }
+  }
+}
+
+// What `applyOne` throws when a change `resolveChanges` checked does not apply after all.
+function unexpected(i: number, change: PlannedChange) {
+  return (reason: string) => new ChangeConflict(`change ${i + 1} (${change.op}): ${reason}`);
 }
 
 /**
- * A hex SHA-256 of what `changes` overwrite: the size and title of each sheet they write, and the
- * cells they write as entered (`entered[i]`, the values of `changes[i]`'s cells in formula mode).
- * Whitespace in formulas is ignored, since Google may change it in a formula nobody edits.
+ * Walks `prepared` over `grid` as each change leaves it, finding the sheet each acts on: a range's
+ * by the title it then has, any other change's by ID or by the ref an earlier change gave the
+ * sheet it adds. Fills in what a change leaves to its default, gives each sheet added an ID from
+ * `mint` that no sheet has, and writes formulas' references as Google stores them. Returns the
+ * changes and, for each ref, the ID of the sheet it names. Throws `Error` for a change Google
+ * would refuse, or one that would delete what the guard cannot cover.
+ */
+export function resolveChanges(
+  grid: Grid, prepared: readonly PreparedChange[], mint: () => number,
+): { planned: PlannedChange[]; refs: Record<string, number> } {
+  let work = working(grid);
+  let refs = new Map<string, number>();
+  let used = new Set(grid.sheets.map(sheet => sheet.id));
+  let fresh = () => {
+    for (let tries = 0; tries < 100; tries++) {
+      let id = mint();
+      if (!used.has(id)) {
+        used.add(id);
+        return id;
+      }
+    }
+    throw new Error("No unused sheet ID could be chosen.");
+  };
+
+  let planned = prepared.map((change, i): PlannedChange => {
+    let label = `Change ${i + 1} (${change.op})`;
+    let sheetFor = (target: SheetTarget): SimSheet => {
+      let id = typeof target === "number" ? target : refs.get(target);
+      if (id === undefined) throw new Error(`${label}: no earlier change gives a sheet the ref "${target}".`);
+      let sheet = work.sheets.find(candidate => candidate.id === id);
+      if (sheet) return sheet;
+      throw new Error(typeof target === "number"
+        ? `${label}: the spreadsheet has no sheet with ID ${id}. Call getSpreadsheet() for sheet IDs.`
+        : `${label}: the sheet ref "${target}" names is deleted by an earlier change.`);
+    };
+    let titleFree = (title: string, except?: number) => {
+      let other = findSheet(work.sheets, title);
+      if (other && other.id !== except) {
+        throw new Error(`${label}: the spreadsheet already has a sheet titled "${other.title}"; sheet ` +
+          "titles must differ, ignoring case.");
+      }
+    };
+    let placeable = (index: number) => {
+      let count = work.sheets.length;
+      if (index > count) {
+        throw new Error(`${label}: index ${index} is past the end; the spreadsheet has ` +
+          `${plural(count, "sheet")}, so index may be at most ${count}.`);
+      }
+    };
+    let fits = (added: number) => {
+      let total = cellsOf(work.sheets) + added;
+      if (total > MAX_SPREADSHEET_CELLS) {
+        throw new Error(`${label}: the spreadsheet would hold ${total.toLocaleString("en-US")} cells; ` +
+          `Google Sheets holds at most ${MAX_SPREADSHEET_CELLS.toLocaleString("en-US")}.`);
+      }
+    };
+
+    let next = ((): PlannedChange => {
+      switch (change.op) {
+        case "writeCells":
+        case "clearRange":
+          return resolveCells(work, change, label);
+        case "addSheet": {
+          let index = change.index ?? work.sheets.length;
+          let rowCount = change.rowCount ?? DEFAULT_ROW_COUNT;
+          let columnCount = change.columnCount ?? DEFAULT_COLUMN_COUNT;
+          titleFree(change.title);
+          placeable(index);
+          fits(rowCount * columnCount);
+          let sheetId = fresh();
+          if (change.ref !== undefined) refs.set(change.ref, sheetId);
+          return { op: "addSheet", sheetId, title: change.title, index, rowCount, columnCount };
+        }
+        case "renameSheet": {
+          let sheet = sheetFor(change.sheetId);
+          titleFree(change.title, sheet.id);
+          return { op: "renameSheet", sheetId: sheet.id, title: change.title };
+        }
+        case "duplicateSheet": {
+          let source = sheetFor(change.sheetId);
+          let title = change.title ?? `Copy of ${source.title}`;
+          if (title.length > MAX_TITLE_LENGTH) {
+            throw new Error(`${label}: "${title}" would be over ${MAX_TITLE_LENGTH} characters; give the copy ` +
+              "a title.");
+          }
+          titleFree(title);
+          let index = change.index ?? source.index + 1;
+          placeable(index);
+          fits(source.rowCount * source.columnCount);
+          let newSheetId = fresh();
+          if (change.ref !== undefined) refs.set(change.ref, newSheetId);
+          return { op: "duplicateSheet", sheetId: source.id, newSheetId, title, index };
+        }
+        case "deleteSheet": {
+          let sheet = sheetFor(change.sheetId);
+          if (!sheet.hidden && work.sheets.filter(candidate => !candidate.hidden).length === 1) {
+            throw new Error(`${label}: "${sheet.title}" is the spreadsheet's only visible sheet, and ` +
+              "a spreadsheet keeps at least one.");
+          }
+          let cells = sheet.rowCount * sheet.columnCount;
+          if (cells > MAX_DELETED_SHEET_CELLS) {
+            throw new Error(`${label}: "${sheet.title}" has ${cells.toLocaleString("en-US")} cells, more ` +
+              `than the ${MAX_DELETED_SHEET_CELLS.toLocaleString("en-US")} a sheet deleted here may ` +
+              "have; delete it in Google Sheets.");
+          }
+          return { op: "deleteSheet", sheetId: sheet.id, rowCount: sheet.rowCount, columnCount: sheet.columnCount };
+        }
+        default:
+          return resolveLines(change, sheetFor(change.sheetId), label, fits);
+      }
+    })();
+    applyOne(work, next, 0, unexpected(i, next));
+    return next;
+  });
+  return { planned, refs: Object.fromEntries(refs) };
+}
+
+function resolveCells(
+  work: Working, change: Extract<PreparedChange, { op: "writeCells" | "clearRange" }>, label: string,
+): PlannedChange {
+  let sheet = findSheet(work.sheets, change.sheet);
+  if (!sheet) {
+    throw new Error(`${label}: the spreadsheet has no sheet named "${change.sheet}". Call ` +
+      "getSpreadsheet() for sheet titles.");
+  }
+  let outside = outsideCell(sheet, change.rect);
+  if (outside !== undefined) {
+    let hint = change.rect.endColumn > sheet.columnCount
+      ? `insertColumns with at: "${columnLetters(sheet.columnCount)}" adds columns`
+      : `insertRows with at: ${sheet.rowCount + 1} adds rows`;
+    throw new Error(`${label}: "${sheet.title}" has ${plural(sheet.rowCount, "row")} and ` +
+      `${plural(sheet.columnCount, "column")}, so ${outside} is outside it. ${hint}.`);
+  }
+  if (change.op === "clearRange") return { op: change.op, sheetId: sheet.id, rect: change.rect };
+  let titleOf = (name: string) => findSheet(work.sheets, name)?.title;
+  let values = change.values.map((row, r) => row.map((value, c) => {
+    if (!isFormula(value)) return value;
+    let formula = canonicalFormula(value, titleOf);
+    // Quoting a sheet's title can lengthen a formula past what a cell holds.
+    if (formula.length > MAX_CELL_LENGTH) {
+      let cell = cellName(change.rect.startRow + r, change.rect.startColumn + c);
+      throw new Error(`${label}: the formula for ${cell} runs to ` +
+        `${formula.length.toLocaleString("en-US")} characters once its references are written ` +
+        `as Google stores them; a cell holds at most ${MAX_CELL_LENGTH.toLocaleString("en-US")}.`);
+    }
+    return formula;
+  }));
+  return { op: change.op, sheetId: sheet.id, rect: change.rect, values };
+}
+
+function resolveLines(
+  change: Extract<PreparedChange, { op: LineOp }>, sheet: SimSheet, label: string,
+  fits: (added: number) => void,
+): PlannedChange {
+  let axis = axisOf(change.op);
+  let count = axis === "rows" ? sheet.rowCount : sheet.columnCount;
+  let noun = axis === "rows" ? "row" : "column";
+  let { start } = change;
+  if (change.op === "insertRows" || change.op === "insertColumns") {
+    if (start > count) {
+      let allowed = axis === "rows" ? `from 1 to ${count + 1}` : `a column from A to ${columnLetters(count)}`;
+      throw new Error(`${label}: "${sheet.title}" has ${plural(count, noun)}, so at must be ${allowed}.`);
+    }
+    if (axis === "columns" && count + change.count > MAX_COLUMNS) {
+      throw new Error(`${label}: "${sheet.title}" has ${plural(count, noun)}, and a sheet holds at ` +
+        `most ${MAX_COLUMNS.toLocaleString("en-US")}.`);
+    }
+    fits(change.count * (axis === "rows" ? sheet.columnCount : sheet.rowCount));
+    return { op: change.op, sheetId: sheet.id, start, count: change.count, ...(start === count ? { appends: true } : {}) };
+  }
+  if (start + change.count > count) {
+    throw new Error(`${label}: "${sheet.title}" has ${plural(count, noun)}, so ` +
+      `${band(axis, start, change.count)} cannot be deleted.`);
+  }
+  if (change.count === count) {
+    throw new Error(`${label}: deleting ${band(axis, start, change.count)} would delete every ${noun} ` +
+      `of "${sheet.title}", and a sheet keeps at least one.`);
+  }
+  let frozen = (axis === "rows" ? sheet.frozenRowCount : sheet.frozenColumnCount) ?? 0;
+  if (frozen > 0 && count - change.count <= frozen) {
+    throw new Error(`${label}: deleting ${band(axis, start, change.count)} would leave only the ` +
+      `${plural(frozen, `frozen ${noun}`)} of "${sheet.title}", and a sheet keeps at least one ${noun} ` +
+      "unfrozen.");
+  }
+  return { op: change.op, sheetId: sheet.id, start, count: change.count };
+}
+
+/**
+ * Applies `changes` to `grid` in order, the cells they enter recording `by`, the ID of the queued
+ * change they make. Returns the grid as they leave it, and the Sheets requests that make them;
+ * `grid` itself when there are none. Throws `ChangeConflict` for a change that no longer applies:
+ * a sheet that is gone, an ID or title another sheet has taken, the last visible sheet, rows or
+ * columns the sheet no longer has, or cells outside a sheet's grid.
+ */
+export function planSheet(
+  grid: Grid, changes: readonly PlannedChange[], by = 0,
+): { grid: Grid; requests: unknown[] } {
+  if (changes.length === 0) return { grid, requests: [] };
+  let work = working(grid);
+  let requests = changes.map((change, i) => applyOne(work, change, by, unexpected(i, change)));
+  return { grid: work, requests };
+}
+
+// Runs of consecutive positions, leaving out those undefined.
+function runsOf(positions: readonly (number | undefined)[]): { start: number; end: number }[] {
+  let runs: { start: number; end: number }[] = [];
+  for (let position of positions) {
+    if (position === undefined) continue;
+    let last = runs.at(-1);
+    if (last && last.end === position) last.end++;
+    else runs.push({ start: position, end: position + 1 });
+  }
+  return runs;
+}
+
+// The cells `rect` of `sheet` covers as they were in `original`, the same sheet before the batch,
+// in as few rectangles as lines the batch inserted leave possible.
+function mappedBack(original: SimSheet, sheet: SimSheet, rect: Rect): SheetArea[] {
+  let rows = runsOf(linesAt(sheet.rows, rect.startRow, rect.endRow)
+    .map(row => row === undefined ? undefined : positionOf(original.rows, row)));
+  let columns = runsOf(linesAt(sheet.columns, rect.startColumn, rect.endColumn)
+    .map(column => column === undefined ? undefined : positionOf(original.columns, column)));
+  return rows.flatMap(r => columns.map(c => ({
+    sheetId: sheet.id, rect: { startRow: r.start, endRow: r.end, startColumn: c.start, endColumn: c.end },
+  })));
+}
+
+// The cells of `area` that `other` does not cover, in at most four rectangles.
+function uncovered(area: SheetArea, other: SheetArea): SheetArea[] {
+  let a = area.rect;
+  let b = other.rect;
+  if (area.sheetId !== other.sheetId || b.startRow >= a.endRow || b.endRow <= a.startRow ||
+    b.startColumn >= a.endColumn || b.endColumn <= a.startColumn) return [area];
+  let rows = { startRow: Math.max(a.startRow, b.startRow), endRow: Math.min(a.endRow, b.endRow) };
+  let pieces: Rect[] = [];
+  if (a.startRow < b.startRow) pieces.push({ ...a, endRow: b.startRow });
+  if (a.startColumn < b.startColumn) pieces.push({ ...rows, startColumn: a.startColumn, endColumn: b.startColumn });
+  if (b.endColumn < a.endColumn) pieces.push({ ...rows, startColumn: b.endColumn, endColumn: a.endColumn });
+  if (b.endRow < a.endRow) pieces.push({ ...a, startRow: b.endRow });
+  return pieces.map(rect => ({ sheetId: area.sheetId, rect }));
+}
+
+/**
+ * The cells `planned` overwrites or removes, as `grid`, the spreadsheet just before the batch,
+ * holds them: each write's cells mapped back through the batch's own earlier changes, less those
+ * of lines and sheets it creates; each deleted band of rows or columns; each deleted sheet. Each
+ * cell is in one area only. Throws `Error` when they are more than `MAX_GUARDED_CELLS`.
+ */
+export function guardCells(grid: Grid, planned: readonly PlannedChange[]): SheetArea[] {
+  let work = working(grid);
+  let areas: SheetArea[] = [];
+  planned.forEach((change, i) => {
+    let sheet = work.sheets.find(candidate => candidate.id === change.sheetId);
+    let original = grid.sheets.find(candidate => candidate.id === change.sheetId);
+    let covered: SheetArea[] = [];
+    if (sheet && original) {
+      if (isCellChange(change)) covered = mappedBack(original, sheet, change.rect);
+      else if (change.op === "deleteSheet") {
+        covered = [{
+          sheetId: original.id,
+          rect: { startRow: 0, endRow: original.rowCount, startColumn: 0, endColumn: original.columnCount },
+        }];
+      } else if (change.op === "deleteRows" || change.op === "deleteColumns") {
+        let end = change.start + change.count;
+        covered = mappedBack(original, sheet, change.op === "deleteRows"
+          ? { startRow: change.start, endRow: end, startColumn: 0, endColumn: sheet.columnCount }
+          : { startRow: 0, endRow: sheet.rowCount, startColumn: change.start, endColumn: end });
+      }
+    }
+    // Earlier areas the new one covers give way to it, and it adds only what they leave uncovered.
+    for (let area of covered) {
+      areas = areas.filter(earlier => uncovered(earlier, area).length > 0);
+      areas.push(...areas.reduce((left, earlier) => left.flatMap(piece => uncovered(piece, earlier)), [area]));
+    }
+    applyOne(work, change, 0, unexpected(i, change));
+  });
+  let cells = areas.reduce((total, { rect }) =>
+    total + (rect.endRow - rect.startRow) * (rect.endColumn - rect.startColumn), 0);
+  if (cells > MAX_GUARDED_CELLS) {
+    throw new Error(`These changes overwrite or delete ${cells.toLocaleString("en-US")} cells that are ` +
+      `already there; one batch may overwrite or delete at most ${MAX_GUARDED_CELLS.toLocaleString("en-US")}.`);
+  }
+  return areas;
+}
+
+/** The IDs of the sheets `changes` act on that are there before them, ascending. */
+export function guardedSheets(changes: readonly PlannedChange[]): number[] {
+  let created = new Set<number>();
+  let addressed = new Set<number>();
+  for (let change of changes) {
+    if (change.op === "addSheet") {
+      created.add(change.sheetId);
+      continue;
+    }
+    if (!created.has(change.sheetId)) addressed.add(change.sheetId);
+    if (change.op === "duplicateSheet") created.add(change.newSheetId);
+  }
+  return [...addressed].toSorted((a, b) => a - b);
+}
+
+/**
+ * What a batch's guard covers: the sheets it acts on, and its cells, which a batch queued before
+ * the guard named them leaves to be those its changes write.
+ */
+export function guardOf(batch: {
+  changes: readonly PlannedChange[]; guard: { cells?: readonly SheetArea[] };
+}): { sheetIds: number[]; cells: SheetArea[] } {
+  return {
+    sheetIds: guardedSheets(batch.changes),
+    cells: batch.guard.cells
+      ? [...batch.guard.cells]
+      : batch.changes.filter(isCellChange).map(({ sheetId, rect }) => ({ sheetId, rect })),
+  };
+}
+
+/** Whether each of `cells` lies within its sheet's grid, so it can be read. */
+export function guardFits(sheets: readonly SheetMeta[], cells: readonly SheetArea[]): boolean {
+  return cells.every(({ sheetId, rect }) => {
+    let sheet = sheets.find(candidate => candidate.id === sheetId);
+    return sheet !== undefined && rect.endRow <= sheet.rowCount && rect.endColumn <= sheet.columnCount;
+  });
+}
+
+// The sheets a change to rows, columns or sheets acts on or creates.
+function structuralSheets(change: PlannedChange): number[] {
+  if (isCellChange(change)) return [];
+  return change.op === "duplicateSheet" ? [change.sheetId, change.newSheetId] : [change.sheetId];
+}
+
+/**
+ * The queued changes a batch builds on, which must have been applied before it: those that
+ * entered what `cells` of `grid` hold, and those changing rows, columns or sheets of a sheet the
+ * batch acts on.
+ */
+export function guardAfter(
+  grid: Grid, pending: readonly QueuedChange[], planned: readonly PlannedChange[],
+  cells: readonly SheetArea[],
+): number[] {
+  let after = new Set<number>();
+  if (grid.cells.size > 0) {
+    for (let { sheetId, rect } of cells) {
+      let sheet = grid.sheets.find(candidate => candidate.id === sheetId);
+      if (!sheet) continue;
+      let columns = linesAt(sheet.columns, rect.startColumn, rect.endColumn);
+      for (let row of linesAt(sheet.rows, rect.startRow, rect.endRow)) {
+        for (let column of columns) {
+          let entry = row === undefined || column === undefined
+            ? undefined : grid.cells.get(cellKey(sheetId, row, column));
+          if (entry && entry.by !== 0) after.add(entry.by);
+        }
+      }
+    }
+  }
+  let addressed = new Set(guardedSheets(planned));
+  // A formula names rows, columns and sheets as earlier structure leaves them, on any sheet, so a
+  // batch with one depends on every structural change queued before it.
+  let formulas = planned.some(change => change.op === "writeCells" && change.values.some(row => row.some(isFormula)));
+  for (let { id, action } of pending) {
+    if (action.payload.changes.some(change => structuralSheets(change).some(sheetId =>
+      formulas || addressed.has(sheetId)))) {
+      after.add(id);
+    }
+  }
+  return [...after].toSorted((a, b) => a - b);
+}
+
+/** Titles for the approver of each sheet `planned` acts on, as `grid` has them, or creates. */
+export function sheetLabels(grid: Grid, planned: readonly PlannedChange[]): Record<string, string> {
+  let labels = new Map<number, string>();
+  let label = (sheetId: number, title: string | undefined) => {
+    if (title !== undefined && !labels.has(sheetId)) labels.set(sheetId, title);
+  };
+  for (let change of planned) {
+    if (change.op === "addSheet") label(change.sheetId, change.title);
+    else label(change.sheetId, grid.sheets.find(sheet => sheet.id === change.sheetId)?.title);
+    if (change.op === "duplicateSheet") label(change.newSheetId, change.title);
+  }
+  return Object.fromEntries(labels);
+}
+
+function within({ startRow, endRow, startColumn, endColumn }: Rect, row: number, column: number): boolean {
+  return row >= startRow && row < endRow && column >= startColumn && column < endColumn;
+}
+
+// The protected range's cells by name, where its ends are bounded.
+function protectionName(protection: SheetProtection, title: string): string {
+  let { rect } = protection.area;
+  if ([rect.endRow, rect.endColumn].every(Number.isFinite)) return `the protected range ${a1Of(title, rect)}`;
+  return `a protected range of "${title}"`;
+}
+
+/**
+ * Refuses a change writing a cell Google holds that is in a protected range the connected account
+ * may not edit, and that the range does not leave editable, and any change to the rows, columns or
+ * tab of a sheet holding such a range. Cells of lines queued changes insert are not protected.
+ * Throws `Error`.
+ */
+export function checkProtections(
+  metadata: { sheets: readonly SheetMeta[]; protectedRanges: readonly SheetProtection[] },
+  grid: Grid, planned: readonly PlannedChange[],
+): void {
+  let locked = metadata.protectedRanges.filter(protection => !protection.requestingUserCanEdit);
+  if (locked.length === 0) return;
+  let work = working(grid);
+  planned.forEach((change, i) => {
+    let label = `Change ${i + 1} (${change.op})`;
+    let sheet = work.sheets.find(candidate => candidate.id === change.sheetId);
+    let source = sheet?.source;
+    let protections = locked.filter(protection => protection.area.sheetId === source);
+    if (sheet && source !== undefined && protections.length > 0) {
+      let title = metadata.sheets.find(candidate => candidate.id === source)?.title ?? sheet.title;
+      if (!isCellChange(change)) {
+        throw new Error(`${label}: "${sheet.title}" holds ${protectionName(protections[0], title)}, which ` +
+          "the connected account may not edit, so its rows, columns and tab cannot be changed.");
+      }
+      let { rect } = change;
+      let rows = linesAt(sheet.rows, rect.startRow, rect.endRow).map(row => row === undefined ? undefined : baseIndexOf(row));
+      let columns = linesAt(sheet.columns, rect.startColumn, rect.endColumn).map(column => column === undefined ? undefined : baseIndexOf(column));
+      for (let protection of protections) {
+        rows.forEach((row, r) => columns.forEach((column, c) => {
+          if (row === undefined || column === undefined || !within(protection.area.rect, row, column)) return;
+          let editable = protection.unprotected.some(area => area.sheetId === source && within(area.rect, row, column));
+          if (editable) return;
+          throw new Error(`${label}: ${cellName(rect.startRow + r, rect.startColumn + c)} is in ` +
+            `${protectionName(protection, title)}, which the connected account may not edit.`);
+        }));
+      }
+    }
+    applyOne(work, change, 0, unexpected(i, change));
+  });
+}
+
+/**
+ * A hex SHA-256 of what a batch overwrites or removes: the size and title of each sheet in
+ * `guard.sheetIds`, and the cells of each of `guard.cells` as entered (`entered[i]`, the values of
+ * `guard.cells[i]` in formula mode). Whitespace in formulas is ignored, since Google may change
+ * it in a formula nobody edits.
  */
 export async function guardDigest(
   sheets: readonly SheetMeta[],
-  changes: readonly PlannedChange[],
+  guard: { sheetIds: readonly number[]; cells: readonly SheetArea[] },
   entered: readonly (readonly (readonly SheetCellInput[])[])[],
 ): Promise<string> {
-  let ids = [...new Set(changes.map(change => change.sheetId))].toSorted((a, b) => a - b);
-  let described = ids.map(id => {
+  let described = guard.sheetIds.map(id => {
     let sheet = sheets.find(candidate => candidate.id === id);
     return sheet ? [id, sheet.title, sheet.rowCount, sheet.columnCount] : [id, null];
   });
-  let cells = changes.map(({ rect }, i) => {
+  let cells = guard.cells.map(({ rect }, i) => {
     let values: unknown[] = [];
     for (let row = rect.startRow; row < rect.endRow; row++) {
       for (let column = rect.startColumn; column < rect.endColumn; column++) {

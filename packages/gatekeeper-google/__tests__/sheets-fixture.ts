@@ -5,7 +5,8 @@
 
 import type { Rect } from "../src/sheets-model";
 import type { SpreadsheetCellValue } from "../src/sheets-read-types";
-import type { Grid, SheetMeta } from "../src/sheets-simulation";
+import { cellKey } from "../src/sheets-plan";
+import { gridOf, type Grid, type SheetMeta } from "../src/sheets-simulation";
 import type { SheetCellInput } from "../src/sheets-types";
 
 /** A sheet of `rowCount` by `columnCount` cells, 20 by 6 unless given. */
@@ -13,9 +14,19 @@ export function sheet(id: number, title: string, fields: Partial<SheetMeta> = {}
   return { id, title, index: id, rowCount: 20, columnCount: 6, ...fields };
 }
 
-/** A grid of `sheets` holding what `cells` enters, keyed `sheetId:row:column`. */
+/**
+ * A grid of `sheets` as Google holds them, with what `cells` enters, keyed `sheetId:row:column`
+ * by zero-based position, as entered outside a replay.
+ */
 export function grid(sheets: SheetMeta[], cells: Record<string, SheetCellInput> = {}): Grid {
-  return { sheets, cells: new Map(Object.entries(cells)) };
+  let base = gridOf({ sheets });
+  return {
+    ...base,
+    cells: new Map(Object.entries(cells).map(([key, input]) => {
+      let [sheetId, row, column] = key.split(":");
+      return [cellKey(Number(sheetId), `b${row}`, `b${column}`), { input, at: 0, by: 0 }];
+    })),
+  };
 }
 
 /** A zero-based rectangle from its first row and column and its size. */
@@ -156,3 +167,21 @@ export const FORMULA_CANONICALIZATION: [entered: string, stored: string][] = [
 
 /** A formula whose whitespace Google dropped later, with no write to its sheet. */
 export const WHITESPACE_DRIFT: [stored: string, later: string] = ["=Sales!$D$3 + 1", "=Sales!$D$3+1"];
+
+/** What Google answered requests changing a spreadsheet's structure with, refusing them. */
+export const STRUCTURE_REFUSALS = {
+  negativeSheetId: "Sheet id must be non-negative.",
+  sheetIdTaken: (sheetId: number) => `Sheet with id ${sheetId} already exists.`,
+  titleTaken: (title: string) => `A sheet with the name "${title}" already exists. Please enter another name.`,
+  titleTooLong: "The sheet name cannot be greater than 100 characters.",
+  lastVisibleSheet: "You can't remove all the visible sheets in a document.",
+  everyRow: (request: number) => `Invalid requests[${request}].deleteDimension: You can't delete all the rows on the sheet.`,
+  everyColumn: (request: number) =>
+    `Invalid requests[${request}].deleteDimension: You can't delete all the columns on the sheet.`,
+  insertAtEnd: (size: number) =>
+    `range.startIndex must be less than the grid size (${size}) if inheritFromBefore is false.`,
+  insertPastEnd: (size: number) => `range.startIndex is larger than current grid size (${size})`,
+};
+
+/** The size Google gives a sheet added with none. */
+export const NEW_SHEET_SIZE = { rowCount: 1000, columnCount: 26 };

@@ -3,10 +3,11 @@
  *
  * Sheets has no revision to pin a write to, so a write is guarded instead. Apply reads the
  * spreadsheet afresh, plans the batch against it, and checks a digest of what the batch overwrites
- * (the cells it writes as entered, and the title and size of each sheet it writes to) against the
- * one taken when it was queued, of those cells as they were to be by then: with what the changes
- * queued before it enter, which must therefore have been applied. A change that no longer applies,
- * or whose cells a collaborator has edited, fails without writing. The guard leaves a window: a
+ * or removes (the cells it writes, the rows, columns and sheets it deletes, as entered, and the
+ * title and size of each sheet it changes) against the one taken when it was queued, of those
+ * cells as they were to be by then: with the rows, columns, sheets and values the changes queued
+ * before it leave, which must therefore have been applied. A change that no longer applies, or
+ * whose cells a collaborator has edited, fails without writing. The guard leaves a window: a
  * collaborator's edit landing between that read and the write is overwritten.
  *
  * Every write is one atomic `batchUpdate`, which also creates a marker, a developer metadata
@@ -32,9 +33,9 @@ import {
 import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import { obsContext } from "./observability";
 import { SheetsWriteRefused, type GoogleSheetsApi } from "./sheets-api";
-import { cellName, isFormula, rectName } from "./sheets-model";
-import { guardDigest, planSheet } from "./sheets-plan";
-import type { PlannedChange, SheetBatch, SheetsActions } from "./sheets-simulation";
+import { cellName, columnLetters, isFormula, rectName } from "./sheets-model";
+import { guardDigest, guardFits, guardOf, planSheet } from "./sheets-plan";
+import { gridOf, type PlannedChange, type SheetBatch, type SheetsActions } from "./sheets-simulation";
 import type { SheetCellInput } from "./sheets-types";
 import { ChangeConflict } from "./slides-text";
 
@@ -56,10 +57,10 @@ const EDIT_SHEET_VALUES: ActionKind = { tag: "editSheetValues", label: "Sheet va
 
 /** The kind a batch is queued as, so approving a kind approves no more than it says. */
 export function batchKind(
-  changes: readonly ({ op: "writeCells"; values: SheetCellInput[][] } | { op: "clearRange" })[],
+  changes: readonly { op: string; values?: SheetCellInput[][] }[],
 ): "editSheetValues" | "updateSheet" {
-  let literal = changes.every(change =>
-    change.op === "clearRange" || change.values.every(row => !row.some(isFormula)));
+  let literal = changes.every(change => change.op === "clearRange" ||
+    (change.op === "writeCells" && change.values!.every(row => !row.some(isFormula))));
   return literal ? "editSheetValues" : "updateSheet";
 }
 
@@ -67,8 +68,7 @@ export function batchKind(
 const MAX_ATTEMPTS = 3;
 const MARKER_KEY = "gadgets.write";
 
-function sheetName(sheets: Record<string, string>, sheetId: number): string {
-  let title = sheets[sheetId];
+function sheetName(title: string | undefined, sheetId: number): string {
   return title === undefined ? `sheet ${sheetId}` : `"${plainInline(title, 60)}"`;
 }
 
@@ -76,13 +76,15 @@ function sheetName(sheets: Record<string, string>, sheetId: number): string {
 // but letters, marks, digits, punctuation, symbols and the plain space, and the quotes around it.
 const UNCLEAR_IN_PROSE = /[^\p{L}\p{M}\p{N}\p{P}\p{S} ]|"/u;
 
-// The title of a change's sheet when `sheetName` cannot show it exactly. Titles are how an
-// approver tells sheets apart, and "Sheet_1" would otherwise read as Google's default "Sheet1",
-// or "Sales" followed by a zero-width space as "Sales".
-function inexactTitle(sheets: Record<string, string>, sheetId: number): string | undefined {
-  let title = sheets[sheetId];
-  return title !== undefined && (plainInline(title, 60) !== title || UNCLEAR_IN_PROSE.test(title))
-    ? title : undefined;
+// Whether `sheetName` cannot show `title` exactly. Titles are how an approver tells sheets apart,
+// and "Sheet_1" would otherwise read as Google's default "Sheet1", or "Sales" followed by a
+// zero-width space as "Sales".
+function inexact(title: string): boolean {
+  return plainInline(title, 60) !== title || UNCLEAR_IN_PROSE.test(title);
+}
+
+function plural(count: number, noun: string): string {
+  return `${count.toLocaleString("en-US")} ${noun}${count === 1 ? "" : "s"}`;
 }
 
 // A line separator other than \n, which a viewer may break a line at though the kit keeps it.
@@ -100,13 +102,15 @@ function oneLine(value: unknown): string {
 async function guarded(host: SheetsHost, batch: SheetBatch): Promise<unknown[] | undefined> {
   let unapplied = batch.guard.after.find(id => !host.applied(id));
   if (unapplied !== undefined) {
-    throw new ChangeConflict(`it overwrites cells change ${unapplied} writes, which was not applied`);
+    throw new ChangeConflict(`it builds on change ${unapplied}, which was not applied`);
   }
   let metadata = await host.api.getMetadata(host.spreadsheetId);
-  let { requests } = planSheet({ sheets: metadata.sheets, cells: new Map() }, batch.changes);
-  let entered = await host.api.readEntered(
-    host.spreadsheetId, batch.changes.map(({ sheetId, rect }) => ({ sheetId, rect })));
-  let digest = await guardDigest(metadata.sheets, batch.changes, entered);
+  let { requests } = planSheet(gridOf(metadata), batch.changes);
+  let guard = guardOf(batch);
+  // Cells the sheets no longer hold cannot be read, and have changed.
+  if (!guardFits(metadata.sheets, guard.cells)) return undefined;
+  let entered = await host.api.readAreas(host.spreadsheetId, guard.cells, "formula");
+  let digest = await guardDigest(metadata.sheets, guard, entered);
   return digest === batch.guard.sha256 ? requests : undefined;
 }
 
@@ -133,8 +137,8 @@ async function write(host: SheetsHost, batch: SheetBatch): Promise<void> {
   }
   if (!requests) {
     throw new ActionApplyError(
-      "This change no longer applies: cells it overwrites, or a sheet it writes to, changed since " +
-      "it was queued.");
+      "This change no longer applies: cells it overwrites or deletes, or a sheet it changes, " +
+      "changed since it was queued.");
   }
 
   let { marker } = batch;
@@ -169,7 +173,7 @@ async function write(host: SheetsHost, batch: SheetBatch): Promise<void> {
       if (await markerFound(host, marker)) return landed();
       throw new ActionApplyError(
         "Google Sheets refused this change as invalid [http=400]. It may write to a protected range " +
-        "or outside a sheet's grid.");
+        "or outside a sheet's grid, or leave a sheet with fewer rows or columns than Google allows.");
     }
     logger.warn("Sheets write outcome unknown", { event: "sheets.apply.lost", error });
   }
@@ -197,21 +201,70 @@ async function write(host: SheetsHost, batch: SheetBatch): Promise<void> {
 
 type Field = (label: string, text: string, kind: "inline" | "verbatim") => void;
 
-/** One line naming what a change does; `field` adds what the approver must see exactly. */
-function describeChange(change: PlannedChange, sheets: Record<string, string>, field: Field): string {
-  let where = `In ${sheetName(sheets, change.sheetId)}`;
-  let title = inexactTitle(sheets, change.sheetId);
-  if (title !== undefined) field("Sheet", title, "inline");
-  let cells = rectName(change.rect);
-  if (change.op === "clearRange") return `${where}, clear the contents of ${cells}, keeping their formatting`;
-  field("Values", change.values.map(oneLine).join("\n"), "verbatim");
-  // One formula per line: one with a line break of its own is quoted, so it cannot pass for others.
-  let formulas = change.values.flatMap((row, r) => row.flatMap((value, c) => isFormula(value)
-    ? [`${cellName(change.rect.startRow + r, change.rect.startColumn + c)}: ` +
-      (/[\r\n\u2028\u2029]/.test(value) ? oneLine(value) : value)]
-    : []));
-  if (formulas.length > 0) field("Formulas", formulas.join("\n"), "verbatim");
-  return `${where}, set ${cells} to the values below`;
+// Lines by their names: "row 5", "rows 5 to 6", "column C", "columns C to D".
+function band(axis: "rows" | "columns", start: number, count: number): string {
+  let name = (position: number) => axis === "rows" ? String(position + 1) : columnLetters(position);
+  let noun = axis === "rows" ? "row" : "column";
+  return count === 1 ? `${noun} ${name(start)}` : `${noun}s ${name(start)} to ${name(start + count - 1)}`;
+}
+
+/**
+ * One line naming what a change does; `field` adds what the approver must see exactly. `titles`
+ * holds each sheet's title as the changes before this one leave it, and this one updates it.
+ */
+function describeChange(change: PlannedChange, titles: Map<number, string>, field: Field): string {
+  let named = (sheetId: number, label = "Sheet") => {
+    let title = titles.get(sheetId);
+    if (title !== undefined && inexact(title)) field(label, title, "inline");
+    return sheetName(title, sheetId);
+  };
+  switch (change.op) {
+    case "writeCells":
+    case "clearRange": {
+      let where = `In ${named(change.sheetId)}`;
+      let cells = rectName(change.rect);
+      if (change.op === "clearRange") return `${where}, clear the contents of ${cells}, keeping their formatting`;
+      field("Values", change.values.map(oneLine).join("\n"), "verbatim");
+      // One formula per line: one with a line break of its own is quoted, so it cannot pass for others.
+      let formulas = change.values.flatMap((row, r) => row.flatMap((value, c) => isFormula(value)
+        ? [`${cellName(change.rect.startRow + r, change.rect.startColumn + c)}: ` +
+          (/[\r\n\u2028\u2029]/.test(value) ? oneLine(value) : value)]
+        : []));
+      if (formulas.length > 0) field("Formulas", formulas.join("\n"), "verbatim");
+      return `${where}, set ${cells} to the values below`;
+    }
+    case "addSheet":
+      titles.set(change.sheetId, change.title);
+      return `Add a sheet ${named(change.sheetId, "Title")} of ${plural(change.rowCount, "row")} and ` +
+        `${plural(change.columnCount, "column")} at position ${change.index + 1}`;
+    case "renameSheet": {
+      let from = named(change.sheetId);
+      titles.set(change.sheetId, change.title);
+      return `Rename ${from} to ${named(change.sheetId, "New title")}`;
+    }
+    case "duplicateSheet": {
+      let source = named(change.sheetId);
+      titles.set(change.newSheetId, change.title);
+      return `Copy ${source} as ${named(change.newSheetId, "Copy title")} at position ${change.index + 1}`;
+    }
+    case "deleteSheet":
+      return `Delete the sheet ${named(change.sheetId)} (${plural(change.rowCount, "row")}, ` +
+        `${plural(change.columnCount, "column")}) and everything on it`;
+    case "insertRows":
+    case "insertColumns": {
+      let axis: "rows" | "columns" = change.op === "insertRows" ? "rows" : "columns";
+      let lines = plural(change.count, axis === "rows" ? "row" : "column");
+      // Lines added after the last have no line to go before.
+      let where = change.appends
+        ? `add ${lines} after ${band(axis, change.start - 1, 1)}`
+        : `insert ${lines} before ${band(axis, change.start, 1)}`;
+      return `In ${named(change.sheetId)}, ${where}`;
+    }
+    case "deleteRows":
+    case "deleteColumns":
+      return `In ${named(change.sheetId)}, delete ` +
+        band(change.op === "deleteRows" ? "rows" : "columns", change.start, change.count);
+  }
 }
 
 /** A batch's definition, the same for each kind but in the `kind` a user may auto-approve. */
@@ -221,11 +274,14 @@ function sheetBatch(kind?: ActionKind): ActionDefinition<SheetBatch, SheetsHost>
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
     describe: ({ changes, sheets }) => {
-      let ids = [...new Set(changes.map(change => change.sheetId))];
+      // The sheets the batch acts on or makes, copies included.
+      let ids = [...new Set(changes.flatMap(change =>
+        change.op === "duplicateSheet" ? [change.sheetId, change.newSheetId] : [change.sheetId]))];
+      let titles = new Map(Object.entries(sheets).map(([id, title]) => [Number(id), title]));
       let fields: [string, string, "inline" | "verbatim"][] = [];
       let lines = changes.map((change, i) => {
         let label = changes.length === 1 ? "" : `Change ${i + 1}: `;
-        return describeChange(change, sheets, (name, text, shape) => fields.push([`${label}${name}`, text, shape]));
+        return describeChange(change, titles, (name, text, shape) => fields.push([`${label}${name}`, text, shape]));
       });
       let builder = buildDescription(lines.length === 1
         ? `${lines[0]}.`
@@ -233,7 +289,9 @@ function sheetBatch(kind?: ActionKind): ActionDefinition<SheetBatch, SheetsHost>
           lines.map((line, i) => `${i + 1}. ${line}`).join("\n"));
       for (let [label, text, shape] of fields) builder[shape](label, text);
       return {
-        title: sanitizeTitle(ids.length === 1 ? `Edit ${sheetName(sheets, ids[0])}` : `Edit ${ids.length} sheets`),
+        title: sanitizeTitle(changes.every(change => change.op === "addSheet")
+          ? ids.length === 1 ? `Add the sheet ${sheetName(sheets[ids[0]], ids[0])}` : `Add ${ids.length} sheets`
+          : ids.length === 1 ? `Edit ${sheetName(sheets[ids[0]], ids[0])}` : `Edit ${ids.length} sheets`),
         ...builder.finish(),
         implementsRevert: false,
       };

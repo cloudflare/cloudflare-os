@@ -16,6 +16,10 @@ const REQUEST_TIMEOUT_MS = 30_000;
 const SPREADSHEET_FIELDS = "spreadsheetId,properties(title,locale,timeZone)";
 const SHEET_PROPERTIES_FIELDS =
   "properties(sheetId,title,index,hidden,gridProperties(rowCount,columnCount))";
+// Google keeps at least one unfrozen row and column, so the gatekeeper needs the frozen counts too.
+const METADATA_PROPERTIES_FIELDS =
+  "properties(sheetId,title,index,hidden," +
+  "gridProperties(rowCount,columnCount,frozenRowCount,frozenColumnCount))";
 // Never `editors`: it lists collaborators' email addresses.
 const PROTECTED_RANGE_FIELDS =
   "protectedRanges(range,unprotectedRanges,requestingUserCanEdit,warningOnly)";
@@ -38,7 +42,9 @@ type RestSpreadsheet = {
       title?: string;
       index?: number;
       hidden?: boolean;
-      gridProperties?: { rowCount?: number; columnCount?: number };
+      gridProperties?: {
+        rowCount?: number; columnCount?: number; frozenRowCount?: number; frozenColumnCount?: number;
+      };
     };
     protectedRanges?: {
       range?: RestGridRange;
@@ -68,7 +74,11 @@ export type SheetProtection = {
 };
 
 /** A spreadsheet's metadata, with each sheet's protected ranges. */
-export type SpreadsheetMetadata = SpreadsheetInfo & { protectedRanges: SheetProtection[] };
+export type SpreadsheetMetadata = Omit<SpreadsheetInfo, "sheets"> & {
+  /** The sheets, with how many of their leading rows and columns are frozen, when any are. */
+  sheets: (SpreadsheetSheetInfo & { frozenRowCount?: number; frozenColumnCount?: number })[];
+  protectedRanges: SheetProtection[];
+};
 
 /** A `batchUpdate` Google answered with a 4xx status, so it applied none of the requests. */
 export class SheetsWriteRefused extends Error {
@@ -77,7 +87,11 @@ export class SheetsWriteRefused extends Error {
   }
 }
 
-function validateRanges(ranges: string[]): ValidatedRange[] {
+/**
+ * Checks the ranges a read asks for: 1 to 20 bounded A1 ranges, of at most 50,000 cells in all.
+ * Throws `Error`.
+ */
+export function validateRanges(ranges: string[]): ValidatedRange[] {
   if (!Array.isArray(ranges) || ranges.length === 0 || ranges.length > MAX_RANGES) {
     throw new Error(`readRanges requires between 1 and ${MAX_RANGES} ranges.`);
   }
@@ -208,7 +222,7 @@ export class GoogleSheetsApi {
   async getMetadata(spreadsheetId: string): Promise<SpreadsheetMetadata> {
     let url = new URL(`${API_BASE}/${encodeURIComponent(spreadsheetId)}`);
     url.searchParams.set(
-      "fields", `${SPREADSHEET_FIELDS},sheets(${SHEET_PROPERTIES_FIELDS},${PROTECTED_RANGE_FIELDS})`);
+      "fields", `${SPREADSHEET_FIELDS},sheets(${METADATA_PROPERTIES_FIELDS},${PROTECTED_RANGE_FIELDS})`);
     let result = await this.#request<RestSpreadsheet>(url, "get spreadsheet metadata");
     let protectedRanges = (result.sheets ?? []).flatMap(sheet => {
       let sheetId = sheet.properties?.sheetId;
@@ -220,7 +234,18 @@ export class GoogleSheetsApi {
         warningOnly: protection.warningOnly === true,
       }));
     });
-    return { ...spreadsheetInfo(result), protectedRanges };
+    let info = spreadsheetInfo(result);
+    let frozen = new Map((result.sheets ?? []).map(({ properties }) =>
+      [properties?.sheetId, properties?.gridProperties] as const));
+    let sheets = info.sheets.map(sheet => {
+      let { frozenRowCount, frozenColumnCount } = frozen.get(sheet.id) ?? {};
+      return {
+        ...sheet,
+        ...(frozenRowCount ? { frozenRowCount } : {}),
+        ...(frozenColumnCount ? { frozenColumnCount } : {}),
+      };
+    });
+    return { ...info, sheets, protectedRanges };
   }
 
   async readRanges(
@@ -244,12 +269,12 @@ export class GoogleSheetsApi {
   }
 
   /**
-   * The cells of each of `areas` as entered, formulas as their text, padded to its size. Each must
-   * lie within its sheet's grid. Only the response size bounds the read, so callers bound how many
-   * cells they ask for.
+   * The cells of each of `areas` as `valueMode` reads them, padded to its size: in formula mode,
+   * as entered, formulas as their text. Each must lie within its sheet's grid. Only the response
+   * size bounds the read, so callers bound how many cells they ask for.
    */
-  async readEntered(
-    spreadsheetId: string, areas: readonly SheetArea[],
+  async readAreas(
+    spreadsheetId: string, areas: readonly SheetArea[], valueMode: SpreadsheetValueMode,
   ): Promise<SpreadsheetCellValue[][][]> {
     if (areas.length === 0) return [];
     let response = await fetchWithAuthRetry(
@@ -268,7 +293,8 @@ export class GoogleSheetsApi {
             },
           })),
           majorDimension: "ROWS",
-          valueRenderOption: "FORMULA",
+          valueRenderOption: valueRenderOption(valueMode),
+          ...(valueMode === "raw" ? { dateTimeRenderOption: "SERIAL_NUMBER" } : {}),
         }),
       },
       // A read, however it is sent.
@@ -276,7 +302,7 @@ export class GoogleSheetsApi {
     );
     let result = await readGoogleJson<{
       valueRanges?: { valueRange?: RestValueRange; dataFilters?: { gridRange?: RestGridRange }[] }[];
-    }>(response, { provider: "Google Sheets", operation: "read entered values", maxBytes: MAX_RESPONSE_BYTES });
+    }>(response, { provider: "Google Sheets", operation: "read cells", maxBytes: MAX_RESPONSE_BYTES });
     // Google answers in an order of its own, so each answer is found by the filter it echoes.
     let returned = result.valueRanges ?? [];
     return areas.map(area => {

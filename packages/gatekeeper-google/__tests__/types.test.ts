@@ -197,6 +197,21 @@ const sheetIds: Promise<Record<string, number>> = sheet.updateSheet([
 ]);
 // @ts-expect-error A change names its range.
 sheet.updateSheet([{ op: "clearRange" }]);
+const minted: Promise<Record<string, number>> = sheet.updateSheet([
+  { op: "addSheet", title: "Q4", ref: "q4", index: 1, rowCount: 100, columnCount: 5 },
+  { op: "writeCells", range: "'Q4'!A1", values: [["Forecast"]] },
+  { op: "renameSheet", sheetId: "q4", title: "Q4 2026" },
+  { op: "duplicateSheet", sheetId: 0, title: "Copy", ref: "copy", index: 2 },
+  { op: "insertRows", sheetId: "copy", at: 3, count: 2 },
+  { op: "deleteRows", sheetId: 0, at: 5 },
+  { op: "insertColumns", sheetId: 0, at: "C" },
+  { op: "deleteColumns", sheetId: 0, at: "C", count: 2 },
+  { op: "deleteSheet", sheetId: "copy" },
+]);
+// @ts-expect-error Columns are named by their letters.
+sheet.updateSheet([{ op: "insertColumns", sheetId: 0, at: 3 }]);
+// @ts-expect-error A sheet added needs a title.
+sheet.updateSheet([{ op: "addSheet" }]);
 `)
       // The agent's runtime provides the module Chat's declarations import.
       .filter(message => !message.includes("'cloudflare:workers'"))).toEqual([]);
