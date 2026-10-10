@@ -83,7 +83,7 @@ function synthesizeRepost(id: string, source: XPostInfo, me: StoredIdentity): XP
 }
 
 /** Every post pending actions will publish that X has not yet assigned an ID, newest first. */
-export function pendingPosts(pending: Pending, me: StoredIdentity, resolve: Resolve): XPostInfo[] {
+function synthesizedPosts(pending: Pending, me: StoredIdentity, resolve: Resolve): XPostInfo[] {
   const posts: XPostInfo[] = [];
   for (const { action } of pending) {
     if (action.kind === "createPost") {
@@ -104,9 +104,21 @@ export function pendingPosts(pending: Pending, me: StoredIdentity, resolve: Reso
   return posts.toReversed();
 }
 
-/** The pending post with temporary ID `id`, if it is still waiting to publish. */
+/**
+ * The posts pending actions will publish that X has not yet assigned an ID, newest first, less
+ * those a pending deletion removes.
+ */
+export function pendingPosts(pending: Pending, me: StoredIdentity, resolve: Resolve): XPostInfo[] {
+  const gone = deleted(pending, resolve);
+  return synthesizedPosts(pending, me, resolve).filter(post => !gone.has(post.id));
+}
+
+/**
+ * The pending post with temporary ID `id`, if it is still waiting to publish, even if a pending
+ * deletion removes it: see `overlayPost`.
+ */
 export function pendingPost(id: string, pending: Pending, me: StoredIdentity, resolve: Resolve): XPostInfo | undefined {
-  return pendingPosts(pending, me, resolve).find(post => post.id === id);
+  return synthesizedPosts(pending, me, resolve).find(post => post.id === id);
 }
 
 /** Posts pending deletions remove, by the ID X assigned. */

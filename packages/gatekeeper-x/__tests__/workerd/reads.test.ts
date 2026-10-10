@@ -271,6 +271,15 @@ describe("pending actions in reads", () => {
     expect(bob.relationship).toEqual({ following: true, followedBy: false });
   });
 
+  it("hides a post waiting for approval once its deletion is waiting too", async () => {
+    const { props, name } = await setup();
+    unwrap(await hooks().run(name, props, [["createPost", { text: "Second thoughts" }]]));
+    unwrap(await hooks().run(name, props, [["getPost", "~1"], ["delete"]]));
+    expect(failure(await hooks().run(name, props, [["getPost", "~1"], ["getInfo"]]))).toBe("This post has been deleted.");
+    const [page] = unwrap(await hooks().run(name, props, [["listMyPosts"]], { pages: 1 })) as XPostInfo[][];
+    expect(page).toEqual([]);
+  });
+
   it("shows a pending repost among the account's posts, unless reposts are excluded", async () => {
     const { x, props, name } = await setup();
     const post = x.post(BOB, "worth sharing");
