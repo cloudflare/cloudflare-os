@@ -33,6 +33,9 @@ function mockSlack(org = true) {
               response_metadata: { next_cursor: "second-page" } }; break;
       case "team.info": {
         let domain = url.searchParams.get("domain");
+        if (!org && domain) {
+          result = { ok: false, error: "team_not_on_enterprise" }; break;
+        }
         let id = url.searchParams.get("team") || (domain ? domain.toUpperCase() : "EORG");
         result = { team: { id, name: id, domain: id.toLowerCase() } }; break;
       }
@@ -124,6 +127,26 @@ describe("Slack org installations", () => {
     await expect(client.workspaceIdForDomain("tforeign")).rejects.toMatchObject({ code: "team_access_not_granted" });
   });
 
+  it.each([undefined, false])("resolves workspace-installed thread hosts without Enterprise lookup (flag %s)",
+      async isEnterpriseInstall => {
+    mockSlack(false);
+    let client = new SlackApi(async () => "token", {
+      installation: async () => ({ teamId: "TONE", isEnterpriseInstall }),
+    });
+    expect(await client.workspaceIdForDomain("tone")).toBe("TONE");
+    let info = requests.find(url => url.pathname.endsWith("team.info"));
+    expect(info?.searchParams.get("team")).toBe("TONE");
+    expect(requests.some(url => url.searchParams.has("domain"))).toBe(false);
+    expect(requests.some(url => url.pathname.endsWith("auth.teams.list"))).toBe(false);
+  });
+
+  it("rejects a different permalink host for a workspace installation", async () => {
+    mockSlack(false);
+    await expect(new SlackApi(async () => "token").workspaceIdForDomain("ttwo"))
+        .rejects.toMatchObject({ code: "team_access_not_granted" });
+    expect(requests.some(url => url.searchParams.has("domain"))).toBe(false);
+  });
+
   it("does not use an enterprise ID as a workspace selector", async () => {
     mockSlack();
     expect(() => api("EORG")).toThrow("not an enterprise");
@@ -136,6 +159,16 @@ describe("Slack org installations", () => {
       installation: async () => ({ teamId: "", isEnterpriseInstall: true, enterpriseId: "EORG" }),
     });
     expect(await client.listWorkspaces()).toHaveLength(2);
+    // Saved org metadata also chooses the Enterprise-only permalink resolution path.
+    let fetchSlack = fetch;
+    vi.stubGlobal("fetch", async (input: string) => {
+      if (input.includes("team.info") && new URL(input).searchParams.has("domain")) {
+        requests.push(new URL(input));
+        return Response.json({ ok: true, team: { id: "TTWO", name: "Two", domain: "ttwo" } });
+      }
+      return fetchSlack(input);
+    });
+    expect(await client.workspaceIdForDomain("ttwo")).toBe("TTWO");
     await expect(client.getWorkspaceInfo()).rejects.toThrow("Select a Slack workspace");
   });
 

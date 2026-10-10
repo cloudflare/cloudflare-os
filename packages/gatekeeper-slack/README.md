@@ -39,8 +39,10 @@ user's memberships). See Slack's [Enterprise development guide](https://docs.sla
 and [auth.teams.list reference](https://docs.slack.dev/reference/methods/auth.teams.list/).
 
 Each granted resource still selects exactly one workspace. Workspace and conversation pickers
-retain its `T…` ID in the resource URL and Durable Object props; thread URLs resolve their
-workspace through `team.info(domain)`. The agent-facing session API is unchanged.
+retain its `T…` ID in the resource URL and Durable Object props. For thread URLs, workspace
+installations verify the permalink host against their own workspace's metadata; only org
+installations use the Enterprise-only `team.info(domain)` lookup, followed by membership checks.
+The agent-facing session API is unchanged.
 
 | API calls | Workspace selector |
 | --- | --- |

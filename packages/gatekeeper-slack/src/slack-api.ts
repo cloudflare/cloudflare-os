@@ -358,14 +358,21 @@ export class SlackApi {
     return new SlackApi(this.#getToken, { ...this.#options, teamId: async () => teamId });
   }
 
-  /** Workspaces both granted to the app and joined by this user; walks every grant page. */
-  async listWorkspaces(): Promise<SlackWorkspace[]> {
+  async #installationContext() {
     let auth = await this.#call<SlackApiEnvelope & {
       team_id?: string; user_id?: string; is_enterprise_install?: boolean;
     }>("auth.test", {});
     let saved = await this.#options.installation?.();
-    let orgInstall = saved?.isEnterpriseInstall ??
-        (auth.is_enterprise_install === true || !isWorkspaceId(auth.team_id));
+    return {
+      auth,
+      orgInstall: saved?.isEnterpriseInstall ??
+          (auth.is_enterprise_install === true || !isWorkspaceId(auth.team_id)),
+    };
+  }
+
+  /** Workspaces both granted to the app and joined by this user; walks every grant page. */
+  async listWorkspaces(): Promise<SlackWorkspace[]> {
+    let { auth, orgInstall } = await this.#installationContext();
     if (!orgInstall) {
       if (!isWorkspaceId(auth.team_id)) throw new Error("Slack returned no workspace identity.");
       let info = await this.#readWorkspaceInfo({ team: auth.team_id });
@@ -398,6 +405,14 @@ export class SlackApi {
 
   /** Resolve a workspace permalink host without assuming the token has one workspace. */
   async workspaceIdForDomain(domain: string): Promise<string> {
+    let { auth, orgInstall } = await this.#installationContext();
+    if (!orgInstall) {
+      if (!isWorkspaceId(auth.team_id)) throw new Error("Slack returned no workspace identity.");
+      // Domain lookup is Enterprise-only; a workspace token may resolve only its own host.
+      let info = await this.#readWorkspaceInfo({ team: auth.team_id });
+      if (info.domain !== domain) throw new SlackApiError("team_access_not_granted", 200);
+      return info.teamId;
+    }
     let info = await this.#readWorkspaceInfo({ domain });
     if (!(await this.hasWorkspaceAccess(info.teamId))) {
       throw new SlackApiError("team_access_not_granted", 200);

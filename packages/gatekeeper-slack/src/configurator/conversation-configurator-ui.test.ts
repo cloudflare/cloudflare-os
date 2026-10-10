@@ -33,36 +33,54 @@ function control(tree: unknown, name: string): Record<string, unknown> {
 
 function render(values: ConversationConfiguratorValues) {
   let patches: Partial<ConversationConfiguratorValues>[] = [];
+  let clearFields = vi.fn();
+  let setValues = vi.fn((patch: Partial<ConversationConfiguratorValues>) => void patches.push(patch));
   let ui = { listWorkspaces: vi.fn(async () => []), listConversations: vi.fn(async () => []) };
   let tree = conversation.render({
-    values, setValues: patch => void patches.push(patch), clearFields() {}, ui,
+    values, setValues, clearFields, ui,
   });
-  return { tree, patches, ui };
+  return { tree, patches, clearFields, setValues, ui };
 }
 
 describe("Slack workspace selection", () => {
   it("clears the selected conversation when the workspace changes", () => {
     let values = { teamId: "TONE", conversationId: "COLD" };
-    let { tree, patches } = render(values);
+    let { tree, patches, clearFields, setValues } = render(values);
     (control(tree, "teamId").onChange as (value: string) => void)("TTWO");
+    expect(clearFields).toHaveBeenCalledExactlyOnceWith("conversationId");
+    expect(clearFields.mock.invocationCallOrder[0]).toBeLessThan(setValues.mock.invocationCallOrder[0]);
     expect(patches).toEqual([{ teamId: "TTWO", conversationId: null }]);
     expect(conversation.isReady({ values: { ...values, ...patches[0] } })).toBe(false);
   });
 
-  it("scopes discovery and the runtime option cache to the selected workspace", async () => {
+  it("scopes discovery to the selected workspace after changing it", async () => {
     let { tree, ui } = render({ teamId: "TTWO", conversationId: null });
-    let picker = control(tree, "conversationId:TTWO");
+    let picker = control(tree, "conversationId");
     await (picker.loadOptions as (query: string) => Promise<unknown>)("general");
     expect(ui.listConversations).toHaveBeenCalledWith("TTWO", "general");
-    expect(control(render({ teamId: "TONE" }).tree, "conversationId:TONE")).toBeDefined();
+    let other = render({ teamId: "TONE" });
+    await (control(other.tree, "conversationId").loadOptions as (query: string) => Promise<unknown>)("");
+    expect(other.ui.listConversations).toHaveBeenCalledWith("TONE", "");
   });
 
   it("does not discover conversations without a workspace", async () => {
     let { tree, ui } = render({});
-    let picker = control(tree, "conversationId:");
+    let picker = control(tree, "conversationId");
     expect(picker.disabled).toBe(true);
     expect(await (picker.loadOptions as (query: string) => Promise<unknown>)("")).toEqual([]);
     expect(ui.listConversations).not.toHaveBeenCalled();
+  });
+
+  it("keeps autocomplete names aligned with the runtime's seeded query keys", () => {
+    let values = conversation.initialValuesFromResourceUrl({
+      resourceUrl: "https://app.slack.com/client/TTWO/CTWO", resourceUrlPattern: "", ui: unusedUi,
+    });
+    let { tree } = render(values);
+    // seedInitialValues seeds queryByName by value key; Autocomplete displays the query by name.
+    for (let [name, value] of Object.entries(values)) {
+      expect(control(tree, name).value).toBe(value);
+    }
+    expect(conversation.isReady({ values })).toBe(true);
   });
 
   it("round-trips the chosen workspace and conversation without token-based autodetection", () => {

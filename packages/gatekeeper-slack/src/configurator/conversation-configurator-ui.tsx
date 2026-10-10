@@ -26,7 +26,7 @@ export default {
         ? { teamId, conversationId: decodeURIComponent(conversationId) } : {};
   },
 
-  render({ values, setValues, ui }) {
+  render({ values, setValues, clearFields, ui }) {
     return <Section>
       <Field label="Workspace" description="Choose where to look for channels and direct messages.">
         <Autocomplete
@@ -35,6 +35,7 @@ export default {
           placeholder="Choose a Slack workspace..."
           loadOptions={query => ui.listWorkspaces(query)}
           onChange={teamId => {
+            clearFields("conversationId");
             setValues({ teamId, conversationId: null });
           }}
         />
@@ -44,8 +45,7 @@ export default {
         description="Choose a channel or direct message this connection can read."
       >
         <Autocomplete
-          // Scope the runtime's cached query/options to this workspace.
-          name={`conversationId:${values.teamId ?? ""}`}
+          name="conversationId"
           value={values.conversationId}
           placeholder="Search channels and DMs..."
           disabled={!values.teamId}
