@@ -23,6 +23,7 @@ export default defineConfig({
         durableObjects: {
           USER_ACCOUNT: { className: "UserAccount", useSQLite: true },
           GITLAB_GATEKEEPER: { className: "GitLabGatekeeperImpl", useSQLite: true },
+          GITLAB_HOOK_DRIVER: { className: "GitLabHookDriver", useSQLite: true },
           TEST_HOOKS: { className: "TestHooks", useSQLite: true },
         },
         bindings: {
@@ -36,6 +37,8 @@ export default defineConfig({
           GITLAB_API_URL: "https://gitlab-api.example.com",
           CF_ACCESS_CLIENT_ID: "test-access-id",
           CF_ACCESS_CLIENT_SECRET: "test-access-secret",
+          // The origin GitLab delivers webhooks to, without which hooks are refused.
+          WEBHOOK_ORIGIN: "https://gadgets.test",
         },
       },
     }),

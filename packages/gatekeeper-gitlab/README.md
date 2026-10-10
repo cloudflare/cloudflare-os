@@ -112,6 +112,36 @@ endpoint ignores the reviewer state without an error, so on them the gatekeeper 
 `requestChanges` review rather than post it as a plain comment. Comment and approve reviews work
 on every version.
 
+## Event hooks (optional)
+
+Gadgets can subscribe to a project's issue, merge request, comment, review, push and tag events,
+or to one issue's or merge request's (`subscribe()` in `src/types.d.ts`). GitLab delivers them
+through a project webhook, so this needs GitLab 19.0 or later and a URL GitLab can reach:
+
+1. Set `WEBHOOK_ORIGIN` on this worker to the public origin GitLab should deliver to, e.g.
+   `https://gadgets.example.com`. Without it, hooks are refused and everything else works as
+   before. A self-hosted instance must be allowed to send webhooks there.
+2. If the deployment sits behind Cloudflare Access, add a bypass for
+   `/gatekeeper/gitlab/webhook/*`; the worker accepts only deliveries signed with a webhook's
+   signing token instead.
+
+Enabling a hook adds a webhook to the project, delivering to
+`${WEBHOOK_ORIGIN}/gatekeeper/gitlab/webhook/<id>`, so GitLab allows it only if the connected
+account is a Maintainer or Owner of the project. An account's hooks on one project share its
+webhook, which is deleted when the last of them is disabled, or when the account is disconnected.
+Each webhook signs its deliveries with a signing token only GitLab and this deployment hold
+(Standard Webhooks, which GitLab added in 19.0; the older secret token is sent in the clear, so it
+is not used): a delivery whose signature or timestamp doesn't check out is refused, one GitLab
+repeats is ignored, and an event is delivered only while the account can still read the project.
+The webhook never asks for confidential issues or internal comments. The project's other
+Maintainers can see the webhook, though not its token, and editing or deleting it stops the
+deliveries until a hook on the project is next enabled, which restores it. A delivery that
+reaches the worker is retried until the gadget's hook accepts it, eight attempts in all.
+
+For local development, GitLab cannot reach `localhost`: run a tunnel to the dev server (e.g.
+`cloudflared tunnel --url http://localhost:8787`) and set `WEBHOOK_ORIGIN` to its origin in the
+root `.dev.vars`.
+
 ## Worker Preview OAuth callbacks
 
 A Worker Preview's hostname cannot be registered with the GitLab application, so a deployment

@@ -1,0 +1,777 @@
+// GitLab event hooks, end to end inside the gatekeeper worker: a facet restored the way the
+// Overseer restores it binds the hook, TestHooks enables it and answers each firing, GitLab is
+// the fake below (on fake-gitlab.ts's fetch boundary), and its signed webhook deliveries arrive
+// through the worker's own fetch handler.
+
+import { SELF, env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import type { HookDescription } from "@gadgets/workshop-shared/gatekeeper";
+import { afterEach, expect, it, vi } from "vitest";
+import * as fx from "../fixtures/gitlab-docs.js";
+import type { GitLabSubscribeOptions } from "../../src/types.js";
+import { FakeGitLab, WEB, json, seedAccount, unwrap } from "./fake-gitlab.js";
+import type { GatekeeperProps } from "./worker.js";
+
+const PROJECT = "group/sub/project";
+const P = encodeURIComponent(PROJECT);
+const PROJECT_ID = 15;
+const HOOKS = `/api/v4/projects/${PROJECT_ID}/hooks`;
+const HEAD = "b".repeat(40);
+const BASE = "a".repeat(40);
+const ZERO = "0".repeat(40);
+const CREATED = new Date().toISOString();
+
+type Row = Record<string, unknown>;
+type Webhook = { id: number; url: string; signingToken?: string; triggers: string[] };
+
+const user = (username: string, id: number) => ({
+  id, username, name: username[0].toUpperCase() + username.slice(1),
+  avatar_url: `https://avatars.example/${username}`, email: `${username}@example.com`,
+});
+/** The connected account. */
+const ADA = user("ada", 7);
+const BOB = user("bob", 8);
+
+const projectPayload = { id: PROJECT_ID, name: "Project", path_with_namespace: PROJECT, web_url: `${WEB}/${PROJECT}` };
+
+/** How GitLab reports an issue's or merge request's event, under `X-Gitlab-Event`. */
+function issueHook(action: string, iid: number, sender = BOB): Row {
+  return {
+    object_kind: "issue", event_type: "issue", user: sender, project: projectPayload,
+    object_attributes: {
+      id: 300 + iid, iid, title: "Crash on start", description: "It crashes.", action,
+      state: action === "close" ? "closed" : "opened", url: `${WEB}/${PROJECT}/-/issues/${iid}`,
+      created_at: CREATED, updated_at: CREATED, confidential: false,
+    },
+    labels: [], assignees: [], changes: {},
+  };
+}
+
+function mergeRequestHook(action: string, iid: number, attributes: Row = {}, changes: Row = {}, sender = BOB): Row {
+  return {
+    object_kind: "merge_request", event_type: "merge_request", user: sender, project: projectPayload,
+    object_attributes: {
+      id: 900 + iid, iid, title: "Fix the crash", action, state: "opened", draft: false,
+      source_branch: "fix", target_branch: "main", url: `${WEB}/${PROJECT}/-/merge_requests/${iid}`,
+      created_at: CREATED, updated_at: CREATED, ...attributes,
+    },
+    changes, labels: [], reviewers: [], assignees: [],
+  };
+}
+
+/** A diff note's position, as GitLab gives one in both its webhooks and its REST API. */
+const position = {
+  base_sha: BASE, start_sha: BASE, head_sha: HEAD, old_path: "src/app.ts", new_path: "src/app.ts",
+  position_type: "text", old_line: null, new_line: 12,
+};
+
+function noteHook(on: "Issue" | "MergeRequest", iid: number, body: string, options: {
+  sender?: typeof ADA; diff?: boolean; id?: number; action?: string; internal?: boolean;
+} = {}): Row {
+  const { sender = BOB, diff = false, id = 1241, action = "create", internal = false } = options;
+  return {
+    object_kind: "note", event_type: "note", user: sender, project_id: PROJECT_ID, project: projectPayload,
+    object_attributes: {
+      id, note: body, noteable_type: on, author_id: sender.id, created_at: CREATED, updated_at: CREATED,
+      system: false, internal, action, discussion_id: "d".repeat(40), type: diff ? "DiffNote" : null,
+      url: `${WEB}/${PROJECT}/-/${on === "Issue" ? "issues" : "merge_requests"}/${iid}#note_${id}`,
+      ...diff ? { position } : {},
+    },
+    ...on === "Issue"
+      ? { issue: { id: 300 + iid, iid, title: "Crash on start" } }
+      : { merge_request: { id: 900 + iid, iid, title: "Fix the crash" } },
+  };
+}
+
+function pushHook(kind: "push" | "tag_push", ref: string, before: string, head: string, sender = ADA): Row {
+  return {
+    object_kind: kind, event_name: kind, before, after: head, ref, checkout_sha: head === ZERO ? null : head,
+    user_id: sender.id, user_name: sender.name, user_username: sender.username, user_avatar: sender.avatar_url,
+    project_id: PROJECT_ID, project: projectPayload, commits: [], total_commits_count: 0,
+  };
+}
+
+/** The REST shapes of the issue and merge request whose events are delivered. */
+function issueRest(iid: number): Row {
+  return {
+    ...fx.issueResponse.data, iid, project_id: PROJECT_ID, title: "Crash on start", state: "opened",
+    closed_at: null, web_url: `${WEB}/${PROJECT}/-/issues/${iid}`, labels: ["bug"],
+  };
+}
+
+function mergeRequestRest(iid: number): Row {
+  return {
+    ...fx.mergeRequestResponse.data, iid, project_id: PROJECT_ID, source_project_id: PROJECT_ID,
+    target_project_id: PROJECT_ID, title: "Fix the crash", source_branch: "fix", target_branch: "main",
+    sha: HEAD, diff_refs: { base_sha: BASE, head_sha: HEAD, start_sha: BASE },
+    web_url: `${WEB}/${PROJECT}/-/merge_requests/${iid}`,
+  };
+}
+
+/** A reviewer's review state changing, as a merge request event's `changes` reports it. */
+const reviewerState = (previous: string, current: string) => ({
+  reviewers: [[{ ...BOB, state: previous }], [{ ...BOB, state: current }]],
+});
+
+/** An issue's or merge request's event as the driver queues it, for delivering to a facet directly. */
+const storedEvent = (kind: "issue" | "mergeRequest", iid: number) => ({
+  id: crypto.randomUUID(), projectId: PROJECT_ID, actor: null, kind, action: "opened", target: { kind, iid },
+});
+
+const notFound = () => json({ message: "404 Not found" }, { status: 404 });
+
+const TRIGGERS: Record<string, string> = {
+  "Issue Hook": "issues_events", "Merge Request Hook": "merge_requests_events", "Note Hook": "note_events",
+  "Push Hook": "push_events", "Tag Push Hook": "tag_push_events",
+};
+
+function fromBase64(encoded: string): Uint8Array {
+  return Uint8Array.from(atob(encoded), char => char.charCodeAt(0));
+}
+
+/** A Standard Webhooks signature, as GitLab signs a delivery with a webhook's signing token. */
+async function sign(signingToken: string, id: string, timestamp: string, body: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw", fromBase64(signingToken.slice("whsec_".length)), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${id}.${timestamp}.${body}`));
+  return `v1,${btoa(String.fromCharCode(...new Uint8Array(signature)))}`;
+}
+
+/**
+ * GitLab, as far as hooks use it: the instance's version, the project and who may manage its
+ * webhooks, the viewer, the issue and merge request REST reads, and webhooks that sign what they
+ * deliver.
+ */
+class FakeGitLabHooks {
+  readonly gitlab = new FakeGitLab();
+  maintainer = true;
+  /** Whether the account can still read the project at all. */
+  readable = true;
+  version = "19.4.0-ee";
+  /** Whether webhooks keep a signing token, as from GitLab 19.0. */
+  signs = true;
+  readonly webhooks = new Map<number, Webhook>();
+  readonly deleted: number[] = [];
+  /**
+   * While set, a webhook DELETE stalls, counted in `stalledDeletes`. Polled rather than awaited:
+   * a promise settled from the test would carry the test's I/O context into the driver.
+   */
+  stallDeletes = false;
+  stalledDeletes = 0;
+  #nextId = 100;
+
+  constructor() {
+    this.gitlab
+      .on("GET", /^\/api\/v4\/user$/, () => json({ ...ADA, web_url: `${WEB}/ada`, confirmed_at: CREATED }))
+      .on("GET", /^\/api\/v4\/metadata$/, () => json({ version: this.version }))
+      .on("GET", new RegExp(`^/api/v4/projects/${P}$`), () => this.readable
+        ? json({ ...fx.projectResponse.data, id: PROJECT_ID, path_with_namespace: PROJECT, web_url: `${WEB}/${PROJECT}` })
+        : notFound())
+      .on("GET", new RegExp(`^/api/v4/projects/${P}/issues/(\\d+)\\?`), request => this.readable
+        ? json(issueRest(Number(/issues\/(\d+)/.exec(request.url.pathname)![1])))
+        : notFound())
+      .on("GET", new RegExp(`^/api/v4/projects/${P}/merge_requests/(\\d+)\\?`), request => this.readable
+        ? json(mergeRequestRest(Number(/merge_requests\/(\d+)/.exec(request.url.pathname)![1])))
+        : notFound())
+      .on("GET", new RegExp(`^/api/v4/projects/${P}/merge_requests/\\d+/approvals$`), () => json(fx.approvalsResponse.data))
+      .on("GET", new RegExp(`^${HOOKS}\\?`), () => this.maintainer
+        ? json([...this.webhooks.values()].map(webhook => this.#reported(webhook)))
+        : json({ message: "403 Forbidden" }, { status: 403 }))
+      .on("POST", new RegExp(`^${HOOKS}$`), request => {
+        if (!this.maintainer) return json({ message: "403 Forbidden" }, { status: 403 });
+        const webhook = this.#configured(this.#nextId++, request.body!);
+        this.webhooks.set(webhook.id, webhook);
+        return json(this.#reported(webhook), { status: 201 });
+      })
+      .on("PUT", new RegExp(`^${HOOKS}/(\\d+)$`), request => {
+        const id = Number(/hooks\/(\d+)/.exec(request.url.pathname)![1]);
+        if (!this.webhooks.has(id)) return notFound();
+        const webhook = this.#configured(id, request.body!);
+        this.webhooks.set(id, webhook);
+        return json(this.#reported(webhook));
+      })
+      .on("DELETE", new RegExp(`^${HOOKS}/(\\d+)$`), async request => {
+        const id = Number(/hooks\/(\d+)/.exec(request.url.pathname)![1]);
+        if (this.stallDeletes) {
+          this.stalledDeletes++;
+          while (this.stallDeletes) await scheduler.wait(1);
+        }
+        if (!this.webhooks.delete(id)) return notFound();
+        this.deleted.push(id);
+        return new Response(null, { status: 204 });
+      });
+    this.gitlab.install();
+  }
+
+  #configured(id: number, body: string): Webhook {
+    const config = JSON.parse(body) as Row;
+    return {
+      id, url: String(config.url),
+      ...this.signs && typeof config.signing_token === "string" ? { signingToken: config.signing_token } : {},
+      triggers: Object.keys(config).filter(key => key.endsWith("_events") && config[key] === true).toSorted(),
+    };
+  }
+
+  #reported({ id, url, signingToken, triggers }: Webhook): Row {
+    return {
+      id, url, alert_status: "executable", enable_ssl_verification: true,
+      ...Object.fromEntries(triggers.map(trigger => [trigger, true])),
+      ...this.version.startsWith("18.") ? {} : { signing_token_present: signingToken !== undefined },
+    };
+  }
+
+  /**
+   * Deliver one event as GitLab would: to each of the project's webhooks with its trigger on,
+   * signed with its signing token, at `sentAt`.
+   */
+  async deliver(event: string, payload: object, { id = crypto.randomUUID(), sentAt = Date.now(), signingToken }: {
+    id?: string; sentAt?: number; signingToken?: string;
+  } = {}): Promise<number[]> {
+    const body = JSON.stringify(payload);
+    const timestamp = String(Math.floor(sentAt / 1000));
+    const subscribed = [...this.webhooks.values()].filter(webhook => webhook.triggers.includes(TRIGGERS[event]));
+    return await Promise.all(subscribed.map(async webhook => {
+      const token = signingToken ?? webhook.signingToken;
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json", "X-Gitlab-Event": event, "webhook-id": id, "webhook-timestamp": timestamp,
+      };
+      if (token !== undefined) headers["webhook-signature"] = await sign(token, id, timestamp, body);
+      return (await SELF.fetch(webhook.url, { method: "POST", headers, body })).status;
+    }));
+  }
+}
+
+const connectAccount = () => seedAccount();
+
+let nextScenario = 0;
+
+/** A binding of the account's, with one hook TestHooks can subscribe, enable and fire. */
+function binding(account: string, overrides: Partial<GatekeeperProps> = {}) {
+  const scenario = `gitlab-hooks-${nextScenario++}`;
+  const props: GatekeeperProps = { userObjectId: account, resourceKind: "project", projectPath: PROJECT, ...overrides };
+  const hooks = env.TEST_HOOKS.getByName(scenario);
+  return {
+    hooks,
+    scenario,
+    props,
+    subscribe: async (options?: GitLabSubscribeOptions, target?: { kind: "issue" | "mergeRequest"; id: string }) =>
+      await unwrap<HookDescription>(await hooks.subscribeHook(scenario, props, options, target)),
+    enable: async () => await unwrap(await hooks.enableHook()),
+    disable: () => hooks.disableHook(),
+    read: () => hooks.readHook(),
+  };
+}
+
+const driver = (account: string) => env.GITLAB_HOOK_DRIVER.getByName(account);
+
+/**
+ * Wait until the account's driver has no delivery due: its own alarm runs them, and forcing that
+ * alarm here as well would deliver one event twice from two concurrent alarm() calls.
+ */
+const settled = (account: string) => vi.waitFor(() => runInDurableObject(driver(account), (_instance, state) => {
+  const due = [...state.storage.kv.list<{ at?: number }>({ prefix: "msg:" })]
+    .filter(([, row]) => row.at !== undefined && row.at <= Date.now());
+  if (due.length > 0) throw new Error(`${due.length} deliveries due`);
+}));
+
+/** Run the driver's alarm at `ms` from now, on a faked clock the runtime itself never wakes for. */
+async function after(ms: number, account: string): Promise<void> {
+  vi.setSystemTime(Date.now() + ms);
+  try {
+    await runDurableObjectAlarm(driver(account));
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+it("adds the webhook once a hook is enabled, and delivers the events it watches for", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const triage = binding(account);
+
+  expect(await triage.subscribe({ events: ["issue"] })).toEqual({
+    title: `Watch ${PROJECT} on GitLab`,
+    description: `Call this hook with each issue event in ${PROJECT}, letting it read each one and queue ` +
+      "changes there for approval. Enabling it adds a webhook to the project on GitLab, unless an earlier " +
+      "hook there already has.",
+  });
+  // A hook is bound disabled, so nothing changes on GitLab until the user enables it.
+  expect(gitlab.webhooks.size).toBe(0);
+  await triage.enable();
+  expect([...gitlab.webhooks.values()]).toEqual([{
+    id: 100,
+    url: `https://gadgets.test/gatekeeper/gitlab/webhook/${env.GITLAB_HOOK_DRIVER.idFromName(account)}`,
+    signingToken: expect.stringMatching(/^whsec_[A-Za-z0-9+/]{43}=$/),
+    // Only what its hooks watch, so GitLab doesn't deliver the push below at all.
+    triggers: ["issues_events"],
+  }]);
+  // Confidential issues and internal comments are never asked for.
+  const [created] = gitlab.gitlab.requests.filter(request => request.method === "POST");
+  expect(JSON.parse(created.body!)).toMatchObject({
+    confidential_issues_events: false, confidential_note_events: false, enable_ssl_verification: true,
+  });
+
+  expect(await gitlab.deliver("Issue Hook", issueHook("open", 42))).toEqual([204]);
+  expect(await gitlab.deliver("Issue Hook", issueHook("update", 42))).toEqual([204]);
+  expect(await gitlab.deliver("Push Hook", pushHook("push", "refs/heads/main", BASE, HEAD))).toEqual([]);
+  await settled(account);
+
+  const { received, observations } = await triage.read();
+  expect(received).toEqual([{
+    kind: "issue", id: expect.any(String), action: "opened",
+    actor: { username: "bob", displayName: "Bob", url: `${WEB}/bob`, avatarUrl: "https://avatars.example/bob" },
+    // Read through the REST API, as `getDetails()` reads it: the webhook doesn't carry these.
+    info: expect.objectContaining({
+      id: "42", title: "Crash on start", bodyMarkdown: fx.issueResponse.data.description,
+      author: expect.objectContaining({ username: "root" }), commentCount: 1, labels: [{ name: "bug" }],
+      url: `${WEB}/${PROJECT}/-/issues/42`,
+    }),
+  }]);
+  expect(observations).toEqual([{
+    title: "GitLab issue #42 opened: Crash on start",
+    description: `Receive issue #42 in ${PROJECT}, opened by \`@bob\`: its title, description, author, ` +
+      "assignees, and labels.",
+  }]);
+});
+
+it("queues a hook's writes on its firing, and never hands the account its own comments or reviews", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const responder = binding(account);
+  await responder.subscribe({ events: ["comment", "review"] });
+  await responder.enable();
+  await responder.hooks.setHookBehavior({ reply: "On it." });
+
+  await gitlab.deliver("Note Hook", noteHook("Issue", 42, "Please look.", { id: 1 }));
+  await gitlab.deliver("Note Hook", noteHook("Issue", 42, "On it.", { id: 2, sender: ADA }));
+  await gitlab.deliver("Merge Request Hook", mergeRequestHook("approval", 7, {}, {}, ADA));
+  await settled(account);
+
+  const { received, submissions } = await responder.read();
+  expect(received).toEqual([expect.objectContaining({
+    kind: "comment", comment: expect.objectContaining({ bodyMarkdown: "Please look." }),
+  })]);
+  expect(submissions).toEqual([{ actionId: expect.any(Number), title: "Comment on #42" }]);
+});
+
+it("delivers a merge request's lifecycle, reviews and diff comments, advertising its commits", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const reviewer = binding(account);
+  await reviewer.subscribe({ events: ["mergeRequest", "review", "comment"] });
+  await reviewer.enable();
+
+  await gitlab.deliver("Merge Request Hook", mergeRequestHook("open", 7));
+  await gitlab.deliver("Merge Request Hook", mergeRequestHook("update", 7, { oldrev: BASE }));
+  await gitlab.deliver("Merge Request Hook", mergeRequestHook("update", 7, {}, { draft: { previous: true, current: false } }));
+  await gitlab.deliver("Merge Request Hook", mergeRequestHook("update", 7, {}, { title: { previous: "a", current: "b" } }));
+  await gitlab.deliver("Merge Request Hook", mergeRequestHook("merge", 7, { state: "merged" }));
+  await gitlab.deliver("Merge Request Hook", mergeRequestHook("approval", 7));
+  // GitLab's own unapproval on a push is no one's review; a re-request is no review at all.
+  await gitlab.deliver("Merge Request Hook", mergeRequestHook("approval", 7, { system: true }));
+  await gitlab.deliver("Merge Request Hook", mergeRequestHook("update", 7, {}, reviewerState("review_started", "requested_changes")));
+  await gitlab.deliver("Merge Request Hook", mergeRequestHook("update", 7, {}, reviewerState("approved", "unreviewed")));
+  await gitlab.deliver("Note Hook", noteHook("MergeRequest", 7, "Off by one here.", { diff: true }));
+  // An edit is no new comment, and an internal one is never delivered.
+  await gitlab.deliver("Note Hook", noteHook("MergeRequest", 7, "Off by one, here.", { diff: true, action: "update" }));
+  await gitlab.deliver("Note Hook", noteHook("MergeRequest", 7, "Between us.", { id: 1250, internal: true }));
+  await settled(account);
+
+  const { received, observations, advertised } = await reviewer.read();
+  const byKind = (kind: string) => received.filter(event => event.kind === kind);
+  expect(byKind("mergeRequest").map(event => "action" in event && event.action).toSorted())
+    .toEqual(["merged", "opened", "pushed", "readyForReview"]);
+  expect(byKind("mergeRequest")[0]).toMatchObject({
+    info: { id: "7", title: "Fix the crash", source: { branch: "fix", sha: HEAD }, approvedBy: [{ username: "root" }] },
+  });
+  expect(byKind("review").map(event => "decision" in event && event.decision).toSorted())
+    .toEqual(["approve", "requestChanges"]);
+  expect(byKind("review")[0]).toMatchObject({
+    actor: { username: "bob" },
+    subject: { kind: "mergeRequest", id: "7", title: "Fix the crash", url: `${WEB}/${PROJECT}/-/merge_requests/7` },
+  });
+  expect(byKind("comment")).toEqual([expect.objectContaining({
+    subject: expect.objectContaining({ kind: "mergeRequest", id: "7" }),
+    comment: expect.objectContaining({
+      id: "1241", bodyMarkdown: "Off by one here.", threadId: "d".repeat(40),
+      target: { path: "src/app.ts", subjectType: "line", line: 12, side: "new" },
+      url: `${WEB}/${PROJECT}/-/merge_requests/7#note_1241`,
+    }),
+  })]);
+  expect(observations).toContainEqual({
+    title: "GitLab merge request !7 marked ready: Fix the crash",
+    description: `Receive merge request !7 in ${PROJECT}, marked ready by \`@bob\`: its title, description, ` +
+      "author, assignees, reviewers, approvals, labels, branches, and merge status.",
+  });
+  expect(observations).toContainEqual({
+    title: "GitLab comment on !7: Fix the crash",
+    description: `Read a new comment by \`@bob\` on the diff of merge request !7 in ${PROJECT}.`,
+  });
+  expect(new Set(advertised)).toEqual(new Set([HEAD, BASE]));
+});
+
+it("delivers branch pushes and tag pushes, each to hooks that watch for them", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const deployer = binding(account);
+  const releaser = binding(account);
+  await deployer.subscribe({ events: ["push"] });
+  await releaser.subscribe({ events: ["tag"] });
+  await deployer.enable();
+  await releaser.enable();
+
+  await gitlab.deliver("Push Hook", pushHook("push", "refs/heads/release/1.0", ZERO, HEAD));
+  await gitlab.deliver("Tag Push Hook", pushHook("tag_push", "refs/tags/v1.0", ZERO, HEAD));
+  await gitlab.deliver("Tag Push Hook", pushHook("tag_push", "refs/tags/v0.9", BASE, ZERO));
+  await settled(account);
+
+  const pushes = await deployer.read();
+  expect(pushes.received).toEqual([expect.objectContaining({
+    kind: "push", branch: "release/1.0", after: HEAD, actor: expect.objectContaining({ username: "ada" }),
+  })]);
+  expect(pushes.received[0]).toMatchObject({ before: undefined });
+  expect(pushes.observations).toEqual([{
+    title: "GitLab push to release/1.0 in group/sub/project",
+    description: `Receive a push by \`@ada\` to branch \`release/1.0\` of ${PROJECT}, creating it at \`${HEAD}\`.`,
+  }]);
+  // A created branch had no head before the push, which is not a commit to advertise.
+  expect(pushes.advertised).toEqual([HEAD]);
+
+  const tags = await releaser.read();
+  expect(tags.received.map(event => "tag" in event && event.tag).toSorted()).toEqual(["v0.9", "v1.0"]);
+  expect(tags.observations).toContainEqual({
+    title: "GitLab push of tag v0.9 in group/sub/project",
+    description: `Receive a push by \`@ada\` of tag \`v0.9\` in ${PROJECT}, deleting it.`,
+  });
+  // An annotated tag names its tag object rather than a commit.
+  expect(tags.advertised).toEqual([]);
+});
+
+it("gives a hook on one issue only that issue's events, never the merge request numbered alike", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const issueBinding = binding(account, { resourceKind: "issue", iid: 42 });
+  expect((await issueBinding.subscribe()).description).toMatch(
+    new RegExp(`^Call this hook with each issue and comment event in issue #42 in ${PROJECT},`));
+  await issueBinding.enable();
+  // The same, through a project binding's issue.
+  const narrowed = binding(account);
+  await narrowed.subscribe(undefined, { kind: "issue", id: "42" });
+  await narrowed.enable();
+
+  await gitlab.deliver("Issue Hook", issueHook("close", 43));
+  await gitlab.deliver("Note Hook", noteHook("MergeRequest", 42, "Not the issue.", { id: 5 }));
+  await gitlab.deliver("Merge Request Hook", mergeRequestHook("open", 42));
+  await gitlab.deliver("Push Hook", pushHook("push", "refs/heads/main", BASE, HEAD));
+  await gitlab.deliver("Issue Hook", issueHook("reopen", 42));
+  await gitlab.deliver("Note Hook", noteHook("Issue", 42, "Here.", { id: 6 }));
+  await settled(account);
+
+  for (const hook of [issueBinding, narrowed]) {
+    const { received } = await hook.read();
+    expect(received.map(event => event.kind).toSorted()).toEqual(["comment", "issue"]);
+  }
+  // One webhook serves every hook the account has on the project.
+  expect(gitlab.webhooks.size).toBe(1);
+});
+
+it("keeps an issue binding's hooks to its issue, whatever their delivery stub's parameters", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const issueBinding = binding(account, { resourceKind: "issue", iid: 42 });
+  await issueBinding.subscribe();
+
+  // Parameters only this binding's subscribe() seals, here claiming the whole project or another number.
+  await issueBinding.hooks.deliverDirectly(issueBinding.scenario, issueBinding.props, {}, storedEvent("issue", 43));
+  await issueBinding.hooks.deliverDirectly(issueBinding.scenario, issueBinding.props,
+    { target: { kind: "issue", iid: 43 } }, storedEvent("issue", 43));
+  await issueBinding.hooks.deliverDirectly(issueBinding.scenario, issueBinding.props, {}, storedEvent("mergeRequest", 42));
+  await issueBinding.hooks.deliverDirectly(issueBinding.scenario, issueBinding.props, {}, storedEvent("issue", 42));
+
+  expect((await issueBinding.read()).received).toEqual([expect.objectContaining({ info: expect.objectContaining({ id: "42" }) })]);
+  // Delivered without any webhook: these deliveries came straight to the facet.
+  expect(gitlab.webhooks.size).toBe(0);
+});
+
+it("gives a hook on one merge request its lifecycle, comments and reviews", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const mergeRequestBinding = binding(account, { resourceKind: "mergeRequest", iid: 7 });
+  expect((await mergeRequestBinding.subscribe()).description).toMatch(
+    new RegExp(`^Call this hook with each merge request, comment and review event in merge request !7 in ${PROJECT},`));
+  await mergeRequestBinding.enable();
+
+  await gitlab.deliver("Merge Request Hook", mergeRequestHook("open", 7));
+  await gitlab.deliver("Note Hook", noteHook("MergeRequest", 7, "LGTM"));
+  await gitlab.deliver("Merge Request Hook", mergeRequestHook("approval", 7));
+  await gitlab.deliver("Merge Request Hook", mergeRequestHook("open", 8));
+  await gitlab.deliver("Note Hook", noteHook("Issue", 7, "Not the merge request.", { id: 9 }));
+  await settled(account);
+
+  const { received } = await mergeRequestBinding.read();
+  expect(received.map(event => event.kind).toSorted()).toEqual(["comment", "mergeRequest", "review"]);
+});
+
+it("refuses deliveries that aren't signed with the webhook's signing token, or recently", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+  const [{ url, signingToken }] = gitlab.webhooks.values();
+
+  expect(await gitlab.deliver("Issue Hook", issueHook("open", 42), {
+    signingToken: `whsec_${btoa("x".repeat(32))}`,
+  })).toEqual([401]);
+  // A captured delivery replayed after the signature's tolerance.
+  expect(await gitlab.deliver("Issue Hook", issueHook("open", 42), { sentAt: Date.now() - 10 * 60_000 }))
+    .toEqual([401]);
+  const unsigned = await SELF.fetch(url, {
+    method: "POST", body: "{}",
+    headers: { "X-Gitlab-Event": "Issue Hook", "webhook-id": crypto.randomUUID(), "webhook-timestamp": "1" },
+  });
+  expect(unsigned.status).toBe(401);
+  const unnamed = await SELF.fetch(url, { method: "POST", body: "{}" });
+  expect(unnamed.status).toBe(400);
+  const elsewhere = await SELF.fetch(url.replace(/[0-9a-f]{64}$/, "f".repeat(64)), {
+    method: "POST", body: "{}", headers: { "X-Gitlab-Event": "Issue Hook" },
+  });
+  expect(elsewhere.status).toBe(404);
+  // Signed, but for a project this webhook isn't on, or not JSON at all.
+  expect(await gitlab.deliver("Issue Hook", { ...issueHook("open", 42), project: { ...projectPayload, id: 999 } }))
+    .toEqual([404]);
+  const id = crypto.randomUUID();
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const garbled = await SELF.fetch(url, {
+    method: "POST", body: "not json",
+    headers: {
+      "X-Gitlab-Event": "Issue Hook", "webhook-id": id, "webhook-timestamp": timestamp,
+      "webhook-signature": await sign(signingToken!, id, timestamp, "not json"),
+    },
+  });
+  expect(garbled.status).toBe(400);
+  const oversized = new Uint8Array(5 * 1024 * 1024 + 1);
+  const headers = {
+    "X-Gitlab-Event": "Issue Hook", "webhook-id": id, "webhook-timestamp": timestamp, "webhook-signature": "v1,AAAA",
+  };
+  expect((await SELF.fetch(url, { method: "POST", body: oversized, headers })).status).toBe(413);
+  const streamed = new ReadableStream({ type: "bytes", start(controller) {
+    controller.enqueue(oversized);
+    controller.close();
+  } });
+  expect((await SELF.fetch(url, { method: "POST", body: streamed, headers })).status).toBe(413);
+  await settled(account);
+
+  expect((await triage.read()).received).toEqual([]);
+});
+
+it("delivers an event once, however often GitLab delivers it", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+
+  // A retry and a resend repeat the delivery's id, each signed afresh.
+  const id = crypto.randomUUID();
+  await gitlab.deliver("Issue Hook", issueHook("open", 42), { id });
+  await gitlab.deliver("Issue Hook", issueHook("open", 42), { id, sentAt: Date.now() + 1000 });
+  await gitlab.deliver("Issue Hook", issueHook("reopen", 41), { id });
+  await settled(account);
+
+  expect((await triage.read()).received).toEqual([expect.objectContaining({ info: expect.objectContaining({ id: "42" }) })]);
+});
+
+it.each([
+  ["the hook failed", { failures: 1 }],
+  ["whose firing the Workshop failed to start", { admissionFailures: 1 }],
+])("retries a delivery %s", async (_, behavior) => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+  await triage.hooks.setHookBehavior(behavior);
+
+  await gitlab.deliver("Issue Hook", issueHook("open", 42));
+  await settled(account);
+  expect((await triage.read()).received).toEqual([]);
+  await after(60_000, account);
+
+  expect((await triage.read()).received).toHaveLength(1);
+});
+
+it("shares one webhook among an account's hooks on a project, and deletes it with the last", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const first = binding(account);
+  const second = binding(account);
+  await first.subscribe();
+  await second.subscribe();
+
+  await Promise.all([first.enable(), second.enable()]);
+  expect(gitlab.webhooks.size).toBe(1);
+  await first.disable();
+  expect(gitlab.deleted).toEqual([]);
+  await second.disable();
+  expect(gitlab.deleted).toEqual([100]);
+
+  await first.enable();
+  expect([...gitlab.webhooks.keys()]).toEqual([101]);
+  await gitlab.deliver("Issue Hook", issueHook("open", 42));
+  await settled(account);
+  expect((await first.read()).received).toHaveLength(1);
+  expect((await second.read()).received).toEqual([]);
+});
+
+it("turns on the webhook triggers its hooks watch, as they are enabled and disabled", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const triage = binding(account);
+  const reviewer = binding(account);
+  const deployer = binding(account);
+  await triage.subscribe({ events: ["issue", "comment"] });
+  await reviewer.subscribe({ events: ["review"] });
+  await deployer.subscribe({ events: ["push", "tag"] });
+  const triggers = () => [...gitlab.webhooks.values()].map(webhook => webhook.triggers);
+
+  await triage.enable();
+  expect(triggers()).toEqual([["issues_events", "note_events"]]);
+  await reviewer.enable();
+  expect(triggers()).toEqual([["issues_events", "merge_requests_events", "note_events"]]);
+  await deployer.enable();
+  expect(triggers()).toEqual([["issues_events", "merge_requests_events", "note_events", "push_events", "tag_push_events"]]);
+  await deployer.disable();
+  await reviewer.disable();
+  expect(triggers()).toEqual([["issues_events", "note_events"]]);
+  await triage.disable();
+  expect(triggers()).toEqual([]);
+});
+
+it("leaves a working webhook when a hook is enabled while the last one's is being deleted", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const first = binding(account);
+  const second = binding(account);
+  await first.subscribe();
+  await second.subscribe();
+  await first.enable();
+
+  gitlab.stallDeletes = true;
+  const disabling = first.disable();
+  await vi.waitFor(() => expect(gitlab.stalledDeletes).toBe(1));
+  const enabling = second.enable();
+  // Time for the enable to reach the driver, which must not touch the webhook being deleted.
+  await scheduler.wait(100);
+  gitlab.stallDeletes = false;
+  await Promise.all([disabling, enabling]);
+
+  expect(gitlab.deleted).toEqual([100]);
+  expect([...gitlab.webhooks.keys()]).toEqual([101]);
+  await gitlab.deliver("Issue Hook", issueHook("open", 42));
+  await settled(account);
+  expect((await second.read()).received).toHaveLength(1);
+});
+
+it("gives each account its own webhook on a project, and each its own events", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const [ada, carol] = await Promise.all([connectAccount(), connectAccount()]);
+  const adaHook = binding(ada);
+  const carolHook = binding(carol);
+  await adaHook.subscribe();
+  await carolHook.subscribe();
+  await adaHook.enable();
+  await carolHook.enable();
+  expect(gitlab.webhooks.size).toBe(2);
+
+  expect(await gitlab.deliver("Issue Hook", issueHook("open", 42))).toEqual([204, 204]);
+  await settled(ada);
+  await settled(carol);
+
+  expect((await adaHook.read()).received).toHaveLength(1);
+  expect((await carolHook.read()).received).toHaveLength(1);
+  // One account's signing token signs nothing another's will accept.
+  const [adaWebhook, carolWebhook] = gitlab.webhooks.values();
+  gitlab.webhooks.set(carolWebhook.id, { ...carolWebhook, signingToken: adaWebhook.signingToken });
+  expect(await gitlab.deliver("Issue Hook", issueHook("reopen", 42))).toEqual([204, 401]);
+});
+
+it("adopts the webhook an earlier attempt left on the project", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const url = `https://gadgets.test/gatekeeper/gitlab/webhook/${env.GITLAB_HOOK_DRIVER.idFromName(account)}`;
+  gitlab.webhooks.set(5, { id: 5, url, signingToken: `whsec_${btoa("l".repeat(32))}`, triggers: ["push_events"] });
+  const triage = binding(account);
+  await triage.subscribe();
+
+  await triage.enable();
+  // GitLab would take a second webhook with the same URL, which would deliver everything twice.
+  expect(gitlab.webhooks.size).toBe(1);
+  expect(gitlab.webhooks.get(5)).toMatchObject({ url, triggers: expect.arrayContaining(["issues_events"]) });
+  expect(gitlab.webhooks.get(5)?.signingToken).not.toBe(`whsec_${btoa("l".repeat(32))}`);
+  await gitlab.deliver("Issue Hook", issueHook("open", 42));
+  await settled(account);
+  expect((await triage.read()).received).toHaveLength(1);
+});
+
+it("delivers nothing once the account can no longer read the project", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+
+  // Removed from the project, the account still has its webhook there: GitLab keeps delivering.
+  gitlab.readable = false;
+  expect(await gitlab.deliver("Issue Hook", issueHook("open", 42))).toEqual([204]);
+  await settled(account);
+
+  expect(await triage.read()).toMatchObject({ received: [], observations: [] });
+});
+
+it("refuses to watch a project whose webhooks the account can't manage", async () => {
+  const gitlab = new FakeGitLabHooks();
+  gitlab.maintainer = false;
+  const account = await connectAccount();
+
+  await expect(binding(account).subscribe()).rejects.toThrow(
+    `GitLab delivers events to a webhook, which only a Maintainer or Owner of ${PROJECT} can add, and the ` +
+    "connected account is not one.");
+});
+
+it("refuses to watch on a GitLab that cannot sign webhook deliveries", async () => {
+  const gitlab = new FakeGitLabHooks();
+  gitlab.version = "18.11.2-ee";
+  const account = await connectAccount();
+  await expect(binding(account).subscribe()).rejects.toThrow(
+    `GitLab hooks need GitLab 19.0 or later, which signs webhook deliveries, and ${WEB} runs 18.11.2-ee.`);
+
+  // One that claims a version it doesn't have gets no webhook it couldn't verify.
+  gitlab.version = "19.4.0-ee";
+  gitlab.signs = false;
+  const triage = binding(account);
+  await triage.subscribe();
+  await expect(triage.enable()).rejects.toThrow("GitLab hooks need GitLab 19.0 or later, which signs webhook deliveries.");
+  expect(gitlab.webhooks.size).toBe(0);
+});
+
+it("deletes a disconnected account's webhooks and delivers nothing more", async () => {
+  const gitlab = new FakeGitLabHooks();
+  gitlab.gitlab.on("POST", /^\/oauth\/revoke$/, () => json({}));
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+
+  const [webhook] = gitlab.webhooks.values();
+  await unwrap(await triage.hooks.revokeAccount(account));
+  expect(gitlab.deleted).toEqual([webhook.id]);
+  // Were GitLab to deliver anyway, the driver no longer answers for the webhook.
+  gitlab.webhooks.set(webhook.id, webhook);
+  expect(await gitlab.deliver("Issue Hook", issueHook("open", 42))).toEqual([404]);
+  await expect(triage.enable()).rejects.toThrow("This GitLab account has been disconnected.");
+  expect((await triage.read()).received).toEqual([]);
+});

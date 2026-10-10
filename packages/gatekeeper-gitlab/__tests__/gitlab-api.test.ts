@@ -19,6 +19,7 @@ import {
   refreshAccessToken,
   revokeToken,
   supportsReviewerState,
+  supportsSigningTokens,
   type GitLabInstance,
 } from "../src/gitlab-api";
 import * as fx from "./fixtures/gitlab-docs";
@@ -394,6 +395,11 @@ describe("issues and merge requests", () => {
     for (const version of ["19.1.3-ee", "18.11.0", "15.2-pre", "", "unknown"]) {
       expect(supportsReviewerState(version)).toBe(false);
     }
+  });
+
+  it("gates webhook signing tokens on 19.0", () => {
+    for (const version of ["19.0.0-ee", "19.4.2", "20.1.0-pre"]) expect(supportsSigningTokens(version)).toBe(true);
+    for (const version of ["18.11.4-ee", "18.0.0", "", "unknown"]) expect(supportsSigningTokens(version)).toBe(false);
   });
 });
 

@@ -1,6 +1,6 @@
 # GitLab gatekeeper storage schema
 
-Durable Object storage layout for `UserAccount` and `GitLabGatekeeperImpl`. Written from the code
+Durable Object storage layout for `UserAccount`, `GitLabGatekeeperImpl` and `GitLabHookDriver`. Written from the code
 as each piece lands; the GitHub gatekeeper's `storage-schema.md` is the shape this mirrors.
 
 ## UserAccount
@@ -25,9 +25,23 @@ KV only. Two families: a TTL cache that any queued/applied/rejected action inval
 | Key | Value | Notes |
 |---|---|---|
 | `cacheGeneration` | `number` | Bumped by `#clearCaches()`; every `cache:*` entry records the generation it was written under and is ignored once it differs. |
-| `cache:<kind>:<parts…>` | `{ fetchedAt, value, generation }` | TTL cache. Families: `version` (1 h); `viewer` (5 min); `project`, `project-by-id`, `issue`, `mr-raw`, `mr`, `mr-approvals`, `discussions`, `compare`, `commit`, `branch-head`, `mr-diffs`, `mr-simulated` (30 s); `list-issues`, `list-mrs`, `list-branches`, `list-tags`, `list-commits`, `mr-commits` (15 s); `merge-base` (never expires -- a pure function of its two shas). `mr-diffs` pages are keyed by the merge request's whole revision (`baseSha`, `mergeBaseSha`, `headSha`): the target branch can move under an unchanged head. No ETags: GitLab REST does not reliably answer conditional requests. |
+| `cache:<kind>:<parts…>` | `{ fetchedAt, value, generation }` | TTL cache. Families: `version` (1 h); `viewer` (5 min); `project`, `project-id`, `project-by-id`, `issue`, `mr-raw`, `mr`, `mr-approvals`, `discussions`, `compare`, `commit`, `branch-head`, `mr-diffs`, `mr-simulated` (30 s); `list-issues`, `list-mrs`, `list-branches`, `list-tags`, `list-commits`, `mr-commits` (15 s); `merge-base` (never expires -- a pure function of its two shas). `mr-diffs` pages are keyed by the merge request's whole revision (`baseSha`, `mergeBaseSha`, `headSha`): the target branch can move under an unchanged head. No ETags: GitLab REST does not reliably answer conditional requests. |
 | `counter:<name>` | `number` | Action ids (`action`) and provisional ids: `resource` (`~N`), and `comment`/`review`/`diff`/`reply` (`~comment1`, …). |
 | `action:<approvalId>` | `{ action, state: "staged" \| "pending", progress?, … }` | A queued action; `#listPendingActions()` reads the `pending` ones and the read side overlays them. A `push` record binds `{ branch, expectedOldSha, newSha, force }` at queue time, and a `mergeMergeRequest` record its `expectedHeadSha` and, for a source branch in this project, `sourceBranch`: rejecting a push retires the queued pushes and merges bound to the heads it strands. `progress` records how far a review's apply has got, so a retry resumes instead of repeating a step: `approval` (`"approving"`, `{ approvedAt }`, or `"preexisting"`), `comments` (per diff comment: `null`, `"creating"`, its draft id, `"published"`), `requestedChanges`, `summary` (the note id, once posted). A step whose answer can be lost is recorded as under way first, and the retry asks GitLab what became of it -- save the summary, which is posted again; a discard reads it to take back what is still unpublished. |
 | `retiredAction:<approvalId>` | `{ action, state: "approved" \| "rejected", appliedAt?, rejectedAt?, revertInfo?, progress? }` | An action past its lifetime, kept for revert. |
 | `provisional:<~N>` | `{ kind, realId? }` | A provisional issue or merge request and, once created, its real number. Both `#~N` and `!~N` resolve through it, each against its own kind. |
 | `diffAlias:<~id>` | `string` | A provisional reply's real note id, once the reply is posted; a reply queued against it while it was pending resolves through this. |
+
+## GitLabHookDriver
+
+One per connected account, named by its `UserAccount` id; see `src/gitlab-hooks.ts`. KV only.
+
+| Key | Value | Notes |
+|---|---|---|
+| `account` | `string` | The `UserAccount` id, whose token adds and deletes the webhooks. |
+| `secret` | `string` | The signing token every webhook of this driver signs its deliveries with: `whsec_` and the base64 of a 32-byte key (Standard Webhooks). |
+| `webhook:<projectId>` | `{ id, project: { id, path } }` | The webhook this driver added to the project, keyed by the project's numeric id, from when its first hook is enabled until its last is disabled. |
+| `reg:<hookKey>` | `{ project, target?, events, viewerId }` | What one enabled hook watches: its project, the issue or merge request it is narrowed to, its event kinds, and the account's GitLab user id. |
+| `caps:<hookKey>` | `{ delivery, initiator }` | The facet's persistent delivery stub and the Workshop's `HookInitiator`. |
+| `msg:<hookKey>:<webhookId>` | kit `HookDeliveryQueue` row | An event pending delivery to one hook, or a finished one kept for a day, named by the delivery's signed `webhook-id`, so GitLab's retries and resends of it collapse. |
+| `revoked` | `true` | Set, with every other key deleted, once the account is disconnected. |

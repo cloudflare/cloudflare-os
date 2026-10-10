@@ -1,3 +1,5 @@
+import type { RpcStub } from "cloudflare:workers";
+
 /**
  * A GitLab project.
  *
@@ -150,6 +152,61 @@ export interface GitLabProject {
    * fields are structured filters.
    */
   searchMergeRequests(query: GitLabMergeRequestSearch): Promise<Cursor<GitLabMergeRequestSummary>>;
+
+  /**
+   * Have `hook.receiveEvent()` called with each event of the kinds in `options.events` (by
+   * default, all of them) in this project:
+   * - `issue`: an issue was opened, closed, or reopened;
+   * - `mergeRequest`: a merge request was opened, closed, merged, reopened, marked ready, or
+   *   pushed to;
+   * - `comment`: a comment was posted on an issue or merge request, or on a merge request's diff;
+   * - `review`: a merge request was approved, or a review requesting changes or with comments
+   *   was submitted;
+   * - `push`: a branch was pushed to, created, or deleted;
+   * - `tag`: a tag was created or deleted.
+   *
+   * GitLab reports nothing at all for a push that changes more than three branches or tags. It
+   * never reports confidential issues or internal comments here. The connected account's own
+   * comments and reviews are never delivered. Every other event is, whoever caused it, including
+   * the writes a hook queues once they are approved. The hook starts disabled, and nothing is
+   * delivered until the user enables it. Every call creates a distinct hook, so subscribe once
+   * for each set of events to watch.
+   *
+   * GitLab delivers the events to a webhook that enabling the hook adds to the project, which
+   * only the project's Maintainers and Owners may do: this throws unless the connected account
+   * is one, if this deployment has not configured GitLab hooks, and before GitLab 19.0.
+   *
+   * `hook` must be a persistent stub: from `executeCode`, create it with
+   * `env.MY_GADGET[restore](params)` on the Gadget's binding; inside the Gadget, with
+   * `this.ctx.restore(params)`. The Gadget's `[restore]()` receives those `params` for every
+   * delivery, so they can tell its subscriptions apart. The restored target is a separate
+   * object; pass it what it needs from `[restore]()`, such as `this`, the Gadget.
+   *
+   * @example
+   * // server.js
+   * import { DurableObject, RpcTarget, restore } from "cloudflare:workers";
+   * export class Gadget extends DurableObject {
+   *   async [restore](params) {
+   *     if (params.type === "triage") return new Triage();
+   *     throw new TypeError(`Unknown restore type: ${params.type}`);
+   *   }
+   * }
+   * class Triage extends RpcTarget {
+   *   async receiveEvent(event) {
+   *     if (event.kind === "issue" && event.action === "opened" && /crash/i.test(event.info.title)) {
+   *       await event.issue.addLabels(["bug"]);
+   *     }
+   *   }
+   * }
+   *
+   * // executeCode
+   * import { restore } from "cloudflare:workers";
+   * export default async function(self, env) {
+   *   const hook = await env.MY_GADGET[restore]({ type: "triage" });
+   *   await env.GITLAB_PROJECT.subscribe(hook, { events: ["issue"] });
+   * }
+   */
+  subscribe(hook: RpcStub<GitLabEventHook>, options?: GitLabSubscribeOptions): Promise<void>;
 }
 
 /**
@@ -196,6 +253,12 @@ export interface GitLabIssuable {
 export interface GitLabIssue extends GitLabIssuable {
   /** Returns the current issue metadata and description. */
   getDetails(): Promise<GitLabIssueDetails>;
+
+  /**
+   * As `GitLabProject.subscribe()`, for this issue alone: its `issue` events and the `comment`s on
+   * it (by default, both). Throws while the issue's creation is pending.
+   */
+  subscribe(hook: RpcStub<GitLabEventHook>, options?: GitLabSubscribeOptions): Promise<void>;
 }
 
 /** A merge request. This extends the shared issuable API with review-oriented operations. */
@@ -279,6 +342,13 @@ export interface GitLabMergeRequest extends GitLabIssuable {
    * passed (pipeline status is not exposed through this interface; check it in GitLab).
    */
   merge(options?: GitLabMergeRequestMergeOptions): Promise<void>;
+
+  /**
+   * As `GitLabProject.subscribe()`, for this merge request alone: its `mergeRequest` events, the
+   * `comment`s on it and on its diff, and its `review`s (by default, all three). Throws while the
+   * merge request's creation is pending.
+   */
+  subscribe(hook: RpcStub<GitLabEventHook>, options?: GitLabSubscribeOptions): Promise<void>;
 }
 
 /** Basic information about a GitLab user or bot that appears in issue or review metadata. */
@@ -734,4 +804,137 @@ export type GitLabMergeRequestMergeOptions = {
    *  match, so nothing pushed since you looked is merged unreviewed. Defaults to the merge
    *  request's head when `merge()` is called. */
   expectedHeadSha?: string;
+}
+
+/** Implemented by a gadget to receive GitLab activity; see `GitLabProject.subscribe()`. */
+export interface GitLabEventHook {
+  /**
+   * Called with each event the hook watches for. Its capabilities (`issue`, `mergeRequest` or
+   * `project`) can read and queue writes for approval, and are released when this call returns.
+   * An event may arrive more than once or out of order, so key any work on `event.id` to keep it
+   * idempotent. One this throws for is retried with backoff, eight attempts in all, and disabling
+   * the hook ends its retries. An event can also be missed, as when GitLab can't reach this
+   * deployment for hours, so a gadget that must see every change should also read the project
+   * now and then.
+   */
+  receiveEvent(event: GitLabEvent): Promise<void>;
+}
+
+/** What `subscribe()` watches for. */
+export type GitLabSubscribeOptions = {
+  /** The kinds of event to deliver; by default, every kind the subscription can see. */
+  events?: GitLabEventKind[];
+}
+
+/** One event delivered to a `GitLabEventHook`, told apart by `kind`. */
+export type GitLabEvent =
+  | GitLabIssueEvent
+  | GitLabMergeRequestEvent
+  | GitLabCommentEvent
+  | GitLabReviewEvent
+  | GitLabPushEvent
+  | GitLabTagEvent;
+
+/** The kinds of `GitLabEvent`, which `GitLabSubscribeOptions.events` picks among. */
+export type GitLabEventKind = GitLabEvent["kind"];
+
+/** What every `GitLabEvent` carries. */
+export type GitLabEventBase = {
+  /** The event's id: the same for each delivery of it. */
+  id: string;
+  /** Who caused the event, when GitLab names someone. */
+  actor: GitLabActor | null;
+}
+
+/** An issue was opened, closed, or reopened. */
+export type GitLabIssueEvent = GitLabEventBase & {
+  kind: "issue";
+  action: "opened" | "closed" | "reopened";
+  /** The issue as GitLab reports it when the event is delivered, which may be after later changes. */
+  info: GitLabIssueDetails;
+  /** The issue, to read and to queue changes for approval. */
+  issue: GitLabIssue;
+}
+
+/** A merge request was opened, closed, merged, reopened, marked ready, or pushed to. */
+export type GitLabMergeRequestEvent = GitLabEventBase & {
+  kind: "mergeRequest";
+  /** `readyForReview` means it stopped being a draft; `pushed` that its source branch moved. */
+  action: "opened" | "closed" | "merged" | "reopened" | "readyForReview" | "pushed";
+  /** The merge request as GitLab reports it when the event is delivered, which may be after later changes. */
+  info: GitLabMergeRequestDetails;
+  /** The merge request, to read and to queue changes for approval. */
+  mergeRequest: GitLabMergeRequest;
+}
+
+/**
+ * A comment was posted on an issue or a merge request, or on a merge request's diff. Exactly
+ * one of `issue` and `mergeRequest` is set, to what it was posted on.
+ */
+export type GitLabCommentEvent = GitLabEventBase & {
+  kind: "comment";
+  /** The issue or merge request it was posted on. */
+  subject: GitLabEventSubject;
+  /**
+   * The comment, as `readDiscussion()` lists one; or, for one on the diff, as `readDiffThreads()`
+   * lists one, with its thread's id and location.
+   */
+  comment: GitLabDiscussionEntry | GitLabDiffComment;
+  issue?: GitLabIssue;
+  mergeRequest?: GitLabMergeRequest;
+}
+
+/**
+ * A merge request was approved, or, from GitLab 19.3, a review requesting changes or with
+ * comments was submitted. A review's summary and diff comments arrive as `comment` events.
+ */
+export type GitLabReviewEvent = GitLabEventBase & {
+  kind: "review";
+  /** The merge request reviewed. */
+  subject: GitLabEventSubject;
+  decision: GitLabReviewDecision;
+  mergeRequest: GitLabMergeRequest;
+}
+
+/** A branch was pushed to, created, or deleted. GitLab does not say whether a push was forced. */
+export type GitLabPushEvent = GitLabEventBase & {
+  kind: "push";
+  /** The branch's name, without `refs/heads/`. */
+  branch: string;
+  /** Its head commit before the push; absent when the push created it. */
+  before?: string;
+  /** Its head commit after the push; absent when the push deleted it. */
+  after?: string;
+  /** The project, to read what was pushed (e.g. `listCommits({ ref: after })`) and queue writes. */
+  project: GitLabProject;
+}
+
+/**
+ * A tag was created or deleted. `before` and `after` name what the tag pointed to: a commit, or
+ * for an annotated tag, its tag object.
+ */
+export type GitLabTagEvent = GitLabEventBase & {
+  kind: "tag";
+  /** The tag's name, without `refs/tags/`. */
+  tag: string;
+  /** What it pointed to before the push; absent when the push created it. */
+  before?: string;
+  /** What it points to after the push; absent when the push deleted it. */
+  after?: string;
+  /** The project, to read what the tag marks (e.g. `listCommits({ ref: tag })`) and queue writes. */
+  project: GitLabProject;
+}
+
+/** The issue or merge request a comment or review event concerns, as of the event. */
+export type GitLabEventSubject = GitLabIssuableRef & {
+  /** Whether it is an issue or a merge request: GitLab numbers them separately. */
+  kind: "issue" | "mergeRequest";
+  title: string;
+}
+
+/** A comment on a merge request's diff, with the id and location of the thread it is in. */
+export type GitLabDiffComment = GitLabDiffThreadComment & {
+  /** The diff thread's id, as `GitLabDiffThread.id`. */
+  threadId: string;
+  target: GitLabDiffCommentTarget;
 }
