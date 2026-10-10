@@ -95,7 +95,7 @@ import GatekeeperModal from "./GatekeeperModal";
 import { GatekeeperIcon } from "./components/GatekeeperIcon";
 import { formatOf, FORMAT_ICONS } from "./components/format/formats";
 import { FormatMiniature } from "./components/format/FormatVisuals";
-import { HookToggle } from "./components/HookToggle";
+import { HookToggle, hookToggleFailureToast } from "./components/HookToggle";
 import { IncompleteDescriptionNotice, isDescriptionIncomplete } from "./components/IncompleteDescriptionNotice";
 import { ActionFields, entryFields } from "./components/ActionFields";
 import DeleteConfirmationDialog from "./components/DeleteConfirmationDialog";
@@ -4457,7 +4457,7 @@ function ChatInterface({
       }
     } catch (err) {
       console.error("Failed to toggle hook:", err);
-      toasts.add({ title: `Failed to ${enabled ? "enable" : "disable"} hook`, variant: "error" });
+      toasts.add(hookToggleFailureToast(enabled, err));
       // Revert the optimistic update.
       if (applyOptimisticHookEnabled(actionId, !enabled)) forceUpdate();
     } finally {
@@ -4981,8 +4981,9 @@ function ChatInterface({
               {!isDeleted && (
                 <div className="ml-3 flex flex-shrink-0 items-center self-center">
                   <HookToggle
+                    hookTitle={log.description.title}
                     enabled={log.enabled}
-                    disabled={isProc}
+                    pending={isProc}
                     onToggle={(enabled) => handleToggleHook(msg.actionId, log.hookId!, enabled)}
                   />
                 </div>

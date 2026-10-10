@@ -5,7 +5,7 @@
 // without a cast.
 
 import type { TestHooks } from "./workerd/worker.js";
-import type { UserAccount } from "../src/github.js";
+import type { GitHubHookDriver, UserAccount } from "../src/github.js";
 
 declare global {
   namespace Cloudflare {
@@ -14,6 +14,7 @@ declare global {
       // from the generated `worker-configuration.d.ts`.
       TEST_HOOKS: DurableObjectNamespace<TestHooks>;
       USER_ACCOUNT: DurableObjectNamespace<UserAccount>;
+      GITHUB_HOOK_DRIVER: DurableObjectNamespace<GitHubHookDriver>;
     }
   }
 }

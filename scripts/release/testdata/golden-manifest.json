@@ -291,6 +291,12 @@
             "GitHubGatekeeperImpl"
           ],
           "tag": "v0"
+        },
+        {
+          "new_sqlite_classes": [
+            "GitHubHookDriver"
+          ],
+          "tag": "v1"
         }
       ],
       "modules": [

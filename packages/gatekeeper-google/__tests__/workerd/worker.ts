@@ -220,7 +220,14 @@ class RecordingHook extends RpcTarget {
   }
 }
 
-type GmailHookState = { received: GmailMessageInfo[]; reply?: string; failures: number };
+type GmailHookState = {
+  received: GmailMessageInfo[]; reply?: string; failures: number;
+  /**
+   * While set, an entry is held before the hook answers it, with `holding` set meanwhile. Polled,
+   * not awaited: a promise settled from the test would carry the test's I/O into this object.
+   */
+  held?: boolean; holding?: boolean;
+};
 
 /** A gadget's Gmail hook: records each entry, optionally failing first or replying. */
 class GmailRecordingHook extends RpcTarget {
@@ -230,6 +237,11 @@ class GmailRecordingHook extends RpcTarget {
 
   async receiveMessage(entry: GmailMessageEntry): Promise<void> {
     try {
+      if (this.state.held) {
+        this.state.holding = true;
+        while (this.state.held) await scheduler.wait(5);
+        this.state.holding = false;
+      }
       if (this.state.failures > 0) {
         this.state.failures--;
         throw new Error("The test hook failed.");
@@ -636,12 +648,12 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   /** What the Gmail hook received, how many of its failures remain, and what it queued. */
   readGmailHook(): {
     received: GmailMessageInfo[]; failures: number; submissions: Array<{ actionId: number }>;
-    observations: Array<{ title: string }>;
+    observations: Array<{ title: string }>; holding: boolean;
   } {
     const { submissions, observations } = this.#hookQueue.read();
     return {
       received: this.#gmailHook.received, failures: this.#gmailHook.failures, submissions,
-      observations: observations as Array<{ title: string }>,
+      observations: observations as Array<{ title: string }>, holding: this.#gmailHook.holding === true,
     };
   }
 }

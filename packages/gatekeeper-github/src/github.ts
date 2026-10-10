@@ -1,4 +1,4 @@
-import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
+import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint, restore } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import {
   ApprovalQueue,
@@ -15,28 +15,29 @@ import {
   type GitCache,
   type GitOid,
   type GitPullHints,
+  type ObservationDescription,
   type ResourceConfiguratorFrame,
   type ResourceDescription,
   type SupportedResource,
   type VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  ActionDescriptionBuilder, buildDescription, codeSpan, type RenderedDescription,
+  ActionDescriptionBuilder, buildDescription, codeSpan, sanitizeTitle, type RenderedDescription,
 } from "@gadgets/gatekeeper-kit/action-description";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import {
   clearCredentialExpiryLatch, notifyCredentialsExpiredOnce,
 } from "@gadgets/gatekeeper-kit/credential-expiry";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
+import { CredentialCoordinator, type RejectionVerdict } from "@gadgets/gatekeeper-kit/credentials";
 import {
-  CredentialCoordinator, isCredentialsExpired, type RejectionVerdict,
-} from "@gadgets/gatekeeper-kit/credentials";
-import {
+  CREDENTIALS_EXPIRED_MESSAGE,
   GitHubApi,
   GitHubApiError,
   exchangeAuthCode,
   refreshGitHubGrant,
   revokeOAuthToken,
+  withAccountApi,
   type GitHubOAuthGrant,
   type ConditionalRequestResult,
   type GitHubCompareResponse,
@@ -46,8 +47,15 @@ import {
   type GitHubPullFileResponse,
   type GitHubPullRequestResponse,
   type GitHubPullRequestReviewCommentResponse,
+  type GitHubPullRequestReviewResponse,
   type PinnedRepo,
 } from "./github-api";
+import { getBasePath, getBaseUrl, webhookOrigin, type Env } from "./github-env";
+import {
+  HOOKS_NOT_CONFIGURED, handleWebhookRequest,
+  type GitHubEventHookTarget, type GitHubHookDelivery, type GitHubHookParams,
+} from "./github-hooks";
+import type { GitHubWebhookEvent } from "./github-webhook-events";
 import { assertIssueSearchResultsInRepo, buildIssueSearchQuery } from "./github-search";
 import {
   MAX_DIFF_BLOB_BYTES,
@@ -93,6 +101,9 @@ import type {
   GitHubDiffThread,
   GitHubDiscussionEntry,
   GitHubDraftDiffComment,
+  GitHubEvent,
+  GitHubEventKind,
+  GitHubEventReview,
   GitHubIssue,
   GitHubIssueDetails,
   GitHubIssueFilter,
@@ -107,6 +118,7 @@ import type {
   GitHubPullRequestDiff,
   GitHubPullRequestDiffFile,
   GitHubPullRequestDiffHunk,
+  GitHubPullRequestEvent,
   GitHubPullRequestFilter,
   GitHubPullRequestMergeOptions,
   GitHubPullRequestReviewDraft,
@@ -117,6 +129,8 @@ import type {
   GitHubRepoMetadata,
   GitHubRepoRef,
   GitHubReviewDecision,
+  GitHubSubmittedDiffComment,
+  GitHubSubscribeOptions,
   GitHubTagSummary,
 } from "./types";
 import TYPES_CODE from "./types.txt";
@@ -131,17 +145,13 @@ import GITHUB_PULL_REQUEST_CONFIGURATOR_HTML from "./generated/github-pull-reque
 import GITHUB_REPO_CONFIGURATOR_HTML from "./generated/github-repo-configurator-ui.txt";
 import { obsContext } from "./observability.js";
 
+export { GitHubHookController, GitHubHookDriver } from "./github-hooks";
+
 const VENDOR_ID = "github";
 
 const logger = obsContext.createLogger({
   component: "gatekeeper.github", vendorId: VENDOR_ID,
 });
-
-type Env = Cloudflare.Env & {
-  BASE_URL?: string;
-  CLIENT_ID?: string;
-  CLIENT_SECRET?: string;
-};
 
 type StoredNonce = {
   value: string;
@@ -610,15 +620,6 @@ function constantTimeEqual(a: string, b: string): boolean {
   return crypto.subtle.timingSafeEqual(bufA, bufB);
 }
 
-function getBaseUrl(env: Env): string {
-  return stripTrailingSlashes(env.BASE_URL ?? "http://localhost:8787/gatekeeper/github");
-}
-
-function getBasePath(env: Env): string {
-  const path = new URL(getBaseUrl(env)).pathname;
-  return path === "/" ? "" : path;
-}
-
 function ensureConfigured(env: Env): void {
   if (!env.CLIENT_ID || !env.CLIENT_SECRET) {
     throw new Error("The GitHub gatekeeper is not configured.");
@@ -987,6 +988,62 @@ function discussionCommentFromResponse(comment: GitHubIssueCommentResponse): Git
   };
 }
 
+function submittedDiffCommentFromResponse(comment: GitHubPullRequestReviewCommentResponse): GitHubSubmittedDiffComment {
+  return {
+    id: String(comment.id),
+    threadId: String(comment.in_reply_to_id ?? comment.id),
+    target: commentTargetFromResponse(comment),
+    author: actorFromUser(comment.user),
+    bodyMarkdown: comment.body ?? "",
+    createdAt: new Date(comment.created_at),
+    updatedAt: parseDate(comment.updated_at),
+    url: comment.html_url,
+  };
+}
+
+const PULL_REQUEST_ACTION_WORDS: Record<GitHubPullRequestEvent["action"], string> = {
+  opened: "opened",
+  closed: "closed",
+  merged: "merged",
+  reopened: "reopened",
+  readyForReview: "marked ready for review",
+  pushed: "pushed to",
+};
+
+const EVENT_KIND_NAMES: Record<GitHubEventKind, string> = {
+  issue: "issue",
+  pullRequest: "pull request",
+  comment: "comment",
+  review: "review",
+  push: "push",
+  tag: "tag",
+};
+
+/** E.g. "issue, comment and push". */
+function listEventKinds(kinds: GitHubEventKind[], conjunction: "and" | "or"): string {
+  const names = kinds.map(kind => EVENT_KIND_NAMES[kind]);
+  return names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} ${conjunction} ${names.at(-1)}`;
+}
+
+/** What a push did to a branch or tag, e.g. "moving it from `a` to `b`". */
+function refChange(before: string | undefined, after: string | undefined): string {
+  if (after === undefined) return "deleting it";
+  return `${before === undefined ? "creating it at" : `moving it from ${codeSpan(before)} to`} ${codeSpan(after)}`;
+}
+
+function eventReview(review: GitHubPullRequestReviewResponse): GitHubEventReview {
+  return {
+    id: String(review.id),
+    author: actorFromUser(review.user),
+    // Webhooks spell the state in lower case, the REST API in upper case.
+    decision: reviewDecisionFromState(review.state.toUpperCase()),
+    bodyMarkdown: review.body ?? "",
+    ...review.commit_id ? { commitId: review.commit_id } : {},
+    ...review.submitted_at ? { submittedAt: new Date(review.submitted_at) } : {},
+    url: review.html_url,
+  };
+}
+
 function parsePatch(patch: string): GitHubPullRequestDiffHunk[] {
   const lines = patch.split("\n");
   const hunks: GitHubPullRequestDiffHunk[] = [];
@@ -1212,6 +1269,10 @@ export default {
     const relPath = url.pathname.slice(basePath.length);
     const path = relPath.slice(1).split("/");
 
+    if (path.length === 2 && path[0] === "webhook" && req.method === "POST") {
+      return handleWebhookRequest(req, path[1], env, ctx.exports);
+    }
+
     if (path.length === 2 && path[0].length === 64 && path[1].length === NONCE_BYTES * 2) {
       if (!env.CLIENT_ID || !env.CLIENT_SECRET) {
         return new Response(NOT_CONFIGURED_HTML, {
@@ -1312,9 +1373,6 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
     return TYPES_CODE;
   }
 }
-
-const CREDENTIALS_EXPIRED_MESSAGE =
-  "GitHub credentials have expired or been revoked. Please reconnect the account.";
 
 /**
  * Stands in for the identity of a token the account no longer serves, so the coordinator's
@@ -1516,40 +1574,6 @@ export class UserAccount extends DurableObject<Env> {
   }
 }
 
-/**
- * Runs `fn` against GitHub as `account`, following redirects only within `repo` (see GitHubApi).
- * GitHub's rejection of the token a request presented is the account's to adjudicate, so a token
- * replaced while the request was in flight fails as retryable rather than marking the account
- * expired. With `replayable`, which only calls safe to run twice may pass, such a failure instead
- * reruns `fn` once with the replacement token.
- */
-async function withAccountApi<T>(
-  account: DurableObjectStub<UserAccount>, fn: (api: GitHubApi) => Promise<T>,
-  options: { replayable?: true; repo?: PinnedRepo } = {},
-): Promise<T> {
-  for (let replays = options.replayable ? 1 : 0; ; replays--) {
-    let presented: string | undefined;
-    const api = new GitHubApi(async () => (presented = await account.getAccessToken()),
-      { repo: options.repo });
-    try {
-      return await fn(api);
-    } catch (error) {
-      if (isCredentialsExpired(error)) {
-        throw new Error(CREDENTIALS_EXPIRED_MESSAGE, { cause: error });
-      }
-      if (!(error instanceof GitHubApiError && error.isAuthError) || presented === undefined) {
-        throw error;
-      }
-      const verdict = await account.reportTokenRejected(presented);
-      if (verdict === "expired") throw new Error(CREDENTIALS_EXPIRED_MESSAGE, { cause: error });
-      if (verdict !== "superseded") throw error;
-      if (replays > 0) continue;
-      throw new Error("GitHub credentials were renewed during this request. Please retry it.",
-        { cause: error });
-    }
-  }
-}
-
 /** Runs replay-safe GitHub reads as the account behind `userObjectId`; see withAccountApi. */
 function accountReader(
   exports: Cloudflare.Exports, userObjectId: string,
@@ -1661,8 +1685,10 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async revoke(): Promise<void> {
-    const id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
-    await this.ctx.exports.UserAccount.get(id).revoke();
+    const { userObjectId } = this.ctx.props;
+    // First, while the account's token can still delete its webhooks.
+    await this.ctx.exports.GitHubHookDriver.getByName(userObjectId).revoke();
+    await this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(userObjectId)).revoke();
   }
 
   async reconnect(): Promise<{ url: string }> {
@@ -3285,16 +3311,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
           updatedAt: parseDate(review.submitted_at),
           url: review.html_url,
           decision: reviewDecisionFromState(review.state),
-          diffComments: reviewComments.map(comment => ({
-            id: String(comment.id),
-            threadId: String(comment.in_reply_to_id ?? comment.id),
-            target: commentTargetFromResponse(comment),
-            author: actorFromUser(comment.user),
-            bodyMarkdown: comment.body ?? "",
-            createdAt: new Date(comment.created_at),
-            updatedAt: parseDate(comment.updated_at),
-            url: comment.html_url,
-          })),
+          diffComments: reviewComments.map(submittedDiffCommentFromResponse),
         };
       }));
 
@@ -3635,6 +3652,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
           snippet: repo.description ?? `GitHub repository ${repo.fullName}`,
           suggestedBindingName: "GITHUB_REPO",
           tsType: "GitHubRepo",
+          hookTsType: "GitHubEventHook",
         };
       }
       case "issue": {
@@ -3645,6 +3663,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
           snippet: textSnippet(issue.bodyMarkdown, `${issue.state} issue in ${issue.repo.fullName}`),
           suggestedBindingName: "GITHUB_ISSUE",
           tsType: "GitHubIssue",
+          hookTsType: "GitHubEventHook",
         };
       }
       case "pull": {
@@ -3655,6 +3674,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
           snippet: textSnippet(pull.bodyMarkdown, `${pull.state} pull request in ${pull.repo.fullName}`),
           suggestedBindingName: "GITHUB_PULL_REQUEST",
           tsType: "GitHubPullRequest",
+          hookTsType: "GitHubEventHook",
         };
       }
     }
@@ -3700,6 +3720,243 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       case "pull":
         return new GitHubPullRequestImpl(this, queue, String(this.ctx.props.issueNumber));
     }
+  }
+
+  [restore]({ number }: GitHubHookParams): GitHubHookDelivery {
+    return new GitHubHookDeliveryImpl((callback, approvalQueue, event) =>
+      this.#deliverHookEvent(number, callback, approvalQueue, event));
+  }
+
+  /**
+   * Binds `hook` to events in the bound repository, or with `target` on one issue or pull request
+   * in it (see `GitHubRepo.subscribe()`), first checking that the account may add the webhook
+   * that will deliver them.
+   */
+  async bindEventHook(
+    approvalQueue: RpcStub<ApprovalQueue>, target: { kind: EntityKind; id: string } | undefined,
+    hook: RpcStub<GitHubEventHookTarget>, options: GitHubSubscribeOptions | undefined,
+  ): Promise<void> {
+    if (webhookOrigin(this.env) === undefined) throw new Error(HOOKS_NOT_CONFIGURED);
+    const { owner, repo, userObjectId } = this.ctx.props;
+    const watchable: GitHubEventKind[] = target === undefined
+      ? ["issue", "pullRequest", "comment", "review", "push", "tag"]
+      : target.kind === "issue" ? ["issue", "comment"] : ["pullRequest", "comment", "review"];
+    const events = [...new Set(options?.events ?? watchable)];
+    if (events.length === 0 || events.some(kind => !watchable.includes(kind))) {
+      throw new TypeError(`This can only watch for ${listEventKinds(watchable, "or")} events.`);
+    }
+    let number: number | undefined;
+    if (target !== undefined) {
+      const id = target.id.startsWith("~") ? this.#resolveProvisionalId(target.id) : target.id;
+      number = Number(id);
+      if (!Number.isSafeInteger(number) || number < 1) {
+        throw new Error(`#${target.id} can't be watched until it is created on GitHub.`);
+      }
+    }
+    const pin = await this.#pinnedRepo();
+    if (!pin) throw new Error(`Failed to look up ${owner}/${repo} on GitHub. Please try again.`);
+    const [{ permissions }, { user: viewer }] = await this.#readApi(api =>
+      Promise.all([api.getRepo(owner, repo), api.getViewer()]));
+    if (!permissions?.admin) {
+      throw new Error(`GitHub delivers events to a webhook, which only an admin of ${owner}/${repo} ` +
+        "can add, and the connected account is not one.");
+    }
+
+    const params: GitHubHookParams = number === undefined ? {} : { number };
+    using delivery: RpcStub<GitHubHookDelivery> = await this.ctx.restore(params);
+    const controller = this.ctx.exports.GitHubHookController({ props: {
+      ...params,
+      key: crypto.randomUUID(),
+      userObjectId,
+      repo: pin,
+      events,
+      viewerId: viewer.id,
+      delivery,
+    } });
+    const watched = number === undefined
+      ? `${owner}/${repo}`
+      : `${target?.kind === "pull" ? "pull request" : "issue"} #${number} in ${owner}/${repo}`;
+    // @ts-expect-error Workers currently widens the controller's hook type across bindHook RPC.
+    await approvalQueue.bindHook(controller, hook, {
+      title: sanitizeTitle(`Watch ${watched} on GitHub`),
+      description: `Call this hook with each ${listEventKinds(events, "and")} event in ${watched}, ` +
+        "letting it read each one and queue changes there for approval. Enabling it adds a " +
+        "webhook to the repository on GitHub, unless an earlier hook there already has.",
+    });
+  }
+
+  /**
+   * Delivers one event to one firing of a hook on this binding, or (`number`) on one issue or pull
+   * request in it, if the binding admits the event: in the bound repository, and its issue or pull
+   * request, while the account can still read it. The driver's own filters only spare firings.
+   */
+  async #deliverHookEvent(
+    number: number | undefined, callback: RpcStub<GitHubEventHookTarget>,
+    approvalQueue: RpcStub<ApprovalQueue>, stored: GitHubWebhookEvent,
+  ): Promise<void> {
+    const { owner, repo, resourceKind, issueNumber } = this.ctx.props;
+    const pin = await this.#pinnedRepo();
+    if (!pin) throw new Error(`Failed to look up ${owner}/${repo} on GitHub.`);
+    if (stored.repoId !== pin.id) return;
+    // An issue or pull request binding's hooks watch only that one, whatever their parameters say.
+    const scope = issueNumber ?? number;
+    // A push or a tag concerns no one issue or pull request.
+    if (scope !== undefined && !("number" in stored && stored.number === scope)) return;
+    const onPullRequest = stored.kind === "pullRequest" || stored.kind === "review"
+      || (stored.kind === "comment" && stored.subject.pullRequest);
+    if (resourceKind === "issue" && onPullRequest) return;
+    if (resourceKind === "pull" && !onPullRequest) return;
+    try {
+      // The webhook outlives the account's access to the repository, and its connection, so every
+      // delivery asks GitHub afresh, never the cache: a revoked account is refused even moments
+      // after a delivery that succeeded. Asked by the repository's id, not its name, which a
+      // repository renamed since may have left to another; and with the last answer's ETag, so an
+      // unchanged repository answers 304, which costs no rate limit.
+      await this.#loadCachedWithEtag(this.#cacheKey("repo-access", String(pin.id)), 0, async etag => {
+        const result = await this.#withApi(api => api.getRepoByIdConditional(pin.id, { ifNoneMatch: etag }));
+        return result.status === 304 ? result : { ...result, data: true };
+      });
+    } catch (error) {
+      if (!(error instanceof GitHubApiError && error.status === 404)) throw error;
+      // Nothing to retry, and nothing else would tell why the hook went quiet.
+      logger.warn("dropped a GitHub event the account can no longer read", {
+        event: "hooks.delivery.unreadable",
+      });
+      return;
+    }
+
+    // Released when receiveEvent() returns, or here if it is never called.
+    const capabilities: Disposable[] = [];
+    const gitCache = new SessionGitCache(approvalQueue, { withhold: commit => this.isSimulatedCommitId(commit) });
+    let event: GitHubEvent;
+    try {
+      const built = this.#hookEvent(stored, approvalQueue, capabilities);
+      event = built.event;
+      await approvalQueue.authorizeObservation(built.observation);
+      if (built.commitIds.length > 0) await gitCache.advertise(built.commitIds);
+    } catch (error) {
+      for (const capability of capabilities) capability[Symbol.dispose]();
+      throw error;
+    } finally {
+      gitCache.dispose();
+    }
+    await callback.receiveEvent(event);
+  }
+
+  /**
+   * The event a hook receives for `stored`, with capabilities on `approvalQueue` (each also
+   * pushed to `capabilities`), the observation delivering it makes, and the commits it names.
+   */
+  #hookEvent(stored: GitHubWebhookEvent, approvalQueue: RpcStub<ApprovalQueue>, capabilities: Disposable[]):
+      { event: GitHubEvent; observation: ObservationDescription; commitIds: GitOid[] } {
+    const { owner, repo } = this.ctx.props;
+    const where = `${owner}/${repo}`;
+    const { id, actor } = stored;
+    const by = actor ? ` by ${codeSpan(`@${actor.login}`)}` : "";
+    const held = <T extends Disposable>(capability: T): T => (capabilities.push(capability), capability);
+    const issue = (number: number) =>
+      held(new GitHubIssueImpl(this, approvalQueue.dup(), String(number), "issue"));
+    const pullRequest = (number: number) =>
+      held(new GitHubPullRequestImpl(this, approvalQueue.dup(), String(number)));
+    switch (stored.kind) {
+      case "issue": {
+        const info = normalizeIssueDetails(owner, repo, stored.issue as GitHubIssueResponse);
+        return {
+          event: { kind: "issue", id, actor, action: stored.action, info, issue: issue(stored.number) },
+          observation: {
+            title: sanitizeTitle(`GitHub issue #${info.id} ${stored.action}: ${info.title}`),
+            description: `Receive issue #${info.id} in ${where}, ${stored.action}${by}: its title, ` +
+              "body, author, assignees, and labels.",
+          },
+          commitIds: [],
+        };
+      }
+      case "pullRequest": {
+        const info = normalizePullDetails(owner, repo, stored.pullRequest as GitHubPullRequestResponse);
+        const action = PULL_REQUEST_ACTION_WORDS[stored.action];
+        return {
+          event: {
+            kind: "pullRequest", id, actor, action: stored.action, info,
+            pullRequest: pullRequest(stored.number),
+          },
+          observation: {
+            title: sanitizeTitle(`GitHub pull request #${info.id} ${action}: ${info.title}`),
+            description: `Receive pull request #${info.id} in ${where}, ${action}${by}: its title, ` +
+              "description, author, assignees, reviewers, labels, branches, and size.",
+          },
+          commitIds: commitIdsOfPullSummary(info),
+        };
+      }
+      case "comment": {
+        const subject = this.#eventSubject(stored.number, stored.subject);
+        const comment = "comment" in stored
+          ? discussionCommentFromResponse(stored.comment as GitHubIssueCommentResponse)
+          : submittedDiffCommentFromResponse(stored.diffComment as GitHubPullRequestReviewCommentResponse);
+        const on = ("target" in comment ? "the diff of " : "") +
+          (stored.subject.pullRequest ? "pull request" : "issue");
+        return {
+          event: {
+            kind: "comment", id, actor, subject, comment,
+            ...stored.subject.pullRequest
+              ? { pullRequest: pullRequest(stored.number) }
+              : { issue: issue(stored.number) },
+          },
+          observation: {
+            title: sanitizeTitle(`GitHub comment on #${subject.id}: ${subject.title}`),
+            description: `Read a new comment${by} on ${on} #${subject.id} in ${where}.`,
+          },
+          commitIds: [],
+        };
+      }
+      case "review": {
+        const subject = this.#eventSubject(stored.number, stored.subject);
+        const review = eventReview(stored.review as GitHubPullRequestReviewResponse);
+        return {
+          event: { kind: "review", id, actor, subject, review, pullRequest: pullRequest(stored.number) },
+          observation: {
+            title: sanitizeTitle(`GitHub review of #${subject.id}: ${subject.title}`),
+            description: `Read a review${by} of pull request #${subject.id} in ${where}: its decision ` +
+              "and summary.",
+          },
+          commitIds: review.commitId === undefined ? [] : [review.commitId],
+        };
+      }
+      case "push": {
+        const { branch, before, after, forced } = stored;
+        return {
+          event: {
+            kind: "push", id, actor, branch, before, after, forced,
+            repo: held(new GitHubRepoSessionImpl(this, approvalQueue.dup())),
+          },
+          observation: {
+            title: sanitizeTitle(`GitHub push to ${branch} in ${where}`),
+            description: `Receive a push${by} to branch ${codeSpan(branch)} of ${where}, ${refChange(before, after)}.`,
+          },
+          commitIds: [before, after].filter(commit => commit !== undefined),
+        };
+      }
+      case "tag": {
+        const { tag, before, after } = stored;
+        return {
+          event: {
+            kind: "tag", id, actor, tag, before, after,
+            repo: held(new GitHubRepoSessionImpl(this, approvalQueue.dup())),
+          },
+          observation: {
+            title: sanitizeTitle(`GitHub push of tag ${tag} in ${where}`),
+            description: `Receive a push${by} of tag ${codeSpan(tag)} in ${where}, ${refChange(before, after)}.`,
+          },
+          // An annotated tag names its tag object, which is no commit to advertise.
+          commitIds: [],
+        };
+      }
+    }
+  }
+
+  #eventSubject(number: number, { title, pullRequest }: { title: string; pullRequest: boolean }) {
+    const { owner, repo } = this.ctx.props;
+    const id = String(number);
+    return { repo: repoRef(owner, repo), id, url: (pullRequest ? pullUrl : issueUrl)(owner, repo, id), title };
   }
 
   /**
@@ -5560,6 +5817,10 @@ export class GitHubRepoSessionImpl extends RpcTarget implements GitHubRepoSessio
     // GitHub-known parents still advertise.
     return await this.#gitCache.wrap(cursor, commitIdsOfSummary);
   }
+
+  async subscribe(hook: RpcStub<GitHubEventHookTarget>, options?: GitHubSubscribeOptions): Promise<void> {
+    await this.#gatekeeper.bindEventHook(this.#approvalQueue, undefined, hook, options);
+  }
 }
 
 @validateRpc()
@@ -5657,6 +5918,11 @@ class GitHubIssueImpl extends RpcTarget implements GitHubIssue {
       title: `Comment on #${this.logicalId}`,
       implementsRevert: true,
     });
+  }
+
+  async subscribe(hook: RpcStub<GitHubEventHookTarget>, options?: GitHubSubscribeOptions): Promise<void> {
+    await this.gatekeeper.bindEventHook(
+      this.approvalQueue, { kind: this.kind, id: this.logicalId }, hook, options);
   }
 }
 
@@ -5761,5 +6027,21 @@ export class GitHubPullRequestImpl extends GitHubIssueImpl implements GitHubPull
       title: `Merge pull request #${this.logicalId}`,
       implementsRevert: false,
     });
+  }
+}
+
+/** What a hook's delivery stub restores to: the binding's facet, narrowed to delivering. */
+@validateRpc()
+class GitHubHookDeliveryImpl extends RpcTarget implements GitHubHookDelivery {
+  readonly #deliver: GitHubHookDelivery["deliver"];
+
+  constructor(deliver: GitHubHookDelivery["deliver"]) {
+    super();
+    this.#deliver = deliver;
+  }
+
+  deliver(callback: RpcStub<GitHubEventHookTarget>, approvalQueue: RpcStub<ApprovalQueue>,
+          event: GitHubWebhookEvent): Promise<void> {
+    return this.#deliver(callback, approvalQueue, event);
   }
 }

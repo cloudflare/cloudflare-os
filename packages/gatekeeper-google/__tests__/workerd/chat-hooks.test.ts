@@ -79,6 +79,7 @@ function mockGoogle() {
     const method = (init.method ?? "GET").toUpperCase();
     const subject = new Headers(init.headers).get("Authorization")?.replace("Bearer token-", "");
     if (url.href === "https://www.googleapis.com/oauth2/v3/certs") return json(jwks);
+    if (url.href === "https://oauth2.googleapis.com/revoke" && method === "POST") return new Response(null);
     if (url.href === "https://www.googleapis.com/oauth2/v3/userinfo") return json({sub: subject});
     if (url.href === "https://workspaceevents.googleapis.com/v1/subscriptions" && method === "POST") {
       if (google.unrecorded) return json({error: {code: 409, status: "ALREADY_EXISTS"}}, 409);
@@ -337,6 +338,48 @@ it("ends a failing delivery's retries when its hook is disabled, even if it is r
     vi.useRealTimers();
   }
   expect((await ada.hooks.readHook()).received).toEqual([]);
+});
+
+it("drops a disconnected account's hooks in the space, while another account's go on", async () => {
+  mockGoogle();
+  const ada = await connect("ada");
+  const bob = await connect("bob");
+  await ada.hooks.chatEnableHook();
+  await bob.hooks.chatEnableHook();
+
+  await (testEnv.UserAccount.get(testEnv.UserAccount.idFromString(ada.props.userObjectId)) as unknown as
+    {revoke(): Promise<void>}).revoke();
+  // Each subscription reports the message, which ada's no longer delivers.
+  expect(await push("ada", [chatMessage("carol")])).toBe(204);
+  expect(await push("bob", [chatMessage("carol")])).toBe(204);
+  await deliver();
+
+  expect((await ada.hooks.readHook()).received).toEqual([]);
+  expect((await bob.hooks.readHook()).received).toHaveLength(1);
+  // Nothing is left to try for the disconnected account, whose credentials are gone.
+  expect(await runInDurableObject(driver(), (_instance: unknown, state: DurableObjectState) => ({
+    registered: [...state.storage.kv.list({prefix: "reg:"})].length,
+    pending: [...state.storage.kv.list<{at?: number}>({prefix: "msg:"})].filter(([, row]) => row.at !== undefined).length,
+  }))).toEqual({registered: 1, pending: 0});
+});
+
+it("drops on disconnect a hook registered before accounts kept track, once its driver's alarm has run", async () => {
+  mockGoogle();
+  const ada = await connect("ada");
+  await ada.hooks.chatEnableHook();
+  const account = testEnv.UserAccount.get(testEnv.UserAccount.idFromString(ada.props.userObjectId));
+  // As a hook registered before this release left things: the account has no record of the driver.
+  await runInDurableObject(account, (_instance: unknown, state: DurableObjectState) =>
+    state.storage.kv.delete(`hookDriver:chat:${SPACE}`));
+  await runInDurableObject(driver(), (_instance: unknown, state: DurableObjectState) =>
+    state.storage.kv.delete(`tracked:${ada.props.userObjectId}`));
+  expect(await push("ada", [chatMessage("carol")])).toBe(204);
+  await deliver();
+  expect((await ada.hooks.readHook()).received).toHaveLength(1);
+
+  await (account as unknown as {revoke(): Promise<void>}).revoke();
+  expect(await runInDurableObject(driver(), (_instance: unknown, state: DurableObjectState) =>
+    [...state.storage.kv.list({prefix: "reg:"})].length)).toBe(0);
 });
 
 it("retries a failed subscription renewal before the subscription lapses", async () => {

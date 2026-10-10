@@ -8,12 +8,13 @@
 // stubs the test passes (the fake approval queue and git cache) ride through to the facet, and
 // results ride back as plain data.
 
-import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import type { RpcStub } from "cloudflare:workers";
+import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint, restore } from "cloudflare:workers";
 import type {
-  AccountDescription, ActionDescription, ConnectHandoff, GatekeeperUser, GitCache,
+  AccountDescription, ActionDescription, ConnectHandoff, GatekeeperUser, GitCache, HookController,
+  HookDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { GitHubGatekeeperImpl, type GitHubVerifierApi } from "../../src/github.js";
+import type { GitHubHookParams } from "../../src/github-hooks.js";
 import type {
   Cursor,
   GitHubBranchSummary,
@@ -21,19 +22,25 @@ import type {
   GitHubCommitFilter,
   GitHubCommitSummary,
   GitHubCreatePullRequestOptions,
+  GitHubEvent,
+  GitHubIssue,
   GitHubIssueDetails,
   GitHubPullRequestDetails,
   GitHubPullRequestDiffFile,
   GitHubPullRequestMergeOptions,
   GitHubPullRequestRevision,
+  GitHubRepo,
   GitHubRepoMetadata,
+  GitHubSubscribeOptions,
 } from "../../src/types.js";
 
 export { default } from "../../src/github.js";
 export * from "../../src/github.js";
 // Named as well, since the pool builds `ctx.exports` entrypoints only from exports it can see
-// statically, and the account and TestHooks mint these.
-export { GatekeeperUserImpl, GitHubVerifier } from "../../src/github.js";
+// statically, and the account, the facet and TestHooks mint these.
+export {
+  GatekeeperUserImpl, GitHubHookController, GitHubHookDriver, GitHubVerifier,
+} from "../../src/github.js";
 
 /** What each `TestConnectCallback` was told, by its `props.name`. */
 export const connectCallbackEvents = new Map<string, string[]>();
@@ -216,6 +223,13 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     const user = (this.ctx.exports as unknown as TestExports)
       .GatekeeperUserImpl({ props: { userObjectId } });
     return await outcome(() => user.describe());
+  }
+
+  /** `GatekeeperUser.revoke()` for the account with id `userObjectId`, as disconnecting it does. */
+  async revokeAccount(userObjectId: string): Promise<Outcome<void>> {
+    const user = (this.ctx.exports as unknown as TestExports)
+      .GatekeeperUserImpl({ props: { userObjectId } });
+    return await outcome(() => user.revoke());
   }
 
   /** `GitHubVerifier.hasRepoAccess()` as the account with id `userObjectId`. */
@@ -478,4 +492,240 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     })) as unknown as SeedFacet;
     await facet.seed(entries);
   }
+
+  // ── Hooks, with this object standing in for the Overseer ─────────────
+  //
+  // One hook per TestHooks object: subscribing stores the controller it binds, enabling hands it
+  // an initiator whose firings reach `startHook()` here, and those firings deliver to a
+  // RecordingHook over `#firingQueue`.
+
+  #hook: HookState = { received: [], failures: 0, admissionFailures: 0 };
+  #firingQueue = new FiringQueue();
+
+  /**
+   * Subscribe through the binding's session, or one of its issues or pull requests, as
+   * executeCode would; returns what the hook was bound with.
+   */
+  async subscribeHook(
+    facetName: string, props: GatekeeperProps, options?: GitHubSubscribeOptions,
+    target?: { kind: "issue" | "pull"; id: string },
+  ): Promise<Outcome<HookDescription>> {
+    return await outcome(async () => {
+      const facet = this.#hookFacet(facetName, props);
+      await facet.testRestoreThrough(this.ctx.id.toString(), facetName, props);
+      using queue = new RpcStub(new BindingQueue(this.ctx.storage));
+      using session = await facet.startSession(queue as never) as unknown as (GitHubRepo & GitHubIssue) & Disposable;
+      using hook = new RpcStub(new RecordingHook(this.#hook));
+      if (target === undefined) {
+        await session.subscribe(hook as never, options);
+      } else {
+        using capability = (target.kind === "issue"
+          ? await session.getIssue(target.id)
+          : await session.getPullRequest(target.id)) as GitHubIssue & Disposable;
+        await capability.subscribe(hook as never, options);
+      }
+      return this.ctx.storage.kv.get<HookDescription>("hookDescription")!;
+    });
+  }
+
+  async enableHook(): Promise<Outcome<void>> {
+    const initiator = (this.ctx.exports as unknown as HookExports)
+      .TestHookInitiator({ props: { hooks: this.ctx.id.toString() } });
+    return await outcome(() => this.#controller().enable(initiator, { workspaceId: "test-workspace" }));
+  }
+
+  async disableHook(): Promise<void> {
+    await this.#controller().disable();
+  }
+
+  /** The Overseer's `HookInitiator.startHook()`, for this object's hook. */
+  startHook() {
+    if (this.#hook.admissionFailures > 0) {
+      this.#hook.admissionFailures--;
+      throw new Error("The test Workshop failed to start the firing.");
+    }
+    return { callback: new RecordingHook(this.#hook), approvalQueue: new RpcStub(this.#firingQueue) };
+  }
+
+  /**
+   * Deliver `event` to a firing of this object's hook through the facet's `[restore](params)`
+   * target, as a delivery stub minted with any `params` would.
+   */
+  async deliverDirectly(facetName: string, props: GatekeeperProps, params: GitHubHookParams, event: unknown) {
+    const { callback, approvalQueue } = this.startHook();
+    using callbackStub = new RpcStub(callback);
+    await this.#hookFacet(facetName, props).testDeliver(params, callbackStub, approvalQueue, event);
+    approvalQueue[Symbol.dispose]();
+  }
+
+  /** What a delivery stub the facet minted reaches: the facet's own `[restore]()` target. */
+  async deliverHook(
+    facetName: string, props: GatekeeperProps, params: GitHubHookParams,
+    callback: RpcStub<RpcTarget>, approvalQueue: RpcStub<RpcTarget>, event: unknown,
+  ): Promise<void> {
+    await this.#hookFacet(facetName, props).testDeliver(params, callback, approvalQueue, event);
+  }
+
+  setHookBehavior(behavior: Partial<Omit<HookState, "received">>): void {
+    Object.assign(this.#hook, behavior);
+  }
+
+  /** What the hook received, and what its firings observed, queued and advertised. */
+  readHook() {
+    return { received: this.#hook.received, failures: this.#hook.failures, ...this.#firingQueue.read() };
+  }
+
+  #controller(): HookController<RpcTarget> {
+    const controller = this.ctx.storage.kv.get<HookController<RpcTarget>>("hookController");
+    if (!controller) throw new Error("No hook has been bound.");
+    return controller;
+  }
+
+  #hookFacet(facetName: string, props: GatekeeperProps): HookFacet {
+    return this.ctx.facets.get<GitHubGatekeeperImpl>(facetName, () => ({
+      class: (this.ctx.exports as unknown as TestExports).GitHubGatekeeperImpl({ props }),
+    })) as unknown as HookFacet;
+  }
 }
+
+/** A gadget's hook, sharing its state with the TestHooks object that fires it. */
+type HookState = {
+  /** Each event received, without its capabilities. */
+  received: Omit<GitHubEvent, "issue" | "pullRequest" | "repo">[];
+  /** Fail this many more deliveries. */
+  failures: number;
+  /** Fail this many more `startHook()` calls, as the Workshop refusing a firing would. */
+  admissionFailures: number;
+  /** Queue this comment through each event's issue or pull request. */
+  reply?: string;
+};
+
+/** The facet methods the hook harness calls, two of them installed below for the tests. */
+type HookFacet = {
+  startSession(queue: never): Promise<unknown>;
+  testRestoreThrough(hooks: string, facetName: string, props: GatekeeperProps): Promise<void>;
+  testDeliver(params: GitHubHookParams, callback: unknown, queue: unknown, event: unknown): Promise<void>;
+};
+
+type TestHookDeliveryProps = {
+  hooks: string; facetName: string; props: GatekeeperProps; params: GitHubHookParams;
+};
+
+/** This worker's hook entrypoints, which the gatekeeper's generated `Cloudflare.Exports` omits. */
+type HookExports = {
+  TestHooks: DurableObjectNamespace<TestHooks>;
+  TestHookInitiator(options: { props: { hooks: string } }): Fetcher<TestHookInitiator>;
+  TestHookDelivery(options: { props: TestHookDeliveryProps }): Fetcher<TestHookDelivery>;
+};
+
+function testHooks(exports: Cloudflare.Exports, id: string) {
+  const namespace = (exports as unknown as HookExports).TestHooks;
+  return namespace.get(namespace.idFromString(id));
+}
+
+/** The Overseer's HookInitiator: each firing reaches the TestHooks object that enabled the hook. */
+export class TestHookInitiator extends WorkerEntrypoint<Cloudflare.Env, { hooks: string }> {
+  startHook() {
+    return testHooks(this.ctx.exports, this.ctx.props.hooks).startHook();
+  }
+}
+
+/**
+ * Stands in for the stub the facet mints with ctx.restore(), which this pool cannot do (its
+ * Durable Object wrappers don't forward `[restore]`): it reaches the facet's real `[restore]`
+ * target through TestHooks.
+ */
+export class TestHookDelivery extends WorkerEntrypoint<Cloudflare.Env, TestHookDeliveryProps> {
+  deliver(callback: RpcStub<RpcTarget>, approvalQueue: RpcStub<RpcTarget>, event: unknown) {
+    const { hooks, facetName, props, params } = this.ctx.props;
+    return testHooks(this.ctx.exports, hooks).deliverHook(facetName, props, params, callback, approvalQueue, event);
+  }
+}
+
+/** The queue a subscription binds its hook on: keeps the controller, as the Overseer would. */
+class BindingQueue extends RpcTarget {
+  constructor(private readonly storage: DurableObjectStorage) {
+    super();
+  }
+
+  async bindHook(controller: unknown, _callback: unknown, description: HookDescription): Promise<void> {
+    this.storage.kv.put("hookController", controller);
+    this.storage.kv.put("hookDescription", description);
+  }
+}
+
+class RecordingGitCache extends RpcTarget {
+  constructor(private readonly advertised: string[]) {
+    super();
+  }
+
+  async advertiseCommit(commitId: string): Promise<void> {
+    this.advertised.push(commitId);
+  }
+}
+
+/** The approval queue of every firing: records what the deliveries observed, queued and advertised. */
+class FiringQueue extends RpcTarget {
+  #observations: { title: string; description: string }[] = [];
+  #submissions: { actionId: number; title: string }[] = [];
+  #advertised: string[] = [];
+
+  async authorizeObservation(observation: { title: string; description: string }): Promise<void> {
+    this.#observations.push({ title: observation.title, description: observation.description });
+  }
+
+  async submitAction(actionId: number, description: { title: string }): Promise<void> {
+    this.#submissions.push({ actionId, title: description.title });
+  }
+
+  async getGitCache() {
+    return new RecordingGitCache(this.#advertised);
+  }
+
+  read() {
+    return { observations: this.#observations, submissions: this.#submissions, advertised: this.#advertised };
+  }
+}
+
+/** A gadget's event hook: records each event, and fails or replies as its state says. */
+class RecordingHook extends RpcTarget {
+  constructor(private readonly state: HookState) {
+    super();
+  }
+
+  async receiveEvent(event: GitHubEvent): Promise<void> {
+    const { issue, pullRequest, repo, ...received } =
+      event as GitHubEvent & { issue?: GitHubIssue; pullRequest?: GitHubIssue; repo?: GitHubRepo };
+    try {
+      if (this.state.failures > 0) {
+        this.state.failures--;
+        throw new Error("The test hook failed.");
+      }
+      this.state.received.push(received);
+      if (this.state.reply !== undefined) await (issue ?? pullRequest)?.postComment(this.state.reply);
+    } finally {
+      for (const capability of [issue, pullRequest, repo]) {
+        (capability as Partial<Disposable> | undefined)?.[Symbol.dispose]?.();
+      }
+    }
+  }
+}
+
+type TestGitHub = GitHubGatekeeperImpl & HookFacet;
+const testPrototype = GitHubGatekeeperImpl.prototype as TestGitHub;
+
+/**
+ * Make this facet's ctx.restore() mint TestHookDelivery stubs that route back to `[restore]`,
+ * disposable as a restored stub is.
+ */
+testPrototype.testRestoreThrough = async function(hooks, facetName, props) {
+  const { ctx } = this as unknown as { ctx: DurableObjectState };
+  const exports = ctx.exports as unknown as HookExports;
+  ctx.restore = async (params: GitHubHookParams) => Object.assign(
+    exports.TestHookDelivery({ props: { hooks, facetName, props, params } }), { [Symbol.dispose]() {} });
+};
+
+/** Deliver through the target the facet's `[restore]()` returns for a hook's delivery stub. */
+testPrototype.testDeliver = function(params, callback, queue, event) {
+  return this[restore](params).deliver(callback as never, queue as never, event as never);
+};
