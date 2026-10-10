@@ -141,10 +141,11 @@ const CHECK_INTERVAL_MS = HOUR_MS;
 /** How far back a check reads a webhook's deliveries: two checks' worth, so none falls between. */
 const DELIVERY_LOOKBACK_MS = 2 * CHECK_INTERVAL_MS;
 /**
- * How many redeliveries one check may ask GitHub for, oldest first; the rest wait for the next
- * check, and are lost if they age out of its lookback first. One that fails again is asked for
- * again at the next check, until GitHub stops allowing it after three days: that keeps failures
- * recoverable through an outage, for this many requests an hour at most.
+ * How many redeliveries one check may ask GitHub for, shared fairly among the account's
+ * repositories and oldest first within each; the rest wait for the next check, and are lost if they
+ * age out of its lookback first. One that fails again is asked for again at the next check, until
+ * GitHub stops allowing it after three days: that keeps failures recoverable through an outage, for
+ * this many requests an hour at most.
  */
 const MAX_REDELIVERIES_PER_CHECK = 20;
 /**
@@ -342,20 +343,37 @@ export class GitHubHookDriver extends DurableObject<Env> {
     }
   }
 
-  /** Check each webhook on GitHub (see #checkWebhook), within one budget of redeliveries. */
+  /**
+   * Check each webhook on GitHub (see #checkWebhook), then ask GitHub to redeliver what it failed to
+   * deliver to them, sharing one budget among them so that a busy repository can't starve the rest.
+   */
   async #checkWebhooks(): Promise<void> {
     const kv = this.ctx.storage.kv;
     kv.put("checkAt", Date.now() + CHECK_INTERVAL_MS);
     const account = kv.get<string>("account");
     const url = this.#webhookUrl();
     if (account === undefined || url === undefined) return;
-    let budget = MAX_REDELIVERIES_PER_CHECK;
+    const checked: { webhook: Webhook; failed: GitHubWebhookDeliveryResponse[] }[] = [];
     for (const webhook of this.#webhooks()) {
       try {
-        budget -= await this.#checkWebhook(account, url, webhook, budget);
+        checked.push({ webhook, failed: await this.#checkWebhook(account, url, webhook) });
       } catch (error) {
         // Tried again at the next check.
         logger.warn("failed to check a GitHub webhook", { event: "hooks.webhook.check.failed", error });
+      }
+    }
+    const shares = fairShares(checked.map(({ failed }) => failed.length), MAX_REDELIVERIES_PER_CHECK);
+    for (const [i, { webhook: { id, repo }, failed }] of checked.entries()) {
+      if (shares[i] === 0) continue;
+      try {
+        await this.#api(account, repo, async api => {
+          for (const { id: deliveryId } of failed.slice(0, shares[i])) {
+            await api.redeliverRepoWebhookDelivery(repo.owner, repo.repo, id, deliveryId);
+          }
+        });
+      } catch (error) {
+        // The rest are asked for again at the next check, while it still reads them.
+        logger.warn("failed to have GitHub redeliver to a webhook", { event: "hooks.webhook.redeliver.failed", error });
       }
     }
   }
@@ -364,11 +382,11 @@ export class GitHubHookDriver extends DurableObject<Env> {
    * Bring `webhook` back to what its hooks need if it no longer matches: deleted, deactivated,
    * pointed elsewhere, sending form-encoded payloads, not verifying this deployment's certificate,
    * subscribed to other events, or signing with another secret, which GitHub never shows but which
-   * fails deliveries here with 401. Then ask GitHub to redeliver, oldest first and at most
-   * `budget`, what it failed to deliver lately, as it never does itself.
-   * @returns How many redeliveries it asked for.
+   * fails deliveries here with 401.
+   * @returns What GitHub failed to deliver to it lately, oldest first, to ask it to redeliver, as it
+   *   never does itself.
    */
-  async #checkWebhook(account: string, url: string, { id, repo }: Webhook, budget: number): Promise<number> {
+  async #checkWebhook(account: string, url: string, { id, repo }: Webhook): Promise<GitHubWebhookDeliveryResponse[]> {
     const read = await this.#api(account, repo, async api => {
       try {
         const found = await api.getRepoWebhook(repo.owner, repo.repo, id);
@@ -399,7 +417,7 @@ export class GitHubHookDriver extends DurableObject<Env> {
         });
       });
     }
-    if (read === undefined) return 0;
+    if (read === undefined) return [];
     const { deliveries } = read;
     if (deliveries.length > 0 && !deliveries.some(delivered)) {
       logger.error("GitHub failed every recent delivery to this deployment", {
@@ -407,15 +425,7 @@ export class GitHubHookDriver extends DurableObject<Env> {
         deliveryStatuses: [...new Set(deliveries.map(({ status_code }) => status_code))],
       });
     }
-    const redeliveries = failed.slice(0, budget);
-    if (redeliveries.length > 0) {
-      await this.#api(account, repo, async api => {
-        for (const { id: deliveryId } of redeliveries) {
-          await api.redeliverRepoWebhookDelivery(repo.owner, repo.repo, id, deliveryId);
-        }
-      });
-    }
-    return redeliveries.length;
+    return failed;
   }
 
   /**
@@ -561,6 +571,25 @@ function undelivered(deliveries: GitHubWebhookDeliveryResponse[], finalRefusals:
   return [...latest.values()]
     .filter(delivery => !delivered(delivery) && !finalRefusals.has(delivery.status_code))
     .toReversed();
+}
+
+/**
+ * Split `budget` among `demands` max-min fairly: one each in turn while any wants more, so one that
+ * wants many can't crowd out one that wants a few.
+ */
+function fairShares(demands: number[], budget: number): number[] {
+  const shares = demands.map(() => 0);
+  for (let left = budget, gave = true; gave && left > 0;) {
+    gave = false;
+    for (const [i, demand] of demands.entries()) {
+      if (left > 0 && shares[i] < demand) {
+        shares[i]++;
+        left--;
+        gave = true;
+      }
+    }
+  }
+  return shares;
 }
 
 /** Why GitHub refused to add a webhook, in terms the user can act on. */
