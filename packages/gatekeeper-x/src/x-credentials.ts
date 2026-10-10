@@ -30,7 +30,10 @@ export type StoredIdentity = {
 };
 
 /** A read reservation's answer: allowed, or refused with the limit and when it resets. */
-export type ReadReservation = { ok: true } | { ok: false; limit: number; resetsAt: number };
+export type ReadReservation =
+  /** `day` is the UTC day the reads were reserved against, absent when reads are unlimited. */
+  | { ok: true; day?: string }
+  | { ok: false; limit: number; resetsAt: number };
 
 /** The X gatekeeper's own methods on its verifier, which the overseer hands back only to us. */
 export interface XVerifierApi extends GatekeeperUserVerifier {
@@ -67,7 +70,7 @@ export function readLimitMessage(reservation: { limit: number; resetsAt: number 
 /** The account's daily read budget, which every binding and picker of a connection draws on. */
 export type ReadBudget = {
   reserveReads(count: number): Promise<ReadReservation>;
-  settleReads(reserved: number, actual: number): Promise<void>;
+  settleReads(reserved: number, actual: number, day: string): Promise<void>;
 };
 
 /**
@@ -87,7 +90,7 @@ export async function withinReadLimit<T>(budget: ReadBudget, reserve: number,
     return envelope;
   } finally {
     try {
-      await budget.settleReads(reserve, billed);
+      if (reservation.day !== undefined) await budget.settleReads(reserve, billed, reservation.day);
     } catch (error) {
       logger.warn("failed to settle X reads", { event: "x.reads.settle.failed", error });
     }

@@ -526,13 +526,15 @@ export class UserAccount extends DurableObject<Env> {
       return { ok: false, limit, resetsAt: midnight };
     }
     this.ctx.storage.kv.put("reads", { day, used: used + count });
-    return { ok: true };
+    return { ok: true, day };
   }
 
-  /** Settles a reservation of `reserved` reads with the `actual` count X returned. */
-  async settleReads(reserved: number, actual: number): Promise<void> {
+  /**
+   * Settles a reservation of `reserved` reads, made against `day`, with the `actual` count X
+   * returned. One that outlived its day settles nothing: the new day's count isn't its to change.
+   */
+  async settleReads(reserved: number, actual: number, day: string): Promise<void> {
     if (dailyReadLimit(this.env) === null) return;
-    const day = new Date().toISOString().slice(0, 10);
     const stored = this.ctx.storage.kv.get<{ day: string; used: number }>("reads");
     if (stored?.day !== day) return;
     this.ctx.storage.kv.put("reads", { day, used: Math.max(0, stored.used - reserved + actual) });

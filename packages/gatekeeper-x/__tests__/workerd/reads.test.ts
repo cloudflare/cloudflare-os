@@ -114,6 +114,19 @@ describe("the daily read limit", () => {
     expect(failure(await hooks().run(crypto.randomUUID(), other, [["listReplies"]], { pages: 1 }))).toMatch(/used today's 50 reads/);
   });
 
+  it("settles a read begun before midnight against that day, not the next", async () => {
+    const { userObjectId } = await setup();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-10T23:59:59Z"));
+    const late = unwrap(await hooks().account(userObjectId, "reserveReads", 20)) as { day: string };
+    vi.setSystemTime(new Date("2026-10-11T00:00:01Z"));
+    const early = unwrap(await hooks().account(userObjectId, "reserveReads", 20)) as { day: string };
+    unwrap(await hooks().account(userObjectId, "settleReads", 20, 20, early.day));
+    // The read from before midnight returned nothing, which changes nothing about the new day.
+    unwrap(await hooks().account(userObjectId, "settleReads", 20, 0, late.day));
+    expect(await readsUsed(userObjectId)).toBe(20);
+  });
+
   it("resets at UTC midnight", async () => {
     const { userObjectId, props, name } = await setup();
     await setReadsUsed(userObjectId, 50, "2000-01-01");
