@@ -394,9 +394,12 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     this.ctx.storage.kv.put<Cached<T>>(key, { fetchedAt: Date.now(), value, generation });
   }
 
-  /** TTL cache: GitLab's REST API does not reliably answer conditional requests, so there is no ETag path. */
-  async #cached<T>(key: string, ttlMs: number, loader: () => Promise<T>): Promise<T> {
-    const cached = this.#loadCached<T>(key, ttlMs);
+  /**
+   * TTL cache: GitLab's REST API does not reliably answer conditional requests, so there is no ETag
+   * path. With `fresh`, always asks GitLab, and caches the answer.
+   */
+  async #cached<T>(key: string, ttlMs: number, loader: () => Promise<T>, fresh = false): Promise<T> {
+    const cached = fresh ? undefined : this.#loadCached<T>(key, ttlMs);
     if (cached !== undefined) return cached;
     const generation = this.#cacheGeneration();
     const value = await loader();
@@ -564,9 +567,9 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   /** The project's numeric id, which its webhook and the events that webhook delivers name it by. */
-  async #getProjectId(): Promise<number> {
+  async #getProjectId(fresh = false): Promise<number> {
     return await this.#cached(this.#cacheKey("project-id", this.#projectPath()), ENTITY_CACHE_TTL_MS, async () =>
-      (await this.#withApi(api => api.getProject(this.#projectPath()))).id);
+      (await this.#withApi(api => api.getProject(this.#projectPath()))).id, fresh);
   }
 
   /** A fork's project ref, for a merge request whose source project is not this one. */
@@ -591,17 +594,17 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
   // -- issues and merge requests ----------------------------------------------------------
 
-  async #getRemoteIssueDetails(realId: string): Promise<GitLabIssueDetails> {
+  async #getRemoteIssueDetails(realId: string, fresh = false): Promise<GitLabIssueDetails> {
     return await this.#cached(this.#cacheKey("issue", realId), ENTITY_CACHE_TTL_MS, async () =>
       normalizeIssueDetails(this.#instanceUrl(), this.#projectPath(),
-        await this.#withApi(api => api.getIssue(this.#projectPath(), Number(realId)))));
+        await this.#withApi(api => api.getIssue(this.#projectPath(), Number(realId)))), fresh);
   }
 
   /**
    * The raw merge request, retried once when `diff_refs` is still empty (GitLab computes it
    * asynchronously after creation); the revision reads fall back to `/merge_base` if it stays so.
    */
-  async #getRawMergeRequest(realId: string): Promise<GitLabMergeRequestResponse> {
+  async #getRawMergeRequest(realId: string, fresh = false): Promise<GitLabMergeRequestResponse> {
     return await this.#cached(this.#cacheKey("mr-raw", realId), ENTITY_CACHE_TTL_MS, async () => {
       let mr = await this.#withApi(api => api.getMergeRequest(this.#projectPath(), Number(realId)));
       if (!mr.diff_refs && mr.state === "opened") {
@@ -609,7 +612,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         mr = await this.#withApi(api => api.getMergeRequest(this.#projectPath(), Number(realId)));
       }
       return mr;
-    });
+    }, fresh);
   }
 
   /**
@@ -617,7 +620,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * user): the merge request is still readable without them, but an empty list would claim
    * nobody approved.
    */
-  async #getApprovers(realId: string): Promise<GitLabSimpleUser[] | null> {
+  async #getApprovers(realId: string, fresh = false): Promise<GitLabSimpleUser[] | null> {
     return await this.#cached(this.#cacheKey("mr-approvals", realId), ENTITY_CACHE_TTL_MS, async () => {
       try {
         return (await this.#withApi(api => api.getMergeRequestApprovals(this.#projectPath(), Number(realId))))
@@ -626,16 +629,16 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         if (error instanceof GitLabApiError && (error.status === 404 || error.status === 403)) return null;
         throw error;
       }
-    });
+    }, fresh);
   }
 
-  async #getRemoteMergeRequestDetails(realId: string): Promise<GitLabMergeRequestDetails> {
+  async #getRemoteMergeRequestDetails(realId: string, fresh = false): Promise<GitLabMergeRequestDetails> {
     return await this.#cached(this.#cacheKey("mr", realId), ENTITY_CACHE_TTL_MS, async () => {
-      const raw = this.#getRawMergeRequest(realId);
+      const raw = this.#getRawMergeRequest(realId, fresh);
       const [mr, approvers, sourceProject] = await Promise.all([
-        raw, this.#getApprovers(realId), raw.then(fetched => this.#sourceProjectRef(fetched))]);
+        raw, this.#getApprovers(realId, fresh), raw.then(fetched => this.#sourceProjectRef(fetched))]);
       return normalizeMergeRequestDetails(this.#instanceUrl(), this.#projectPath(), mr, approvers, sourceProject);
-    });
+    }, fresh);
   }
 
   async #getIssueDetails(logicalId: string): Promise<GitLabIssueDetails> {
@@ -1445,9 +1448,10 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     const gitCache = new SessionGitCache(approvalQueue, { withhold: commit => this.isSimulatedCommitId(commit) });
     let event: GitLabEvent;
     try {
-      // The webhook outlives the account's access to the project, and its connection: what an
-      // event's delivery reads, it reads as the account.
-      if (stored.projectId !== await this.#getProjectId()) return;
+      // The webhook outlives the account's access to the project, and its connection, so every
+      // delivery asks GitLab afresh, never the cache, as the account: a revoked account is refused
+      // even moments after a delivery that succeeded.
+      if (stored.projectId !== await this.#getProjectId(true)) return;
       const built = await this.#hookEvent(stored, approvalQueue, capabilities);
       event = built.event;
       await approvalQueue.authorizeObservation(built.observation);
@@ -1481,7 +1485,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     const project = () => held(new GitLabProjectSessionImpl(this, approvalQueue.dup()));
     switch (stored.kind) {
       case "issue": {
-        const info = await this.#getRemoteIssueDetails(String(stored.target.iid));
+        // Afresh too: one cached just before the event would describe the issue before it.
+        const info = await this.#getRemoteIssueDetails(String(stored.target.iid), true);
         return {
           event: { kind: "issue", id, actor, action: stored.action, info, issue: issue(info.id) },
           observation: {
@@ -1493,7 +1498,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         };
       }
       case "mergeRequest": {
-        const info = await this.#getRemoteMergeRequestDetails(String(stored.target.iid));
+        const info = await this.#getRemoteMergeRequestDetails(String(stored.target.iid), true);
         const action = MERGE_REQUEST_ACTION_WORDS[stored.action];
         return {
           event: { kind: "mergeRequest", id, actor, action: stored.action, info, mergeRequest: mergeRequest(info.id) },

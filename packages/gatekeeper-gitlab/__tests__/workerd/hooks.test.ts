@@ -98,16 +98,16 @@ function pushHook(kind: "push" | "tag_push", ref: string, before: string, head: 
 }
 
 /** The REST shapes of the issue and merge request whose events are delivered. */
-function issueRest(iid: number): Row {
+function issueRest(iid: number, state = "opened"): Row {
   return {
-    ...fx.issueResponse.data, iid, project_id: PROJECT_ID, title: "Crash on start", state: "opened",
-    closed_at: null, web_url: `${WEB}/${PROJECT}/-/issues/${iid}`, labels: ["bug"],
+    ...fx.issueResponse.data, iid, project_id: PROJECT_ID, title: "Crash on start", state,
+    closed_at: state === "closed" ? CREATED : null, web_url: `${WEB}/${PROJECT}/-/issues/${iid}`, labels: ["bug"],
   };
 }
 
-function mergeRequestRest(iid: number): Row {
+function mergeRequestRest(iid: number, state = "opened"): Row {
   return {
-    ...fx.mergeRequestResponse.data, iid, project_id: PROJECT_ID, source_project_id: PROJECT_ID,
+    ...fx.mergeRequestResponse.data, iid, state, project_id: PROJECT_ID, source_project_id: PROJECT_ID,
     target_project_id: PROJECT_ID, title: "Fix the crash", source_branch: "fix", target_branch: "main",
     sha: HEAD, diff_refs: { base_sha: BASE, head_sha: HEAD, start_sha: BASE },
     web_url: `${WEB}/${PROJECT}/-/merge_requests/${iid}`,
@@ -158,6 +158,10 @@ class FakeGitLabHooks {
   signs = true;
   readonly webhooks = new Map<number, Webhook>();
   readonly deleted: number[] = [];
+  /** Each issue's and merge request's state by iid, `"opened"` unless set. */
+  readonly states = { issue: new Map<number, string>(), mergeRequest: new Map<number, string>() };
+  /** Each merge request's approvals by iid, the fixture's unless set. */
+  readonly approvals = new Map<number, Row[]>();
   /** Every delivery attempt, oldest first. */
   readonly log: Delivery[] = [];
   /** The logged attempts the driver had resent, by id. */
@@ -180,13 +184,18 @@ class FakeGitLabHooks {
       .on("GET", new RegExp(`^/api/v4/projects/${P}$`), () => this.readable
         ? json({ ...fx.projectResponse.data, id: PROJECT_ID, path_with_namespace: PROJECT, web_url: `${WEB}/${PROJECT}` })
         : notFound())
-      .on("GET", new RegExp(`^/api/v4/projects/${P}/issues/(\\d+)\\?`), request => this.readable
-        ? json(issueRest(Number(/issues\/(\d+)/.exec(request.url.pathname)![1])))
-        : notFound())
-      .on("GET", new RegExp(`^/api/v4/projects/${P}/merge_requests/(\\d+)\\?`), request => this.readable
-        ? json(mergeRequestRest(Number(/merge_requests\/(\d+)/.exec(request.url.pathname)![1])))
-        : notFound())
-      .on("GET", new RegExp(`^/api/v4/projects/${P}/merge_requests/\\d+/approvals$`), () => json(fx.approvalsResponse.data))
+      .on("GET", new RegExp(`^/api/v4/projects/${P}/issues/(\\d+)\\?`), request => {
+        const iid = Number(/issues\/(\d+)/.exec(request.url.pathname)![1]);
+        return this.readable ? json(issueRest(iid, this.states.issue.get(iid))) : notFound();
+      })
+      .on("GET", new RegExp(`^/api/v4/projects/${P}/merge_requests/(\\d+)\\?`), request => {
+        const iid = Number(/merge_requests\/(\d+)/.exec(request.url.pathname)![1]);
+        return this.readable ? json(mergeRequestRest(iid, this.states.mergeRequest.get(iid))) : notFound();
+      })
+      .on("GET", new RegExp(`^/api/v4/projects/${P}/merge_requests/\\d+/approvals$`), request => {
+        const iid = Number(/merge_requests\/(\d+)/.exec(request.url.pathname)![1]);
+        return json({ ...fx.approvalsResponse.data, approved_by: this.approvals.get(iid) ?? fx.approvalsResponse.data.approved_by });
+      })
       .on("GET", new RegExp(`^${HOOKS}\\?`), () => this.maintainer
         ? json([...this.webhooks.values()].map(webhook => this.#reported(webhook)))
         : json({ message: "403 Forbidden" }, { status: 403 }))
@@ -966,6 +975,52 @@ it("changes nothing on GitLab while its webhook is intact, and stops checking wi
   expect(webhookRequests()).toEqual(["DELETE"]);
   expect(gitlab.webhooks.has(id)).toBe(false);
   expect(await runInDurableObject(driver(account), (_instance, state) => state.storage.getAlarm())).toBeNull();
+});
+
+it("delivers nothing once the account can no longer read the project, even just after a delivery", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+
+  // The first delivery caches the project's id and the issue's details, which no later one trusts.
+  await gitlab.deliver("Issue Hook", issueHook("open", 42));
+  await settled(account);
+  gitlab.readable = false;
+  await gitlab.deliver("Issue Hook", issueHook("reopen", 42));
+  await gitlab.deliver("Note Hook", noteHook("Issue", 42, "Meanwhile.", { id: 7 }));
+  await settled(account);
+
+  const { received, observations } = await triage.read();
+  expect(received).toEqual([expect.objectContaining({ kind: "issue", action: "opened" })]);
+  expect(observations).toHaveLength(1);
+});
+
+it.each([
+  ["an issue's", "issue" as const, "close", { state: "closed" }],
+  ["a merge request's", "mergeRequest" as const, "merge",
+    { state: "merged", approvedBy: [expect.objectContaining({ username: "root" })] }],
+])("gives %s event it as GitLab has it then, not as a read just before cached it", async (_, kind, action, then) => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe({ events: [kind] });
+  await triage.enable();
+
+  // Read while open, and a merge request before anyone approved it.
+  gitlab.approvals.set(42, []);
+  const read = kind === "issue"
+    ? await unwrap(await triage.hooks.openIssue(triage.scenario, triage.props, "42"))
+    : await unwrap(await triage.hooks.openMergeRequest(triage.scenario, triage.props, "42"));
+  expect(read).toMatchObject({ state: "opened" });
+  gitlab.states[kind].set(42, then.state);
+  gitlab.approvals.delete(42);
+  if (kind === "issue") await gitlab.deliver("Issue Hook", issueHook(action, 42));
+  else await gitlab.deliver("Merge Request Hook", mergeRequestHook(action, 42, { state: then.state }));
+  await settled(account);
+
+  expect((await triage.read()).received).toEqual([expect.objectContaining({ info: expect.objectContaining(then) })]);
 });
 
 it("delivers nothing once the account can no longer read the project", async () => {
