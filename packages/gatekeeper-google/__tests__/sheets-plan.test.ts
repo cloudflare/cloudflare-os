@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { prepareChanges } from "../src/sheets-input";
+import { enteredOf, type EnteredValue } from "../src/sheets-model";
 import { guardDigest, planSheet, resolveChanges } from "../src/sheets-plan";
-import type { SpreadsheetCellValue } from "../src/sheets-read-types";
 import type { PlannedChange, SheetMeta } from "../src/sheets-simulation";
 import type { SheetChange } from "../src/sheets-types";
 import { ChangeConflict } from "../src/slides-text";
@@ -103,31 +103,52 @@ describe("Sheets apply guard", () => {
     { op: "clearRange", sheetId: 7, rect: rect(2, 2, 2, 1) },
   ];
   let [stored, later] = WHITESPACE_DRIFT;
-  let entered: SpreadsheetCellValue[][][] = [[["old", stored]], [[3], [null]]];
-  let digest = (overrides: { sheets?: SheetMeta[]; entered?: SpreadsheetCellValue[][][] } = {}) =>
+  let entered: EnteredValue[][][] = [[["old", { formula: stored }]], [[3], [null]]];
+  let digest = (overrides: { sheets?: SheetMeta[]; entered?: EnteredValue[][][] } = {}) =>
     guardDigest(overrides.sheets ?? SHEETS, changes, overrides.entered ?? entered);
+  // The digest with `value` entered in the batch's first cell.
+  let withFirst = (value: EnteredValue) => digest({ entered: [[[value, { formula: stored }]], [[3], [null]]] });
 
   it("is a hex SHA-256, unchanged by whitespace Google drops from a formula", async () => {
     let base = await digest();
     expect(base).toMatch(/^[0-9a-f]{64}$/);
-    expect(await digest({ entered: [[["old", later]], [[3], [null]]] })).toBe(base);
-    // A row Google trims of trailing blanks reads the same as one padded with them.
-    expect(await digest({ entered: [[["old", stored]], [[3]]] })).toBe(base);
-    expect(await digest({ entered: [[["old", stored]], [[3], [""]]] })).toBe(base);
+    expect(await digest({ entered: [[["old", { formula: later }]], [[3], [null]]] })).toBe(base);
+    // A cell left out is blank.
+    expect(await digest({ entered: [[["old", { formula: stored }]], [[3]]] })).toBe(base);
     // Zero and false are values, not blanks.
-    expect(await digest({ entered: [[["old", stored]], [[3], [0]]] })).not.toBe(base);
-    expect(await digest({ entered: [[["old", stored]], [[3], [false]]] })).not.toBe(base);
+    expect(await digest({ entered: [[["old", { formula: stored }]], [[3], [0]]] })).not.toBe(base);
+    expect(await digest({ entered: [[["old", { formula: stored }]], [[3], [false]]] })).not.toBe(base);
+  });
+
+  it("digests text exactly, though formula-mode reads cannot tell it from a formula", async () => {
+    expect(await withFirst("=order 123")).not.toBe(await withFirst("=order123"));
+    expect(await withFirst(stored)).not.toBe(await withFirst(later));
+    expect(await withFirst("=1")).not.toBe(await withFirst({ formula: "=1" }));
+    expect(await withFirst({ error: "REF" })).not.toBe(await withFirst("#REF!"));
+    expect(await withFirst({ error: "REF" })).not.toBe(await withFirst({ formula: "REF" }));
+    expect(await withFirst({ error: "REF" })).not.toBe(await withFirst({ error: "N_A" }));
+    // Nor can text pass for a tagged value.
+    expect(await withFirst({ formula: "=1" })).not.toBe(await withFirst('["f","=1"]'));
   });
 
   it("changes with a value, a sheet's title or its size", async () => {
     let base = await digest();
-    expect(await digest({ entered: [[["new", stored]], [[3], [null]]] })).not.toBe(base);
-    expect(await digest({ entered: [[["old", "=Sales!$D$4 + 1"]], [[3], [null]]] })).not.toBe(base);
-    expect(await digest({ entered: [[["old", stored]], [["3"], [null]]] })).not.toBe(base);
+    expect(await digest({ entered: [[["new", { formula: stored }]], [[3], [null]]] })).not.toBe(base);
+    expect(await digest({ entered: [[["old", { formula: "=Sales!$D$4 + 1" }]], [[3], [null]]] })).not.toBe(base);
+    expect(await digest({ entered: [[["old", { formula: stored }]], [["3"], [null]]] })).not.toBe(base);
     expect(await digest({ sheets: [sheet(0, "Sales"), { ...SHEETS[1], title: "Its" }] })).not.toBe(base);
     expect(await digest({ sheets: [sheet(0, "Sales", { rowCount: 21 }), SHEETS[1]] })).not.toBe(base);
     expect(await digest({ sheets: [SHEETS[1]] })).not.toBe(base);
     // A sheet no change writes is not part of it.
     expect(await digest({ sheets: [...SHEETS, sheet(9, "Other")] })).toBe(base);
+  });
+});
+
+describe("Entered values", () => {
+  it("enters input starting with = as a formula, and any other input as itself", () => {
+    expect(enteredOf("=order 123")).toEqual({ formula: "=order 123" });
+    expect(enteredOf("#REF!")).toBe("#REF!");
+    expect(enteredOf("'=quoted")).toBe("'=quoted");
+    expect([enteredOf(5), enteredOf(false), enteredOf(null)]).toEqual([5, false, null]);
   });
 });

@@ -9,7 +9,7 @@
 
 import { canonicalFormula, compactFormula } from "./sheets-formula";
 import { MAX_CELL_LENGTH, type PreparedChange } from "./sheets-input";
-import { cellName, findSheet, isFormula, type Rect } from "./sheets-model";
+import { cellName, findSheet, isFormula, type EnteredValue, type Rect } from "./sheets-model";
 import type { Grid, PlannedChange, SheetMeta } from "./sheets-simulation";
 import type { SheetCellInput } from "./sheets-types";
 import { ChangeConflict } from "./slides-text";
@@ -128,15 +128,22 @@ export function planSheet(
   return { grid: { sheets: grid.sheets, cells }, requests };
 }
 
+// A cell as the digest encodes it: text, numbers, booleans and blanks as themselves, a formula or
+// an error tagged, so no two kinds of value encode alike.
+function digested(value: EnteredValue): unknown {
+  if (value === null || typeof value !== "object") return value;
+  return "formula" in value ? ["f", compactFormula(value.formula)] : ["e", value.error];
+}
+
 /**
  * A hex SHA-256 of what `changes` overwrite: the size and title of each sheet they write, and the
- * cells they write as entered (`entered[i]`, the values of `changes[i]`'s cells in formula mode).
- * Whitespace in formulas is ignored, since Google may change it in a formula nobody edits.
+ * cells they write as entered (`entered[i]`, those of `changes[i]`). Whitespace in a formula is
+ * ignored, since Google may change it in a formula nobody edits; text is digested exactly.
  */
 export async function guardDigest(
   sheets: readonly SheetMeta[],
   changes: readonly PlannedChange[],
-  entered: readonly (readonly (readonly SheetCellInput[])[])[],
+  entered: readonly (readonly (readonly EnteredValue[])[])[],
 ): Promise<string> {
   let ids = [...new Set(changes.map(change => change.sheetId))].toSorted((a, b) => a - b);
   let described = ids.map(id => {
@@ -147,11 +154,7 @@ export async function guardDigest(
     let values: unknown[] = [];
     for (let row = rect.startRow; row < rect.endRow; row++) {
       for (let column = rect.startColumn; column < rect.endColumn; column++) {
-        // Google answers a blank cell before the last value of a row with "", and leaves out one
-        // after it, so the two are the same.
-        let given = entered[i]?.[row - rect.startRow]?.[column - rect.startColumn];
-        let value = given === undefined || given === "" ? null : given;
-        values.push(typeof value === "string" && isFormula(value) ? compactFormula(value) : value);
+        values.push(digested(entered[i]?.[row - rect.startRow]?.[column - rect.startColumn] ?? null));
       }
     }
     return values;

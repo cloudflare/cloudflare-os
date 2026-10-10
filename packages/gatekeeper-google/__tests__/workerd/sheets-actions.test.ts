@@ -1,11 +1,13 @@
 import { env } from "cloudflare:test";
 import { APPLY_OUTCOME_UNKNOWN_MESSAGE } from "@gadgets/gatekeeper-kit/actions";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { a1Of, parseRange, type Rect } from "../../src/sheets-model";
+import { a1Of, enteredOf, parseRange, type EnteredValue, type Rect } from "../../src/sheets-model";
 import type { SpreadsheetInfo, SpreadsheetRange, SpreadsheetValueMode } from "../../src/sheets-read-types";
 import type { SheetMeta } from "../../src/sheets-simulation";
 import type { SheetCellInput, SheetChange } from "../../src/sheets-types";
-import { protectedRange, sheet as sheetMeta, spreadsheetMetadata, type FixtureGridRange } from "../sheets-fixture";
+import {
+  protectedRange, sheet as sheetMeta, spreadsheetMetadata, WHITESPACE_DRIFT, type FixtureGridRange,
+} from "../sheets-fixture";
 
 type BatchRequest = Record<string, any>;
 
@@ -16,14 +18,23 @@ type ProviderSheet = SheetMeta & { protectedRanges?: ReturnType<typeof protected
 
 const key = (sheetId: number, row: number, column: number) => `${sheetId}:${row}:${column}`;
 
+/** A cell's `userEnteredValue`, as Google returns it. */
+function userEnteredValue(value: Exclude<EnteredValue, null>): Record<string, unknown> {
+  if (typeof value === "object") {
+    return "formula" in value ? { formulaValue: value.formula } : { errorValue: { type: value.error } };
+  }
+  return typeof value === "string" ? { stringValue: value }
+    : typeof value === "number" ? { numberValue: value } : { boolValue: value };
+}
+
 /**
  * Google Sheets as far as these tests need it: metadata honouring its field mask, value reads in
- * each mode, data-filter reads answered out of order, developer metadata, Drive's `canEdit`, and
- * an atomic `batchUpdate` of the requests the gatekeeper sends.
+ * each mode, typed grid reads by data filter, developer metadata, Drive's `canEdit`, and an atomic
+ * `batchUpdate` of the requests the gatekeeper sends.
  */
 class SheetsProvider {
   title = "Budget";
-  cells = new Map<string, SheetCellInput>();
+  cells = new Map<string, EnteredValue>();
   /** The results of formulas, by their text; any other formula computes 0. */
   results: Record<string, number> = {};
   markers = new Map<number, { metadataKey: string; metadataValue: string }>();
@@ -60,7 +71,7 @@ class SheetsProvider {
       }
       let path = url.pathname.replace("/v4/spreadsheets/sheet-1", "");
       if (path === ":batchUpdate") return this.#batch((await request.json() as { requests: BatchRequest[] }).requests);
-      if (path === "/values:batchGetByDataFilter") return this.#byDataFilter(await request.json());
+      if (path === ":getByDataFilter") return this.#gridData(url, await request.json());
       if (path === "/values:batchGet") return this.#batchGet(url);
       let metadataId = path.match(/^\/developerMetadata\/(\d+)$/)?.[1];
       if (metadataId !== undefined) {
@@ -75,15 +86,20 @@ class SheetsProvider {
     return this;
   }
 
-  /** A collaborator's edit of one cell, named as in `Sales!B2`. */
+  /** A collaborator's edit of one cell, named as in `Sales!B2`, input starting `=` a formula. */
   set(name: string, value: SheetCellInput): void {
+    this.enter(name, enteredOf(value));
+  }
+
+  /** A collaborator's edit of one cell, entered as `value`. */
+  enter(name: string, value: EnteredValue): void {
     let { sheet: title, rect } = parseRange(name);
     let id = this.sheets.find(s => s.title === title)!.id;
     if (value === null) this.cells.delete(key(id, rect.startRow, rect.startColumn));
     else this.cells.set(key(id, rect.startRow, rect.startColumn), value);
   }
 
-  get(name: string): SheetCellInput {
+  get(name: string): EnteredValue {
     let { sheet: title, rect } = parseRange(name);
     let id = this.sheets.find(s => s.title === title)!.id;
     return this.cells.get(key(id, rect.startRow, rect.startColumn)) ?? null;
@@ -106,11 +122,14 @@ class SheetsProvider {
     return Response.json(body);
   }
 
-  #shown(value: SheetCellInput, mode: string): SheetCellInput {
-    let raw = typeof value === "string" && value.startsWith("=") ? this.results[value] ?? 0 : value;
-    if (mode === "FORMULA") return value;
-    if (mode === "UNFORMATTED_VALUE") return raw;
-    return typeof raw === "boolean" ? String(raw).toUpperCase() : raw === null ? null : String(raw);
+  #shown(value: EnteredValue, mode: string): SheetCellInput {
+    if (value !== null && typeof value === "object") {
+      if ("error" in value) return `#${value.error} ()`;
+      if (mode === "FORMULA") return value.formula;
+      value = this.results[value.formula] ?? 0;
+    }
+    if (mode !== "FORMATTED_VALUE") return value;
+    return typeof value === "boolean" ? String(value).toUpperCase() : value === null ? null : String(value);
   }
 
   /** The cells of `rect` of a sheet, clipped to its grid, with trailing blanks trimmed. */
@@ -146,22 +165,36 @@ class SheetsProvider {
     });
   }
 
-  #byDataFilter(body: { dataFilters: { gridRange: Required<FixtureGridRange> }[]; valueRenderOption: string }): Response {
-    expect(body.valueRenderOption).toBe("FORMULA");
-    let answers = body.dataFilters.map(({ gridRange }) => {
-      let sheet = this.sheets.find(s => s.id === gridRange.sheetId)!;
-      let { rect, values } = this.#values(sheet, {
-        startRow: gridRange.startRowIndex, endRow: gridRange.endRowIndex,
-        startColumn: gridRange.startColumnIndex, endColumn: gridRange.endColumnIndex,
-      }, "FORMULA");
-      return {
-        valueRange: { range: a1Of(sheet.title, rect), majorDimension: "ROWS", ...(values ? { values } : {}) },
-        // Echoed with its zero fields left out.
-        dataFilters: [{ gridRange: Object.fromEntries(Object.entries(gridRange).filter(([, v]) => v !== 0)) }],
-      };
+  /**
+   * One entry per sheet a filter names, in the spreadsheet's order rather than the order asked,
+   * with a block of typed cells per filter. A start of 0 and blanks at the end are left out.
+   */
+  #gridData(url: URL, body: { dataFilters: { gridRange: Required<FixtureGridRange> }[]; includeGridData: boolean }): Response {
+    expect(url.searchParams.get("fields"))
+      .toBe("sheets(properties(sheetId),data(startRow,startColumn,rowData(values(userEnteredValue))))");
+    expect(body.includeGridData).toBe(true);
+    let sheets = this.sheets.toSorted((a, b) => a.index - b.index).flatMap(sheet => {
+      let blocks = body.dataFilters.filter(({ gridRange }) => gridRange.sheetId === sheet.id).map(({ gridRange }) => {
+        let rowData: { values?: Record<string, unknown>[] }[] = [];
+        for (let row = gridRange.startRowIndex; row < Math.min(gridRange.endRowIndex, sheet.rowCount); row++) {
+          let values: Record<string, unknown>[] = [];
+          for (let column = gridRange.startColumnIndex; column < Math.min(gridRange.endColumnIndex, sheet.columnCount); column++) {
+            let value = this.cells.get(key(sheet.id, row, column)) ?? null;
+            values.push(value === null ? {} : { userEnteredValue: userEnteredValue(value) });
+          }
+          while (values.length > 0 && !values.at(-1)!.userEnteredValue) values.pop();
+          rowData.push(values.length > 0 ? { values } : {});
+        }
+        while (rowData.length > 0 && !rowData.at(-1)!.values) rowData.pop();
+        return {
+          ...(gridRange.startRowIndex ? { startRow: gridRange.startRowIndex } : {}),
+          ...(gridRange.startColumnIndex ? { startColumn: gridRange.startColumnIndex } : {}),
+          ...(rowData.length > 0 ? { rowData } : {}),
+        };
+      });
+      return blocks.length > 0 ? [{ properties: sheet.id === 0 ? {} : { sheetId: sheet.id }, data: blocks }] : [];
     });
-    // Not in the order asked.
-    return Response.json({ valueRanges: answers.toReversed() });
+    return Response.json({ sheets });
   }
 
   #batch(requests: BatchRequest[]): Response {
@@ -210,7 +243,7 @@ class SheetsProvider {
   }
 
   #apply(
-    request: BatchRequest, cells: Map<string, SheetCellInput>,
+    request: BatchRequest, cells: Map<string, EnteredValue>,
     markers: Map<number, { metadataKey: string; metadataValue: string }>,
   ): void {
     if (request.createDeveloperMetadata) {
@@ -230,8 +263,8 @@ class SheetsProvider {
           // A cell `rows` leaves out is cleared.
           let entered = rows?.[row - range.startRowIndex]?.values?.[column - range.startColumnIndex]
             ?.userEnteredValue;
-          let value = entered?.formulaValue ?? entered?.stringValue ?? entered?.numberValue ??
-            entered?.boolValue ?? null;
+          let value: EnteredValue = entered?.formulaValue !== undefined ? { formula: entered.formulaValue }
+            : entered?.stringValue ?? entered?.numberValue ?? entered?.boolValue ?? null;
           if (value === null) cells.delete(key(sheet.id, row, column));
           else cells.set(key(sheet.id, row, column), value);
         }
@@ -415,7 +448,7 @@ describe("Google Sheets changes", () => {
         },
       },
     ]);
-    expect(provider.get("Sales!D2")).toBe("=sum(Sales!B2:C2)");
+    expect(provider.get("Sales!D2")).toEqual({ formula: "=sum(Sales!B2:C2)" });
   });
 
   it("names a sheet exactly when the description cannot, and quotes a formula with a line break", async () => {
@@ -538,6 +571,38 @@ describe("Google Sheets changes", () => {
       "This change no longer applies: cells it overwrites, or a sheet it writes to, changed since it " +
       "was queued.");
     expect(provider.get("Sales!B2")).toBe("edited");
+  });
+
+  it.each([
+    ["respaced text", "=order 123", "=order123"],
+    ["text retyped as a formula", "=1", { formula: "=1" }],
+    ["an error value retyped as text", { error: "REF" }, "#REF!"],
+  ] as const)("refuses to overwrite %s, which formula-mode reads cannot tell apart", async (_case, was, edited) => {
+    let provider = budget();
+    provider.enter("Sales!B2", was);
+    let sheets = gatekeeper();
+    let { actionId } = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[7]] }]);
+
+    provider.enter("Sales!B2", edited);
+
+    expect(await sheets.apply(actionId!)).toBe(
+      "This change no longer applies: cells it overwrites, or a sheet it writes to, changed since it " +
+      "was queued.");
+    expect(provider.batches).toEqual([]);
+    expect(provider.get("Sales!B2")).toEqual(edited);
+  });
+
+  it("overwrites a formula whose whitespace Google dropped since the change was queued", async () => {
+    let [stored, later] = WHITESPACE_DRIFT;
+    let provider = budget();
+    provider.set("Sales!B2", stored);
+    let sheets = gatekeeper();
+    let { actionId } = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[7]] }]);
+
+    provider.set("Sales!B2", later);
+
+    expect(await sheets.apply(actionId!)).toBeNull();
+    expect(provider.get("Sales!B2")).toBe(7);
   });
 
   it("asks for a restart only when rejecting a change that later ones were built on", async () => {

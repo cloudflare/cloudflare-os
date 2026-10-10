@@ -119,9 +119,11 @@ describe("Sheets queued changes in reads", () => {
     let queuedGrid = applyChange(grid([SALES]), queued(1, [
       { op: "writeCells", sheetId: 0, rect: rect(0, 0, 1, 2), values: [["=A9", null]] },
     ]).action);
-    let changes: PlannedChange[] = [{ op: "clearRange", sheetId: 0, rect: rect(0, 1, 2) }];
-    // B1 and B2 as Google holds them; B1 is queued to be cleared, so it reads null; Google trims B2.
-    expect(asQueued(queuedGrid, changes, [[["was"]]])).toEqual([[[null], [null]]]);
-    expect(asQueued(grid([SALES]), changes, [[["was"], [7]]])).toEqual([[["was"], [7]]]);
+    let changes: PlannedChange[] = [{ op: "clearRange", sheetId: 0, rect: rect(0, 0, 2, 2) }];
+    // A1:B2 as Google holds it. A1 is queued to hold a formula and B1 to be cleared; B2 is left out.
+    expect(asQueued(queuedGrid, changes, [[["=A9", "was"], [{ formula: "=A2" }]]]))
+      .toEqual([[[{ formula: "=A9" }, null], [{ formula: "=A2" }, null]]]);
+    expect(asQueued(grid([SALES]), changes, [[["=A9", "was"], [{ error: "REF" }, 7]]]))
+      .toEqual([[["=A9", "was"], [{ error: "REF" }, 7]]]);
   });
 });

@@ -11,7 +11,7 @@ import {
 } from "../../src/sheets";
 import type { QueuedChange } from "../../src/sheets-simulation";
 import type { GoogleSpreadsheetSession } from "../../src/sheets-types";
-import { protectedRange, rect, sheet, spreadsheetMetadata } from "../sheets-fixture";
+import { ENTERED_READS, protectedRange, rect, sheet, spreadsheetMetadata } from "../sheets-fixture";
 
 class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   readonly observations: ObservationDescription[] = [];
@@ -201,5 +201,91 @@ describe("Google Sheets spreadsheet session", () => {
       { op: "writeCells", range: "Sales!A1", values: [["x"]] },
     ]))).rejects.toThrow('The RPC receiver does not implement the method "updateSheet".');
     expect(providerFetches).toHaveLength(1);
+  });
+});
+
+/** Answers every request with `answer`, recording each. */
+function answering(answer: unknown): Request[] {
+  let requests: Request[] = [];
+  vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    requests.push(new Request(input, init));
+    return Response.json(answer);
+  }));
+  return requests;
+}
+
+describe("Google Sheets entered values", () => {
+  let api = new GoogleSheetsApi(async () => "access-token");
+  let areas = [
+    { sheetId: 7, rect: rect(2, 1, 2, 3) },
+    { sheetId: 0, rect: rect(0, 0, 3, ENTERED_READS.length) },
+    { sheetId: 0, rect: rect(5, 3, 1, 2) },
+  ];
+
+  it("places each cell by the sheet and position Google gives it, whatever order it answers in", async () => {
+    // One entry per sheet, in the spreadsheet's order, with a block per range in the order asked.
+    // Google leaves out a sheet ID or start of 0, blank cells and rows at the end, and the value of
+    // a blank cell before them.
+    let requests = answering({
+      sheets: [
+        {
+          properties: {},
+          data: [
+            {
+              rowData: [
+                { values: ENTERED_READS.map(([userEnteredValue]) => ({ userEnteredValue })) },
+                {},
+                { values: [{}, { userEnteredValue: { numberValue: 0 } }] },
+              ],
+            },
+            { startRow: 5, startColumn: 3, rowData: [{ values: [{ userEnteredValue: { boolValue: false } }] }] },
+          ],
+        },
+        {
+          properties: { sheetId: 7 },
+          data: [{ startRow: 2, startColumn: 1, rowData: [{ values: [{}, {}, { userEnteredValue: { stringValue: "x" } }] }] }],
+        },
+      ],
+    });
+
+    let blank = ENTERED_READS.map(() => null);
+    expect(await api.readEntered("sheet-1", areas)).toEqual([
+      [[null, null, "x"], [null, null, null]],
+      [
+        ["=order 123", "=quoted", { formula: "=1/0" }, "#REF!", { error: "REF" }, { error: "DIVIDE_BY_ZERO" }],
+        blank,
+        [null, 0, ...blank.slice(2)],
+      ],
+      [[false, null]],
+    ]);
+
+    // Only the cells' entered values are asked for, never who may edit them.
+    expect(requests).toHaveLength(1);
+    let url = new URL(requests[0].url);
+    expect(url.pathname).toBe("/v4/spreadsheets/sheet-1:getByDataFilter");
+    expect(url.searchParams.get("fields"))
+      .toBe("sheets(properties(sheetId),data(startRow,startColumn,rowData(values(userEnteredValue))))");
+    expect(url.searchParams.get("prettyPrint")).toBe("false");
+    expect(await requests[0].json()).toEqual({
+      dataFilters: areas.map(({ sheetId, rect: { startRow, endRow, startColumn, endColumn } }) => ({
+        gridRange: {
+          sheetId, startRowIndex: startRow, endRowIndex: endRow, startColumnIndex: startColumn,
+          endColumnIndex: endColumn,
+        },
+      })),
+      includeGridData: true,
+    });
+  });
+
+  it("refuses an answer without a block where a range starts", async () => {
+    answering({
+      sheets: [
+        { properties: {}, data: [{}, { startRow: 5, startColumn: 3 }] },
+        { properties: { sheetId: 7 }, data: [{ startRow: 2 }] },
+      ],
+    });
+
+    await expect(api.readEntered("sheet-1", areas))
+      .rejects.toThrow("Google Sheets did not return every range it was asked for.");
   });
 });

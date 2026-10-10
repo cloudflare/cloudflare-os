@@ -15,9 +15,11 @@ import type { TaggedAction } from "@gadgets/gatekeeper-kit/actions";
 import {
   replaySimulation, type SimulationResult, type SimulationStep,
 } from "@gadgets/gatekeeper-kit/simulation";
-import { cellName, intersection, shownValue, type Rect } from "./sheets-model";
+import {
+  cellName, enteredOf, intersection, shownValue, type EnteredValue, type Rect,
+} from "./sheets-model";
 import { cellKey, planSheet } from "./sheets-plan";
-import type { SpreadsheetCellValue, SpreadsheetRange, SpreadsheetValueMode } from "./sheets-read-types";
+import type { SpreadsheetRange, SpreadsheetValueMode } from "./sheets-read-types";
 import { ChangeConflict } from "./slides-text";
 import type { SheetCellInput } from "./sheets-types";
 
@@ -133,17 +135,17 @@ export function buildsOn(pending: readonly QueuedChange[], changes: readonly Pla
 }
 
 /**
- * `entered`, what Google holds in each of `changes`' cells in formula mode, with what queued
- * changes enter in them, as `grid` records it.
+ * `entered`, what Google holds in each of `changes`' cells as entered, with what queued changes
+ * enter in them, as `grid` records it.
  */
 export function asQueued(
   grid: Grid, changes: readonly PlannedChange[],
-  entered: readonly (readonly (readonly SpreadsheetCellValue[])[])[],
-): SheetCellInput[][][] {
+  entered: readonly (readonly (readonly EnteredValue[])[])[],
+): EnteredValue[][][] {
   return changes.map(({ sheetId, rect }, i) =>
     Array.from({ length: rect.endRow - rect.startRow }, (_, r) =>
       Array.from({ length: rect.endColumn - rect.startColumn }, (_, c) => {
         let key = cellKey(sheetId, rect.startRow + r, rect.startColumn + c);
-        return grid.cells.has(key) ? grid.cells.get(key)! : entered[i]?.[r]?.[c] ?? null;
+        return grid.cells.has(key) ? enteredOf(grid.cells.get(key)!) : entered[i]?.[r]?.[c] ?? null;
       })));
 }

@@ -4,7 +4,9 @@ import type {
 } from "./sheets-read-types";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import { readGoogleJson } from "./google-response";
-import { parseRange, validateRange, type Rect, type ValidatedRange } from "./sheets-model";
+import {
+  parseRange, validateRange, type EnteredValue, type Rect, type ValidatedRange,
+} from "./sheets-model";
 
 const API_BASE = "https://sheets.googleapis.com/v4/spreadsheets";
 const MAX_RANGES = 20;
@@ -19,6 +21,9 @@ const SHEET_PROPERTIES_FIELDS =
 // Never `editors`: it lists collaborators' email addresses.
 const PROTECTED_RANGE_FIELDS =
   "protectedRanges(range,unprotectedRanges,requestingUserCanEdit,warningOnly)";
+// Each range's position, which Google leaves out where it is 0, and its cells as entered.
+const ENTERED_FIELDS =
+  "sheets(properties(sheetId),data(startRow,startColumn,rowData(values(userEnteredValue))))";
 
 /** A `GridRange`. Google omits each index that is 0, and an end that is unbounded. */
 type RestGridRange = {
@@ -52,6 +57,25 @@ type RestSpreadsheet = {
 type RestValueRange = {
   range?: string;
   values?: unknown[][];
+};
+
+/** A cell's `userEnteredValue`: one of these, or none for a blank cell. */
+type RestExtendedValue = {
+  formulaValue?: unknown;
+  stringValue?: unknown;
+  numberValue?: unknown;
+  boolValue?: unknown;
+  errorValue?: { type?: unknown };
+};
+
+/** A sheet's cells as `spreadsheets:getByDataFilter` returns them: a block per data filter. */
+type RestGridSheet = {
+  properties?: { sheetId?: number };
+  data?: {
+    startRow?: number;
+    startColumn?: number;
+    rowData?: { values?: { userEnteredValue?: RestExtendedValue }[] }[];
+  }[];
 };
 
 /** Cells of one sheet. An end Google leaves unbounded is `Infinity`. */
@@ -154,13 +178,17 @@ function areaOf(range: RestGridRange | undefined, sheetId: number): SheetArea {
   };
 }
 
-// Whether Google's echo of a data filter's `GridRange`, which leaves out its zero fields, is
-// `area`'s.
-function echoes(echoed: RestGridRange | undefined, { sheetId, rect }: SheetArea): boolean {
-  return (echoed?.sheetId ?? 0) === sheetId &&
-    (echoed?.startRowIndex ?? 0) === rect.startRow && (echoed?.endRowIndex ?? 0) === rect.endRow &&
-    (echoed?.startColumnIndex ?? 0) === rect.startColumn &&
-    (echoed?.endColumnIndex ?? 0) === rect.endColumn;
+// What a cell holds, from its `userEnteredValue`. A kind of value not known here is refused, so
+// the guard cannot mistake it for another.
+function enteredValue(value: RestExtendedValue | undefined): EnteredValue {
+  if (value === undefined) return null;
+  let { formulaValue, stringValue, numberValue, boolValue, errorValue } = value;
+  if (typeof formulaValue === "string") return { formula: formulaValue };
+  if (typeof stringValue === "string") return stringValue;
+  if (typeof numberValue === "number") return numberValue;
+  if (typeof boolValue === "boolean") return boolValue;
+  if (typeof errorValue?.type === "string") return { error: errorValue.type };
+  throw new Error("Google Sheets returned an unsupported cell value.");
 }
 
 /** The Google Sheets API, as far as the gatekeeper uses it. */
@@ -244,16 +272,21 @@ export class GoogleSheetsApi {
   }
 
   /**
-   * The cells of each of `areas` as entered, formulas as their text, padded to its size. Each must
-   * lie within its sheet's grid. Only the response size bounds the read, so callers bound how many
+   * The cells of each of `areas` as entered, padded to its size with null. Each must lie within
+   * its sheet's grid. They are read typed, as formula-mode values cannot tell text starting with
+   * `=` from a formula, by grid range with `spreadsheets:getByDataFilter`, which needs a grant that
+   * may edit the spreadsheet. Only the response size bounds the read, so callers bound how many
    * cells they ask for.
    */
   async readEntered(
     spreadsheetId: string, areas: readonly SheetArea[],
-  ): Promise<SpreadsheetCellValue[][][]> {
+  ): Promise<EnteredValue[][][]> {
     if (areas.length === 0) return [];
+    let url = new URL(`${API_BASE}/${encodeURIComponent(spreadsheetId)}:getByDataFilter`);
+    url.searchParams.set("fields", ENTERED_FIELDS);
+    url.searchParams.set("prettyPrint", "false");
     let response = await fetchWithAuthRetry(
-      `${API_BASE}/${encodeURIComponent(spreadsheetId)}/values:batchGetByDataFilter`,
+      url.toString(),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -267,25 +300,36 @@ export class GoogleSheetsApi {
               endColumnIndex: rect.endColumn,
             },
           })),
-          majorDimension: "ROWS",
-          valueRenderOption: "FORMULA",
+          includeGridData: true,
         }),
       },
       // A read, however it is sent.
       this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS, idempotent: true },
     );
-    let result = await readGoogleJson<{
-      valueRanges?: { valueRange?: RestValueRange; dataFilters?: { gridRange?: RestGridRange }[] }[];
-    }>(response, { provider: "Google Sheets", operation: "read entered values", maxBytes: MAX_RESPONSE_BYTES });
-    // Google answers in an order of its own, so each answer is found by the filter it echoes.
-    let returned = result.valueRanges ?? [];
-    return areas.map(area => {
-      let answer = returned.find(({ dataFilters }) => echoes(dataFilters?.[0]?.gridRange, area));
-      if (!answer) throw new Error("Google Sheets did not return every range it was asked for.");
-      let { rect } = area;
-      return normalizeRange(answer.valueRange ?? {}, {
-        range: "", rows: rect.endRow - rect.startRow, columns: rect.endColumn - rect.startColumn,
-      }).values;
+    let result = await readGoogleJson<{ sheets?: RestGridSheet[] }>(response, {
+      provider: "Google Sheets", operation: "read entered values", maxBytes: MAX_RESPONSE_BYTES,
+    });
+    // Each range's cells are placed by the position Google gives them, whichever order they come
+    // in, so a range is answered when its sheet holds data starting where it does. A cell Google
+    // trims from the end of a row or range is blank.
+    let starts = new Set<string>();
+    let cells = new Map<string, EnteredValue>();
+    for (let sheet of result.sheets ?? []) {
+      let sheetId = sheet.properties?.sheetId ?? 0;
+      for (let { startRow = 0, startColumn = 0, rowData } of sheet.data ?? []) {
+        starts.add(`${sheetId}:${startRow}:${startColumn}`);
+        rowData?.forEach((row, r) => row.values?.forEach((cell, c) => {
+          cells.set(`${sheetId}:${startRow + r}:${startColumn + c}`, enteredValue(cell.userEnteredValue));
+        }));
+      }
+    }
+    return areas.map(({ sheetId, rect }) => {
+      if (!starts.has(`${sheetId}:${rect.startRow}:${rect.startColumn}`)) {
+        throw new Error("Google Sheets did not return every range it was asked for.");
+      }
+      return Array.from({ length: rect.endRow - rect.startRow }, (_row, r) =>
+        Array.from({ length: rect.endColumn - rect.startColumn }, (_cell, c) =>
+          cells.get(`${sheetId}:${rect.startRow + r}:${rect.startColumn + c}`) ?? null));
     });
   }
 

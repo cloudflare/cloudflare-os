@@ -81,19 +81,17 @@ export function valueRange(range: string, rows: ModeReads[][], mode: keyof ModeR
 }
 
 /**
- * `values:batchGetByDataFilter`'s answer: not in the order asked, and each range's data filter
- * echoed with its zero fields left out.
+ * Cells whose formula-mode reads look like a formula or an error value: the `userEnteredValue`
+ * `spreadsheets:getByDataFilter` returned for each, beside its formula-mode read.
  */
-export function byDataFilter(ranges: { gridRange: FixtureGridRange; range: string; values?: unknown[][] }[]) {
-  let echoed = (gridRange: FixtureGridRange) =>
-    Object.fromEntries(Object.entries(gridRange).filter(([, value]) => value !== 0));
-  return {
-    valueRanges: ranges.toReversed().map(({ gridRange, range, values }) => ({
-      valueRange: { range, majorDimension: "ROWS", ...(values ? { values } : {}) },
-      dataFilters: [{ gridRange: echoed(gridRange) }],
-    })),
-  };
-}
+export const ENTERED_READS: [userEnteredValue: Record<string, unknown>, formulaRead: string][] = [
+  [{ stringValue: "=order 123" }, "=order 123"],
+  [{ stringValue: "=quoted" }, "=quoted"],
+  [{ formulaValue: "=1/0" }, "=1/0"],
+  [{ stringValue: "#REF!" }, "#REF!"],
+  [{ errorValue: { type: "REF" } }, "#REF! ()"],
+  [{ errorValue: { type: "DIVIDE_BY_ZERO" } }, "#DIV/0! ()"],
+];
 
 /**
  * Typed `updateCells` input in a bold, currency-formatted row, as each mode read it back. `input`

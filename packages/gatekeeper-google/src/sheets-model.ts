@@ -164,6 +164,18 @@ export function isFormula(input: SheetCellInput): input is string {
 }
 
 /**
+ * What a cell holds as entered: a string is literal text, never a formula; `{ formula }` is a
+ * formula's text, `{ error }` the type of an error value typed into the cell, such as `REF`, and
+ * null a blank cell.
+ */
+export type EnteredValue = string | number | boolean | null | { formula: string } | { error: string };
+
+/** What a cell holds once `input` is entered in it: input starting with `=` is a formula. */
+export function enteredOf(input: SheetCellInput): EnteredValue {
+  return isFormula(input) ? { formula: input } : input;
+}
+
+/**
  * What a cell holding `input` reads as in `mode`, or null and pending when only Google can work it
  * out. Formula reads show input as entered. Raw reads show literal values, but not a formula's
  * result. Formatted reads show text, but not numbers, booleans or results, whose display depends
