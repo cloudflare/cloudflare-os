@@ -176,6 +176,21 @@ describe("what a read discloses", () => {
     expect(list).toMatchObject({ name: "Secret", private: true });
     expect(await exclusions(name)).toEqual([["observer"]]);
   });
+
+  it("keeps withholding a private List while a change making it public waits", async () => {
+    const { x, props, name } = await observed();
+    x.lists.set("77", { id: "77", name: "Secret", private: true, owner_id: ALICE.id, member_count: 1 });
+    x.listMembers.set("77", new Set([BOB.id]));
+    x.post(BOB, "listed");
+    unwrap(await hooks().run(name, props, [["getList", "77"], ["update", { private: false }]]));
+    const list = unwrap(await hooks().run(name, props, [["getList", "77"], ["getInfo"]])) as XListInfo;
+    // The gadget sees its change, but X has not made the List public yet.
+    expect(list.private).toBe(false);
+    unwrap(await hooks().run(name, props, [["getList", "77"], ["listMembers"]], { pages: 1 }));
+    unwrap(await hooks().run(name, props, [["getList", "77"], ["listPosts"]], { pages: 1 }));
+    unwrap(await hooks().run(name, props, [["listOwnedLists"]], { pages: 1 }));
+    expect(await exclusions(name)).toEqual([["observer"], ["observer"], ["observer"], ["observer"]]);
+  });
 });
 
 describe("pending actions in reads", () => {

@@ -202,6 +202,11 @@ export class FakeX {
       const members = [...this.listMembers.get(match[1]) ?? []].flatMap(id => this.users.get(id) ?? []);
       return this.#page(url, members, "pagination_token");
     }
+    if (method === "GET" && (match = path.match(/^\/2\/lists\/(\d+)\/tweets$/))) {
+      const members = this.listMembers.get(match[1]) ?? new Set<string>();
+      const posts = [...this.posts.values()].filter(post => members.has(post.author_id ?? ""));
+      return this.#page(url, posts.toReversed(), "pagination_token", items => this.#includes(url, items).includes);
+    }
 
     // Writes, as the connected user.
     if (method === "POST" && path === "/2/tweets") {
