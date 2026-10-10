@@ -1,0 +1,117 @@
+.github/workflows/ci.yml
+  s_74eb0b1cbb84f7::t_60a692141e3e32 88-92
+.github/workflows/github-contract.yml
+  s_74eb0b1cbb84f7::t_9a96d548c96453 1-74
+AGENTS.md
+  s_74eb0b1cbb84f7::t_eedfa2c1f619cd 96
+docs/integration-testing.md
+  s_74eb0b1cbb84f7::t_613277560313a3 17,19-21,65-80,111-123
+packages/gatekeeper-github/README.md
+  s_74eb0b1cbb84f7::t_85a152ceeb04ea 112-122,128-137
+packages/gatekeeper-github/__tests__/contract/github.contract.test.ts
+  s_74eb0b1cbb84f7::t_5f66a9ed234012 1-259
+packages/gatekeeper-github/__tests__/workerd/hooks.test.ts
+  s_74eb0b1cbb84f7::t_55f8ef306ce69c 22-30,49-54,90-94,124-129,145-156,159-161,163-165,171-172,174-196,198,201,210-214,216-217,222-233,238,242-244,248-257,276-286,288-293,296-297,299,309-311,367-385,411-413,419,554-555,581-583,620,734-752,866-868,891-892,895-897,915-916,934-1007,1015,1053-1138,1154-1214
+packages/gatekeeper-github/package.json
+  s_74eb0b1cbb84f7::t_18ae49fc75a3ac 10-11
+packages/gatekeeper-github/src/github-api.ts
+  s_74eb0b1cbb84f7::t_fbf2f04b93f306 176-177,641-651
+packages/gatekeeper-github/src/github-hooks.ts
+  s_74eb0b1cbb84f7::t_e780dda1fbef0e 29,32,34,111-115,120-121,136,140-143,203,266,268-273,313-316,323,326,332-345,350-354,356,370,373,376,378,380,386,394,530-535,537-538,542-543,547-565
+packages/gatekeeper-github/src/github-webhook-events.ts
+  s_74eb0b1cbb84f7::t_8712c90f290dc0 1-145
+packages/gatekeeper-github/src/github.ts
+  s_74eb0b1cbb84f7::t_3ad7f47062493e 56,58,3810-3818
+packages/gatekeeper-github/storage-schema.md
+  s_74eb0b1cbb84f7::t_4be7665050089a 190-192
+packages/gatekeeper-github/tsconfig.contract.json
+  s_74eb0b1cbb84f7::t_c19f97d713d397 1-10
+packages/gatekeeper-github/tsconfig.json
+  s_74eb0b1cbb84f7::t_cf22948f6249c9 17
+packages/gatekeeper-github/vite.config.ts
+  s_74eb0b1cbb84f7::t_dae14004d88728 2,11,15-42
+packages/gatekeeper-github/vitest.contract.config.ts
+  s_74eb0b1cbb84f7::t_41bd44fcb55fc8 1-15
+packages/gatekeeper-google/README.md
+  s_74eb0b1cbb84f7::t_80fa93073281f1 186-189
+packages/gatekeeper-google/__tests__/workerd/chat-hooks.test.ts
+  s_74eb0b1cbb84f7::t_bce31eb34a830a 82,343-384
+packages/gatekeeper-google/__tests__/workerd/gmail-hooks.test.ts
+  s_74eb0b1cbb84f7::t_5c261d969f3e47 112,266-276,452-511
+packages/gatekeeper-google/__tests__/workerd/worker.ts
+  s_74eb0b1cbb84f7::t_dda6b36273afe6 223-230,240-244,651,656
+packages/gatekeeper-google/src/chat-hooks.ts
+  s_74eb0b1cbb84f7::t_45f3675196cc69 94-95,107-109,125-137,166,191-210,264,268-271
+packages/gatekeeper-google/src/gmail-hooks.ts
+  s_74eb0b1cbb84f7::t_6e10980277c8c7 112-113,123-126,153-155,177-184,205,337-356,389,393-396
+packages/gatekeeper-google/src/google.ts
+  s_74eb0b1cbb84f7::t_dea3328564b104 433-438,723,735,740-765
+packages/gatekeeper-google/vite.config.ts
+  s_74eb0b1cbb84f7::t_982fe65010023f 2,15-27
+packages/gatekeeper-kit/__tests__/hook-delivery-queue.test.ts
+  s_74eb0b1cbb84f7::t_616573ccb30f53 5,66-73,76-79,82-108
+packages/integration-tests/README.md
+  s_74eb0b1cbb84f7::t_01afe30bc14dbf 62-82
+packages/integration-tests/__tests__/github-fake.ts
+  s_74eb0b1cbb84f7::t_83433560ab6282 1-224
+packages/integration-tests/__tests__/github-hooks-off.test.ts
+  s_74eb0b1cbb84f7::t_3404373330f4de 1-105
+packages/integration-tests/__tests__/github-hooks.test.ts
+  s_74eb0b1cbb84f7::t_d03cc26a323f83 1-142
+packages/integration-tests/__tests__/google-fake.ts
+  s_74eb0b1cbb84f7::t_4829b492bc69d4 1-354
+packages/integration-tests/__tests__/google-hooks-upgrade.test.ts
+  s_74eb0b1cbb84f7::t_e51ff538a586ea 1-205
+packages/integration-tests/package.json
+  s_74eb0b1cbb84f7::t_e2be498fecafd3 15
+packages/integration-tests/scripts/build-upgrade-base.ts
+  s_74eb0b1cbb84f7::t_8e2f27726e19c8 1-67
+packages/integration-tests/vite.config.ts
+  s_74eb0b1cbb84f7::t_f7461d2969e95d 19-27,50-57
+packages/workshop-frontend/package.json
+  s_74eb0b1cbb84f7::t_33c08cfb21b62b 9-10,55,57
+packages/workshop-frontend/src/Activity.test.tsx
+  s_74eb0b1cbb84f7::t_0ddddbd6da4409 5,22-24,146-153,155-160,162-164,169,172,175-237
+packages/workshop-frontend/src/Activity.tsx
+  s_74eb0b1cbb84f7::t_3c7fa285eba528 808,810
+packages/workshop-frontend/src/ChatInterface.actions.test.tsx
+  s_74eb0b1cbb84f7::t_c0b30570c20537 49-51,403-497
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_74eb0b1cbb84f7::t_7fc879abceb553 4984,4986
+packages/workshop-frontend/src/Connections.test.tsx
+  s_74eb0b1cbb84f7::t_04c089cfeedc4b 1-130
+packages/workshop-frontend/src/Connections.tsx
+  s_74eb0b1cbb84f7::t_0a7bc89e181e6f 432,434
+packages/workshop-frontend/src/action-test-harness.ts
+  s_74eb0b1cbb84f7::t_d8c7ab8967631b 128-155
+packages/workshop-frontend/src/components/HookToggle.tsx
+  s_74eb0b1cbb84f7::t_82682ec50f23ab 5-6,8-9,15,21-25,27-30
+packages/workshop-frontend/src/hookToggles.browser.test.tsx
+  s_74eb0b1cbb84f7::t_c732bbc6e57611 1-194
+packages/workshop-frontend/tsconfig.vite.json
+  s_74eb0b1cbb84f7::t_d7f3faa6946ba1 13
+packages/workshop-frontend/vite.config.ts
+  s_74eb0b1cbb84f7::t_790a212e4c2efc 2,63-64,92-95
+packages/workshop-frontend/vitest.browser.config.ts
+  s_74eb0b1cbb84f7::t_41e812b1081ed9 1-26
+pnpm-lock.yaml
+  s_74eb0b1cbb84f7::t_3858bb2359275d 15-17,30-32,114,126,138,163,175,209,252,342,404,413,441,453,490,505,555,567,632,666,697,728,785,940,974,984,993,999,1011,1020,1029,1069,1124,1145,1163,1182,1307-1309,1313-1315,1324,1601-1603,1641,3304-3309,3315-3319,5006-5015,6217-6218,6267,6274,7648-7660,7673-7689,9515-9520,10280,10285,10289,10314
+pnpm-workspace.yaml
+  s_74eb0b1cbb84f7::t_bb0f53f625b6cd 38-41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ce3287f6e731eb9df410c85684466c96e3f12521",
+  "prompts": {},
+  "sessions": {
+    "s_74eb0b1cbb84f7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_edf458c69ffepVeVZFxEZXzOIj",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,47 @@
+.github/workflows/gitlab-contract.yml
+  s_a0621677aa027b::t_69a9c6e90ec530 1-72
+packages/gatekeeper-gitlab/README.md
+  s_a0621677aa027b::t_8176643e58c0ef 161-172
+packages/gatekeeper-gitlab/__tests__/contract/gitlab.contract.test.ts
+  s_74eb0b1cbb84f7::t_ce2afd755a6f0d 1-263
+packages/gatekeeper-gitlab/package.json
+  s_74eb0b1cbb84f7::t_1464fa8dae2e74 10-11
+packages/gatekeeper-gitlab/src/gitlab-gatekeeper.ts
+  s_74eb0b1cbb84f7::t_23e9a406ede1ec 101
+packages/gatekeeper-gitlab/src/gitlab-hooks.ts
+  s_74eb0b1cbb84f7::t_d0716ca4123834 39-41,43
+packages/gatekeeper-gitlab/src/gitlab-webhook-events.ts
+  s_74eb0b1cbb84f7::t_53c48fb686c376 1-174
+packages/gatekeeper-gitlab/tsconfig.contract.json
+  s_74eb0b1cbb84f7::t_90d1e3d4b1e431 1-10
+packages/gatekeeper-gitlab/tsconfig.json
+  s_74eb0b1cbb84f7::t_4e29bbb40edf24 18
+packages/gatekeeper-gitlab/vite.config.ts
+  s_74eb0b1cbb84f7::t_193904654259b5 21-22
+packages/gatekeeper-gitlab/vitest.contract.config.ts
+  s_74eb0b1cbb84f7::t_17bbfd7b99f638 1-15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "31ea2705854c3533c87f77631a7bd696837a8db7",
+  "prompts": {},
+  "sessions": {
+    "s_74eb0b1cbb84f7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_edf458c69ffepVeVZFxEZXzOIj",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_a0621677aa027b": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ed9b3cd70ffezwXnN0F1p3USaM",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
