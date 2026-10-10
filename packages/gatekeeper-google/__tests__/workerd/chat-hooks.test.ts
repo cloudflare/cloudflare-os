@@ -363,6 +363,25 @@ it("drops a disconnected account's hooks in the space, while another account's g
   }))).toEqual({registered: 1, pending: 0});
 });
 
+it("drops on disconnect a hook registered before accounts kept track, once its driver's alarm has run", async () => {
+  mockGoogle();
+  const ada = await connect("ada");
+  await ada.hooks.chatEnableHook();
+  const account = testEnv.UserAccount.get(testEnv.UserAccount.idFromString(ada.props.userObjectId));
+  // As a hook registered before this release left things: the account has no record of the driver.
+  await runInDurableObject(account, (_instance: unknown, state: DurableObjectState) =>
+    state.storage.kv.delete(`hookDriver:chat:${SPACE}`));
+  await runInDurableObject(driver(), (_instance: unknown, state: DurableObjectState) =>
+    state.storage.kv.delete(`tracked:${ada.props.userObjectId}`));
+  expect(await push("ada", [chatMessage("carol")])).toBe(204);
+  await deliver();
+  expect((await ada.hooks.readHook()).received).toHaveLength(1);
+
+  await (account as unknown as {revoke(): Promise<void>}).revoke();
+  expect(await runInDurableObject(driver(), (_instance: unknown, state: DurableObjectState) =>
+    [...state.storage.kv.list({prefix: "reg:"})].length)).toBe(0);
+});
+
 it("retries a failed subscription renewal before the subscription lapses", async () => {
   const google = mockGoogle();
   const ada = await connect("ada");

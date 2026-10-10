@@ -467,6 +467,24 @@ it("drops a disconnected account's hooks on the mailbox, while another account's
   expect(await driverHooks()).toEqual({registered: 1, pending: 0});
 });
 
+it("drops on disconnect a hook registered before accounts kept track, once its driver's alarm has run", async () => {
+  const gmail = mockGmail();
+  const ada = await connect();
+  await enable(ada);
+  // As a hook registered before this release left things: the account has no record of the driver.
+  await runInDurableObject(testEnv.UserAccount.get(testEnv.UserAccount.idFromString(ada.props.userObjectId)),
+    (_instance: unknown, state: DurableObjectState) => state.storage.kv.delete(`hookDriver:gmail:${MAILBOX}`));
+  await runInDurableObject(driver(), (_instance: unknown, state: DurableObjectState) =>
+    state.storage.kv.delete(`tracked:${ada.props.userObjectId}`));
+  const message = arrive(gmail);
+  await push(gmail);
+  await settled();
+  expect(await receivedIds(ada)).toEqual([message]);
+
+  await disconnect(ada);
+  expect(await driverHooks()).toEqual({registered: 0, pending: 0});
+});
+
 it.each([["succeeds", 0], ["fails", 1]])(
   "ends a delivery for good once its account is disconnected while the hook holds it, and the hook then %s",
   async (_, failures) => {

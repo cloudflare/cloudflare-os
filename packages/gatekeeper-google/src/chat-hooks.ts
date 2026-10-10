@@ -91,6 +91,8 @@ type Subscription = { name: string; expireTime: number; renewAt: number };
 const registrationKey = (key: string) => `reg:${key}`;
 const capabilitiesKey = (key: string) => `caps:${key}`;
 const subscriptionKey = (authority: string) => `sub:${authority}`;
+/** Set once the account knows this driver holds hooks of its (see UserAccount.trackHookDriver()). */
+const trackedKey = (userObjectId: string) => `tracked:${userObjectId}`;
 
 export class ChatHookDriver extends DurableObject<Env> {
   /** Subscription creations in flight, by account, which concurrent enables and renewals join. */
@@ -104,6 +106,7 @@ export class ChatHookDriver extends DurableObject<Env> {
     if (!subscription || subscription.expireTime <= Date.now()) await this.#subscribe(registration);
     // Recorded first, so that disconnecting the account reaches every hook it registers.
     await this.#account(registration.userObjectId).trackHookDriver({ kind: "chat", name: registration.spaceName });
+    this.ctx.storage.kv.put(trackedKey(registration.userObjectId), true);
     const replaced = this.ctx.storage.kv.get<Capabilities>(capabilitiesKey(key));
     this.ctx.storage.kv.put(registrationKey(key), registration);
     this.ctx.storage.kv.put(capabilitiesKey(key), capabilities);
@@ -129,6 +132,7 @@ export class ChatHookDriver extends DurableObject<Env> {
     for (const [regKey, registration] of registrations) {
       if (registration.userObjectId === userObjectId) await this.unregister(regKey.slice("reg:".length));
     }
+    this.ctx.storage.kv.delete(trackedKey(userObjectId));
   }
 
   /** Queue the new messages a subscription reported for each hook of its account they match. */
@@ -159,6 +163,7 @@ export class ChatHookDriver extends DurableObject<Env> {
    * - dropping expired subscriptions no hook uses any more.
    */
   async alarm(): Promise<void> {
+    await this.#trackAccounts();
     const now = Date.now();
     await this.#queue.run(now, (hookKey, message) => this.#deliver(hookKey, message));
     const registrations = [...this.#registrations()].map(([, registration]) => registration);
@@ -181,6 +186,26 @@ export class ChatHookDriver extends DurableObject<Env> {
       }
     }
     await this.#reschedule();
+  }
+
+  /**
+   * Tell each account with hooks here that this driver holds them, as register() does. A hook
+   * registered before accounts kept track has no record of it, which disconnecting its account
+   * needs to reach it; failing, it is told at the next alarm.
+   */
+  async #trackAccounts(): Promise<void> {
+    const kv = this.ctx.storage.kv;
+    const untracked = new Map([...this.#registrations()]
+      .filter(([, { userObjectId }]) => !kv.get(trackedKey(userObjectId)))
+      .map(([, { userObjectId, spaceName }]) => [userObjectId, spaceName]));
+    for (const [userObjectId, spaceName] of untracked) {
+      try {
+        await this.#account(userObjectId).trackHookDriver({ kind: "chat", name: spaceName });
+        kv.put(trackedKey(userObjectId), true);
+      } catch (error) {
+        logger.warn("failed to note a Chat hook driver with its account", { event: "chat.hooks.track.failed", error });
+      }
+    }
   }
 
   async #deliver(hookKey: string, message: ChatMessageRaw): Promise<void> {
