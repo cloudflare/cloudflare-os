@@ -153,7 +153,10 @@ export type XPostInfo = {
   conversationId: string;
   /** Present when this post is a reply. */
   replyTo?: { postId: string; userId: string };
-  /** Present when this post is a repost of another post. */
+  /**
+   * Present when this post is a repost of another post. A repost waiting for approval is listed by
+   * `listMyPosts()` under the reposted post's ID, since a repost has none until X makes it.
+   */
   repostOf?: XReferencedPost;
   /** Present when this post quotes another post. */
   quoteOf?: XReferencedPost;

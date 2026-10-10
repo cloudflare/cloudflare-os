@@ -271,6 +271,19 @@ describe("pending actions in reads", () => {
     expect(bob.relationship).toEqual({ following: true, followedBy: false });
   });
 
+  it("shows a pending repost among the account's posts, unless reposts are excluded", async () => {
+    const { x, props, name } = await setup();
+    const post = x.post(BOB, "worth sharing");
+    unwrap(await hooks().run(name, props, [["getPost", post.id], ["repost"]]));
+    const [page] = unwrap(await hooks().run(name, props, [["listMyPosts"]], { pages: 1 })) as XPostInfo[][];
+    expect(page).toEqual([expect.objectContaining({
+      id: post.id, author: expect.objectContaining({ username: "alice" }),
+      repostOf: expect.objectContaining({ id: post.id, text: "worth sharing", author: expect.objectContaining({ username: "bob" }) }),
+    })]);
+    const [withoutReposts] = unwrap(await hooks().run(name, props, [["listMyPosts", { excludeReposts: true }]], { pages: 1 })) as XPostInfo[][];
+    expect(withoutReposts).toEqual([]);
+  });
+
   it("authorizes the profiles of a pending List's members, which were read from X", async () => {
     const { props, name } = await setup();
     unwrap(await hooks().run(name, props, [["createList", "Friends"]]));

@@ -538,7 +538,9 @@ async function profilePosts(ctx: SessionContext, user: WireUser, options: XTimel
     request: (api, _me, token) => api.get<WirePost[]>(`/2/users/${user.id}/tweets`, {
       ...POST_FIELDS, ...query, ...pageQuery(size, token, { min: 5, max: 100 }),
     }),
-    overlay: mine ? { kind: "mine", excludeReplies: options?.excludeReplies } : { kind: "others" },
+    overlay: mine
+      ? { kind: "mine", excludeReplies: options?.excludeReplies, excludeReposts: options?.excludeReposts }
+      : { kind: "others" },
     newestFirst: newestFirst(options),
     title: `Read ${name}'s X posts`,
     describe: count => `Read ${countOf(count, "post")} by ${name}.`,
