@@ -3649,9 +3649,17 @@ function clearFormulaPick() {
   formulaPick = null; formulaPickGestureComplete = false; formulaRangeHandle.style.display = "none";
   gridTable.querySelectorAll("td.formula-ref").forEach((cell) => cell.classList.remove("formula-ref", "formula-ref-top", "formula-ref-bottom", "formula-ref-left", "formula-ref-right"));
 }
-function formulaRangeText(r1: number, c1: number, r2: number, c2: number) { const first = rcToRef(Math.min(r1, r2), Math.min(c1, c2));
-const last = rcToRef(Math.max(r1, r2), Math.max(c1, c2));
-return first === last ? first : first + ":" + last; }
+function formulaRangeText(r1: number, c1: number, r2: number, c2: number, original: string) {
+  const endpoints = original.split(":");
+  const endpoint = (row: number, column: number, text: string) => {
+    const bang = text.lastIndexOf("!"), prefix = text.slice(0, bang + 1);
+    const locks = /^(\$?)[A-Z]+(\$?)\d+$/i.exec(text.slice(bang + 1));
+    return prefix + (locks?.[1] || "") + colToLetter(column) + (locks?.[2] || "") + (row + 1);
+  };
+  const first = endpoint(Math.min(r1, r2), Math.min(c1, c2), endpoints[0]);
+  const last = endpoint(Math.max(r1, r2), Math.max(c1, c2), endpoints[1] || endpoints[0]);
+  return first === last ? first : first + ":" + last;
+}
 function localFormulaPosition(ref: string) { const bang = ref.indexOf("!");
 if (bang >= 0) {
   const sheetName = ref.slice(0, bang).replace(/^'|'$/g, "").replace(/''/g, "'");
@@ -3791,7 +3799,7 @@ if (!formulaPick || reset) {
   }
   formulaPick = { textStart: start, textEnd: end, r1, c1, r2, c2, picked: true };
 } else { formulaPick.r2 = r2; formulaPick.c2 = c2; formulaPick.picked = true; }
-const reference = formulaRangeText(formulaPick.r1, formulaPick.c1, formulaPick.r2, formulaPick.c2);
+const reference = formulaRangeText(formulaPick.r1, formulaPick.c1, formulaPick.r2, formulaPick.c2, cellEditor.value.slice(formulaPick.textStart, formulaPick.textEnd));
 cellEditor.value = cellEditor.value.slice(0, formulaPick.textStart) + reference + cellEditor.value.slice(formulaPick.textEnd);
 formulaPick.textEnd = formulaPick.textStart + reference.length;
 cellEditor.setSelectionRange(formulaPick.textEnd, formulaPick.textEnd);
@@ -4410,12 +4418,20 @@ function clipboardReferences(ranges: Range[], sheet: SheetMeta, allRows: boolean
   const rows = [...new Set(ranges.flatMap((range) => Array.from({ length: range.r2 - range.r1 + 1 }, (_, index) => range.r1 + index)))].sort((a, b) => a - b);
   let lastColumn = 0;
   for (const row of rows) for (let column = 0; column < sheet.cols; column++) if (getCell(rcToRef(row, column))) lastColumn = Math.max(lastColumn, column);
+  if (sheet.comments) for (const comment of sheet.comments) {
+    const position = parseRef(comment.ref);
+    if (position && ranges.some((range) => position.r >= range.r1 && position.r <= range.r2)) lastColumn = Math.max(lastColumn, position.c);
+  }
   return rows.map((row) => Array.from({ length: lastColumn + 1 }, (_, column) => rcToRef(row, column)));
 }
 if (allColumns) {
   const columns = [...new Set(ranges.flatMap((range) => Array.from({ length: range.c2 - range.c1 + 1 }, (_, index) => range.c1 + index)))].sort((a, b) => a - b);
   let lastRow = 0;
   for (const column of columns) for (let row = 0; row < sheet.rows; row++) if (getCell(rcToRef(row, column))) lastRow = Math.max(lastRow, row);
+  if (sheet.comments) for (const comment of sheet.comments) {
+    const position = parseRef(comment.ref);
+    if (position && ranges.some((range) => position.c >= range.c1 && position.c <= range.c2)) lastRow = Math.max(lastRow, position.r);
+  }
   return Array.from({ length: lastRow + 1 }, (_, row) => columns.map((column) => rcToRef(row, column)));
 }
 if (ranges.length === 1) {
@@ -4503,7 +4519,7 @@ if (moving && useSnapshot) for (const row of useSnapshot.cells) for (const snaps
   if (snapshot && cutSourceUnchanged(useSnapshot.sheetId, snapshot)) unchangedSources.add(snapshot.sourceRef);
 }
 const rows = normalized.split("\n");
-if (rows.length > 1 && rows[rows.length - 1] === "") rows.pop();
+if (!useSnapshot && rows.length > 1 && rows[rows.length - 1] === "") rows.pop();
 const values = rows.map((row) => row.split("\t"));
 const sourceHeight = values.length, sourceWidth = Math.max(1, ...values.map((row) => row.length));
 const targetRanges = selectionRanges();
