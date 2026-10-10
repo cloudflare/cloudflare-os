@@ -1,0 +1,103 @@
+packages/gatekeeper-x/cloudflare.config.ts
+  s_6e159c0858b8f9::t_4b683987eca38d 1-21
+packages/gatekeeper-x/deploy-inputs.json
+  s_6e159c0858b8f9::t_34a8d8607e4938 1-23
+packages/gatekeeper-x/package.json
+  s_6e159c0858b8f9::t_9c59b010295ea7 1-28
+packages/gatekeeper-x/src/configurator/x-account-configurator-types.d.ts
+  s_6e159c0858b8f9::t_229b1224963c96 1-10
+packages/gatekeeper-x/src/configurator/x-account-configurator-ui.tsx
+  s_6e159c0858b8f9::t_f5fe427f43d0e1 1-27
+packages/gatekeeper-x/src/configurator/x-list-configurator-types.d.ts
+  s_6e159c0858b8f9::t_19611a3ed9f674 1-22
+packages/gatekeeper-x/src/configurator/x-list-configurator-ui.tsx
+  s_6e159c0858b8f9::t_45c668902cd8ac 1-31
+packages/gatekeeper-x/src/configurator/x-post-configurator-types.d.ts
+  s_6e159c0858b8f9::t_68e4fb2183d022 1-7
+packages/gatekeeper-x/src/configurator/x-post-configurator-ui.tsx
+  s_6e159c0858b8f9::t_8b5fc6f5b49625 1-75
+packages/gatekeeper-x/src/configurator/x-profile-configurator-types.d.ts
+  s_6e159c0858b8f9::t_927661ad89e3e5 1-10
+packages/gatekeeper-x/src/configurator/x-profile-configurator-ui.tsx
+  s_6e159c0858b8f9::t_b57163a6895e7f 1-69
+packages/gatekeeper-x/src/observability.ts
+  s_6e159c0858b8f9::t_fddb38bb554f1d 1-19
+packages/gatekeeper-x/src/text-modules.d.ts
+  s_6e159c0858b8f9::t_867bee15785f75 1-9
+packages/gatekeeper-x/src/types.d.ts
+  s_6e159c0858b8f9::t_85f0dc76e4ce7a 1-423
+packages/gatekeeper-x/src/types.txt
+  s_6e159c0858b8f9::t_46aaebc9249923 1
+packages/gatekeeper-x/src/x-actions.ts
+  s_6e159c0858b8f9::t_6f792b9ddd58af 1-887
+packages/gatekeeper-x/src/x-api.ts
+  s_6e159c0858b8f9::t_26231ae66ddeb9 1-288
+packages/gatekeeper-x/src/x-configurators.ts
+  s_6e159c0858b8f9::t_7521dfc679e150 1-97
+packages/gatekeeper-x/src/x-credentials.ts
+  s_6e159c0858b8f9::t_393931aab9314a 1-95
+packages/gatekeeper-x/src/x-cursor.ts
+  s_6e159c0858b8f9::t_b57adb417dc08f 1-79
+packages/gatekeeper-x/src/x-env.ts
+  s_6e159c0858b8f9::t_6cd7a8466fd5de 1-180
+packages/gatekeeper-x/src/x-gatekeeper.ts
+  s_6e159c0858b8f9::t_beea41908ef9ee 1-418
+packages/gatekeeper-x/src/x-logo.svg
+  s_6e159c0858b8f9::t_174bf40cea5959 1
+packages/gatekeeper-x/src/x-normalize.ts
+  s_6e159c0858b8f9::t_49316b3f4059ad 1-308
+packages/gatekeeper-x/src/x-sessions.ts
+  s_6e159c0858b8f9::t_6a18ac9802bda4 1-959
+packages/gatekeeper-x/src/x-simulation.ts
+  s_6e159c0858b8f9::t_c21100cdb4d0ca 1-285
+packages/gatekeeper-x/src/x-text.ts
+  s_6e159c0858b8f9::t_8445dc2e2043ff 1-92
+packages/gatekeeper-x/src/x-urls.ts
+  s_6e159c0858b8f9::t_f643e932c971f7 1-135
+packages/gatekeeper-x/src/x.ts
+  s_6e159c0858b8f9::t_175fcbb615a786 1-723
+packages/gatekeeper-x/tsconfig.json
+  s_6e159c0858b8f9::t_5e5825af99d2ec 1-19
+packages/gatekeeper-x/vite.config.ts
+  s_6e159c0858b8f9::t_639d359e21532c 1-13
+packages/gatekeeper-x/vitest.config.ts
+  s_6e159c0858b8f9::t_ef876916bb7235 1-8
+packages/gatekeeper-x/vitest.worker.config.ts
+  s_6e159c0858b8f9::t_fce63bc9519717 1-42
+packages/gatekeeper-x/worker-configuration.d.ts
+  s_6e159c0858b8f9::t_0584e072ec2bc0 1-16196
+packages/gatekeeper-x/wrangler.jsonc
+  s_6e159c0858b8f9::t_c2750e35a43b62 1-41
+pnpm-lock.yaml
+  s_6e159c0858b8f9::t_59a30b0c366711 874-913,1669
+scripts/release/testdata/fixture-bundles/gatekeeper-x/x.js
+  s_6e159c0858b8f9::t_83ab87c0c8e6ce 1
+scripts/release/testdata/golden-manifest.json
+  s_6e159c0858b8f9::t_6a23061fdc00f3 1015-1088
+scripts/run-dev-server.ts
+  s_74eb0b1cbb84f7::t_5c28b311bb330a 485,504-505
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "57333d5dac84eb69b2fd022c3217cf20cc8ca5a2",
+  "prompts": {},
+  "sessions": {
+    "s_6e159c0858b8f9": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_eda3e264bffecsUpurXN1ZDw8a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_74eb0b1cbb84f7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_edf458c69ffepVeVZFxEZXzOIj",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
