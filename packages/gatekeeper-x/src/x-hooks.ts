@@ -189,9 +189,17 @@ export class XHookDriver extends DurableObject<Env> {
       // Disconnected while an earlier change ran.
       if (kv.get("revoked")) throw new Error(DISCONNECTED);
       // Subscribed first: a hook recorded before X delivers its events would never fire.
-      await this.#router(subjectOf(registration)).watch(subjectOf(registration),
-        EVENT_TYPES[registration.kind], userObjectId);
-      if (kv.get("revoked")) throw new Error(DISCONNECTED);
+      const router = this.#router(subjectOf(registration));
+      await router.watch(subjectOf(registration), EVENT_TYPES[registration.kind], userObjectId);
+      if (kv.get("revoked")) {
+        // Disconnected while X subscribed: revoke() found no record of this hook, so its watch is
+        // undone here, or X would go on delivering, and billing, events no hook takes.
+        await router.unwatch(subjectOf(registration), EVENT_TYPES[registration.kind], userObjectId)
+          .catch((error: unknown) => {
+            logger.warn("failed to unsubscribe from X events", { event: "hooks.subscription.unwatch.failed", error });
+          });
+        throw new Error(DISCONNECTED);
+      }
       const replaced = kv.get<Capabilities>(capabilitiesKey(key));
       kv.put(registrationKey(key), registration);
       kv.put(capabilitiesKey(key), capabilities);

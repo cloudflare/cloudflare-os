@@ -290,6 +290,32 @@ describe("accounts going away", () => {
     expect(failure(await late.trySubscribe([["subscribeMentions"]]))).toMatch(/Reconnect the X account/);
   });
 
+  it("undoes the subscription of a hook enabled as the account is disconnected", async () => {
+    const x = new FakeX().install();
+    const account = await seedAccount(x);
+    const hook = binding({ userObjectId: account, resourceKind: "profile", username: "bob" });
+    await hook.subscribe([["subscribePosts"]]);
+    // X holds the subscription request until the disconnect has begun.
+    let subscribing = false;
+    let release!: () => void;
+    const released = new Promise<void>(resolve => { release = resolve; });
+    x.on("POST", /^\/2\/activity\/subscriptions$/, async request => {
+      if (JSON.parse(request.body!).event_type !== "post.create") return undefined;
+      subscribing = true;
+      await released;
+      return undefined;
+    });
+    const enabling = hook.tryEnable();
+    await vi.waitFor(() => expect(subscribing).toBe(true));
+    const revoking = sharedHooks().user(account, "revoke");
+    await vi.waitFor(() => runInDurableObject(driver(account), (_instance, state) =>
+      expect(state.storage.kv.get("revoked")).toBe(true)));
+    release();
+    expect(failure(await enabling)).toBe("This X account has been disconnected.");
+    unwrap(await revoking);
+    expect(subscriptionsOf(x).map(([type]) => type)).toEqual(["oauth.revoke"]);
+  });
+
   it("subscribes again after the user revoked the app, adopting what X kept", async () => {
     const { x, account } = await watchingMentions();
     await x.deliver("oauth.revoke", undefined, { user_id: ALICE.id, app_id: "1", date_time: new Date().toISOString() });
