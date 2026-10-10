@@ -1458,7 +1458,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       if (built.commitIds.length > 0) await gitCache.advertise(built.commitIds);
     } catch (error) {
       for (const capability of capabilities) capability[Symbol.dispose]();
-      if (!(error instanceof GitLabApiError && error.status === 404)) throw error;
+      // 403 for what the account's role no longer covers, such as a Guest's merge requests.
+      if (!(error instanceof GitLabApiError && (error.status === 404 || error.status === 403))) throw error;
       // Nothing to retry, and nothing else would tell why the hook went quiet.
       logger.warn("dropped a GitLab event the account can no longer read", { event: "hooks.delivery.unreadable" });
       return;
@@ -1472,7 +1473,9 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * The event a hook receives for `stored`, with capabilities on `approvalQueue` (each also pushed
    * to `capabilities`), the observation delivering it makes, and the commits it names. An issue's
    * or merge request's details are read now, as the webhook's payload does not carry them in the
-   * shape the REST API does; a comment, review or push is taken from the (signed) payload.
+   * shape the REST API does; a comment, review or push is taken from the (signed) payload, once
+   * the account has read what it tells of. Reading the project is not enough: a Guest of a private
+   * project reads it, and its issues, but not its merge requests or repository.
    */
   async #hookEvent(stored: GitLabWebhookEvent, approvalQueue: RpcStub<ApprovalQueue>, capabilities: Disposable[]):
       Promise<{ event: GitLabEvent; observation: ObservationDescription; commitIds: GitOid[] }> {
@@ -1511,7 +1514,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         };
       }
       case "comment": {
-        const subject = this.#eventSubject(stored.target, stored.title);
+        const subject = this.#eventSubject(stored.target, await this.#readTitle(stored.target));
         const note = stored.note as GitLabNoteResponse;
         const entry = discussionCommentFromNote(this.#instanceUrl(), subject.url, note);
         const { kind: _, ...posted } = entry;
@@ -1534,7 +1537,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         };
       }
       case "review": {
-        const subject = this.#eventSubject(stored.target, stored.title);
+        const subject = this.#eventSubject(stored.target, await this.#readTitle(stored.target));
         return {
           event: { kind: "review", id, actor, subject, decision: stored.decision, mergeRequest: mergeRequest(subject.id) },
           observation: {
@@ -1546,6 +1549,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       }
       case "push": {
         const { branch, before, after } = stored;
+        await this.#readRepository();
         return {
           event: { kind: "push", id, actor, branch, before, after, project: project() },
           observation: {
@@ -1557,6 +1561,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       }
       case "tag": {
         const { tag, before, after } = stored;
+        await this.#readRepository();
         return {
           event: { kind: "tag", id, actor, tag, before, after, project: project() },
           observation: {
@@ -1568,6 +1573,21 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         };
       }
     }
+  }
+
+  /**
+   * The title of the issue or merge request `target`, read afresh as the account, which throws
+   * GitLab's refusal once it can no longer read it.
+   */
+  async #readTitle({ kind, iid }: GitLabEventTarget): Promise<string> {
+    return kind === "issue"
+      ? (await this.#getRemoteIssueDetails(String(iid), true)).title
+      : (await this.#getRawMergeRequest(String(iid), true)).title;
+  }
+
+  /** Throws GitLab's refusal unless the account can read the project's repository now. */
+  async #readRepository(): Promise<void> {
+    await this.#withApi(api => api.listBranches(this.#projectPath(), { page: 1, perPage: 1 }));
   }
 
   #eventSubject({ kind, iid }: GitLabEventTarget, title: string): GitLabEventSubject {

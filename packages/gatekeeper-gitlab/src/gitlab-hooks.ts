@@ -100,8 +100,8 @@ export type GitLabWebhookEvent = {
 } & (
   | { kind: "issue"; action: GitLabIssueEvent["action"]; target: GitLabEventTarget }
   | { kind: "mergeRequest"; action: GitLabMergeRequestEvent["action"]; target: GitLabEventTarget }
-  | { kind: "comment"; target: GitLabEventTarget; title: string; note: WebhookJson; discussionId: string }
-  | { kind: "review"; target: GitLabEventTarget; title: string; decision: GitLabReviewDecision }
+  | { kind: "comment"; target: GitLabEventTarget; note: WebhookJson; discussionId: string }
+  | { kind: "review"; target: GitLabEventTarget; decision: GitLabReviewDecision }
   | { kind: "push"; branch: string; before?: string; after?: string }
   | { kind: "tag"; tag: string; before?: string; after?: string }
 );
@@ -732,8 +732,8 @@ type WebhookPayload = {
     /** The reviewers before and after, with their review states. */
     reviewers?: [Array<WebhookUser & { state?: unknown }>, Array<WebhookUser & { state?: unknown }>];
   } | null;
-  issue?: { iid?: unknown; title?: unknown } | null;
-  merge_request?: { iid?: unknown; title?: unknown } | null;
+  issue?: { iid?: unknown } | null;
+  merge_request?: { iid?: unknown } | null;
   ref?: unknown;
   before?: unknown;
   after?: unknown;
@@ -782,7 +782,7 @@ function parseWebhookEvent(name: string, id: string, projectId: number, payload:
       if (action) return { event: { ...base, kind: "mergeRequest", action, target }, senderId };
       const decision = reviewDecision(attributes, payload.changes, senderId);
       if (!decision) return undefined;
-      return { event: { ...base, kind: "review", decision, target, title: String(attributes.title ?? "") }, senderId };
+      return { event: { ...base, kind: "review", decision, target }, senderId };
     }
     case "Note Hook": {
       // A comment created on an issue or merge request: not one on a commit or snippet, an edit,
@@ -806,8 +806,7 @@ function parseWebhookEvent(name: string, id: string, projectId: number, payload:
       };
       return {
         event: {
-          ...base, kind: "comment", target: { kind, iid: noteable.iid }, title: String(noteable.title ?? ""),
-          note, discussionId: attributes.discussion_id,
+          ...base, kind: "comment", target: { kind, iid: noteable.iid }, note, discussionId: attributes.discussion_id,
         },
         senderId,
       };

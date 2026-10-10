@@ -132,9 +132,10 @@ webhook, which is deleted when the last of them is disabled, or when the account
 Each webhook signs its deliveries with its own signing token, which only GitLab and this deployment
 hold (Standard Webhooks, which GitLab added in 19.0; the older secret token is sent in the clear,
 so it is not used): a delivery whose signature or timestamp doesn't check out is refused, as is one
-naming a project other than the one whose webhook signed it, one GitLab repeats is ignored, and an
-event is delivered only while the account can still read the project. The webhook never asks for
-confidential issues or internal comments.
+naming a project other than the one whose webhook signed it, and one GitLab repeats is ignored. An
+event is delivered only while the account can still read the issue, merge request or repository it
+concerns, which the project alone doesn't show: a Guest of a private project reads it, but not its
+merge requests or code. The webhook never asks for confidential issues or internal comments.
 
 The project's other Maintainers can see the webhook, though not its token. Every hour the worker
 checks each webhook on GitLab, and restores one that someone has deleted, pointed elsewhere,

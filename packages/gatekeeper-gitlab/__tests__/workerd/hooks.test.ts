@@ -193,6 +193,11 @@ class FakeGitLabHooks {
   maintainer = true;
   /** Whether the account can still read the project at all. */
   readable = true;
+  /**
+   * Whether the account is now only a Guest of the project, which, the project being private,
+   * reads it and its issues but not its merge requests or repository.
+   */
+  guest = false;
   version = "19.4.0-ee";
   /** Whether webhooks keep a signing token, as from GitLab 19.0. */
   signs = true;
@@ -235,12 +240,15 @@ class FakeGitLabHooks {
       })
       .on("GET", /^\/api\/v4\/projects\/[^/]+\/merge_requests\/\d+\?/, request => {
         const [path, iid] = projectItem(request);
-        return this.readable ? json(mergeRequestRest(iid, this.states.mergeRequest.get(iid), path)) : notFound();
+        return this.#refusedUnlessReporter() ?? json(mergeRequestRest(iid, this.states.mergeRequest.get(iid), path));
       })
       .on("GET", /^\/api\/v4\/projects\/[^/]+\/merge_requests\/\d+\/approvals$/, request => {
         const [, iid] = projectItem(request);
-        return json({ ...fx.approvalsResponse.data, approved_by: this.approvals.get(iid) ?? fx.approvalsResponse.data.approved_by });
+        return this.#refusedUnlessReporter() ??
+          json({ ...fx.approvalsResponse.data, approved_by: this.approvals.get(iid) ?? fx.approvalsResponse.data.approved_by });
       })
+      .on("GET", /^\/api\/v4\/projects\/[^/]+\/repository\/branches\?/, () =>
+        this.#refusedUnlessReporter() ?? json([{ name: "main", commit: { id: HEAD } }], { headers: { "x-next-page": "" } }))
       .on("GET", new RegExp(`${ANY_HOOKS}\\?`), request => this.maintainer
         ? json([...this.webhooks.values()].filter(webhook => webhook.projectId === hookIds(request).projectId)
           .map(webhook => this.#reported(webhook)))
@@ -302,6 +310,12 @@ class FakeGitLabHooks {
         return new Response(null, { status: 204 });
       });
     this.gitlab.install();
+  }
+
+  /** GitLab's refusal of a read a Guest may not make, if the account may not make it now. */
+  #refusedUnlessReporter(): Response | undefined {
+    if (!this.readable) return notFound();
+    return this.guest ? forbidden() : undefined;
   }
 
   /** The webhook a request names, unless it is on another project than the request names. */
@@ -1250,6 +1264,37 @@ it("delivers nothing once the account can no longer read the project", async () 
   await settled(account);
 
   expect(await triage.read()).toMatchObject({ received: [], observations: [] });
+});
+
+it("delivers only what a Guest can read once the account is made one, though it still reads the project", async () => {
+  const gitlab = new FakeGitLabHooks();
+  const account = await connectAccount();
+  const triage = binding(account);
+  await triage.subscribe();
+  await triage.enable();
+
+  gitlab.guest = true;
+  await gitlab.deliver("Merge Request Hook", mergeRequestHook("open", 7));
+  await gitlab.deliver("Note Hook", noteHook("MergeRequest", 7, "Ship it?", { id: 1 }));
+  await gitlab.deliver("Merge Request Hook", mergeRequestHook("approval", 7));
+  await gitlab.deliver("Push Hook", pushHook("push", "refs/heads/main", BASE, HEAD));
+  await gitlab.deliver("Tag Push Hook", pushHook("tag_push", "refs/tags/v1", ZERO, HEAD));
+  await gitlab.deliver("Issue Hook", issueHook("open", 42));
+  await gitlab.deliver("Note Hook", noteHook("Issue", 42, "Still happening.", { id: 2 }));
+  await settled(account);
+
+  // A Guest reads issues and their comments, and nothing about merge requests or the repository.
+  const { received, observations } = await triage.read();
+  expect(received).toHaveLength(2);
+  expect(received).toEqual(expect.arrayContaining([
+    expect.objectContaining({ kind: "issue" }),
+    expect.objectContaining({ kind: "comment", subject: expect.objectContaining({ kind: "issue", id: "42" }) }),
+  ]));
+  expect(observations).toHaveLength(2);
+  // Refused for good: nothing is retried once a retry would be due.
+  const asked = gitlab.gitlab.requests.length;
+  await clock(account).at(2 * 60_000, () => runDurableObjectAlarm(driver(account)));
+  expect(gitlab.gitlab.requests.slice(asked)).toEqual([]);
 });
 
 it("changes nothing while WEBHOOK_ORIGIN is unset: subscribe() refuses, and the webhook route is inert", async () => {
