@@ -4617,11 +4617,11 @@ if (moving && useSnapshot) {
     if (row > target.r2 && targetRanges.length > 1 || column > target.c2 && targetRanges.length > 1) continue;
     if (row >= curSheet().rows || column >= curSheet().cols) continue;
     const snapshot = useSnapshot.cells[i]?.[j];
-    if (snapshot && moves.has(snapshot.sourceRef)) continue;
+    if (!snapshot || moves.has(snapshot.sourceRef)) continue;
     const ref = rcToRef(row, column);
     if (destinationRefs.has(activeSheetId + "!" + ref)) { saveStatus.set("bad", "Cut destinations overlap; select non-overlapping targets"); return; }
     destinationRefs.add(activeSheetId + "!" + ref);
-    if (snapshot) moves.set(snapshot.sourceRef, { sheetId: activeSheetId, ref });
+    moves.set(snapshot.sourceRef, { sheetId: activeSheetId, ref });
   }
   const rangeMoves = indexCutRangeMoves(useSnapshot.sheetId, moves, unchangedSources);
   const rangeChecks = new Map<string, boolean>();
@@ -4654,7 +4654,7 @@ for (const target of targetRanges) {
     const sourceRow = i % sourceHeight, sourceColumn = j % sourceWidth;
     const ref = rcToRef(row, column);
     const snapshot = useSnapshot?.cells[sourceRow]?.[sourceColumn];
-    if (moving && snapshot && moves.get(snapshot.sourceRef)?.ref !== ref) continue;
+    if (moving && (!snapshot || moves.get(snapshot.sourceRef)?.ref !== ref)) continue;
     destinationRefs.add(activeSheetId + "!" + ref);
     if (useSnapshot && keepFormatting) {
       recordCell(activeSheetId, ref);
