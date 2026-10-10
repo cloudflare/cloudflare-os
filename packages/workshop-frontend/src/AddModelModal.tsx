@@ -314,12 +314,12 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
 
   return (
     <Dialog.Root open={visible} onOpenChange={(open) => { if (!open) onCancel() }}>
-      <Dialog className="responsive-dialog overflow-y-auto p-6" size="lg">
-        <Dialog.Title className="text-lg font-semibold mb-4">
+      <Dialog className="responsive-dialog !top-[clamp(24px,10vh,80px)] !flex !max-h-[calc(100vh-clamp(24px,10vh,80px)-24px)] !-translate-y-0 flex-col overflow-hidden p-0" size="lg">
+        <Dialog.Title className="shrink-0 px-6 pt-6 text-lg font-semibold">
           {title}
         </Dialog.Title>
 
-        <div className="space-y-4">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4">
           {/* Model / Provider selection */}
           {source ? (
             <Input
@@ -489,7 +489,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
         </div>
 
         {/* Footer */}
-        <div className="mt-6 flex justify-end gap-2">
+        <div className="flex shrink-0 justify-end gap-2 border-t border-kumo-line px-6 py-4">
           <Dialog.Close render={(props) => (
             <Button variant="secondary" {...props} disabled={loading}>
               Cancel
