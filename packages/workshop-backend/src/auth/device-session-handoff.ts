@@ -20,13 +20,13 @@ function decodePublicKey(value: string): Uint8Array {
   try {
     bytes = Uint8Array.fromBase64(value, {
       alphabet: "base64url",
-      lastChunkHandling: "strict",
+      lastChunkHandling: "loose",
     });
   } catch {
     throw new Error("Invalid device handoff key.");
   }
   if (bytes.length !== 65 || bytes[0] !== 4 ||
-      bytes.toBase64({ alphabet: "base64url" }) !== value) {
+      bytes.toBase64({ alphabet: "base64url", omitPadding: true }) !== value) {
     throw new Error("Invalid device handoff key.");
   }
   return bytes;

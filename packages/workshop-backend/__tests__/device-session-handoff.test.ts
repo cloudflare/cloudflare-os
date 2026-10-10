@@ -14,7 +14,8 @@ describe("device session handoff encryption", () => {
         { name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]) as CryptoKeyPair;
     const appPublic = new Uint8Array(
         await crypto.subtle.exportKey("raw", appKey.publicKey) as ArrayBuffer)
-        .toBase64({ alphabet: "base64url" });
+        .toBase64({ alphabet: "base64url", omitPadding: true });
+    expect(appPublic).toHaveLength(87);
     const before = Date.now();
     const sealed = await sealDeviceSessionHandoff(
         appPublic, state, { kind: "cloudflare-access", token: "sensitive-jwt" });

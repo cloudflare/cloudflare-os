@@ -36,7 +36,7 @@ async function appKey() {
       { name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]) as CryptoKeyPair;
   const publicKey = new Uint8Array(
       await crypto.subtle.exportKey("raw", key.publicKey) as ArrayBuffer)
-      .toBase64({ alphabet: "base64url" });
+      .toBase64({ alphabet: "base64url", omitPadding: true });
   return { key, publicKey };
 }
 
