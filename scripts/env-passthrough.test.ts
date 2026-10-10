@@ -81,7 +81,8 @@ const EXPECTED: Record<string, ExpectedArea> = {
   },
   // `build-gatekeeper-configurator.ts` is covered in detail by
   // build-gatekeeper-configurator.test.ts, which pins its reads against the shared task's `env`.
-  // `build-release.ts`, `run-local.ts` and `preview/` are invoked directly, never as vp tasks.
+  // `build-release.ts`, `run-dev-server.ts`, `run-local.ts` and `preview/` are invoked directly,
+  // never as vp tasks.
   // `TESTS_WITH_TIMEOUT_DISABLE` is `with-timeout.ts`'s off switch. Every cached task that wraps
   // the watchdog declares it in `env` via `TESTS_WITH_TIMEOUT_ENV`; `vitest-task.test.ts` pins that.
   scripts: {
@@ -90,8 +91,8 @@ const EXPECTED: Record<string, ExpectedArea> = {
       "CF_ACCESS_AUD", "CF_ACCESS_ISS", "CF_AI_GATEWAY", "CF_AI_GATEWAY_ACCOUNT_ID",
       "CF_AI_GATEWAY_API_TOKEN", "CF_AI_GATEWAY_PROVIDERS", "CF_AI_GATEWAY_USE_BINDING",
       "CI_COMMIT_SHA", "CI_PIPELINE_IID", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN",
-      "GITHUB_REPOSITORY", "GITHUB_TOKEN", "PREVIEW_ADMINS", "PREVIEW_GITHUB_CLIENT_ID",
-      "PREVIEW_GITHUB_CLIENT_SECRET", "PREVIEW_NAME", "PREVIEW_PR_NUMBER",
+      "CLOUDFLARE_OS_DEPLOYMENT", "GITHUB_REPOSITORY", "GITHUB_TOKEN", "PREVIEW_ADMINS",
+      "PREVIEW_GITHUB_CLIENT_ID", "PREVIEW_GITHUB_CLIENT_SECRET", "PREVIEW_NAME", "PREVIEW_PR_NUMBER",
       "PREVIEW_WORKERS_DEV_HOST", "PREVIEW_WRANGLER", "VITE_BACKEND_HOST",
       // Read by `vp/concurrency.ts` in the wrapper before `vp` starts, never inside a task.
       "VP_RUN_CONCURRENCY_LIMIT",

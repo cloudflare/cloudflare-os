@@ -80,6 +80,19 @@ try {
   process.exit(1);
 }
 
+// The deploy service binds CLOUDFLARE_OS_DEPLOYMENT as JSON, and the backend treats the string form
+// as absent, so a value from the shell or `.dev.vars` is parsed here, before the builds so bad JSON
+// fails fast, and written into the backend's config as an object. An empty value counts as unset.
+let cloudflareOsDeployment: unknown;
+if (process.env.CLOUDFLARE_OS_DEPLOYMENT) {
+  try {
+    cloudflareOsDeployment = JSON.parse(process.env.CLOUDFLARE_OS_DEPLOYMENT);
+  } catch {
+    console.error("CLOUDFLARE_OS_DEPLOYMENT is not valid JSON; set it as one JSON line.");
+    process.exit(1);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Discover gatekeeper packages.
 // ---------------------------------------------------------------------------
@@ -541,6 +554,10 @@ for (const gk of gatekeepers) {
   // For local testing, create an account named "admin" to test admin features.
   config.vars = config.vars || {};
   config.vars.ADMINS = ["admin"];
+
+  if (cloudflareOsDeployment !== undefined) {
+    config.vars.CLOUDFLARE_OS_DEPLOYMENT = cloudflareOsDeployment;
+  }
 
   // Pass through the optional OAuth sign-in / AI Gateway billing env vars from the shell
   // environment, so you can run e.g.

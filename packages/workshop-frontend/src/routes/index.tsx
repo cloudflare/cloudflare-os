@@ -5,6 +5,7 @@ import { useKumoToastManager } from "@cloudflare/kumo";
 import { ChatComposer } from "../features/chat/composer/ChatComposer";
 import MeshBackground from "../components/MeshBackground";
 import HomeTaskSuggestions from "../components/AppShell/HomeTaskSuggestions";
+import { UpdateAvailableNotice } from "../features/deployment-updates/UpdateAvailableNotice";
 import { useAuthenticatedApi } from "../AuthContext";
 import { RpcStub } from "capnweb";
 import {
@@ -159,6 +160,7 @@ export function HomePageContent({ prompt }: HomeSearch) {
     // Flat enterprise treatment: no mesh, no watermark hexagon, no prompt-glow. The AppShell's
     // <main> already supplies a faint dotted grid as the page background.
     <div className="relative isolate flex min-h-full w-full flex-col items-center justify-start px-4 pb-16 pt-10 sm:px-8 sm:pt-16 lg:pt-24">
+      <UpdateAvailableNotice />
       {/* The brand hex mesh, restored and de-warmed for the new system: a gentle perspective hex
           grid receding upward. Masked to fade out before the composer so it stays a quiet backdrop. */}
       <div

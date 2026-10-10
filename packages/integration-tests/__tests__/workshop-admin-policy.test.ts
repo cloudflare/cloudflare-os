@@ -115,6 +115,16 @@ it("enforces deployment gatekeeper policy through the admin API", async () => {
   }
 });
 
+// The harness sets no CLOUDFLARE_OS_DEPLOYMENT, so this is a deployment the deploy flow did not
+// install. Non-admins get no AdminApi at all, which the gatekeeper policy case asserts.
+it("reports no update status, and asks no deploy service, for a self-hosted deployment", async () => {
+  // getUpdateStatus() awaits any check it makes, and no model handler answers a deploy service,
+  // so a request would be recorded as unmocked before the call resolves.
+  const escapedBefore = network.getUnmockedCalls();
+  await expect(admin.getUpdateStatus()).resolves.toBeNull();
+  expect(network.getUnmockedCalls()).toEqual(escapedBefore);
+});
+
 it("deployment instructions and format hints reach the agent but not the user", async () => {
   const marker = `instructions-${crypto.randomUUID()}`;
   const hint = `hint-${crypto.randomUUID()}`;

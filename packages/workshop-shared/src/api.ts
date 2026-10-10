@@ -1030,6 +1030,21 @@ export const MAX_SITE_LOGO_BYTES = 256 * 1024;
 /** Maximum width or height of an admin-uploaded site logo in pixels. */
 export const MAX_SITE_LOGO_DIMENSION = 512;
 
+/**
+ * The default of the deployment's minimum age (see AdminApi.setUpdateMinimumAgeHours): how many
+ * hours a newer release must have been available before admins are notified of it.
+ */
+export const DEFAULT_UPDATE_MINIMUM_AGE_HOURS = 24;
+
+/**
+ * The default of the deployment's notice snooze (see AdminApi.setUpdateNoticeSnoozeHours): how
+ * many hours a dismissed update notice stays hidden in the browser that dismissed it.
+ */
+export const DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS = 24;
+
+/** The largest minimum age and notice snooze, in hours, an admin may set: 30 days. */
+export const MAX_UPDATE_HOURS = 720;
+
 /** All admin-managed deployment settings, returned by AdminApi.getSettings() for the admin UI. */
 export type AdminSettingsView = {
   /** Whether new account signups are allowed. */
@@ -1116,6 +1131,58 @@ export type AdminFormat = {
    * removed, nor resets their overrides.
    */
   bundled: boolean;
+};
+
+/**
+ * Whether a newer release is available for a deployment the deploy flow installed, returned by
+ * AdminApi.getUpdateStatus(). The check fields describe the last successful update check made for
+ * the release this backend runs: until one succeeds, `latestReleaseId`, `availableSince` and
+ * `checkedAt` are absent and `updateAvailable` is false.
+ */
+export type DeploymentUpdateStatus = {
+  /** The release this backend runs. */
+  currentReleaseId: string;
+  /** The newest release the last successful check for `currentReleaseId` reported. */
+  latestReleaseId?: string;
+  /** Whether that check said a release newer than `currentReleaseId` exists. */
+  updateAvailable: boolean;
+  /**
+   * When the first release newer than `currentReleaseId` was published. Absent unless
+   * `updateAvailable`.
+   */
+  availableSince?: Date;
+  /**
+   * Whether the home page should show admins the update notice now, before the browser applies
+   * its own dismissal (see `noticeSnoozeHours`). True exactly when `checksEnabled`, the check says
+   * `updateAvailable`, the deployment is not `modified`, and `availableSince` is at least
+   * `minimumAgeHours` ago.
+   */
+  notify: boolean;
+  /**
+   * Whether the deployment checks for updates by itself (see AdminApi.setUpdateChecksEnabled).
+   * When false, `notify` is false and only AdminApi.checkForUpdates() asks for the newest release.
+   */
+  checksEnabled: boolean;
+  /**
+   * The deployment's minimum age: how many hours a newer release must have been available before
+   * `notify` is true (see AdminApi.setUpdateMinimumAgeHours).
+   */
+  minimumAgeHours: number;
+  /**
+   * The deployment's notice snooze: how many hours a browser hides the notice after an admin
+   * dismisses it there (see AdminApi.setUpdateNoticeSnoozeHours).
+   */
+  noticeSnoozeHours: number;
+  /**
+   * Whether this deployment's running code differs from what the deploy flow installed: the
+   * backend's own version tag is not the one the deploy flow recorded. The deploy flow refuses to
+   * upgrade a modified deployment.
+   */
+  modified: boolean;
+  /** The opaque link that opens the deploy flow for this installation. */
+  updateUrl: string;
+  /** When the last successful check for `currentReleaseId` was made. */
+  checkedAt?: Date;
 };
 
 /**
@@ -1364,6 +1431,42 @@ export interface AdminApi {
    * eight requests, each of which may use the whole response cap.
    */
   testNewGatewayModel(model: GatewayModel): Promise<GatewayModelLevelTest[]>;
+
+  /**
+   * Whether a newer release is available. Null unless the deploy flow installed this deployment.
+   * While automatic update checks are off (see setUpdateChecksEnabled) it asks no one and reports
+   * the last check made for the running release, if any.
+   */
+  getUpdateStatus(): Promise<DeploymentUpdateStatus | null>;
+
+  /**
+   * Ask now for the newest release, whether or not automatic update checks are on, and return
+   * the status that check produces. Null unless the deploy flow installed this deployment. Throws
+   * when the check fails.
+   */
+  checkForUpdates(): Promise<DeploymentUpdateStatus | null>;
+
+  /**
+   * Set whether the deployment checks for updates by itself. On by default. When off,
+   * getUpdateStatus() makes no outbound call and admins are never notified; checkForUpdates()
+   * still asks.
+   */
+  setUpdateChecksEnabled(enabled: boolean): Promise<void>;
+
+  /**
+   * Set how many hours a newer release must have been available before admins are notified of
+   * it, DEFAULT_UPDATE_MINIMUM_AGE_HOURS by default. It delays the notice only: an update always
+   * installs the newest release. 0 notifies as soon as a check reports an update. Throws unless
+   * `hours` is a whole number from 0 to MAX_UPDATE_HOURS.
+   */
+  setUpdateMinimumAgeHours(hours: number): Promise<void>;
+
+  /**
+   * Set how many hours a dismissed update notice stays hidden in the browser that dismissed it,
+   * DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS by default. 0 means a closed notice comes back on the next
+   * visit to Home. Throws unless `hours` is a whole number from 0 to MAX_UPDATE_HOURS.
+   */
+  setUpdateNoticeSnoozeHours(hours: number): Promise<void>;
 }
 
 /** A partial edit to one promoted format. Absent fields are left alone. */
