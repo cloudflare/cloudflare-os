@@ -12,7 +12,7 @@
   },
   "scripts": {
     "build": "tsc --noEmit",
-    "test:prebuild": "vp run -F @gadgets/integration-tests build:test-gatekeeper && vp run -F @gadgets/github-gatekeeper build:integration-worker",
+    "test:prebuild": "vp run -F @gadgets/integration-tests build:test-gatekeeper && vp run -F @gadgets/github-gatekeeper build:integration-worker && vp run -F @gadgets/google-gatekeeper build:integration-worker && vp run -F @gadgets/integration-tests build:upgrade-base",
     "test:run": "pnpm run test:prebuild && vitest run",
     "test:watch": "pnpm run test:prebuild && vitest"
   },

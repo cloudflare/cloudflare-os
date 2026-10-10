@@ -68,6 +68,18 @@ without `WEBHOOK_ORIGIN` gets. GitHub is `__tests__/github-fake.ts`, a handler m
 interceptor. The gatekeeper boots from the tree `vp run -F @gadgets/github-gatekeeper
 build:integration-worker` validates, which the `test` task and `test:prebuild` build first.
 
+## An upgrade: Google's hooks
+
+`__tests__/google-hooks-upgrade.test.ts` enables Gmail and Chat hooks under the release of
+`gatekeeper-google` that came before its hook delivery queue moved into gatekeeper-kit, then
+upgrades that Worker in place to this tree's build, keeping its storage. It checks that queued
+deliveries, the hooks' capabilities and alarms, the Gmail watch and cursor and the Chat subscription
+all carry over, and that disconnecting reaches hooks the old release never told the account about.
+Google is `__tests__/google-fake.ts`. `vp run -F @gadgets/integration-tests build:upgrade-base`
+(`scripts/build-upgrade-base.ts`) bundles the old release from a temporary worktree of its revision.
+The new one comes from `vp run -F @gadgets/google-gatekeeper build:integration-worker`. The `test`
+task and `test:prebuild` build both first.
+
 ## Further reading
 
 [`docs/integration-testing.md`](../../docs/integration-testing.md) covers the reasoning behind the
