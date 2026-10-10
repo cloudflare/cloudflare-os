@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DELIVERED_RETENTION_MS, HookDeliveryQueue, MAX_DELIVERIES_PER_RUN, MAX_DELIVERY_ATTEMPTS, disposeStubs,
 } from "../src/hook-delivery-queue";
-import { fakeKv } from "./fake-kv";
+import { fakeKv, type FakeKv } from "./fake-kv";
 
 const MINUTE = 60_000;
 
@@ -63,22 +63,49 @@ describe("HookDeliveryQueue", () => {
     expect(deliver.mock.calls).toEqual([["b", "for b"]]);
   });
 
-  it("neither retries nor revives a message whose row went during its attempt", async () => {
+  it.each<[string, "succeeds" | "fails", (queue: HookDeliveryQueue<string>, kv: FakeKv) => void, string[]]>([
+    // Disabling the hook: its row is finished, so a duplicate push still collapses.
+    ["cancelled", "fails", queue => queue.cancel("hook"), ["msg:hook:m1"]],
+    ["cancelled", "succeeds", queue => queue.cancel("hook"), ["msg:hook:m1"]],
+    // Its driver forgetting every hook, as disconnecting the account does.
+    ["deleted", "fails", (_queue, kv) => kv.delete("msg:hook:m1"), []],
+    ["deleted", "succeeds", (_queue, kv) => kv.delete("msg:hook:m1"), []],
+  ])("neither retries nor revives a message whose row is %s while its attempt %s", async (_, outcome, end, kept) => {
     const kv = fakeKv();
     const queue = new HookDeliveryQueue<string>(kv, () => {});
-    queue.enqueue("cancelled", "m1", "message", Date.now());
-    queue.enqueue("forgotten", "m1", "message", Date.now());
-
-    await queue.run(Date.now(), async hookKey => {
-      if (hookKey === "cancelled") {
-        queue.cancel(hookKey);
-        throw new Error("the gadget failed");
-      }
-      kv.delete("msg:forgotten:m1");
+    queue.enqueue("hook", "m1", "message", Date.now());
+    const deliver = vi.fn(async () => {
+      end(queue, kv);
+      if (outcome === "fails") throw new Error("the gadget failed");
     });
 
-    expect(kv.keys()).toEqual(["msg:cancelled:m1"]);
-    expect(queue.nextDue()).toBe(Date.now() + DELIVERED_RETENTION_MS);
+    await queue.run(Date.now(), deliver);
+    // Past any retry's backoff.
+    vi.setSystemTime(Date.now() + 2 * 60 * MINUTE);
+    await queue.run(Date.now(), deliver);
+
+    expect(deliver).toHaveBeenCalledOnce();
+    expect(kv.keys()).toEqual(kept);
+  });
+
+  it("takes up the rows gatekeeper-google's queue stored before the move, as it wrote them", async () => {
+    const kv = fakeKv();
+    kv.put("msg:hook:retrying", { message: "retrying", attempts: 1, at: Date.now() });
+    kv.put("msg:hook:last", { message: "last", attempts: MAX_DELIVERY_ATTEMPTS - 1, at: Date.now() });
+    kv.put("msg:hook:finished", { deliveredAt: Date.now() - MINUTE });
+    const onDrop = vi.fn();
+    const queue = new HookDeliveryQueue<string>(kv, onDrop);
+    const deliver = vi.fn(async () => { throw new Error("the gadget failed"); });
+
+    // A finished row still collapses a duplicate push.
+    queue.enqueue("hook", "finished", "again", Date.now());
+    await queue.run(Date.now(), deliver);
+
+    expect(deliver.mock.calls).toEqual([["hook", "last"], ["hook", "retrying"]]);
+    // Each attempt count carried on: the second attempt's backoff, and the last attempt dropped.
+    expect(kv.get("msg:hook:retrying")).toEqual({ message: "retrying", attempts: 2, at: Date.now() + 2 * MINUTE });
+    expect(kv.get("msg:hook:last")).toEqual({ deliveredAt: Date.now() });
+    expect(onDrop).toHaveBeenCalledOnce();
   });
 
   it("starts at most MAX_DELIVERIES_PER_RUN deliveries, oldest first", async () => {
