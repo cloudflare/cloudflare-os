@@ -8,6 +8,7 @@
 
 import {
   ActionApplyError,
+  ActionOutcomeUnknownError,
   defineActions,
   type ActionContext,
   type ActionPresentation,
@@ -28,9 +29,9 @@ import {
 } from "./x-api";
 import type { StoredIdentity } from "./x-credentials";
 import { VENDOR_ID } from "./x-env";
-import type { WireList, WirePost } from "./x-normalize";
+import { sentContent, type SentContent, type WireList, type WirePost } from "./x-normalize";
 import {
-  TEXT_LIMIT, TEXT_LIMIT_PREMIUM, comparableText, extractMentions, extractUrls, weightedLength,
+  TEXT_LIMIT, TEXT_LIMIT_PREMIUM, comparableText, comparableUrl, extractMentions, extractUrls, weightedLength,
 } from "./x-text";
 
 /** Most posts one thread may hold. */
@@ -59,6 +60,9 @@ export type PostTarget = { id: string; info: XPostInfo };
 
 /** The List an action targets. */
 export type ListTarget = { id: string; info: XListInfo };
+
+/** What a send recorded just before it went to X: when, and for a post the media it attached. */
+export type SendAttempt = { at: number; mediaIds?: string[] };
 
 /** What each kind of action stores. */
 export type XActions = {
@@ -129,7 +133,7 @@ export type XActionHost = {
   progress: { get(id: number): string[]; put(id: number, ids: string[]): void; delete(id: number): void };
   /** A send whose outcome X never reported, keyed by action and post index. */
   attempts: {
-    get(key: string): { at: number } | undefined; put(key: string, at: number): void; delete(key: string): void;
+    get(key: string): SendAttempt | undefined; put(key: string, attempt: SendAttempt): void; delete(key: string): void;
   };
   /** Drops cached reads once an action changed what they show. */
   invalidate(): Promise<void>;
@@ -304,24 +308,52 @@ async function toggle(host: XActionHost, op: (api: XApi, me: StoredIdentity) => 
   }
 }
 
+/** How far X's clock may run behind ours. */
+const CLOCK_SKEW_MS = 10_000;
+/** How long after its attempt began X may date what a send created: well past our timeout. */
+const RECONCILE_WINDOW_MS = 5 * 60 * 1000;
+
+/** One key per distinct content, however X rewrote its links and in whatever order it lists them. */
+function contentKey(content: SentContent): string {
+  return JSON.stringify([
+    content.replyTo ?? null,
+    comparableText(content.text),
+    content.links.map(comparableUrl).toSorted(),
+    content.mediaIds.toSorted(),
+    content.poll,
+  ]);
+}
+
 /**
- * Finds a post this account just published from `draft`: the reconciliation for a send whose
- * outcome X never reported, so a retry binds what landed instead of posting twice.
+ * Finds the post a send whose outcome X never reported made, so a retry binds it instead of
+ * posting twice: among the account's posts dated around the attempt, the one with the draft's
+ * reply parent, text, link destinations and poll, carrying the media the attempt uploaded.
+ * @returns The post's ID, or `undefined` when none matches and the send may go again.
+ * @throws ActionOutcomeUnknownError when more than one could match: binding the wrong one would
+ * have a revert delete it, and sending again could post twice.
  */
 async function findPublished(host: XActionHost, draft: StoredDraft, replyTo: string | undefined,
-                             since: number): Promise<string | undefined> {
+                             attempt: SendAttempt): Promise<string | undefined> {
+  const windowEnd = attempt.at + RECONCILE_WINDOW_MS;
   const envelope = await host.read<WirePost[]>(5, (api, me) => api.get<WirePost[]>(`/2/users/${me.id}/tweets`, {
-    max_results: 5,
-    start_time: xTime(new Date(since - 10_000)),
-    "tweet.fields": "created_at,referenced_tweets,note_tweet",
+    max_results: 100,
+    start_time: xTime(new Date(attempt.at - CLOCK_SKEW_MS)),
+    // Until the window has closed it runs to the present.
+    ...(windowEnd < Date.now() - CLOCK_SKEW_MS ? { end_time: xTime(new Date(windowEnd)) } : {}),
+    "tweet.fields": "created_at,referenced_tweets,note_tweet,entities,attachments",
   }));
-  const wanted = comparableText(draft.text);
-  const match = (envelope.data ?? []).find(candidate => {
-    const text = candidate.note_tweet?.text ?? candidate.text ?? "";
-    const parent = (candidate.referenced_tweets ?? []).find(ref => ref.type === "replied_to")?.id;
-    return comparableText(text) === wanted && parent === replyTo;
+  const wanted = contentKey({
+    text: draft.text, replyTo, links: extractUrls(draft.text), mediaIds: attempt.mediaIds ?? [],
+    poll: draft.poll !== undefined,
   });
-  return match?.id;
+  const matches = (envelope.data ?? []).filter(post => contentKey(sentContent(post)) === wanted);
+  // A further page could hold another match, so it leaves the answer as open as two matches do.
+  if (matches.length > 1 || envelope.meta?.next_token !== undefined) {
+    throw new ActionOutcomeUnknownError("More than one of the account's posts from when this was sent " +
+      "could be this one, so which, if any, this action published is unknown, and it won't be sent " +
+      "again. Check the account's posts on X, then reject this action to clear it.");
+  }
+  return matches[0]?.id;
 }
 
 /** Publishes one draft, replying to `replyTo` when given. */
@@ -329,7 +361,7 @@ async function publishOne(host: XActionHost, draft: StoredDraft, replyTo: string
                           attemptKey: string): Promise<string> {
   const prior = host.attempts.get(attemptKey);
   if (prior) {
-    const landed = await findPublished(host, draft, replyTo, prior.at);
+    const landed = await findPublished(host, draft, replyTo, prior);
     if (landed) {
       host.attempts.delete(attemptKey);
       return landed;
@@ -359,7 +391,8 @@ async function publishOne(host: XActionHost, draft: StoredDraft, replyTo: string
   if (draft.madeWithAi) body.made_with_ai = true;
   if (replyTo) body.reply = { in_reply_to_tweet_id: replyTo };
 
-  host.attempts.put(attemptKey, Date.now());
+  const attempt: SendAttempt = { at: Date.now(), mediaIds };
+  host.attempts.put(attemptKey, attempt);
   try {
     const created = await host.write(api => api.post<{ id: string }>("/2/tweets", body));
     const id = requireData(created, "post").id;
@@ -367,7 +400,7 @@ async function publishOne(host: XActionHost, draft: StoredDraft, replyTo: string
     return id;
   } catch (error) {
     if (isOutcomeUnknown(error) || (error instanceof XApiError && error.isDuplicate)) {
-      const landed = await findPublished(host, draft, replyTo, host.attempts.get(attemptKey)?.at ?? Date.now());
+      const landed = await findPublished(host, draft, replyTo, attempt);
       if (landed) {
         host.attempts.delete(attemptKey);
         return landed;
@@ -400,14 +433,15 @@ async function publishAll(host: XActionHost, ctx: ActionContext, drafts: readonl
       host.progress.put(ctx.id, published);
     }
   } catch (error) {
-    if (error instanceof ActionApplyError) {
+    if (error instanceof ActionApplyError || error instanceof ActionOutcomeUnknownError) {
       // Terminal, so no retry will need the progress or the images.
       host.progress.delete(ctx.id);
       host.releaseImages(drafts);
       if (published.length > 0) {
-        throw new ActionApplyError(`${error.message} ${published.length === 1
+        const message = `${error.message} ${published.length === 1
           ? "The thread's first post was published and is still on X."
-          : `The thread's first ${published.length} posts were published and are still on X.`}`);
+          : `The thread's first ${published.length} posts were published and are still on X.`}`;
+        throw error instanceof ActionApplyError ? new ActionApplyError(message) : new ActionOutcomeUnknownError(message);
       }
     }
     throw error;

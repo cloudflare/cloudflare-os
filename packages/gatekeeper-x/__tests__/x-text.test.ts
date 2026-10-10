@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { comparableText, extractMentions, extractUrls, weightedLength } from "../src/x-text";
+import { comparableText, comparableUrl, extractMentions, extractUrls, weightedLength } from "../src/x-text";
 
 describe("weightedLength", () => {
   it("counts Latin text one per character", () => {
@@ -69,5 +69,17 @@ describe("comparableText", () => {
 
   it("tells different texts apart", () => {
     expect(comparableText("Hello world")).not.toBe(comparableText("Hello there"));
+  });
+});
+
+describe("comparableUrl", () => {
+  it("equates a link as written with X's record of it", () => {
+    expect(comparableUrl("example.com")).toBe(comparableUrl("http://example.com"));
+    expect(comparableUrl("https://Example.COM/Path/")).toBe(comparableUrl("example.com/Path"));
+  });
+
+  it("tells different destinations apart", () => {
+    expect(comparableUrl("https://example.com/a")).not.toBe(comparableUrl("https://example.com/b"));
+    expect(comparableUrl("https://example.com/Path")).not.toBe(comparableUrl("https://example.com/path"));
   });
 });

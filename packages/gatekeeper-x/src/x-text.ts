@@ -2,6 +2,8 @@
 // approver should see called out. These follow twitter-text's v3 rules closely enough to refuse
 // what X would refuse before it reaches the approval queue; X remains the authority at apply.
 
+import { stripTrailingSlashes } from "@gadgets/workshop-shared/gatekeeper";
+
 /** Standard accounts' limit, in weighted characters. */
 export const TEXT_LIMIT = 280;
 /** X Premium accounts' limit. */
@@ -99,4 +101,15 @@ export function comparableText(text: string): string {
     .replace(URL_PATTERN, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/**
+ * A link as written in a draft and as X records it (`expanded_url`) compare equal: X adds a scheme
+ * to a bare domain, so the scheme, the host's case and trailing slashes are dropped.
+ */
+export function comparableUrl(url: string): string {
+  const bare = url.replace(/^https?:\/\//i, "");
+  const slash = bare.indexOf("/");
+  const host = slash === -1 ? bare : bare.slice(0, slash);
+  return stripTrailingSlashes(host.toLowerCase() + bare.slice(host.length));
 }
