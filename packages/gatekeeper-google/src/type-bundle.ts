@@ -21,7 +21,9 @@ export const SLIDES_TYPES_MODULE_PREFIX =
 
 /** Module-only prefix of the Google Sheets declaration. */
 export const SHEETS_TYPES_MODULE_PREFIX =
-  'import type { GoogleSpreadsheetReadSession } from "./sheets-read-types";\n' +
+  "import type {\n" +
+  "  GoogleSpreadsheetReadSession, SheetBorder, SheetColor, SheetNumberFormat,\n" +
+  '} from "./sheets-read-types";\n' +
   'export type * from "./sheets-read-types";\n\n';
 
 /** Remove a declaration's expected module prefix before adding it to the flat agent type bundle. */

@@ -445,11 +445,12 @@ outcome could still land, later changes stay pending.
 A change is refused when it is queued if the connected account can only view the spreadsheet, or
 if it writes outside a sheet's grid or into a protected range the account cannot edit. A change
 addresses at most 10,000 cells and a batch 20,000, a cell holds at most 50,000 characters, the
-changes queued at once may enter at most 100,000 cells in all (a copied sheet counting the cells
-changes queued to it enter) and make at most 50 changes to rows, columns and sheets, and a queued
-batch is capped at 100 KiB. While such changes are queued, a read or a batch may involve at most
-5,000,000 characters of formulas times their number, since each formula is rewritten through each
-of them, and hold at most 5 MiB of text as rewritten. Google allows 60 write requests a minute per
+changes queued at once may set values or formatting in at most 100,000 cells in all (a cell given
+both counting twice, a copied sheet counting what changes queued to it set) and make at most 50
+changes to rows, columns and sheets, and a queued batch is capped at 100 KiB. While such changes are
+queued, a read or a batch may involve at most 5,000,000 characters of formulas times their number,
+since each formula is rewritten through each of them, and hold at most 5 MiB of text as rewritten.
+Google allows 60 write requests a minute per user; a write over that quota stays pending.
 user; a write over that quota stays pending.
 
 ## Google Drive read-only bindings

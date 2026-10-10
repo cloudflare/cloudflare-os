@@ -64,6 +64,73 @@ export type SpreadsheetRange = {
 };
 
 /**
+ * A colour: `#rrggbb`, or one of the spreadsheet theme's colours by name: `TEXT`, `BACKGROUND`,
+ * `ACCENT1` to `ACCENT6`, or `LINK`.
+ */
+export type SheetColor = string;
+
+/** How a cell border is drawn. */
+export type SheetBorderStyle =
+  "SOLID" | "SOLID_MEDIUM" | "SOLID_THICK" | "DOTTED" | "DASHED" | "DOUBLE";
+
+/** One edge of a cell's border. */
+export type SheetBorder = {
+  style: SheetBorderStyle;
+  /** The border's colour. Absent means black. */
+  color?: SheetColor;
+};
+
+/** How a cell displays a number, date or time. */
+export type SheetNumberFormat = {
+  type: "TEXT" | "NUMBER" | "PERCENT" | "CURRENCY" | "DATE" | "TIME" | "DATE_TIME" | "SCIENTIFIC";
+  /**
+   * A pattern in Google Sheets' number format syntax, such as `"$"#,##0.00` or `yyyy-mm-dd`.
+   * Absent means the type's default for the spreadsheet's locale.
+   */
+  pattern?: string;
+};
+
+/**
+ * The formatting set on a cell itself. An absent field is the default. A theme colour reads as its
+ * name, and any other colour as `#rrggbb`.
+ */
+export type SheetCellFormat = {
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strikethrough?: boolean;
+  /** Font size in points. */
+  fontSize?: number;
+  textColor?: SheetColor;
+  /** Background colour. */
+  fillColor?: SheetColor;
+  numberFormat?: SheetNumberFormat;
+  horizontalAlignment?: "LEFT" | "CENTER" | "RIGHT";
+  verticalAlignment?: "TOP" | "MIDDLE" | "BOTTOM";
+  /** Whether text too long for the cell overflows into empty neighbours, wraps, or is cut off. */
+  wrap?: "OVERFLOW" | "WRAP" | "CLIP";
+  borders?: { top?: SheetBorder; bottom?: SheetBorder; left?: SheetBorder; right?: SheetBorder };
+};
+
+/** The formatting of one rectangular range. */
+export type SpreadsheetFormats = {
+  /** Canonical A1 range read, such as `Sales!A1:C3`. */
+  range: string;
+  /** Rectangular rows of formats. A cell with no formatting set is `null`. */
+  formats: (SheetCellFormat | null)[][];
+  /**
+   * A1 names (no sheet, such as `B3`) of cells in this range whose formatting is not known until
+   * queued changes apply: cells of rows or columns a queued change inserts. They read `null`.
+   */
+  pendingCells?: string[];
+  /**
+   * The first queued change that no longer applies. It and the changes queued after it are not
+   * shown.
+   */
+  queuedChangeConflict?: string;
+};
+
+/**
  * Read-only access to one Google spreadsheet. With changes queued, reads show them as entered (see
  * `pendingCells`).
  */
@@ -89,4 +156,11 @@ export interface GoogleSpreadsheetReadSession {
     ranges: string[],
     options?: { valueMode?: SpreadsheetValueMode },
   ): Promise<SpreadsheetRange[]>;
+
+  /**
+   * Read the formatting of a bounded A1 range, such as `'Sales 2026'!A1:F20`, accepted as
+   * `readRange` accepts one. At most 10,000 cells may be requested, and the response must not
+   * exceed 5 MiB.
+   */
+  readFormats(range: string): Promise<SpreadsheetFormats>;
 }
