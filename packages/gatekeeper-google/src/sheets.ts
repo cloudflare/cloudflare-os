@@ -19,21 +19,20 @@ import {
   batchKind, MARKER_RETENTION_MS, SHEETS_ACTIONS, type MarkerEntry,
 } from "./sheets-actions";
 import {
-  BlankSpreadsheet, GoogleSheetsApi, type SheetProtection, type SpreadsheetMetadata,
-  type SpreadsheetReader,
+  BlankSpreadsheet, GoogleSheetsApi, validateRanges, type SheetArea, type SpreadsheetReader,
 } from "./sheets-api";
-import { prepareChanges } from "./sheets-input";
+import { isCellChange, prepareChanges } from "./sheets-input";
+import { findSheet, parseRange, type Rect } from "./sheets-model";
 import {
-  a1Of, cellName, findSheet, intersection, parseRange, type Rect,
-} from "./sheets-model";
-import { guardDigest, resolveChanges } from "./sheets-plan";
+  checkProtections, guardAfter, guardCells, guardDigest, guardedSheets, resolveChanges, sheetLabels,
+} from "./sheets-plan";
 import type {
   GoogleSpreadsheetReadSession, SpreadsheetInfo, SpreadsheetRange, SpreadsheetValueMode,
 } from "./sheets-read-types";
 import {
-  asQueued, buildsOn, conflictReason, overlayRange, replayChanges,
-  type Grid, type PlannedChange, type QueuedChange, type SheetBatch, type SheetsAction,
-  type SheetsActions,
+  basePiecesOf, baseValues, conflictReason, enteredContent, gridOf, overlayRange, rangesToFetch,
+  replayChanges, resolveArea, simulatedRange, type Grid, type PlannedChange, type QueuedChange,
+  type SheetBatch, type SheetsAction, type SheetsActions,
 } from "./sheets-simulation";
 import type { GoogleSpreadsheetSession, SheetChange } from "./sheets-types";
 import { SHEETS_TYPES_MODULE_PREFIX, stripTypeModulePrefix } from "./type-bundle";
@@ -48,6 +47,15 @@ const STALE_MARKERS_KEY = "sheets:staleMarkers";
 const MAX_STALE_MARKERS = 20;
 
 type Env = Cloudflare.Env;
+
+// A random ID for a marker or a sheet a change adds. A developer metadata ID is a positive 32-bit
+// integer, 0 asking Google to pick one, and a sheet ID a non-negative one: a random 31-bit number,
+// drawn again while it is 0.
+function randomId(): number {
+  let id = 0;
+  while (id === 0) id = crypto.getRandomValues(new Uint32Array(1))[0] >>> 1;
+  return id;
+}
 
 // Throws if `value` would not fit in the one storage value a queued change is.
 function checkQueuedSize(value: unknown): void {
@@ -70,14 +78,6 @@ function retainedMarkers(entries: readonly MarkerEntry[], now: number): MarkerEn
   let closed = new Set(entries.filter(entry => !open(entry))
     .toSorted((a, b) => a.sentAt - b.sentAt).slice(-MAX_STALE_MARKERS));
   return entries.filter(entry => open(entry) || closed.has(entry));
-}
-
-// A developer metadata ID is a positive 32-bit integer, 0 asking Google to pick one: a random
-// 31-bit number, drawn again while it is 0.
-function mintMarkerId(): number {
-  let id = 0;
-  while (id === 0) id = crypto.getRandomValues(new Uint32Array(1))[0] >>> 1;
-  return id;
 }
 
 let sheetsTypesCode: string | undefined;
@@ -297,47 +297,26 @@ function replayed(base: Grid, changes: readonly QueuedChange[]): { grid: Grid; c
     : { grid: result.partial, conflict: conflictReason(result.unsupported, result.reason) };
 }
 
-function gridOf(metadata: SpreadsheetMetadata): Grid {
-  return { sheets: metadata.sheets, cells: new Map() };
-}
-
-function within({ startRow, endRow, startColumn, endColumn }: Rect, row: number, column: number): boolean {
-  return row >= startRow && row < endRow && column >= startColumn && column < endColumn;
-}
-
-// The protected range's cells by name, where its ends are bounded.
-function protectionName(protection: SheetProtection, title: string): string {
-  let { rect } = protection.area;
-  if ([rect.endRow, rect.endColumn].every(Number.isFinite)) return `the protected range ${a1Of(title, rect)}`;
-  return `a protected range of "${title}"`;
-}
-
 /**
- * Refuses a change writing a cell of a protected range the connected account may not edit, and
- * that the range does not leave editable. A range that only warns is no obstacle: Google warns in
- * its own editor, but lets the API write it.
+ * `read`, Google's values for each of `ranges`, showing what queued changes enter in their cells,
+ * for a grid whose queued changes leave rows, columns and sheets where they are.
  */
-function checkProtections(
-  changes: readonly PlannedChange[], protections: readonly SheetProtection[], grid: Grid,
-): void {
-  changes.forEach((change, i) => {
-    for (let protection of protections) {
-      if (protection.requestingUserCanEdit || protection.warningOnly) continue;
-      if (protection.area.sheetId !== change.sheetId) continue;
-      let shared = intersection(change.rect, protection.area.rect);
-      if (!shared) continue;
-      for (let row = shared.startRow; row < shared.endRow; row++) {
-        for (let column = shared.startColumn; column < shared.endColumn; column++) {
-          let editable = protection.unprotected.some(({ sheetId, rect }) =>
-            sheetId === change.sheetId && within(rect, row, column));
-          if (editable) continue;
-          let title = grid.sheets.find(sheet => sheet.id === change.sheetId)?.title ?? "";
-          throw new Error(`Change ${i + 1} (${change.op}): ${cellName(row, column)} is in ` +
-            `${protectionName(protection, title)}, which the connected account may not edit.`);
-        }
-      }
-    }
+function overlaid(
+  read: readonly SpreadsheetRange[], ranges: readonly { sheet?: string; rect: Rect }[], grid: Grid,
+  mode: SpreadsheetValueMode | undefined,
+): SpreadsheetRange[] {
+  return read.map((range, i) => {
+    // Google reads a range naming no sheet from the first visible one.
+    let sheet = findSheet(grid.sheets, ranges[i].sheet);
+    return sheet ? overlayRange(range, sheet.id, ranges[i].rect, grid, mode) : range;
   });
+}
+
+/** A read refused for what it found, which is reported only once the read is authorized. */
+class RefusedRead extends Error {
+  constructor(readonly refusal: Error) {
+    super(refusal.message);
+  }
 }
 
 /** What `updateSpreadsheet()` read to queue a batch, or why it cannot queue one. */
@@ -347,6 +326,7 @@ type Prepared = {
   conflict?: string;
   refusal?: Error;
   batch?: Omit<SheetBatch, "marker">;
+  refs?: Record<string, number>;
 };
 
 /** A directly bound spreadsheet's session, exported for tests. */
@@ -419,33 +399,84 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     return this.#readRanges(ranges, options);
   }
 
-  /** `ranges` as Google returns them, showing what queued changes enter in their cells. */
+  /**
+   * `ranges` as Google returns them, showing what queued changes enter in their cells, and, once
+   * queued changes move rows, columns or sheets, as those changes leave them.
+   */
   async #simulatedRanges(
     ranges: string[], pending: readonly QueuedChange[], mode: SpreadsheetValueMode | undefined,
   ): Promise<SpreadsheetRange[]> {
     if (pending.length === 0) return this.#reader.readRanges(this.#spreadsheetId, ranges, mode);
     // A malformed range is refused before anything is fetched.
     let parsed = ranges.map(range => parseRange(range));
-    let [metadata, read] = await Promise.all([
-      this.#api.getMetadata(this.#spreadsheetId),
-      this.#api.readRanges(this.#spreadsheetId, ranges, mode),
+    let structural = pending.some(({ action }) =>
+      action.payload.changes.some(change => !isCellChange(change)));
+    let shown: SpreadsheetRange[];
+    let conflict: string | undefined;
+    if (structural) {
+      validateRanges(ranges);
+      let replay = replayed(gridOf(await this.#api.getMetadata(this.#spreadsheetId)), pending);
+      conflict = replay.conflict;
+      shown = replay.grid.log.length > 0
+        ? await this.#movedRanges(replay.grid, parsed, mode ?? "formatted")
+        : overlaid(await this.#api.readRanges(this.#spreadsheetId, ranges, mode), parsed, replay.grid, mode);
+    } else {
+      let [metadata, read] = await Promise.all([
+        this.#api.getMetadata(this.#spreadsheetId),
+        this.#api.readRanges(this.#spreadsheetId, ranges, mode),
+      ]);
+      let replay = replayed(gridOf(metadata), pending);
+      conflict = replay.conflict;
+      shown = overlaid(read, parsed, replay.grid, mode);
+    }
+    return conflict ? shown.map(range => ({ ...range, queuedChangeConflict: conflict })) : shown;
+  }
+
+  /**
+   * `ranges` of `grid`, whose queued changes move rows, columns or sheets, read from the cells of
+   * the spreadsheet Google holds they show: in `mode`, and in formula mode to tell its formulas.
+   * Those cells are fetched by grid range, since a range's title or bounds may name nothing
+   * Google holds.
+   */
+  async #movedRanges(
+    grid: Grid, ranges: readonly { sheet?: string; rect: Rect }[], mode: SpreadsheetValueMode,
+  ): Promise<SpreadsheetRange[]> {
+    let areas: ReturnType<typeof resolveArea>[];
+    let pieces: ReturnType<typeof rangesToFetch>;
+    try {
+      areas = ranges.map(range => resolveArea(grid, range));
+      pieces = rangesToFetch(grid, areas);
+    } catch (error) {
+      // These name the spreadsheet's sheets and sizes, so they wait for the read's authorization.
+      throw new RefusedRead(error as Error);
+    }
+    let [shown, formulas] = await Promise.all([
+      this.#api.readAreas(this.#spreadsheetId, pieces, mode),
+      mode === "formula" ? undefined : this.#api.readAreas(this.#spreadsheetId, pieces, "formula"),
     ]);
-    let { grid, conflict } = replayed(gridOf(metadata), pending);
-    return read.map((range, i) => {
-      // Google reads a range naming no sheet from the first visible one.
-      let sheet = findSheet(grid.sheets, parsed[i].sheet);
-      let shown = sheet ? overlayRange(range, sheet.id, parsed[i].rect, grid, mode) : range;
-      return conflict ? { ...shown, queuedChangeConflict: conflict } : shown;
-    });
+    let shownValues = baseValues(pieces, shown);
+    let base = { shown: shownValues, formulas: formulas ? baseValues(pieces, formulas) : shownValues };
+    return areas.map(area => simulatedRange(grid, area, base, mode));
   }
 
   async #readRanges(
     ranges: string[],
     options?: { valueMode?: SpreadsheetValueMode },
   ): Promise<SpreadsheetRange[]> {
-    return this.#read(
-      () => this.#changes.snapshot(pending => this.#simulatedRanges(ranges, pending, options?.valueMode)),
+    let read = await this.#read(
+      () => this.#changes.snapshot(pending => this.#simulatedRanges(ranges, pending, options?.valueMode))
+        .catch((error: unknown) => {
+          if (error instanceof RefusedRead) return error;
+          throw error;
+        }),
       result => {
+        if (result instanceof RefusedRead) {
+          return {
+            title: "Read Google Sheets ranges",
+            description: `Looked up ${ranges.length} range(s) in the connected spreadsheet with the ` +
+              "queued changes applied.",
+          };
+        }
         let cellCount = result.reduce(
           (total, range) => total + range.values.reduce((sum, row) => sum + row.length, 0),
           0,
@@ -459,6 +490,8 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
             "in the connected spreadsheet.",
         };
       });
+    if (read instanceof RefusedRead) throw read.refusal;
+    return read;
   }
 
   async updateSpreadsheet(changes: SheetChange[]): Promise<void> {
@@ -474,22 +507,28 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
           let { grid, conflict } = replayed(gridOf(metadata), pending);
           if (!editable || conflict) return { title: metadata.title, editable, conflict };
           let planned: PlannedChange[];
+          let refs: Record<string, number>;
+          let cells: SheetArea[];
           try {
-            planned = resolveChanges(grid, prepared);
-            checkProtections(planned, metadata.protectedRanges, grid);
+            ({ planned, refs } = resolveChanges(grid, prepared, randomId));
+            checkProtections(metadata, grid, planned);
+            cells = guardCells(grid, planned);
           } catch (error) {
             // Reported after authorization, since it reveals the spreadsheet's sheets.
             return { title: metadata.title, editable, refusal: error as Error };
           }
-          // What the batch overwrites as it is to be when the batch applies: as Google holds it
-          // now, with what changes queued before it enter.
-          let entered = await this.#api.readEntered(
-            this.#spreadsheetId, planned.map(({ sheetId, rect }) => ({ sheetId, rect })));
-          let sha256 = await guardDigest(grid.sheets, planned, asQueued(grid, planned, entered));
-          let sheets = Object.fromEntries(planned.map(({ sheetId }) =>
-            [sheetId, grid.sheets.find(sheet => sheet.id === sheetId)!.title]));
-          let guard = { sha256, after: buildsOn(pending, planned) };
-          return { title: metadata.title, editable, batch: { changes: planned, sheets, guard } };
+          // What the batch overwrites or removes as it is to be when the batch applies: as Google
+          // holds it now, with the changes queued before it made.
+          let pieces = basePiecesOf(grid, cells);
+          let entered = await this.#api.readEntered(this.#spreadsheetId, pieces);
+          let sha256 = await guardDigest(
+            grid.sheets, { sheetIds: guardedSheets(planned), cells },
+            enteredContent(grid, cells, baseValues(pieces, entered)));
+          let guard = { sha256, after: guardAfter(grid, pending, planned, cells), cells };
+          return {
+            title: metadata.title, editable, refs,
+            batch: { changes: planned, sheets: sheetLabels(grid, planned), guard },
+          };
         }),
         ({ title }) => ({
           title: "Read Google Sheets cells to change them",
@@ -505,8 +544,8 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
       }
       if (read.refusal) throw read.refusal;
       // Minted here, so every attempt to apply the batch carries the same marker.
-      let marker = { id: mintMarkerId(), token: crypto.randomUUID() };
-      return { payload: { ...read.batch!, marker }, result: undefined };
+      let marker = { id: randomId(), token: crypto.randomUUID() };
+      return { payload: { ...read.batch!, marker }, result: read.refs! };
     });
   }
 }

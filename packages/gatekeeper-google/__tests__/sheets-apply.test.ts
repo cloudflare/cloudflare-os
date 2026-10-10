@@ -134,7 +134,7 @@ function setup() {
       let changes: PlannedChange[] = [{ op: "writeCells", sheetId: 0, rect: B2, values: [[value]] }];
       let entered = [[[fake.cells.get("1:1") ?? null]]];
       let marker = { id: ++nextMarker, token: crypto.randomUUID() };
-      let sha256 = await guardDigest(SHEETS, changes, entered);
+      let sha256 = await guardDigest(SHEETS, { sheetIds: [0], cells: [{ sheetId: 0, rect: B2 }] }, entered);
       let id = await actions.submit({ submitAction: async () => {} }, "editSheetValues", {
         changes, sheets: { 0: "Sales" }, marker, guard: { sha256, after: [] },
       });
