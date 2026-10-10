@@ -62,8 +62,9 @@ export const GOOGLE_SLIDES_RESOURCE: SupportedResource = {
   urlPattern: "https://docs.google.com/presentation/d/:presentationId/*",
   title: "Google Slides Presentation",
   description:
-    "Read a presentation you choose, and edit its text and speaker notes and copy, move, or " +
-    "delete its slides, with your approval.",
+    "Read a presentation you choose, its slides, layouts, masters, and formatting, and, with " +
+    "your approval, edit its text and design, copy, move, or delete slides, and change its " +
+    "backgrounds and theme colours.",
   grantable: true,
   creatable: true,
 };

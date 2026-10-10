@@ -1,12 +1,13 @@
 import { env } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
-  RestPageElement, RestPresentation, RestSlide, RestText,
+  RestPageBackgroundFill, RestPageElement, RestPresentation, RestSlide, RestText,
+  RestThemeColorPair,
 } from "../../src/slides-api";
 import type { Slide, PresentationInfo, ShapeElement, TableElement } from "../../src/slides-read-types";
 import type { SlideTextEdit } from "../../src/slides-types";
 import { TEXT_STYLE_FIELDS } from "../../src/slides-text";
-import { presentation, shape, slide, text } from "../slides-fixture";
+import { colorScheme, presentation, shape, SIMPLE_LIGHT, slide, text } from "../slides-fixture";
 
 /** One provider index of a shape's text: a character, or an AutoText. */
 type Unit = string | { auto: string };
@@ -52,17 +53,59 @@ function table(objectId: string, rows: string[][]): RestPageElement {
   };
 }
 
-/** A deck as the summary's field mask returns it: shapes' text, and other elements' IDs alone. */
-function summaryOf(deck: RestPresentation): RestPresentation {
-  return {
-    ...deck,
-    slides: deck.slides!.map(slide => ({
-      ...slide,
-      pageElements: slide.pageElements?.map(({ objectId, shape }) =>
-        ({ objectId, ...(shape ? { shape: { placeholder: shape.placeholder, text: shape.text } } : {}) })),
-    })),
+/** A parsed field mask: each field it names, and that field's own mask, or `true` for all of it. */
+type Mask = Map<string, Mask | true>;
+
+function parseMask(fields: string): Mask {
+  let at = 0;
+  let parse = (): Mask => {
+    let mask: Mask = new Map();
+    while (at < fields.length && fields[at] !== ")") {
+      let name = /^[^,()]+/.exec(fields.slice(at))![0];
+      at += name.length;
+      if (fields[at] === "(") {
+        at++;
+        mask.set(name, parse());
+        at++;
+      } else {
+        mask.set(name, true);
+      }
+      if (fields[at] === ",") at++;
+    }
+    return mask;
   };
+  return parse();
 }
+
+/** `value` with only what `mask` names, as Google answers a request with a `fields` parameter. */
+function masked(value: unknown, mask: Mask | true): unknown {
+  if (mask === true || value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(item => masked(item, mask));
+  return Object.fromEntries(Object.entries(value).flatMap(([key, field]) => {
+    let inner = mask.get(key);
+    return inner === undefined ? [] : [[key, masked(field, inner)]];
+  }));
+}
+
+/** Where Google serves the copy it keeps of a picture background: a bearer URL. */
+const PICTURE_COPY = "https://lh7-rt.googleusercontent.com/slidesz/picture-copy";
+
+/**
+ * A background as Google stores it from a request: `RENDERED`, the default, is omitted, and a
+ * picture is downloaded once and served from Google's own host.
+ */
+function storedFill({ propertyState, ...fill }: RestPageBackgroundFill): RestPageBackgroundFill {
+  if (fill.stretchedPictureFill) {
+    if (!fill.stretchedPictureFill.contentUrl?.startsWith("https://")) throw new Invalid();
+    let size = { width: { magnitude: 13600, unit: "EMU" as const }, height: { magnitude: 7650, unit: "EMU" as const } };
+    return { stretchedPictureFill: { contentUrl: PICTURE_COPY, size } };
+  }
+  return propertyState === "RENDERED" ? fill : { propertyState, ...fill };
+}
+
+const FOLLOWING: Record<string, string> = {
+  TEXT1: "DARK1", BACKGROUND1: "LIGHT1", TEXT2: "LIGHT2", BACKGROUND2: "DARK2",
+};
 
 class Invalid extends Error {}
 
@@ -92,16 +135,16 @@ class SlidesProvider {
       if (url.pathname === "/v1/presentations/deck-1:batchUpdate") {
         return this.#batch(await request.json());
       }
+      let fields = url.searchParams.get("fields");
+      let mask = fields === null ? true : parseMask(fields);
       if (url.pathname === "/v1/presentations/deck-1") {
-        // Only the summary's mask stops at shapes, leaving tables and groups as their IDs.
-        let deck = url.searchParams.get("fields")?.includes("pageElements(objectId,shape(")
-          ? summaryOf(this.deck) : this.deck;
-        return Response.json({ ...deck, ...(this.editable ? { revisionId: `r${this.revision}` } : {}) });
+        let read = { ...this.deck, ...(this.editable ? { revisionId: `r${this.revision}` } : {}) };
+        return Response.json(masked(read, mask));
       }
       let pageId = url.pathname.match(/^\/v1\/presentations\/deck-1\/pages\/([^/]+)$/)?.[1];
       if (pageId) this.pageReads.push(pageId);
       let page = [...this.deck.slides!, ...this.deck.layouts ?? []].find(s => s.objectId === pageId);
-      return page ? Response.json(page) : new Response(null, { status: 404 });
+      return page ? Response.json(masked(page, mask)) : new Response(null, { status: 404 });
     }));
     return this;
   }
@@ -285,6 +328,29 @@ class SlidesProvider {
       grid.tableRows!.forEach((row, r) => row.tableCells!.forEach((cell, c) => {
         cell.location = { rowIndex: r, columnIndex: c };
       }));
+    } else if (request.updatePageProperties) {
+      let { objectId, pageProperties, fields } = request.updatePageProperties;
+      let masters = deck.masters ?? [];
+      let page = [...slides, ...deck.layouts ?? [], ...masters].find(p => p.objectId === objectId);
+      if (!page) throw new Invalid();
+      let master = masters.includes(page);
+      let properties = page.pageProperties ??= {};
+      if (fields === "pageBackgroundFill") {
+        let fill: RestPageBackgroundFill | undefined = pageProperties.pageBackgroundFill;
+        // A master has nothing to inherit, so resetting one leaves it with none.
+        properties.pageBackgroundFill = fill ? storedFill(fill)
+          : master ? { propertyState: "NOT_RENDERED", solidFill: { color: { rgbColor: { red: 1, green: 1, blue: 1 } } } }
+          : { propertyState: "INHERIT" };
+      } else if (fields === "colorScheme") {
+        // Google takes all 12 theme colours, on a master alone, and works out the four that follow.
+        let colors: RestThemeColorPair[] | undefined = pageProperties.colorScheme?.colors;
+        if (!master || colors?.length !== 12) throw new Invalid();
+        let following = Object.entries(FOLLOWING).map(([type, follows]) =>
+          ({ type, color: colors.find(color => color.type === follows)?.color }));
+        properties.colorScheme = { colors: [...colors, ...following] };
+      } else {
+        throw new Invalid();
+      }
     } else {
       throw new Invalid();
     }
@@ -774,7 +840,7 @@ describe("Google Slides changes", () => {
     expect(await slides.reject(second.actionId!)).toBeNull();
     expect(await slides.autoApprovable()).toEqual([
       { tag: "editSlidesText", label: "Slide text edits" },
-      { tag: "formatSlides", label: "Slide formatting and layout" },
+      { tag: "formatSlides", label: "Slide formatting and arrangement" },
       { tag: "skipSlides", label: "Skipping slides" },
     ]);
   });
@@ -1183,5 +1249,291 @@ describe("Google Slides new and skipped slides", () => {
     ]);
     expect(provider.deck.slides!.map(s => s.slideProperties!.isSkipped)).toEqual([undefined, undefined, true]);
     expect((await slides.outline()).slides.map(s => s.skipped)).toEqual([false, false, true]);
+  });
+});
+
+function background(target: object, value: unknown) {
+  return { op: "setBackground", ...target, background: value };
+}
+
+describe("Google Slides backgrounds and theme", () => {
+  const PICTURE_URL = "https://example.com/backdrop.png";
+  const RED: RestPageBackgroundFill =
+    { propertyState: "RENDERED", solidFill: { color: { rgbColor: { red: 1 } }, alpha: 1 } };
+
+  it("lets a slide's colour, none or inherited background apply without asking, but not a picture or a theme change", async () => {
+    new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    let kindOf = async (...changes: object[]) => {
+      let { action } = await slides.queued("updateSlides", changes);
+      return action!.autoApprovable ? action!.actionKind!.tag : "manual";
+    };
+
+    expect(await kindOf(background({ slideId: "s1" }, "#ff0000"))).toBe("formatSlides");
+    expect(await kindOf(background({ slideId: "s1" }, "none"))).toBe("formatSlides");
+    expect(await kindOf(
+      background({ slideId: "s1" }, null),
+      { op: "formatText", slideId: "s1", elementId: "t1", format: { bold: true } },
+    )).toBe("formatSlides");
+    // Google downloads a picture, and a layout or master reaches slides the user is not looking at.
+    expect(await kindOf(background({ slideId: "s1" }, { imageUrl: PICTURE_URL }))).toBe("manual");
+    expect(await kindOf(background({ layoutId: "layout-title" }, "#ff0000"))).toBe("manual");
+    expect(await kindOf(background({ masterId: "master-1" }, "ACCENT1"))).toBe("manual");
+    expect(await kindOf({ op: "setThemeColors", masterId: "master-1", colors: { ACCENT1: "#ff0000" } }))
+      .toBe("manual");
+  });
+
+  it("queues slide and theme changes as one approval, shows them in reads, and writes them as one batch", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+
+    let { actionId, action } = await slides.queued("updateSlides", [
+      { op: "setBackground", slideId: "s2", background: "#ff0000" },
+      { op: "setBackground", layoutId: "layout-title-body", background: { imageUrl: PICTURE_URL } },
+      { op: "setThemeColors", masterId: "master-1", colors: { ACCENT1: "#123456" } },
+    ]);
+
+    expect(action).toMatchObject({
+      title: "Change slide 2 (\"Revenue\") and the theme",
+      autoApprovable: false,
+      descriptionIsComplete: true,
+      fields: [{ label: "Change 2: Background image URL", kind: "text", value: PICTURE_URL }],
+    });
+    expect(action!.description).toBe(
+      "Makes 3 changes, all or none of which are applied:\n\n" +
+      "1. On slide 2 (\"Revenue\"), set the background to #ff0000\n" +
+      "2. On layout \"Title and body\" of master \"Simple Light\", set the background to a picture " +
+      "downloaded from the URL below, stretched to fill it\n" +
+      "3. On the master \"Simple Light\", set the theme colours ACCENT1 #123456\n\n" +
+      "Each change to a master or layout reaches every slide made from it.");
+    let queued = await slides.outline();
+    expect(queued.slides.map(s => s.background)).toEqual([undefined, "#ff0000", undefined]);
+    expect(queued.layouts.map(({ id, background: set }) => [id, set])).toEqual([
+      ["layout-title", undefined], ["layout-title-body", "picture"],
+    ]);
+    expect(queued.masters).toEqual([{
+      id: "master-1", name: "Simple Light", background: "LIGHT1",
+      themeColors: { ...SIMPLE_LIGHT, ACCENT1: "#123456" },
+    }]);
+    expect(provider.batches).toEqual([]);
+
+    expect(await slides.apply(actionId!)).toBeNull();
+
+    let [{ requests, requiredRevisionId }] = provider.batches;
+    expect(requiredRevisionId).toBe("r1");
+    expect(requests.slice(0, 2)).toEqual([
+      { updatePageProperties: { objectId: "s2", pageProperties: { pageBackgroundFill: RED }, fields: "pageBackgroundFill" } },
+      { updatePageProperties: {
+        objectId: "layout-title-body",
+        pageProperties: { pageBackgroundFill: { propertyState: "RENDERED", stretchedPictureFill: { contentUrl: PICTURE_URL } } },
+        fields: "pageBackgroundFill",
+      } },
+    ]);
+    let scheme = requests[2].updatePageProperties;
+    expect(scheme).toMatchObject({ objectId: "master-1", fields: "colorScheme" });
+    expect(scheme.pageProperties.colorScheme.colors.map((pair: RestThemeColorPair) => pair.type))
+      .toEqual(Object.keys(SIMPLE_LIGHT));
+    expect(await slides.outline()).toEqual(queued);
+  });
+
+  it("titles a batch by the pages it changes", async () => {
+    new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    let titleOf = async (...changes: object[]) =>
+      (await slides.queued("updateSlides", changes)).action!.title;
+    let layoutBackground = { op: "setBackground", layoutId: "layout-title", background: "none" };
+    let theme = { op: "setThemeColors", masterId: "master-1", colors: { DARK1: "#111111" } };
+
+    expect(await titleOf(theme)).toBe("Change the master \"Simple Light\"");
+    expect(await titleOf(theme, { op: "setBackground", masterId: "master-1", background: "#ffffff" }))
+      .toBe("Change the master \"Simple Light\"");
+    expect(await titleOf(layoutBackground)).toBe("Change layout \"Title slide\" of master \"Simple Light\"");
+    expect(await titleOf(layoutBackground, theme)).toBe("Change the theme");
+    expect(await titleOf(
+      { op: "setBackground", slideId: "s1", background: "none" },
+      { op: "setBackground", slideId: "s3", background: "none" },
+      theme,
+    )).toBe("Change 2 slides and the theme");
+  });
+
+  it("reads only the outline to queue a theme change, and keeps a colour a collaborator changed meanwhile", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    let { actionId, observations } = await slides.queued("updateSlides", [
+      { op: "setThemeColors", masterId: "master-1", colors: { ACCENT1: "#123456" } },
+    ]);
+    expect(observations).toEqual([
+      "Read the masters and layouts of \"Quarterly review\" to queue changes to them.",
+    ]);
+
+    provider.edit(d => {
+      d.masters![0].pageProperties!.colorScheme = colorScheme({ ...SIMPLE_LIGHT, DARK2: "#abcdef" });
+    });
+
+    expect(await slides.apply(actionId!)).toBeNull();
+
+    expect(provider.batches.map(b => b.requiredRevisionId)).toEqual(["r2"]);
+    expect((await slides.outline()).masters[0].themeColors)
+      .toEqual({ ...SIMPLE_LIGHT, DARK2: "#abcdef", ACCENT1: "#123456" });
+    // Google works out the four that follow the 12 itself.
+    let colors = provider.deck.masters![0].pageProperties!.colorScheme!.colors!;
+    expect(colors.find(color => color.type === "BACKGROUND2")).toEqual({
+      type: "BACKGROUND2", color: { red: 0xab / 255, green: 0xcd / 255, blue: 0xef / 255 },
+    });
+  });
+
+  it("refuses a change to a layout or master the presentation does not have, queuing nothing", async () => {
+    new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    let refusal = async (change: object) => {
+      let outcome = await slides.call("updateSlides", [change]);
+      expect(outcome.actionId).toBeUndefined();
+      return outcome.error;
+    };
+
+    expect(await refusal({ op: "setBackground", layoutId: "layout-gone", background: "none" }))
+      .toContain('the presentation has no layout "layout-gone"');
+    // A master named as a layout is not one.
+    expect(await refusal({ op: "setBackground", layoutId: "master-1", background: "none" }))
+      .toContain('the presentation has no layout "master-1"');
+    expect(await refusal({ op: "setThemeColors", masterId: "layout-title", colors: { DARK1: "#000001" } }))
+      .toContain('the presentation has no master "layout-title"');
+  });
+
+  it("reports a queued change to a layout a collaborator deleted, and fails it without writing", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    let { actionId } = await slides.queued("updateSlides", [
+      { op: "setBackground", layoutId: "layout-title", background: "#ff0000" },
+    ]);
+
+    provider.edit(d => {
+      d.layouts = d.layouts!.filter(l => l.objectId !== "layout-title");
+    });
+
+    let outline = await slides.outline();
+    expect(outline.layouts.map(l => l.id)).toEqual(["layout-title-body"]);
+    expect(outline.queuedChangeConflict).toContain('the presentation has no layout "layout-title"');
+    expect(await slides.apply(actionId!)).toContain("This change no longer applies");
+    expect(provider.batches).toEqual([]);
+  });
+
+  it.each([
+    { name: "a slide's colour", changes: [{ op: "setBackground", slideId: "s1", background: "#ff0000" }] },
+    { name: "no master background", changes: [{ op: "setBackground", masterId: "master-1", background: "none" }] },
+    { name: "theme colours", changes: [{ op: "setThemeColors", masterId: "master-1", colors: { ACCENT6: "#000000" } }] },
+  ])("finds a lost batch that only sets $name landed", async ({ changes }) => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    let { actionId } = await slides.queued("updateSlides", changes);
+    provider.nextFailure = "lost";
+
+    expect(await slides.apply(actionId!)).toBeNull();
+
+    expect(provider.batches).toHaveLength(2);
+    expect(provider.batches[1]).toEqual(provider.batches[0]);
+  });
+
+  // Every picture reads as "picture", so a collaborator's would read as the batch's own, even
+  // where an earlier change in the batch sets the page a colour or its inherited background.
+  it.each([
+    { name: "alone", first: [] },
+    { name: "after a colour", first: [{ op: "setBackground", slideId: "s1", background: "#00ff00" }] },
+    { name: "after an inherited one", first: [{ op: "setBackground", slideId: "s1", background: null }] },
+  ])("records an unknown outcome for a dropped picture background set $name, whatever picture the page has after", async ({ first }) => {
+    let provider = new SlidesProvider(deck()).install();
+    provider.slide("s1").pageProperties = { pageBackgroundFill: RED };
+    let slides = gatekeeper();
+    let { actionId } = await slides.queued("updateSlides", [
+      ...first,
+      { op: "setBackground", slideId: "s1", background: { imageUrl: PICTURE_URL } },
+    ]);
+    dropNextWrite(provider, d => {
+      d.slides![0].pageProperties = {
+        pageBackgroundFill: { stretchedPictureFill: { contentUrl: "https://example.com/other.png", size: {} } },
+      };
+    });
+
+    expect(await slides.apply(actionId!)).toContain("may or may not have taken effect");
+    expect(provider.batches).toHaveLength(2);
+  });
+
+  it("finds a lost reset to the inherited background landed", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    provider.slide("s2").pageProperties = { pageBackgroundFill: RED };
+    let slides = gatekeeper();
+    let { actionId } = await slides.queued("updateSlides", [
+      { op: "setBackground", slideId: "s2", background: null },
+    ]);
+    provider.nextFailure = "lost";
+
+    expect(await slides.apply(actionId!)).toBeNull();
+
+    expect(provider.slide("s2").pageProperties).toEqual({ pageBackgroundFill: { propertyState: "INHERIT" } });
+  });
+
+  // The slide reads the same whether the batch landed or not.
+  it("records an unknown outcome for a dropped batch setting a background the slide already has", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    provider.slide("s1").pageProperties = { pageBackgroundFill: RED };
+    let slides = gatekeeper();
+    let { actionId } = await slides.queued("updateSlides", [
+      { op: "setBackground", slideId: "s1", background: "#ff0000" },
+    ]);
+    dropNextWrite(provider);
+
+    expect(await slides.apply(actionId!)).toContain("may or may not have taken effect");
+    expect(provider.batches).toHaveLength(2);
+  });
+
+  it("records an unknown outcome for a dropped reset on a slide a collaborator then deleted", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    provider.slide("s2").pageProperties = { pageBackgroundFill: RED };
+    let slides = gatekeeper();
+    let { actionId } = await slides.queued("updateSlides", [
+      { op: "setBackground", slideId: "s2", background: null },
+    ]);
+    dropNextWrite(provider, d => {
+      d.slides = d.slides!.filter(s => s.objectId !== "s2");
+    });
+
+    expect(await slides.apply(actionId!)).toContain("may or may not have taken effect");
+  });
+
+  it("checks a queued batch's slides before queuing a theme change to the master it also changes", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    await slides.queued("updateSlides", [
+      { op: "editText", slideId: "s2", elementId: "b2", find: "$10M", replace: "$12M" },
+      { op: "setThemeColors", masterId: "master-1", colors: { ACCENT1: "#123456" } },
+    ]);
+    provider.edit(d => {
+      d.slides![1].pageElements![1].shape!.text = text(["Revenue: $11M"], ["Margin: 20%"]);
+    });
+
+    let outcome = await slides.call("updateSlides", [
+      { op: "setThemeColors", masterId: "master-1", colors: { ACCENT2: "#654321" } },
+    ]);
+    expect(outcome.actionId).toBeUndefined();
+    expect(outcome.error).toContain("No more changes can be queued until it is rejected");
+  });
+
+  it("never reads back the URL Google serves a picture background from", async () => {
+    let provider = new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    let { actionId } = await slides.queued("updateSlides", [
+      { op: "setBackground", slideId: "s1", background: { imageUrl: PICTURE_URL } },
+      { op: "setBackground", masterId: "master-1", background: { imageUrl: PICTURE_URL } },
+    ]);
+    expect(await slides.apply(actionId!)).toBeNull();
+    expect(JSON.stringify(provider.deck)).toContain(PICTURE_COPY);
+
+    let outline = await slides.outline();
+    let [s1] = await slides.slides("s1");
+
+    expect(outline.masters[0].background).toBe("picture");
+    expect(outline.slides[0].background).toBe("picture");
+    expect(s1.background).toBe("picture");
+    expect(JSON.stringify([outline, s1])).not.toContain("googleusercontent");
   });
 });

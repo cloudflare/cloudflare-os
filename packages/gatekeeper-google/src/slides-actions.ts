@@ -19,13 +19,16 @@ import {
 import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import { obsContext } from "./observability";
 import { SlidesWriteRefused, type GoogleSlidesApi, type RestSlide } from "./slides-api";
-import { designDeck, type DesignChange, type DesignStep } from "./slides-design";
+import {
+  designDeck, pageOf, slideIdOf, type DesignChange, type DesignPage, type DesignStep,
+} from "./slides-design";
 import { CREATES } from "./slides-design-input";
-import { mastersOf, slideIds } from "./slides-model";
+import { backgroundOf, themeColorsOf } from "./slides-format";
+import { mastersOf, slideIds, themePagesOf } from "./slides-model";
 import type { SlideBounds } from "./slides-read-types";
 import {
   movedOrder, newSlidePlace, requireNewSlide, requirePlaceholders, requireSlide, type Deck,
-  type DesignBatch, type SlideLabel, type SlidesActions,
+  type DesignBatch, type SlideLabel, type SlidesActions, type ThemeLabel,
 } from "./slides-simulation";
 import { elementIdsOf, locate, textOfTarget, type TextAddress } from "./slides-target";
 import { ChangeConflict, projectedText, richTextOf } from "./slides-text";
@@ -37,23 +40,37 @@ const logger = obsContext.createLogger({ component: "gatekeeper.google.slides", 
 export type SlidesHost = { api: GoogleSlidesApi; presentationId: string };
 
 // What a user may let apply without asking: a batch that only edits text, or one that only changes
-// how existing text and elements look, in shapes and table cells alike, and skipping slides or
-// showing them again, which destroys nothing and is undone the same way. Setting a link or font
-// does not count, since Google keeps the whole string, and anything that creates or deletes,
-// changes a table's rows, columns or cell fills, or sets alt text needs approval.
+// how existing text, elements and slides look, in shapes and table cells alike, and skipping slides
+// or showing them again, which destroys nothing and is undone the same way. Setting a link or font
+// does not count, since Google keeps the whole string, nor does a picture background, which Google
+// downloads. Anything that creates or deletes, changes a table's rows, columns or cell fills, sets
+// alt text, or changes a layout or master, which reaches slides the user is not looking at, needs
+// approval.
 const EDIT_SLIDES_TEXT: ActionKind = { tag: "editSlidesText", label: "Slide text edits" };
-const FORMAT_SLIDES: ActionKind = { tag: "formatSlides", label: "Slide formatting and layout" };
+const FORMAT_SLIDES: ActionKind = { tag: "formatSlides", label: "Slide formatting and arrangement" };
 const SKIP_SLIDES: ActionKind = { tag: "skipSlides", label: "Skipping slides" };
-const FORMATTING = new Set<DesignChange["op"]>([
-  "formatText", "formatParagraphs", "updateShape", "setBounds", "arrange",
-]);
+
+function isFormatting(change: DesignChange): boolean {
+  switch (change.op) {
+    case "formatText":
+      return !change.format.link && !change.format.fontFamily;
+    case "formatParagraphs":
+    case "updateShape":
+    case "setBounds":
+    case "arrange":
+      return true;
+    case "setBackground":
+      return slideIdOf(change) !== undefined &&
+        (change.background === null || typeof change.background === "string");
+    default:
+      return false;
+  }
+}
 
 /** The kind a batch is queued as, so approving a kind approves no more than it says. */
 export function batchKind(changes: readonly DesignChange[]): "editText" | "formatSlides" | "updateSlides" {
   if (changes.every(change => change.op === "editText")) return "editText";
-  let formats = changes.every(change => FORMATTING.has(change.op) &&
-    !(change.op === "formatText" && (change.format.link || change.format.fontFamily)));
-  return formats ? "formatSlides" : "updateSlides";
+  return changes.every(isFormatting) ? "formatSlides" : "updateSlides";
 }
 
 // Planning against a fresh read, and resending a batch whose response was lost.
@@ -61,7 +78,7 @@ const MAX_ATTEMPTS = 3;
 
 /**
  * A fresh read: the revision to pin a write to, the slide order, the slides it fetched, the
- * masters of every slide and layout, and which slides are skipped.
+ * masters of every slide and layout, every master and layout, and which slides are skipped.
  */
 type Fresh = Deck & { revisionId: string; skipped: ReadonlySet<string> };
 
@@ -85,7 +102,9 @@ async function readFresh(host: SlidesHost, ids: readonly string[]): Promise<Fres
   let slides = await host.api.getSlides(host.presentationId, ids, order);
   let skipped = new Set(outline.slides?.flatMap(({ objectId, slideProperties }) =>
     objectId && slideProperties?.isSkipped ? [objectId] : []));
-  return { revisionId, order, slides, ...mastersOf(outline), skipped };
+  return {
+    revisionId, order, slides, ...mastersOf(outline), themePages: themePagesOf(outline), skipped,
+  };
 }
 
 function noLongerApplies(error: unknown): never {
@@ -148,6 +167,15 @@ async function write(
 
 function slideName({ number, title }: SlideLabel): string {
   return title ? `slide ${number} ("${plainInline(title, 60)}")` : `slide ${number}`;
+}
+
+const quoted = (name: string) => `"${plainInline(name, 60)}"`;
+
+// A master or layout by the name it had when the change was queued, or by its ID without one.
+function pageName({ pageType, id }: DesignPage, themes: Record<string, ThemeLabel> = {}): string {
+  let label = Object.hasOwn(themes, id) ? themes[id] : undefined;
+  if (pageType === "MASTER") return `the master ${quoted(label?.name ?? id)}`;
+  return `layout ${quoted(label?.name ?? id)}` + (label?.master ? ` of master ${quoted(label.master)}` : "");
 }
 
 /** Names an element: by its ID, as a `noun`, unless the batch describing it creates it. */
@@ -311,6 +339,19 @@ function describeChange(
       let lines = lineCount(noun, change.at, change.count ?? 1);
       return `delete ${lines} of ${element(change.elementId, "table")}`;
     }
+    case "setBackground": {
+      let { background } = change;
+      if (background === null) return "show the background it inherits";
+      if (background === "none") return "remove the background";
+      if (typeof background === "string") return `set the background to ${background}`;
+      field("Background image URL", background.imageUrl);
+      return "set the background to a picture downloaded from the URL below, stretched to fill it";
+    }
+    case "setThemeColors": {
+      let names = Object.entries(change.colors).flatMap(([name, color]) =>
+        color === undefined ? [] : [`${name} ${color}`]);
+      return `set the theme colours ${names.join(", ")}`;
+    }
     case "formatTableCells": {
       let { range } = change;
       let cells = range
@@ -328,7 +369,7 @@ function describeChange(
 
 // One line per change, and the fields to show verbatim after them.
 function describeDesign(
-  changes: DesignChange[], slides: Record<string, SlideLabel>,
+  { changes, slides, themes }: DesignBatch,
 ): { lines: string[]; fields: [label: string, text: string][] } {
   let created = new Map<string, string>();
   let fields: [string, string][] = [];
@@ -338,7 +379,9 @@ function describeDesign(
     let line = describeChange(change, element, (name, text) => fields.push([`${label}${name}`, text]));
     let noun = CREATES[change.op];
     if (noun && "id" in change) created.set(change.id, `the ${noun} change ${i + 1} adds`);
-    return `On ${slideName(slides[change.slideId])}, ${line}`;
+    let page = pageOf(change);
+    let name = page.pageType === "SLIDE" ? slideName(slides[page.id]) : pageName(page, themes);
+    return `On ${name}, ${line}`;
   });
   return { lines, fields };
 }
@@ -353,7 +396,9 @@ function textIfThere(slide: RestSlide, address: TextAddress): string | undefined
   }
 }
 
-const slideOf = (deck: Deck, slideId: string): RestSlide => deck.slides.get(slideId) ?? {};
+// A layout or master reads as a slide with only page properties, which is all a change sets on one.
+const pageIn = (deck: Deck, { pageType, id }: DesignPage): RestSlide | undefined =>
+  pageType === "SLIDE" ? deck.slides.get(id) : deck.themePages.get(id);
 
 /** Rows or columns a change inserts or deletes. */
 type TableLines = { elementId: string; axis: "row" | "column"; insert: boolean; at: number; count: number };
@@ -410,9 +455,10 @@ function cellsOf(slide: RestSlide, id: string): string | undefined {
 /**
  * Whether a read taken after a lost response shows a design batch landed. Only what the batch
  * would have changed counts, where it would leave it: which elements exist, the cells of a table
- * it adds or deletes rows or columns of, and text, found where later changes to its table move it.
- * A batch with none of those, such as one that only formats or moves elements, cannot be shown
- * to have landed.
+ * it adds or deletes rows or columns of, text, found where later changes to its table move it, and
+ * the theme colours it sets and the backgrounds it leaves pages with, other than pictures. A batch
+ * with none of those, such as one that only formats or moves elements or leaves a page a picture,
+ * cannot be shown to have landed.
  */
 function designLanded(
   changes: readonly DesignChange[], steps: readonly (DesignStep | null)[],
@@ -420,10 +466,13 @@ function designLanded(
 ): boolean {
   let checks = changes.flatMap((change, i) => {
     let evidence: boolean[] = [];
-    let witness = <T>(read: (slide: RestSlide) => T | undefined) => {
-      let value = read(slideOf(planned, change.slideId));
-      if (value !== undefined && value !== read(slideOf(before, change.slideId))) {
-        evidence.push(read(slideOf(after, change.slideId)) === value);
+    let page = pageOf(change);
+    let witness = <T>(read: (page: RestSlide) => T | undefined) => {
+      let value = read(pageIn(planned, page) ?? {});
+      if (value !== undefined && value !== read(pageIn(before, page) ?? {})) {
+        // A page deleted since cannot show what the batch did to it.
+        let held = pageIn(after, page);
+        evidence.push(held !== undefined && read(held) === value);
       }
     };
     let { created, deleted } = steps[i]!;
@@ -434,9 +483,25 @@ function designLanded(
     if (moved) witness(slide => textIfThere(slide, moved));
     const lines = tableLinesOf(change);
     if (lines) witness(slide => cellsOf(slide, lines.elementId));
+    // The page's background as the whole batch leaves it, unless that is a picture: every picture
+    // reads as "picture", so one a collaborator set would pass for the batch's own.
+    if (change.op === "setBackground") {
+      witness(held => {
+        let background = backgroundOf(held.pageProperties?.pageBackgroundFill) ?? "inherited";
+        return background === "picture" ? undefined : background;
+      });
+    }
+    if (change.op === "setThemeColors") {
+      witness(held => JSON.stringify(themeColorsOf(held.pageProperties?.colorScheme)));
+    }
     return evidence;
   });
   return checks.length > 0 && checks.every(Boolean);
+}
+
+// The slides a batch's changes are on, leaving out its layouts and masters, which every read holds.
+function slideIdsOf(changes: readonly DesignChange[]): string[] {
+  return [...new Set(changes.flatMap(change => slideIdOf(change) ?? []))];
 }
 
 /** A design batch's definition, the same for each kind but in the `kind` a user may auto-approve. */
@@ -445,23 +510,32 @@ function designBatch(kind?: ActionKind): ActionDefinition<DesignBatch, SlidesHos
     ...(kind ? { kind, autoApprovable: true } : {}),
     delivery: "continue-with-simulation",
     claimBeforeApply: true,
-    describe: ({ changes, slides }) => {
-      let ids = [...new Set(changes.map(change => change.slideId))];
-      let { lines, fields } = describeDesign(changes, slides);
+    describe: batch => {
+      let { changes, slides, themes } = batch;
+      let ids = slideIdsOf(changes);
+      let pages = changes.map(pageOf).filter(page => page.pageType !== "SLIDE");
+      let pageCount = new Set(pages.map(page => page.id)).size;
+      let { lines, fields } = describeDesign(batch);
       let builder = buildDescription(lines.length === 1
         ? `${lines[0]}.`
         : `Makes ${lines.length} changes, all or none of which are applied:\n\n` +
           lines.map((line, i) => `${i + 1}. ${line}`).join("\n"));
       for (let [label, text] of fields) builder.verbatim(label, text);
+      if (pageCount > 0) {
+        builder.prose("Each change to a master or layout reaches every slide made from it.");
+      }
+      let slidesName = ids.length === 1 ? slideName(slides[ids[0]]) : `${ids.length} slides`;
+      let title = pageCount === 0 ? `Change ${slidesName}`
+        : ids.length > 0 ? `Change ${slidesName} and the theme`
+        : pageCount === 1 ? `Change ${pageName(pages[0], themes)}`
+        : "Change the theme";
       return {
-        title: sanitizeTitle(ids.length === 1
-          ? `Change ${slideName(slides[ids[0]])}`
-          : `Change ${ids.length} slides`),
+        title: sanitizeTitle(title),
         ...builder.finish(),
         implementsRevert: false,
       };
     },
-    apply: ({ changes }, host) => write(host, [...new Set(changes.map(change => change.slideId))], fresh => {
+    apply: ({ changes }, host) => write(host, slideIdsOf(changes), fresh => {
       let { deck, steps } = designDeck(fresh, changes);
       return {
         requests: steps.flatMap(step => step!.requests),

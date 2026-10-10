@@ -15,15 +15,25 @@ import type { TaggedAction } from "@gadgets/gatekeeper-kit/actions";
 import {
   replaySimulation, type SimulationResult, type SimulationStep,
 } from "@gadgets/gatekeeper-kit/simulation";
-import type { RestPage, RestPageElement, RestSlide } from "./slides-api";
-import { designDeck, type DesignChange } from "./slides-design";
+import type { RestPage, RestPageElement, RestSlide, RestThemePage } from "./slides-api";
+import { designDeck, pageOf, slideIdOf, type DesignChange } from "./slides-design";
 import { ChangeConflict } from "./slides-text";
 
 /** A slide as it was when a change was queued, so the approver can recognize it. */
 export type SlideLabel = { number: number; title?: string };
 
-/** An `updateSlides()` batch. `slides` labels each slide a change is on. */
-export type DesignBatch = { changes: DesignChange[]; slides: Record<string, SlideLabel> };
+/** A master or layout as it was when a change was queued: its name, and a layout's master's. */
+export type ThemeLabel = { name?: string; master?: string };
+
+/**
+ * An `updateSlides()` batch. `slides` labels each slide a change is on, and `themes` each master
+ * or layout, by ID; `themes` may be absent when there are none.
+ */
+export type DesignBatch = {
+  changes: DesignChange[];
+  slides: Record<string, SlideLabel>;
+  themes?: Record<string, ThemeLabel>;
+};
 
 /**
  * A placeholder a created slide gets from its layout: the ID the gatekeeper minted for it, the
@@ -69,8 +79,9 @@ export type SlidesActions = {
 export type SlidesAction = TaggedAction<SlidesActions>;
 
 /**
- * What a read fetched, with queued changes applied: the slide order, and the slides it fetched.
- * Every slide a queued edit addresses is a full page, so an edit to a slide it holds is checked.
+ * What a read fetched, with queued changes applied: the slide order, the slides it fetched, and
+ * every master and layout, which the outline holds. Every slide a queued edit addresses is a full
+ * page, so an edit to a slide it holds is checked.
  */
 export type Deck = {
   order: readonly string[];
@@ -79,6 +90,8 @@ export type Deck = {
   masters: ReadonlyMap<string, string>;
   /** The presentation's first master, which a slide added to it with none takes its layout from. */
   firstMaster?: string;
+  /** Every master and layout, which the outline holds. */
+  themePages: ReadonlyMap<string, RestThemePage>;
 };
 
 /** Element IDs a duplicate gets: the gatekeeper's, so a queued edit can name them. */
@@ -265,8 +278,11 @@ export function applyChange(deck: Deck, action: SlidesAction): Deck {
       let master = masters.get(slideId);
       let dropped = master !== undefined && master !== deck.firstMaster &&
         !rest.some(id => masters.get(id) === master);
-      return reordered(deck, rest, next,
-        dropped ? new Map([...masters].filter(([, of]) => of !== master)) : masters);
+      if (!dropped) return reordered(deck, rest, next);
+      let themePages = new Map([...deck.themePages].filter(([id, page]) =>
+        id !== master && page.layoutProperties?.masterObjectId !== master));
+      return reordered({ ...deck, themePages }, rest, next,
+        new Map([...masters].filter(([, of]) => of !== master)));
     }
     case "moveSlides": {
       let { slideIds, after } = action.payload;
@@ -313,33 +329,38 @@ export function replayChanges(
 }
 
 /**
- * The slides a read must fetch to show `ids` with queued changes: the slides themselves, the slide
- * each queued duplicate of one copies (back to its original), and every slide of a batch touching
- * one, since a batch applies all or none. A conflict on a slide reached only through an earlier
- * change, or on one no change links to `ids`, is not found, so the read shows the changes after
- * it, as approving them in order would apply them. A slide a queued `createSlide` adds is not
- * Google's yet, so none is fetched for it: replay makes it whole.
+ * The slides a read must fetch to show `pages` with queued changes: the slides themselves, the
+ * slide each queued duplicate of one copies (back to its original), and every slide of a batch
+ * touching one, or touching a master or layout among `pages`, since a batch applies all or none.
+ * A conflict on a slide reached only through an earlier change, or on one no change links to
+ * `pages`, is not found, so the read shows the changes after it, as approving them in order would
+ * apply them. A slide a queued `createSlide` adds is not Google's yet, so none is fetched for it:
+ * replay makes it whole. The set also holds the masters and layouts reached, which `getSlides()`
+ * passes over, not being slides.
  */
-export function slidesToFetch(ids: readonly string[], changes: readonly QueuedChange[]): Set<string> {
-  let needed = new Set(ids);
+export function slidesToFetch(pages: readonly string[], changes: readonly QueuedChange[]): Set<string> {
+  let needed = new Set(pages);
   for (let { action } of changes.toReversed()) {
     if (action.kind === "duplicateSlide" && needed.has(action.payload.newSlideId)) {
       needed.add(action.payload.slideId);
-    } else {
-      let targets = batchSlides(action);
+    } else if (action.kind === "editText" || action.kind === "formatSlides" || action.kind === "updateSlides") {
+      let targets = action.payload.changes.map(change => pageOf(change).id);
       if (targets.some(id => needed.has(id))) for (let id of targets) needed.add(id);
     }
   }
   return needed;
 }
 
-/** The slides a design batch changes, which it checks together; none for other changes. */
+/**
+ * The slides a design batch changes, which it checks together, leaving out its masters and
+ * layouts, which every read holds; none for other changes.
+ */
 export function batchSlides(action: SlidesAction): string[] {
   switch (action.kind) {
     case "editText":
     case "formatSlides":
     case "updateSlides":
-      return action.payload.changes.map(change => change.slideId);
+      return action.payload.changes.flatMap(change => slideIdOf(change) ?? []);
     default:
       return [];
   }

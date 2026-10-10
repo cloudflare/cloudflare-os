@@ -15,7 +15,7 @@ export const GMAIL_TYPES_MODULE_PREFIX = 'import type { RpcStub } from "cloudfla
 /** Module-only prefix of the Google Slides declaration. */
 export const SLIDES_TYPES_MODULE_PREFIX =
   "import type {\n" +
-  "  GooglePresentationReadSession, ParagraphFormat, SlideBounds, SlideColor,\n" +
+  "  GooglePresentationReadSession, ParagraphFormat, SlideBounds, SlideColor, ThemeColorName,\n" +
   '} from "./slides-read-types";\n' +
   'export type * from "./slides-read-types";\n\n';
 

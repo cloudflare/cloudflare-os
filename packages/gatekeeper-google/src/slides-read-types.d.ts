@@ -14,8 +14,12 @@ export type SlideSummary = {
   index: number;
   /** Display name of the layout the slide was made from, such as `Title and body`. */
   layout?: string;
+  /** ID of that layout, as `PresentationInfo.layouts` lists it. */
+  layoutId?: string;
   /** ID of the master, or theme, its layout belongs to. */
   master?: string;
+  /** Background set on the slide itself; absent when it shows its layout's. */
+  background?: SlideBackground;
   /** Whether the slide is skipped when presenting. */
   skipped: boolean;
   /** Text of the slide's title placeholder, truncated to 200 characters. */
@@ -38,6 +42,8 @@ export type SlideLayout = {
   master: string;
   /** The placeholders the layout holds, by type such as `TITLE` or `BODY`, in drawing order. */
   placeholders: string[];
+  /** Background set on the layout itself; absent when it shows its master's. */
+  background?: SlideBackground;
 };
 
 /** Metadata about the connected presentation and the slides it contains. */
@@ -50,6 +56,8 @@ export type PresentationInfo = {
   locale?: string;
   /** Size of every slide. */
   pageSize: SlideSize;
+  /** Every master, in presentation order. */
+  masters: SlideMaster[];
   /** Every slide, in presentation order. */
   slides: SlideSummary[];
   /** Every layout the presentation's masters hold. */
@@ -95,6 +103,32 @@ type SlideElementBase = {
  * the presentation's theme.
  */
 export type SlideColor = string;
+
+/**
+ * A page's background: a colour, `"picture"` for an image (which is not returned), or `"none"`
+ * for none at all.
+ */
+export type SlideBackground = SlideColor | "picture" | "none";
+
+/**
+ * The 12 colours a theme defines. `TEXT1`, `BACKGROUND1`, `TEXT2` and `BACKGROUND2`, which a
+ * `SlideColor` may also name, follow `DARK1`, `LIGHT1`, `LIGHT2` and `DARK2` respectively.
+ */
+export type ThemeColorName =
+  | "DARK1" | "LIGHT1" | "DARK2" | "LIGHT2" | "ACCENT1" | "ACCENT2" | "ACCENT3" | "ACCENT4"
+  | "ACCENT5" | "ACCENT6" | "HYPERLINK" | "FOLLOWED_HYPERLINK";
+
+/** A master: the page a theme's layouts are made from, which holds the theme's colours. */
+export type SlideMaster = {
+  /** Stable master object ID. */
+  id: string;
+  /** Display name, such as `Simple Light`. */
+  name?: string;
+  /** Background set on the master, which its layouts and slides show unless they set their own. */
+  background?: SlideBackground;
+  /** The theme's colours, each `#rrggbb`. */
+  themeColors: Partial<Record<ThemeColorName, string>>;
+};
 
 /**
  * Text formatting set on the text itself. What text takes from its placeholder, layout or theme is
@@ -367,6 +401,8 @@ export type SlideThumbnail = {
  * `getSlides()` returns the slides' own elements: their text, formatting, and where they are.
  * Layout and master elements such as logos and footers are not included, nor is formatting an
  * element takes from its placeholder or theme; `getSlideThumbnail()` shows the slide whole.
+ * `getPresentation()` lists the masters and layouts, with their backgrounds and the theme's
+ * colours, but not their elements.
  */
 export interface GooglePresentationReadSession {
   /** Return presentation metadata and a summary of every slide. */

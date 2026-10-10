@@ -1,10 +1,26 @@
 import { describe, expect, it } from "vitest";
-import type { RestPageElement, RestPresentation } from "../src/slides-api";
-import { layoutNames, mastersOf, presentationInfo, slideOf } from "../src/slides-model";
+import type {
+  RestOpaqueColor, RestPageBackgroundFill, RestPageElement, RestPresentation,
+} from "../src/slides-api";
+import {
+  backgroundOf, restBackgroundOf, restThemeColorsOf, THEME_COLOR_TYPES, themeColorsOf,
+} from "../src/slides-format";
+import { layoutNames, mastersOf, presentationInfo, slideOf, themePagesOf } from "../src/slides-model";
 import type { ShapeElement } from "../src/slides-read-types";
-import { presentation, shape, slide, text } from "./slides-fixture";
+import {
+  colorScheme, layout, master, presentation, shape, SIMPLE_LIGHT, slide, text,
+} from "./slides-fixture";
 import liveOutline from "./slides-live-outline.json";
 import liveSample from "./slides-live-sample.json";
+import liveTheme from "./slides-live-theme.json";
+
+const PICTURE_URL = "https://lh7-rt.googleusercontent.com/slidesz/picture-token";
+
+const solid = (color: RestOpaqueColor) => ({ solidFill: { color, alpha: 1 } });
+
+/** A layout of the recorded deck's master that sets no background. */
+const liveLayout = (id: string, name: string) =>
+  ({ id, name, master: "simple-light-2", placeholders: [] });
 
 function onlySlide(...elements: RestPageElement[]) {
   return slideOf(slide("s1", elements), 0, new Map());
@@ -27,10 +43,12 @@ describe("Slides model", () => {
     let [withTable, withBreaks] = sample.slides!.map((page, i) => slideOf(page, i, layouts));
 
     expect(presentationInfo(liveOutline as RestPresentation).slides).toEqual([
-      { id: "g7c11224212bb9f2f_8", index: 0, layout: "G| Big Copy White", skipped: false,
-        title: "The £330M API Meltdown", hasSpeakerNotes: true },
+      { id: "g7c11224212bb9f2f_8", index: 0, layout: "G| Big Copy White",
+        layoutId: "g22eec438119_14_5", skipped: false, title: "The £330M API Meltdown",
+        hasSpeakerNotes: true },
       { id: "g722ffecb27484c70_34", index: 1, layout: "H| Chart + Copy Left Column",
-        skipped: false, title: "This Isn't Just Their Problem", hasSpeakerNotes: false },
+        layoutId: "g22ae4b1c657_0_2075", skipped: false, title: "This Isn't Just Their Problem",
+        hasSpeakerNotes: false },
     ]);
     expect(withTable.speakerNotes).toBe("Mention the £330M\nthen demo");
     expect(withTable.elements).toContainEqual(
@@ -342,12 +360,16 @@ describe("Slides model", () => {
       title: "Quarterly review",
       locale: "en",
       pageSize: { width: 720, height: 405 },
+      masters: [
+        { id: "master-1", name: "Simple Light", background: "LIGHT1", themeColors: SIMPLE_LIGHT },
+      ],
       slides: [
-        { id: "s1", index: 0, layout: "Title slide", master: "master-1", skipped: false,
-          title: "T".repeat(200), hasSpeakerNotes: false },
-        { id: "s2", index: 1, master: "master-1", skipped: true, title: "Agenda", hasSpeakerNotes: false },
-        { id: "s3", index: 2, layout: "Title and body", master: "master-1", skipped: false,
-          hasSpeakerNotes: false },
+        { id: "s1", index: 0, layout: "Title slide", layoutId: "layout-title", master: "master-1",
+          skipped: false, title: "T".repeat(200), hasSpeakerNotes: false },
+        { id: "s2", index: 1, layoutId: "layout-unknown", master: "master-1", skipped: true,
+          title: "Agenda", hasSpeakerNotes: false },
+        { id: "s3", index: 2, layout: "Title and body", layoutId: "layout-title-body",
+          master: "master-1", skipped: false, hasSpeakerNotes: false },
       ],
       layouts: [
         { id: "layout-title", name: "Title slide", master: "master-1", placeholders: ["CENTERED_TITLE", "SUBTITLE"] },
@@ -363,6 +385,155 @@ describe("Slides model", () => {
       masters: new Map([["layout-title", "master-1"], ["layout-title-body", "master-1"], ["s1", "master-1"]]),
       firstMaster: "master-1",
     });
+  });
+
+  // The recorded deck's master has a changed DARK1 and LIGHT2; layout p2 has no background, p4 a
+  // colour; slide "p" has a picture, which reads back with only its size.
+  it("projects a recorded deck's masters, layouts and backgrounds", () => {
+    let info = presentationInfo(liveTheme as RestPresentation);
+
+    expect(info.masters).toEqual([{
+      id: "simple-light-2", name: "Simple Light", background: "LIGHT1",
+      themeColors: {
+        DARK1: "#112233", LIGHT1: "#ffffff", DARK2: "#595959", LIGHT2: "#cce5ff",
+        ACCENT1: "#4285f4", ACCENT2: "#212121", ACCENT3: "#78909c", ACCENT4: "#ffab40",
+        ACCENT5: "#0097a7", ACCENT6: "#eeff41", HYPERLINK: "#0097a7", FOLLOWED_HYPERLINK: "#0097a7",
+      },
+    }]);
+    expect(info.layouts).toEqual([
+      { ...liveLayout("p2", "Title slide"), background: "none" },
+      liveLayout("p3", "Section header"),
+      { ...liveLayout("p4", "Title and body"), background: "#1a334d" },
+      liveLayout("p5", "Title and two columns"),
+      liveLayout("p6", "Title only"),
+      liveLayout("p7", "One column text"),
+      liveLayout("p8", "Main point"),
+      liveLayout("p9", "Section title and description"),
+      liveLayout("p10", "Caption"),
+      liveLayout("p11", "Big number"),
+      liveLayout("p12", "Blank"),
+    ]);
+    expect(info.slides).toEqual([
+      { id: "p", index: 0, layout: "Title slide", layoutId: "p2", master: "simple-light-2",
+        background: "picture", skipped: false, hasSpeakerNotes: false },
+      { id: "probe_s2", index: 1, layout: "Title and body", layoutId: "p4",
+        master: "simple-light-2", skipped: false, title: "Inherits a coloured layout",
+        hasSpeakerNotes: false },
+    ]);
+  });
+
+  it("keys masters and then layouts by ID, each marked with the list it came from", () => {
+    let rest = presentation([]);
+    rest.layouts!.unshift(layout("layout-cover", "Cover", { masterObjectId: "master-2" }));
+    rest.masters!.push(master("master-2", { name: "Dark" }));
+
+    let pages = themePagesOf(rest);
+
+    expect([...pages].map(([id, page]) => [id, page.pageType])).toEqual([
+      ["master-1", "MASTER"], ["master-2", "MASTER"],
+      ["layout-cover", "LAYOUT"], ["layout-title", "LAYOUT"], ["layout-title-body", "LAYOUT"],
+    ]);
+    expect(presentationInfo(rest).layouts.map(({ id, master: of }) => [id, of])).toEqual([
+      ["layout-cover", "master-2"], ["layout-title", "master-1"], ["layout-title-body", "master-1"],
+    ]);
+  });
+
+  it("lists the masters and layouts it is given, which may differ from the presentation's", () => {
+    let rest = presentation([]);
+    let pages = new Map(themePagesOf(rest));
+    pages.set("master-1", {
+      ...pages.get("master-1")!,
+      pageProperties: {
+        pageBackgroundFill: { propertyState: "NOT_RENDERED" }, colorScheme: colorScheme(),
+      },
+    });
+    pages.delete("layout-title");
+
+    let info = presentationInfo(rest, pages);
+
+    expect(info.masters).toMatchObject([{ id: "master-1", background: "none" }]);
+    expect(info.layouts.map(({ id }) => id)).toEqual(["layout-title-body"]);
+  });
+
+  // Google repeats DARK1, LIGHT1, LIGHT2 and DARK2 as TEXT1, BACKGROUND1, TEXT2 and BACKGROUND2.
+  it("reads a master's 12 theme colours in Google's order, without the four that repeat them", () => {
+    let colors = { ...SIMPLE_LIGHT, LIGHT2: "#010203" };
+
+    let [read] = presentationInfo(presentation([])).masters;
+    let themeColors = themeColorsOf(colorScheme(colors));
+
+    expect(Object.keys(read.themeColors)).toEqual(THEME_COLOR_TYPES);
+    expect(read.themeColors.DARK1).toBe("#000000");
+    expect(themeColors).toEqual(colors);
+    expect(themeColorsOf({ colors: [{ type: "ACCENT1", color: { red: 1 } }, { type: "TEXT1" }] }))
+      .toEqual({ ACCENT1: "#ff0000" });
+    expect(themeColorsOf(undefined)).toEqual({});
+  });
+
+  it.each<[string, RestPageBackgroundFill | undefined, string | undefined]>([
+    ["inherited", { propertyState: "INHERIT" }, undefined],
+    ["missing", undefined, undefined],
+    ["none", { propertyState: "NOT_RENDERED" }, "none"],
+    // A master reset to none keeps a white fill, which it does not show.
+    ["none over a colour", { propertyState: "NOT_RENDERED", ...solid({ rgbColor: { red: 1 } }) }, "none"],
+    ["an RGB colour", solid({ rgbColor: { red: 0.1019608, green: 0.2, blue: 0.3019608 } }), "#1a334d"],
+    ["a theme colour", { propertyState: "RENDERED", ...solid({ themeColor: "ACCENT1" }) }, "ACCENT1"],
+    ["a picture", { stretchedPictureFill: { contentUrl: PICTURE_URL, size: {} } }, "picture"],
+    ["a picture with no size", { propertyState: "RENDERED", stretchedPictureFill: {} }, "picture"],
+  ])("reads a background that is %s on a slide, a layout and a master", (_, fill, expected) => {
+    let pageProperties = fill ? { pageBackgroundFill: fill } : {};
+    let page = { ...slide("s1", []), pageProperties };
+    let rest = presentation([page]);
+    rest.masters![0].pageProperties = { ...pageProperties, colorScheme: colorScheme() };
+    rest.layouts![1].pageProperties = pageProperties;
+
+    let info = presentationInfo(rest);
+
+    expect(backgroundOf(fill)).toBe(expected);
+    expect(info.masters[0].background).toBe(expected);
+    expect(info.layouts[1].background).toBe(expected);
+    expect(info.slides[0].background).toBe(expected);
+    expect(slideOf(page, 0, new Map()).background).toBe(expected);
+    for (let read of [info.masters[0], info.layouts[1], info.slides[0]]) {
+      expect("background" in read).toBe(expected !== undefined);
+    }
+  });
+
+  // A picture's `contentUrl` acts as the account that read it for 30 minutes.
+  it("never reports a picture's contentUrl, even when the response carries one", () => {
+    let picture = { pageBackgroundFill: { stretchedPictureFill: { contentUrl: PICTURE_URL } } };
+    let page = { ...slide("s1", []), pageProperties: picture };
+    let rest = presentation([page]);
+    rest.masters![0].pageProperties = { ...picture, colorScheme: colorScheme() };
+    rest.layouts![0].pageProperties = picture;
+
+    let reads = [presentationInfo(rest), slideOf(page, 0, layoutNames(rest))];
+
+    expect(reads.map(read => JSON.stringify(read)).join()).not.toContain("googleusercontent");
+    expect(reads[0]).toMatchObject({
+      masters: [{ background: "picture" }], layouts: [{ background: "picture" }, {}],
+      slides: [{ background: "picture" }],
+    });
+  });
+
+  it("writes a background and a theme's 12 colours as Google takes them", () => {
+    expect(restBackgroundOf("#ff0080")).toEqual({
+      propertyState: "RENDERED", solidFill: { color: { rgbColor: { red: 1, blue: 128 / 255 } }, alpha: 1 },
+    });
+    expect(restBackgroundOf("ACCENT2")).toEqual(
+      { propertyState: "RENDERED", solidFill: { color: { themeColor: "ACCENT2" }, alpha: 1 } });
+    expect(restBackgroundOf("none")).toEqual({ propertyState: "NOT_RENDERED" });
+    expect(restBackgroundOf({ imageUrl: PICTURE_URL }))
+      .toEqual({ propertyState: "RENDERED", stretchedPictureFill: { contentUrl: PICTURE_URL } });
+    expect(restBackgroundOf(null)).toBeUndefined();
+
+    let pairs = restThemeColorsOf(SIMPLE_LIGHT);
+    expect(pairs).toEqual(colorScheme().colors!.slice(0, 12));
+    expect(pairs?.[0]).toEqual({ type: "DARK1", color: {} });
+    expect(themeColorsOf({ colors: pairs })).toEqual(SIMPLE_LIGHT);
+    let { ACCENT6: _, ...eleven } = SIMPLE_LIGHT;
+    expect(restThemeColorsOf(eleven)).toBeUndefined();
+    expect(restThemeColorsOf({ ...SIMPLE_LIGHT, DARK2: "DARK1" })).toBeUndefined();
   });
 
   it("rejects a page element without an object ID", () => {

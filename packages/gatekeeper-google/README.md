@@ -244,14 +244,15 @@ can be found.
 Very large Google Docs can exceed Durable Objects' 2 MB value limit after Markdown conversion,
 causing tab listing, content reads, and edits to fail.
 
-A Google Slides presentation's slide summaries come from one response capped at 10 MiB. It holds
-the text of every slide's shapes and speaker notes, but no styles or geometry: about 4 KiB a slide
-on a live deck, so a presentation needs thousands of slides to exceed it. Slide content is read
-one slide at a time, capped at 2 MiB each. While changes await approval, reads also fetch the
+A Google Slides presentation's slide summaries come from one response capped at 10 MiB. It holds the
+text of every slide's shapes and speaker notes, but no styles or geometry: about 4 KiB a slide on a
+live deck, so a presentation needs thousands of slides to exceed it. It also holds every master's
+and layout's name and background and the masters' theme colours, a few KiB in all. Slide content is
+read one slide at a time, capped at 2 MiB each. While changes await approval, reads also fetch the
 slides they address, so each can be checked as approving it would: slide content reads the other
-slides of any batch touching a slide it shows, since a batch applies all or none, and the
-summaries read every slide a queued batch changes, since they hold no tables or grouped shapes.
-Large batches awaiting approval therefore cost reads more requests against Google's per-user quota.
+slides of any batch touching a slide it shows, since a batch applies all or none, and the summaries
+read every slide a queued batch changes, since they hold no tables or grouped shapes. Large batches
+awaiting approval therefore cost reads more requests against Google's per-user quota.
 
 The simulated presentation was recorded from an English-locale account, so until it is created it
 reads with locale `en` and English layout names. Google translates those names: a presentation a
@@ -290,11 +291,32 @@ in the batch can address one by its `ref`, and later batches by the ID returned 
 URL is never fetched by the gatekeeper: Google downloads it when the change is applied, so nothing
 is read from it before approval.
 
+Two of its changes reach beyond a slide's elements:
+
+- `setBackground` sets the background of a slide, a layout or a master, named by exactly one of
+  `slideId`, `layoutId` and `masterId`: a colour, `"none"`, a picture by public `https:` URL, or
+  `null` to inherit the background of the layout or master the page is made from. A master has
+  nothing to inherit from, and Google turns a reset there into no background, so `null` is refused
+  for one. As with images, Google, not the gatekeeper, downloads a picture URL when the batch is
+  applied. Reads report a picture background only as `"picture"`, and never request its content
+  URL, a short-lived URL that reads as the account that fetched it.
+- `setThemeColors` sets some of a master's 12 theme colours. Google takes all 12 at once, so the
+  colours not given are merged in from the master's scheme as the batch is planned against its
+  fresh read: a colour a collaborator changed meanwhile is kept, and one changed after that read
+  makes Google refuse the revision-pinned write, so it is planned again.
+
+`getPresentation()` lists the masters, with their backgrounds and theme colours, and the layouts,
+with their master and background, but not their elements; each slide reports its layout, its master
+and a background of its own. The Slides API cannot change which layout an existing slide is made
+from.
+
 A batch is queued as one of three action kinds, which share everything but which ones a user may
-let apply without asking: "Slide text edits" (only text edits), "Slide formatting and layout"
-(only formatting text, paragraphs and shapes, and moving or stacking elements, setting no link or
-font, since Google keeps their whole strings), and every other batch, mixed ones included, which
-always waits for approval.
+let apply without asking: "Slide text edits" (only text edits), "Slide formatting and arrangement"
+(only formatting text, setting no link or font, since Google keeps their whole strings; formatting
+paragraphs and shapes; moving or stacking elements; and setting slides' backgrounds to a colour,
+`"none"` or `null`), and every other batch, mixed ones included, which always waits for approval.
+A picture background, any change to a layout or master, and theme colours therefore always wait:
+they change slides the user is not looking at, or make Google fetch a URL.
 
 `createSlide()` adds a slide made from one of the presentation's layouts, at the start, the end, or
 after a given slide. The gatekeeper mints the slide's ID and one for each placeholder it gets from
@@ -311,8 +333,8 @@ summaries carry their master's ID, and a layout that does not fit where it is to
 when queued, and again on approval against a fresh read, as is one deleted since; approval also
 refuses one that has lost a placeholder the slide was to get. Google deletes a master and its
 layouts with the last slide on it, unless it is the presentation's first master, as a live probe
-showed, so reads drop the layouts of a master whose last slide a queued deletion removes, and a
-slide queued after it on one of those layouts is refused. Google names a new slide's speaker notes
+showed, so reads drop a master whose last slide a queued deletion removes, with its layouts, and
+a slide queued after it on one of those layouts is refused. Google names a new slide's speaker notes
 only as it creates the slide, so they cannot be edited until it is approved. Adding a slide always
 waits for approval.
 
@@ -341,15 +363,16 @@ regular weight, so the text is no longer bold unless the change says so. A slide
 AutoText can only be replaced whole.
 
 Each approved change is one `batchUpdate`, planned against a fresh read and pinned to its revision
-with `requiredRevisionId`, so a change applies only to the text it was planned against: one that
-no longer applies fails without writing, and a concurrent edit makes Google refuse the write so it
-is planned again. A write whose response is lost may have been committed, so it is only ever
-resent as first sent, at the same revision. If that is refused, a read decides whether it landed,
-counting only what the write would have changed: an element it created that it does not also
-delete, an element it deleted that was there before, text it edited, and a table it adds or
-deletes rows or columns of, by its size and its cells' positions, spans and text. If the read
-cannot tell, as for a batch that only formats or moves elements, the change is marked as having an
-unknown outcome and never retried.
+with `requiredRevisionId`, so a change applies only to the text it was planned against: one that no
+longer applies fails without writing, and a concurrent edit makes Google refuse the write so it is
+planned again. A write whose response is lost may have been committed, so it is only ever resent as
+first sent, at the same revision. If that is refused, a read decides whether it landed, counting
+only what the write would have changed: an element it created that it does not also delete, an
+element it deleted that was there before, text it edited, a table it adds or deletes rows or columns
+of, by its size and its cells' positions, spans and text, a theme colour it set, and a background
+other than a picture it left a page with, that the page did not already have (every picture reads
+alike). If the read cannot tell, as for a batch that only formats or moves elements or leaves a page
+a picture, the change is marked as having an unknown outcome and never retried.
 
 Google returns a presentation's revision only to an account that can edit it, so a view-only
 account can read a presentation but every change to it fails. A queued change is stored in one
