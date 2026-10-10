@@ -184,10 +184,25 @@ describe("subscribing", () => {
     await hook.subscribe([["subscribeMentions"]]);
     x.loseAnswer("POST", /^\/2\/activity\/subscriptions$/,
       request => JSON.parse(request.body!).event_type === "post.mention.create");
-    failure(await hook.tryEnable());
-    // X refuses the retry as a duplicate, and the lookup must find the one it has.
+    // Adopted at once, though X lists it past its first page.
     await hook.enable();
     expect(subscriptionsOf(x).filter(([type]) => type === "post.mention.create")).toHaveLength(1);
+  });
+
+  it("ends a subscription X made though it lost the answer, when no hook took it", async () => {
+    const x = new FakeX().install();
+    const account = await seedAccount(x);
+    const hook = binding({ userObjectId: account, resourceKind: "profile", username: "bob" });
+    await hook.subscribe([["subscribePosts"]]);
+    x.loseAnswer("POST", /^\/2\/activity\/subscriptions$/, request => JSON.parse(request.body!).event_type === "post.create");
+    // X lists it only on a later look, so enabling fails, and the hook is never enabled again.
+    let listing = false;
+    x.on("GET", /^\/2\/activity\/subscriptions/, () => listing ? undefined : json({ data: [] }));
+    failure(await hook.tryEnable());
+    expect(subscriptionsOf(x)).toContainEqual(["post.create", BOB.id, "app"]);
+    listing = true;
+    expect(await runDurableObjectAlarm(env.X_ACTIVITY_ROUTER.getByName(BOB.id))).toBe(true);
+    expect(subscriptionsOf(x).map(([type]) => type)).toEqual(["oauth.revoke"]);
   });
 
   it("keeps a subscription X failed to delete, and deletes it again from the alarm", async () => {

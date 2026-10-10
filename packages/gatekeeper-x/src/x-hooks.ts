@@ -29,7 +29,7 @@ import type {
 } from "@gadgets/workshop-shared/gatekeeper";
 import { obsContext } from "./observability";
 import type { XPostHook } from "./types";
-import { XApi, XApiError, requireData } from "./x-api";
+import { XApi, XApiError, isOutcomeUnknown, requireData } from "./x-api";
 import { accountSource } from "./x-credentials";
 import { SIGNATURE_HEADER, VENDOR_ID, webhookUrl, type Env } from "./x-env";
 
@@ -325,15 +325,18 @@ type Subscription = { id: string; deleting?: true };
 
 const subscriptionKey = (eventType: string) => `sub:${eventType}`;
 const watcherPrefix = (eventType: string) => `watch:${eventType}:`;
+const unconfirmedKey = (eventType: string) => `unconfirmed:${eventType}`;
 
-/** How long until a subscription X failed to delete is deleted again. */
-const DELETE_RETRY_MS = 15 * 60 * 1000;
+/** How long until the alarm retries what X failed to confirm: a deletion, or a creation. */
+const RETRY_MS = 15 * 60 * 1000;
 
 /**
  * One per X user, named by their ID: X's subscriptions to that user's events, one per event type
- * however many hooks need it, and which accounts' drivers watch each. Storage: `sub:<event type>`
- * and `watch:<event type>:<account id>`. A subscription nothing watches is kept until X confirms
- * deleting it, retried from the alarm, since X would otherwise go on delivering and billing it.
+ * however many hooks need it, and which accounts' drivers watch each. Storage: `sub:<event type>`,
+ * `watch:<event type>:<account id>`, and `unconfirmed:<event type>` (`{ userId }`) for a creation
+ * whose outcome X never reported. X would go on delivering and billing a subscription nothing
+ * records, so one X may have made is looked for again from the alarm, and one nothing watches is
+ * kept until X confirms deleting it.
  */
 export class XActivityRouter extends DurableObject<Env> {
   /** Subscription changes, one at a time, so two first watchers don't both subscribe. */
@@ -361,11 +364,18 @@ export class XActivityRouter extends DurableObject<Env> {
     });
   }
 
-  /** Deletes again each subscription nothing watches that X failed to delete. */
+  /**
+   * Records each subscription X made without saying so, then deletes each one nothing watches,
+   * retrying what X failed to delete.
+   */
   async alarm(): Promise<void> {
     await this.#changes.run(async () => {
-      // Listed up front: retiring one changes storage, and awaits X.
-      const eventTypes = Array.from(this.ctx.storage.kv.list({ prefix: "sub:" }), ([key]) => key.slice("sub:".length));
+      const kv = this.ctx.storage.kv;
+      // Listed up front: settling one changes storage, and awaits X.
+      for (const [key, { userId }] of Array.from(kv.list<{ userId: string }>({ prefix: "unconfirmed:" }))) {
+        await this.#confirm(key.slice("unconfirmed:".length), userId);
+      }
+      const eventTypes = Array.from(kv.list({ prefix: "sub:" }), ([key]) => key.slice("sub:".length));
       for (const eventType of eventTypes) {
         if (this.#watchers(eventType).length === 0) await this.#retire(eventType);
       }
@@ -405,10 +415,31 @@ export class XActivityRouter extends DurableObject<Env> {
         : await appApi(this.env).post<SubscriptionResponse>("/2/activity/subscriptions", body);
       return { id: subscriptionIdOf(requireData(created, "subscription")) };
     } catch (error) {
-      if (!isDuplicate(error)) throw error;
+      // Refused as one X already has, or perhaps made with the answer lost: either way, X's is adopted.
+      if (!isDuplicate(error) && !isOutcomeUnknown(error)) throw error;
+      // Noted first, so a creation X shows only later, or a failed look, is settled from the alarm.
+      if (isOutcomeUnknown(error)) {
+        this.ctx.storage.kv.put(unconfirmedKey(eventType), { userId });
+        await this.#wakeBy(Date.now() + RETRY_MS);
+      }
       const existing = await findSubscription(this.env, eventType, userId);
       if (!existing) throw error;
       return { id: existing };
+    }
+  }
+
+  /** Records the subscription to `eventType` X may have made without saying so, if it has one. */
+  async #confirm(eventType: string, userId: string): Promise<void> {
+    const kv = this.ctx.storage.kv;
+    try {
+      if (kv.get<Subscription>(subscriptionKey(eventType)) === undefined) {
+        const id = await findSubscription(this.env, eventType, userId);
+        if (id !== undefined) kv.put(subscriptionKey(eventType), { id });
+      }
+      kv.delete(unconfirmedKey(eventType));
+    } catch (error) {
+      logger.warn("failed to look for an X subscription; retrying later", { event: "hooks.subscription.confirm.failed", error });
+      await this.#wakeBy(Date.now() + RETRY_MS);
     }
   }
 
@@ -422,10 +453,14 @@ export class XActivityRouter extends DurableObject<Env> {
     } catch (error) {
       logger.warn("failed to delete an X subscription; retrying later", { event: "hooks.subscription.delete.failed", error });
       kv.put(subscriptionKey(eventType), { id: subscription.id, deleting: true });
-      const retryAt = Date.now() + DELETE_RETRY_MS;
-      const scheduled = await this.ctx.storage.getAlarm();
-      if (scheduled === null || scheduled > retryAt) await this.ctx.storage.setAlarm(retryAt);
+      await this.#wakeBy(Date.now() + RETRY_MS);
     }
+  }
+
+  /** Moves the alarm earlier, never later. */
+  async #wakeBy(time: number): Promise<void> {
+    const scheduled = await this.ctx.storage.getAlarm();
+    if (scheduled === null || scheduled > time) await this.ctx.storage.setAlarm(time);
   }
 
   /** Deletes a subscription at X, then forgets it; one X no longer has counts as deleted. */
