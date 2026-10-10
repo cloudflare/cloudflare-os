@@ -1,0 +1,74 @@
+# Checks against GitHub itself what the GitHub gatekeeper's hooks rely on GitHub for, which the
+# fakes in the regular suites can only assume: see packages/gatekeeper-github/__tests__/contract.
+#
+# It needs a disposable private repository, with at least one commit, named `owner/name` by the
+# CONTRACT_GITHUB_REPO variable and administered by the account whose token is the
+# CONTRACT_GITHUB_TOKEN secret (classic: `repo` and `admin:repo_hook`; fine-grained: that
+# repository's administration, contents, issues, pull requests and webhooks, read and write).
+# Without them it does nothing. Each run leaves closed issues and pull requests behind, and uploads
+# the payloads GitHub sent, names replaced, for fixtures.
+name: GitHub contract
+
+on:
+  schedule:
+    - cron: "23 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Runs share the one repository.
+concurrency:
+  group: github-contract
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "24.19.0"
+
+jobs:
+  contract:
+    name: GitHub contract checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CONTRACT_GITHUB_TOKEN: ${{ secrets.CONTRACT_GITHUB_TOKEN }}
+      CONTRACT_GITHUB_REPO: ${{ vars.CONTRACT_GITHUB_REPO }}
+    steps:
+      - name: Skip without a contract repository
+        if: env.CONTRACT_GITHUB_TOKEN == '' || env.CONTRACT_GITHUB_REPO == ''
+        run: echo "::notice::CONTRACT_GITHUB_TOKEN or CONTRACT_GITHUB_REPO is not set, so the GitHub contract checks were skipped."
+
+      - name: Check out repository
+        if: env.CONTRACT_GITHUB_TOKEN != '' && env.CONTRACT_GITHUB_REPO != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Enable Corepack
+        if: env.CONTRACT_GITHUB_TOKEN != '' && env.CONTRACT_GITHUB_REPO != ''
+        run: corepack enable
+
+      - name: Set up Vite+, Node.js and dependencies
+        if: env.CONTRACT_GITHUB_TOKEN != '' && env.CONTRACT_GITHUB_REPO != ''
+        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: true
+          run-install: true
+
+      - name: Check GitHub's contract
+        if: env.CONTRACT_GITHUB_TOKEN != '' && env.CONTRACT_GITHUB_REPO != ''
+        run: pnpm --filter @gadgets/github-gatekeeper test:contract
+        env:
+          # This workflow's own token, which can't read the contract repository: the access check's
+          # outsider.
+          CONTRACT_GITHUB_OUTSIDER_TOKEN: ${{ github.token }}
+          CONTRACT_GITHUB_PAYLOADS_DIR: ${{ runner.temp }}/github-contract-payloads
+
+      - name: Keep GitHub's payloads
+        if: always() && env.CONTRACT_GITHUB_TOKEN != '' && env.CONTRACT_GITHUB_REPO != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: github-contract-payloads
+          path: ${{ runner.temp }}/github-contract-payloads
+          if-no-files-found: ignore

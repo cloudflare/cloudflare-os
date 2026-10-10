@@ -53,8 +53,9 @@ import {
 import { getBasePath, getBaseUrl, webhookOrigin, type Env } from "./github-env";
 import {
   HOOKS_NOT_CONFIGURED, handleWebhookRequest,
-  type GitHubEventHookTarget, type GitHubHookDelivery, type GitHubHookParams, type GitHubWebhookEvent,
+  type GitHubEventHookTarget, type GitHubHookDelivery, type GitHubHookParams,
 } from "./github-hooks";
+import type { GitHubWebhookEvent } from "./github-webhook-events";
 import { assertIssueSearchResultsInRepo, buildIssueSearchQuery } from "./github-search";
 import {
   MAX_DIFF_BLOB_BYTES,
