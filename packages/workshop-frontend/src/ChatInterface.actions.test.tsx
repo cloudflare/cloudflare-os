@@ -398,3 +398,36 @@ describe('send and retry failures', () => {
         { title: 'Failed to retry agent', description: undefined, variant: 'error' })
   })
 })
+
+describe('hook toggles', () => {
+  beforeEach(() => {
+    addToast.mockClear()
+    // Each failure is logged as well as shown.
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+  })
+
+  it('says why a hook bound in the chat could not be enabled', async () => {
+    const refusal = "GitHub refused to add a webhook to acme/widgets: only the repository's admins can."
+    const server = makeOverseer()
+    const chat = withChatApi(server, undefined, [openChat])
+    Object.assign(server.overseer as object, { enableHook: async () => { throw new Error(refusal) } })
+    await renderChat(server.overseer, { selectedChatId: 1 })
+    chat.emitMessage({
+      ...actionMessage,
+      actionLog: entry(1, {
+        type: 'bindHook', hookId: 7, enabled: false,
+        description: { title: 'Watch acme/widgets on GitHub', description: 'Call this hook with each issue event.' },
+      }),
+    } as AiChatMessage)
+
+    // The checkbox the switch forwards its clicks to. jsdom has no PointerEvent, which the switch
+    // forwards them with.
+    const checkbox = document.querySelector('[aria-label="Enable hook"]')?.nextElementSibling
+    if (!(checkbox instanceof HTMLInputElement)) throw new Error('No hook toggle rendered')
+    await act(async () => checkbox.click())
+
+    expect(addToast).toHaveBeenCalledExactlyOnceWith(
+        { title: 'Failed to enable hook', description: refusal, variant: 'error' })
+    expect(document.querySelector('[aria-label="Enable hook"]')).not.toBeNull()
+  })
+})
