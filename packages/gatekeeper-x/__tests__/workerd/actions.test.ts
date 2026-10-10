@@ -8,7 +8,7 @@ import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { XListInfo, XPostDraft, XPostInfo } from "../../src/types";
 import { scopesFor } from "../../src/x-env";
 import type { WirePost } from "../../src/x-normalize";
-import { ALICE, BOB, FakeX, failure, hooks, json, reconnectAs, seedAccount, unwrap } from "./fake-x";
+import { ALICE, BOB, FakeX, failure, hooks, json, reconnectAs, seedAccount, snowflakeAt, unwrap } from "./fake-x";
 import type { GatekeeperProps, Step } from "./worker";
 
 afterEach(() => {
@@ -155,13 +155,25 @@ describe("publishing", () => {
     });
     const [{ actionId }] = await t.submitted();
     const message = failure(await t.apply(actionId));
-    expect(message).toMatch(/More than one of the account's posts from when this was sent could be this one/);
+    expect(message).toMatch(/leave it unknown whether this action made one/);
     // For good: approving again asks X nothing and sends nothing, and rejecting clears it.
     const requests = t.x.requests.length;
     expect(failure(await t.apply(actionId))).toBe(message);
     expect(t.x.requests).toHaveLength(requests);
     expect(postsBy(t.x, ALICE.id)).toHaveLength(2);
     unwrap(await t.reject(actionId));
+  });
+
+  it("never binds a post like it that was there before the send", async () => {
+    const t = await setup();
+    // The same words, posted five seconds before, and a first send X answers with a 503.
+    const earlier = t.x.post(ALICE, "Same words", { id: snowflakeAt(Date.now() - 5000) });
+    await t.run([["createPost", { text: "Same words" }]]);
+    t.x.on("POST", /^\/2\/tweets$/, () => new Response("upstream error", { status: 503 }));
+    const [{ actionId }] = await t.submitted();
+    expect(failure(await t.apply(actionId))).toMatch(/leave it unknown whether this action made one/);
+    unwrap(await t.reject(actionId));
+    expect(t.x.posts.has(earlier.id)).toBe(true);
   });
 
   it("fails a first send X refuses as a duplicate, binding no post that was already there", async () => {
