@@ -1,6 +1,8 @@
 packages/gatekeeper-google/src/sheets.ts
   s_010272bf0842e6::t_2aff785feb2fe9 19,31
   s_010272bf0842e6::t_3945cead3321f5 22-24,30,35-36,45-46,301-315,415,496-533,535-566,663-666
+  s_010272bf0842e6::t_09c650e10967c6 20-21
+  s_010272bf0842e6::t_8023c376acd903 534
 packages/gatekeeper-google/src/sheets-types.d.ts
   s_010272bf0842e6::t_b0b2aa4bef43e2 1,3
   s_010272bf0842e6::t_1be2e3cd5630b4 2,19-58,75-82,190-194,199-201,217-223
@@ -33,10 +35,14 @@ packages/gatekeeper-google/__tests__/workerd/sheets-session.test.ts
   s_010272bf0842e6::t_bbbb2a5c97fbd0 12-13,17,56-68,72,97-130,341-470
 packages/gatekeeper-google/src/sheets-api.ts
   s_010272bf0842e6::t_0d992708796938 2,7-12,17,112-123,336-420
+  s_010272bf0842e6::t_8023c376acd903 469,504-520
+  s_010272bf0842e6::t_ae9a565f85a629 521
 packages/gatekeeper-google/src/sheets-read-types.d.ts
   s_010272bf0842e6::t_a2906684632e19 66-132,159-165
 packages/gatekeeper-google/__tests__/sheets-format.test.ts
   s_63fdba5c9a28cc::t_0a7a6bb4bcfcc8 1-5,7-345
+  s_010272bf0842e6::t_ae9a565f85a629 355-356
+  s_010272bf0842e6::t_523b461357d03a 6,346-354
 packages/gatekeeper-google/__tests__/sheets-input.test.ts
   s_63fdba5c9a28cc::t_414ad6dbf80cf8 47-48,204,209-338
 packages/gatekeeper-google/__tests__/sheets-plan.test.ts
