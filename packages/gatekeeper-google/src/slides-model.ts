@@ -1,6 +1,6 @@
 /**
- * Turns Slides responses into the presentation agents read: slide summaries from a presentation,
- * and one slide's content from its page.
+ * Turns Slides responses into the presentation agents read: its masters, layouts and slide
+ * summaries from a presentation, and one slide's content from its page.
  *
  * Text is projected from the text runs' and AutoTexts' content, concatenated, minus the newline
  * Slides always keeps at the end of a shape or table cell. An AutoText occupies one provider index
@@ -8,17 +8,20 @@
  * the provider's UTF-16 text indices; `slides-text.ts` maps between the two to address edits.
  */
 
-import type { RestBorderRow, RestPageElement, RestPresentation, RestSlide, RestText } from "./slides-api";
+import type {
+  RestBorderRow, RestPageElement, RestPresentation, RestSlide, RestText, RestThemePage,
+} from "./slides-api";
 import {
   emu, IDENTITY, localBox, matrixOf, multiply, placementOf, points, roundedPlacement, slidePoint,
   tableLinesOf, type Box, type Matrix,
 } from "./slides-geometry";
 import {
-  borderOf, cellPropertiesOf, colorOf, dashOf, formattingOf, shapePropertiesOf, weightOf,
+  backgroundOf, borderOf, cellPropertiesOf, colorOf, dashOf, formattingOf, shapePropertiesOf,
+  themeColorsOf, weightOf,
 } from "./slides-format";
 import type {
-  LineElement, PresentationInfo, Slide, SlideElement, SlideLayout, SlideSummary, TableBorder,
-  TableCell, TableElement,
+  LineElement, PresentationInfo, Slide, SlideElement, SlideLayout, SlideMaster, SlideSummary,
+  TableBorder, TableCell, TableElement,
 } from "./slides-read-types";
 
 /** Layout display names by layout object ID. */
@@ -228,6 +231,16 @@ export function mastersOf(rest: RestPresentation): { masters: Map<string, string
   };
 }
 
+/** A presentation's or its outline's masters and then layouts, by object ID, in Google's order. */
+export function themePagesOf(rest: RestPresentation): ReadonlyMap<string, RestThemePage> {
+  let pages = new Map<string, RestThemePage>();
+  let lists = [["MASTER", rest.masters], ["LAYOUT", rest.layouts]] as const;
+  for (let [pageType, list] of lists) {
+    for (let page of list ?? []) if (page.objectId) pages.set(page.objectId, { ...page, pageType });
+  }
+  return pages;
+}
+
 /** The IDs of a presentation's slides, in presentation order. */
 export function slideIds(rest: RestPresentation): string[] {
   return (rest.slides ?? []).map(slide => {
@@ -258,32 +271,50 @@ function summaryOf(slide: RestSlide, index: number, layouts: LayoutNames): Slide
   let properties = slide.slideProperties;
   let layout = properties?.layoutObjectId && layouts.get(properties.layoutObjectId);
   let master = properties?.masterObjectId;
+  let background = backgroundOf(slide.pageProperties?.pageBackgroundFill);
   let title = titleOf(slide);
   return {
     id: slide.objectId,
     index,
     ...(layout ? { layout } : {}),
+    ...(properties?.layoutObjectId ? { layoutId: properties.layoutObjectId } : {}),
     ...(master ? { master } : {}),
+    ...(background ? { background } : {}),
     skipped: properties?.isSkipped === true,
     ...(title ? { title } : {}),
     hasSpeakerNotes: speakerNotesOf(slide).length > 0,
   };
 }
 
-/** The layouts a presentation read with `GoogleSlidesApi.getPresentation()` lists. */
-function layoutsOf(rest: RestPresentation): SlideLayout[] {
-  return (rest.layouts ?? []).flatMap(({ objectId, layoutProperties, pageElements }) => {
-    let name = layoutProperties?.displayName;
-    let master = layoutProperties?.masterObjectId;
-    if (!objectId || !name || !master) return [];
-    let placeholders = (pageElements ?? []).flatMap(({ shape }) => shape?.placeholder?.type ?? []);
-    return [{ id: objectId, name, master, placeholders }];
-  });
+function masterOf(page: RestThemePage): SlideMaster {
+  let name = page.masterProperties?.displayName;
+  let background = backgroundOf(page.pageProperties?.pageBackgroundFill);
+  return {
+    id: page.objectId!,
+    ...(name ? { name } : {}),
+    ...(background ? { background } : {}),
+    themeColors: themeColorsOf(page.pageProperties?.colorScheme),
+  };
 }
 
-/** Summarize a presentation read with `GoogleSlidesApi.getPresentation()`. */
-export function presentationInfo(rest: RestPresentation): PresentationInfo {
+function layoutOf({ objectId, layoutProperties, pageProperties, pageElements }: RestThemePage): SlideLayout[] {
+  let name = layoutProperties?.displayName;
+  let master = layoutProperties?.masterObjectId;
+  if (!objectId || !name || !master) return [];
+  let placeholders = (pageElements ?? []).flatMap(({ shape }) => shape?.placeholder?.type ?? []);
+  let background = backgroundOf(pageProperties?.pageBackgroundFill);
+  return [{ id: objectId, name, master, placeholders, ...(background ? { background } : {}) }];
+}
+
+/**
+ * Summarize a presentation read with `GoogleSlidesApi.getPresentation()`, its masters and layouts
+ * taken from `themePages`.
+ */
+export function presentationInfo(
+  rest: RestPresentation, themePages: ReadonlyMap<string, RestThemePage> = themePagesOf(rest),
+): PresentationInfo {
   let layouts = layoutNames(rest);
+  let pages = [...themePages.values()];
   return {
     id: rest.presentationId,
     title: rest.title ?? "Untitled presentation",
@@ -291,8 +322,9 @@ export function presentationInfo(rest: RestPresentation): PresentationInfo {
     pageSize: {
       width: points(emu(rest.pageSize?.width)), height: points(emu(rest.pageSize?.height)),
     },
+    masters: pages.filter(page => page.pageType === "MASTER").map(page => masterOf(page)),
     slides: (rest.slides ?? []).map((slide, index) => summaryOf(slide, index, layouts)),
-    layouts: layoutsOf(rest),
+    layouts: pages.filter(page => page.pageType === "LAYOUT").flatMap(page => layoutOf(page)),
   };
 }
 
