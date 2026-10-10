@@ -79,10 +79,11 @@ included). Across all resource types, the gatekeeper can request:
 
 - `openid`, `userinfo.profile`, and `userinfo.email` to identify the connected account.
 - `gmail.modify` for Gmail thread reads, organization, replies, forwards, and sending. This single scope already includes label access and sending.
-- `documents` for direct Google Docs reads and edits; `documents.readonly` for native Docs opened from account-wide, folder, or exact-file Drive bindings.
+- `documents` for direct Google Docs reads, edits, and creation; `documents.readonly` for native Docs opened from account-wide, folder, or exact-file Drive bindings.
 - `drive.metadata.readonly` for the Docs, Sheets, Slides, and folder pickers, account-wide Drive discovery, exact-file metadata, folder descendant proofs, and native-file scope checks. Google classifies this as a restricted scope, so every Drive resource here needs restricted-scope verification.
-- `spreadsheets.readonly` to read metadata and bounded cell ranges from directly selected spreadsheets or native Sheets opened from account-wide, folder, or exact-file Drive bindings.
-- `presentations` to read and edit directly selected presentations, and to render slide thumbnails; `presentations.readonly` to read and render native Slides opened from account-wide, folder, or exact-file Drive bindings. Google counts each thumbnail as an expensive read, limited to 60 a minute per user and 300 per project.
+- `spreadsheets` to read metadata and bounded cell ranges from directly selected spreadsheets, and to create spreadsheets. Google Sheets bindings are read-only; the read-write scope is requested because Google's `spreadsheets.create` accepts no read-only scope. The switch from `spreadsheets.readonly` retracted every existing Sheets grant, including one derived from `drive.readonly`: owners re-consent the next time they connect a spreadsheet, and collaborators observing an existing Sheets binding are asked to grant read-write `spreadsheets` the next time they open its workspace.
+- `spreadsheets.readonly` to read native Sheets opened from account-wide, folder, or exact-file Drive bindings.
+- `presentations` to read, edit, and create directly selected presentations, and to render slide thumbnails; `presentations.readonly` to read and render native Slides opened from account-wide, folder, or exact-file Drive bindings. Google counts each thumbnail as an expensive read, limited to 60 a minute per user and 300 per project.
 - `calendar.calendarlist.readonly` so the resource picker can list calendars.
 - `calendar.events` to manage selected calendar and check calendar availability.
 - `chat.spaces.readonly`, `chat.messages`, and `chat.memberships.readonly` for every Chat resource. A whole-account Chat connection adds `chat.users.readstate.readonly` for its unread-only search, and `chat.spaces.create` and `directory.readonly` to start direct messages and group chats with people in the connected account's Workspace directory. Starting a conversation is its own approval kind, separate from sending in an existing one, and people outside the organization can't be added to a new conversation.
@@ -207,6 +208,41 @@ result and state. Normal deployments should omit these settings and continue usi
 Deploy the relay-capable stable Worker before enabling the fixed redirect on previews. Wrangler
 stores baseline and Preview secrets separately, so provision the same signing value in both places.
 
+## Creating files
+
+Google Docs, Sheets and Slides are creatable resource types: an agent can ask for a new one with
+`createExternalResource`, giving a one-line title (trimmed, at most 256 characters), and its binding
+works at once, before anything exists at Google. Until the creation is approved the gatekeeper
+simulates an empty file: a Doc reads as one empty tab and queues edits as usual, a spreadsheet as
+one empty `Sheet1` of 1000 × 26 cells, and a presentation as the one Google creates, a 16:9 deck
+with a title slide, which queues changes as usual. Of the default theme's layouts it offers only
+five (title slide, section header, title and body, title only, and blank); the others become
+available once the presentation exists. Nothing reaches Google and no account is involved.
+
+The approver picks which of their connected Google accounts to create the file in; it lands in
+that account's My Drive, and the binding switches to the real file. Doc edits queued against the
+simulation then apply to the created document like any other edit, and Slides changes apply to the
+created presentation unchanged.
+
+That works for Slides because Google gives every new presentation the same object IDs (master
+`simple-light-2`, title slide `p`, and layouts `p2` to `p12`, seen both on a personal account
+through the API and on a Workspace account in the editor), so the simulation reads a recording of
+one, `src/blank-presentation.json`: each read a session makes, through the session's own field
+masks, less the presentation's ID, title and revision and the layouts it does not offer.
+`pnpm --filter @gadgets/google-gatekeeper record:blank-presentation <token-file>` records it again;
+the file holds an access token with the `presentations` and `drive.file` scopes. It creates two
+presentations, refuses to record unless they read the same, and deletes them; with `--check` it
+compares them with the committed recording instead. Should Google's new presentation change, a
+queued change naming a slide, element or layout the created presentation lacks fails when
+approved, writing nothing.
+
+Google's create calls take no idempotency key. A retried approval after a lost reply binds the file
+already created (the gatekeeper records it), but a file can still be orphaned in the approver's
+Drive: a create request that times out or fails with a 5xx after Google acted, a crash between
+Google's reply and that record being written, or a creation rejected after an approval whose
+success was lost. Every created file's ID is logged (`google.creation.file.created`), so an orphan
+can be found.
+
 ## Known limitations
 
 Very large Google Docs can exceed Durable Objects' 2 MB value limit after Markdown conversion,
@@ -221,11 +257,33 @@ slides of any batch touching a slide it shows, since a batch applies all or none
 summaries read every slide a queued batch changes, since they hold no tables or grouped shapes.
 Large batches awaiting approval therefore cost reads more requests against Google's per-user quota.
 
+The simulated presentation was recorded from an English-locale account, so until it is created it
+reads with locale `en` and English layout names. Google translates those names: a presentation a
+Spanish-language account made in the editor read locale `es-419` and layout names such as
+`Título y cuerpo`, with the recording's object IDs, placeholders and geometry. One created through
+the API in a non-English account has not been checked, so an approver's presentation may name its
+layouts differently from what the agent saw before approval, including in an approval card queued
+then. `createSlide()` takes a layout's ID, never its name.
+
+## Google Slides reads
+
+`getSlides()` reads each element as the Slides editor shows it: its box and rotation, and what it
+sets rather than inherits. Shapes carry their text and its formatting (links to URLs or to slides,
+font weight, paragraph indents and bullets), and their fill, its opacity, and their outline with its
+dash. Tables carry their cells, column widths, row heights and borders, collapsed to one `border`
+when every edge matches. A table's `size` is nominal, 3,000,000 EMU square on every live read, so
+its box is its columns and rows added up; a row's height is the least it may have, since Google
+draws it taller to fit its text and reports that nowhere. Lines carry their ends, computed from
+their transform, arrowheads, and the elements they connect; videos their YouTube or Drive ID; and
+images and Sheets charts their source URL and spreadsheet. The `contentUrl` an image or chart also
+has is a bearer URL, like a thumbnail's, so it is never read. `getPresentation()` lists the
+presentation's layouts with their placeholders, for `createSlide()`.
+
 ## Google Slides edits
 
-A directly bound presentation accepts four changes, each queued for approval: `updateSlides()`,
-`duplicateSlide()`, `deleteSlide()`, and `moveSlides()`. Changes are journaled with the kit's
-`ActionJournal`, and apply in the order they were queued.
+A directly bound presentation accepts six changes, each queued for approval: `updateSlides()`,
+`duplicateSlide()`, `deleteSlide()`, `moveSlides()`, `createSlide()`, and `setSlidesSkipped()`.
+Changes are journaled with the kit's `ActionJournal`, and apply in the order they were queued.
 
 `updateSlides()` takes up to 50 changes applied together: find-and-replace or whole-text
 replacement in shapes, table cells, and speaker notes, text and paragraph formatting (including
@@ -242,6 +300,30 @@ let apply without asking: "Slide text edits" (only text edits), "Slide formattin
 font, since Google keeps their whole strings), and every other batch, mixed ones included, which
 always waits for approval.
 
+`createSlide()` adds a slide made from one of the presentation's layouts, at the start, the end, or
+after a given slide. The gatekeeper mints the slide's ID and one for each placeholder it gets from
+the layout, read from the layout's page when the change is queued, so later changes can fill the
+placeholders before it is approved. Reads show the new slide with the layout's placeholders, empty,
+at the layout's size and position, as a live probe showed Google makes them, but for a slide
+number: Google adds one only while the presentation shows slide numbers, which a new one does not,
+and otherwise ignores its mapping, so none is minted and a slide number appears once the slide
+exists (`instantiatedPlaceholders()` in `slides-simulation.ts`).
+Google takes a new slide's layout only from the master of the slide before it, of the first slide
+when it goes first, or of the presentation's first master when it has no slides, so a deck with
+slides imported in another theme has layouts that fit only some places: layouts and slide
+summaries carry their master's ID, and a layout that does not fit where it is to go is refused
+when queued, and again on approval against a fresh read, as is one deleted since; approval also
+refuses one that has lost a placeholder the slide was to get. Google deletes a master and its
+layouts with the last slide on it, unless it is the presentation's first master, as a live probe
+showed, so reads drop the layouts of a master whose last slide a queued deletion removes, and a
+slide queued after it on one of those layouts is refused. Google names a new slide's speaker notes
+only as it creates the slide, so they cannot be edited until it is approved. Adding a slide always
+waits for approval.
+
+`setSlidesSkipped()` skips slides, leaving them out when presenting, or shows them again. It is
+the "Skipping slides" kind, which a user may let apply without asking: it destroys nothing, and
+is undone the same way. It applies against the presentation's outline alone, reading no slide.
+
 Reads show queued changes as if applied, by replaying them over Slides' own JSON before it is
 projected; thumbnails show the presentation as saved. Each change is replayed as Google documents
 its request, and one the replay cannot follow exactly is refused instead: a bullet list started
@@ -249,15 +331,18 @@ right after another list item, which Google may join to that list; table rows or
 or deleted beside a merged cell; deleting a grouped element that would leave its group with one;
 rotating a video, which Google cannot shear; and new text filling a list item whose bullet is
 styled apart from its text, which Google would restyle to match. The replay makes no claim about
-what Google renders: shrinking text to fit, wrapping, the box Google fits an image to, the size it
-gives a new table, and the formatting new table rows and columns take appear once applied. It
-does follow Google in turning a shape's autofit off once its text changes, fixing the font sizes
-and line spacings the text sets at what the autofit had shrunk them to. A replacement takes the
-style of the text it replaces, and text left unchanged at either end of a match is not rewritten,
-so it keeps its own. Formatting a whole list paragraph also updates its bullet's style in replay,
-which later replacements use when checking whether they can keep that style. Setting a font sets
-it at regular weight, so the text is no longer bold unless the change says so. A slide number or
-other AutoText can only be replaced whole.
+what Google renders: shrinking text to fit, wrapping, the box Google fits an image to, the borders
+around new or deleted table rows and columns, and the formatting new rows and columns take appear
+once applied. Table rows and columns are sized as live reads show Google sizing them: a new table
+shares its box evenly, a new row or column copies the one beside it, every column then narrows so
+the table keeps its width, and the lines a deletion leaves keep theirs. It does follow Google in
+turning a shape's autofit off once its text changes, fixing the font sizes and line spacings the
+text sets at what the autofit had shrunk them to. A replacement takes the style of the text it
+replaces, and text left unchanged at either end of a match is not rewritten, so it keeps its own.
+Formatting a whole list paragraph also updates its bullet's style in replay, which later
+replacements use when checking whether they can keep that style. Setting a font sets it at
+regular weight, so the text is no longer bold unless the change says so. A slide number or other
+AutoText can only be replaced whole.
 
 Each approved change is one `batchUpdate`, planned against a fresh read and pinned to its revision
 with `requiredRevisionId`, so a change applies only to the text it was planned against: one that

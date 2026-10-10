@@ -75,8 +75,10 @@ const codeOutputs = (messages: AiChatMessage[]) => messages.flatMap(message =>
   message.type === "message" ? message.toolCalls ?? [] : []).flatMap(call =>
     call.toolName === "executeCode" ? [call.output] : []);
 
-it.concurrent("the agent's prompt follows the workspace's gadgets and bindings", async () => {
-  const model = models.script([{ text: "First." }, { text: "Second." }, { text: "Third." }]);
+it.concurrent("a chat's prompt lists the workspace's gadgets and bindings as it first saw them",
+    async () => {
+  const model = models.script(
+      [{ text: "First." }, { text: "Second." }, { text: "Third." }, { text: "Fourth." }]);
   using owner = await newWorkspace(model, "agentprompt");
   const { api, account, ws } = owner;
   const formats = await waitFor("bundled output formats to install", async () => {
@@ -101,21 +103,25 @@ it.concurrent("the agent's prompt follows the workspace's gadgets and bindings",
     expect(first).toContain(format.blueprintId);
   }
 
-  // The rename lands on mainline; the binding is only proposed in another chat.
+  // A rename, and a binding proposed in another chat and then merged, show only in chats started
+  // after them.
   await board.setTitle("Quarterly roadmap");
   const chatB = await ws.newChat("Give the roadmap the extra data.", null);
   await board.bind("BOARD_EXTRA", await boardExtra.getId(), chatB);
-  await ws.sendChatMessage(chatA, "And now?", SCRIPTED_MODEL_ID);
-  await settle(ws, model, chatA, 2);
-  const second = systemPromptOf(model.requests[1]);
-  expect(second).toContain("Quarterly roadmap");
-  expect(second).not.toContain("Task board");
-  expect(second).not.toContain("BOARD_EXTRA");
+  const chatC = await ws.newChat("What is in this workspace now?", SCRIPTED_MODEL_ID);
+  await settle(ws, model, chatC, 2);
+  const renamed = systemPromptOf(model.requests[1]);
+  expect(renamed).toContain("Quarterly roadmap");
+  expect(renamed).not.toContain("Task board");
+  expect(renamed).not.toContain("BOARD_EXTRA");
 
   expect(await ws.mergeChanges(chatB)).toEqual({ outcome: "merged" });
-  await ws.sendChatMessage(chatA, "And after that change?", SCRIPTED_MODEL_ID);
+  await ws.sendChatMessage(chatA, "And now?", SCRIPTED_MODEL_ID);
   await settle(ws, model, chatA, 3);
-  expect(systemPromptOf(model.requests[2])).toContain("BOARD_EXTRA");
+  expect(systemPromptOf(model.requests[2])).toBe(first);
+  const chatD = await ws.newChat("And after that change?", SCRIPTED_MODEL_ID);
+  await settle(ws, model, chatD, 4);
+  expect(systemPromptOf(model.requests[3])).toContain("BOARD_EXTRA");
 });
 
 it.concurrent("a pasted link becomes a binding for that chat only", async () => {

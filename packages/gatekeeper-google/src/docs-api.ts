@@ -271,6 +271,23 @@ export class GoogleDocsApi {
     });
   }
 
+  /** Create an empty document titled `title` in the caller's My Drive, returning its ID. */
+  async createDocument(title: string): Promise<string> {
+    let { documentId } = await this.#request<{ documentId?: unknown }>(
+      `${DOCS_API_BASE}?fields=documentId`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      },
+      "create document",
+    );
+    if (typeof documentId !== "string" || documentId.length === 0) {
+      throw new Error("Google Docs returned no document ID");
+    }
+    return documentId;
+  }
+
   /** Fetch a document and flatten its tab tree. */
   async getDocument(documentId: string): Promise<GoogleDocsDocument> {
     let { documentId: id, title, revisionId, tabs } = await this.#request<GoogleDocsResponse>(
@@ -383,5 +400,57 @@ export class GoogleDocsApi {
       },
       "delete named range",
     );
+  }
+}
+
+/** The reads a Google Doc session makes. */
+export type GoogleDocReader = Pick<GoogleDocsApi, "getDocument" | "getDocumentMetadata" | "getRevisionId">;
+
+/** The tab ID Google gives a new document's only tab, and so the blank stand-in's. */
+export const BLANK_DOC_TAB_ID = "t.0";
+
+/** Revision of the blank stand-in, which never changes. */
+const BLANK_DOC_REVISION = "blank";
+
+/**
+ * A document not yet created, read as Google returns a new one: one tab holding one empty
+ * paragraph. Makes no request.
+ */
+export class BlankGoogleDoc implements GoogleDocReader {
+  constructor(private title: string) {}
+
+  async getDocument(documentId: string): Promise<GoogleDocsDocument> {
+    let tab: GoogleDocsTab = {
+      tabId: BLANK_DOC_TAB_ID,
+      title: "Tab 1",
+      index: 0,
+      nestingLevel: 0,
+      lists: {},
+      namedRanges: {},
+      body: {
+        content: [
+          { startIndex: 0, endIndex: 1, sectionBreak: {} },
+          {
+            startIndex: 1,
+            endIndex: 2,
+            paragraph: {
+              elements: [{ startIndex: 1, endIndex: 2, textRun: { content: "\n", textStyle: {} } }],
+              paragraphStyle: { namedStyleType: "NORMAL_TEXT" },
+            },
+          },
+        ],
+      },
+    };
+    return { documentId, title: this.title, revisionId: BLANK_DOC_REVISION, tabs: [tab] };
+  }
+
+  async getDocumentMetadata(
+    documentId: string,
+  ): Promise<Pick<GoogleDocsDocument, "documentId" | "title" | "revisionId">> {
+    return { documentId, title: this.title, revisionId: BLANK_DOC_REVISION };
+  }
+
+  async getRevisionId(): Promise<string | undefined> {
+    return BLANK_DOC_REVISION;
   }
 }

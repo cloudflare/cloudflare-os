@@ -33,8 +33,13 @@ type RestValueRange = {
 
 type ValidatedRange = {
   range: string;
+  /** The sheet the range names, unquoted, if it names one. */
+  sheet?: string;
   rows: number;
   columns: number;
+  /** The 1-based row and column of the range's bottom-right cell. */
+  endRow: number;
+  endColumn: number;
 };
 
 function columnNumber(column: string): number {
@@ -53,7 +58,7 @@ function validateRange(range: string): ValidatedRange {
   // A quoted sheet title escapes an apostrophe as two apostrophes. Requiring explicit cell
   // coordinates keeps reads bounded; named, whole-row, and whole-column ranges are rejected.
   let match = range.match(
-    /^(?:(?:'(?:[^']|'')+'|[^'!]+)!)?\$?([A-Za-z]{1,3})\$?([1-9]\d*)(?::\$?([A-Za-z]{1,3})\$?([1-9]\d*))?$/,
+    /^(?:('(?:[^']|'')+'|[^'!]+)!)?\$?([A-Za-z]{1,3})\$?([1-9]\d*)(?::\$?([A-Za-z]{1,3})\$?([1-9]\d*))?$/,
   );
   if (!match) {
     throw new Error(
@@ -62,10 +67,11 @@ function validateRange(range: string): ValidatedRange {
     );
   }
 
-  let startColumn = columnNumber(match[1]);
-  let startRow = Number(match[2]);
-  let endColumn = columnNumber(match[3] ?? match[1]);
-  let endRow = Number(match[4] ?? match[2]);
+  let [, sheet, start, startRowText, end = start, endRowText = startRowText] = match;
+  let startColumn = columnNumber(start);
+  let startRow = Number(startRowText);
+  let endColumn = columnNumber(end);
+  let endRow = Number(endRowText);
   if (endColumn < startColumn || endRow < startRow) {
     throw new Error(`A1 range "${range}" must run from its top-left cell to its bottom-right cell.`);
   }
@@ -75,7 +81,10 @@ function validateRange(range: string): ValidatedRange {
   if (!Number.isSafeInteger(rows) || !Number.isSafeInteger(columns)) {
     throw new Error(`A1 range "${range}" is too large.`);
   }
-  return { range, rows, columns };
+  return {
+    range, rows, columns, endRow, endColumn,
+    ...(sheet && { sheet: sheet.startsWith("'") ? sheet.slice(1, -1).replaceAll("''", "'") : sheet }),
+  };
 }
 
 function validateRanges(ranges: string[]): ValidatedRange[] {
@@ -118,16 +127,39 @@ function normalizeRange(rest: RestValueRange, requested: ValidatedRange): Spread
   });
   return { range: rest.range ?? requested.range, values };
 }
+
+/** The one sheet a created spreadsheet gets, named here so it doesn't depend on the account's locale. */
+const BLANK_SHEET = { sheetId: 0, title: "Sheet1", rowCount: 1000, columnCount: 26 } as const;
+
 export class GoogleSheetsApi {
   constructor(private getAccessToken: AccessTokenProvider) {}
 
-  async #request<T>(url: URL, operation: string): Promise<T> {
+  async #request<T>(url: URL, operation: string, init: RequestInit = {}): Promise<T> {
     let response = await fetchWithAuthRetry(
-      url.toString(), {}, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
+      url.toString(), init, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
     );
     return readGoogleJson<T>(response, {
       provider: "Google Sheets", operation, maxBytes: MAX_RESPONSE_BYTES,
     });
+  }
+
+  /** Create a spreadsheet titled `title` in the caller's My Drive, holding one empty sheet. */
+  async createSpreadsheet(title: string): Promise<string> {
+    let url = new URL(API_BASE);
+    url.searchParams.set("fields", "spreadsheetId");
+    let { sheetId, title: sheetTitle, rowCount, columnCount } = BLANK_SHEET;
+    let { spreadsheetId } = await this.#request<{ spreadsheetId?: unknown }>(url, "create spreadsheet", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        properties: { title },
+        sheets: [{ properties: { sheetId, title: sheetTitle, gridProperties: { rowCount, columnCount } } }],
+      }),
+    });
+    if (typeof spreadsheetId !== "string" || spreadsheetId.length === 0) {
+      throw new Error("Google Sheets returned no spreadsheet ID");
+    }
+    return spreadsheetId;
   }
 
   async getSpreadsheet(spreadsheetId: string): Promise<SpreadsheetInfo> {
@@ -176,5 +208,42 @@ export class GoogleSheetsApi {
     );
     let returned = result.valueRanges ?? [];
     return validated.map((range, index) => normalizeRange(returned[index] ?? {}, range));
+  }
+}
+
+/** The reads a spreadsheet session makes. */
+export type SpreadsheetReader = Pick<GoogleSheetsApi, "getSpreadsheet" | "readRanges">;
+
+/**
+ * A spreadsheet not yet created, read as the one createSpreadsheet() makes: one empty sheet. Makes
+ * no request, and so cannot know the locale and time zone Google will give it.
+ */
+export class BlankSpreadsheet implements SpreadsheetReader {
+  constructor(private title: string) {}
+
+  async getSpreadsheet(spreadsheetId: string): Promise<SpreadsheetInfo> {
+    let { sheetId, title, rowCount, columnCount } = BLANK_SHEET;
+    return {
+      id: spreadsheetId,
+      title: this.title,
+      sheets: [{ id: sheetId, title, index: 0, rowCount, columnCount }],
+    };
+  }
+
+  /** Every requested cell is empty. */
+  async readRanges(_spreadsheetId: string, ranges: string[]): Promise<SpreadsheetRange[]> {
+    let { title, rowCount, columnCount } = BLANK_SHEET;
+    return validateRanges(ranges).map(range => {
+      // Google matches sheet names case-insensitively, as it keeps them unique.
+      if (range.sheet !== undefined && range.sheet.toLowerCase() !== title.toLowerCase()) {
+        throw new Error(
+          `No sheet named "${range.sheet}": a spreadsheet awaiting creation has only "${title}".`);
+      }
+      if (range.endRow > rowCount || range.endColumn > columnCount) {
+        throw new Error(`A1 range "${range.range}" exceeds the ${rowCount} rows and ${columnCount} ` +
+          `columns of "${title}".`);
+      }
+      return normalizeRange({}, range);
+    });
   }
 }

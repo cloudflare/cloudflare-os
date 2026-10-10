@@ -121,7 +121,7 @@ export type SlideChange =
     fill?: SlideColor | "none";
     outline?: ShapeOutline | "none";
   }
-  /** Set a shape's fill, outline, or where its text sits vertically. */
+  /** Set a shape's fill, which is set opaque, outline, or where its text sits vertically. */
   | {
     op: "updateShape";
     slideId: string;
@@ -168,8 +168,9 @@ export type SlideChange =
   | { op: "replaceImage"; slideId: string; elementId: string; url: string }
   /**
    * Add a table of up to 20 rows and 20 columns, with `cells[row][column]` as each cell's text.
-   * Google may make it larger than `bounds`; without `bounds` it sizes it and centres it on the
-   * slide, and it has no `bounds` until applied.
+   * Google shares `bounds` evenly among its columns and rows, drawing a row taller than its share
+   * when its text needs it; without `bounds` it sizes the table and centres it on the slide, and it
+   * has no `bounds` until applied.
    */
   | {
     op: "createTable";
@@ -204,8 +205,8 @@ export type SlideChange =
     count?: number;
   }
   /**
-   * Set the fill or vertical text alignment of the cells in `range`, or of every cell. The range
-   * may not cut through a merged cell.
+   * Set the fill, which is set opaque, or vertical text alignment of the cells in `range`, or of
+   * every cell. The range may not cut through a merged cell.
    */
   | {
     op: "formatTableCells";
@@ -236,10 +237,10 @@ export interface GooglePresentationSession extends GooglePresentationReadSession
    * together as separate batches.
    *
    * Reads show the changes as if applied, except what only Google can work out: a new element
-   * reads with just what the change sets until it is applied, and an image's fitted size, the size
-   * Google gives a table, the formatting new table rows and columns take, and how text wraps or
-   * shrinks to fit appear once applied. Throws, queuing nothing, when a change does not apply to
-   * the slides `getSlides()` would now return.
+   * reads with just what the change sets until it is applied, and an image's fitted size, the
+   * borders and formatting new table rows and columns take, and how text wraps or shrinks to fit
+   * appear once applied. Throws, queuing nothing, when a change does not apply to the slides
+   * `getSlides()` would now return.
    */
   updateSlides(changes: SlideChange[]): Promise<Record<string, string>>;
 
@@ -249,7 +250,10 @@ export interface GooglePresentationSession extends GooglePresentationReadSession
    */
   duplicateSlide(slideId: string): Promise<string>;
 
-  /** Queue deleting a slide. */
+  /**
+   * Queue deleting a slide. Deleting the last slide of any master but the presentation's first
+   * removes that master's layouts from `PresentationInfo.layouts`, as Google deletes them with it.
+   */
   deleteSlide(slideId: string): Promise<void>;
 
   /**
@@ -257,4 +261,21 @@ export interface GooglePresentationSession extends GooglePresentationReadSession
    * keep their current order relative to each other, whatever order `slideIds` lists them in.
    */
   moveSlides(slideIds: string[], after: string | null): Promise<void>;
+
+  /**
+   * Queue adding a slide made from a layout, `layoutId` being one of `PresentationInfo.layouts`'
+   * IDs: right after the slide `after`, at the start when `after` is null, or at the end when it
+   * is omitted. The layout's `master` must be that of the slide before it, of the first slide when
+   * it goes first, or of the presentation's first master when it has no slides, as Google requires.
+   * Returns the new slide's ID. The slide gets the layout's placeholders, empty: read it with
+   * `getSlides()` to fill them with `updateSlides()`.
+   * Its speaker notes can be edited only once it is approved.
+   */
+  createSlide(layoutId: string, after?: string | null): Promise<string>;
+
+  /**
+   * Queue skipping slides, which leaves them out when presenting, or with `skipped` false, showing
+   * them again. Reads show it as `SlideSummary.skipped`. The user may let this apply without asking.
+   */
+  setSlidesSkipped(slideIds: string[], skipped: boolean): Promise<void>;
 }

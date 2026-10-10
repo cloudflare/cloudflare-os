@@ -1,22 +1,30 @@
 import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import type {
-  ActionDescription, ActionField, ActionKind, ApprovalQueue, GitCache, HookController,
-  HookDescription, ObservationDescription,
+  ActionDescription, ActionField, ActionKind, ApprovalQueue, Gatekeeper, GitCache, HookController,
+  HookDescription, ObservationDescription, ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { TestGitCache } from "./test-git-cache";
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import type { GoogleAccessToken } from "../src/google-api";
 import type { GoogleDocSession, GoogleDocTab } from "../src/docs-types";
+import type { GoogleSpreadsheetSession, SpreadsheetInfo, SpreadsheetRange } from "../src/sheets-types";
 import type { PresentationInfo, Slide } from "../src/slides-read-types";
 import type { GooglePresentationSession } from "../src/slides-types";
-import GoogleWorker, { GoogleDocGatekeeperImpl, GoogleSlidesGatekeeperImpl } from "../src/google";
+import GoogleWorker, {
+  GatekeeperVendor, GoogleDocGatekeeperImpl, GoogleSheetsGatekeeperImpl,
+  GoogleSlidesGatekeeperImpl, GoogleVerifier,
+} from "../src/google";
 
-export { GoogleDocGatekeeperImpl, GoogleSlidesGatekeeperImpl };
+export {
+  GatekeeperVendor, GoogleDocGatekeeperImpl, GoogleSheetsGatekeeperImpl,
+  GoogleSlidesGatekeeperImpl, GoogleVerifier,
+};
 export default GoogleWorker;
 
 export class UserAccount extends DurableObject<Env> {
+  /** Names the account in its token, so a provider fake can tell which account a request was made as. */
   async getAccessToken(): Promise<GoogleAccessToken> {
-    return { token: "test-access-token", expires: new Date(8640000000000000) };
+    return { token: `test-access-token:${this.ctx.id}`, expires: new Date(8640000000000000) };
   }
 }
 
@@ -37,6 +45,10 @@ type SlidesCall = {
   observations: string[];
 };
 
+/** An error's message, so a test can assert on a failure that crossed the RPC boundary. */
+function failure(error: unknown): { error: string } {
+  return { error: error instanceof Error ? error.message : String(error) };
+}
 class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   actionId?: number;
   action?: ActionDescription;
@@ -72,6 +84,10 @@ export class TestHooks extends DurableObject<Env> {
   #lastActionDescription = "";
   #lastActionFields: ActionField[] = [];
   #lastObservations: string[] = [];
+  /** The class each facet runs, where it is not the default bound Google Doc. */
+  #classes = new Map<string, DurableObjectClass<Gatekeeper<any>>>();
+  /** The class each facet's applyCreation() returned, until adoptCreated() switches to it. */
+  #created = new Map<string, DurableObjectClass<Gatekeeper<any>>>();
 
   /** The approval description of the edit most recently submitted through these hooks. */
   get lastActionDescription(): string {
@@ -91,10 +107,77 @@ export class TestHooks extends DurableObject<Env> {
   #gatekeeper(facetName: string) {
     let userObjectId = this.ctx.exports.UserAccount.idFromName("test-user").toString();
     return this.ctx.facets.get<GoogleDocGatekeeperImpl>(facetName, () => ({
-      class: this.ctx.exports.GoogleDocGatekeeperImpl({
+      class: this.#classes.get(facetName) ?? this.ctx.exports.GoogleDocGatekeeperImpl({
         props: { userObjectId, documentId: "doc-1" } satisfies GatekeeperProps,
       }),
     }));
+  }
+
+  /** Mint a simulated file as createExternalResource does, and run `facetName` on it. */
+  async createResource(facetName: string, resourceUrlPattern: string, title: string)
+      : Promise<{ action: ActionDescription } | { error: string }> {
+    try {
+      let created = await this.ctx.exports.GatekeeperVendor.createResource(resourceUrlPattern, title);
+      this.#classes.set(facetName, created.class);
+      return { action: created.action };
+    } catch (error) {
+      return failure(error);
+    }
+  }
+
+  /**
+   * Approve the creation into `userName`'s account. The returned class is only kept: the overseer
+   * restarts the facet on it afterwards, which adoptCreated() does.
+   */
+  async applyCreation(facetName: string, userName = "test-user")
+      : Promise<{ resourceUrl: string } | { error: string }> {
+    let userObjectId = this.ctx.exports.UserAccount.idFromName(userName).toString();
+    try {
+      let created = await (this.#gatekeeper(facetName) as unknown as Gatekeeper<any>)
+        .applyCreation!(this.ctx.exports.GoogleVerifier({ props: { userObjectId } }));
+      this.#created.set(facetName, created.class);
+      return { resourceUrl: created.resourceUrl };
+    } catch (error) {
+      return failure(error);
+    }
+  }
+
+  /** What the overseer does once a creation applies: restart the facet on the real class. */
+  async adoptCreated(facetName: string): Promise<void> {
+    let created = this.#created.get(facetName);
+    if (!created) throw new Error(`No creation applied on ${facetName}`);
+    this.ctx.facets.abort(facetName, new Error("Connection restarted because its resource was created."));
+    this.#classes.set(facetName, created);
+  }
+
+  async describe(facetName: string): Promise<ResourceDescription> {
+    return this.#gatekeeper(facetName).describe();
+  }
+
+  async #withReadSession<Session, T>(
+    facetName: string, body: (session: Session) => Promise<T>,
+  ): Promise<T | { error: string }> {
+    let queue = new TestApprovalQueue();
+    using approvalQueue = new RpcStub<ApprovalQueue>(queue);
+    using session = await (this.#gatekeeper(facetName) as unknown as Gatekeeper<Session>)
+      .startSession(approvalQueue) as Session & Disposable;
+    try {
+      return await body(session);
+    } catch (error) {
+      return failure(error);
+    } finally {
+      this.#lastObservations = queue.observations;
+    }
+  }
+
+  async readSpreadsheet(facetName: string): Promise<SpreadsheetInfo | { error: string }> {
+    return this.#withReadSession<GoogleSpreadsheetSession, SpreadsheetInfo>(
+      facetName, session => session.getSpreadsheet());
+  }
+
+  async readRange(facetName: string, range: string): Promise<SpreadsheetRange | { error: string }> {
+    return this.#withReadSession<GoogleSpreadsheetSession, SpreadsheetRange>(
+      facetName, session => session.readRange(range));
   }
 
   async #withSession<T>(
@@ -183,7 +266,7 @@ export class TestHooks extends DurableObject<Env> {
   #slides(facetName: string) {
     let userObjectId = this.ctx.exports.UserAccount.idFromName("test-user").toString();
     return this.ctx.facets.get<GoogleSlidesGatekeeperImpl>(facetName, () => ({
-      class: this.ctx.exports.GoogleSlidesGatekeeperImpl({
+      class: this.#classes.get(facetName) ?? this.ctx.exports.GoogleSlidesGatekeeperImpl({
         props: { userObjectId, presentationId: "deck-1" },
       }),
     }));

@@ -8,7 +8,7 @@
  */
 
 import type { RestDimension, RestPageElement, RestTransform } from "./slides-api";
-import type { SlideBounds } from "./slides-read-types";
+import type { SlideBounds, SlidePoint } from "./slides-read-types";
 
 /** EMU, Slides' unit of length, per point. */
 export const EMU_PER_POINT = 12_700;
@@ -72,11 +72,42 @@ function apply(m: Matrix, x: number, y: number): [number, number] {
   return [m.a * x + m.c * y + m.tx, m.b * x + m.d * y + m.ty];
 }
 
+/** Where the point `(x, y)` of an element's frame, in EMU, is on the slide once `m` places it. */
+export function slidePoint(m: Matrix, x: number, y: number): SlidePoint {
+  let [px, py] = apply(m, x, y);
+  return { x: points(px), y: points(py) };
+}
+
+/**
+ * A table's column widths and row heights in EMU, each only when Google gives every one. A row's
+ * height is the least it may have: Google draws it taller to fit its text, and reports that nowhere.
+ */
+export function tableLinesOf(
+  table: NonNullable<RestPageElement["table"]>,
+): { widths?: number[]; heights?: number[] } {
+  let widths = table.tableColumns?.map(column => column.columnWidth);
+  let heights = table.tableRows?.map(row => row.rowHeight);
+  return {
+    ...(widths && widths.length === table.columns && widths.every(width => width)
+      ? { widths: widths.map(emu) } : {}),
+    ...(heights && heights.length === table.rows && heights.every(height => height)
+      ? { heights: heights.map(emu) } : {}),
+  };
+}
+
 /**
  * An element's box in its own frame: its size, or for a group, which Google gives no size, the box
- * around its children. Undefined when Google gave too little to place it.
+ * around its children. A table's `size` is nominal, as a live read shows (always 3,000,000 EMU
+ * square), so its box is its columns and rows. Undefined when Google gave too little to place it.
  */
 export function localBox(element: RestPageElement): Box | undefined {
+  if (element.table) {
+    let { widths, heights } = tableLinesOf(element.table);
+    if (!widths || !heights) return undefined;
+    return {
+      x: 0, y: 0, width: widths.reduce((a, b) => a + b, 0), height: heights.reduce((a, b) => a + b, 0),
+    };
+  }
   if (element.size) {
     return { x: 0, y: 0, width: emu(element.size.width), height: emu(element.size.height) };
   }

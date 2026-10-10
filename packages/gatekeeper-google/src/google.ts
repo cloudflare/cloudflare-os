@@ -1,6 +1,6 @@
 import { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
-import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind, GitCache, type ConnectHandoff } from '@gadgets/workshop-shared/gatekeeper';
+import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind, GitCache, type ActionDescription, type ConnectHandoff } from '@gadgets/workshop-shared/gatekeeper';
 import { buildDescription, codeSpan, plainInline } from "@gadgets/gatekeeper-kit/action-description";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
@@ -11,9 +11,16 @@ import {
 } from "@gadgets/gatekeeper-kit/preview-oauth";
 import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleVerifiedEmail, GoogleAccessToken, revokeGoogleToken } from "./google-api";
 import { GoogleDocSession, DocMetadata, type GoogleDocReadSession, type GoogleDocTab } from "./docs-types";
-import { GoogleDocsApi, type GoogleDocsDocument, type GoogleDocsTab } from "./docs-api";
-import { GoogleSheetsApi } from "./sheets-api";
+import {
+  BLANK_DOC_TAB_ID, BlankGoogleDoc, GoogleDocsApi, type GoogleDocReader, type GoogleDocsDocument,
+  type GoogleDocsTab,
+} from "./docs-api";
+import { BlankSpreadsheet, GoogleSheetsApi, type SpreadsheetReader } from "./sheets-api";
 import { GoogleSlidesApi } from "./slides-api";
+import {
+  boundProps, createFileOnce, creationAction, isSimulated, newFileTitle, UNCREATED_FILE_ID,
+  type SimulatedFileProps,
+} from "./creation";
 import {
   getGoogleSlidesTypesCode, GooglePresentationReadSessionImpl, type GoogleSlidesGatekeeperImplProps,
 } from "./slides";
@@ -95,12 +102,13 @@ import DRIVE_FOLDER_CONFIGURATOR_HTML from "./generated/drive-folder-configurato
 import GOOGLE_LOGO_SVG from "./google-logo.svg";
 import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS } from "./auth-retry";
+import { Mutex } from "./mutex";
 import {
   BIGQUERY_HOST, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
   GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE,
   GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
   GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE, RESOURCE_BY_KIND,
-  SUPPORTED_RESOURCES,
+  SUPPORTED_RESOURCES, creatableKind, nativeFileUrl,
   grantedResourceUrlPatterns, hasDriveResourceGrant, parseResourceUrl,
   recordedResourceUrlPatterns, type RecordedResourceGrant,
 } from "./resources";
@@ -398,35 +406,29 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
     return SUPPORTED_RESOURCES;
   }
 
+  async createResource(resourceUrlPattern: string, title: string): Promise<{
+    class: DurableObjectClass<Gatekeeper<any>>;
+    resource: SupportedResource;
+    action: ActionDescription;
+  }> {
+    let kind = creatableKind(resourceUrlPattern);
+    let props: SimulatedFileProps = { creation: { title: newFileTitle(title) } };
+    let cls: DurableObjectClass<Gatekeeper<any>>;
+    switch (kind) {
+      case "doc": cls = this.ctx.exports.GoogleDocGatekeeperImpl({props}); break;
+      case "sheets": cls = this.ctx.exports.GoogleSheetsGatekeeperImpl({props}); break;
+      case "slides": cls = this.ctx.exports.GoogleSlidesGatekeeperImpl({props}); break;
+    }
+    let resource = RESOURCE_BY_KIND[kind];
+    return { class: cls, resource, action: creationAction(resource, props.creation.title) };
+  }
+
   async getTypeScriptTypes(): Promise<string> {
     return [
       stripTypeModulePrefix(TYPES_CODE, GMAIL_TYPES_MODULE_PREFIX), getGoogleDocTypesCode(),
       SHEETS_TYPES_CODE, getGoogleSlidesTypesCode(), CALENDAR_TYPES_CODE, BIGQUERY_TYPES_CODE,
       getDriveAgentTypesCode(), CHAT_TYPES_CODE,
     ].join("\n");
-  }
-}
-
-/**
- * Serializes operations against each other, so none observes another's mid-flight state.
- *
- * A promise chain rather than `blockConcurrencyWhile`: that would freeze the whole object for the
- * duration of a fetch, and an exception or a 30s overrun inside it resets the Durable Object. Same
- * pattern as the Slack and Supabase gatekeepers.
- */
-class Mutex {
-  #tail: Promise<void> = Promise.resolve();
-
-  async run<T>(operation: () => Promise<T>): Promise<T> {
-    let previous = this.#tail;
-    let release!: () => void;
-    this.#tail = new Promise(resolve => { release = resolve; });
-    await previous;
-    try {
-      return await operation();
-    } finally {
-      release();
-    }
   }
 }
 
@@ -1037,7 +1039,8 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 //   - Google Chat — strategies A/B: an account binding refuses observers; a conversation or thread
 //     binding checks that the observer can open its conversation.
 // The overseer only ever hands this verifier back to a Google gatekeeper, which may therefore trust
-// the boolean results.
+// the boolean results. Creation uses it too: getUserObjectId names the account a user approved a
+// pending creation into, and applyCreation() creates the file through that account.
 
 type GoogleVerifierProps = {
   userObjectId: string;
@@ -1170,6 +1173,10 @@ export class GoogleVerifier extends WorkerEntrypoint<Env, GoogleVerifierProps>
       allowed: await api.checkObservations(observations),
     };
   }
+
+  async getUserObjectId(): Promise<string> {
+    return this.ctx.props.userObjectId;
+  }
 }
 
 class PendingActionStore<Action> {
@@ -1245,7 +1252,6 @@ class RpcCursor<Entry> extends RpcTarget implements Cursor<Entry> {
 // =======================================================================================
 
 type GoogleDocActionBase = {
-  documentId: string;
   /**
    * The tab this edit targets. Absent only on records stored before tab support, which are
    * invalidated rather than retargeted: the first tab is not necessarily the one they meant.
@@ -1387,7 +1393,7 @@ function isGoogleDocSnapshot(value: unknown): value is GoogleDocSnapshot {
  * confirm the cache.
  */
 async function googleDocRevisionUnchanged(
-  docsApi: GoogleDocsApi,
+  docsApi: GoogleDocReader,
   documentId: string,
   cached: GoogleDocSnapshot,
 ): Promise<boolean> {
@@ -1565,10 +1571,22 @@ function applyMarkdownReplacement(
   };
 }
 
-function appendMarkdownForSimulation(markdown: string, appendedMarkdown: string): string {
+/**
+ * Whether a tab holds nothing but one empty paragraph, as a new document does. An append fills
+ * that paragraph rather than following it, in both the simulation and the write. A paragraph whose
+ * only content renders as nothing (a chip with no label) is protected, so it is not blank. Empty
+ * Markdown counts too: a pending replace that removes a tab's whole content leaves the simulation
+ * empty, while the real tab keeps its final paragraph and so renders as `"\n"`.
+ */
+function isBlankGoogleDocTab({ markdown, protectedRanges }: EditableMarkdown): boolean {
+  return (markdown === "" || markdown === "\n") && protectedRanges.length === 0;
+}
+
+function appendMarkdownForSimulation(content: EditableMarkdown, appendedMarkdown: string): string {
   let terminatedAppend = appendedMarkdown + "\n";
 
-  if (markdown.length === 0) return terminatedAppend;
+  if (isBlankGoogleDocTab(content)) return terminatedAppend;
+  let { markdown } = content;
   return canonicalizeMarkdownReplacement(
     markdown, markdown + (markdown.endsWith("\n") ? "\n" : "\n\n") + terminatedAppend);
 }
@@ -1597,7 +1615,7 @@ function applyGoogleDocActionToContent(
       return {
         ...content,
         markdown: appendMarkdownForSimulation(
-          content.markdown, canonicalizeMarkdownForWrite(action.markdown)),
+          content, canonicalizeMarkdownForWrite(action.markdown)),
       };
     default:
       action satisfies never;
@@ -1717,11 +1735,11 @@ function materializeGoogleDocAction(
 
     case "appendText": {
       let appendIndex = requireGoogleDocAppendIndex(googleDocAppendIndex(tab));
-      return {
-        tab,
-        requests: markdownToDocRequests("\n" + action.markdown, appendIndex, tab.tabId,
-          { resetParagraphs: true, preserveLeadingParagraph: true }),
-      };
+      let requests = isBlankGoogleDocTab(googleDocSimulatedContent(tab))
+        ? markdownToDocRequests(action.markdown, appendIndex, tab.tabId, { resetParagraphs: true })
+        : markdownToDocRequests("\n" + action.markdown, appendIndex, tab.tabId,
+          { resetParagraphs: true, preserveLeadingParagraph: true });
+      return { tab, requests };
     }
 
     default:
@@ -1730,9 +1748,24 @@ function materializeGoogleDocAction(
   }
 }
 
-type GoogleDocGatekeeperImplProps = {
-  userObjectId: string;
-  documentId: string;
+type GoogleDocGatekeeperImplProps = { userObjectId: string; documentId: string } | SimulatedFileProps;
+
+/** The ID of the first tab of a document just created, for the real class to adopt pending edits. */
+const CREATED_DOC_TAB_KEY = "createdDocTab";
+
+/**
+ * Moves the state a simulated document left in storage onto the created one: pending edits to the
+ * blank document's tab target the created document's first tab, and the cached reads of the blank
+ * document are dropped.
+ */
+function adoptBlankDocument(kv: DurableObjectStorage["kv"], tabId: string): void {
+  let pendingActions = new PendingActionStore<GoogleDocAction>(kv);
+  for (let { id, action } of pendingActions.list()) {
+    if (action.tabId === BLANK_DOC_TAB_ID) pendingActions.put(id, { ...action, tabId });
+  }
+  kv.delete(DOC_SNAPSHOT_KEY);
+  kv.delete(DOC_METADATA_REVISION_KEY);
+  kv.delete(CREATED_DOC_TAB_KEY);
 }
 
 // All Google Doc edits (replaceText, appendText, ...) are grouped under a single action kind
@@ -1747,17 +1780,32 @@ export class GoogleDocGatekeeperImpl
     implements Gatekeeper<GoogleDocSession> {
   #simulationCache: GoogleDocSimulationCacheHolder = {};
 
-  // Serialize applying and rejecting actions against each other. Every network await below leaves
-  // the Durable Object's input gate open, and one action id can arrive twice — the overseer marks a
-  // record approved only after applyAction() returns, so two approvals of it both see it pending.
-  // Interleaved, both fetch the document and the loser writes content the winner already committed;
-  // the write marker is no defence, since the winner's cleanup deletes it before the loser looks.
+  // Serialize applying and rejecting actions, and creating the document, against each other. Every
+  // network await below leaves the Durable Object's input gate open, and one action id can arrive
+  // twice — the overseer marks a record approved only after applyAction() returns, so two approvals
+  // of it both see it pending. Interleaved, both fetch the document and the loser writes content the
+  // winner already committed; the write marker is no defence, since the winner's cleanup deletes it
+  // before the loser looks. Two approvals of a creation would likewise create two documents.
   #actions = new Mutex();
   #tokens = new AccessTokenCache(opts => {
     let stub: DurableObjectStub<UserAccount> = this.ctx.exports.UserAccount.get(
-        this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
+        this.ctx.exports.UserAccount.idFromString(this.#bound.userObjectId));
     return stub.getAccessToken(opts);
   });
+
+  constructor(ctx: DurableObjectState<GoogleDocGatekeeperImplProps>, env: Env) {
+    super(ctx, env);
+    // The real class's first start after applyCreation(): take over what the blank document left.
+    let tabId = ctx.storage.kv.get<string>(CREATED_DOC_TAB_KEY);
+    if (tabId !== undefined && !isSimulated(ctx.props)) {
+      ctx.storage.transactionSync(() => adoptBlankDocument(ctx.storage.kv, tabId));
+    }
+  }
+
+  /** The account and document this binding reaches, which a document not yet created has not. */
+  get #bound(): { userObjectId: string; documentId: string } {
+    return boundProps(this.ctx.props, "doc");
+  }
 
   async #getAccessToken(opts?: AccessTokenRequest): Promise<string> {
     return this.#tokens.get(opts);
@@ -1789,9 +1837,10 @@ export class GoogleDocGatekeeperImpl
       return document;
     }
 
-    await api.deleteNamedRange(this.ctx.props.documentId, receipt.markerId);
+    let { documentId } = this.#bound;
+    await api.deleteNamedRange(documentId, receipt.markerId);
     this.#clearDocWriteReceipt(receipt.markerId);
-    return api.getDocument(this.ctx.props.documentId);
+    return api.getDocument(documentId);
   }
 
   /**
@@ -1818,10 +1867,21 @@ export class GoogleDocGatekeeperImpl
   }
 
   async describe(): Promise<ResourceDescription> {
+    let props = this.ctx.props;
+    if (isSimulated(props)) {
+      let { title } = props.creation;
+      return {
+        url: nativeFileUrl("doc"),
+        title,
+        snippet: `Google Doc: ${title} (not created yet)`,
+        suggestedBindingName: "GOOGLE_DOC",
+        tsType: "GoogleDocSession",
+      };
+    }
     let api = new GoogleDocsApi(opts => this.#getAccessToken(opts));
-    let doc = await api.getDocumentMetadata(this.ctx.props.documentId);
+    let doc = await api.getDocumentMetadata(props.documentId);
     return {
-      url: `https://docs.google.com/document/d/${this.ctx.props.documentId}/edit`,
+      url: nativeFileUrl("doc", props.documentId),
       title: doc.title,
       snippet: `Google Doc: ${doc.title}`,
       suggestedBindingName: "GOOGLE_DOC",
@@ -1839,12 +1899,15 @@ export class GoogleDocGatekeeperImpl
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>)
       : Promise<GoogleDocSession> {
-    let api = new GoogleDocsApi(opts => this.#getAccessToken(opts));
+    let props = this.ctx.props;
     let pendingActions = new PendingActionStore<GoogleDocAction>(this.ctx.storage.kv);
+    // A blank document always has a revision, so the session never reaches Drive for one.
     return new GoogleDocSessionImpl(
-        api,
+        isSimulated(props)
+          ? new BlankGoogleDoc(props.creation.title)
+          : new GoogleDocsApi(opts => this.#getAccessToken(opts)),
         new DriveApi(opts => this.#getAccessToken(opts)),
-        this.ctx.props.documentId,
+        isSimulated(props) ? UNCREATED_FILE_ID : props.documentId,
         approvalQueue.dup(),
         pendingActions,
         this.ctx.storage,
@@ -1859,7 +1922,26 @@ export class GoogleDocGatekeeperImpl
     return this.#actions.run(() => this.#rejectAction(actionId));
   }
 
+  async applyCreation(creator: Fetcher<GatekeeperUserVerifier>)
+      : Promise<{class: DurableObjectClass<Gatekeeper<any>>, resourceUrl: string}> {
+    return this.#actions.run(() => this.#applyCreation(creator));
+  }
+
+  async #applyCreation(creator: Fetcher<GatekeeperUserVerifier>)
+      : Promise<{class: DurableObjectClass<Gatekeeper<any>>, resourceUrl: string}> {
+    let { userObjectId, fileId, resourceUrl, getAccessToken: tokens } = await createFileOnce(
+        this.ctx, creator, "doc", (title, getToken) => new GoogleDocsApi(getToken).createDocument(title));
+    // Edits queued against the blank document name its tab, which the created one may not share.
+    let [tab] = (await new GoogleDocsApi(tokens).getDocument(fileId)).tabs;
+    this.ctx.storage.kv.put(CREATED_DOC_TAB_KEY, tab.tabId);
+    return {
+      class: this.ctx.exports.GoogleDocGatekeeperImpl({props: {userObjectId, documentId: fileId}}),
+      resourceUrl,
+    };
+  }
+
   async #applyAction(actionId: number): Promise<void> {
+    let { documentId } = this.#bound;
     let pendingActions = new PendingActionStore<GoogleDocAction>(this.ctx.storage.kv);
     let pending = pendingActions.list();
     let pendingIndex = pending.findIndex(({id}) => id === actionId);
@@ -1887,7 +1969,7 @@ export class GoogleDocGatekeeperImpl
     }
     let writeMarkerName = googleDocWriteMarkerName(action.writeId);
     let api = new GoogleDocsApi(opts => this.#getAccessToken(opts));
-    let doc = await api.getDocument(action.documentId);
+    let doc = await api.getDocument(documentId);
     doc = await this.#reconcileDocWriteReceipt(api, doc);
     let snapshot = googleDocSnapshot(doc);
     let markerIds = [...new Set(googleDocActionTabs(doc.tabs, action.tabId)
@@ -1917,7 +1999,7 @@ export class GoogleDocGatekeeperImpl
       }
       let { tab, requests } = materialized;
       if (requests.length > 0) {
-        let result = await api.batchUpdate(action.documentId, requests, snapshot.revisionId, {
+        let result = await api.batchUpdate(documentId, requests, snapshot.revisionId, {
           name: writeMarkerName,
           rangeStart: tab.bodyEndIndex - 1,
           tabId: tab.tabId,
@@ -1931,7 +2013,7 @@ export class GoogleDocGatekeeperImpl
     if (writeMarkerId) {
       this.#handoffDocWriteReceipt(actionId, writeMarkerId, pendingActions);
       try {
-        await api.deleteNamedRange(action.documentId, writeMarkerId);
+        await api.deleteNamedRange(documentId, writeMarkerId);
         this.#clearDocWriteReceipt(writeMarkerId);
       } catch (error) {
         logger.warn("failed to clean up Google Doc write marker", {
@@ -1946,7 +2028,7 @@ export class GoogleDocGatekeeperImpl
     try {
       let refreshedSnapshot = snapshot;
       if (writeMarkerId) {
-        refreshedSnapshot = googleDocSnapshot(await api.getDocument(action.documentId));
+        refreshedSnapshot = googleDocSnapshot(await api.getDocument(documentId));
       }
       await this.ctx.storage.put(DOC_SNAPSHOT_KEY, refreshedSnapshot);
       invalidateUnreplayableGoogleDocActions(
@@ -1995,7 +2077,7 @@ export class GoogleDocGatekeeperImpl
    */
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     let verifier = user as unknown as Fetcher<GoogleVerifierApi>;
-    if (!(await verifier.hasDocAccess(this.ctx.props.documentId))) {
+    if (!(await verifier.hasDocAccess(this.#bound.documentId))) {
       throw new Error(
         "This collaborator does not have access to the bound Google Doc, so they cannot be allowed " +
         "to observe data this workspace read from it.");
@@ -2007,7 +2089,7 @@ export class GoogleDocGatekeeperImpl
 
 @validateRpc()
 class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
-  #docsApi: GoogleDocsApi;
+  #docsApi: GoogleDocReader;
   #driveApi: DriveApi;
   #documentId: string;
   #approvalQueue: RpcStub<ApprovalQueue>;
@@ -2016,7 +2098,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
   #simulationCache: GoogleDocSimulationCacheHolder;
 
   constructor(
-    docsApi: GoogleDocsApi,
+    docsApi: GoogleDocReader,
     driveApi: DriveApi,
     documentId: string,
     approvalQueue: RpcStub<ApprovalQueue>,
@@ -2246,7 +2328,6 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
 
     let action: GoogleDocAction = {
       type: "replaceText",
-      documentId: this.#documentId,
       tabId: tab.tabId,
       submittedAt: Date.now(),
       markdownVersion: MARKDOWN_RENDERING_VERSION,
@@ -2300,7 +2381,6 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
 
     let action: GoogleDocAction = {
       type: "appendText",
-      documentId: this.#documentId,
       tabId: tab.tabId,
       submittedAt: Date.now(),
       markdownVersion: MARKDOWN_RENDERING_VERSION,
@@ -2342,31 +2422,45 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
 // Google Sheets Gatekeeper
 // =======================================================================================
 
-type GoogleSheetsGatekeeperImplProps = {
-  userObjectId: string;
-  spreadsheetId: string;
-};
+type GoogleSheetsGatekeeperImplProps = { userObjectId: string; spreadsheetId: string } | SimulatedFileProps;
 
 @validateRpc()
 export class GoogleSheetsGatekeeperImpl
     extends DurableObject<Env, GoogleSheetsGatekeeperImplProps>
     implements Gatekeeper<GoogleSpreadsheetSession> {
+  #creating = new Mutex();
   #tokens = new AccessTokenCache(opts => {
     let account = this.ctx.exports.UserAccount.get(
-      this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId),
+      this.ctx.exports.UserAccount.idFromString(this.#bound.userObjectId),
     );
     return account.getAccessToken(opts);
   });
+
+  /** The account and spreadsheet this binding reaches, which a spreadsheet not yet created has not. */
+  get #bound(): { userObjectId: string; spreadsheetId: string } {
+    return boundProps(this.ctx.props, "sheets");
+  }
 
   async #getAccessToken(opts?: AccessTokenRequest): Promise<string> {
     return this.#tokens.get(opts);
   }
 
   async describe(): Promise<ResourceDescription> {
+    let props = this.ctx.props;
+    if (isSimulated(props)) {
+      let { title } = props.creation;
+      return {
+        url: nativeFileUrl("sheets"),
+        title,
+        snippet: `Google Spreadsheet: ${title} (read-only; not created yet)`,
+        suggestedBindingName: "GOOGLE_SHEET",
+        tsType: "GoogleSpreadsheetSession",
+      };
+    }
     let api = new GoogleSheetsApi(opts => this.#getAccessToken(opts));
-    let spreadsheet = await api.getSpreadsheet(this.ctx.props.spreadsheetId);
+    let spreadsheet = await api.getSpreadsheet(props.spreadsheetId);
     return {
-      url: `https://docs.google.com/spreadsheets/d/${this.ctx.props.spreadsheetId}/edit`,
+      url: nativeFileUrl("sheets", props.spreadsheetId),
       title: spreadsheet.title,
       snippet: `Google Spreadsheet: ${spreadsheet.title} (read-only)`,
       suggestedBindingName: "GOOGLE_SHEET",
@@ -2383,13 +2477,29 @@ export class GoogleSheetsGatekeeperImpl
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GoogleSpreadsheetSession> {
-    let api = new GoogleSheetsApi(opts => this.#getAccessToken(opts));
+    let props = this.ctx.props;
     let queue = approvalQueue.dup();
     // A spreadsheet binding's scope is the one spreadsheet, so there is nothing to revalidate.
     return new GoogleSpreadsheetSessionImpl(
-      api, this.ctx.props.spreadsheetId, queue,
+      isSimulated(props)
+        ? new BlankSpreadsheet(props.creation.title)
+        : new GoogleSheetsApi(opts => this.#getAccessToken(opts)),
+      isSimulated(props) ? UNCREATED_FILE_ID : props.spreadsheetId,
+      queue,
       unguardedNativeRead(description => queue.authorizeObservation(description)),
     );
+  }
+
+  async applyCreation(creator: Fetcher<GatekeeperUserVerifier>)
+      : Promise<{class: DurableObjectClass<Gatekeeper<any>>, resourceUrl: string}> {
+    return this.#creating.run(async () => {
+      let { userObjectId, fileId, resourceUrl } = await createFileOnce(this.ctx, creator, "sheets",
+          (title, tokens) => new GoogleSheetsApi(tokens).createSpreadsheet(title));
+      return {
+        class: this.ctx.exports.GoogleSheetsGatekeeperImpl({props: {userObjectId, spreadsheetId: fileId}}),
+        resourceUrl,
+      };
+    });
   }
 
   /** Read-only — no side-effecting actions. */
@@ -2410,7 +2520,7 @@ export class GoogleSheetsGatekeeperImpl
    */
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     let verifier = user as unknown as Fetcher<GoogleVerifierApi>;
-    if (!(await verifier.hasSpreadsheetAccess(this.ctx.props.spreadsheetId))) {
+    if (!(await verifier.hasSpreadsheetAccess(this.#bound.spreadsheetId))) {
       throw new Error(
         "This collaborator does not have access to the bound Google spreadsheet, so they cannot " +
         "observe data this workspace read from it.",
@@ -2423,13 +2533,13 @@ export class GoogleSheetsGatekeeperImpl
 
 @validateRpc()
 class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpreadsheetSession {
-  #api: GoogleSheetsApi;
+  #api: SpreadsheetReader;
   #spreadsheetId: string;
   #approvalQueue: RpcStub<ApprovalQueue>;
   #read: NativeRead;
 
   constructor(
-    api: GoogleSheetsApi,
+    api: SpreadsheetReader,
     spreadsheetId: string,
     approvalQueue: RpcStub<ApprovalQueue>,
     read: NativeRead,

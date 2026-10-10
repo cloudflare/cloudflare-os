@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { unguardedNativeRead, type NativeRead } from "../../src/drive-session";
 import { GoogleSlidesApi } from "../../src/slides-api";
 import { GooglePresentationSessionImpl } from "../../src/slides";
+import type { QueuedChange } from "../../src/slides-simulation";
 import { presentation, shape, slide, text } from "../slides-fixture";
 
 class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
@@ -83,14 +84,17 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-/** `wrap` stands in for a scope-checking read, such as a Drive folder binding's, around the base. */
-function newSession(wrap: (read: NativeRead) => NativeRead = read => read) {
+/**
+ * `wrap` stands in for a scope-checking read, such as a Drive folder binding's, around the base;
+ * `pending` are the changes reads show as queued.
+ */
+function newSession(wrap: (read: NativeRead) => NativeRead = read => read, pending: QueuedChange[] = []) {
   let queue = new TestApprovalQueue();
   let queueStub: RpcStub<ApprovalQueue> = new RpcStub(queue);
   let session = new RpcStub(new GooglePresentationSessionImpl(
     new GoogleSlidesApi(async () => "access-token"), "deck-1", queueStub,
     wrap(unguardedNativeRead(description => queueStub.authorizeObservation(description))),
-    { snapshot: read => read([]), queue: () => Promise.reject(new Error("Unexpected change")) },
+    { snapshot: read => read(pending), queue: () => Promise.reject(new Error("Unexpected change")) },
   ));
   return { queue, session };
 }
@@ -145,6 +149,29 @@ describe("Google Slides presentation session", () => {
     await expect(Promise.resolve(session.getSlides(ids))).rejects.toThrow("Request fewer");
     expect(await session.getSlides(ids.slice(0, 4))).toHaveLength(4);
     expect(await session.getSlides(ids.slice(4))).toHaveLength(1);
+  });
+
+  it("reads a queued new slide from replay alone, skips it as queued, and does not render it", async () => {
+    let { session } = newSession(undefined, [
+      { id: 1, action: { kind: "createSlide", payload: {
+        newSlideId: "new", layoutId: "layout-title", layout: "Title slide", after: "s1",
+        placeholders: [{ objectId: "new-title", type: "CENTERED_TITLE", index: 0, parentObjectId: "lt-title" }],
+      } } },
+      { id: 2, action: { kind: "skipSlides", payload: { slideIds: ["new", "s2"], skipped: true, slides: [] } } },
+    ]);
+    using _session = session;
+
+    let [created] = await session.getSlides(["new"]);
+
+    expect(created).toMatchObject({
+      id: "new", index: 1, layout: "Title slide", skipped: true, speakerNotes: "",
+      elements: [{ id: "new-title", placeholder: "CENTERED_TITLE", text: "" }],
+    });
+    expect(providerFetches.filter(url => url.pathname.includes("/pages/"))).toEqual([]);
+    expect((await session.getPresentation()).slides.map(s => [s.id, s.index, s.skipped]))
+      .toEqual([["s1", 0, false], ["new", 1, true], ["s2", 2, true]]);
+    await expect(Promise.resolve(session.getSlideThumbnail("new")))
+      .rejects.toThrow('Slide "new" is a new slide awaiting approval');
   });
 
   describe("getSlideThumbnail", () => {

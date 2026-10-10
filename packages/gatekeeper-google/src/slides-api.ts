@@ -1,6 +1,10 @@
 import { readBytesCapped, ResponseTooLargeError } from "@gadgets/gatekeeper-kit/response-body";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import { readGoogleJson } from "./google-response";
+import {
+  LAYOUT_PAGE_FIELDS, OUTLINE_FIELDS, SLIDE_FIELDS, SUMMARY_FIELDS,
+} from "./slides-fields";
+import BLANK_RECORDING from "./blank-presentation.json";
 
 const API_BASE = "https://slides.googleapis.com/v1/presentations";
 // 10 MiB matches the Docs bound for a document body.
@@ -8,24 +12,6 @@ const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 // A slide is read on its own; a text-heavy live slide is about 50 KiB with all its styles.
 const MAX_SLIDE_BYTES = 2 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
-
-// Replaying a queued change needs an AutoText's width, which only the indices give, and its type.
-const TEXT_FIELDS =
-  "text(textElements(startIndex,endIndex,textRun(content),autoText(type,content)))";
-const LAYOUT_FIELDS = "layouts(objectId,layoutProperties(displayName))";
-// Summaries need titles and speaker notes, which a mask can only reach as every shape's text.
-// Styles and geometry, most of a deck's JSON, are left out: 65 KiB for a live 16-slide deck,
-// against 780 KiB with them.
-const SUMMARY_FIELDS =
-  `presentationId,title,locale,pageSize,${LAYOUT_FIELDS},` +
-  `slides(objectId,pageElements(objectId,shape(placeholder(type),${TEXT_FIELDS})),` +
-  "slideProperties(layoutObjectId,isSkipped,notesPage(notesProperties(speakerNotesObjectId)," +
-  `pageElements(objectId,shape(${TEXT_FIELDS})))))`;
-// Google returns `revisionId` only to an account that can edit the presentation.
-const OUTLINE_FIELDS = `presentationId,title,revisionId,${LAYOUT_FIELDS},slides(objectId)`;
-const SLIDE_FIELDS =
-  "objectId,pageElements," +
-  "slideProperties(layoutObjectId,isSkipped,notesPage(notesProperties,pageElements))";
 
 // A thumbnail response is a URL and two numbers.
 const MAX_THUMBNAIL_RESPONSE_BYTES = 16 * 1024;
@@ -122,6 +108,33 @@ export type RestTableCellProperties = {
   contentAlignment?: string;
 };
 
+/** A `TableCellLocation`; Google omits a zero index. */
+export type RestCellLocation = { rowIndex?: number; columnIndex?: number };
+
+/** A cell edge's `TableBorderProperties`. */
+export type RestBorderProperties = {
+  tableBorderFill?: { solidFill?: RestSolidFill }; weight?: RestDimension; dashStyle?: string;
+};
+
+/** One row of a table's cell edges: the edges along one line of the grid. */
+export type RestBorderRow = {
+  tableBorderCells?: { location?: RestCellLocation; tableBorderProperties?: RestBorderProperties }[];
+};
+
+/** The end of a line attached to an element's connection site. */
+export type RestLineConnection = { connectedObjectId?: string; connectionSiteIndex?: number };
+
+/** A line's `LineProperties`, as far as the gatekeeper reads them. */
+export type RestLineProperties = {
+  lineFill?: { solidFill?: RestSolidFill };
+  weight?: RestDimension;
+  dashStyle?: string;
+  startArrow?: string;
+  endArrow?: string;
+  startConnection?: RestLineConnection;
+  endConnection?: RestLineConnection;
+};
+
 /** A `PageElement`, as far as the gatekeeper reads one. */
 export type RestPageElement = {
   objectId?: string;
@@ -131,31 +144,40 @@ export type RestPageElement = {
   description?: string;
   shape?: {
     shapeType?: string;
-    placeholder?: { type?: string };
+    /** Google omits `index` when it is 0; `parentObjectId` is the layout placeholder it inherits from. */
+    placeholder?: { type?: string; index?: number; parentObjectId?: string };
     text?: RestText;
     shapeProperties?: RestShapeProperties;
   };
   table?: {
     rows?: number;
     columns?: number;
+    tableColumns?: { columnWidth?: RestDimension }[];
     tableRows?: {
+      rowHeight?: RestDimension;
       tableCells?: {
-        location?: { rowIndex?: number; columnIndex?: number };
+        location?: RestCellLocation;
         rowSpan?: number;
         columnSpan?: number;
         text?: RestText;
         tableCellProperties?: RestTableCellProperties;
       }[];
     }[];
+    horizontalBorderRows?: RestBorderRow[];
+    verticalBorderRows?: RestBorderRow[];
   };
   elementGroup?: { children?: RestPageElement[] };
-  image?: unknown;
-  video?: unknown;
-  line?: unknown;
-  sheetsChart?: unknown;
+  /** `contentUrl`, on images and charts, is a bearer URL, so it is never read. */
+  image?: { sourceUrl?: string };
+  video?: { source?: string; id?: string; url?: string };
+  line?: { lineCategory?: string; lineProperties?: RestLineProperties };
+  sheetsChart?: { spreadsheetId?: string; chartId?: number };
   wordArt?: { renderedText?: string };
   speakerSpotlight?: unknown;
 };
+
+/** A `Page` of any kind, as far as its elements. */
+export type RestPage = { objectId?: string; pageElements?: RestPageElement[] };
 
 /** A slide `Page`. */
 export type RestSlide = {
@@ -163,6 +185,7 @@ export type RestSlide = {
   pageElements?: RestPageElement[];
   slideProperties?: {
     layoutObjectId?: string;
+    masterObjectId?: string;
     isSkipped?: boolean;
     notesPage?: {
       notesProperties?: { speakerNotesObjectId?: string };
@@ -178,7 +201,12 @@ export type RestPresentation = {
   locale?: string;
   revisionId?: string;
   pageSize?: { width?: RestDimension; height?: RestDimension };
-  layouts?: { objectId?: string; layoutProperties?: { displayName?: string } }[];
+  masters?: { objectId?: string }[];
+  layouts?: {
+    objectId?: string;
+    layoutProperties?: { displayName?: string; masterObjectId?: string };
+    pageElements?: RestPageElement[];
+  }[];
   slides?: RestSlide[];
 };
 
@@ -223,15 +251,34 @@ function pagePath(presentationId: string, pageId: string): string {
 export class GoogleSlidesApi {
   constructor(private getAccessToken: AccessTokenProvider) {}
 
+  async #send<T>(url: URL, init: RequestInit, operation: string, maxBytes: number): Promise<T> {
+    let response = await fetchWithAuthRetry(
+      url.toString(), init, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
+    );
+    return readGoogleJson<T>(response, { provider: "Google Slides", operation, maxBytes });
+  }
+
   async #get<T>(
     path: string, params: Record<string, string>, operation: string, maxBytes = MAX_RESPONSE_BYTES,
   ): Promise<T> {
     let url = new URL(`${API_BASE}/${path}`);
     for (let [name, value] of Object.entries(params)) url.searchParams.set(name, value);
-    let response = await fetchWithAuthRetry(
-      url.toString(), {}, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
-    );
-    return readGoogleJson<T>(response, { provider: "Google Slides", operation, maxBytes });
+    return this.#send<T>(url, {}, operation, maxBytes);
+  }
+
+  /** Create a presentation titled `title` in the caller's My Drive, returning its ID. */
+  async createPresentation(title: string): Promise<string> {
+    let url = new URL(API_BASE);
+    url.searchParams.set("fields", "presentationId");
+    let { presentationId } = await this.#send<{ presentationId?: unknown }>(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    }, "create presentation", MAX_RESPONSE_BYTES);
+    if (typeof presentationId !== "string" || presentationId.length === 0) {
+      throw new Error("Google Slides returned no presentation ID");
+    }
+    return presentationId;
   }
 
   async #presentation(
@@ -266,6 +313,14 @@ export class GoogleSlidesApi {
       pagePath(presentationId, slideId), { fields: SLIDE_FIELDS }, "get slide", MAX_SLIDE_BYTES);
     if (slide.objectId !== slideId) throw new Error("Google Slides returned a different slide");
     return slide;
+  }
+
+  /** Fetch a layout's placeholders, as far as a slide made from it takes them. */
+  async getLayout(presentationId: string, layoutId: string): Promise<RestPage> {
+    let layout = await this.#get<RestPage>(
+      pagePath(presentationId, layoutId), { fields: LAYOUT_PAGE_FIELDS }, "get layout", MAX_SLIDE_BYTES);
+    if (layout.objectId !== layoutId) throw new Error("Google Slides returned a different layout");
+    return layout;
   }
 
   /** Fetch full pages of the slides among `ids` that `order`, the deck's slide IDs, still has. */
@@ -329,5 +384,63 @@ export class GoogleSlidesApi {
     }).catch((error: unknown) => error);
     let refused = response.status >= 400 && response.status < 500;
     throw refused ? new SlidesWriteRefused(response.status) : failure;
+  }
+}
+
+/** The reads a presentation session makes. */
+export type PresentationReader = Pick<
+  GoogleSlidesApi, "getPresentation" | "getOutline" | "getSlides" | "getLayout" | "getThumbnail">;
+
+/**
+ * What a presentation session reads of a new presentation, as `scripts/record-blank-presentation.ts`
+ * recorded it from Google: each read less the presentation's ID, title and revision, and each page
+ * by its ID.
+ */
+type BlankRecording = {
+  presentation: Omit<RestPresentation, "presentationId">;
+  outline: Omit<RestPresentation, "presentationId">;
+  slides: Record<string, RestSlide>;
+  layouts: Record<string, RestPage>;
+};
+
+const BLANK = BLANK_RECORDING as BlankRecording;
+// A change applies against a fresh read of the created presentation, so this never reaches Google.
+const BLANK_REVISION = "blank";
+
+/**
+ * A presentation not yet created, read as the recording of a new one: the title slide and default
+ * layouts Google gives every new presentation, under the same object IDs, so a change queued against
+ * it applies unchanged to the presentation a user's approval creates. Makes no request. Each read
+ * is a copy, since one recording serves every session in the isolate.
+ */
+export class BlankPresentation implements PresentationReader {
+  constructor(private title: string) {}
+
+  async getPresentation(presentationId: string): Promise<RestPresentation> {
+    return { ...structuredClone(BLANK.presentation), presentationId, title: this.title };
+  }
+
+  /** With a revision, as Google reports one to the account that creates, and so can edit, it. */
+  async getOutline(presentationId: string): Promise<RestPresentation> {
+    return {
+      ...structuredClone(BLANK.outline), presentationId, title: this.title, revisionId: BLANK_REVISION,
+    };
+  }
+
+  async getSlides(
+    _presentationId: string, ids: Iterable<string>, order: readonly string[],
+  ): Promise<Map<string, RestSlide>> {
+    return new Map([...ids].filter(id => order.includes(id) && Object.hasOwn(BLANK.slides, id))
+      .map(id => [id, structuredClone(BLANK.slides[id])]));
+  }
+
+  async getLayout(_presentationId: string, layoutId: string): Promise<RestPage> {
+    if (!Object.hasOwn(BLANK.layouts, layoutId)) throw new Error("A new presentation has no such layout.");
+    return structuredClone(BLANK.layouts[layoutId]);
+  }
+
+  async getThumbnail(): Promise<PageThumbnail> {
+    throw new Error("This Google Slides presentation doesn't exist yet, so its slides can't be " +
+      "rendered until a user approves its creation.");
   }
 }
