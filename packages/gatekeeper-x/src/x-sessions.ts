@@ -273,18 +273,23 @@ export async function readUser(host: XSessionHost, target: UserTarget): Promise<
   return requireData(envelope, "user");
 }
 
-async function readList(ctx: SessionContext, id: string): Promise<XListInfo> {
+/**
+ * A List with pending actions replayed, and whether reading it is private to the account: X says
+ * the List is private, or a pending change makes it so. A pending change to public lifts nothing,
+ * since the List stays private on X until that change is approved.
+ */
+async function readList(ctx: SessionContext, id: string): Promise<{ info: XListInfo; restricted: boolean }> {
   const { host } = ctx;
   const resolved = host.resolve(id);
   if (isProvisional(resolved)) {
     const pending = pendingList(resolved, host.pending(), ref => host.resolve(ref));
     if (!pending) throw new Error("No pending List has this temporary ID; it may have been rejected.");
-    return pending;
+    return { info: pending, restricted: pending.private };
   }
   const info = await fetchList(host, resolved);
   const visible = overlayList(info, host.pending(), ref => host.resolve(ref));
   if (!visible) throw new Error("This List has been deleted.");
-  return visible;
+  return { info: visible, restricted: info.private || visible.private };
 }
 
 /** Captures a draft's images for the action that will upload them once approved. */
@@ -642,17 +647,17 @@ export class XListImpl extends RpcTarget implements XList {
   }
 
   async getInfo(): Promise<XListInfo> {
-    const info = await readList(this.#ctx, this.#id);
+    const { info, restricted } = await readList(this.#ctx, this.#id);
     await this.#ctx.gate.authorize({
       title: "Read an X List",
       description: `Read the List "${escapeObservationValue(info.name)}".`,
-    }, info.private ? OWNER : BASELINE);
+    }, restricted ? OWNER : BASELINE);
     return info;
   }
 
   async listPosts(options?: XPageOptions): Promise<Cursor<XPostInfo>> {
     const size = pageSize(options);
-    const list = await readList(this.#ctx, this.#id);
+    const { info: list, restricted } = await readList(this.#ctx, this.#id);
     const id = this.#ctx.host.resolve(this.#id);
     if (isProvisional(id)) return pendingCursor([]);
     const name = escapeObservationValue(list.name);
@@ -662,7 +667,7 @@ export class XListImpl extends RpcTarget implements XList {
       }),
       overlay: { kind: "others" },
       newestFirst: false,
-      privateSource: list.private,
+      privateSource: restricted,
       title: "Read an X List's posts",
       describe: count => `Read ${countOf(count, "post")} from the List "${name}".`,
       cacheKey: `list-posts:${id}`,
@@ -671,7 +676,7 @@ export class XListImpl extends RpcTarget implements XList {
 
   async listMembers(options?: XPageOptions): Promise<Cursor<XUserInfo>> {
     const size = pageSize(options);
-    const list = await readList(this.#ctx, this.#id);
+    const { info: list, restricted } = await readList(this.#ctx, this.#id);
     const id = this.#ctx.host.resolve(this.#id);
     const name = escapeObservationValue(list.name);
     const { host } = this.#ctx;
@@ -688,7 +693,7 @@ export class XListImpl extends RpcTarget implements XList {
       }),
       relationship: false,
       overlay: (users, newestPage) => overlayMembers(users, host.pending(), id, ref => host.resolve(ref), newestPage),
-      privateSource: () => list.private,
+      privateSource: () => restricted,
       title: "Read an X List's members",
       describe: count => `Read ${countOf(count, "member")} of the List "${name}".`,
     });
@@ -725,7 +730,7 @@ export class XListImpl extends RpcTarget implements XList {
 
   /** The List an action targets, which the connected account must own: not an observation. */
   async #owned(): Promise<{ id: string; info: XListInfo }> {
-    const info = await readList(this.#ctx, this.#id);
+    const { info } = await readList(this.#ctx, this.#id);
     if (info.owner.id !== (await this.#ctx.host.me()).id) {
       throw new Error("Only Lists the connected account owns can be changed.");
     }
@@ -884,13 +889,14 @@ export class XAccountSessionImpl extends RpcTarget implements XAccountSession {
           ...LIST_FIELDS, ...pageQuery(size, token, { min: 1, max: 100 }),
         }));
         const includes = indexIncludes(envelope.includes);
-        const items = overlayOwnedLists((envelope.data ?? []).map(list => toListInfo(list, includes)),
-          host.pending(), ref => host.resolve(ref), token === undefined);
+        const fetched = (envelope.data ?? []).map(list => toListInfo(list, includes));
+        const items = overlayOwnedLists(fetched, host.pending(), ref => host.resolve(ref), token === undefined);
         return {
           items,
           nextToken: envelope.meta?.next_token,
           observation: { title: "List owned X Lists", description: `Read ${countOf(items.length, "owned List")}.` },
-          scope: items.some(list => list.private) ? OWNER : BASELINE,
+          // As `readList`: what X says is private stays so, whatever a pending change would make it.
+          scope: [...fetched, ...items].some(list => list.private) ? OWNER : BASELINE,
         } satisfies XPage<XListInfo>;
       },
       authorize: page => gate.authorize(page.observation, page.scope),
