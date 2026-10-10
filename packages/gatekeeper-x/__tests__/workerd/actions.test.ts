@@ -343,6 +343,24 @@ describe("Lists", () => {
     expect(await t.run([["getList", "~1"], ["getInfo"]])).toMatchObject({ id: lists[0].id });
   });
 
+  it("never binds a List just like it that was there before the first create", async () => {
+    const t = await setup();
+    t.x.lists.set("6", { id: "6", name: "Friends", private: false, owner_id: ALICE.id, created_at: new Date().toISOString() });
+    await t.run([["createList", "Friends"]]);
+    let failed = false;
+    t.x.on("POST", /^\/2\/lists$/, () => {
+      if (failed) return undefined;
+      failed = true;
+      return new Response("upstream error", { status: 503 });
+    });
+    const [{ actionId }] = await t.submitted();
+    expect(failure(await t.apply(actionId))).toMatch(/did not confirm whether this List was created/);
+    unwrap(await t.apply(actionId));
+    expect([...t.x.lists.keys()]).toHaveLength(2);
+    unwrap(await t.revert(actionId));
+    expect([...t.x.lists.keys()]).toEqual(["6"]);
+  });
+
   it("won't let a List X may have created be rejected, and creates it on the next approval if it didn't", async () => {
     const t = await setup();
     // A List of the same name from long ago is not the one this action created.

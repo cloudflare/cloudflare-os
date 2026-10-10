@@ -284,6 +284,7 @@ async function readPost(ctx: SessionContext, id: string): Promise<PostRead> {
   if (isProvisional(resolved)) {
     const pending = pendingPost(resolved, host.pending(), await host.me(), ref => host.resolve(ref));
     if (!pending) throw new Error("No pending post has this temporary ID; it may have been rejected.");
+    if (!overlayPost(pending, host.pending(), ref => host.resolve(ref))) throw new Error("This post has been deleted.");
     // The account's own draft: its author is the connected account, whose privacy is known.
     return { info: pending, unverified: false };
   }
