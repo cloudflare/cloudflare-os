@@ -1,0 +1,25 @@
+packages/gatekeeper-google/__tests__/workerd/chat-hooks.test.ts
+  s_74eb0b1cbb84f7::t_e9036c7e28a8de 366-384
+packages/gatekeeper-google/__tests__/workerd/gmail-hooks.test.ts
+  s_74eb0b1cbb84f7::t_d722404f910cfa 470-487
+packages/gatekeeper-google/src/chat-hooks.ts
+  s_74eb0b1cbb84f7::t_2640f313e81fe3 94-95,109,135,166,191-210
+packages/gatekeeper-google/src/gmail-hooks.ts
+  s_74eb0b1cbb84f7::t_b21ecdb89e683e 112-113,123-126,155,182,205,337-356
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bba34bca9807058ff2f68c78aa15f0f7771295e9",
+  "prompts": {},
+  "sessions": {
+    "s_74eb0b1cbb84f7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_edf458c69ffepVeVZFxEZXzOIj",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
