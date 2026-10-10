@@ -173,6 +173,41 @@ describe("resourceUrlPatternsToOAuthScopes", () => {
     ]);
   });
 
+  it("asks a directly bound spreadsheet for the Sheets write scope", () => {
+    expect(resourceUrlPatternsToOAuthScopes([GOOGLE_SHEETS_RESOURCE.urlPattern])).toEqual([
+      ...IDENTITY_SCOPES,
+      "https://www.googleapis.com/auth/spreadsheets",
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+    ]);
+  });
+
+  // A direct Sheets binding writes, so a connection holding only spreadsheets.readonly must read
+  // as ungranted, and the Workshop prompts for the wider scope, while a reconnect still asks for
+  // the resource it recorded.
+  it("re-prompts a direct Sheets grant that holds only spreadsheets.readonly", () => {
+    const grant = {
+      resourceUrlPatterns: [GOOGLE_SHEETS_RESOURCE.urlPattern],
+      oauthScopes: [
+        ...IDENTITY_SCOPES,
+        "https://www.googleapis.com/auth/spreadsheets.readonly",
+        "https://www.googleapis.com/auth/drive.metadata.readonly",
+      ],
+    };
+    expect(grantedResourceUrlPatterns(grant)).toEqual([]);
+    expect(recordedResourceUrlPatterns(grant)).toEqual([GOOGLE_SHEETS_RESOURCE.urlPattern]);
+  });
+
+  // Drive resources only read spreadsheets, so the direct Sheets binding's wider scope covers them.
+  it("covers a Drive resource's spreadsheets.readonly with a spreadsheets grant", () => {
+    expect(resourcesCoveredByScopes([GOOGLE_DRIVE_FILE_RESOURCE.urlPattern], [
+      ...IDENTITY_SCOPES,
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/documents.readonly",
+      "https://www.googleapis.com/auth/spreadsheets",
+      "https://www.googleapis.com/auth/presentations.readonly",
+    ])).toEqual([GOOGLE_DRIVE_FILE_RESOURCE.urlPattern]);
+  });
+
   it("requires account and file grants to expand beyond metadata-only consent", () => {
     const drivePatterns = [
       GOOGLE_DRIVE_RESOURCE.urlPattern,
