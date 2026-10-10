@@ -867,6 +867,8 @@ export class XAccountSessionImpl extends RpcTarget implements XAccountSession {
       }),
       overlay: { kind: "others" },
       newestFirst: newestFirst(options),
+      // Whose posts it shows is whom the account follows, private to a protected account.
+      privateSource: async () => (await this.#ctx.host.me()).protected,
       title: "Read the X home timeline",
       describe: count => `Read ${countOf(count, "post")} from the home timeline.`,
       cacheKey: `home:${JSON.stringify(query)}`,
