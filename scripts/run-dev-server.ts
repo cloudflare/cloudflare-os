@@ -7,6 +7,7 @@
 //   --use-workers-ai-binding   Include the Workers AI binding in
 //                               workshop-backend (requires Cloudflare login).
 //   --port PORT                 Listen on PORT instead of 8787. Overrides VITE_BACKEND_HOST.
+//   --generate-only            Generate all wrangler.dev.jsonc files and exit.
 //
 // Env:
 //   VITE_BACKEND_HOST=localhost:9000  Also pass --port 9000 to wrangler dev.
@@ -599,6 +600,10 @@ for (const gk of gatekeepers) {
   const outPath = join(ROOT, "packages", "workshop-backend", "wrangler.dev.jsonc");
   writeFileSync(outPath, JSON.stringify(config, null, 2) + "\n");
   console.log(`generated: ${outPath}`);
+}
+
+if (process.argv.includes("--generate-only")) {
+  process.exit(0);
 }
 
 // ---------------------------------------------------------------------------
