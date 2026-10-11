@@ -348,6 +348,18 @@ describe("Sheets formulas through steps that cannot change them", () => {
     expect(tokenize).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps text that holds the characters it sets references aside with", () => {
+    let literal = '=IF(TRUE,"\uE000\uE100\uE001",A1)';
+    expect(formulaAt(g, 0, literal, 0).text).toBe(literal);
+    expect(formulaAt(g, 2, literal, 0).text).toBe('=IF(TRUE,"\uE000\uE100\uE001",A51)');
+    // A reference to a sheet the formula names before it exists is set aside, and the text kept.
+    let early = replayed(gridOf({ sheets }), [queued(1, [
+      { op: "addSheet", sheetId: 9, title: "Q4", index: 3, rowCount: 1, columnCount: 1 },
+      insertRows(2, 1),
+    ])]);
+    expect(formulaAt(early, 2, "=Q4!A1+A1", 0)).toEqual({ text: "=Q4!A1+A2", cellsChanged: false, broken: true });
+  });
+
   it("rewrites through every step on the sheet a formula is on, or one it names", () => {
     expect(formulaAt(g, 2, "=A1", 0).text).toBe("=A51");
     expect(rewriteFormula).toHaveBeenCalledTimes(50);

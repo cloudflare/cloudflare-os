@@ -419,9 +419,11 @@ export function formulaAt(grid: Grid, sheetId: number, formula: string, from: nu
       broken: result.broken || rewritten.broken || frozen.length > before || unfreezable,
     };
   }
+  // A formula holding the placeholders' characters itself has none set aside, so its text stands.
+  if (frozen.length === 0) return result;
   return {
     ...result,
-    text: result.text.replace(FROZEN, (_, index: string) => frozen[index.charCodeAt(0) - FROZEN_INDEX]),
+    text: result.text.replace(FROZEN, (match, index: string) => frozen[index.charCodeAt(0) - FROZEN_INDEX] ?? match),
   };
 }
 
