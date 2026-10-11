@@ -1170,6 +1170,10 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     let read = await sheets.read("Sales!A51:A2050", "formula");
     expect(read.values[0]).toEqual(["=B51*2"]);
     expect(read.values.at(-1)).toEqual(["=B2050*2"]);
+    // A formula is rewritten for each range showing it, so asking twice counts twice.
+    expect((await sheets.call("readRanges", ["Sales!A51:A1150", "Sales!A51:A1150"])).error)
+      .toContain("These ranges hold too many formulas");
+    expect((await sheets.call("readRanges", ["Sales!A51:A1150"])).error).toBeUndefined();
 
     expect((await sheets.call("updateSpreadsheet", [{ op: "clearRange", range: "Sales!A51:A2150" }])).error).toBe(
       "These changes overwrite or delete too many formulas that the queued changes to rows, columns and " +

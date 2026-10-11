@@ -461,20 +461,32 @@ export const MAX_READ_CELLS = 50_000;
 export const MAX_FORMULA_REWRITES = 100_000;
 
 /**
- * How many formula rewrites showing `entered`, what Google holds in a read's or guard's cells, may
- * take in `grid`: its formulas and those queued on `sheetIds`, each once for every step of the log.
+ * How many formula rewrites showing `areas` of `grid` takes, from `entered`, what Google holds in
+ * the cells `basePiecesOf` gives for them: each formula an area shows, Google's or queued, once for
+ * every step of the log, and again for every other area showing it.
  */
 export function formulaRewrites(
-  grid: Grid, sheetIds: readonly number[], entered: readonly (readonly (readonly EnteredValue[])[])[],
+  grid: Grid, areas: readonly { sheetId: number; rect: Rect }[], entered: BaseCells<EnteredValue>,
 ): number {
   if (grid.log.length === 0) return 0;
   let formulas = 0;
-  for (let piece of entered) {
-    for (let row of piece) for (let value of row) if (holdsFormula(value)) formulas++;
-  }
-  let sheets = new Set(sheetIds);
-  for (let [key, entry] of grid.cells) {
-    if (isFormula(entry.input) && sheets.has(Number(key.slice(0, key.indexOf(":"))))) formulas++;
+  for (let { sheetId, rect } of areas) {
+    let sheet = sheetOf(grid, sheetId);
+    let columns = linesAt(sheet.columns, rect.startColumn, rect.endColumn);
+    for (let row of linesAt(sheet.rows, rect.startRow, rect.endRow)) {
+      for (let column of columns) {
+        if (row === undefined || column === undefined) continue;
+        let entry = grid.cells.get(cellKey(sheet.id, row, column));
+        if (entry) {
+          if (isFormula(entry.input)) formulas++;
+          continue;
+        }
+        let baseRow = baseIndexOf(row);
+        let baseColumn = baseIndexOf(column);
+        if (sheet.source === undefined || baseRow === undefined || baseColumn === undefined) continue;
+        if (holdsFormula(entered(sheet.source, baseRow, baseColumn))) formulas++;
+      }
+    }
   }
   return formulas * grid.log.length;
 }

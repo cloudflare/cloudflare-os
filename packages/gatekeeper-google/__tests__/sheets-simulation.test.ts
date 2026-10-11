@@ -296,17 +296,22 @@ describe("Sheets formulas through steps that cannot change them", () => {
   let g = replayed(gridOf({ sheets }), [queued(1, Array.from({ length: 50 }, () => insertRows(2, 1)))]);
   let formula = "=SUM(A1:B2)+Sales!C3*'S1'!A1";
 
-  it("counts each formula a read shows, and each queued on the sheets read, once per step of the log", () => {
-    let entered: EnteredValue[][][] = [[[{ formula: "=A1" }, "=text", 3], [null, { formula: "=B2" }, { error: "REF" }]]];
-    expect(formulaRewrites(gridOf({ sheets }), [0], entered)).toBe(0);
+  it("counts each formula an area shows once per step of the log, and again for each area showing it", () => {
+    let piece = { sheetId: 0, rect: rect(0, 0, 2, 3) };
+    let entered = baseValues<EnteredValue>([piece], [
+      [[{ formula: "=A1" }, "=text", 3], [null, { formula: "=B2" }, { error: "REF" }]],
+    ]);
+    let sales = { sheetId: 0, rect: rect(0, 0, 3, 3) };
+    expect(formulaRewrites(gridOf({ sheets }), [sales], entered)).toBe(0);
     let moved = replayed(gridOf({ sheets }), [
       queued(1, [insertRows(0, 1), insertRows(2, 1)]),
       queued(2, [{ op: "writeCells", sheetId: 0, rect: rect(0, 0, 1, 2), values: [["=C1", "x"]] }]),
       queued(3, [{ op: "writeCells", sheetId: 2, rect: rect(0, 0), values: [["=D1"]] }]),
     ]);
-    // Two formulas Google holds and one queued on Sales, through two steps.
-    expect(formulaRewrites(moved, [0], entered)).toBe(6);
-    expect(formulaRewrites(moved, [0, 2], entered)).toBe(8);
+    // The formula queued in the inserted row 1, and Google's two, moved down to A2 and B3.
+    expect(formulaRewrites(moved, [sales], entered)).toBe(6);
+    expect(formulaRewrites(moved, [sales, sales], entered)).toBe(12);
+    expect(formulaRewrites(moved, [sales, { sheetId: 2, rect: rect(0, 0) }], entered)).toBe(8);
   });
 
   beforeEach(() => {

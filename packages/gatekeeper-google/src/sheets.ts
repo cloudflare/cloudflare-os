@@ -454,11 +454,11 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
       this.#api.readEntered(this.#spreadsheetId, pieces),
       this.#api.readAreas(this.#spreadsheetId, pieces, mode),
     ]);
-    if (formulaRewrites(grid, areas.map(area => area.sheetId), entered) > MAX_FORMULA_REWRITES) {
+    let base = { entered: baseValues(pieces, entered), shown: baseValues(pieces, shown) };
+    if (formulaRewrites(grid, areas, base.entered) > MAX_FORMULA_REWRITES) {
       throw new Error("These ranges hold too many formulas to read with the queued changes to rows, " +
         "columns and sheets applied. Read fewer cells, or approve or reject the queued changes first.");
     }
-    let base = { entered: baseValues(pieces, entered), shown: baseValues(pieces, shown) };
     return areas.map(area => simulatedRange(grid, area, base, mode));
   }
 
@@ -523,8 +523,8 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
           // What the batch overwrites or removes as it is to be when the batch applies: as Google
           // holds it now, with the changes queued before it made.
           let pieces = basePiecesOf(grid, cells);
-          let entered = await this.#api.readEntered(this.#spreadsheetId, pieces);
-          if (formulaRewrites(grid, cells.map(area => area.sheetId), entered) > MAX_FORMULA_REWRITES) {
+          let entered = baseValues(pieces, await this.#api.readEntered(this.#spreadsheetId, pieces));
+          if (formulaRewrites(grid, cells, entered) > MAX_FORMULA_REWRITES) {
             return {
               title: metadata.title, editable,
               refusal: new Error("These changes overwrite or delete too many formulas that the queued " +
@@ -532,7 +532,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
                 "the queued changes first."),
             };
           }
-          let content = enteredContent(grid, cells, baseValues(pieces, entered));
+          let content = enteredContent(grid, cells, entered);
           let sha256 = await guardDigest(grid.sheets, { sheetIds: guardedSheets(planned), cells }, content);
           let formulas = content.some(area => area.some(row => row.some(holdsFormula)));
           let guard = { sha256, after: guardAfter(grid, pending, planned, cells, formulas), cells };
