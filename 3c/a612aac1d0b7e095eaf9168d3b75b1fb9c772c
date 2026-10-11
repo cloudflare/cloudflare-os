@@ -1,0 +1,27 @@
+packages/gatekeeper-github/src/github-hooks.ts
+  s_74eb0b1cbb84f7::t_6ad799d864b708 147-149
+packages/gatekeeper-kit/__tests__/fake-kv.ts
+  s_74eb0b1cbb84f7::t_ad1a175c0d3c73 9,32-33,36
+packages/gatekeeper-kit/__tests__/hook-delivery-queue.test.ts
+  s_74eb0b1cbb84f7::t_4f75982e98da55 8-11,70-77,137,140-181
+packages/gatekeeper-kit/src/hook-delivery-queue.ts
+  s_74eb0b1cbb84f7::t_a88e48e323382c 22-23,31-54,57-60,95,97,105-111,116-118,123-132,134-138,140,148-151,156,158,160-208,210
+packages/gatekeeper-kit/src/kv.ts
+  s_74eb0b1cbb84f7::t_d9657dc332306c 44-46,50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3ca612aac1d0b7e095eaf9168d3b75b1fb9c772c",
+  "prompts": {},
+  "sessions": {
+    "s_74eb0b1cbb84f7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_edf458c69ffepVeVZFxEZXzOIj",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
