@@ -54,7 +54,7 @@ describe('AuthProvider', () => {
 
   it('confirms the current user after a transient identity lookup failure', async () => {
     vi.useFakeTimers()
-    const whoami = vi.fn()
+    const whoami = vi.fn<AuthenticatedApi['whoami']>()
       .mockRejectedValueOnce(new Error('WebSocket not ready'))
       .mockResolvedValue(user)
     const container = document.createElement('div')
