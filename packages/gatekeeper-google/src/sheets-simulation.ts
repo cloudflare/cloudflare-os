@@ -216,6 +216,12 @@ const FROZEN_INDEX = 0xE100;
 const FROZEN_LAST = 0xF8FF;
 const FROZEN = /\uE000([\uE100-\uF8FF])\uE001/g;
 
+/**
+ * Thrown for a formula naming a missing sheet that `formulaAt` cannot set aside: its text holds the
+ * characters it sets references aside with, or it names missing sheets more often than they number.
+ */
+export class UnsimulatedFormula extends Error {}
+
 // What `formulaAt` needs of a grid's log, worked out once per grid in space linear in the log and
 // the sheets. By title, ignoring case: `held`, the runs of steps `[start, end)` before which a
 // sheet has it, ascending and apart; and `involving`, the steps involving it. By sheet:
@@ -367,17 +373,14 @@ export function formulaAt(grid: Grid, sheetId: number, formula: string, from: nu
   // deleted, is not that sheet's, even if a later step gives a sheet its title: it is set aside
   // until the end, so no later step rewrites it, and reads broken.
   let frozen: string[] = [];
-  // Text already holding the stand-in, or more references than it can number, is not set aside,
-  // and reads broken instead.
-  let unfreezable = false;
   let freezable = !formula.includes(FROZEN_START);
   let freeze = (text: string, s: number) => tokenize(text).map(token => {
     if (token.kind !== "reference" || token.sheet === undefined || exists(token.sheet.toLowerCase(), s)) {
       return token.text;
     }
+    // Rewritten by later steps, it would read as neither Google's text nor the formula's.
     if (!freezable || FROZEN_INDEX + frozen.length > FROZEN_LAST) {
-      unfreezable = true;
-      return token.text;
+      throw new UnsimulatedFormula("A formula names a missing sheet in a way that cannot be followed.");
     }
     frozen.push(token.text);
     return FROZEN_START + String.fromCharCode(FROZEN_INDEX + frozen.length - 1) + FROZEN_END;
@@ -386,7 +389,6 @@ export function formulaAt(grid: Grid, sheetId: number, formula: string, from: nu
   let named: Set<string> | undefined;
   // The first step from `s` on that may change the formula: one rewriting the formulas on the
   // sheet it is then on, or one involving a sheet it names or run while that sheet is missing.
-  // Once nothing can be set aside, a missing sheet changes nothing more, as it already reads broken.
   let next = (s: number) => {
     if (s >= log.length) return log.length;
     let found = log.length;
@@ -402,7 +404,6 @@ export function formulaAt(grid: Grid, sheetId: number, formula: string, from: nu
     for (let title of named ??= namedSheets(result.text)) {
       let steps = view.involving.get(title) ?? [];
       found = Math.min(found, steps[firstAtLeast(steps, s)] ?? found);
-      if (unfreezable) continue;
       let run = heldRun(title, s);
       found = Math.min(found, run === undefined || run[0] > s ? s : run[1]);
     }
@@ -416,7 +417,7 @@ export function formulaAt(grid: Grid, sheetId: number, formula: string, from: nu
     result = {
       text: rewritten.text,
       cellsChanged: result.cellsChanged || rewritten.cellsChanged,
-      broken: result.broken || rewritten.broken || frozen.length > before || unfreezable,
+      broken: result.broken || rewritten.broken || frozen.length > before,
     };
   }
   // A formula holding the placeholders' characters itself has none set aside, so its text stands.

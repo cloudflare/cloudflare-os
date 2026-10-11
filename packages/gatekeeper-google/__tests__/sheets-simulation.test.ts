@@ -7,6 +7,7 @@ import type { SpreadsheetCellValue, SpreadsheetValueMode } from "../src/sheets-r
 import {
   applyChange, basePiecesOf, baseValues, conflictReason, enteredContent, formulaAt, gridOf,
   overlayRange, rangesToFetch, replayChanges, resolveArea, rewriteWork, simulatedRange, SimulatedTextTooLong,
+  UnsimulatedFormula,
   type Grid, type PlannedChange, type QueuedChange, type SheetMeta, type SheetsAction,
 } from "../src/sheets-simulation";
 import { positionOf } from "../src/sheets-structure";
@@ -358,6 +359,22 @@ describe("Sheets formulas through steps that cannot change them", () => {
       insertRows(2, 1),
     ])]);
     expect(formulaAt(early, 2, "=Q4!A1+A1", 0)).toEqual({ text: "=Q4!A1+A2", cellsChanged: false, broken: true });
+  });
+
+  it("refuses a formula naming a missing sheet when the reference cannot be set aside", () => {
+    // Q is deleted, a new Q added and renamed: the formula's Q is the first one throughout.
+    let reused = replayed(gridOf({ sheets: [...sheets, sheet(5, "Q", { index: 3 })] }), [queued(1, [
+      { op: "deleteSheet", sheetId: 5, rowCount: 1000, columnCount: 26 },
+      { op: "addSheet", sheetId: 6, title: "Q", index: 3, rowCount: 1, columnCount: 1 },
+      { op: "renameSheet", sheetId: 6, title: "Renamed" },
+    ])]);
+    expect(formulaAt(reused, 0, "=Q!A1+Q!A2", 0)).toMatchObject({ text: "=Q!A1+Q!A2", broken: true });
+    // Text holding the characters it sets references aside with.
+    expect(() => formulaAt(reused, 0, '=IF(TRUE,"\uE000",Q!A1)', 0)).toThrow(UnsimulatedFormula);
+    // More references than those characters can number.
+    let many = "=" + Array.from({ length: 6_145 }, () => "Q!A1").join("+");
+    expect(() => formulaAt(reused, 0, many, 0)).toThrow(UnsimulatedFormula);
+    expect(formulaAt(reused, 0, "=" + Array.from({ length: 6_144 }, () => "Q!A1").join("+"), 0).broken).toBe(true);
   });
 
   it("rewrites through every step on the sheet a formula is on, or one it names", () => {

@@ -1180,6 +1180,26 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
       "sheets rewrite. Change fewer cells, or approve or reject the queued changes first.");
   });
 
+  it("refuses a read or a batch over a formula it cannot follow through the queued changes", async () => {
+    let provider = budget([sheetMeta(0, "Sales"), sheetMeta(5, "Q", { index: 1, rowCount: 5, columnCount: 5 })]);
+    provider.set("Sales!A1", '=IF(TRUE,"\uE000",Q!A1)');
+    let sheets = gatekeeper();
+    // The formula's Q is deleted, and a new Q added and renamed after it.
+    await sheets.queued([
+      { op: "deleteSheet", sheetId: 5 },
+      { op: "addSheet", title: "Q", ref: "q" },
+      { op: "renameSheet", sheetId: "q", title: "Renamed" },
+    ]);
+
+    expect((await sheets.call("readRange", "Sales!A1", { valueMode: "formula" })).error).toBe(
+      "These ranges hold a formula that cannot be shown with the queued changes to rows, columns and " +
+      "sheets applied. Read other cells, or approve or reject the queued changes first.");
+    expect((await sheets.call("readRange", "Sales!B1:C2", { valueMode: "formula" })).error).toBeUndefined();
+    expect((await sheets.call("updateSpreadsheet", [{ op: "clearRange", range: "Sales!A1" }])).error).toBe(
+      "These changes overwrite or delete a formula that cannot be followed through the queued changes to " +
+      "rows, columns and sheets. Approve or reject the queued changes first.");
+  });
+
   it("refuses a read or a batch whose formulas a queued rename makes too long", async () => {
     // Each formula names S1 50 times, so renaming S1 to 100 characters takes it from 300 characters
     // to 5,250, and 2,000 of them past the 5 MiB a read may build.

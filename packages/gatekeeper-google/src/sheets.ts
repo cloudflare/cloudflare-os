@@ -32,7 +32,7 @@ import type {
 import {
   basePiecesOf, baseValues, conflictReason, enteredContent, gridOf, holdsFormula, MAX_REWRITE_WORK,
   overlayRange, rangesToFetch, replayChanges, resolveArea, rewriteWork, simulatedRange,
-  SimulatedTextTooLong, textBudget,
+  SimulatedTextTooLong, textBudget, UnsimulatedFormula,
   type Grid, type PlannedChange, type QueuedChange, type SheetBatch, type SheetsAction, type SheetsActions,
 } from "./sheets-simulation";
 import type { GoogleSpreadsheetSession, SheetChange } from "./sheets-types";
@@ -464,6 +464,11 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     try {
       return areas.map(area => simulatedRange(grid, area, base, mode, budget));
     } catch (error) {
+      if (error instanceof UnsimulatedFormula) {
+        throw new Error("These ranges hold a formula that cannot be shown with the queued changes to " +
+          "rows, columns and sheets applied. Read other cells, or approve or reject the queued changes " +
+          "first.", { cause: error });
+      }
       if (!(error instanceof SimulatedTextTooLong)) throw error;
       throw new Error("These ranges hold too much text to read with the queued changes to rows, " +
         "columns and sheets applied. Read fewer cells, or approve or reject the queued changes first.",
@@ -545,6 +550,14 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
           try {
             content = enteredContent(grid, cells, entered);
           } catch (error) {
+            if (error instanceof UnsimulatedFormula) {
+              return {
+                title: metadata.title, editable,
+                refusal: new Error("These changes overwrite or delete a formula that cannot be followed " +
+                  "through the queued changes to rows, columns and sheets. Approve or reject the queued " +
+                  "changes first.", { cause: error }),
+              };
+            }
             if (!(error instanceof SimulatedTextTooLong)) throw error;
             return {
               title: metadata.title, editable,
