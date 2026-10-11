@@ -1,18 +1,23 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SheetArea, SheetProtection } from "../src/sheets-api";
 import { compactFormula } from "../src/sheets-formula";
 import { prepareChanges } from "../src/sheets-input";
 import {
-  checkProtections, guardAfter, guardCells, guardDigest, guardedSheets, guardFits, guardOf, planSheet,
-  resolveChanges, sheetLabels,
+  checkProtections, guardAfter, guardCells, guardDigest, guardedSheets, guardFits, guardOf, MAX_GUARDED_CELLS,
+  planSheet, resolveChanges, sheetLabels,
 } from "../src/sheets-plan";
-import { enteredOf, type EnteredValue } from "../src/sheets-model";
+import { linesAt } from "../src/sheets-structure";
+import { enteredOf, type EnteredValue, type Rect } from "../src/sheets-model";
 import {
-  replayChanges, type Grid, type PlannedChange, type QueuedChange, type SheetBatch, type SheetMeta,
+  basePiecesOf, baseValues, enteredContent, holdsFormula, replayChanges, type Grid, type PlannedChange,
+  type QueuedChange, type SheetBatch, type SheetMeta,
 } from "../src/sheets-simulation";
 import type { SheetChange } from "../src/sheets-types";
 import { ChangeConflict } from "../src/slides-text";
 import { NEW_SHEET_SIZE, TYPED_INPUT, WHITESPACE_DRIFT, grid, rect, sheet } from "./sheets-fixture";
+
+// Every export calls through to its own code; the spies only count how many lines are listed.
+vi.mock("../src/sheets-structure", { spy: true });
 
 const SHEETS = [sheet(0, "Sales"), sheet(7, "It's", { index: 1, rowCount: 100, columnCount: 26 })];
 
@@ -289,6 +294,21 @@ describe("Sheets structural change requests", () => {
       .toThrow('Change 1 (insertColumns): "Sales" has 18,278 columns, and a sheet holds at most 18,278.');
   });
 
+  it("keeps a copy's frozen rows and columns, so the batch cannot unfreeze the copy's last line", () => {
+    let frozen = [sheet(0, "Sales", { frozenRowCount: 2, frozenColumnCount: 1 })];
+    expect(refused([
+      { op: "duplicateSheet", sheetId: 0, ref: "copy" }, { op: "deleteRows", sheetId: "copy", at: 3, count: 18 },
+    ], frozen)).toThrow('Change 2 (deleteRows): deleting rows 3 to 20 would leave only the 2 frozen rows of "Copy of Sales"');
+    expect(refused([
+      { op: "duplicateSheet", sheetId: 0, ref: "copy" }, { op: "deleteColumns", sheetId: "copy", at: "B", count: 5 },
+    ], frozen)).toThrow('Change 2 (deleteColumns): deleting columns B to F would leave only the 1 frozen column of "Copy of Sales"');
+    let { planned } = resolve([{ op: "duplicateSheet", sheetId: 0 }]);
+    let copy = planSheet(grid(SHEETS), planned).grid.sheets.find(candidate => candidate.title === "Copy of Sales");
+    expect(copy).toBeDefined();
+    expect(copy).not.toHaveProperty("frozenRowCount");
+    expect(copy).not.toHaveProperty("frozenColumnCount");
+  });
+
   it("refuses inserting or deleting rows and columns the sheet does not have", () => {
     expect(refused([{ op: "insertRows", sheetId: 0, at: 22 }]))
       .toThrow('Change 1 (insertRows): "Sales" has 20 rows, so at must be from 1 to 21.');
@@ -529,6 +549,57 @@ describe("Sheets batches built on queued changes", () => {
     expect(after([{ op: "writeCells", range: "Sales!D9", values: [[2]] }])).toEqual([]);
   });
 
+  it("builds a batch guarding a formula on every structural change queued before it, on any sheet", () => {
+    // Sales!A1 holds a formula naming It's rows, which the guard digests as change 1 leaves them.
+    let deleted = [queued(1, [{ op: "deleteRows", sheetId: 7, start: 0, count: 1 }])];
+    let shifted = replayed(grid(SHEETS), deleted);
+    let { planned } = resolveChanges(shifted, prepareChanges([
+      { op: "writeCells", range: "Sales!A1", values: [["x"]] },
+    ]), minter());
+    let cells = guardCells(shifted, planned);
+    let pieces = basePiecesOf(shifted, cells);
+    // Whether the guard digests a formula, as the session works it out from what it digests.
+    let guarding = (held: EnteredValue) => {
+      let content = enteredContent(shifted, cells, baseValues(pieces, [[[held]]]));
+      return { content, formulas: content.some(area => area.some(row => row.some(holdsFormula))) };
+    };
+    let formula = guarding({ formula: "='It''s'!A5" });
+    expect(formula.content).toEqual([[[{ formula: "='It''s'!A4" }]]]);
+    expect(guardAfter(shifted, deleted, planned, cells, formula.formulas)).toEqual([1]);
+    // Text starting with = names no rows.
+    let text = guarding("='It''s'!A5");
+    expect(text.content).toEqual([[["='It''s'!A5"]]]);
+    expect(guardAfter(shifted, deleted, planned, cells, text.formulas)).toEqual([]);
+  });
+
+  it("builds a copy on every structural change queued before it, on any sheet, which its formulas name", () => {
+    let rewritten = [
+      queued(1, [{ op: "writeCells", sheetId: 0, rect: rect(0, 0), values: [["='It''s'!A5"]] }]),
+      queued(2, [{ op: "deleteRows", sheetId: 7, start: 4, count: 1 }]),
+    ];
+    let shifted = replayed(grid(SHEETS), rewritten);
+    let { planned } = resolveChanges(shifted, prepareChanges([{ op: "duplicateSheet", sheetId: 0 }]), minter(101));
+    expect(guardAfter(shifted, rewritten, planned, guardCells(shifted, planned))).toEqual([1, 2]);
+  });
+
+  it("builds a copy on the changes that entered what its original holds as it is copied", () => {
+    expect(after([{ op: "duplicateSheet", sheetId: 0 }])).toEqual([1, 2, 3]);
+    expect(after([{ op: "duplicateSheet", sheetId: 0, ref: "copy" }, { op: "duplicateSheet", sheetId: "copy" }]))
+      .toEqual([1, 2, 3]);
+    expect(after([{ op: "duplicateSheet", sheetId: 7 }])).toEqual([2]);
+    // A copy queued earlier holds what was queued for its original.
+    let copied = [...pending, queued(4, [{ op: "duplicateSheet", sheetId: 0, newSheetId: 50, title: "Copy", index: 2 }])];
+    let withCopy = replayed(grid(SHEETS), copied);
+    let { planned } = resolveChanges(withCopy, prepareChanges([{ op: "duplicateSheet", sheetId: 50 }]), minter(101));
+    expect(guardAfter(withCopy, copied, planned, guardCells(withCopy, planned))).toEqual([1, 2, 3, 4]);
+    // Entries made outside a replay, and those the batch makes, are no queued change's.
+    let entered = grid(SHEETS, { "0:0:0": 1 });
+    ({ planned } = resolveChanges(entered, prepareChanges([
+      { op: "writeCells", range: "Sales!B1", values: [[2]] }, { op: "duplicateSheet", sheetId: 0 },
+    ]), minter(101)));
+    expect(guardAfter(entered, [], planned, guardCells(entered, planned))).toEqual([]);
+  });
+
   it("labels each sheet a batch acts on or creates by its title before the batch", () => {
     let { planned } = resolve([
       { op: "renameSheet", sheetId: 0, title: "X" },
@@ -537,6 +608,164 @@ describe("Sheets batches built on queued changes", () => {
       { op: "clearRange", range: "Q4!A1" },
     ]);
     expect(sheetLabels(grid(SHEETS), planned)).toEqual({ 0: "Sales", 101: "Q4", 7: "It's", 102: "Copy of It's" });
+  });
+});
+
+/** The most lines one `linesAt` call has listed since its calls were last cleared. */
+const widest = () => vi.mocked(linesAt).mock.calls.reduce((most, [, start, end]) => Math.max(most, end - start), 0);
+
+describe("Sheets batches over millions of rows", () => {
+  beforeEach(() => vi.mocked(linesAt).mockClear());
+
+  it("adds a sheet of 2,000,000 rows and deletes all but one, listing none of the rows deleted", () => {
+    let base = grid(SHEETS);
+    let { planned } = resolveChanges(base, prepareChanges([
+      { op: "addSheet", title: "Tall", ref: "tall", rowCount: 2_000_000, columnCount: 1 },
+      { op: "writeCells", range: "Tall!A2000000", values: [[1]] },
+      { op: "deleteRows", sheetId: "tall", at: 2, count: 1_999_999 },
+    ]), minter(101));
+    let next = planSheet(base, planned).grid;
+    expect(next.sheets.find(candidate => candidate.id === 101)?.rowCount).toBe(1);
+    // The write went with the row it was in.
+    expect(next.cells.size).toBe(0);
+    let cells = guardCells(base, planned);
+    expect(cells).toEqual([]);
+    expect(guardAfter(base, [], planned, cells)).toEqual([]);
+    expect(widest()).toBeGreaterThan(0);
+    expect(widest()).toBeLessThanOrEqual(MAX_GUARDED_CELLS);
+  });
+
+  it("finds a queued write among 1,999,999 rows deleted by its position, and refuses guarding them", () => {
+    let tall = [sheet(0, "Tall", { rowCount: 2_000_000, columnCount: 1 }), sheet(1, "Other")];
+    let pending = [queued(1, [{ op: "writeCells", sheetId: 0, rect: rect(1_999_999, 0), values: [[5]] }])];
+    let simulated = replayed(grid(tall), pending);
+    let deleting = (at: number) => resolveChanges(simulated, prepareChanges([
+      { op: "deleteRows", sheetId: 0, at, count: 1_999_999 },
+    ]), minter()).planned;
+
+    let planned = deleting(2);
+    expect(planSheet(simulated, planned).grid.cells.size).toBe(0);
+    expect(() => guardCells(simulated, planned)).toThrow(
+      "These changes overwrite or delete 1,999,999 cells that are already there; one batch may overwrite or " +
+      "delete at most 50,000.");
+    expect(guardAfter(simulated, pending, planned, [{ sheetId: 0, rect: rect(1, 0, 1_999_999) }])).toEqual([1]);
+    // Deleting the rows above the write keeps it, in the one row left.
+    let kept = planSheet(simulated, deleting(1)).grid;
+    expect([...kept.cells.values()]).toEqual([{ input: 5, at: 0, by: 1 }]);
+    expect(widest()).toBeLessThanOrEqual(MAX_GUARDED_CELLS);
+  });
+});
+
+/** A queued write of literal values to every cell of `area` of sheet `sheetId`. */
+function filled(id: number, sheetId: number, area: Rect): QueuedChange {
+  let values = Array.from({ length: area.endRow - area.startRow }, (_row, r) =>
+    Array.from({ length: area.endColumn - area.startColumn }, (_cell, c) => r * 100 + c));
+  return queued(id, [{ op: "writeCells", sheetId, rect: area, values }]);
+}
+
+/** `count` copies of Sales over `simulated`, each titled apart, with the IDs 101 on. */
+function copies(simulated: Grid, count: number) {
+  let changes = Array.from({ length: count }, (_copy, i): SheetChange =>
+    ({ op: "duplicateSheet", sheetId: 0, title: `Copy ${i + 1}` }));
+  return resolveChanges(simulated, prepareChanges(changes), minter(...changes.map((_copy, i) => 101 + i)));
+}
+
+describe("Sheets copies of queued cells", () => {
+  let big = [sheet(0, "Sales", { rowCount: 1000, columnCount: 26 }), sheet(7, "It's", { index: 1, rowCount: 100, columnCount: 26 })];
+
+  it("refuses a copy that would bring the cells queued changes enter past 100,000", () => {
+    let simulated = replayed(grid(big), [filled(1, 0, rect(0, 0, 800, 25))]);
+    expect(simulated.cells.size).toBe(20_000);
+    expect(() => copies(simulated, 50)).toThrow(
+      'Change 5 (duplicateSheet): copying "Sales" adds its 20,000 queued cells to the copy, which would bring ' +
+      "the cells queued changes enter to 120,000, and at most 100,000 may be queued. Approve or reject queued " +
+      "changes first.");
+    expect(copies(simulated, 4).planned).toHaveLength(4);
+  });
+
+  it("stops a replay at a copy that a rejected batch let through, before it enters its cells", () => {
+    let write = filled(1, 0, rect(0, 0, 800, 25));
+    let deletion = queued(2, [{ op: "deleteRows", sheetId: 0, start: 0, count: 800 }]);
+    let simulated = replayed(grid(big), [write, deletion]);
+    // With the rows deleted, the copies add nothing.
+    let copied = queued(3, copies(simulated, 50).planned);
+    expect(replayed(grid(big), [write, deletion, copied]).cells.size).toBe(0);
+
+    let result = replayChanges(grid(big), [write, copied]);
+    expect(result).toMatchObject({
+      kind: "incomplete",
+      unsupported: copied,
+      reason: "change 5 (duplicateSheet): it would bring the cells queued changes enter to 120,000, more than " +
+        "the 100,000 that may be queued",
+    });
+    if (result.kind === "incomplete") expect(result.partial.cells.size).toBe(20_000);
+  });
+
+  it("counts every cell a write or clear enters toward 100,000, but not one already entered", () => {
+    let full = [sheet(0, "Sales", { rowCount: 4000, columnCount: 25 }), sheet(7, "It's", { index: 1 })];
+    let simulated = replayed(grid(full), [filled(1, 0, rect(0, 0, 4000, 25))]);
+    expect(simulated.cells.size).toBe(100_000);
+    let resolving = (changes: SheetChange[]) => () => resolveChanges(simulated, prepareChanges(changes), minter(101));
+    expect(resolving([{ op: "writeCells", range: "'It''s'!A1", values: [[1]] }])).toThrow(
+      "Change 1 (writeCells): it would bring the cells queued changes enter to 100,001, and at most 100,000 " +
+      "may be queued. Approve or reject queued changes first.");
+    expect(resolving([{ op: "clearRange", range: "'It''s'!A1:B2" }])).toThrow(
+      "Change 1 (clearRange): it would bring the cells queued changes enter to 100,004");
+    expect(resolving([{ op: "writeCells", range: "Sales!A1:B2", values: [[1, 2], [3, 4]] }])).not.toThrow();
+    // A copy of a sheet with nothing queued adds nothing.
+    expect(resolving([{ op: "duplicateSheet", sheetId: 7 }])).not.toThrow();
+    expect(() => planSheet(simulated, [{ op: "clearRange", sheetId: 7, rect: rect(0, 0) }]))
+      .toThrow(new ChangeConflict("change 1 (clearRange): it would bring the cells queued changes enter to " +
+        "100,001, more than the 100,000 that may be queued"));
+  });
+
+  it("indexes entries by sheet only for changes that need them, once per grid", () => {
+    let pending = [filled(1, 0, rect(0, 0, 80, 25)), filled(2, 7, rect(0, 0, 100, 26))];
+    let keys = vi.spyOn(Map.prototype, "keys");
+    try {
+      let simulated = replayed(grid(big), [...pending, filled(3, 0, rect(100, 0, 10, 10))]);
+      let { planned } = resolveChanges(simulated, prepareChanges([
+        { op: "writeCells", range: "Sales!A1:B1", values: [[1, 2]] },
+        { op: "clearRange", range: "'It''s'!A1:C3" },
+      ]), minter());
+      planSheet(simulated, planned);
+      guardAfter(simulated, pending, planned, guardCells(simulated, planned));
+      expect(keys).not.toHaveBeenCalled();
+
+      planSheet(simulated, copies(simulated, 3).planned);
+      expect(keys).toHaveBeenCalled();
+      keys.mockClear();
+      planSheet(simulated, [
+        { op: "duplicateSheet", sheetId: 0, newSheetId: 101, title: "A", index: 2 },
+        { op: "deleteRows", sheetId: 7, start: 0, count: 5 },
+        { op: "deleteSheet", sheetId: 101, rowCount: 1000, columnCount: 26 },
+      ]);
+      expect(keys).toHaveBeenCalledTimes(1);
+    } finally {
+      keys.mockRestore();
+    }
+  });
+
+  it("copies only its original's entries, never another sheet's nor those it adds", () => {
+    let pending = [filled(1, 0, rect(0, 0, 80, 25)), filled(2, 7, rect(0, 0, 100, 26))];
+    let simulated = replayed(grid(big), pending);
+    let { planned } = copies(simulated, 20);
+    expect(guardAfter(simulated, pending, planned, guardCells(simulated, planned))).toEqual([1]);
+
+    let split = vi.spyOn(String.prototype, "split");
+    let next: Grid;
+    let keysSplit: string[];
+    try {
+      next = planSheet(simulated, planned).grid;
+      keysSplit = split.mock.calls.flatMap(([separator], i) =>
+        String(separator) === ":" ? [String(split.mock.contexts[i])] : []);
+    } finally {
+      split.mockRestore();
+    }
+    expect(next.cells.size).toBe(2_000 + 2_600 + 20 * 2_000);
+    // Each copy parses the key of each of Sales's 2,000 entries once, and no other.
+    expect(keysSplit).toHaveLength(20 * 2_000);
+    expect(keysSplit.every(key => key.startsWith("0:"))).toBe(true);
   });
 });
 

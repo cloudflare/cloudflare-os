@@ -105,6 +105,21 @@ export const ENTERED_READS: [userEnteredValue: Record<string, unknown>, formulaR
 ];
 
 /**
+ * Each error value typed into a cell: the type `userEnteredValue.errorValue` gave it, and its
+ * formula-mode read.
+ */
+export const ERROR_VALUE_READS: [type: string, formulaRead: string][] = [
+  ["N_A", "#N/A ()"],
+  ["NAME", "#NAME? ()"],
+  ["VALUE", "#VALUE! ()"],
+  ["NUM", "#NUM! ()"],
+  ["NULL_VALUE", "#NULL! ()"],
+  ["ERROR", "#ERROR! ()"],
+  ["REF", "#REF! ()"],
+  ["DIVIDE_BY_ZERO", "#DIV/0! ()"],
+];
+
+/**
  * `values:batchGetByDataFilter`'s answer: not in the order asked, and each range's data filter
  * echoed with its zero fields left out.
  */

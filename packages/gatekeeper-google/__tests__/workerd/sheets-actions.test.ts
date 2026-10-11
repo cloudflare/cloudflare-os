@@ -56,6 +56,11 @@ class SheetsProvider {
   cells = new Map<string, EnteredValue>();
   /** The results of formulas, by their text; any other formula computes 0. */
   results: Record<string, number> = {};
+  /**
+   * Values Google fills cells holding nothing entered with, as an array formula's result spills
+   * into them, by cell. Value reads show them; reads of what cells hold as entered do not.
+   */
+  spills = new Map<string, number>();
   markers = new Map<number, { metadataKey: string; metadataValue: string }>();
   /** Every `batchUpdate` sent, committed or not. */
   batches: BatchRequest[][] = [];
@@ -121,6 +126,13 @@ class SheetsProvider {
     else this.cells.set(key(id, rect.startRow, rect.startColumn), value);
   }
 
+  /** A value Google fills the cell named as in `Sales!B2` with, nothing being entered in it. */
+  spill(name: string, value: number): void {
+    let { sheet: title, rect } = parseRange(name);
+    let id = this.sheets.find(s => s.title === title)!.id;
+    this.spills.set(key(id, rect.startRow, rect.startColumn), value);
+  }
+
   get(name: string): EnteredValue {
     let { sheet: title, rect } = parseRange(name);
     let id = this.sheets.find(s => s.title === title)!.id;
@@ -163,7 +175,7 @@ class SheetsProvider {
     for (let row = clipped.startRow; row < clipped.endRow; row++) {
       let line: unknown[] = [];
       for (let column = clipped.startColumn; column < clipped.endColumn; column++) {
-        let value = this.cells.get(key(sheet.id, row, column)) ?? null;
+        let value = this.cells.get(key(sheet.id, row, column)) ?? this.spills.get(key(sheet.id, row, column)) ?? null;
         line.push(value === null ? "" : this.#shown(value, mode));
       }
       while (line.length > 0 && line.at(-1) === "") line.pop();
@@ -1226,6 +1238,61 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     expect(provider.get("Sales!A4")).toBe("APAC");
   });
 
+  it("moves text starting with = past queued rows as text, rewriting and guarding only formulas as formulas", async () => {
+    let provider = budget();
+    // E1 and E3 hold text, F1 a formula of the same characters, D1 an error value typed in.
+    provider.enter("Sales!D1", { error: "N_A" });
+    provider.enter("Sales!E1", "=B2");
+    provider.set("Sales!F1", "=B2");
+    provider.enter("Sales!E3", "=B2");
+    provider.results["=B2"] = 4;
+    let sheets = gatekeeper();
+    let batch: SheetChange[] = [
+      { op: "insertRows", sheetId: 0, at: 1 },
+      { op: "writeCells", range: "Sales!E2", values: [["new"]] },
+    ];
+    let { actionId } = await sheets.queued(batch);
+
+    expect(await sheets.read("Sales!D2:F4", "formula")).toEqual({
+      range: "Sales!D2:F4", values: [["#N/A ()", "new", "=B3"], [null, null, null], [null, "=B2", null]],
+    });
+    expect(await sheets.read("Sales!E2:F4", "raw")).toEqual({
+      range: "Sales!E2:F4", values: [["new", 4], [null, null], ["=B2", null]],
+    });
+
+    // A formula-mode read shows the text E1 held and this formula alike.
+    provider.set("Sales!E1", "=B2");
+    expect(await sheets.apply(actionId!)).toBe(CHANGED);
+    expect(provider.batches).toEqual([]);
+    await sheets.reject(actionId!);
+
+    let requeued = await sheets.queued(batch);
+    expect(await sheets.apply(requeued.actionId!)).toBeNull();
+    expect([provider.get("Sales!E2"), provider.get("Sales!F2"), provider.get("Sales!E4")])
+      .toEqual(["new", { formula: "=B3" }, "=B2"]);
+  });
+
+  it("reads pending, in every mode, a cell an array formula fills once rows are queued", async () => {
+    let provider = budget();
+    // E1's result spills into E2, which holds nothing entered.
+    provider.set("Sales!E1", "=SEQUENCE(2)");
+    provider.results["=SEQUENCE(2)"] = 1;
+    provider.spill("Sales!E2", 2);
+    let sheets = gatekeeper();
+    expect(await sheets.read("Sales!E1:E2", "raw")).toEqual({ range: "Sales!E1:E2", values: [[1], [2]] });
+    // The rows go in below, moving neither cell.
+    await sheets.queued([{ op: "insertRows", sheetId: 0, at: 5, count: 2 }]);
+    provider.dataFilterReads = [];
+
+    expect(await sheets.read("Sales!E1:E2", "formula"))
+      .toEqual({ range: "Sales!E1:E2", values: [["=SEQUENCE(2)"], [null]], pendingCells: ["E2"] });
+    expect(provider.dataFilterReads.map(({ mode }) => mode).toSorted()).toEqual(["ENTERED", "FORMULA"]);
+    expect(await sheets.read("Sales!E1:E2", "raw"))
+      .toEqual({ range: "Sales!E1:E2", values: [[1], [null]], pendingCells: ["E2"] });
+    expect(await sheets.read("Sales!E1:E2"))
+      .toEqual({ range: "Sales!E1:E2", values: [["1"], [null]], pendingCells: ["E2"] });
+  });
+
   it("returns the IDs it mints for the sheets a batch adds, which Google honours", async () => {
     let provider = budget();
     let sheets = gatekeeper();
@@ -1440,6 +1507,34 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
       `This change no longer applies: it builds on change ${inserted.actionId}, which was not applied.`);
     expect(provider.batches).toEqual([]);
     expect(provider.get("Sales!A2")).toBe("EMEA");
+  });
+
+  it("fails a copy of a sheet holding a rejected write, without writing", async () => {
+    let provider = budget();
+    let sheets = gatekeeper();
+    let written = await sheets.queued([{ op: "writeCells", range: "Sales!A1", values: [["Area"]] }]);
+    let copied = await sheets.queued([{ op: "duplicateSheet", sheetId: 0 }]);
+    expect(await sheets.read("'Copy of Sales'!A1", "formula")).toEqual({ range: "'Copy of Sales'!A1", values: [["Area"]] });
+
+    await sheets.reject(written.actionId!);
+    expect(await sheets.apply(copied.actionId!)).toBe(
+      `This change no longer applies: it builds on change ${written.actionId}, which was not applied.`);
+    expect(provider.batches).toEqual([]);
+    expect(provider.sheets.map(sheet => sheet.title)).toEqual(["Sales", "Q3 Plan"]);
+  });
+
+  it("fails a write over a formula naming rows a rejected change deleted on another sheet, without writing", async () => {
+    let provider = budget();
+    provider.set("Sales!A1", "='Q3 Plan'!A5");
+    let sheets = gatekeeper();
+    let deleted = await sheets.queued([{ op: "deleteRows", sheetId: 7, at: 1 }]);
+    let written = await sheets.queued([{ op: "writeCells", range: "Sales!A1", values: [["x"]] }]);
+
+    expect(await sheets.reject(deleted.actionId!)).toEqual({ restart: true });
+    expect(await sheets.apply(written.actionId!)).toBe(
+      `This change no longer applies: it builds on change ${deleted.actionId}, which was not applied.`);
+    expect(provider.batches).toEqual([]);
+    expect(provider.get("Sales!A1")).toEqual({ formula: "='Q3 Plan'!A5" });
   });
 
   it("refuses any change to the rows, columns or tab of a sheet holding a range the account may not edit", async () => {

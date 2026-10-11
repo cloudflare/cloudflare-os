@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   baseIndexOf, baseLines, basePieces, deleteLines, insertLines, lineAt, lineCount, linesAt,
-  positionOf, type Lines,
+  positionOf, positionsIn, type Lines,
 } from "../src/sheets-structure";
 
 /** Every line's identity, in order. */
@@ -88,5 +88,43 @@ describe("Sheets rows and columns as runs", () => {
     expect(basePieces(lines, 3, 5)).toEqual([]);
     expect(basePieces(lines, 8, 9)).toEqual([{ start: 8, length: 1 }]);
     expect(basePieces(lines, 9, 30)).toEqual([{ start: 9, length: 1 }]);
+  });
+});
+
+/** `positionsIn` line by line: the position in `earlier` of each line, joined into runs. */
+function oneByOne(earlier: Lines, lines: Lines, start: number, end: number) {
+  let runs: { start: number; end: number }[] = [];
+  for (let identity of linesAt(lines, start, end)) {
+    let position = identity === undefined ? undefined : positionOf(earlier, identity);
+    if (position === undefined) continue;
+    let last = runs.at(-1);
+    if (last && last.end === position) last.end++;
+    else runs.push({ start: position, end: position + 1 });
+  }
+  return runs;
+}
+
+describe("Sheets lines mapped back", () => {
+  it("finds where lines were before insertions and deletions, leaving out those inserted since", () => {
+    let earlier = insertLines(baseLines(10), 4, 3, 1);
+    let lines = insertLines(deleteLines(earlier, 3, 5), 2, 2, 2);
+    expect(identities(lines)).toEqual(["b0", "b1", "n2.0", "n2.1", "b2", "b5", "b6", "b7", "b8", "b9"]);
+    expect(positionsIn(earlier, lines, 0, 10)).toEqual([{ start: 0, end: 3 }, { start: 8, end: 13 }]);
+    // Lines consecutive now that were not then map to separate runs.
+    let rejoined = deleteLines(earlier, 4, 3);
+    expect(rejoined).toEqual(baseLines(10));
+    expect(positionsIn(earlier, rejoined, 2, 6)).toEqual([{ start: 2, end: 4 }, { start: 7, end: 9 }]);
+    expect(positionsIn(earlier, lines, 2, 4)).toEqual([]);
+    expect(positionsIn(earlier, lines, 8, 30)).toEqual([{ start: 11, end: 13 }]);
+    for (let [start, end] of [[0, 10], [1, 6], [2, 5], [4, 9], [9, 12]]) {
+      expect(positionsIn(earlier, lines, start, end)).toEqual(oneByOne(earlier, lines, start, end));
+    }
+  });
+
+  it("maps millions of lines run by run", () => {
+    let earlier = baseLines(2_000_000);
+    let lines = insertLines(deleteLines(earlier, 1, 1_999_998), 1, 1, 3);
+    expect(positionsIn(earlier, lines, 0, 3)).toEqual([{ start: 0, end: 1 }, { start: 1_999_999, end: 2_000_000 }]);
+    expect(positionsIn(lines, earlier, 0, 2_000_000)).toEqual([{ start: 0, end: 1 }, { start: 2, end: 3 }]);
   });
 });

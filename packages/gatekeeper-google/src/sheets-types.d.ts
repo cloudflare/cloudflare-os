@@ -152,8 +152,10 @@ export interface GoogleSpreadsheetSession extends GoogleSpreadsheetReadSession {
    *
    * A batch makes at most 50 changes, a change addresses at most 10,000 cells and a batch 20,000,
    * and a cell holds at most 50,000 characters. A batch may overwrite or delete at most 50,000
-   * cells that are already there. The batch as queued, values included, must also fit in 100 KiB,
-   * about 50,000 characters of text in all. Changes writing outside a sheet's grid, or into a
+   * cells that are already there, and the changes queued at once may enter at most 100,000 cells
+   * in all, a copy counting the cells changes queued to its sheet enter; approve or reject some to
+   * queue more. The batch as queued, values included, must also fit in 100 KiB, about 50,000
+   * characters of text in all. Changes writing outside a sheet's grid, or into a
    * range the connected account may not edit, are refused, queuing nothing, as is any change to the
    * rows, columns or tab of a sheet holding a range the account may not edit.
    *
@@ -170,7 +172,9 @@ export interface GoogleSpreadsheetSession extends GoogleSpreadsheetReadSession {
    * result reads `null` and is listed in `pendingCells` when a queued change alters the cells one
    * of its references covers (growing, shrinking or deleting them, or deleting their sheet), or
    * when it uses `ROW`, `COLUMN`, `ROWS`, `COLUMNS`, `OFFSET`, `INDIRECT`, `ADDRESS`, `CELL`,
-   * `SHEET`, `SHEETS`, `FORMULATEXT`, `LAMBDA`, `LET` or a named range.
+   * `SHEET`, `SHEETS`, `FORMULATEXT`, `LAMBDA`, `LET` or a named range. Cells Google fills with
+   * nothing entered in them, such as an array formula's results, a `QUERY` or `FILTER` result or a
+   * pivot table, read `null` and are listed in `pendingCells` too.
    */
   updateSpreadsheet(changes: SheetChange[]): Promise<void>;
 }

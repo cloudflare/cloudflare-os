@@ -30,8 +30,8 @@ import type {
   GoogleSpreadsheetReadSession, SpreadsheetInfo, SpreadsheetRange, SpreadsheetValueMode,
 } from "./sheets-read-types";
 import {
-  basePiecesOf, baseValues, conflictReason, enteredContent, gridOf, overlayRange, rangesToFetch,
-  replayChanges, resolveArea, simulatedRange, type Grid, type PlannedChange, type QueuedChange,
+  basePiecesOf, baseValues, conflictReason, enteredContent, gridOf, holdsFormula, overlayRange,
+  rangesToFetch, replayChanges, resolveArea, simulatedRange, type Grid, type PlannedChange, type QueuedChange,
   type SheetBatch, type SheetsAction, type SheetsActions,
 } from "./sheets-simulation";
 import type { GoogleSpreadsheetSession, SheetChange } from "./sheets-types";
@@ -434,9 +434,9 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
 
   /**
    * `ranges` of `grid`, whose queued changes move rows, columns or sheets, read from the cells of
-   * the spreadsheet Google holds they show: in `mode`, and in formula mode to tell its formulas.
-   * Those cells are fetched by grid range, since a range's title or bounds may name nothing
-   * Google holds.
+   * the spreadsheet Google holds they show: as entered, to tell its formulas from text, and in
+   * `mode`, which shows the cells Google fills with nothing entered in them. Those cells are
+   * fetched by grid range, since a range's title or bounds may name nothing Google holds.
    */
   async #movedRanges(
     grid: Grid, ranges: readonly { sheet?: string; rect: Rect }[], mode: SpreadsheetValueMode,
@@ -450,12 +450,11 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
       // These name the spreadsheet's sheets and sizes, so they wait for the read's authorization.
       throw new RefusedRead(error as Error);
     }
-    let [shown, formulas] = await Promise.all([
+    let [entered, shown] = await Promise.all([
+      this.#api.readEntered(this.#spreadsheetId, pieces),
       this.#api.readAreas(this.#spreadsheetId, pieces, mode),
-      mode === "formula" ? undefined : this.#api.readAreas(this.#spreadsheetId, pieces, "formula"),
     ]);
-    let shownValues = baseValues(pieces, shown);
-    let base = { shown: shownValues, formulas: formulas ? baseValues(pieces, formulas) : shownValues };
+    let base = { entered: baseValues(pieces, entered), shown: baseValues(pieces, shown) };
     return areas.map(area => simulatedRange(grid, area, base, mode));
   }
 
@@ -521,10 +520,10 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
           // holds it now, with the changes queued before it made.
           let pieces = basePiecesOf(grid, cells);
           let entered = await this.#api.readEntered(this.#spreadsheetId, pieces);
-          let sha256 = await guardDigest(
-            grid.sheets, { sheetIds: guardedSheets(planned), cells },
-            enteredContent(grid, cells, baseValues(pieces, entered)));
-          let guard = { sha256, after: guardAfter(grid, pending, planned, cells), cells };
+          let content = enteredContent(grid, cells, baseValues(pieces, entered));
+          let sha256 = await guardDigest(grid.sheets, { sheetIds: guardedSheets(planned), cells }, content);
+          let formulas = content.some(area => area.some(row => row.some(holdsFormula)));
+          let guard = { sha256, after: guardAfter(grid, pending, planned, cells, formulas), cells };
           return {
             title: metadata.title, editable, refs,
             batch: { changes: planned, sheets: sheetLabels(grid, planned), guard },

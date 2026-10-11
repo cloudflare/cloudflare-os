@@ -216,6 +216,120 @@ const FROZEN_INDEX = 0xE100;
 const FROZEN_LAST = 0xF8FF;
 const FROZEN = /\uE000([\uE100-\uF8FF])\uE001/g;
 
+// What `formulaAt` needs of a grid's log, worked out once per grid in space linear in the log and
+// the sheets. By title, ignoring case: `held`, the runs of steps `[start, end)` before which a
+// sheet has it, ascending and apart; and `involving`, the steps involving it. By sheet:
+// `targeting`, the steps that rewrite the formulas on it as theirs (unqualified references, or a
+// copy's references to its original); `copying`, the steps that copy to it; and `hosts`, the
+// sheet a formula ending on it is on from each step of a run on.
+type LogView = {
+  held: Map<string, [number, number][]>;
+  involving: Map<string, number[]>;
+  targeting: Map<number, number[]>;
+  copying: Map<number, number[]>;
+  hosts: Map<number, { start: number; host: number }[]>;
+};
+
+const LOG_VIEWS = new WeakMap<Grid, LogView>();
+
+// Adds `value` to the list `map` holds for `key`.
+function listed<K, V>(map: Map<K, V[]>, key: K, value: V) {
+  let values = map.get(key);
+  if (values) values.push(value);
+  else map.set(key, [value]);
+}
+
+function logView(grid: Grid): LogView {
+  let view = LOG_VIEWS.get(grid);
+  if (view) return view;
+  let { log } = grid;
+  view = { held: new Map(), involving: new Map(), targeting: new Map(), copying: new Map(), hosts: new Map() };
+  let { held } = view;
+  // The titles held before the step reached, found from the last back, each with the step its run
+  // ends before.
+  let live = new Map(grid.sheets.map(sheet => [sheet.title.toLowerCase(), log.length]));
+  let close = (title: string, start: number) => {
+    let end = live.get(title);
+    if (end === undefined) return;
+    live.delete(title);
+    if (start >= end) return;
+    // Runs are found from the last back, so the one found before this one follows it.
+    let later = held.get(title)?.at(-1);
+    if (later?.[0] === end) later[0] = start;
+    else listed(held, title, [start, end] as [number, number]);
+  };
+  let open = (title: string, end: number) => {
+    if (!live.has(title)) live.set(title, end);
+  };
+  for (let s = log.length - 1; s >= 0; s--) {
+    let step = log[s];
+    if (step.kind === "add") close(step.title.toLowerCase(), s + 1);
+    if (step.kind === "duplicate") close(step.newTitle.toLowerCase(), s + 1);
+    if (step.kind === "deleteSheet") open(step.title.toLowerCase(), s + 1);
+    if (step.kind === "rename") {
+      close(step.to.toLowerCase(), s + 1);
+      open(step.from.toLowerCase(), s + 1);
+    }
+  }
+  for (let title of live.keys()) close(title, 0);
+  for (let runs of held.values()) runs.reverse();
+  log.forEach((step, s) => {
+    let titles = step.kind === "rename" ? [step.from, step.to]
+      : step.kind === "duplicate" ? [step.title, step.newTitle] : [step.title];
+    for (let title of new Set(titles.map(name => name.toLowerCase()))) listed(view.involving, title, s);
+    let target = step.kind === "duplicate" ? step.newSheetId
+      : step.kind === "rename" || step.kind === "add" ? undefined : step.sheetId;
+    if (target !== undefined) listed(view.targeting, target, s);
+    if (step.kind === "duplicate") listed(view.copying, step.newSheetId, s);
+  });
+  LOG_VIEWS.set(grid, view);
+  return view;
+}
+
+// The index of the first of `sorted` that is at least `value`, or its length.
+function firstAtLeast(sorted: readonly number[], value: number): number {
+  let low = 0;
+  let high = sorted.length;
+  while (low < high) {
+    let middle = (low + high) >>> 1;
+    if (sorted[middle] < value) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+// The sheet a formula on sheet `sheetId` once the log has run is on, as runs of steps, each from
+// its `start` to the next's: found from the last step back, through the copies that made each.
+function hostsOf(grid: Grid, view: LogView, sheetId: number) {
+  let hosts = view.hosts.get(sheetId);
+  if (hosts) return hosts;
+  hosts = [];
+  let host = sheetId;
+  let end = grid.log.length;
+  while (end > 0) {
+    let copies = view.copying.get(host) ?? [];
+    let copy = copies[firstAtLeast(copies, end) - 1];
+    if (copy === undefined) {
+      hosts.push({ start: 0, host });
+      break;
+    }
+    hosts.push({ start: copy, host });
+    host = (grid.log[copy] as Extract<StructuralStep, { kind: "duplicate" }>).sheetId;
+    end = copy;
+  }
+  hosts.reverse();
+  view.hosts.set(sheetId, hosts);
+  return hosts;
+}
+
+// The titles of the sheets `formula`'s references name, ignoring case. Only a reference with a
+// `!` names one.
+function namedSheets(formula: string): Set<string> {
+  if (!formula.includes("!")) return new Set();
+  return new Set(tokenize(formula).flatMap(token =>
+    token.kind === "reference" && token.sheet !== undefined ? [token.sheet.toLowerCase()] : []));
+}
+
 /**
  * `formula`, on sheet `sheetId` once the grid's log has run, rewritten through the log from step
  * `from` on, as Google rewrites it, with whether its references' cells changed or broke on the
@@ -223,29 +337,32 @@ const FROZEN = /\uE000([\uE100-\uF8FF])\uE001/g;
  */
 export function formulaAt(grid: Grid, sheetId: number, formula: string, from: number): RewrittenFormula {
   let { log } = grid;
-  // The sheet the formula is on at each step, found from the last back.
-  let hosts: number[] = [];
-  let host = sheetId;
-  for (let s = log.length - 1; s >= from; s--) {
-    hosts[s - from] = host;
-    let step = log[s];
-    if (step.kind === "duplicate" && step.newSheetId === host) host = step.sheetId;
-  }
-  // The titles the spreadsheet has before each step, found from the last back.
-  let titles: Set<string>[] = [];
-  let live = new Set(grid.sheets.map(sheet => sheet.title.toLowerCase()));
-  for (let s = log.length - 1; s >= from; s--) {
-    let step = log[s];
-    live = new Set(live);
-    if (step.kind === "add") live.delete(step.title.toLowerCase());
-    if (step.kind === "duplicate") live.delete(step.newTitle.toLowerCase());
-    if (step.kind === "deleteSheet") live.add(step.title.toLowerCase());
-    if (step.kind === "rename") {
-      live.delete(step.to.toLowerCase());
-      live.add(step.from.toLowerCase());
+  let view = logView(grid);
+  let hosts = hostsOf(grid, view, sheetId);
+  // The run of `hosts` that step `s` is in.
+  let hostRun = (s: number) => {
+    let low = 0;
+    let high = hosts.length - 1;
+    while (low < high) {
+      let middle = (low + high + 1) >>> 1;
+      if (hosts[middle].start <= s) low = middle;
+      else high = middle - 1;
     }
-    titles[s - from] = live;
-  }
+    return low;
+  };
+  // The run of steps holding `title` that ends after step `s`, if any.
+  let heldRun = (title: string, s: number) => {
+    let runs = view.held.get(title) ?? [];
+    let low = 0;
+    let high = runs.length;
+    while (low < high) {
+      let middle = (low + high) >>> 1;
+      if (runs[middle][1] <= s) low = middle + 1;
+      else high = middle;
+    }
+    return runs[low] as [number, number] | undefined;
+  };
+  let exists = (title: string, s: number) => (heldRun(title, s)?.[0] ?? Infinity) <= s;
   // A reference naming a sheet that does not exist when a step runs, because it never did or was
   // deleted, is not that sheet's, even if a later step gives a sheet its title: it is set aside
   // until the end, so no later step rewrites it, and reads broken.
@@ -254,8 +371,8 @@ export function formulaAt(grid: Grid, sheetId: number, formula: string, from: nu
   // and reads broken instead.
   let unfreezable = false;
   let freezable = !formula.includes(FROZEN_START);
-  let freeze = (text: string, exists: Set<string>) => tokenize(text).map(token => {
-    if (token.kind !== "reference" || token.sheet === undefined || exists.has(token.sheet.toLowerCase())) {
+  let freeze = (text: string, s: number) => tokenize(text).map(token => {
+    if (token.kind !== "reference" || token.sheet === undefined || exists(token.sheet.toLowerCase(), s)) {
       return token.text;
     }
     if (!freezable || FROZEN_INDEX + frozen.length > FROZEN_LAST) {
@@ -266,10 +383,36 @@ export function formulaAt(grid: Grid, sheetId: number, formula: string, from: nu
     return FROZEN_START + String.fromCharCode(FROZEN_INDEX + frozen.length - 1) + FROZEN_END;
   }).join("");
   let result: RewrittenFormula = { text: formula, cellsChanged: false, broken: false };
-  for (let s = from; s < log.length; s++) {
+  let named: Set<string> | undefined;
+  // The first step from `s` on that may change the formula: one rewriting the formulas on the
+  // sheet it is then on, or one involving a sheet it names or run while that sheet is missing.
+  // Once nothing can be set aside, a missing sheet changes nothing more, as it already reads broken.
+  let next = (s: number) => {
+    if (s >= log.length) return log.length;
+    let found = log.length;
+    for (let run = hostRun(s); run < hosts.length; run++) {
+      let end = hosts[run + 1]?.start ?? log.length;
+      let steps = view.targeting.get(hosts[run].host) ?? [];
+      let step = steps[firstAtLeast(steps, Math.max(s, hosts[run].start))];
+      if (step !== undefined && step < end) {
+        found = step;
+        break;
+      }
+    }
+    for (let title of named ??= namedSheets(result.text)) {
+      let steps = view.involving.get(title) ?? [];
+      found = Math.min(found, steps[firstAtLeast(steps, s)] ?? found);
+      if (unfreezable) continue;
+      let run = heldRun(title, s);
+      found = Math.min(found, run === undefined || run[0] > s ? s : run[1]);
+    }
+    return found;
+  };
+  for (let s = next(from); s < log.length; s = next(s + 1)) {
     let before = frozen.length;
-    let text = freeze(result.text, titles[s - from]);
-    let rewritten = rewriteThrough(text, log[s], hosts[s - from]);
+    let text = freeze(result.text, s);
+    let rewritten = rewriteThrough(text, log[s], hosts[hostRun(s)].host);
+    if (rewritten.text !== result.text) named = undefined;
     result = {
       text: rewritten.text,
       cellsChanged: result.cellsChanged || rewritten.cellsChanged,
@@ -405,8 +548,31 @@ export function baseValues<T extends EnteredValue = SpreadsheetCellValue>(
   return (sheetId, row, column) => cells.get(`${sheetId}:${row}:${column}`) ?? null;
 }
 
-/** What Google holds in a read's base cells: in the mode read, and in formula mode. */
-export type BaseRead = { shown: BaseValues; formulas: BaseValues };
+/**
+ * What Google holds in a read's base cells: as entered, which tells a formula from text that
+ * starts with `=`, and as the mode read shows them, which also shows what Google fills cells
+ * holding nothing entered with.
+ */
+export type BaseRead = { entered: BaseCells<EnteredValue>; shown: BaseValues };
+
+/** Whether a cell holds a formula, rather than text, even text starting with `=`. */
+export function holdsFormula(value: EnteredValue): value is { formula: string } {
+  return value !== null && typeof value === "object" && "formula" in value;
+}
+
+// Each error value Google lets a cell hold typed, by type, as a formula-mode read shows it.
+const ERROR_TEXT = new Map([
+  ["N_A", "#N/A ()"], ["NAME", "#NAME? ()"], ["VALUE", "#VALUE! ()"], ["NUM", "#NUM! ()"],
+  ["NULL_VALUE", "#NULL! ()"], ["ERROR", "#ERROR! ()"], ["REF", "#REF! ()"], ["DIVIDE_BY_ZERO", "#DIV/0! ()"],
+]);
+
+// A cell holding no formula as a formula-mode read shows it. An error of a type not known here
+// reads pending.
+function literalText(value: Exclude<EnteredValue, { formula: string }>): { value: SpreadsheetCellValue; pending: boolean } {
+  if (value === null || typeof value !== "object") return { value, pending: false };
+  let text = ERROR_TEXT.get(value.error);
+  return text === undefined ? { value: null, pending: true } : { value: text, pending: false };
+}
 
 // The value of one cell of `sheet` in `mode`, and whether only Google can work it out.
 function cellValue(
@@ -425,16 +591,22 @@ function cellValue(
   if (sheet.source === undefined || baseRow === undefined || baseColumn === undefined) {
     return { value: null, pending: false };
   }
-  let formula = base.formulas(sheet.source, baseRow, baseColumn);
-  if (!isFormula(formula) || grid.log.length === 0) {
-    return { value: base.shown(sheet.source, baseRow, baseColumn), pending: false };
-  }
-  let rewritten = formulaAt(grid, sheet.id, formula, 0);
-  if (mode === "formula") return { value: rewritten.text, pending: false };
-  if (rewritten.cellsChanged || rewritten.broken || structureSensitive(formula)) {
+  let entered = base.entered(sheet.source, baseRow, baseColumn);
+  let shown = { value: base.shown(sheet.source, baseRow, baseColumn), pending: false };
+  // A cell Google fills with nothing entered in it, as an array formula's result spills into it or
+  // a pivot table fills it, holds what only Google can work out once structure is queued.
+  if (entered === null && shown.value !== null && shown.value !== "" && grid.log.length > 0) {
     return { value: null, pending: true };
   }
-  return { value: base.shown(sheet.source, baseRow, baseColumn), pending: false };
+  // Anything but a formula, text starting with `=` included, moves with its line as it is.
+  if (!holdsFormula(entered)) return mode === "formula" ? literalText(entered) : shown;
+  if (grid.log.length === 0) return mode === "formula" ? { value: entered.formula, pending: false } : shown;
+  let rewritten = formulaAt(grid, sheet.id, entered.formula, 0);
+  if (mode === "formula") return { value: rewritten.text, pending: false };
+  if (rewritten.cellsChanged || rewritten.broken || structureSensitive(entered.formula)) {
+    return { value: null, pending: true };
+  }
+  return shown;
 }
 
 // The values of `rect` of `sheet`, padded to `rows` by `columns`, and the cells pending.
@@ -493,9 +665,7 @@ export function enteredContent(
       // A cell of an inserted line, or of an added sheet, is blank.
       if (sheet.source === undefined || baseRow === undefined || baseColumn === undefined) return null;
       let value = entered(sheet.source, baseRow, baseColumn);
-      if (value === null || typeof value !== "object" || !("formula" in value) || grid.log.length === 0) {
-        return value;
-      }
+      if (!holdsFormula(value) || grid.log.length === 0) return value;
       return { formula: formulaAt(grid, sheet.id, value.formula, 0).text };
     }));
   });

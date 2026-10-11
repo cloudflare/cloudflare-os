@@ -123,12 +123,43 @@ export function deleteLines(lines: Lines, start: number, count: number): Lines {
   return joined([...before, ...after]);
 }
 
+// The runs of the lines at positions `start` to `end - 1`, in order.
+function runsAt(lines: Lines, start: number, end: number): LineRun[] {
+  let [, from] = split(lines, start);
+  return split(from, end - start)[0];
+}
+
 /**
  * The lines of the sheet Google holds among positions `start` to `end - 1`, as runs of their
  * indices there, in order: what a read of those positions fetches.
  */
 export function basePieces(lines: Lines, start: number, end: number): { start: number; length: number }[] {
-  let [, from] = split(lines, start);
-  let [within] = split(from, end - start);
-  return within.flatMap(run => run.kind === "base" ? [{ start: run.start, length: run.length }] : []);
+  return runsAt(lines, start, end).flatMap(run => run.kind === "base" ? [{ start: run.start, length: run.length }] : []);
+}
+
+/**
+ * Where the lines at positions `start` to `end - 1` of `lines` are in `earlier`, the same lines
+ * before some were inserted or deleted, as runs of consecutive positions there, in order. Lines
+ * `earlier` does not have are left out. Works run by run, never line by line.
+ */
+export function positionsIn(
+  earlier: Lines, lines: Lines, start: number, end: number,
+): { start: number; end: number }[] {
+  let positions: { start: number; end: number }[] = [];
+  for (let run of runsAt(lines, start, end)) {
+    let first = 0;
+    for (let other of earlier) {
+      let same = run.kind === "base" ? other.kind === "base" : other.kind === "new" && other.id === run.id;
+      let from = Math.max(run.start, other.start);
+      let to = Math.min(run.start + run.length, other.start + other.length);
+      if (same && from < to) {
+        let position = first + from - other.start;
+        let last = positions.at(-1);
+        if (last && last.end === position) last.end += to - from;
+        else positions.push({ start: position, end: position + to - from });
+      }
+      first += other.length;
+    }
+  }
+  return positions;
 }

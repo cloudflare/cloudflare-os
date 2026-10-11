@@ -369,8 +369,9 @@ export class GoogleSheetsApi {
 
   /**
    * The cells of each of `areas` as `valueMode` reads them, padded to its size: in formula mode,
-   * as entered, formulas as their text. Each must lie within its sheet's grid. Only the response
-   * size bounds the read, so callers bound how many cells they ask for.
+   * formulas as their text, which only `readEntered` tells from text starting with `=`. Each must
+   * lie within its sheet's grid. Only the response size bounds the read, so callers bound how many
+   * cells they ask for.
    */
   async readAreas(
     spreadsheetId: string, areas: readonly SheetArea[], valueMode: SpreadsheetValueMode,

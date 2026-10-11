@@ -22,7 +22,7 @@ import type {
   Entry, Grid, PlannedChange, QueuedChange, SheetMeta, SimSheet, StructuralStep,
 } from "./sheets-simulation";
 import {
-  baseIndexOf, deleteLines, insertLines, lineCount, linesAt, positionOf, type Lines,
+  baseIndexOf, deleteLines, insertLines, lineCount, linesAt, positionOf, positionsIn, type Lines,
 } from "./sheets-structure";
 import type { SheetCellInput, SheetTarget } from "./sheets-types";
 import { ChangeConflict } from "./slides-text";
@@ -33,6 +33,11 @@ export const DEFAULT_ROW_COUNT = 1000;
 export const DEFAULT_COLUMN_COUNT = 26;
 /** The most cells a batch may overwrite or delete, which its guard covers. */
 export const MAX_GUARDED_CELLS = 50_000;
+/**
+ * The most cells queued changes may enter in all, by writing, clearing or copying them: every
+ * read, queued batch and apply replays each of them.
+ */
+export const MAX_QUEUED_ENTRIES = 100_000;
 /** The most cells a sheet deleted here may have, so the guard can cover them. */
 export const MAX_DELETED_SHEET_CELLS = 50_000;
 
@@ -76,11 +81,61 @@ function cellsOf(sheets: readonly SheetMeta[]): number {
   return sheets.reduce((total, sheet) => total + sheet.rowCount * sheet.columnCount, 0);
 }
 
-/** A grid being changed in place, which no one else holds. */
-type Working = { sheets: SimSheet[]; cells: Map<string, Entry>; log: StructuralStep[] };
+/**
+ * A grid being changed in place, which no one else holds, with the keys of its entries by sheet
+ * once a change needs one sheet's entries, so it visits only those.
+ */
+type Working = {
+  sheets: SimSheet[]; cells: Map<string, Entry>; log: StructuralStep[]; keys?: Map<number, Set<string>>;
+};
 
 function working(grid: Grid): Working {
   return { sheets: [...grid.sheets], cells: new Map(grid.cells), log: [...grid.log] };
+}
+
+// The keys of sheet `sheetId`'s entries in `keys`, an empty set added if it has none.
+function keySet(keys: Map<number, Set<string>>, sheetId: number): Set<string> {
+  let set = keys.get(sheetId);
+  if (!set) keys.set(sheetId, set = new Set());
+  return set;
+}
+
+// The keys of the entries on sheet `sheetId`, which the caller may add to or delete from. The
+// first call indexes every entry's key by its sheet and `enter` keeps the index from then on, so
+// changes that only write cells never build it.
+function keysOn(work: Working, sheetId: number): Set<string> {
+  if (!work.keys) {
+    work.keys = new Map();
+    for (let key of work.cells.keys()) keySet(work.keys, Number(key.slice(0, key.indexOf(":")))).add(key);
+  }
+  return keySet(work.keys, sheetId);
+}
+
+function enter(work: Working, sheetId: number, key: string, entry: Entry): void {
+  work.cells.set(key, entry);
+  if (work.keys) keySet(work.keys, sheetId).add(key);
+}
+
+// How many cells of `rows` by `columns` of sheet `sheetId` hold no entry yet.
+function unentered(
+  work: Working, sheetId: number, rows: readonly (string | undefined)[], columns: readonly (string | undefined)[],
+): number {
+  let count = 0;
+  for (let row of rows) {
+    for (let column of columns) if (!work.cells.has(cellKey(sheetId, row!, column!))) count++;
+  }
+  return count;
+}
+
+// The entries `change`, which applies to `work`, adds: the cells a write or clear enters that hold
+// none yet, or those a copy takes from its original.
+function entriesAdded(work: Working, change: PlannedChange): number {
+  if (change.op === "duplicateSheet") return keysOn(work, change.sheetId).size;
+  if (!isCellChange(change)) return 0;
+  let sheet = work.sheets.find(candidate => candidate.id === change.sheetId)!;
+  let { rect } = change;
+  return unentered(work, sheet.id, linesAt(sheet.rows, rect.startRow, rect.endRow),
+    linesAt(sheet.columns, rect.startColumn, rect.endColumn));
 }
 
 // `sheets` with `sheet` placed at its index and those from there on one along, as Google inserts one.
@@ -140,6 +195,14 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
       throw conflict(`position ${index} is past the spreadsheet's ${plural(work.sheets.length, "sheet")}`);
     }
   };
+  // Checked before the entries are made, so a replay that would grow past the limit stops short.
+  let room = (added: number) => {
+    let total = work.cells.size + added;
+    if (total > MAX_QUEUED_ENTRIES) {
+      throw conflict(`it would bring the cells queued changes enter to ${total.toLocaleString("en-US")}, ` +
+        `more than the ${MAX_QUEUED_ENTRIES.toLocaleString("en-US")} that may be queued`);
+    }
+  };
 
   switch (change.op) {
     case "writeCells":
@@ -150,9 +213,10 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
       if (outside !== undefined) throw conflict(`${outside} is outside "${sheet.title}"`);
       let rows = linesAt(sheet.rows, rect.startRow, rect.endRow);
       let columns = linesAt(sheet.columns, rect.startColumn, rect.endColumn);
+      room(unentered(work, sheet.id, rows, columns));
       rows.forEach((row, r) => columns.forEach((column, c) => {
         let input = change.op === "writeCells" ? change.values[r][c] : null;
-        work.cells.set(cellKey(sheet.id, row!, column!), { input, at: work.log.length, by });
+        enter(work, sheet.id, cellKey(sheet.id, row!, column!), { input, at: work.log.length, by });
       }));
       let range = gridRange(change.sheetId, rect);
       // Cells of `range` that `rows` leaves out are cleared, so a clear sends none.
@@ -190,16 +254,19 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
       let source = existing(change.sheetId);
       let { newSheetId, title, index } = change;
       unused(newSheetId, title, index);
+      let copied = keysOn(work, source.id);
+      room(copied.size);
       work.sheets = placed(work.sheets, {
         id: newSheetId, title, index, rowCount: source.rowCount, columnCount: source.columnCount,
         rows: source.rows, columns: source.columns,
         ...(source.source === undefined ? {} : { source: source.source }),
+        ...(source.frozenRowCount === undefined ? {} : { frozenRowCount: source.frozenRowCount }),
+        ...(source.frozenColumnCount === undefined ? {} : { frozenColumnCount: source.frozenColumnCount }),
       });
-      // The copy holds what is queued for the original, and its cells move with its own lines. The
-      // keys added name the copy, so the loop skips them.
-      for (let [key, entry] of work.cells) {
-        let [sheetId, row, column] = key.split(":");
-        if (Number(sheetId) === source.id) work.cells.set(cellKey(newSheetId, row, column), entry);
+      // The copy holds what is queued for the original, and its cells move with its own lines.
+      for (let key of copied) {
+        let [, row, column] = key.split(":");
+        enter(work, newSheetId, cellKey(newSheetId, row, column), work.cells.get(key)!);
       }
       work.log.push({ kind: "duplicate", sheetId: source.id, title: source.title, newSheetId, newTitle: title });
       // Google picks a localized name, and the first position, for a copy given neither.
@@ -213,9 +280,8 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
         throw conflict(`"${sheet.title}" is the spreadsheet's only visible sheet`);
       }
       work.sheets = removed(work.sheets, sheet);
-      for (let key of work.cells.keys()) {
-        if (Number(key.split(":")[0]) === sheet.id) work.cells.delete(key);
-      }
+      for (let key of keysOn(work, sheet.id)) work.cells.delete(key);
+      work.keys!.delete(sheet.id);
       work.log.push({ kind: "deleteSheet", sheetId: sheet.id, title: sheet.title });
       return { deleteSheet: { sheetId: sheet.id } };
     }
@@ -247,11 +313,15 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
           "cannot be deleted");
       }
       if (change.count >= count) throw conflict(`it would delete every ${noun} of "${sheet.title}"`);
-      let deleted = new Set(linesAt(lines, change.start, change.start + change.count));
+      // A band may span millions of lines, so the sheet's entries are found by their position.
       let part = axis === "rows" ? 1 : 2;
-      for (let key of work.cells.keys()) {
-        let parts = key.split(":");
-        if (Number(parts[0]) === sheet.id && deleted.has(parts[part])) work.cells.delete(key);
+      let keys = keysOn(work, sheet.id);
+      for (let key of keys) {
+        let position = positionOf(lines, key.split(":")[part]);
+        if (position !== undefined && position >= change.start && position < change.start + change.count) {
+          work.cells.delete(key);
+          keys.delete(key);
+        }
       }
       next = deleteLines(lines, change.start, change.count);
       work.log.push({ kind: "delete", sheetId: sheet.id, title: sheet.title, axis, start: change.start, count: change.count });
@@ -378,6 +448,17 @@ export function resolveChanges(
           return resolveLines(change, sheetFor(change.sheetId), label, fits);
       }
     })();
+    let added = entriesAdded(work, next);
+    let total = work.cells.size + added;
+    if (total > MAX_QUEUED_ENTRIES) {
+      let what = next.op === "duplicateSheet"
+        ? `copying "${work.sheets.find(sheet => sheet.id === next.sheetId)?.title}" adds its ` +
+          `${plural(added, "queued cell")} to the copy, which`
+        : "it";
+      throw new Error(`${label}: ${what} would bring the cells queued changes enter to ` +
+        `${total.toLocaleString("en-US")}, and at most ${MAX_QUEUED_ENTRIES.toLocaleString("en-US")} may ` +
+        "be queued. Approve or reject queued changes first.");
+    }
     applyOne(work, next, 0, unexpected(i, next));
     return next;
   });
@@ -467,28 +548,14 @@ export function planSheet(
   if (changes.length === 0) return { grid, requests: [] };
   let work = working(grid);
   let requests = changes.map((change, i) => applyOne(work, change, by, unexpected(i, change)));
-  return { grid: work, requests };
-}
-
-// Runs of consecutive positions, leaving out those undefined.
-function runsOf(positions: readonly (number | undefined)[]): { start: number; end: number }[] {
-  let runs: { start: number; end: number }[] = [];
-  for (let position of positions) {
-    if (position === undefined) continue;
-    let last = runs.at(-1);
-    if (last && last.end === position) last.end++;
-    else runs.push({ start: position, end: position + 1 });
-  }
-  return runs;
+  return { grid: { sheets: work.sheets, cells: work.cells, log: work.log }, requests };
 }
 
 // The cells `rect` of `sheet` covers as they were in `original`, the same sheet before the batch,
 // in as few rectangles as lines the batch inserted leave possible.
 function mappedBack(original: SimSheet, sheet: SimSheet, rect: Rect): SheetArea[] {
-  let rows = runsOf(linesAt(sheet.rows, rect.startRow, rect.endRow)
-    .map(row => row === undefined ? undefined : positionOf(original.rows, row)));
-  let columns = runsOf(linesAt(sheet.columns, rect.startColumn, rect.endColumn)
-    .map(column => column === undefined ? undefined : positionOf(original.columns, column)));
+  let rows = positionsIn(original.rows, sheet.rows, rect.startRow, rect.endRow);
+  let columns = positionsIn(original.columns, sheet.columns, rect.startColumn, rect.endColumn);
   return rows.flatMap(r => columns.map(c => ({
     sheetId: sheet.id, rect: { startRow: r.start, endRow: r.end, startColumn: c.start, endColumn: c.end },
   })));
@@ -598,32 +665,46 @@ function structuralSheets(change: PlannedChange): number[] {
 
 /**
  * The queued changes a batch builds on, which must have been applied before it: those that
- * entered what `cells` of `grid` hold, and those changing rows, columns or sheets of a sheet the
- * batch acts on.
+ * entered what `cells` of `grid` hold, those that entered what a sheet the batch copies holds as
+ * it is copied, and those changing rows, columns or sheets of a sheet the batch acts on, or of any
+ * sheet when the batch enters a formula, copies a sheet, or `guardsFormula`, its guard digests one.
  */
 export function guardAfter(
   grid: Grid, pending: readonly QueuedChange[], planned: readonly PlannedChange[],
-  cells: readonly SheetArea[],
+  cells: readonly SheetArea[], guardsFormula = false,
 ): number[] {
   let after = new Set<number>();
-  if (grid.cells.size > 0) {
-    for (let { sheetId, rect } of cells) {
-      let sheet = grid.sheets.find(candidate => candidate.id === sheetId);
-      if (!sheet) continue;
-      let columns = linesAt(sheet.columns, rect.startColumn, rect.endColumn);
-      for (let row of linesAt(sheet.rows, rect.startRow, rect.endRow)) {
-        for (let column of columns) {
-          let entry = row === undefined || column === undefined
-            ? undefined : grid.cells.get(cellKey(sheetId, row, column));
-          if (entry && entry.by !== 0) after.add(entry.by);
+  // Each entry is found in `cells` by its position, so no line of them is listed.
+  for (let [key, entry] of grid.cells) {
+    if (entry.by === 0 || after.has(entry.by)) continue;
+    let [sheetId, row, column] = key.split(":");
+    let sheet = grid.sheets.find(candidate => candidate.id === Number(sheetId));
+    if (!sheet) continue;
+    let r = positionOf(sheet.rows, row);
+    let c = positionOf(sheet.columns, column);
+    if (r === undefined || c === undefined) continue;
+    if (cells.some(area => area.sheetId === sheet.id && within(area.rect, r, c))) after.add(entry.by);
+  }
+  // A copy holds what is queued for its original as the batch copies it, so a copy of a copy the
+  // batch made holds that copy's.
+  if (grid.cells.size > 0 && planned.some(change => change.op === "duplicateSheet")) {
+    let work = working(grid);
+    planned.forEach((change, i) => {
+      if (change.op === "duplicateSheet") {
+        for (let key of keysOn(work, change.sheetId)) {
+          let { by } = work.cells.get(key)!;
+          if (by !== 0) after.add(by);
         }
       }
-    }
+      applyOne(work, change, 0, unexpected(i, change));
+    });
   }
   let addressed = new Set(guardedSheets(planned));
-  // A formula names rows, columns and sheets as earlier structure leaves them, on any sheet, so a
-  // batch with one depends on every structural change queued before it.
-  let formulas = planned.some(change => change.op === "writeCells" && change.values.some(row => row.some(isFormula)));
+  // A formula names rows, columns and sheets as earlier structure leaves them, on any sheet, as do
+  // those a copy takes from its original and those the guard digests, so a batch with one depends
+  // on every structural change queued before it.
+  let formulas = guardsFormula || planned.some(change => change.op === "duplicateSheet" ||
+    (change.op === "writeCells" && change.values.some(row => row.some(isFormula))));
   for (let { id, action } of pending) {
     if (action.payload.changes.some(change => structuralSheets(change).some(sheetId =>
       formulas || addressed.has(sheetId)))) {

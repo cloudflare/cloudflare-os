@@ -417,8 +417,9 @@ names columns by letter, or uses a name such as a named range, reads `null` and 
 `pendingCells`, as are cells a queued formula enters. Cells of inserted rows and columns and of
 added sheets read as empty. Deleting a sheet leaves the formulas that refer to it as written, as
 Google does; they read `#REF!` once it applies, and stay so even if a later sheet takes the title.
-One thing is not simulated: the cells an array formula such as `SORT` or `SEQUENCE` fills read as
-the values Google last computed, moved with their rows and columns, although Google recomputes them.
+Once rows, columns or sheets are queued, cells Google fills with nothing entered in them, such as an
+array formula's results (`SORT`, `SEQUENCE`, `FILTER`, `QUERY`) or a pivot table, read `null` and
+are listed in `pendingCells`.
 
 Sheets has no revision to pin a write to, so each approved batch is planned against a fresh read
 and guarded by a digest of what it overwrites or removes: the cells it writes and the rows,
@@ -439,9 +440,10 @@ outcome could still land, later changes stay pending.
 
 A change is refused when it is queued if the connected account can only view the spreadsheet, or
 if it writes outside a sheet's grid or into a protected range the account cannot edit. A change
-addresses at most 10,000 cells and a batch 20,000, a cell holds at most 50,000 characters, and a
-queued batch is capped at 100 KiB. Google allows 60 write requests a minute per user; a write over
-that quota stays pending.
+addresses at most 10,000 cells and a batch 20,000, a cell holds at most 50,000 characters, the
+changes queued at once may enter at most 100,000 cells in all (a copied sheet counting the cells
+changes queued to it enter), and a queued batch is capped at 100 KiB. Google allows 60 write requests a minute per user; a write over that quota
+stays pending.
 
 ## Google Drive read-only bindings
 

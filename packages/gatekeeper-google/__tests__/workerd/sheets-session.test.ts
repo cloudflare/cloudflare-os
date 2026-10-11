@@ -44,16 +44,26 @@ const METADATA = spreadsheetMetadata("sheet-1", "Budget", [
 ]);
 
 let providerFetches: URL[];
-/** The body of each data-filter read, in order. */
+/** The body of each data-filter read of values, in order. */
 let dataFilterReads: {
   dataFilters: { gridRange: Required<FixtureGridRange> }[];
   valueRenderOption: string;
   dateTimeRenderOption?: string;
 }[];
+/** The grid ranges of each read of cells as entered, in order. */
+let enteredReads: Required<FixtureGridRange>[][];
+
+/** The cells of `gridRange`, each named by its own sheet, row and column. */
+function named({ sheetId, startRowIndex, endRowIndex, startColumnIndex, endColumnIndex }: Required<FixtureGridRange>) {
+  return Array.from({ length: endRowIndex - startRowIndex }, (_row, r) =>
+    Array.from({ length: endColumnIndex - startColumnIndex }, (_column, c) =>
+      `${sheetId}:${startRowIndex + r}:${startColumnIndex + c}`));
+}
 
 beforeEach(() => {
   providerFetches = [];
   dataFilterReads = [];
+  enteredReads = [];
   vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     let request = new Request(input, init);
     let url = new URL(request.url);
@@ -71,12 +81,24 @@ beforeEach(() => {
       dataFilterReads.push(body);
       // Each cell holds its own sheet, row and column, so a test can tell which cell a value came from.
       return Response.json(byDataFilter(body.dataFilters.map(({ gridRange }) => ({
-        gridRange,
-        range: "",
-        values: Array.from({ length: gridRange.endRowIndex - gridRange.startRowIndex }, (_row, r) =>
-          Array.from({ length: gridRange.endColumnIndex - gridRange.startColumnIndex }, (_column, c) =>
-            `${gridRange.sheetId}:${gridRange.startRowIndex + r}:${gridRange.startColumnIndex + c}`)),
+        gridRange, range: "", values: named(gridRange),
       }))));
+    }
+    if (url.pathname.endsWith(":getByDataFilter")) {
+      let { dataFilters } = await request.json() as { dataFilters: { gridRange: Required<FixtureGridRange> }[] };
+      enteredReads.push(dataFilters.map(({ gridRange }) => gridRange));
+      // Each cell holds the text naming it; a sheet's entry lists a block per range on it.
+      let sheetIds = [...new Set(dataFilters.map(({ gridRange }) => gridRange.sheetId))].toSorted((a, b) => a - b);
+      return Response.json({
+        sheets: sheetIds.map(sheetId => ({
+          properties: { sheetId },
+          data: dataFilters.filter(({ gridRange }) => gridRange.sheetId === sheetId).map(({ gridRange }) => ({
+            startRow: gridRange.startRowIndex,
+            startColumn: gridRange.startColumnIndex,
+            rowData: named(gridRange).map(row => ({ values: row.map(stringValue => ({ userEnteredValue: { stringValue } })) })),
+          })),
+        })),
+      });
     }
     // The fake honours only whether protected ranges were asked for; it never sends editors.
     let fields = url.searchParams.get("fields") ?? "";
@@ -237,17 +259,15 @@ describe("Google Sheets spreadsheet session", () => {
     // No range names the title Google holds, so none is read by A1 range.
     expect(providerFetches.filter(url => url.pathname.endsWith("/values:batchGet"))).toEqual([]);
     // The inserted row splits the range into the two rows around it, read as entered too, to tell
-    // formulas apart.
+    // formulas from text.
     let pieces = [
       { sheetId: 0, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: 2 },
       { sheetId: 0, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 0, endColumnIndex: 2 },
     ];
     expect(dataFilterReads.map(({ dataFilters, valueRenderOption, dateTimeRenderOption }) =>
-      ({ gridRanges: dataFilters.map(({ gridRange }) => gridRange), valueRenderOption, dateTimeRenderOption }))
-      .toSorted((a, b) => a.valueRenderOption.localeCompare(b.valueRenderOption))).toEqual([
-      { gridRanges: pieces, valueRenderOption: "FORMULA", dateTimeRenderOption: undefined },
-      { gridRanges: pieces, valueRenderOption: "UNFORMATTED_VALUE", dateTimeRenderOption: "SERIAL_NUMBER" },
-    ]);
+      ({ gridRanges: dataFilters.map(({ gridRange }) => gridRange), valueRenderOption, dateTimeRenderOption })))
+      .toEqual([{ gridRanges: pieces, valueRenderOption: "UNFORMATTED_VALUE", dateTimeRenderOption: "SERIAL_NUMBER" }]);
+    expect(enteredReads).toEqual([pieces]);
   });
 
   it("fetches at most 20 pieces of what Google holds for a read with rows queued", async () => {
@@ -260,7 +280,10 @@ describe("Google Sheets spreadsheet session", () => {
     let read = await session.readRange("Sales!A1:A40", { valueMode: "formula" });
 
     expect(read.values).toEqual(Array.from({ length: 40 }, (_, i) => [i % 2 === 0 ? `0:${i / 2}:0` : null]));
-    expect(dataFilterReads.map(({ dataFilters }) => dataFilters.length)).toEqual([20]);
+    // A formula-mode read asks for the same two reads as any other mode.
+    expect(enteredReads.map(gridRanges => gridRanges.length)).toEqual([20]);
+    expect(dataFilterReads.map(({ dataFilters, valueRenderOption }) => [dataFilters.length, valueRenderOption]))
+      .toEqual([[20, "FORMULA"]]);
 
     // A column inserted too splits each of those pieces in two.
     let { session: split } = newSession([rows, queuedBatch(2, [{ op: "insertColumns", sheetId: 0, start: 1, count: 1 }])]);
@@ -268,6 +291,7 @@ describe("Google Sheets spreadsheet session", () => {
     await expect(Promise.resolve(split.readRange("Sales!A1:C40"))).rejects.toThrow(
       "These ranges cannot be read with the queued changes applied. Read fewer cells, or approve or " +
       "reject the queued changes first.");
+    expect(enteredReads).toHaveLength(1);
     expect(dataFilterReads).toHaveLength(1);
     expect(providerFetches.filter(url => url.pathname.endsWith("/values:batchGet"))).toEqual([]);
   });

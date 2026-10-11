@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SheetArea } from "../src/sheets-api";
+import { rewriteFormula, tokenize } from "../src/sheets-formula";
+import type { EnteredValue } from "../src/sheets-model";
 import { planSheet } from "../src/sheets-plan";
 import type { SpreadsheetCellValue, SpreadsheetValueMode } from "../src/sheets-read-types";
 import {
@@ -8,7 +10,10 @@ import {
   type Grid, type PlannedChange, type QueuedChange, type SheetMeta, type SheetsAction,
 } from "../src/sheets-simulation";
 import { positionOf } from "../src/sheets-structure";
-import { grid, rect, sheet } from "./sheets-fixture";
+import { ERROR_VALUE_READS, grid, rect, sheet } from "./sheets-fixture";
+
+// Every export calls through to its own code; the spies only count calls from other modules.
+vi.mock("../src/sheets-formula", { spy: true });
 
 function queued(
   id: number, changes: PlannedChange[], kind: SheetsAction["kind"] = "updateSpreadsheet", sheets: Record<string, string> = {},
@@ -35,7 +40,7 @@ const SALES = sheet(0, "Sales");
 const COSTS = sheet(1, "Costs", { index: 1 });
 
 /** Nothing Google holds: every cell blank. */
-const BLANK = { shown: baseValues([], []), formulas: baseValues([], []) };
+const BLANK = { entered: baseValues<EnteredValue>([], []), shown: baseValues([], []) };
 
 /** Each sheet's ID, title, index and whether it is hidden. */
 const summary = (g: Grid) => g.sheets.map(({ id, title, index, hidden }) => [id, title, index, hidden ?? false]);
@@ -240,7 +245,7 @@ describe("Sheets formulas through queued structure", () => {
     expect(formulaAt(copied, 5, held, 0).text).toBe("=A2+'Sales copy'!B2");
     // The same formula held by Google in A1 of Sales, read on the copy, where it is now in A2.
     let piece = { sheetId: 0, rect: rect(0, 0) };
-    let base = { shown: baseValues([piece], [[[3]]]), formulas: baseValues([piece], [[[held]]]) };
+    let base = { entered: baseValues<EnteredValue>([piece], [[[{ formula: held }]]]), shown: baseValues([piece], [[[held]]]) };
     expect(simulatedRange(copied, { sheetId: 5, rect: rect(0, 0, 2, 1), rows: 2, columns: 1 }, base, "formula"))
       .toEqual({ range: "'Sales copy'!A1:A2", values: [[null], ["=A2+'Sales copy'!B2"]] });
   });
@@ -256,6 +261,21 @@ describe("Sheets formulas through queued structure", () => {
     expect(formulaAt(renamed, 0, "=Costs!A1", 0)).toEqual({ text: "=New!A1", cellsChanged: false, broken: false });
   });
 
+  it("follows a title only while a sheet holds it, whichever sheet that is", () => {
+    // Costs is deleted, a sheet "costs" takes its title and is renamed "COSTS", with rows
+    // inserted on it before and after.
+    let retitled = planSheet(grid([SALES, COSTS]), [
+      { op: "deleteSheet", sheetId: 1, rowCount: COSTS.rowCount, columnCount: COSTS.columnCount },
+      { op: "addSheet", sheetId: 4, title: "costs", index: 1, rowCount: 5, columnCount: 5 },
+      { op: "insertRows", sheetId: 4, start: 0, count: 1 },
+      { op: "renameSheet", sheetId: 4, title: "COSTS" },
+      { op: "insertRows", sheetId: 4, start: 0, count: 1 },
+    ]).grid;
+    expect(formulaAt(retitled, 0, "=Costs!A1", 0)).toEqual({ text: "=Costs!A1", cellsChanged: true, broken: true });
+    expect(formulaAt(retitled, 0, "=Costs!A1", 2)).toEqual({ text: "=COSTS!A3", cellsChanged: false, broken: false });
+    expect(formulaAt(retitled, 0, "=Costs!A1", 4)).toEqual({ text: "=Costs!A2", cellsChanged: false, broken: false });
+  });
+
   it("leaves a reference to a deleted sheet as written when another sheet takes its title", () => {
     let replaced = planSheet(grid([SALES, COSTS]), [
       { op: "deleteSheet", sheetId: 1, rowCount: COSTS.rowCount, columnCount: COSTS.columnCount },
@@ -268,6 +288,83 @@ describe("Sheets formulas through queued structure", () => {
   });
 });
 
+describe("Sheets formulas through steps that cannot change them", () => {
+  // Sales holds the formulas; 50 rows are inserted on Other, one at a time.
+  let sheets = [
+    sheet(0, "Sales", { rowCount: 2_000, columnCount: 25 }), sheet(1, "S1", { index: 1 }), sheet(2, "Other", { index: 2 }),
+  ];
+  let g = replayed(gridOf({ sheets }), [queued(1, Array.from({ length: 50 }, () => insertRows(2, 1)))]);
+  let formula = "=SUM(A1:B2)+Sales!C3*'S1'!A1";
+
+  beforeEach(() => {
+    vi.mocked(tokenize).mockClear();
+    vi.mocked(rewriteFormula).mockClear();
+  });
+
+  it("reads a formula only once to pass every step on a sheet it neither is on nor names", () => {
+    expect(formulaAt(g, 0, formula, 0)).toEqual({ text: formula, cellsChanged: false, broken: false });
+    expect(tokenize).toHaveBeenCalledTimes(1);
+    expect(rewriteFormula).not.toHaveBeenCalled();
+    // Unqualified references follow none of those steps, so nothing is read at all.
+    expect(formulaAt(g, 0, "=SUM(A1:B2)", 0).text).toBe("=SUM(A1:B2)");
+    expect(tokenize).toHaveBeenCalledTimes(1);
+  });
+
+  it("rewrites through every step on the sheet a formula is on, or one it names", () => {
+    expect(formulaAt(g, 2, "=A1", 0).text).toBe("=A51");
+    expect(rewriteFormula).toHaveBeenCalledTimes(50);
+    expect(formulaAt(g, 0, "=other!A2+A2", 0).text).toBe("=other!A52+A2");
+    expect(rewriteFormula).toHaveBeenCalledTimes(100);
+  });
+
+  it("reads 50,000 formulas through the steps without rewriting one", () => {
+    let piece = { sheetId: 0, rect: rect(0, 0, 2_000, 25) };
+    let formulas = Array.from({ length: 2_000 }, (_row, r) => Array.from({ length: 25 }, () =>
+      ({ formula: `=SUM(A${r + 1}:B${r + 2})+Sales!C3*'S1'!A1` })));
+    let saved = formulas.map(line => line.map(() => 7));
+    let base = { entered: baseValues<EnteredValue>([piece], [formulas]), shown: baseValues([piece], [saved]) };
+    let started = performance.now();
+    let read = simulatedRange(g, { ...piece, rows: 2_000, columns: 25 }, base, "raw");
+    let elapsed = performance.now() - started;
+    expect(read).toEqual({ range: "Sales!A1:Y2000", values: saved });
+    expect(rewriteFormula).not.toHaveBeenCalled();
+    // At most one read of each formula for the sheets it names; `structureSensitive` reads it in
+    // its own module.
+    expect(vi.mocked(tokenize).mock.calls.length).toBeLessThanOrEqual(50_000);
+    expect(elapsed).toBeLessThan(3_000);
+  });
+
+  it("reads 50,000 formulas through 2,500 steps on other sheets without visiting one", () => {
+    // Sheets T1 to T1250 are added, each followed by a row inserted on Other.
+    let steps = Array.from({ length: 1_250 }, (_step, i): PlannedChange[] => [
+      { op: "addSheet", sheetId: 100 + i, title: `T${i + 1}`, index: 3 + i, rowCount: 1, columnCount: 1 },
+      insertRows(2, 1),
+    ]).flat();
+    let long = replayed(gridOf({ sheets }), [queued(1, steps)]);
+    expect(long.log).toHaveLength(2_500);
+    let piece = { sheetId: 0, rect: rect(0, 0, 2_000, 25) };
+    let formulas = Array.from({ length: 2_000 }, (_row, r) => Array.from({ length: 25 }, () =>
+      ({ formula: `=SUM(A${r + 1}:B${r + 2})+Sales!C3*'S1'!A1` })));
+    let saved = formulas.map(line => line.map(() => 7));
+    let base = { entered: baseValues<EnteredValue>([piece], [formulas]), shown: baseValues([piece], [saved]) };
+    let started = performance.now();
+    let read = simulatedRange(long, { ...piece, rows: 2_000, columns: 25 }, base, "raw");
+    let elapsed = performance.now() - started;
+    expect(read).toEqual({ range: "Sales!A1:Y2000", values: saved });
+    expect(rewriteFormula).not.toHaveBeenCalled();
+    expect(vi.mocked(tokenize).mock.calls.length).toBeLessThanOrEqual(50_000);
+    expect(elapsed).toBeLessThan(3_000);
+    // A formula entered after the last sheet is added visits only the row inserted after it.
+    expect(formulaAt(long, 0, "=T1250!A1+Other!A1", 2_499))
+      .toEqual({ text: "=T1250!A1+Other!A2", cellsChanged: false, broken: false });
+    expect(rewriteFormula).toHaveBeenCalledTimes(1);
+    // One naming a sheet before it is added is set aside at the first step, and visits no other.
+    vi.mocked(tokenize).mockClear();
+    expect(formulaAt(long, 0, "=T1!A1+T1250!A1", 0)).toEqual({ text: "=T1!A1+T1250!A1", cellsChanged: false, broken: true });
+    expect(vi.mocked(tokenize).mock.calls.length).toBeLessThanOrEqual(3);
+  });
+});
+
 describe("Sheets reads with structure queued", () => {
   let SHEET = sheet(0, "Sales", { rowCount: 10, columnCount: 4 });
   let OTHER = sheet(1, "Other", { index: 1, rowCount: 10, columnCount: 4 });
@@ -276,7 +373,7 @@ describe("Sheets reads with structure queued", () => {
   function shown(formula: string, steps: PlannedChange[], mode: SpreadsheetValueMode = "raw") {
     let g = planSheet(gridOf({ sheets: [SHEET, OTHER] }), steps).grid;
     let piece = { sheetId: 0, rect: rect(9, 3) };
-    let base = { shown: baseValues([piece], [[[42]]]), formulas: baseValues([piece], [[[formula]]]) };
+    let base = { entered: baseValues<EnteredValue>([piece], [[[{ formula }]]]), shown: baseValues([piece], [[[42]]]) };
     let sales = g.sheets.find(({ id }) => id === 0)!;
     let at = rect(positionOf(sales.rows, "b9")!, positionOf(sales.columns, "b3")!);
     return simulatedRange(g, { sheetId: 0, rect: at, rows: 1, columns: 1 }, base, mode);
@@ -322,7 +419,7 @@ describe("Sheets reads with structure queued", () => {
     expect(pieces).toEqual([
       { sheetId: 0, rect: rect(0, 0, 1, 1) }, { sheetId: 0, rect: rect(1, 0, 1, 1) },
     ]);
-    let base = { shown: baseValues(pieces, [[["a1"]], [["a2"]]]), formulas: baseValues(pieces, [[["a1"]], [["a2"]]]) };
+    let base = { entered: baseValues(pieces, [[["a1"]], [["a2"]]]), shown: baseValues(pieces, [[["a1"]], [["a2"]]]) };
     expect(simulatedRange(g, { sheetId: 0, rect: rect(0, 0, 3, 2), rows: 3, columns: 2 }, base, "formatted"))
       .toEqual({ range: "Sales!A1:B3", values: [[null, "a1"], [null, null], [null, "a2"]] });
     expect(simulatedRange(g, { sheetId: 3, rect: rect(0, 0, 2, 2), rows: 2, columns: 2 }, BLANK))
@@ -335,18 +432,19 @@ describe("Sheets reads with structure queued", () => {
       queued(2, [insertRows(0, 2)]),
     ]);
     let piece = { sheetId: 0, rect: rect(0, 0, 2, 4) };
-    let formulas = baseValues<SpreadsheetCellValue>([piece], [[["=A2+1", "old", "old", true], ["x", 5]]]);
+    let entered = baseValues<EnteredValue>([piece], [[[{ formula: "=A2+1" }, "old", "old", true], ["x", 5]]]);
     let area = { sheetId: 0, rect: rect(0, 0, 3, 4), rows: 3, columns: 4 };
-    let read = (values: SpreadsheetCellValue[][], mode: SpreadsheetValueMode) =>
-      simulatedRange(g, area, { shown: baseValues([piece], [values]), formulas }, mode);
-    expect(read([["=A2+1", "old", "old", true], ["x", 5]], "formula")).toEqual({
+    let read = (mode: SpreadsheetValueMode, values: SpreadsheetCellValue[][]) =>
+      simulatedRange(g, area, { entered, shown: baseValues([piece], [values]) }, mode);
+    // A formula-mode read shows what cells hold as entered.
+    expect(read("formula", [["=A2+1", "old", "old", true], ["x", 5]])).toEqual({
       range: "Sales!A1:D3", values: [["=A3+1", "=A3", 7, true], [null, null, null, null], ["x", 5, null, null]],
     });
-    expect(read([[3, "old", "old", true], ["x", 5]], "raw")).toEqual({
+    expect(read("raw", [[3, "old", "old", true], ["x", 5]])).toEqual({
       range: "Sales!A1:D3", values: [[3, null, 7, true], [null, null, null, null], ["x", 5, null, null]],
       pendingCells: ["B1"],
     });
-    expect(read([["$3.00", "old", "old", "TRUE"], ["x", "$5.00"]], "formatted")).toEqual({
+    expect(read("formatted", [["$3.00", "old", "old", "TRUE"], ["x", "$5.00"]])).toEqual({
       range: "Sales!A1:D3",
       values: [["$3.00", null, null, "TRUE"], [null, null, null, null], ["x", "$5.00", null, null]],
       pendingCells: ["B1", "C1"],
@@ -363,11 +461,80 @@ describe("Sheets reads with structure queued", () => {
     expect(once.cells.get("0:n0.0:b0")).toEqual({ input: "=B1", at: 1, by: 1 });
     let area = { sheetId: 0, rect: rect(0, 0), rows: 1, columns: 1 };
     expect(simulatedRange(once, area, BLANK, "formula").values).toEqual([["=B1"]]);
-    expect(enteredContent(once, [{ sheetId: 0, rect: rect(0, 0) }], BLANK.formulas)).toEqual([[[{ formula: "=B1" }]]]);
+    expect(enteredContent(once, [{ sheetId: 0, rect: rect(0, 0) }], BLANK.entered)).toEqual([[[{ formula: "=B1" }]]]);
     let twice = replayed(gridOf({ sheets: [SHEET] }), [...entered, queued(2, [insertRows(0, 1)])]);
     expect(simulatedRange(twice, { ...area, rect: rect(1, 0) }, BLANK, "formula"))
       .toEqual({ range: "Sales!A2", values: [["=B2"]] });
-    expect(enteredContent(twice, [{ sheetId: 0, rect: rect(1, 0) }], BLANK.formulas)).toEqual([[[{ formula: "=B2" }]]]);
+    expect(enteredContent(twice, [{ sheetId: 0, rect: rect(1, 0) }], BLANK.entered)).toEqual([[[{ formula: "=B2" }]]]);
+  });
+
+  it("moves text starting with = as text, rewriting and pending only formulas", () => {
+    // A1 and C1 hold text, B1 and D1 the same characters as formulas; a row goes in above them.
+    let g = planSheet(gridOf({ sheets: [SHEET] }), [insertRows(0, 1)]).grid;
+    let piece = { sheetId: 0, rect: rect(0, 0, 1, 4) };
+    let entered = baseValues<EnteredValue>([piece], [[["=A1", { formula: "=A1" }, "=ROW()", { formula: "=ROW()" }]]]);
+    let area = { sheetId: 0, rect: rect(0, 0, 2, 4), rows: 2, columns: 4 };
+    let blank = [null, null, null, null];
+
+    let formulas = baseValues([piece], [[["=A1", "=A1", "=ROW()", "=ROW()"]]]);
+    expect(simulatedRange(g, area, { entered, shown: formulas }, "formula"))
+      .toEqual({ range: "Sales!A1:D2", values: [blank, ["=A1", "=A2", "=ROW()", "=ROW()"]] });
+    let raw = baseValues([piece], [[["=A1", 7, "=ROW()", 1]]]);
+    expect(simulatedRange(g, area, { entered, shown: raw }, "raw"))
+      .toEqual({ range: "Sales!A1:D2", values: [blank, ["=A1", 7, "=ROW()", null]], pendingCells: ["D2"] });
+    // The guard sees the same.
+    expect(enteredContent(g, [{ sheetId: 0, rect: rect(1, 0, 1, 4) }], entered))
+      .toEqual([[["=A1", { formula: "=A2" }, "=ROW()", { formula: "=ROW()" }]]]);
+  });
+
+  it("reads an error value typed into a cell as a formula-mode read shows it, and one not known pending", () => {
+    let g = planSheet(gridOf({ sheets: [SHEET, OTHER] }), [insertRows(1, 1)]).grid;
+    let types = [...ERROR_VALUE_READS.map(([type]) => type), "SOMETHING_NEW"];
+    let piece = { sheetId: 0, rect: rect(0, 0, types.length, 1) };
+    let entered = baseValues<EnteredValue>([piece], [types.map(type => [{ error: type }])]);
+    let area = { sheetId: 0, rect: piece.rect, rows: types.length, columns: 1 };
+
+    let formulas = baseValues([piece], [[...ERROR_VALUE_READS.map(([, read]) => [read]), ["#SOMETHING_NEW ()"]]]);
+    expect(simulatedRange(g, area, { entered, shown: formulas }, "formula")).toEqual({
+      range: `Sales!A1:A${types.length}`,
+      values: [...ERROR_VALUE_READS.map(([, read]) => [read]), [null]],
+      pendingCells: [`A${types.length}`],
+    });
+    // Other modes show what Google read.
+    let formatted = baseValues([piece], [types.map(() => ["#N/A"])]);
+    expect(simulatedRange(g, area, { entered, shown: formatted }, "formatted").values).toEqual(types.map(() => ["#N/A"]));
+  });
+
+  it("reads pending a cell Google fills with nothing entered in it, in every mode, once structure is queued", () => {
+    // A1 holds an array formula whose result spills into A2:A3; B1 is blank, C1 holds text.
+    let piece = { sheetId: 0, rect: rect(0, 0, 3, 3) };
+    let entered = baseValues<EnteredValue>([piece], [[[{ formula: "=SEQUENCE(3)" }, null, "x"]]]);
+    let reads: Record<SpreadsheetValueMode, SpreadsheetCellValue[][]> = {
+      formula: [["=SEQUENCE(3)", "", "x"], [2], [3]],
+      raw: [[1, "", "x"], [2], [3]],
+      formatted: [["1", "", "x"], ["2"], ["3"]],
+    };
+    let read = (g: Grid, mode: SpreadsheetValueMode) => simulatedRange(
+      g, { ...piece, rows: 3, columns: 3 }, { entered, shown: baseValues([piece], [reads[mode]]) }, mode);
+    // A row inserted on another sheet moves none of these cells.
+    let g = planSheet(gridOf({ sheets: [SHEET, OTHER] }), [insertRows(1, 1)]).grid;
+    let pendingCells = ["A2", "A3"];
+
+    expect(read(g, "formula")).toEqual({
+      range: "Sales!A1:C3", values: [["=SEQUENCE(3)", null, "x"], [null, null, null], [null, null, null]],
+      pendingCells,
+    });
+    expect(read(g, "raw")).toEqual({
+      range: "Sales!A1:C3", values: [[1, "", "x"], [null, null, null], [null, null, null]],
+      pendingCells,
+    });
+    expect(read(g, "formatted")).toEqual({
+      range: "Sales!A1:C3", values: [["1", "", "x"], [null, null, null], [null, null, null]],
+      pendingCells,
+    });
+    // With no structure queued, Google's values stand.
+    expect(read(gridOf({ sheets: [SHEET, OTHER] }), "raw"))
+      .toEqual({ range: "Sales!A1:C3", values: [[1, "", "x"], [2, null, null], [3, null, null]] });
   });
 
   it("gives the guard each cell as it is to be once queued changes apply", () => {
