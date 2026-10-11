@@ -454,6 +454,30 @@ export function overlayRange(
 export const MAX_READ_PIECES = 20;
 /** The most cells one simulated read may fetch. */
 export const MAX_READ_CELLS = 50_000;
+/**
+ * The most formula rewrites one simulated read or guard may make, counting each formula it shows
+ * once for every queued change to rows, columns or sheets: each costs a pass over the formula.
+ */
+export const MAX_FORMULA_REWRITES = 100_000;
+
+/**
+ * How many formula rewrites showing `entered`, what Google holds in a read's or guard's cells, may
+ * take in `grid`: its formulas and those queued on `sheetIds`, each once for every step of the log.
+ */
+export function formulaRewrites(
+  grid: Grid, sheetIds: readonly number[], entered: readonly (readonly (readonly EnteredValue[])[])[],
+): number {
+  if (grid.log.length === 0) return 0;
+  let formulas = 0;
+  for (let piece of entered) {
+    for (let row of piece) for (let value of row) if (holdsFormula(value)) formulas++;
+  }
+  let sheets = new Set(sheetIds);
+  for (let [key, entry] of grid.cells) {
+    if (isFormula(entry.input) && sheets.has(Number(key.slice(0, key.indexOf(":"))))) formulas++;
+  }
+  return formulas * grid.log.length;
+}
 
 /**
  * A range a read asks for in the grid: the sheet, its cells clipped to the sheet's grid as Google

@@ -5,7 +5,7 @@ import type { EnteredValue } from "../src/sheets-model";
 import { planSheet } from "../src/sheets-plan";
 import type { SpreadsheetCellValue, SpreadsheetValueMode } from "../src/sheets-read-types";
 import {
-  applyChange, basePiecesOf, baseValues, conflictReason, enteredContent, formulaAt, gridOf,
+  applyChange, basePiecesOf, baseValues, conflictReason, enteredContent, formulaAt, formulaRewrites, gridOf,
   overlayRange, rangesToFetch, replayChanges, resolveArea, simulatedRange,
   type Grid, type PlannedChange, type QueuedChange, type SheetMeta, type SheetsAction,
 } from "../src/sheets-simulation";
@@ -295,6 +295,19 @@ describe("Sheets formulas through steps that cannot change them", () => {
   ];
   let g = replayed(gridOf({ sheets }), [queued(1, Array.from({ length: 50 }, () => insertRows(2, 1)))]);
   let formula = "=SUM(A1:B2)+Sales!C3*'S1'!A1";
+
+  it("counts each formula a read shows, and each queued on the sheets read, once per step of the log", () => {
+    let entered: EnteredValue[][][] = [[[{ formula: "=A1" }, "=text", 3], [null, { formula: "=B2" }, { error: "REF" }]]];
+    expect(formulaRewrites(gridOf({ sheets }), [0], entered)).toBe(0);
+    let moved = replayed(gridOf({ sheets }), [
+      queued(1, [insertRows(0, 1), insertRows(2, 1)]),
+      queued(2, [{ op: "writeCells", sheetId: 0, rect: rect(0, 0, 1, 2), values: [["=C1", "x"]] }]),
+      queued(3, [{ op: "writeCells", sheetId: 2, rect: rect(0, 0), values: [["=D1"]] }]),
+    ]);
+    // Two formulas Google holds and one queued on Sales, through two steps.
+    expect(formulaRewrites(moved, [0], entered)).toBe(6);
+    expect(formulaRewrites(moved, [0, 2], entered)).toBe(8);
+  });
 
   beforeEach(() => {
     vi.mocked(tokenize).mockClear();

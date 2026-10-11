@@ -30,9 +30,9 @@ import type {
   GoogleSpreadsheetReadSession, SpreadsheetInfo, SpreadsheetRange, SpreadsheetValueMode,
 } from "./sheets-read-types";
 import {
-  basePiecesOf, baseValues, conflictReason, enteredContent, gridOf, holdsFormula, overlayRange,
-  rangesToFetch, replayChanges, resolveArea, simulatedRange, type Grid, type PlannedChange, type QueuedChange,
-  type SheetBatch, type SheetsAction, type SheetsActions,
+  basePiecesOf, baseValues, conflictReason, enteredContent, formulaRewrites, gridOf, holdsFormula,
+  MAX_FORMULA_REWRITES, overlayRange, rangesToFetch, replayChanges, resolveArea, simulatedRange,
+  type Grid, type PlannedChange, type QueuedChange, type SheetBatch, type SheetsAction, type SheetsActions,
 } from "./sheets-simulation";
 import type { GoogleSpreadsheetSession, SheetChange } from "./sheets-types";
 import { SHEETS_TYPES_MODULE_PREFIX, stripTypeModulePrefix } from "./type-bundle";
@@ -454,6 +454,10 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
       this.#api.readEntered(this.#spreadsheetId, pieces),
       this.#api.readAreas(this.#spreadsheetId, pieces, mode),
     ]);
+    if (formulaRewrites(grid, areas.map(area => area.sheetId), entered) > MAX_FORMULA_REWRITES) {
+      throw new Error("These ranges hold too many formulas to read with the queued changes to rows, " +
+        "columns and sheets applied. Read fewer cells, or approve or reject the queued changes first.");
+    }
     let base = { entered: baseValues(pieces, entered), shown: baseValues(pieces, shown) };
     return areas.map(area => simulatedRange(grid, area, base, mode));
   }
@@ -520,6 +524,14 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
           // holds it now, with the changes queued before it made.
           let pieces = basePiecesOf(grid, cells);
           let entered = await this.#api.readEntered(this.#spreadsheetId, pieces);
+          if (formulaRewrites(grid, cells.map(area => area.sheetId), entered) > MAX_FORMULA_REWRITES) {
+            return {
+              title: metadata.title, editable,
+              refusal: new Error("These changes overwrite or delete too many formulas that the queued " +
+                "changes to rows, columns and sheets rewrite. Change fewer cells, or approve or reject " +
+                "the queued changes first."),
+            };
+          }
           let content = enteredContent(grid, cells, baseValues(pieces, entered));
           let sha256 = await guardDigest(grid.sheets, { sheetIds: guardedSheets(planned), cells }, content);
           let formulas = content.some(area => area.some(row => row.some(holdsFormula)));

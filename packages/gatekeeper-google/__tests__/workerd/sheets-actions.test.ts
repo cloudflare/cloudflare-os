@@ -1156,6 +1156,26 @@ describe("Google Sheets changes", () => {
 });
 
 describe("Google Sheets changes to rows, columns and sheets", () => {
+  it("refuses a read or a batch whose formulas the queued structure would rewrite too often", async () => {
+    // 2,100 formulas, each read once for each of 50 queued inserts, is past 100,000 rewrites.
+    let provider = budget([sheetMeta(0, "Sales", { rowCount: 2_100, columnCount: 2 })]);
+    for (let row = 1; row <= 2_100; row++) provider.set(`Sales!A${row}`, `=B${row}*2`);
+    let sheets = gatekeeper();
+    await sheets.queued(Array.from({ length: 50 }, () => ({ op: "insertRows" as const, sheetId: 0, at: 1 })));
+
+    expect((await sheets.call("readRange", "Sales!A51:A2150")).error).toBe(
+      "These ranges hold too many formulas to read with the queued changes to rows, columns and sheets " +
+      "applied. Read fewer cells, or approve or reject the queued changes first.");
+    // 2,000 of them are within it.
+    let read = await sheets.read("Sales!A51:A2050", "formula");
+    expect(read.values[0]).toEqual(["=B51*2"]);
+    expect(read.values.at(-1)).toEqual(["=B2050*2"]);
+
+    expect((await sheets.call("updateSpreadsheet", [{ op: "clearRange", range: "Sales!A51:A2150" }])).error).toBe(
+      "These changes overwrite or delete too many formulas that the queued changes to rows, columns and " +
+      "sheets rewrite. Change fewer cells, or approve or reject the queued changes first.");
+  });
+
   it("inserts rows and writes into them in one batch, landing where the read previewed", async () => {
     let provider = budget();
     provider.results["=B2*2"] = 8;
