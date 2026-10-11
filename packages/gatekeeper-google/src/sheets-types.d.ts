@@ -152,12 +152,13 @@ export interface GoogleSpreadsheetSession extends GoogleSpreadsheetReadSession {
    *
    * A batch makes at most 50 changes, a change addresses at most 10,000 cells and a batch 20,000,
    * and a cell holds at most 50,000 characters. A batch may overwrite or delete at most 50,000
-   * cells that are already there, and the changes queued at once may enter at most 100,000 cells
-   * in all, a copy counting the cells changes queued to its sheet enter; approve or reject some to
-   * queue more. The batch as queued, values included, must also fit in 100 KiB, about 50,000
-   * characters of text in all. Changes writing outside a sheet's grid, or into a
-   * range the connected account may not edit, are refused, queuing nothing, as is any change to the
-   * rows, columns or tab of a sheet holding a range the account may not edit.
+   * cells that are already there. The changes queued at once may enter at most 100,000 cells in
+   * all, a copy counting the cells changes queued to its sheet enter, and make at most 50 changes to
+   * rows, columns and sheets; approve or reject some to queue more. The batch as queued, values
+   * included, must also fit in 100 KiB, about 50,000 characters of text in all. Changes writing
+   * outside a sheet's grid, or into a range the connected account may not edit, are refused, queuing
+   * nothing, as is any change to the rows, columns or tab of a sheet holding a range the account may
+   * not edit.
    *
    * Reads show queued changes as entered: formula reads show a queued formula as its text, and raw
    * reads show queued literal values. A queued formula's result, and in formatted reads a queued

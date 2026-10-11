@@ -4,7 +4,7 @@ import { compactFormula } from "../src/sheets-formula";
 import { prepareChanges } from "../src/sheets-input";
 import {
   checkProtections, guardAfter, guardCells, guardDigest, guardedSheets, guardFits, guardOf, MAX_GUARDED_CELLS,
-  planSheet, resolveChanges, sheetLabels,
+  MAX_QUEUED_STEPS, planSheet, resolveChanges, sheetLabels,
 } from "../src/sheets-plan";
 import { linesAt } from "../src/sheets-structure";
 import { enteredOf, type EnteredValue, type Rect } from "../src/sheets-model";
@@ -688,7 +688,7 @@ describe("Sheets copies of queued cells", () => {
     let deletion = queued(2, [{ op: "deleteRows", sheetId: 0, start: 0, count: 800 }]);
     let simulated = replayed(grid(big), [write, deletion]);
     // With the rows deleted, the copies add nothing.
-    let copied = queued(3, copies(simulated, 50).planned);
+    let copied = queued(3, copies(simulated, 49).planned);
     expect(replayed(grid(big), [write, deletion, copied]).cells.size).toBe(0);
 
     let result = replayChanges(grid(big), [write, copied]);
@@ -699,6 +699,20 @@ describe("Sheets copies of queued cells", () => {
         "the 100,000 that may be queued",
     });
     if (result.kind === "incomplete") expect(result.partial.cells.size).toBe(20_000);
+  });
+
+  it("refuses a change to rows, columns or sheets once 50 are queued, counting the batch's own", () => {
+    let inserts = (count: number) => Array.from({ length: count }, (): SheetChange => ({ op: "insertRows", sheetId: 0, at: 1 }));
+    let simulated = replayed(grid(SHEETS), [queued(1, resolveChanges(grid(SHEETS), prepareChanges(inserts(30)), minter()).planned)]);
+    expect(simulated.log).toHaveLength(30);
+    let resolving = (changes: SheetChange[]) => () => resolveChanges(simulated, prepareChanges(changes), minter(101));
+    expect(resolving(inserts(20))).not.toThrow();
+    expect(resolving(inserts(21))).toThrow(
+      `Change 21 (insertRows): ${MAX_QUEUED_STEPS} changes to rows, columns and sheets are queued already, the most ` +
+      "that may be. Approve or reject queued changes first.");
+    expect(resolving([{ op: "renameSheet", sheetId: 7, title: "Its" }, ...inserts(20)])).toThrow("Change 21 (insertRows)");
+    // Cells may still be written.
+    expect(resolving([...inserts(20), { op: "writeCells", range: "Sales!A1", values: [[1]] }])).not.toThrow();
   });
 
   it("counts every cell a write or clear enters toward 100,000, but not one already entered", () => {

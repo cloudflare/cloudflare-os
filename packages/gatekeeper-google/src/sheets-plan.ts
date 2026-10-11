@@ -38,6 +38,11 @@ export const MAX_GUARDED_CELLS = 50_000;
  * read, queued batch and apply replays each of them.
  */
 export const MAX_QUEUED_ENTRIES = 100_000;
+/**
+ * The most changes to rows, columns and sheets that may be queued at once: reads, queued batches
+ * and applies replay formulas and queued cells through each of them.
+ */
+export const MAX_QUEUED_STEPS = 50;
 /** The most cells a sheet deleted here may have, so the guard can cover them. */
 export const MAX_DELETED_SHEET_CELLS = 50_000;
 
@@ -448,6 +453,10 @@ export function resolveChanges(
           return resolveLines(change, sheetFor(change.sheetId), label, fits);
       }
     })();
+    if (!isCellChange(next) && work.log.length >= MAX_QUEUED_STEPS) {
+      throw new Error(`${label}: ${MAX_QUEUED_STEPS} changes to rows, columns and sheets are queued already, ` +
+        "the most that may be. Approve or reject queued changes first.");
+    }
     let added = entriesAdded(work, next);
     let total = work.cells.size + added;
     if (total > MAX_QUEUED_ENTRIES) {
