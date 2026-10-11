@@ -122,14 +122,13 @@ export type TestCommand = string | { command: string; idleSeconds: number }
  * line per completed test file, so silence -- not wall clock -- is what distinguishes a hang from a
  * slow suite.
  *
- * That holds only where files complete more often than this. A suite dominated by import rather than
- * execution is quiet for longer, and raises the threshold for itself with the object form of
- * `TestCommand`.
+ * Imports and concurrent workerd fleets can leave healthy cloud-container runs quiet for minutes.
+ * Allow thirty minutes by default; suites can override the idle allowance with `TestCommand`.
  */
-const IDLE_TIMEOUT_SECONDS = 60
+const IDLE_TIMEOUT_SECONDS = 1800
 
 /** Wall-clock backstop, for a command that stays chatty while looping forever. */
-const TOTAL_TIMEOUT_SECONDS = 600
+const TOTAL_TIMEOUT_SECONDS = 1800
 
 /**
  * Nothing under vitest bounds a wedged run -- its own timeouts are enforced inside the test worker

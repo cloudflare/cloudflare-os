@@ -78,16 +78,13 @@ export default {
         cache: false,
       },
       /**
-       * The unit suite needs a longer idle threshold than the watchdog's default. Import dominates
-       * its runtime (`import 261s, tests 19s` on a 4-vCPU runner, alongside three other workerd
-       * fleets), and vitest prints only as files complete, so a healthy run's silences stretch past
-       * the default once the machine is contended. The wall-clock backstop still bounds a real hang.
-       *
-       * The integration config is one file and keeps the default.
+       * Import dominates the unit suite's runtime, and vitest prints only as files complete.
+       * Both suites use the shared thirty-minute watchdog allowances so healthy cloud-container
+       * runs are not mistaken for hangs. The wall-clock backstop still bounds a real hang.
        */
       test: {
         ...vitestTask([
-          { command: 'vitest run', idleSeconds: 120 },
+          'vitest run',
           'vitest run --config vitest.integration.config.ts',
         ]),
         dependsOn: [

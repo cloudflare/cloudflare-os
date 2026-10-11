@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { describe, it } from "node:test";
 import { VITEST_MAX_WORKERS as CONCURRENCY_VITEST_MAX_WORKERS } from "./vp/concurrency.ts";
 import {
@@ -59,20 +60,20 @@ describe("withTestTimeout", () => {
   it("wraps a bare command in the default thresholds", () => {
     assert.equal(
       withTestTimeout("vitest run"),
-      "gadgets-with-timeout --idle 60 --max 600 -- vitest run");
+      "gadgets-with-timeout --idle 1800 --max 1800 -- vitest run");
   });
 
-  it("lets the object form raise only the idle threshold", () => {
+  it("lets the object form override only the idle threshold", () => {
     assert.equal(
       withTestTimeout({ command: "vitest run", idleSeconds: 120 }),
-      "gadgets-with-timeout --idle 120 --max 600 -- vitest run");
+      "gadgets-with-timeout --idle 120 --max 1800 -- vitest run");
   });
 
   it("never lets a command override the wall-clock backstop", () => {
     // The type has no such field; this pins the runtime shape against a future one.
     const wrapped = withTestTimeout(
       { command: "vitest run", idleSeconds: 30, maxSeconds: 5 } as never);
-    assert.match(wrapped, / --max 600 -- /);
+    assert.match(wrapped, / --max 1800 -- /);
   });
 });
 
@@ -82,25 +83,25 @@ describe("the progress reporter", () => {
   it("is pinned on every vitest command a builder generates", () => {
     assert.equal(
       vitestTask("vitest run").command,
-      "gadgets-with-timeout --idle 60 --max 600 -- vitest run --reporter=default");
+      "gadgets-with-timeout --idle 1800 --max 1800 -- vitest run --reporter=default");
     assert.equal(
       vitestTask({ command: "vitest run -c vitest.app.config.ts", idleSeconds: 120 }).command,
-      "gadgets-with-timeout --idle 120 --max 600 -- " +
+      "gadgets-with-timeout --idle 120 --max 1800 -- " +
         "vitest run -c vitest.app.config.ts --reporter=default");
     assert.equal(
       vitestTaskWithExclusions("vitest run", []).command,
-      "gadgets-with-timeout --idle 60 --max 600 -- vitest run --reporter=default");
+      "gadgets-with-timeout --idle 1800 --max 1800 -- vitest run --reporter=default");
   });
 
   it("leaves other commands, and a vitest command that names its own reporter, as written", () => {
     const task = vitestTask(["node scripts/codegen.ts", "vitest run --reporter=json"]);
     assert.deepEqual(task.command, [
-      "gadgets-with-timeout --idle 60 --max 600 -- node scripts/codegen.ts",
-      "gadgets-with-timeout --idle 60 --max 600 -- vitest run --reporter=json",
+      "gadgets-with-timeout --idle 1800 --max 1800 -- node scripts/codegen.ts",
+      "gadgets-with-timeout --idle 1800 --max 1800 -- vitest run --reporter=json",
     ]);
     assert.equal(
       vitestTask("vitest run --reporter verbose").command,
-      "gadgets-with-timeout --idle 60 --max 600 -- vitest run --reporter verbose");
+      "gadgets-with-timeout --idle 1800 --max 1800 -- vitest run --reporter verbose");
   });
 });
 
@@ -209,4 +210,42 @@ describe("the vitest worker budget", () => {
     // workshop-backend's and integration-tests' `test`.
     assert.ok(seen >= 2, `expected at least 2 vitest tasks across the configs, found ${seen}`);
   });
+});
+
+describe("shared backend watchdog allowance", () => {
+  it("uses the shared 30-minute defaults in both backend test commands", async () => {
+    const tasks = await watchdoggedTasksIn("packages/workshop-backend/vite.config.ts");
+    const test = tasks.find(([name]) => name === "test")?.[1];
+    assert.ok(test, "backend test task must remain watchdogged");
+    const commands = [test.command].flat();
+    assert.equal(commands.length, 2);
+    for (const command of commands) {
+      assert.ok(command.startsWith("gadgets-with-timeout --idle 1800 --max 1800 -- vitest run"));
+    }
+  });
+});
+
+describe("Google cloud-container per-test allowance", () => {
+  it("sets fifteen seconds in every Google test project", async () => {
+    for (const config of ["vitest.config.ts", "vitest.worker.config.ts", "vitest.docs-worker.config.ts"]) {
+      const source = await readFile(new URL(`../packages/gatekeeper-google/${config}`, import.meta.url), "utf8");
+      assert.match(source, /testTimeout:\s*15_000/);
+    }
+  });
+});
+
+describe("cold gatekeeper configurator prerequisites", () => {
+  for (const [directory, packageName] of [
+    ["gatekeeper-github", "@gadgets/github-gatekeeper"],
+    ["gatekeeper-gitlab", "@gadgets/gitlab-gatekeeper"],
+  ]) {
+    it(`generates ${directory} configurators through both test entrypoints`, async () => {
+      const { default: config } = await import(`../packages/${directory}/vite.config.ts`);
+      assert.ok(config.run.tasks.test.dependsOn.includes("build:configurator"));
+      const manifest = JSON.parse(await readFile(
+        new URL(`../packages/${directory}/package.json`, import.meta.url), "utf8"));
+      assert.ok(manifest.scripts["test:run"].startsWith(
+        `vp run -F ${packageName} build:configurator && vitest run`));
+    });
+  }
 });

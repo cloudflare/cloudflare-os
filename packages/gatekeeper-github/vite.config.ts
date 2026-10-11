@@ -7,6 +7,7 @@ import { TESTS_WITH_TIMEOUT_ENV, withTestTimeout, withVitestTask } from "@gadget
  * two projects -- pure logic in Node, and the session git-cache wiring suite in workerd -- so it
  * composes `withVitestTask` directly, the same way gatekeeper-cloudflare does. The passes stay
  * separate commands so one can replay from the task cache when only the other's inputs moved.
+ * Both passes import generated configurators, so the test task declares that prerequisite too.
  */
 const config = withVitestTask(gatekeeperConfiguratorConfig, [
   "vitest run",
@@ -19,6 +20,7 @@ export default {
     ...config.run,
     tasks: {
       ...config.run.tasks,
+      test: { ...config.run.tasks.test, dependsOn: ["build:configurator"] },
       // The contract checks run in Node rather than workerd, so they are checked with Node's types.
       build: { ...config.run.tasks.build, command: ["tsc", "tsc -p tsconfig.contract.json"] },
       /**
