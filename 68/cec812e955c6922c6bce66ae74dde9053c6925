@@ -1,0 +1,23 @@
+packages/gatekeeper-github/storage-schema.md
+  s_74eb0b1cbb84f7::t_754797f83cc4d9 207-209
+packages/gatekeeper-kit/__tests__/hook-delivery-queue.test.ts
+  s_74eb0b1cbb84f7::t_bc422b7428edbc 10-11
+packages/gatekeeper-kit/src/hook-delivery-queue.ts
+  s_74eb0b1cbb84f7::t_4a3a30bedc584b 34-36,38,125-127,129,131,151-153,186-187,189,202,210
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "68cec812e955c6922c6bce66ae74dde9053c6925",
+  "prompts": {},
+  "sessions": {
+    "s_74eb0b1cbb84f7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_edf458c69ffepVeVZFxEZXzOIj",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
