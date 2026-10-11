@@ -145,7 +145,7 @@ export class TestHooks extends DurableObject<Env> {
     let userObjectId = this.ctx.exports.UserAccount.idFromName(userName).toString();
     try {
       let created = await (this.#gatekeeper(facetName) as unknown as Gatekeeper<any>)
-        .applyCreation!(this.ctx.exports.GoogleVerifier({ props: { userObjectId } }));
+        .applyCreation!(this.ctx.exports.GoogleVerifier({ props: { userObjectId } }), null);
       this.#created.set(facetName, created.class);
       return { resourceUrl: created.resourceUrl };
     } catch (error) {

@@ -3,7 +3,7 @@
 
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ConnectedAccountsSubscriber } from '@gadgets/workshop-shared/api'
+import type { ConnectedAccountsSubscriber, Overseer } from '@gadgets/workshop-shared/api'
 import type { AccountDescription, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
 
 const addToast = vi.hoisted(() => vi.fn<(options: unknown) => void>())
@@ -112,7 +112,7 @@ describe('Activity creation approval', () => {
       },
     }
     const server = makeOverseer()
-    const approveAction = vi.fn<(id: number, accountId?: number) => Promise<void>>(async () => {})
+    const approveAction = vi.fn<Overseer['approveAction']>(async () => {})
     Object.assign(server.overseer, {
       approveAction,
       getGatekeeperById: async () => ({
@@ -138,7 +138,7 @@ describe('Activity creation approval', () => {
     await act(async () =>
       [...dialog.querySelectorAll('button')].find(b => b.textContent === 'Approve')!.click())
 
-    expect(approveAction).toHaveBeenCalledWith(1, 2)
+    expect(approveAction).toHaveBeenCalledWith(1, { accountId: 2 })
   })
 })
 

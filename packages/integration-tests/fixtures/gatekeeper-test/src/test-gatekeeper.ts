@@ -188,6 +188,15 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     this.ctx.storage.kv.delete(`actions:${from}`);
   }
 
+  /** Each applyCreation() into account `label`, by the configuration it was given. */
+  recordCreation(label: string, configuration: string | null): void {
+    this.ctx.storage.kv.put(`creations:${label}`, [...this.getCreations(label), configuration]);
+  }
+
+  getCreations(label: string): (string | null)[] {
+    return this.ctx.storage.kv.get<(string | null)[]>(`creations:${label}`) ?? [];
+  }
+
   failNextApply(label: string, reason: string): void {
     this.ctx.storage.kv.put(`fail-next-apply:${label}`, reason);
   }
@@ -770,13 +779,14 @@ export class TestGatekeeper
     await control(this.ctx.exports).discardAction(this.ctx.props.label, action);
   }
 
-  async applyCreation(creator: Fetcher<TestVerifierApi>): Promise<{
+  async applyCreation(creator: Fetcher<TestVerifierApi>, configuration: string | null): Promise<{
     class: DurableObjectClass<Gatekeeper<TestSession>>;
     resourceUrl: string;
   }> {
     const label = await creator.identify();
     const { resourceUrl } = this.ctx.props;
     await control(this.ctx.exports).adoptActions(this.ctx.props.label, label);
+    await control(this.ctx.exports).recordCreation(label, configuration);
     return { class: this.ctx.exports.TestGatekeeper({ props: { label, resourceUrl } }), resourceUrl };
   }
 
@@ -921,6 +931,13 @@ export default {
         value: state.value,
         applyCount: state.applyCount,
       });
+    }
+
+    // Body: {"label": "..."} -> {"configurations": (string | null)[]}, one per applyCreation().
+    if (url.pathname === "/control/creations" && req.method === "POST") {
+      const { label } = body as Record<string, unknown>;
+      if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
+      return Response.json({ configurations: await control(ctx.exports).getCreations(label) });
     }
 
     // Body: {"label": "..."} -> {"attempts": number}
