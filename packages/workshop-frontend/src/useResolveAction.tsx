@@ -1,14 +1,16 @@
 import { useCallback, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { useKumoToastManager } from '@cloudflare/kumo'
 import type { RpcStub } from 'capnweb'
-import type { ActionLogEntry, ActionState, Overseer } from '@gadgets/workshop-shared/api'
+import type {
+  ActionLogEntry, ActionState, CreationApproval, Overseer,
+} from '@gadgets/workshop-shared/api'
 import { CreationAccountModal } from './components/CreationAccountModal'
 
 type ActionDecision = 'approve' | 'deny'
 
 /**
  * Returns `resolveAction` for an action's approve/deny controls, and `creationAccountModal` for
- * the caller to render: approving a creation first asks which account to create it in.
+ * the caller to render: approving a creation first asks which account to create it in, and how.
  */
 export function useResolveAction(
   overseer: RpcStub<Overseer>,
@@ -21,11 +23,11 @@ export function useResolveAction(
   const [creation, setCreation] = useState<ActionLogEntry | null>(null)
 
   const resolve = useCallback(async (
-    actionId: number, decision: ActionDecision, accountId?: number,
+    actionId: number, decision: ActionDecision, approval?: CreationApproval,
   ) => {
     setProcessing(previous => new Set(previous).add(actionId))
     try {
-      if (decision === 'approve') await overseer.approveAction(actionId, accountId)
+      if (decision === 'approve') await overseer.approveAction(actionId, approval)
       else await overseer.rejectAction(actionId)
       onResolvedRef.current?.(actionId, decision === 'approve' ? 'approved' : 'rejected')
     } catch (error) {
@@ -49,9 +51,9 @@ export function useResolveAction(
     <CreationAccountModal
       overseer={overseer}
       gatekeeperId={creation.gatekeeperId!}
-      onChoose={accountId => {
+      onChoose={approval => {
         setCreation(null)
-        void resolve(creation.id, 'approve', accountId)
+        void resolve(creation.id, 'approve', approval)
       }}
       onCancel={() => setCreation(null)}
     />
