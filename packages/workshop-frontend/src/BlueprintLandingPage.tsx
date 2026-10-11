@@ -17,6 +17,7 @@ import {
 } from './fileTransfers'
 import { AccountChooser, AccountOption } from './gatekeeper-modal/AccountChooser'
 import ResourceConfiguratorHost from './ResourceConfiguratorHost'
+import { disposeConfiguratorFrame } from './disposeConfiguratorFrame'
 import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControls'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from './components/menuStyles'
 import { useDocumentTitle } from './useDocumentTitle'
@@ -1465,13 +1466,6 @@ function BindingField({
   }
 
   return null
-}
-
-// Dispose the host-side capability bundle returned with a configurator frame, releasing the
-// gatekeeper-side resources backing the iframe.
-function disposeConfiguratorFrame(frame: ResourceConfiguratorFrame | null) {
-  const uiDisposable = frame?.ui as any
-  uiDisposable?.[Symbol.dispose]?.()
 }
 
 function formatSuggestedResource(resourceUrl: string): string {
