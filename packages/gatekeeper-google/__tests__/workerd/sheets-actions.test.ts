@@ -1865,6 +1865,20 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     expect(provider.sheets.map(sheet => sheet.title)).toEqual(["Sales", "Q3 Plan"]);
   });
 
+  it("fails a copy of a sheet holding rejected formatting, without writing", async () => {
+    let provider = budget();
+    let sheets = gatekeeper();
+    let formatted = await sheets.queued([{ op: "formatCells", range: "Sales!A1", format: { bold: true } }]);
+    let copied = await sheets.queued([{ op: "duplicateSheet", sheet: "Sales" }]);
+    expect((await sheets.call("readFormats", "'Copy of Sales'!A1")).value).toMatchObject({ formats: [[{ bold: true }]] });
+
+    await sheets.reject(formatted.actionId!);
+    expect(await sheets.apply(copied.actionId!)).toBe(
+      `This change no longer applies: it builds on change ${formatted.actionId}, which was not applied.`);
+    expect(provider.batches).toEqual([]);
+    expect(provider.sheets.map(sheet => sheet.title)).toEqual(["Sales", "Q3 Plan"]);
+  });
+
   it("fails a write over a formula naming rows a rejected change deleted on another sheet, without writing", async () => {
     let provider = budget();
     provider.set("Sales!A1", "='Q3 Plan'!A5");

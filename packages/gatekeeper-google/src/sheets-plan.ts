@@ -171,8 +171,41 @@ function entriesAdded(work: Working, change: PlannedChange): number {
   if (!isRangeChange(change)) return 0;
   let sheet = work.sheets.find(candidate => candidate.id === change.sheetId)!;
   let { rect } = change;
-  return unentered(change.op === "formatCells" ? work.formats : work.cells, sheet.id,
+  if (change.op === "formatCells") return formatsAdded(work, sheet, rect, change.format);
+  return unentered(work.cells, sheet.id,
     linesAt(sheet.rows, rect.startRow, rect.endRow), linesAt(sheet.columns, rect.startColumn, rect.endColumn));
+}
+
+// The cells beside `rect` of `sheet` whose facing border `format` clears, as `recordFormat` does:
+// those beside each outer edge it sets a border on, within the sheet.
+function bordered(
+  sheet: SimSheet, rect: Rect, format: SheetFormatChange, each: (row: string, column: string, side: BorderSide) => void,
+): void {
+  let { borders = {} } = format;
+  let beside = (rowAt: number, columnAt: number, side: BorderSide) => {
+    let row = rowAt < 0 ? undefined : lineAt(sheet.rows, rowAt);
+    let column = columnAt < 0 ? undefined : lineAt(sheet.columns, columnAt);
+    if (row !== undefined && column !== undefined) each(row, column, side);
+  };
+  for (let column = rect.startColumn; column < rect.endColumn; column++) {
+    if (borders.top !== undefined) beside(rect.startRow - 1, column, "bottom");
+    if (borders.bottom !== undefined) beside(rect.endRow, column, "top");
+  }
+  for (let row = rect.startRow; row < rect.endRow; row++) {
+    if (borders.left !== undefined) beside(row, rect.startColumn - 1, "right");
+    if (borders.right !== undefined) beside(row, rect.endColumn, "left");
+  }
+}
+
+// How many cells formatting `rect` of `sheet` with `format` gives formats that have none yet: the
+// range's, and those beside it whose facing border it clears.
+function formatsAdded(work: Working, sheet: SimSheet, rect: Rect, format: SheetFormatChange): number {
+  let count = unentered(work.formats, sheet.id,
+    linesAt(sheet.rows, rect.startRow, rect.endRow), linesAt(sheet.columns, rect.startColumn, rect.endColumn));
+  bordered(sheet, rect, format, (row, column) => {
+    if (!work.formats.has(cellKey(sheet.id, row, column))) count++;
+  });
+  return count;
 }
 
 // `sheets` with `sheet` placed at its index and those from there on one along, as Google inserts one.
@@ -322,20 +355,8 @@ function recordFormat(work: Working, sheet: SimSheet, rect: Rect, format: SheetF
       borders: { ...entry.borders, ...sides },
     }));
   }));
-  let beside = (rowAt: number, columnAt: number, side: BorderSide) => {
-    let row = rowAt < 0 ? undefined : lineAt(sheet.rows, rowAt);
-    let column = columnAt < 0 ? undefined : lineAt(sheet.columns, columnAt);
-    if (row === undefined || column === undefined) return;
-    update(row, column, entry => ({ ...entry, borders: { ...entry.borders, [side]: null } }));
-  };
-  for (let column = rect.startColumn; column < rect.endColumn; column++) {
-    if (borders.top !== undefined) beside(rect.startRow - 1, column, "bottom");
-    if (borders.bottom !== undefined) beside(rect.endRow, column, "top");
-  }
-  for (let row = rect.startRow; row < rect.endRow; row++) {
-    if (borders.left !== undefined) beside(row, rect.startColumn - 1, "right");
-    if (borders.right !== undefined) beside(row, rect.endColumn, "left");
-  }
+  bordered(sheet, rect, format, (row, column, side) =>
+    update(row, column, entry => ({ ...entry, borders: { ...entry.borders, [side]: null } })));
 }
 
 /**
@@ -378,7 +399,7 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
       let rows = linesAt(sheet.rows, rect.startRow, rect.endRow);
       let columns = linesAt(sheet.columns, rect.startColumn, rect.endColumn);
       if (change.op === "formatCells") {
-        room(unentered(work.formats, sheet.id, rows, columns));
+        room(formatsAdded(work, sheet, rect, change.format));
         recordFormat(work, sheet, rect, change.format);
         return formatRequests(range, change.format);
       }
@@ -613,7 +634,7 @@ export function resolveChanges(
           return resolveLines(change, sheetFor(change.sheet), label, fits);
       }
     })();
-    if (!isCellChange(next) && work.log.length >= MAX_QUEUED_STEPS) {
+    if (!isRangeChange(next) && work.log.length >= MAX_QUEUED_STEPS) {
       throw new Error(`${label}: ${MAX_QUEUED_STEPS} changes to rows, columns and sheets are queued already, ` +
         "the most that may be. Approve or reject queued changes first.");
     }
@@ -886,12 +907,14 @@ export function guardAfter(
   let addressed = new Set(guardedSheets(planned));
   // A formula names rows, columns and sheets as earlier structure leaves them, on any sheet, as do
   // those a copy takes from its original and those the guard digests, so a batch with one depends
-  // on every structural change queued before it.
-  let formulas = guardsFormula || planned.some(change => change.op === "duplicateSheet" ||
-    (change.op === "writeCells" && change.values.some(row => row.some(isFormula))));
+  // on every structural change queued before it. A copy also takes the formatting queued for its
+  // original, which records no change it came from, so it depends on every formatting change too.
+  let copies = planned.some(change => change.op === "duplicateSheet");
+  let formulas = guardsFormula || copies ||
+    planned.some(change => change.op === "writeCells" && change.values.some(row => row.some(isFormula)));
   let places = placesSheet(planned);
   for (let { id, action } of pending) {
-    if (action.payload.changes.some(change =>
+    if (action.payload.changes.some(change => (copies && change.op === "formatCells") ||
       structuralSheets(change).some(sheetId => formulas || addressed.has(sheetId)) ||
       (places && (placesSheet([change]) || change.op === "deleteSheet")))) {
       after.add(id);

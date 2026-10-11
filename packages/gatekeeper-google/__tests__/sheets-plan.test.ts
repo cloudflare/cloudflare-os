@@ -772,8 +772,46 @@ describe("Sheets copies of queued cells", () => {
       `Change 21 (insertRows): ${MAX_QUEUED_STEPS} changes to rows, columns and sheets are queued already, the most ` +
       "that may be. Approve or reject queued changes first.");
     expect(resolving([{ op: "renameSheet", sheet: "It's", title: "Its" }, ...inserts(20)])).toThrow("Change 21 (insertRows)");
-    // Cells may still be written.
+    // Cells may still be written, and formatted.
     expect(resolving([...inserts(20), { op: "writeCells", range: "Sales!A1", values: [[1]] }])).not.toThrow();
+    expect(resolving([...inserts(20), { op: "formatCells", range: "Sales!A1", format: { bold: true } }])).not.toThrow();
+  });
+
+  it("counts the cells beside a range whose facing border formatting clears toward 100,000", () => {
+    let tall = [sheet(0, "Sales", { rowCount: 20_000, columnCount: 10 })];
+    // Left and right borders on a column format it and clear the borders facing it on both sides.
+    let framed = (id: number, column: number, startRow: number): QueuedChange => queued(id, [{
+      op: "formatCells", sheetId: 0, rect: rect(startRow, column, 10_000, 1),
+      format: { borders: { left: { style: "SOLID" }, right: { style: "SOLID" } } },
+    }]);
+    let simulated = replayed(grid(tall), [framed(1, 1, 0), framed(2, 4, 0), framed(3, 7, 0)]);
+    expect(simulated.formats.size).toBe(90_000);
+    expect(() => resolveChanges(simulated, prepareChanges([{
+      op: "formatCells", range: "Sales!B10001:B20000",
+      format: { borders: { left: { style: "SOLID" }, right: { style: "SOLID" } } },
+    }]), minter())).toThrow(
+      "Change 1 (formatCells): it would bring the cell values and formats queued changes set to 120,000");
+    expect(() => planSheet(simulated, framed(4, 1, 10_000).action.payload.changes))
+      .toThrow("it would bring the cell values and formats queued changes set to 120,000");
+    // Without borders it formats only its own cells.
+    expect(() => resolveChanges(simulated, prepareChanges([
+      { op: "formatCells", range: "Sales!B10001:B20000", format: { bold: true } },
+    ]), minter())).not.toThrow();
+  });
+
+  it("builds a copy on every formatting change queued before it", () => {
+    let pending = [
+      queued(1, [{ op: "formatCells", sheetId: 0, rect: rect(0, 0), format: { bold: true } }]),
+      queued(2, [{ op: "formatCells", sheetId: 7, rect: rect(0, 0), format: { italic: true } }]),
+    ];
+    let simulated = replayed(grid(SHEETS), pending);
+    let copy = resolveChanges(simulated, prepareChanges([{ op: "duplicateSheet", sheet: "Sales" }]), minter(101));
+    expect(guardAfter(simulated, pending, copy, guardCells(simulated, copy))).toEqual([1, 2]);
+    // A write depends on neither.
+    let write = resolveChanges(simulated, prepareChanges([
+      { op: "writeCells", range: "Sales!A1", values: [[1]] },
+    ]), minter());
+    expect(guardAfter(simulated, pending, write, guardCells(simulated, write))).toEqual([]);
   });
 
   it("counts every cell a write or clear enters toward 100,000, but not one already entered", () => {
