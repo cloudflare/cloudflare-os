@@ -5,7 +5,7 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { RpcStub } from 'capnweb'
 import type { AiChatAuthorInfo, AuthenticatedApi } from '@gadgets/workshop-shared/api'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthProvider, useAuthenticatedApi } from './AuthContext'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -23,6 +23,8 @@ const CurrentUserProbe = () => {
 }
 
 describe('AuthProvider', () => {
+  afterEach(() => vi.useRealTimers())
+
   it('keeps the current user available while a reconnected API confirms the same account', async () => {
     let confirmReconnect!: (info: AiChatAuthorInfo) => void
     const nextIdentity = new Promise<AiChatAuthorInfo>(resolve => { confirmReconnect = resolve })
@@ -47,6 +49,27 @@ describe('AuthProvider', () => {
 
     await act(async () => confirmReconnect({ ...user }))
     expect(container.textContent).toBe(user.id)
+    act(() => root.unmount())
+  })
+
+  it('confirms the current user after a transient identity lookup failure', async () => {
+    vi.useFakeTimers()
+    const whoami = vi.fn()
+      .mockRejectedValueOnce(new Error('WebSocket not ready'))
+      .mockResolvedValue(user)
+    const container = document.createElement('div')
+    const root = createRoot(container)
+
+    await act(async () => root.render(
+      <AuthProvider authenticatedApi={apiWithWhoami(whoami)} onLogout={() => {}}>
+        <CurrentUserProbe />
+      </AuthProvider>
+    ))
+    expect(container.textContent).toBe('loading')
+
+    await act(async () => vi.advanceTimersByTimeAsync(250))
+    expect(container.textContent).toBe(user.id)
+    expect(whoami).toHaveBeenCalledTimes(2)
     act(() => root.unmount())
   })
 })

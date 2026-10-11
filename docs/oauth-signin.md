@@ -112,7 +112,8 @@ session store; each installation owns and consumes its transfers.
 
 Inside an installation's embedded web view, the native shell exposes the versioned
 `window.cloudflareOSNative` capability. The Workshop calls `loginReady()` only after its normal
-`whoami()` call confirms authentication, and offers **Back to installs** through
+`whoami()` call confirms authentication. It may call `loginReady()` again after a reconnect, so the
+app treats that notification as idempotent. The Workshop offers **Back to installs** through
 `returnToInstalls()`.
 Notification enrollment is an optional capability on the same object. The legacy notification
 globals remain temporarily as a fallback for the currently distributed TestFlight build; new

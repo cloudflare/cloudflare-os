@@ -462,8 +462,9 @@ export interface AuthenticatedApi extends RpcTarget {
   /**
    * Stage a two-minute, single-use device-session transfer for a native app. The state is an
    * opaque 16–512 character URL-safe value and the key is an uncompressed P-256 public key encoded
-   * as unpadded base64url. The encrypted credential remains server-side until the browser confirms
-   * the transfer through the fixed, claimed HTTPS callback.
+   * as unpadded base64url. The encrypted credential remains server-side until the browser POSTs
+   * the returned ticket to `/api/device-session/callback`, which redirects to the fixed, claimed
+   * HTTPS app link. Repeating a live state reissues its ticket and invalidates the previous one.
    */
   beginDeviceSessionHandoff(publicKey: string, state: string)
     : Promise<DeviceSessionHandoffStart>;

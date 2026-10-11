@@ -4,11 +4,11 @@ import { nativeApp } from './nativeApp'
 
 /** Reports an authenticated embedded-web-view session to the single versioned native bridge. */
 export const NativeAppBridge = () => {
-  const { currentUser } = useAuthenticatedApi()
+  const { currentUser, isCurrentUserConfirmed } = useAuthenticatedApi()
 
   useEffect(() => {
-    if (currentUser?.type === 'user') nativeApp()?.loginReady()
-  }, [currentUser])
+    if (isCurrentUserConfirmed && currentUser?.type === 'user') nativeApp()?.loginReady()
+  }, [currentUser, isCurrentUserConfirmed])
 
   return null
 }

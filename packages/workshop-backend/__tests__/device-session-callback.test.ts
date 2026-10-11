@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { createExecutionContext } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import type { DeviceSessionHandoff } from "../src/auth/device-session-handoff";
 import { deviceSessionCallback } from "../src/auth/device-session-callback";
@@ -36,6 +37,28 @@ function request(body: URLSearchParams, options?: {
 }
 
 describe("device session callback", () => {
+  it("redeems a staged transfer through the Worker route exactly once", async () => {
+    const user = env.TEST_USER.getByName(`device-session-route-${crypto.randomUUID()}`);
+    await user.authenticateFromCfAccess("route-user@example.com", true);
+    const key = await crypto.subtle.generateKey(
+        { name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]) as CryptoKeyPair;
+    const publicKey = new Uint8Array(
+        await crypto.subtle.exportKey("raw", key.publicKey) as ArrayBuffer)
+        .toBase64({ alphabet: "base64url", omitPadding: true });
+    const start = await user.stageDeviceSessionHandoff(publicKey, state);
+    const body = new URLSearchParams({ ...start, state });
+
+    const response = await server.fetch(request(body), env, createExecutionContext());
+    expect(response.status).toBe(303);
+    const callback = new URL(response.headers.get("Location")!);
+    expect(callback.origin + callback.pathname).toBe("https://os.cloudflare.app/oauthredirect");
+    expect(callback.searchParams.get("state")).toBe(state);
+    expect(callback.searchParams.get("ciphertext")).toBeTruthy();
+
+    const replay = await server.fetch(request(body), env, createExecutionContext());
+    expect(replay.status).toBe(410);
+  });
+
   it("consumes the server-held handoff and redirects to the claimed HTTPS app link", async () => {
     const consume = vi.fn().mockResolvedValue(handoff);
     const response = await deviceSessionCallback(

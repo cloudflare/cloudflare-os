@@ -116,12 +116,27 @@ describe('native device-session handoff', () => {
     root = undefined
     container = undefined
 
-    const begin = vi.fn<Begin>().mockRejectedValue(new Error('expired'))
+    const failure = new Error('The Access session has expired. Sign in again before connecting the app.')
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const begin = vi.fn<Begin>().mockRejectedValue(failure)
     page = await render(begin)
     await act(async () => {
       page.querySelector('button')!.click()
     })
-    expect(page.textContent).toContain('Could not prepare this device session')
+    expect(page.textContent).toContain(failure.message)
+    expect(logged).toHaveBeenCalledWith('Failed to prepare a device session:', failure)
+    expect(page.querySelector('button')).not.toBeNull()
+  })
+
+  it('keeps a retryable connection failure generic', async () => {
+    const logged = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    const failure = new Error('Peer closed WebSocket')
+    const page = await render(vi.fn<Begin>().mockRejectedValue(failure))
+    await act(async () => {
+      page.querySelector('button')!.click()
+    })
+    expect(page.textContent).toContain('Could not prepare this device session. Try again.')
+    expect(logged).toHaveBeenCalledWith('Failed to prepare a device session:', failure)
     expect(page.querySelector('button')).not.toBeNull()
   })
 

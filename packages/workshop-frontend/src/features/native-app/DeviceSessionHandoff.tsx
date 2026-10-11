@@ -2,6 +2,7 @@ import { Button } from '@cloudflare/kumo'
 import { useEffect, useState } from 'react'
 import type { RpcStub } from 'capnweb'
 import type { AiChatAuthorInfo, AuthenticatedApi, DeviceSessionHandoffStart } from '@gadgets/workshop-shared/api'
+import { logRpcFailure, rpcFailureDescription } from '../../rpcErrors'
 
 const STATE_PARAMETER = 'cfos_native_state'
 const KEY_PARAMETER = 'cfos_native_key'
@@ -105,8 +106,9 @@ export const DeviceSessionHandoff = ({
         attempt.state,
       )
       submitDeviceSession(attempt.state, start)
-    } catch {
-      setError('Could not prepare this device session. Try again.')
+    } catch (err) {
+      logRpcFailure('Failed to prepare a device session:', err)
+      setError(rpcFailureDescription(err) ?? 'Could not prepare this device session. Try again.')
       setWorking(false)
     }
   }
