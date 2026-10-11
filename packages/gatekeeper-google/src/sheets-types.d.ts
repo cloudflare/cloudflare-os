@@ -221,8 +221,10 @@ export interface GoogleSpreadsheetSession extends GoogleSpreadsheetReadSession {
    * range's outer edge also removes the facing border of the cell beside it, as Google does. The
    * formatting of inserted rows and columns reads `null` and is listed in `pendingCells`, as Google
    * decides it. In formatted reads, a cell whose number format a queued change sets or resets reads
-   * `null` and is listed in `pendingCells`, unless a queued change leaves it empty. Formatting is
-   * applied as queued, over any formatting a collaborator gives the cells in the meantime.
+   * `null` and is listed in `pendingCells`, unless a queued change leaves it empty, as does a value
+   * queued on an inserted row or column, which takes the number format of the line before it.
+   * Formatting is applied as queued, over any formatting a collaborator gives the cells in the
+   * meantime.
    */
   updateSpreadsheet(changes: SheetChange[]): Promise<void>;
 }

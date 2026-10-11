@@ -437,8 +437,9 @@ differ between rows and columns, read `null` and are listed in `pendingCells`. A
 range's outer edge removes the facing border of the cell beside it, since Google gives an edge one
 owner, and reads show that. A formatted value read of a cell whose number format a queued change
 sets or resets reads `null` too, listed in that range's `pendingCells`, unless a queued change
-leaves the cell empty: a format such as `;;;` can hide what a blank-looking cell holds. Google accepts
-any font size and number pattern, so the gatekeeper's checks are the only ones: a font size is an
+leaves the cell empty: a format such as `;;;` can hide what a blank-looking cell holds. So does a
+value queued on an inserted row or column, which takes the number format of the line before it.
+Google accepts any font size and number pattern, so the gatekeeper's checks are the only ones: a font size is an
 integer from 1 to 400, and a pattern holds 1 to 200 characters and no control characters.
 Formatting is not guarded: a collaborator's formatting change made after a batch is queued is
 overwritten when it applies.

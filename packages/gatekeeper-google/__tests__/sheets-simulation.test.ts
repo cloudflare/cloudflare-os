@@ -874,4 +874,28 @@ describe("Sheets formatted values with a number format queued", () => {
     expect(simulatedRange(moved, area, base([[5, "text", null, 0.25, 7]]), "raw").values)
       .toEqual([[5, "text", null, 0.25, 7]]);
   });
+
+  it("reads pending a value queued on an inserted line, which takes the number format before it", () => {
+    let hidden = { numberFormat: { type: "NUMBER" as const, pattern: ";;;" } };
+    let sheets = [sheet(0, "Sales", { rowCount: 10, columnCount: 4 })];
+    let g = replayed(gridOf({ sheets }), [queued(1, [
+      { op: "formatCells", sheetId: 0, rect: rect(0, 0), format: hidden },
+      insertRows(0, 2),
+      { op: "insertColumns", sheetId: 0, start: 1, count: 1 },
+      { op: "writeCells", sheetId: 0, rect: rect(1, 0, 1, 2), values: [["visible", "x"]] },
+      { op: "writeCells", sheetId: 0, rect: rect(0, 1), values: [["y"]] },
+      { op: "writeCells", sheetId: 0, rect: rect(1, 1), values: [[null]] },
+      { op: "addSheet", sheetId: 3, title: "Q4", index: 1, rowCount: 2, columnCount: 2 },
+      { op: "writeCells", sheetId: 3, rect: rect(0, 0), values: [["shown"]] },
+    ])]);
+    let area = { sheetId: 0, rect: rect(0, 0, 2, 2), rows: 2, columns: 2 };
+    // A2 is on the inserted row, B1 on the inserted column; B2, on both, is emptied.
+    expect(simulatedRange(g, area, BLANK)).toEqual({
+      range: "Sales!A1:B2", values: [[null, null], [null, null]], pendingCells: ["A1", "B1", "A2"],
+    });
+    expect(simulatedRange(g, area, BLANK, "raw").values).toEqual([[null, "y"], ["visible", null]]);
+    // A sheet a queued change adds starts with no formatting to take.
+    expect(simulatedRange(g, { sheetId: 3, rect: rect(0, 0), rows: 1, columns: 1 }, BLANK).values)
+      .toEqual([["shown"]]);
+  });
 });

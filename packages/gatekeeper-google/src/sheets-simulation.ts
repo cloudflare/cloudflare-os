@@ -448,15 +448,28 @@ export function formulaAt(grid: Grid, sheetId: number, formula: string, from: nu
 
 type Shown = { value: SpreadsheetCellValue; pending: boolean };
 
+// Whether the cell keyed `key` is on a row or column a queued change inserts, which takes the
+// formatting of the line before it, not on one a queued change adds with its sheet.
+function inserted(grid: Grid, key: string): boolean {
+  return key.split(":").slice(1).some(identity => {
+    let step = identity.match(/^n(\d+)\./)?.[1];
+    return step !== undefined && grid.log[Number(step)]?.kind === "insert";
+  });
+}
+
 /**
  * `shown`, the cell keyed `key` as `mode` reads it, made pending when a formatted read would show
- * it in a number format a queued change sets or resets, which only Google can display. That holds
+ * it in a number format only Google can display: one a queued change sets or resets, or, for a
+ * value queued on an inserted row or column, the one it takes from the line before it. That holds
  * for a cell that reads blank too, since a format such as `;;;` hides what a cell holds; only a
  * cell a queued change empties is known to read blank.
  */
 function displayed(shown: Shown, grid: Grid, key: string, mode: SpreadsheetValueMode = "formatted"): Shown {
-  if (mode !== "formatted" || grid.formats.get(key)?.set.numberFormat === undefined) return shown;
-  return grid.cells.get(key)?.input === null ? shown : { value: null, pending: true };
+  if (mode !== "formatted") return shown;
+  let input = grid.cells.get(key)?.input;
+  let unknown = grid.formats.get(key)?.set.numberFormat !== undefined ||
+    (input !== undefined && inserted(grid, key));
+  return !unknown || input === null ? shown : { value: null, pending: true };
 }
 
 /**
