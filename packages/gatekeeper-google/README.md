@@ -444,8 +444,8 @@ addresses at most 10,000 cells and a batch 20,000, a cell holds at most 50,000 c
 changes queued at once may enter at most 100,000 cells in all (a copied sheet counting the cells
 changes queued to it enter) and make at most 50 changes to rows, columns and sheets, and a queued
 batch is capped at 100 KiB. While such changes are queued, a read or a batch may involve at most
-100,000 formulas times their number, since each formula is rewritten through each of them. Google
-allows 60 write requests a minute per user; a write over that quota stays pending.
+5,000,000 characters of formulas times their number, since each formula is rewritten through each
+of them. Google allows 60 write requests a minute per user; a write over that quota stays pending.
 
 ## Google Drive read-only bindings
 

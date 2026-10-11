@@ -30,8 +30,8 @@ import type {
   GoogleSpreadsheetReadSession, SpreadsheetInfo, SpreadsheetRange, SpreadsheetValueMode,
 } from "./sheets-read-types";
 import {
-  basePiecesOf, baseValues, conflictReason, enteredContent, formulaRewrites, gridOf, holdsFormula,
-  MAX_FORMULA_REWRITES, overlayRange, rangesToFetch, replayChanges, resolveArea, simulatedRange,
+  basePiecesOf, baseValues, conflictReason, enteredContent, gridOf, holdsFormula, MAX_REWRITE_WORK,
+  overlayRange, rangesToFetch, replayChanges, resolveArea, rewriteWork, simulatedRange,
   type Grid, type PlannedChange, type QueuedChange, type SheetBatch, type SheetsAction, type SheetsActions,
 } from "./sheets-simulation";
 import type { GoogleSpreadsheetSession, SheetChange } from "./sheets-types";
@@ -455,7 +455,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
       this.#api.readAreas(this.#spreadsheetId, pieces, mode),
     ]);
     let base = { entered: baseValues(pieces, entered), shown: baseValues(pieces, shown) };
-    if (formulaRewrites(grid, areas, base.entered) > MAX_FORMULA_REWRITES) {
+    if (rewriteWork(grid, areas, base.entered) > MAX_REWRITE_WORK) {
       throw new Error("These ranges hold too many formulas to read with the queued changes to rows, " +
         "columns and sheets applied. Read fewer cells, or approve or reject the queued changes first.");
     }
@@ -524,7 +524,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
           // holds it now, with the changes queued before it made.
           let pieces = basePiecesOf(grid, cells);
           let entered = baseValues(pieces, await this.#api.readEntered(this.#spreadsheetId, pieces));
-          if (formulaRewrites(grid, cells, entered) > MAX_FORMULA_REWRITES) {
+          if (rewriteWork(grid, cells, entered) > MAX_REWRITE_WORK) {
             return {
               title: metadata.title, editable,
               refusal: new Error("These changes overwrite or delete too many formulas that the queued " +

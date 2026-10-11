@@ -5,8 +5,8 @@ import type { EnteredValue } from "../src/sheets-model";
 import { planSheet } from "../src/sheets-plan";
 import type { SpreadsheetCellValue, SpreadsheetValueMode } from "../src/sheets-read-types";
 import {
-  applyChange, basePiecesOf, baseValues, conflictReason, enteredContent, formulaAt, formulaRewrites, gridOf,
-  overlayRange, rangesToFetch, replayChanges, resolveArea, simulatedRange,
+  applyChange, basePiecesOf, baseValues, conflictReason, enteredContent, formulaAt, gridOf,
+  overlayRange, rangesToFetch, replayChanges, resolveArea, rewriteWork, simulatedRange,
   type Grid, type PlannedChange, type QueuedChange, type SheetMeta, type SheetsAction,
 } from "../src/sheets-simulation";
 import { positionOf } from "../src/sheets-structure";
@@ -296,22 +296,23 @@ describe("Sheets formulas through steps that cannot change them", () => {
   let g = replayed(gridOf({ sheets }), [queued(1, Array.from({ length: 50 }, () => insertRows(2, 1)))]);
   let formula = "=SUM(A1:B2)+Sales!C3*'S1'!A1";
 
-  it("counts each formula an area shows once per step of the log, and again for each area showing it", () => {
+  it("counts each formula's text an area shows once per step of the log, and again for each area showing it", () => {
     let piece = { sheetId: 0, rect: rect(0, 0, 2, 3) };
     let entered = baseValues<EnteredValue>([piece], [
-      [[{ formula: "=A1" }, "=text", 3], [null, { formula: "=B2" }, { error: "REF" }]],
+      [[{ formula: "=A1" }, "=text", 3], [null, { formula: "=B2+B3" }, { error: "REF" }]],
     ]);
     let sales = { sheetId: 0, rect: rect(0, 0, 3, 3) };
-    expect(formulaRewrites(gridOf({ sheets }), [sales], entered)).toBe(0);
+    expect(rewriteWork(gridOf({ sheets }), [sales], entered)).toBe(0);
     let moved = replayed(gridOf({ sheets }), [
       queued(1, [insertRows(0, 1), insertRows(2, 1)]),
       queued(2, [{ op: "writeCells", sheetId: 0, rect: rect(0, 0, 1, 2), values: [["=C1", "x"]] }]),
       queued(3, [{ op: "writeCells", sheetId: 2, rect: rect(0, 0), values: [["=D1"]] }]),
     ]);
-    // The formula queued in the inserted row 1, and Google's two, moved down to A2 and B3.
-    expect(formulaRewrites(moved, [sales], entered)).toBe(6);
-    expect(formulaRewrites(moved, [sales, sales], entered)).toBe(12);
-    expect(formulaRewrites(moved, [sales, { sheetId: 2, rect: rect(0, 0) }], entered)).toBe(8);
+    // The formula queued in the inserted row 1 (3 characters), and Google's two, moved down to A2
+    // (3) and B3 (6), through two steps.
+    expect(rewriteWork(moved, [sales], entered)).toBe(24);
+    expect(rewriteWork(moved, [sales, sales], entered)).toBe(48);
+    expect(rewriteWork(moved, [sales, { sheetId: 2, rect: rect(0, 0) }], entered)).toBe(30);
   });
 
   beforeEach(() => {

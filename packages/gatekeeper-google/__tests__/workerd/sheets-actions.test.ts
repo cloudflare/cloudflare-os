@@ -1157,23 +1157,23 @@ describe("Google Sheets changes", () => {
 
 describe("Google Sheets changes to rows, columns and sheets", () => {
   it("refuses a read or a batch whose formulas the queued structure would rewrite too often", async () => {
-    // 2,100 formulas, each read once for each of 50 queued inserts, is past 100,000 rewrites.
+    // Each formula is 75 characters, rewritten through 50 queued inserts: 3,750 of the 5,000,000.
     let provider = budget([sheetMeta(0, "Sales", { rowCount: 2_100, columnCount: 2 })]);
-    for (let row = 1; row <= 2_100; row++) provider.set(`Sales!A${row}`, `=B${row}*2`);
+    let sum = (row: number) => "=" + Array.from({ length: 25 }, () => `B${row}`).join("+");
+    for (let row = 1; row <= 2_100; row++) provider.set(`Sales!A${row}`, sum(1));
     let sheets = gatekeeper();
     await sheets.queued(Array.from({ length: 50 }, () => ({ op: "insertRows" as const, sheetId: 0, at: 1 })));
 
     expect((await sheets.call("readRange", "Sales!A51:A2150")).error).toBe(
       "These ranges hold too many formulas to read with the queued changes to rows, columns and sheets " +
       "applied. Read fewer cells, or approve or reject the queued changes first.");
-    // 2,000 of them are within it.
-    let read = await sheets.read("Sales!A51:A2050", "formula");
-    expect(read.values[0]).toEqual(["=B51*2"]);
-    expect(read.values.at(-1)).toEqual(["=B2050*2"]);
-    // A formula is rewritten for each range showing it, so asking twice counts twice.
-    expect((await sheets.call("readRanges", ["Sales!A51:A1150", "Sales!A51:A1150"])).error)
+    // A formula is rewritten for each range showing it, so 700 of them asked for twice is too many.
+    expect((await sheets.call("readRanges", ["Sales!A51:A750", "Sales!A51:A750"])).error)
       .toContain("These ranges hold too many formulas");
-    expect((await sheets.call("readRanges", ["Sales!A51:A1150"])).error).toBeUndefined();
+    // Refused before any rewriting; fewer are read with their references moved.
+    let read = await sheets.read("Sales!A51:A150", "formula");
+    expect(read.values[0]).toEqual([sum(51)]);
+    expect(read.values).toHaveLength(100);
 
     expect((await sheets.call("updateSpreadsheet", [{ op: "clearRange", range: "Sales!A51:A2150" }])).error).toBe(
       "These changes overwrite or delete too many formulas that the queued changes to rows, columns and " +

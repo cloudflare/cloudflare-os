@@ -455,21 +455,22 @@ export const MAX_READ_PIECES = 20;
 /** The most cells one simulated read may fetch. */
 export const MAX_READ_CELLS = 50_000;
 /**
- * The most formula rewrites one simulated read or guard may make, counting each formula it shows
- * once for every queued change to rows, columns or sheets: each costs a pass over the formula.
+ * The most formula text one simulated read or guard may rewrite, in characters, counting each
+ * formula it shows once for every queued change to rows, columns or sheets: each costs a pass over
+ * the formula's text.
  */
-export const MAX_FORMULA_REWRITES = 100_000;
+export const MAX_REWRITE_WORK = 5_000_000;
 
 /**
- * How many formula rewrites showing `areas` of `grid` takes, from `entered`, what Google holds in
- * the cells `basePiecesOf` gives for them: each formula an area shows, Google's or queued, once for
- * every step of the log, and again for every other area showing it.
+ * How much formula text showing `areas` of `grid` rewrites, in characters, from `entered`, what
+ * Google holds in the cells `basePiecesOf` gives for them: each formula an area shows, Google's or
+ * queued, once for every step of the log, and again for every other area showing it.
  */
-export function formulaRewrites(
+export function rewriteWork(
   grid: Grid, areas: readonly { sheetId: number; rect: Rect }[], entered: BaseCells<EnteredValue>,
 ): number {
   if (grid.log.length === 0) return 0;
-  let formulas = 0;
+  let text = 0;
   for (let { sheetId, rect } of areas) {
     let sheet = sheetOf(grid, sheetId);
     let columns = linesAt(sheet.columns, rect.startColumn, rect.endColumn);
@@ -478,17 +479,18 @@ export function formulaRewrites(
         if (row === undefined || column === undefined) continue;
         let entry = grid.cells.get(cellKey(sheet.id, row, column));
         if (entry) {
-          if (isFormula(entry.input)) formulas++;
+          if (isFormula(entry.input)) text += entry.input.length;
           continue;
         }
         let baseRow = baseIndexOf(row);
         let baseColumn = baseIndexOf(column);
         if (sheet.source === undefined || baseRow === undefined || baseColumn === undefined) continue;
-        if (holdsFormula(entered(sheet.source, baseRow, baseColumn))) formulas++;
+        let value = entered(sheet.source, baseRow, baseColumn);
+        if (holdsFormula(value)) text += value.formula.length;
       }
     }
   }
-  return formulas * grid.log.length;
+  return text * grid.log.length;
 }
 
 /**
