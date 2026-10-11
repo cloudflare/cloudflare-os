@@ -460,6 +460,30 @@ export const MAX_READ_CELLS = 50_000;
  * the formula's text.
  */
 export const MAX_REWRITE_WORK = 5_000_000;
+/**
+ * The most text, in UTF-16 units, one simulated read or guard may build, as Google caps its own
+ * answers at 5 MiB: a rewritten formula can be longer than the one Google holds, as when a sheet it
+ * names is renamed to a longer title.
+ */
+export const MAX_SIMULATED_TEXT = 5 * 1024 * 1024;
+
+/** Thrown when a simulated read or guard would build more than `MAX_SIMULATED_TEXT`. */
+export class SimulatedTextTooLong extends Error {}
+
+/** What is left of `MAX_SIMULATED_TEXT` for one simulated read or guard, across its ranges. */
+export type TextBudget = { left: number };
+
+/** A fresh `TextBudget`. */
+export function textBudget(): TextBudget {
+  return { left: MAX_SIMULATED_TEXT };
+}
+
+// Takes the text of `value` from `budget`, throwing `SimulatedTextTooLong` once it runs out.
+function spend<T extends EnteredValue>(budget: TextBudget, value: T): T {
+  budget.left -= typeof value === "string" ? value.length : holdsFormula(value) ? value.formula.length : 0;
+  if (budget.left < 0) throw new SimulatedTextTooLong("A simulated read or guard would build too much text.");
+  return value;
+}
 
 /**
  * How much formula text showing `areas` of `grid` rewrites, in characters, from `entered`, what
@@ -650,7 +674,7 @@ function cellValue(
 // The values of `rect` of `sheet`, padded to `rows` by `columns`, and the cells pending.
 function cellValues(
   grid: Grid, sheet: SimSheet, rect: Rect, size: { rows: number; columns: number }, base: BaseRead,
-  mode: SpreadsheetValueMode,
+  mode: SpreadsheetValueMode, budget: TextBudget,
 ): { values: SpreadsheetCellValue[][]; pendingCells: string[] } {
   let rows = linesAt(sheet.rows, rect.startRow, rect.endRow);
   let columns = linesAt(sheet.columns, rect.startColumn, rect.endColumn);
@@ -659,7 +683,7 @@ function cellValues(
     if (r >= rows.length || c >= columns.length) return null;
     let { value, pending } = cellValue(grid, sheet, rows[r], columns[c], base, mode);
     if (pending) pendingCells.push(cellName(rect.startRow + r, rect.startColumn + c));
-    return value;
+    return spend(budget, value);
   }));
   return { values, pendingCells };
 }
@@ -667,13 +691,16 @@ function cellValues(
 /**
  * `area` of `grid` as a read in `mode` returns it, from `base`, what Google holds in the cells
  * `basePiecesOf` gives for it: queued input as entered, cells moved with their lines, formulas
- * Google holds rewritten, and the cells only Google can work out null and pending.
+ * Google holds rewritten, and the cells only Google can work out null and pending. Its text is
+ * taken from `budget`, shared by the ranges of one read: throws `SimulatedTextTooLong` once that
+ * runs out.
  */
 export function simulatedRange(
   grid: Grid, area: SimulatedArea, base: BaseRead, mode: SpreadsheetValueMode = "formatted",
+  budget = textBudget(),
 ): SpreadsheetRange {
   let sheet = sheetOf(grid, area.sheetId);
-  let { values, pendingCells } = cellValues(grid, sheet, area.rect, area, base, mode);
+  let { values, pendingCells } = cellValues(grid, sheet, area.rect, area, base, mode, budget);
   return {
     range: a1Of(sheet.title, area.rect),
     values,
@@ -687,7 +714,7 @@ export function simulatedRange(
  * queued input, cells moved with their lines, and formulas rewritten.
  */
 export function enteredContent(
-  grid: Grid, areas: readonly SheetArea[], entered: BaseCells<EnteredValue>,
+  grid: Grid, areas: readonly SheetArea[], entered: BaseCells<EnteredValue>, budget = textBudget(),
 ): EnteredValue[][][] {
   return areas.map(({ sheetId, rect }) => {
     let sheet = sheetOf(grid, sheetId);
@@ -696,15 +723,16 @@ export function enteredContent(
       if (row === undefined || column === undefined) return null;
       let entry = grid.cells.get(cellKey(sheet.id, row, column));
       if (entry) {
-        return enteredOf(isFormula(entry.input) ? formulaAt(grid, sheet.id, entry.input, entry.at).text : entry.input);
+        return spend(budget, enteredOf(
+          isFormula(entry.input) ? formulaAt(grid, sheet.id, entry.input, entry.at).text : entry.input));
       }
       let baseRow = baseIndexOf(row);
       let baseColumn = baseIndexOf(column);
       // A cell of an inserted line, or of an added sheet, is blank.
       if (sheet.source === undefined || baseRow === undefined || baseColumn === undefined) return null;
       let value = entered(sheet.source, baseRow, baseColumn);
-      if (!holdsFormula(value) || grid.log.length === 0) return value;
-      return { formula: formulaAt(grid, sheet.id, value.formula, 0).text };
+      if (!holdsFormula(value) || grid.log.length === 0) return spend(budget, value);
+      return spend(budget, { formula: formulaAt(grid, sheet.id, value.formula, 0).text });
     }));
   });
 }

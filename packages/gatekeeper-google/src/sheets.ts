@@ -22,7 +22,7 @@ import {
   BlankSpreadsheet, GoogleSheetsApi, validateRanges, type SheetArea, type SpreadsheetReader,
 } from "./sheets-api";
 import { isCellChange, prepareChanges } from "./sheets-input";
-import { findSheet, parseRange, type Rect } from "./sheets-model";
+import { findSheet, parseRange, type EnteredValue, type Rect } from "./sheets-model";
 import {
   checkProtections, guardAfter, guardCells, guardDigest, guardedSheets, resolveChanges, sheetLabels,
 } from "./sheets-plan";
@@ -32,6 +32,7 @@ import type {
 import {
   basePiecesOf, baseValues, conflictReason, enteredContent, gridOf, holdsFormula, MAX_REWRITE_WORK,
   overlayRange, rangesToFetch, replayChanges, resolveArea, rewriteWork, simulatedRange,
+  SimulatedTextTooLong, textBudget,
   type Grid, type PlannedChange, type QueuedChange, type SheetBatch, type SheetsAction, type SheetsActions,
 } from "./sheets-simulation";
 import type { GoogleSpreadsheetSession, SheetChange } from "./sheets-types";
@@ -459,7 +460,15 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
       throw new Error("These ranges hold too many formulas to read with the queued changes to rows, " +
         "columns and sheets applied. Read fewer cells, or approve or reject the queued changes first.");
     }
-    return areas.map(area => simulatedRange(grid, area, base, mode));
+    let budget = textBudget();
+    try {
+      return areas.map(area => simulatedRange(grid, area, base, mode, budget));
+    } catch (error) {
+      if (!(error instanceof SimulatedTextTooLong)) throw error;
+      throw new Error("These ranges hold too much text to read with the queued changes to rows, " +
+        "columns and sheets applied. Read fewer cells, or approve or reject the queued changes first.",
+        { cause: error });
+    }
   }
 
   async #readRanges(
@@ -532,7 +541,18 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
                 "the queued changes first."),
             };
           }
-          let content = enteredContent(grid, cells, entered);
+          let content: EnteredValue[][][];
+          try {
+            content = enteredContent(grid, cells, entered);
+          } catch (error) {
+            if (!(error instanceof SimulatedTextTooLong)) throw error;
+            return {
+              title: metadata.title, editable,
+              refusal: new Error("These changes overwrite or delete cells holding too much text with the " +
+                "queued changes to rows, columns and sheets applied. Change fewer cells, or approve or " +
+                "reject the queued changes first.", { cause: error }),
+            };
+          }
           let sha256 = await guardDigest(grid.sheets, { sheetIds: guardedSheets(planned), cells }, content);
           let formulas = content.some(area => area.some(row => row.some(holdsFormula)));
           let guard = { sha256, after: guardAfter(grid, pending, planned, cells, formulas), cells };

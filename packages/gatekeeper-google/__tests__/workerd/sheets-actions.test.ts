@@ -1180,6 +1180,29 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
       "sheets rewrite. Change fewer cells, or approve or reject the queued changes first.");
   });
 
+  it("refuses a read or a batch whose formulas a queued rename makes too long", async () => {
+    // Each formula names S1 50 times, so renaming S1 to 100 characters takes it from 300 characters
+    // to 5,250, and 2,000 of them past the 5 MiB a read may build.
+    let provider = budget([
+      sheetMeta(0, "Sales", { rowCount: 2_000, columnCount: 2 }), sheetMeta(1, "S1", { index: 1, rowCount: 5, columnCount: 5 }),
+    ]);
+    let formula = "=" + Array.from({ length: 50 }, () => "S1!A1").join("+");
+    for (let row = 1; row <= 2_000; row++) provider.set(`Sales!A${row}`, formula);
+    let sheets = gatekeeper();
+    await sheets.queued([{ op: "renameSheet", sheetId: 1, title: "T".repeat(100) }]);
+
+    // Formula reads show the formulas' text; other reads show their results, which a rename leaves.
+    expect((await sheets.call("readRange", "Sales!A1:A2000", { valueMode: "formula" })).error).toBe(
+      "These ranges hold too much text to read with the queued changes to rows, columns and sheets " +
+      "applied. Read fewer cells, or approve or reject the queued changes first.");
+    expect((await sheets.call("readRange", "Sales!A1:A2000")).error).toBeUndefined();
+    let read = await sheets.read("Sales!A1:A2", "formula");
+    expect(read.values).toEqual([[formula.replaceAll("S1!", `${"T".repeat(100)}!`)], [formula.replaceAll("S1!", `${"T".repeat(100)}!`)]]);
+    expect((await sheets.call("updateSpreadsheet", [{ op: "clearRange", range: "Sales!A1:A2000" }])).error).toBe(
+      "These changes overwrite or delete cells holding too much text with the queued changes to rows, " +
+      "columns and sheets applied. Change fewer cells, or approve or reject the queued changes first.");
+  });
+
   it("inserts rows and writes into them in one batch, landing where the read previewed", async () => {
     let provider = budget();
     provider.results["=B2*2"] = 8;

@@ -6,7 +6,7 @@ import { planSheet } from "../src/sheets-plan";
 import type { SpreadsheetCellValue, SpreadsheetValueMode } from "../src/sheets-read-types";
 import {
   applyChange, basePiecesOf, baseValues, conflictReason, enteredContent, formulaAt, gridOf,
-  overlayRange, rangesToFetch, replayChanges, resolveArea, rewriteWork, simulatedRange,
+  overlayRange, rangesToFetch, replayChanges, resolveArea, rewriteWork, simulatedRange, SimulatedTextTooLong,
   type Grid, type PlannedChange, type QueuedChange, type SheetMeta, type SheetsAction,
 } from "../src/sheets-simulation";
 import { positionOf } from "../src/sheets-structure";
@@ -295,6 +295,25 @@ describe("Sheets formulas through steps that cannot change them", () => {
   ];
   let g = replayed(gridOf({ sheets }), [queued(1, Array.from({ length: 50 }, () => insertRows(2, 1)))]);
   let formula = "=SUM(A1:B2)+Sales!C3*'S1'!A1";
+
+  it("stops building a read or guard once its text, longer for a renamed sheet, runs past its budget", () => {
+    let renamed = replayed(gridOf({ sheets }), [queued(1, [{ op: "renameSheet", sheetId: 1, title: "T".repeat(100) }])]);
+    let piece = { sheetId: 0, rect: rect(0, 0, 1, 2) };
+    let entered = baseValues<EnteredValue>([piece], [[[{ formula: "=S1!A1" }, "text"]]]);
+    let base = { entered, shown: baseValues([piece], [[[7, "text"]]]) };
+    let area = { ...piece, rows: 1, columns: 2 };
+    // The formula grows from 6 characters to 104.
+    expect(simulatedRange(renamed, area, base, "formula", { left: 108 }).values).toEqual([[`=${"T".repeat(100)}!A1`, "text"]]);
+    expect(() => simulatedRange(renamed, area, base, "formula", { left: 107 })).toThrow(SimulatedTextTooLong);
+    // One budget serves every range of a read.
+    let budget = { left: 150 };
+    simulatedRange(renamed, area, base, "formula", budget);
+    expect(budget.left).toBe(42);
+    expect(() => simulatedRange(renamed, area, base, "formula", budget)).toThrow(SimulatedTextTooLong);
+    expect(() => enteredContent(renamed, [piece], entered, { left: 107 })).toThrow(SimulatedTextTooLong);
+    expect(enteredContent(renamed, [piece], entered, { left: 108 }))
+      .toEqual([[[{ formula: `=${"T".repeat(100)}!A1` }, "text"]]]);
+  });
 
   it("counts each formula's text an area shows once per step of the log, and again for each area showing it", () => {
     let piece = { sheetId: 0, rect: rect(0, 0, 2, 3) };
