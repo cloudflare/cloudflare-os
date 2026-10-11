@@ -408,6 +408,10 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return this.#user.startResourceConfigurator(accountId, resourceUrlPattern);
   }
 
+  startCreationConfigurator(accountId: number, resourceUrlPattern: string) {
+    return this.#user.startCreationConfigurator(accountId, resourceUrlPattern);
+  }
+
   async dismissSharedGadget(gadgetId: string): Promise<void> {
     return this.#user.forgetSharedGadget(gadgetId);
   }

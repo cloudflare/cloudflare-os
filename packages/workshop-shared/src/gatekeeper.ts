@@ -263,6 +263,13 @@ export type SupportedResource = {
    * (see GatekeeperVendor.createResource()).
    */
   creatable?: boolean;
+
+  /**
+   * With `creatable`: the approver of a creation of this type configures it, in the account they
+   * create it in, through that account's GatekeeperUser.startCreationConfigurator(). Callers gate
+   * on this flag rather than probing, since RPC stubs cannot report optional-method presence.
+   */
+  creationConfigurator?: boolean;
 }
 
 /** Removes every trailing slash from a string in linear time. */
@@ -676,6 +683,15 @@ export interface GatekeeperUser extends WorkerEntrypoint {
   ): Promise<ResourceConfiguratorFrame>;
 
   /**
+   * Get the UI in which the approver of a creation of the creatable type `resourceUrlPattern`
+   * configures it in this account, e.g. where to create it. The frame starts on the vendor's
+   * default, and its collectResourceUrl() returns the vendor-defined value passed to
+   * Gatekeeper.applyCreation(). The choice must not change the simulated resource's interface.
+   * Present when the type sets SupportedResource.creationConfigurator.
+   */
+  startCreationConfigurator?(resourceUrlPattern: string): Promise<GatekeeperUiFrame>;
+
+  /**
    * Revoke this account connection. The GatekeeperUser, and all Gatekeepers created through it,
    * become broken.
    */
@@ -978,16 +994,22 @@ export interface Gatekeeper<Session> extends DurableObject {
   /**
    * For a gatekeeper from GatekeeperVendor.createResource(): a user approved its creation, so
    * create the resource at the provider through the account they chose, whose verifier is
-   * `creator`. Returns the class to use from then on, imbued with the real resource as that
-   * account's getGatekeeperClassFor() would return it, and the resource's URL. The Overseer
-   * restarts this facet on that class before anything else reaches it; storage carries over, so
-   * actions queued against the simulated resource apply through the new class. Should be
-   * idempotent, for the same reason as applyAction().
+   * `creator`, configured as `configuration` says: what the approver chose in that account's
+   * GatekeeperUser.startCreationConfigurator(), or null for no choice, meaning the vendor's
+   * default. It comes from the approver's client, so treat it as untrusted input. Returns the class
+   * to use from then on, imbued with the real resource as that account's getGatekeeperClassFor()
+   * would return it, and the resource's URL. The Overseer restarts this facet on that class before
+   * anything else reaches it; storage carries over, so actions queued against the simulated
+   * resource apply through the new class. Should be idempotent, for the same reason as
+   * applyAction(). If an earlier attempt may already have created the resource, keep that
+   * attempt's account, and bring the resource to `configuration` or throw: actions queued behind
+   * the creation apply as soon as this returns. Only that account's own approver may change it, so
+   * if `creator` is another account, throw unless it already is as `configuration` says.
    *
    * If the user rejects the creation instead, the Overseer removes this gatekeeper, rejecting
    * its queued actions without calling rejectAction(): its storage is deleted with it.
    */
-  applyCreation?(creator: Fetcher<GatekeeperUserVerifier>)
+  applyCreation?(creator: Fetcher<GatekeeperUserVerifier>, configuration: string | null)
       : Promise<{class: DurableObjectClass<Gatekeeper<any>>, resourceUrl: string}>;
 
   /**

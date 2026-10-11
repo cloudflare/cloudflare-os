@@ -56,6 +56,7 @@ export type ProvidedAccountInfo = {
 type AccountCreatorStub = Required<Pick<GatekeeperVendor, "createAccount">>;
 type ResourceCreatorStub = Required<Pick<GatekeeperVendor, "createResource">>;
 type SingletonAccountStub = Required<Pick<GatekeeperUser, "getSingletonGatekeeperClass" | "startAppUi">>;
+type CreationConfiguratorStub = Required<Pick<GatekeeperUser, "startCreationConfigurator">>;
 
 function areCredentialsValid(record: ConnectedAccountRecord): boolean {
   if (record.credentialsExpired) return false;
@@ -1705,6 +1706,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let record = this.storage.connectedAccounts.get(accountId);
     if (!record) throw new Error("No such account.");
     return record.account.startResourceConfigurator(resourceUrlPattern);
+  }
+
+  async startCreationConfigurator(accountId: number, resourceUrlPattern: string)
+      : Promise<GatekeeperUiFrame> {
+    let record = this.storage.connectedAccounts.get(accountId);
+    if (!record) throw new Error("No such account.");
+    return (record.account as unknown as CreationConfiguratorStub)
+        .startCreationConfigurator(resourceUrlPattern);
   }
 
   /**

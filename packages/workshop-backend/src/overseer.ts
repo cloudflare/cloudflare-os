@@ -79,7 +79,7 @@ import { createWorkshopLogger, obsContext } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
 import { isLoopLimitError, retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
 import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
-import type { GadgetExportFormat } from "@gadgets/workshop-shared/api";
+import type { CreationApproval, GadgetExportFormat } from "@gadgets/workshop-shared/api";
 import {
   assertChatAttachmentSupportedByProvider,
   isAllowedChatAttachmentImageMimeType,
@@ -4714,10 +4714,12 @@ class OverseerImpl implements AgentHooks {
   // gate was cleared: this is the single chokepoint where an action transitions to "approved", so
   // requiring them here guarantees the audit log always records the resolving user and whether it
   // was applied automatically. For an auto-approval, `resolvedBy` is the user who enabled the rule.
-  // A creation also needs `creator`: the verifier of the account the approver chose to create it in.
+  // A creation also needs `creation`: the verifier of the account the approver chose to create it
+  // in, and what they chose in that account's creation configurator.
   async applyPendingAction(record: ActionRecord & {type: "action"},
                            resolvedBy: AiChatAuthorInfo, autoApproved: boolean,
-                           creator?: Fetcher<GatekeeperUserVerifier>): Promise<void> {
+                           creation?: {creator: Fetcher<GatekeeperUserVerifier>,
+                                       configuration: string | null}): Promise<void> {
     let id = record.gatekeeperId;
     // A created resource exists only once its creation applies, and that stays pending until then.
     if (record.action !== "create" && this.#creationPending(id)) {
@@ -4726,11 +4728,12 @@ class OverseerImpl implements AgentHooks {
     let gatekeeper = await this.getGatekeeperFacet(record.gatekeeperId);
     let created: {class: GatekeeperClass, resourceUrl: string} | undefined;
     if (record.action === "create") {
-      if (!creator) throw new Error("Choose one of your accounts to create this resource in.");
+      if (!creation) throw new Error("Choose one of your accounts to create this resource in.");
       // applyCreation is optional on Gatekeeper; GatekeeperVendor.createResource()'s gatekeepers
       // implement it.
       created = await (gatekeeper as unknown as Fetcher<Gatekeeper<any> &
-          Required<Pick<Gatekeeper<any>, "applyCreation">>>).applyCreation(creator);
+          Required<Pick<Gatekeeper<any>, "applyCreation">>>)
+          .applyCreation(creation.creator, creation.configuration);
     } else {
       // The apply-time cache stub is scoped to the gatekeeper AND to this action (approval can
       // happen long after the session that queued it, so the queue-time stub is gone) -- the
@@ -10803,7 +10806,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     };
   }
 
-  async approveAction(id: number, accountId?: number): Promise<void> {
+  async approveAction(id: number, creation?: CreationApproval): Promise<void> {
     let action = this.impl.storage.actions.get(id);
     if (!action) {
       throw new Error(`No such action: ${id}`);
@@ -10824,9 +10827,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let profile = await this.#getClientProfile();
     // A creation is made in the account the approver chose, whose verifier carries its authority.
     let vendorId = gatekeeperVendorId(this.impl.storage.gatekeepers.get(action.gatekeeperId));
-    let creator = action.action === "create" && accountId !== undefined && vendorId
-        ? await this.#clientUser.getVerifier(accountId, vendorId) ?? undefined : undefined;
-    await this.impl.applyPendingAction(action, profile, false, creator);
+    let creator = action.action === "create" && creation && vendorId
+        ? await this.#clientUser.getVerifier(creation.accountId, vendorId) : null;
+    await this.impl.applyPendingAction(action, profile, false,
+        creator ? {creator, configuration: creation?.configuration ?? null} : undefined);
 
     // If this was an awaited agent action, resume only after all awaited actions in the turn are
     // approved. If applyPendingAction throws, the action stays pending and the turn stays suspended.

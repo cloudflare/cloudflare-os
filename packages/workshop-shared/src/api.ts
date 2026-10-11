@@ -786,6 +786,14 @@ export interface AuthenticatedApi extends RpcTarget {
   ): Promise<ResourceConfiguratorFrame>;
 
   /**
+   * Get the UI in which the approver of a creation of the type `resourceUrlPattern` configures it
+   * in their connected account `accountId` (see SupportedResource.creationConfigurator). The
+   * frame's collectResourceUrl() gives CreationApproval.configuration.
+   */
+  startCreationConfigurator(accountId: number, resourceUrlPattern: string)
+      : Promise<GatekeeperUiFrame>;
+
+  /**
    * Remove a shared gadget from the user's home page listing. Does NOT revoke the user's
    * access -- if they open the gadget again (e.g., via link), it reappears on their home page.
    */
@@ -2348,6 +2356,19 @@ export type ActionLogEntry = {
   // are enabled/disabled, which the user can freely toggle as often as they want.
 });
 
+/** How the approver of a creation (see ActionLogEntry.creation) chose to make it. */
+export type CreationApproval = {
+  /** The approver's connected account, for the gatekeeper's vendor, to create the resource in. */
+  accountId: number;
+
+  /**
+   * What the approver chose in that account's creation configurator (see
+   * AuthenticatedApi.startCreationConfigurator()): a vendor-defined URL only the gatekeeper reads.
+   * Omitted when they made no choice, as for a type without one.
+   */
+  configuration?: string;
+};
+
 export type BoundHookInfo = {
   id: number;
 
@@ -2647,10 +2668,10 @@ export interface Overseer extends RpcTarget {
 
   /**
    * Approve an action that is currently in the "pending" state. The action will be performed on
-   * approval. Approving a creation (see ActionLogEntry.creation) requires `accountId`: the
-   * approver's connected account, for the gatekeeper's vendor, in which the resource is created.
+   * approval. Approving a creation (see ActionLogEntry.creation) requires `creation`: how the
+   * approver chose to make it.
    */
-  approveAction(id: number, accountId?: number): Promise<void>;
+  approveAction(id: number, creation?: CreationApproval): Promise<void>;
 
   /**
    * Reject an action that is in the "pending" state. This notifies the gatekeeper that it will not
