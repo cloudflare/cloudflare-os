@@ -64,9 +64,11 @@ export interface GitHubRepo {
    * in a worktree get to GitHub. The branch is created if it does not exist.
    *
    * `commitId` must be a full 40-character commit id (e.g. the result of a worktree `commit()`),
-   * and the commit's history must be locally available down to a commit that came from this
-   * repository -- which is automatic for commits authored in a worktree mounted from a commit of
-   * this repository.
+   * and its history must be locally available down to a commit this connection provided --
+   * which is automatic for commits authored in a worktree mounted from a commit you looked up
+   * through it. Another connection's commits do not count, even one to this same repository:
+   * look up the base and push through the same connection. To fix a pull request that has a
+   * connection of its own, do both through that one, pushing with `GitHubPullRequest.push()`.
    *
    * Without `force`, the push must be a fast-forward: the branch's current head must be an
    * ancestor of `commitId`. If the branch has moved past the head your work was based on, the
@@ -307,8 +309,11 @@ export interface GitHubPullRequest extends GitHubIssue {
    * `getDetails()` returns, commit your changes on top of it, and push the result.
    *
    * `commitId` must be a full 40-character commit id (e.g. the result of a worktree `commit()`),
-   * and the commit's history must be locally available down to a commit read through this pull
-   * request -- which is automatic for commits authored on top of its head.
+   * and its history must be locally available down to a commit this connection provided. So do
+   * the whole fix through this pull request: read the head with `getDetails()` rather than
+   * through a repository connection, and mount that. If a repository connection reported the
+   * head first (in a branch or pull request listing, say), the workspace fetched it through that
+   * connection, and the push must go through it instead.
    *
    * The push must be a fast-forward: if the pull request has moved past the head your work was
    * based on, the push fails with an error saying so; read its new head and rebase onto it, or
