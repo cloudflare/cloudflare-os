@@ -521,15 +521,21 @@ function atSizedCaret(): boolean {
 }
 
 /**
- * Give the run the browser just opened for typed text at a sized caret its picked size. A typed
- * space can land as U+00A0, which the browser uses to keep it from collapsing.
+ * Give the run the browser just opened for typed text at a sized caret its picked size. A line or
+ * paragraph break carries the browser's typing size to the new line, so the picked size goes with
+ * it. A typed space can land as U+00A0, which the browser uses to keep it from collapsing.
  */
-function sizeTypedRun(typed: string | null) {
-  const pt = caretSize!.pt;
+function sizeTypedInput({ data, inputType }: InputEvent) {
+  const { pt } = caretSize!;
+  const { focusNode, focusOffset } = window.getSelection()!;
   caretSize = null;
-  const run = window.getSelection()?.focusNode?.parentElement;
+  if (focusNode && (inputType === "insertParagraph" || inputType === "insertLineBreak")) {
+    caretSize = { pt, node: focusNode, offset: focusOffset };
+    return;
+  }
+  const run = focusNode?.parentElement;
   if (!run || run === editor || !editor.contains(run)) return;
-  if (run.textContent?.replaceAll("\u00a0", " ") !== typed) return;
+  if (run.textContent?.replaceAll("\u00a0", " ") !== data) return;
   if (run.style.fontSize !== "xxx-large" && run.getAttribute("size") !== "7") return;
   run.removeAttribute("size");
   run.style.fontSize = pt + "pt";
@@ -1423,7 +1429,7 @@ async function sendChanges(): Promise<SaveOutcome> {
 }
 
 editor.addEventListener("input", (e) => {
-  if (caretSize) sizeTypedRun((e as InputEvent).data);
+  if (caretSize) sizeTypedInput(e as InputEvent);
   if (selectedImage && !editor.contains(selectedImage)) hideImageControls();
   else if (selectedImage) positionImageControls();
   scheduleSave();
