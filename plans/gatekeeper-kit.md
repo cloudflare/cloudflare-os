@@ -199,7 +199,8 @@ export const NONCE_KEY = "nonce";               // unchanged from every current 
 export type ConnectStage = "initiation" | "oauth";
 export type StoredNonce<Extra extends object = Record<never, never>> =
   TimedNonce & { stage: ConnectStage } & Extra;
-export function putInitiation(kv, initiationNonce: string, now: number): void;
+export function putInitiation<Meta extends object>(
+  kv, initiationNonce: string, now: number, meta?: Meta & NonceExtra): void;
 export function advanceToOAuth<Extra extends object>(
   kv, initiationNonce: string, now: number, extra?: Extra & NonceExtra): string | null;
 export function claimOAuth<Extra extends object>(
@@ -212,10 +213,16 @@ nonce in one synchronous step, so exactly one concurrent caller can advance a gi
 `Extra` fields (PKCE verifier, requested scopes). The stored shape matches the `StoredNonce` every
 existing OAuth gatekeeper writes (`mcp-shared` is the exception: `account.ts:118` also carries a
 `"connecting"` stage, which step 12 leaves in place). `Extra` stays flat rather than nested under a
-property; the reserved keys (`value`, `expiresAt`, `stage`) are intersected onto
-`advanceToOAuth`'s `extra` parameter, which both excludes them statically and rejects them at
-runtime. The exclusion lives on the parameter rather than the `Extra` constraint: as a constraint
+property; the reserved keys (`value`, `expiresAt`, `stage`) are intersected onto `putInitiation`'s
+`meta` and `advanceToOAuth`'s `extra` parameters, which both exclude them statically and reject them
+at runtime. The exclusion lives on the parameter rather than the `Extra` constraint: as a constraint
 it is a weak type, which defeats inference and collapses `StoredNonce<Extra>` to `never`.
+
+Initiation metadata records what a link was minted for, so a callback need not infer it: deriving
+"reconnect" from `stored() !== undefined` at callback time (GitLab's and X's original check)
+misroutes a reconnect whose account was disconnected meanwhile. `advanceToOAuth` carries it into
+the OAuth record, `extra` winning a name clash. Recording `firstConnect: true` at the connect entry
+point makes the absent value, a pre-deploy link included, take the safe staged path.
 
 ```ts
 export function isConnectAttempted(kv): boolean;

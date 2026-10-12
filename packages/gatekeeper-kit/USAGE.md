@@ -54,6 +54,13 @@ The handshake holds one OAuth nonce, so a second `advanceToOAuth` invalidates th
 callback. A claimed attempt can still race with a connection change. Use `startedUnder` in the
 matching initial or reconnect path below.
 
+Decide which path an attempt takes when its link is minted, not when it is used: pass that intent to
+`putInitiation` as metadata, which `advanceToOAuth` carries into the OAuth record (its own `extra`
+wins a name clash) and `claimOAuth` returns. Inferring it at callback time from whether credentials
+exist misroutes a reconnect whose account was disconnected meanwhile. Make the absent value the safe
+one — record `firstConnect: true` from the connect entry point, so anything else, a link minted
+before the field existed included, stages its grant as a reconnect.
+
 ### Initial connect
 
 An initial connect may persist its complete grant in the new account before calling

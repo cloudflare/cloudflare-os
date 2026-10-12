@@ -40,25 +40,36 @@ function rejectReservedKeys(extra: object): void {
 }
 
 /**
- * Stores a connect-flow initiation nonce.
+ * Stores a connect-flow initiation nonce, with provider metadata decided when the link is minted —
+ * what it was minted *for* (a reconnect, say) — rather than inferred when it is used. The metadata
+ * rides the attempt: `advanceToOAuth` carries it into the OAuth record, and `claimOAuth` returns it.
  * @param kv Durable Object nonce storage.
  * @param initiationNonce Nonce carried by the connect link.
  * @param now Current Unix time in milliseconds.
+ * @param meta Provider metadata to retain through the callback.
  */
-export function putInitiation(kv: ConnectNonceKv, initiationNonce: string, now: number): void {
-  kv.put<StoredNonce>(NONCE_KEY, {
+export function putInitiation<Meta extends object>(
+  kv: ConnectNonceKv,
+  initiationNonce: string,
+  now: number,
+  meta?: Meta & NonceExtra,
+): void {
+  if (meta) rejectReservedKeys(meta);
+  kv.put(NONCE_KEY, {
+    ...meta,
     value: initiationNonce,
     expiresAt: now + INITIATION_NONCE_LIFETIME_MS,
     stage: "initiation",
-  });
+  } satisfies StoredNonce);
 }
 
 /**
- * Advances a valid connect attempt to OAuth.
+ * Advances a valid connect attempt to OAuth, keeping the metadata `putInitiation` stored.
  * @param kv Durable Object nonce storage.
  * @param initiationNonce Nonce carried by the connect link.
  * @param now Current Unix time in milliseconds.
- * @param extra Provider metadata to retain through the callback.
+ * @param extra Provider metadata to retain through the callback, overriding initiation metadata of
+ * the same name.
  * @returns The OAuth nonce, or `null` when invalid.
  *
  * @example
@@ -88,7 +99,9 @@ export function advanceToOAuth<Extra extends object>(
   if (stored?.stage !== "initiation" || !isLiveNonce(stored, initiationNonce, now)) return null;
 
   const oauthNonce = generateNonce();
+  // The record's own fields come last, so the initiation stage's value, expiry and stage go.
   kv.put(NONCE_KEY, {
+    ...stored,
     ...extra,
     value: oauthNonce,
     expiresAt: now + OAUTH_NONCE_LIFETIME_MS,
