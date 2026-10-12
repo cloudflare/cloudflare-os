@@ -1,9 +1,10 @@
 // The push action on the real gatekeeper Durable Object: queue-time binding of the expected old
-// head (stacked pushes compose; non-fast-forward refused; creation exempt), simulated reads over
-// queued pushes (branch heads, refs, commits, history, an MR's diff and merge base), apply through
-// receive-pack framing with the queue-time CAS and desired-state idempotency, revert by ref
-// rollback or deletion, reject cascades, and the gitPull request framing. GitLab is faked at
-// fetch; the workspace git cache is a stub the test controls.
+// head (stacked pushes compose; non-fast-forward refused; creation exempt), pushes made through a
+// merge request to its source branch, simulated reads over queued pushes (branch heads, refs,
+// commits, history, an MR's diff and merge base), apply through receive-pack framing with the
+// queue-time CAS and desired-state idempotency, revert by ref rollback or deletion, reject
+// cascades, and the gitPull request framing. GitLab is faked at fetch; the workspace git cache is
+// a stub the test controls.
 
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -277,6 +278,37 @@ describe("queueing a push", () => {
     const cache = new TestGitCache().withCommit(OTHER, commitPayload(TREE1, [], "root"));
     const action = await queuePush(name, props, "feature", OTHER, false, cache);
     expect(action).toMatchObject({ branch: "feature", expectedOldSha: ZERO_OID, newSha: OTHER });
+  });
+});
+
+/** Merge request !133 from `feature` (at BASE) into `main`; `sourceProjectId` 2 makes it a fork's. */
+async function mergeRequest(sourceProjectId = 1) {
+  const { gitlab, props, name } = await setup();
+  gitlab.branches.set("feature", BASE);
+  gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}/merge_requests/133\\?`), () => json({
+    ...fx.mergeRequestResponse.data, iid: 133, source_branch: "feature", target_branch: "main", sha: BASE,
+    source_project_id: sourceProjectId, target_project_id: 1,
+  }));
+  const push = async (commit: string, cache: TestGitCache) =>
+    await unwrap(await hooks().queueAction(name, props, "prepareMergeRequestPush", ["133", commit, stubOf(cache)], DESC));
+  return { gitlab, push };
+}
+
+describe("pushing to a merge request", () => {
+  it("pushes to its source branch over the queued pushes, and only as a fast-forward", async () => {
+    const { push } = await mergeRequest();
+    const cache = cacheWithChain();
+    expect(await push(HEAD1, cache)).toMatchObject({ branch: "feature", expectedOldSha: BASE, newSha: HEAD1, force: false });
+    expect(await push(HEAD2, cache)).toMatchObject({ expectedOldSha: HEAD1, newSha: HEAD2 });
+    const unrelated = new TestGitCache().withCommit(OTHER, commitPayload(TREE1, [], "root"));
+    await expect(push(OTHER, unrelated)).rejects.toThrow(/merge request !133: .* not a fast-forward .* or merge it in\.$/);
+  });
+
+  it("refuses a merge request from a fork, and one whose source branch is gone", async () => {
+    await expect((await mergeRequest(2)).push(HEAD1, cacheWithChain())).rejects.toThrow("its source branch is in a fork");
+    const { gitlab, push } = await mergeRequest();
+    gitlab.branches.delete("feature");
+    await expect(push(HEAD1, cacheWithChain())).rejects.toThrow(`its source branch "feature" no longer exists`);
   });
 });
 

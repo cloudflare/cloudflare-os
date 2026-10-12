@@ -5588,20 +5588,28 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
    * fast-forward from; the zero-id compare-and-swap at apply protects against a branch appearing
    * in the interim), and `force` skips only this policy check -- it does not loosen the old-sha
    * match at apply.
+   *
+   * `pull` names the pull request whose head branch this push is for (`preparePullRequestPush`):
+   * the branch must then exist, since recreating it would not restore the pull request.
    */
   async preparePush(branch: string, commitId: string, force: boolean,
-                    gitCache: RpcStub<GitCache>): Promise<PushAction | null> {
+                    gitCache: RpcStub<GitCache>, pull?: string): Promise<PushAction | null> {
+    const target = pull === undefined ? `branch "${branch}"` : `pull request ${pull}`;
     const realHead = await this.#withApi(api =>
       api.getBranchHead(this.ctx.props.owner, this.ctx.props.repo, branch));
-    const expectedOldSha = this.#simulateBranchHead(branch, realHead) ?? ZERO_OID;
+    const head = this.#simulateBranchHead(branch, realHead);
+    if (head === null && pull !== undefined) {
+      throw new Error(`Cannot push to ${target}: its head branch "${branch}" no longer exists.`);
+    }
+    const expectedOldSha = head ?? ZERO_OID;
     if (expectedOldSha === commitId) return null;
     if (!force && expectedOldSha !== ZERO_OID &&
         !(await gitCache.isAncestor(expectedOldSha, commitId))) {
       throw new Error(
-        `Cannot push to branch "${branch}": its current head ${expectedOldSha} is not an ` +
-        `ancestor of ${commitId}, so this push is not a fast-forward -- the branch has moved ` +
-        `past the head this work was based on. Pull the branch's new head and rebase onto it, ` +
-        `or pass force: true to overwrite the branch.`);
+        `Cannot push to ${target}: its current head ${expectedOldSha} is not an ancestor of ` +
+        `${commitId}, so this push is not a fast-forward -- it has moved past the head this ` +
+        `work was based on. Pull its new head and rebase onto it, ` +
+        `${pull === undefined ? "or pass force: true to overwrite the branch." : "or merge it in."}`);
     }
     return {
       type: "push",
@@ -5614,6 +5622,31 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       newSha: commitId,
       force,
     };
+  }
+
+  /**
+   * `GitHubPullRequest.push()`: `preparePush` to the pull request's head branch, never forced.
+   * Refused for a fork's pull request, whose head branch is in a repository this connection
+   * does not reach.
+   */
+  async preparePullRequestPush(pullId: string, commitId: string,
+                               gitCache: RpcStub<GitCache>): Promise<PushAction | null> {
+    const label = pullId.startsWith("~") ? pullId : `#${pullId}`;
+    const realId = pullId.startsWith("~") ? this.#resolveProvisionalId(pullId) : pullId;
+    let branch: string;
+    if (realId === undefined) {
+      const create = this.#findCreateAction(pullId, "pull") as CreatePullRequestAction | undefined;
+      if (!create) throw new Error(`Provisional pull request ${pullId} is no longer available.`);
+      branch = create.options.head;
+    } else {
+      const pull = await this.#getRemotePullRequestDetails(realId);
+      if (!isOwnHead(pull)) {
+        throw new Error(`Cannot push to pull request ${label}: its head branch is in the fork ` +
+          `${pull.head.repo.fullName}, and pushing to a fork is not supported.`);
+      }
+      branch = pull.head.ref;
+    }
+    return await this.preparePush(branch, commitId, false, gitCache, label);
   }
 
   /**
@@ -6046,6 +6079,21 @@ export class GitHubPullRequestImpl extends GitHubIssueImpl implements GitHubPull
     await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
       title: `Merge pull request #${this.logicalId}`,
       implementsRevert: false,
+    });
+  }
+
+  async push(commitId: string): Promise<void> {
+    if (!isCommitOid(commitId)) {
+      throw new Error(
+        `push() requires a full 40-character commit id; got ${JSON.stringify(commitId)}.`);
+    }
+    const action = await this.gatekeeper.preparePullRequestPush(
+      this.logicalId, commitId, await this.#gitCache.stub());
+    if (action === null) return;  // the head branch is already at commitId: nothing to do
+    await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
+      title: `Push ${commitId.slice(0, 12)} to #${this.logicalId} (${action.branch})`,
+      pushedCommits: [commitId],
+      implementsRevert: true,
     });
   }
 }

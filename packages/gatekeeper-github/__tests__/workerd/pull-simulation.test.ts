@@ -4,7 +4,8 @@
 // agent sequence: push a branch (queued), immediately create a pull request against it (queued),
 // then keep reading the pull request -- details, diff, commit list -- which must reflect the
 // pushed state even though nothing has reached GitHub yet. Also covered: queue-time branch
-// validation, the out-of-order-approval guard, and the push-rejection cascade.
+// validation, the out-of-order-approval guard, the push-rejection cascade, and pushes made
+// through a pull request to its head branch.
 
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import { env, runInDurableObject } from "cloudflare:test";
@@ -399,6 +400,8 @@ async function repoGatekeeper() {
   return {
     preparePush: (branch: string, commitId: string, cache: TestGitCache) =>
       unwrap(hooks.preparePush(scenario, props, branch, commitId, false, stubOf(cache))),
+    preparePullRequestPush: (pullId: string, commitId: string, cache: TestGitCache) =>
+      unwrap(hooks.preparePullRequestPush(scenario, props, pullId, commitId, stubOf(cache))),
     submitPush: (queue: TestApprovalQueue, action: PushActionData) =>
       unwrap(hooks.submitPush(scenario, props, stubOf(queue), action, {
         title: "push", description: "test push",
@@ -726,20 +729,20 @@ describe("push rejection cascade", () => {
   });
 });
 
+const FORK = { owner: { login: "contributor" }, name: REPO };
+
+/** `topic` at OLD with pull request #7 on it, plus the agent commit HEAD1 on top of OLD. */
+function topicScenario() {
+  const github = scenarioGitHub();
+  github.branches.set("topic", OLD);
+  github.pulls.set(7, pullResponse(7, { ref: "topic", sha: OLD }, { ref: "main", sha: BASE }));
+  const cache = scenarioCache()
+    .withObject(HEAD1, "commit", commitPayload(TREE_1, [OLD], "feat: add new.txt"))
+    .withAncestry(OLD, HEAD1);
+  return { github, cache, pull: github.pulls.get(7)! };
+}
+
 describe("merge head binding", () => {
-  const FORK = { owner: { login: "contributor" }, name: REPO };
-
-  /** `topic` at OLD with pull request #7 on it, plus the agent commit HEAD1 on top of OLD. */
-  function topicScenario() {
-    const github = scenarioGitHub();
-    github.branches.set("topic", OLD);
-    github.pulls.set(7, pullResponse(7, { ref: "topic", sha: OLD }, { ref: "main", sha: BASE }));
-    const cache = scenarioCache()
-      .withObject(HEAD1, "commit", commitPayload(TREE_1, [OLD], "feat: add new.txt"))
-      .withAncestry(OLD, HEAD1);
-    return { github, cache, pull: github.pulls.get(7)! };
-  }
-
   it("binds the head a queued push leaves, and merges only at it", async () => {
     const { github, cache, pull } = topicScenario();
     const gk = await repoGatekeeper();
@@ -820,6 +823,33 @@ describe("merge head binding", () => {
 
     const { action } = await queueMerge(gk, "7");
     expect(action).toMatchObject({ expectedHeadSha: HEAD1, headBranch: "topic" });
+  });
+});
+
+describe("pushing to a pull request", () => {
+  it("pushes to its head branch over the queued pushes, and only as a fast-forward", async () => {
+    const { cache } = topicScenario();
+    cache.withObject(HEAD2, "commit", commitPayload(TREE_2, [HEAD1], "fix: review feedback"))
+      .withAncestry(HEAD1, HEAD2);
+    const gk = await repoGatekeeper();
+    await queuePush(gk, cache, "topic", HEAD1);
+
+    expect(await gk.preparePullRequestPush("7", HEAD2, cache))
+      .toMatchObject({ branch: "topic", expectedOldSha: HEAD1, newSha: HEAD2, force: false });
+    await expect(gk.preparePullRequestPush("7", BASE, cache))
+      .rejects.toThrow(/pull request #7: .* not a fast-forward .* or merge it in\.$/);
+  });
+
+  it("refuses a fork's pull request, and one whose head branch is gone", async () => {
+    const { github, cache } = topicScenario();
+    github.pulls.set(9, pullResponse(9, { ref: "topic", sha: HEAD2, repo: FORK }, { ref: "main", sha: BASE }));
+    const gk = await repoGatekeeper();
+    await expect(gk.preparePullRequestPush("9", HEAD1, cache))
+      .rejects.toThrow("its head branch is in the fork contributor/widgets");
+
+    github.branches.delete("topic");
+    await expect(gk.preparePullRequestPush("7", HEAD1, cache))
+      .rejects.toThrow(`its head branch "topic" no longer exists`);
   });
 });
 
