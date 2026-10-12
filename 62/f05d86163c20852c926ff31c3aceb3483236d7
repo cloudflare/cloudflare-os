@@ -1,0 +1,23 @@
+packages/gatekeeper-x/src/x-sessions.ts
+  s_6e159c0858b8f9::t_e72a2e47194b8f 26,140-145,179-180,188,240-242,244,247-249,259,265-266,268,271,350-351,354,358-362,375,377
+packages/gatekeeper-x/src/x-gatekeeper.ts
+  s_6e159c0858b8f9::t_3529c6d826a815 185
+packages/gatekeeper-x/src/x.ts
+  s_6e159c0858b8f9::t_0b6b5dfae74563 142-143
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "62f05d86163c20852c926ff31c3aceb3483236d7",
+  "prompts": {},
+  "sessions": {
+    "s_6e159c0858b8f9": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_eda3e264bffecsUpurXN1ZDw8a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

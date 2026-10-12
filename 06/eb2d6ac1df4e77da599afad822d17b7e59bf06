@@ -1,0 +1,23 @@
+packages/gatekeeper-gitlab/README.md
+  s_74eb0b1cbb84f7::t_931346a26bbd04 144-151
+packages/gatekeeper-gitlab/__tests__/workerd/hooks.test.ts
+  s_74eb0b1cbb84f7::t_49625aca01ea57 11,17-20,35-36,61-65,125,127-128,132,134-135,137,152-167,187,201,209-210,226-230,232-234,236-241,244-250,254-255,258-259,272,275,279-282,286-290,293,298-301,307-313,315,330,345-346,348-349,352,354,359-370,488,730-731,893-894,923-924,958-1041,1117-1118
+packages/gatekeeper-gitlab/src/gitlab-hooks.ts
+  s_74eb0b1cbb84f7::t_8aa37826ed24c6 164-168,354-357,364,367,373-385,393-396,398,434,442-444,603-621
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "06eb2d6ac1df4e77da599afad822d17b7e59bf06",
+  "prompts": {},
+  "sessions": {
+    "s_74eb0b1cbb84f7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_edf458c69ffepVeVZFxEZXzOIj",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

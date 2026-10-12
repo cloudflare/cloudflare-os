@@ -1,0 +1,26 @@
+packages/gatekeeper-x/storage-schema.md
+  s_6e159c0858b8f9::t_0b51f8eb089860 32
+AGENTS.md
+  s_6e159c0858b8f9::t_46e5002b102a16 42
+plans/x-gatekeeper.md
+  s_6e159c0858b8f9::t_7d1a28eec25f42 1076-1078
+  s_6e159c0858b8f9::t_83559365d9d354 1058
+packages/gatekeeper-x/src/x-actions.ts
+  s_6e159c0858b8f9::t_1b630eb4771d1f 134,316-328,345,363,367-398,779-814
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7fdbd7bb04fec2fc14ee3c690cda76b88a77d096",
+  "prompts": {},
+  "sessions": {
+    "s_6e159c0858b8f9": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_eda3e264bffecsUpurXN1ZDw8a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

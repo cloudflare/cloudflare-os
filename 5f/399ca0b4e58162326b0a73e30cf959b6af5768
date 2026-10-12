@@ -1,0 +1,23 @@
+packages/gatekeeper-x/__tests__/workerd/reads.test.ts
+  s_6e159c0858b8f9::t_59f3e0bc208711 212-215
+packages/gatekeeper-x/src/x-sessions.ts
+  s_6e159c0858b8f9::t_1a8dc8b679d89c 825-826
+plans/x-gatekeeper.md
+  s_6e159c0858b8f9::t_d7b8c5673519a9 728-730
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5f399ca0b4e58162326b0a73e30cf959b6af5768",
+  "prompts": {},
+  "sessions": {
+    "s_6e159c0858b8f9": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_eda3e264bffecsUpurXN1ZDw8a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
