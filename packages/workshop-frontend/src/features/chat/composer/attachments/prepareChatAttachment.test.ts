@@ -41,7 +41,7 @@ describe("prepareChatAttachment", () => {
     );
 
     await expect(prepareChatAttachment(file)).rejects.toThrow(
-      "Attachments must be 1.0 MB or smaller.",
+      "Attachments must be 4.0 MB or smaller.",
     );
   });
 
@@ -69,7 +69,7 @@ describe("prepareChatAttachment", () => {
     stubCanvas((type) => ({ size: OVER_LIMIT, type }));
 
     await expect(prepareChatAttachment(png)).rejects.toThrow(
-      "Attachments must be 1.0 MB or smaller.",
+      "Attachments must be 4.0 MB or smaller.",
     );
   });
 });
