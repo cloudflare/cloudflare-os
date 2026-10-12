@@ -64,6 +64,7 @@ import {
   type GitLabApiRunner,
   type GitLabGatekeeperImplProps,
 } from "./gitlab-env";
+import { handleWebhookRequest } from "./gitlab-hooks";
 import { parseResourceUrl } from "./gitlab-normalize";
 import {
   GitLabIssueConfiguratorUI,
@@ -78,6 +79,7 @@ import GITLAB_PROJECT_CONFIGURATOR_HTML from "./generated/gitlab-project-configu
 import { obsContext } from "./observability";
 
 export { GitLabGatekeeperImpl } from "./gitlab-gatekeeper";
+export { GitLabHookController, GitLabHookDriver } from "./gitlab-hooks";
 export { GitLabIssueImpl, GitLabMergeRequestImpl, GitLabProjectSessionImpl } from "./gitlab-sessions";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.gitlab", vendorId: VENDOR_ID });
@@ -146,6 +148,10 @@ export default {
 
     const relPath = url.pathname.slice(basePath.length);
     const path = relPath.slice(1).split("/");
+
+    if (path.length === 2 && path[0] === "webhook" && req.method === "POST") {
+      return handleWebhookRequest(req, path[1], env, ctx.exports);
+    }
 
     if (path.length === 2 && path[0].length === 64 && path[1].length === NONCE_BYTES * 2) {
       if (!env.CLIENT_ID || !env.CLIENT_SECRET) {
@@ -635,7 +641,23 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async revoke(): Promise<void> {
-    await this.#account().revoke();
+    // A stub of its own for each call: one to a driver that has restarted is broken.
+    const driver = () => this.ctx.exports.GitLabHookDriver.getByName(this.ctx.props.userObjectId);
+    let webhooksGone = true;
+    try {
+      // First, while the account's token can still delete its webhooks. Asked again should its
+      // answer be lost, as when it restarts after recording what GitLab failed to delete: it takes
+      // up where it was, and says so.
+      webhooksGone = await driver().revoke().catch(() => driver().revoke());
+    } finally {
+      // Kept while GitLab may yet delete one of them, which takes the token, for the disconnect to
+      // be tried again; revoked otherwise, even when the driver failed, which mustn't leave a
+      // disconnected account's grant live.
+      if (webhooksGone) await this.#account().revoke();
+    }
+    if (!webhooksGone) {
+      throw new Error("GitLab failed to delete some of this account's webhooks, so it is still connected. Disconnect it again to finish.");
+    }
   }
 
   async reconnect(): Promise<{ url: string }> {

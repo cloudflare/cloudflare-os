@@ -369,6 +369,12 @@
             "GitLabGatekeeperImpl"
           ],
           "tag": "v0"
+        },
+        {
+          "new_sqlite_classes": [
+            "GitLabHookDriver"
+          ],
+          "tag": "v1"
         }
       ],
       "modules": [

@@ -1,5 +1,5 @@
 import gatekeeperConfiguratorConfig from "@gadgets/scripts/gatekeeper-configurator";
-import { withVitestTask } from "../../scripts/vitest-task-vite-config.js";
+import { TESTS_WITH_TIMEOUT_ENV, withTestTimeout, withVitestTask } from "../../scripts/vitest-task-vite-config.js";
 
 /**
  * Vite+ per-package settings: the shared configurator `build`/`build:configurator` tasks plus a
@@ -7,7 +7,32 @@ import { withVitestTask } from "../../scripts/vitest-task-vite-config.js";
  * passes stay separate commands so one can replay from the task cache when only the other's
  * inputs moved.
  */
-export default withVitestTask(gatekeeperConfiguratorConfig, [
+const config = withVitestTask(gatekeeperConfiguratorConfig, [
   "vitest run",
   "vitest run -c vitest.worker.config.ts",
 ]);
+
+export default {
+  ...config,
+  run: {
+    ...config.run,
+    tasks: {
+      ...config.run.tasks,
+      // The contract checks run in Node rather than workerd, so they are checked with Node's types.
+      build: { ...config.run.tasks.build, command: ["tsc", "tsc -p tsconfig.contract.json"] },
+      /**
+       * The validated entrypoint `@gadgets/integration-tests` boots this gatekeeper from, built
+       * before its test files start; see gatekeeper-github's task of the same name.
+       */
+      "build:integration-worker": {
+        command: withTestTimeout("capnweb-validate build --out .wrangler/validate"),
+        dependsOn: ["build:configurator"],
+        cache: {
+          env: TESTS_WITH_TIMEOUT_ENV,
+          input: [{ auto: true }, { pattern: "!**/.wrangler/**", base: "workspace" }],
+          output: [".wrangler/validate/**"],
+        },
+      },
+    },
+  },
+};

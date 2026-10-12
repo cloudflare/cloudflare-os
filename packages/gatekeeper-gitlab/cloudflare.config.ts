@@ -18,4 +18,5 @@ export const wrangler = DEFAULT_GATEKEEPER_WRANGLER;
 
 export const migrations: DurableObjectMigration[] = [
   { tag: "v0", new_sqlite_classes: ["UserAccount", "GitLabGatekeeperImpl"] },
+  { tag: "v1", new_sqlite_classes: ["GitLabHookDriver"] },
 ];

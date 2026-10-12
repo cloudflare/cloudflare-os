@@ -12,6 +12,7 @@ import { commitIdsOfSummary, isCommitOid } from "@gadgets/gatekeeper-kit/git-obj
 import { validateBranchName } from "@gadgets/gatekeeper-kit/git-transport";
 import type { EntityKind } from "./gitlab-action-types";
 import type { GitLabGatekeeperImpl } from "./gitlab-gatekeeper";
+import type { GitLabEventHookTarget } from "./gitlab-hooks";
 import { commitIdsOfMergeRequestSummary } from "./gitlab-normalize";
 import type {
   GitLabBranchFilter,
@@ -40,6 +41,7 @@ import type {
   GitLabPageOptions,
   GitLabProject,
   GitLabProjectMetadata,
+  GitLabSubscribeOptions,
   GitLabTagSummary,
 } from "./types";
 
@@ -229,6 +231,10 @@ export class GitLabProjectSessionImpl extends RpcTarget implements GitLabProject
       options, pageSize(options), await this.#gitCache.stub());
     return await this.#gitCache.wrap(cursor, commitIdsOfSummary);
   }
+
+  async subscribe(hook: RpcStub<GitLabEventHookTarget>, options?: GitLabSubscribeOptions): Promise<void> {
+    await this.#gatekeeper.bindEventHook(this.#approvalQueue, undefined, hook, options);
+  }
 }
 
 /**
@@ -325,6 +331,11 @@ export abstract class GitLabIssuableImpl extends RpcTarget implements GitLabIssu
       title: `Comment on ${this.#reference()}`,
       implementsRevert: true,
     });
+  }
+
+  /** `GitLabIssue.subscribe()` and `GitLabMergeRequest.subscribe()`, which differ only in what they watch. */
+  async subscribe(hook: RpcStub<GitLabEventHookTarget>, options?: GitLabSubscribeOptions): Promise<void> {
+    await this.gatekeeper.bindEventHook(this.approvalQueue, { kind: this.kind, id: this.logicalId }, hook, options);
   }
 }
 

@@ -4,7 +4,7 @@
 
 import { stripTrailingSlashes, type SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import type { PreviewOAuthEnv } from "@gadgets/gatekeeper-kit/preview-oauth";
-import { isCredentialsExpired, type RejectionVerdict } from "@gadgets/gatekeeper-kit/credentials";
+import { CredentialsExpiredError, isCredentialsExpired, type RejectionVerdict } from "@gadgets/gatekeeper-kit/credentials";
 import { DEFAULT_INSTANCE_URL, GitLabApi, GitLabApiError, type GitLabInstance } from "./gitlab-api";
 
 /**
@@ -27,6 +27,12 @@ export type Env = Cloudflare.Env & PreviewOAuthEnv & {
   /** Optional Cloudflare Access service token, attached to every Worker→GitLab request (secrets). */
   CF_ACCESS_CLIENT_ID?: string;
   CF_ACCESS_CLIENT_SECRET?: string;
+  /**
+   * The public origin GitLab delivers webhooks to, such as `https://gadgets.example.com`: the
+   * deployment's own, or a tunnel's in local development. GitLab hooks are refused while it is
+   * unset.
+   */
+  WEBHOOK_ORIGIN?: string;
 };
 
 export const VENDOR_ID = "gitlab";
@@ -108,6 +114,20 @@ export function gitlabInstance(env: Env): GitLabInstance {
   };
 }
 
+/**
+ * The origin GitLab delivers webhooks to, or undefined when this deployment has not configured
+ * GitLab hooks.
+ * @throws If `WEBHOOK_ORIGIN` is not an `https` origin.
+ */
+export function webhookOrigin(env: Env): string | undefined {
+  if (env.WEBHOOK_ORIGIN === undefined) return undefined;
+  const origin = URL.parse(env.WEBHOOK_ORIGIN);
+  if (origin?.protocol !== "https:" || origin.href !== `${origin.origin}/`) {
+    throw new Error("WEBHOOK_ORIGIN must be an https origin, such as https://gadgets.example.com.");
+  }
+  return origin.origin;
+}
+
 /** The OAuth application's credentials; throws when they are not configured. */
 export function oauthApp(env: Env): { clientId: string; clientSecret: string } {
   if (!env.CLIENT_ID || !env.CLIENT_SECRET) {
@@ -152,7 +172,12 @@ export async function withAccountApi<T>(
       if (isCredentialsExpired(error)) throw new Error(RECONNECT_MESSAGE, { cause: error });
       if (!(error instanceof GitLabApiError && error.isAuthError) || presented === undefined) throw error;
       const verdict = await account.reportTokenRejected(presented);
-      if (verdict === "expired") throw new Error(RECONNECT_MESSAGE, { cause: error });
+      if (verdict === "expired") {
+        // Shaped like the known expiry above: the marked error as its cause is how callers tell an
+        // expiry from a token renewed mid-request.
+        // oxlint-disable-next-line eslint/preserve-caught-error -- kept as the marked error's cause.
+        throw new Error(RECONNECT_MESSAGE, { cause: new CredentialsExpiredError(RECONNECT_MESSAGE, { cause: error }) });
+      }
       if (verdict !== "superseded") throw error;
       if (replays > 0) continue;
       throw new Error("GitLab credentials were renewed during this request. Please retry it.", { cause: error });

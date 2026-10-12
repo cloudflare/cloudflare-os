@@ -501,7 +501,9 @@ const PASSTHROUGH_GATEKEEPER_VARS: Record<string, string[]> = {
   "gatekeeper-github": ["WEBHOOK_ORIGIN"],
   // The instance a self-hosted GitLab gatekeeper talks to, and the Access service token for one
   // behind Cloudflare Access; unset, it talks to gitlab.com.
-  "gatekeeper-gitlab": ["GITLAB_URL", "GITLAB_API_URL", "CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET"],
+  "gatekeeper-gitlab": [
+    "GITLAB_URL", "GITLAB_API_URL", "CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET", "WEBHOOK_ORIGIN",
+  ],
 };
 
 for (const gk of gatekeepers) {
