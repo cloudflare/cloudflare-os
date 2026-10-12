@@ -2765,8 +2765,8 @@ export interface Overseer extends RpcTarget {
    * turn finishes in a chat someone is viewing, the workspace resends that turn's last model
    * request just before the provider's cached copy of it would expire, so the user's next message
    * costs less and starts sooner. The resends are billed like the turn. They stop when the last
-   * viewer leaves, at the chat's next turn, or before they would cost more than the cache miss
-   * they avoid. Throws if the chat doesn't exist.
+   * viewer leaves, at the chat's next turn, two hours after the turn, or before they would cost
+   * more than the cache miss they avoid. Throws if the chat doesn't exist.
    */
   viewChat(chatId: number): Promise<RpcStub<{}>>;
 

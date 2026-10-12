@@ -5,6 +5,8 @@ import { ChatCacheWarmer } from "../src/chat-cache-warming.js";
 
 const MINUTE = 60_000;
 const CHAT = 7;
+// When the first ping goes out after a request with a 5-minute cache.
+const FIRST_PING = 4.5 * MINUTE;
 
 function usage(cacheRead: number, cacheWrite = 0): Usage {
   return {
@@ -39,17 +41,17 @@ describe("ChatCacheWarmer", () => {
     vi.useRealTimers();
   });
 
-  it("resends a viewed chat's request a minute before its cache would expire", async () => {
+  it("resends a viewed chat's request half a minute before its cache would expire", async () => {
     warmer.view(CHAT);
     const { cached, resend } = request();
     warmer.start(CHAT, cached);
 
-    await vi.advanceTimersByTimeAsync(4 * MINUTE - 1);
+    await vi.advanceTimersByTimeAsync(FIRST_PING - 1);
     expect(resend).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     expect(resend).toHaveBeenCalledTimes(1);
     // Each ping restarts the lifetime.
-    await vi.advanceTimersByTimeAsync(4 * MINUTE);
+    await vi.advanceTimersByTimeAsync(FIRST_PING);
     expect(resend).toHaveBeenCalledTimes(2);
   });
 
@@ -73,7 +75,7 @@ describe("ChatCacheWarmer", () => {
     // Leaving twice counts once, so the chat is still viewed.
     leaveFirst();
     leaveFirst();
-    await vi.advanceTimersByTimeAsync(8 * MINUTE);
+    await vi.advanceTimersByTimeAsync(2 * FIRST_PING);
     expect(resend).toHaveBeenCalledTimes(2);
 
     leaveSecond();
@@ -88,8 +90,18 @@ describe("ChatCacheWarmer", () => {
     const { cached, resend } = request();
     warmer.start(CHAT, cached);
 
-    await vi.advanceTimersByTimeAsync(24 * 4 * MINUTE);
+    await vi.advanceTimersByTimeAsync(24 * FIRST_PING);
     expect(resend).toHaveBeenCalledTimes(11);
+  });
+
+  it("stops two hours after the turn", async () => {
+    warmer.view(CHAT);
+    const { cached, resend } = request(undefined, { cacheLifetime: 30 * MINUTE, expiryCost: 1000 });
+    warmer.start(CHAT, cached);
+
+    // Pings at 29.5, 59, 88.5 and 118 minutes; the next would come after two hours.
+    await vi.advanceTimersByTimeAsync(6 * 60 * MINUTE);
+    expect(resend).toHaveBeenCalledTimes(4);
   });
 
   it("doesn't warm a request whose miss costs no more than one ping", async () => {
@@ -104,7 +116,7 @@ describe("ChatCacheWarmer", () => {
   it("doesn't warm a request whose ping would already be late", async () => {
     warmer.view(CHAT);
     const { cached, resend } = request();
-    await vi.advanceTimersByTimeAsync(4 * MINUTE);
+    await vi.advanceTimersByTimeAsync(FIRST_PING);
     warmer.start(CHAT, cached);
 
     await vi.advanceTimersByTimeAsync(60 * MINUTE);
@@ -138,7 +150,7 @@ describe("ChatCacheWarmer", () => {
     await vi.advanceTimersByTimeAsync(2 * MINUTE);
     const third = request();
     warmer.start(CHAT, third.cached);
-    await vi.advanceTimersByTimeAsync(4 * MINUTE);
+    await vi.advanceTimersByTimeAsync(FIRST_PING);
     expect(second.resend).not.toHaveBeenCalled();
     expect(third.resend).toHaveBeenCalledTimes(1);
   });
@@ -149,7 +161,7 @@ describe("ChatCacheWarmer", () => {
     const { cached, resend } = request(() => new Promise(resolve => { answer = resolve; }));
     warmer.start(CHAT, cached);
 
-    await vi.advanceTimersByTimeAsync(4 * MINUTE);
+    await vi.advanceTimersByTimeAsync(FIRST_PING);
     expect(resend).toHaveBeenCalledTimes(1);
     warmer.stop(CHAT);
     answer(usage(100_000));
