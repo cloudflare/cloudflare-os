@@ -75,6 +75,7 @@ packages/gatekeeper-google/src/sheets-plan.ts
   s_010272bf0842e6::t_56ccf883579520 712,719,722,726
   s_f8f4e8eafb49cb::t_e45060443c06fb 18,20
   s_f8f4e8eafb49cb::t_9e363b113ac49d 19,713-715
+  s_0c68076cfec9c1::t_438b8b03d8fad1 664-665,672-673
 packages/gatekeeper-google/__tests__/types.test.ts
   s_010272bf0842e6::t_9051168ef61678 200-214
 packages/gatekeeper-google/__tests__/workerd/sheets-session.test.ts
@@ -95,6 +96,7 @@ packages/gatekeeper-google/src/sheets-api.ts
   s_010272bf0842e6::t_b3301a91f5e799 282-284
   s_010272bf0842e6::t_55a7c36caf5861 21-24,50-52,262,274-281
   s_f8f4e8eafb49cb::t_d52955523848f8 195-203,370,374,377-394,397-403,405-413
+  s_0c68076cfec9c1::t_7410c92bc8363e 414
 packages/gatekeeper-google/src/sheets-structure.ts
   s_010272bf0842e6::t_fa1eacd66d1fae 77-82,89
   s_010272bf0842e6::t_f9aa45adb9d5e0 31,39
@@ -108,6 +110,9 @@ packages/gatekeeper-google/__tests__/sheets-simulation.test.ts
   s_010272bf0842e6::t_f25bf73db63e42 39,431-442
   s_f8f4e8eafb49cb::t_decfdbf6d5c05a 366,370,381-382
   s_f8f4e8eafb49cb::t_e1ae4a08de0d65 338
+  s_0c68076cfec9c1::t_9837ed534c1a43 13-15,21,139
+  s_0c68076cfec9c1::t_7410c92bc8363e 196
+  s_0c68076cfec9c1::t_55db2c65ad7e97 142
 packages/gatekeeper-google/__tests__/sheets-fixture.ts
   s_010272bf0842e6::t_f95d985e88417b 8-9
   s_010272bf0842e6::t_9e52ebe216cd80 183-200
@@ -139,6 +144,7 @@ packages/gatekeeper-google/src/sheets-simulation.ts
   s_f8f4e8eafb49cb::t_dacd36785eef7e 398
   s_f8f4e8eafb49cb::t_7d746db4c0f4be 32,393
   s_f8f4e8eafb49cb::t_9e363b113ac49d 29,392,394-395,399-401,475-477,480,482-501
+  s_0c68076cfec9c1::t_82feedc2a8785a 146-147,150-152,154
 packages/gatekeeper-google/__tests__/sheets-apply.test.ts
   s_f8f4e8eafb49cb::t_dacd36785eef7e 134
 ---
@@ -152,6 +158,14 @@ packages/gatekeeper-google/__tests__/sheets-apply.test.ts
       "agent_id": {
         "tool": "claude",
         "id": "890bd2c4-bc81-47c2-9055-2c1fae3caf90",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_0c68076cfec9c1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84984110-a45c-49f6-ab14-a52150ec2200",
         "model": "claude-opus-5-5"
       },
       "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
