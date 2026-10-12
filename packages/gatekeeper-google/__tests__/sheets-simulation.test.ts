@@ -5,7 +5,9 @@ import {
 } from "../src/sheets-simulation";
 import { grid, rect, sheet } from "./sheets-fixture";
 
-function queued(id: number, changes: PlannedChange[], kind: SheetsAction["kind"] = "updateSheet"): QueuedChange {
+function queued(
+  id: number, changes: PlannedChange[], kind: SheetsAction["kind"] = "updateSpreadsheet",
+): QueuedChange {
   return {
     id,
     action: {

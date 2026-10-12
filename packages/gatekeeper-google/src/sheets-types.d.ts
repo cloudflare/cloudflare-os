@@ -5,6 +5,14 @@ export type * from "./sheets-read-types";
  * A value to enter in a cell. A string starting with `=` is a formula; any other string is text
  * exactly as given, never read as a number or date. `null` clears the cell; an empty string is
  * refused in its favour, as is a number that is not finite.
+ *
+ * To enter a date or time, write its serial number into a cell already formatted as a date or
+ * time. Text such as `"2026-10-12"` stays text, and `=DATE(2026, 10, 12)` works but makes the batch
+ * wait for approval. `"raw"` reads show dates and times as serial numbers.
+ *
+ * Text starting with `=` cannot be entered as text, and `"formula"` reads show such text exactly as
+ * they show a formula. So reading a cell back and writing it again can turn its text into a
+ * formula, which then needs approval.
  */
 export type SheetCellInput = string | number | boolean | null;
 
@@ -34,7 +42,7 @@ export type SheetChange =
  */
 export interface GoogleSpreadsheetSession extends GoogleSpreadsheetReadSession {
   /**
-   * Queue changes as one approval, applied in order, together or not at all. Returns `{}`.
+   * Queue changes as one approval, applied in order, together or not at all.
    *
    * The user may let a batch apply without asking only when it enters literal values and clears
    * ranges; a batch with any formula waits for approval. Formulas calling `IMPORTRANGE`, which
@@ -53,5 +61,5 @@ export interface GoogleSpreadsheetSession extends GoogleSpreadsheetReadSession {
    * formula, upper-casing columns and quoting sheet titles its own way; the formula is shown
    * already tidied.
    */
-  updateSheet(changes: SheetChange[]): Promise<Record<string, number>>;
+  updateSpreadsheet(changes: SheetChange[]): Promise<void>;
 }

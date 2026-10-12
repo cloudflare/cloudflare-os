@@ -1,6 +1,6 @@
 /**
- * What an agent passes `updateSheet()`, checked before anything is read: the checks that need no
- * spreadsheet.
+ * What an agent passes `updateSpreadsheet()`, checked before anything is read: the checks that
+ * need no spreadsheet.
  */
 
 import { REFUSED_FUNCTIONS, refusedFunction } from "./sheets-formula";

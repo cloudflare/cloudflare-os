@@ -126,7 +126,10 @@ function setup() {
     journal,
     actions,
     markers: () => stored,
-    /** Queues a write of `value` to Sales!B2, guarded by the cell as it is, as `updateSheet()` would. */
+    /**
+     * Queues a write of `value` to Sales!B2, guarded by the cell as it is, as
+     * `updateSpreadsheet()` would.
+     */
     queue: async (value: number) => {
       let changes: PlannedChange[] = [{ op: "writeCells", sheetId: 0, rect: B2, values: [[value]] }];
       let entered = [[[fake.cells.get("1:1") ?? null]]];

@@ -12,7 +12,7 @@ const SHEETS = [sheet(0, "Sales"), sheet(7, "It's", { index: 1, rowCount: 100, c
 /** Plans `changes` later, for `toThrow`. */
 const refused = (changes: SheetChange[]) => () => plan(changes);
 
-/** Plans `changes` over a spreadsheet of `SHEETS`, as `updateSheet()` would queue them. */
+/** Plans `changes` over a spreadsheet of `SHEETS`, as `updateSpreadsheet()` would queue them. */
 function plan(changes: SheetChange[]) {
   let planned = resolveChanges(grid(SHEETS), prepareChanges(changes));
   return { planned, ...planSheet(grid(SHEETS), planned) };

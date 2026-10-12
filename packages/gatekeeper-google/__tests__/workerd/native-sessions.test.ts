@@ -544,9 +544,9 @@ describe("folder-scoped native sessions", () => {
 
     // The capability itself has no write method, whatever a caller sends it.
     const writable = sheet as unknown as GoogleSpreadsheetSession;
-    await expect(Promise.resolve(writable.updateSheet([
+    await expect(Promise.resolve(writable.updateSpreadsheet([
       { op: "writeCells", range: "Sheet1!A1", values: [["changed"]] },
-    ]))).rejects.toThrow('The RPC receiver does not implement the method "updateSheet".');
+    ]))).rejects.toThrow('The RPC receiver does not implement the method "updateSpreadsheet".');
   });
 
   // The capability was minted while the file was inside; the move is what revokes it, and it has to

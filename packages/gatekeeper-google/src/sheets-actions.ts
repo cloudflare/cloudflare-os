@@ -77,10 +77,10 @@ const EDIT_SHEET_VALUES: ActionKind = { tag: "editSheetValues", label: "Sheet va
 /** The kind a batch is queued as, so approving a kind approves no more than it says. */
 export function batchKind(
   changes: readonly ({ op: "writeCells"; values: SheetCellInput[][] } | { op: "clearRange" })[],
-): "editSheetValues" | "updateSheet" {
+): "editSheetValues" | "updateSpreadsheet" {
   let literal = changes.every(change =>
     change.op === "clearRange" || change.values.every(row => !row.some(isFormula)));
-  return literal ? "editSheetValues" : "updateSheet";
+  return literal ? "editSheetValues" : "updateSpreadsheet";
 }
 
 // Sending a batch: the first send, and resends once an answer was lost.
@@ -289,5 +289,5 @@ function sheetBatch(kind?: ActionKind): ActionDefinition<SheetBatch, SheetsHost>
 /** The Sheets change set, bound once per spreadsheet's journal. */
 export const SHEETS_ACTIONS = defineActions<SheetsHost, SheetsActions>({
   editSheetValues: sheetBatch(EDIT_SHEET_VALUES),
-  updateSheet: sheetBatch(),
+  updateSpreadsheet: sheetBatch(),
 }, { fence: "none", vendorId: "google" });

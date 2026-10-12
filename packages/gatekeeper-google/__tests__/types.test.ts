@@ -191,12 +191,12 @@ describe("embedded agent declarations", () => {
     expect(topLevelNames(vendorBundle())).toContain("GoogleSpreadsheetSession");
     expect(compileAgentTypes(vendorBundle() + `
 declare const sheet: GoogleSpreadsheetSession;
-const sheetIds: Promise<Record<string, number>> = sheet.updateSheet([
+const queued: Promise<void> = sheet.updateSpreadsheet([
   { op: "writeCells", range: "'Sales 2026'!A1:B1", values: [["=SUM(C1:C9)", null]] },
   { op: "clearRange", range: "Sales!A2:B3" },
 ]);
 // @ts-expect-error A change names its range.
-sheet.updateSheet([{ op: "clearRange" }]);
+sheet.updateSpreadsheet([{ op: "clearRange" }]);
 `)
       // The agent's runtime provides the module Chat's declarations import.
       .filter(message => !message.includes("'cloudflare:workers'"))).toEqual([]);

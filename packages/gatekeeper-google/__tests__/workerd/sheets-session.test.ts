@@ -74,7 +74,7 @@ function queued(id: number, sheetId: number, cells: ReturnType<typeof rect>, val
   return {
     id,
     action: {
-      kind: "updateSheet",
+      kind: "updateSpreadsheet",
       payload: {
         changes: [{ op: "writeCells", sheetId, rect: cells, values }],
         sheets: { [sheetId]: "Sales" },
@@ -197,9 +197,9 @@ describe("Google Sheets spreadsheet session", () => {
 
     expect((await session.getSpreadsheet()).title).toBe("Budget");
     let writable = session as unknown as GoogleSpreadsheetSession;
-    await expect(Promise.resolve(writable.updateSheet([
+    await expect(Promise.resolve(writable.updateSpreadsheet([
       { op: "writeCells", range: "Sales!A1", values: [["x"]] },
-    ]))).rejects.toThrow('The RPC receiver does not implement the method "updateSheet".');
+    ]))).rejects.toThrow('The RPC receiver does not implement the method "updateSpreadsheet".');
     expect(providerFetches).toHaveLength(1);
   });
 });

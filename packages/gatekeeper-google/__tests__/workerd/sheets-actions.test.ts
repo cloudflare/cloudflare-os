@@ -287,14 +287,14 @@ function gatekeeper() {
   let facet = `sheets-${++facetCount}`;
   let call = async (method: string, ...args: unknown[]) =>
     hooks().callSheets(facet, method as never, args);
-  let update = (changes: SheetChange[]) => call("updateSheet", changes);
+  let update = (changes: SheetChange[]) => call("updateSpreadsheet", changes);
   return {
     call,
     update,
     queued: async (changes: SheetChange[]) => {
       let outcome = await update(changes);
       if (outcome.error !== undefined) throw new Error(outcome.error);
-      if (outcome.actionId === undefined) throw new Error("updateSheet queued nothing");
+      if (outcome.actionId === undefined) throw new Error("updateSpreadsheet queued nothing");
       return outcome;
     },
     read: async (range: string, valueMode?: SpreadsheetValueMode) =>
@@ -349,7 +349,7 @@ describe("Google Sheets changes", () => {
       { op: "writeCells", range: "Sales!B2:C2", values: [[6, "done"]] },
     ]);
 
-    expect(value).toEqual({});
+    expect(value).toBeUndefined();
     expect(observations).toEqual(['Read the cells 1 change(s) write in "Budget" to queue them.']);
     expect(action).toMatchObject({
       title: 'Edit "Sales"',

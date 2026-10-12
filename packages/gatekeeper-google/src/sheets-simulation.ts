@@ -48,12 +48,12 @@ export type PlannedChange =
   | { op: "clearRange"; sheetId: number; rect: Rect };
 
 /**
- * An `updateSheet()` batch. `sheets` gives the title of each sheet a change writes, as it was when
- * the batch was queued, so the approver can recognize it. `marker` identifies the batch's write in
- * the spreadsheet, so its outcome can be found when Google's answer is lost. `guard` is a digest of
- * what the batch overwrites as it was to be by the time the batch applies: as Google held it, with
- * what changes queued before it enter. `after` lists those of them whose cells it overwrites, which
- * must have been applied for the digest to hold.
+ * An `updateSpreadsheet()` batch. `sheets` gives the title of each sheet a change writes, as it was
+ * when the batch was queued, so the approver can recognize it. `marker` identifies the batch's
+ * write in the spreadsheet, so its outcome can be found when Google's answer is lost. `guard` is a
+ * digest of what the batch overwrites as it was to be by the time the batch applies: as Google held
+ * it, with what changes queued before it enter. `after` lists those of them whose cells it
+ * overwrites, which must have been applied for the digest to hold.
  */
 export type SheetBatch = {
   changes: PlannedChange[];
@@ -64,12 +64,12 @@ export type SheetBatch = {
 
 /**
  * The payload of each kind of queued change. A batch is queued as `editSheetValues` when it only
- * enters literal values and clears cells, and `updateSheet` otherwise; they differ in nothing but
- * which kinds a user may let apply without asking.
+ * enters literal values and clears cells, and `updateSpreadsheet` otherwise; they differ in nothing
+ * but which kinds a user may let apply without asking.
  */
 export type SheetsActions = {
   editSheetValues: SheetBatch;
-  updateSheet: SheetBatch;
+  updateSpreadsheet: SheetBatch;
 };
 
 /** A queued change, as the journal stores it. */

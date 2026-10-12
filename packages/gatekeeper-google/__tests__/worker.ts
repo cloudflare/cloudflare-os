@@ -49,7 +49,7 @@ type SlidesCall = {
 
 /** What one Sheets session call returned or threw, and what it queued and observed. */
 type SheetsCall = {
-  value?: SpreadsheetInfo | SpreadsheetRange | SpreadsheetRange[] | Record<string, number>;
+  value?: SpreadsheetInfo | SpreadsheetRange | SpreadsheetRange[];
   error?: string;
   actionId?: number;
   action?: ActionDescription;
@@ -378,7 +378,7 @@ export class TestHooks extends DurableObject<Env> {
       calling.catch(() => {});
       if (entered) {
         // Calls on one stub are delivered in order, and this one waits on nothing.
-        await session.updateSheet([]).catch(() => {});
+        await session.updateSpreadsheet([]).catch(() => {});
         await entered();
       }
       outcome = { value: await calling };

@@ -340,7 +340,7 @@ function checkProtections(
   });
 }
 
-/** What `updateSheet()` read to queue a batch, or why it cannot queue one. */
+/** What `updateSpreadsheet()` read to queue a batch, or why it cannot queue one. */
 type Prepared = {
   title: string;
   editable: boolean;
@@ -461,7 +461,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
       });
   }
 
-  async updateSheet(changes: SheetChange[]): Promise<Record<string, number>> {
+  async updateSpreadsheet(changes: SheetChange[]): Promise<void> {
     let prepared = prepareChanges(changes);
     // The queued batch holds every value, so one that cannot be stored is refused before any read.
     checkQueuedSize(prepared);
@@ -506,7 +506,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
       if (read.refusal) throw read.refusal;
       // Minted here, so every attempt to apply the batch carries the same marker.
       let marker = { id: mintMarkerId(), token: crypto.randomUUID() };
-      return { payload: { ...read.batch!, marker }, result: {} };
+      return { payload: { ...read.batch!, marker }, result: undefined };
     });
   }
 }

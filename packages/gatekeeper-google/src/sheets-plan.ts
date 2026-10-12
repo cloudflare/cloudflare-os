@@ -1,5 +1,5 @@
 /**
- * `updateSheet()` changes: where each lands, their replay over a grid, the requests that make
+ * `updateSpreadsheet()` changes: where each lands, their replay over a grid, the requests that make
  * them, and the digest of what they overwrite.
  *
  * Queueing, replay and apply all run `planSheet`, so the cells a read previews and the batch an
