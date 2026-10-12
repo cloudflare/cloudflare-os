@@ -69,6 +69,8 @@ export type GitHubIssueResponse = {
 export type GitHubPullRequestBranchResponse = {
   ref: string;
   sha: string;
+  /** `owner:ref`, still sent once a deleted fork has nulled `repo`. */
+  label: string;
   repo: GitHubRepoResponse | null;
 };
 

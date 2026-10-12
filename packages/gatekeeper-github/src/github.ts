@@ -771,18 +771,20 @@ function normalizeIssueDetails(owner: string, repo: string, response: GitHubIssu
   };
 }
 
+/**
+ * A deleted fork's branch has a null `repo`, so its owner comes from `label`: falling back to the
+ * bound repository's would mistake it for one of this repository's own branches. The fork's name
+ * went with it; the bound repository's stands in.
+ */
 function normalizePullBranchRef(
-  fallbackOwner: string,
   fallbackRepo: string,
   response: GitHubPullRequestResponse["head"],
 ): GitHubPullRequestBranchRef {
-  const branchRepo = response.repo;
-  const owner = branchRepo?.owner.login ?? fallbackOwner;
-  const repo = branchRepo?.name ?? fallbackRepo;
+  const owner = response.repo?.owner.login ?? response.label.split(":", 1)[0];
   return {
     ref: response.ref,
     sha: response.sha,
-    repo: repoRef(owner, repo),
+    repo: repoRef(owner, response.repo?.name ?? fallbackRepo),
   };
 }
 
@@ -804,8 +806,8 @@ function normalizePullSummary(
     ...normalizeIssueSummary(owner, repo, response),
     draft: response.draft,
     merged: !!response.merged_at,
-    head: normalizePullBranchRef(owner, repo, response.head),
-    base: normalizePullBranchRef(owner, repo, response.base),
+    head: normalizePullBranchRef(repo, response.head),
+    base: normalizePullBranchRef(repo, response.base),
   };
 }
 
@@ -2838,7 +2840,9 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   }
 
   async #getRemotePullRequestDetails(realId: string): Promise<GitHubPullRequestDetails> {
-    const key = this.#cacheKey("pull", realId);
+    // "-v2": v1 normalized a deleted fork's head as this repository's, and etag revalidation can
+    // keep such an entry alive past the TTL.
+    const key = this.#cacheKey("pull-v2", realId);
     const details = await this.#loadCachedWithEtag<GitHubPullRequestDetails>(
       key,
       ENTITY_CACHE_TTL_MS,

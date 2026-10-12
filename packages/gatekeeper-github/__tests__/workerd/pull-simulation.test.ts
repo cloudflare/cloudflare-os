@@ -155,10 +155,20 @@ function commitResponse(commit: FakeCommit) {
 /** A branch's repository in a pull request's REST shape. */
 type RestRepo = { owner: { login: string }, name: string };
 
+/** A pull request branch's REST shape. GitHub nulls `repo` once a fork is deleted. */
+type RestBranch = { ref: string, sha: string, label: string, repo: RestRepo | null };
+
 /**
- * A pull request's REST shape. `repo` names a branch's repository as GitHub spells it; omitted,
- * it is the bound repo as the binding spells it.
+ * `repo` names the branch's repository as GitHub spells it; omitted, it is the bound repo as the
+ * binding spells it.
  */
+function restBranch(
+  { ref, sha, repo = { owner: { login: OWNER }, name: REPO } }: { ref: string, sha: string, repo?: RestRepo },
+): RestBranch {
+  return { ref, sha, label: `${repo.owner.login}:${ref}`, repo };
+}
+
+/** A pull request's REST shape. */
 function pullResponse(
   number: number,
   head: { ref: string, sha: string, repo?: RestRepo },
@@ -185,8 +195,8 @@ function pullResponse(
     additions: 1,
     deletions: 0,
     changed_files: 1,
-    head: { ref: head.ref, sha: head.sha, repo: head.repo ?? null },
-    base: { ref: base.ref, sha: base.sha, repo: base.repo ?? null },
+    head: restBranch(head),
+    base: restBranch(base),
   };
 }
 
@@ -850,6 +860,16 @@ describe("pushing to a pull request", () => {
     github.branches.delete("topic");
     await expect(gk.preparePullRequestPush("7", HEAD1, cache))
       .rejects.toThrow(`its head branch "topic" no longer exists`);
+  });
+
+  it("refuses a deleted fork's pull request, though this repository has a branch of its name", async () => {
+    const { github, cache } = topicScenario();
+    const pull = pullResponse(9, { ref: "topic", sha: HEAD2, repo: FORK }, { ref: "main", sha: BASE });
+    github.pulls.set(9, { ...pull, head: { ...pull.head, repo: null } });
+    const gk = await repoGatekeeper();
+    // HEAD1 fast-forwards this repository's own `topic`, which the push must not move.
+    await expect(gk.preparePullRequestPush("9", HEAD1, cache))
+      .rejects.toThrow("its head branch is in the fork contributor/widgets");
   });
 });
 
