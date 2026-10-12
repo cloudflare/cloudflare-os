@@ -9,7 +9,8 @@ flow, no settings and no management UI.
 The admin Gatekeepers panel sets the mode, like every auto-provisioned gatekeeper
 (`provisioning-policy.ts` in workshop-backend):
 
-- **Optional** (the default): each user turns it on once, on the Connectors page.
+- **Optional** (the default): onboarding offers it switched on, and a user can turn it on or off
+  later on the Gatekeepers page.
 - **Enabled**: every user gets it.
 - **Disabled**: no one gets it, and existing accounts go dormant.
 
@@ -95,7 +96,7 @@ outside AI Gateway.
 - **Billing.** Each search spends the deployment account's AI Gateway credits. The free daily
   allowance and Cloudflare-credits top-up for models do not cover searches, and there is no
   per-user limit. On a public server, set the mode to Disabled unless you accept that: under the
-  default, Optional, any user can turn it on.
+  default, Optional, every new user who leaves it on in onboarding gets it.
 - **Local dev.** Start with `pnpm dev-server -- --use-workers-ai-binding`, which needs a Cloudflare
   login. Without the flag the Worker has no `AI` binding and every search fails.
 
