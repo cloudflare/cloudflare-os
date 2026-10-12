@@ -327,7 +327,6 @@ type Prepared = {
   conflict?: string;
   refusal?: Error;
   batch?: Omit<SheetBatch, "marker">;
-  refs?: Record<string, number>;
 };
 
 /** A directly bound spreadsheet's session, exported for tests. */
@@ -524,10 +523,9 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
           let { grid, conflict } = replayed(gridOf(metadata), pending);
           if (!editable || conflict) return { title: metadata.title, editable, conflict };
           let planned: PlannedChange[];
-          let refs: Record<string, number>;
           let cells: SheetArea[];
           try {
-            ({ planned, refs } = resolveChanges(grid, prepared, randomId));
+            planned = resolveChanges(grid, prepared, randomId);
             checkProtections(metadata, grid, planned);
             cells = guardCells(grid, planned);
           } catch (error) {
@@ -570,7 +568,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
           let formulas = content.some(area => area.some(row => row.some(holdsFormula)));
           let guard = { sha256, after: guardAfter(grid, pending, planned, cells, formulas), cells };
           return {
-            title: metadata.title, editable, refs,
+            title: metadata.title, editable,
             batch: { changes: planned, sheets: sheetLabels(grid, planned), guard },
           };
         }),
@@ -589,7 +587,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
       if (read.refusal) throw read.refusal;
       // Minted here, so every attempt to apply the batch carries the same marker.
       let marker = { id: randomId(), token: crypto.randomUUID() };
-      return { payload: { ...read.batch!, marker }, result: read.refs! };
+      return { payload: { ...read.batch!, marker }, result: undefined };
     });
   }
 }

@@ -96,14 +96,14 @@ export type PlannedChange =
   | { op: Extract<LineOp, `delete${string}`>; sheetId: number; start: number; count: number };
 
 /**
- * An `updateSpreadsheet()` batch. `sheets` gives the title of each sheet a change acts on or creates, as
- * it was when the batch was queued (a created sheet's as created), so the approver can recognize
- * it. `marker` identifies the batch's write in the spreadsheet, so its outcome can be found when
- * Google's answer is lost. `guard` is a digest of what the batch overwrites or removes as it was to
- * be by the time the batch applies: as Google held it, with what changes queued before it enter.
- * `after` lists those of them it builds on, which must have been applied for the digest to hold.
- * `cells` are the cells it covers, as the spreadsheet is to be just before the batch applies;
- * without them, the cells the changes write.
+ * An `updateSpreadsheet()` batch. `sheets` gives the title of each sheet a change acts on or
+ * creates, as it was when the batch was queued (a created sheet's as created), so the approver can
+ * recognize it. `marker` identifies the batch's write in the spreadsheet, so its outcome can be
+ * found when Google's answer is lost. `guard` is a digest of what the batch overwrites or removes
+ * as it was to be by the time the batch applies: as Google held it, with what changes queued
+ * before it enter. `after` lists those of them it builds on, which must have been applied for the
+ * digest to hold. `cells` are the cells it covers, as the spreadsheet is to be just before the
+ * batch applies; without them, the cells the changes write.
  */
 export type SheetBatch = {
   changes: PlannedChange[];

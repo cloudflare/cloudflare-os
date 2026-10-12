@@ -17,7 +17,8 @@ import { ERROR_VALUE_READS, grid, rect, sheet } from "./sheets-fixture";
 vi.mock("../src/sheets-formula", { spy: true });
 
 function queued(
-  id: number, changes: PlannedChange[], kind: SheetsAction["kind"] = "updateSpreadsheet", sheets: Record<string, string> = {},
+  id: number, changes: PlannedChange[], kind: SheetsAction["kind"] = "updateSpreadsheet",
+  sheets: Record<string, string> = {},
 ): QueuedChange {
   return {
     id,
@@ -142,7 +143,8 @@ describe("Sheets queued changes in reads", () => {
   });
 
   it("stops at a change to a sheet renamed since it was queued, as its guard would refuse it", () => {
-    let change = queued(1, [{ op: "writeCells", sheetId: 0, rect: rect(0, 0), values: [[1]] }], "updateSpreadsheet", { 0: "Sales" });
+    let change = queued(
+      1, [{ op: "writeCells", sheetId: 0, rect: rect(0, 0), values: [[1]] }], "updateSpreadsheet", { 0: "Sales" });
     expect(replayChanges(grid([sheet(0, "Revenue")]), [change])).toMatchObject({
       kind: "incomplete", appliedCount: 0, unsupported: change,
       reason: 'the sheet "Sales" it acts on has been renamed "Revenue"',

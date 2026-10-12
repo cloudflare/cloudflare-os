@@ -1165,7 +1165,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     let sum = (row: number) => "=" + Array.from({ length: 25 }, () => `B${row}`).join("+");
     for (let row = 1; row <= 2_100; row++) provider.set(`Sales!A${row}`, sum(1));
     let sheets = gatekeeper();
-    await sheets.queued(Array.from({ length: 50 }, () => ({ op: "insertRows" as const, sheetId: 0, at: 1 })));
+    await sheets.queued(Array.from({ length: 50 }, () => ({ op: "insertRows" as const, sheet: "Sales", at: 1 })));
 
     expect((await sheets.call("readRange", "Sales!A51:A2150")).error).toBe(
       "These ranges hold too many formulas to read with the queued changes to rows, columns and sheets " +
@@ -1189,9 +1189,9 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     let sheets = gatekeeper();
     // The formula's Q is deleted, and a new Q added and renamed after it.
     await sheets.queued([
-      { op: "deleteSheet", sheetId: 5 },
-      { op: "addSheet", title: "Q", ref: "q" },
-      { op: "renameSheet", sheetId: "q", title: "Renamed" },
+      { op: "deleteSheet", sheet: "Q" },
+      { op: "addSheet", title: "Q" },
+      { op: "renameSheet", sheet: "Q", title: "Renamed" },
     ]);
 
     expect((await sheets.call("readRange", "Sales!A1", { valueMode: "formula" })).error).toBe(
@@ -1212,7 +1212,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     let formula = "=" + Array.from({ length: 50 }, () => "S1!A1").join("+");
     for (let row = 1; row <= 2_000; row++) provider.set(`Sales!A${row}`, formula);
     let sheets = gatekeeper();
-    await sheets.queued([{ op: "renameSheet", sheetId: 1, title: "T".repeat(100) }]);
+    await sheets.queued([{ op: "renameSheet", sheet: "S1", title: "T".repeat(100) }]);
 
     // Formula reads show the formulas' text; other reads show their results, which a rename leaves.
     expect((await sheets.call("readRange", "Sales!A1:A2000", { valueMode: "formula" })).error).toBe(
@@ -1232,11 +1232,11 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     let sheets = gatekeeper();
 
     let { actionId, action, value } = await sheets.queued([
-      { op: "insertRows", sheetId: 0, at: 3, count: 2 },
+      { op: "insertRows", sheet: "Sales", at: 3, count: 2 },
       { op: "writeCells", range: "Sales!A3:B4", values: [["LATAM", 2], ["ANZ", 3]] },
     ]);
 
-    expect(value).toEqual({});
+    expect(value).toBeUndefined();
     expect(action).toMatchObject({ title: 'Edit "Sales"', autoApprovable: false });
     expect(action!.description).toContain(
       "Makes 2 changes, all or none of which are applied:\n\n" +
@@ -1280,7 +1280,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     provider.results["=B2*2"] = 8;
     provider.results["=SUM(B2:B3)"] = 9;
     let sheets = gatekeeper();
-    let { actionId } = await sheets.queued([{ op: "insertRows", sheetId: 0, at: 3 }]);
+    let { actionId } = await sheets.queued([{ op: "insertRows", sheet: "Sales", at: 3 }]);
     let blank = [null, null, null, null];
 
     expect(await sheets.read("Sales!A2:D4", "formula")).toEqual({
@@ -1318,7 +1318,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     provider.results["=B2"] = 4;
     let sheets = gatekeeper();
     let batch: SheetChange[] = [
-      { op: "insertRows", sheetId: 0, at: 1 },
+      { op: "insertRows", sheet: "Sales", at: 1 },
       { op: "writeCells", range: "Sales!E2", values: [["new"]] },
     ];
     let { actionId } = await sheets.queued(batch);
@@ -1351,7 +1351,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     let sheets = gatekeeper();
     expect(await sheets.read("Sales!E1:E2", "raw")).toEqual({ range: "Sales!E1:E2", values: [[1], [2]] });
     // The rows go in below, moving neither cell.
-    await sheets.queued([{ op: "insertRows", sheetId: 0, at: 5, count: 2 }]);
+    await sheets.queued([{ op: "insertRows", sheet: "Sales", at: 5, count: 2 }]);
     provider.dataFilterReads = [];
 
     expect(await sheets.read("Sales!E1:E2", "formula"))
@@ -1363,24 +1363,24 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
       .toEqual({ range: "Sales!E1:E2", values: [["1"], [null]], pendingCells: ["E2"] });
   });
 
-  it("returns the IDs it mints for the sheets a batch adds, which Google honours", async () => {
+  it("acts on a sheet a batch adds by its title, under an ID it mints that Google honours", async () => {
     let provider = budget();
     let sheets = gatekeeper();
 
     let { actionId, action, value } = await sheets.queued([
-      { op: "addSheet", title: "Q4", ref: "q4" },
+      { op: "addSheet", title: "Q4" },
       { op: "writeCells", range: "q4!A1", values: [["Forecast"]] },
-      { op: "insertRows", sheetId: "q4", at: 1001, count: 5 },
+      { op: "insertRows", sheet: "q4", at: 1001, count: 5 },
     ]);
 
-    let q4 = (value as Record<string, number>).q4;
-    expect(value).toEqual({ q4: expect.any(Number) });
-    expect(Number.isInteger(q4) && q4 >= 1 && q4 <= MAX_SHEET_ID && q4 !== 7).toBe(true);
+    expect(value).toBeUndefined();
     expect(action).toMatchObject({ title: 'Edit "Q4"', autoApprovable: false });
     expect(action!.description).toContain(
       '1. Add a sheet "Q4" of 1,000 rows and 26 columns at position 3\n' +
       '2. In "Q4", set A1 to the values below\n' +
       '3. In "Q4", add 5 rows after row 1000');
+    let q4 = (await sheets.info()).sheets.find(sheet => sheet.title === "Q4")!.id;
+    expect(Number.isInteger(q4) && q4 >= 1 && q4 <= MAX_SHEET_ID && q4 !== 7).toBe(true);
     expect((await sheets.info()).sheets).toContainEqual({ id: q4, title: "Q4", index: 2, rowCount: 1005, columnCount: 26 });
     // Google holds nothing of a sheet a queued change adds, so reading it fetches no values.
     let reads = valueReads(provider);
@@ -1411,7 +1411,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     let sheets = gatekeeper();
 
     let { actionId, action } = await sheets.queued([
-      { op: "renameSheet", sheetId: 7, title: "Q3 Final" },
+      { op: "renameSheet", sheet: "Q3 Plan", title: "Q3 Final" },
       { op: "writeCells", range: "'q3 final'!A1", values: [["=sales!b2*2"]] },
     ]);
 
@@ -1453,19 +1453,19 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     let provider = budget();
     let sheets = gatekeeper();
 
-    let { actionId, action, value } = await sheets.queued([
-      { op: "addSheet", title: "Q4", ref: "q4", rowCount: 5, columnCount: 3 },
-      { op: "renameSheet", sheetId: 7, title: "Plan_B" },
-      { op: "duplicateSheet", sheetId: 0 },
-      { op: "insertRows", sheetId: "q4", at: 6, count: 2 },
-      { op: "insertRows", sheetId: 0, at: 2 },
-      { op: "deleteRows", sheetId: 0, at: 5, count: 2 },
-      { op: "insertColumns", sheetId: 7, at: "E" },
-      { op: "deleteColumns", sheetId: 7, at: "b", count: 2 },
-      { op: "deleteColumns", sheetId: 0, at: "F" },
-      { op: "deleteRows", sheetId: 0, at: 1 },
-      { op: "deleteSheet", sheetId: "q4" },
-      { op: "insertColumns", sheetId: 0, at: "A", count: 3 },
+    let { actionId, action } = await sheets.queued([
+      { op: "addSheet", title: "Q4", rowCount: 5, columnCount: 3 },
+      { op: "renameSheet", sheet: "Q3 Plan", title: "Plan_B" },
+      { op: "duplicateSheet", sheet: "Sales" },
+      { op: "insertRows", sheet: "Q4", at: 6, count: 2 },
+      { op: "insertRows", sheet: "Sales", at: 2 },
+      { op: "deleteRows", sheet: "Sales", at: 5, count: 2 },
+      { op: "insertColumns", sheet: "Plan_B", at: "E" },
+      { op: "deleteColumns", sheet: "Plan_B", at: "b", count: 2 },
+      { op: "deleteColumns", sheet: "Sales", at: "F" },
+      { op: "deleteRows", sheet: "Sales", at: 1 },
+      { op: "deleteSheet", sheet: "Q4" },
+      { op: "insertColumns", sheet: "Sales", at: "A", count: 3 },
     ]);
 
     // Q4, It's, Sales and the copy of Sales.
@@ -1500,7 +1500,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     expect(await sheets.apply(actionId!)).toBeNull();
 
     let sent = changeRequests(provider.batches[0]);
-    let q4 = (value as Record<string, number>).q4;
+    let q4 = sent[0].addSheet?.properties.sheetId;
     let copy = sent[2].duplicateSheet?.newSheetId;
     expect(sent).toEqual([
       { addSheet: { properties: { sheetId: q4, title: "Q4", index: 2, gridProperties: { rowCount: 5, columnCount: 3 } } } },
@@ -1525,7 +1525,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
   it("reports a queued deleteSheet whose sheet a collaborator deleted, and fails it without writing", async () => {
     let provider = budget();
     let sheets = gatekeeper();
-    let { actionId, action } = await sheets.queued([{ op: "deleteSheet", sheetId: 7 }]);
+    let { actionId, action } = await sheets.queued([{ op: "deleteSheet", sheet: "Q3 Plan" }]);
 
     expect(action).toMatchObject({
       title: 'Edit "Q3 Plan"',
@@ -1548,7 +1548,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
   it("refuses to delete rows a collaborator edited since they were queued, and deletes them otherwise", async () => {
     let provider = budget();
     let sheets = gatekeeper();
-    let edited = await sheets.queued([{ op: "deleteRows", sheetId: 0, at: 3 }]);
+    let edited = await sheets.queued([{ op: "deleteRows", sheet: "Sales", at: 3 }]);
     expect(edited.action!.description).toBe('In "Sales", delete row 3.');
 
     provider.set("Sales!F3", "note");
@@ -1557,7 +1557,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     await sheets.reject(edited.actionId!);
 
     provider.set("Sales!A4", "ANZ");
-    let unedited = await sheets.queued([{ op: "deleteRows", sheetId: 0, at: 2, count: 2 }]);
+    let unedited = await sheets.queued([{ op: "deleteRows", sheet: "Sales", at: 2, count: 2 }]);
     expect(unedited.action!.description).toBe('In "Sales", delete rows 2 to 3.');
     provider.set("Sales!F9", "elsewhere");
     expect(await sheets.apply(unedited.actionId!)).toBeNull();
@@ -1583,7 +1583,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
   it("fails a copy placed among sheets a collaborator has since reordered, without writing", async () => {
     let provider = budget();
     let sheets = gatekeeper();
-    let { actionId } = await sheets.queued([{ op: "duplicateSheet", sheetId: 0 }]);
+    let { actionId } = await sheets.queued([{ op: "duplicateSheet", sheet: "Sales" }]);
     expect((await sheets.info()).sheets.map(s => s.title)).toEqual(["Sales", "Copy of Sales", "Q3 Plan"]);
 
     // Position 1 would now put the copy before Sales, not after it.
@@ -1595,7 +1595,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
   it("fails a deletion of rows that would leave only rows a collaborator has since frozen, without writing", async () => {
     let provider = budget();
     let sheets = gatekeeper();
-    let { actionId } = await sheets.queued([{ op: "deleteRows", sheetId: 0, at: 2, count: 19 }]);
+    let { actionId } = await sheets.queued([{ op: "deleteRows", sheet: "Sales", at: 2, count: 19 }]);
 
     provider.sheets[0] = { ...provider.sheets[0], frozenRowCount: 1 };
     expect(await sheets.apply(actionId!)).toBe(
@@ -1606,7 +1606,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
   it("fails a batch built on a rejected change to rows, without writing", async () => {
     let provider = budget();
     let sheets = gatekeeper();
-    let inserted = await sheets.queued([{ op: "insertRows", sheetId: 0, at: 2 }]);
+    let inserted = await sheets.queued([{ op: "insertRows", sheet: "Sales", at: 2 }]);
     let written = await sheets.queued([{ op: "writeCells", range: "Sales!A2", values: [["new"]] }]);
 
     expect(await sheets.reject(inserted.actionId!)).toEqual({ restart: true });
@@ -1620,7 +1620,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     let provider = budget();
     let sheets = gatekeeper();
     let written = await sheets.queued([{ op: "writeCells", range: "Sales!A1", values: [["Area"]] }]);
-    let copied = await sheets.queued([{ op: "duplicateSheet", sheetId: 0 }]);
+    let copied = await sheets.queued([{ op: "duplicateSheet", sheet: "Sales" }]);
     expect(await sheets.read("'Copy of Sales'!A1", "formula")).toEqual({ range: "'Copy of Sales'!A1", values: [["Area"]] });
 
     await sheets.reject(written.actionId!);
@@ -1634,7 +1634,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     let provider = budget();
     provider.set("Sales!A1", "='Q3 Plan'!A5");
     let sheets = gatekeeper();
-    let deleted = await sheets.queued([{ op: "deleteRows", sheetId: 7, at: 1 }]);
+    let deleted = await sheets.queued([{ op: "deleteRows", sheet: "Q3 Plan", at: 1 }]);
     let written = await sheets.queued([{ op: "writeCells", range: "Sales!A1", values: [["x"]] }]);
 
     expect(await sheets.reject(deleted.actionId!)).toEqual({ restart: true });
@@ -1662,8 +1662,8 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     let sheets = gatekeeper();
 
     for (let change of [
-      { op: "insertRows", sheetId: 0, at: 21 },
-      { op: "renameSheet", sheetId: 0, title: "Sales 2026" },
+      { op: "insertRows", sheet: "Sales", at: 21 },
+      { op: "renameSheet", sheet: "Sales", title: "Sales 2026" },
     ] satisfies SheetChange[]) {
       let outcome = await sheets.update([change]);
       expect(outcome.error).toBe(
@@ -1671,7 +1671,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
         "not edit, so its rows, columns and tab cannot be changed.");
       expect(outcome.actionId).toBeUndefined();
     }
-    expect((await sheets.update([{ op: "insertRows", sheetId: 7, at: 11 }])).actionId).toEqual(expect.any(Number));
+    expect((await sheets.update([{ op: "insertRows", sheet: "Q3 Plan", at: 11 }])).actionId).toEqual(expect.any(Number));
   });
 
   it("applies a batch queued before guards named their cells, guarding the cells it writes", async () => {

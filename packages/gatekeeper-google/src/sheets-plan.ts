@@ -24,7 +24,7 @@ import type {
 import {
   baseIndexOf, deleteLines, insertLines, lineCount, linesAt, positionOf, positionsIn, type Lines,
 } from "./sheets-structure";
-import type { SheetCellInput, SheetTarget } from "./sheets-types";
+import type { SheetCellInput } from "./sheets-types";
 import { ChangeConflict } from "./slides-text";
 
 /** The rows of a sheet added with none given, as in Google Sheets. */
@@ -352,18 +352,15 @@ function unexpected(i: number, change: PlannedChange) {
 }
 
 /**
- * Walks `prepared` over `grid` as each change leaves it, finding the sheet each acts on: a range's
- * by the title it then has, any other change's by ID or by the ref an earlier change gave the
- * sheet it adds. Fills in what a change leaves to its default, gives each sheet added an ID from
- * `mint` that no sheet has, and writes formulas' references as Google stores them. Returns the
- * changes and, for each ref, the ID of the sheet it names. Throws `Error` for a change Google
- * would refuse, or one that would delete what the guard cannot cover.
+ * Walks `prepared` over `grid` as each change leaves it, finding the sheet each acts on by the
+ * title it then has. Fills in what a change leaves to its default, gives each sheet added an ID
+ * from `mint` that no sheet has, and writes formulas' references as Google stores them. Throws
+ * `Error` for a change Google would refuse, or one that would delete what the guard cannot cover.
  */
 export function resolveChanges(
   grid: Grid, prepared: readonly PreparedChange[], mint: () => number,
-): { planned: PlannedChange[]; refs: Record<string, number> } {
+): PlannedChange[] {
   let work = working(grid);
-  let refs = new Map<string, number>();
   let used = new Set(grid.sheets.map(sheet => sheet.id));
   let fresh = () => {
     for (let tries = 0; tries < 100; tries++) {
@@ -376,17 +373,9 @@ export function resolveChanges(
     throw new Error("No unused sheet ID could be chosen.");
   };
 
-  let planned = prepared.map((change, i): PlannedChange => {
+  return prepared.map((change, i): PlannedChange => {
     let label = `Change ${i + 1} (${change.op})`;
-    let sheetFor = (target: SheetTarget): SimSheet => {
-      let id = typeof target === "number" ? target : refs.get(target);
-      if (id === undefined) throw new Error(`${label}: no earlier change gives a sheet the ref "${target}".`);
-      let sheet = work.sheets.find(candidate => candidate.id === id);
-      if (sheet) return sheet;
-      throw new Error(typeof target === "number"
-        ? `${label}: the spreadsheet has no sheet with ID ${id}. Call getSpreadsheet() for sheet IDs.`
-        : `${label}: the sheet ref "${target}" names is deleted by an earlier change.`);
-    };
+    let sheetFor = (title: string) => sheetNamed(work, title, label);
     let titleFree = (title: string, except?: number) => {
       let other = findSheet(work.sheets, title);
       if (other && other.id !== except) {
@@ -421,17 +410,15 @@ export function resolveChanges(
           titleFree(change.title);
           placeable(index);
           fits(rowCount * columnCount);
-          let sheetId = fresh();
-          if (change.ref !== undefined) refs.set(change.ref, sheetId);
-          return { op: "addSheet", sheetId, title: change.title, index, rowCount, columnCount };
+          return { op: "addSheet", sheetId: fresh(), title: change.title, index, rowCount, columnCount };
         }
         case "renameSheet": {
-          let sheet = sheetFor(change.sheetId);
+          let sheet = sheetFor(change.sheet);
           titleFree(change.title, sheet.id);
           return { op: "renameSheet", sheetId: sheet.id, title: change.title };
         }
         case "duplicateSheet": {
-          let source = sheetFor(change.sheetId);
+          let source = sheetFor(change.sheet);
           let title = change.title ?? `Copy of ${source.title}`;
           if (title.length > MAX_TITLE_LENGTH) {
             throw new Error(`${label}: "${title}" would be over ${MAX_TITLE_LENGTH} characters; give the copy ` +
@@ -441,12 +428,10 @@ export function resolveChanges(
           let index = change.index ?? source.index + 1;
           placeable(index);
           fits(source.rowCount * source.columnCount);
-          let newSheetId = fresh();
-          if (change.ref !== undefined) refs.set(change.ref, newSheetId);
-          return { op: "duplicateSheet", sheetId: source.id, newSheetId, title, index };
+          return { op: "duplicateSheet", sheetId: source.id, newSheetId: fresh(), title, index };
         }
         case "deleteSheet": {
-          let sheet = sheetFor(change.sheetId);
+          let sheet = sheetFor(change.sheet);
           if (!sheet.hidden && work.sheets.filter(candidate => !candidate.hidden).length === 1) {
             throw new Error(`${label}: "${sheet.title}" is the spreadsheet's only visible sheet, and ` +
               "a spreadsheet keeps at least one.");
@@ -460,7 +445,7 @@ export function resolveChanges(
           return { op: "deleteSheet", sheetId: sheet.id, rowCount: sheet.rowCount, columnCount: sheet.columnCount };
         }
         default:
-          return resolveLines(change, sheetFor(change.sheetId), label, fits);
+          return resolveLines(change, sheetFor(change.sheet), label, fits);
       }
     })();
     if (!isCellChange(next) && work.log.length >= MAX_QUEUED_STEPS) {
@@ -481,17 +466,20 @@ export function resolveChanges(
     applyOne(work, next, 0, unexpected(i, next));
     return next;
   });
-  return { planned, refs: Object.fromEntries(refs) };
+}
+
+// The sheet titled `title`, as the changes before the one `label` names leave the spreadsheet.
+function sheetNamed(work: Working, title: string, label: string): SimSheet {
+  let sheet = findSheet(work.sheets, title);
+  if (sheet) return sheet;
+  throw new Error(`${label}: the spreadsheet has no sheet named "${title}". Call ` +
+    "getSpreadsheet() for sheet titles.");
 }
 
 function resolveCells(
   work: Working, change: Extract<PreparedChange, { op: "writeCells" | "clearRange" }>, label: string,
 ): PlannedChange {
-  let sheet = findSheet(work.sheets, change.sheet);
-  if (!sheet) {
-    throw new Error(`${label}: the spreadsheet has no sheet named "${change.sheet}". Call ` +
-      "getSpreadsheet() for sheet titles.");
-  }
+  let sheet = sheetNamed(work, change.sheet, label);
   let outside = outsideCell(sheet, change.rect);
   if (outside !== undefined) {
     let hint = change.rect.endColumn > sheet.columnCount

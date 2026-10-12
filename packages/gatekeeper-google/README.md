@@ -397,10 +397,10 @@ changes queued after it are not shown.
 
 The same batch can change a spreadsheet's structure: `addSheet`, `renameSheet`, `duplicateSheet`
 and `deleteSheet` act on its sheets, and `insertRows`, `deleteRows`, `insertColumns` and
-`deleteColumns` on a sheet's rows and columns. A change names its sheet by ID, or by the `ref` an
-earlier change of the batch gave a sheet it adds or copies; ranges name sheets by title, including
-titles the batch gives. The gatekeeper mints the ID of each sheet a batch adds, and `updateSpreadsheet()`
-returns each `ref` mapped to it. A batch with any structural change always waits for approval.
+`deleteColumns` on a sheet's rows and columns. A change names its sheet by title in `sheet`, as a
+range does, including a title an earlier change of the batch gives a sheet it adds, copies or
+renames, so it never needs an ID the spreadsheet has not assigned yet. The gatekeeper mints the ID
+of each sheet a batch adds. A batch with any structural change always waits for approval.
 Every default is sent explicitly, so the approver sees what will be made: a new sheet has Google's
 1,000 rows and 26 columns and comes last, and a copy is titled `Copy of <title>` and placed right
 after its source (Google would put it first, under a name of its own choosing). Changes are refused

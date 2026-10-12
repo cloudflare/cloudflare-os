@@ -34,7 +34,7 @@ function resolve(changes: SheetChange[], sheets: SheetMeta[] = SHEETS, mint = mi
 
 /** Plans `changes` over a spreadsheet of `SHEETS`, as `updateSpreadsheet()` would queue them. */
 function plan(changes: SheetChange[]) {
-  let { planned } = resolve(changes);
+  let planned = resolve(changes);
   return { planned, ...planSheet(grid(SHEETS), planned) };
 }
 
@@ -154,17 +154,16 @@ describe("Sheets change requests", () => {
 
 describe("Sheets structural change requests", () => {
   it("sends each op in the shape Google accepts, filling in defaults and minting sheet IDs", () => {
-    let { planned, refs } = resolve([
-      { op: "addSheet", title: "Q4", ref: "q4" },
-      { op: "renameSheet", sheetId: "q4", title: "Q4 2026" },
-      { op: "duplicateSheet", sheetId: 0 },
-      { op: "insertRows", sheetId: 0, at: 21, count: 2 },
-      { op: "insertColumns", sheetId: 0, at: "A" },
-      { op: "deleteRows", sheetId: 7, at: 5, count: 2 },
-      { op: "deleteColumns", sheetId: 7, at: "C" },
-      { op: "deleteSheet", sheetId: "q4" },
+    let planned = resolve([
+      { op: "addSheet", title: "Q4" },
+      { op: "renameSheet", sheet: "Q4", title: "Q4 2026" },
+      { op: "duplicateSheet", sheet: "Sales" },
+      { op: "insertRows", sheet: "Sales", at: 21, count: 2 },
+      { op: "insertColumns", sheet: "Sales", at: "A" },
+      { op: "deleteRows", sheet: "It's", at: 5, count: 2 },
+      { op: "deleteColumns", sheet: "It's", at: "C" },
+      { op: "deleteSheet", sheet: "Q4 2026" },
     ]);
-    expect(refs).toEqual({ q4: 101 });
     expect(planned).toEqual([
       { op: "addSheet", sheetId: 101, title: "Q4", index: 2, ...NEW_SHEET_SIZE },
       { op: "renameSheet", sheetId: 101, title: "Q4 2026" },
@@ -194,9 +193,9 @@ describe("Sheets structural change requests", () => {
   });
 
   it("takes what an addSheet or duplicateSheet is given over its defaults", () => {
-    let { planned } = resolve([
+    let planned = resolve([
       { op: "addSheet", title: "Top", index: 0, rowCount: 5, columnCount: 2 },
-      { op: "duplicateSheet", sheetId: 7, title: "Mine", index: 0 },
+      { op: "duplicateSheet", sheet: "It's", title: "Mine", index: 0 },
     ]);
     expect(planned).toEqual([
       { op: "addSheet", sheetId: 101, title: "Top", index: 0, rowCount: 5, columnCount: 2 },
@@ -205,11 +204,10 @@ describe("Sheets structural change requests", () => {
   });
 
   it("mints only IDs no sheet has, those the batch adds included", () => {
-    let { planned, refs } = resolve([
-      { op: "addSheet", title: "A", ref: "a" },
-      { op: "duplicateSheet", sheetId: "a", ref: "b" },
+    let planned = resolve([
+      { op: "addSheet", title: "A" },
+      { op: "duplicateSheet", sheet: "A" },
     ], SHEETS, minter(0, 7, 55, 55, 56));
-    expect(refs).toEqual({ a: 55, b: 56 });
     expect(planned.map(change => change.op === "duplicateSheet" ? change.newSheetId : change.sheetId)).toEqual([55, 56]);
     expect(() => resolveChanges(grid(SHEETS), prepareChanges([{ op: "addSheet", title: "A" }]), () => 0))
       .toThrow("No unused sheet ID could be chosen.");
@@ -217,7 +215,7 @@ describe("Sheets structural change requests", () => {
 
   it("addresses each change to the spreadsheet as the changes before it leave it", () => {
     let { planned, requests, grid: next } = plan([
-      { op: "insertRows", sheetId: 0, at: 1, count: 2 },
+      { op: "insertRows", sheet: "Sales", at: 1, count: 2 },
       { op: "writeCells", range: "Sales!A1:A3", values: [[1], [2], [3]] },
     ]);
     expect(planned[1]).toEqual({ op: "writeCells", sheetId: 0, rect: rect(0, 0, 3), values: [[1], [2], [3]] });
@@ -227,82 +225,96 @@ describe("Sheets structural change requests", () => {
     expect(next.cells.get("0:b0:b0")).toEqual({ input: 3, at: 1, by: 0 });
 
     let renamed = resolve([
-      { op: "renameSheet", sheetId: 0, title: "Sales 2026" },
+      { op: "renameSheet", sheet: "Sales", title: "Sales 2026" },
       { op: "writeCells", range: "'sales 2026'!A1", values: [["=SUM('SALES 2026'!b1:b2)"]] },
-    ]).planned;
+    ]);
     expect(renamed[1]).toEqual({ op: "writeCells", sheetId: 0, rect: rect(0, 0), values: [["=SUM('Sales 2026'!B1:B2)"]] });
     expect(refused([
-      { op: "renameSheet", sheetId: 0, title: "Sales 2026" },
+      { op: "renameSheet", sheet: "Sales", title: "Sales 2026" },
       { op: "clearRange", range: "Sales!A1" },
     ])).toThrow('Change 2 (clearRange): the spreadsheet has no sheet named "Sales".');
 
     let added = resolve([
       { op: "addSheet", title: "Q4", rowCount: 5, columnCount: 2 },
       { op: "writeCells", range: "Q4!B5", values: [[1]] },
-    ]).planned;
+    ]);
     expect(added[1]).toEqual({ op: "writeCells", sheetId: 101, rect: rect(4, 1), values: [[1]] });
     expect(refused([{ op: "addSheet", title: "Q4", rowCount: 5, columnCount: 2 }, { op: "clearRange", range: "Q4!C1" }]))
       .toThrow('Change 2 (clearRange): "Q4" has 5 rows and 2 columns, so C1 is outside it.');
   });
 
-  it("refuses an unknown sheet, and a ref to a sheet an earlier change deletes", () => {
-    expect(refused([{ op: "deleteSheet", sheetId: 3 }]))
-      .toThrow("Change 1 (deleteSheet): the spreadsheet has no sheet with ID 3. Call getSpreadsheet() for sheet IDs.");
+  it("finds each change's sheet by the title it has once earlier changes apply, ignoring case", () => {
+    expect(refused([{ op: "deleteSheet", sheet: "Nope" }])).toThrow(
+      'Change 1 (deleteSheet): the spreadsheet has no sheet named "Nope". Call getSpreadsheet() for sheet titles.');
+    // A rename takes the old title from the sheet, and a deleted sheet's title names nothing.
     expect(refused([
-      { op: "addSheet", title: "A", ref: "a" },
-      { op: "deleteSheet", sheetId: "a" },
-      { op: "renameSheet", sheetId: "a", title: "B" },
-    ])).toThrow('Change 3 (renameSheet): the sheet ref "a" names is deleted by an earlier change.');
+      { op: "renameSheet", sheet: "Sales", title: "Revenue" },
+      { op: "insertRows", sheet: "Sales", at: 1 },
+    ])).toThrow('Change 2 (insertRows): the spreadsheet has no sheet named "Sales".');
+    expect(refused([
+      { op: "addSheet", title: "A" },
+      { op: "deleteSheet", sheet: "A" },
+      { op: "renameSheet", sheet: "A", title: "B" },
+    ])).toThrow('Change 3 (renameSheet): the spreadsheet has no sheet named "A".');
+    let planned = resolve([
+      { op: "insertRows", sheet: "SALES", at: 1 },
+      { op: "deleteColumns", sheet: "it's", at: "A" },
+      { op: "duplicateSheet", sheet: "Sales", title: "Copy" },
+      { op: "deleteRows", sheet: "COPY", at: 1 },
+      { op: "renameSheet", sheet: "copy", title: "Final" },
+      { op: "insertColumns", sheet: "final", at: "A" },
+    ]);
+    expect(planned.map(change => change.sheetId)).toEqual([0, 7, 0, 101, 101, 101]);
   });
 
   it("refuses a title another sheet has, ignoring case", () => {
     expect(refused([{ op: "addSheet", title: "sales" }])).toThrow(`Change 1 (addSheet): ${taken("Sales")}`);
-    expect(refused([{ op: "renameSheet", sheetId: 7, title: "SALES" }])).toThrow(`Change 1 (renameSheet): ${taken("Sales")}`);
-    expect(refused([{ op: "duplicateSheet", sheetId: 0 }, { op: "duplicateSheet", sheetId: 0 }]))
+    expect(refused([{ op: "renameSheet", sheet: "It's", title: "SALES" }])).toThrow(`Change 1 (renameSheet): ${taken("Sales")}`);
+    expect(refused([{ op: "duplicateSheet", sheet: "Sales" }, { op: "duplicateSheet", sheet: "Sales" }]))
       .toThrow(`Change 2 (duplicateSheet): ${taken("Copy of Sales")}`);
-    expect(refused([{ op: "duplicateSheet", sheetId: 0, title: "IT'S" }])).toThrow(taken("It's"));
+    expect(refused([{ op: "duplicateSheet", sheet: "Sales", title: "IT'S" }])).toThrow(taken("It's"));
     // A sheet may change the case of its own title, and a title a rename frees may be taken.
-    expect(refused([{ op: "renameSheet", sheetId: 0, title: "SALES" }])).not.toThrow();
-    expect(refused([{ op: "renameSheet", sheetId: 0, title: "Old" }, { op: "addSheet", title: "Sales" }])).not.toThrow();
-    expect(refused([{ op: "duplicateSheet", sheetId: 0 }], [sheet(0, "x".repeat(95))]))
+    expect(refused([{ op: "renameSheet", sheet: "Sales", title: "SALES" }])).not.toThrow();
+    expect(refused([{ op: "renameSheet", sheet: "Sales", title: "Old" }, { op: "addSheet", title: "Sales" }])).not.toThrow();
+    expect(refused([{ op: "duplicateSheet", sheet: "x".repeat(95) }], [sheet(0, "x".repeat(95))]))
       .toThrow(`Change 1 (duplicateSheet): "Copy of ${"x".repeat(95)}" would be over 100 characters; give the copy a title.`);
   });
 
   it("refuses deleting the last visible sheet, or every row or column", () => {
     let hidden = [sheet(0, "Sales"), sheet(1, "Hidden", { hidden: true })];
-    expect(refused([{ op: "deleteSheet", sheetId: 0 }], hidden))
+    expect(refused([{ op: "deleteSheet", sheet: "Sales" }], hidden))
       .toThrow('Change 1 (deleteSheet): "Sales" is the spreadsheet\'s only visible sheet, and a spreadsheet keeps at least one.');
-    expect(refused([{ op: "deleteSheet", sheetId: 1 }], hidden)).not.toThrow();
-    expect(refused([{ op: "deleteSheet", sheetId: 0 }, { op: "deleteSheet", sheetId: 7 }]))
+    expect(refused([{ op: "deleteSheet", sheet: "Hidden" }], hidden)).not.toThrow();
+    expect(refused([{ op: "deleteSheet", sheet: "Sales" }, { op: "deleteSheet", sheet: "It's" }]))
       .toThrow('Change 2 (deleteSheet): "It\'s" is the spreadsheet\'s only visible sheet');
-    expect(refused([{ op: "deleteRows", sheetId: 0, at: 1, count: 20 }]))
+    expect(refused([{ op: "deleteRows", sheet: "Sales", at: 1, count: 20 }]))
       .toThrow('Change 1 (deleteRows): deleting rows 1 to 20 would delete every row of "Sales", and a sheet keeps at least one.');
-    expect(refused([{ op: "deleteColumns", sheetId: 0, at: "A", count: 6 }]))
+    expect(refused([{ op: "deleteColumns", sheet: "Sales", at: "A", count: 6 }]))
       .toThrow('Change 1 (deleteColumns): deleting columns A to F would delete every column of "Sales"');
-    expect(refused([{ op: "deleteRows", sheetId: 0, at: 1, count: 19 }])).not.toThrow();
+    expect(refused([{ op: "deleteRows", sheet: "Sales", at: 1, count: 19 }])).not.toThrow();
   });
 
   it("refuses leaving only frozen rows or columns, and more columns than a sheet holds", () => {
     let frozen = [sheet(0, "Sales", { frozenRowCount: 2, frozenColumnCount: 1 })];
-    expect(refused([{ op: "deleteRows", sheetId: 0, at: 3, count: 18 }], frozen))
+    expect(refused([{ op: "deleteRows", sheet: "Sales", at: 3, count: 18 }], frozen))
       .toThrow('Change 1 (deleteRows): deleting rows 3 to 20 would leave only the 2 frozen rows of "Sales"');
-    expect(refused([{ op: "deleteRows", sheetId: 0, at: 3, count: 17 }], frozen)).not.toThrow();
-    expect(refused([{ op: "deleteColumns", sheetId: 0, at: "B", count: 5 }], frozen))
+    expect(refused([{ op: "deleteRows", sheet: "Sales", at: 3, count: 17 }], frozen)).not.toThrow();
+    expect(refused([{ op: "deleteColumns", sheet: "Sales", at: "B", count: 5 }], frozen))
       .toThrow('would leave only the 1 frozen column of "Sales"');
     let wide = [sheet(0, "Sales", { rowCount: 1, columnCount: 18_278 })];
-    expect(refused([{ op: "insertColumns", sheetId: 0, at: "A" }], wide))
+    expect(refused([{ op: "insertColumns", sheet: "Sales", at: "A" }], wide))
       .toThrow('Change 1 (insertColumns): "Sales" has 18,278 columns, and a sheet holds at most 18,278.');
   });
 
   it("keeps a copy's frozen rows and columns, so the batch cannot unfreeze the copy's last line", () => {
     let frozen = [sheet(0, "Sales", { frozenRowCount: 2, frozenColumnCount: 1 })];
     expect(refused([
-      { op: "duplicateSheet", sheetId: 0, ref: "copy" }, { op: "deleteRows", sheetId: "copy", at: 3, count: 18 },
+      { op: "duplicateSheet", sheet: "Sales" }, { op: "deleteRows", sheet: "Copy of Sales", at: 3, count: 18 },
     ], frozen)).toThrow('Change 2 (deleteRows): deleting rows 3 to 20 would leave only the 2 frozen rows of "Copy of Sales"');
     expect(refused([
-      { op: "duplicateSheet", sheetId: 0, ref: "copy" }, { op: "deleteColumns", sheetId: "copy", at: "B", count: 5 },
+      { op: "duplicateSheet", sheet: "Sales" }, { op: "deleteColumns", sheet: "Copy of Sales", at: "B", count: 5 },
     ], frozen)).toThrow('Change 2 (deleteColumns): deleting columns B to F would leave only the 1 frozen column of "Copy of Sales"');
-    let { planned } = resolve([{ op: "duplicateSheet", sheetId: 0 }]);
+    let planned = resolve([{ op: "duplicateSheet", sheet: "Sales" }]);
     let copy = planSheet(grid(SHEETS), planned).grid.sheets.find(candidate => candidate.title === "Copy of Sales");
     expect(copy).toBeDefined();
     expect(copy).not.toHaveProperty("frozenRowCount");
@@ -310,15 +322,15 @@ describe("Sheets structural change requests", () => {
   });
 
   it("refuses inserting or deleting rows and columns the sheet does not have", () => {
-    expect(refused([{ op: "insertRows", sheetId: 0, at: 22 }]))
+    expect(refused([{ op: "insertRows", sheet: "Sales", at: 22 }]))
       .toThrow('Change 1 (insertRows): "Sales" has 20 rows, so at must be from 1 to 21.');
-    expect(refused([{ op: "insertColumns", sheetId: 0, at: "H" }]))
+    expect(refused([{ op: "insertColumns", sheet: "Sales", at: "H" }]))
       .toThrow('Change 1 (insertColumns): "Sales" has 6 columns, so at must be a column from A to G.');
-    expect(refused([{ op: "deleteRows", sheetId: 0, at: 19, count: 4 }]))
+    expect(refused([{ op: "deleteRows", sheet: "Sales", at: 19, count: 4 }]))
       .toThrow('Change 1 (deleteRows): "Sales" has 20 rows, so rows 19 to 22 cannot be deleted.');
-    expect(refused([{ op: "deleteColumns", sheetId: 0, at: "G" }]))
+    expect(refused([{ op: "deleteColumns", sheet: "Sales", at: "G" }]))
       .toThrow('Change 1 (deleteColumns): "Sales" has 6 columns, so column G cannot be deleted.');
-    expect(refused([{ op: "insertRows", sheetId: 0, at: 1, count: 5 }, { op: "deleteRows", sheetId: 0, at: 25 }]))
+    expect(refused([{ op: "insertRows", sheet: "Sales", at: 1, count: 5 }, { op: "deleteRows", sheet: "Sales", at: 25 }]))
       .not.toThrow();
   });
 
@@ -329,17 +341,17 @@ describe("Sheets structural change requests", () => {
     expect(refused([{ op: "addSheet", title: "A", rowCount: 10_000_000, columnCount: 1 }]))
       .toThrow("Change 1 (addSheet): the spreadsheet would hold 10,002,720 cells; Google Sheets holds at most 10,000,000.");
     let big = [sheet(0, "Big", { rowCount: 9_999_000, columnCount: 1 })];
-    expect(refused([{ op: "insertRows", sheetId: 0, at: 1, count: 1000 }], big)).not.toThrow();
-    expect(refused([{ op: "insertColumns", sheetId: 0, at: "B" }], big)).toThrow("would hold 19,998,000 cells");
-    expect(refused([{ op: "duplicateSheet", sheetId: 0 }], big)).toThrow("would hold 19,998,000 cells");
+    expect(refused([{ op: "insertRows", sheet: "Big", at: 1, count: 1000 }], big)).not.toThrow();
+    expect(refused([{ op: "insertColumns", sheet: "Big", at: "B" }], big)).toThrow("would hold 19,998,000 cells");
+    expect(refused([{ op: "duplicateSheet", sheet: "Big" }], big)).toThrow("would hold 19,998,000 cells");
   });
 
   it("refuses deleting a sheet of more than 50,000 cells", () => {
     let sheets = [sheet(0, "Sales"), sheet(1, "Big", { index: 1, rowCount: 1000, columnCount: 51 })];
-    expect(refused([{ op: "deleteSheet", sheetId: 1 }], sheets)).toThrow(
+    expect(refused([{ op: "deleteSheet", sheet: "Big" }], sheets)).toThrow(
       'Change 1 (deleteSheet): "Big" has 51,000 cells, more than the 50,000 a sheet deleted here may have; ' +
       "delete it in Google Sheets.");
-    expect(refused([{ op: "deleteColumns", sheetId: 1, at: "A" }, { op: "deleteSheet", sheetId: 1 }], sheets))
+    expect(refused([{ op: "deleteColumns", sheet: "Big", at: "A" }, { op: "deleteSheet", sheet: "Big" }], sheets))
       .not.toThrow();
   });
 
@@ -451,49 +463,49 @@ describe("Sheets apply guard", () => {
 
 /** The cells a batch of `changes` over `sheets` overwrites or removes. */
 function cellsOf(changes: SheetChange[], sheets: SheetMeta[] = SHEETS): SheetArea[] {
-  return guardCells(grid(sheets), resolve(changes, sheets).planned);
+  return guardCells(grid(sheets), resolve(changes, sheets));
 }
 
 describe("Sheets guarded cells", () => {
   it("maps a write back through the batch's own inserted lines, leaving them out", () => {
     expect(cellsOf([
-      { op: "insertRows", sheetId: 0, at: 3, count: 2 },
+      { op: "insertRows", sheet: "Sales", at: 3, count: 2 },
       { op: "clearRange", range: "Sales!A1:A6" },
     ])).toEqual([{ sheetId: 0, rect: rect(0, 0, 4) }]);
     expect(cellsOf([
-      { op: "insertColumns", sheetId: 0, at: "B" },
+      { op: "insertColumns", sheet: "Sales", at: "B" },
       { op: "clearRange", range: "Sales!A1:C1" },
     ])).toEqual([{ sheetId: 0, rect: rect(0, 0, 1, 2) }]);
     // Lines a queued change inserted before the batch are lines the batch overwrites.
     let queuedInsert = planSheet(grid(SHEETS), [{ op: "insertRows", sheetId: 0, start: 0, count: 1 }]).grid;
-    let { planned } = resolveChanges(queuedInsert, prepareChanges([
-      { op: "insertRows", sheetId: 0, at: 2 },
+    let planned = resolveChanges(queuedInsert, prepareChanges([
+      { op: "insertRows", sheet: "Sales", at: 2 },
       { op: "clearRange", range: "Sales!A1:A3" },
     ]), minter());
     expect(guardCells(queuedInsert, planned)).toEqual([{ sheetId: 0, rect: rect(0, 0, 2) }]);
   });
 
   it("covers a deleted band across the sheet, and a deleted sheet whole", () => {
-    expect(cellsOf([{ op: "deleteRows", sheetId: 0, at: 5, count: 2 }]))
+    expect(cellsOf([{ op: "deleteRows", sheet: "Sales", at: 5, count: 2 }]))
       .toEqual([{ sheetId: 0, rect: rect(4, 0, 2, 6) }]);
-    expect(cellsOf([{ op: "deleteColumns", sheetId: 0, at: "B" }])).toEqual([{ sheetId: 0, rect: rect(0, 1, 20, 1) }]);
-    expect(cellsOf([{ op: "deleteSheet", sheetId: 7 }])).toEqual([{ sheetId: 7, rect: rect(0, 0, 100, 26) }]);
+    expect(cellsOf([{ op: "deleteColumns", sheet: "Sales", at: "B" }])).toEqual([{ sheetId: 0, rect: rect(0, 1, 20, 1) }]);
+    expect(cellsOf([{ op: "deleteSheet", sheet: "It's" }])).toEqual([{ sheetId: 7, rect: rect(0, 0, 100, 26) }]);
     // A column the batch inserted and then deletes covers nothing; the one beside it does.
     expect(cellsOf([
-      { op: "insertColumns", sheetId: 0, at: "A" },
-      { op: "deleteColumns", sheetId: 0, at: "A", count: 2 },
+      { op: "insertColumns", sheet: "Sales", at: "A" },
+      { op: "deleteColumns", sheet: "Sales", at: "A", count: 2 },
     ])).toEqual([{ sheetId: 0, rect: rect(0, 0, 20, 1) }]);
   });
 
   it("covers nothing of sheets the batch creates, nor what changes no cell", () => {
     expect(cellsOf([
-      { op: "addSheet", title: "Q4", ref: "q4" },
+      { op: "addSheet", title: "Q4" },
       { op: "clearRange", range: "Q4!A1:B2" },
-      { op: "deleteRows", sheetId: "q4", at: 1 },
-      { op: "duplicateSheet", sheetId: 0, ref: "copy" },
+      { op: "deleteRows", sheet: "Q4", at: 1 },
+      { op: "duplicateSheet", sheet: "Sales" },
       { op: "clearRange", range: "'Copy of Sales'!A1" },
-      { op: "renameSheet", sheetId: 7, title: "Other" },
-      { op: "insertRows", sheetId: 7, at: 1 },
+      { op: "renameSheet", sheet: "It's", title: "Other" },
+      { op: "insertRows", sheet: "Other", at: 1 },
     ])).toEqual([]);
   });
 
@@ -510,13 +522,13 @@ describe("Sheets guarded cells", () => {
     // A sheet whose rows are deleted and then the sheet: its cells count once.
     let square = [sheet(0, "Square", { rowCount: 200, columnCount: 200 }), sheet(1, "Other", { index: 1 })];
     expect(cellsOf([
-      { op: "deleteRows", sheetId: 0, at: 1, count: 100 }, { op: "deleteSheet", sheetId: 0 },
+      { op: "deleteRows", sheet: "Square", at: 1, count: 100 }, { op: "deleteSheet", sheet: "Square" },
     ], square)).toEqual([{ sheetId: 0, rect: rect(0, 0, 200, 200) }]);
     let wide = [sheet(0, "Wide", { rowCount: 1000, columnCount: 60 })];
-    expect(() => cellsOf([{ op: "deleteColumns", sheetId: 0, at: "A", count: 51 }], wide)).toThrow(
+    expect(() => cellsOf([{ op: "deleteColumns", sheet: "Wide", at: "A", count: 51 }], wide)).toThrow(
       "These changes overwrite or delete 51,000 cells that are already there; one batch may overwrite or " +
       "delete at most 50,000.");
-    expect(cellsOf([{ op: "deleteColumns", sheetId: 0, at: "A", count: 50 }], wide)).toHaveLength(1);
+    expect(cellsOf([{ op: "deleteColumns", sheet: "Wide", at: "A", count: 50 }], wide)).toHaveLength(1);
   });
 });
 
@@ -528,7 +540,7 @@ describe("Sheets batches built on queued changes", () => {
   ];
   let simulated = replayed(grid(SHEETS), pending);
   let after = (changes: SheetChange[]) => {
-    let { planned } = resolveChanges(simulated, prepareChanges(changes), minter(101));
+    let planned = resolveChanges(simulated, prepareChanges(changes), minter(101));
     return guardAfter(simulated, pending, planned, guardCells(simulated, planned));
   };
 
@@ -536,12 +548,12 @@ describe("Sheets batches built on queued changes", () => {
     expect(after([{ op: "clearRange", range: "Sales!A1:A2" }])).toEqual([1]);
     expect(after([{ op: "clearRange", range: "Sales!A1:B5" }])).toEqual([1, 3]);
     expect(after([{ op: "clearRange", range: "Sales!C1:D9" }])).toEqual([]);
-    expect(after([{ op: "deleteRows", sheetId: 0, at: 5 }])).toEqual([3]);
+    expect(after([{ op: "deleteRows", sheet: "Sales", at: 5 }])).toEqual([3]);
   });
 
   it("builds on every change to the rows, columns or tab of a sheet it acts on", () => {
     expect(after([{ op: "clearRange", range: "'It''s'!Z99" }])).toEqual([2]);
-    expect(after([{ op: "renameSheet", sheetId: 7, title: "Other" }])).toEqual([2]);
+    expect(after([{ op: "renameSheet", sheet: "It's", title: "Other" }])).toEqual([2]);
     expect(after([{ op: "addSheet", title: "Q4" }])).toEqual([]);
   });
 
@@ -555,7 +567,7 @@ describe("Sheets batches built on queued changes", () => {
     // Sales!A1 holds a formula naming It's rows, which the guard digests as change 1 leaves them.
     let deleted = [queued(1, [{ op: "deleteRows", sheetId: 7, start: 0, count: 1 }])];
     let shifted = replayed(grid(SHEETS), deleted);
-    let { planned } = resolveChanges(shifted, prepareChanges([
+    let planned = resolveChanges(shifted, prepareChanges([
       { op: "writeCells", range: "Sales!A1", values: [["x"]] },
     ]), minter());
     let cells = guardCells(shifted, planned);
@@ -580,7 +592,7 @@ describe("Sheets batches built on queued changes", () => {
       queued(2, [{ op: "deleteRows", sheetId: 7, start: 4, count: 1 }]),
     ];
     let shifted = replayed(grid(SHEETS), rewritten);
-    let { planned } = resolveChanges(shifted, prepareChanges([{ op: "duplicateSheet", sheetId: 0 }]), minter(101));
+    let planned = resolveChanges(shifted, prepareChanges([{ op: "duplicateSheet", sheet: "Sales" }]), minter(101));
     expect(guardAfter(shifted, rewritten, planned, guardCells(shifted, planned))).toEqual([1, 2]);
   });
 
@@ -592,34 +604,34 @@ describe("Sheets batches built on queued changes", () => {
       queued(4, [{ op: "insertRows", sheetId: 0, start: 0, count: 1 }]),
     ];
     let moved = replayed(grid(SHEETS), tabs);
-    let { planned } = resolveChanges(moved, prepareChanges([{ op: "addSheet", title: "Q5", index: 1 }]), minter(101));
+    let planned = resolveChanges(moved, prepareChanges([{ op: "addSheet", title: "Q5", index: 1 }]), minter(101));
     // Where it lands counts the sheets the first two leave; the others move no sheet.
     expect(guardAfter(moved, tabs, planned, guardCells(moved, planned))).toEqual([1, 2]);
   });
 
   it("builds a copy on the changes that entered what its original holds as it is copied", () => {
-    expect(after([{ op: "duplicateSheet", sheetId: 0 }])).toEqual([1, 2, 3]);
-    expect(after([{ op: "duplicateSheet", sheetId: 0, ref: "copy" }, { op: "duplicateSheet", sheetId: "copy" }]))
+    expect(after([{ op: "duplicateSheet", sheet: "Sales" }])).toEqual([1, 2, 3]);
+    expect(after([{ op: "duplicateSheet", sheet: "Sales" }, { op: "duplicateSheet", sheet: "Copy of Sales" }]))
       .toEqual([1, 2, 3]);
-    expect(after([{ op: "duplicateSheet", sheetId: 7 }])).toEqual([2]);
+    expect(after([{ op: "duplicateSheet", sheet: "It's" }])).toEqual([2]);
     // A copy queued earlier holds what was queued for its original.
     let copied = [...pending, queued(4, [{ op: "duplicateSheet", sheetId: 0, newSheetId: 50, title: "Copy", index: 2 }])];
     let withCopy = replayed(grid(SHEETS), copied);
-    let { planned } = resolveChanges(withCopy, prepareChanges([{ op: "duplicateSheet", sheetId: 50 }]), minter(101));
+    let planned = resolveChanges(withCopy, prepareChanges([{ op: "duplicateSheet", sheet: "Copy" }]), minter(101));
     expect(guardAfter(withCopy, copied, planned, guardCells(withCopy, planned))).toEqual([1, 2, 3, 4]);
     // Entries made outside a replay, and those the batch makes, are no queued change's.
     let entered = grid(SHEETS, { "0:0:0": 1 });
-    ({ planned } = resolveChanges(entered, prepareChanges([
-      { op: "writeCells", range: "Sales!B1", values: [[2]] }, { op: "duplicateSheet", sheetId: 0 },
+    (planned = resolveChanges(entered, prepareChanges([
+      { op: "writeCells", range: "Sales!B1", values: [[2]] }, { op: "duplicateSheet", sheet: "Sales" },
     ]), minter(101)));
     expect(guardAfter(entered, [], planned, guardCells(entered, planned))).toEqual([]);
   });
 
   it("labels each sheet a batch acts on or creates by its title before the batch", () => {
-    let { planned } = resolve([
-      { op: "renameSheet", sheetId: 0, title: "X" },
-      { op: "addSheet", title: "Q4", ref: "q4" },
-      { op: "duplicateSheet", sheetId: 7 },
+    let planned = resolve([
+      { op: "renameSheet", sheet: "Sales", title: "X" },
+      { op: "addSheet", title: "Q4" },
+      { op: "duplicateSheet", sheet: "It's" },
       { op: "clearRange", range: "Q4!A1" },
     ]);
     expect(sheetLabels(grid(SHEETS), planned)).toEqual({ 0: "Sales", 101: "Q4", 7: "It's", 102: "Copy of It's" });
@@ -634,10 +646,10 @@ describe("Sheets batches over millions of rows", () => {
 
   it("adds a sheet of 2,000,000 rows and deletes all but one, listing none of the rows deleted", () => {
     let base = grid(SHEETS);
-    let { planned } = resolveChanges(base, prepareChanges([
-      { op: "addSheet", title: "Tall", ref: "tall", rowCount: 2_000_000, columnCount: 1 },
+    let planned = resolveChanges(base, prepareChanges([
+      { op: "addSheet", title: "Tall", rowCount: 2_000_000, columnCount: 1 },
       { op: "writeCells", range: "Tall!A2000000", values: [[1]] },
-      { op: "deleteRows", sheetId: "tall", at: 2, count: 1_999_999 },
+      { op: "deleteRows", sheet: "Tall", at: 2, count: 1_999_999 },
     ]), minter(101));
     let next = planSheet(base, planned).grid;
     expect(next.sheets.find(candidate => candidate.id === 101)?.rowCount).toBe(1);
@@ -655,8 +667,8 @@ describe("Sheets batches over millions of rows", () => {
     let pending = [queued(1, [{ op: "writeCells", sheetId: 0, rect: rect(1_999_999, 0), values: [[5]] }])];
     let simulated = replayed(grid(tall), pending);
     let deleting = (at: number) => resolveChanges(simulated, prepareChanges([
-      { op: "deleteRows", sheetId: 0, at, count: 1_999_999 },
-    ]), minter()).planned;
+      { op: "deleteRows", sheet: "Tall", at, count: 1_999_999 },
+    ]), minter());
 
     let planned = deleting(2);
     expect(planSheet(simulated, planned).grid.cells.size).toBe(0);
@@ -681,7 +693,7 @@ function filled(id: number, sheetId: number, area: Rect): QueuedChange {
 /** `count` copies of Sales over `simulated`, each titled apart, with the IDs 101 on. */
 function copies(simulated: Grid, count: number) {
   let changes = Array.from({ length: count }, (_copy, i): SheetChange =>
-    ({ op: "duplicateSheet", sheetId: 0, title: `Copy ${i + 1}` }));
+    ({ op: "duplicateSheet", sheet: "Sales", title: `Copy ${i + 1}` }));
   return resolveChanges(simulated, prepareChanges(changes), minter(...changes.map((_copy, i) => 101 + i)));
 }
 
@@ -695,7 +707,7 @@ describe("Sheets copies of queued cells", () => {
       'Change 5 (duplicateSheet): copying "Sales" adds its 20,000 queued cells to the copy, which would bring ' +
       "the cells queued changes enter to 120,000, and at most 100,000 may be queued. Approve or reject queued " +
       "changes first.");
-    expect(copies(simulated, 4).planned).toHaveLength(4);
+    expect(copies(simulated, 4)).toHaveLength(4);
   });
 
   it("stops a replay at a copy that a rejected batch let through, before it enters its cells", () => {
@@ -703,7 +715,7 @@ describe("Sheets copies of queued cells", () => {
     let deletion = queued(2, [{ op: "deleteRows", sheetId: 0, start: 0, count: 800 }]);
     let simulated = replayed(grid(big), [write, deletion]);
     // With the rows deleted, the copies add nothing.
-    let copied = queued(3, copies(simulated, 49).planned);
+    let copied = queued(3, copies(simulated, 49));
     expect(replayed(grid(big), [write, deletion, copied]).cells.size).toBe(0);
 
     let result = replayChanges(grid(big), [write, copied]);
@@ -717,15 +729,15 @@ describe("Sheets copies of queued cells", () => {
   });
 
   it("refuses a change to rows, columns or sheets once 50 are queued, counting the batch's own", () => {
-    let inserts = (count: number) => Array.from({ length: count }, (): SheetChange => ({ op: "insertRows", sheetId: 0, at: 1 }));
-    let simulated = replayed(grid(SHEETS), [queued(1, resolveChanges(grid(SHEETS), prepareChanges(inserts(30)), minter()).planned)]);
+    let inserts = (count: number) => Array.from({ length: count }, (): SheetChange => ({ op: "insertRows", sheet: "Sales", at: 1 }));
+    let simulated = replayed(grid(SHEETS), [queued(1, resolveChanges(grid(SHEETS), prepareChanges(inserts(30)), minter()))]);
     expect(simulated.log).toHaveLength(30);
     let resolving = (changes: SheetChange[]) => () => resolveChanges(simulated, prepareChanges(changes), minter(101));
     expect(resolving(inserts(20))).not.toThrow();
     expect(resolving(inserts(21))).toThrow(
       `Change 21 (insertRows): ${MAX_QUEUED_STEPS} changes to rows, columns and sheets are queued already, the most ` +
       "that may be. Approve or reject queued changes first.");
-    expect(resolving([{ op: "renameSheet", sheetId: 7, title: "Its" }, ...inserts(20)])).toThrow("Change 21 (insertRows)");
+    expect(resolving([{ op: "renameSheet", sheet: "It's", title: "Its" }, ...inserts(20)])).toThrow("Change 21 (insertRows)");
     // Cells may still be written.
     expect(resolving([...inserts(20), { op: "writeCells", range: "Sales!A1", values: [[1]] }])).not.toThrow();
   });
@@ -742,7 +754,7 @@ describe("Sheets copies of queued cells", () => {
       "Change 1 (clearRange): it would bring the cells queued changes enter to 100,004");
     expect(resolving([{ op: "writeCells", range: "Sales!A1:B2", values: [[1, 2], [3, 4]] }])).not.toThrow();
     // A copy of a sheet with nothing queued adds nothing.
-    expect(resolving([{ op: "duplicateSheet", sheetId: 7 }])).not.toThrow();
+    expect(resolving([{ op: "duplicateSheet", sheet: "It's" }])).not.toThrow();
     expect(() => planSheet(simulated, [{ op: "clearRange", sheetId: 7, rect: rect(0, 0) }]))
       .toThrow(new ChangeConflict("change 1 (clearRange): it would bring the cells queued changes enter to " +
         "100,001, more than the 100,000 that may be queued"));
@@ -753,7 +765,7 @@ describe("Sheets copies of queued cells", () => {
     let keys = vi.spyOn(Map.prototype, "keys");
     try {
       let simulated = replayed(grid(big), [...pending, filled(3, 0, rect(100, 0, 10, 10))]);
-      let { planned } = resolveChanges(simulated, prepareChanges([
+      let planned = resolveChanges(simulated, prepareChanges([
         { op: "writeCells", range: "Sales!A1:B1", values: [[1, 2]] },
         { op: "clearRange", range: "'It''s'!A1:C3" },
       ]), minter());
@@ -761,7 +773,7 @@ describe("Sheets copies of queued cells", () => {
       guardAfter(simulated, pending, planned, guardCells(simulated, planned));
       expect(keys).not.toHaveBeenCalled();
 
-      planSheet(simulated, copies(simulated, 3).planned);
+      planSheet(simulated, copies(simulated, 3));
       expect(keys).toHaveBeenCalled();
       keys.mockClear();
       planSheet(simulated, [
@@ -778,7 +790,7 @@ describe("Sheets copies of queued cells", () => {
   it("copies only its original's entries, never another sheet's nor those it adds", () => {
     let pending = [filled(1, 0, rect(0, 0, 80, 25)), filled(2, 7, rect(0, 0, 100, 26))];
     let simulated = replayed(grid(big), pending);
-    let { planned } = copies(simulated, 20);
+    let planned = copies(simulated, 20);
     expect(guardAfter(simulated, pending, planned, guardCells(simulated, planned))).toEqual([1]);
 
     let split = vi.spyOn(String.prototype, "split");
@@ -812,7 +824,7 @@ describe("Sheets protected ranges", () => {
     ],
   };
   let check = (changes: SheetChange[], base: Grid = grid(SHEETS)) => () =>
-    checkProtections(metadata, base, resolveChanges(base, prepareChanges(changes), minter(101)).planned);
+    checkProtections(metadata, base, resolveChanges(base, prepareChanges(changes), minter(101)));
 
   it("refuses writing a cell the account may not edit, but not one the range leaves editable", () => {
     expect(check([{ op: "clearRange", range: "Sales!B1:C1" }]))
@@ -831,10 +843,10 @@ describe("Sheets protected ranges", () => {
   it("refuses any change to the rows, columns or tab of a sheet holding such a range", () => {
     let message = 'Change 1 (renameSheet): "Sales" holds the protected range Sales!A1:B2, which the connected ' +
       "account may not edit, so its rows, columns and tab cannot be changed.";
-    expect(check([{ op: "renameSheet", sheetId: 0, title: "X" }])).toThrow(message);
-    expect(check([{ op: "insertRows", sheetId: 0, at: 21 }])).toThrow("Change 1 (insertRows): \"Sales\" holds");
-    expect(check([{ op: "duplicateSheet", sheetId: 0 }])).toThrow("Change 1 (duplicateSheet): \"Sales\" holds");
-    expect(check([{ op: "deleteRows", sheetId: 7, at: 1 }, { op: "addSheet", title: "Q4" }])).not.toThrow();
+    expect(check([{ op: "renameSheet", sheet: "Sales", title: "X" }])).toThrow(message);
+    expect(check([{ op: "insertRows", sheet: "Sales", at: 21 }])).toThrow("Change 1 (insertRows): \"Sales\" holds");
+    expect(check([{ op: "duplicateSheet", sheet: "Sales" }])).toThrow("Change 1 (duplicateSheet): \"Sales\" holds");
+    expect(check([{ op: "deleteRows", sheet: "It's", at: 1 }, { op: "addSheet", title: "Q4" }])).not.toThrow();
     let unbounded = { ...metadata, protectedRanges: [protection(7, { startRow: 0, endRow: Infinity, startColumn: 0, endColumn: 3 })] };
     expect(() => checkProtections(unbounded, grid(SHEETS), [{ op: "deleteSheet", sheetId: 7, rowCount: 100, columnCount: 26 }]))
       .toThrow('Change 1 (deleteSheet): "It\'s" holds a protected range of "It\'s"');
