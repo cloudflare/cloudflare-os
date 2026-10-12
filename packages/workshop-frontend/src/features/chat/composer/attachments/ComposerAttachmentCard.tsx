@@ -40,9 +40,12 @@ const CARD_CLASS =
 const OUTLINE_CLASS =
   "pointer-events-none absolute inset-0 rounded-xl ring-1 ring-inset ring-kumo-line";
 
-// Always visible on small screens, where there is no hover; revealed by hover or focus above that.
+// Hidden until hover or focus, but only on devices that can hover: touch has no hover to reveal it
+// (and `focus-visible` does not fire on a tap), so there it stays visible. This keys off the input
+// capability rather than viewport width, which would also hide it on tablets. `group-hover` is
+// already limited to hover-capable devices by Tailwind.
 const REMOVE_BUTTON_CLASS =
-  "absolute right-1.5 top-1.5 flex h-5 w-5 cursor-pointer items-center justify-center rounded-full bg-kumo-base text-kumo-default shadow-sm ring-1 ring-kumo-line hover:bg-kumo-tint focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring disabled:cursor-not-allowed disabled:opacity-50 sm:opacity-0 sm:group-hover:opacity-100";
+  "absolute right-1.5 top-1.5 flex h-5 w-5 cursor-pointer items-center justify-center rounded-full bg-kumo-base text-kumo-default shadow-sm ring-1 ring-kumo-line hover:bg-kumo-tint focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring disabled:cursor-not-allowed disabled:opacity-50 [@media(hover:hover)]:opacity-0 group-hover:opacity-100";
 
 export const ComposerAttachmentCard = ({
   attachment,
