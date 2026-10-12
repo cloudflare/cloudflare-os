@@ -85,13 +85,6 @@ describe("ComposerAttachmentTray", () => {
     expect(view.textContent).not.toContain("photo.png");
   });
 
-  it("keeps the extension of a long name visible", () => {
-    const view = render([attachment({ name: "a-really-long-name-for-a-quarterly-report-final.pdf" })]);
-
-    expect(view.textContent).toContain("…");
-    expect(view.textContent).toContain(".pdf");
-  });
-
   it("hides the content of an uploading card but still announces it", () => {
     const view = render([
       attachment({ name: "photo.png", mimeType: "image/png", previewUrl: "blob:photo", uploadState: "uploading" }),

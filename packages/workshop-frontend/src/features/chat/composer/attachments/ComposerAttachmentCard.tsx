@@ -13,9 +13,8 @@ import {
   XIcon,
   type Icon,
 } from "@phosphor-icons/react";
-import { SkeletonLine } from "@cloudflare/kumo";
+import { SkeletonLine, Tooltip } from "@cloudflare/kumo";
 import { attachmentKind, type AttachmentKind } from "./attachmentKind";
-import { shortenAttachmentName } from "./attachmentName";
 import type { ComposerAttachment } from "./useComposerAttachments";
 
 // Everything visual about an attachment card lives in this file; the tray only lays cards out.
@@ -61,41 +60,43 @@ export const ComposerAttachmentCard = ({
   const failed = attachment.uploadState === "error";
 
   return (
-    <div className={CARD_CLASS} title={name}>
-      {attachment.uploadState === "uploading" ? (
-        <>
-          <SkeletonLine minWidth={100} maxWidth={100} className="h-full w-full" />
-          <span className="sr-only">Uploading {name}</span>
-        </>
-      ) : attachment.previewUrl && !failed ? (
-        <img src={attachment.previewUrl} alt={name} className="h-full w-full object-contain" />
-      ) : (
-        <div className="flex h-full flex-col justify-between p-2.5 sm:p-3">
-          {failed ? (
-            <div className="flex flex-col gap-1">
-              <WarningIcon size={16} className="text-kumo-danger" />
-              <span className="text-[11px] font-medium leading-[14px] text-kumo-danger sm:text-[12px] sm:leading-4">
-                Upload failed
-              </span>
-            </div>
-          ) : (
-            <KindIcon size={20} className="text-kumo-default" />
-          )}
-          <span className={`break-words text-[11px] font-medium leading-[14px] sm:text-[12px] sm:leading-4 ${failed ? "line-clamp-1 text-kumo-subtle sm:line-clamp-2" : "line-clamp-2 text-kumo-default"}`}>
-            {shortenAttachmentName(name)}
-          </span>
-        </div>
-      )}
-      <span aria-hidden="true" className={OUTLINE_CLASS} />
-      <button
-        type="button"
-        aria-label={`Remove ${name}`}
-        disabled={disabled}
-        onClick={onRemove}
-        className={REMOVE_BUTTON_CLASS}
-      >
-        <XIcon size={10} weight="bold" />
-      </button>
-    </div>
+    <Tooltip content={name} side="top" asChild>
+      <div className={CARD_CLASS}>
+        {attachment.uploadState === "uploading" ? (
+          <>
+            <SkeletonLine minWidth={100} maxWidth={100} className="h-full w-full" />
+            <span className="sr-only">Uploading {name}</span>
+          </>
+        ) : attachment.previewUrl && !failed ? (
+          <img src={attachment.previewUrl} alt={name} className="h-full w-full object-contain" />
+        ) : (
+          <div className="flex h-full flex-col justify-between p-2.5 sm:p-3">
+            {failed ? (
+              <div className="flex flex-col gap-1">
+                <WarningIcon size={16} className="text-kumo-danger" />
+                <span className="text-[11px] font-medium leading-[14px] text-kumo-danger sm:text-[12px] sm:leading-4">
+                  Upload failed
+                </span>
+              </div>
+            ) : (
+              <KindIcon size={20} className="text-kumo-default" />
+            )}
+            <span className={`break-words text-[11px] font-medium leading-[14px] sm:text-[12px] sm:leading-4 ${failed ? "line-clamp-1 text-kumo-subtle sm:line-clamp-2" : "line-clamp-2 text-kumo-default"}`}>
+              {name}
+            </span>
+          </div>
+        )}
+        <span aria-hidden="true" className={OUTLINE_CLASS} />
+        <button
+          type="button"
+          aria-label={`Remove ${name}`}
+          disabled={disabled}
+          onClick={onRemove}
+          className={REMOVE_BUTTON_CLASS}
+        >
+          <XIcon size={10} weight="bold" />
+        </button>
+      </div>
+    </Tooltip>
   );
 };
