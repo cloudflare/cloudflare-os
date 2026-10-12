@@ -1,0 +1,19 @@
+packages/gatekeeper-x/src/x-sessions.ts
+  s_6e159c0858b8f9::t_2ff66ddbcde08b 589-591,593
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "078bc0cabd2a59a504d89f490a6dcd359e2396c4",
+  "prompts": {},
+  "sessions": {
+    "s_6e159c0858b8f9": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_eda3e264bffecsUpurXN1ZDw8a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

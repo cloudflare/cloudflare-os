@@ -1,0 +1,24 @@
+packages/gatekeeper-google/README.md
+  s_c64553d463df78::t_75b8f137be4be3 287-290
+packages/gatekeeper-google/__tests__/workerd/slides-actions.test.ts
+  s_c64553d463df78::t_67395545314376 1179-1185,1190
+packages/gatekeeper-google/src/slides-actions.ts
+  s_c64553d463df78::t_67395545314376 480-486
+  s_c64553d463df78::t_75b8f137be4be3 453-455
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ad67b3e79aa403afbb952fb89ba987df84a7d130",
+  "prompts": {},
+  "sessions": {
+    "s_c64553d463df78": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "190b76b5-6004-4f84-b206-24043da8572a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
