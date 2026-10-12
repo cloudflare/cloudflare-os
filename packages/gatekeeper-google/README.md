@@ -413,8 +413,10 @@ and columns, and formulas rewritten as Google rewrites them, references shifted,
 turned into `#REF!`, and sheet titles requoted. A formula's value is shown only while every
 reference it holds keeps exactly its cells; one whose reference grows, shrinks or breaks, or that
 calls a position-dependent function such as `ROW`, `OFFSET` or `INDIRECT`, or `QUERY`, whose query
-names columns by letter, or uses a name such as a named range, reads `null` and is listed in
-`pendingCells`, as are cells a queued formula enters. Cells of inserted rows and columns and of
+names columns by letter, or uses a name such as a named range, or calls a function the
+gatekeeper does not know to depend only on its arguments (one of the spreadsheet's named functions
+may hide references or such calls), reads `null` and is listed in `pendingCells`, as are cells a
+queued formula enters. Cells of inserted rows and columns and of
 added sheets read as empty. Deleting a sheet leaves the formulas that refer to it as written, as
 Google does; they read `#REF!` once it applies, and stay so even if a later sheet takes the title.
 Once rows, columns or sheets are queued, cells Google fills with nothing entered in them, such as an

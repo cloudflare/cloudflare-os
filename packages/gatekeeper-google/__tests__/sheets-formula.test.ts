@@ -39,6 +39,8 @@ describe("Sheets formula tokens", () => {
     ]);
     // Calls, names and sheet titles that look like cells are not references.
     expect(references("=LOG10(A1B2) + AB12!C3 + TRUE")).toEqual([{ text: "AB12!C3", sheet: "AB12" }]);
+    // Nor are calls with whitespace before their parenthesis.
+    expect(references("=LOG10 (A1) + atan2\n(B1, C1)")).toEqual([{ text: "A1" }, { text: "B1" }, { text: "C1" }]);
     expect(references('="A1:B2"')).toEqual([]);
   });
 });
@@ -273,6 +275,12 @@ describe("Sheets formulas through structural changes", () => {
     expect(rewriteFormula(formula, step, false)).toEqual({ text, cellsChanged, broken });
   });
 
+  it("leaves the name of a function called with whitespace before its parenthesis", () => {
+    expect(rewriteFormula("=LOG10 (A1) + ATAN2 (B1, 1)", insertRows("F", 1), true))
+      .toEqual({ text: "=LOG10 (A2) + ATAN2 (B2, 1)", ...UNCHANGED });
+    expect(canonicalFormula("=log10 (a1)", titleOf)).toBe("=log10 (A1)");
+  });
+
   it("rewrites a reference naming the sheet from elsewhere as one on the sheet, ignoring case", () => {
     expect(SINGLE_REFERENCES.length).toBeGreaterThan(20);
     for (let [formula, step, text, cellsChanged, broken = false] of SINGLE_REFERENCES) {
@@ -364,7 +372,13 @@ describe("Sheets structure-sensitive formulas", () => {
     expect(structureSensitive("=SUM(A1:B2) + IF(TRUE, 1, false) + NORM.DIST(1, 0, 1, TRUE)")).toBe(false);
     expect(structureSensitive("='It''s'!A1 + Sales!B2:B + #REF! + #N/A + #DIV/0!")).toBe(false);
     expect(structureSensitive('="ROW(" & "MyRange"')).toBe(false);
-    expect(structureSensitive("=ROWSUM(1)")).toBe(false);
+  });
+
+  it("flags a call to a function it does not know, which may be a named function", () => {
+    // A named function can hide references and structure-sensitive calls, as =ROWS(Sales!A:A).
+    expect(structureSensitive("=ROWCOUNT()")).toBe(true);
+    expect(structureSensitive("=SUM(A1) + rowsum (1)")).toBe(true);
+    expect(structureSensitive("=log10 (A1) + Sum(A2) + atan2(1, 2)")).toBe(false);
   });
 
   it("flags a range whose ends are not one reference, and QUERY's lettered columns", () => {

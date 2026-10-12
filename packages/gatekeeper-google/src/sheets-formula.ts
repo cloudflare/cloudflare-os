@@ -66,10 +66,11 @@ const COLUMN = String.raw`\$?[A-Za-z]{1,3}`;
 const ROW = String.raw`\$?[0-9]+`;
 const CELL = COLUMN + ROW;
 
-// A reference ends where no name, call or sheet prefix continues it.
+// A reference ends where no name, call or sheet prefix continues it. Google lets whitespace come
+// between a function's name and its `(`, so `LOG10 (A1)` calls LOG10 as `LOG10(A1)` does.
 const REFERENCE = new RegExp(
   `(?:${CELL}:${CELL}|${CELL}:${COLUMN}|${CELL}:${ROW}|${CELL}|${COLUMN}:${COLUMN}|${ROW}:${ROW})` +
-  String.raw`(?![\p{L}\p{N}_.(!])`,
+  String.raw`(?![\p{L}\p{N}_.(!]|\s+\()`,
   "uy",
 );
 const CORNER = /^(\$?([A-Za-z]*))(\$?([0-9]*))$/;
@@ -371,15 +372,57 @@ export const STRUCTURE_SENSITIVE_FUNCTIONS: ReadonlySet<string> = new Set([
   "QUERY",
 ]);
 
+/**
+ * Built-in functions whose result depends only on the values of their arguments, neither on where
+ * cells are nor on the time. A call to any other function may be to one of the spreadsheet's named
+ * functions, whose definition can hold references or structure-sensitive calls the formula does not
+ * show.
+ */
+export const ARGUMENT_ONLY_FUNCTIONS: ReadonlySet<string> = new Set([
+  // Logic.
+  "IF", "IFS", "IFERROR", "IFNA", "AND", "OR", "NOT", "XOR", "SWITCH", "CHOOSE",
+  "ISBLANK", "ISNUMBER", "ISTEXT", "ISNONTEXT", "ISLOGICAL", "ISERROR", "ISERR", "ISNA", "ISEVEN",
+  "ISODD", "ISDATE", "ISEMAIL", "ISURL", "N", "T", "NA", "ERROR.TYPE", "TYPE",
+  // Arithmetic and rounding.
+  "SUM", "SUMIF", "SUMIFS", "SUMPRODUCT", "SUMSQ", "PRODUCT", "QUOTIENT", "MOD", "ABS", "SIGN",
+  "SQRT", "POWER", "EXP", "LN", "LOG", "LOG10", "PI", "INT", "TRUNC", "ROUND", "ROUNDUP",
+  "ROUNDDOWN", "MROUND", "CEILING", "CEILING.MATH", "FLOOR", "FLOOR.MATH", "EVEN", "ODD", "GCD",
+  "LCM", "FACT", "COMBIN", "PERMUT", "DEGREES", "RADIANS", "SIN", "COS", "TAN", "ASIN", "ACOS",
+  "ATAN", "ATAN2", "SINH", "COSH", "TANH",
+  // Statistics.
+  "AVERAGE", "AVERAGEA", "AVERAGEIF", "AVERAGEIFS", "COUNT", "COUNTA", "COUNTBLANK", "COUNTIF",
+  "COUNTIFS", "COUNTUNIQUE", "MIN", "MINA", "MINIFS", "MAX", "MAXA", "MAXIFS", "MEDIAN", "MODE",
+  "MODE.SNGL", "LARGE", "SMALL", "RANK", "RANK.EQ", "RANK.AVG", "PERCENTILE", "PERCENTILE.INC",
+  "PERCENTILE.EXC", "QUARTILE", "QUARTILE.INC", "QUARTILE.EXC", "STDEV", "STDEV.S", "STDEV.P",
+  "STDEVA", "STDEVP", "VAR", "VAR.S", "VAR.P", "VARA", "VARP", "CORREL", "COVAR", "SLOPE",
+  "INTERCEPT", "FORECAST", "NORM.DIST", "NORM.INV", "NORMDIST", "NORMINV",
+  // Text.
+  "CONCATENATE", "CONCAT", "TEXTJOIN", "JOIN", "SPLIT", "LEFT", "RIGHT", "MID", "LEN", "LOWER",
+  "UPPER", "PROPER", "TRIM", "CLEAN", "SUBSTITUTE", "REPLACE", "FIND", "SEARCH", "TEXT", "VALUE",
+  "REPT", "EXACT", "CHAR", "CODE", "UNICHAR", "UNICODE", "FIXED", "DOLLAR", "REGEXMATCH",
+  "REGEXEXTRACT", "REGEXREPLACE", "TO_TEXT", "HYPERLINK",
+  // Dates and times, from the dates given.
+  "DATE", "TIME", "DATEVALUE", "TIMEVALUE", "YEAR", "MONTH", "DAY", "HOUR", "MINUTE", "SECOND",
+  "WEEKDAY", "WEEKNUM", "ISOWEEKNUM", "EDATE", "EOMONTH", "DATEDIF", "DAYS", "DAYS360",
+  "NETWORKDAYS", "NETWORKDAYS.INTL", "WORKDAY", "WORKDAY.INTL", "YEARFRAC",
+  // Lookup, over the ranges given.
+  "VLOOKUP", "HLOOKUP", "XLOOKUP", "LOOKUP", "INDEX", "MATCH", "XMATCH",
+  // Arrays.
+  "ARRAYFORMULA", "FILTER", "SORT", "SORTN", "UNIQUE", "FLATTEN", "TRANSPOSE", "SEQUENCE",
+  // Finance.
+  "PMT", "IPMT", "PPMT", "FV", "PV", "NPV", "IRR", "RATE", "NPER",
+]);
+
 const CONSTANTS: ReadonlySet<string> = new Set(["TRUE", "FALSE"]);
 
 /**
  * Whether a structural change could alter what `formula` computes in ways its references do not
  * show: it calls one of `STRUCTURE_SENSITIVE_FUNCTIONS` (in any case, in a name or any of its
- * dot-separated parts), or uses a name that is neither a function call nor `TRUE` or `FALSE`, such
- * as a named range or a `LET` or `LAMBDA` name, whose cells its text does not show. So does a `:`
- * outside a reference, as in `A1 : A3` or `B1:INDEX(...)`: the range it makes can grow or shrink
- * while each of its ends only moves.
+ * dot-separated parts), calls a function not in `ARGUMENT_ONLY_FUNCTIONS`, such as one of the
+ * spreadsheet's named functions, or uses a name that is neither a function call nor `TRUE` or
+ * `FALSE`, such as a named range or a `LET` or `LAMBDA` name, whose cells its text does not show.
+ * So does a `:` outside a reference, as in `A1 : A3` or `B1:INDEX(...)`: the range it makes can
+ * grow or shrink while each of its ends only moves.
  */
 export function structureSensitive(formula: string): boolean {
   let tokens = tokenize(formula);
@@ -390,6 +433,6 @@ export function structureSensitive(formula: string): boolean {
     if (name.split(".").some(part => STRUCTURE_SENSITIVE_FUNCTIONS.has(part))) return true;
     // A run of whitespace is one token, so the token after it is the next of substance.
     let next = tokens[i + 1]?.kind === "space" ? tokens[i + 2] : tokens[i + 1];
-    return next?.text !== "(" && !CONSTANTS.has(name);
+    return next?.text === "(" ? !ARGUMENT_ONLY_FUNCTIONS.has(name) : !CONSTANTS.has(name);
   });
 }
