@@ -1,0 +1,2561 @@
+{
+ "openapi": "3.1.0",
+ "info": {
+  "title": "UniFi Protect API",
+  "version": "0.0.0"
+ },
+ "source": "https://developer.ui.com/protect/v7.3.70/openapi.json",
+ "paths": {
+  "/v1/meta/info": {
+   "get": {
+    "summary": "Get application information",
+    "description": "Get generic information about the Protect application",
+    "tags": [
+     "Information about application"
+    ],
+    "responses": {
+     "200": {
+      "description": "Success response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "applicationVersion"
+         ],
+         "properties": {
+          "applicationVersion": {
+           "$ref": "#/components/schemas/protectVersion"
+          }
+         }
+        }
+       }
+      }
+     },
+     "default": {
+      "description": "Error response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/genericError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/nvrs": {
+   "get": {
+    "summary": "Get NVR details",
+    "description": "Get detailed information about the NVR",
+    "tags": [
+     "NVR information & management"
+    ],
+    "responses": {
+     "200": {
+      "description": "Success response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/nvr"
+        }
+       }
+      }
+     },
+     "default": {
+      "description": "Error response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/genericError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/cameras": {
+   "get": {
+    "summary": "Get all cameras",
+    "description": "Get detailed information about all cameras",
+    "tags": [
+     "Camera information & management"
+    ],
+    "responses": {
+     "200": {
+      "description": "Success response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array",
+         "items": {
+          "$ref": "#/components/schemas/camera"
+         }
+        }
+       }
+      }
+     },
+     "default": {
+      "description": "Error response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/genericError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/cameras/{id}": {
+   "get": {
+    "summary": "Get camera details",
+    "description": "Get detailed information about a specific camera",
+    "tags": [
+     "Camera information & management"
+    ],
+    "parameters": [
+     {
+      "in": "path",
+      "name": "id",
+      "description": "The primary key of camera",
+      "schema": {
+       "$ref": "#/components/schemas/cameraId"
+      },
+      "required": true
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/camera"
+        }
+       }
+      }
+     },
+     "default": {
+      "description": "Error response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/genericError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "patch": {
+    "summary": "Patch camera settings",
+    "description": "Patch the settings for a specific camera",
+    "tags": [
+     "Camera information & management"
+    ],
+    "parameters": [
+     {
+      "in": "path",
+      "name": "id",
+      "description": "The primary key of camera",
+      "schema": {
+       "$ref": "#/components/schemas/cameraId"
+      },
+      "required": true
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "name": {
+          "type": "string",
+          "description": "The name of the device."
+         },
+         "osdSettings": {
+          "type": "object",
+          "properties": {
+           "isNameEnabled": {
+            "$ref": "#/components/schemas/osdIsNameEnabled"
+           },
+           "isDateEnabled": {
+            "$ref": "#/components/schemas/osdIsDateEnabled"
+           },
+           "isLogoEnabled": {
+            "$ref": "#/components/schemas/osdIsLogoEnabled"
+           },
+           "isDebugEnabled": {
+            "$ref": "#/components/schemas/osdIsDebugEnabled"
+           },
+           "overlayLocation": {
+            "$ref": "#/components/schemas/osdOverlayLocation"
+           }
+          },
+          "additionalProperties": false,
+          "description": "On Screen Display settings.",
+          "title": "osdSettings"
+         },
+         "ledSettings": {
+          "type": "object",
+          "properties": {
+           "isEnabled": {
+            "$ref": "#/components/schemas/ledIsEnabled"
+           },
+           "welcomeLed": {
+            "$ref": "#/components/schemas/ledWelcomeLed"
+           },
+           "floodLed": {
+            "$ref": "#/components/schemas/ledFloodLed"
+           }
+          },
+          "additionalProperties": false,
+          "description": "LED settings.",
+          "title": "ledSettings"
+         },
+         "lcdMessage": {
+          "$ref": "#/components/schemas/lcdMessage",
+          "description": "Message that's set on the LCD screen (for doorbells and/or other devices with LCD screens). To upload image assets for the LCD screen, use the `/files/{fileType}` endpoint."
+         },
+         "micVolume": {
+          "allOf": [
+           {
+            "$ref": "#/components/schemas/micVolume"
+           }
+          ],
+          "minimum": 1
+         },
+         "videoMode": {
+          "$ref": "#/components/schemas/videoMode"
+         },
+         "hdrType": {
+          "allOf": [
+           {
+            "$ref": "#/components/schemas/hdrType"
+           }
+          ],
+          "description": "High Dynamic Range (HDR) mode setting.",
+          "enum": [
+           "auto",
+           "on",
+           "off"
+          ],
+          "x-enum-descriptions": [
+           "Recommended, the system automatically adjusts the HDR level.",
+           "Forces HDR to be always enabled as the highest level.",
+           "Disables HDR completely."
+          ],
+          "x-enum-varnames": [
+           "auto",
+           "on",
+           "off"
+          ]
+         },
+         "smartDetectSettings": {
+          "type": "object",
+          "properties": {
+           "objectTypes": {
+            "$ref": "#/components/schemas/objectTypes"
+           },
+           "audioTypes": {
+            "$ref": "#/components/schemas/audioTypes"
+           }
+          },
+          "additionalProperties": false,
+          "description": "Smart detection settings for the camera.",
+          "title": "smartDetectSettings"
+         }
+        },
+        "additionalProperties": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/camera"
+        }
+       }
+      }
+     },
+     "default": {
+      "description": "Error response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/genericError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/cameras/{id}/snapshot": {
+   "get": {
+    "summary": "Get camera snapshot",
+    "description": "Get a snapshot image from a specific camera. Use channel=package for cameras with a package camera (hasPackageCamera: true).",
+    "tags": [
+     "Camera information & management"
+    ],
+    "parameters": [
+     {
+      "in": "path",
+      "name": "id",
+      "description": "The primary key of camera",
+      "schema": {
+       "$ref": "#/components/schemas/cameraId"
+      },
+      "required": true
+     },
+     {
+      "in": "query",
+      "name": "channel",
+      "description": "Camera channel to capture snapshot from. Use \"package\" for cameras with a package camera (hasPackageCamera: true).",
+      "schema": {
+       "$ref": "#/components/schemas/snapshotChannel"
+      }
+     },
+     {
+      "in": "query",
+      "name": "highQuality",
+      "description": "Whether to force 1080P or higher resolution snapshot",
+      "schema": {
+       "$ref": "#/components/schemas/forceHighQuality"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Camera snapshot",
+      "content": {
+       "image/jpeg": {
+        "schema": {
+         "type": "string",
+         "format": "binary"
+        }
+       }
+      }
+     },
+     "503": {
+      "description": "The camera is offline or not reachable."
+     },
+     "default": {
+      "description": "Error response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/genericError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/cameras/{id}/ptz/goto/{slot}": {
+   "post": {
+    "summary": "Move PTZ camera to preset",
+    "description": "Adjust the PTZ camera position to a specified preset",
+    "tags": [
+     "Camera PTZ control & management"
+    ],
+    "parameters": [
+     {
+      "in": "path",
+      "name": "id",
+      "description": "The primary key of camera",
+      "schema": {
+       "$ref": "#/components/schemas/cameraId"
+      },
+      "required": true
+     },
+     {
+      "in": "path",
+      "name": "slot",
+      "description": "Which slot this preset belongs to (-1 home preset, >=0 other presets).",
+      "schema": {
+       "type": "string",
+       "description": "Which slot this preset belongs to (-1 home preset, >=0 other presets).",
+       "examples": [
+        "-1",
+        "0",
+        "2",
+        "8",
+        "9"
+       ]
+      },
+      "required": true
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "The PTZ camera was moved to the given preset successfully."
+     },
+     "default": {
+      "description": "Error response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/genericError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/cameras/{id}/ptz/patrol/start/{slot}": {
+   "post": {
+    "summary": "Start a camera PTZ patrol",
+    "description": "Start a camera PTZ patrol",
+    "tags": [
+     "Camera PTZ control & management"
+    ],
+    "parameters": [
+     {
+      "in": "path",
+      "name": "id",
+      "description": "The primary key of camera",
+      "schema": {
+       "$ref": "#/components/schemas/cameraId"
+      },
+      "required": true
+     },
+     {
+      "in": "path",
+      "name": "slot",
+      "description": "The slot number (0-4) of the patrol that is currently running, or null if no patrol is running",
+      "schema": {
+       "$ref": "#/components/schemas/activePatrolSlotString"
+      },
+      "required": true
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "The camera PTZ patrol was started successfully."
+     },
+     "default": {
+      "description": "Error response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/genericError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/cameras/{id}/ptz/patrol/stop": {
+   "post": {
+    "summary": "Stop active camera PTZ patrol",
+    "description": "Stop active camera PTZ patrol",
+    "tags": [
+     "Camera PTZ control & management"
+    ],
+    "parameters": [
+     {
+      "in": "path",
+      "name": "id",
+      "description": "The primary key of camera",
+      "schema": {
+       "$ref": "#/components/schemas/cameraId"
+      },
+      "required": true
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "The camera PTZ patrol was stopped successfully."
+     },
+     "default": {
+      "description": "Error response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/genericError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/sensors": {
+   "get": {
+    "summary": "Get all sensors",
+    "description": "Get detailed information about all sensors",
+    "tags": [
+     "Sensor information & management"
+    ],
+    "responses": {
+     "200": {
+      "description": "Success response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array",
+         "items": {
+          "$ref": "#/components/schemas/sensor"
+         }
+        }
+       }
+      }
+     },
+     "default": {
+      "description": "Error response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/genericError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/sensors/{id}": {
+   "get": {
+    "summary": "Get sensor details",
+    "description": "Get detailed information about a specific sensor",
+    "tags": [
+     "Sensor information & management"
+    ],
+    "parameters": [
+     {
+      "in": "path",
+      "name": "id",
+      "description": "The primary key of sensor",
+      "schema": {
+       "$ref": "#/components/schemas/sensorId"
+      },
+      "required": true
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/sensor"
+        }
+       }
+      }
+     },
+     "default": {
+      "description": "Error response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/genericError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/lights": {
+   "get": {
+    "summary": "Get all lights",
+    "description": "Get detailed information about all lights",
+    "tags": [
+     "Light information & management"
+    ],
+    "responses": {
+     "200": {
+      "description": "Success response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array",
+         "items": {
+          "$ref": "#/components/schemas/light"
+         }
+        }
+       }
+      }
+     },
+     "default": {
+      "description": "Error response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/genericError"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/v1/lights/{id}": {
+   "get": {
+    "summary": "Get light details",
+    "description": "Get detailed information about a specific light",
+    "tags": [
+     "Light information & management"
+    ],
+    "parameters": [
+     {
+      "in": "path",
+      "name": "id",
+      "description": "The primary key of light",
+      "schema": {
+       "$ref": "#/components/schemas/lightId"
+      },
+      "required": true
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Success response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/light"
+        }
+       }
+      }
+     },
+     "default": {
+      "description": "Error response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/genericError"
+        }
+       }
+      }
+     }
+    }
+   },
+   "patch": {
+    "summary": "Patch light settings",
+    "description": "Patch the settings for a specific light",
+    "tags": [
+     "Light information & management"
+    ],
+    "parameters": [
+     {
+      "in": "path",
+      "name": "id",
+      "description": "The primary key of light",
+      "schema": {
+       "$ref": "#/components/schemas/lightId"
+      },
+      "required": true
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "name": {
+          "$ref": "#/components/schemas/name"
+         },
+         "isLightForceEnabled": {
+          "$ref": "#/components/schemas/isLightForceEnabled"
+         },
+         "lightModeSettings": {
+          "$ref": "#/components/schemas/lightModeSettings"
+         },
+         "lightDeviceSettings": {
+          "$ref": "#/components/schemas/lightDeviceSettings"
+         }
+        },
+        "additionalProperties": false
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/light"
+        }
+       }
+      }
+     },
+     "default": {
+      "description": "Error response",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/genericError"
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ },
+ "components": {
+  "schemas": {
+   "activePatrolSlot": {
+    "type": "number",
+    "title": "activePatrolSlot",
+    "description": "The slot number (0-4) of the patrol that is currently running, or null if no patrol is running",
+    "examples": [
+     0,
+     1,
+     2,
+     3,
+     4
+    ]
+   },
+   "activePatrolSlotString": {
+    "type": "string",
+    "title": "activePatrolSlotString",
+    "description": "The slot number (0-4) of the patrol that is currently running, or null if no patrol is running",
+    "examples": [
+     "0",
+     "1",
+     "2",
+     "3",
+     "4"
+    ]
+   },
+   "alarmSettings": {
+    "type": "object",
+    "properties": {
+     "isEnabled": {
+      "type": "boolean",
+      "description": "Enable smoke and carbon monoxide alarm sensor."
+     }
+    },
+    "description": "Smoke and carbon monoxide alarm sensor settings.",
+    "title": "alarmSettings"
+   },
+   "audioTypes": {
+    "type": "array",
+    "items": {
+     "type": "string",
+     "enum": [
+      "alrmSmoke",
+      "alrmCmonx",
+      "alrmSiren",
+      "alrmBabyCry",
+      "alrmSpeak",
+      "alrmBark",
+      "alrmBurglar",
+      "alrmCarHorn",
+      "alrmGlassBreak"
+     ]
+    },
+    "title": "audioTypes"
+   },
+   "batteryStatus": {
+    "type": "object",
+    "properties": {
+     "percentage": {
+      "type": [
+       "number",
+       "null"
+      ],
+      "description": "Battery charge level from 0 to 100 (%).",
+      "examples": [
+       95,
+       50
+      ]
+     },
+     "isLow": {
+      "type": "boolean",
+      "description": "Low battery charge level flag."
+     }
+    },
+    "description": "[DEPRECATED] Use wirelessConnectionState.batteryStatus instead. Battery status.",
+    "title": "batteryStatus"
+   },
+   "bridgeId": {
+    "type": "string",
+    "description": "The primary key of bridge",
+    "examples": [
+     "66d025b301ebc903e80003ea",
+     "672094f900e26303e800062a"
+    ],
+    "title": "bridgeId"
+   },
+   "camera": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "$ref": "#/components/schemas/cameraId"
+     },
+     "modelKey": {
+      "$ref": "#/components/schemas/cameraModelKey"
+     },
+     "state": {
+      "$ref": "#/components/schemas/deviceState"
+     },
+     "name": {
+      "oneOf": [
+       {
+        "$ref": "#/components/schemas/name"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "type": {
+      "$ref": "#/components/schemas/deviceType"
+     },
+     "guid": {
+      "$ref": "#/components/schemas/deviceGuid"
+     },
+     "mac": {
+      "$ref": "#/components/schemas/mac"
+     },
+     "isMicEnabled": {
+      "$ref": "#/components/schemas/isMicEnabled"
+     },
+     "osdSettings": {
+      "$ref": "#/components/schemas/osdSettings"
+     },
+     "ledSettings": {
+      "$ref": "#/components/schemas/ledSettings"
+     },
+     "lcdMessage": {
+      "$ref": "#/components/schemas/lcdMessageUnion"
+     },
+     "micVolume": {
+      "$ref": "#/components/schemas/micVolume"
+     },
+     "activePatrolSlot": {
+      "oneOf": [
+       {
+        "$ref": "#/components/schemas/activePatrolSlot"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "videoMode": {
+      "$ref": "#/components/schemas/videoMode"
+     },
+     "hdrType": {
+      "$ref": "#/components/schemas/hdrType"
+     },
+     "featureFlags": {
+      "$ref": "#/components/schemas/cameraFeatureFlags"
+     },
+     "smartDetectSettings": {
+      "$ref": "#/components/schemas/smartDetectSettings"
+     },
+     "hasPackageCamera": {
+      "$ref": "#/components/schemas/hasPackageCamera"
+     }
+    },
+    "required": [
+     "id",
+     "modelKey",
+     "state",
+     "name",
+     "type",
+     "guid",
+     "mac",
+     "isMicEnabled",
+     "osdSettings",
+     "ledSettings",
+     "lcdMessage",
+     "micVolume",
+     "activePatrolSlot",
+     "videoMode",
+     "hdrType",
+     "featureFlags",
+     "smartDetectSettings",
+     "hasPackageCamera"
+    ],
+    "title": "camera"
+   },
+   "cameraFeatureFlags": {
+    "type": "object",
+    "properties": {
+     "supportFullHdSnapshot": {
+      "type": "boolean",
+      "description": "Whether camera support full HD or higher resolution snapshot"
+     },
+     "hasHdr": {
+      "type": "boolean",
+      "description": "Whether the camera supports High Dynamic Range mode"
+     },
+     "smartDetectTypes": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "enum": [
+        "person",
+        "vehicle",
+        "package",
+        "licensePlate",
+        "face",
+        "animal"
+       ]
+      },
+      "description": "What smart detection object types do the camera support."
+     },
+     "smartDetectAudioTypes": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "enum": [
+        "alrmSmoke",
+        "alrmCmonx",
+        "alrmSiren",
+        "alrmBabyCry",
+        "alrmSpeak",
+        "alrmBark",
+        "alrmBurglar",
+        "alrmCarHorn",
+        "alrmGlassBreak"
+       ]
+      },
+      "description": "What smart detection audio types do the camera support."
+     },
+     "videoModes": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "enum": [
+        "default",
+        "highFps",
+        "homekit",
+        "sport",
+        "slowShutter",
+        "lprReflex",
+        "lprNoneReflex"
+       ]
+      },
+      "description": "A list of supported video modes by the camera"
+     },
+     "hasMic": {
+      "type": "boolean",
+      "description": "Whether the camera has a microphone"
+     },
+     "hasLedStatus": {
+      "type": "boolean",
+      "description": "Whether the camera has LED status"
+     },
+     "hasSpeaker": {
+      "type": "boolean",
+      "description": "Whether the camera has a speaker to support talkback"
+     }
+    },
+    "required": [
+     "supportFullHdSnapshot",
+     "hasHdr",
+     "smartDetectTypes",
+     "smartDetectAudioTypes",
+     "videoModes",
+     "hasMic",
+     "hasLedStatus",
+     "hasSpeaker"
+    ],
+    "title": "cameraFeatureFlags"
+   },
+   "cameraId": {
+    "type": "string",
+    "description": "The primary key of camera",
+    "examples": [
+     "66d025b301ebc903e80003ea",
+     "672094f900e26303e800062a"
+    ],
+    "title": "cameraId"
+   },
+   "cameraModelKey": {
+    "type": "string",
+    "const": "camera",
+    "description": "The model key of the camera",
+    "title": "cameraModelKey"
+   },
+   "deviceGuid": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "description": "Stable identifier for the device model.",
+    "examples": [
+     "6b8fdd7c-7e4c-4156-bb39-be05ca855491"
+    ],
+    "title": "deviceGuid"
+   },
+   "deviceState": {
+    "type": "string",
+    "enum": [
+     "CONNECTED",
+     "CONNECTING",
+     "DISCONNECTED"
+    ],
+    "description": "Connection state of the device.",
+    "examples": [
+     "CONNECTED",
+     "CONNECTING",
+     "DISCONNECTED"
+    ],
+    "title": "deviceState"
+   },
+   "deviceType": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "description": "The device model name.",
+    "examples": [
+     "UVC Micro"
+    ],
+    "title": "deviceType"
+   },
+   "doorbellSettings": {
+    "type": "object",
+    "properties": {
+     "defaultMessageText": {
+      "type": "string",
+      "description": "Default text to display on the LCD screen.",
+      "examples": [
+       "WELCOME"
+      ]
+     },
+     "defaultMessageResetTimeoutMs": {
+      "type": "number",
+      "description": "Default timeout for resetting LCD screen to the default message.",
+      "examples": [
+       60000
+      ]
+     },
+     "customMessages": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "description": "A list of custom doorbell messages.",
+      "examples": [
+       [
+        "Do Not Disturb",
+        "Leave Package at Door"
+       ],
+       []
+      ]
+     },
+     "customImages": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "preview": {
+         "type": "string",
+         "examples": [
+          "34225b30-fe6a-11af-1690-29424bd911c2.png.gif"
+         ]
+        },
+        "sprite": {
+         "type": "string",
+         "examples": [
+          "34225b30-fe6a-11af-1690-29424bd911c2.png"
+         ]
+        }
+       },
+       "required": [
+        "preview",
+        "sprite"
+       ]
+      },
+      "description": "A list of custom doorbell images for client preview."
+     }
+    },
+    "title": "doorbellSettings"
+   },
+   "enableAt": {
+    "anyOf": [
+     {
+      "type": "string",
+      "const": "fulltime"
+     },
+     {
+      "type": "string",
+      "const": "dark"
+     }
+    ],
+    "description": "At what time is the lighting mode relevant and acted upon (this has no effect when mode is off).",
+    "title": "enableAt"
+   },
+   "forceHighQuality": {
+    "type": "string",
+    "enum": [
+     "true",
+     "false"
+    ],
+    "description": "Whether to force 1080P or higher resolution snapshot",
+    "title": "forceHighQuality"
+   },
+   "genericError": {
+    "type": "object",
+    "properties": {
+     "error": {
+      "type": "string",
+      "description": "Error message",
+      "examples": [
+       "Unexpected API error occurred"
+      ]
+     },
+     "name": {
+      "type": "string",
+      "description": "Name of the error",
+      "examples": [
+       "API_ERROR"
+      ]
+     },
+     "cause": {
+      "type": "object",
+      "additionalProperties": {},
+      "description": "An optional nested cause for the parent error",
+      "examples": [
+       {
+        "error": "Unexpected functionality error",
+        "name": "UNKNOWN_ERROR"
+       }
+      ]
+     }
+    },
+    "required": [
+     "error",
+     "name"
+    ],
+    "title": "genericError"
+   },
+   "glassBreakSettings": {
+    "type": "object",
+    "properties": {
+     "isEnabled": {
+      "type": "boolean",
+      "description": "Enable glass break sensor."
+     },
+     "sensitivity": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "Glass break sensitivity (0-100) used when system is not armed or when no armed override is set.",
+      "examples": [
+       25
+      ]
+     },
+     "sensitivityWhenArmed": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "Glass break sensitivity (0-100) used when the system is armed and `hasCustomSensitivityWhenArmed` is true on the sensor.",
+      "examples": [
+       50
+      ]
+     }
+    },
+    "description": "Glass break sensor settings.",
+    "title": "glassBreakSettings"
+   },
+   "hasPackageCamera": {
+    "type": "boolean",
+    "description": "Whether the camera has a package camera.",
+    "title": "hasPackageCamera"
+   },
+   "hdrType": {
+    "type": "string",
+    "enum": [
+     "auto",
+     "on",
+     "off"
+    ],
+    "description": "High Dynamic Range (HDR) mode setting.",
+    "examples": [
+     "auto",
+     "off"
+    ],
+    "title": "hdrType"
+   },
+   "humiditySettings": {
+    "type": "object",
+    "properties": {
+     "isEnabled": {
+      "type": "boolean",
+      "description": "Enable relative humidity sensor."
+     },
+     "margin": {
+      "type": "number",
+      "description": "Humidity threshold detection hysteresis margin (%). Read-only value decided by sensor implementation.",
+      "examples": [
+       1
+      ]
+     },
+     "lowThreshold": {
+      "type": [
+       "number",
+       "null"
+      ],
+      "minimum": 1,
+      "maximum": 99,
+      "description": "Humidity low level threshold from 1 to 99 (%).",
+      "examples": [
+       30
+      ]
+     },
+     "highThreshold": {
+      "type": [
+       "number",
+       "null"
+      ],
+      "description": "Humidity high level threshold from 1 to 99 (%).",
+      "examples": [
+       80
+      ]
+     }
+    },
+    "description": "Relative humidity sensor settings.",
+    "title": "humiditySettings"
+   },
+   "isDark": {
+    "type": "boolean",
+    "description": "Whether the light is currently sensing that it's in a dark scene.",
+    "title": "isDark"
+   },
+   "isLightForceEnabled": {
+    "type": "boolean",
+    "description": "Whether the light has its main LED currently force-enabled.",
+    "title": "isLightForceEnabled"
+   },
+   "isLightOn": {
+    "type": "boolean",
+    "description": "Whether the light has its main LED currently enabled.",
+    "title": "isLightOn"
+   },
+   "isMicEnabled": {
+    "type": "boolean",
+    "description": "Whether or not the microphone on camera is enabled",
+    "title": "isMicEnabled"
+   },
+   "isPirMotionDetected": {
+    "type": "boolean",
+    "description": "Whether the light PIR is currently detecting motion",
+    "title": "isPirMotionDetected"
+   },
+   "lastMotion": {
+    "type": [
+     "number",
+     "null"
+    ],
+    "description": "Unix timestamp of the last time the PIR motion-detection was triggered.",
+    "examples": [
+     1445408038748
+    ],
+    "title": "lastMotion"
+   },
+   "lcdMessage": {
+    "oneOf": [
+     {
+      "type": "object",
+      "properties": {
+       "type": {
+        "type": "string",
+        "const": "DO_NOT_DISTURB"
+       },
+       "resetAt": {
+        "type": [
+         "number",
+         "null"
+        ],
+        "description": "UNIX timestamp when doorbell message should be removed (if not set then `nvr.doorbellSettings.defaultMessageResetTimeoutMs` is used, if set to `null` then interpreted as \"forever\")"
+       }
+      },
+      "required": [
+       "type"
+      ],
+      "description": "Show a pre-defined \"do not disturb\" message on the doorbell"
+     },
+     {
+      "type": "object",
+      "properties": {
+       "type": {
+        "type": "string",
+        "const": "LEAVE_PACKAGE_AT_DOOR"
+       },
+       "resetAt": {
+        "type": [
+         "number",
+         "null"
+        ],
+        "description": "UNIX timestamp when doorbell message should be removed (if not set then `nvr.doorbellSettings.defaultMessageResetTimeoutMs` is used, if set to `null` then interpreted as \"forever\")"
+       }
+      },
+      "required": [
+       "type"
+      ],
+      "description": "Show a pre-defined \"leave package at door\" message on the doorbell"
+     },
+     {
+      "type": "object",
+      "properties": {
+       "type": {
+        "type": "string",
+        "const": "CUSTOM_MESSAGE"
+       },
+       "resetAt": {
+        "type": [
+         "number",
+         "null"
+        ],
+        "description": "UNIX timestamp when doorbell message should be removed (if not set then `nvr.doorbellSettings.defaultMessageResetTimeoutMs` is used, if set to `null` then interpreted as \"forever\")"
+       },
+       "text": {
+        "type": "string",
+        "description": "The custom text message to show on the doorbell",
+        "examples": [
+         "Hello world!"
+        ]
+       }
+      },
+      "required": [
+       "type",
+       "text"
+      ],
+      "description": "Show a custom text message on the doorbell"
+     },
+     {
+      "type": "object",
+      "properties": {
+       "type": {
+        "type": "string",
+        "const": "IMAGE"
+       },
+       "resetAt": {
+        "type": [
+         "number",
+         "null"
+        ],
+        "description": "UNIX timestamp when doorbell message should be removed (if not set then `nvr.doorbellSettings.defaultMessageResetTimeoutMs` is used, if set to `null` then interpreted as \"forever\")"
+       },
+       "text": {
+        "type": "string",
+        "description": "The ID of the custom image to show on the doorbell",
+        "examples": [
+         "34225b30-fe6a-11af-1690-29424bd911c2.png"
+        ]
+       }
+      },
+      "required": [
+       "type",
+       "text"
+      ],
+      "description": "Show a custom image on the doorbell"
+     }
+    ],
+    "title": "lcdMessage"
+   },
+   "lcdMessageUnion": {
+    "type": "object",
+    "properties": {
+     "type": {
+      "type": "string",
+      "enum": [
+       "LEAVE_PACKAGE_AT_DOOR",
+       "DO_NOT_DISTURB",
+       "CUSTOM_MESSAGE",
+       "IMAGE"
+      ]
+     },
+     "resetAt": {
+      "type": [
+       "number",
+       "null"
+      ],
+      "description": "UNIX timestamp when doorbell message should be removed (if not set then `nvr.doorbellSettings.defaultMessageResetTimeoutMs` is used, if set to `null` then interpreted as \"forever\")"
+     },
+     "text": {
+      "type": "string"
+     }
+    },
+    "title": "lcdMessageUnion"
+   },
+   "leakSettings": {
+    "type": "object",
+    "properties": {
+     "isInternalEnabled": {
+      "type": "boolean",
+      "description": "Enable internal water leak detection."
+     },
+     "isExternalEnabled": {
+      "type": "boolean",
+      "description": "Enable external water leak detection."
+     }
+    },
+    "description": "Leak sensor settings.",
+    "title": "leakSettings"
+   },
+   "ledFloodLed": {
+    "type": "boolean",
+    "description": "Indicates whether the flood LED is enabled.",
+    "title": "ledFloodLed"
+   },
+   "ledIsEnabled": {
+    "type": "boolean",
+    "description": "Indicates whether the status LED is enabled.",
+    "title": "ledIsEnabled"
+   },
+   "ledSettings": {
+    "type": "object",
+    "properties": {
+     "isEnabled": {
+      "$ref": "#/components/schemas/ledIsEnabled"
+     },
+     "welcomeLed": {
+      "$ref": "#/components/schemas/ledWelcomeLed"
+     },
+     "floodLed": {
+      "$ref": "#/components/schemas/ledFloodLed"
+     }
+    },
+    "required": [
+     "isEnabled",
+     "welcomeLed",
+     "floodLed"
+    ],
+    "description": "LED settings.",
+    "title": "ledSettings"
+   },
+   "ledWelcomeLed": {
+    "type": "boolean",
+    "description": "Indicates whether the welcome LED is enabled.",
+    "title": "ledWelcomeLed"
+   },
+   "light": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "$ref": "#/components/schemas/lightId"
+     },
+     "modelKey": {
+      "$ref": "#/components/schemas/lightModelKey"
+     },
+     "state": {
+      "$ref": "#/components/schemas/deviceState"
+     },
+     "name": {
+      "oneOf": [
+       {
+        "$ref": "#/components/schemas/name"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "type": {
+      "$ref": "#/components/schemas/deviceType"
+     },
+     "guid": {
+      "$ref": "#/components/schemas/deviceGuid"
+     },
+     "mac": {
+      "$ref": "#/components/schemas/mac"
+     },
+     "lightModeSettings": {
+      "$ref": "#/components/schemas/lightModeSettings"
+     },
+     "lightDeviceSettings": {
+      "$ref": "#/components/schemas/lightDeviceSettings"
+     },
+     "isDark": {
+      "$ref": "#/components/schemas/isDark"
+     },
+     "isLightOn": {
+      "$ref": "#/components/schemas/isLightOn"
+     },
+     "isLightForceEnabled": {
+      "$ref": "#/components/schemas/isLightForceEnabled"
+     },
+     "lastMotion": {
+      "$ref": "#/components/schemas/lastMotion"
+     },
+     "isPirMotionDetected": {
+      "$ref": "#/components/schemas/isPirMotionDetected"
+     },
+     "camera": {
+      "oneOf": [
+       {
+        "$ref": "#/components/schemas/cameraId"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "description": "Which camera is configured to be paired to this light."
+     }
+    },
+    "required": [
+     "id",
+     "modelKey",
+     "state",
+     "name",
+     "type",
+     "guid",
+     "mac",
+     "lightModeSettings",
+     "lightDeviceSettings",
+     "isDark",
+     "isLightOn",
+     "isLightForceEnabled",
+     "lastMotion",
+     "isPirMotionDetected",
+     "camera"
+    ],
+    "title": "light"
+   },
+   "lightDeviceSettings": {
+    "type": "object",
+    "properties": {
+     "isIndicatorEnabled": {
+      "type": "boolean",
+      "description": "Turn on/off floodlight status LED indicator."
+     },
+     "pirDuration": {
+      "type": "number",
+      "minimum": 0,
+      "description": "How long the light stays on after a motion event in milliseconds.",
+      "examples": [
+       30000,
+       15000
+      ]
+     },
+     "pirSensitivity": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "How sensitive is the PIR to motion (0-100)%.",
+      "examples": [
+       50,
+       80
+      ]
+     },
+     "ledLevel": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 6,
+      "description": "Brightness level of the main LED (1-6).",
+      "examples": [
+       6,
+       3
+      ]
+     }
+    },
+    "description": "Hardware settings for light device.",
+    "title": "lightDeviceSettings"
+   },
+   "lightId": {
+    "type": "string",
+    "description": "The primary key of light",
+    "examples": [
+     "66d025b301ebc903e80003ea",
+     "672094f900e26303e800062a"
+    ],
+    "title": "lightId"
+   },
+   "lightMode": {
+    "anyOf": [
+     {
+      "type": "string",
+      "const": "always"
+     },
+     {
+      "type": "string",
+      "const": "motion"
+     },
+     {
+      "type": "string",
+      "const": "off"
+     }
+    ],
+    "description": "When will floodlight turn on.",
+    "title": "lightMode"
+   },
+   "lightModeSettings": {
+    "type": "object",
+    "properties": {
+     "mode": {
+      "$ref": "#/components/schemas/lightMode"
+     },
+     "enableAt": {
+      "$ref": "#/components/schemas/enableAt"
+     }
+    },
+    "description": "Settings for when and how your light gets activated",
+    "title": "lightModeSettings"
+   },
+   "lightModelKey": {
+    "type": "string",
+    "const": "light",
+    "description": "The model key of the light",
+    "title": "lightModelKey"
+   },
+   "lightSettings": {
+    "type": "object",
+    "properties": {
+     "isEnabled": {
+      "type": "boolean",
+      "description": "Enable ambient light sensor."
+     },
+     "margin": {
+      "type": "number",
+      "description": "Ambient light threshold detection hysteresis margin (Lux). Read-only value decided by sensor implementation.",
+      "examples": [
+       10
+      ]
+     },
+     "lowThreshold": {
+      "type": [
+       "number",
+       "null"
+      ],
+      "minimum": 1,
+      "maximum": 503192,
+      "description": "Ambient light interrupt threshold low level from 1 to 503192 (Lux).",
+      "examples": [
+       20
+      ]
+     },
+     "highThreshold": {
+      "type": [
+       "number",
+       "null"
+      ],
+      "description": "Ambient light interrupt threshold high level from 1 to 503192 (Lux).",
+      "examples": [
+       100
+      ]
+     }
+    },
+    "description": "Ambient light sensor settings.",
+    "title": "lightSettings"
+   },
+   "mac": {
+    "type": "string",
+    "description": "The primary MAC address of the device.",
+    "examples": [
+     "24A43C3DFEB9",
+     "D021F98B6AED"
+    ],
+    "title": "mac"
+   },
+   "micVolume": {
+    "type": "number",
+    "minimum": 0,
+    "maximum": 100,
+    "description": "Mic volume: a number from 0-100.",
+    "examples": [
+     50,
+     100
+    ],
+    "title": "micVolume"
+   },
+   "motionSettings": {
+    "type": "object",
+    "properties": {
+     "isEnabled": {
+      "type": "boolean",
+      "description": "Enable motion sensor."
+     },
+     "sensitivity": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "Motion sensitivity (0-100) used when system is not armed or when no armed override is set.",
+      "examples": [
+       50,
+       100
+      ]
+     },
+     "sensitivityWhenArmed": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 100,
+      "description": "Motion sensitivity (0-100) used when the system is armed and `hasCustomSensitivityWhenArmed` is true on the sensor.",
+      "examples": [
+       50
+      ]
+     }
+    },
+    "description": "Motion sensor settings.",
+    "title": "motionSettings"
+   },
+   "name": {
+    "type": "string",
+    "description": "The name of the device.",
+    "examples": [
+     "Front Door",
+     "Office Entrance",
+     "Server Room"
+    ],
+    "title": "name"
+   },
+   "nvr": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "$ref": "#/components/schemas/nvrId"
+     },
+     "modelKey": {
+      "$ref": "#/components/schemas/nvrModelKey"
+     },
+     "name": {
+      "oneOf": [
+       {
+        "$ref": "#/components/schemas/name"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "type": {
+      "$ref": "#/components/schemas/nvrType"
+     },
+     "guid": {
+      "$ref": "#/components/schemas/nvrGuid"
+     },
+     "mac": {
+      "$ref": "#/components/schemas/mac"
+     },
+     "doorbellSettings": {
+      "$ref": "#/components/schemas/doorbellSettings"
+     },
+     "armMode": {
+      "$ref": "#/components/schemas/nvrArmMode"
+     }
+    },
+    "required": [
+     "id",
+     "modelKey",
+     "name",
+     "type",
+     "guid",
+     "mac",
+     "doorbellSettings",
+     "armMode"
+    ],
+    "title": "nvr"
+   },
+   "nvrArmMode": {
+    "type": "object",
+    "properties": {
+     "status": {
+      "type": "string",
+      "enum": [
+       "arming",
+       "armed",
+       "breach",
+       "disabled"
+      ]
+     },
+     "armProfileId": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "armedAt": {
+      "type": [
+       "number",
+       "null"
+      ]
+     },
+     "willBeArmedAt": {
+      "type": [
+       "number",
+       "null"
+      ]
+     },
+     "breachDetectedAt": {
+      "type": [
+       "number",
+       "null"
+      ]
+     },
+     "breachEventCount": {
+      "type": "number"
+     },
+     "breachTriggerEventId": {
+      "type": [
+       "string",
+       "null"
+      ]
+     },
+     "breachEventId": {
+      "type": [
+       "string",
+       "null"
+      ]
+     }
+    },
+    "required": [
+     "status",
+     "armProfileId",
+     "armedAt",
+     "willBeArmedAt",
+     "breachDetectedAt",
+     "breachEventCount",
+     "breachTriggerEventId",
+     "breachEventId"
+    ],
+    "title": "nvrArmMode"
+   },
+   "nvrGuid": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "description": "GUID of the NVR",
+    "title": "nvrGuid"
+   },
+   "nvrId": {
+    "type": "string",
+    "description": "The primary key of nvr",
+    "examples": [
+     "66d025b301ebc903e80003ea",
+     "672094f900e26303e800062a"
+    ],
+    "title": "nvrId"
+   },
+   "nvrModelKey": {
+    "type": "string",
+    "const": "nvr",
+    "description": "The model key of the nvr",
+    "title": "nvrModelKey"
+   },
+   "nvrType": {
+    "type": "string",
+    "description": "The NVR model name.",
+    "examples": [
+     "UNVR-PRO",
+     "UDM-PRO",
+     "UNKNOWN"
+    ],
+    "title": "nvrType"
+   },
+   "objectTypes": {
+    "type": "array",
+    "items": {
+     "type": "string",
+     "enum": [
+      "person",
+      "vehicle",
+      "package",
+      "licensePlate",
+      "face",
+      "animal"
+     ]
+    },
+    "title": "objectTypes"
+   },
+   "osdIsDateEnabled": {
+    "type": "boolean",
+    "description": "Whether to show the date in the OSD.",
+    "title": "osdIsDateEnabled"
+   },
+   "osdIsDebugEnabled": {
+    "type": "boolean",
+    "description": "Whether debug info is enabled.",
+    "title": "osdIsDebugEnabled"
+   },
+   "osdIsLogoEnabled": {
+    "type": "boolean",
+    "description": "Whether to show the logo in the bottom right corner.",
+    "title": "osdIsLogoEnabled"
+   },
+   "osdIsNameEnabled": {
+    "type": "boolean",
+    "description": "Whether to show the name in the OSD.",
+    "title": "osdIsNameEnabled"
+   },
+   "osdOverlayLocation": {
+    "type": "string",
+    "enum": [
+     "topLeft",
+     "topMiddle",
+     "topRight",
+     "bottomLeft",
+     "bottomMiddle",
+     "bottomRight"
+    ],
+    "description": "The location of the overlay on the screen.",
+    "examples": [
+     "bottomRight",
+     "topLeft"
+    ],
+    "title": "osdOverlayLocation"
+   },
+   "osdSettings": {
+    "type": "object",
+    "properties": {
+     "isNameEnabled": {
+      "$ref": "#/components/schemas/osdIsNameEnabled"
+     },
+     "isDateEnabled": {
+      "$ref": "#/components/schemas/osdIsDateEnabled"
+     },
+     "isLogoEnabled": {
+      "$ref": "#/components/schemas/osdIsLogoEnabled"
+     },
+     "isDebugEnabled": {
+      "$ref": "#/components/schemas/osdIsDebugEnabled"
+     },
+     "overlayLocation": {
+      "$ref": "#/components/schemas/osdOverlayLocation"
+     }
+    },
+    "required": [
+     "isNameEnabled",
+     "isDateEnabled",
+     "isLogoEnabled",
+     "isDebugEnabled",
+     "overlayLocation"
+    ],
+    "description": "On Screen Display settings.",
+    "title": "osdSettings"
+   },
+   "protectVersion": {
+    "type": "string",
+    "description": "Protect application version",
+    "examples": [
+     "1.0.0"
+    ],
+    "title": "protectVersion"
+   },
+   "sensor": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "$ref": "#/components/schemas/sensorId"
+     },
+     "modelKey": {
+      "$ref": "#/components/schemas/sensorModelKey"
+     },
+     "state": {
+      "$ref": "#/components/schemas/deviceState"
+     },
+     "name": {
+      "oneOf": [
+       {
+        "$ref": "#/components/schemas/name"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "type": {
+      "$ref": "#/components/schemas/deviceType"
+     },
+     "guid": {
+      "$ref": "#/components/schemas/deviceGuid"
+     },
+     "mac": {
+      "$ref": "#/components/schemas/mac"
+     },
+     "mountType": {
+      "$ref": "#/components/schemas/sensorMountType"
+     },
+     "batteryStatus": {
+      "$ref": "#/components/schemas/batteryStatus"
+     },
+     "featureFlags": {
+      "$ref": "#/components/schemas/sensorFeatureFlags"
+     },
+     "stats": {
+      "$ref": "#/components/schemas/sensorStats"
+     },
+     "lightSettings": {
+      "$ref": "#/components/schemas/lightSettings"
+     },
+     "humiditySettings": {
+      "$ref": "#/components/schemas/humiditySettings"
+     },
+     "temperatureSettings": {
+      "$ref": "#/components/schemas/temperatureSettings"
+     },
+     "isOpened": {
+      "$ref": "#/components/schemas/sensorIsOpened"
+     },
+     "openStatusChangedAt": {
+      "$ref": "#/components/schemas/sensorOpenStatusChangedAt"
+     },
+     "isMotionDetected": {
+      "$ref": "#/components/schemas/sensorIsMotionDetected"
+     },
+     "motionDetectedAt": {
+      "$ref": "#/components/schemas/sensorMotionDetectedAt"
+     },
+     "motionSettings": {
+      "$ref": "#/components/schemas/motionSettings"
+     },
+     "glassBreakSettings": {
+      "$ref": "#/components/schemas/glassBreakSettings"
+     },
+     "scheduleMode": {
+      "$ref": "#/components/schemas/sensorScheduleMode"
+     },
+     "armProfileIds": {
+      "$ref": "#/components/schemas/sensorArmProfileIds"
+     },
+     "hasCustomSensitivityWhenArmed": {
+      "$ref": "#/components/schemas/sensorHasCustomSensitivityWhenArmed"
+     },
+     "alarmTriggeredAt": {
+      "$ref": "#/components/schemas/sensorAlarmTriggeredAt"
+     },
+     "alarmSettings": {
+      "$ref": "#/components/schemas/alarmSettings"
+     },
+     "leakDetectedAt": {
+      "$ref": "#/components/schemas/sensorLeakDetectedAt"
+     },
+     "externalLeakDetectedAt": {
+      "$ref": "#/components/schemas/sensorExternalLeakDetectedAt"
+     },
+     "leakSettings": {
+      "$ref": "#/components/schemas/leakSettings"
+     },
+     "tamperingDetectedAt": {
+      "$ref": "#/components/schemas/tamperingDetectedAt"
+     },
+     "wirelessConnectionState": {
+      "$ref": "#/components/schemas/wirelessConnectionState"
+     }
+    },
+    "required": [
+     "id",
+     "modelKey",
+     "state",
+     "name",
+     "type",
+     "guid",
+     "mac",
+     "mountType",
+     "batteryStatus",
+     "stats",
+     "lightSettings",
+     "humiditySettings",
+     "temperatureSettings",
+     "isOpened",
+     "openStatusChangedAt",
+     "isMotionDetected",
+     "motionDetectedAt",
+     "motionSettings",
+     "glassBreakSettings",
+     "scheduleMode",
+     "armProfileIds",
+     "hasCustomSensitivityWhenArmed",
+     "alarmTriggeredAt",
+     "alarmSettings",
+     "leakDetectedAt",
+     "externalLeakDetectedAt",
+     "leakSettings",
+     "tamperingDetectedAt",
+     "wirelessConnectionState"
+    ],
+    "title": "sensor"
+   },
+   "sensorAlarmTriggeredAt": {
+    "type": [
+     "number",
+     "null"
+    ],
+    "description": "Unix timestamp when the smoke or carbon monoxide alarm was triggered, nullable.",
+    "examples": [
+     1445408038748
+    ],
+    "title": "sensorAlarmTriggeredAt"
+   },
+   "sensorArmProfileIds": {
+    "type": [
+     "array",
+     "null"
+    ],
+    "items": {
+     "type": "string",
+     "maxLength": 64
+    },
+    "maxItems": 32,
+    "description": "When `scheduleMode` is `when_armed`, restricts armed-mode detection to these arm profile ids. Empty or null = all profiles.",
+    "title": "sensorArmProfileIds"
+   },
+   "sensorExternalLeakDetectedAt": {
+    "type": [
+     "number",
+     "null"
+    ],
+    "description": "Unix timestamp when the sensor detected an external water leak, nullable.",
+    "examples": [
+     1445408038748
+    ],
+    "title": "sensorExternalLeakDetectedAt"
+   },
+   "sensorFeatureFlags": {
+    "type": "object",
+    "properties": {
+     "temperature": {
+      "$ref": "#/components/schemas/sensorIntegrationFeatureCapability",
+      "description": "Matches `stats.temperature` and `temperatureSettings`."
+     },
+     "humidity": {
+      "$ref": "#/components/schemas/sensorIntegrationFeatureCapability",
+      "description": "Matches `stats.humidity` and `humiditySettings`."
+     },
+     "light": {
+      "$ref": "#/components/schemas/sensorIntegrationFeatureCapability",
+      "description": "Matches `stats.light` and `lightSettings`."
+     },
+     "motion": {
+      "$ref": "#/components/schemas/sensorIntegrationFeatureCapability",
+      "description": "Matches motion state and `motionSettings`."
+     },
+     "waterLeak": {
+      "$ref": "#/components/schemas/sensorIntegrationFeatureCapability",
+      "description": "Matches leak state and `leakSettings`."
+     },
+     "open": {
+      "$ref": "#/components/schemas/sensorIntegrationFeatureCapability",
+      "description": "Matches entry/door-window/garage open state (`isOpened`)."
+     },
+     "tamper": {
+      "$ref": "#/components/schemas/sensorIntegrationFeatureCapability",
+      "description": "Matches tamper detection (`tamperingDetectedAt`)."
+     },
+     "smoke": {
+      "$ref": "#/components/schemas/sensorIntegrationFeatureCapability",
+      "description": "Matches smoke / CO alarm surfaces (`alarmSettings`, `alarmTriggeredAt`)."
+     }
+    },
+    "description": "Sensor feature flags.",
+    "title": "sensorFeatureFlags"
+   },
+   "sensorHasCustomSensitivityWhenArmed": {
+    "type": "boolean",
+    "description": "When true, glass break and motion both use their respective `sensitivityWhenArmed` value while the system is armed.",
+    "title": "sensorHasCustomSensitivityWhenArmed"
+   },
+   "sensorId": {
+    "type": "string",
+    "description": "The primary key of sensor",
+    "examples": [
+     "66d025b301ebc903e80003ea",
+     "672094f900e26303e800062a"
+    ],
+    "title": "sensorId"
+   },
+   "sensorIntegrationFeatureCapability": {
+    "type": "object",
+    "properties": {
+     "channelCount": {
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "description": "If a capability key is absent (`undefined`), the capability should be treated as not supported. When present, a positive value indicates how many independent channels of that measurement or input the sensor exposes. For example, two temperature probes would report as two channels.",
+      "examples": [
+       1,
+       2
+      ]
+     }
+    },
+    "required": [
+     "channelCount"
+    ],
+    "additionalProperties": false,
+    "description": "Capability slice for integration responses: how many channels the device provides for one domain (see `channelCount`).",
+    "title": "sensorIntegrationFeatureCapability"
+   },
+   "sensorIsMotionDetected": {
+    "type": "boolean",
+    "description": "Whether sensor is currently detecting the motion.",
+    "title": "sensorIsMotionDetected"
+   },
+   "sensorIsOpened": {
+    "type": [
+     "boolean",
+     "null"
+    ],
+    "description": "Whether the door/window/garage is opened.",
+    "title": "sensorIsOpened"
+   },
+   "sensorLeakDetectedAt": {
+    "type": [
+     "number",
+     "null"
+    ],
+    "description": "Unix timestamp when the sensor detected a water leak, nullable.",
+    "examples": [
+     1445408038748
+    ],
+    "title": "sensorLeakDetectedAt"
+   },
+   "sensorModelKey": {
+    "type": "string",
+    "const": "sensor",
+    "description": "The model key of the sensor",
+    "title": "sensorModelKey"
+   },
+   "sensorMotionDetectedAt": {
+    "type": [
+     "number",
+     "null"
+    ],
+    "description": "Unix timestamp when the last motion was detected.",
+    "examples": [
+     1445408038748
+    ],
+    "title": "sensorMotionDetectedAt"
+   },
+   "sensorMountType": {
+    "type": "string",
+    "enum": [
+     "door",
+     "window",
+     "garage",
+     "leak",
+     "none"
+    ],
+    "description": "Mounting type of the sensor.",
+    "examples": [
+     "door",
+     "none"
+    ],
+    "title": "sensorMountType"
+   },
+   "sensorOpenStatusChangedAt": {
+    "type": [
+     "number",
+     "null"
+    ],
+    "description": "Unix timestamp when the door/window/garage was last opened or closed, nullable.",
+    "examples": [
+     1445408038748
+    ],
+    "title": "sensorOpenStatusChangedAt"
+   },
+   "sensorScheduleMode": {
+    "type": "string",
+    "enum": [
+     "always",
+     "when_armed"
+    ],
+    "description": "When armed-mode detection runs: `always` or only `when_armed`. Applies to both glass break and motion together.",
+    "title": "sensorScheduleMode"
+   },
+   "sensorStats": {
+    "type": "object",
+    "properties": {
+     "light": {
+      "type": "object",
+      "properties": {
+       "value": {
+        "oneOf": [
+         {
+          "$ref": "#/components/schemas/sensorValue"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "status": {
+        "$ref": "#/components/schemas/sensorStatus"
+       }
+      },
+      "description": "Ambient light value (Lux)."
+     },
+     "humidity": {
+      "type": "object",
+      "properties": {
+       "value": {
+        "oneOf": [
+         {
+          "$ref": "#/components/schemas/sensorValue"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "status": {
+        "$ref": "#/components/schemas/sensorStatus"
+       }
+      },
+      "description": "Relative humidity value (%)."
+     },
+     "temperature": {
+      "type": "object",
+      "properties": {
+       "value": {
+        "oneOf": [
+         {
+          "$ref": "#/components/schemas/sensorValue"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "status": {
+        "$ref": "#/components/schemas/sensorStatus"
+       }
+      },
+      "description": "Temperature value (Celsius)."
+     }
+    },
+    "description": "Sensor statistics.",
+    "title": "sensorStats"
+   },
+   "sensorStatus": {
+    "type": "string",
+    "enum": [
+     "neutral",
+     "low",
+     "safe",
+     "high",
+     "unknown"
+    ],
+    "description": "What range does the measured metric fall into",
+    "title": "sensorStatus",
+    "examples": [
+     "high"
+    ]
+   },
+   "sensorValue": {
+    "type": "number",
+    "description": "Decimal value of the metric measured by the sensor",
+    "examples": [
+     22.5,
+     65
+    ],
+    "title": "sensorValue"
+   },
+   "signalQuality": {
+    "type": [
+     "number",
+     "null"
+    ],
+    "description": "Percent representation of Bluetooth signal strength.",
+    "examples": [
+     85
+    ],
+    "title": "signalQuality"
+   },
+   "signalState": {
+    "type": "object",
+    "properties": {
+     "signalQuality": {
+      "$ref": "#/components/schemas/signalQuality"
+     },
+     "signalStrength": {
+      "$ref": "#/components/schemas/signalStrength"
+     }
+    },
+    "required": [
+     "signalQuality",
+     "signalStrength"
+    ],
+    "description": "Signal state.",
+    "title": "signalState"
+   },
+   "signalStrength": {
+    "type": [
+     "number",
+     "null"
+    ],
+    "description": "dBm value of Bluetooth signal strength.",
+    "examples": [
+     -45
+    ],
+    "title": "signalStrength"
+   },
+   "smartDetectSettings": {
+    "type": "object",
+    "properties": {
+     "objectTypes": {
+      "$ref": "#/components/schemas/objectTypes"
+     },
+     "audioTypes": {
+      "$ref": "#/components/schemas/audioTypes"
+     }
+    },
+    "required": [
+     "objectTypes",
+     "audioTypes"
+    ],
+    "description": "Smart detection settings for the camera.",
+    "title": "smartDetectSettings"
+   },
+   "snapshotChannel": {
+    "type": "string",
+    "enum": [
+     "main",
+     "package"
+    ],
+    "description": "Camera channel to capture snapshot from. Use \"package\" for cameras with a package camera (hasPackageCamera: true).",
+    "title": "channel"
+   },
+   "tamperingDetectedAt": {
+    "type": [
+     "number",
+     "null"
+    ],
+    "description": "Unix timestamp when the sensor detected tampering, nullable.",
+    "examples": [
+     1445408038748
+    ],
+    "title": "tamperingDetectedAt"
+   },
+   "temperatureSettings": {
+    "type": "object",
+    "properties": {
+     "isEnabled": {
+      "type": "boolean",
+      "description": "Enable temperature sensor."
+     },
+     "margin": {
+      "type": "number",
+      "description": "Temperature threshold detection hysteresis margin (C). Read-only value decided by sensor implementation.",
+      "examples": [
+       0.1
+      ]
+     },
+     "lowThreshold": {
+      "type": [
+       "number",
+       "null"
+      ],
+      "minimum": -39,
+      "maximum": 124,
+      "description": "Temperature low level threshold from -39 to 124 (C).",
+      "examples": [
+       20
+      ]
+     },
+     "highThreshold": {
+      "type": [
+       "number",
+       "null"
+      ],
+      "description": "Temperature high level threshold from -39 to 124 (C).",
+      "examples": [
+       25
+      ]
+     }
+    },
+    "description": "Temperature sensor settings.",
+    "title": "temperatureSettings"
+   },
+   "videoMode": {
+    "type": "string",
+    "enum": [
+     "default",
+     "highFps",
+     "sport",
+     "slowShutter",
+     "lprReflex",
+     "lprNoneReflex"
+    ],
+    "description": "Current video mode of the camera",
+    "examples": [
+     "highFps",
+     "default"
+    ],
+    "title": "videoMode"
+   },
+   "wirelessBatteryIsLow": {
+    "type": "boolean",
+    "description": "Low battery charge level flag.",
+    "title": "wirelessBatteryIsLow"
+   },
+   "wirelessBatteryPercentage": {
+    "type": [
+     "number",
+     "null"
+    ],
+    "description": "Battery charge level from 0 to 100 (%).",
+    "examples": [
+     95,
+     50
+    ],
+    "title": "wirelessBatteryPercentage"
+   },
+   "wirelessBatteryStatus": {
+    "type": "object",
+    "properties": {
+     "percentage": {
+      "$ref": "#/components/schemas/wirelessBatteryPercentage"
+     },
+     "isLow": {
+      "$ref": "#/components/schemas/wirelessBatteryIsLow"
+     }
+    },
+    "required": [
+     "percentage",
+     "isLow"
+    ],
+    "description": "Battery status.",
+    "title": "wirelessBatteryStatus"
+   },
+   "wirelessBridgeId": {
+    "oneOf": [
+     {
+      "$ref": "#/components/schemas/bridgeId"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "description": "The ID of the bridge this device is connected through.",
+    "title": "wirelessBridgeId"
+   },
+   "wirelessConnectionState": {
+    "type": "object",
+    "properties": {
+     "signalState": {
+      "$ref": "#/components/schemas/signalState"
+     },
+     "batteryStatus": {
+      "$ref": "#/components/schemas/wirelessBatteryStatus"
+     },
+     "bridge": {
+      "$ref": "#/components/schemas/wirelessBridgeId"
+     }
+    },
+    "required": [
+     "signalState",
+     "batteryStatus",
+     "bridge"
+    ],
+    "description": "Wireless connection state including signal quality, battery status, and bridge connection.",
+    "title": "wirelessConnectionState"
+   }
+  }
+ }
+}

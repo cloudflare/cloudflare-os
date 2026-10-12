@@ -1012,6 +1012,48 @@
         "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/supabase"
       }
     },
+    "gatekeeper-unifi": {
+      "bindings": [],
+      "compatibilityDate": "2026-09-04",
+      "compatibilityFlags": [
+        "allow_irrevocable_stub_storage",
+        "global_fetch_strictly_public"
+      ],
+      "inputs": [],
+      "installable": true,
+      "kind": "gatekeeper",
+      "mainModule": "unifi.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "UnifiAccount",
+            "UnifiGatekeeper"
+          ],
+          "tag": "v0"
+        }
+      ],
+      "modules": [
+        {
+          "name": "unifi.js",
+          "r2Key": "blobs/modules/a6d44f3d226dc2f179079277816f4a207c098fe5006a8594e9cd03a0b4530d5a",
+          "sha256": "a6d44f3d226dc2f179079277816f4a207c098fe5006a8594e9cd03a0b4530d5a",
+          "size": 58,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "shortName": "unifi",
+      "singleton": true,
+      "vars": {
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/unifi"
+      }
+    },
     "gatekeeper-x": {
       "bindings": [
         {

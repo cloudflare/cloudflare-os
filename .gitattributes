@@ -5,3 +5,6 @@
 # `types:generate --check` diffs each committed worker-configuration.d.ts against freshly generated
 # output.
 * text=auto eol=lf
+
+# Vendored by a script (packages/gatekeeper-unifi/scripts/vendor-openapi.ts): collapsed in review diffs.
+packages/gatekeeper-unifi/__tests__/openapi/*.json linguist-generated=true gitlab-generated
