@@ -6,7 +6,11 @@ const logger = createWorkshopLogger("workshop.cache-warming");
 
 // How long before a cached prompt would expire its ping goes out, leaving room for timer and
 // network delays.
-const PING_LEAD_MS = 60_000;
+const PING_LEAD_MS = 30_000;
+
+// No ping goes out later than this after the turn's last request. A user who hasn't replied by
+// then has likely left the tab open, and warming would only spend toward its cost cap.
+const WARMING_LIMIT_MS = 2 * 60 * 60_000;
 
 type Warming = {
   request: CachedRequest;
@@ -28,10 +32,10 @@ type ChatViewers = {
  *
  * When a turn ends in a viewed chat, its last request is sent again, with the smallest response
  * cap, shortly before the cached copy would expire, and again after each such ping. Warming stops
- * when the last viewer leaves, before a ping would take the pings past what the cache miss they
- * avoid costs, when a ping fails or finds the cache gone, and on stop(). The viewers' open
- * connections keep the Durable Object in memory meanwhile. Warming is held in memory only, like
- * the request it resends, so a restart ends it.
+ * when the last viewer leaves, two hours after the turn, before a ping would take the pings past
+ * what the cache miss they avoid costs, when a ping fails or finds the cache gone, and on stop().
+ * The viewers' open connections keep the Durable Object in memory meanwhile. Warming is held in
+ * memory only, like the request it resends, so a restart ends it.
  */
 export class ChatCacheWarmer {
   // The chats someone views now.
@@ -76,12 +80,15 @@ export class ChatCacheWarmer {
     chat.warming = undefined;
   }
 
-  // Schedules the next ping, unless the cached copy would expire first or the ping would take the
-  // pings past what the cache miss they avoid costs.
+  // Schedules the next ping, unless the cached copy would expire first, the ping would come after
+  // the warming limit, or it would take the pings past what the cache miss they avoid costs.
   #schedule(chatId: number, warming: Warming) {
-    let delay = warming.sentAt + warming.request.cacheLifetime - PING_LEAD_MS - Date.now();
-    if (delay <= 0 || !worthPinging(warming.request, warming.pings)) return this.stop(chatId);
-    warming.timer = setTimeout(() => void this.#ping(chatId, warming), delay);
+    let due = warming.sentAt + warming.request.cacheLifetime - PING_LEAD_MS;
+    if (due <= Date.now() || due > warming.request.sentAt + WARMING_LIMIT_MS ||
+        !worthPinging(warming.request, warming.pings)) {
+      return this.stop(chatId);
+    }
+    warming.timer = setTimeout(() => void this.#ping(chatId, warming), due - Date.now());
   }
 
   async #ping(chatId: number, warming: Warming) {
