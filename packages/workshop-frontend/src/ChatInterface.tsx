@@ -1921,6 +1921,60 @@ function appendWorkParts(target: WorkMessageParts, source: WorkMessageParts) {
   }
 }
 
+// Scheduled-task (bindHook) cards carry the enable toggle, so they belong where the user will see
+// them: at the end of the turn that created them, not buried mid-turn between tool rows. Maps the
+// anchor (the sequence of the turn's last visible agent message, which re-anchors as the turn
+// grows) to the cards to render below that message. Mirrors how created-workpiece cards anchor.
+function computeHookCardsByTurnItemSeq(
+  messages: AiChatMessage[],
+): Map<number, ActionChatMessage[]> {
+  const out = new Map<number, ActionChatMessage[]>();
+  let lastAgentMessageSeq: number | null = null;
+  let lastVisibleWorkSeq: number | null = null;
+  let cards: ActionChatMessage[] = [];
+  let cardsAnchorSeq: number | null = null;
+
+  const attachCards = () => {
+    if (cards.length === 0) return;
+    const anchorSeq = lastAgentMessageSeq ?? lastVisibleWorkSeq;
+    if (anchorSeq === null) return;
+    if (cardsAnchorSeq !== null && cardsAnchorSeq !== anchorSeq) out.delete(cardsAnchorSeq);
+    out.set(anchorSeq, cards);
+    cardsAnchorSeq = anchorSeq;
+  };
+
+  const resetTurn = () => {
+    lastAgentMessageSeq = null;
+    lastVisibleWorkSeq = null;
+    cards = [];
+    cardsAnchorSeq = null;
+  };
+
+  for (const m of messages) {
+    if (m.type === "slashCommand" || m.type === "merge" || m.type === "revert") {
+      resetTurn();
+    } else if (m.type === "message") {
+      if (m.author.type === "user") {
+        resetTurn();
+      } else if (!isEmptyAssistantMessage(m)) {
+        lastAgentMessageSeq = m.sequence;
+        lastVisibleWorkSeq = m.sequence;
+        attachCards();
+      }
+    } else if (m.type === "action" && m.actionLog?.type === "bindHook") {
+      cards = [...cards, m];
+      attachCards();
+    } else if (isObservationActionMessage(m) || m.type === "useGadget") {
+      lastVisibleWorkSeq = m.sequence;
+      attachCards();
+    } else if (m.type === "changes" && m.author.type === "user") {
+      resetTurn();
+    }
+  }
+
+  return out;
+}
+
 // Suffix appended to discard labels when the discarded changes include gadget creations, since
 // reverting also deletes the created gadgets: " (deletes gadgets “A”, “B”)".
 function describeCreatedWorkpieceDeletion(created: CreatedWorkpieceName[] | undefined): string {
@@ -2098,10 +2152,21 @@ export function buildChatDisplayEntries(
   const startsOwnRow = (msg: AiChatMessage) =>
     appliedBlueprintMerges(msg).length > 0 || isVisibleSavedChangesMessage(msg);
 
+  const anchoredHookSeqs = new Set<number>();
+  for (const cards of computeHookCardsByTurnItemSeq(messages).values()) {
+    for (const card of cards) anchoredHookSeqs.add(card.sequence);
+  }
+
   for (let i = 0; i < messages.length; ) {
     const msg = messages[i];
     maybePushBoundaries(msg.sequence);
     maybePushModelChange(msg);
+
+    if (msg.type === "action" && anchoredHookSeqs.has(msg.sequence)) {
+      // Hook cards anchored to the end of a turn render there, so they get no row of their own here.
+      i++;
+      continue;
+    }
 
     if (msg.type === "slashCommand") {
       // A built-in command is handled by the Workshop itself, so it has no prompt to show and gets
@@ -4844,6 +4909,11 @@ function ChatInterface({
     return out;
   }, [currentMessages, messageStates, outputOfWorkpiece]);
 
+  const hookCardsByTurnItemSeq = useMemo(
+    () => computeHookCardsByTurnItemSeq(currentMessages),
+    [currentMessages],
+  );
+
   const renderConnectionRequestCard = (
     msg: AiChatMessage & { type: "connectionRequest" },
   ) => {
@@ -5851,6 +5921,8 @@ function ChatInterface({
                           pendingChangeByTurnItemSeq.get(entry.lastMessageSequence) ?? null;
                         const createdWorkpieces =
                           createdWorkpiecesByTurnItemSeq.get(entry.lastMessageSequence) ?? [];
+                        const hookCards =
+                          hookCardsByTurnItemSeq.get(entry.lastMessageSequence) ?? [];
                         const showFooterOnGroupIndex = pendingChange
                           ? entry.toolCallGroups.length - 1
                           : -1;
@@ -5892,6 +5964,9 @@ function ChatInterface({
                                 created={created}
                                 onOpen={() => onOpenGadget(created.workpieceId)}
                               />
+                            ))}
+                            {hookCards.map((card) => (
+                              <Fragment key={card.actionId}>{renderActionCard(card)}</Fragment>
                             ))}
                           </div>
                         );
@@ -5989,6 +6064,8 @@ function ChatInterface({
                             ) ?? null;
                             const createdWorkpieces =
                               createdWorkpiecesByTurnItemSeq.get(actionMessageSeq) ?? [];
+                            const hookCards =
+                              hookCardsByTurnItemSeq.get(actionMessageSeq) ?? [];
                             const attachActionsToToolGroups =
                               !hasMessageText &&
                               !!pendingChange &&
@@ -6074,6 +6151,10 @@ function ChatInterface({
                                 created={created}
                                 onOpen={() => onOpenGadget(created.workpieceId)}
                               />
+                            ))}
+
+                            {hookCards.map((card) => (
+                              <Fragment key={card.actionId}>{renderActionCard(card)}</Fragment>
                             ))}
 
                             {messageToolGroups && messageToolGroups.length > 0 && (

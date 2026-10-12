@@ -398,3 +398,86 @@ describe('send and retry failures', () => {
         { title: 'Failed to retry agent', description: undefined, variant: 'error' })
   })
 })
+
+// A scheduled task is created mid-turn, but its card carries the enable toggle, so it has to land
+// at the end of the turn where the user will see it.
+describe('scheduled task card placement', () => {
+  const base = { chatId: 1, timestamp: new Date() }
+  const agent = { type: 'agent', id: 'model', name: 'Model' } as const
+  const hookLog = {
+    id: 1,
+    resourceTitle: 'Scheduled Tasks',
+    createdAt: new Date(),
+    state: 'approved',
+    type: 'bindHook',
+    description: { title: 'Motivational quote', description: 'Post a quote.' },
+    hookId: 7,
+    enabled: false,
+  } as ActionLogEntry
+
+  const user = (sequence: number, message: string) =>
+    ({ ...base, sequence, author: { type: 'user', id: 'u', name: 'User' }, type: 'message', message })
+  const hook = { ...base, sequence: 3, author: agent, type: 'action', actionId: 1, actionLog: hookLog }
+  const turn = [
+    user(1, 'schedule a quote'),
+    { ...base, sequence: 2, author: agent, type: 'message', message: '', toolCalls: [{
+      toolCallId: 'tc-2', toolName: 'readFile', input: { filename: 'server.js' } }] },
+    hook,
+    { ...base, sequence: 4, author: agent, type: 'useGadget' },
+    { ...base, sequence: 5, author: agent, type: 'message', message: 'Created your task.' },
+  ] as AiChatMessage[]
+
+  async function renderTurn(messages = turn) {
+    const server = makeOverseer()
+    const chat = withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    ])
+    await renderChat(server.overseer, { selectedChatId: 1 })
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [] })
+    for (const message of messages) chat.emitMessage(message)
+  }
+
+  const position = (el: Element | null | undefined) => {
+    if (!el) throw new Error('Expected element is missing')
+    return [...document.querySelectorAll('*')].indexOf(el)
+  }
+  const textElement = (text: string) =>
+    [...document.querySelectorAll('*')].toReversed().find(el => el.textContent?.includes(text))
+  const hasHookCard = () => document.body.textContent?.includes('Hook: Motivational quote')
+
+  it('renders the card exactly once', async () => {
+    await renderTurn()
+
+    expect(document.body.textContent?.split('Hook: Motivational quote').length).toBe(2)
+  })
+
+  it('places the card after the closing text and the copy button, not mid-turn', async () => {
+    await renderTurn()
+
+    expect(hasHookCard()).toBe(true)
+    const card = textElement('Hook: Motivational quote')
+    const copy = document.querySelector('button[aria-label="Copy message"]')
+    expect(position(card)).toBeGreaterThan(position(textElement('Created your task.')))
+    expect(position(card)).toBeGreaterThan(position(copy))
+    expect(position(card)).toBeGreaterThan(position(textElement('Used the gadget')))
+  })
+
+  it('keeps the card with its own turn once the conversation moves on', async () => {
+    await renderTurn([
+      ...turn,
+      user(6, 'thanks'),
+      { ...base, sequence: 7, author: agent, type: 'message', message: 'You are welcome.' },
+    ] as AiChatMessage[])
+
+    const card = textElement('Hook: Motivational quote')
+    expect(position(card)).toBeGreaterThan(position(textElement('Created your task.')))
+    expect(position(card)).toBeLessThan(position(textElement('thanks')))
+  })
+
+  it('still shows a card that has no agent message to attach to', async () => {
+    await renderTurn([user(1, 'schedule a quote'), { ...hook, sequence: 2 }] as AiChatMessage[])
+
+    expect(hasHookCard()).toBe(true)
+  })
+})
