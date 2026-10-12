@@ -8,3 +8,6 @@
 
 # Written by `pnpm types:generate` (`wrangler types`) and checked by `types:generate --check`.
 **/worker-configuration.d.ts linguist-generated
+
+# Vendored by a script (packages/gatekeeper-unifi/scripts/vendor-openapi.ts): collapsed in review diffs.
+packages/gatekeeper-unifi/__tests__/openapi/*.json linguist-generated=true gitlab-generated

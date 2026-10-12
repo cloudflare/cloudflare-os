@@ -1,0 +1,454 @@
+{
+ "openapi": "3.0.3",
+ "info": {
+  "title": "UniFi Site Manager API",
+  "version": "1.0.0"
+ },
+ "source": "https://developer.ui.com/site-manager/v1.0.0/openapi.json",
+ "paths": {
+  "/v1/hosts": {
+   "get": {
+    "description": "Retrieves a list of all hosts associated with the UI account making the API call. <br/><br/>**Note**: The structure of `userData` and `reportedState` fields may vary depending on the UniFi OS or Network Server version. The example provided is based on UniFi OS 4.1.13.",
+    "operationId": "listHosts",
+    "parameters": [
+     {
+      "description": "Number of items to return per page",
+      "example": "10",
+      "in": "query",
+      "name": "pageSize",
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "description": "Token for pagination to retrieve the next set of results",
+      "example": "602232A870250000000006C514FF00000000073DD8DB000000006369FDA2:1467082514",
+      "in": "query",
+      "name": "nextToken",
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "examples": {
+         "ok": {
+          "value": {
+           "data": [
+            {
+             "id": "70A7419783ED0000000006797F060000000006C719490000000062ABD4EA:1261206302",
+             "hardwareId": "e5bf13cd-98a7-5a96-9463-0d65d78cd3a4",
+             "type": "ucore",
+             "ipAddress": "220.130.137.169",
+             "owner": true,
+             "isBlocked": false,
+             "registrationTime": "",
+             "lastConnectionStateChange": "2024-04-16T02:52:54.193Z",
+             "latestBackupTime": "",
+             "userData": {
+              "apps": [
+               "users"
+              ],
+              "consoleGroupMembers": [
+               {
+                "mac": "70A7419783ED",
+                "role": "UNADOPTED",
+                "roleAttributes": {
+                 "applications": {
+                  "access": {
+                   "owned": false,
+                   "required": false,
+                   "supported": true
+                  },
+                  "connect": {
+                   "owned": false,
+                   "required": false,
+                   "supported": true
+                  },
+                  "innerspace": {
+                   "owned": false,
+                   "required": false,
+                   "supported": true
+                  },
+                  "network": {
+                   "owned": false,
+                   "required": true,
+                   "supported": true
+                  },
+                  "protect": {
+                   "owned": false,
+                   "required": false,
+                   "supported": true
+                  },
+                  "talk": {
+                   "owned": false,
+                   "required": false,
+                   "supported": true
+                  }
+                 },
+                 "candidateRoles": [
+                  "PRIMARY"
+                 ],
+                 "connectedState": "CONNECTED",
+                 "connectedStateLastChanged": "2024-04-16T02:52:54.193Z"
+                },
+                "sysId": 59925
+               }
+              ],
+              "controllers": [
+               "network",
+               "protect",
+               "access",
+               "talk",
+               "connect",
+               "innerspace"
+              ],
+              "email": "example@ui.com",
+              "features": {
+               "deviceGroups": true,
+               "floorplan": {
+                "canEdit": true,
+                "canView": true
+               },
+               "manageApplications": true,
+               "notifications": true,
+               "pion": true,
+               "webrtc": {
+                "iceRestart": true,
+                "mediaStreams": true,
+                "twoWayAudio": true
+               }
+              },
+              "fullName": "UniFi User",
+              "localId": "d4eb483d-98a7-438b-abe1-f46628dff73f",
+              "permissions": {
+               "access.management": [
+                "admin"
+               ],
+               "connect.management": [
+                "admin"
+               ],
+               "innerspace.management": [
+                "admin"
+               ],
+               "network.management": [
+                "admin"
+               ],
+               "protect.management": [
+                "admin"
+               ],
+               "system.management.location": [
+                "admin"
+               ],
+               "system.management.user": [
+                "admin"
+               ],
+               "talk.management": [
+                "admin"
+               ]
+              },
+              "role": "owner",
+              "roleId": "c349b256-98a7-44ab-b8a1-13c437ea7742",
+              "status": "ACTIVE"
+             },
+             "reportedState": null
+            }
+           ],
+           "httpStatusCode": 200,
+           "traceId": "a7dc15e0eb4527142d7823515b15f87d",
+           "nextToken": "ba8e384e-3308-4236-b344-7357657351ca"
+          }
+         }
+        },
+        "schema": {
+         "properties": {
+          "code": {
+           "description": "Error code from upstream"
+          },
+          "data": {
+           "description": "Generic response data, specific schema depends on the endpoint",
+           "items": {
+            "description": "Generic response data, specific schema depends on the endpoint",
+            "properties": {
+             "id": {
+              "description": "Unique identifier of the host device",
+              "type": "string"
+             },
+             "hardwareId": {
+              "description": "Hardware identifier of the device",
+              "type": "string"
+             },
+             "type": {
+              "description": "Type of the device (console, network-server)",
+              "type": "string"
+             },
+             "ipAddress": {
+              "description": "Current IP address of the device",
+              "type": "string"
+             },
+             "owner": {
+              "description": "Indicates if the current user is the owner of this device",
+              "type": "boolean"
+             },
+             "isBlocked": {
+              "description": "Indicates if the device is blocked from cloud access",
+              "type": "boolean"
+             },
+             "registrationTime": {
+              "description": "Time in RFC3339 format when the device was registered to the cloud",
+              "format": "date-time",
+              "type": "string"
+             },
+             "lastConnectionStateChange": {
+              "description": "Time in RFC3339 format when the connection state last changed",
+              "format": "date-time",
+              "type": "string"
+             },
+             "latestBackupTime": {
+              "description": "Time in RFC3339 format of the latest device backup",
+              "format": "date-time",
+              "type": "string"
+             },
+             "userData": {
+              "description": "User-specific data associated with the device including permissions and role information"
+             },
+             "reportedState": {
+              "description": "Device's reported state information"
+             }
+            },
+            "type": "object",
+            "x-properties-order": [
+             "id",
+             "hardwareId",
+             "type",
+             "ipAddress",
+             "owner",
+             "isBlocked",
+             "registrationTime",
+             "lastConnectionStateChange",
+             "latestBackupTime",
+             "userData",
+             "reportedState"
+            ]
+           },
+           "type": "array"
+          },
+          "httpStatusCode": {
+           "description": "HTTP status code",
+           "type": "integer"
+          },
+          "traceId": {
+           "description": "Request trace identifier",
+           "type": "string"
+          },
+          "nextToken": {
+           "description": "Pagination token for fetching the next set of results",
+           "type": "string"
+          }
+         },
+         "type": "object",
+         "x-properties-order": [
+          "code",
+          "data",
+          "httpStatusCode",
+          "traceId",
+          "nextToken"
+         ]
+        }
+       }
+      },
+      "description": "200"
+     },
+     "401": {
+      "content": {
+       "application/json": {
+        "examples": {
+         "unauthorized": {
+          "value": {
+           "code": "unauthorized",
+           "httpStatusCode": 401,
+           "message": "unauthorized",
+           "traceId": "a7dc15e0eb4527142d7823515b15f87d"
+          }
+         }
+        },
+        "schema": {
+         "properties": {
+          "code": {
+           "description": "Error code from upstream"
+          },
+          "httpStatusCode": {
+           "description": "HTTP status code",
+           "type": "integer"
+          },
+          "message": {
+           "description": "Error message",
+           "type": "string"
+          },
+          "traceId": {
+           "description": "Request trace identifier",
+           "type": "string"
+          }
+         },
+         "type": "object",
+         "x-properties-order": [
+          "code",
+          "httpStatusCode",
+          "message",
+          "traceId"
+         ]
+        }
+       }
+      },
+      "description": "401"
+     },
+     "429": {
+      "content": {
+       "application/json": {
+        "examples": {
+         "rate limit": {
+          "value": {
+           "code": "rate_limit",
+           "httpStatusCode": 429,
+           "message": "rate limit exceeded, retry after 5.372786998s",
+           "traceId": "a7dc15e0eb4527142d7823515b15f87d"
+          }
+         }
+        },
+        "schema": {
+         "properties": {
+          "code": {
+           "description": "Error code from upstream"
+          },
+          "httpStatusCode": {
+           "description": "HTTP status code",
+           "type": "integer"
+          },
+          "message": {
+           "description": "Error message",
+           "type": "string"
+          },
+          "traceId": {
+           "description": "Request trace identifier",
+           "type": "string"
+          }
+         },
+         "type": "object",
+         "x-properties-order": [
+          "code",
+          "httpStatusCode",
+          "message",
+          "traceId"
+         ]
+        }
+       }
+      },
+      "description": "429",
+      "headers": {
+       "Retry-After": {
+        "example": "5",
+        "schema": {
+         "type": "string"
+        }
+       }
+      }
+     },
+     "500": {
+      "content": {
+       "application/json": {
+        "examples": {
+         "failed to list hosts": {
+          "value": {
+           "code": "server_error",
+           "httpStatusCode": 500,
+           "message": "failed to list hosts",
+           "traceId": "a7dc15e0eb4527142d7823515b15f87d"
+          }
+         }
+        },
+        "schema": {
+         "properties": {
+          "code": {
+           "description": "Error code from upstream"
+          },
+          "httpStatusCode": {
+           "description": "HTTP status code",
+           "type": "integer"
+          },
+          "message": {
+           "description": "Error message",
+           "type": "string"
+          },
+          "traceId": {
+           "description": "Request trace identifier",
+           "type": "string"
+          }
+         },
+         "type": "object",
+         "x-properties-order": [
+          "code",
+          "httpStatusCode",
+          "message",
+          "traceId"
+         ]
+        }
+       }
+      },
+      "description": "500"
+     },
+     "502": {
+      "content": {
+       "application/json": {
+        "examples": {
+         "bad gateway": {
+          "value": {
+           "code": "bad_gateway",
+           "httpStatusCode": 502,
+           "message": "bad gateway",
+           "traceId": "a7dc15e0eb4527142d7823515b15f87d"
+          }
+         }
+        },
+        "schema": {
+         "properties": {
+          "code": {
+           "description": "Error code from upstream"
+          },
+          "httpStatusCode": {
+           "description": "HTTP status code",
+           "type": "integer"
+          },
+          "message": {
+           "description": "Error message",
+           "type": "string"
+          },
+          "traceId": {
+           "description": "Request trace identifier",
+           "type": "string"
+          }
+         },
+         "type": "object",
+         "x-properties-order": [
+          "code",
+          "httpStatusCode",
+          "message",
+          "traceId"
+         ]
+        }
+       }
+      },
+      "description": "502"
+     }
+    },
+    "summary": "List Hosts",
+    "x-position": 1
+   }
+  }
+ },
+ "components": {
+  "schemas": {}
+ }
+}
