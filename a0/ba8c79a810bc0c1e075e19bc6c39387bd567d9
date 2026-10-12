@@ -1,0 +1,21 @@
+packages/gatekeeper-google/__tests__/workerd/chat-hooks.test.ts
+  s_74eb0b1cbb84f7::t_ec77b15c6a8eb0 572-598
+packages/gatekeeper-google/src/chat-hooks.ts
+  s_74eb0b1cbb84f7::t_7485e66fd15ee5 184-189,191
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a0ba8c79a810bc0c1e075e19bc6c39387bd567d9",
+  "prompts": {},
+  "sessions": {
+    "s_74eb0b1cbb84f7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_edf458c69ffepVeVZFxEZXzOIj",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+.github/workflows/github-contract.yml
+  s_74eb0b1cbb84f7::t_65afde50befe47 10
+packages/gatekeeper-github/__tests__/contract/github.contract.test.ts
+  s_74eb0b1cbb84f7::t_5561917eefc8a0 12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "22b232189ffb93881c2b24212378502531738840",
+  "prompts": {},
+  "sessions": {
+    "s_74eb0b1cbb84f7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_edf458c69ffepVeVZFxEZXzOIj",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

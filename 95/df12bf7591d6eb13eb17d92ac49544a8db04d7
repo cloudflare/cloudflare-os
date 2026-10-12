@@ -1,0 +1,37 @@
+STORYBOARD.md
+  s_58819f73dfb5a6::t_c281823413c9ba 97-106
+packages/workshop-frontend/src/ShareModal.tsx
+  s_58819f73dfb5a6::t_161a28220968f0 95-111,127,138,156,158,172,182,286,302
+packages/workshop-frontend/src/features/scoped-connections/GadgetShareDialog.tsx
+  s_58819f73dfb5a6::t_cb198d12d601c5 5,109-119,153-176
+packages/workshop-frontend/src/features/scoped-connections/ScopedConnectionList.tsx
+  s_58819f73dfb5a6::t_e4b636c97d41d4 68
+packages/workshop-frontend/src/features/scoped-connections/prototypeState.ts
+  s_58819f73dfb5a6::t_3ff65d61f0d73a 52-53,119-120,159-162
+packages/workshop-frontend/src/storyboard/gadgetUis.ts
+  s_58819f73dfb5a6::t_4ae4b552cb67c9 14-15,161,163,166
+packages/workshop-frontend/src/storyboard/shots.ts
+  s_58819f73dfb5a6::t_d2af8bc1492de0 84-86,152,204-206,213,233-234,845-911,1060,1081,1091-1101,1190-1239
+storyboard/build-doc.py
+  s_58819f73dfb5a6::t_b9bb07d73a513d 107-115,235-244
+storyboard/crops.json
+  s_58819f73dfb5a6::t_66e70f3fc1e371 31,38-40,46-48
+storyboard/doc.md
+  s_58819f73dfb5a6::t_41d370ee8e2090 158,160,215,275-278,293-296,327-330,343-346,373-376,383,387-393,397-399,401,429,433-443,445-449,469-488,497,503-504,509,515,517,519,521,651-653,655,677-678,693-700,703
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "95df12bf7591d6eb13eb17d92ac49544a8db04d7",
+  "prompts": {},
+  "sessions": {
+    "s_58819f73dfb5a6": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ed869cedaffeaNXQbjGyMXeIZR",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
