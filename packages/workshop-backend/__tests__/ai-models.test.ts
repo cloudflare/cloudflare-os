@@ -1787,6 +1787,91 @@ describe("System prompt cache blocks", () => {
   }, 15000);
 });
 
+describe("Resending a request to keep its cache", () => {
+  beforeEach(() => {
+    capturedRequests.length = 0;
+  });
+
+  // An agent turn's request: a split system prompt, tools, and a user message.
+  async function send(handle: ModelHandle,
+                      options: NonNullable<Parameters<ModelHandle["stream"]>[2]> = {}) {
+    const message = await handle.stream(handle.model, {
+      messages: [
+        {
+          role: "system", content: "Shared instructions.",
+          sections: { environment: "This workspace's gadgets." },
+          toolsAdded: [{ name: "lookUp", description: "Looks up.", parameters: Type.Object({}) }],
+          timestamp: 0,
+        },
+        { role: "user", content: "hello", timestamp: 0 },
+      ],
+    }, { fetch: fetchStub, maxRetries: 0, ...options }).result();
+    expect(message.stopReason).toBe("error");
+  }
+
+  // A captured request's headers, less the ones that differ between a request and its resend.
+  const sharedHeaders = ({ headers }: CapturedRequest) => Object.fromEntries(
+      [...headers].filter(([name]) =>
+          !["content-length", "cf-aig-metadata", "cf-aig-skip-cache"].includes(name)));
+
+  it("resends an Anthropic request as sent, with a one-token cap, marked in the gateway",
+      async () => {
+    const handle = getModel(env(), { provider: "anthropic", model: "claude-opus-5-5", apiToken: "" },
+        INITIATOR, {
+          sessionAffinity: "chat-7",
+          metadata: { source: "chat", gadgetId: "gadget-123", chatId: 7 },
+        });
+    await send(handle);
+    // The stub answers 400, so the resend fails like a real failed request.
+    await expect(handle.lastRequest?.resend()).rejects.toThrow();
+
+    const [sent, resent] = capturedRequests;
+    expect(resent.url).toBe(sent.url);
+    expect(JSON.parse(resent.body)).toEqual({ ...JSON.parse(sent.body), max_tokens: 1 });
+    expect(sharedHeaders(resent)).toEqual(sharedHeaders(sent));
+    expect(JSON.parse(resent.headers.get("cf-aig-metadata")!)).toEqual({
+      user: "user-123", source: "cache-warm", gadgetId: "gadget-123", chatId: 7,
+    });
+    expect(resent.headers.get("cf-aig-skip-cache")).toBe("true");
+    expect(sent.headers.get("cf-aig-skip-cache")).toBeNull();
+    expect(handle.lastRequest?.cacheLifetime).toBe(5 * 60_000);
+  }, 15000);
+
+  it("resends a GPT-5.6+ request as sent, with the smallest output cap", async () => {
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }),
+        { provider: "openai", model: "gpt-6-luna", apiToken: "direct-api-token" }, INITIATOR,
+        { sessionAffinity: "chat-7" });
+    await send(handle);
+    await expect(handle.lastRequest?.resend()).rejects.toThrow();
+
+    const [sent, resent] = capturedRequests;
+    expect(JSON.parse(resent.body)).toEqual({ ...JSON.parse(sent.body), max_output_tokens: 16 });
+    expect(sharedHeaders(resent)).toEqual(sharedHeaders(sent));
+    expect(handle.lastRequest?.cacheLifetime).toBe(30 * 60_000);
+  }, 15000);
+
+  it.each([
+    { name: "a Claude given a thinking budget, which must stay below the cap",
+      config: { provider: "anthropic", model: "claude-haiku-4-5", reasoning: "high" } },
+    { name: "OpenAI models before GPT-5.6, whose cache has no set lifetime",
+      config: { provider: "openai", model: "gpt-5.2" } },
+    { name: "Workers AI", config: { provider: "cloudflare", model: WORKERS_AI_CONFIG.model } },
+  ] as const)("keeps no request to resend for $name", async ({ config }) => {
+    const handle = getModel(env({ CF_AI_GATEWAY_PROVIDERS: "anthropic,openai,cloudflare" }),
+        { ...config, apiToken: "" }, INITIATOR);
+    await send(handle);
+    expect(handle.lastRequest).toBeUndefined();
+  }, 15000);
+
+  it("forgets the request once the handle sends one with caching off", async () => {
+    const handle = getModel(env(), ANTHROPIC_CONFIG, INITIATOR);
+    await send(handle);
+    expect(handle.lastRequest).toBeDefined();
+    await send(handle, { cacheRetention: "none" });
+    expect(handle.lastRequest).toBeUndefined();
+  }, 15000);
+});
+
 // An env whose platform gateway rides a Workers AI binding answering with `run`.
 function bindingRunEnv(run: (...args: unknown[]) => Promise<unknown>): Cloudflare.Env {
   return env({

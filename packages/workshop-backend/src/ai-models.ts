@@ -3,7 +3,7 @@ import { validateRpc } from "capnweb-validate";
 import type {
   AnthropicMessagesCompat, Api, AssistantMessageEventStream, ClassifierApi, ClassifierContext,
   ClassifierModel, ClassifierOptions, ClassifierResult, Context, FetchFunction, Model, ModelCost,
-  OpenAICompletionsCompat, ProviderHeaders, SimpleStreamOptions, StreamFunction,
+  OpenAICompletionsCompat, ProviderHeaders, SimpleStreamOptions, StreamFunction, Usage,
 } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, getSupportedThinkingLevels, normalizeContext }
   from "@earendil-works/pi-ai";
@@ -37,7 +37,9 @@ import {
 } from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
-import { hasGpt56PromptCaching, splitSystemPrompt } from "./system-prompt-blocks.js";
+import {
+  estimateSharedHeadTokens, hasGpt56PromptCaching, splitSystemPrompt,
+} from "./system-prompt-blocks.js";
 
  /**
   * Routing to bill a user's own Cloudflare account for inference (BYOK path once the free tier is
@@ -62,7 +64,7 @@ type GatewayMetadata = {
 };
 
 type GatewayMetadataContext = {
-  source: "chat" | "thread-title" | "gadget-title" | "model-binding";
+  source: "chat" | "thread-title" | "gadget-title" | "model-binding" | "cache-warm";
   gadgetId?: string;
   chatId?: number;
 };
@@ -119,6 +121,38 @@ export type ModelHandle = {
    * is safe.
    */
   lastResponse?: { status: number; aiGatewayLogId?: string };
+
+  /**
+   * The most recent request `stream` sent with prompt caching on, if the handle can send it again
+   * to keep the provider's cached copy of its prompt (see CachedRequest). Cleared at the start of
+   * every request, so consumers must read it right after the request they care about completes.
+   */
+  lastRequest?: CachedRequest;
+};
+
+/**
+ * A request a handle sent with prompt caching on, which it can send again to keep the provider's
+ * cached copy of its prompt: each read of that copy restarts its lifetime.
+ */
+export type CachedRequest = {
+  /** When the request was sent. The provider counts the cache lifetime from a request's start. */
+  sentAt: number;
+
+  /** How long the provider keeps the prompt cached after a request last read or wrote it. */
+  cacheLifetime: number;
+
+  /** Estimated tokens at the start of the prompt that every chat of the agent's kind sends. */
+  sharedTokens: number;
+
+  /** The model's prices per million tokens, which price each resend too. */
+  prices: ModelCost;
+
+  /**
+   * Sends the request again with the smallest response cap its API takes, through the handle's
+   * routing, marked as a cache warm-up in AI Gateway. Resolves with the request's usage; rejects
+   * if it fails.
+   */
+  resend(): Promise<Usage>;
 };
 
 function buildMetadata(initiator: AiChatAuthorInfo, context?: GatewayMetadataContext): GatewayMetadata {
@@ -483,8 +517,10 @@ function makeHandle(args: HandleArgs): ModelHandle {
     model: args.model,
     aiGatewayLogRoute: args.aiGatewayLogRoute,
     stream: (model, context, { thinking = true, ...options } = {}) => {
-      // Never let a failed request read a previous request's response metadata.
+      // Never let a failed request read a previous request's response metadata, or leave the
+      // previous request to be resent in its place.
       handle.lastResponse = undefined;
+      handle.lastRequest = undefined;
       // This request's own response metadata: concurrent requests on one handle overwrite
       // `lastResponse`, but not this.
       let received: ModelHandle["lastResponse"];
@@ -530,15 +566,31 @@ function makeHandle(args: HandleArgs): ModelHandle {
         // blocks (see chat-attachment-pdf.ts), Gemini function calls without a thought signature
         // get Google's stand-in (see signGeminiFunctionCalls), and with caching on, the leading
         // system prompt is split after its static text (see system-prompt-blocks.ts), and a split
-        // request drops pi's per-chat prompt cache key (see withoutPromptCacheKey).
+        // request drops pi's per-chat prompt cache key (see withoutPromptCacheKey). The request as
+        // sent is kept for resending (see cachedRequest).
         onPayload: async (payload, payloadModel) => {
           const replaced = await options.onPayload?.(payload, payloadModel);
           const bridged = bridgePdfAttachments(args.model.api, replaced ?? payload) ?? replaced;
           const signed = signGeminiFunctionCalls(args.model, bridged ?? payload) ?? bridged;
           if (options.cacheRetention === "none") return signed;
           const split = splitSystemPrompt(args.model, transcript, signed ?? payload);
-          if (split === undefined) return signed;
-          return withoutPromptCacheKey(args.model, split) ?? split;
+          const sent = split === undefined
+              ? signed
+              : withoutPromptCacheKey(args.model, split) ?? split;
+          handle.lastRequest = cachedRequest(streamFn, model, transcript, sent ?? payload, {
+            fetch: merged.fetch,
+            apiKey: merged.apiKey,
+            sessionId: merged.sessionId,
+            cacheRetention: options.cacheRetention,
+            headers: args.gatewayMetadata ? {
+              ...headers,
+              "cf-aig-metadata": JSON.stringify({ ...args.gatewayMetadata, source: "cache-warm" }),
+              // The resend is the same every time, which a gateway that caches responses would
+              // answer without asking the provider.
+              "cf-aig-skip-cache": "true",
+            } : headers,
+          });
+          return sent;
         },
       };
       return traceChat(model, () => received,
@@ -562,6 +614,62 @@ function withoutPromptCacheKey(model: Model<Api>, payload: unknown): object | un
   const { prompt_cache_key, ...rest } = payload;
   return rest;
 }
+
+// `payload`, which a handle sent for `context`, as a CachedRequest that resends it with `routing`:
+// the handle's endpoint, auth and headers. Undefined where resending can't keep the cache (see
+// cappedForResend). Resending takes nothing else from the request, so a kept request holds only
+// its payload, not the caller's options or transcript.
+function cachedRequest(
+    streamFn: StreamFunction<Api, SimpleStreamOptions>, model: Model<Api>, context: Context,
+    payload: unknown, routing: SimpleStreamOptions): CachedRequest | undefined {
+  const resent = cappedForResend(model, payload);
+  if (resent === undefined) return undefined;
+  return {
+    sentAt: Date.now(),
+    cacheLifetime: resent.cacheLifetime,
+    sharedTokens: estimateSharedHeadTokens(context),
+    prices: model.cost,
+    resend: async () => {
+      // pi builds a request from the context and then replaces it with the payload.
+      const message = await streamFn(model, normalizeContext({ messages: [] }),
+          { ...routing, onPayload: () => resent.payload }).result();
+      if (message.stopReason === "error" || message.stopReason === "aborted") {
+        throw new Error(message.errorMessage ?? "The model request failed.");
+      }
+      return message.usage;
+    },
+  };
+}
+
+// The cache lifetime of `payload`'s API, and `payload` with the smallest response cap it takes.
+// Undefined where a resend isn't known to keep the cache.
+// - anthropic-messages: pi's default retention keeps the conversation 5 minutes from the start
+//   of the last request that read it. Anthropic's pre-warm takes max_tokens 0, but not with
+//   streaming, which pi always uses, so 1 it is. An enabled thinking budget must stay below
+//   max_tokens, so such requests can't be resent; adaptive thinking takes any cap.
+// - openai-responses, GPT-5.6 and later: at least 30 minutes after the last write or reuse. 16
+//   is the smallest max_output_tokens the API takes.
+// - Other APIs: undefined.
+function cappedForResend(model: Model<Api>, payload: unknown)
+    : { payload: object; cacheLifetime: number } | undefined {
+  if (typeof payload !== "object" || payload === null) return undefined;
+  switch (model.api) {
+    case "anthropic-messages":
+      return hasEnabledThinking(payload)
+          ? undefined
+          : { payload: { ...payload, max_tokens: 1 }, cacheLifetime: 5 * 60_000 };
+    case "openai-responses":
+      return hasGpt56PromptCaching(model)
+          ? { payload: { ...payload, max_output_tokens: 16 }, cacheLifetime: 30 * 60_000 }
+          : undefined;
+    default:
+      return undefined;
+  }
+}
+
+const hasEnabledThinking = (payload: object): boolean =>
+    "thinking" in payload && typeof payload.thinking === "object" && payload.thinking !== null &&
+    "type" in payload.thinking && payload.thinking.type === "enabled";
 
 // Gemini 3 rejects a request whose current turn holds a function call without a thought signature.
 // The synthetic calls history replay adds (see makeReplayObservation in agent.ts) have none, nor do
