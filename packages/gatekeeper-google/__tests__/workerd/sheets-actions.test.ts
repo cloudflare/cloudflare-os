@@ -1960,7 +1960,7 @@ describe("Google Sheets formatting", () => {
       },
     }]);
 
-    expect(value).toEqual({});
+    expect(value).toBeUndefined();
     expect(action).toMatchObject({
       title: 'Format "Sales"',
       description: 'In "Sales", format A1:B2: bold, 14 pt, text colour #ff0000, fill ACCENT1, number format ' +

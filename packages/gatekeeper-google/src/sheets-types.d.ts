@@ -8,8 +8,9 @@ export type * from "./sheets-read-types";
  * exactly as given, never read as a number or date. `null` clears the cell; an empty string is
  * refused in its favour, as is a number that is not finite.
  *
- * To enter a date or time, write its serial number into a cell already formatted as a date or
- * time. Text such as `"2026-10-12"` stays text, and `=DATE(2026, 10, 12)` works but makes the batch
+ * To enter a date or time, write its serial number into a cell formatted as a date or time, as a
+ * `formatCells` change setting `numberFormat: { type: "DATE" }` (or `"TIME"` or `"DATE_TIME"`)
+ * formats it. Text such as `"2026-10-12"` stays text, and `=DATE(2026, 10, 12)` works but makes the batch
  * wait for approval. `"raw"` reads show dates and times as serial numbers.
  *
  * Text starting with `=` cannot be entered as text, and `"formula"` reads show such text exactly as

@@ -374,10 +374,10 @@ apply in the order they were queued. A spreadsheet opened from a Drive binding h
 Input is literal and typed, so nothing depends on the spreadsheet's locale: a string starting with
 `=` is a formula, any other string is text exactly as given, never read as a number or date,
 numbers and booleans are entered as such, and `null` clears a cell. A date is entered as its
-serial number in a cell formatted as a date. Text starting with `=` cannot be written as text, and
-formula-mode reads show it exactly as a formula, so writing back what was read can turn it into
-one. A batch of only literal values and clears is queued as "Sheet value edits",
-which a user may let apply without asking; a batch with any formula always waits for approval.
+serial number in a cell formatted as a date, as `formatCells` can format it. Text starting with
+`=` cannot be written as text, and formula-mode reads show it exactly as a formula, so writing
+back what was read can turn it into one. A batch of only literal values and clears is queued as
+"Sheet value edits", which a user may let apply without asking; a batch with any formula always waits for approval.
 A formula naming `IMPORTRANGE`, which reads another spreadsheet and so escapes the binding, or
 `IMPORTDATA`, `IMPORTHTML`, `IMPORTXML`, `IMPORTFEED` or `IMAGE`, which make Google fetch a URL, is
 refused in any letter case, outside string literals. Formulas the spreadsheet already holds are
