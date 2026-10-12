@@ -28,6 +28,7 @@ packages/gatekeeper-google/src/sheets-plan.ts
   s_f8f4e8eafb49cb::t_44af298f0bda49 452
   s_f8f4e8eafb49cb::t_7da5ebfe9529c5 29,94-95,99,126-128,138-155,157-158,162,432-436,450-451,491,728
   s_f8f4e8eafb49cb::t_1f40463399d109 167-168,170-171,174-175,303,357,359,376,380,421,626,633,872-873
+  s_0c68076cfec9c1::t_26ace7b540b8c6 921-924
 packages/gatekeeper-google/src/sheets-format.ts
   s_010272bf0842e6::t_208c8225d9f4e9 16
   s_010272bf0842e6::t_d3ec6134cce2e6 1-15,17-234
@@ -89,6 +90,14 @@ packages/gatekeeper-google/README.md
       "agent_id": {
         "tool": "claude",
         "id": "890bd2c4-bc81-47c2-9055-2c1fae3caf90",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_0c68076cfec9c1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "84984110-a45c-49f6-ab14-a52150ec2200",
         "model": "claude-opus-5-5"
       },
       "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
