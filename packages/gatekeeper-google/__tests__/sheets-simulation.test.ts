@@ -371,6 +371,13 @@ describe("Sheets formulas through steps that cannot change them", () => {
     expect(formulaAt(reused, 0, "=Q!A1+Q!A2", 0)).toMatchObject({ text: "=Q!A1+Q!A2", broken: true });
     // Text holding the characters it sets references aside with.
     expect(() => formulaAt(reused, 0, '=IF(TRUE,"\uE000",Q!A1)', 0)).toThrow(UnsimulatedFormula);
+    // Those characters in a title a queued change gives a sheet the formula names.
+    let retitled = replayed(gridOf({ sheets: [...sheets, sheet(5, "Q", { index: 3 })] }), [queued(1, [
+      { op: "deleteSheet", sheetId: 5, rowCount: 1000, columnCount: 26 },
+      { op: "renameSheet", sheetId: 0, title: "\uE000\uE100\uE001" },
+    ])]);
+    expect(() => formulaAt(retitled, 1, "=Q!A1+Sales!A1", 0)).toThrow(UnsimulatedFormula);
+    expect(formulaAt(retitled, 1, "=Sales!A1", 0).text).toBe("='\uE000\uE100\uE001'!A1");
     // More references than those characters can number.
     let many = "=" + Array.from({ length: 6_145 }, () => "Q!A1").join("+");
     expect(() => formulaAt(reused, 0, many, 0)).toThrow(UnsimulatedFormula);

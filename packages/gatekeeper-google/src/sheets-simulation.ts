@@ -218,7 +218,8 @@ const FROZEN = /\uE000([\uE100-\uF8FF])\uE001/g;
 
 /**
  * Thrown for a formula naming a missing sheet that `formulaAt` cannot set aside: its text holds the
- * characters it sets references aside with, or it names missing sheets more often than they number.
+ * characters it sets references aside with, from the start or from a title a queued change gives a
+ * sheet, or it names missing sheets more often than they number.
  */
 export class UnsimulatedFormula extends Error {}
 
@@ -422,6 +423,10 @@ export function formulaAt(grid: Grid, sheetId: number, formula: string, from: nu
   }
   // A formula holding the placeholders' characters itself has none set aside, so its text stands.
   if (frozen.length === 0) return result;
+  // A title a queued change gave a sheet may hold them too, and could not be told from a placeholder.
+  if (result.text.split(FROZEN_START).length - 1 !== frozen.length) {
+    throw new UnsimulatedFormula("A formula names a missing sheet in a way that cannot be followed.");
+  }
   return {
     ...result,
     text: result.text.replace(FROZEN, (match, index: string) => frozen[index.charCodeAt(0) - FROZEN_INDEX] ?? match),
