@@ -1127,6 +1127,8 @@ Create a worktree: a file tree rooted at a git commit, which you can then read a
 
 \`commitId\` is a full git commit id (40 hex digits; abbreviated ids are not accepted) already known to this workspace — typically one returned by a connection's API (e.g. a repository's branch or commit listing). Look the commit up through the connection first if you only know a branch or tag name.
 
+To push commits made here, push through the connection you looked the base commit up through: a push is checked against the history that connection provided, and fails through any other, even one to the same repository.
+
 In \`executeCode\`, the worktree's env binding additionally offers a programmatic API — \`listFiles\`, \`grep\`, \`commit\` (write a git commit of the worktree's content), \`diff\`, and more; use \`describeBinding\` to see it.
 `.trim();
 
