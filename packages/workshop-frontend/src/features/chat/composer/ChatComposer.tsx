@@ -705,6 +705,11 @@ export const ChatComposer = ({
               : "Connection hiccup — your message may not have been sent. Try again; if it keeps failing, reload the page."}
           </div>
         )}
+        <ComposerAttachmentTray
+          attachments={pendingAttachments}
+          disabled={isSending}
+          onRemove={removeAttachment}
+        />
         {/* Textarea */}
         <div className="relative px-4 pb-1 pt-3">
           {slashCommandPicker.popup}
@@ -890,12 +895,6 @@ export const ChatComposer = ({
             />
           </div>
         </div>
-
-        <ComposerAttachmentTray
-          attachments={pendingAttachments}
-          disabled={isSending}
-          onRemove={removeAttachment}
-        />
 
         {/* Footer row: connection/options left, model + send right */}
         <div className="flex items-center justify-between gap-1.5 px-3 pb-1.5">
