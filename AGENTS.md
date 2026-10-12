@@ -22,6 +22,7 @@ reviewing or answering questions about code under its directory:
 | `packages/gatekeeper-x/AGENTS.md` | X, whose reads are billed |
 | `packages/gatekeeper-microsoft/AGENTS.md` | Microsoft 365: SharePoint, Outlook, Calendar |
 | `packages/gatekeeper-websearch/AGENTS.md` | Web Search |
+| `packages/gatekeeper-unifi/AGENTS.md` | UniFi Network and Protect, through Site Manager or a console |
 | `packages/mcp-shared/AGENTS.md` | MCP / MCP Server Portal gatekeepers |
 | `packages/observability/AGENTS.md` | server logging, issue reporting, metrics |
 | `packages/error-reporting/AGENTS.md` | frontend error reporting |
