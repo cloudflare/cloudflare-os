@@ -458,6 +458,9 @@ class SheetsProvider {
     } else {
       if (end > size) throw new Invalid("range.endIndex is past the grid");
       if (count >= size) throw new Invalid(`You can't delete all the ${rows ? "rows" : "columns"} on the sheet.`);
+      if (size - count <= ((rows ? sheet.frozenRowCount : sheet.frozenColumnCount) ?? 0)) {
+        throw new Invalid(`You can't delete all the ${rows ? "rows" : "columns"} on the sheet that aren't frozen.`);
+      }
     }
     state.cells = new Map([...state.cells].flatMap(([cell, value]) => {
       let [sheetId, row, column] = cell.split(":").map(Number);
@@ -1563,6 +1566,43 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
       .toEqual(["Region", "ANZ", "elsewhere"]);
   });
 
+  it("fails a batch adding a sheet after a rejected one, whose position counts it, without writing", async () => {
+    let provider = budget();
+    let sheets = gatekeeper();
+    let front = await sheets.queued([{ op: "addSheet", title: "Q4", index: 0 }]);
+    // Between Sales and Q3 Plan once Q4 is first.
+    let between = await sheets.queued([{ op: "addSheet", title: "Q5", index: 2 }]);
+    expect((await sheets.info()).sheets.map(s => s.title)).toEqual(["Q4", "Sales", "Q5", "Q3 Plan"]);
+
+    expect(await sheets.reject(front.actionId!)).toEqual({ restart: true });
+    expect(await sheets.apply(between.actionId!)).toBe(
+      `This change no longer applies: it builds on change ${front.actionId}, which was not applied.`);
+    expect(provider.batches).toEqual([]);
+  });
+
+  it("fails a copy placed among sheets a collaborator has since reordered, without writing", async () => {
+    let provider = budget();
+    let sheets = gatekeeper();
+    let { actionId } = await sheets.queued([{ op: "duplicateSheet", sheetId: 0 }]);
+    expect((await sheets.info()).sheets.map(s => s.title)).toEqual(["Sales", "Copy of Sales", "Q3 Plan"]);
+
+    // Position 1 would now put the copy before Sales, not after it.
+    provider.sheets = provider.sheets.map(s => ({ ...s, index: 1 - s.index }));
+    expect(await sheets.apply(actionId!)).toBe(CHANGED);
+    expect(provider.batches).toEqual([]);
+  });
+
+  it("fails a deletion of rows that would leave only rows a collaborator has since frozen, without writing", async () => {
+    let provider = budget();
+    let sheets = gatekeeper();
+    let { actionId } = await sheets.queued([{ op: "deleteRows", sheetId: 0, at: 2, count: 19 }]);
+
+    provider.sheets[0] = { ...provider.sheets[0], frozenRowCount: 1 };
+    expect(await sheets.apply(actionId!)).toBe(
+      'This change no longer applies: change 1 (deleteRows): it would leave only the 1 frozen row of "Sales".');
+    expect(provider.batches).toEqual([]);
+  });
+
   it("fails a batch built on a rejected change to rows, without writing", async () => {
     let provider = budget();
     let sheets = gatekeeper();
@@ -1613,7 +1653,11 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
           }),
         ],
       } as Partial<ProviderSheet>),
-      sheetMeta(7, "Q3 Plan", { index: 1, rowCount: 10, columnCount: 4 }),
+      // Google only warns about editing this one, in its own editor.
+      sheetMeta(7, "Q3 Plan", {
+        index: 1, rowCount: 10, columnCount: 4,
+        protectedRanges: [protectedRange(3, { sheetId: 7 }, { requestingUserCanEdit: false, warningOnly: true })],
+      } as Partial<ProviderSheet>),
     ]);
     let sheets = gatekeeper();
 

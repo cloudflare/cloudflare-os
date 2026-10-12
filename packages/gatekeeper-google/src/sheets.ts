@@ -24,7 +24,7 @@ import {
 import { isCellChange, prepareChanges } from "./sheets-input";
 import { findSheet, parseRange, type EnteredValue, type Rect } from "./sheets-model";
 import {
-  checkProtections, guardAfter, guardCells, guardDigest, guardedSheets, resolveChanges, sheetLabels,
+  checkProtections, guardAfter, guardCells, guardDigest, guardOf, resolveChanges, sheetLabels,
 } from "./sheets-plan";
 import type {
   GoogleSpreadsheetReadSession, SpreadsheetInfo, SpreadsheetRange, SpreadsheetValueMode,
@@ -566,7 +566,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
                 "reject the queued changes first.", { cause: error }),
             };
           }
-          let sha256 = await guardDigest(grid.sheets, { sheetIds: guardedSheets(planned), cells }, content);
+          let sha256 = await guardDigest(grid.sheets, guardOf({ changes: planned, guard: { cells } }), content);
           let formulas = content.some(area => area.some(row => row.some(holdsFormula)));
           let guard = { sha256, after: guardAfter(grid, pending, planned, cells, formulas), cells };
           return {

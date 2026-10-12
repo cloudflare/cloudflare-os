@@ -67,10 +67,15 @@ export function spreadsheetMetadata(
   return {
     spreadsheetId,
     properties: { title, locale: "en_US", timeZone: "America/New_York" },
-    sheets: sheets.map(({ id, title: sheetTitle, index, rowCount, columnCount, hidden, protectedRanges }) => ({
+    sheets: sheets.map(({
+      id, title: sheetTitle, index, rowCount, columnCount, hidden, frozenRowCount, frozenColumnCount, protectedRanges,
+    }) => ({
       properties: {
         sheetId: id, title: sheetTitle, index, ...(hidden ? { hidden } : {}),
-        gridProperties: { rowCount, columnCount },
+        gridProperties: {
+          rowCount, columnCount,
+          ...(frozenRowCount ? { frozenRowCount } : {}), ...(frozenColumnCount ? { frozenColumnCount } : {}),
+        },
       },
       ...(protectedRanges ? { protectedRanges } : {}),
     })),

@@ -423,11 +423,13 @@ are listed in `pendingCells`.
 
 Sheets has no revision to pin a write to, so each approved batch is planned against a fresh read
 and guarded by a digest of what it overwrites or removes: the cells it writes and the rows,
-columns and sheets it deletes, as entered, and the title and size of each sheet it addresses,
-ignoring whitespace in formulas. Cells that changes queued before it write are expected to hold what
-those enter, and sheets those restructure to have the shape they leave, so a batch built on one that
-was rejected or failed fails too, as does a batch with a formula when any structural change queued
-before it was not applied. A batch guards at most 50,000 cells. A change whose cells or sheet
+columns and sheets it deletes, as entered, the title and size of each sheet it addresses, and,
+when it adds or copies a sheet, the order of every sheet, ignoring whitespace in formulas. Cells
+that changes queued before it write are expected to hold what those enter, and sheets those
+restructure to have the shape they leave, so a batch built on one that was rejected or failed fails
+too, as does a batch with a formula when any structural change queued before it was not applied,
+and a batch adding or copying a sheet when a sheet queued before it to be added, copied or deleted
+was not. A batch guards at most 50,000 cells. A change whose cells or sheet
 changed since it was queued fails without writing; a collaborator's edit between that read and the
 write is not caught, and formatting is not guarded. Each batch also creates a developer-metadata marker whose ID is minted at queue time,
 which Google stores at most once, so a write whose response is lost is found by its marker or

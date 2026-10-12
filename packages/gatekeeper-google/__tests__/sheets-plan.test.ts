@@ -415,7 +415,9 @@ describe("Sheets apply guard", () => {
       guard: { sha256: "", after: [] },
     };
     let guard = guardOf(batch);
-    expect(guard).toEqual({ sheetIds: [0, 7], cells: [{ sheetId: 7, rect: rect(2, 2, 2, 1) }, { sheetId: 0, rect: rect(0, 0, 1, 2) }] });
+    expect(guard).toEqual({
+      sheetIds: [0, 7], cells: [{ sheetId: 7, rect: rect(2, 2, 2, 1) }, { sheetId: 0, rect: rect(0, 0, 1, 2) }], order: false,
+    });
     // The bytes hashed are those the guard was taken over when it was queued.
     let bytes = new TextEncoder().encode(JSON.stringify([
       [[0, "Sales", 20, 6], [7, "It's", 100, 26]], [[3, null], ["old", ["f", compactFormula(stored)]]],
@@ -580,6 +582,19 @@ describe("Sheets batches built on queued changes", () => {
     let shifted = replayed(grid(SHEETS), rewritten);
     let { planned } = resolveChanges(shifted, prepareChanges([{ op: "duplicateSheet", sheetId: 0 }]), minter(101));
     expect(guardAfter(shifted, rewritten, planned, guardCells(shifted, planned))).toEqual([1, 2]);
+  });
+
+  it("builds a batch adding a sheet on every sheet queued before it to be added, copied or deleted", () => {
+    let tabs = [
+      queued(1, [{ op: "addSheet", sheetId: 50, title: "Q4", index: 0, rowCount: 5, columnCount: 5 }]),
+      queued(2, [{ op: "deleteSheet", sheetId: 7, rowCount: 100, columnCount: 26 }]),
+      queued(3, [{ op: "renameSheet", sheetId: 0, title: "Revenue" }]),
+      queued(4, [{ op: "insertRows", sheetId: 0, start: 0, count: 1 }]),
+    ];
+    let moved = replayed(grid(SHEETS), tabs);
+    let { planned } = resolveChanges(moved, prepareChanges([{ op: "addSheet", title: "Q5", index: 1 }]), minter(101));
+    // Where it lands counts the sheets the first two leave; the others move no sheet.
+    expect(guardAfter(moved, tabs, planned, guardCells(moved, planned))).toEqual([1, 2]);
   });
 
   it("builds a copy on the changes that entered what its original holds as it is copied", () => {

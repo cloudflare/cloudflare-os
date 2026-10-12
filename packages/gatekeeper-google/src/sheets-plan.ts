@@ -154,6 +154,11 @@ function removed(sheets: readonly SimSheet[], gone: SimSheet): SimSheet[] {
     : [other.index > gone.index ? { ...other, index: other.index - 1 } : other]);
 }
 
+// How many of `sheet`'s leading lines along `axis` are frozen; Google keeps at least one unfrozen.
+function frozenCount(sheet: SimSheet, axis: Axis): number {
+  return (axis === "rows" ? sheet.frozenRowCount : sheet.frozenColumnCount) ?? 0;
+}
+
 function withLines(sheet: SimSheet, axis: Axis, lines: Lines): SimSheet {
   return axis === "rows"
     ? { ...sheet, rows: lines, rowCount: lineCount(lines) }
@@ -318,6 +323,11 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
           "cannot be deleted");
       }
       if (change.count >= count) throw conflict(`it would delete every ${noun} of "${sheet.title}"`);
+      // A collaborator may have frozen lines since the change was queued.
+      let frozen = frozenCount(sheet, axis);
+      if (frozen > 0 && count - change.count <= frozen) {
+        throw conflict(`it would leave only the ${plural(frozen, `frozen ${noun}`)} of "${sheet.title}"`);
+      }
       // A band may span millions of lines, so the sheet's entries are found by their position.
       let part = axis === "rows" ? 1 : 2;
       let keys = keysOn(work, sheet.id);
@@ -535,7 +545,7 @@ function resolveLines(
     throw new Error(`${label}: deleting ${band(axis, start, change.count)} would delete every ${noun} ` +
       `of "${sheet.title}", and a sheet keeps at least one.`);
   }
-  let frozen = (axis === "rows" ? sheet.frozenRowCount : sheet.frozenColumnCount) ?? 0;
+  let frozen = frozenCount(sheet, axis);
   if (frozen > 0 && count - change.count <= frozen) {
     throw new Error(`${label}: deleting ${band(axis, start, change.count)} would leave only the ` +
       `${plural(frozen, `frozen ${noun}`)} of "${sheet.title}", and a sheet keeps at least one ${noun} ` +
@@ -643,18 +653,25 @@ export function guardedSheets(changes: readonly PlannedChange[]): number[] {
   return [...addressed].toSorted((a, b) => a - b);
 }
 
+// Whether `changes` place a sheet among the others, at an index that counts them.
+function placesSheet(changes: readonly PlannedChange[]): boolean {
+  return changes.some(change => change.op === "addSheet" || change.op === "duplicateSheet");
+}
+
 /**
- * What a batch's guard covers: the sheets it acts on, and its cells, which a batch queued before
- * the guard named them leaves to be those its changes write.
+ * What a batch's guard covers: the sheets it acts on; its cells, which a batch queued before the
+ * guard named them leaves to be those its changes write; and, when it places a sheet, the sheets'
+ * order.
  */
 export function guardOf(batch: {
   changes: readonly PlannedChange[]; guard: { cells?: readonly SheetArea[] };
-}): { sheetIds: number[]; cells: SheetArea[] } {
+}): { sheetIds: number[]; cells: SheetArea[]; order: boolean } {
   return {
     sheetIds: guardedSheets(batch.changes),
     cells: batch.guard.cells
       ? [...batch.guard.cells]
       : batch.changes.filter(isCellChange).map(({ sheetId, rect }) => ({ sheetId, rect })),
+    order: placesSheet(batch.changes),
   };
 }
 
@@ -675,8 +692,10 @@ function structuralSheets(change: PlannedChange): number[] {
 /**
  * The queued changes a batch builds on, which must have been applied before it: those that
  * entered what `cells` of `grid` hold, those that entered what a sheet the batch copies holds as
- * it is copied, and those changing rows, columns or sheets of a sheet the batch acts on, or of any
- * sheet when the batch enters a formula, copies a sheet, or `guardsFormula`, its guard digests one.
+ * it is copied, those changing rows, columns or sheets of a sheet the batch acts on, or of any
+ * sheet when the batch enters a formula, copies a sheet, or `guardsFormula`, its guard digests one,
+ * and, when the batch places a sheet at an index that counts the others, those adding, copying or
+ * deleting one.
  */
 export function guardAfter(
   grid: Grid, pending: readonly QueuedChange[], planned: readonly PlannedChange[],
@@ -714,9 +733,11 @@ export function guardAfter(
   // on every structural change queued before it.
   let formulas = guardsFormula || planned.some(change => change.op === "duplicateSheet" ||
     (change.op === "writeCells" && change.values.some(row => row.some(isFormula))));
+  let places = placesSheet(planned);
   for (let { id, action } of pending) {
-    if (action.payload.changes.some(change => structuralSheets(change).some(sheetId =>
-      formulas || addressed.has(sheetId)))) {
+    if (action.payload.changes.some(change =>
+      structuralSheets(change).some(sheetId => formulas || addressed.has(sheetId)) ||
+      (places && (placesSheet([change]) || change.op === "deleteSheet")))) {
       after.add(id);
     }
   }
@@ -800,13 +821,14 @@ function digested(value: EnteredValue): unknown {
 
 /**
  * A hex SHA-256 of what a batch overwrites or removes: the size and title of each sheet in
- * `guard.sheetIds`, and the cells of each of `guard.cells` as entered (`entered[i]`, those of
- * `guard.cells[i]`). Whitespace in a formula is ignored, since Google may change it in a formula
- * nobody edits; text is digested exactly.
+ * `guard.sheetIds`, the cells of each of `guard.cells` as entered (`entered[i]`, those of
+ * `guard.cells[i]`), and with `guard.order` every sheet's ID in index order, hidden ones included,
+ * since where a batch places a sheet counts them. Whitespace in a formula is ignored, since Google
+ * may change it in a formula nobody edits; text is digested exactly.
  */
 export async function guardDigest(
   sheets: readonly SheetMeta[],
-  guard: { sheetIds: readonly number[]; cells: readonly SheetArea[] },
+  guard: { sheetIds: readonly number[]; cells: readonly SheetArea[]; order?: boolean },
   entered: readonly (readonly (readonly EnteredValue[])[])[],
 ): Promise<string> {
   let described = guard.sheetIds.map(id => {
@@ -822,7 +844,8 @@ export async function guardDigest(
     }
     return values;
   });
-  let bytes = new TextEncoder().encode(JSON.stringify([described, cells]));
+  let order = guard.order ? [sheets.toSorted((a, b) => a.index - b.index).map(({ id }) => id)] : [];
+  let bytes = new TextEncoder().encode(JSON.stringify([described, cells, ...order]));
   let digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   return Array.from(digest, byte => byte.toString(16).padStart(2, "0")).join("");
 }
