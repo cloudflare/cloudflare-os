@@ -8,7 +8,6 @@ export type WorkshopObservabilityFields = {
   autoProvisioned: boolean;
   blueprintId: string;
   cacheReadTokens: number;
-  cacheWarmStop: "budget" | "failed" | "missed" | "stopped" | "unviewed";
   cacheWriteTokens: number;
   callbackInitiated: boolean;
   chatId: number;
@@ -38,7 +37,6 @@ export type WorkshopObservabilityFields = {
   operation: string;
   outcome: "ok" | "error" | "usage_limit" | "no_email" | "signups_disabled";
   path: string;
-  pingCount: number;
   recordedType: string;
   resourceTitle: string;
   sequence: number;

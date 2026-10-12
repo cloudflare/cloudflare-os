@@ -123,16 +123,17 @@ export type ModelHandle = {
   lastResponse?: { status: number; aiGatewayLogId?: string };
 
   /**
-   * The most recent request `stream` sent with prompt caching on, if the handle can send it again
-   * to keep the provider's cached copy of its prompt (see CachedRequest). Cleared at the start of
-   * every request, so consumers must read it right after the request they care about completes.
+   * The most recent request `stream` completed with prompt caching on, if the handle can send it
+   * again to keep the provider's cached copy of its prompt (see CachedRequest). Cleared at the
+   * start of every request and set once it succeeds, so consumers must read it right after the
+   * request they care about completes.
    */
   lastRequest?: CachedRequest;
 };
 
 /**
- * A request a handle sent with prompt caching on, which it can send again to keep the provider's
- * cached copy of its prompt: each read of that copy restarts its lifetime.
+ * A request a handle completed with prompt caching on, which it can send again to keep the
+ * provider's cached copy of its prompt: each read of that copy restarts its lifetime.
  */
 export type CachedRequest = {
   /** When the request was sent. The provider counts the cache lifetime from a request's start. */
@@ -141,11 +142,16 @@ export type CachedRequest = {
   /** How long the provider keeps the prompt cached after a request last read or wrote it. */
   cacheLifetime: number;
 
-  /** Estimated tokens at the start of the prompt that every chat of the agent's kind sends. */
-  sharedTokens: number;
+  /** What one resend costs, in dollars: a read of the whole prompt from the cache. */
+  resendCost: number;
 
-  /** The model's prices per million tokens, which price each resend too. */
-  prices: ModelCost;
+  /**
+   * What the chat's next request pays extra, in dollars, if the cached copy expires first: a
+   * write of the chat's own part of the prompt instead of a read. The tools and static system
+   * text that start the prompt don't count: they are cached apart from it (for an hour on
+   * Anthropic), and other chats read them too.
+   */
+  expiryCost: number;
 
   /**
    * Sends the request again with the smallest response cap its API takes, through the handle's
@@ -524,6 +530,8 @@ function makeHandle(args: HandleArgs): ModelHandle {
       // This request's own response metadata: concurrent requests on one handle overwrite
       // `lastResponse`, but not this.
       let received: ModelHandle["lastResponse"];
+      // This request as sent, and when, if prompt caching is on.
+      let sent: { payload: unknown; at: number } | undefined;
       const headers: ProviderHeaders = {
         ...args.headers,
         ...options.headers,
@@ -566,35 +574,43 @@ function makeHandle(args: HandleArgs): ModelHandle {
         // blocks (see chat-attachment-pdf.ts), Gemini function calls without a thought signature
         // get Google's stand-in (see signGeminiFunctionCalls), and with caching on, the leading
         // system prompt is split after its static text (see system-prompt-blocks.ts), and a split
-        // request drops pi's per-chat prompt cache key (see withoutPromptCacheKey). The request as
-        // sent is kept for resending (see cachedRequest).
+        // request drops pi's per-chat prompt cache key (see withoutPromptCacheKey).
         onPayload: async (payload, payloadModel) => {
           const replaced = await options.onPayload?.(payload, payloadModel);
           const bridged = bridgePdfAttachments(args.model.api, replaced ?? payload) ?? replaced;
           const signed = signGeminiFunctionCalls(args.model, bridged ?? payload) ?? bridged;
           if (options.cacheRetention === "none") return signed;
           const split = splitSystemPrompt(args.model, transcript, signed ?? payload);
-          const sent = split === undefined
+          const final = split === undefined
               ? signed
               : withoutPromptCacheKey(args.model, split) ?? split;
-          handle.lastRequest = cachedRequest(streamFn, model, transcript, sent ?? payload, {
-            fetch: merged.fetch,
-            apiKey: merged.apiKey,
-            sessionId: merged.sessionId,
-            cacheRetention: options.cacheRetention,
-            headers: args.gatewayMetadata ? {
-              ...headers,
-              "cf-aig-metadata": JSON.stringify({ ...args.gatewayMetadata, source: "cache-warm" }),
-              // The resend is the same every time, which a gateway that caches responses would
-              // answer without asking the provider.
-              "cf-aig-skip-cache": "true",
-            } : headers,
-          });
-          return sent;
+          sent = { payload: final ?? payload, at: Date.now() };
+          return final;
         },
       };
-      return traceChat(model, () => received,
+      const stream = traceChat(model, () => received,
           () => streamFn(model, transcript, merged));
+      // Kept once the request succeeds, which is before its caller can start another.
+      void stream.result().then(message => {
+        if (sent === undefined || message.stopReason === "error" ||
+            message.stopReason === "aborted") {
+          return;
+        }
+        handle.lastRequest = cachedRequest(streamFn, model, transcript, sent, message.usage, {
+          fetch: merged.fetch,
+          apiKey: merged.apiKey,
+          sessionId: merged.sessionId,
+          cacheRetention: options.cacheRetention,
+          headers: args.gatewayMetadata ? {
+            ...headers,
+            "cf-aig-metadata": JSON.stringify({ ...args.gatewayMetadata, source: "cache-warm" }),
+            // The resend is the same every time, which a gateway that caches responses would
+            // answer without asking the provider.
+            "cf-aig-skip-cache": "true",
+          } : headers,
+        });
+      });
+      return stream;
     },
   };
   return handle;
@@ -615,20 +631,25 @@ function withoutPromptCacheKey(model: Model<Api>, payload: unknown): object | un
   return rest;
 }
 
-// `payload`, which a handle sent for `context`, as a CachedRequest that resends it with `routing`:
-// the handle's endpoint, auth and headers. Undefined where resending can't keep the cache (see
-// cappedForResend). Resending takes nothing else from the request, so a kept request holds only
-// its payload, not the caller's options or transcript.
+// The request a handle `sent` for `context`, which completed with `usage`, as a CachedRequest that
+// resends it with `routing`: the handle's endpoint, auth and headers. Undefined where resending
+// can't keep the cache (see cappedForResend). Resending takes nothing else from the request, so a
+// kept request holds only its payload, not the caller's options or transcript.
 function cachedRequest(
     streamFn: StreamFunction<Api, SimpleStreamOptions>, model: Model<Api>, context: Context,
-    payload: unknown, routing: SimpleStreamOptions): CachedRequest | undefined {
-  const resent = cappedForResend(model, payload);
+    sent: { payload: unknown; at: number }, usage: Usage,
+    routing: SimpleStreamOptions): CachedRequest | undefined {
+  const resent = cappedForResend(model, sent.payload);
   if (resent === undefined) return undefined;
+  const { cacheRead, cacheWrite } = model.cost;
+  const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
+  const own = Math.max(prompt - estimateSharedHeadTokens(context), 0);
   return {
-    sentAt: Date.now(),
+    sentAt: sent.at,
     cacheLifetime: resent.cacheLifetime,
-    sharedTokens: estimateSharedHeadTokens(context),
-    prices: model.cost,
+    // Prices are per million tokens.
+    resendCost: prompt * cacheRead / 1e6,
+    expiryCost: own * (cacheWrite - cacheRead) / 1e6,
     resend: async () => {
       // pi builds a request from the context and then replaces it with the payload.
       const message = await streamFn(model, normalizeContext({ messages: [] }),

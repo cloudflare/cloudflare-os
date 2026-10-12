@@ -1,13 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ModelCost, Usage } from "@earendil-works/pi-ai";
+import type { Usage } from "@earendil-works/pi-ai";
 import type { CachedRequest } from "../src/ai-models.js";
 import { ChatCacheWarmer } from "../src/chat-cache-warming.js";
 
 const MINUTE = 60_000;
 const CHAT = 7;
-
-// Anthropic-like prices: reads at a tenth of input, 5-minute writes at 1.25x.
-const PRICES: ModelCost = { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 };
 
 function usage(cacheRead: number, cacheWrite = 0): Usage {
   return {
@@ -16,13 +13,15 @@ function usage(cacheRead: number, cacheWrite = 0): Usage {
   };
 }
 
-// A request sent now that answers every resend with `answer`, as a cache hit by default.
+// A request sent now that answers every resend with `answer`, as a cache hit by default. With
+// Anthropic's prices (reads at a tenth of input, 5-minute writes at 1.25x), a miss of the whole
+// prompt costs 11.5 reads of it.
 function request(
     answer: () => Promise<Usage> = async () => usage(100_000),
     overrides: Partial<CachedRequest> = {}) {
   const resend = vi.fn(answer);
   const cached: CachedRequest = {
-    sentAt: Date.now(), cacheLifetime: 5 * MINUTE, sharedTokens: 0, prices: PRICES, resend,
+    sentAt: Date.now(), cacheLifetime: 5 * MINUTE, resendCost: 1, expiryCost: 11.5, resend,
     ...overrides,
   };
   return { cached, resend };
@@ -43,7 +42,7 @@ describe("ChatCacheWarmer", () => {
   it("resends a viewed chat's request a minute before its cache would expire", async () => {
     warmer.view(CHAT);
     const { cached, resend } = request();
-    warmer.start(CHAT, cached, 100_000);
+    warmer.start(CHAT, cached);
 
     await vi.advanceTimersByTimeAsync(4 * MINUTE - 1);
     expect(resend).not.toHaveBeenCalled();
@@ -58,7 +57,7 @@ describe("ChatCacheWarmer", () => {
   it("doesn't warm a turn that ended with nobody viewing the chat", async () => {
     warmer.view(CHAT)();
     const { cached, resend } = request();
-    warmer.start(CHAT, cached, 100_000);
+    warmer.start(CHAT, cached);
     warmer.view(CHAT);
 
     await vi.advanceTimersByTimeAsync(60 * MINUTE);
@@ -69,7 +68,7 @@ describe("ChatCacheWarmer", () => {
     const leaveFirst = warmer.view(CHAT);
     const leaveSecond = warmer.view(CHAT);
     const { cached, resend } = request();
-    warmer.start(CHAT, cached, 100_000);
+    warmer.start(CHAT, cached);
 
     // Leaving twice counts once, so the chat is still viewed.
     leaveFirst();
@@ -86,31 +85,17 @@ describe("ChatCacheWarmer", () => {
 
   it("stops once the pings have cost as much as the miss they avoid", async () => {
     warmer.view(CHAT);
-    // A miss costs (6.25 - 0.5) / 0.5 = 11.5 reads of the prompt.
     const { cached, resend } = request();
-    warmer.start(CHAT, cached, 100_000);
+    warmer.start(CHAT, cached);
 
     await vi.advanceTimersByTimeAsync(24 * 4 * MINUTE);
     expect(resend).toHaveBeenCalledTimes(11);
   });
 
-  it("counts only the chat's own part of the prompt as what a miss would write", async () => {
+  it("doesn't warm a request whose miss costs no more than one ping", async () => {
     warmer.view(CHAT);
-    // The chat's own 10% costs 1.15 reads of the whole prompt to write again: one ping.
-    const { cached, resend } = request(undefined, { sharedTokens: 90_000 });
-    warmer.start(CHAT, cached, 100_000);
-
-    await vi.advanceTimersByTimeAsync(60 * MINUTE);
-    expect(resend).toHaveBeenCalledTimes(1);
-  });
-
-  it.each([
-    { name: "has no cheaper reads", prices: { ...PRICES, cacheWrite: PRICES.cacheRead } },
-    { name: "is unpriced", prices: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
-  ])("doesn't warm a model that $name", async ({ prices }) => {
-    warmer.view(CHAT);
-    const { cached, resend } = request(undefined, { prices });
-    warmer.start(CHAT, cached, 100_000);
+    const { cached, resend } = request(undefined, { expiryCost: 1 });
+    warmer.start(CHAT, cached);
 
     await vi.advanceTimersByTimeAsync(60 * MINUTE);
     expect(resend).not.toHaveBeenCalled();
@@ -120,7 +105,7 @@ describe("ChatCacheWarmer", () => {
     warmer.view(CHAT);
     const { cached, resend } = request();
     await vi.advanceTimersByTimeAsync(4 * MINUTE);
-    warmer.start(CHAT, cached, 100_000);
+    warmer.start(CHAT, cached);
 
     await vi.advanceTimersByTimeAsync(60 * MINUTE);
     expect(resend).not.toHaveBeenCalled();
@@ -132,7 +117,7 @@ describe("ChatCacheWarmer", () => {
   ])("stops after a ping that $name", async ({ answer }) => {
     warmer.view(CHAT);
     const { cached, resend } = request(answer);
-    warmer.start(CHAT, cached, 100_000);
+    warmer.start(CHAT, cached);
 
     await vi.advanceTimersByTimeAsync(60 * MINUTE);
     expect(resend).toHaveBeenCalledTimes(1);
@@ -141,16 +126,16 @@ describe("ChatCacheWarmer", () => {
   it("stops on stop(), and when a newer request replaces the warmed one", async () => {
     warmer.view(CHAT);
     const first = request();
-    warmer.start(CHAT, first.cached, 100_000);
+    warmer.start(CHAT, first.cached);
     warmer.stop(CHAT);
     await vi.advanceTimersByTimeAsync(60 * MINUTE);
     expect(first.resend).not.toHaveBeenCalled();
 
     const second = request();
-    warmer.start(CHAT, second.cached, 100_000);
+    warmer.start(CHAT, second.cached);
     await vi.advanceTimersByTimeAsync(2 * MINUTE);
     const third = request();
-    warmer.start(CHAT, third.cached, 100_000);
+    warmer.start(CHAT, third.cached);
     await vi.advanceTimersByTimeAsync(4 * MINUTE);
     expect(second.resend).not.toHaveBeenCalled();
     expect(third.resend).toHaveBeenCalledTimes(1);
@@ -160,7 +145,7 @@ describe("ChatCacheWarmer", () => {
     warmer.view(CHAT);
     let answer!: (usage: Usage) => void;
     const { cached, resend } = request(() => new Promise(resolve => { answer = resolve; }));
-    warmer.start(CHAT, cached, 100_000);
+    warmer.start(CHAT, cached);
 
     await vi.advanceTimersByTimeAsync(4 * MINUTE);
     expect(resend).toHaveBeenCalledTimes(1);

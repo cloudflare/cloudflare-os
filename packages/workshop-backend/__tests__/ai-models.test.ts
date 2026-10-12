@@ -1792,21 +1792,82 @@ describe("Resending a request to keep its cache", () => {
     capturedRequests.length = 0;
   });
 
-  // An agent turn's request: a split system prompt, tools, and a user message.
+  // A stream of server-sent events, each named by its type as Anthropic and OpenAI name theirs.
+  const events = (sent: object[]) => new Response(
+      sent.map(event => `event: ${"type" in event ? String(event.type) : ""}\n` +
+          `data: ${JSON.stringify(event)}\n\n`).join(""),
+      { headers: { "content-type": "text/event-stream" } });
+
+  // Answers every request to a 100k-token prompt, 90k of it read from the cache, in the API's own
+  // format. Anthropic's reply counts 5k tokens, which a resend doesn't send again.
+  const answeringFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const request = new Request(input as RequestInfo, init);
+    capturedRequests.push({ url: request.url, headers: request.headers, body: await request.text() });
+    const { pathname } = new URL(request.url);
+    if (pathname.endsWith("/messages")) {
+      return events([
+        { type: "message_start", message: {
+          id: "message", type: "message", role: "assistant", model: "claude", content: [],
+          stop_reason: null, stop_sequence: null,
+          usage: {
+            input_tokens: 10, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 9_990,
+            output_tokens: 1,
+          },
+        } },
+        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "OK" } },
+        { type: "content_block_stop", index: 0 },
+        { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null },
+          usage: { output_tokens: 5_000 } },
+        { type: "message_stop" },
+      ]);
+    }
+    if (pathname.endsWith("/responses")) {
+      const item = {
+        type: "message", id: "message", role: "assistant", status: "completed",
+        content: [{ type: "output_text", text: "OK", annotations: [] }],
+      };
+      return events([
+        { type: "response.output_item.added", output_index: 0,
+          item: { ...item, status: "in_progress", content: [] } },
+        { type: "response.output_item.done", output_index: 0, item },
+        { type: "response.completed", response: {
+          id: "response", status: "completed", output: [item],
+          usage: {
+            input_tokens: 100_000, output_tokens: 1, total_tokens: 100_001,
+            input_tokens_details: { cached_tokens: 90_000 },
+          },
+        } },
+      ]);
+    }
+    const chunk = (choice: object, rest: object = {}) => `data: ${JSON.stringify({
+      id: "completion", object: "chat.completion.chunk", created: 0, model: "model",
+      choices: [{ index: 0, ...choice }], ...rest,
+    })}\n\n`;
+    return new Response(
+        chunk({ delta: { role: "assistant", content: "OK" }, finish_reason: null }) +
+        chunk({ delta: {}, finish_reason: "stop" },
+            { usage: { prompt_tokens: 100_000, completion_tokens: 1, total_tokens: 100_001 } }) +
+        "data: [DONE]\n\n",
+        { headers: { "content-type": "text/event-stream" } });
+  }) as typeof fetch;
+
+  // An agent turn's request: a split system prompt whose static text and tools come to about 10k
+  // tokens, and a user message.
   async function send(handle: ModelHandle,
                       options: NonNullable<Parameters<ModelHandle["stream"]>[2]> = {}) {
     const message = await handle.stream(handle.model, {
       messages: [
         {
-          role: "system", content: "Shared instructions.",
+          role: "system", content: "Shared instructions. ".repeat(1_900),
           sections: { environment: "This workspace's gadgets." },
           toolsAdded: [{ name: "lookUp", description: "Looks up.", parameters: Type.Object({}) }],
           timestamp: 0,
         },
         { role: "user", content: "hello", timestamp: 0 },
       ],
-    }, { fetch: fetchStub, maxRetries: 0, ...options }).result();
-    expect(message.stopReason).toBe("error");
+    }, { fetch: answeringFetch, maxRetries: 0, ...options }).result();
+    expect(message.stopReason).toBe("stop");
   }
 
   // A captured request's headers, less the ones that differ between a request and its resend.
@@ -1822,8 +1883,7 @@ describe("Resending a request to keep its cache", () => {
           metadata: { source: "chat", gadgetId: "gadget-123", chatId: 7 },
         });
     await send(handle);
-    // The stub answers 400, so the resend fails like a real failed request.
-    await expect(handle.lastRequest?.resend()).rejects.toThrow();
+    await expect(handle.lastRequest?.resend()).resolves.toMatchObject({ cacheRead: 90_000 });
 
     const [sent, resent] = capturedRequests;
     expect(resent.url).toBe(sent.url);
@@ -1842,12 +1902,26 @@ describe("Resending a request to keep its cache", () => {
         { provider: "openai", model: "gpt-6-luna", apiToken: "direct-api-token" }, INITIATOR,
         { sessionAffinity: "chat-7" });
     await send(handle);
-    await expect(handle.lastRequest?.resend()).rejects.toThrow();
+    await expect(handle.lastRequest?.resend()).resolves.toMatchObject({ cacheRead: 90_000 });
 
     const [sent, resent] = capturedRequests;
     expect(JSON.parse(resent.body)).toEqual({ ...JSON.parse(sent.body), max_output_tokens: 16 });
     expect(sharedHeaders(resent)).toEqual(sharedHeaders(sent));
     expect(handle.lastRequest?.cacheLifetime).toBe(30 * 60_000);
+  }, 15000);
+
+  it("prices a resend as a read of the whole prompt, and a miss as a write of the chat's own part",
+      async () => {
+    const handle = getModel(env(), { provider: "anthropic", model: "claude-opus-5-5", apiToken: "" },
+        INITIATOR);
+    await send(handle);
+
+    const { cacheRead, cacheWrite } = handle.model.cost;
+    expect(handle.lastRequest?.resendCost).toBeCloseTo(100_000 * cacheRead / 1e6, 6);
+    // The tools and static system text, about 10k tokens, are cached apart from the chat's part.
+    const ownTokens = handle.lastRequest!.expiryCost / ((cacheWrite - cacheRead) / 1e6);
+    expect(ownTokens).toBeGreaterThan(89_900);
+    expect(ownTokens).toBeLessThan(90_100);
   }, 15000);
 
   it.each([
@@ -1863,11 +1937,16 @@ describe("Resending a request to keep its cache", () => {
     expect(handle.lastRequest).toBeUndefined();
   }, 15000);
 
-  it("forgets the request once the handle sends one with caching off", async () => {
+  it("keeps no request that failed, or that the handle sent with caching off", async () => {
     const handle = getModel(env(), ANTHROPIC_CONFIG, INITIATOR);
     await send(handle);
     expect(handle.lastRequest).toBeDefined();
     await send(handle, { cacheRetention: "none" });
+    expect(handle.lastRequest).toBeUndefined();
+
+    await send(handle);
+    await handle.stream(handle.model, { messages: [{ role: "user", content: "hi", timestamp: 0 }] },
+        { fetch: fetchStub, maxRetries: 0 }).result();
     expect(handle.lastRequest).toBeUndefined();
   }, 15000);
 });
