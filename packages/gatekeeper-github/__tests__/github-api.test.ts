@@ -206,6 +206,14 @@ describe("GitHubApi git reads", () => {
     const api = new GitHubApi(async () => "test-token");
     expect(await api.getBranchHead("cloudflare", "workerd", "main")).toBeNull();
   });
+
+  it("refuses a branch name that would climb out of the repository, before any request", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const api = new GitHubApi(async () => "test-token");
+    await expect(api.getBranchHead("cloudflare", "workerd", "../../../../../../repos/victim/secret/git/ref/heads/main"))
+      .rejects.toThrow("invalid branch name");
+    expect(fetch).not.toHaveBeenCalled();
+  });
 });
 
 describe("GitHubApi redirects", () => {

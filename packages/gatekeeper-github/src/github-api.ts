@@ -1,4 +1,5 @@
 import { CredentialsExpiredError, isCredentialsExpired, type RefreshCredentials } from "@gadgets/gatekeeper-kit/credentials";
+import { validateBranchName } from "@gadgets/gatekeeper-kit/git-transport";
 import {
   isInvalidGrant, mergeOAuthTokens, OAuthClient, oauthRefresh,
 } from "@gadgets/gatekeeper-kit/oauth-client";
@@ -1350,14 +1351,15 @@ export class GitHubApi {
    * Always an unconditional, uncached read: callers use this to bind a push's expected old head,
    * which must reflect the remote's live state. Read as the exact git ref, because
    * `/branches/<name>` redirects a renamed branch's old name to the new one (as `master` does in
-   * many repositories), and git has no such alias.
+   * many repositories), and git has no such alias. The name is validated first: it is encoded
+   * segment by segment, so a `..` segment would otherwise climb out of the repository.
    */
   async getBranchHead(owner: string, repo: string, branch: string): Promise<string | null> {
     try {
       const result = await this.#request<{ object: { sha: string } }>(
         "GET",
         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${
-          branch.split("/").map(encodeURIComponent).join("/")}`,
+          validateBranchName(branch).split("/").map(encodeURIComponent).join("/")}`,
       );
       return result.data.object.sha;
     } catch (error) {
