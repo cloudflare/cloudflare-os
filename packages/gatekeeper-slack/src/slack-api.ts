@@ -650,9 +650,10 @@ export class SlackApi {
     // Shared channels belong to several workspaces. Their host is not their access boundary.
     if (channel.shared_team_ids?.length) {
       if (channel.shared_team_ids.includes(teamId)) return;
-      throw new SlackApiError("access_denied", 200);
-    }
-    if (channel.team_id === teamId) return;
+      // Enterprise DMs can be listed in this workspace while sharing metadata names another.
+      // Unlike shared channels, a mismatch must fall through to workspace-scoped DM discovery.
+      if (!channel.is_im && !channel.is_mpim) throw new SlackApiError("access_denied", 200);
+    } else if (channel.team_id === teamId) return;
     // DMs and older channel responses can omit workspace metadata. Prove membership through a
     // workspace-scoped listing rather than treating an org token's visibility (or its requested
     // context_team_id) as sufficient. This also handles shared channels hosted elsewhere.

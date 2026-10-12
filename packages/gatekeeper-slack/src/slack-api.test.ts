@@ -61,6 +61,32 @@ function mockSlack(org = true) {
 
 const api = (teamId = "TONE") => new SlackApi(async () => "test-token").forWorkspace(teamId);
 
+function mockEnterpriseDm(kind: "im" | "mpim", listed = true) {
+  mockSlack();
+  // Captured Enterprise DM shape: org viewing context, no team_id, and sharing metadata
+  // naming a different workspace even though selected-workspace discovery includes the DM.
+  channel = { id: "DONE", is_im: kind === "im", is_mpim: kind === "mpim",
+    context_team_id: "EORG", shared_team_ids: ["TTWO"] };
+  let fetchSlack = fetch;
+  vi.stubGlobal("fetch", async (input: string) => {
+    let url = new URL(input);
+    let method = url.pathname.split("/").pop();
+    if (method === "users.conversations") {
+      requests.push(url);
+      return url.searchParams.has("cursor")
+          ? Response.json({ ok: true, channels: listed && url.searchParams.get("team_id") === "TONE"
+              ? [channel] : [] })
+          : Response.json({ ok: true, channels: [], response_metadata: { next_cursor: "dm-page" } });
+    }
+    if (method === "search.messages") {
+      requests.push(url);
+      return Response.json({ ok: true, messages: { matches: [{ ts: "123.000001", text: "test",
+        channel: { id: "DONE" } }], paging: { page: 1, pages: 1 } } });
+    }
+    return fetchSlack(input);
+  });
+}
+
 function mockCredentialChange() {
   mockSlack();
   let token = "org-token";
@@ -361,6 +387,34 @@ describe("Slack org installations", () => {
   it("also verifies DMs with empty sharing metadata rather than rejecting every DM", async () => {
     mockSlack(); channel = { id: "DONE", is_im: true, shared_team_ids: [] };
     await expect(api().getConversationInfo("DONE")).resolves.toMatchObject({ id: "DONE", kind: "im" });
+  });
+
+  it.each(["im", "mpim"] as const)("proves an Enterprise %s despite mismatched shared-team metadata", async kind => {
+    mockEnterpriseDm(kind);
+    let client = api();
+    await expect(client.getConversationInfo("DONE")).resolves.toMatchObject({ id: "DONE", kind });
+    await expect(client.listHistory("DONE", undefined, 1)).resolves.toMatchObject({ items: [{ text: "test" }] });
+    await expect(client.listReplies("DONE", "123.000001", undefined, 1))
+        .resolves.toMatchObject({ items: [{ text: "test" }] });
+    await expect(client.listConversationMembers("DONE", undefined, 10)).resolves.toMatchObject({ items: ["WSELF"] });
+    await expect(client.searchMessages("test", undefined, 10))
+        .resolves.toMatchObject({ items: [{ channelId: "DONE", message: { text: "test" } }] });
+    let proofs = requests.filter(url => url.pathname.endsWith("users.conversations"));
+    expect(proofs.some(url => url.searchParams.get("cursor") === "dm-page")).toBe(true);
+    for (let proof of proofs) {
+      expect(proof.searchParams.get("team_id")).toBe("TONE");
+      expect(proof.searchParams.get("types")).toBe(kind);
+    }
+  });
+
+  it.each(["im", "mpim"] as const)("denies an Enterprise %s absent from the selected workspace", async kind => {
+    mockEnterpriseDm(kind, false);
+    // Nonmatching sharing metadata must still require the listing proof, not another metadata hint.
+    channel.team_id = channel.context_team_id = "TONE";
+    let client = api();
+    await expect(client.listHistory("DONE", undefined, 1)).rejects.toMatchObject({ code: "access_denied" });
+    await expect(client.searchMessages("test", undefined, 10)).rejects.toMatchObject({ code: "access_denied" });
+    expect(requests.some(url => url.pathname.endsWith("conversations.history"))).toBe(false);
   });
 
   it("does not mistake a requested viewing context for membership in a foreign channel", async () => {

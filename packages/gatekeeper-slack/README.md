@@ -57,6 +57,13 @@ workspace-scoped conversation listing. Search matches undergo the same check. Di
 is limited to the workspace directory; author/mention resolution can still resolve participants
 from other workspaces in shared channels.
 
+Enterprise DM responses can name another workspace in `shared_team_ids` even when the selected
+workspace's DM discovery includes the conversation. For DMs and group DMs, that mismatch falls
+through to the existing workspace-scoped `users.conversations` proof instead of rejecting the
+read. An exact conversation ID must still be found in the selected workspace's listing; neither
+org-token visibility nor `context_team_id` is sufficient. Shared-channel mismatch denials are
+unchanged. See the [users.conversations reference](https://docs.slack.dev/reference/methods/users.conversations/).
+
 Observer checks use each collaborator's own credentials and the selected workspace ID, never
 enterprise-ID equality. Workspace bindings additionally track the conversations actually read,
 excluding collaborators who cannot read newly observed private channels or DMs.
@@ -129,5 +136,7 @@ pnpm --filter @gadgets/slack-gatekeeper test:run
 
 Node regression tests cover OAuth response shapes, workspace API parameters, shared-channel/DM
 boundaries, legacy recovery, reconnects, observer exclusion, and configurator field dependencies.
+Enterprise DM regressions include nonmatching shared-team metadata, membership on a later listing
+page, nonempty search validation, and denial when the conversation is absent from that workspace.
 Validate the Worker RPC schema with `pnpm exec capnweb-validate build --out .wrangler/validate`
 from this package before a local Wrangler dry-run.
