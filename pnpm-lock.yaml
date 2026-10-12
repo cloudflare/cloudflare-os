@@ -1307,6 +1307,9 @@ importers:
       hash-wasm:
         specifier: ^4.12.0
         version: 4.12.0
+      motion:
+        specifier: ^13.4.3
+        version: 13.4.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       react:
         specifier: ^19.2.8
         version: 19.2.8

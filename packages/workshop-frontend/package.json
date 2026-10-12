@@ -38,6 +38,7 @@
     "@tanstack/react-router": "^1.170.39",
     "capnweb": "catalog:",
     "hash-wasm": "^4.12.0",
+    "motion": "^13.4.3",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-markdown": "^10.1.0",
