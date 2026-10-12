@@ -1080,6 +1080,18 @@ keeps `claimed` out of `listUndecided` below, which converting the claim makes n
 They stay pending, fail at the provider if the effect never landed, and clear by rejection —
 exactly a corpus dependent whose creator never resolved.
 
+**A dependent is refused at submit once nothing can provide its reference.** The cascade scans
+submitted records, so a dependent submitted *after* its provider was rejected escaped it, and every
+apply then failed retryably on the unresolved reference — an auto-approvable one stopping the
+Workshop's in-order drain for every later action on the binding. By hand, Jira and cf-wiki only
+withhold auto-approval from a dependent whose reference will not resolve, and X's sessions refuse a
+temporary id whose pending action is gone. `submit` now asks, inside the submission lane so it
+cannot race the provider's own staging, whether each `dependsOn` reference is resolved
+(`isResolvedReference`) or provided by a pending or claimed record, and refuses the action before
+allocating otherwise. A provider decided in the one round trip while the dependent is being
+delivered escapes the cascade, which cannot see a staged record, so `submit` asks again once the
+dependent is submitted and fails it the way the cascade would have.
+
 `provides` and `dependsOn` return arrays, not `Iterable<string>`. Every one of those six cascades
 keys on a scalar string — confluence's `parentId`, notion's `pageId`, github's `targetId`, linear's
 `issueRef`, spotify's `playlistId`, cf-wiki's `provisionalId` — and `string` satisfies
@@ -3334,7 +3346,12 @@ evidence, and the trigger.
   idempotency key and lookup by it — 0 of 15 live writers probe today, and three independently chose
   the manual-check message instead (`mcp-shared/src/action-store.ts:43-46`,
   `ironclad.ts:916-931`, and the kit). Half the work is already done: `ActionContext.id` is the
-  stable key such a probe would look up.
+  stable key such a probe would look up. Reviewed again and still deferred: X, the one candidate,
+  has neither (its probe matches recent posts by text inside a time window), Google Chat sets
+  `requestId` and needs no claim at all, and internal Jira and Salesforce refuse the retry, which
+  `claimBeforeApply` already does. A probe keyed on a gatekeeper's own attempt marker also misreads
+  the gap between the provider's success and the journal's applied record: the marker is cleared
+  first, so a crash there reads as absent and dispatches again.
 - **A `reverting` marker** for the retained tier, so an interrupted compensating call is
   distinguishable from a completed one. No gatekeeper in either corpus persists one, which is why
   all 11 functional reverts are silently replayable; the kit already owns the right primitive in

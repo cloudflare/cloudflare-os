@@ -562,6 +562,11 @@ provider" warning survives.
 substitutes for a provider idempotency key derived from the stable `ActionContext.id`, which is
 what makes a retry safe in the first place.
 
+`submit` refuses a payload whose `dependsOn` names a reference that is neither resolved nor
+provided by a pending or claimed action: once its provider was rejected or failed, every apply
+would fail retryably, and an auto-approvable one would stall the drain behind it. A provider
+decided while the dependent was being delivered fails it instead, as the cascade would have.
+
 ### Describe with `buildDescription`
 
 Write `describe` with `buildDescription` from `@gadgets/gatekeeper-kit/action-description`. The
