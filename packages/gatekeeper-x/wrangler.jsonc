@@ -36,6 +36,14 @@
         "UserAccount",
         "XGatekeeperImpl"
       ]
+    },
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "XHookDriver",
+        "XActivityRouter",
+        "XWebhookRegistry"
+      ]
     }
   ]
 }

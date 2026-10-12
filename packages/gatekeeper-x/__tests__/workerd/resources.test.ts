@@ -58,6 +58,7 @@ describe("describe", () => {
     const description = unwrap(await hooks().describe(crypto.randomUUID(), { userObjectId, resourceKind: "account" }));
     expect(description).toEqual({
       url: ACCOUNT_URL, title: "@alice", snippet: "Alice", suggestedBindingName: "X", tsType: "XAccountSession",
+      hookTsType: "XPostHook",
     });
     expect(x.requests).toHaveLength(0);
   });
@@ -71,6 +72,7 @@ describe("describe", () => {
     const description = unwrap(await hooks().describe(name, props)) as { title: string; snippet: string; url: string };
     expect(description).toMatchObject({
       url: `https://x.com/bob/status/${post.id}`, title: "Post by @bob", suggestedBindingName: "X_POST", tsType: "XPost",
+      hookTsType: "XPostHook",
     });
     expect([...description.snippet]).toHaveLength(100);
     await hooks().restart(name);
@@ -82,10 +84,12 @@ describe("describe", () => {
     const x = new FakeX().install();
     const userObjectId = await seedAccount(x);
     x.lists.set("5", { id: "5", name: "Friends", owner_id: BOB.id, member_count: 1 });
-    expect(unwrap(await hooks().describe(crypto.randomUUID(), { userObjectId, resourceKind: "list", listId: "5" })))
-      .toMatchObject({ title: "Friends", snippet: "List by @bob · 1 member", url: "https://x.com/i/lists/5", tsType: "XList" });
+    const list = unwrap(await hooks().describe(crypto.randomUUID(), { userObjectId, resourceKind: "list", listId: "5" }));
+    expect(list).toMatchObject({ title: "Friends", snippet: "List by @bob · 1 member", url: "https://x.com/i/lists/5", tsType: "XList" });
+    // A List has nothing to subscribe to.
+    expect(list).not.toHaveProperty("hookTsType");
     expect(unwrap(await hooks().describe(crypto.randomUUID(), { userObjectId, resourceKind: "profile", username: "alice" })))
-      .toMatchObject({ title: "@alice", snippet: "Alice · 10 followers", url: "https://x.com/alice", tsType: "XProfile" });
+      .toMatchObject({ title: "@alice", snippet: "Alice · 10 followers", url: "https://x.com/alice", tsType: "XProfile", hookTsType: "XPostHook" });
   });
 
   it("refuses to describe a post the account can't see", async () => {

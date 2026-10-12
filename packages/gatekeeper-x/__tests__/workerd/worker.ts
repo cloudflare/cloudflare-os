@@ -6,15 +6,20 @@
 // a facet, or to a session it mints, cannot be handed to the test, so TestHooks runs each scenario
 // itself -- a chain of method calls on a session -- and returns the result as plain data.
 
-import { DurableObject, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
+import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint, restore } from "cloudflare:workers";
 import type {
-  ActionDescription, ConnectHandoff, GatekeeperConnectCallback, ObservationDescription,
+  ActionDescription, ConnectHandoff, GatekeeperConnectCallback, HookController, HookDescription, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
+import type { XPostEvent } from "../../src/types.js";
 import type { XGatekeeperImplProps } from "../../src/x-env.js";
+import type { XHookParams } from "../../src/x-hooks.js";
 
 export { default } from "../../src/x.js";
 export * from "../../src/x.js";
-import { GatekeeperUserImpl, XVerifier } from "../../src/x.js";
+// Named as well, since the pool builds `ctx.exports` entrypoints only from exports it can see
+// statically, and the facet, the controller and the drivers mint these.
+export { XActivityRouter, XHookController, XHookDriver, XWebhookRegistry } from "../../src/x.js";
+import { GatekeeperUserImpl, XGatekeeperImpl, XVerifier } from "../../src/x.js";
 
 /**
  * The account entrypoint, reachable for tests. Under the capnweb-validate *vite* plugin, which
@@ -223,4 +228,198 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     const account = this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(userObjectId));
     return await outcome(() => (account as unknown as Callable)[method](...args));
   }
+
+  // -- hooks, with this object standing in for the overseer --------------------------------
+  //
+  // One hook per TestHooks object: subscribing stores the controller it binds, enabling hands it an
+  // initiator whose firings reach `startHook()` here, and those firings deliver to a RecordingHook
+  // over `#firingQueue`.
+
+  #hook: HookState = { received: [], failures: 0, admissionFailures: 0 };
+  #firingQueue = new FiringQueue();
+
+  /** Subscribes through a session, as executeCode would: `steps` lead to the method that takes the hook. */
+  async subscribeHook(facetName: string, props: GatekeeperProps, steps: Step[]): Promise<Outcome<HookDescription>> {
+    return await outcome(async () => {
+      const facet = this.#gatekeeper(facetName, props) as unknown as HookFacet;
+      await facet.testRestoreThrough(this.ctx.id.toString(), facetName, props);
+      using queue = new RpcStub(new BindingQueue(this.ctx.storage));
+      using hook = new RpcStub(new RecordingHook(this.#hook));
+      const session = await facet.startSession(queue as never);
+      try {
+        let target: Callable = session;
+        for (const [index, [method, ...args]] of steps.entries()) {
+          const result = await target[method](...(index === steps.length - 1 ? [...args, hook] : args));
+          target = result as Callable;
+        }
+      } finally {
+        session[Symbol.dispose]?.();
+      }
+      return this.ctx.storage.kv.get<HookDescription>("hookDescription")!;
+    });
+  }
+
+  async enableHook(): Promise<Outcome<void>> {
+    const initiator = (this.ctx.exports as unknown as HookExports).TestHookInitiator({ props: { hooks: this.ctx.id.toString() } });
+    return await outcome(() => this.#controller().enable(initiator as never, { workspaceId: "test-workspace" }));
+  }
+
+  async disableHook(): Promise<Outcome<void>> {
+    return await outcome(() => this.#controller().disable());
+  }
+
+  /** The overseer's `HookInitiator.startHook()`, for this object's hook. */
+  startHook() {
+    if (this.#hook.admissionFailures > 0) {
+      this.#hook.admissionFailures--;
+      throw new Error("The test Workshop failed to start the firing.");
+    }
+    return { callback: new RecordingHook(this.#hook), approvalQueue: new RpcStub(this.#firingQueue) };
+  }
+
+  /** What a delivery stub the facet minted reaches: the facet's own `[restore]()` target. */
+  async deliverHook(facetName: string, props: GatekeeperProps, params: XHookParams,
+                    callback: RpcStub<RpcTarget>, approvalQueue: RpcStub<RpcTarget>, event: unknown): Promise<void> {
+    await (this.#gatekeeper(facetName, props) as unknown as HookFacet).testDeliver(params, callback, approvalQueue, event);
+  }
+
+  setHookBehavior(behavior: Partial<Omit<HookState, "received">>): void {
+    Object.assign(this.#hook, behavior);
+  }
+
+  /** What the hook received, and what its firings observed and queued. */
+  readHook() {
+    return {
+      received: this.#hook.received, capabilities: this.#hook.capabilities ?? [], failures: this.#hook.failures,
+      ...this.#firingQueue.read(),
+    };
+  }
+
+  #controller(): HookController<RpcTarget> {
+    const controller = this.ctx.storage.kv.get<HookController<RpcTarget>>("hookController");
+    if (!controller) throw new Error("No hook has been bound.");
+    return controller;
+  }
 }
+
+/** A gadget's hook, sharing its state with the TestHooks object that fires it. */
+type HookState = {
+  /** Each event received, without its capability. */
+  received: Omit<XPostEvent, "post">[];
+  /** Whether each event received carried a capability. */
+  capabilities?: boolean[];
+  /** Fail this many more deliveries. */
+  failures: number;
+  /** Fail this many more `startHook()` calls, as the Workshop refusing a firing would. */
+  admissionFailures: number;
+  /** Reply with this through each event's post. */
+  reply?: string;
+};
+
+/** The facet methods the hook harness calls, two of them installed below for the tests. */
+type HookFacet = {
+  startSession(queue: never): Promise<Callable>;
+  testRestoreThrough(hooks: string, facetName: string, props: GatekeeperProps): Promise<void>;
+  testDeliver(params: XHookParams, callback: unknown, queue: unknown, event: unknown): Promise<void>;
+};
+
+type TestHookDeliveryProps = { hooks: string; facetName: string; props: GatekeeperProps; params: XHookParams };
+
+/** This worker's hook entrypoints, which the gatekeeper's generated `Cloudflare.Exports` omits. */
+type HookExports = {
+  TestHooks: DurableObjectNamespace<TestHooks>;
+  TestHookInitiator(options: { props: { hooks: string } }): Fetcher;
+  TestHookDelivery(options: { props: TestHookDeliveryProps }): Fetcher;
+};
+
+function testHooks(exports: Cloudflare.Exports, id: string) {
+  const namespace = (exports as unknown as HookExports).TestHooks;
+  return namespace.get(namespace.idFromString(id));
+}
+
+/** The overseer's HookInitiator: each firing reaches the TestHooks object that enabled the hook. */
+export class TestHookInitiator extends WorkerEntrypoint<Cloudflare.Env, { hooks: string }> {
+  startHook() {
+    return testHooks(this.ctx.exports, this.ctx.props.hooks).startHook();
+  }
+}
+
+/**
+ * Stands in for the stub the facet mints with ctx.restore(), which this pool cannot do (its Durable
+ * Object wrappers don't forward `[restore]`): it reaches the facet's real `[restore]` target
+ * through TestHooks.
+ */
+export class TestHookDelivery extends WorkerEntrypoint<Cloudflare.Env, TestHookDeliveryProps> {
+  deliver(callback: RpcStub<RpcTarget>, approvalQueue: RpcStub<RpcTarget>, event: unknown) {
+    const { hooks, facetName, props, params } = this.ctx.props;
+    return testHooks(this.ctx.exports, hooks).deliverHook(facetName, props, params, callback, approvalQueue, event);
+  }
+}
+
+/** The queue a subscription binds its hook on: keeps the controller, as the overseer would. */
+class BindingQueue extends RpcTarget {
+  constructor(private readonly storage: DurableObjectStorage) {
+    super();
+  }
+
+  async bindHook(controller: unknown, _callback: unknown, description: HookDescription): Promise<void> {
+    this.storage.kv.put("hookController", controller);
+    this.storage.kv.put("hookDescription", description);
+  }
+}
+
+/** The approval queue of every firing: records what the deliveries observed and queued. */
+class FiringQueue extends RpcTarget {
+  #observations: ObservationDescription[] = [];
+  #submissions: { actionId: number; title: string }[] = [];
+
+  async authorizeObservation(observation: ObservationDescription): Promise<void> {
+    this.#observations.push(observation);
+  }
+
+  async submitAction(actionId: number, description: { title: string }): Promise<void> {
+    this.#submissions.push({ actionId, title: description.title });
+  }
+
+  read() {
+    return { observations: this.#observations, submissions: this.#submissions };
+  }
+}
+
+/** A gadget's post hook: records each event, and fails or replies as its state says. */
+class RecordingHook extends RpcTarget {
+  constructor(private readonly state: HookState) {
+    super();
+  }
+
+  async receivePost(event: XPostEvent): Promise<void> {
+    const { post, ...received } = event;
+    try {
+      if (this.state.failures > 0) {
+        this.state.failures--;
+        throw new Error("The test hook failed.");
+      }
+      this.state.received.push(received);
+      (this.state.capabilities ??= []).push(post !== undefined);
+      if (this.state.reply !== undefined) await post?.reply({ text: this.state.reply });
+    } finally {
+      (post as Partial<Disposable> | undefined)?.[Symbol.dispose]?.();
+    }
+  }
+}
+
+type TestX = XGatekeeperImpl & HookFacet;
+const testPrototype = XGatekeeperImpl.prototype as TestX;
+
+/** Make this facet's ctx.restore() mint TestHookDelivery stubs that route back to `[restore]`. */
+testPrototype.testRestoreThrough = async function(hooks, facetName, props) {
+  const { ctx } = this as unknown as { ctx: DurableObjectState };
+  const exports = ctx.exports as unknown as HookExports;
+  ctx.restore = async (params: XHookParams) => Object.assign(
+    exports.TestHookDelivery({ props: { hooks, facetName, props, params } }), { [Symbol.dispose]() {} });
+};
+
+/** Deliver through the target the facet's `[restore]()` returns for a hook's delivery stub. */
+testPrototype.testDeliver = function(params, callback, queue, event) {
+  return this[restore](params).deliver(callback as never, queue as never, event as never);
+};

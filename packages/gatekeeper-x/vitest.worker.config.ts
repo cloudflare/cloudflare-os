@@ -23,6 +23,9 @@ export default defineConfig({
         durableObjects: {
           USER_ACCOUNT: { className: "UserAccount", useSQLite: true },
           X_GATEKEEPER: { className: "XGatekeeperImpl", useSQLite: true },
+          X_HOOK_DRIVER: { className: "XHookDriver", useSQLite: true },
+          X_ACTIVITY_ROUTER: { className: "XActivityRouter", useSQLite: true },
+          X_WEBHOOK_REGISTRY: { className: "XWebhookRegistry", useSQLite: true },
           TEST_HOOKS: { className: "TestHooks", useSQLite: true },
         },
         bindings: {
@@ -30,6 +33,8 @@ export default defineConfig({
           CLIENT_SECRET: "test-client-secret",
           BASE_URL: "http://localhost:8787/gatekeeper/x",
           X_DAILY_READ_LIMIT: "50",
+          WEBHOOK_ORIGIN: "https://gadgets.test",
+          X_APP_BEARER_TOKEN: "test-app-token",
         },
       },
     }),

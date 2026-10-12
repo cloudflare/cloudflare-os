@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   BASE_SCOPES, DEFAULT_DAILY_READ_LIMIT, RESOURCES, RESOURCE_SCOPES, dailyReadLimit, getRedirectUri,
-  grantedResourcePatterns, kindOfPattern, scopesFor, type Env,
+  grantedResourcePatterns, kindOfPattern, scopesFor, webhookUrl, type Env,
 } from "../src/x-env";
 
 describe("getRedirectUri", () => {
@@ -60,6 +60,27 @@ describe("kindOfPattern", () => {
     expect(kindOfPattern(RESOURCES.post.urlPattern)).toBe("post");
     expect(kindOfPattern("https://x.com/*")).toBeUndefined();
   });
+});
+
+describe("webhookUrl", () => {
+  const env = (origin: string | undefined, token: string | undefined) =>
+    ({ WEBHOOK_ORIGIN: origin, X_APP_BEARER_TOKEN: token, BASE_URL: "https://gadgets.example.com/gatekeeper/x" }) as Env;
+
+  it("is where X delivers once both settings are present", () => {
+    expect(webhookUrl(env("https://hooks.example.com", "app-token"))).toBe("https://hooks.example.com/gatekeeper/x/webhook");
+    expect(webhookUrl(env("https://Hooks.Example.com/", "app-token"))).toBe("https://hooks.example.com/gatekeeper/x/webhook");
+  });
+
+  it("is absent until both are set", () => {
+    expect(webhookUrl(env(undefined, "app-token"))).toBeUndefined();
+    expect(webhookUrl(env("https://hooks.example.com", undefined))).toBeUndefined();
+    expect(webhookUrl(env("https://hooks.example.com", ""))).toBeUndefined();
+  });
+
+  it.each(["http://hooks.example.com", "https://hooks.example.com:8443", "https://hooks.example.com/path", "not a url"])(
+    "refuses %s, which X would not deliver to", origin => {
+      expect(() => webhookUrl(env(origin, "app-token"))).toThrow(/https origin without a port/);
+    });
 });
 
 describe("dailyReadLimit", () => {

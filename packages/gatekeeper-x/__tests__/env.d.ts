@@ -5,7 +5,7 @@
 // by augmenting it.
 
 import type { TestHooks } from "./workerd/worker.js";
-import type { UserAccount } from "../src/x.js";
+import type { UserAccount, XActivityRouter, XHookDriver, XWebhookRegistry } from "../src/x.js";
 
 declare global {
   namespace Cloudflare {
@@ -13,6 +13,9 @@ declare global {
       TEST_HOOKS: DurableObjectNamespace<TestHooks>;
       USER_ACCOUNT: DurableObjectNamespace<UserAccount>;
       X_GATEKEEPER: DurableObjectNamespace;
+      X_HOOK_DRIVER: DurableObjectNamespace<XHookDriver>;
+      X_ACTIVITY_ROUTER: DurableObjectNamespace<XActivityRouter>;
+      X_WEBHOOK_REGISTRY: DurableObjectNamespace<XWebhookRegistry>;
     }
   }
 }
