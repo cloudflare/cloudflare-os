@@ -1793,14 +1793,13 @@ describe("Resending a request to keep its cache", () => {
   });
 
   // A stream of server-sent events, each named by its type as Anthropic and OpenAI name theirs.
-  const events = (sent: object[]) => new Response(
-      sent.map(event => `event: ${"type" in event ? String(event.type) : ""}\n` +
-          `data: ${JSON.stringify(event)}\n\n`).join(""),
+  const events = (sent: Record<string, unknown>[]) => new Response(
+      sent.map(event => `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`).join(""),
       { headers: { "content-type": "text/event-stream" } });
 
-  // Answers every request to a 100k-token prompt in the API's own format, 90k of it read from the
-  // cache unless Anthropic caches none of it. Anthropic's reply counts 5k tokens, which a resend
-  // doesn't send again.
+  // Answers every request to a 100k-token prompt with an empty reply in the API's own format, 90k
+  // of the prompt read from the cache unless Anthropic caches none of it. Anthropic's reply counts
+  // 5k tokens, which a resend doesn't send again.
   const answering = ({ cached = true } = {}) => (async (input: RequestInfo | URL,
                                                         init?: RequestInit) => {
     const request = new Request(input as RequestInfo, init);
@@ -1816,42 +1815,28 @@ describe("Resending a request to keep its cache", () => {
             output_tokens: 1,
           } : { input_tokens: 100_000, output_tokens: 1 },
         } },
-        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
-        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "OK" } },
-        { type: "content_block_stop", index: 0 },
         { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null },
           usage: { output_tokens: 5_000 } },
         { type: "message_stop" },
       ]);
     }
     if (pathname.endsWith("/responses")) {
-      const item = {
-        type: "message", id: "message", role: "assistant", status: "completed",
-        content: [{ type: "output_text", text: "OK", annotations: [] }],
-      };
-      return events([
-        { type: "response.output_item.added", output_index: 0,
-          item: { ...item, status: "in_progress", content: [] } },
-        { type: "response.output_item.done", output_index: 0, item },
-        { type: "response.completed", response: {
-          id: "response", status: "completed", output: [item],
-          usage: {
-            input_tokens: 100_000, output_tokens: 1, total_tokens: 100_001,
-            input_tokens_details: { cached_tokens: 90_000 },
-          },
-        } },
-      ]);
+      return events([{ type: "response.completed", response: {
+        id: "response", status: "completed", output: [],
+        usage: {
+          input_tokens: 100_000, output_tokens: 1, total_tokens: 100_001,
+          input_tokens_details: { cached_tokens: 90_000 },
+        },
+      } }]);
     }
-    const chunk = (choice: object, rest: object = {}) => `data: ${JSON.stringify({
+    return new Response(`data: ${JSON.stringify({
       id: "completion", object: "chat.completion.chunk", created: 0, model: "model",
-      choices: [{ index: 0, ...choice }], ...rest,
-    })}\n\n`;
-    return new Response(
-        chunk({ delta: { role: "assistant", content: "OK" }, finish_reason: null }) +
-        chunk({ delta: {}, finish_reason: "stop" },
-            { usage: { prompt_tokens: 100_000, completion_tokens: 1, total_tokens: 100_001 } }) +
-        "data: [DONE]\n\n",
-        { headers: { "content-type": "text/event-stream" } });
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      usage: {
+        prompt_tokens: 100_000, completion_tokens: 1, total_tokens: 100_001,
+        prompt_tokens_details: { cached_tokens: 90_000 },
+      },
+    })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
   }) as typeof fetch;
 
   // An agent turn's request: a split system prompt whose static text and tools come to about 10k
@@ -1939,8 +1924,8 @@ describe("Resending a request to keep its cache", () => {
     expect(handle.lastRequest).toBeUndefined();
   }, 15000);
 
-  it("keeps no request that failed, that the provider didn't cache, or that the handle sent with " +
-      "caching off", async () => {
+  it("keeps no request that the provider didn't cache, or that the handle sent with caching off",
+      async () => {
     const handle = getModel(env(), ANTHROPIC_CONFIG, INITIATOR);
     await send(handle);
     expect(handle.lastRequest).toBeDefined();
@@ -1949,11 +1934,6 @@ describe("Resending a request to keep its cache", () => {
 
     // As for a prompt below the model's minimum.
     await send(handle, { fetch: answering({ cached: false }) });
-    expect(handle.lastRequest).toBeUndefined();
-
-    await send(handle);
-    await handle.stream(handle.model, { messages: [{ role: "user", content: "hi", timestamp: 0 }] },
-        { fetch: fetchStub, maxRetries: 0 }).result();
     expect(handle.lastRequest).toBeUndefined();
   }, 15000);
 });

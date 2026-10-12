@@ -123,10 +123,10 @@ export type ModelHandle = {
   lastResponse?: { status: number; aiGatewayLogId?: string };
 
   /**
-   * The most recent request `stream` completed with prompt caching on, if the handle can send it
-   * again to keep the provider's cached copy of its prompt (see CachedRequest). Cleared at the
-   * start of every request and set once it succeeds, so consumers must read it right after the
-   * request they care about completes.
+   * The most recent request `stream` sent with prompt caching on, once its response ends, if the
+   * provider cached any of it and the handle can send it again to keep that copy (see
+   * CachedRequest). Cleared at the start of every request, so consumers must read it right after
+   * the request they care about completes.
    */
   lastRequest?: CachedRequest;
 };
@@ -147,9 +147,7 @@ export type CachedRequest = {
 
   /**
    * What the chat's next request pays extra, in dollars, if the cached copy expires first: a
-   * write of the chat's own part of the prompt instead of a read. The tools and static system
-   * text that start the prompt don't count: they are cached apart from it (for an hour on
-   * Anthropic), and other chats read them too.
+   * write instead of a read of the chat's own part of the prompt (see estimateSharedHeadTokens).
    */
   expiryCost: number;
 
@@ -590,12 +588,9 @@ function makeHandle(args: HandleArgs): ModelHandle {
       };
       const stream = traceChat(model, () => received,
           () => streamFn(model, transcript, merged));
-      // Kept once the request succeeds, which is before its caller can start another.
+      // Kept once the response ends, which is before its caller can start another request.
       void stream.result().then(message => {
-        if (sent === undefined || message.stopReason === "error" ||
-            message.stopReason === "aborted") {
-          return;
-        }
+        if (sent === undefined) return;
         handle.lastRequest = cachedRequest(streamFn, model, transcript, sent, message.usage, {
           fetch: merged.fetch,
           apiKey: merged.apiKey,

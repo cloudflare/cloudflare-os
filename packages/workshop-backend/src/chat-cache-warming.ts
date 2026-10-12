@@ -62,14 +62,10 @@ export class ChatCacheWarmer {
   start(chatId: number, request: CachedRequest): void {
     this.stop(chatId);
     let chat = this.#chats.get(chatId);
-    // Nobody views the chat, the first ping would come after the cache expired, or even one ping
-    // would cost more than the miss it avoids.
-    if (!chat || pingDue(request, request.sentAt) <= Date.now() || !worthPinging(request, 0)) {
-      return;
-    }
-    let warming: Warming = {request, sentAt: request.sentAt, pings: 0};
-    chat.warming = warming;
-    this.#schedule(chatId, warming);
+    // A turn that ended with nobody viewing the chat, such as a callback's, isn't warmed.
+    if (!chat) return;
+    chat.warming = {request, sentAt: request.sentAt, pings: 0};
+    this.#schedule(chatId, chat.warming);
   }
 
   /** Stops warming `chatId`: its next turn caches a new request, or the chat is gone. */
@@ -80,9 +76,12 @@ export class ChatCacheWarmer {
     chat.warming = undefined;
   }
 
+  // Schedules the next ping, unless the cached copy would expire first or the ping would take the
+  // pings past what the cache miss they avoid costs.
   #schedule(chatId: number, warming: Warming) {
-    warming.timer = setTimeout(() => void this.#ping(chatId, warming),
-        pingDue(warming.request, warming.sentAt) - Date.now());
+    let delay = warming.sentAt + warming.request.cacheLifetime - PING_LEAD_MS - Date.now();
+    if (delay <= 0 || !worthPinging(warming.request, warming.pings)) return this.stop(chatId);
+    warming.timer = setTimeout(() => void this.#ping(chatId, warming), delay);
   }
 
   async #ping(chatId: number, warming: Warming) {
@@ -104,18 +103,10 @@ export class ChatCacheWarmer {
     if (!current()) return;
     // A ping that read nothing found no cached copy to keep, and one that wrote found it expired
     // or changed.
-    if (usage.cacheRead === 0 || usage.cacheWrite > 0 ||
-        !worthPinging(warming.request, warming.pings)) {
-      return this.stop(chatId);
-    }
+    if (usage.cacheRead === 0 || usage.cacheWrite > 0) return this.stop(chatId);
     warming.sentAt = sentAt;
     this.#schedule(chatId, warming);
   }
-}
-
-// When the ping after a request sent at `sentAt` is due.
-function pingDue(request: CachedRequest, sentAt: number): number {
-  return sentAt + request.cacheLifetime - PING_LEAD_MS;
 }
 
 // Ski rental: whether `pings` pings and one more still cost less than the cache miss they avoid.
