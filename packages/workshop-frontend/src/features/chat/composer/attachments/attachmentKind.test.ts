@@ -20,6 +20,12 @@ describe("attachmentKind", () => {
     expect(attachmentKind("application/octet-stream", "main.rs")).toBe("code");
   });
 
+  it("does not read inherited object properties as extensions", () => {
+    for (const extension of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
+      expect(attachmentKind("application/octet-stream", `file.${extension}`)).toBe("file");
+    }
+  });
+
   it("uses the generic kind when nothing matches", () => {
     expect(attachmentKind("application/octet-stream", "mystery")).toBe("file");
     expect(attachmentKind("application/octet-stream", "mystery.xyz")).toBe("file");

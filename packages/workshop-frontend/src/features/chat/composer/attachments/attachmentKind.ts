@@ -11,16 +11,17 @@ export type AttachmentKind =
   | "text"
   | "file";
 
-const EXTENSION_KINDS: Record<string, AttachmentKind> = {
-  pdf: "pdf",
-  csv: "spreadsheet", tsv: "spreadsheet", xls: "spreadsheet", xlsx: "spreadsheet",
-  doc: "document", docx: "document", rtf: "document",
-  ppt: "presentation", pptx: "presentation", key: "presentation",
-  zip: "archive", gz: "archive", tar: "archive", tgz: "archive", "7z": "archive",
-  json: "code", js: "code", ts: "code", tsx: "code", jsx: "code", py: "code", rs: "code",
-  go: "code", html: "code", css: "code", yaml: "code", yml: "code", xml: "code", sh: "code",
-  txt: "text", md: "text", log: "text",
-};
+const EXTENSION_KINDS = new Map<string, AttachmentKind>([
+  ["pdf", "pdf"],
+  ["csv", "spreadsheet"], ["tsv", "spreadsheet"], ["xls", "spreadsheet"], ["xlsx", "spreadsheet"],
+  ["doc", "document"], ["docx", "document"], ["rtf", "document"],
+  ["ppt", "presentation"], ["pptx", "presentation"], ["key", "presentation"],
+  ["zip", "archive"], ["gz", "archive"], ["tar", "archive"], ["tgz", "archive"], ["7z", "archive"],
+  ["json", "code"], ["js", "code"], ["ts", "code"], ["tsx", "code"], ["jsx", "code"],
+  ["py", "code"], ["rs", "code"], ["go", "code"], ["html", "code"], ["css", "code"],
+  ["yaml", "code"], ["yml", "code"], ["xml", "code"], ["sh", "code"],
+  ["txt", "text"], ["md", "text"], ["log", "text"],
+]);
 
 const MIME_KINDS: [prefixOrExact: string, kind: AttachmentKind][] = [
   ["application/pdf", "pdf"],
@@ -57,5 +58,5 @@ export const attachmentKind = (mimeType: string, name?: string): AttachmentKind 
   if (byMime) return byMime[1];
   const dot = name?.lastIndexOf(".") ?? -1;
   if (!name || dot < 0) return "file";
-  return EXTENSION_KINDS[name.slice(dot + 1).toLowerCase()] ?? "file";
+  return EXTENSION_KINDS.get(name.slice(dot + 1).toLowerCase()) ?? "file";
 };
