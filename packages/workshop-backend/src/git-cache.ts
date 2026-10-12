@@ -74,14 +74,17 @@ const logger = createWorkshopLogger("workshop.git-cache");
 
 /**
  * Maximum payload size of a single git object the cache will accept from a gatekeeper (a put(),
- * or a pack entry), comfortably inside the store's record constraint (a deflated object must fit
- * one storage record). A put() beyond this is rejected -- but measured first, so the size
- * lands in metadata and later reads of the object fail fast instead of re-downloading it.
+ * or a pack entry). The git store (git-store.ts) writes each object, deflated, as one row of
+ * Durable Object SQLite storage, and the platform caps a row at 8 MiB (8,388,608 bytes). Even
+ * incompressible content deflates to barely more than its own size, so an object of up to
+ * 8,000,000 bytes always fits, with room to spare. A put() beyond this is rejected -- but measured
+ * first, so the size lands in metadata and later reads of the object fail fast instead of
+ * re-downloading it.
  *
  * This bounds only what is brought in from remotes. It is never applied to an object the store
  * already holds: whatever storage accepted is readable.
  */
-export const MAX_GIT_OBJECT_SIZE = 1 << 20;
+export const MAX_GIT_OBJECT_SIZE = 8_000_000;
 
 /**
  * Maximum byte size of a packfile accepted by `consumePack()` (matching the transfer-size

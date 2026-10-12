@@ -1806,8 +1806,8 @@ describe("applying a blueprint to a gadget", () => {
 
   it("records no release for a gadget whose copy of the blueprint's files failed", async () => {
     // More than one agent step may change, so the copy that createGadget makes cannot land.
-    let large = Object.fromEntries(["a", "b"].map(
-        name => [`${name}.js`, `// ${name}\n`.repeat(100_000)]));
+    let large = Object.fromEntries(["a", "b", "c"].map(
+        name => [`${name}.js`, `// ${name}\n`.repeat(300_000)]));
     let alice = await publishVersions("Alice's", [large]);
 
     await withWorkspace(async workspace => {

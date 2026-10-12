@@ -2,7 +2,7 @@ import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName } from '@gadgets/workshop-shared/api'
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
-  transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
+  MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
 import {
@@ -44,7 +44,7 @@ import {
   getAiGatewayLogCost,
   type AiGatewayLogRoute,
 } from "./ai-gateway";
-import { AgentGadgetInfo, AgentHooks, CHAT_CHANGE_MESSAGE_BUDGET, SeedBindingInfo, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
+import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
 import { scanWorkpieceForGrep, type GrepScan } from "./grep";
@@ -420,7 +420,7 @@ const CHAT_CHANGE_AUTHOR_SPLIT_MS = 60_000;
 // so a long editing session can't grow the window (and its subscribe-replay cost) without bound.
 // The job is compacting keystroke-granularity ops into few large composed ops -- rows arrive
 // per edit burst, so this is sized in "a screenful of typing", not lines. Byte growth is
-// bounded separately (CHAT_CHANGE_MESSAGE_BUDGET, enforced at row-append time). Thanks to the
+// bounded separately (MAX_CODE_CHANGE_SIZE, enforced at row-append time). Thanks to the
 // retired-row grace window this stales nobody: a submission based inside the materialized range
 // still transforms over the retired rows.
 const CHAT_CHANGE_MATERIALIZE_THRESHOLD = 1000;
@@ -2536,8 +2536,8 @@ class OverseerImpl implements AgentHooks {
   //
   // One message, always: the composition is kept storable by bounding what accumulates
   // (submitCodeChange materializes the pending window before a row would push its summed size
-  // past CHAT_CHANGE_MESSAGE_BUDGET; the agent's step buffer is bounded by STEP_CHANGE_BUDGET
-  // at the write call -- both declared in agent.ts), never by splitting the output --
+  // past MAX_CODE_CHANGE_SIZE; the agent's step buffer is bounded by the same cap at the write
+  // call), never by splitting the output --
   // splitting would scatter one batch's extras and edits across messages a suffix revert could
   // divide, and would break the agent's message-counting change-ID numbering.
   //
@@ -3175,16 +3175,19 @@ class OverseerImpl implements AgentHooks {
     //  - Attribution: the newest live rows belong to a different author who has gone idle, and
     //    one message must never blend two authors' sessions. (Two authors typing *concurrently*
     //    still share a batch, attributed to "Multiple Authors".)
-    //  - Byte budget: this row would push the window's summed change size past what one
-    //    "changes" message may compose (materialization writes exactly one message, so the
-    //    bound is enforced here, where rows accumulate). A row bigger than the whole budget
-    //    thus always lands in an empty window and later travels alone in one oversized message.
+    //  - Size: this row would push the window's summed change size past what one "changes"
+    //    message may compose (materialization writes exactly one message, so the bound is
+    //    enforced here, where rows accumulate; an unstorable message would wedge
+    //    materialization, which retries the same compose until it succeeds). A row that alone
+    //    exceeds the cap -- transformation can grow a validated change slightly -- lands in an
+    //    empty window and travels alone, in a message storage proved it can hold when the row
+    //    itself was written.
     let latest = this.#newestLiveChatChange(chatId, codeBase.generation);
     let authorSplit = latest !== undefined && !this.sameChatAuthor(latest.author, author) &&
         Date.now() - latest.timestamp.getTime() > CHAT_CHANGE_AUTHOR_SPLIT_MS;
     let window = this.#liveWindowSummary(chatId, codeBase);
     let byteSplit = window.count > 0 &&
-        window.bytes + codeChangeSerializedSize(transformed) > CHAT_CHANGE_MESSAGE_BUDGET;
+        window.bytes + codeChangeSerializedSize(transformed) > MAX_CODE_CHANGE_SIZE;
     if (authorSplit || byteSplit) {
       this.materializeChatChanges(chatId, meta);
       meta = this.getChatMetaOrThrow(chatId);

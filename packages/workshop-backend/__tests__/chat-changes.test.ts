@@ -6,8 +6,9 @@ import type {
   AiChatAuthorInfo, AiChatMessage, AiChatMetadata, AiChatSubscriber, CodeChangeSubmission,
   Overseer,
 } from "@gadgets/workshop-shared/api";
-import { diffFiles, type CodeContent, type CodeChange }
-  from "@gadgets/workshop-shared/code-change";
+import {
+  codeChangeSerializedSize, diffFiles, MAX_CODE_CHANGE_SIZE, type CodeContent, type CodeChange,
+} from "@gadgets/workshop-shared/code-change";
 import { keyString } from "@gadgets/typed-storage";
 import type { OverseerDurableObject } from "../src/overseer.js";
 
@@ -1315,28 +1316,31 @@ describe("agent step barrier", () => {
         .toEqual(["message", "changes", "message"]);
   }));
 
-  it("writes the step's buffer as one message even past the message byte budget",
+  it("writes a step's buffer at the full change cap as one storable message",
       () => withImpl(async impl => {
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
     addGadget(impl, 1, "APP", c1);
     addChat(impl, 1);
 
-    // Two buffered changes composing to ~1.2MB by the serialized-size estimate: past
-    // CHAT_CHANGE_MESSAGE_BUDGET (the *user* path's accumulation bound) but within the step
-    // budget the write calls enforce. The barrier still writes exactly one message -- the
-    // no-chunking policy; the step's bound is what keeps this storable.
-    let text = "文".repeat(300_000);
+    // Two buffered changes whose summed serialized-size estimate is just under
+    // MAX_CODE_CHANGE_SIZE, the most a step may buffer. Two-byte characters make the estimate
+    // nearly exact, so the one "changes" message the barrier writes is about as large as a
+    // stored message can get: this exercises the real record cap's envelope headroom.
+    let change = (path: string, text: string): CodeChange => ({ 1: [[path, { set: text }]] });
+    let n = (MAX_CODE_CHANGE_SIZE / 2 - codeChangeSerializedSize(change("a.txt", ""))) / 2;
+    let text = "文".repeat(n);
+    let changes = [change("a.txt", text), change("b.txt", text)];
+    let total = changes.reduce((sum, c) => sum + codeChangeSerializedSize(c), 0);
+    expect(total).toBeLessThanOrEqual(MAX_CODE_CHANGE_SIZE);
+    expect(total).toBeGreaterThan(MAX_CODE_CHANGE_SIZE - 16);
     expect(await impl.commitAgentStep(1, AGENT, stepMsgs("big step"), {
       ...NO_EXTRAS,
-      changes: [
-        { change: { 1: [["a.txt", { set: text }]] }, pin: { gadgetId: 1, baseCommit: c1 } },
-        { change: { 1: [["b.txt", { set: text }]] } },
-      ],
+      changes: [{ change: changes[0], pin: { gadgetId: 1, baseCommit: c1 } }, { change: changes[1] }],
     })).toBe(true);
 
-    let changes = chatMessages(impl, 1).filter(msg => msg.type === "changes");
-    expect(changes).toHaveLength(1);
-    expect(changes[0].watermark).toEqual({ changesGeneration: 0, throughRevision: 2 });
+    let messages = chatMessages(impl, 1).filter(msg => msg.type === "changes");
+    expect(messages).toHaveLength(1);
+    expect(messages[0].watermark).toEqual({ changesGeneration: 0, throughRevision: 2 });
     expect(liveRows(impl, 1)).toHaveLength(0);
 
     let folded = await impl.buildChatContent(1);
@@ -1545,18 +1549,18 @@ describe("chat content reconstruction", () => {
     expect((await gadgetContent(impl, 1, 1))["a.txt"]).toBe(text);
   }));
 
-  it("materializes the pending window before a submission would breach the byte budget",
+  it("materializes the pending window before a submission would breach the change cap",
       () => withImpl(async impl => {
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
     addGadget(impl, 1, "APP", c1);
     addChat(impl, 1);
 
     // Two rows setting *distinct* files (so their composition genuinely accumulates payload
-    // rather than collapsing), each 300K two-byte characters = ~600KB by the serialized-size
-    // estimate (hand-built `set` changes: diffing dissimilar strings this large is quadratic).
-    // Together they compose past the 1MB byte budget, so the second submission must materialize
-    // the first row into its own message before appending.
-    let text = "文".repeat(300_000);
+    // rather than collapsing), each half the cap by the serialized-size estimate (hand-built
+    // `set` changes: diffing dissimilar strings this large is quadratic). Together they compose
+    // past MAX_CODE_CHANGE_SIZE, so the second submission must materialize the first row into
+    // its own message before appending.
+    let text = "x".repeat(MAX_CODE_CHANGE_SIZE / 4);
     await submit(impl, 1, {
       generation: 0, revision: 0, clientId: "cli", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
@@ -1587,33 +1591,44 @@ describe("chat content reconstruction", () => {
     expect(["a.txt", "b.txt"].map(file => folded.get(1)!.get(file))).toEqual([text, text]);
   }));
 
-  it("a change bigger than the whole budget travels alone in one oversized message",
+  it("a row that transformation grew past the cap travels alone in one message",
       () => withImpl(async impl => {
-    let c1 = await commitFiles(impl, { "a.txt": "one\n" });
+    let c1 = await commitFiles(impl, { "a.txt": "ab" });
     addGadget(impl, 1, "APP", c1);
     addChat(impl, 1);
 
-    // One row -- a single multi-file change of two 300K-two-byte-character files, ~1.2MB by the
-    // serialized-size estimate -- exceeds the 1MB budget on its own while staying inside the
-    // per-file and per-change caps. It appends into an empty window; the next submission's byte
-    // trigger then materializes it alone, in one message.
-    let big = "文".repeat(300_000);
+    // Alice inserts between "a" and "b"; Bob, concurrently and exactly at the cap, replaces
+    // the whole text. Rebasing Bob's deletion around Alice's insert splits it, adding sections,
+    // so the row stored for him measures past the cap though his submission validated.
     await submit(impl, 1, {
-      generation: 0, revision: 0, clientId: "cli", seq: 1,
+      generation: 0, revision: 0, clientId: "alice", seq: 1,
       pins: [{ gadgetId: 1, baseCommit: c1 }],
-      change: { 1: [["a.txt", { set: big }], ["b.txt", { set: big }]] },
+      change: { 1: [["a.txt", { edit: [1, [0, "X"], 1] }]] },
     });
+    let replace = (text: string): CodeChange => ({ 1: [["a.txt", { edit: [[2, text]] }]] });
+    let big = "x".repeat((MAX_CODE_CHANGE_SIZE - codeChangeSerializedSize(replace(""))) / 2);
+    expect(codeChangeSerializedSize(replace(big))).toBe(MAX_CODE_CHANGE_SIZE);
     await submit(impl, 1, {
-      generation: 0, revision: 1, clientId: "cli", seq: 2,
+      generation: 0, revision: 0, clientId: "bob", seq: 1, change: replace(big),
+    });
+
+    // Bob's row could not join Alice's, so hers was materialized first; his landed in an empty
+    // window, and the next submission's trigger materializes it alone.
+    let rows = liveRows(impl, 1);
+    expect(rows).toHaveLength(1);
+    expect(codeChangeSerializedSize(rows[0].change)).toBeGreaterThan(MAX_CODE_CHANGE_SIZE);
+    await submit(impl, 1, {
+      generation: 0, revision: 2, clientId: "alice", seq: 2,
       change: { 1: [["c.txt", { set: "small\n" }]] },
     });
 
     let changes = chatMessages(impl, 1).filter(msg => msg.type === "changes");
-    expect(changes).toHaveLength(1);
-    expect(changes[0].watermark).toEqual({ changesGeneration: 0, throughRevision: 1 });
+    expect(changes.map(msg => msg.watermark)).toEqual([
+      { changesGeneration: 0, throughRevision: 1 },
+      { changesGeneration: 0, throughRevision: 2 },
+    ]);
     expect(liveRows(impl, 1)).toHaveLength(1);
-    expect((await gadgetContent(impl, 1, 1))["a.txt"]).toBe(big);
-    expect((await gadgetContent(impl, 1, 1))["b.txt"]).toBe(big);
+    expect((await gadgetContent(impl, 1, 1))["a.txt"]).toBe(`${big}X`);
   }));
 
   it("splits batches by author when a different author resumes after idle",

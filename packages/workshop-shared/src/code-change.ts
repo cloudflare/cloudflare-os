@@ -132,21 +132,15 @@ export type CodeContent = Map<number, GadgetFiles>;
 export const MAX_FILE_PATH_LENGTH = 1024;
 
 /**
- * Maximum total size of one `CodeChange`, measured as a proxy for its serialized size: each file
- * entry costs a fixed overhead plus its path length plus its payload -- a `set`'s content
- * length, or an `edit`'s weighted section count plus its inserted-text length (`remove` costs
- * nothing beyond the overhead). Counting entries and sections, not just inserted text, bounds
- * storage, RPC messages, and transform work even for changes made of many payload-free parts
- * (mass removes). Enforced by `validateCodeChangeSchema`.
+ * Maximum `codeChangeSerializedSize` of one `CodeChange`, and of any composition of changes the
+ * server stores as one record. Durable Object storage caps a record at 8 MiB; this leaves the
+ * rest (388,608 bytes) for the record's envelope. A change past it could never be stored, and
+ * accepting one would wedge whatever later had to store it, so it is rejected up front: by
+ * `validateCodeChangeSchema` for a single change, and by the server's own budgets for the
+ * compositions it builds. Because the measure counts structure as well as text, it also bounds
+ * changes made of many payload-free parts (mass removes).
  */
-export const MAX_CODE_CHANGE_SIZE = 2 * 1024 * 1024;
-
-// The two module-private weights behind MAX_CODE_CHANGE_SIZE (callers only need the cap itself):
-// the fixed per-file-entry share, and each edit section's share -- a section serializes to a
-// few bytes of digits and brackets even when it inserts nothing, so it must weigh more than
-// nothing but needn't be exact.
-const FILE_ENTRY_SIZE_OVERHEAD = 16;
-const EDIT_SECTION_SIZE_WEIGHT = 4;
+export const MAX_CODE_CHANGE_SIZE = 8_000_000;
 
 // Structure overhead granted per node by codeChangeSerializedSize: V8 writes a handful of
 // header/varint bytes per object, array, and string, so a generous fixed share per node keeps
@@ -157,15 +151,13 @@ const SERIALIZED_LINE_OVERHEAD = 8;
 
 /**
  * Upper bound on the bytes a `CodeChange` contributes to a V8-serialized storage record --
- * the form Durable Object storage actually holds change rows and "changes" messages in,
- * subject to its 2MB value cap. V8 writes each string raw (Latin-1 at one byte per UTF-16
- * code unit, or UTF-16 at two) plus small structure headers, so two bytes per code unit of
- * every string -- gadget keys, paths, `set` text, inserted lines -- plus a fixed share per
- * structural node never undercounts; the estimate reads only string lengths, costing O(nodes)
- * independent of text size, and is immune to the escape-sequence and multi-byte inflation a
- * JSON-text measure would suffer. Callers use it to keep *compositions* of changes inside
- * one storable record; `MAX_CODE_CHANGE_SIZE` separately bounds a single change with its own
- * unit-weighted measure at validation time.
+ * the form Durable Object storage actually holds change rows and "changes" messages in.
+ * V8 writes each string raw (Latin-1 at one byte per UTF-16 code unit, or UTF-16 at two) plus
+ * small structure headers, so two bytes per code unit of every string -- gadget keys, paths,
+ * `set` text, inserted lines -- plus a fixed share per structural node never undercounts; the
+ * estimate reads only string lengths, costing O(nodes) independent of text size, and is immune
+ * to the escape-sequence and multi-byte inflation a JSON-text measure would suffer. The measure
+ * `MAX_CODE_CHANGE_SIZE` caps, for single changes and for compositions alike.
  */
 export function codeChangeSerializedSize(change: CodeChange): number {
   let bytes = SERIALIZED_ENTRY_OVERHEAD;  // the change object's own framing
@@ -534,7 +526,8 @@ export function validateCodeChangeSchema(change: CodeChange): void {
   // count is pre-checked in O(1) and the budget re-checked as each section's cost accrues, so a
   // hostile change is rejected before its sections are walked -- and in particular before
   // `ChangeSet.fromJSON` materializes a second copy of an oversized edit.
-  let remaining = MAX_CODE_CHANGE_SIZE;
+  // The running cost is exactly `codeChangeSerializedSize`, accrued in the same order.
+  let remaining = MAX_CODE_CHANGE_SIZE - SERIALIZED_ENTRY_OVERHEAD;
   for (let [gadgetKey, fileChanges] of Object.entries(change)) {
     let gadgetId = Number(gadgetKey);
     if (!Number.isSafeInteger(gadgetId) || gadgetId < 0 || String(gadgetId) !== gadgetKey) {
@@ -543,6 +536,8 @@ export function validateCodeChangeSchema(change: CodeChange): void {
     if (fileChanges.length === 0) {
       throw new Error(`code change gadget entry is empty: gadget ${gadgetKey}`);
     }
+    remaining -= SERIALIZED_ENTRY_OVERHEAD + 2 * gadgetKey.length;
+    if (remaining < 0) throw new Error("code change is too large");
     let seen = new Set<string>();
     for (let [path, fileChange] of fileChanges) {
       if (path === "") throw new Error(`code change file path is empty: gadget ${gadgetKey}`);
@@ -553,7 +548,7 @@ export function validateCodeChangeSchema(change: CodeChange): void {
         throw new Error(`code change has a duplicate file entry: gadget ${gadgetKey} ${path}`);
       }
       seen.add(path);
-      remaining -= FILE_ENTRY_SIZE_OVERHEAD + path.length;
+      remaining -= SERIALIZED_ENTRY_OVERHEAD + 2 * path.length;
       if (remaining < 0) throw new Error("code change is too large");
       remaining -= validateFileChangeSchema(`gadget ${gadgetKey} ${path}`, fileChange, remaining);
     }
@@ -573,8 +568,8 @@ function validateFileChangeSchema(where: string, fileChange: FileChange, budget:
     throw new Error(`file change must have exactly one of edit/set/remove: ${where}`);
   }
   if ("set" in fileChange) {
-    if (fileChange.set.length > budget) throw new Error("code change is too large");
-    return fileChange.set.length;
+    if (2 * fileChange.set.length > budget) throw new Error("code change is too large");
+    return 2 * fileChange.set.length;
   }
   if ("remove" in fileChange) return 0;
   // ChangeSet.fromJSON is not strict enough on its own -- it accepts negative and non-integer
@@ -583,18 +578,18 @@ function validateFileChangeSchema(where: string, fileChange: FileChange, budget:
   // resulting document's line metadata from its text) -- so check sections ourselves first;
   // fromJSON then rejects the remaining malformed shapes, on input the budget has bounded.
   // O(1) budget pre-check on the section count alone, before any section is even looked at.
-  let cost = fileChange.edit.length * EDIT_SECTION_SIZE_WEIGHT;
+  let cost = fileChange.edit.length * SERIALIZED_SECTION_OVERHEAD;
   if (cost > budget) throw new Error("code change is too large");
   for (let section of fileChange.edit) {
     if (Array.isArray(section)) {
       if (!Number.isSafeInteger(section[0]) || section[0] < 0) {
         throw new Error(`file change edit has an invalid section length: ${where}`);
       }
-      // The inserted text's length: the lines' lengths plus the "\n" joining them. The
-      // separator count is known before the lines are walked, so a section padded with empty
-      // lines is rejected here in O(1) rather than after the walk.
-      let insertedHere = section.length >= 2 ? section.length - 2 : 0;
-      if (cost + insertedHere > budget) throw new Error("code change is too large");
+      // Each line's overhead is known before the lines are walked, so a section padded with
+      // empty lines is rejected here in O(1) rather than after the walk.
+      cost += (section.length - 1) * SERIALIZED_LINE_OVERHEAD;
+      if (cost > budget) throw new Error("code change is too large");
+      let insertedHere = section.length >= 2 ? section.length - 2 : 0;  // the joining "\n"s
       for (let i = 1; i < section.length; i++) {
         // A numeric index into `[number, ...string[]]` types as `string | number` because it
         // spans every element; every element past the first is a line.
@@ -603,11 +598,11 @@ function validateFileChangeSchema(where: string, fileChange: FileChange, budget:
           throw new Error(`file change edit inserted line contains a newline: ${where}`);
         }
         insertedHere += line.length;
+        cost += 2 * line.length;
       }
       if (section[0] === 0 && insertedHere === 0) {
         throw new Error(`file change edit has a do-nothing section: ${where}`);
       }
-      cost += insertedHere;
       if (cost > budget) throw new Error("code change is too large");
     } else {
       if (!Number.isSafeInteger(section) || section < 0) {

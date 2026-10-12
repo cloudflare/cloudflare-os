@@ -1,6 +1,6 @@
 import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
-import { applyCodeChange, codeChangeSerializedSize, replaceSpanChange, type CodeContent,
-  type CodeChange, type FileChange } from '@gadgets/workshop-shared/code-change';
+import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replaceSpanChange,
+  type CodeContent, type CodeChange, type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger } from "./observability";
@@ -37,40 +37,6 @@ import {
 import { formatGrep, type GrepScan } from "./grep";
 
 const logger = createWorkshopLogger("workshop.agent");
-
-/**
- * Byte bound on one "changes" message's composed change for the *user* edit path.
- * Materialization writes exactly one message per call (see materializeChatChanges in
- * overseer.ts), so the composition is kept storable by bounding what *accumulates* rather than
- * by splitting the output: submitCodeChange materializes the pending live rows before appending
- * a row that would push their summed size past the budget. Rows are individually bounded
- * (MAX_CODE_CHANGE_SIZE) but a composition of several is not, and an unstorable message would
- * wedge materialization permanently (rows only retire on success, so accept and turn start
- * would retry the same oversized compose forever). A single row may legally exceed the budget:
- * the append-time trigger then guarantees it lands in an empty window and travels alone in one
- * oversized message, which storage already proved it can hold when the row itself was written.
- * Agent tool edits don't accumulate as live rows at all: they buffer in the step and land at
- * the barrier in one message, bounded by STEP_CHANGE_BUDGET at the write call. Measured with
- * codeChangeSerializedSize (composition never exceeds the sum of its inputs' sizes, so summing
- * rows bounds their composed change) and sized well clear of the 2MB storage record cap the
- * estimate upper-bounds against. (Declared here rather than in overseer.ts because agent.ts
- * must not import overseer.ts -- the dependency runs the other way.)
- */
-export const CHAT_CHANGE_MESSAGE_BUDGET = 1024 * 1024;
-
-/**
- * Byte bound on one agent step's buffered changes (their summed codeChangeSerializedSize),
- * enforced at the write call: the file-tool call that would exceed it fails with an
- * agent-visible error, everything buffered before it persists normally at the barrier, and the
- * model adapts mid-turn. The bound exists for correctness -- the barrier writes the step's
- * buffer as *one* "changes" message, which must fit in a 2MB storage record, envelope included
- * -- with bounded buffer memory falling out as a side effect. It is also what bounds a single
- * whole-file write (a `set` carries the file's entire text, uncompressed), so a file grows past
- * that only by edits; a file too large to commit at all fails at accept. (Known, accepted gap:
- * createGadget's blueprint copy is a single multi-file change that may legally measure past
- * the budget, but no shipped blueprint comes close.)
- */
-export const STEP_CHANGE_BUDGET = 1536 * 1024;
 
 /**
  * How much text one tool result may put in front of the model. About 8k tokens: a handful of
@@ -2770,8 +2736,8 @@ async function runAgentPass(
   // (AgentHooks.commitAgentStep), so a crash loses the whole step -- transcript and effects
   // together -- and the resumed model re-runs it cleanly. Turn-owned and passed explicitly
   // where needed (the barrier now; executeCodeMode once worktree writes join it). `bytes` is
-  // the buffered changes' summed codeChangeSerializedSize, checked against STEP_CHANGE_BUDGET
-  // at each write call.
+  // the buffered changes' summed codeChangeSerializedSize, checked against MAX_CODE_CHANGE_SIZE
+  // at each write call (see appendAgentEdit).
   let stepBuffer = {changes: [] as AgentStepChange[], bytes: 0};
 
   // (A crashed predecessor leaves no stranded state to recover here: each step's rows, pins,
@@ -2818,12 +2784,14 @@ async function runAgentPass(
       workpieceId: WorkpieceId, change: CodeChange,
       pin?: {baseCommit: string, baseFiles: Map<string, string>}) => {
     // Bound the step's total: the barrier writes the buffer as exactly one "changes" message,
-    // which must fit in one storage record. The failed call buffers nothing -- everything
-    // buffered before it persists normally at the barrier -- and the error tells the model how
-    // to adapt: a single file write that is too large alone fails the same way every step, so
-    // its error says how to write the file instead.
+    // which must fit in one storage record, or the step's edits would be lost. Composition never
+    // exceeds the sum of its inputs' sizes, so the summed size bounds the message's change.
+    // The failed call buffers nothing -- everything buffered before it persists normally at the
+    // barrier -- and the error tells the model how to adapt: a single file write that is too
+    // large alone fails the same way every step, so its error says how to write the file
+    // instead. (This also bounds createGadget's blueprint copy, which buffers as one change.)
     let size = codeChangeSerializedSize(change);
-    if (stepBuffer.bytes + size > STEP_CHANGE_BUDGET) {
+    if (stepBuffer.bytes + size > MAX_CODE_CHANGE_SIZE) {
       let oneFile = Object.values(change).flat().length === 1;
       throw new Error(stepBuffer.changes.length === 0 && oneFile
           ? "This write is too large to make in one step. Write the file in smaller parts, " +

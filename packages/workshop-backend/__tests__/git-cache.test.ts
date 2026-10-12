@@ -1203,8 +1203,9 @@ describe("consumePack", () => {
     // A one-blob pack minus its trailer, recounted to two entries.
     let prefix = concatBytes(await buildPackBytes([{ type: "blob", payload: big }])).slice(0, -20);
     new DataView(prefix.buffer).setUint32(8, 2);
-    // Delta: base size 0x100005 and target size 16 (varints), then a 16-byte copy from offset 0.
-    let delta = new Uint8Array([0x85, 0x80, 0x40, 16, 0x90, 16]);
+    // Delta: base size and target size 16 (varints), then a 16-byte copy from offset 0.
+    let varint = (n: number): number[] => n < 0x80 ? [n] : [(n & 0x7f) | 0x80, ...varint(n >>> 7)];
+    let delta = new Uint8Array([...varint(big.byteLength), 16, 0x90, 16]);
     let body = concatBytes([prefix, new Uint8Array([(7 << 4) | delta.length]),
       Uint8Array.from(bigOid.match(/../g)!, h => parseInt(h, 16)), deflate(delta)]);
     let pack = concatBytes([body, new Uint8Array(await crypto.subtle.digest("SHA-1", body))]);
@@ -1605,8 +1606,9 @@ describe("client-facing reads (readCommitTree / readFilesAtCommit)", () => {
   it("stops after the response budget, omitting the rest for the client to re-request",
       async () => {
     let t = makeCache();
+    const FILE_SIZE = READ_FILES_RESPONSE_BUDGET / 8;
     let blob = await storeLocal(t.storage,
-        { type: "blob", payload: new Uint8Array(MAX_GIT_OBJECT_SIZE).fill(0x61) });
+        { type: "blob", payload: new Uint8Array(FILE_SIZE).fill(0x61) });
     let names = Array.from({ length: 10 }, (_, i) => `f${i}.txt`);
     let tree = await storeLocal(t.storage, {
       type: "tree",
@@ -1615,13 +1617,12 @@ describe("client-facing reads (readCommitTree / readFilesAtCommit)", () => {
     let commit = await storeLocal(t.storage,
         { type: "commit", payload: commitPayload(tree, [], "big") });
 
-    // 8 MiB of text is within budget; the ninth file pushes past it and is still delivered;
+    // Eight files fill the budget exactly; the ninth pushes past it and is still delivered;
     // the tenth is omitted (not reported absent).
     let result = await t.cache.readFilesAtCommit(commit, names);
-    expect(READ_FILES_RESPONSE_BUDGET).toBe(8 * MAX_GIT_OBJECT_SIZE);
     expect(result.map(([path]) => path)).toStrictEqual(names.slice(0, 9));
     expect(result.every(([, file]) =>
-        file.kind === "text" && file.text.length === MAX_GIT_OBJECT_SIZE)).toBe(true);
+        file.kind === "text" && file.text.length === FILE_SIZE)).toBe(true);
     expect(t.pulls).toHaveLength(0);
   });
 

@@ -5,6 +5,7 @@ import {
   MAX_FILE_PATH_LENGTH,
   applyCodeChange,
   changedGadgets,
+  codeChangeSerializedSize,
   composeCodeChange,
   composeEpochChanges,
   diffFiles,
@@ -601,6 +602,19 @@ describe("validateCodeChangeSchema", () => {
     expect(() => validateCodeChangeSchema({ 1: files })).toThrow(/change is too large/);
   });
 
+  it("measures the change cap by codeChangeSerializedSize", () => {
+    // The cap is the same measure the server's composition budgets use, so a change that
+    // validates always fits wherever a change of its size is stored.
+    let atCap = (extra: number): CodeChange => {
+      let probe: CodeChange = { 1: [["f", { set: "" }], ["g", { edit: [3, [0, "a", ""]] }]] };
+      let fill = (MAX_CODE_CHANGE_SIZE - codeChangeSerializedSize(probe)) / 2 + extra;
+      return { 1: [["f", { set: "\u20ac".repeat(fill) }], ["g", { edit: [3, [0, "a", ""]] }]] };
+    };
+    expect(codeChangeSerializedSize(atCap(0))).toBe(MAX_CODE_CHANGE_SIZE);
+    validateCodeChangeSchema(atCap(0));
+    expect(() => validateCodeChangeSchema(atCap(1))).toThrow(/change is too large/);
+  });
+
   it("caps changes made of many payload-free entries", () => {
     // Removes insert nothing, but each entry still counts toward the change size.
     let path = "p".repeat(1000);
@@ -630,7 +644,7 @@ describe("validateCodeChangeSchema", () => {
     // Inserted text is budget-checked as it accrues: this edit's total insertion exceeds the
     // *change* budget mid-walk, before fromJSON parses it.
     let chunk = "x".repeat(CHUNK_LENGTH);
-    let inserts: TextChange = Array.from({ length: 5 }, () => [0, chunk] as [number, string]);
+    let inserts: TextChange = Array.from({ length: 9 }, () => [0, chunk] as [number, string]);
     expect(() => validateCodeChangeSchema({ 1: [["f", { edit: inserts }]] }))
         .toThrow(/code change is too large/);
 

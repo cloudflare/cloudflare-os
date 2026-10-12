@@ -197,6 +197,13 @@ first).
    patching those with grouping metadata, delete the chunking loop — **one
    message per materialize call, always** — and make every composition fit by
    bounding what accumulates:
+   *(Since superseded: when the Durable Object record cap rose from 2MB to
+   8 MiB, the 1MB and ~1.5MB budgets below and `MAX_CODE_CHANGE_SIZE`'s
+   separate unit-weighted measure were folded into one cap —
+   `MAX_CODE_CHANGE_SIZE`, 8,000,000 by `codeChangeSerializedSize` — which
+   bounds single changes, the step buffer, and the user-row window alike.
+   A row can then exceed the cap only by transformation's slight growth, so
+   the lone-oversized-row carve-out remains but is rarely reached.)*
    - **User rows**: raise `CHAT_CHANGE_MATERIALIZE_THRESHOLD` from 128 to
      **1000** — its real job is compacting keystroke-granularity ops into few
      large ops (128 rows is only a line or two of typing) — and add a **byte
