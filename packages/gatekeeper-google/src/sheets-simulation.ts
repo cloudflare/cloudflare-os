@@ -78,8 +78,17 @@ export type SheetsAction = TaggedAction<SheetsActions>;
 /** One journal entry visible to replay. */
 export type QueuedChange = { readonly id: number; readonly action: SheetsAction };
 
-/** Applies one queued change to `grid`, returning a new grid. Throws `ChangeConflict`. */
+/**
+ * Applies one queued change to `grid`, returning a new grid. Throws `ChangeConflict`, also for a
+ * sheet it writes that is no longer titled as when it was queued, which its guard would refuse.
+ */
 export function applyChange(grid: Grid, action: SheetsAction): Grid {
+  for (let [id, title] of Object.entries(action.payload.sheets)) {
+    let sheet = grid.sheets.find(candidate => candidate.id === Number(id));
+    if (sheet && sheet.title !== title) {
+      throw new ChangeConflict(`the sheet "${title}" it writes to has been renamed "${sheet.title}"`);
+    }
+  }
   return planSheet(grid, action.payload.changes).grid;
 }
 

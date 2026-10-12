@@ -207,8 +207,9 @@ async function write(host: SheetsHost, batch: SheetBatch): Promise<void> {
   } catch (error) {
     if (error instanceof SheetsWriteRefused) {
       if (error.status === 400 && await markerFound(host, marker)) return landed();
-      // Nothing was applied. A 401, 403 or 429 may pass, so the action stays pending.
-      record(false);
+      // Nothing was applied, so the marker was never created and needs no entry. A 401, 403 or 429
+      // may pass, so the action stays pending, and its next send records the marker again.
+      host.markers.write(host.markers.read().filter(({ id }) => id !== marker.id));
       if (error.status !== 400) throw error;
       throw new ActionApplyError(
         "Google Sheets refused this change as invalid [http=400]. It may write to a protected range " +

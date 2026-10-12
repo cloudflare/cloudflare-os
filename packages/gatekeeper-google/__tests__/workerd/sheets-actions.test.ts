@@ -799,6 +799,8 @@ describe("Google Sheets changes", () => {
 
     expect(await sheets.apply(actionId!)).toContain(`[http=${status}]`);
     expect(provider.commits).toBe(0);
+    // Refused, the batch created no marker, so it keeps no entry until it is sent again.
+    expect(await sheets.markers()).toEqual([]);
 
     expect(await sheets.apply(actionId!)).toBeNull();
     expect(provider.batches).toHaveLength(2);
@@ -808,9 +810,11 @@ describe("Google Sheets changes", () => {
     expect(provider.commits).toBe(1);
   });
 
-  it("fails a change Google refuses as invalid, writing nothing", async () => {
+  it("fails a change Google refuses as invalid, writing nothing and keeping every earlier marker", async () => {
     let provider = budget();
     let sheets = gatekeeper();
+    let old = Array.from({ length: 20 }, (_, i) => i + 1);
+    await sheets.seedMarkers(old);
     let { actionId } = await sheets.queued([{ op: "writeCells", range: "Sales!B12", values: [[6]] }]);
     // The grid shrinks between the apply's read and its write.
     provider.beforeNextBatch = () => {
@@ -821,6 +825,8 @@ describe("Google Sheets changes", () => {
       "Google Sheets refused this change as invalid [http=400]. It may write to a protected range or " +
       "outside a sheet's grid.");
     expect(provider.commits).toBe(0);
+    // The refused batch never created its marker, so it takes no stored marker's place.
+    expect(await sheets.markers()).toEqual(old.map(id => ({ id, sentAt: 0 })));
   });
 
   it("refuses to queue a change the account can only view, after authorizing the read", async () => {
@@ -849,6 +855,10 @@ describe("Google Sheets changes", () => {
             requestingUserCanEdit: false,
           }),
           protectedRange(3, { sheetId: 0, startRowIndex: 9, endRowIndex: 10 }),
+          // Google only warns about editing this one, in its own editor.
+          protectedRange(4, { sheetId: 0, startRowIndex: 11, endRowIndex: 12 }, {
+            requestingUserCanEdit: false, warningOnly: true,
+          }),
         ],
       } as Partial<ProviderSheet>),
     ]);
@@ -869,6 +879,7 @@ describe("Google Sheets changes", () => {
     let allowed = await sheets.update([
       { op: "writeCells", range: "Sales!C1", values: [["open"]] },
       { op: "writeCells", range: "Sales!A10", values: [["editable"]] },
+      { op: "writeCells", range: "Sales!A12", values: [["warned"]] },
     ]);
     expect(allowed.actionId).toEqual(expect.any(Number));
     expect(provider.masks.some(mask => mask.includes("protectedRanges"))).toBe(true);

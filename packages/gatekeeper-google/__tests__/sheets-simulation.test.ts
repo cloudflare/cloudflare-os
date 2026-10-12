@@ -101,6 +101,15 @@ describe("Sheets queued changes in reads", () => {
     });
   });
 
+  it("stops at a change to a sheet renamed since it was queued, as its guard would refuse it", () => {
+    let change = queued(1, [{ op: "writeCells", sheetId: 0, rect: rect(0, 0), values: [[1]] }]);
+    expect(replayChanges(grid([sheet(0, "Revenue")]), [change])).toMatchObject({
+      kind: "incomplete", appliedCount: 0, unsupported: change,
+      reason: 'the sheet "Sales" it writes to has been renamed "Revenue"',
+    });
+    expect(replayChanges(grid([SALES]), [change])).toMatchObject({ kind: "complete", appliedCount: 1 });
+  });
+
   it("names the queued changes whose cells a batch also writes", () => {
     let pending = [
       queued(1, [{ op: "writeCells", sheetId: 0, rect: rect(0, 0), values: [[1]] }]),

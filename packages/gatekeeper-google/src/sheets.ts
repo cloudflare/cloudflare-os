@@ -314,14 +314,16 @@ function protectionName(protection: SheetProtection, title: string): string {
 
 /**
  * Refuses a change writing a cell of a protected range the connected account may not edit, and
- * that the range does not leave editable.
+ * that the range does not leave editable. A range that only warns is no obstacle: Google warns in
+ * its own editor, but lets the API write it.
  */
 function checkProtections(
   changes: readonly PlannedChange[], protections: readonly SheetProtection[], grid: Grid,
 ): void {
   changes.forEach((change, i) => {
     for (let protection of protections) {
-      if (protection.requestingUserCanEdit || protection.area.sheetId !== change.sheetId) continue;
+      if (protection.requestingUserCanEdit || protection.warningOnly) continue;
+      if (protection.area.sheetId !== change.sheetId) continue;
       let shared = intersection(change.rect, protection.area.rect);
       if (!shared) continue;
       for (let row = shared.startRow; row < shared.endRow; row++) {
