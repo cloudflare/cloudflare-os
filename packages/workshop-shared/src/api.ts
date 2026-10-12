@@ -2027,7 +2027,7 @@ export type GadgetMetadata = {
 
   // TODO:
   // - created / modified / activity times
-  // - icon? thumbnail?
+  // - thumbnail?
 }
 
 /**
@@ -2037,6 +2037,22 @@ export type GadgetMetadata = {
 export type GadgetMetadataWithTimestamps = GadgetMetadata & {
   created: Date;
   lastActive: Date;
+
+  /**
+   * Content hash of the logo the workspace's chat 0 model drew for it, once there is one. Show it
+   * with `workspaceLogoUrl()`, and only as an `<img>`.
+   */
+  logo?: string;
+}
+
+/** Path prefix serving workspace logos; see `workspaceLogoUrl()`. */
+export const WORKSPACE_LOGO_PATH_PREFIX = "/api/workspace-logo/";
+
+/** The URL of a listed workspace's logo, or undefined if it has none. */
+export function workspaceLogoUrl(gadget: Pick<GadgetMetadataWithTimestamps, "id" | "logo">)
+    : string | undefined {
+  return gadget.logo === undefined ? undefined
+      : `${WORKSPACE_LOGO_PATH_PREFIX}${gadget.id}/${gadget.logo}`;
 }
 
 /**

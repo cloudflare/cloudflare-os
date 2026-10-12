@@ -103,6 +103,7 @@ type LibraryBlueprintRecord = {
 export type GadgetRecord = GadgetMetadata & {
   created: Date;
   lastActive?: Date;  // if missing, gadget is provisional
+  logo?: string;  // see GadgetMetadataWithTimestamps
   // If we're not the gadget owner (it was shared with us), `owner` is set (inherited from
   // GadgetMetadata).
 };

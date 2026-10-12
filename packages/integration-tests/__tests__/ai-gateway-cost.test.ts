@@ -70,12 +70,13 @@ it("a chat is charged the AI Gateway log's cost in place of the estimate", async
   using api = await signUp(publicApi, nextUsernames("gatewaycost")[0]!);
   using ws = await api.newGadget();
 
+  // Chat 0's turn also draws the workspace logo, which is charged to the chat the same way.
   const chatId = await ws.newChat("What does this cost?", SCRIPTED_MODEL_ID);
   await waitForIdleChat(ws, chatId);
-  await waitFor("the gateway cost", async () =>
-    (await ws.listChats()).find(chat => chat.id === chatId)?.totalCost === 1.25 || null);
-  expect((await ws.getMetadata()).totalCost).toBe(1.25);
-  expect(logReads).toBe(2);
+  await waitFor("the gateway cost of the turn and the logo", async () =>
+    (await ws.listChats()).find(chat => chat.id === chatId)?.totalCost === 2.5 || null);
+  expect((await ws.getMetadata()).totalCost).toBe(2.5);
+  expect(logReads).toBe(3);
 });
 
 const ADDED: GatewayModel = {

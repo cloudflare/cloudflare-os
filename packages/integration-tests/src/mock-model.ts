@@ -8,7 +8,7 @@ const AUXILIARY_REQUEST = z.object({
   messages: z.tuple([z.object({ role: z.literal("user"), content: z.string() })]),
 });
 
-type AuxiliaryRequestKind = "thread-title" | "gadget-title" | "binding-name";
+type AuxiliaryRequestKind = "thread-title" | "gadget-title" | "binding-name" | "workspace-logo";
 type AuxiliaryCompletion = {
   kind: AuxiliaryRequestKind;
   promptPrefix: string;
@@ -31,6 +31,11 @@ const AUXILIARY_COMPLETIONS: AuxiliaryCompletion[] = [
     kind: "binding-name",
     promptPrefix: "Choose a short, meaningful JavaScript identifier in ALL_CAPS_WITH_UNDERSCORES",
     response: "TEST_BINDING",
+  },
+  {
+    kind: "workspace-logo",
+    promptPrefix: "You design app icons. Draw the icon for a workspace.",
+    response: '<svg viewBox="0 0 64 64"><circle cx="32" cy="32" r="24" fill="#f60"/></svg>',
   },
 ];
 

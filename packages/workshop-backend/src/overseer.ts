@@ -61,6 +61,9 @@ import {
 } from "./blueprint-release";
 import { encodeGitTree, gitObjectOid, parseGitCommitRefs } from "./git-codec";
 import {
+  deleteWorkspaceLogo, putWorkspaceLogo, sanitizeWorkspaceLogoSvg, workspaceLogoPrompt,
+} from "./workspace-logo";
+import {
   listFeaturedBlueprintsFromKv, readBlueprintKvRecord, type BlueprintKvRecord,
 } from "./storage-schema/blueprints-kv";
 import { WebFetchEnv } from "./web-fetch";
@@ -6628,6 +6631,11 @@ class OverseerImpl implements AgentHooks {
           }
         }
 
+        // In the background, and billed the way the turn just decided to bill.
+        if (chatId === 0 && this.ownerId && this.storage.logo.get() === undefined) {
+          this.ctx.waitUntil(this.#drawLogo(aiModel.config, initiator, byokRouting, byokOwnerStub));
+        }
+
         let sessionAffinity = await computeSessionAffinity(this.ctx.id.toString(), chatId);
         let chosenModel = getModel(
             this.env, aiModel.config, initiator, {
@@ -7989,6 +7997,64 @@ class OverseerImpl implements AgentHooks {
         event: "chat.title.generate.failed", chatId, error: err,
       });
     }
+  }
+
+  // Draws the workspace logo with the model of the chat 0 turn starting it, from the chat's first
+  // message. The one attempt is claimed before the model is called, so a refusal, a rejected
+  // answer or a failure leaves the monogram for good rather than paying twice.
+  async #drawLogo(modelConfig: AiModelConfig, initiator: AiChatAuthorInfo,
+                  userGateway: UserGatewayRouting | undefined,
+                  byokOwnerStub: DurableObjectStub<UserDurableObject> | undefined): Promise<void> {
+    let subject = this.#logoSubject();
+    if (subject === undefined) return;
+
+    this.storage.logo.put(null);
+    let gadgetId = this.ctx.id.toString();
+    try {
+      let model = getModel(this.env, modelConfig, initiator, {
+        userGateway,
+        metadata: { source: "workspace-logo", gadgetId, chatId: 0 },
+      });
+      let written = await completeText(model, { prompt: workspaceLogoPrompt(subject) });
+      let logId = model.lastResponse?.aiGatewayLogId;
+      if (logId && model.aiGatewayLogRoute) {
+        void this.#getCostFromAiGateway(0, model.aiGatewayLogRoute, logId);
+      }
+
+      let svg = sanitizeWorkspaceLogoSvg(written);
+      if (svg === null) {
+        this.logger.warn("workspace logo rejected", { event: "workspace.logo.rejected" });
+        return;
+      }
+      let hash = await putWorkspaceLogo(this.env.BLUEPRINT_CONTENT, gadgetId, svg);
+      if (this.storage.logo.get() !== null || !this.ownerId) {
+        // The workspace was deleted while its logo was drawn.
+        await deleteWorkspaceLogo(this.env.BLUEPRINT_CONTENT, gadgetId, hash);
+        return;
+      }
+      this.storage.logo.put(hash);
+      let owner = this.users.get(this.users.idFromString(this.ownerId));
+      await retryOnDoReset(() => owner.updateLogo(gadgetId, hash), this.logger);
+    } catch (err) {
+      this.logger.warn("failed to draw workspace logo", {
+        event: "workspace.logo.draw.failed", error: err,
+      });
+    } finally {
+      if (byokOwnerStub) this.ctx.waitUntil(refreshCachedBalance(this.env, byokOwnerStub));
+    }
+  }
+
+  // The first thing the user said in chat 0, past whatever came before it: a slash command's own
+  // record, a gadget's changes, an attachment sent with no text. Undefined if chat 0 opened any
+  // other way (a hook's callback, say), in which case it never gets a subject.
+  #logoSubject(): string | undefined {
+    for (let record of this.storage.chats.list({prefix: chatKeyPrefix(0)})) {
+      if (record.type !== "message") continue;
+      if (record.author.type !== "user") return undefined;
+      let text = record.message.trim();
+      if (text) return text;
+    }
+    return undefined;
   }
 
   // Generate a title for the whole gadget, called only after code starts being written.
@@ -9562,11 +9628,12 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       // Fire-and-forget a call to the collaborator's user DO so the gadget appears on
       // (or is refreshed on) their home page.
       let title = this.impl.storage.title.get();
+      let logo = this.impl.storage.logo.get() ?? undefined;
       let gadgetId = this.impl.ctx.id.toString();
       void (async () => {
         try {
           const ownerProfile = await owner.whoami();
-          await clientUser.recordSharedGadgetOpen(gadgetId, title, ownerProfile, role);
+          await clientUser.recordSharedGadgetOpen(gadgetId, title, logo, ownerProfile, role);
         } catch (err) {
           this.impl.logger.warn("failed to record shared gadget open", {
             event: "shared.gadget.open.record.failed", gadgetId, error: err,
@@ -10594,7 +10661,19 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     await this.impl.ctx.blockConcurrencyWhile(async () => {
       await this.#owner.deleteGadget(this.impl.ctx.id.toString());
+      let logo = this.impl.storage.logo.get();
       await this.impl.ctx.storage.deleteAll();
+      // Before the restart is scheduled, which would cut it short. A logo still being drawn
+      // deletes its own blob once it finds the workspace gone.
+      if (logo) {
+        try {
+          await deleteWorkspaceLogo(this.impl.env.BLUEPRINT_CONTENT, this.impl.ctx.id.toString(), logo);
+        } catch (err) {
+          this.impl.logger.warn("failed to delete workspace logo", {
+            event: "workspace.logo.delete.failed", error: err,
+          });
+        }
+      }
       this.impl.recordGadgetAnalytics({
         event_name: "gadget_deleted",
         user_id: this.#clientUser.id.toString(),

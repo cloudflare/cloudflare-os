@@ -1162,6 +1162,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       codeVersion: 0,
       totalCost: 0,
 
+      // The workspace logo's content hash (see workspace-logo.ts). Undefined until the one attempt
+      // to draw it starts, null from then until it is published, and for good if it never is.
+      logo: <string | null | undefined>undefined,
+
       // Next workpiece ID. This is called `nextGatekeeperId` for historical reasons (it predates
       // the ability to have multiple gadgets per workspace), but it is actually used to allocate
       // workpiece IDs of any type.

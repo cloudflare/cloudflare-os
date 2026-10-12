@@ -56,7 +56,7 @@ type GatewayMetadata = {
 };
 
 type GatewayMetadataContext = {
-  source: "chat" | "thread-title" | "gadget-title" | "model-binding";
+  source: "chat" | "thread-title" | "gadget-title" | "workspace-logo" | "model-binding";
   gadgetId?: string;
   chatId?: number;
 };

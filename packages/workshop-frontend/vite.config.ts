@@ -86,6 +86,7 @@ export default defineConfig(({ mode }) => {
         '/api/device-session/callback': `http://${backendHost}`,
         '/blueprint-screenshot': `http://${backendHost}`,
         '/api/site-logo': `http://${backendHost}`,
+        '/api/workspace-logo': `http://${backendHost}`,
       },
     },
     build: {
