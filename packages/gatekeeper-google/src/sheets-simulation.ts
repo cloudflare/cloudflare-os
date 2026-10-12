@@ -448,15 +448,6 @@ export function formulaAt(grid: Grid, sheetId: number, formula: string, from: nu
 
 type Shown = { value: SpreadsheetCellValue; pending: boolean };
 
-// Whether the cell keyed `key` is on a row or column a queued change inserts, which takes the
-// formatting of the line before it, not on one a queued change adds with its sheet.
-function inserted(grid: Grid, key: string): boolean {
-  return key.split(":").slice(1).some(identity => {
-    let step = identity.match(/^n(\d+)\./)?.[1];
-    return step !== undefined && grid.log[Number(step)]?.kind === "insert";
-  });
-}
-
 /**
  * `shown`, the cell keyed `key` as `mode` reads it, made pending when a formatted read would show
  * it in a number format only Google can display: one a queued change sets or resets, or, for a
@@ -468,7 +459,7 @@ function displayed(shown: Shown, grid: Grid, key: string, mode: SpreadsheetValue
   if (mode !== "formatted") return shown;
   let input = grid.cells.get(key)?.input;
   let unknown = grid.formats.get(key)?.set.numberFormat !== undefined ||
-    (input !== undefined && inserted(grid, key));
+    (input !== undefined && key.split(":").slice(1).some(identity => insertedLine(grid, identity)));
   return !unknown || input === null ? shown : { value: null, pending: true };
 }
 

@@ -146,18 +146,19 @@ describe("Google Sheets format requests", () => {
   });
 
   it("names a reset field in the mask and sends no value for it, so Google resets it", () => {
+    // A colour reset names the older field Google also keeps it in, so a colour set there goes too.
     expect(formatRequests(range, { bold: null, fillColor: null, numberFormat: null, wrap: "CLIP" })).toEqual([{
       repeatCell: {
         range,
         cell: { userEnteredFormat: { wrapStrategy: "CLIP" } },
-        fields: "userEnteredFormat(textFormat(bold),backgroundColorStyle,numberFormat,wrapStrategy)",
+        fields: "userEnteredFormat(textFormat(bold),backgroundColorStyle,backgroundColor,numberFormat,wrapStrategy)",
       },
     }]);
     expect(formatRequests(range, { italic: true, textColor: null })).toEqual([{
       repeatCell: {
         range,
         cell: { userEnteredFormat: { textFormat: { italic: true } } },
-        fields: "userEnteredFormat(textFormat(italic,foregroundColorStyle))",
+        fields: "userEnteredFormat(textFormat(italic,foregroundColorStyle,foregroundColor))",
       },
     }]);
     // As a scratch spreadsheet reset bold alone and kept the rest.

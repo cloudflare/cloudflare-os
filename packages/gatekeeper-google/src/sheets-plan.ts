@@ -268,6 +268,13 @@ const FORMAT_PATHS: Record<FormatField, string> = {
   wrap: "wrapStrategy",
 };
 
+// The older field Google also keeps each colour in. A reset names it too, so a colour set through
+// it does not survive the reset.
+const LEGACY_COLOR_PATHS: Partial<Record<FormatField, string>> = {
+  textColor: "textFormat.foregroundColor",
+  fillColor: "backgroundColor",
+};
+
 function formatValue(field: FormatField, value: NonNullable<SheetFormatChange[FormatField]>): unknown {
   switch (field) {
     case "textColor":
@@ -298,13 +305,16 @@ export function formatRequests(range: ReturnType<typeof gridRange>, format: Shee
   for (let field of Object.keys(FORMAT_PATHS) as FormatField[]) {
     let value = format[field];
     if (value === undefined) continue;
-    let [group, name] = FORMAT_PATHS[field].split(".");
-    if (name === undefined) {
-      paths.push(group);
-      if (value !== null) userEnteredFormat[group] = formatValue(field, value);
-    } else {
-      textPaths.push(name);
-      if (value !== null) text[name] = formatValue(field, value);
+    let legacy = value === null ? LEGACY_COLOR_PATHS[field] : undefined;
+    for (let path of legacy ? [FORMAT_PATHS[field], legacy] : [FORMAT_PATHS[field]]) {
+      let [group, name] = path.split(".");
+      if (name === undefined) {
+        paths.push(group);
+        if (value !== null) userEnteredFormat[group] = formatValue(field, value);
+      } else {
+        textPaths.push(name);
+        if (value !== null) text[name] = formatValue(field, value);
+      }
     }
   }
   if (textPaths.length > 0) {
