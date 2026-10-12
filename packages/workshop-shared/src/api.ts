@@ -2238,8 +2238,9 @@ export const MAX_READ_FILES_PER_CALL = 64;
 /**
  * Text bytes after which Overseer.readFilesAtCommit() stops decoding and omits the remaining
  * requested paths from its response (the client re-requests them). Keeps one response well
- * under the RPC message ceiling even with the UTF-16 inflation of serialized text; a single
- * file, being at most the git store's per-object cap, is always returned whole.
+ * under the RPC message ceiling even with the UTF-16 inflation of serialized text. The first
+ * file is always returned whole, however large, so every call makes progress; its size is
+ * bounded only by what the git store could hold.
  */
 export const READ_FILES_RESPONSE_BUDGET = 8 * 1024 * 1024;
 

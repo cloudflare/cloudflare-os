@@ -118,13 +118,10 @@ export type CodeContent = Map<number, GadgetFiles>;
 // =======================================================================================
 // Size caps
 
-/**
- * Maximum length, in UTF-16 code units, of a single file's text that a change may produce (a
- * `set`'s content or an `edit`'s after-length). Backstop, not a product limit: gadget files are
- * source code, and each must fit in a git storage record capped at 2MB -- 512K code units stays
- * under that even for incompressible worst-case UTF-8.
- */
-export const MAX_FILE_TEXT_LENGTH = 512 * 1024;
+// There is deliberately no cap on a file's length. What bounds a file is the git storage record
+// its blob is written to at commit time, and that bound applies to the *deflated* object, which
+// no length measured here could predict; the commit's write fails atomically, losing nothing.
+// The caps below bound changes themselves, which are stored and sent uncompressed.
 
 /**
  * Maximum length, in UTF-16 code units, of a single file path within a change. Enforced only on
@@ -528,8 +525,8 @@ export function changedGadgets(change: CodeChange): number[] {
  * paths; exactly one variant per `FileChange`; that every `edit` parses as a ChangeSet whose
  * sections are non-negative integers that each retain, delete, or insert something (do-nothing
  * padding is rejected) and whose inserted line strings contain no "\n"; and the size caps:
- * `MAX_FILE_TEXT_LENGTH` per produced file, `MAX_FILE_PATH_LENGTH` per path, and
- * `MAX_CODE_CHANGE_SIZE` for the change overall. Throws on the first violation.
+ * `MAX_FILE_PATH_LENGTH` per path and `MAX_CODE_CHANGE_SIZE` for the change overall. Throws on
+ * the first violation.
  * Content-dependent checks (lengths, boundaries) are stage 2: `validateCodeChangeContent`.
  */
 export function validateCodeChangeSchema(change: CodeChange): void {
@@ -576,9 +573,6 @@ function validateFileChangeSchema(where: string, fileChange: FileChange, budget:
     throw new Error(`file change must have exactly one of edit/set/remove: ${where}`);
   }
   if ("set" in fileChange) {
-    if (fileChange.set.length > MAX_FILE_TEXT_LENGTH) {
-      throw new Error(`file is too large: ${where}`);
-    }
     if (fileChange.set.length > budget) throw new Error("code change is too large");
     return fileChange.set.length;
   }
@@ -622,13 +616,11 @@ function validateFileChangeSchema(where: string, fileChange: FileChange, budget:
       if (section === 0) throw new Error(`file change edit has a do-nothing section: ${where}`);
     }
   }
-  let changes: ChangeSet;
   try {
-    changes = toChangeSet(fileChange.edit);
+    toChangeSet(fileChange.edit);
   } catch (e) {
     throw new Error(`file change edit is malformed: ${where}: ${e}`, { cause: e });
   }
-  if (changes.newLength > MAX_FILE_TEXT_LENGTH) throw new Error(`file is too large: ${where}`);
   return cost;
 }
 

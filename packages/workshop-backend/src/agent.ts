@@ -64,9 +64,9 @@ export const CHAT_CHANGE_MESSAGE_BUDGET = 1024 * 1024;
  * agent-visible error, everything buffered before it persists normally at the barrier, and the
  * model adapts mid-turn. The bound exists for correctness -- the barrier writes the step's
  * buffer as *one* "changes" message, which must fit in a 2MB storage record, envelope included
- * -- with bounded buffer memory falling out as a side effect. Sized to admit any single valid
- * file write with margin: a maximal whole-file `set` (MAX_FILE_TEXT_LENGTH, 512K UTF-16 units)
- * measures at most ~1MB under the at-most-two-bytes-per-unit estimate. (Known, accepted gap:
+ * -- with bounded buffer memory falling out as a side effect. It is also what bounds a single
+ * whole-file write (a `set` carries the file's entire text, uncompressed), so a file grows past
+ * that only by edits; a file too large to commit at all fails at accept. (Known, accepted gap:
  * createGadget's blueprint copy is a single multi-file change that may legally measure past
  * the budget, but no shipped blueprint comes close.)
  */
@@ -2820,11 +2820,17 @@ async function runAgentPass(
     // Bound the step's total: the barrier writes the buffer as exactly one "changes" message,
     // which must fit in one storage record. The failed call buffers nothing -- everything
     // buffered before it persists normally at the barrier -- and the error tells the model how
-    // to adapt.
+    // to adapt: a single file write that is too large alone fails the same way every step, so
+    // its error says how to write the file instead.
     let size = codeChangeSerializedSize(change);
     if (stepBuffer.bytes + size > STEP_CHANGE_BUDGET) {
-      throw new Error("Too many code changes in one step. End this response; the changes made " +
-          "so far are being saved, and you can continue the work in your next step.");
+      let oneFile = Object.values(change).flat().length === 1;
+      throw new Error(stepBuffer.changes.length === 0 && oneFile
+          ? "This write is too large to make in one step. Write the file in smaller parts, " +
+            "for example by splitting it into several files, or by writing part of it and then " +
+            "adding the rest with edits."
+          : "Too many code changes in one step. End this response; the changes made so far " +
+            "are being saved, and you can continue the work in your next step.");
     }
     // Apply first: an inapplicable change must throw before anything buffers.
     let newContent = sessionContent;

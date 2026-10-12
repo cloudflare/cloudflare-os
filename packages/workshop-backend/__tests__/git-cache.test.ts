@@ -1441,6 +1441,24 @@ describe("lazy walker reads", () => {
     expect(t.pulls).toHaveLength(0);
   });
 
+  it("reads a blob over the gatekeeper cap that the store holds: limits apply only to writes",
+      async () => {
+    let t = makeCache();
+    let text = "a".repeat(MAX_GIT_OBJECT_SIZE + 1);
+    let big = await storeLocal(t.storage, { type: "blob", payload: new TextEncoder().encode(text) });
+    let tree = await storeLocal(t.storage, {
+      type: "tree",
+      payload: treePayload([{ mode: "100644", name: "huge.txt", oid: big }]),
+    });
+    let commit = await storeLocal(t.storage,
+        { type: "commit", payload: commitPayload(tree, [], "huge") });
+    expect(await t.cache.readFileAtCommit(commit, "huge.txt")).toBe(text);
+    expect(await t.cache.readTextBlob(big, undefined, "huge.txt")).toBe(text);
+    expect(await t.cache.readFilesAtCommit(commit, ["huge.txt"]))
+        .toEqual([["huge.txt", { kind: "text", text }]]);
+    expect(t.pulls).toHaveLength(0);
+  });
+
   it("fails parsing a tree with a non-UTF-8 entry name, naming the tree", async () => {
     let t = makeCache();
     await storeLocal(t.storage, fixture(BAD_NAME_TREE));

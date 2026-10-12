@@ -73,11 +73,13 @@ const logger = createWorkshopLogger("workshop.git-cache");
 // Constants
 
 /**
- * Maximum payload size of a single git object the cache will store, aligned with the store's
- * record constraints (a deflated object must fit a ~2MB storage record) and the intended
- * ~1MB per-file support cap for worktrees. A put() beyond this is rejected -- but measured
- * first, so the size lands in metadata and later reads of the object fail fast instead of
- * re-downloading it.
+ * Maximum payload size of a single git object the cache will accept from a gatekeeper (a put(),
+ * or a pack entry), comfortably inside the store's record constraint (a deflated object must fit
+ * one storage record). A put() beyond this is rejected -- but measured first, so the size
+ * lands in metadata and later reads of the object fail fast instead of re-downloading it.
+ *
+ * This bounds only what is brought in from remotes. It is never applied to an object the store
+ * already holds: whatever storage accepted is readable.
  */
 export const MAX_GIT_OBJECT_SIZE = 1 << 20;
 
@@ -141,8 +143,9 @@ export class GitObjectTooLargeError extends Error {
 }
 
 /**
- * A worktree file's *content* cannot be presented as text: the blob is over the support cap
- * (oversized) or is not valid UTF-8 text (binary). The message is the agent-visible, path-
+ * A worktree file's *content* cannot be presented as text: the blob is unavailable at the
+ * supported size (a remote's blob the cache declined or a filtered pull omitted; see
+ * MAX_GIT_OBJECT_SIZE) or is not valid UTF-8 text (binary). The message is the agent-visible, path-
  * flavored description. Distinct from path-shape errors (symlink/gitlink/directory) and from
  * transient pull failures so callers can tell "fine to overwrite whole, but unreadable and
  * undiffable" apart from errors that must propagate: the Worktree binding's writeFile falls
@@ -908,6 +911,8 @@ export class WorkspaceGitCache {
   }
 
   // Reads a blob for a file path, translating unavailable-at-size into the path-specific error.
+  // A blob the store holds is returned whatever its size: size limits apply only to what is
+  // brought in (see MAX_GIT_OBJECT_SIZE), never to reading what was stored.
   async #readBlob(oid: GitOid, referencedBy: GitOid | undefined, path: string)
       : Promise<Uint8Array> {
     let blob: PackableObject;
@@ -918,10 +923,6 @@ export class WorkspaceGitCache {
         throw new UnreadableContentError(tooLargeMessage(path), { cause: err });
       }
       throw err;
-    }
-    if (blob.payload.byteLength > MAX_GIT_OBJECT_SIZE) {
-      // Locally-present but over the cap (e.g. written before the cap existed).
-      throw new UnreadableContentError(tooLargeMessage(path));
     }
     return blob.payload;
   }

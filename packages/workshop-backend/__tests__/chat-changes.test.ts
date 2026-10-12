@@ -1197,42 +1197,71 @@ describe("updateChatFromMainline", () => {
     expect((await commitObject(impl, merge)).parent[0]).toBe(c1);
   }));
 
-  describe("refuses a merge that needs a file too large to hold", () => {
+  describe("enforces no file size of its own", () => {
     // A file of 200K characters, whose every line both sides change: the conflict holds all
-    // three versions, 600K characters in all, which is more than a file may.
+    // three versions, 600K characters in all.
     const lines = (word: string) => `${word.repeat(250)}\n`.repeat(200);
-    // Under the text limit, but a blob of more than 1 MiB: each "€" takes three bytes.
+    // A blob of more than 1 MiB: each "€" takes three bytes.
     const wide = `${"€".repeat(399)}\n`.repeat(1000);
 
-    async function expectRefused(impl: any, pattern: RegExp): Promise<void> {
-      impl.materializeChatChanges(1);
-      let before = { meta: impl.storage.chatMeta.get(1), messages: chatMessages(impl, 1) };
-      await expect(impl.updateChatFromMainline(1, USER)).rejects.toThrow(pattern);
-      expect(impl.storage.chatMeta.get(1)).toEqual(before.meta);
-      expect(chatMessages(impl, 1)).toEqual(before.messages);
-    }
-
-    it("where the merged text would be", () => withImpl(async impl => {
+    it("merging a large file both sides changed", () => withImpl(async impl => {
       await staleChat(impl, { "big.txt": lines("base") }, { "big.txt": lines("chat") },
                       { "big.txt": lines("main") });
-      await expectRefused(impl, /Cannot merge "APP\/big\.txt".*undo this chat's changes to it/);
+      expect(await impl.updateChatFromMainline(1, USER))
+          .toEqual({ conflictPaths: ["APP/big.txt"] });
+      expect((await gadgetContent(impl, 1, 1))["big.txt"].length)
+          .toBeGreaterThan(3 * lines("base").length);
     }));
 
-    it("where one side's blob is", () => withImpl(async impl => {
+    it("merging, accepting, and reading back a blob over 1 MiB", () => withImpl(async impl => {
       await staleChat(impl, { "big.txt": "base\n" }, { "big.txt": "chat\n" },
                       { "big.txt": wide });
-      await expectRefused(impl, /Cannot merge "APP\/big\.txt"/);
-    }));
-
-    it("but not where only one side changed the file", () => withImpl(async impl => {
-      let c1Files = { "big.txt": "base\n", "a.txt": "one\n" };
-      await staleChat(impl, c1Files, { ...c1Files, "a.txt": "one\nchat\n" },
-                      { ...c1Files, "big.txt": wide });
-      expect(await impl.updateChatFromMainline(1, USER)).toEqual({ conflictPaths: [] });
-      expect(await gadgetContent(impl, 1, 1))
-          .toEqual({ "big.txt": wide, "a.txt": "one\nchat\n" });
+      expect(await impl.updateChatFromMainline(1, USER))
+          .toEqual({ conflictPaths: ["APP/big.txt"] });
+      expect(await impl.mergeChanges(1, USER_META, "user-do-id")).toEqual({ outcome: "merged" });
+      let head = impl.storage.gadgets.get(1)!.commitId!;
+      let merged = (await filesAt(impl, head))["big.txt"];
+      expect(merged).toContain(wide);
+      expect(await impl.gitCache.readFileAtCommit(head, "big.txt")).toBe(merged);
     }));
   });
+
+  it("refuses an accept whose file storage cannot hold, naming it and changing nothing",
+      () => withImpl(async impl => {
+    let c1 = await commitFiles(impl, { "server.js": "one\n" });
+    addGadget(impl, 1, "APP", c1);
+    addChat(impl, 1);
+    // Incompressible, so that its stored object is as large as the text.
+    let big = Array.from({ length: 200 * 1024 }, () => Math.random().toString(36)[2]).join("");
+    await submit(impl, 1, {
+      generation: 0, revision: 0, clientId: "cli", seq: 1,
+      pins: [{ gadgetId: 1, baseCommit: c1 }],
+      change: { 1: [["server.js", { set: big }]] },
+    });
+    impl.materializeChatChanges(1);
+    let before = { meta: impl.storage.chatMeta.get(1), messages: chatMessages(impl, 1) };
+
+    // The limit is storage's own, on the stored (deflated) object. This one stands in for the
+    // record cap, so the test needn't write past the real cap, which may yet be raised.
+    let objects = impl.storage.gitObjects;
+    let put = objects.put;
+    objects.put = (record: { data: Uint8Array }) => {
+      if (record.data.byteLength > 1024) {
+        throw new Error("string or blob too big: SQLITE_TOOBIG");
+      }
+      put.call(objects, record);
+    };
+    try {
+      await expect(impl.mergeChanges(1, USER_META, "user-do-id")).rejects.toThrow(
+          /^Cannot accept changes to APP: server\.js is too large to store\. Split it into/);
+    } finally {
+      objects.put = put;
+    }
+    expect(impl.storage.gadgets.get(1)!.commitId).toBe(c1);
+    expect(impl.storage.chatMeta.get(1)).toEqual(before.meta);
+    expect(chatMessages(impl, 1)).toEqual(before.messages);
+    expect(await gadgetContent(impl, 1, 1)).toEqual({ "server.js": big });
+  }));
 });
 
 describe("agent step barrier", () => {
