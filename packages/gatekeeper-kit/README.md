@@ -40,7 +40,7 @@ Workshop owns connect completion ticket minting and redemption.
 | Observations | Admission strategies, tracked-collection fencing, exclusion derivation, and the guarded authorization call. | Calling the gate for every read, truthful escaped descriptions, choosing the matching strategy and scope, ACL oracles, and collection canonicalization. |
 | Cursors | Serialized walks, buffering, common page/offset/token continuation, filtering hooks, and per-page authorization callbacks. | Provider page adapters, page limits and termination semantics, resource lifetime, and the observation description for each returned page. |
 | Cache | Authority partitioning, stale-fill fencing, TTL storage, single-flight loads, and invalidation. | Cache families, names and keys, authority dimensions, TTLs, value projection, and deciding which reads are safe to cache. |
-| HTTP endpoints and responses | Operator-supplied endpoint normalization, common no-access probes, and byte-capped text decoding. | Host allowlists, redirect and header policy, response schemas, provider errors, and binary or streaming limits. |
+| HTTP endpoints and responses | Operator-supplied endpoint normalization, dot-segment-safe path-segment encoding, common no-access probes, byte-capped text decoding, and best-effort error-body prefixes. | Host allowlists, redirect and header policy, provider id grammar, response schemas, provider errors, and binary or streaming limits. |
 
 When a provider does not fit a leaf, implement the canonical TypeScript interface directly and keep
 the other leaves that still fit. Bypassing a leaf also means owning its guarantees for that concern;
@@ -89,9 +89,9 @@ import {
 | `./hook-delivery-queue` | Per-hook queue of pushed events: deduplication, retry with backoff, and bounded delivery runs from the driver's alarm. | A hook driver delivers provider pushes through `HookInitiator.startHook()`. |
 | `./oauth-client` | OAuth 2.0 token-endpoint client, PKCE, and refresh adapter. | A gatekeeper exchanges, refreshes, or revokes OAuth 2.0 tokens. |
 | `./preview-oauth` | Signed OAuth state and stable-to-preview callback relay. | Preview Workers share one callback registered with the OAuth provider. |
-| `./endpoint` | User-supplied provider endpoint normalization. | A user enters a self-hosted provider URL. |
+| `./endpoint` | User-supplied provider endpoint normalization, and agent-supplied path-segment encoding (`pathSegment`, `pathSegments`). | A user enters a self-hosted provider URL, or an agent-supplied id goes into a request path. |
 | `./http-errors` | HTTP access-error classification and ACL probes. | A verifier distinguishes no access from provider failure. |
-| `./response-body` | Strict byte-capped body decoding. | A gatekeeper reads any provider response body, or a connect form posted to a route that reads the body before checking the nonce. |
+| `./response-body` | Strict byte-capped body decoding, and `readTextPrefix` for error excerpts. | A gatekeeper reads any provider response body, or a connect form posted to a route that reads the body before checking the nonce. |
 | `./git-transport` | Git smart-HTTP framing: protocol-v2 fetch (pkt-line, filter specs, sideband demux into `GitCache.consumePack()`) and send-pack ref updates, plus `simulateBranchHead` for a branch with queued pushes. | A gatekeeper implements `Gatekeeper.gitPull()` or a `push` action against a git host; it supplies only the URL, auth, and timeouts as a fetch callback. |
 | `./git-objects` | Commit-id validation, raw commit-object parsing, and commit advertising (`advertiseCommits`, and `advertisePages` as a `PageHookCursor` hook). | A session returns commit ids (advertise them) or simulates reads of commits queued for push from their local bytes. |
 | `./git-diff` | Tree-to-tree diff over an injected `TreeDiffSource`, and `parseUnifiedPatch` for provider patches, both producing the unified-patch hunk shape agents see. | A pull/merge request's source branch has queued pushes and the provider cannot compute the diff yet, or a provider returns unified patches. |

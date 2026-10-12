@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeVendorEndpoint } from "../src/endpoint";
+import { normalizeVendorEndpoint, pathSegment, pathSegments } from "../src/endpoint";
 
 const hostPattern = /^[a-z0-9-]+\.mktorest\.com$/i;
 const label = "Marketo REST endpoint";
@@ -106,5 +106,32 @@ describe("normalizeVendorEndpoint", () => {
       expect(answer).toContain(label);
       expect(answer).not.toContain(raw);
     }
+  });
+});
+
+describe("pathSegment", () => {
+  const base = "https://api.example.com/v1/files/";
+
+  it.each(["", ".", ".."])("refuses the route-changing segment %j", value => {
+    expect(() => pathSegment(value)).toThrow(/path segment/);
+  });
+
+  it("keeps encoded dots and slashes inside the route prefix", () => {
+    // Raw, `%2e%2e` is a dot segment to the URL parser; encoded once more it is a plain name.
+    expect(new URL(base + pathSegment("%2e%2e")).pathname).toBe("/v1/files/%252e%252e");
+    expect(new URL(base + pathSegment("../x")).pathname).toBe("/v1/files/..%2Fx");
+    expect(new URL(base + pathSegment("...")).pathname).toBe("/v1/files/...");
+  });
+});
+
+describe("pathSegments", () => {
+  it("encodes each segment and keeps the slashes", () => {
+    expect(pathSegments("group/sub/pro ject")).toBe("group/sub/pro%20ject");
+    expect(new URL(`https://gitlab.example.com/${pathSegments("g/%2e%2e/p")}.git`).pathname)
+      .toBe("/g/%252e%252e/p.git");
+  });
+
+  it.each(["a//b", "/a", "a/", "a/../b", "a/./b", ""])("refuses %j", value => {
+    expect(() => pathSegments(value)).toThrow(/path segment/);
   });
 });

@@ -867,11 +867,19 @@ simulated diff and a provider diff read alike.
 - Use `readTextCapped` for every textual, JSON, or error body — a provider can return more bytes
   than the Worker can hold — and for a connect form read before its nonce is checked. It decodes
   UTF-8 and buffers, so binary downloads and streaming protocols (SSE, Git) need their own
-  byte-preserving limit instead.
+  byte-preserving limit instead. The exception is an excerpt decorating an error already being
+  raised: `readTextPrefix(response, n)` truncates instead of refusing and never throws on the body,
+  so an oversized HTML error page still yields its first bytes. Never redact its result: the cut can
+  split an echoed secret. Read a body that may echo a credential whole with `readTextCapped` and
+  redact before cutting. Use `readTextCapped` whenever the whole body must be read, JSON included.
 - Use `normalizeVendorEndpoint` for user-supplied provider base URLs. It validates that one URL and
   is not a fetch policy: fetch with `redirect: "manual"`, or re-validate each `Location` and drop
   origin-scoped headers when the origin changes, or a redirect carries `Authorization` off the
   allowlisted host.
+- Put agent-supplied ids into request paths with `pathSegment`, or `pathSegments` for a
+  `/`-separated name, not bare `encodeURIComponent`: it leaves `.` and `..` literal, and URL
+  parsing resolves them out of the route prefix. The provider's id grammar is still the
+  gatekeeper's to check.
 - Use `PreviewOAuth` when previews must share one stable callback registered with the OAuth
   provider.
 - Use `OAuthClient` for OAuth 2.0 token-endpoint calls rather than a hand-written `fetch`. It is

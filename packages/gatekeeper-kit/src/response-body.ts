@@ -1,4 +1,4 @@
-/** Strict byte-capped body decoding. */
+/** Byte-capped body decoding: strict whole-body reads, and best-effort prefixes for error text. */
 
 import { requirePositiveInt } from "./positive-int";
 
@@ -107,4 +107,56 @@ export async function readBytesCapped(
     offset += chunk.byteLength;
   }
   return out;
+}
+
+/**
+ * Decodes at most the first `maxBytes` bytes of a body as UTF-8, for best-effort decoration of an
+ * error already being raised -- an excerpt of an oversized HTML error page, say. Unlike
+ * `readTextCapped`, a longer body is truncated rather than refused, and `Content-Length` is
+ * ignored. The chunk crossing the cap is sliced, so nothing past it is decoded or kept; a cut
+ * inside a character ends in U+FFFD. The rest of the body is cancelled.
+ *
+ * Never throws for the body itself: a missing, used, or locked body, a failed read, or a failed
+ * cancel yields whatever decoded before it, possibly `""`. Only an invalid `maxBytes` throws.
+ *
+ * The excerpt is provider-authored and travels with the error into logs and issue reports, and
+ * redacting it is unsound: the cut can end inside a secret the far side echoed, or inside one of
+ * its characters as U+FFFD, and the head left behind matches nothing. Where a body may echo a
+ * credential, read it whole with `readTextCapped`, fall back to the status when that refuses, and
+ * redact before cutting for display.
+ * @param body Response or request to consume.
+ * @param maxBytes Maximum bytes decoded; a positive safe integer.
+ * @returns The decoded prefix.
+ *
+ * @example
+ * ```ts
+ * if (!response.ok) {
+ *   const detail = (await readTextPrefix(response, 200)).trim();
+ *   throw new VendorApiError(response.status, detail || response.statusText);
+ * }
+ * ```
+ */
+export async function readTextPrefix(body: Request | Response, maxBytes: number): Promise<string> {
+  requirePositiveInt("maxBytes", maxBytes);
+  const decoder = new TextDecoder();
+  let text = "";
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    reader = body.body?.getReader();
+    for (let left = maxBytes; left > 0;) {
+      const chunk = await reader?.read();
+      if (chunk === undefined || chunk.done) break;
+      const { value } = chunk;
+      const kept = value.subarray(0, left);
+      left -= kept.byteLength;
+      text += decoder.decode(kept, { stream: true });
+    }
+  } catch {
+    // Decoration must not replace the error being raised; keep what arrived.
+  } finally {
+    // A no-op on a finished stream; on a live one it stops the transfer past the cap.
+    await reader?.cancel().catch(() => undefined);
+    reader?.releaseLock();
+  }
+  return text + decoder.decode();
 }

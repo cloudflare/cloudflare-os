@@ -1926,6 +1926,8 @@ export function normalizeVendorEndpoint(raw: string, options: {
   label: string;                    // names the endpoint in the thrown message
   requireHttps?: boolean;           // default true
 }): string;                         // origin + normalized path; no query, userinfo or fragment
+export function pathSegment(value: string): string;
+export function pathSegments(value: string): string;
 ```
 
 For the operator-pasted endpoint an instance-hosted vendor needs (marketo's `<munchkin>.mktorest.com`,
@@ -1964,12 +1966,23 @@ query. mcp-shared's endpoint **blocklist** (`endpoint.ts:17-45`) is deliberately
 it is MCP-scoped SSRF defence with its own trust boundary, and moving it would churn shipped code
 for no new consumer.
 
+`pathSegment` and `pathSegments` are the other half of a provider URL: the agent-supplied ids
+interpolated into its path. `encodeURIComponent` leaves `.` and `..` literal, and WHATWG URL
+parsing resolves them (percent-encoded `%2e%2e` too), so an id of `..` climbs out of the route
+prefix it was placed in. They refuse `""`, `.` and `..` and encode everything else; `pathSegments`
+splits a `/`-separated name (a GitLab project path, a Chat media resource) and applies the same per
+segment, so a leading, trailing or doubled slash is refused as an empty segment. The id grammar
+(charset, length) stays the gatekeeper's, and the error echoes only the refused segment, at most
+two characters. Three internal copies disagreed (sentry refused any `..` substring, firstbase only
+exact dots, zip encoded `%2e`).
+
 ### 4.15 `./response-body`
 
 ```ts
 export const MAX_RESPONSE_BYTES = 1024 * 1024;
 export class ResponseTooLargeError extends Error {}
 export function readTextCapped(response: Request | Response, maxBytes?: number): Promise<string>;
+export function readTextPrefix(body: Request | Response, maxBytes: number): Promise<string>;
 ```
 
 The one thing the competing `gatekeeper-factory-research` branch surfaced that belongs here — and it
@@ -2000,6 +2013,13 @@ origin-scoped headers when one crosses origins (`fetch.ts:142-209`), the factory
 refuses any redirect leaving its declared origin, and `normalizeVendorEndpoint` (§4.14) admits an
 operator-pasted vendor host. Those are three different trust boundaries, and a helper spanning them
 would have to expose knobs for exactly the policy it claims to centralize.
+
+`readTextPrefix` is the one exception to "refused rather than truncated", and is a separate export
+so the strict reader keeps its all-or-nothing contract. It decorates an error already being raised
+with the first `maxBytes` of the body — an HTML error page past the strict cap otherwise yields no
+excerpt at all — so it truncates, ignores `Content-Length`, cancels the rest, and never throws on
+the body: a used, locked or failing body returns what decoded, possibly `""`, because a read failure
+must not replace the provider error it was decorating.
 
 ### 4.16 `./preview-oauth`
 
