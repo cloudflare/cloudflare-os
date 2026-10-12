@@ -4,7 +4,8 @@
 // `consumePack()` (against a mock cache; real pack decoding is workshop-backend's test surface),
 // the pull driver's requested-oid verification with its filtered-blob carve-out, and the
 // send-pack side: ref-update command encoding (branch-name/oid validation included), the
-// canonical empty pack, report-status parsing, and the push driver's body composition.
+// canonical empty pack, report-status parsing, the push driver's body composition, and the
+// branch-head simulation over queued ref updates.
 
 import type { GitOid, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
 import { describe, expect, it } from "vitest";
@@ -26,6 +27,7 @@ import {
   pktText,
   pullGitObjectsIntoCache,
   pushGitRefUpdate,
+  simulateBranchHead,
   validateBranchName,
 } from "../src/git-transport";
 
@@ -556,5 +558,37 @@ describe("pushGitRefUpdate", () => {
         async body => { await collect(body); return new Response("nope", { status: 502 }); },
         { branch: "main", oldSha: oid(1), newSha: oid(2) }, streamOf([new Uint8Array(1)])))
       .rejects.toThrow(/HTTP 502/);
+  });
+});
+
+describe("simulateBranchHead", () => {
+  it("follows a stacked chain to its end in any list order, without touching the input", () => {
+    // Frozen, so consuming the caller's list instead of a copy would throw.
+    const pushes = Object.freeze([
+      { expectedOldSha: oid(3), newSha: oid(4) },
+      { expectedOldSha: oid(1), newSha: oid(2) },
+      { expectedOldSha: oid(2), newSha: oid(3) },
+    ]);
+    expect(simulateBranchHead(oid(1), pushes)).toBe(oid(4));
+  });
+
+  it("creates an absent branch only from a ZERO_OID expectation", () => {
+    const pushes = [{ expectedOldSha: oid(1), newSha: oid(2) }, { expectedOldSha: ZERO_OID, newSha: oid(1) }];
+    expect(simulateBranchHead(null, pushes)).toBe(oid(2));
+    expect(simulateBranchHead(oid(5), pushes)).toBe(oid(5));
+    expect(simulateBranchHead(null, pushes.slice(0, 1))).toBeNull();
+  });
+
+  it("reads a deleted branch as absent, so a later creation still stacks on it", () => {
+    const deletion = { expectedOldSha: oid(1), newSha: ZERO_OID };
+    expect(simulateBranchHead(oid(1), [deletion])).toBeNull();
+    expect(simulateBranchHead(oid(1), [{ expectedOldSha: ZERO_OID, newSha: oid(3) }, deletion])).toBe(oid(3));
+  });
+
+  it("stops overlaying at the first push whose expectation no longer matches", () => {
+    const pushes = [{ expectedOldSha: oid(1), newSha: oid(2) }, { expectedOldSha: oid(7), newSha: oid(8) }];
+    expect(simulateBranchHead(oid(1), pushes)).toBe(oid(2));
+    // The branch moved on the remote: no queued push applies any more.
+    expect(simulateBranchHead(oid(9), pushes)).toBe(oid(9));
   });
 });

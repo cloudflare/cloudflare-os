@@ -38,6 +38,7 @@ import {
   emptyPackBytes,
   pullGitObjectsIntoCache,
   pushGitRefUpdate,
+  simulateBranchHead,
 } from "@gadgets/gatekeeper-kit/git-transport";
 import {
   GitLabApi,
@@ -460,27 +461,13 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   /**
-   * Overlay a branch's queued pushes onto its real head: repeatedly consume the pending push
-   * whose expected old head is the current head, advancing to its new head. `null` when the
-   * branch does not exist and no queued push creates it. Reads use this to show a branch at its
-   * simulated head; the push queue path uses it to bind the next push's expectation.
+   * A branch's head with its queued pushes overlaid (the kit's `simulateBranchHead` over this
+   * branch's pending pushes); `null` when the branch does not exist and no queued push creates
+   * it. Reads use this to show a branch at its simulated head; the push queue path uses it to
+   * bind the next push's expectation.
    */
   #simulateBranchHead(branch: string, realHead: GitOid | null): GitOid | null {
-    let head = realHead;
-    const pending = [...this.#pendingPushActions(branch)];
-    for (let progressed = true; progressed;) {
-      progressed = false;
-      for (let i = 0; i < pending.length; i += 1) {
-        const expected = pending[i].expectedOldSha === ZERO_OID ? null : pending[i].expectedOldSha;
-        if (expected === head) {
-          head = pending[i].newSha;
-          pending.splice(i, 1);
-          progressed = true;
-          break;
-        }
-      }
-    }
-    return head;
+    return simulateBranchHead(realHead, this.#pendingPushActions(branch));
   }
 
   // -- viewer and project -----------------------------------------------------------------

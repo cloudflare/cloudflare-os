@@ -812,7 +812,7 @@ in `github.ts` is the checklist. Divergences:
   `added`, `deleted_file` → `removed`, `renamed_file` → `renamed` with `previousPath: old_path`,
   else `modified`; an empty `diff` — a binary file — or a `too_large` or `collapsed` one →
   `diffOmitted: true`, with `additions`/`deletions` then counting nothing, as the type says);
-  additions/deletions per file are counted from the hunks `parsePatch` reads, where a patch's
+  additions/deletions per file are counted from the hunks the kit's `parseUnifiedPatch` reads, where a patch's
   final newline ends its last line rather than starting a blank context line an agent could
   comment on. `revision` from `revisionFromDiffRefs(mr.diff_refs)`, and the pages are cached
   under that whole revision (Caches). `#getMergeBaseCached` calls `/repository/merge_base`
@@ -843,7 +843,7 @@ substitutes transport endpoints and REST lookups:
   request (it may be minutes from expiry; the pack streams well within the 2-hour window).
 - **`push(branch, commitId, {force?})`**: `preparePush` reads the live branch head (`GET
   …/repository/branches/:name`, 404 → `ZERO_OID`), overlays queued pushes via
-  `#simulateBranchHead`, no-ops when already at `commitId`, checks `isAncestor` unless `force` or
+  `#simulateBranchHead` (the kit's `simulateBranchHead` over the queued pushes), no-ops when already at `commitId`, checks `isAncestor` unless `force` or
   creating, queues `{branch, expectedOldSha, newSha, force}` with `pushedCommits: [commitId]`.
   Apply: `cache.buildPack()` → `pushGitRefUpdate(body => api.fetchGitReceivePack(projectPath,
   body), …)`; `GitRefUpdateRejectedError` → re-read head; equal to `newSha` → desired-state
@@ -1229,7 +1229,7 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
    from github's single `github.ts` for reviewability: `gitlab.ts` (entrypoint, vendor,
    `UserAccount` with PKCE and refresh under a mutex, `GatekeeperUserImpl`, `GitLabVerifier`),
    `gitlab-env.ts` (instance configuration and resource patterns), `gitlab-normalize.ts` (pure
-   REST→API mapping, `revisionFromDiffRefs`, `parsePatch`), `gitlab-cursors.ts`,
+   REST→API mapping, `revisionFromDiffRefs`), `gitlab-cursors.ts`,
    `gitlab-action-types.ts`, `gitlab-gatekeeper.ts` (the DO), `gitlab-sessions.ts`, and the
    three configurators. Every observation method with caches and overlays; the action methods
    throw "not available". Node: `gitlab-normalize.test.ts`, `gitlab-env.test.ts`,

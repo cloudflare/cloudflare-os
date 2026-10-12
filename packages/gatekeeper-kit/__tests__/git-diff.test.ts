@@ -1,6 +1,5 @@
-// Pure-logic coverage for git-diff.ts: tree-object parsing, the pruning tree-to-tree walk, and
-// the line-level unified diff whose hunks must match the shape a gatekeeper's patch reader
-// produces from the provider's own patches.
+// Pure-logic coverage for git-diff.ts: tree-object parsing, the pruning tree-to-tree walk, the
+// line-level unified diff, and the unified-patch reader whose hunks the diff must match.
 
 import { describe, expect, it } from "vitest";
 import {
@@ -10,6 +9,7 @@ import {
   diffGitTrees,
   diffTextLines,
   parseGitTreePayload,
+  parseUnifiedPatch,
   treeEntryKind,
   type GitTreeEntry,
   type TreeDiffSource,
@@ -276,6 +276,48 @@ describe("diffTextLines", () => {
     expect(hunks[0].lines[700]).toEqual({ kind: "context", text: "\\ No newline at end of file" });
     expect(hunks[0].lines.at(-1)).toEqual(
       { kind: "context", text: "\\ No newline at end of file" });
+  });
+});
+
+describe("parseUnifiedPatch", () => {
+  it("reads diffTextLines' hunks back from their patch text, numbering and EOF markers included", () => {
+    const lines = Array.from({ length: 20 }, (_, i) => `line${i + 1}`);
+    const changed = lines.with(1, "two").with(19, "twenty");
+    const { hunks } = diffTextLines(lines.join("\n"), changed.join("\n"));
+    expect(hunks).toHaveLength(2);
+    const prefix = { added: "+", removed: "-", context: " " };
+    const patch = hunks.flatMap(hunk => [
+      hunk.header,
+      // An unnumbered line is the `\ No newline at end of file` marker, written verbatim.
+      ...hunk.lines.map(line => line.oldLineNumber === undefined && line.newLineNumber === undefined
+        ? line.text : prefix[line.kind] + line.text),
+    ]).map(line => `${line}\n`).join("");
+    expect(parseUnifiedPatch(patch)).toEqual(hunks);
+  });
+
+  it("reads no line past a patch's final newline", () => {
+    // Read as a line, the empty string after the last newline would be a blank context line past
+    // the end of the hunk, there to comment on.
+    const [hunk] = parseUnifiedPatch("@@ -1,2 +1,2 @@\n a\n-b\n+c\n");
+    expect(hunk.lines).toEqual([
+      { kind: "context", text: "a", oldLineNumber: 1, newLineNumber: 1 },
+      { kind: "removed", text: "b", oldLineNumber: 2 },
+      { kind: "added", text: "c", newLineNumber: 2 },
+    ]);
+  });
+
+  it("skips a diff --git preamble and restarts numbering at each hunk header", () => {
+    const patch = "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n@@ -10,2 +9,0 @@ fn()\n-c\n-d";
+    expect(parseUnifiedPatch(patch)).toEqual([
+      {
+        header: "@@ -1 +1 @@",
+        lines: [{ kind: "removed", text: "a", oldLineNumber: 1 }, { kind: "added", text: "b", newLineNumber: 1 }],
+      },
+      {
+        header: "@@ -10,2 +9,0 @@ fn()",
+        lines: [{ kind: "removed", text: "c", oldLineNumber: 10 }, { kind: "removed", text: "d", oldLineNumber: 11 }],
+      },
+    ]);
   });
 });
 

@@ -601,3 +601,26 @@ export async function pushGitRefUpdate(
   });
   parseReceivePackResponse(report, `refs/heads/${update.branch}`);
 }
+
+/**
+ * The head a branch will have once its queued compare-and-swap ref updates apply, starting from
+ * `realHead` (`null` = the branch does not exist). Each push whose `expectedOldSha` equals the
+ * current head (`ZERO_OID` = absent) advances it to that push's `newSha` -- the transition
+ * `pushGitRefUpdate` enforces -- so a stacked chain composes in any list order, and a push whose
+ * expectation no longer matches simply stops overlaying. A `newSha` of `ZERO_OID` deletes the
+ * branch, so the result is `null`, never `ZERO_OID`. Pass only the target branch's pushes. Does
+ * not mutate `pushes`.
+ */
+export function simulateBranchHead(
+  realHead: GitOid | null,
+  pushes: readonly { expectedOldSha: GitOid; newSha: GitOid }[],
+): GitOid | null {
+  let head = realHead;
+  const remaining = [...pushes];
+  for (;;) {
+    const index = remaining.findIndex(push => push.expectedOldSha === (head ?? ZERO_OID));
+    if (index === -1) return head;
+    const { newSha } = remaining.splice(index, 1)[0];
+    head = newSha === ZERO_OID ? null : newSha;
+  }
+}

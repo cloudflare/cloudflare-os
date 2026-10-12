@@ -62,6 +62,7 @@ import {
   changedPathsBetweenTrees,
   diffGitTrees,
   parseGitTreePayload,
+  parseUnifiedPatch,
   type TreeDiffSource,
 } from "@gadgets/gatekeeper-kit/git-diff";
 import { SessionGitCache } from "@gadgets/gatekeeper-kit/cursors";
@@ -76,6 +77,7 @@ import {
   emptyPackBytes,
   pullGitObjectsIntoCache,
   pushGitRefUpdate,
+  simulateBranchHead,
   validateBranchName,
 } from "@gadgets/gatekeeper-kit/git-transport";
 import {
@@ -117,7 +119,6 @@ import type {
   GitHubPullRequestDetails,
   GitHubPullRequestDiff,
   GitHubPullRequestDiffFile,
-  GitHubPullRequestDiffHunk,
   GitHubPullRequestEvent,
   GitHubPullRequestFilter,
   GitHubPullRequestMergeOptions,
@@ -1042,59 +1043,6 @@ function eventReview(review: GitHubPullRequestReviewResponse): GitHubEventReview
     ...review.submitted_at ? { submittedAt: new Date(review.submitted_at) } : {},
     url: review.html_url,
   };
-}
-
-function parsePatch(patch: string): GitHubPullRequestDiffHunk[] {
-  const lines = patch.split("\n");
-  const hunks: GitHubPullRequestDiffHunk[] = [];
-  let currentHunk: GitHubPullRequestDiffHunk | undefined;
-  let oldLine = 0;
-  let newLine = 0;
-
-  for (const line of lines) {
-    const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
-    if (match) {
-      oldLine = Number(match[1]);
-      newLine = Number(match[3]);
-      currentHunk = { header: line, lines: [] };
-      hunks.push(currentHunk);
-      continue;
-    }
-
-    if (!currentHunk) continue;
-
-    if (line.startsWith("+")) {
-      currentHunk.lines.push({
-        kind: "added",
-        text: line.slice(1),
-        newLineNumber: newLine,
-      });
-      newLine += 1;
-    } else if (line.startsWith("-")) {
-      currentHunk.lines.push({
-        kind: "removed",
-        text: line.slice(1),
-        oldLineNumber: oldLine,
-      });
-      oldLine += 1;
-    } else if (line.startsWith("\\")) {
-      currentHunk.lines.push({
-        kind: "context",
-        text: line,
-      });
-    } else {
-      currentHunk.lines.push({
-        kind: "context",
-        text: line.startsWith(" ") ? line.slice(1) : line,
-        oldLineNumber: oldLine,
-        newLineNumber: newLine,
-      });
-      oldLine += 1;
-      newLine += 1;
-    }
-  }
-
-  return hunks;
 }
 
 @validateRpc()
@@ -3577,7 +3525,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       deletions: file.deletions,
       // GitHub omits `patch` for binary files and for large text diffs.
       diffOmitted: !file.patch,
-      hunks: file.patch ? parsePatch(file.patch) : [],
+      hunks: file.patch ? parseUnifiedPatch(file.patch) : [],
     };
   }
 
@@ -4898,28 +4846,12 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   }
 
   /**
-   * The head a branch reads at once its queued pushes are treated as applied: starting from the
-   * real head (`null` = the branch does not exist), each queued push whose bound `expectedOldSha`
-   * matches advances it to that push's `newSha` -- exactly the transition apply will enforce, so
-   * stacked pushes compose and a push whose expectation the remote has since invalidated simply
-   * stops overlaying. This is both the simulation read (`listBranches`/`getCommit`) and what the
-   * queue path binds the *next* push's `expectedOldSha` to.
+   * The head a branch reads at once its queued pushes are treated as applied (the kit's
+   * `simulateBranchHead` over this branch's pending pushes). This is both the simulation read
+   * (`listBranches`/`getCommit`) and what the queue path binds the *next* push's `expectedOldSha` to.
    */
   #simulateBranchHead(branch: string, realHead: string | null): string | null {
-    let head = realHead;
-    // Chain-follow to a fixpoint rather than trusting list order: each queued push binds its
-    // expectation to the previous one's newSha, so consuming "the action expecting the current
-    // head" until none matches applies a well-formed chain regardless of tie-broken ordering.
-    const remaining = this.#pendingPushActions(branch);
-    for (let index = 0; index !== -1;) {
-      index = remaining.findIndex(action =>
-        head === (action.expectedOldSha === ZERO_OID ? null : action.expectedOldSha));
-      if (index !== -1) {
-        head = remaining[index].newSha;
-        remaining.splice(index, 1);
-      }
-    }
-    return head;
+    return simulateBranchHead(realHead, this.#pendingPushActions(branch));
   }
 
   // Reads a commit queued for push (or already proven on this remote) from the workspace git

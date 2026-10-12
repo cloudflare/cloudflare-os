@@ -852,6 +852,12 @@ of those would record a pull-routing hint for an object the remote does not have
 `SessionGitCache` (`./cursors`) does both over its own lazily fetched cache stub, with `withhold`
 given once at construction.
 
+A simulated read of a branch with queued pushes takes its head from `simulateBranchHead(realHead,
+pushes)`, the gatekeeper filtering the pushes to that branch; the same call gives the next push its
+`expectedOldSha`, so the simulated head and the compare-and-swap agree. Provider patches go through
+`parseUnifiedPatch`, one file's patch at a time, which shares `diffTextLines`'s hunk shape, so a
+simulated diff and a provider diff read alike.
+
 ## Other module boundaries
 
 - Use `withAuthRetry` only for token flows without `CredentialSource`. Otherwise,

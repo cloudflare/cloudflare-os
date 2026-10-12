@@ -1,8 +1,8 @@
 // Pure helpers for simulating a pull/merge request's diff from raw git objects. When the source
 // branch has queued pushes, the provider cannot compute the diff (the pushed commits are not on
 // the remote yet), so the gatekeeper computes it locally: a pruning tree-to-tree walk enumerates
-// the changed paths, and jsdiff's line-level Myers diff produces hunks in the same shape a
-// provider's unified patches parse into, so one reader (a gatekeeper's `parsePatch`) serves both.
+// the changed paths, and jsdiff's line-level Myers diff produces hunks in the same shape
+// `parseUnifiedPatch` reads a provider's unified patches into.
 //
 // This module deliberately has no platform imports (in particular no `cloudflare:workers`), so its
 // logic runs under the kit's Node vitest project. All object reads go through an injected
@@ -25,6 +25,49 @@ export type GitDiffHunk = {
   header: string;
   lines: GitDiffLine[];
 };
+
+/**
+ * Read one file's unified patch (a GitHub `files[].patch`, a GitLab `diff`) into hunks, numbering
+ * each line on its old/new side. Hunk line counts are not enforced, so a multi-file diff would read
+ * the next file's header lines into the previous hunk: split one by file first. Text before the
+ * first `@@` header (e.g. a `diff --git` preamble) is skipped. Every patch line ends in a
+ * newline, so the empty string after the last one is not a line: read as one, it would be a
+ * blank context line past the end of the hunk that an agent could anchor a comment to. A
+ * `\ No newline at end of file` marker is kept verbatim as an unnumbered context line.
+ */
+export function parseUnifiedPatch(patch: string): GitDiffHunk[] {
+  const lines = patch.split("\n");
+  if (lines.at(-1) === "") lines.pop();
+  const hunks: GitDiffHunk[] = [];
+  let oldLine = 0;
+  let newLine = 0;
+  for (const line of lines) {
+    const header = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+    if (header) {
+      oldLine = Number(header[1]);
+      newLine = Number(header[2]);
+      hunks.push({ header: line, lines: [] });
+      continue;
+    }
+    const hunk = hunks.at(-1);
+    if (!hunk) continue;
+    if (line.startsWith("+")) {
+      hunk.lines.push({ kind: "added", text: line.slice(1), newLineNumber: newLine++ });
+    } else if (line.startsWith("-")) {
+      hunk.lines.push({ kind: "removed", text: line.slice(1), oldLineNumber: oldLine++ });
+    } else if (line.startsWith("\\")) {
+      hunk.lines.push({ kind: "context", text: line });
+    } else {
+      hunk.lines.push({
+        kind: "context",
+        text: line.startsWith(" ") ? line.slice(1) : line,
+        oldLineNumber: oldLine++,
+        newLineNumber: newLine++,
+      });
+    }
+  }
+  return hunks;
+}
 
 /**
  * One changed file in a diff, in the shape the GitHub and GitLab gatekeepers expose to agents
@@ -332,7 +375,7 @@ const HUNK_CONTEXT_LINES = 3;
 /**
  * A hunk's `@@` header in git's own format: the count is omitted when it is 1, and a zero-count
  * side names the line it attaches after (git's `-l,0` / `+m,0` convention, 0 at the start of
- * the file) -- which is how provider patches spell it, so a patch reader sees one grammar.
+ * the file) -- which is how provider patches spell it, so `parseUnifiedPatch` sees one grammar.
  */
 function hunkHeader(oldStart: number, oldCount: number, newStart: number, newCount: number)
     : string {
@@ -343,10 +386,9 @@ function hunkHeader(oldStart: number, oldCount: number, newStart: number, newCou
 /**
  * Unified-diff a file's text at line granularity: jsdiff's `structuredPatch` (a Myers diff, the
  * same engine behind workshop-backend's formatUnifiedDiff) with git's default 3 lines of
- * context, converted to the same shape a gatekeeper's patch reader produces from the provider's
- * own patches -- including git's `\ No newline at end of file` marker after a final line missing
- * its newline (a numberless context line, exactly as such readers preserve it), which jsdiff
- * emits natively.
+ * context, converted to the shape `parseUnifiedPatch` reads from the provider's own patches --
+ * including git's `\ No newline at end of file` marker after a final line missing its newline (a
+ * numberless context line, exactly as that reader preserves it), which jsdiff emits natively.
  *
  * Minimality is bounded two ways, both degrading to one whole remove-then-add block (still a
  * correct unified diff, just not a minimal one): a diff needing more than
@@ -396,7 +438,7 @@ export function diffTextLines(oldText: string, newText: string): {
   }
 
   // Convert jsdiff's hunks (prefixed line strings, one-based starts and counts) to numbered
-  // lines, walking each hunk exactly as a patch reader walks a provider patch. One convention
+  // lines, walking each hunk exactly as `parseUnifiedPatch` walks a provider patch. One convention
   // differs: jsdiff reports a zero-count side's start as one *past* the attach-after line,
   // where git writes the attach-after line itself, so those starts shift down by one (the
   // shift never affects numbering -- a zero-count side numbers no lines).

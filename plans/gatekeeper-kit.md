@@ -2238,6 +2238,8 @@ export function pushGitRefUpdate(
 export class GitRefUpdateRejectedError extends Error { readonly reason: string }
 export function emptyPackBytes(): Promise<Uint8Array>;
 export const ZERO_OID: string;
+export function simulateBranchHead(realHead: GitOid | null,
+  pushes: readonly { expectedOldSha: GitOid; newSha: GitOid }[]): GitOid | null;
 ```
 
 Git smart-HTTP protocol v2 framing, moved verbatim from gatekeeper-github: pkt-line encoding and
@@ -2246,7 +2248,10 @@ compare-and-swap with its report-status parsing. The gatekeeper's callback suppl
 credentials, the timeouts and the protocol headers (`Git-Protocol: version=2` among them); the kit
 owns the bodies. A pre-receive refusal surfaces as `GitRefUpdateRejectedError.reason`, the server's
 own line, which the gatekeeper passes through. `filterSpecForHints` encodes GitHub's verified
-partial-clone limits; other servers may accept more. Consumed by github and gitlab.
+partial-clone limits; other servers may accept more. `simulateBranchHead` overlays a branch's
+queued ref updates on its real head by the same compare-and-swap rule, chain-following in any list
+order, so a simulated read and the next push's expected old sha agree; a push to `ZERO_OID`
+deletes, reading as `null`. Consumed by github and gitlab.
 
 ### 4.21 `./git-diff`
 
@@ -2264,6 +2269,7 @@ export function changedPathsBetweenTrees(source: TreeDiffSource, oldTree: GitOid
 export function diffTextLines(oldText: string, newText: string):
   { hunks: GitDiffHunk[]; additions: number; deletions: number };
 export function parseGitTreePayload(payload: Uint8Array, oid: GitOid): GitTreeEntry[];
+export function parseUnifiedPatch(patch: string): GitDiffHunk[];
 ```
 
 A tree-to-tree diff over an injected `TreeDiffSource`, so a gatekeeper can simulate the diff of
@@ -2272,8 +2278,10 @@ vendor-neutral; each gatekeeper's agent-facing `types.d.ts` keeps structurally i
 (that text must stay self-contained). `MAX_DIFF_*` cap blob size, total bytes, and lines diffed per
 file, and `MAX_DIFF_OUTPUT_PER_FILE`/`MAX_DIFF_OUTPUT_TOTAL` cap the hunk text emitted, so a
 result stays under Durable Object storage's 2 MB value limit; a file past any cap reports
-`diffOmitted` and no hunks, and one past an output cap keeps its line counts. The reader of
-unified patches (`parsePatch`) is still per gatekeeper; see §11.
+`diffOmitted` and no hunks, and one past an output cap keeps its line counts. `parseUnifiedPatch`
+reads a provider's per-file patches into the same hunk shape, so simulated and provider diffs share
+one grammar; a patch's final newline ends its last line rather than starting a blank one. It does
+not enforce hunk line counts, so a multi-file diff must be split by file first.
 
 ### 4.22 `./git-objects`
 
@@ -3359,13 +3367,15 @@ recorded here because the pass found it. Each entry names why it waits and what 
 - **Resource-pattern scope helpers.** Cloudflare, Google, Slack and internal Ironclad each model the
   granted scope differently, so there is no shared contract yet. *Trigger:* a second gatekeeper
   that records requested and granted scopes the way Google does.
-- **Git push simulation.** The pending-chain walk, simulated branch heads, the served-id set,
-  `SessionGitCache`, push apply and rollback, and `parsePatch` are duplicated across github and
-  gitlab, and where the copies differ GitHub's side is the bug, not a provider difference: GitLab's
-  plan records its first-parent walk and missing cascade through stacked pushes as GitHub bugs, and
-  GitHub also drops the rejection reason and lacks the trailing-newline guard. *Trigger:* the next
-  change to either copy — land it as the extraction, into `./git-diff` and a git-simulation leaf,
-  with GitLab's behaviour.
+- **Git push simulation, remainder.** `parseUnifiedPatch` (`./git-diff`) and `simulateBranchHead`
+  (`./git-transport`) were extracted, and `SessionGitCache` already lived in `./cursors`. What stays
+  per gatekeeper is entangled with provider APIs and durable action records: the pending-chain walk
+  (GitHub probes each commit, GitLab splits side ancestry and asks `/merge_base`; both list first
+  parents only), tree comparison, push refusal wording, rollback, and the rejected-push cascade.
+  Two GitHub gaps remain local fixes, not kit work: rollback drops the receive-pack reason, and
+  rejection does not cascade through stacked pushes as GitLab's `#rejectActionsStrandedByPush`
+  does. *Trigger:* a third git gatekeeper, or a pure chain walker returning `{ firstParent, pending,
+  frontier }` that both can call.
 
 Rejected: a `clientCredentials()` grant (`OAuthClient.request("token", …)` covers both instances, and
 Zylo returns `expires_on`), streaming `ActionFileStore` capture (no Drive upload exists), and a
