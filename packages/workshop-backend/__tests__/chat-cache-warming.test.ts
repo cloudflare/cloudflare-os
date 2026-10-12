@@ -113,6 +113,7 @@ describe("ChatCacheWarmer", () => {
 
   it.each([
     { name: "writes to the cache", answer: async () => usage(0, 100_000) },
+    { name: "reads nothing from the cache", answer: async () => usage(0) },
     { name: "fails", answer: async (): Promise<Usage> => { throw new Error("overloaded"); } },
   ])("stops after a ping that $name", async ({ answer }) => {
     warmer.view(CHAT);

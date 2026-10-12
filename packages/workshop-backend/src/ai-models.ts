@@ -633,14 +633,15 @@ function withoutPromptCacheKey(model: Model<Api>, payload: unknown): object | un
 
 // The request a handle `sent` for `context`, which completed with `usage`, as a CachedRequest that
 // resends it with `routing`: the handle's endpoint, auth and headers. Undefined where resending
-// can't keep the cache (see cappedForResend). Resending takes nothing else from the request, so a
-// kept request holds only its payload, not the caller's options or transcript.
+// can't keep the cache (see cappedForResend), or the provider cached none of the request, as for a
+// prompt below its minimum. Resending takes nothing else from the request, so a kept request holds
+// only its payload, not the caller's options or transcript.
 function cachedRequest(
     streamFn: StreamFunction<Api, SimpleStreamOptions>, model: Model<Api>, context: Context,
     sent: { payload: unknown; at: number }, usage: Usage,
     routing: SimpleStreamOptions): CachedRequest | undefined {
   const resent = cappedForResend(model, sent.payload);
-  if (resent === undefined) return undefined;
+  if (resent === undefined || usage.cacheRead + usage.cacheWrite === 0) return undefined;
   const { cacheRead, cacheWrite } = model.cost;
   const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
   const own = Math.max(prompt - estimateSharedHeadTokens(context), 0);

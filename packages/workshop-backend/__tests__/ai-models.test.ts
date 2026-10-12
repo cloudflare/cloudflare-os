@@ -1798,9 +1798,11 @@ describe("Resending a request to keep its cache", () => {
           `data: ${JSON.stringify(event)}\n\n`).join(""),
       { headers: { "content-type": "text/event-stream" } });
 
-  // Answers every request to a 100k-token prompt, 90k of it read from the cache, in the API's own
-  // format. Anthropic's reply counts 5k tokens, which a resend doesn't send again.
-  const answeringFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  // Answers every request to a 100k-token prompt in the API's own format, 90k of it read from the
+  // cache unless Anthropic caches none of it. Anthropic's reply counts 5k tokens, which a resend
+  // doesn't send again.
+  const answering = ({ cached = true } = {}) => (async (input: RequestInfo | URL,
+                                                        init?: RequestInit) => {
     const request = new Request(input as RequestInfo, init);
     capturedRequests.push({ url: request.url, headers: request.headers, body: await request.text() });
     const { pathname } = new URL(request.url);
@@ -1809,10 +1811,10 @@ describe("Resending a request to keep its cache", () => {
         { type: "message_start", message: {
           id: "message", type: "message", role: "assistant", model: "claude", content: [],
           stop_reason: null, stop_sequence: null,
-          usage: {
+          usage: cached ? {
             input_tokens: 10, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 9_990,
             output_tokens: 1,
-          },
+          } : { input_tokens: 100_000, output_tokens: 1 },
         } },
         { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
         { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "OK" } },
@@ -1866,7 +1868,7 @@ describe("Resending a request to keep its cache", () => {
         },
         { role: "user", content: "hello", timestamp: 0 },
       ],
-    }, { fetch: answeringFetch, maxRetries: 0, ...options }).result();
+    }, { fetch: answering(), maxRetries: 0, ...options }).result();
     expect(message.stopReason).toBe("stop");
   }
 
@@ -1937,11 +1939,16 @@ describe("Resending a request to keep its cache", () => {
     expect(handle.lastRequest).toBeUndefined();
   }, 15000);
 
-  it("keeps no request that failed, or that the handle sent with caching off", async () => {
+  it("keeps no request that failed, that the provider didn't cache, or that the handle sent with " +
+      "caching off", async () => {
     const handle = getModel(env(), ANTHROPIC_CONFIG, INITIATOR);
     await send(handle);
     expect(handle.lastRequest).toBeDefined();
     await send(handle, { cacheRetention: "none" });
+    expect(handle.lastRequest).toBeUndefined();
+
+    // As for a prompt below the model's minimum.
+    await send(handle, { fetch: answering({ cached: false }) });
     expect(handle.lastRequest).toBeUndefined();
 
     await send(handle);

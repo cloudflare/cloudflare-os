@@ -102,8 +102,10 @@ export class ChatCacheWarmer {
       cacheReadTokens: usage.cacheRead, cacheWriteTokens: usage.cacheWrite,
     });
     if (!current()) return;
-    // A write means the cached copy had already expired, or no longer matches the request.
-    if (usage.cacheWrite > 0 || !worthPinging(warming.request, warming.pings)) {
+    // A ping that read nothing found no cached copy to keep, and one that wrote found it expired
+    // or changed.
+    if (usage.cacheRead === 0 || usage.cacheWrite > 0 ||
+        !worthPinging(warming.request, warming.pings)) {
       return this.stop(chatId);
     }
     warming.sentAt = sentAt;
