@@ -4931,6 +4931,34 @@ describe("Gmail pending sends", () => {
         .toEqual([["image.png", "png"], ["invite.ics", lfCalendar], ["tail.bin", "x".repeat(lfCalendar.length)]]);
     });
 
+  it("reads same-named inline and regular forward parts as their own bytes", async () => {
+    const {gatekeeper, receive} = mailHarness();
+    const source = receive();
+    // Build the MIME directly: MIMEText would sort the inline part ahead of the regular one.
+    source.raw = base64Url([
+      "From: sender@example.com", "To: me@example.com", "Subject: Same names",
+      "Message-ID: <same-names@example.com>", "MIME-Version: 1.0",
+      'Content-Type: multipart/mixed; boundary="same-names"', "",
+      "--same-names", "Content-Type: text/plain; charset=utf-8", "", "Source body",
+      "--same-names", 'Content-Type: application/octet-stream; name="same.bin"',
+      'Content-Disposition: attachment; filename="same.bin"',
+      "Content-Transfer-Encoding: base64", "", btoa("AAA"),
+      "--same-names", 'Content-Type: application/octet-stream; name="same.bin"',
+      'Content-Disposition: inline; filename="same.bin"',
+      "Content-Transfer-Encoding: base64", "", btoa("BBB"),
+      "--same-names--", "",
+    ].join("\r\n"));
+    const session = await gatekeeper.startSession(approvalQueue());
+    const draft = await (await session.getMessage(source.id)).createForwardDraft(["to@example.com"], "Before");
+    await gatekeeper.applyAction(1);
+
+    const entries = await draft.attachments();
+
+    expect((await Promise.all(entries.map(async entry =>
+      [entry.info.disposition, new TextDecoder().decode(await entry.attachment.getContent())]))).toSorted())
+      .toEqual([["attachment", "AAA"], ["inline", "BBB"]]);
+  });
+
   it("lists an applied inline forward's CID image from Gmail's part metadata", async () => {
     const {gatekeeper, receive} = mailHarness();
     const source = receive(cidSource);

@@ -127,7 +127,8 @@ of archives and label changes, each needing a round trip to the user.
      bytes, not emitted as normalized calendar content; byte-exact state never is, so recovery
      cannot adopt an edit the legacy parse hides. A forward's source parts come from its
      snapshot and are never re-keyed; an inline forward's attachments are listed and read as
-     its rebuilt output emits them, matched by name, Content-ID and media type, so a part the
+     its rebuilt output emits them, matched by exact bytes and else by name, disposition,
+     Content-ID and media type, so a part the
      old builder duplicated is dropped. Bare-index keys are trusted only for a revision this
      binding has not rewritten. Listing a draft under a pending old update reports each
      provider part's own size and type. A `v2:`

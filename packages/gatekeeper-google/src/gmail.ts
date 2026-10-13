@@ -1814,33 +1814,48 @@ async function inlineForwardMessage(
 
 /**
  * An inline forward's attachment state, each part paired with the part its rebuilt output emits:
- * source parts in order by filename, Content-ID and media type, then uploads in order. State
- * captured from the old builder's output can hold parts it duplicated or bytes it normalized, so
- * metadata comes from the rebuilt part, and a source part the rebuild does not emit is dropped.
+ * source parts by their exact bytes, else (for bytes the old builder normalized) in order by
+ * metadata, then uploads in order. State captured from the old builder's output can hold parts
+ * it duplicated, so metadata comes from the rebuilt part, and a source part the rebuild does not
+ * emit is dropped.
  */
-function rebuiltForwardAttachments(
+async function rebuiltForwardAttachments(
     attachments: readonly GmailDraftAttachmentState[], rebuilt: GmailOutboundMessage):
-    Array<{attachment: GmailDraftAttachmentState; part: GmailOutboundAttachment}> {
+    Promise<Array<{attachment: GmailDraftAttachmentState; part: GmailOutboundAttachment}>> {
   const sourceParts = rebuilt.attachments.length - attachments.filter(attachment => attachment.file).length;
+  const digests = await Promise.all(rebuilt.attachments.slice(0, sourceParts).map(attachmentDigest));
   const used = new Set<number>();
-  let upload = sourceParts;
-  return attachments.flatMap(attachment => {
-    const index = attachment.file ? upload++ : rebuilt.attachments.findIndex((part, candidate) =>
+  const claim = (attachment: GmailDraftAttachmentState, exact: boolean) => {
+    const index = rebuilt.attachments.findIndex((part, candidate) =>
       candidate < sourceParts && !used.has(candidate) &&
-      (part.filename || null) === attachment.info.filename &&
-      // The raw parser keeps a Content-ID's brackets; Gmail's part listing strips them.
-      part.contentId?.trim().replace(/^<(.*)>$/, "$1") ===
-        attachment.info.contentId?.trim().replace(/^<(.*)>$/, "$1") &&
-      part.contentType.split(";")[0].trim().toLowerCase() ===
-        attachment.info.mimeType.split(";")[0].trim().toLowerCase());
+      (!exact || digests[candidate] === attachment.contentDigest) &&
+      matchesForwardPartMetadata(part, attachment));
+    if (index >= 0) used.add(index);
+    return index;
+  };
+  // Metadata alone cannot tell same-named parts apart, so exact bytes claim their parts first.
+  const exact = attachments.map(attachment => attachment.file ? -1 : claim(attachment, true));
+  let upload = sourceParts;
+  return attachments.flatMap((attachment, position) => {
+    const index = attachment.file ? upload++ : exact[position] >= 0 ? exact[position] : claim(attachment, false);
     const part = rebuilt.attachments[index];
     if (index < 0 || !part) return [];
-    used.add(index);
     const size = atob(part.data.replace(/\s/g, "")).length;
     return [{attachment: {...attachment, info: {
       ...attachment.info, mimeType: part.contentType, size, readable: size <= MAX_GMAIL_ATTACHMENT_BYTES,
     }}, part}];
   });
+}
+
+function matchesForwardPartMetadata(
+    part: GmailOutboundAttachment, attachment: GmailDraftAttachmentState): boolean {
+  return (part.filename || null) === attachment.info.filename &&
+    (part.disposition ?? "attachment") === (attachment.info.disposition ?? "attachment") &&
+    // The raw parser keeps a Content-ID's brackets; Gmail's part listing strips them.
+    part.contentId?.trim().replace(/^<(.*)>$/, "$1") ===
+      attachment.info.contentId?.trim().replace(/^<(.*)>$/, "$1") &&
+    part.contentType.split(";")[0].trim().toLowerCase() ===
+      attachment.info.mimeType.split(";")[0].trim().toLowerCase();
 }
 
 async function draftOutputFingerprint(
@@ -4152,7 +4167,7 @@ class GmailDraftStub extends ApprovalQueueRpcTarget implements GmailDraft {
     const providerParts = new Map(full ? providerSnapshots.map((snapshot, index) =>
       [providerAttachmentIdentity(resource, full.message.id, index).key, snapshot] as const) : []);
     const listed = source && state.source?.format === "inline"
-      ? rebuiltForwardAttachments(state.attachments,
+      ? await rebuiltForwardAttachments(state.attachments,
         await inlineForwardMessage(this.#ctx.api, this.#ctx.store, state, source))
       : state.attachments.map(attachment => ({attachment, part: undefined}));
     const entries = listed.map(({attachment, part}) => {
