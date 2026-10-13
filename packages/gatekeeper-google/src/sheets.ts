@@ -19,7 +19,8 @@ import {
   batchKind, MARKER_RETENTION_MS, SHEETS_ACTIONS, type MarkerEntry,
 } from "./sheets-actions";
 import {
-  BlankSpreadsheet, GoogleSheetsApi, parseFormatRange, validateRanges, type SheetArea,
+  BlankSpreadsheet, explainUnopenedSpreadsheet, GoogleSheetsApi, parseFormatRange, validateRanges,
+  type SheetArea,
   type SpreadsheetMetadata, type SpreadsheetReader,
 } from "./sheets-api";
 import type { BaseFormats } from "./sheets-format";
@@ -186,7 +187,10 @@ export class GoogleSheetsGatekeeperImpl
         tsType: "GoogleSpreadsheetSession",
       };
     }
-    let spreadsheet = await this.#api.getSpreadsheet(props.spreadsheetId);
+    let spreadsheet = await this.#api.getSpreadsheet(props.spreadsheetId).catch(async (error: unknown) => {
+      throw await explainUnopenedSpreadsheet(
+        error, async () => (await this.#drive.getFile(props.spreadsheetId)).mimeType);
+    });
     return {
       url: nativeFileUrl("sheets", props.spreadsheetId),
       title: spreadsheet.title,
