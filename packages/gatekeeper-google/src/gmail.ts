@@ -166,6 +166,8 @@ type GmailDraftSendAction = {
   dependsOn?: number[];
   /** As on `GmailDraftUpdateAction`. */
   historicalAttachments?: true;
+  /** `approved` re-keyed when a historical predecessor wrote its parts; see `exactAfter`. */
+  exactApproved?: GmailDraftState;
   /** As on `GmailSendAction`. */
   submittedAt?: number;
 };
@@ -177,6 +179,27 @@ type GmailDraftSendAction = {
 function hasHistoricalAttachments(action: GmailDraftUpdateAction | GmailDraftSendAction): boolean {
   return action.historicalAttachments === true || !isVersionedGmailFingerprint(
     action.type === "draftUpdate" ? action.expectedBefore : action.expectedSnapshot);
+}
+
+/**
+ * Re-key `state`'s attachments that match `before` (by key and digest) to their counterparts in
+ * `exact`, the byte-exact state a historical predecessor wrote. Undefined when nothing changes.
+ */
+function migrateAttachmentState(
+    state: GmailDraftState, before: GmailDraftState, exact: GmailDraftState): GmailDraftState | undefined {
+  let changed = false;
+  const attachments = state.attachments.map(attachment => {
+    const index = before.attachments.findIndex(part =>
+      part.key === attachment.key && part.contentDigest === attachment.contentDigest);
+    const migrated = exact.attachments[index];
+    if (index < 0 || !migrated || migrated.contentDigest === attachment.contentDigest) return attachment;
+    changed = true;
+    return {...attachment, contentDigest: migrated.contentDigest, info: {
+      ...attachment.info, mimeType: migrated.info.mimeType, disposition: migrated.info.disposition,
+      size: migrated.info.size,
+    }};
+  });
+  return changed ? {...state, attachments} : undefined;
 }
 
 type GmailDraftWriteReceipt = {
@@ -752,18 +775,25 @@ class GmailStore {
       if (!successor.action.dependsOn?.includes(actionId)) {
         throw new Error("The dependent Gmail draft action lost its write prerequisite.");
       }
+      // A historical predecessor re-keyed its attachments before writing them; the successor's
+      // copy of those parts can no longer be matched through the legacy parse of what it wrote.
+      const migrate = (state: GmailDraftState) => action.type === "draftUpdate" && action.exactAfter
+        ? migrateAttachmentState(state, action.after, action.exactAfter) : undefined;
       let expected: string;
       let rebased: GmailDraftUpdateAction | GmailDraftDeleteAction | GmailDraftSendAction;
       switch (successor.action.type) {
-      case "draftUpdate":
+      case "draftUpdate": {
         expected = successor.action.expectedBefore;
+        const exactAfter = migrate(successor.action.exactAfter ?? successor.action.after);
         rebased = {
           ...successor.action,
           expectedBefore: baseline.fingerprint,
           expectedProviderMessageId: baseline.messageId,
           ...(hasHistoricalAttachments(successor.action) ? {historicalAttachments: true} : {}),
+          ...(exactAfter ? {exactAfter} : {}),
         };
         break;
+      }
       case "draftDelete":
         expected = successor.action.expectedSnapshot;
         rebased = {
@@ -772,15 +802,18 @@ class GmailStore {
           expectedProviderMessageId: baseline.messageId,
         };
         break;
-      case "draftSend":
+      case "draftSend": {
         expected = successor.action.expectedSnapshot;
+        const exactApproved = migrate(successor.action.exactApproved ?? successor.action.approved);
         rebased = {
           ...successor.action,
           expectedSnapshot: baseline.fingerprint,
           expectedProviderMessageId: baseline.messageId,
           ...(hasHistoricalAttachments(successor.action) ? {historicalAttachments: true} : {}),
+          ...(exactApproved ? {exactApproved} : {}),
         };
         break;
+      }
       case "draftCreate":
         throw new Error("A Gmail draft cannot have another create action as its successor.");
       }
@@ -4580,8 +4613,10 @@ async function buildPendingOutbound(
       throw new Error("This draft's attachments cannot be read until the draft exists in Gmail.");
     }
   }
-  return api.buildOutbound(dated(draftSpec(action.approved,
-    await materializeDraftAttachments(store, action.approved, draft, hasHistoricalAttachments(action)))));
+  // A send whose historical predecessor wrote its parts carries their exact mapping instead.
+  return api.buildOutbound(dated(draftSpec(action.approved, await materializeDraftAttachments(
+    store, action.exactApproved ?? action.approved, draft,
+    !action.exactApproved && hasHistoricalAttachments(action)))));
 }
 
 async function verifyReconciledSend(
@@ -5172,7 +5207,7 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
           let approvedOutputFingerprint = store.getSendFingerprint(actionId, action.messageId!);
           if (!approvedOutputFingerprint) {
             approvedOutputFingerprint = await draftOutputFingerprint(
-              api, store, action.approved, action.sourceAttachment);
+              api, store, action.exactApproved ?? action.approved, action.sourceAttachment);
             store.setSendFingerprint(actionId, action.messageId!, approvedOutputFingerprint);
           }
           if (!await matchesGmailFingerprint(sentMessage, approvedOutputFingerprint, sentParsed)) {

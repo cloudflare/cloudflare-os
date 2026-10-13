@@ -125,7 +125,8 @@ of archives and label changes, each needing a round trip to the user.
      state an old action captured (marked `historicalAttachments` once it is rebased) is
      correlated to provider parts through the legacy parse, and it is re-keyed to their exact
      bytes, not emitted as normalized calendar content (the re-keyed state is recorded as
-     `exactAfter` before an update writes it, since the written revision re-encodes those parts);
+     `exactAfter` before an update writes it, since the written revision re-encodes those parts,
+     and carried into the rebased successor as `exactAfter` or `exactApproved`);
      byte-exact state never is, so recovery
      cannot adopt an edit the legacy parse hides. A forward's source parts come from its
      snapshot and are never re-keyed; an inline forward's attachments are listed and read as
