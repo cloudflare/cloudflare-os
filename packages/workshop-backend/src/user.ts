@@ -1622,7 +1622,20 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let record = this.storage.connectedAccounts.get(accountId);
     if (!record) throw new Error("No such account.");
     let { url } = await record.account.ensureResources(resourceUrlPatterns);
-    if (url === undefined) return null;
+    if (url === undefined) {
+      // Already granted, so the stored description the caller judged by is stale; refresh it.
+      // Best-effort: callers read null as access confirmed, which a failed refresh doesn't change.
+      try {
+        let description = await record.account.describe();
+        let current = this.storage.connectedAccounts.get(accountId);
+        if (current) this.storage.connectedAccounts.put({ ...current, description });
+      } catch (err) {
+        logger.warn("failed to refresh a stale account description", {
+          event: "account.describe.refresh.failed", vendorId: record.vendorId, accountId, error: err,
+        });
+      }
+      return null;
+    }
     return { url, nonce: await this.openConnectFlow(accountId) };
   }
 
