@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@gadgets/error-reporting": "workspace:*",
+    "@gadgets/gatekeeper-kit": "workspace:*",
     "@gadgets/observability": "workspace:*",
     "@gadgets/typed-storage": "workspace:*",
     "@gadgets/ui": "workspace:*",
