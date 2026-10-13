@@ -195,18 +195,34 @@ export type AgentGadgetInfo = {
  */
 export const GIT_BINDING_NAME = "GIT";
 
+/**
+ * The name of the `Exports` binding (see exports-session.ts) present in the agent's executeCode
+ * env -- never a gadget's -- beneath any chat binding of the same name, which shadows it.
+ */
+export const EXPORTS_BINDING_NAME = "EXPORTS";
+
+/**
+ * The names every chat's executeCode env holds automatically, so no new chat binding may take
+ * them. (A chat binding that took one before it was reserved keeps it, shadowing the automatic
+ * binding.)
+ */
+export const AUTOMATIC_CHAT_BINDING_NAMES: readonly string[] =
+    [GIT_BINDING_NAME, EXPORTS_BINDING_NAME];
+
 // Describes the binding named by a `describeBinding` tool call: a name in the chat's env or,
 // given `gadget`, in that gadget's own env.
 async function describeBinding(
     {name, gadget}: {name: string, gadget?: string},
     chatBindings: Map<string, ChatBindingEntry>,
     chatId: number,
-    hooks: Pick<AgentHooks, "describeBinding" | "describeGitBinding" | "listGadgetInfo">)
+    hooks: Pick<AgentHooks,
+        "describeBinding" | "describeGitBinding" | "describeExportsBinding" | "listGadgetInfo">)
     : Promise<string> {
   if (gadget === undefined) {
     let envName = `env.${name}`;
     let entry = chatBindings.get(name);
     if (!entry && name === GIT_BINDING_NAME) return hooks.describeGitBinding(envName);
+    if (!entry && name === EXPORTS_BINDING_NAME) return hooks.describeExportsBinding(envName);
     if (!entry) throw new Error(`There is no binding named "${name}" in your env.`);
     switch (entry.type) {
       case "workpiece":
@@ -451,6 +467,9 @@ export interface AgentHooks {
   /** Describe the env.GIT binding (see GIT_BINDING_NAME), for the describeBinding tool. */
   describeGitBinding(envName: string): string;
 
+  /** Describe the env.EXPORTS binding (see EXPORTS_BINDING_NAME), for the describeBinding tool. */
+  describeExportsBinding(envName: string): string;
+
   /**
    * Add a binding to the given gadget, pointing at the given workpiece. The binding is provisional
    * to the chat. The caller is responsible for getting the addition recorded in the chat log (see
@@ -661,6 +680,8 @@ Both the client and server run inside a strictly isolated sandbox. They cannot m
 
 Every Gadget's \`env\`, as well as your own \`executeCode\` env, always contains \`env.GIT\`, which provides programmatic access to git commits known to the workspace: read a commit's metadata and files, edit them in memory, and write new commits. Use \`describeBinding\` to learn its API if you need it.
 
+Your own \`executeCode\` env also always contains \`env.EXPORTS\`, which exports a Gadget as a file in any format it offers -- the same files a user gets from the Workshop's Export menu. Use \`describeBinding\` to learn its API if you need it.
+
 Note that the iframe sandbox on the client side prohibits modal popup boxes like alert() and confirm(), so do not use those.
 
 ## Server -> Client callbacks and subscriptions
@@ -840,6 +861,8 @@ You were started programmatically by the Gadget to perform a task, described bel
 Typically (but not always), you will need to use the \`executeCode\` tool to complete the task, invoking the available bindings (members of the env object) and other APIs available to you.
 
 Your \`env\` always contains \`env.GIT\`, which provides programmatic access to git commits known to the workspace (read a commit's metadata and files, edit them, and write new commits). Use \`describeBinding\` to learn its API if you need it.
+
+Your \`env\` also contains \`env.EXPORTS\`, which exports a Gadget as a file in any format it offers, using its binding name in your env. Use \`describeBinding\` to learn its API if you need it.
 `.trim();
 
 // The tools offered to a spawned agent (see runAgentPass). Anything that modifies a gadget or
@@ -1637,11 +1660,12 @@ async function runAgentPass(
   // to anything yet. A denied request releases its name (log-derived, so replay agrees).
   let claimedNames = new Set<string>();
 
-  // Whether a name is unavailable for a new chat binding. GIT_BINDING_NAME counts as in scope
-  // because the automatic env.GIT occupies it; only new bindings are refused -- a chat binding
-  // that already took the name (from before env.GIT existed) keeps resolving as it did.
-  let isNameInScope = (name: string) =>
-      name === GIT_BINDING_NAME || chatBindings.has(name) || claimedNames.has(name);
+  // Whether a name is unavailable for a new chat binding. AUTOMATIC_CHAT_BINDING_NAMES count as
+  // in scope because the automatic env.GIT and env.EXPORTS occupy them; only new bindings are
+  // refused -- a chat binding that already took such a name (from before it was reserved) keeps
+  // resolving as it did.
+  let isNameInScope = (name: string) => AUTOMATIC_CHAT_BINDING_NAMES.includes(name) ||
+      chatBindings.has(name) || claimedNames.has(name);
 
   // Reverse lookup: the chat env name for a workpiece, if the agent holds one.
   let chatNameFor = (id: WorkpieceId): string | undefined => {
@@ -2880,7 +2904,8 @@ async function runAgentPass(
     let systemPromptBindings: string;
     if (namedSeeds.length == 0) {
       systemPromptBindings =
-          "Aside from `env.GIT` and any resources described below, the `env` object is empty.";
+          "Aside from `env.GIT`, `env.EXPORTS`, and any resources described below, the `env` " +
+          "object is empty.";
     } else {
       let lines = namedSeeds.map(seed =>
           `* env.${seed.name} — ` +
@@ -3488,6 +3513,10 @@ async function runAgentPass(
           if (!sourceEntry && source === GIT_BINDING_NAME) {
             throw new Error(`env.${source} is already present in every gadget's env; there is ` +
                 `no need to bind it.`);
+          }
+          if (!sourceEntry && source === EXPORTS_BINDING_NAME) {
+            throw new Error(`env.${source} exists only in your executeCode env; it cannot be ` +
+                `bound into a gadget.`);
           }
           if (!sourceEntry) {
             throw new Error(`There is no binding named "${source}" in your env.`);
