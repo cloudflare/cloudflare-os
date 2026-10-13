@@ -3,7 +3,7 @@ import type {
   SpreadsheetValueMode,
 } from "./sheets-read-types";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
-import { readGoogleJson } from "./google-response";
+import { GoogleApiError, readGoogleJson } from "./google-response";
 import {
   baseFormats, FORMAT_READ_FIELDS, type BaseFormats, type RestFormatSheet,
 } from "./sheets-format";
@@ -242,9 +242,19 @@ export class GoogleSheetsApi {
     let response = await fetchWithAuthRetry(
       url.toString(), init, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS },
     );
-    return readGoogleJson<T>(response, {
-      provider: "Google Sheets", operation, maxBytes: MAX_RESPONSE_BYTES,
-    });
+    try {
+      return await readGoogleJson<T>(response, {
+        provider: "Google Sheets", operation, maxBytes: MAX_RESPONSE_BYTES,
+      });
+    } catch (error) {
+      // Google's answer for a Drive file it stores in Office format, such as an .xlsx.
+      if (error instanceof GoogleApiError && error.providerStatus === "FAILED_PRECONDITION") {
+        throw new Error(
+          "Google Sheets cannot open this file, likely because it is an Office file such as .xlsx. " +
+          "Open it in Google Sheets, choose File > Save as Google Sheets, and use the copy instead.");
+      }
+      throw error;
+    }
   }
 
   /** Create a spreadsheet titled `title` in the caller's My Drive, holding one empty sheet. */

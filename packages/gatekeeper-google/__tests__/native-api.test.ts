@@ -345,4 +345,18 @@ describe("native Google content API safety", () => {
     expect(error.message).toBe(expected);
     expect(error.message).not.toContain("secret provider");
   });
+
+  it("tells the caller to convert an Office file Sheets cannot open", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      error: {
+        code: 400,
+        status: "FAILED_PRECONDITION",
+        message: "This operation is not supported for this document",
+      },
+    }, { status: 400 })));
+
+    await expect(new GoogleSheetsApi(token).getSpreadsheet("sheet-1"))
+      .rejects.toThrow(/Office file such as \.xlsx.*Save as Google Sheets/);
+  });
 });
