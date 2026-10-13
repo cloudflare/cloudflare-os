@@ -4705,20 +4705,23 @@ describe("Gmail pending sends", () => {
       .toBe(lfCalendar);
   });
 
-  it("applies a pre-upgrade successor after its predecessor re-encodes their unencoded calendar", async () => {
+  it("applies every pre-upgrade descendant after their predecessor re-encodes an unencoded calendar", async () => {
     const {gatekeeper, values, imported, draft, historicalBefore, historicalize} = await unencodedCalendarDraft();
     await draft.update({text: "First"});
     await draft.update({subject: "Second"});
-    await historicalize(2, await historicalize(1, historicalBefore));
+    await draft.update({cc: ["cc@example.com"]});
+    await historicalize(3, await historicalize(2, await historicalize(1, historicalBefore)));
     await gatekeeper.restart();
     await gatekeeper.applyAction(1);
     await gatekeeper.restart();
 
-    await gatekeeper.applyAction(2);
+    // The overlay of every descendant, not only the next one, must still match Gmail's parts.
+    await draft.update({text: "Fourth"});
+    for (const id of [2, 3, 4]) await gatekeeper.applyAction(id);
 
-    expect(await values.has("pending:action:2")).toBe(false);
+    for (const id of [2, 3, 4]) expect(await values.has(`pending:action:${id}`)).toBe(false);
     const written = await parseGmailDraft(fakeMailRaw(imported.mail));
-    expect(written.subject).toBe("Second");
+    expect([written.subject, written.cc, written.text.trim()]).toEqual(["Second", ["cc@example.com"], "Fourth"]);
     expect(atob(written.attachments[0].data.replace(/\s/g, ""))).toBe(lfCalendar);
   });
 

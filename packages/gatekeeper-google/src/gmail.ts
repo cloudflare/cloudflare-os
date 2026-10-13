@@ -775,25 +775,18 @@ class GmailStore {
       if (!successor.action.dependsOn?.includes(actionId)) {
         throw new Error("The dependent Gmail draft action lost its write prerequisite.");
       }
-      // A historical predecessor re-keyed its attachments before writing them; the successor's
-      // copy of those parts can no longer be matched through the legacy parse of what it wrote.
-      const migrate = (state: GmailDraftState) => action.type === "draftUpdate" && action.exactAfter
-        ? migrateAttachmentState(state, action.after, action.exactAfter) : undefined;
       let expected: string;
       let rebased: GmailDraftUpdateAction | GmailDraftDeleteAction | GmailDraftSendAction;
       switch (successor.action.type) {
-      case "draftUpdate": {
+      case "draftUpdate":
         expected = successor.action.expectedBefore;
-        const exactAfter = migrate(successor.action.exactAfter ?? successor.action.after);
         rebased = {
           ...successor.action,
           expectedBefore: baseline.fingerprint,
           expectedProviderMessageId: baseline.messageId,
           ...(hasHistoricalAttachments(successor.action) ? {historicalAttachments: true} : {}),
-          ...(exactAfter ? {exactAfter} : {}),
         };
         break;
-      }
       case "draftDelete":
         expected = successor.action.expectedSnapshot;
         rebased = {
@@ -802,18 +795,15 @@ class GmailStore {
           expectedProviderMessageId: baseline.messageId,
         };
         break;
-      case "draftSend": {
+      case "draftSend":
         expected = successor.action.expectedSnapshot;
-        const exactApproved = migrate(successor.action.exactApproved ?? successor.action.approved);
         rebased = {
           ...successor.action,
           expectedSnapshot: baseline.fingerprint,
           expectedProviderMessageId: baseline.messageId,
           ...(hasHistoricalAttachments(successor.action) ? {historicalAttachments: true} : {}),
-          ...(exactApproved ? {exactApproved} : {}),
         };
         break;
-      }
       case "draftCreate":
         throw new Error("A Gmail draft cannot have another create action as its successor.");
       }
@@ -823,6 +813,24 @@ class GmailStore {
         throw new Error("The dependent Gmail draft action no longer matches the approved write output.");
       }
       this.#kv.put(this.#actionKey(successor.id), rebased);
+    }
+    // A historical write re-keyed its attachments before writing them. Every later action's copy of
+    // those parts can no longer be matched through the legacy parse of what it wrote, so each
+    // takes the exact mapping; only the immediate successor's preconditions were rebased above.
+    if (action.type === "draftUpdate" && action.exactAfter) {
+      for (const {id, action: candidate} of this.listActions()) {
+        if (id <= actionId || (candidate.type !== "draftUpdate" && candidate.type !== "draftSend") ||
+            this.resolveDraftId(candidate.draftId) !== logicalId) {
+          continue;
+        }
+        const migrated = candidate.type === "draftUpdate"
+          ? migrateAttachmentState(candidate.exactAfter ?? candidate.after, action.after, action.exactAfter)
+          : migrateAttachmentState(candidate.exactApproved ?? candidate.approved, action.after, action.exactAfter);
+        if (migrated) {
+          this.#kv.put(this.#actionKey(id), candidate.type === "draftUpdate"
+            ? {...candidate, exactAfter: migrated} : {...candidate, exactApproved: migrated});
+        }
+      }
     }
 
     resource.appliedAttachments = baseline.appliedAttachments;
