@@ -49,12 +49,151 @@
               "speakerNotesObjectId": "i3"
             }
           }
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "propertyState": "INHERIT"
+          }
         }
       }
     ],
     "masters": [
       {
-        "objectId": "simple-light-2"
+        "objectId": "simple-light-2",
+        "masterProperties": {
+          "displayName": "Simple Light"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "solidFill": {
+              "color": {
+                "themeColor": "LIGHT1"
+              },
+              "alpha": 1
+            }
+          },
+          "colorScheme": {
+            "colors": [
+              {
+                "type": "DARK1",
+                "color": {}
+              },
+              {
+                "type": "LIGHT1",
+                "color": {
+                  "red": 1,
+                  "green": 1,
+                  "blue": 1
+                }
+              },
+              {
+                "type": "DARK2",
+                "color": {
+                  "red": 0.34901962,
+                  "green": 0.34901962,
+                  "blue": 0.34901962
+                }
+              },
+              {
+                "type": "LIGHT2",
+                "color": {
+                  "red": 0.93333334,
+                  "green": 0.93333334,
+                  "blue": 0.93333334
+                }
+              },
+              {
+                "type": "ACCENT1",
+                "color": {
+                  "red": 0.25882354,
+                  "green": 0.52156866,
+                  "blue": 0.95686275
+                }
+              },
+              {
+                "type": "ACCENT2",
+                "color": {
+                  "red": 0.12941177,
+                  "green": 0.12941177,
+                  "blue": 0.12941177
+                }
+              },
+              {
+                "type": "ACCENT3",
+                "color": {
+                  "red": 0.47058824,
+                  "green": 0.5647059,
+                  "blue": 0.6117647
+                }
+              },
+              {
+                "type": "ACCENT4",
+                "color": {
+                  "red": 1,
+                  "green": 0.67058825,
+                  "blue": 0.2509804
+                }
+              },
+              {
+                "type": "ACCENT5",
+                "color": {
+                  "green": 0.5921569,
+                  "blue": 0.654902
+                }
+              },
+              {
+                "type": "ACCENT6",
+                "color": {
+                  "red": 0.93333334,
+                  "green": 1,
+                  "blue": 0.25490198
+                }
+              },
+              {
+                "type": "HYPERLINK",
+                "color": {
+                  "green": 0.5921569,
+                  "blue": 0.654902
+                }
+              },
+              {
+                "type": "FOLLOWED_HYPERLINK",
+                "color": {
+                  "green": 0.5921569,
+                  "blue": 0.654902
+                }
+              },
+              {
+                "type": "TEXT1",
+                "color": {}
+              },
+              {
+                "type": "BACKGROUND1",
+                "color": {
+                  "red": 1,
+                  "green": 1,
+                  "blue": 1
+                }
+              },
+              {
+                "type": "TEXT2",
+                "color": {
+                  "red": 0.93333334,
+                  "green": 0.93333334,
+                  "blue": 0.93333334
+                }
+              },
+              {
+                "type": "BACKGROUND2",
+                "color": {
+                  "red": 0.34901962,
+                  "green": 0.34901962,
+                  "blue": 0.34901962
+                }
+              }
+            ]
+          }
+        }
       }
     ],
     "layouts": [
@@ -86,6 +225,11 @@
         "layoutProperties": {
           "masterObjectId": "simple-light-2",
           "displayName": "Title slide"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "propertyState": "INHERIT"
+          }
         }
       },
       {
@@ -109,6 +253,11 @@
         "layoutProperties": {
           "masterObjectId": "simple-light-2",
           "displayName": "Section header"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "propertyState": "INHERIT"
+          }
         }
       },
       {
@@ -139,6 +288,11 @@
         "layoutProperties": {
           "masterObjectId": "simple-light-2",
           "displayName": "Title and body"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "propertyState": "INHERIT"
+          }
         }
       },
       {
@@ -162,6 +316,11 @@
         "layoutProperties": {
           "masterObjectId": "simple-light-2",
           "displayName": "Title only"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "propertyState": "INHERIT"
+          }
         }
       },
       {
@@ -178,6 +337,11 @@
         "layoutProperties": {
           "masterObjectId": "simple-light-2",
           "displayName": "Blank"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "propertyState": "INHERIT"
+          }
         }
       }
     ],
@@ -194,7 +358,141 @@
     ],
     "masters": [
       {
-        "objectId": "simple-light-2"
+        "objectId": "simple-light-2",
+        "masterProperties": {
+          "displayName": "Simple Light"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "solidFill": {
+              "color": {
+                "themeColor": "LIGHT1"
+              },
+              "alpha": 1
+            }
+          },
+          "colorScheme": {
+            "colors": [
+              {
+                "type": "DARK1",
+                "color": {}
+              },
+              {
+                "type": "LIGHT1",
+                "color": {
+                  "red": 1,
+                  "green": 1,
+                  "blue": 1
+                }
+              },
+              {
+                "type": "DARK2",
+                "color": {
+                  "red": 0.34901962,
+                  "green": 0.34901962,
+                  "blue": 0.34901962
+                }
+              },
+              {
+                "type": "LIGHT2",
+                "color": {
+                  "red": 0.93333334,
+                  "green": 0.93333334,
+                  "blue": 0.93333334
+                }
+              },
+              {
+                "type": "ACCENT1",
+                "color": {
+                  "red": 0.25882354,
+                  "green": 0.52156866,
+                  "blue": 0.95686275
+                }
+              },
+              {
+                "type": "ACCENT2",
+                "color": {
+                  "red": 0.12941177,
+                  "green": 0.12941177,
+                  "blue": 0.12941177
+                }
+              },
+              {
+                "type": "ACCENT3",
+                "color": {
+                  "red": 0.47058824,
+                  "green": 0.5647059,
+                  "blue": 0.6117647
+                }
+              },
+              {
+                "type": "ACCENT4",
+                "color": {
+                  "red": 1,
+                  "green": 0.67058825,
+                  "blue": 0.2509804
+                }
+              },
+              {
+                "type": "ACCENT5",
+                "color": {
+                  "green": 0.5921569,
+                  "blue": 0.654902
+                }
+              },
+              {
+                "type": "ACCENT6",
+                "color": {
+                  "red": 0.93333334,
+                  "green": 1,
+                  "blue": 0.25490198
+                }
+              },
+              {
+                "type": "HYPERLINK",
+                "color": {
+                  "green": 0.5921569,
+                  "blue": 0.654902
+                }
+              },
+              {
+                "type": "FOLLOWED_HYPERLINK",
+                "color": {
+                  "green": 0.5921569,
+                  "blue": 0.654902
+                }
+              },
+              {
+                "type": "TEXT1",
+                "color": {}
+              },
+              {
+                "type": "BACKGROUND1",
+                "color": {
+                  "red": 1,
+                  "green": 1,
+                  "blue": 1
+                }
+              },
+              {
+                "type": "TEXT2",
+                "color": {
+                  "red": 0.93333334,
+                  "green": 0.93333334,
+                  "blue": 0.93333334
+                }
+              },
+              {
+                "type": "BACKGROUND2",
+                "color": {
+                  "red": 0.34901962,
+                  "green": 0.34901962,
+                  "blue": 0.34901962
+                }
+              }
+            ]
+          }
+        }
       }
     ],
     "layouts": [
@@ -203,6 +501,11 @@
         "layoutProperties": {
           "masterObjectId": "simple-light-2",
           "displayName": "Title slide"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "propertyState": "INHERIT"
+          }
         }
       },
       {
@@ -210,6 +513,11 @@
         "layoutProperties": {
           "masterObjectId": "simple-light-2",
           "displayName": "Section header"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "propertyState": "INHERIT"
+          }
         }
       },
       {
@@ -217,6 +525,11 @@
         "layoutProperties": {
           "masterObjectId": "simple-light-2",
           "displayName": "Title and body"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "propertyState": "INHERIT"
+          }
         }
       },
       {
@@ -224,6 +537,11 @@
         "layoutProperties": {
           "masterObjectId": "simple-light-2",
           "displayName": "Title only"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "propertyState": "INHERIT"
+          }
         }
       },
       {
@@ -231,6 +549,11 @@
         "layoutProperties": {
           "masterObjectId": "simple-light-2",
           "displayName": "Blank"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "propertyState": "INHERIT"
+          }
         }
       }
     ]
@@ -404,6 +727,11 @@
           "notesProperties": {
             "speakerNotesObjectId": "i3"
           }
+        }
+      },
+      "pageProperties": {
+        "pageBackgroundFill": {
+          "propertyState": "INHERIT"
         }
       }
     }

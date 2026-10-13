@@ -917,7 +917,8 @@ export function formatMissingBlueprintBindings(
                 : ``);
         break;
       case "aiModel":
-        details = `an AI model binding`;
+        details = binding.modelKind === "decision"
+            ? `an AI decision model binding` : `an AI model binding`;
         break;
       case "agentSpawner":
         details = `an agent-spawner binding`;

@@ -59,6 +59,7 @@ import { GadgetPresence } from './components/GadgetPresence'
 import BlueprintModal from './BlueprintModal'
 import { UpdateFromBlueprintDialog } from './features/blueprint-updates/UpdateFromBlueprintDialog'
 import { useBlueprintUpdateAvailable } from './features/blueprint-updates/useBlueprintUpdateAvailable'
+import { reportVisibleChat } from './features/notifications/visibleChat'
 import TopBarNotice from './TopBarNotice'
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from './components/WorkshopControls'
 import { useActionEntries, useActions } from './useActions'
@@ -874,6 +875,13 @@ export default function GadgetEditor() {
     || (streamingActiveFile != null && !isWorktreeId(streamingActiveFile.workpieceId))
   const layoutModeReady = chatListReady && (codeStateReady || hasCodeRelatedState)
 
+  // Wait for the workpiece list (and the first selected-gadget stub, which follows it by one
+  // effect pass) before rendering; a workspace with no gadgets renders with `gadget` null.
+  const workspaceLoading = !metadata || !overseer || !workpiecesReady ||
+    (selectedGadgetId !== null && gadget === null)
+  // layoutModeReady survives a failed reopen and its retry, which show error and loading pages.
+  const chatRendered = layoutModeReady && !error && !workspaceLoading
+
   // Wait for all initial subscriptions before choosing the new-workspace chat-only layout.
   // `hasCommittedCode` matters here too: on the first accept the proposed changes clear before the
   // new head's tree arrives, and simple mode must not flash on during that window -- the
@@ -1159,6 +1167,14 @@ export default function GadgetEditor() {
       replace: true,
     })
   }, [showChatParam, id, navigate, setWorkspaceVisibility, exitGadgetFullscreen])
+
+  // Notifications skip the chat on screen: rendered, and not covered by full-screen preview or, on a
+  // phone, by the workspace pane.
+  useEffect(() => {
+    if (!chatRendered || isGadgetFullscreen || effectiveSelectedChatId === null) return
+    const chat = { workspaceId: id!, chatId: effectiveSelectedChatId }
+    return reportVisibleChat(() => showFullEditor && isSinglePaneLayout() ? null : chat)
+  }, [chatRendered, isGadgetFullscreen, effectiveSelectedChatId, id, showFullEditor])
 
   // ── navigation helper ────────────────────────────────────────────────────────
   const navigateToChat = useCallback(
@@ -1463,10 +1479,7 @@ export default function GadgetEditor() {
     )
   }
 
-  // Wait for the workpiece list (and the first selected-gadget stub, which follows it by one
-  // effect pass) before rendering; a workspace with no gadgets renders with `gadget` null.
-  if (!metadata || !overseer || !workpiecesReady ||
-      (selectedGadgetId !== null && gadget === null)) {
+  if (workspaceLoading) {
     return (
       <div className="flex min-h-full items-center justify-center bg-kumo-base">
         <div className="flex flex-col items-center gap-3">

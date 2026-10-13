@@ -1,5 +1,5 @@
 import { RpcStub } from "capnweb";
-import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, UserNotification, type DeviceSessionHandoffStart } from '@gadgets/workshop-shared/api';
+import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, UserNotification, type DeviceSessionHandoffStart } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
@@ -617,23 +617,24 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.profile.put(profile);
   }
 
-  async listModels(): Promise<AiChatAuthorInfo[]> {
-    return this.#listModels(await getGatewayModels(this.env));
+  async listModels(kind: ModelKind = "language"): Promise<AiChatAuthorInfo[]> {
+    return this.#listModels(await getGatewayModels(this.env), kind);
   }
 
-  #listModels(models: GatewayModels | null): AiChatAuthorInfo[] {
+  #listModels(models: GatewayModels | null, kind: ModelKind): AiChatAuthorInfo[] {
     let result: AiChatAuthorInfo[] = [];
 
     // When AI Gateway mode is active, include the gateway models the deployment offers.
     if (models) {
-      result.push(...models.list());
+      result.push(...models.list(kind));
     }
 
     // Also include user-configured models, where users may add their own, skipping any that a
     // gateway model shadows, whatever its mode (see #resolveModel()).
     if (models && !models.userModels) return result;
     for (let model of this.storage.aiModels.list()) {
-      if (!models?.get(model.profile.id)) {
+      if (!models?.get(model.profile.id) &&
+          modelKind(model.config.provider, model.config.model) === kind) {
         result.push(model.profile);
       }
     }
@@ -869,7 +870,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let models = await getGatewayModels(this.env);
     let selectedModelId = existingChatModelId;
     if (selectedModelId === null || !this.#resolveModel(selectedModelId, models)) {
-      let offered = this.#listModels(models);
+      let offered = this.#listModels(models, "language");
       let preferredModel = this.storage.preferredModel.get();
       selectedModelId = (offered.find(model => model.id === preferredModel) ?? offered[0])?.id ?? null;
     }

@@ -1,6 +1,6 @@
 import {
   AdminGatewayProvider, AdminModel, AiChatAuthorInfo, AiModelConfig, AiModelProvider, GatewayModel,
-  GatewayModelMode, HTTPS_ONLY_PROVIDERS, ReasoningLevel, SUGGESTED_MODELS,
+  GatewayModelMode, HTTPS_ONLY_PROVIDERS, ModelKind, ReasoningLevel, SUGGESTED_MODELS, modelKind,
 } from "@gadgets/workshop-shared/api";
 import { readAdminConfig } from "./admin-config.js";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
@@ -248,9 +248,13 @@ export class GatewayModels {
     return this.#byId.get(id);
   }
 
-  /** The models offered in pickers, i.e. the enabled ones, as AiChatAuthorInfo entries. */
-  list(): AiChatAuthorInfo[] {
-    return this.all.filter(model => model.mode === "enabled")
+  /**
+   * The models of one kind offered in pickers, i.e. the enabled ones, as AiChatAuthorInfo
+   * entries.
+   */
+  list(kind: ModelKind): AiChatAuthorInfo[] {
+    return this.all.filter(model =>
+            model.mode === "enabled" && modelKind(model.provider, model.id) === kind)
         .map(({ id, name }) => ({ type: "agent", id, name }));
   }
 

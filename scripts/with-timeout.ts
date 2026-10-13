@@ -34,6 +34,9 @@
 // unsupervised local run. A wedge is then killed anonymously by whatever is outside, with no
 // surviving-tree listing to name the culprit. Under vp the variable reaches a cached task only
 // through the task's `env` declaration (see vitest-task-vite-config.ts), which also fingerprints it.
+// `TESTS_WITH_TIMEOUT_IDLE_SECONDS` and `TESTS_WITH_TIMEOUT_MAX_SECONDS` override their respective
+// CLI thresholds for slow CI/container runs. Both require positive, finite seconds and are likewise
+// forwarded and fingerprinted; neither disables the watchdog.
 
 import { execFile, spawn } from "node:child_process";
 import { constants } from "node:os";
@@ -169,7 +172,14 @@ function holdLifeline(args: string[]): void {
 
 /** The back (see the header): the watchdog itself, run by the front with `--lifeline`. */
 function supervise(args: string[]): void {
-  const { idleMs, maxMs, argv } = parseArgs(args);
+  const defaults = parseArgs(args);
+  const idleOverride = process.env.TESTS_WITH_TIMEOUT_IDLE_SECONDS;
+  const maxOverride = process.env.TESTS_WITH_TIMEOUT_MAX_SECONDS;
+  const idleMs = idleOverride === undefined ? defaults.idleMs :
+    parseSeconds("TESTS_WITH_TIMEOUT_IDLE_SECONDS", idleOverride);
+  const maxMs = maxOverride === undefined ? defaults.maxMs :
+    parseSeconds("TESTS_WITH_TIMEOUT_MAX_SECONDS", maxOverride);
+  const { argv } = defaults;
   // After `parseArgs`, so a malformed invocation fails with the usage error even when disabled.
   const watchdogsDisabled = Boolean(process.env.TESTS_WITH_TIMEOUT_DISABLE);
   const [command, commandArgs] = resolveCommand(argv);

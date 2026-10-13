@@ -1,17 +1,18 @@
 /**
  * Formatting between Google's JSON and what agents read and write: colours, text and paragraph
- * styles, and shape and cell fills. Only what Google reports as set is read; an unset field is
- * inherited.
+ * styles, shape and cell fills, page backgrounds and theme colours. Only what Google reports as
+ * set is read; an unset field is inherited.
  */
 
 import type {
-  RestBorderProperties, RestColor, RestDimension, RestOpaqueColor, RestParagraphStyle,
-  RestPropertyState, RestShapeProperties, RestSolidFill, RestText, RestTextStyle,
+  RestBorderProperties, RestColor, RestDimension, RestOpaqueColor, RestPageBackgroundFill,
+  RestPageProperties, RestParagraphStyle, RestPropertyState, RestShapeProperties, RestSolidFill,
+  RestText, RestTextStyle, RestThemeColorPair,
 } from "./slides-api";
 import { emu, points } from "./slides-geometry";
 import type {
-  DashStyle, FormattedParagraph, FormattedRange, ParagraphFormat, ShapeElement, SlideColor,
-  TableBorder, TableCell, TextFormat, TextLink,
+  DashStyle, FormattedParagraph, FormattedRange, ParagraphFormat, ShapeElement, SlideBackground,
+  SlideColor, TableBorder, TableCell, TextFormat, TextLink, ThemeColorName,
 } from "./slides-read-types";
 import type { ShapeOutline, TextFormatChange } from "./slides-types";
 
@@ -199,11 +200,35 @@ export function borderOf(properties: RestBorderProperties): TableBorder {
   return { ...(color ? { color } : {}), ...weightOf(properties.weight), ...dashOf(properties.dashStyle) };
 }
 
-/** The theme colours a `SlideColor` may name. */
-const THEME_COLORS = new Set([
+/** A page's background as agents read it: a colour, `"picture"` or `"none"`; undefined if inherited. */
+export function backgroundOf(fill: RestPageBackgroundFill | undefined): SlideBackground | undefined {
+  let rendered = fill?.propertyState === undefined || fill.propertyState === "RENDERED";
+  return rendered && fill?.stretchedPictureFill ? "picture" : fillOf(fill);
+}
+
+/** The 12 colours a theme defines, in the order Google lists them. */
+export const THEME_COLOR_TYPES = [
   "DARK1", "LIGHT1", "DARK2", "LIGHT2", "ACCENT1", "ACCENT2", "ACCENT3", "ACCENT4", "ACCENT5",
-  "ACCENT6", "HYPERLINK", "FOLLOWED_HYPERLINK", "TEXT1", "BACKGROUND1", "TEXT2", "BACKGROUND2",
+  "ACCENT6", "HYPERLINK", "FOLLOWED_HYPERLINK",
+] as const satisfies readonly ThemeColorName[];
+
+/** The theme colours a `SlideColor` may name: the 12, and the four Google lists after them. */
+const THEME_COLORS = new Set<string>([
+  ...THEME_COLOR_TYPES, "TEXT1", "BACKGROUND1", "TEXT2", "BACKGROUND2",
 ]);
+
+/** A master's theme colours as agents read them: the 12, without the four that only follow them. */
+export function themeColorsOf(
+  scheme: RestPageProperties["colorScheme"],
+): Partial<Record<ThemeColorName, string>> {
+  let colors: Partial<Record<ThemeColorName, string>> = {};
+  for (let type of THEME_COLOR_TYPES) {
+    let pair = scheme?.colors?.find(color => color.type === type);
+    // Google omits a zero component, so black is `{}`.
+    if (pair) colors[type] = colorOf({ rgbColor: pair.color ?? {} });
+  }
+  return colors;
+}
 
 /** Whether `color` is a `#rrggbb` colour or a theme colour's name. */
 export function isSlideColor(color: string): boolean {
@@ -315,6 +340,35 @@ export function restFillOf(fill: SlideColor | "none"): Fill {
   return fill === "none"
     ? { propertyState: "NOT_RENDERED" }
     : { propertyState: "RENDERED", solidFill: { color: restColorOf(fill), alpha: 1 } };
+}
+
+/**
+ * A page's background as Google takes it: a colour, none, or a picture Google downloads from
+ * `imageUrl`. Undefined for `null`, which the field mask alone resets to inherited.
+ */
+export function restBackgroundOf(
+  background: SlideColor | "none" | { imageUrl: string } | null,
+): RestPageBackgroundFill | undefined {
+  if (background === null) return undefined;
+  if (typeof background === "string") return restFillOf(background);
+  return { propertyState: "RENDERED", stretchedPictureFill: { contentUrl: background.imageUrl } };
+}
+
+/**
+ * A master's colour scheme as Google takes it: the 12 colours in Google's order, each `#rrggbb`,
+ * without the four that follow them. Undefined unless `colors` gives all 12.
+ */
+export function restThemeColorsOf(
+  colors: Partial<Record<ThemeColorName, string>>,
+): RestThemeColorPair[] | undefined {
+  let pairs: RestThemeColorPair[] = [];
+  for (let type of THEME_COLOR_TYPES) {
+    let color = colors[type];
+    let rgbColor = color === undefined ? undefined : restColorOf(color).rgbColor;
+    if (!rgbColor) return undefined;
+    pairs.push({ type, color: rgbColor });
+  }
+  return pairs;
 }
 
 /** The `ShapeProperties` and field mask a shape change sets. */

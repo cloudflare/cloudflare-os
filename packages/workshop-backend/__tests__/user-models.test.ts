@@ -442,4 +442,17 @@ describe("UserDurableObject gateway model modes", () => {
           .toBe("Claude Haiku 4.5");
     }, DISABLED));
   });
+
+  // Chats, spawners and the external-message default all take the language models, which no
+  // decision model can serve.
+  it("lists decision models apart from language models", () => inGatewayUser(async user => {
+    await user.addModel({ ...PROFILE, id: "my-clef" },
+        { provider: "cloudflare", model: "@cf/cloudflare/clef", apiToken: "" });
+
+    const decisionIds = ["@cf/cloudflare/clef", "@cf/cloudflare/clef-flash", "my-clef"];
+    expect((await user.listModels("decision")).map(model => model.id)).toEqual(decisionIds);
+    const languageIds = await listedIds(user);
+    expect(languageIds).toContain("@cf/zai-org/glm-5.2");
+    expect(languageIds.filter(id => decisionIds.includes(id))).toEqual([]);
+  }, { addedProviders: ["cloudflare"] }));
 });

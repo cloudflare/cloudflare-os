@@ -3,13 +3,14 @@
  * presentation, and the IDs minted for the elements it creates.
  */
 
-import { isSlideColor } from "./slides-format";
-import type { SlideBounds } from "./slides-read-types";
+import { isSlideColor, THEME_COLOR_TYPES } from "./slides-format";
+import type { SlideBounds, ThemeColorName } from "./slides-read-types";
 import type { DesignChange } from "./slides-design";
 import { mintObjectId } from "./slides-simulation";
 import { STRIPPED_CHARACTERS } from "./slides-text";
 import type {
-  ShapeOutline, SlideChange, SlideTextEdit, SlideTextTarget, TextFormatChange,
+  ShapeOutline, SlideBackgroundChange, SlideChange, SlideTextEdit, SlideTextTarget,
+  TextFormatChange,
 } from "./slides-types";
 
 const MAX_CHANGES = 50;
@@ -52,6 +53,11 @@ const SHAPE_TYPES = new Set([
   "FLOW_CHART_TERMINATOR", "ARROW_EAST", "ARROW_NORTH_EAST", "ARROW_NORTH", "SPEECH",
   "STARBURST", "TEARDROP", "ELLIPSE_RIBBON", "ELLIPSE_RIBBON_2", "CLOUD_CALLOUT",
 ]);
+
+/** The theme colours a `SlideColor` may name that follow one of the 12, and the one each follows. */
+const FOLLOWING_COLORS: Record<string, ThemeColorName> = {
+  TEXT1: "DARK1", BACKGROUND1: "LIGHT1", TEXT2: "LIGHT2", BACKGROUND2: "DARK2",
+};
 
 /** The changes that create an element, and what each creates. */
 export const CREATES: Partial<Record<SlideChange["op"], string>> = {
@@ -142,8 +148,8 @@ function checkBounds(bounds: Partial<SlideBounds> | undefined): void {
   checkPositive(bounds.height, "bounds.height");
 }
 
-function checkFill(fill: string | undefined): void {
-  if (fill !== "none") checkColor(fill, "fill");
+function checkFill(fill: string | undefined, field = "fill"): void {
+  if (fill !== "none") checkColor(fill, field);
 }
 
 function checkOutline(outline: ShapeOutline | "none" | undefined): void {
@@ -153,6 +159,35 @@ function checkOutline(outline: ShapeOutline | "none" | undefined): void {
   }
   checkColor(outline.color, "outline colour");
   checkPositive(outline.weight, "outline weight");
+}
+
+function checkBackground(
+  change: { slideId?: string; layoutId?: string; masterId?: string },
+  background: SlideBackgroundChange,
+): void {
+  let named = [change.slideId, change.layoutId, change.masterId].filter(id => id !== undefined);
+  if (named.length !== 1) refuse("name exactly one of slideId, layoutId and masterId");
+  // Google resets a master's background to none, which would be shown for one inherited.
+  if (background === null && change.masterId !== undefined) {
+    refuse('a master has no background to inherit; give it "none" instead');
+  }
+  if (typeof background === "string") return checkFill(background, "background");
+  if (background !== null) checkUrl(background.imageUrl, "background.imageUrl", ["https:"]);
+}
+
+function checkThemeColors(colors: Partial<Record<ThemeColorName, string>>): void {
+  let given = Object.entries(colors).filter(([, color]) => color !== undefined);
+  if (given.length === 0) refuse("colors sets nothing");
+  for (let [name, color] of given) {
+    if (!(THEME_COLOR_TYPES as readonly string[]).includes(name)) {
+      let follows = Object.hasOwn(FOLLOWING_COLORS, name) ? FOLLOWING_COLORS[name] : undefined;
+      refuse(`colors names "${name}", which is not one of the 12 theme colours` +
+        (follows ? `; it follows ${follows}, so set that` : ", such as ACCENT1"));
+    }
+    if (typeof color !== "string" || !/^#[0-9a-f]{6}$/i.test(color)) {
+      refuse(`colors.${name} "${color}" is not a #rrggbb colour`);
+    }
+  }
 }
 
 function checkCount(count: number | undefined, max = Infinity): void {
@@ -255,6 +290,10 @@ function checkChange(change: SlideChange): void {
       }
       return;
     }
+    case "setBackground":
+      return checkBackground(change, change.background);
+    case "setThemeColors":
+      return checkThemeColors(change.colors);
     case "deleteElement":
     case "arrange":
       return;
@@ -284,12 +323,15 @@ const FIELDS: Record<SlideChange["op"], readonly string[]> = {
   deleteTableRows: TABLE_LINES,
   deleteTableColumns: TABLE_LINES,
   formatTableCells: ["elementId", "range", "fill", "contentAlignment"],
+  setBackground: ["layoutId", "masterId", "background"],
+  setThemeColors: ["masterId", "colors"],
 };
 
 const NESTED_FIELDS: Record<string, readonly string[]> = {
   cell: ["row", "column"],
   bounds: ["x", "y", "width", "height"],
   outline: ["color", "weight"],
+  background: ["imageUrl"],
   format: [
     "bold", "italic", "underline", "strikethrough", "smallCaps", "fontFamily", "fontSize", "color",
     "highlight", "link", "baseline",
@@ -302,7 +344,9 @@ function picked(value: object, keys: readonly string[]): Record<string, unknown>
 }
 
 function declared(change: SlideChange): SlideChange {
-  let fields = picked(change, ["op", "slideId", ...FIELDS[change.op]]);
+  // A theme colour change is on a master alone.
+  let page = change.op === "setThemeColors" ? [] : ["slideId"];
+  let fields = picked(change, ["op", ...page, ...FIELDS[change.op]]);
   for (let [key, value] of Object.entries(fields)) {
     let nested = key !== "range" ? NESTED_FIELDS[key]
       : change.op === "formatTableCells" ? ["row", "column", "rowSpan", "columnSpan"] : ["start", "end"];
@@ -316,6 +360,9 @@ function normalizedUrls(change: SlideChange): SlideChange {
   if ("url" in change) return { ...change, url: new URL(change.url).href };
   if ("format" in change && change.format?.link !== undefined) {
     return { ...change, format: { ...change.format, link: new URL(change.format.link).href } };
+  }
+  if (change.op === "setBackground" && typeof change.background === "object" && change.background) {
+    return { ...change, background: { imageUrl: new URL(change.background.imageUrl).href } };
   }
   return change;
 }

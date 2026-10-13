@@ -14,7 +14,7 @@ import { GoogleSlidesApi } from "../../src/slides-api";
 import type { GooglePresentationSession } from "../../src/slides-types";
 import { buildTab } from "../doc-fixture";
 import { formatSheet } from "../sheets-fixture";
-import { presentation, shape, slide, text } from "../slides-fixture";
+import { presentation, shape, SIMPLE_LIGHT, slide, text } from "../slides-fixture";
 
 const DOC_MIME = "application/vnd.google-apps.document";
 const SHEET_MIME = "application/vnd.google-apps.spreadsheet";
@@ -236,7 +236,15 @@ describe("Drive nested native sessions", () => {
     using owned = session;
     using deck = await owned.openGoogleSlides("deck-1");
 
-    expect((await deck.getPresentation()).slides.map(s => s.id)).toEqual(["s1", "s2"]);
+    const info = await deck.getPresentation();
+    expect(info.slides.map(s => s.id)).toEqual(["s1", "s2"]);
+    expect(info.masters).toEqual([
+      { id: "master-1", name: "Simple Light", background: "LIGHT1", themeColors: SIMPLE_LIGHT },
+    ]);
+    expect(info.layouts.map(({ id, name, master }) => ({ id, name, master }))).toEqual([
+      { id: "layout-title", name: "Title slide", master: "master-1" },
+      { id: "layout-title-body", name: "Title and body", master: "master-1" },
+    ]);
     expect((await deck.getSlides(["s2"]))[0].speakerNotes).toBe("Say hello");
     expect(queue.observations.map(o => o.title)).toEqual([
       "Open Google Slides presentation from Google Drive",

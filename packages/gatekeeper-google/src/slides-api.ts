@@ -179,9 +179,46 @@ export type RestPageElement = {
 /** A `Page` of any kind, as far as its elements. */
 export type RestPage = { objectId?: string; pageElements?: RestPageElement[] };
 
+/**
+ * A page's `pageBackgroundFill`. A read never carries `contentUrl`, which only a request sets: the
+ * picture Google downloads.
+ */
+export type RestPageBackgroundFill = {
+  propertyState?: RestPropertyState;
+  solidFill?: RestSolidFill;
+  stretchedPictureFill?: {
+    contentUrl?: string; size?: { width?: RestDimension; height?: RestDimension };
+  };
+};
+
+/** One of a theme's colours. Google holds it as a bare `RgbColor`, omitting a zero component. */
+export type RestThemeColorPair = {
+  type?: string; color?: { red?: number; green?: number; blue?: number };
+};
+
+/** A page's `PageProperties`. Only a master has a `colorScheme`. */
+export type RestPageProperties = {
+  pageBackgroundFill?: RestPageBackgroundFill;
+  colorScheme?: { colors?: RestThemeColorPair[] };
+};
+
+/**
+ * A master or layout `Page`. `pageType` is not Google's, which is not requested: it names the
+ * list the page came from.
+ */
+export type RestThemePage = {
+  objectId?: string;
+  pageType: "MASTER" | "LAYOUT";
+  masterProperties?: { displayName?: string };
+  layoutProperties?: { displayName?: string; masterObjectId?: string };
+  pageProperties?: RestPageProperties;
+  pageElements?: RestPageElement[];
+};
+
 /** A slide `Page`. */
 export type RestSlide = {
   objectId?: string;
+  pageProperties?: RestPageProperties;
   pageElements?: RestPageElement[];
   slideProperties?: {
     layoutObjectId?: string;
@@ -201,12 +238,8 @@ export type RestPresentation = {
   locale?: string;
   revisionId?: string;
   pageSize?: { width?: RestDimension; height?: RestDimension };
-  masters?: { objectId?: string }[];
-  layouts?: {
-    objectId?: string;
-    layoutProperties?: { displayName?: string; masterObjectId?: string };
-    pageElements?: RestPageElement[];
-  }[];
+  masters?: Omit<RestThemePage, "pageType">[];
+  layouts?: Omit<RestThemePage, "pageType">[];
   slides?: RestSlide[];
 };
 
@@ -292,7 +325,7 @@ export class GoogleSlidesApi {
     return result;
   }
 
-  /** Fetch what slide summaries need: the text of each slide's shapes and speaker notes. */
+  /** Fetch what summaries need: the masters, the layouts, and each slide's shape and notes text. */
   getPresentation(presentationId: string): Promise<RestPresentation> {
     return this.#presentation(presentationId, SUMMARY_FIELDS, "get presentation");
   }
@@ -302,7 +335,7 @@ export class GoogleSlidesApi {
     return (await this.#presentation(presentationId, "presentationId,title", "get title")).title;
   }
 
-  /** Fetch a presentation's title, layout names and slide IDs, but no slide content. */
+  /** Fetch a presentation's title, masters, layouts and slide IDs, but no slide content. */
   getOutline(presentationId: string): Promise<RestPresentation> {
     return this.#presentation(presentationId, OUTLINE_FIELDS, "get outline");
   }

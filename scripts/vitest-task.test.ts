@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { describe, it } from "node:test";
 import { VITEST_MAX_WORKERS as CONCURRENCY_VITEST_MAX_WORKERS } from "./vp/concurrency.ts";
 import {
@@ -39,19 +40,23 @@ async function watchdoggedTasksIn(config: string): Promise<[string, Task][]> {
 /** Runs the watchdog over a child that stays quiet for `sleepMs`, with `env` added to the child's. */
 function runWatchdog(
   idle: number, max: number, sleepMs: number, env: Record<string, string>,
-): Promise<{ code: number | null; elapsedMs: number }> {
+): Promise<{ code: number | null; elapsedMs: number; stderr: string }> {
   return new Promise(resolve => {
     const startedAt = Date.now();
     // Not inherited: under `TESTS_WITH_TIMEOUT_DISABLE=1 vp run …` this suite itself runs disabled,
     // and the enabled case has to arm the watchdog regardless.
     const childEnv = { ...process.env, ...env };
-    if (!(DISABLE_VAR in env)) delete childEnv[DISABLE_VAR];
+    for (const variable of TESTS_WITH_TIMEOUT_ENV) {
+      if (!(variable in env)) delete childEnv[variable];
+    }
     const child = spawn(
       process.execPath,
       [WITH_TIMEOUT, "--idle", String(idle), "--max", String(max), "--",
         "node", "-e", `setTimeout(() => {}, ${sleepMs})`],
-      { stdio: "ignore", env: childEnv });
-    child.on("close", code => resolve({ code, elapsedMs: Date.now() - startedAt }));
+      { stdio: ["ignore", "ignore", "pipe"], env: childEnv });
+    let stderr = "";
+    child.stderr.on("data", chunk => { stderr += chunk; });
+    child.on("close", code => resolve({ code, elapsedMs: Date.now() - startedAt, stderr }));
   });
 }
 
@@ -62,7 +67,7 @@ describe("withTestTimeout", () => {
       "gadgets-with-timeout --idle 60 --max 600 -- vitest run");
   });
 
-  it("lets the object form raise only the idle threshold", () => {
+  it("lets the object form override only the idle threshold", () => {
     assert.equal(
       withTestTimeout({ command: "vitest run", idleSeconds: 120 }),
       "gadgets-with-timeout --idle 120 --max 600 -- vitest run");
@@ -104,9 +109,14 @@ describe("the progress reporter", () => {
   });
 });
 
-describe("the watchdog off switch", () => {
-  it("is declared in cache.env on every generated test task", () => {
-    assert.ok(vitestTask("vitest run").cache.env.includes(DISABLE_VAR));
+describe("the watchdog environment policy", () => {
+  it("is forwarded and fingerprinted on every generated test task", () => {
+    assert.deepEqual(TESTS_WITH_TIMEOUT_ENV, [
+      "TESTS_WITH_TIMEOUT_DISABLE", "TESTS_WITH_TIMEOUT_IDLE_SECONDS", "TESTS_WITH_TIMEOUT_MAX_SECONDS",
+    ]);
+    for (const variable of TESTS_WITH_TIMEOUT_ENV) {
+      assert.ok(vitestTask("vitest run").cache.env.includes(variable));
+    }
   });
 
   it("reaches every hand-declared cached task that wraps the watchdog", async () => {
@@ -114,11 +124,13 @@ describe("the watchdog off switch", () => {
     for (const config of HAND_DECLARED_CONFIGS) {
       for (const [name, task] of await watchdoggedTasksIn(config)) {
         seen++;
-        assert.ok(
-          task.cache === false ||
-            (typeof task.cache === "object" && task.cache.env?.includes(DISABLE_VAR)),
-          `${config} task "${name}" wraps gadgets-with-timeout but is cached without declaring ` +
-            `${DISABLE_VAR} in cache.env, so a cached run strips the switch.`);
+        for (const variable of TESTS_WITH_TIMEOUT_ENV) {
+          assert.ok(
+            task.cache === false ||
+              (typeof task.cache === "object" && task.cache.env?.includes(variable)),
+            `${config} task "${name}" wraps gadgets-with-timeout but is cached without declaring ` +
+              `${variable} in cache.env, so a cached run strips the policy.`);
+        }
       }
     }
     // A config that stopped exporting its tasks would otherwise pass vacuously.
@@ -137,6 +149,47 @@ describe("the watchdog off switch", () => {
     const { code, elapsedMs } = await runWatchdog(0.3, 0.6, 1500, { [DISABLE_VAR]: "1" });
     assert.equal(code, 0);
     assert.ok(elapsedMs >= 1400, `child finished after ${elapsedMs}ms, so it was cut short`);
+  });
+
+  it("overrides only the idle threshold when requested", async () => {
+    const { code } = await runWatchdog(0.3, 3, 1500, { TESTS_WITH_TIMEOUT_IDLE_SECONDS: "3" });
+    assert.equal(code, 0);
+  });
+
+  it("overrides only the total threshold when requested", async () => {
+    const { code } = await runWatchdog(3, 0.3, 1500, { TESTS_WITH_TIMEOUT_MAX_SECONDS: "3" });
+    assert.equal(code, 0);
+  });
+
+  it("keeps the configured idle limit enforced", async () => {
+    const { code, stderr } = await runWatchdog(3, 3, 1500, { TESTS_WITH_TIMEOUT_IDLE_SECONDS: "0.3" });
+    assert.equal(code, 124);
+    assert.match(stderr, /no output for 0\.3s/);
+  });
+
+  it("keeps the configured total limit enforced with an extended idle allowance", async () => {
+    const { code, stderr } = await runWatchdog(3, 3, 1500, {
+      TESTS_WITH_TIMEOUT_IDLE_SECONDS: "30", TESTS_WITH_TIMEOUT_MAX_SECONDS: "0.3",
+    });
+    assert.equal(code, 124);
+    assert.match(stderr, /still running for 0\.3s/);
+  });
+
+  it("rejects invalid overrides before starting the command", async () => {
+    for (const variable of TESTS_WITH_TIMEOUT_ENV.slice(1)) {
+      for (const value of ["0", "-1", "", "nope", "Infinity"]) {
+        const { code, stderr } = await runWatchdog(3, 3, 0, { [variable]: value });
+        assert.equal(code, 2, `${variable}=${JSON.stringify(value)}`);
+        assert.ok(stderr.includes(`${variable} needs a positive number of seconds`));
+      }
+    }
+  });
+
+  it("retains the existing off switch even when overrides are set", async () => {
+    const { code } = await runWatchdog(0.3, 0.6, 1500, {
+      [DISABLE_VAR]: "1", TESTS_WITH_TIMEOUT_IDLE_SECONDS: "0.1", TESTS_WITH_TIMEOUT_MAX_SECONDS: "0.2",
+    });
+    assert.equal(code, 0);
   });
 });
 
@@ -209,4 +262,42 @@ describe("the vitest worker budget", () => {
     // workshop-backend's and integration-tests' `test`.
     assert.ok(seen >= 2, `expected at least 2 vitest tasks across the configs, found ${seen}`);
   });
+});
+
+describe("backend watchdog allowance", () => {
+  it("preserves the local unit idle allowance and shared integration defaults", async () => {
+    const tasks = await watchdoggedTasksIn("packages/workshop-backend/vite.config.ts");
+    const test = tasks.find(([name]) => name === "test")?.[1];
+    assert.ok(test, "backend test task must remain watchdogged");
+    const commands = [test.command].flat();
+    assert.deepEqual(commands, [
+      "gadgets-with-timeout --idle 120 --max 600 -- vitest run --reporter=default",
+      "gadgets-with-timeout --idle 60 --max 600 -- vitest run --config vitest.integration.config.ts --reporter=default",
+    ]);
+  });
+});
+
+describe("Google cloud-container per-test allowance", () => {
+  it("sets fifteen seconds in every Google test project", async () => {
+    for (const config of ["vitest.config.ts", "vitest.worker.config.ts", "vitest.docs-worker.config.ts"]) {
+      const source = await readFile(new URL(`../packages/gatekeeper-google/${config}`, import.meta.url), "utf8");
+      assert.match(source, /testTimeout:\s*15_000/);
+    }
+  });
+});
+
+describe("cold gatekeeper configurator prerequisites", () => {
+  for (const [directory, packageName] of [
+    ["gatekeeper-github", "@gadgets/github-gatekeeper"],
+    ["gatekeeper-gitlab", "@gadgets/gitlab-gatekeeper"],
+  ]) {
+    it(`generates ${directory} configurators through both test entrypoints`, async () => {
+      const { default: config } = await import(`../packages/${directory}/vite.config.ts`);
+      assert.ok(config.run.tasks.test.dependsOn.includes("build:configurator"));
+      const manifest = JSON.parse(await readFile(
+        new URL(`../packages/${directory}/package.json`, import.meta.url), "utf8"));
+      assert.ok(manifest.scripts["test:run"].startsWith(
+        `vp run -F ${packageName} build:configurator && vitest run`));
+    });
+  }
 });
