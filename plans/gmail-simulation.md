@@ -111,9 +111,9 @@ of archives and label changes, each needing a round trip to the user.
      New persisted fingerprints are prefixed `v2:` and preserve exact attachment bytes. Existing
      unprefixed preconditions and uncertain-send fingerprints retain historical verification;
      an old draft write rebases its successor to the provider's byte-exact revision. An old
-     update whose write is being reconciled also accepts the old builder's output by its
-     historical fingerprint; creates carry no fingerprint that dates them, so they are held to
-     byte-exact output. An old send fingerprint is replaced only on a retry no attempt is
+     update or create whose write is being reconciled also accepts the old builder's output by
+     its historical fingerprint; creates are marked `exactOutput` when staged, so only one
+     staged before the upgrade is. An old send fingerprint is replaced only on a retry no attempt is
      pending for. A fresh action on an inline forward Gmail holds as the old builder wrote it,
      verified by its historical fingerprint, expects that exact revision rather than the rebuilt
      output; the write or send itself still uses the rebuilt, byte-exact output. A forward's
@@ -126,9 +126,11 @@ of archives and label changes, each needing a round trip to the user.
      correlated to provider parts through the legacy parse, and it is re-keyed to their exact
      bytes, not emitted as normalized calendar content; byte-exact state never is, so recovery
      cannot adopt an edit the legacy parse hides. A forward's source parts come from its
-     snapshot and are never re-keyed; a listed source part is read from the rebuilt forward by
-     its captured digest, since the old builder's duplicated parts shift indices. Listing a draft
-     under a pending old update reports each provider part's own size and type. A `v2:`
+     snapshot and are never re-keyed; an inline forward's attachments are listed and read as
+     its rebuilt output emits them, matched by name, Content-ID and media type, so a part the
+     old builder duplicated is dropped. Bare-index keys are trusted only for a revision this
+     binding has not rewritten. Listing a draft under a pending old update reports each
+     provider part's own size and type. A `v2:`
      precondition never falls back to the historical parser.
 
 4. **Where exact simulation isn't possible, show the agent's change and document the gap.** In some

@@ -125,6 +125,8 @@ type GmailDraftCreateAction = {
   draft: GmailDraftState;
   sourceAttachment?: GmailSourceAttachment;
   dependsOn?: number[];
+  /** Staged with byte-exact output; an older create may have been written by the old MIME builder. */
+  exactOutput?: true;
 };
 
 type GmailDraftUpdateAction = {
@@ -1810,6 +1812,35 @@ async function inlineForwardMessage(
   }, state.rfcMessageId, state.subject, state.date, historical);
 }
 
+/**
+ * An inline forward's attachment state, each part paired with the part its rebuilt output emits:
+ * source parts in order by filename, Content-ID and media type, then uploads in order. State
+ * captured from the old builder's output can hold parts it duplicated or bytes it normalized, so
+ * metadata comes from the rebuilt part, and a source part the rebuild does not emit is dropped.
+ */
+function rebuiltForwardAttachments(
+    attachments: readonly GmailDraftAttachmentState[], rebuilt: GmailOutboundMessage):
+    Array<{attachment: GmailDraftAttachmentState; part: GmailOutboundAttachment}> {
+  const sourceParts = rebuilt.attachments.length - attachments.filter(attachment => attachment.file).length;
+  const used = new Set<number>();
+  let upload = sourceParts;
+  return attachments.flatMap(attachment => {
+    const index = attachment.file ? upload++ : rebuilt.attachments.findIndex((part, candidate) =>
+      candidate < sourceParts && !used.has(candidate) &&
+      (part.filename || null) === attachment.info.filename &&
+      (part.contentId ?? undefined) === attachment.info.contentId &&
+      part.contentType.split(";")[0].trim().toLowerCase() ===
+        attachment.info.mimeType.split(";")[0].trim().toLowerCase());
+    const part = rebuilt.attachments[index];
+    if (index < 0 || !part) return [];
+    used.add(index);
+    const size = atob(part.data.replace(/\s/g, "")).length;
+    return [{attachment: {...attachment, info: {
+      ...attachment.info, mimeType: part.contentType, size, readable: size <= MAX_GMAIL_ATTACHMENT_BYTES,
+    }}, part}];
+  });
+}
+
 async function draftOutputFingerprint(
     api: GmailApi, store: GmailStore, state: GmailDraftState,
     snapshot?: GmailSourceAttachment, legacy = false): Promise<string> {
@@ -2036,11 +2067,11 @@ async function mapMatchingApplyingDraftCreate(
   if (resource.providerId && resource.providerId !== provider.id) {
     throw new Error("The uncertain Gmail draft create is already mapped to another provider draft.");
   }
-  const sourceSnapshot = draftSourceSnapshot(create);
-  const approvedOutputFingerprint = await draftOutputFingerprint(
-    api, store, create.draft, sourceSnapshot);
-  if (await gmailDraftFingerprint(current, provider.message.threadId) !==
-      approvedOutputFingerprint) {
+  const approved = await approvedCreateOutput(api, store, create);
+  const providerDraft = {message: provider.message, parsed: current};
+  if (!await holdsDraftOutput(api, store, approved, providerDraft,
+      await gmailDraftFingerprint(current, provider.message.threadId),
+      await exactDraftOutput(api, store, approved, providerDraft))) {
     throw new Error("A discovered Gmail draft has the approved Message-ID but different content.");
   }
   const mapped = store.mapDraftToProvider(resource.logicalId, provider.id, matched.id);
@@ -2052,6 +2083,16 @@ async function mapMatchingApplyingDraftCreate(
     threadId: provider.message.threadId,
   });
   return mapped;
+}
+
+/** A create's approved output; a create staged before `exactOutput` is verified historically too. */
+async function approvedCreateOutput(
+    api: GmailApi, store: GmailStore, action: GmailDraftCreateAction): Promise<ApprovedDraftOutput> {
+  const snapshot = draftSourceSnapshot(action);
+  return {
+    state: action.draft, snapshot, historical: !action.exactOutput, historicalAttachments: false,
+    fingerprint: await draftOutputFingerprint(api, store, action.draft, snapshot),
+  };
 }
 
 async function ensureProviderDraft(
@@ -3924,6 +3965,7 @@ async function createDraftFromMessage(
       type: "draftCreate",
       draft: state,
       ...(sourceSnapshot ? {sourceAttachment: sourceSnapshot} : {}),
+      exactOutput: true,
     }, {
       title: sanitizeTitle(`Create Gmail draft: ${state.subject || "(no subject)"}`),
       ...described,
@@ -4094,6 +4136,8 @@ class GmailDraftStub extends ApprovalQueueRpcTarget implements GmailDraft {
     // A pre-upgrade update recorded the old parser's normalized sizes and types; the provider
     // part's own metadata describes the bytes a read returns.
     const historical = hasHistoricalDraftUpdate(this.#ctx.store, logicalId);
+    // Bare indices name the revision an overlay was captured from, which a later write replaces.
+    const identified = full !== undefined && resource.attachmentMessageId === full.message.id;
     const source = state.source?.kind === "forward"
       ? pendingForwardSnapshot(this.#ctx.store, logicalId) : undefined;
     if (!full && state.source?.kind === "forward" && state.attachments.length > 0 && !source) {
@@ -4104,28 +4148,22 @@ class GmailDraftStub extends ApprovalQueueRpcTarget implements GmailDraft {
       ? enumerateGmailAttachments(full.message.id, full.message.payload) : [];
     const providerParts = new Map(full ? providerSnapshots.map((snapshot, index) =>
       [providerAttachmentIdentity(resource, full.message.id, index).key, snapshot] as const) : []);
-    const entries = state.attachments.map((attachment, index) => {
+    const listed = source && state.source?.format === "inline"
+      ? rebuiltForwardAttachments(state.attachments,
+        await inlineForwardMessage(this.#ctx.api, this.#ctx.store, state, source))
+      : state.attachments.map(attachment => ({attachment, part: undefined}));
+    const entries = listed.map(({attachment, part}) => {
       // Overlays queued before provider-qualified keys name parts by bare index. Only reads take
       // this path: removing one edits the overlay, and applying it re-checks the provider snapshot.
-      const snapshot = providerParts.get(attachment.key) ??
-        (/^\d+$/.test(attachment.key) ? providerSnapshots[Number(attachment.key)] : undefined);
+      const snapshot = part ? undefined : providerParts.get(attachment.key) ??
+        (!identified && /^\d+$/.test(attachment.key) ? providerSnapshots[Number(attachment.key)] : undefined);
       const read = async (): Promise<ArrayBuffer> => {
-        if (snapshot) return this.#ctx.api.getAttachmentContent(snapshot);
-        if (source) {
-          if (state.source?.format !== "inline") {
-            return (await this.#ctx.store.readFile(source)).buffer as ArrayBuffer;
-          }
-          const message = await inlineForwardMessage(this.#ctx.api, this.#ctx.store, state, source);
-          // A part captured from the old builder's output can sit at an index the rebuilt forward no
-          // longer uses (it duplicated inline parts), so its captured bytes locate it first.
-          const matched = attachment.contentDigest === undefined ? -1
-            : (await Promise.all(message.attachments.map(attachmentDigest))).indexOf(attachment.contentDigest);
-          const data = message.attachments[matched < 0 ? index : matched]?.data;
-          if (data !== undefined) {
-            return Uint8Array.from(atob(data.replace(/\s/g, "")), char => char.charCodeAt(0))
-              .buffer as ArrayBuffer;
-          }
+        if (part) {
+          return Uint8Array.from(atob(part.data.replace(/\s/g, "")), char => char.charCodeAt(0))
+            .buffer as ArrayBuffer;
         }
+        if (snapshot) return this.#ctx.api.getAttachmentContent(snapshot);
+        if (source) return (await this.#ctx.store.readFile(source)).buffer as ArrayBuffer;
         throw new Error("This draft attachment is no longer available.");
       };
       const current = historical && snapshot ? {...attachment, info: {
@@ -4859,11 +4897,7 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
         if (!resource || resource.status !== "active") {
           throw new Error("The provisional Gmail draft is no longer active.");
         }
-        const sourceSnapshot = draftSourceSnapshot(action);
-        // A create records no fingerprint that would date it, so it is held to its exact output.
-        const approved = {state: action.draft, snapshot: sourceSnapshot,
-          historical: false, historicalAttachments: false,
-          fingerprint: await draftOutputFingerprint(api, store, action.draft, sourceSnapshot)};
+        const approved = await approvedCreateOutput(api, store, action);
         const storedReceipt = store.getDraftWriteReceipt(actionId);
         if (storedReceipt) {
           const baseline = await readDraftProviderBaseline(api, store, actionId, storedReceipt, approved);
@@ -4930,7 +4964,7 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
           }, approved.fingerprint);
           return;
         }
-        const message = await draftWriteMessage(api, store, action.draft, sourceSnapshot);
+        const message = await draftWriteMessage(api, store, action.draft, approved.snapshot);
         const created = await applyUncertainWrite(
           store, actionId, () => api.createDraft(message.raw, action.draft.threadId));
         const receipt = {

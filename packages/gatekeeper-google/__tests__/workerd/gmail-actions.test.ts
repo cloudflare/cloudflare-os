@@ -4897,26 +4897,38 @@ describe("Gmail pending sends", () => {
       expect(mailbox.filter(mail => mail.labelIds.includes("SENT"))).toHaveLength(operation === "send" ? 1 : 0);
     });
 
-  it("reads each part of a queued update on an inline forward whose image the old builder duplicated", async () => {
-    const {gatekeeper, draft} = await historicalForward({
-      html: '<p>Source <img src="cid:image@example.com"></p>',
-      attachments: [
-        {filename: "image.png", contentType: "image/png", data: btoa("png"), disposition: "inline",
-          contentId: "<image@example.com>", description: "Image"},
-        {filename: "tail.bin", contentType: "application/octet-stream", data: btoa("bin"),
-          disposition: "attachment", description: "Tail"},
-      ],
+  it.each([false, true])(
+    "lists a queued update on an old-builder forward as its rebuild emits it with numeric keys=%s",
+    async numericKeys => {
+      const {gatekeeper, draft, storage, values} = await historicalForward({
+        html: '<p>Source <img src="cid:image@example.com"></p>',
+        attachments: [
+          {filename: "image.png", contentType: "image/png", data: btoa("png"), disposition: "inline",
+            contentId: "<image@example.com>", description: "Image"},
+          // Equal sizes, so a read of the wrong part would still pass the size check.
+          {filename: "invite.ics", contentType: "text/calendar; method=REQUEST; charset=iso-8859-1",
+            data: btoa(lfCalendar), disposition: "attachment", description: "Invitation"},
+          {filename: "tail.bin", contentType: "application/octet-stream",
+            data: btoa("x".repeat(lfCalendar.length)), disposition: "attachment", description: "Tail"},
+        ],
+      });
+      await draft.update({text: "First"});
+      await draft.update({text: "Second"});
+      if (numericKeys) {
+        // The pre-attachment-support shape named parts by their index in the captured revision.
+        const action = (await values.get<{after: GmailDraftState}>("pending:action:3"))!;
+        action.after.attachments = action.after.attachments.map((part, index) => ({...part, key: String(index)}));
+        await storage.kv.put("pending:action:3", action);
+      }
+      await gatekeeper.applyAction(2);
+
+      const entries = await draft.attachments();
+
+      // The old builder emitted the image twice; the rebuild that will be written emits it once.
+      expect(await Promise.all(entries.map(async entry =>
+        [entry.info.filename, new TextDecoder().decode(await entry.attachment.getContent())])))
+        .toEqual([["image.png", "png"], ["invite.ics", lfCalendar], ["tail.bin", "x".repeat(lfCalendar.length)]]);
     });
-    await draft.update({text: "First"});
-    await draft.update({text: "Second"});
-    await gatekeeper.applyAction(2);
-
-    const entries = await draft.attachments();
-
-    expect(await Promise.all(entries.map(async entry =>
-      [entry.info.filename, new TextDecoder().decode(await entry.attachment.getContent())])))
-      .toEqual([["image.png", "png"], ["image.png", "png"], ["tail.bin", "bin"]]);
-  });
 
   it("applies a fresh update to an inline forward whose nested message the old builder wrote", async () => {
     const {gatekeeper, draft, written} = await historicalNestedForward();
@@ -6376,6 +6388,80 @@ describe("Gmail draft dependency reconciliation", () => {
     expect(await values.has("pending:action:1")).toBe(false);
     expect(await values.has("gmail:draftWriteReceipt:1")).toBe(false);
   });
+
+  it.each([
+    {exactOutput: false, listedFirst: false}, {exactOutput: false, listedFirst: true},
+    {exactOutput: true, listedFirst: false},
+  ])(
+    "recovers an old-builder inline-forward calendar create only if staged pre-upgrade: %o",
+    async ({exactOutput, listedFirst}) => {
+      const logicalId = "provisional-forward-draft";
+      const providerId = "provider-draft";
+      const providerMessageId = "provider-message";
+      const threadId = "provider-thread";
+      const source = decodeBase64UrlToBytes(buildEncodedEmail({
+        from: "source@example.com", to: ["me@example.com"], cc: [], bcc: [], subject: "Source",
+        text: "Source body", messageId: "<source@example.com>", attachments: [{
+          filename: "invite.ics", contentType: "text/calendar; method=REQUEST; charset=iso-8859-1",
+          data: btoa("BEGIN:VCALENDAR\nMETHOD:REQUEST\nEND:VCALENDAR\n"), disposition: "attachment",
+          description: "Invitation",
+        }],
+      }));
+      const state: GmailDraftState = {
+        logicalId, from: "me@example.com", replyTo: [], to: ["to@example.com"], cc: [], bcc: [],
+        date: TEST_DRAFT_DATE, subject: "Fwd: Source", text: "Intro",
+        rfcMessageId: "<inline-forward@gadgets.invalid>", timestamp: 1,
+        source: {kind: "forward", messageId: "source-message", format: "inline"},
+        attachments: [], version: 0,
+      };
+      // The old builder wrote the forwarded calendar as CRLF UTF-8 before its response was lost.
+      const providerRaw = (await new GmailApi("me@example.com", async () => "token").buildForwardFromBytes(
+        source, state.to, state.text, {}, state.rfcMessageId, state.subject, state.date, true)).raw;
+      const {gatekeeper, storage, values} = actionHarness((url, init) => {
+        if (url.pathname === "/gmail/v1/users/me/drafts" && !init.method) {
+          return json({drafts: [{id: providerId, message: {id: providerMessageId}}]});
+        }
+        if (url.pathname === `/gmail/v1/users/me/messages/${providerMessageId}` && !init.method) {
+          return json({id: providerMessageId, threadId, internalDate: "1",
+            payload: {headers: [{name: "Message-ID", value: state.rfcMessageId}]}});
+        }
+        if (url.pathname === "/gmail/v1/users/me/messages" && !init.method) {
+          return json({messages: [{id: providerMessageId, threadId}]});
+        }
+        if (url.pathname === `/gmail/v1/users/me/drafts/${providerId}` && !init.method) {
+          return url.searchParams.get("format") === "full"
+            ? json(draftFull(providerId, providerMessageId, threadId, state))
+            : json({id: providerId, message: {id: providerMessageId, threadId, internalDate: "1", raw: providerRaw}});
+        }
+        throw new Error(`Unexpected request: ${init.method ?? "GET"} ${url}`);
+      });
+      const snapshot = await captureForwardSnapshot(storage, source);
+      storage.kv.put(`gmail:draft:${logicalId}`, {
+        logicalId, source: state.source, forwardSnapshot: snapshot, createdAt: 1,
+        status: "active", version: 0,
+      });
+      // A create the old worker staged has no `exactOutput`; a current one must match byte-exactly.
+      storage.kv.put("pending:action:1", {type: "draftCreate", draft: state, sourceAttachment: {
+        ...snapshot, messageId: "source-message", description: "Inline source",
+      }, ...(exactOutput ? {exactOutput: true} : {})});
+      storage.kv.put("gmail:applying:1", Date.now());
+      if (listedFirst) {
+        const session = await gatekeeper.startSession(approvalQueue());
+        await (await session.listDrafts()).next();
+      }
+
+      if (exactOutput) {
+        await expect(gatekeeper.applyAction(1)).rejects.toThrow(/no longer matches the approved create/);
+        expect(await values.has("pending:action:1")).toBe(true);
+        return;
+      }
+      await gatekeeper.applyAction(1);
+
+      expect(await values.get(`gmail:draft:${logicalId}`)).toMatchObject({providerId});
+      for (const key of ["pending:action:1", "gmail:applying:1"]) {
+        expect(await values.has(key)).toBe(false);
+      }
+    });
 
   it("rebases each dependent action onto Gmail's normalized provider revision", async () => {
     const logicalId = "provisional-draft";
