@@ -219,7 +219,7 @@ describe("Gmail recipient and MIME construction", () => {
   });
 
   it.each(["", " ", ".", "..", "../report.pdf", "dir/report.pdf", "dir\\report.pdf",
-    "report.pdf\r\nX-Injected: yes", "report\u0000.pdf"])(
+    "report.pdf\r\nX-Injected: yes", "report\u0000.pdf", "=?UTF-8?B?Zm9vLmJpbg==?=", "a =?utf-8?q?b?= c"])(
     "rejects unsafe upload filename %j", filename => {
       expect(() => gmailAttachmentInputToOutbound({
         filename, mimeType: "application/pdf", content: new ArrayBuffer(0),

@@ -113,7 +113,10 @@ export type EmailContent = {
  * Each file may contain at most 10 MiB (10,485,760 bytes).
  */
 export type GmailAttachmentInput = {
-  /** Nonempty filename without path separators, control characters, or `.` / `..`. */
+  /**
+   * Nonempty filename without path separators, control characters, `.` / `..`, or an RFC 2047
+   * encoded word such as `=?UTF-8?B?...?=`.
+   */
   filename: string;
   /**
    * Valid MIME media type, such as `application/pdf`; multipart containers are not supported.

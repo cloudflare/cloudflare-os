@@ -816,6 +816,11 @@ export function normalizeGmailAttachmentInput(input: GmailAttachmentInput): Gmai
   if (!filename.trim() || filename === "." || filename === ".." || /[/\\]/.test(filename)) {
     throw new Error("Invalid attachment filename.");
   }
+  // A MIME parser decodes an RFC 2047 encoded word even inside an RFC 2231 parameter, so such a
+  // name would not read back as written, and the part could no longer be identified.
+  if (/=\?[^?]*\?[bq]\?[^?]*\?=/i.test(filename)) {
+    throw new Error("Attachment filename must not contain an RFC 2047 encoded word (=?charset?B?...?=).");
+  }
   const mimeType = normalizeAttachmentContentType(input.mimeType);
   if (baseMimeType(mimeType).startsWith("multipart/")) {
     throw new Error("Multipart attachment uploads are not supported.");
