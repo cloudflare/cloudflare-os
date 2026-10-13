@@ -122,13 +122,13 @@ export type TestCommand = string | { command: string; idleSeconds: number }
  * line per completed test file, so silence -- not wall clock -- is what distinguishes a hang from a
  * slow suite.
  *
- * Imports and concurrent workerd fleets can leave healthy cloud-container runs quiet for minutes.
- * Allow thirty minutes by default; suites can override the idle allowance with `TestCommand`.
+ * Import-heavy suites can raise their idle allowance with `TestCommand`; slower environments can
+ * override both thresholds through the watchdog's declared environment variables.
  */
-const IDLE_TIMEOUT_SECONDS = 1800
+const IDLE_TIMEOUT_SECONDS = 60
 
 /** Wall-clock backstop, for a command that stays chatty while looping forever. */
-const TOTAL_TIMEOUT_SECONDS = 1800
+const TOTAL_TIMEOUT_SECONDS = 600
 
 /**
  * Nothing under vitest bounds a wedged run -- its own timeouts are enforced inside the test worker
@@ -144,17 +144,8 @@ const TOTAL_TIMEOUT_SECONDS = 1800
  * consuming package's `node_modules/.bin` on the task's PATH, so it resolves wherever the package
  * lives, and a rename fails loudly with "Failed to find executable" rather than silently.
  *
- * The thresholds are baked into the string rather than read from the environment for the same
- * fingerprint reason: a cached `vp` run strips undeclared env vars, so an override would silently
- * not apply (and would owe `scripts/env-passthrough.test.ts` an entry). Here a policy change is a
- * visible, fingerprinted change -- including a per-command `idleSeconds`, which lands in the command
- * string like any other.
- *
- * Only the idle threshold is overridable: `TOTAL_TIMEOUT_SECONDS` is the backstop against a real
- * hang, and a command able to opt out of it would be unbounded again.
- *
- * The off switch, `TESTS_WITH_TIMEOUT_ENV`, is the one variable read, and it is declared in `env` so
- * that it is fingerprinted too.
+ * Defaults are baked into the command; runtime overrides and the off switch are passed and
+ * fingerprinted through `TESTS_WITH_TIMEOUT_ENV`, so cached runs retain the requested policy.
  */
 export const withTestTimeout = (command: TestCommand): string => {
   const { command: argv, idleSeconds } =
@@ -165,14 +156,15 @@ export const withTestTimeout = (command: TestCommand): string => {
 /**
  * The `cache.env` every task wrapping `withTestTimeout` must declare, if it is cached.
  *
- * `TESTS_WITH_TIMEOUT_DISABLE`, set to anything non-empty, turns the watchdog off (see the header of
- * `with-timeout.ts`). A cached `vp` task sees none of the ambient environment unless the task
- * declares a variable; `cache.env` both passes it through and fingerprints it, so a supervised run
- * never replays an unsupervised one. The builders below add it to every vitest `test` task; a
- * hand-declared task that wraps `withTestTimeout` spreads it itself, and `scripts/vitest-task.test.ts`
- * checks that each one either does so or is `cache: false`.
+ * The watchdog accepts positive-second idle/total overrides, or a non-empty disable switch.
+ * `cache.env` passes and fingerprints all three, so a run never replays a different timeout policy.
+ * Hand-declared watchdogged tasks must use this list too (or be uncached).
  */
-export const TESTS_WITH_TIMEOUT_ENV: string[] = ['TESTS_WITH_TIMEOUT_DISABLE']
+export const TESTS_WITH_TIMEOUT_ENV: string[] = [
+  'TESTS_WITH_TIMEOUT_DISABLE',
+  'TESTS_WITH_TIMEOUT_IDLE_SECONDS',
+  'TESTS_WITH_TIMEOUT_MAX_SECONDS',
+]
 
 /**
  * The worker budget `scripts/vp/run.ts` sets (see `scripts/vp/concurrency.ts`). Defined here
