@@ -25,10 +25,18 @@ describe('classifyMatch', () => {
   it("holds a link to the pattern's own query", () => {
     expect(classifyMatch('https://acme.app.netsuite.com/app/common/entity/custjob.nl?id=42', NETSUITE_CUSTOMER))
       .toEqual({ type: 'full' })
-    expect(classifyMatch('https://acme.app.netsuite.com/app/common/entity/custjob.nl', NETSUITE_CUSTOMER))
-      .toEqual({ type: 'prefix', suffix: '?id=:customerId' })
     expect(classifyMatch('https://acme.app.netsuite.com/app/common/entity/custjob.nl?other=42', NETSUITE_CUSTOMER))
       .toEqual({ type: 'none' })
+  })
+
+  it.each([
+    ['https://linear.app/acme/issue/', 'https://linear.app/:workspace/issue/:issueId{/:rest}*', ':issueId', 'ENG-1'],
+    ['https://acme.atlassian.net/wiki/spaces/ENG/pages/', 'https://*.atlassian.net/wiki/spaces/:spaceKey/pages/:pageId/*?', ':pageId', '123'],
+    ['https://x.com/jack/status/', 'https://x.com/*/status/:postId{/*}?', ':postId', '1'],
+    ['https://x.com/', 'https://x.com/:username([A-Za-z0-9_]{1,15})', ':username', 'jack'],
+  ])('completes %s through its required segments only, in plain placeholders', (typed, pattern, suffix, value) => {
+    expect(classifyMatch(typed, pattern)).toEqual({ type: 'prefix', suffix })
+    expect(classifyMatch(typed + value, pattern)).toEqual({ type: 'full' })
   })
 
   it("holds a link to the pattern's parameter constraints", () => {
@@ -56,7 +64,7 @@ describe('completeUrl', () => {
     expect(completeUrl('jira.cfdata.org', '/browse/*')).toBe('jira.cfdata.org/browse/')
   })
 
-  it("keeps the link's own query rather than adding the pattern's", () => {
+  it("keeps the link's own query when completing its path", () => {
     const link = 'https://acme.app.netsuite.com/app?id=42'
     const match = classifyMatch(link, NETSUITE_CUSTOMER)
     expect(match.type).toBe('prefix')
@@ -66,9 +74,7 @@ describe('completeUrl', () => {
 })
 
 describe('getPlaceholderRanges', () => {
-  it('finds a placeholder in a query value', () => {
-    const url = 'https://acme.app.netsuite.com/app/common/entity/custjob.nl?id=:customerId'
-    const [range] = getPlaceholderRanges(url)
-    expect(url.slice(range.start, range.end)).toBe(':customerId')
+  it('leaves a query value that starts with a colon alone', () => {
+    expect(getPlaceholderRanges('https://github.com/o/r/issues?q=:open')).toEqual([])
   })
 })

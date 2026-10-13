@@ -35,10 +35,29 @@ const splitAtQuery = (url: string): [path: string, tail: string] => {
 }
 
 /**
+ * The host and path segments a URL needs to match a pattern, as URLPattern normalizes them: up to
+ * the first optional segment (`:rest*`, `*?`), with regexes and `+` dropped from parameter names,
+ * so a completion holds plain placeholders. Null for a pattern this browser can't parse.
+ */
+const requiredSegments = (pattern: string): string[] | null => {
+  let parsed: URLPattern
+  try {
+    parsed = new URLPattern(pattern)
+  } catch {
+    return null
+  }
+  const segments = [
+    parsed.port ? `${parsed.hostname}:${parsed.port}` : parsed.hostname,
+    ...parsed.pathname.split('/').slice(1),
+  ]
+  const optional = segments.findIndex(segment => segment !== '*' && /[?*]$/.test(segment))
+  return segments.slice(0, optional < 0 ? undefined : optional).map(segment => segment.replace(/\(.*\)|\+$/g, ''))
+}
+
+/**
  * Classify a search URL, which may be half-typed and lack its scheme, against a resource pattern.
  * 'full' when it names a resource the pattern matches, by the URLPattern test the backend applies;
- * 'prefix' when `completeUrl(search, suffix)` would continue it toward one; otherwise 'none'.
- * Completion reads only the path, so a query or fragment the URL already has stays as it is.
+ * 'prefix' when `completeUrl(search, suffix)` would continue its path toward one; otherwise 'none'.
  */
 export function classifyMatch(search: string, pattern: string): MatchClassification {
   const typed = search.trim()
@@ -49,33 +68,24 @@ export function classifyMatch(search: string, pattern: string): MatchClassificat
     return { type: 'prefix', suffix: pattern.slice(typed.length) }
   }
 
-  const [searchPath, searchTail] = splitAtQuery(typed.replace(/^https?:\/\//i, ''))
-  const [patternPath, patternQuery] = splitAtQuery(pattern.replace(/^https?:\/\//i, ''))
-  // A query the URL already has is kept by `completeUrl`, so only a URL without one is offered the
-  // pattern's (e.g. "?id=:customerId").
-  const query = searchTail ? '' : patternQuery
-  const segments = searchPath.toLowerCase().split('/')
-  const parts = patternPath.split('/')
+  const parts = requiredSegments(pattern)
+  if (!parts) return { type: 'none' }
+  const [path] = splitAtQuery(typed.replace(/^https?:\/\//i, ''))
+  const segments = path.toLowerCase().split('/')
   for (const [i, part] of parts.entries()) {
     const segment = segments[i]
-    if (segment === undefined) {
-      return { type: 'prefix', suffix: `/${parts.slice(i).join('/')}${query}` }
-    }
+    if (segment === undefined) return { type: 'prefix', suffix: `/${parts.slice(i).join('/')}` }
     const matches = part === '*' || part.startsWith(':') ? segment !== ''
       : i === 0 && part.startsWith('*.') ? segment.endsWith(part.slice(1).toLowerCase())
       : segment === part.toLowerCase()
     if (matches) continue
     // The segment still being typed completes to this part, followed by the rest of the pattern.
     if (i === segments.length - 1 && !part.startsWith('*') && part.toLowerCase().startsWith(segment)) {
-      return {
-        type: 'prefix',
-        suffix: [part.slice(segment.length), ...parts.slice(i + 1)].join('/') + query,
-      }
+      return { type: 'prefix', suffix: [part.slice(segment.length), ...parts.slice(i + 1)].join('/') }
     }
     return { type: 'none' }
   }
-  // A complete path that lacks only the query the pattern names.
-  return segments.length === parts.length && query ? { type: 'prefix', suffix: query } : { type: 'none' }
+  return { type: 'none' }
 }
 
 /** Appends a `classifyMatch` suffix to a URL's path, keeping any query or fragment after it. */
@@ -86,12 +96,12 @@ export function completeUrl(url: string, suffix: string): string {
 }
 
 /**
- * Find all placeholder ranges in a URL string. Placeholders are ":name" named parameters, in the
- * path or as a query value, and standalone "*" wildcards. Returns ranges sorted by position.
+ * Find all placeholder ranges in a URL string. Placeholders are ":name" named parameters and
+ * standalone "*" wildcards. Returns ranges sorted by position.
  */
 export function getPlaceholderRanges(url: string): Array<{ start: number; end: number }> {
   const ranges: Array<{ start: number; end: number }> = []
-  const namedParamRegex = /(?<=[/=]):([a-zA-Z_]\w*)/g
+  const namedParamRegex = /(?<=\/):([a-zA-Z_]\w*)/g
   let match
   while ((match = namedParamRegex.exec(url)) !== null) {
     // Include the colon in the range
