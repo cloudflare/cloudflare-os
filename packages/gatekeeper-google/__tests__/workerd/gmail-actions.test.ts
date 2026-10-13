@@ -4653,6 +4653,47 @@ describe("Gmail pending sends", () => {
       }
     });
 
+  it("completes a pre-upgrade update whose unencoded calendar the write re-encodes, across a lost response", async () => {
+    const {gatekeeper, saveDraft, storage, values, calls} = mailHarness({loseDraftUpdateResponse: true});
+    const imported = saveDraft({});
+    imported.mail.raw = base64Url([
+      `From: ${ME}`, "To: to@example.com", "Subject: Imported", `Date: ${TEST_DRAFT_DATE}`,
+      "Message-ID: <imported@example.com>", "MIME-Version: 1.0",
+      'Content-Type: multipart/mixed; boundary="unencoded"', "",
+      "--unencoded", "Content-Type: text/plain; charset=utf-8", "", "Body",
+      "--unencoded", 'Content-Type: text/calendar; method=REQUEST; charset=iso-8859-1; name="invite.ics"',
+      'Content-Disposition: attachment; filename="invite.ics"', "Content-Transfer-Encoding: 8bit", "",
+      lfCalendar, "--unencoded--", "",
+    ].join("\r\n"));
+    const session = await gatekeeper.startSession(approvalQueue());
+    const draft = (await (await session.listDrafts()).next())![0].draft;
+    await draft.update({text: "Approved update"});
+    // The old parser read the unencoded calendar with CRLF line endings and kept its charset.
+    const crlf = new TextEncoder().encode(lfCalendar.replaceAll("\n", "\r\n"));
+    const contentDigest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", crlf))]
+      .map(byte => byte.toString(16).padStart(2, "0")).join("");
+    const parsed = await parseGmailDraft(fakeMailRaw(imported.mail));
+    const historicalBefore = (await gmailDraftFingerprint({...parsed, attachments: parsed.attachments.map(part =>
+      ({...part, data: btoa(lfCalendar.replaceAll("\n", "\r\n"))}))}, imported.mail.threadId)).replace(/^v2:/, "");
+    const action = (await values.get<{after: GmailDraftState}>("pending:action:1"))!;
+    await storage.kv.put("pending:action:1", {...action, expectedBefore: historicalBefore, after: {
+      ...action.after, attachments: action.after.attachments.map(part =>
+        ({...part, contentDigest, info: {...part.info, size: crlf.length}})),
+    }});
+    await gatekeeper.restart();
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/connection lost after draft update/);
+    await gatekeeper.restart();
+
+    await gatekeeper.applyAction(1);
+
+    expect(calls.filter(call => call.init.method === "PUT")).toHaveLength(1);
+    for (const key of ["pending:action:1", "gmail:applying:1"]) {
+      expect(await values.has(key)).toBe(false);
+    }
+    const written = await parseGmailDraft(fakeMailRaw(imported.mail));
+    expect(atob(written.attachments[0].data.replace(/\s/g, ""))).toBe(lfCalendar);
+  });
+
   it("rebases a pre-upgrade dependent calendar update to the exact provider revision", async () => {
     const {gatekeeper, saveDraft, storage, values} = mailHarness();
     const imported = saveDraft(calendarSpec());

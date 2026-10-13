@@ -139,6 +139,11 @@ type GmailDraftUpdateAction = {
   dependsOn?: number[];
   /** Set when a pre-upgrade action is rebased, since its new precondition no longer dates it. */
   historicalAttachments?: true;
+  /**
+   * `after` re-keyed to the provider's exact parts, recorded before a historical update writes
+   * them: the written revision re-encodes parts the legacy parse then reads differently.
+   */
+  exactAfter?: GmailDraftState;
 };
 
 type GmailDraftDeleteAction = {
@@ -351,6 +356,15 @@ class GmailStore {
 
   getAction(id: number): StoredGmailAction | undefined {
     return this.#kv.get<StoredGmailAction>(this.#actionKey(id));
+  }
+
+  /** Record the byte-exact state a historical update is about to write; see `exactAfter`. */
+  recordExactDraftUpdate(id: number, exactAfter: GmailDraftState): void {
+    const action = this.getAction(id);
+    if (action?.type !== "draftUpdate") {
+      throw new Error("The pending Gmail draft update changed before its write.");
+    }
+    this.#kv.put(this.#actionKey(id), {...action, exactAfter});
   }
 
   listActions(): Array<{id: number; action: StoredGmailAction}> {
@@ -1036,7 +1050,7 @@ function draftPending(store: GmailStore): PendingOverlayAction<GmailDraftOverlay
       pending.push({id, action: {
         type: action.type,
         draftId: logicalId,
-        after: {...action.after, logicalId},
+        after: {...action.exactAfter ?? action.after, logicalId},
         dependsOn: action.dependsOn,
       }});
       break;
@@ -1461,6 +1475,8 @@ type ApprovedDraftOutput = {
   historical: boolean;
   /** Its attachment digests predate byte-exact parsing; see `hasHistoricalAttachments`. */
   historicalAttachments: boolean;
+  /** The state already re-keyed to the provider's exact parts, when recorded before the write. */
+  exactState?: GmailDraftState;
 };
 
 /**
@@ -1472,8 +1488,9 @@ type ApprovedDraftOutput = {
 async function exactDraftOutput(
     api: GmailApi, store: GmailStore, approved: ApprovedDraftOutput, provider?: GmailProviderDraft) {
   // A forward's source parts are written from its retained snapshot, not matched to the provider.
-  const exactState = provider && approved.historicalAttachments && !approved.snapshot
-    ? await refreshLegacyDraftAttachments(approved.state, provider) : approved.state;
+  const exactState = approved.exactState ??
+    (provider && approved.historicalAttachments && !approved.snapshot
+      ? await refreshLegacyDraftAttachments(approved.state, provider) : approved.state);
   const historical = approved.historical ||
     hasUnversionedDraftAction(store, store.resolveDraftId(approved.state.logicalId));
   return {
@@ -5005,6 +5022,7 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
         const approved = {state: action.after, snapshot: action.sourceAttachment,
           historical: !isVersionedGmailFingerprint(action.expectedBefore),
           historicalAttachments: hasHistoricalAttachments(action),
+          ...(action.exactAfter ? {exactState: action.exactAfter} : {}),
           fingerprint: await draftOutputFingerprint(api, store, action.after, action.sourceAttachment)};
         if (storedReceipt) {
           const baseline = await readDraftProviderBaseline(api, store, actionId, storedReceipt, approved);
@@ -5050,8 +5068,12 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
             "The Gmail draft changed outside this approval sequence; refusing to apply a different update.");
         }
         // A forward's source parts come from its retained snapshot, so only other drafts re-key.
-        const writeState = approved.historicalAttachments && !action.sourceAttachment
-          ? await refreshLegacyDraftAttachments(action.after, provider) : action.after;
+        // The write re-encodes what it re-keys, so the mapping is recorded before it can land.
+        const writeState = action.exactAfter ?? (approved.historicalAttachments && !action.sourceAttachment
+          ? await refreshLegacyDraftAttachments(action.after, provider) : action.after);
+        if (writeState !== action.after && !action.exactAfter) {
+          store.recordExactDraftUpdate(actionId, writeState);
+        }
         const message = await draftWriteMessage(api, store, writeState, action.sourceAttachment, provider);
         const updated = await applyUncertainWrite(
           store, actionId, () => api.updateDraft(id, message.raw, action.after.threadId));
@@ -5064,7 +5086,8 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
           threadId: updated.message.threadId ?? current.message.threadId,
         };
         store.setDraftWriteReceipt(actionId, receipt);
-        const baseline = await readDraftProviderBaseline(api, store, actionId, receipt, approved);
+        const baseline = await readDraftProviderBaseline(
+          api, store, actionId, receipt, {...approved, exactState: writeState});
         store.completeDraftWrite(actionId, baseline, approved.fingerprint, receipt);
         store.updateDraftForwardContent(action.draftId, action.after);
         return;
