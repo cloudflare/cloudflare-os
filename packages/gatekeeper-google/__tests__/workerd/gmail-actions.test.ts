@@ -4857,6 +4857,13 @@ describe("Gmail pending sends", () => {
     const written = [...harness.drafts.values()][0];
     const parsed = await parseGmailDraft(fakeMailRaw(written));
     written.raw = buildEncodedEmail({...parsed, from: ME, messageId: parsed.messageId!, bcc: []}, true);
+    // The old worker recorded no identities for the parts it wrote.
+    for (const key of (await harness.values.keys()).filter(name => name.startsWith("gmail:draft:"))) {
+      const resource = {...await harness.values.get<Record<string, unknown>>(key)};
+      delete resource.appliedAttachments;
+      delete resource.attachmentMessageId;
+      await harness.storage.kv.put(key, resource);
+    }
     return {...harness, draft, written};
   };
   // The old builder left an extra CRLF inside this non-final unencoded nested message.
@@ -4889,6 +4896,47 @@ describe("Gmail pending sends", () => {
       expect(drafts.size).toBe(operation === "update" ? 1 : 0);
       expect(mailbox.filter(mail => mail.labelIds.includes("SENT"))).toHaveLength(operation === "send" ? 1 : 0);
     });
+
+  it("reads each part of a queued update on an inline forward whose image the old builder duplicated", async () => {
+    const {gatekeeper, draft} = await historicalForward({
+      html: '<p>Source <img src="cid:image@example.com"></p>',
+      attachments: [
+        {filename: "image.png", contentType: "image/png", data: btoa("png"), disposition: "inline",
+          contentId: "<image@example.com>", description: "Image"},
+        {filename: "tail.bin", contentType: "application/octet-stream", data: btoa("bin"),
+          disposition: "attachment", description: "Tail"},
+      ],
+    });
+    await draft.update({text: "First"});
+    await draft.update({text: "Second"});
+    await gatekeeper.applyAction(2);
+
+    const entries = await draft.attachments();
+
+    expect(await Promise.all(entries.map(async entry =>
+      [entry.info.filename, new TextDecoder().decode(await entry.attachment.getContent())])))
+      .toEqual([["image.png", "png"], ["image.png", "png"], ["tail.bin", "bin"]]);
+  });
+
+  it("completes a v2 write whose historical rebuild would exceed the MIME ceiling", async () => {
+    const {gatekeeper, receive, values} = mailHarness();
+    // The old builder would emit this inline image twice, past the ceiling the real write fits.
+    const source = receive({
+      html: '<p>Source <img src="cid:image@example.com"></p>',
+      attachments: [{filename: "image.png", contentType: "image/png", data: btoa("\0".repeat(9 * 1024 * 1024)),
+        disposition: "inline", contentId: "<image@example.com>", description: "Image"}],
+    });
+    const session = await gatekeeper.startSession(approvalQueue());
+    const draft = await (await session.getMessage(source.id)).createForwardDraft(["to@example.com"], "Before");
+    await gatekeeper.applyAction(1);
+    await draft.addAttachment(upload("extra.bin", new Uint8Array(1024 * 1024)));
+
+    await gatekeeper.applyAction(2);
+
+    for (const key of ["pending:action:2", "gmail:applying:2"]) {
+      expect(await values.has(key)).toBe(false);
+    }
+  }, 30_000);
 
   it("applies a fresh update to an inline forward whose nested message the old builder wrote", async () => {
     const {gatekeeper, draft, written} = await historicalNestedForward();

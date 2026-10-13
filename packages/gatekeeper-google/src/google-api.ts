@@ -2800,7 +2800,8 @@ export class GmailApi {
     const replyTo = normalizeEmailRecipients(spec.replyTo ?? []);
     const normalized: GmailOutboundSpec = {...spec, ...recipients, replyTo};
     const raw = buildEncodedEmail(normalized, historical);
-    if (base64UrlDecodedByteLength(raw) > MAX_GMAIL_FORWARD_SOURCE_BYTES) {
+    // A historical build only verifies what the old builder wrote, and is never sent.
+    if (!historical && base64UrlDecodedByteLength(raw) > MAX_GMAIL_FORWARD_SOURCE_BYTES) {
       throw new Error(
         `The Gmail message exceeds the ${MAX_GMAIL_FORWARD_SOURCE_BYTES}-byte MIME limit.`);
     }

@@ -120,13 +120,16 @@ of archives and label changes, each needing a round trip to the user.
      historical fingerprint is taken from a rebuild that reproduces the old builder: its source
      parts as the old parser decoded them, its placeholder filename (which made MIMEText emit an
      inline part as a regular attachment too), and the extra CRLF it left inside non-final
-     unencoded nested messages. Only attachment state an
-     old action captured (marked `historicalAttachments` once it is rebased) is correlated to
-     provider parts through the legacy parse, and it is re-keyed to their exact bytes, not
-     emitted as normalized calendar content; byte-exact state never is, so recovery cannot adopt
-     an edit the legacy parse hides. A forward's source parts come from its snapshot and are
-     never re-keyed, and listing a draft under a pending old update reports each provider
-     part's own size and type. A `v2:` precondition never falls back to the historical parser.
+     unencoded nested messages. That rebuild is verification only: it is exempt from the MIME
+     ceiling and made only for a historical write or a pre-upgrade successor. Only attachment
+     state an old action captured (marked `historicalAttachments` once it is rebased) is
+     correlated to provider parts through the legacy parse, and it is re-keyed to their exact
+     bytes, not emitted as normalized calendar content; byte-exact state never is, so recovery
+     cannot adopt an edit the legacy parse hides. A forward's source parts come from its
+     snapshot and are never re-keyed; a listed source part is read from the rebuilt forward by
+     its captured digest, since the old builder's duplicated parts shift indices. Listing a draft
+     under a pending old update reports each provider part's own size and type. A `v2:`
+     precondition never falls back to the historical parser.
 
 4. **Where exact simulation isn't possible, show the agent's change and document the gap.** In some
    places Gmail's data can't be reconciled with a pending action, mostly free-text search. There the

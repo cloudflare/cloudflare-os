@@ -197,7 +197,8 @@ type GmailDraftProviderBaseline = GmailDraftWriteReceipt & {
   fingerprint: string;
   appliedAttachments: NonNullable<GmailDraftResource["appliedAttachments"]>;
   outputFingerprint: string;
-  legacyOutputFingerprint: string;
+  /** Present only when a historical write or pre-upgrade successor needs it. */
+  legacyOutputFingerprint?: string;
 };
 
 type GmailLabelCreateAction = {
@@ -1463,20 +1464,31 @@ type ApprovedDraftOutput = {
 /**
  * The approved output as the provider draft holds it: `exactState` re-keys historical attachment
  * digests to the provider's exact parts, and `legacyOutputFingerprint` is the precondition a
- * pre-upgrade successor recorded. Byte-exact attachment state is never re-keyed.
+ * pre-upgrade successor recorded. Byte-exact attachment state is never re-keyed, and the
+ * historical output is rebuilt only for a historical write or a pre-upgrade successor.
  */
 async function exactDraftOutput(
     api: GmailApi, store: GmailStore, approved: ApprovedDraftOutput, provider?: GmailProviderDraft) {
   // A forward's source parts are written from its retained snapshot, not matched to the provider.
   const exactState = provider && approved.historicalAttachments && !approved.snapshot
     ? await refreshLegacyDraftAttachments(approved.state, provider) : approved.state;
+  const historical = approved.historical ||
+    hasUnversionedDraftAction(store, store.resolveDraftId(approved.state.logicalId));
   return {
     exactState,
     outputFingerprint: exactState === approved.state ? approved.fingerprint
       : await draftOutputFingerprint(api, store, exactState, approved.snapshot),
-    legacyOutputFingerprint: await draftOutputFingerprint(
-      api, store, approved.state, approved.snapshot, true),
+    ...(historical ? {legacyOutputFingerprint: await draftOutputFingerprint(
+      api, store, approved.state, approved.snapshot, true)} : {}),
   };
+}
+
+/** Whether a pending action on this draft was staged under an unprefixed precondition. */
+function hasUnversionedDraftAction(store: GmailStore, canonicalId: string): boolean {
+  return store.listActions().some(({action}) =>
+    (action.type === "draftUpdate" || action.type === "draftDelete" || action.type === "draftSend") &&
+    store.resolveDraftId(action.draftId) === canonicalId && !isVersionedGmailFingerprint(
+      action.type === "draftUpdate" ? action.expectedBefore : action.expectedSnapshot));
 }
 
 /**
@@ -1489,7 +1501,7 @@ async function exactDraftOutput(
 async function holdsDraftOutput(
     api: GmailApi, store: GmailStore, approved: ApprovedDraftOutput, provider: GmailProviderDraft,
     fingerprint: string,
-    output: {exactState: GmailDraftState; outputFingerprint: string; legacyOutputFingerprint: string}):
+    output: {exactState: GmailDraftState; outputFingerprint: string; legacyOutputFingerprint?: string}):
     Promise<boolean> {
   if (fingerprint === output.outputFingerprint) return true;
   const emitted = await draftWriteMessage(api, store, output.exactState, approved.snapshot, provider);
@@ -1498,7 +1510,7 @@ async function holdsDraftOutput(
     raw: emitted.raw,
   });
   return fingerprint === await gmailDraftFingerprint(parsed, output.exactState.threadId) ||
-    (approved.historical &&
+    (approved.historical && output.legacyOutputFingerprint !== undefined &&
       await matchesGmailFingerprint(provider.message, output.legacyOutputFingerprint, provider.parsed));
 }
 
@@ -4104,7 +4116,11 @@ class GmailDraftStub extends ApprovalQueueRpcTarget implements GmailDraft {
             return (await this.#ctx.store.readFile(source)).buffer as ArrayBuffer;
           }
           const message = await inlineForwardMessage(this.#ctx.api, this.#ctx.store, state, source);
-          const data = message.attachments[index]?.data;
+          // A part captured from the old builder's output can sit at an index the rebuilt forward no
+          // longer uses (it duplicated inline parts), so its captured bytes locate it first.
+          const matched = attachment.contentDigest === undefined ? -1
+            : (await Promise.all(message.attachments.map(attachmentDigest))).indexOf(attachment.contentDigest);
+          const data = message.attachments[matched < 0 ? index : matched]?.data;
           if (data !== undefined) {
             return Uint8Array.from(atob(data.replace(/\s/g, "")), char => char.charCodeAt(0))
               .buffer as ArrayBuffer;
