@@ -61,6 +61,11 @@ describe('classifyMatch', () => {
     expect(classifyMatch(typed, pattern)).toEqual({ type: 'prefix', suffix })
   })
 
+  it('completes a host in any case, and a path only in its own', () => {
+    expect(classifyMatch('https://Chat.Google.com/ro', CHAT_SPACE)).toEqual({ type: 'prefix', suffix: 'om/:spaceId' })
+    expect(classifyMatch('https://chat.google.com/RO', CHAT_SPACE)).toEqual({ type: 'none' })
+  })
+
   it("holds a link to the pattern's parameter constraints", () => {
     const profile = 'https://x.com/:username([A-Za-z0-9_]{1,15})'
     expect(classifyMatch('https://x.com/jack', profile)).toEqual({ type: 'full' })

@@ -85,17 +85,19 @@ export function classifyMatch(search: string, pattern: string): MatchClassificat
   }
 
   const [path] = splitAtQuery(typed.replace(/^https?:\/\//i, ''))
-  const segments = path.toLowerCase().split('/')
+  // A host matches in any case, as URLPattern lowercases the pattern's; a path only in its own.
+  const [host, ...rest] = path.split('/')
+  const segments = [host.toLowerCase(), ...rest]
   for (const [i, part] of parts.entries()) {
     const segment = segments[i]
     if (segment === undefined) return { type: 'prefix', suffix: `/${words.slice(i).join('/')}` }
     const matches = part.some(word => (word === '*' || word.startsWith(':')) ? segment !== ''
-      : (i === 0 && word.startsWith('*.')) ? segment.endsWith(word.slice(1).toLowerCase())
-      : segment === word.toLowerCase())
+      : (i === 0 && word.startsWith('*.')) ? segment.endsWith(word.slice(1))
+      : segment === word)
     if (matches) continue
     // The segment still being typed completes to a word of this part, then the rest of the pattern.
     const word = i === segments.length - 1
-      ? part.find(word => !word.startsWith('*') && word.toLowerCase().startsWith(segment)) : undefined
+      ? part.find(word => !word.startsWith('*') && word.startsWith(segment)) : undefined
     if (word) return { type: 'prefix', suffix: [word.slice(segment.length), ...words.slice(i + 1)].join('/') }
     return { type: 'none' }
   }
