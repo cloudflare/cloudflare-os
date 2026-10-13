@@ -240,6 +240,14 @@ describe("Google Chat configurator URLs", () => {
     expect(chatValues(configurableUrl(chatSpaceConfigurator, values))).toEqual(values);
   });
 
+  it.for([
+    "https://chat.google.com/room/AAAA1234?cls=7",
+    "https://chat.google.com/dm/AAAA1234?cls=7",
+  ])("prefills the conversation from a link Chat gave out, %s", link => {
+    expect(parseResourceUrl(link)).toEqual({ kind: "chatSpace", spaceId: "AAAA1234" });
+    expect(chatValues(link)).toEqual({ spaceId: "AAAA1234" });
+  });
+
   it("prefills nothing from a URL that names no conversation", () => {
     expect(chatValues("https://chat.google.com/")).toEqual({});
     expect(chatValues("https://chat.google.com/room/%ZZ")).toEqual({});

@@ -98,9 +98,12 @@ export const GOOGLE_CHAT_RESOURCE: SupportedResource = {
   grantable: true,
 };
 
-/** One selected Google Chat space, group chat, or direct message. */
+/**
+ * One selected Google Chat space, group chat, or direct message. Chat links to a direct message
+ * under `/dm/` rather than `/room/`.
+ */
 export const GOOGLE_CHAT_SPACE_RESOURCE: SupportedResource = {
-  urlPattern: "https://chat.google.com/room/:spaceId",
+  urlPattern: "https://chat.google.com/:kind(room|dm)/:spaceId",
   title: "Google Chat Conversation",
   description:
       "Read and post in one selected conversation as you, including its members, reactions, " +
@@ -113,7 +116,7 @@ export const GOOGLE_CHAT_SPACE_RESOURCE: SupportedResource = {
  * message's Copy link names its thread too, so a message id may follow the thread's.
  */
 export const GOOGLE_CHAT_THREAD_RESOURCE: SupportedResource = {
-  urlPattern: "https://chat.google.com/room/:spaceId/:threadId{/:messageId}?",
+  urlPattern: "https://chat.google.com/:kind(room|dm)/:spaceId/:threadId{/:messageId}?",
   title: "Google Chat Thread",
   description:
       "Read and reply in one selected thread as you, including its reactions and attachments.",
@@ -326,6 +329,7 @@ const KNOWN_RESOURCE_PATTERNS = new Set(SUPPORTED_RESOURCES.map(resource => reso
 
 /** Former `urlPattern`s of live resources, so a grant recorded under one is read under its new name. */
 const RENAMED_RESOURCE_PATTERNS: Record<string, string> = {
+  "https://chat.google.com/room/:spaceId": GOOGLE_CHAT_SPACE_RESOURCE.urlPattern,
   "https://chat.google.com/room/:spaceId/:threadId": GOOGLE_CHAT_THREAD_RESOURCE.urlPattern,
 };
 
@@ -651,10 +655,11 @@ function parseDriveUrl(parsed: URL): ResourceTarget {
  * Chat's own URLs carry a view path and a fragment, so the grant is keyed on the canonical form
  * the configurator mints: the bare host for the whole account, `/room/{space}` for one
  * conversation, `/room/{space}/{thread}` for one thread. A link Chat gives out to one of those
- * adds a `cls` view parameter, which names no resource and is ignored, as is the message id that
- * follows the thread's in a message's link; any other query, or a fragment, is refused rather than
- * guessed at. The ids are Chat's without their `spaces/` and `threads/` prefixes, validated here
- * because every downstream request interpolates them into a path.
+ * spells a direct message's `/room/` as `/dm/` and adds a `cls` view parameter, which names no
+ * resource and is ignored, as is the message id that follows the thread's in a message's link; any
+ * other query, or a fragment, is refused rather than guessed at. The ids are Chat's without their
+ * `spaces/` and `threads/` prefixes, validated here because every downstream request interpolates
+ * them into a path.
  */
 function parseChatUrl(parsed: URL): ResourceTarget {
   if (parsed.hash || [...parsed.searchParams.keys()].some(key => key !== "cls")) {
@@ -663,12 +668,12 @@ function parseChatUrl(parsed: URL): ResourceTarget {
   }
   if (/^\/?$/.test(parsed.pathname)) return { kind: "chatAccount" };
 
-  let room = /^\/room\/([^/]+)\/?$/.exec(parsed.pathname);
+  let room = /^\/(?:room|dm)\/([^/]+)\/?$/.exec(parsed.pathname);
   if (room) {
     return { kind: "chatSpace", spaceId: validateChatSpaceId(decodeURIComponent(room[1])) };
   }
 
-  let thread = /^\/room\/([^/]+)\/([^/]+)(?:\/[^/]+)?\/?$/.exec(parsed.pathname);
+  let thread = /^\/(?:room|dm)\/([^/]+)\/([^/]+)(?:\/[^/]+)?\/?$/.exec(parsed.pathname);
   if (thread) {
     return {
       kind: "chatThread",
