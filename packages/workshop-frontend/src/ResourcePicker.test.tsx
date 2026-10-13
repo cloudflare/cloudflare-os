@@ -60,7 +60,7 @@ describe('ResourcePicker', () => {
 
   it('names the placeholder still blocking an account, rather than offering to grant access', async () => {
     const thread: SupportedResource = {
-      urlPattern: 'https://chat.google.com/room/:spaceId/:threadId',
+      urlPattern: 'https://chat.google.com/room/:spaceId/:threadId{/:messageId}?',
       title: 'Google Chat Thread',
       description: 'One thread',
       grantable: true,

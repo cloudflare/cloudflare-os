@@ -36,7 +36,7 @@ describe("resource declarations", () => {
       "https://drive.google.com/file/d/:fileId/view",
       "https://chat.google.com/",
       "https://chat.google.com/room/:spaceId",
-      "https://chat.google.com/room/:spaceId/:threadId",
+      "https://chat.google.com/room/:spaceId/:threadId{/:messageId}?",
       "https://bigquery.googleapis.com/:projectId/*",
     ]);
   });
@@ -608,6 +608,8 @@ describe("parseResourceUrl", () => {
         { kind: "chatSpace", spaceId: "AAAA1234" }],
       ["one thread from a link Chat gave out", "https://chat.google.com/room/AAAA1234/TTT?cls=10",
         { kind: "chatThread", spaceId: "AAAA1234", threadId: "TTT" }],
+      ["one thread from a message's link", "https://chat.google.com/room/AAAA1234/TTT/MMM?cls=10",
+        { kind: "chatThread", spaceId: "AAAA1234", threadId: "TTT" }],
     ] as const)("scopes to %s", (_name, url, expected) => {
       expect(parseResourceUrl(url)).toEqual(expected);
     });
@@ -617,7 +619,7 @@ describe("parseResourceUrl", () => {
     it.each([
       "https://chat.google.com/room/",
       "https://chat.google.com/room/AAA%2F..%2FBBB",
-      "https://chat.google.com/room/AAA/BBB/CCC",
+      "https://chat.google.com/room/AAA/BBB/CCC/DDD",
       "https://chat.google.com/room/AAA/B%2FC",
       "https://chat.google.com/room/AAA/...",
       "https://chat.google.com/dm/AAAA1234/TTT",
@@ -636,6 +638,7 @@ describe("parseResourceUrl", () => {
         ["https://chat.google.com/", GOOGLE_CHAT_RESOURCE],
         ["https://chat.google.com/room/AAAA1234", GOOGLE_CHAT_SPACE_RESOURCE],
         ["https://chat.google.com/room/AAAA1234/TTT", GOOGLE_CHAT_THREAD_RESOURCE],
+        ["https://chat.google.com/room/AAAA1234/TTT/MMM", GOOGLE_CHAT_THREAD_RESOURCE],
       ] as const) {
         for (const resource of SUPPORTED_RESOURCES) {
           expect(new URLPattern(resource.urlPattern).test(url)).toBe(resource === expected);
@@ -732,5 +735,14 @@ describe("recorded account grants", () => {
     };
     expect(recordedResourceUrlPatterns(grant)).toEqual([GMAIL_RESOURCE.urlPattern]);
     expect(grantedResourceUrlPatterns(grant)).toEqual([GMAIL_RESOURCE.urlPattern]);
+  });
+
+  it("carries a grant recorded under a pattern a later deploy renamed", () => {
+    const grant = {
+      resourceUrlPatterns: ["https://chat.google.com/room/:spaceId/:threadId"],
+      oauthScopes: resourceUrlPatternsToOAuthScopes([GOOGLE_CHAT_THREAD_RESOURCE.urlPattern]),
+    };
+    expect(recordedResourceUrlPatterns(grant)).toEqual([GOOGLE_CHAT_THREAD_RESOURCE.urlPattern]);
+    expect(grantedResourceUrlPatterns(grant)).toEqual([GOOGLE_CHAT_THREAD_RESOURCE.urlPattern]);
   });
 });

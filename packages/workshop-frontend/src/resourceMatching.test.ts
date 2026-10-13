@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { classifyMatch, completeUrl, getPlaceholderRanges } from './resourceMatching'
 
 const CHAT_SPACE = 'https://chat.google.com/room/:spaceId'
-const CHAT_THREAD = 'https://chat.google.com/room/:spaceId/:threadId'
+const CHAT_THREAD = 'https://chat.google.com/room/:spaceId/:threadId{/:messageId}?'
 const NETSUITE_CUSTOMER = 'https://acme.app.netsuite.com/app/common/entity/custjob.nl?id=:customerId'
 
 describe('classifyMatch', () => {

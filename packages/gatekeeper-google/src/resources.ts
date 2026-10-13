@@ -108,9 +108,12 @@ export const GOOGLE_CHAT_SPACE_RESOURCE: SupportedResource = {
   grantable: true,
 };
 
-/** One thread in a Google Chat conversation: its first message, replies, and future replies. */
+/**
+ * One thread in a Google Chat conversation: its first message, replies, and future replies. A
+ * message's Copy link names its thread too, so a message id may follow the thread's.
+ */
 export const GOOGLE_CHAT_THREAD_RESOURCE: SupportedResource = {
-  urlPattern: "https://chat.google.com/room/:spaceId/:threadId",
+  urlPattern: "https://chat.google.com/room/:spaceId/:threadId{/:messageId}?",
   title: "Google Chat Thread",
   description:
       "Read and reply in one selected thread as you, including its reactions and attachments.",
@@ -321,6 +324,11 @@ const DRIVE_RESOURCE_PATTERNS = new Set([
 export const SUPPORTED_RESOURCES: SupportedResource[] = RESOURCE_SCOPES.map(entry => entry.resource);
 const KNOWN_RESOURCE_PATTERNS = new Set(SUPPORTED_RESOURCES.map(resource => resource.urlPattern));
 
+/** Former `urlPattern`s of live resources, so a grant recorded under one is read under its new name. */
+const RENAMED_RESOURCE_PATTERNS: Record<string, string> = {
+  "https://chat.google.com/room/:spaceId/:threadId": GOOGLE_CHAT_THREAD_RESOURCE.urlPattern,
+};
+
 /** Whether an account's recorded grant includes any Google Drive resource. */
 export function hasDriveResourceGrant(resourceUrlPatterns: readonly string[]): boolean {
   return resourceUrlPatterns.some(pattern => DRIVE_RESOURCE_PATTERNS.has(pattern));
@@ -440,12 +448,15 @@ export type RecordedResourceGrant = {
  * accepted. That generation cannot express an outgrown grant either — a resource whose scopes it no
  * longer covers is indistinguishable from one it never held — so there is nothing to keep.
  *
- * A `urlPattern` a later deploy retired is dropped rather than returned: it maps to no scopes, so
- * requesting it would throw and take the reconnect that repairs the account down with it.
+ * A `urlPattern` a later deploy renamed is read under its new name. One it retired is dropped: it
+ * maps to no scopes, so requesting it would throw and take the reconnect that repairs the account
+ * down with it.
  */
 export function recordedResourceUrlPatterns(grant: RecordedResourceGrant): string[] {
   if (grant.resourceUrlPatterns !== undefined) {
-    return grant.resourceUrlPatterns.filter(pattern => KNOWN_RESOURCE_PATTERNS.has(pattern));
+    return grant.resourceUrlPatterns
+        .map(pattern => RENAMED_RESOURCE_PATTERNS[pattern] ?? pattern)
+        .filter(pattern => KNOWN_RESOURCE_PATTERNS.has(pattern));
   }
   if (grant.oauthScopes === undefined) return [...LEGACY_GRANTED_RESOURCE_URL_PATTERNS];
   return resourcesCoveredByScopes(SCOPE_DERIVED_RESOURCE_URL_PATTERNS, grant.oauthScopes);
@@ -640,10 +651,10 @@ function parseDriveUrl(parsed: URL): ResourceTarget {
  * Chat's own URLs carry a view path and a fragment, so the grant is keyed on the canonical form
  * the configurator mints: the bare host for the whole account, `/room/{space}` for one
  * conversation, `/room/{space}/{thread}` for one thread. A link Chat gives out to one of those
- * adds a `cls` view parameter, which names no resource and is ignored; any other query, or a
- * fragment, is refused rather than guessed at. The ids are Chat's without their `spaces/` and
- * `threads/` prefixes, validated here because every downstream request interpolates them into a
- * path.
+ * adds a `cls` view parameter, which names no resource and is ignored, as is the message id that
+ * follows the thread's in a message's link; any other query, or a fragment, is refused rather than
+ * guessed at. The ids are Chat's without their `spaces/` and `threads/` prefixes, validated here
+ * because every downstream request interpolates them into a path.
  */
 function parseChatUrl(parsed: URL): ResourceTarget {
   if (parsed.hash || [...parsed.searchParams.keys()].some(key => key !== "cls")) {
@@ -657,7 +668,7 @@ function parseChatUrl(parsed: URL): ResourceTarget {
     return { kind: "chatSpace", spaceId: validateChatSpaceId(decodeURIComponent(room[1])) };
   }
 
-  let thread = /^\/room\/([^/]+)\/([^/]+)\/?$/.exec(parsed.pathname);
+  let thread = /^\/room\/([^/]+)\/([^/]+)(?:\/[^/]+)?\/?$/.exec(parsed.pathname);
   if (thread) {
     return {
       kind: "chatThread",
