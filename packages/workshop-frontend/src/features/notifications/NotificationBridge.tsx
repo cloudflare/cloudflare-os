@@ -121,6 +121,9 @@ export const NotificationBridge = ({
       let live = false;
       let subscriber = new NotificationSubscriberImpl(notification => {
         let { id, kind, workspaceId, chatId, chatTitle } = notification;
+        // The user is already looking at this task.
+        let { pathname, search } = router.state.location;
+        if (pathname === `/workspace/${workspaceId}` && search.chat === chatId) return;
         let completed = kind === "taskCompleted";
         addToast.current({
           id,
