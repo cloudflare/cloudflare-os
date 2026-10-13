@@ -759,7 +759,7 @@ is over, or the caller should ask again. The `collections` branch above also ass
 `trackedCollectionObservers`; under a strategy whose `aclChecks` is `"unsupported"` every branch is
 `baseline`, per the table above.
 
-A refusal holds the outgoing page, so the retry re-offers exactly it with no further provider
+A refusal holds the outgoing page, so the retry re-offers its rows with no further provider
 fetch: a page the provider capped short cannot grow between the refusal and the retry, which would
 hand the approver something larger than what they refused. An empty page from a spent window is the
 exception — nothing was disclosed, so the retry opens a fresh window rather than pinning the walk
@@ -784,6 +784,23 @@ return new TokenCursor<Project>({
   // …
 });
 ```
+
+### Merge simulated rows with `inject`
+
+Rows the gatekeeper's own simulation adds to a listing — a branch a queued push will create, a
+commit queued for push — go in `inject: { items, compare, revalidate?, identity? }` rather than a
+wrapper cursor, so they share the walk's serialization, fetch bound and refusal hold. Each injected
+row is served before the first provider row `compare` places it at-or-before, and the rest after the
+last page. They are not provider rows: they never reach `authorizePage`'s `items`, and a page
+made only of them is not authorized, so do not inject anything the provider supplied. Their
+position still says a little — an injected row served first means no fetched provider row sorts
+ahead of it — so a listing whose order is itself sensitive authorizes its observation up front.
+`revalidate` re-reads a row when it is served (`null` drops it), since a page may be drained long
+after the cursor was built. `identity` drops a later row of either source whose identity was
+already served, such as the provider's copy of a create that landed mid-walk; an injected row's
+identity is re-read at each check, so a temporary id that became the provider's still matches.
+A refused page's retry re-reads its injected rows and offers no provider row the refusal did not
+cover; one a dropped injected row had hidden leads the next page instead, with the rows after it.
 
 ### Refusal and failure have different outcomes
 
@@ -815,6 +832,7 @@ The kit supplies defaults where they apply across consumers:
 | `maxTrackedCollections` | 1000 |
 | `maxObservers` | 10 |
 | `remotePageSize` | 100 |
+| cursor `maxProviderPagesPerCall` | 10 |
 | `OAuthClient` `timeoutMs` | 30 000 ms |
 | `OAuthClient` `maxResponseBytes` | 64 KiB |
 
@@ -828,7 +846,9 @@ bounds the distinct collections this binding has *ever* disclosed, including mar
 left behind, so size it from the whole resource rather than one page — a per-page value starts
 refusing valid reads once later pages reveal new collections. `maxObservers` must account for the Workers
 subrequest ceiling because every observer costs a verifier call on each read. `remotePageSize`
-cannot exceed the provider's page cap.
+cannot exceed the provider's page cap. Lower `maxProviderPagesPerCall` for a provider that bills
+each row it returns: a filter that drops whole pages otherwise pays for up to ten per `next()`, and
+`1` with a `pageSize` no provider page exceeds makes each `next()` one provider request.
 
 ## Git
 

@@ -1681,9 +1681,23 @@ silently, and `page * perPage` arithmetic then skips the rows between with no er
 reflect the rows it consumed — a server-side-filtered search with its own next signal, confluence's
 v1 CQL — is a `TokenCursor` carrying that signal as its token.
 
-There is no `overlay`, `map` or injected-item merging. Each came from one gatekeeper's shape, with
-ordering and authorization needs the others do not share. `retain` is the one post-fetch step left,
-and the ordering rule below is what keeps it from costing a page.
+`overlay` and `map` stay in each gatekeeper's `fetchPage`: each came from one gatekeeper's shape.
+Injected-item merging did not stay out. GitHub and GitLab each grew a near-identical
+`StreamingCursor` for it (overlay, injected rows merged by comparator, re-validation at serve time),
+and the copies drifted into opposite bugs — GitHub's served duplicate rows under concurrent
+`next()` and lost a page whose fetch threw, GitLab's walked a fully filtered listing to the end in
+one call. So `inject: { items, compare, revalidate?, identity? }` lives on the buffered base, where
+it inherits serialization, the fetch bound and the refusal hold. Injected rows are the agent's own
+simulation, not provider rows: they never reach `authorizePage`, and a page made only of them is
+not authorized. Only their position carries provider information — an injected row served first
+means no fetched provider row sorts ahead of it — which a listing whose order is itself sensitive
+covers by authorizing up front. `revalidate` and `identity` run when a row is served, not when it
+is fetched, and identities count as served only once their page is authorized. A refused page's
+retry rebuilds from the entries that page consumed, re-reading the injected ones, and stops before
+a provider row the refusal did not cover, such as one a dropped injected row had hidden: that row
+leads the next page, so it is neither lost nor slipped past the refusal.
+`retain` is the one post-fetch step for provider rows, and the ordering rule below is what keeps it
+from costing a page.
 
 Filtering is the exception, because a numeric walk has no end-of-list signal but the row count.
 The numeric cursors' `fetchPage` therefore returns the provider's page **unfiltered** and an optional
@@ -1700,15 +1714,16 @@ Three rules the prior art does not have. Only an **empty** provider page ends a 
 (providers cap page size below what was asked for — Cloudflare's own `/accounts` answers 20 to a
 request for 100 — so treating a short page as the end silently omits every later record). A page the
 caller sees nothing in is not the end either, so one `next()` fetches at most
-`MAX_PROVIDER_PAGES_PER_CALL` (10) pages — **every** page, not just consecutive empty ones, since a
-provider yielding one surviving row every few pages would otherwise cost hundreds of fetches in one
-call — and then yields what it has, `[]` included, which invites another call where `null` would
-claim the list had ended. The bound is latency, not quota: the fetches are sequential and the caller
-is blocked on them, while 10 still fills a 100-row page from a provider dropping 90% of what it
-returns. A short page is legal, so a port needing more per call raises `remotePageSize` rather than
-expecting one call to fill.
-And `next()` is serialized on a `SerialTaskQueue` (§4.12), since two un-awaited callers racing on the
-page counter would return one page twice and skip the next.
+`maxProviderPagesPerCall` (default 10) pages — **every** page, not just consecutive empty ones,
+since a provider yielding one surviving row every few pages would otherwise cost hundreds of fetches
+in one call — and then yields what it has, `[]` included, which invites another call where `null`
+would claim the list had ended. The default bound is latency, not quota: the fetches are sequential
+and the caller is blocked on them, while 10 still fills a 100-row page from a provider dropping 90%
+of what it returns. A short page is legal, so a port needing more per call raises `remotePageSize`
+rather than expecting one call to fill. A provider that bills each row it returns lowers it: `1`
+with a `pageSize` no provider page exceeds makes each `next()` one request. And `next()` is
+serialized on a `SerialTaskQueue` (§4.12), since two un-awaited callers racing on the page counter
+would return one page twice and skip the next.
 
 **Nothing latches a failure, because no paging state moves until every step that can throw has
 run.** `PageNumberCursor` and `OffsetCursor` decide exhaustion from the raw page and apply `retain`
@@ -1748,16 +1763,17 @@ Two rules follow from the token being opaque, and both belong to this class alon
 token, and the walk would otherwise re-fetch that page until a cap. Only the immediately-prior token
 is compared — an unbounded seen-set would grow with the walk it is meant to protect — and the first
 page, asked `undefined`, is exempt by construction. The refusal is stable and non-advancing, so a
-retry re-asks the same token and is refused again rather than losing the position. And a fixed
-shared `MAX_PROVIDER_PAGES_PER_CALL` bound of **10 provider pages** per `next()` call keeps a quiet
-stream from looping forever and also bounds sparse streams: every provider page counts, not just
-consecutive empty ones. At the bound `next()` returns the buffer *even when empty*, because `[]` is
-a legal non-terminal page (only `null` ends a `Cursor`) and the next call resumes the walk with a
-window. It is not an option: google's `CursorPager` hard-codes its own bound, internal cf-wiki loops
-unbounded (a hang on a broken provider), and nobody tunes it per resource. The numeric cursor needs
-no such bound, since an empty page ends its walk. Neither detects a provider that ignores the page
-argument and keeps answering with rows, which yields duplicates instead of ending; that needs an item
-identity the cursor does not have, and no page ceiling substitutes for one.
+retry re-asks the same token and is refused again rather than losing the position. And the
+`maxProviderPagesPerCall` bound keeps a quiet stream from looping forever and also bounds sparse
+streams: every provider page counts, not just consecutive empty ones. At the bound `next()` returns
+the buffer *even when empty*, because `[]` is a legal non-terminal page (only `null` ends a
+`Cursor`) and the next call resumes the walk with a window. It is an option rather than a constant
+because a provider that bills or rate-limits per request wants a lower one — google's own
+`CursorPager` exposes the same bound and Chat sets it to 3, and X's own cursor fetches one page per
+call because X bills every row a read returns — though no kit consumer lowers it yet. Neither
+cursor detects a provider that ignores the page argument and keeps answering with rows, which
+yields duplicates instead of ending; `inject.identity` dedups only what it is told is the same row,
+and no page ceiling substitutes for an identity.
 
 `PageHookCursor<T>` wraps a cursor the gatekeeper already built and runs `beforePage(items)` on each
 page before `next()` returns it — for listings that authorize their observation once, up front, so
@@ -3397,10 +3413,6 @@ recorded here because the pass found it. Each entry names why it waits and what 
   hand-written retry loop.
 - **Hook delivery** (`startHook`, observe, deliver, dispose). Only email and scheduler produce hooks,
   with different policies. *Trigger:* a third producer.
-- **Simulated-item cursor overlay.** cf-wiki and GitHub's provisional items order differently.
-  GitHub and GitLab now carry near-identical `StreamingCursor`s (overlay, injected rows merged by
-  comparator, re-validation at serve time); GitLab's buffers before serving and serializes `next()`,
-  GitHub's still loses the rows of a page whose fetch throws. *Trigger:* the git extraction below.
 - **Resource-pattern scope helpers.** Cloudflare, Google, Slack and internal Ironclad each model the
   granted scope differently, so there is no shared contract yet. *Trigger:* a second gatekeeper
   that records requested and granted scopes the way Google does.
