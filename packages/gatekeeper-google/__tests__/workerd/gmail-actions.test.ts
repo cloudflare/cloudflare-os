@@ -4804,6 +4804,51 @@ describe("Gmail pending sends", () => {
     }
   });
 
+  it.each(["update", "delete", "send"] as const)(
+    "applies a fresh %s to an inline-forward calendar draft the old builder wrote", async operation => {
+      const {gatekeeper, receive, drafts, mailbox} = mailHarness();
+      const source = receive(calendarSpec());
+      const session = await gatekeeper.startSession(approvalQueue());
+      const draft = await (await session.getMessage(source.id)).createForwardDraft(["to@example.com"], "Before");
+      await gatekeeper.applyAction(1);
+      // The same provider revision as the old worker created it, with the calendar as CRLF UTF-8.
+      const written = [...drafts.values()][0];
+      const historical = await historicalCalendarDraft(written);
+      written.raw = buildEncodedEmail({...historical, from: ME, messageId: historical.messageId!, bcc: []});
+      if (operation === "update") await draft.update({text: "After"});
+      else if (operation === "delete") await draft.delete();
+      else await draft.send();
+
+      await gatekeeper.applyAction(2);
+
+      if (operation === "delete") {
+        expect(drafts.size).toBe(0);
+        return;
+      }
+      const parsed = await parseGmailDraft(fakeMailRaw(operation === "send" ? mailbox.at(-1)! : written));
+      expect(atob(parsed.attachments[0].data.replace(/\s/g, ""))).toBe(lfCalendar);
+      if (operation === "update") expect(parsed.text).toContain("After");
+    });
+
+  it("still rejects a real calendar edit in an inline-forward draft", async () => {
+    const {gatekeeper, receive, drafts, calls} = mailHarness();
+    const source = receive(calendarSpec());
+    const session = await gatekeeper.startSession(approvalQueue());
+    const draft = await (await session.getMessage(source.id)).createForwardDraft(["to@example.com"], "Before");
+    await gatekeeper.applyAction(1);
+    const written = [...drafts.values()][0];
+    const parsed = await parseGmailDraft(fakeMailRaw(written));
+    written.raw = buildEncodedEmail({
+      ...parsed, from: ME, messageId: parsed.messageId!, bcc: [],
+      attachments: [{...parsed.attachments[0], data: btoa(lfCalendar.replace("Review", "Changed"))}],
+    });
+    await draft.update({text: "After"});
+
+    await expect(gatekeeper.applyAction(2)).rejects.toThrow(/changed outside this approval sequence/);
+
+    expect(calls.filter(call => call.init.method === "PUT")).toEqual([]);
+  });
+
   it.each(["send", "draftSend"] as const)(
     "replaces a pre-upgrade %s fingerprint on a retry proven not to have applied", async kind => {
       const {gatekeeper, saveDraft, storage, values, calls} = mailHarness();

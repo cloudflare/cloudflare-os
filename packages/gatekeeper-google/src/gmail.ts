@@ -1774,6 +1774,29 @@ async function draftOutputFingerprint(
   return legacy ? unversionedGmailFingerprint(fingerprint) : fingerprint;
 }
 
+/**
+ * The fingerprint a fresh action expects the draft to have in Gmail. An inline forward's output is
+ * rebuilt from its retained source, but one created before fingerprints were versioned is held in
+ * Gmail as the old MIME builder wrote it. When nothing is queued ahead of the action and Gmail's
+ * revision matches the rebuilt output's historical fingerprint, the action expects that exact
+ * revision instead.
+ */
+async function freshDraftPrecondition(
+    ctx: GmailContext, loaded: LoadedGmailDraftBase & {resource: GmailDraftResource},
+    snapshot: GmailSourceAttachment | undefined): Promise<string> {
+  const fingerprint = await draftOutputFingerprint(ctx.api, ctx.store, loaded.state, snapshot);
+  const provider = loaded.provider;
+  if (!snapshot || !provider ||
+      dependenciesFor(ctx.store, loaded.resource.logicalId, "draft").length > 0) {
+    return fingerprint;
+  }
+  const current = await gmailDraftFingerprint(provider.parsed, provider.message.threadId);
+  if (current === fingerprint) return fingerprint;
+  const historical = await draftOutputFingerprint(ctx.api, ctx.store, loaded.state, snapshot, true);
+  return await matchesGmailFingerprint(provider.message, historical, provider.parsed)
+    ? current : fingerprint;
+}
+
 const SYSTEM_LABEL_IDS: GmailSystemLabel[] = [
   "INBOX", "TRASH", "SPAM", "UNREAD", "STARRED", "IMPORTANT", "SENT", "DRAFT", "CHAT",
   "CATEGORY_PRIMARY", "CATEGORY_PERSONAL", "CATEGORY_SOCIAL", "CATEGORY_PROMOTIONS",
@@ -4141,8 +4164,7 @@ class GmailDraftStub extends ApprovalQueueRpcTarget implements GmailDraft {
     const sourceSnapshot = state.source?.kind === "forward" && state.source.format === "inline"
       ? pendingForwardSnapshot(this.#ctx.store, logicalId)
       : undefined;
-    const expectedBefore = await draftOutputFingerprint(
-      this.#ctx.api, this.#ctx.store, state, sourceSnapshot);
+    const expectedBefore = await freshDraftPrecondition(this.#ctx, loaded, sourceSnapshot);
     const descriptionMessage = sourceSnapshot
       ? await inlineForwardMessage(this.#ctx.api, this.#ctx.store, after, sourceSnapshot)
       : replaceAttachments ? this.#ctx.api.buildOutbound(draftSpec(after,
@@ -4180,14 +4202,14 @@ class GmailDraftStub extends ApprovalQueueRpcTarget implements GmailDraft {
   }
 
   async delete(): Promise<void> {
-    const {state, resource} = await loadSimulatedDraft(this.#ctx, this.#logicalId, true);
+    const loaded = await loadSimulatedDraft(this.#ctx, this.#logicalId, true);
+    const {state, resource} = loaded;
     const logicalId = resource.logicalId;
     const version = resource.version;
     const sourceSnapshot = state.source?.kind === "forward" && state.source.format === "inline"
       ? pendingForwardSnapshot(this.#ctx.store, logicalId)
       : undefined;
-    const expectedSnapshot = await draftOutputFingerprint(
-      this.#ctx.api, this.#ctx.store, state, sourceSnapshot);
+    const expectedSnapshot = await freshDraftPrecondition(this.#ctx, loaded, sourceSnapshot);
     const resolved = this.#ctx.store.resolveDraftId(logicalId);
     const current = this.#ctx.store.getDraft(logicalId);
     if (resolved !== logicalId || !current || current.logicalId !== logicalId ||
@@ -4215,7 +4237,8 @@ class GmailDraftStub extends ApprovalQueueRpcTarget implements GmailDraft {
   }
 
   async send(): Promise<string> {
-    const {state, resource} = await loadSimulatedDraft(this.#ctx, this.#logicalId, true);
+    const loaded = await loadSimulatedDraft(this.#ctx, this.#logicalId, true);
+    const {state, resource} = loaded;
     const logicalId = resource.logicalId;
     const version = resource.version;
     const recipients = [...state.to, ...state.cc, ...state.bcc];
@@ -4230,8 +4253,7 @@ class GmailDraftStub extends ApprovalQueueRpcTarget implements GmailDraft {
     const sourceSnapshot = state.source?.kind === "forward" && state.source.format === "inline"
       ? pendingForwardSnapshot(this.#ctx.store, logicalId)
       : undefined;
-    const expectedSnapshot = await draftOutputFingerprint(
-      this.#ctx.api, this.#ctx.store, state, sourceSnapshot);
+    const expectedSnapshot = await freshDraftPrecondition(this.#ctx, loaded, sourceSnapshot);
     // A send action always owns a fresh identity. Imported drafts can reuse a Message-ID from an
     // already-delivered message, which would make ambiguous-send reconciliation unsafe.
     const messageId = newGmailMessageId();

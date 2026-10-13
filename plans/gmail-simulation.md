@@ -114,9 +114,11 @@ of archives and label changes, each needing a round trip to the user.
      update whose write is being reconciled also accepts the old builder's output by its
      historical fingerprint; creates carry no fingerprint that dates them, so they are held to
      byte-exact output. An old send fingerprint is replaced only on a retry no attempt is
-     pending for. Legacy attachment metadata is correlated to the exact provider parts, not
-     emitted as normalized calendar content. A `v2:` precondition never falls back to the
-     historical parser.
+     pending for. A fresh action on an inline forward Gmail holds as the old builder wrote it,
+     verified by its historical fingerprint, expects that exact revision rather than the rebuilt
+     output; the write or send itself still uses the rebuilt, byte-exact output. Legacy
+     attachment metadata is correlated to the exact provider parts, not emitted as normalized
+     calendar content. A `v2:` precondition never falls back to the historical parser.
 
 4. **Where exact simulation isn't possible, show the agent's change and document the gap.** In some
    places Gmail's data can't be reconciled with a pending action, mostly free-text search. There the
