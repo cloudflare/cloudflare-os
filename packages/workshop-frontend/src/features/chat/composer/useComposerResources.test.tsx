@@ -65,10 +65,12 @@ describe("useComposerResources", () => {
     sessionStorage.clear();
     iconState.resolve = undefined;
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   const renderHarness = async (
-    createCapsuleGatekeeper: () => Promise<RpcStub<GatekeeperClient<any>> | null>,
+    createCapsuleGatekeeper: (accountId: number, url: string) =>
+      Promise<RpcStub<GatekeeperClient<any>> | null>,
     draftOptions: { storageKey?: string; logoSlot?: string } = {},
   ) => {
     const onSelectionRequest = vi.fn<(
@@ -76,7 +78,7 @@ describe("useComposerResources", () => {
       documentRevision: number,
     ) => void>();
     const onConnectionCreated = vi.fn<() => void>();
-    const onError = vi.fn<(message: string) => void>();
+    const onError = vi.fn<(title: string, description?: string) => void>();
     let controls: {
       draft: ReturnType<typeof useComposerDraft>;
       resources: ReturnType<typeof useComposerResources>;
@@ -139,6 +141,26 @@ describe("useComposerResources", () => {
       { start: 5, end: 5 },
       expect.any(Number),
     );
+  });
+
+  it("sends the URL with its query and reports the gatekeeper's refusal", async () => {
+    const link = "https://chat.google.com/room/AAQANZZTsQ8?cls=7&tab=1";
+    const refusal = "Google Chat resource URLs must not include fragments or query parameters other than cls.";
+    const createCapsuleGatekeeper = vi.fn<(accountId: number, url: string) =>
+      Promise<RpcStub<GatekeeperClient<any>> | null>>(async () => { throw new Error(refusal); });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const harness = await renderHarness(createCapsuleGatekeeper);
+    act(() => {
+      harness.controls.draft.recordEdit();
+      harness.controls.draft.replaceDocument(emptyDocument(link));
+    });
+    act(() => harness.controls.resources.scanAt(10));
+
+    await act(async () => harness.controls.resources.createCapsule(3, "vendor"));
+
+    expect(createCapsuleGatekeeper).toHaveBeenCalledWith(3, link);
+    expect(harness.onError).toHaveBeenCalledWith("Failed to add resource", refusal);
+    expect(harness.controls.draft.document).toEqual(emptyDocument(link));
   });
 
   it("disposes but rejects a resource result after a newer edit", async () => {

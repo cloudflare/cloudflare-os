@@ -270,7 +270,7 @@ export const ChatComposer = ({
         syncPickerCaret(selection.end);
       });
     },
-    onError: (message) => toasts.add({ title: message, variant: "error" }),
+    onError: (title, description) => toasts.add({ title, description, variant: "error" }),
   });
   const {
     resizeTextarea,

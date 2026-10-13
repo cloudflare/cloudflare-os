@@ -32,7 +32,7 @@ import {
 } from './gatekeeper-modal/AgentSpawnerConfigForm'
 import { AiModelConnectionConfig } from './gatekeeper-modal/AiModelConnectionConfig'
 import { AccountChooser, AccountOption } from './gatekeeper-modal/AccountChooser'
-import { matchesResourceUrl } from './resourceMatching'
+import { classifyMatch } from './resourceMatching'
 import { reportIssue } from './errorReporting'
 import { useSiteName } from './ServerConfigContext'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
@@ -453,7 +453,7 @@ export default function GatekeeperModal({
       const matchesUrl = query.length >= 3 &&
         connection.resourceUrlPattern !== undefined &&
         connection.resourceUrlPattern !== 'https://*' &&
-        matchesResourceUrl(query, connection.resourceUrlPattern)
+        classifyMatch(query, connection.resourceUrlPattern).type !== 'none'
       return matchesText || matchesUrl
     })
   }, [allConnections, searchText])
