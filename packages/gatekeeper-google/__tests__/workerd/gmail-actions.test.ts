@@ -4918,26 +4918,6 @@ describe("Gmail pending sends", () => {
       .toEqual([["image.png", "png"], ["image.png", "png"], ["tail.bin", "bin"]]);
   });
 
-  it("completes a v2 write whose historical rebuild would exceed the MIME ceiling", async () => {
-    const {gatekeeper, receive, values} = mailHarness();
-    // The old builder would emit this inline image twice, past the ceiling the real write fits.
-    const source = receive({
-      html: '<p>Source <img src="cid:image@example.com"></p>',
-      attachments: [{filename: "image.png", contentType: "image/png", data: btoa("\0".repeat(9 * 1024 * 1024)),
-        disposition: "inline", contentId: "<image@example.com>", description: "Image"}],
-    });
-    const session = await gatekeeper.startSession(approvalQueue());
-    const draft = await (await session.getMessage(source.id)).createForwardDraft(["to@example.com"], "Before");
-    await gatekeeper.applyAction(1);
-    await draft.addAttachment(upload("extra.bin", new Uint8Array(1024 * 1024)));
-
-    await gatekeeper.applyAction(2);
-
-    for (const key of ["pending:action:2", "gmail:applying:2"]) {
-      expect(await values.has(key)).toBe(false);
-    }
-  }, 30_000);
-
   it("applies a fresh update to an inline forward whose nested message the old builder wrote", async () => {
     const {gatekeeper, draft, written} = await historicalNestedForward();
     await draft.update({text: "After"});

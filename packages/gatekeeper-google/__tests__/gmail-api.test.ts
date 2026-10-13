@@ -3,7 +3,7 @@ import {
   base64UrlDecodedByteLength, buildEncodedEmail, decodeBase64UrlToBytes,
   enumerateGmailAttachments, gmailAttachmentInputToOutbound, gmailMessageIdQueryValue, GmailApi,
   GmailApiError,
-  MAX_GMAIL_ATTACHMENT_BYTES,
+  MAX_GMAIL_ATTACHMENT_BYTES, MAX_GMAIL_FORWARD_SOURCE_BYTES,
   normalizeAggregateRecipients, normalizeContentId, normalizeMessageIdHeader,
   normalizeReferencesHeader, normalizeTextBody, parseGmailDraft, parseGmailDraftSnapshot, parseGmailPayloadContent,
   parseLegacyGmailDraft, parseMimeMessage, type GmailPayloadPart,
@@ -948,6 +948,23 @@ describe("Gmail recipient and MIME construction", () => {
     expect(await parts(true)).toEqual([
       ["image.png", "png"], ["image.png", "png"], ["nested.eml", `${nested}\r\n`], ["tail.bin", "tail"],
     ]);
+  });
+
+  it("exempts only historical verification builds from the MIME ceiling", () => {
+    const image = (id: string) => ({
+      filename: `${id}.png`, contentType: "image/png", data: btoa("\0".repeat(9.5 * 1024 * 1024)),
+      disposition: "inline" as const, contentId: `<${id}@example.com>`, description: "Image",
+    });
+    const spec = {
+      from: "me@example.com", to: ["to@example.com"], cc: [], bcc: [], subject: "Large",
+      text: "Body", html: '<img src="cid:a@example.com">', messageId: "<m@example.com>",
+      attachments: [image("a")],
+    };
+
+    // The old builder emitted the inline image twice, past the ceiling the real message fits.
+    expect(api().buildOutbound(spec, true).raw.length).toBeGreaterThan(MAX_GMAIL_FORWARD_SOURCE_BYTES * 4 / 3);
+    expect(() => api().buildOutbound({...spec, attachments: [image("a"), image("b")]}))
+      .toThrow(/MIME limit/);
   });
 
   it.each(["text/calendar", "application/ics"].flatMap(mediaType =>
