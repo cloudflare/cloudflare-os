@@ -387,27 +387,27 @@ export function stripTrailingSlashes(value: string): string {
  * Callers are responsible for handling the whole-instance catch-all ("https://*") separately
  * (e.g. as a fallback) — this function does not special-case it.
  *
- * Returns false if URLPattern is unavailable in the current runtime or the pattern is invalid.
+ * Returns false if URLPattern is unavailable in the current runtime, or the pattern or URL is
+ * invalid.
  */
 export function matchesResourceUrlPattern(pattern: string, url: string): boolean {
   const URLPatternCtor = (globalThis as { URLPattern?: new (p: string) => { test(u: string): boolean } }).URLPattern;
   if (!URLPatternCtor) return false;
   let compiled: { test(u: string): boolean };
+  let parsed: URL;
   try {
     compiled = new URLPatternCtor(pattern);
+    parsed = new URL(url);
   } catch {
     return false;
   }
-  // Try the URL as given plus the trailing-slash-toggled variant, since URLPattern distinguishes
-  // them and we don't know which form the pattern expects.
-  const candidates = url.endsWith('/') ? [url, stripTrailingSlashes(url)] : [url, url + '/'];
-  return candidates.some(candidate => {
-    try {
-      return compiled.test(candidate);
-    } catch {
-      return false;
-    }
-  });
+  // Also try the path with its trailing slash toggled, since URLPattern distinguishes the two and
+  // we don't know which form the pattern expects. The path, not the whole URL, since the URL may
+  // end in a query or fragment.
+  const toggled = new URL(parsed);
+  toggled.pathname = parsed.pathname.endsWith('/')
+    ? stripTrailingSlashes(parsed.pathname) : `${parsed.pathname}/`;
+  return compiled.test(parsed.href) || compiled.test(toggled.href);
 }
 
 export type ResolveRequestedResourceResult =
