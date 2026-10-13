@@ -1,0 +1,23 @@
+packages/gatekeeper-google/src/google-response.ts
+  s_1ee7c3531c2827::t_0674278ced39c5 22-28,136-137
+packages/gatekeeper-google/__tests__/native-api.test.ts
+  s_1ee7c3531c2827::t_ae7c8c310b0d22 348-361
+packages/gatekeeper-google/src/sheets-api.ts
+  s_1ee7c3531c2827::t_0674278ced39c5 6,245-257
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "04452d78ffae42f89f46abd398a4a82e07982c9e",
+  "prompts": {},
+  "sessions": {
+    "s_1ee7c3531c2827": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fde96e0f-93d1-47b4-babd-cb70bf4a5429",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
