@@ -135,6 +135,8 @@ type GmailDraftUpdateAction = {
   expectedProviderMessageId?: string;
   sourceAttachment?: GmailSourceAttachment;
   dependsOn?: number[];
+  /** Set when a pre-upgrade action is rebased, since its new precondition no longer dates it. */
+  historicalAttachments?: true;
 };
 
 type GmailDraftDeleteAction = {
@@ -155,9 +157,20 @@ type GmailDraftSendAction = {
   messageId?: string;
   sourceAttachment?: GmailSourceAttachment;
   dependsOn?: number[];
+  /** As on `GmailDraftUpdateAction`. */
+  historicalAttachments?: true;
   /** As on `GmailSendAction`. */
   submittedAt?: number;
 };
+
+/**
+ * Whether an update's or send's attachment state was captured before attachment digests were
+ * byte-exact, so its provider parts can only be matched through the legacy parse.
+ */
+function hasHistoricalAttachments(action: GmailDraftUpdateAction | GmailDraftSendAction): boolean {
+  return action.historicalAttachments === true || !isVersionedGmailFingerprint(
+    action.type === "draftUpdate" ? action.expectedBefore : action.expectedSnapshot);
+}
 
 type GmailDraftWriteReceipt = {
   draftId: string;
@@ -731,6 +744,7 @@ class GmailStore {
           ...successor.action,
           expectedBefore: baseline.fingerprint,
           expectedProviderMessageId: baseline.messageId,
+          ...(hasHistoricalAttachments(successor.action) ? {historicalAttachments: true} : {}),
         };
         break;
       case "draftDelete":
@@ -747,6 +761,7 @@ class GmailStore {
           ...successor.action,
           expectedSnapshot: baseline.fingerprint,
           expectedProviderMessageId: baseline.messageId,
+          ...(hasHistoricalAttachments(successor.action) ? {historicalAttachments: true} : {}),
         };
         break;
       case "draftCreate":
@@ -1364,14 +1379,14 @@ function uploadedInputs(
 type GmailProviderDraft = {message: GmailMessageRaw; parsed: GmailParsedDraft};
 
 // A draft's non-upload attachments in state order, each matched exactly, once, against the parts
-// the provider draft currently holds. Digests captured before byte-exact attachments match through
+// the provider draft currently holds. With `legacy`, historical digests may also match through
 // the legacy parse of the same parts.
 async function correlateDraftAttachments(
-    attachments: readonly GmailDraftAttachmentState[], provider?: GmailProviderDraft):
-    Promise<Array<{part: GmailOutboundAttachment; digest: string} | undefined>> {
+    attachments: readonly GmailDraftAttachmentState[], provider: GmailProviderDraft | undefined,
+    legacy: boolean): Promise<Array<{part: GmailOutboundAttachment; digest: string} | undefined>> {
   const parts = provider?.parsed.attachments ?? [];
   const digests = await Promise.all(parts.map(attachmentDigest));
-  let legacy: GmailOutboundAttachment[] | undefined;
+  let legacyParts: GmailOutboundAttachment[] | undefined;
   let legacyDigests: string[] | undefined;
   const used = new Set<number>();
   const matches: Array<{part: GmailOutboundAttachment; digest: string} | undefined> = [];
@@ -1382,10 +1397,10 @@ async function correlateDraftAttachments(
     }
     let index = parts.findIndex((part, candidate) => !used.has(candidate) &&
       matchesDraftAttachment(attachment, part, digests[candidate]));
-    if (index < 0 && provider) {
-      legacy ??= (await parseLegacyGmailDraft(provider.message)).attachments;
-      legacyDigests ??= await Promise.all(legacy.map(attachmentDigest));
-      index = legacy.findIndex((part, candidate) => !used.has(candidate) &&
+    if (index < 0 && provider && legacy) {
+      legacyParts ??= (await parseLegacyGmailDraft(provider.message)).attachments;
+      legacyDigests ??= await Promise.all(legacyParts.map(attachmentDigest));
+      index = legacyParts.findIndex((part, candidate) => !used.has(candidate) &&
         matchesDraftAttachment(attachment, part, legacyDigests![candidate]));
     }
     if (index < 0 || !parts[index]) {
@@ -1397,10 +1412,12 @@ async function correlateDraftAttachments(
   return matches;
 }
 
-// Re-key attachments that matched only through the legacy parse to the provider's exact parts.
+// Re-key historical attachment state, which matches only through the legacy parse, to the
+// provider's exact parts. Never call it for byte-exact state: it would adopt whatever bytes the
+// provider now holds that the legacy parse cannot tell apart.
 async function refreshLegacyDraftAttachments(
     state: GmailDraftState, provider: GmailProviderDraft): Promise<GmailDraftState> {
-  const matches = await correlateDraftAttachments(state.attachments, provider);
+  const matches = await correlateDraftAttachments(state.attachments, provider, true);
   let changed = false;
   const attachments = state.attachments.map((attachment, index) => {
     const match = matches[index];
@@ -1422,11 +1439,11 @@ async function refreshLegacyDraftAttachments(
 }
 
 // A draft's attachments in state order: uploads from their retained bytes, every other part from
-// the provider draft.
+// the provider draft, matched through the legacy parse only for historical attachment state.
 async function materializeDraftAttachments(
     store: GmailStore, state: GmailDraftState,
-    provider?: GmailProviderDraft): Promise<GmailOutboundAttachment[]> {
-  const matches = await correlateDraftAttachments(state.attachments, provider);
+    provider?: GmailProviderDraft, legacy = false): Promise<GmailOutboundAttachment[]> {
+  const matches = await correlateDraftAttachments(state.attachments, provider, legacy);
   return Promise.all(state.attachments.map(async (attachment, index) => attachment.file
     ? gmailAttachmentInputToOutbound(await uploadedInput(store, attachment.info, attachment.file))
     : matches[index]!.part));
@@ -1439,16 +1456,18 @@ type ApprovedDraftOutput = {
   fingerprint: string;
   /** Staged before fingerprints were versioned, so its write may have come from the old MIME builder. */
   historical: boolean;
+  /** Its attachment digests predate byte-exact parsing; see `hasHistoricalAttachments`. */
+  historicalAttachments: boolean;
 };
 
 /**
- * The approved output as the provider draft holds it: `exactState` re-keys legacy attachment
+ * The approved output as the provider draft holds it: `exactState` re-keys historical attachment
  * digests to the provider's exact parts, and `legacyOutputFingerprint` is the precondition a
- * pre-upgrade successor recorded. Without `provider`, the approved state is already exact.
+ * pre-upgrade successor recorded. Byte-exact attachment state is never re-keyed.
  */
 async function exactDraftOutput(
     api: GmailApi, store: GmailStore, approved: ApprovedDraftOutput, provider?: GmailProviderDraft) {
-  const exactState = provider
+  const exactState = provider && approved.historicalAttachments
     ? await refreshLegacyDraftAttachments(approved.state, provider) : approved.state;
   return {
     exactState,
@@ -2123,7 +2142,11 @@ async function loadSimulatedDraft(
   let state = overlayGmailDraft(
     canonicalId, loaded?.state, draftPending(ctx.store), ctx.store.decisions());
   if (!state) throw new Error("This Gmail draft is pending deletion or send.");
-  if (loaded?.provider) state = await refreshLegacyDraftAttachments(state, loaded.provider);
+  // Only a pending pre-upgrade update contributes attachment digests that need re-keying.
+  if (loaded?.provider && ctx.store.listActions().some(({action}) => action.type === "draftUpdate" &&
+      ctx.store.resolveDraftId(action.draftId) === canonicalId && hasHistoricalAttachments(action))) {
+    state = await refreshLegacyDraftAttachments(state, loaded.provider);
+  }
   return {...loaded, state, resource: current};
 }
 
@@ -4455,7 +4478,7 @@ async function buildPendingOutbound(
     }
   }
   return api.buildOutbound(dated(draftSpec(action.approved,
-    await materializeDraftAttachments(store, action.approved, draft))));
+    await materializeDraftAttachments(store, action.approved, draft, hasHistoricalAttachments(action)))));
 }
 
 async function verifyReconciledSend(
@@ -4808,7 +4831,8 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
         }
         const sourceSnapshot = draftSourceSnapshot(action);
         // A create records no fingerprint that would date it, so it is held to its exact output.
-        const approved = {state: action.draft, snapshot: sourceSnapshot, historical: false,
+        const approved = {state: action.draft, snapshot: sourceSnapshot,
+          historical: false, historicalAttachments: false,
           fingerprint: await draftOutputFingerprint(api, store, action.draft, sourceSnapshot)};
         const storedReceipt = store.getDraftWriteReceipt(actionId);
         if (storedReceipt) {
@@ -4898,6 +4922,7 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
         const id = providerDraftId(store, action.draftId);
         const approved = {state: action.after, snapshot: action.sourceAttachment,
           historical: !isVersionedGmailFingerprint(action.expectedBefore),
+          historicalAttachments: hasHistoricalAttachments(action),
           fingerprint: await draftOutputFingerprint(api, store, action.after, action.sourceAttachment)};
         if (storedReceipt) {
           const baseline = await readDraftProviderBaseline(api, store, actionId, storedReceipt, approved);
@@ -4942,7 +4967,10 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
           throw new Error(
             "The Gmail draft changed outside this approval sequence; refusing to apply a different update.");
         }
-        const message = await draftWriteMessage(api, store, action.after, action.sourceAttachment, provider);
+        // A forward's source parts come from its retained snapshot, so only other drafts re-key.
+        const writeState = approved.historicalAttachments && !action.sourceAttachment
+          ? await refreshLegacyDraftAttachments(action.after, provider) : action.after;
+        const message = await draftWriteMessage(api, store, writeState, action.sourceAttachment, provider);
         const updated = await applyUncertainWrite(
           store, actionId, () => api.updateDraft(id, message.raw, action.after.threadId));
         if (updated.id !== id) {

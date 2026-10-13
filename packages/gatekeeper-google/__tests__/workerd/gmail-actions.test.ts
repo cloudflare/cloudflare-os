@@ -4566,10 +4566,12 @@ describe("Gmail pending sends", () => {
 
   const lfCalendar = "BEGIN:VCALENDAR\nMETHOD:REQUEST\nSUMMARY:Review\nEND:VCALENDAR\n";
   const legacyCalendarType = "text/calendar; method=REQUEST; charset=utf-8";
-  const calendarSpec = (calendar = lfCalendar): Pick<GmailOutboundSpec, "date" | "attachments"> => ({
+  const calendarSpec = (
+      calendar = lfCalendar, contentType = "text/calendar; method=REQUEST; charset=iso-8859-1",
+  ): Pick<GmailOutboundSpec, "date" | "attachments"> => ({
     date: TEST_DRAFT_DATE,
     attachments: [{
-      filename: "invite.ics", contentType: "text/calendar; method=REQUEST; charset=iso-8859-1",
+      filename: "invite.ics", contentType,
       data: btoa(calendar), disposition: "attachment", description: "Calendar invitation",
     }],
   });
@@ -5073,6 +5075,31 @@ describe("Gmail pending sends", () => {
     expect(calls.filter(call => call.init.method === "PUT")).toHaveLength(1);
     for (const key of ["pending:action:1", "gmail:applying:1"]) {
       expect(await values.has(key)).toBe(false);
+    }
+  });
+
+  it("does not adopt a calendar edit only legacy parsing hides when recovering a v2 update", async () => {
+    const {gatekeeper, saveDraft, values, calls} = mailHarness({loseDraftUpdateResponse: true});
+    const imported = saveDraft(calendarSpec(lfCalendar.replaceAll("\n", "\r\n"), legacyCalendarType));
+    const session = await gatekeeper.startSession(approvalQueue());
+    const draft = (await (await session.listDrafts()).next())![0].draft;
+    await draft.update({text: "Approved update"});
+    await draft.send();
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/connection lost after draft update/);
+    // After the write landed, someone changes the calendar to LF bytes in a new Gmail revision.
+    const written = await parseGmailDraft(fakeMailRaw(imported.mail));
+    imported.mail.raw = buildEncodedEmail({
+      ...written, from: ME, messageId: written.messageId!, bcc: [], ...calendarSpec(lfCalendar, legacyCalendarType),
+    });
+    imported.mail.id = "afff";
+    await gatekeeper.restart();
+
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/no longer matches|changed outside/);
+
+    expect(calls.filter(call => call.init.method === "POST" && call.url.pathname.endsWith("/send")))
+      .toEqual([]);
+    for (const key of ["pending:action:1", "pending:action:2", "gmail:applying:1"]) {
+      expect(await values.has(key)).toBe(true);
     }
   });
 
