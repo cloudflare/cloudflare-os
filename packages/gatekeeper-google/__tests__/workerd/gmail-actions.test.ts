@@ -5311,6 +5311,41 @@ describe("Gmail pending sends", () => {
       .toEqual([["B.bin", inline], ["C.bin", added]]);
   });
 
+  it.each([false, true])(
+    "keeps an imported part with a bare Content-ID identified across queued edits, response lost=%s",
+    async loseDraftUpdateResponse => {
+      const {gatekeeper, saveDraft, values} = mailHarness({loseDraftUpdateResponse});
+      const imported = saveDraft({});
+      imported.mail.raw = base64Url([
+        `From: ${ME}`, "To: to@example.com", "Subject: Bare Content-ID",
+        "Message-ID: <bare-cid@example.com>", "MIME-Version: 1.0",
+        'Content-Type: multipart/mixed; boundary="bare-cid"', "",
+        "--bare-cid", "Content-Type: text/plain; charset=utf-8", "", "Before",
+        "--bare-cid", 'Content-Type: image/png; name="image.png"',
+        'Content-Disposition: inline; filename="image.png"', "Content-ID: image@example.com",
+        "Content-Transfer-Encoding: base64", "", btoa("png"),
+        "--bare-cid--", "",
+      ].join("\r\n"));
+      const session = await gatekeeper.startSession(approvalQueue());
+      const draft = (await (await session.listDrafts()).next())![0].draft;
+      await draft.update({text: "First"});
+      await draft.update({subject: "Second"});
+      if (loseDraftUpdateResponse) {
+        await expect(gatekeeper.applyAction(1)).rejects.toThrow(/connection lost after draft update/);
+        await gatekeeper.restart();
+      }
+      await gatekeeper.applyAction(1);
+
+      const [entry] = await draft.attachments();
+
+      // The writer emitted the Content-ID bracketed, as Gmail now holds it.
+      expect(new TextDecoder().decode(await entry.attachment.getContent())).toBe("png");
+      if (!loseDraftUpdateResponse) {
+        await gatekeeper.applyAction(2);
+        expect(await values.has("pending:action:2")).toBe(false);
+      }
+    });
+
   it("reconciles an attachment addition Gmail stored in MIME order after its response was lost", async () => {
     const {gatekeeper, saveDraft, values, calls} = mailHarness({loseDraftUpdateResponse: true});
     const imported = saveDraft({});

@@ -1665,7 +1665,13 @@ function matchesDraftAttachment(
     (part.filename || null) === attachment.info.filename &&
     part.contentType === attachment.info.mimeType &&
     (part.disposition ?? "attachment") === (attachment.info.disposition ?? "attachment") &&
-    (part.contentId ?? undefined) === attachment.info.contentId;
+    sameContentId(part.contentId, attachment.info.contentId);
+}
+
+// An imported part may carry a bare Content-ID; the writer always emits it bracketed, and Gmail's
+// part listing strips the brackets, so the bracket-free value identifies a part.
+function sameContentId(left: string | undefined, right: string | undefined): boolean {
+  return left?.trim().replace(/^<(.*)>$/, "$1") === right?.trim().replace(/^<(.*)>$/, "$1");
 }
 
 // Correlate once against Gmail's actual MIME order, including on write-receipt reconciliation.
@@ -1909,9 +1915,7 @@ function matchesForwardPartMetadata(
     part: GmailOutboundAttachment, attachment: GmailDraftAttachmentState): boolean {
   return (part.filename || null) === attachment.info.filename &&
     (part.disposition ?? "attachment") === (attachment.info.disposition ?? "attachment") &&
-    // The raw parser keeps a Content-ID's brackets; Gmail's part listing strips them.
-    part.contentId?.trim().replace(/^<(.*)>$/, "$1") ===
-      attachment.info.contentId?.trim().replace(/^<(.*)>$/, "$1") &&
+    sameContentId(part.contentId, attachment.info.contentId) &&
     part.contentType.split(";")[0].trim().toLowerCase() ===
       attachment.info.mimeType.split(";")[0].trim().toLowerCase();
 }
