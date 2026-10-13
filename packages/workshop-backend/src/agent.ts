@@ -1,4 +1,4 @@
-import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
+import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replaceSpanChange,
   type CodeContent, type CodeChange, type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
@@ -16,7 +16,10 @@ import {
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { createTwoFilesPatch, FILE_HEADERS_ONLY } from "diff";
 import { webFetch as webFetchImpl, WebFetchEnv, formatWebFetchResult } from "./web-fetch";
-import { formatAlwaysAvailableResourcesPrompt } from "./agent-catalog";
+import {
+  findCatalogChanges, formatAlwaysAvailableResourcesPrompt, formatCatalogChange,
+  seenAlwaysAvailableResources,
+} from "./agent-catalog";
 import { formatInstanceInstructions } from "./admin-config";
 import type { AiGatewayLogRoute } from "./ai-gateway";
 import type { SpawnCallableOptions } from "./agent-spawner-binding";
@@ -151,6 +154,12 @@ export type SeedBindingInfo = {
   catalog?: AgentCatalog | null;
 };
 
+/** The always-available entries of a chat's seed binding layer. */
+export function alwaysAvailableResources(seeds: SeedBindingInfo[]): AlwaysAvailableResource[] {
+  return seeds.flatMap(({name, title, catalog}) =>
+      catalog === undefined ? [] : [{name, title, catalog}]);
+}
+
 /**
  * The history one agent pass replays: the active compaction checkpoint, if any, the chat log from
  * it on, and the token total the provider reported for the chat's last model step (zero when none
@@ -271,6 +280,13 @@ export interface AgentHooks {
 
   /** Records the chat's AiChatAgentContext.workspacePrompt. */
   setChatWorkspacePrompt(chatId: number, workspacePrompt: string): void;
+
+  /** The sequence the chat's next message will get. */
+  nextChatSequencePeek(chatId: number): number;
+
+  /** Appends messages to the chat log, unless the chat has been deleted. */
+  addChatMessages(chatId: number, author: AiChatAuthorInfo,
+      msgs: AiChatMessageBodyWithModelData[]): void;
 
   /**
    * The step's persistence barrier: in one storage transaction, persist the step's chat
@@ -1999,12 +2015,42 @@ async function runAgentPass(
 
   // Always-available resources (e.g. the Context Library) describe the agent's environment, so
   // they're announced in the system prompt (slot 1, below) alongside the bindings list rather
-  // than as a synthetic user turn.
-  let alwaysAvailable = seedBindings.filter(seed => seed.catalog !== undefined);
+  // than as a synthetic user turn. The prompt lists them as this part of the chat first saw them,
+  // so it stays the same when a catalog changes; the model is told of the change instead (see
+  // AiChatAgentContext.alwaysAvailableResources). One the chat can no longer reach drops out.
+  let currentResources = alwaysAvailableResources(seedBindings);
+  let listedResources = checkpoint?.alwaysAvailableResources ??
+      agentContext.alwaysAvailableResources ?? currentResources;
+  let alwaysAvailable = listedResources.filter(listed =>
+      currentResources.some(current => current.name === listed.name));
   let alwaysAvailableResourcesPrompt = alwaysAvailable.length > 0
-      ? formatAlwaysAvailableResourcesPrompt(alwaysAvailable.map(seed =>
-          ({title: seed.title, name: seed.name, catalog: seed.catalog!})))
-      : "";
+      ? formatAlwaysAvailableResourcesPrompt(alwaysAvailable) : "";
+
+  // Tells the model what changed in each resource since it last saw it, as a synthetic
+  // observeUserChanges call (see the "catalogChange" message).
+  let replayCatalogChange = (
+      sequence: number, resources: AlwaysAvailableResource[], timestamp: number) => {
+    let seen = seenAlwaysAvailableResources(listedResources, chatMessages, sequence);
+    let toolCallId = `synthetic_${sequence}`;
+    modelMessages.push(makeReplayAssistantMessage([{
+      type: "toolCall",
+      id: toolCallId,
+      name: "observeUserChanges",
+      arguments: {},
+    }], handle.model, timestamp));
+    modelMessages.push({
+      role: "toolResult",
+      toolCallId,
+      toolName: "observeUserChanges",
+      content: [{
+        type: "text",
+        text: resources.map(resource => formatCatalogChange(resource, seen.get(resource.name)))
+            .join("\n\n"),
+      }],
+      isError: false,
+      timestamp,
+    });
+  };
 
   // Rebuild the code the compacted prefix left behind: first the checkpoint's pins establish
   // their base trees, then the composed proposed change applies on top. (A pre-conversion
@@ -2712,6 +2758,10 @@ async function runAgentPass(
         break;
       }
 
+      case "catalogChange":
+        replayCatalogChange(msg.sequence, msg.resources, msgTimestamp);
+        break;
+
       case "action":
       case "useGadget":
       case "error":
@@ -3085,6 +3135,9 @@ async function runAgentPass(
           compactedTo,
           summary,
           workspacePrompt: systemPromptWorkspace,
+          alwaysAvailableResources: [
+            ...seenAlwaysAvailableResources(listedResources, chatMessages, compactedTo).values(),
+          ],
           ...buildCompactionState(
               chatMessages,
               compactedTo,
@@ -4101,6 +4154,17 @@ async function runAgentPass(
       event: "agent.turn.skipped", chatId,
     });
     return {type: "finished"};
+  }
+
+  // Report the catalogs that changed since the model last saw them. The record is the newest, so
+  // every earlier request stays a prefix of this one. It must not be written before the returns
+  // above: a `/compact` or skipped turn would then no longer be recognized as one.
+  let catalogChanges = findCatalogChanges(
+      seenAlwaysAvailableResources(listedResources, chatMessages, Infinity), currentResources);
+  if (catalogChanges.length > 0) {
+    let sequence = hooks.nextChatSequencePeek(chatId);
+    hooks.addChatMessages(chatId, author, [{type: "catalogChange", resources: catalogChanges}]);
+    replayCatalogChange(sequence, catalogChanges, Date.now());
   }
 
   let context: AgentContext = {

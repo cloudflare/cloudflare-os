@@ -2035,6 +2035,8 @@ export function buildChatDisplayEntries(
   boundaries: readonly CompactionBoundary[] = [],
   outputOf?: ToolOutputResolver,
 ): ChatDisplayEntry[] {
+  // Catalog changes are for the agent alone (see the "catalogChange" message).
+  messages = messages.filter(msg => msg.type !== "catalogChange");
   const result: ChatDisplayEntry[] = [];
   let lastAgentAuthorId: string | null = null;
 

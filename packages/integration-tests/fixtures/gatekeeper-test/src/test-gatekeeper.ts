@@ -137,6 +137,14 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     return this.ctx.storage.kv.get<number>(`ambient-verifications:${label}`) ?? 0;
   }
 
+  setAgentCatalog(label: string, catalog: AgentCatalog): void {
+    this.ctx.storage.kv.put(`agent-catalog:${label}`, catalog);
+  }
+
+  getAgentCatalog(label: string): AgentCatalog | null {
+    return this.ctx.storage.kv.get<AgentCatalog>(`agent-catalog:${label}`) ?? null;
+  }
+
   recordRevocation(label: string): void {
     const key = `revocations:${label}`;
     this.ctx.storage.kv.put(key, (this.ctx.storage.kv.get<number>(key) ?? 0) + 1);
@@ -723,9 +731,9 @@ export class TestGatekeeper
     return new ConnectionProbeTarget(this.ctx.props.label);
   }
 
-  /** No discovery index: the ambient fixture is reached through its session alone. */
+  /** The discovery index a test set for this account: none unless it set one. */
   async getAgentCatalog(): Promise<AgentCatalog | null> {
-    return null;
+    return control(this.ctx.exports).getAgentCatalog(this.ctx.props.label);
   }
 
   /**
@@ -887,6 +895,20 @@ export default {
       const { label } = body as Record<string, unknown>;
       if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
       return Response.json({ count: await control(ctx.exports).getAmbientVerificationCount(label) });
+    }
+
+    // Set the account's discovery catalog: one entry per skill title.
+    // Body: {"label": "...", "skills": ["...", ...]}
+    if (url.pathname === "/control/agent-catalog" && req.method === "POST") {
+      const { label, skills } = body as Record<string, unknown>;
+      if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
+      if (!Array.isArray(skills) || !skills.every(isNonEmptyString)) {
+        return badRequest("`skills` must be an array of non-empty strings");
+      }
+      await control(ctx.exports).setAgentCatalog(label, {
+        entries: skills.map(title => ({ id: title, title, description: `The ${title} skill.` })),
+      });
+      return new Response(null, { status: 204 });
     }
 
     if (url.pathname === "/control/revocation-count" && req.method === "POST") {

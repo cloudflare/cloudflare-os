@@ -44,7 +44,7 @@ import {
   getAiGatewayLogCost,
   type AiGatewayLogRoute,
 } from "./ai-gateway";
-import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
+import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
 import { scanWorkpieceForGrep, type GrepScan } from "./grep";
@@ -7423,10 +7423,10 @@ class OverseerImpl implements AgentHooks {
     // scope-widening restart is omitted, like the other enumerating routes; one that answered null
     // before is not asked again (see #catalogless).
     //
-    // Deliberately not cached on the chat. A catalog says what the session can reach now, so a
-    // cached one can never show a skill added after the chat opened, and a cached failure reads as
-    // an empty library for the rest of the chat. Not an observation either: the catalog reaches
-    // every chat automatically, so by contract it holds nothing that needs observer verification.
+    // Loaded afresh every turn, since a catalog says what the session can reach now (see
+    // AiChatAgentContext.alwaysAvailableResources for how a change reaches the agent). Not an
+    // observation: the catalog reaches every chat automatically, so by contract it holds nothing
+    // that needs observer verification.
     let catalogs = new Map(await Promise.all(ambientIds
         .filter(id => this.gatekeeperUsable(id) && !this.#catalogless.has(id))
         .map(async (gatekeeperId): Promise<[number, AgentCatalog | null]> => {
@@ -7459,14 +7459,6 @@ class OverseerImpl implements AgentHooks {
             return [gatekeeperId, null];
           }
         })));
-    if (dirty) {
-      // The work above is async, so the chat could have been deleted meanwhile. Don't resurrect
-      // its per-chat storage: deleteChat is the single cleanup point (see its comment) and
-      // removes chatMeta, so a missing chatMeta means the chat is gone.
-      if (this.storage.chatMeta.get(chatId)) {
-        this.storage.chatContext.put(context);
-      }
-    }
 
     // Materialize the seed entries, skipping targets that no longer exist (mirroring env build)
     // or that are blocked pending a scope-widening restart (like the enumerating routes above:
@@ -7488,6 +7480,20 @@ class OverseerImpl implements AgentHooks {
       if (ambientSet.has(target)) info.catalog = catalogs.get(target) ?? null;
       result.push(info);
     }
+
+    if (context.alwaysAvailableResources === undefined) {
+      context.alwaysAvailableResources = alwaysAvailableResources(result);
+      dirty = true;
+    }
+    if (dirty) {
+      // The work above is async, so the chat could have been deleted meanwhile. Don't resurrect
+      // its per-chat storage: deleteChat is the single cleanup point (see its comment) and
+      // removes chatMeta, so a missing chatMeta means the chat is gone.
+      if (this.storage.chatMeta.get(chatId)) {
+        this.storage.chatContext.put(context);
+      }
+    }
+
     return result;
   }
 

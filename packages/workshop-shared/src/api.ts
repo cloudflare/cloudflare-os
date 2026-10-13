@@ -24,7 +24,7 @@
 // Gadget a stub pointing to the Gadget's server-side Durable Object interface.
 
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
-import { AccountDescription, ActionKind, ActionDescription, AvatarImage, GatekeeperUiFrame, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
+import { AccountDescription, ActionKind, ActionDescription, AgentCatalog, AvatarImage, GatekeeperUiFrame, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
 import type { CodeChange } from "./code-change.js";
 import type { UiFeatureFlags } from "./feature-flags.js";
 
@@ -3767,6 +3767,17 @@ export type AiChatMessageBody = {
   type: "useGadget";
 } | {
   /**
+   * The catalogs of always-available resources changed after the agent's system prompt listed
+   * them, e.g. a skill was added to the Context Library. The agent writes this before the model
+   * request that first sees the change, and tells the model what changed, so the system prompt can
+   * stay the same for the whole chat. Clients show nothing for it.
+   */
+  type: "catalogChange";
+
+  /** Each changed resource, as it is now. */
+  resources: AlwaysAvailableResource[];
+} | {
+  /**
    * Indicates that the agent run ended with an error (e.g. LLM API failure, abort, server
    * restart). This is displayed to the user with a "retry" button, but is NOT included in the
    * chat log sent to the LLM so the agent does not react to it.
@@ -3870,6 +3881,21 @@ export type AiChatMessageBody = {
    * turn-start naming chokepoint.
    */
   bindingName?: string;
+};
+
+/**
+ * A resource the agent can always use without requesting it (e.g. the Context Library's read
+ * session), as its system prompt lists it.
+ */
+export type AlwaysAvailableResource = {
+  /** The resource's binding name in the agent's `env`. */
+  name: string;
+
+  /** The resource's title. */
+  title: string;
+
+  /** The resource's discovery catalog, or null if it has none or it failed to load. */
+  catalog: AgentCatalog | null;
 };
 
 /**
