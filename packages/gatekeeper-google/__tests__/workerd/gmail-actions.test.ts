@@ -4874,19 +4874,20 @@ describe("Gmail pending sends", () => {
     {filename: "tail.bin", contentType: "application/octet-stream", data: btoa("tail"),
       disposition: "attachment", description: "Tail"},
   ]});
+  // A forwarded source with a CID image, which the old builder also emitted as a regular attachment.
+  const cidSource = {
+    html: '<p>Source <img src="cid:image@example.com"></p>',
+    attachments: [
+      {filename: "image.png", contentType: "image/png", data: btoa("png"), disposition: "inline" as const,
+        contentId: "<image@example.com>", description: "Image"},
+      {filename: "tail.bin", contentType: "application/octet-stream", data: btoa("bin"),
+        disposition: "attachment" as const, description: "Tail"},
+    ],
+  };
 
   it.each(["update", "delete", "send"] as const)(
     "applies a fresh %s to an inline forward with a CID image the old builder wrote", async operation => {
-      // The old builder classified the inline image as a regular attachment as well.
-      const {gatekeeper, draft, drafts, mailbox} = await historicalForward({
-        html: '<p>Source <img src="cid:image@example.com"></p>',
-        attachments: [
-          {filename: "image.png", contentType: "image/png", data: btoa("png"), disposition: "inline",
-            contentId: "<image@example.com>", description: "Image"},
-          {filename: "tail.bin", contentType: "application/octet-stream", data: btoa("tail"),
-            disposition: "attachment", description: "Tail"},
-        ],
-      });
+      const {gatekeeper, draft, drafts, mailbox} = await historicalForward(cidSource);
       if (operation === "update") await draft.update({text: "After"});
       else if (operation === "delete") await draft.delete();
       else await draft.send();
@@ -4929,6 +4930,32 @@ describe("Gmail pending sends", () => {
         [entry.info.filename, new TextDecoder().decode(await entry.attachment.getContent())])))
         .toEqual([["image.png", "png"], ["invite.ics", lfCalendar], ["tail.bin", "x".repeat(lfCalendar.length)]]);
     });
+
+  it("lists an applied inline forward's CID image from Gmail's part metadata", async () => {
+    const {gatekeeper, receive} = mailHarness();
+    const source = receive(cidSource);
+    const session = await gatekeeper.startSession(approvalQueue());
+    const draft = await (await session.getMessage(source.id)).createForwardDraft(["to@example.com"], "Before");
+    await gatekeeper.applyAction(1);
+
+    const entries = await draft.attachments();
+
+    expect(entries.map(entry => entry.info.filename)).toEqual(["image.png", "tail.bin"]);
+  });
+
+  it("stages another action while a rebased pre-upgrade update on an old-builder forward is pending", async () => {
+    const {gatekeeper, draft, storage, values} = await historicalForward(cidSource);
+    await draft.update({text: "First"});
+    await draft.update({text: "Second"});
+    await gatekeeper.applyAction(2);
+    // As a pre-upgrade successor is left once its predecessor rebases it.
+    await storage.kv.put("pending:action:3",
+      {...await values.get<Record<string, unknown>>("pending:action:3"), historicalAttachments: true});
+
+    await draft.update({subject: "Third"});
+
+    expect(await values.has("pending:action:4")).toBe(true);
+  });
 
   it("applies a fresh update to an inline forward whose nested message the old builder wrote", async () => {
     const {gatekeeper, draft, written} = await historicalNestedForward();

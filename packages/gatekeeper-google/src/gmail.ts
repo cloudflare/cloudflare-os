@@ -1828,7 +1828,9 @@ function rebuiltForwardAttachments(
     const index = attachment.file ? upload++ : rebuilt.attachments.findIndex((part, candidate) =>
       candidate < sourceParts && !used.has(candidate) &&
       (part.filename || null) === attachment.info.filename &&
-      (part.contentId ?? undefined) === attachment.info.contentId &&
+      // The raw parser keeps a Content-ID's brackets; Gmail's part listing strips them.
+      part.contentId?.trim().replace(/^<(.*)>$/, "$1") ===
+        attachment.info.contentId?.trim().replace(/^<(.*)>$/, "$1") &&
       part.contentType.split(";")[0].trim().toLowerCase() ===
         attachment.info.mimeType.split(";")[0].trim().toLowerCase());
     const part = rebuilt.attachments[index];
@@ -2197,8 +2199,9 @@ async function loadSimulatedDraft(
   let state = overlayGmailDraft(
     canonicalId, loaded?.state, draftPending(ctx.store), ctx.store.decisions());
   if (!state) throw new Error("This Gmail draft is pending deletion or send.");
-  // Only a pending pre-upgrade update contributes attachment digests that need re-keying.
-  if (loaded?.provider && hasHistoricalDraftUpdate(ctx.store, canonicalId)) {
+  // Only a pending pre-upgrade update contributes attachment digests that need re-keying. An inline
+  // forward's source parts are rebuilt from its retained snapshot instead.
+  if (loaded?.provider && !current.forwardSnapshot && hasHistoricalDraftUpdate(ctx.store, canonicalId)) {
     state = await refreshLegacyDraftAttachments(state, loaded.provider);
   }
   return {...loaded, state, resource: current};
