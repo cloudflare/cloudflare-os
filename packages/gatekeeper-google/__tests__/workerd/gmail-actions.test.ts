@@ -4438,7 +4438,7 @@ describe("Gmail pending sends", () => {
                 ...(part.contentId ? [{name: "Content-ID", value: part.contentId}] : []),
               ],
               body: {size: atob(part.data).length,
-                data: part.data.replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")},
+                data: part.data.replace(/\s/g, "").replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")},
             })),
           ],
         },
@@ -4681,6 +4681,21 @@ describe("Gmail pending sends", () => {
     expect(await values.has("pending:action:2")).toBe(false);
   });
 
+  it("reads a calendar under a pending pre-upgrade update at the provider's exact size", async () => {
+    const {gatekeeper, saveDraft, storage} = mailHarness();
+    const imported = saveDraft(calendarSpec());
+    const session = await gatekeeper.startSession(approvalQueue());
+    const draft = (await (await session.listDrafts()).next())![0].draft;
+    await draft.update({text: "Pending update"});
+    await persistHistoricalCalendarAction(storage, 1, await historicalCalendarFingerprint(imported.mail));
+    await gatekeeper.restart();
+
+    const [entry] = await draft.attachments();
+
+    expect(entry.info.size).toBe(lfCalendar.length);
+    expect(new TextDecoder().decode(await entry.attachment.getContent())).toBe(lfCalendar);
+  });
+
   it.each([false, true])(
     "reconciles a pre-upgrade calendar update already written with receipt=%s", async withReceipt => {
       const {gatekeeper, saveDraft, storage, values, calls} = mailHarness();
@@ -4831,6 +4846,53 @@ describe("Gmail pending sends", () => {
       expect(atob(parsed.attachments[0].data.replace(/\s/g, ""))).toBe(lfCalendar);
       if (operation === "update") expect(parsed.text).toContain("After");
     });
+
+  // An inline-forward draft as the old builder wrote it from a source holding [nested.eml, tail.bin]:
+  // that builder left an extra CRLF inside the non-final unencoded nested message.
+  const historicalNestedForward = async () => {
+    const harness = mailHarness();
+    const nested = "From: a@example.com\r\nSubject: Nested\r\n\r\nNested body";
+    const source = harness.receive({attachments: [
+      {filename: "nested.eml", contentType: "message/rfc822", data: btoa(nested),
+        disposition: "attachment", description: "Nested message"},
+      {filename: "tail.bin", contentType: "application/octet-stream", data: btoa("tail"),
+        disposition: "attachment", description: "Tail"},
+    ]});
+    const session = await harness.gatekeeper.startSession(approvalQueue());
+    const draft = await (await session.getMessage(source.id)).createForwardDraft(["to@example.com"], "Before");
+    await harness.gatekeeper.applyAction(1);
+    const written = [...harness.drafts.values()][0];
+    const parsed = await parseGmailDraft(fakeMailRaw(written));
+    written.raw = buildEncodedEmail({...parsed, from: ME, messageId: parsed.messageId!, bcc: []}, true);
+    return {...harness, draft, written, nested};
+  };
+
+  it("applies a fresh update to an inline forward whose nested message the old builder wrote", async () => {
+    const {gatekeeper, draft, written, nested} = await historicalNestedForward();
+    await draft.update({text: "After"});
+
+    await gatekeeper.applyAction(2);
+
+    const parsed = await parseGmailDraft(fakeMailRaw(written));
+    expect(parsed.text).toContain("After");
+    expect(atob(parsed.attachments[0].data.replace(/\s/g, ""))).toBe(nested);
+  });
+
+  it("applies a pre-upgrade update to an inline forward whose nested message the old builder wrote", async () => {
+    const {gatekeeper, draft, written, nested, storage, values} = await historicalNestedForward();
+    await draft.update({text: "After"});
+    // The old worker staged the update with its unprefixed fingerprint of the draft Gmail holds.
+    const action = await values.get<StoredCalendarAction>("pending:action:2");
+    await storage.kv.put("pending:action:2", {...action, expectedBefore: (await gmailDraftFingerprint(
+      await parseGmailDraft(fakeMailRaw(written)), written.threadId)).replace(/^v2:/, "")});
+    await gatekeeper.restart();
+
+    await gatekeeper.applyAction(2);
+
+    expect(await values.has("pending:action:2")).toBe(false);
+    expect(atob((await parseGmailDraft(fakeMailRaw(written))).attachments[0].data.replace(/\s/g, "")))
+      .toBe(nested);
+  });
 
   it("still rejects a real calendar edit in an inline-forward draft", async () => {
     const {gatekeeper, receive, drafts, calls} = mailHarness();

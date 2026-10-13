@@ -1467,7 +1467,8 @@ type ApprovedDraftOutput = {
  */
 async function exactDraftOutput(
     api: GmailApi, store: GmailStore, approved: ApprovedDraftOutput, provider?: GmailProviderDraft) {
-  const exactState = provider && approved.historicalAttachments
+  // A forward's source parts are written from its retained snapshot, not matched to the provider.
+  const exactState = provider && approved.historicalAttachments && !approved.snapshot
     ? await refreshLegacyDraftAttachments(approved.state, provider) : approved.state;
   return {
     exactState,
@@ -1788,13 +1789,13 @@ function localDraftAttachments(
 
 async function inlineForwardMessage(
     api: GmailApi, store: GmailStore, state: GmailDraftState,
-    snapshot: GmailSourceAttachment): Promise<GmailOutboundMessage> {
+    snapshot: GmailSourceAttachment, historical = false): Promise<GmailOutboundMessage> {
   return api.buildForwardFromBytes(await store.readFile(snapshot), state.to, state.text, {
     cc: state.cc,
     bcc: state.bcc,
     ...(state.html !== undefined ? {html: state.html} : {}),
     attachments: await uploadedInputs(store, state.attachments),
-  }, state.rfcMessageId, state.subject, state.date);
+  }, state.rfcMessageId, state.subject, state.date, historical);
 }
 
 async function draftOutputFingerprint(
@@ -1802,7 +1803,8 @@ async function draftOutputFingerprint(
     snapshot?: GmailSourceAttachment, legacy = false): Promise<string> {
   let fingerprint: string;
   if (state.source?.kind === "forward" && state.source.format === "inline" && snapshot) {
-    const message = await inlineForwardMessage(api, store, state, snapshot);
+    // A historical fingerprint describes what the old builder wrote, not the current builder.
+    const message = await inlineForwardMessage(api, store, state, snapshot, legacy);
     const parsed = await (legacy ? parseLegacyGmailDraft : parseGmailDraft)({
       id: "forward-snapshot", threadId: state.threadId ?? "forward-snapshot",
       internalDate: "0", raw: message.raw,
@@ -2143,11 +2145,16 @@ async function loadSimulatedDraft(
     canonicalId, loaded?.state, draftPending(ctx.store), ctx.store.decisions());
   if (!state) throw new Error("This Gmail draft is pending deletion or send.");
   // Only a pending pre-upgrade update contributes attachment digests that need re-keying.
-  if (loaded?.provider && ctx.store.listActions().some(({action}) => action.type === "draftUpdate" &&
-      ctx.store.resolveDraftId(action.draftId) === canonicalId && hasHistoricalAttachments(action))) {
+  if (loaded?.provider && hasHistoricalDraftUpdate(ctx.store, canonicalId)) {
     state = await refreshLegacyDraftAttachments(state, loaded.provider);
   }
   return {...loaded, state, resource: current};
+}
+
+/** Whether a pending update on this draft carries pre-upgrade attachment state. */
+function hasHistoricalDraftUpdate(store: GmailStore, canonicalId: string): boolean {
+  return store.listActions().some(({action}) => action.type === "draftUpdate" &&
+    store.resolveDraftId(action.draftId) === canonicalId && hasHistoricalAttachments(action));
 }
 
 async function walkRestrictedMessages(
@@ -4072,6 +4079,9 @@ class GmailDraftStub extends ApprovalQueueRpcTarget implements GmailDraft {
     const {state, resource, full} = await loadSimulatedDraft(this.#ctx, this.#logicalId);
     const logicalId = resource.logicalId;
     const validateVersion = this.#versionValidator(logicalId);
+    // A pre-upgrade update recorded the old parser's normalized sizes and types; the provider
+    // part's own metadata describes the bytes a read returns.
+    const historical = hasHistoricalDraftUpdate(this.#ctx.store, logicalId);
     const source = state.source?.kind === "forward"
       ? pendingForwardSnapshot(this.#ctx.store, logicalId) : undefined;
     if (!full && state.source?.kind === "forward" && state.attachments.length > 0 && !source) {
@@ -4102,9 +4112,13 @@ class GmailDraftStub extends ApprovalQueueRpcTarget implements GmailDraft {
         }
         throw new Error("This draft attachment is no longer available.");
       };
+      const current = historical && snapshot ? {...attachment, info: {
+        ...attachment.info,
+        mimeType: snapshot.info.mimeType, size: snapshot.info.size, readable: snapshot.info.readable,
+      }} : attachment;
       return {
-        info: attachment.info,
-        attachment: this.#attachmentCapability(logicalId, attachment, read),
+        info: current.info,
+        attachment: this.#attachmentCapability(logicalId, current, read),
       };
     });
     try {

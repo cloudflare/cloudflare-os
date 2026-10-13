@@ -116,12 +116,15 @@ of archives and label changes, each needing a round trip to the user.
      byte-exact output. An old send fingerprint is replaced only on a retry no attempt is
      pending for. A fresh action on an inline forward Gmail holds as the old builder wrote it,
      verified by its historical fingerprint, expects that exact revision rather than the rebuilt
-     output; the write or send itself still uses the rebuilt, byte-exact output. Only attachment
-     state an old action captured (marked `historicalAttachments` once it is rebased) is
-     correlated to provider parts through the legacy parse, and it is re-keyed to their exact
-     bytes, not emitted as normalized calendar content; byte-exact state never is, so recovery
-     cannot adopt an edit the legacy parse hides. A `v2:` precondition never falls back to the
-     historical parser.
+     output; the write or send itself still uses the rebuilt, byte-exact output. A forward's
+     historical fingerprint is taken from a rebuild that reproduces the old builder, including
+     the extra CRLF it left inside non-final unencoded nested messages. Only attachment state an
+     old action captured (marked `historicalAttachments` once it is rebased) is correlated to
+     provider parts through the legacy parse, and it is re-keyed to their exact bytes, not
+     emitted as normalized calendar content; byte-exact state never is, so recovery cannot adopt
+     an edit the legacy parse hides. A forward's source parts come from its snapshot and are
+     never re-keyed, and listing a draft under a pending old update reports each provider
+     part's own size and type. A `v2:` precondition never falls back to the historical parser.
 
 4. **Where exact simulation isn't possible, show the agent's change and document the gap.** In some
    places Gmail's data can't be reconciled with a pending action, mostly free-text search. There the

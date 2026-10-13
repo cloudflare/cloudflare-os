@@ -1441,8 +1441,11 @@ function requireAttachmentMetadata(
 /**
  * Build a Gmail API base64url RFC 5322 payload. The subject is replaced after MIMEText
  * serialization because its single encoded-word form can exceed the header-line limit.
+ * `historicalNestedLineBreaks` reproduces the pre-upgrade builder, which left MIMEText's extra
+ * CRLF inside each non-final unencoded nested message; only historical verification uses it.
  */
-export function buildEncodedEmail(options: GmailOutboundSpec): string {
+export function buildEncodedEmail(
+    options: GmailOutboundSpec, historicalNestedLineBreaks = false): string {
   const msg = createMimeMessage();
 
   // oxlint-disable-next-line no-control-regex -- intentionally rejecting control chars (header-injection guard)
@@ -1593,7 +1596,8 @@ export function buildEncodedEmail(options: GmailOutboundSpec): string {
         }
         // MIMEText adds an extra CRLF after non-final parts. Base64 ignores it, but it
         // would become part of an unencoded nested message; consume it with the placeholder.
-        const extraLineBreak = rawBytes[end] === 13 && rawBytes[end + 1] === 10 &&
+        const extraLineBreak = !historicalNestedLineBreaks &&
+          rawBytes[end] === 13 && rawBytes[end + 1] === 10 &&
           rawBytes[end + 2] === 13 && rawBytes[end + 3] === 10 ? 2 : 0;
         replacements.push({index, length: end - index + extraLineBreak, replacement: replacement.bytes});
       }
@@ -2787,7 +2791,7 @@ export class GmailApi {
    * Build exactly the structured message persisted in an approval action. Every outbound message
    * passes through here, so this is where the MIME size ceiling is enforced.
    */
-  buildOutbound(spec: GmailOutboundSpec): GmailOutboundMessage {
+  buildOutbound(spec: GmailOutboundSpec, historicalNestedLineBreaks = false): GmailOutboundMessage {
     const recipients = {
       to: normalizeEmailRecipients(spec.to),
       cc: normalizeEmailRecipients(spec.cc),
@@ -2795,7 +2799,7 @@ export class GmailApi {
     };
     const replyTo = normalizeEmailRecipients(spec.replyTo ?? []);
     const normalized: GmailOutboundSpec = {...spec, ...recipients, replyTo};
-    const raw = buildEncodedEmail(normalized);
+    const raw = buildEncodedEmail(normalized, historicalNestedLineBreaks);
     if (base64UrlDecodedByteLength(raw) > MAX_GMAIL_FORWARD_SOURCE_BYTES) {
       throw new Error(
         `The Gmail message exceeds the ${MAX_GMAIL_FORWARD_SOURCE_BYTES}-byte MIME limit.`);
@@ -2931,6 +2935,7 @@ export class GmailApi {
    * Build a Gmail-style inline forward. The source body is quoted below the
    * standard forwarded-message header block, and source attachments are copied
    * as ordinary attachments so inline Content-IDs continue to work.
+   * `historicalNestedLineBreaks` is as on `buildEncodedEmail`.
    */
   async buildForwardRaw(
     originalMessage: GmailMessageRaw,
@@ -2940,6 +2945,7 @@ export class GmailApi {
     messageId = newGmailMessageId(),
     subjectOverride?: string,
     date?: string,
+    historicalNestedLineBreaks = false,
   ): Promise<GmailOutboundMessage> {
     const uploadedAttachments = (options.attachments ?? []).map(gmailAttachmentInputToOutbound);
     const sourceBytes = base64UrlDecodedByteLength(originalMessage.raw);
@@ -2987,19 +2993,22 @@ export class GmailApi {
       messageId,
       ...(date !== undefined ? {date} : {}),
       attachments,
-    });
+    }, historicalNestedLineBreaks);
   }
 
-  /** Build an inline forward from an exact source snapshot held by the gatekeeper. */
+  /**
+   * Build an inline forward from an exact source snapshot held by the gatekeeper.
+   * `historicalNestedLineBreaks` is as on `buildEncodedEmail`.
+   */
   async buildForwardFromBytes(
       sourceBytes: Uint8Array, to: string[], body?: string,
       options: GmailComposeOptions = {}, messageId = newGmailMessageId(), subjectOverride?: string,
-      date?: string):
+      date?: string, historicalNestedLineBreaks = false):
       Promise<GmailOutboundMessage> {
     return this.buildForwardRaw({
       id: "forward-snapshot", threadId: "forward-snapshot", internalDate: "0",
       raw: base64UrlEncodeBytes(sourceBytes),
-    }, to, body, options, messageId, subjectOverride, date);
+    }, to, body, options, messageId, subjectOverride, date, historicalNestedLineBreaks);
   }
 
   /**
