@@ -639,13 +639,16 @@ function parseDriveUrl(parsed: URL): ResourceTarget {
 /**
  * Chat's own URLs carry a view path and a fragment, so the grant is keyed on the canonical form
  * the configurator mints: the bare host for the whole account, `/room/{space}` for one
- * conversation, `/room/{space}/{thread}` for one thread. The ids are Chat's without their
- * `spaces/` and `threads/` prefixes, validated here because every downstream request
- * interpolates them into a path.
+ * conversation, `/room/{space}/{thread}` for one thread. A link Chat gives out to one of those
+ * adds a `cls` view parameter, which names no resource and is ignored; any other query, or a
+ * fragment, is refused rather than guessed at. The ids are Chat's without their `spaces/` and
+ * `threads/` prefixes, validated here because every downstream request interpolates them into a
+ * path.
  */
 function parseChatUrl(parsed: URL): ResourceTarget {
-  if (parsed.search || parsed.hash) {
-    throw new Error("Google Chat resource URLs must not include query strings or fragments.");
+  if (parsed.hash || [...parsed.searchParams.keys()].some(key => key !== "cls")) {
+    throw new Error(
+        "Google Chat resource URLs must not include fragments or query parameters other than cls.");
   }
   if (/^\/?$/.test(parsed.pathname)) return { kind: "chatAccount" };
 

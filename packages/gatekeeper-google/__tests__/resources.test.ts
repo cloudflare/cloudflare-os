@@ -603,6 +603,11 @@ describe("parseResourceUrl", () => {
         { kind: "chatThread", spaceId: "AAAA1234", threadId: "TTT" }],
       ["one thread with a trailing slash", "https://chat.google.com/room/AAAA1234/TTT/",
         { kind: "chatThread", spaceId: "AAAA1234", threadId: "TTT" }],
+      // Chat's own links add a `cls` view parameter, which names no resource.
+      ["one conversation from a link Chat gave out", "https://chat.google.com/room/AAAA1234?cls=7",
+        { kind: "chatSpace", spaceId: "AAAA1234" }],
+      ["one thread from a link Chat gave out", "https://chat.google.com/room/AAAA1234/TTT?cls=10",
+        { kind: "chatThread", spaceId: "AAAA1234", threadId: "TTT" }],
     ] as const)("scopes to %s", (_name, url, expected) => {
       expect(parseResourceUrl(url)).toEqual(expected);
     });
@@ -616,10 +621,10 @@ describe("parseResourceUrl", () => {
       "https://chat.google.com/room/AAA/B%2FC",
       "https://chat.google.com/room/AAA/...",
       "https://chat.google.com/dm/AAAA1234/TTT",
-      "https://chat.google.com/room/AAAA1234/TTT?cls=10",
       "https://chat.google.com/dm/AAAA1234",
       "https://chat.google.com/u/0/",
-      // A grant is keyed on the canonical URL, so noise is refused rather than normalized.
+      // Anything but Chat's own view parameter is refused rather than guessed at.
+      "https://chat.google.com/room/AAAA1234?cls=7&tab=1",
       "https://chat.google.com/?tab=1",
       "https://chat.google.com/room/AAAA1234#frag",
     ])("rejects %s", url => {
