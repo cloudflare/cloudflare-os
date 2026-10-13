@@ -1161,13 +1161,13 @@ export default function GadgetEditor() {
     })
   }, [showChatParam, id, navigate, setWorkspaceVisibility, exitGadgetFullscreen])
 
-  // Notifications skip the chat on screen: not one covered by full-screen preview or, on a phone,
-  // by the workspace pane.
-  useEffect(() => reportVisibleChat(() =>
-    effectiveSelectedChatId === null || isGadgetFullscreen || (showFullEditor && isSinglePaneLayout())
-      ? null
-      : { workspaceId: id!, chatId: effectiveSelectedChatId }
-  ), [id, effectiveSelectedChatId, isGadgetFullscreen, showFullEditor])
+  // Notifications skip the chat on screen: rendered, and not covered by full-screen preview or, on a
+  // phone, by the workspace pane.
+  useEffect(() => {
+    if (!layoutModeReady || isGadgetFullscreen || effectiveSelectedChatId === null) return
+    const chat = { workspaceId: id!, chatId: effectiveSelectedChatId }
+    return reportVisibleChat(() => showFullEditor && isSinglePaneLayout() ? null : chat)
+  }, [layoutModeReady, isGadgetFullscreen, effectiveSelectedChatId, id, showFullEditor])
 
   // ── navigation helper ────────────────────────────────────────────────────────
   const navigateToChat = useCallback(
