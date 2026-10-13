@@ -7,6 +7,7 @@ import type { ObservationGate, ObservationInput } from "@gadgets/gatekeeper-kit/
 import {
   ContextSearchResult, ContextListing, ContextListingEntry, ContextReadResult,
   ContextCollectionVisibility, decodeDocId, encodeDocId, isTextContentType, VENDOR_ID,
+  type ContextLibrary,
 } from "./context-types.js";
 import type { ContextCollectionDurableObject } from "./context-collection.js";
 import type { UserLibraryDurableObject } from "./user-library.js";
@@ -21,7 +22,7 @@ const logger = obsContext.createLogger({
 const MAX_COLLECTION_FANOUT = 8;
 
 @validateRpc()
-export class LibraryReadSession extends RpcTarget {
+export class LibraryReadSession extends RpcTarget implements ContextLibrary {
   // Per-session enabled set. Visibility is retained by the source API, though observer enforcement
   // uses collection-level access checks rather than the old sticky sharing prohibition.
   #enabledPromise?: Promise<Map<string, ContextCollectionVisibility>>;

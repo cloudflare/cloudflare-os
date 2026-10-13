@@ -10,6 +10,7 @@ const PACKAGE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const VALIDATED_ENTRIES = [
   join(PACKAGE_DIR, "../workshop-backend/.wrangler/validate/src/server.ts"),
   join(PACKAGE_DIR, "fixtures/gatekeeper-test/.wrangler/validate/src/test-gatekeeper.ts"),
+  join(PACKAGE_DIR, "../gatekeeper-context/.wrangler/validate/src/index.ts"),
 ];
 
 function rebuildWorkshopForWatch(): void {

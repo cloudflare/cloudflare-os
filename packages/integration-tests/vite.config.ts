@@ -47,13 +47,13 @@ export default {
           ...VITEST_TOOL_SCRATCH_EXCLUSIONS,
           ...WRANGLER_RUNTIME_SCRATCH_EXCLUSIONS,
         ]),
-        // The real gatekeepers the hook suites boot, validated into their own packages' trees,
-        // which are tracked here for the same reason the fixture's is, and the release the Google
-        // upgrade suite starts from.
+        // Real gatekeepers boot from prebuilt validated trees, tracked as inputs like the fixture,
+        // plus the release the Google upgrade suite starts from.
         dependsOn: [
           'build:test-gatekeeper', 'build:upgrade-base',
           '@gadgets/github-gatekeeper#build:integration-worker',
           '@gadgets/google-gatekeeper#build:integration-worker',
+          '@gadgets/gatekeeper-context#build:integration-worker',
         ],
       },
     },

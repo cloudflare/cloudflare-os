@@ -78,6 +78,20 @@ It is booted from a validated tree built before the test files start, as the Wor
 table also keys the eval cache, which this gatekeeper doesn't reach: watch mode reruns a hook suite
 on an edit there only once something else triggers the rerun, which rebuilds it.
 
+### Real Context collections for sharing
+
+`__tests__/context-sharing.test.ts` boots the real `gatekeeper-context` beside the Workshop and
+drives both through the public RPC API. Each case creates separate owner and collaborator accounts
+and an owner-private collection. Listing the collection's discovery metadata must still let the
+collaborator open the workspace; listing or reading its contents must refuse that open without
+naming the inaccessible collection. No Context storage, verifier, or observation authorizer is faked.
+
+Both test entrypoints build `@gadgets/gatekeeper-context#build:integration-worker` (including its
+management SPA) before files start. The suite disables per-boot rebuilding, and `src/worker-inputs.ts`
+tracks Context source/config edits for watch reruns while excluding its generated outputs.
+
+Run just these cases with `pnpm --filter @gadgets/integration-tests test:run __tests__/context-sharing.test.ts`.
+
 ### Storage isolation is by convention, because the alternative is worse
 
 `server.reset()` exists, and measuring it settles the question: **~3 s per call**, which is more than
