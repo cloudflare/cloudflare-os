@@ -5043,6 +5043,39 @@ describe("Gmail pending sends", () => {
       .toEqual([["B.bin", inline], ["C.bin", added]]);
   });
 
+  it("reconciles an attachment addition Gmail stored in MIME order after its response was lost", async () => {
+    const {gatekeeper, saveDraft, values, calls} = mailHarness({loseDraftUpdateResponse: true});
+    const imported = saveDraft({});
+    // MIMEText would sort inline B ahead of regular A; the writer does, so the order changes.
+    imported.mail.raw = base64Url([
+      `From: ${ME}`, "To: to@example.com", "Subject: Imported order",
+      "Message-ID: <imported-order@example.com>", "MIME-Version: 1.0",
+      'Content-Type: multipart/mixed; boundary="imported-order"', "",
+      "--imported-order", "Content-Type: text/plain; charset=utf-8", "", "Before",
+      "--imported-order", 'Content-Type: application/octet-stream; name="A.bin"',
+      'Content-Disposition: attachment; filename="A.bin"',
+      "Content-Transfer-Encoding: base64", "", btoa("\u0001\u0002\u0003"),
+      "--imported-order", 'Content-Type: application/octet-stream; name="B.bin"',
+      'Content-Disposition: inline; filename="B.bin"', "Content-ID: <inline-b@example.com>",
+      "Content-Transfer-Encoding: base64", "", btoa("\u0004\u0005\u0006"),
+      "--imported-order--", "",
+    ].join("\r\n"));
+    const session = await gatekeeper.startSession(approvalQueue());
+    const draft = (await (await session.listDrafts()).next())![0].draft;
+    await draft.addAttachment(upload("C.bin", new Uint8Array([7, 8, 9])));
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/connection lost after draft update/);
+    expect((await parseGmailDraft(fakeMailRaw(imported.mail))).attachments.map(part => part.filename))
+      .toEqual(["B.bin", "A.bin", "C.bin"]);
+    await gatekeeper.restart();
+
+    await gatekeeper.applyAction(1);
+
+    expect(calls.filter(call => call.init.method === "PUT")).toHaveLength(1);
+    for (const key of ["pending:action:1", "gmail:applying:1"]) {
+      expect(await values.has(key)).toBe(false);
+    }
+  });
+
   it.each(["name=ignored.txt", "name*=utf-8''ignored.txt"])(
     "keeps %s uploads readable and removable after forward writes", async filenameParameter => {
       const {gatekeeper, receive, drafts} = mailHarness();

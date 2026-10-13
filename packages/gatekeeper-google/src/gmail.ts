@@ -1290,18 +1290,17 @@ async function readDraftProviderBaseline(
   const fingerprint = await gmailDraftFingerprint(parsed, current.message.threadId);
   const provider = {message: current.message, parsed};
   const {exactState, ...output} = await exactDraftOutput(api, store, approved, provider);
-  const holdsOutput = await holdsDraftOutput(approved, provider, fingerprint, output);
-  if (receipt.unverified && !holdsOutput) {
+  const revised = current.message.id !== receipt.messageId;
+  const expectedThreadId = receipt.threadId ?? approved.state.threadId;
+  if (revised && (!expectedThreadId || current.message.threadId !== expectedThreadId)) {
     throw new Error(
       "The Gmail draft revision changed before its provider-normalized state could be recorded.");
   }
-  if (current.message.id !== receipt.messageId) {
-    const expectedThreadId = receipt.threadId ?? approved.state.threadId;
-    if (!holdsOutput || !expectedThreadId ||
-        current.message.threadId !== expectedThreadId) {
-      throw new Error(
-        "The Gmail draft revision changed before its provider-normalized state could be recorded.");
-    }
+  // Only an unverified receipt or a later revision needs proof that Gmail holds this write.
+  if ((receipt.unverified || revised) &&
+      !await holdsDraftOutput(api, store, approved, provider, fingerprint, {exactState, ...output})) {
+    throw new Error(
+      "The Gmail draft revision changed before its provider-normalized state could be recorded.");
   }
   return {
     draftId: current.id,
@@ -1462,14 +1461,36 @@ async function exactDraftOutput(
 
 /**
  * Whether the provider revision, whose byte-exact fingerprint is `fingerprint`, holds the approved
- * write's output. The old MIME builder rewrote calendar and encoded parts, so a historical write
- * is recognized by its historical fingerprint.
+ * write's output. A state fingerprint keeps the state's attachment order, but the writer emits
+ * inline parts first, so a mismatch is checked against the MIME the write emits. The old MIME
+ * builder rewrote calendar and encoded parts, so a historical write is recognized by its
+ * historical fingerprint.
  */
 async function holdsDraftOutput(
-    approved: ApprovedDraftOutput, provider: GmailProviderDraft, fingerprint: string,
-    output: {outputFingerprint: string; legacyOutputFingerprint: string}): Promise<boolean> {
-  return fingerprint === output.outputFingerprint || (approved.historical &&
-    await matchesGmailFingerprint(provider.message, output.legacyOutputFingerprint, provider.parsed));
+    api: GmailApi, store: GmailStore, approved: ApprovedDraftOutput, provider: GmailProviderDraft,
+    fingerprint: string,
+    output: {exactState: GmailDraftState; outputFingerprint: string; legacyOutputFingerprint: string}):
+    Promise<boolean> {
+  if (fingerprint === output.outputFingerprint) return true;
+  const emitted = await draftWriteMessage(api, store, output.exactState, approved.snapshot, provider);
+  const parsed = await parseGmailDraft({
+    id: "draft-write", threadId: output.exactState.threadId ?? "draft-write", internalDate: "0",
+    raw: emitted.raw,
+  });
+  return fingerprint === await gmailDraftFingerprint(parsed, output.exactState.threadId) ||
+    (approved.historical &&
+      await matchesGmailFingerprint(provider.message, output.legacyOutputFingerprint, provider.parsed));
+}
+
+/** The MIME a draft create or update writes for `state`. */
+async function draftWriteMessage(
+    api: GmailApi, store: GmailStore, state: GmailDraftState,
+    snapshot: GmailSourceAttachment | undefined, provider?: GmailProviderDraft):
+    Promise<GmailOutboundMessage> {
+  return api.buildOutbound(snapshot
+    ? await exactSpecWithSource(api, store, draftSpec(state), snapshot,
+      state.source?.format === "inline", await uploadedInputs(store, state.attachments))
+    : draftSpec(state, await materializeDraftAttachments(store, state, provider)));
 }
 
 async function captureSourceAttachment(
@@ -4798,9 +4819,10 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
         if (resource.providerId) {
           const current = await api.getDraft(resource.providerId);
           const parsed = await parseSafeGmailDraft(current.message);
-          const {exactState, ...output} =
-            await exactDraftOutput(api, store, approved, {message: current.message, parsed});
-          if (await gmailDraftFingerprint(parsed, current.message.threadId) !== output.outputFingerprint) {
+          const provider = {message: current.message, parsed};
+          const fingerprint = await gmailDraftFingerprint(parsed, current.message.threadId);
+          const {exactState, ...output} = await exactDraftOutput(api, store, approved, provider);
+          if (!await holdsDraftOutput(api, store, approved, provider, fingerprint, {exactState, ...output})) {
             throw new Error(
               "The mapped Gmail draft no longer matches the approved create action.");
           }
@@ -4813,7 +4835,7 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
           store.completeDraftWrite(actionId, {
             ...receipt,
             ...output,
-            fingerprint: output.outputFingerprint,
+            fingerprint,
             appliedAttachments: await captureDraftAttachmentIdentities(
               exactState.attachments, parsed, current.message.id),
           }, approved.fingerprint);
@@ -4838,28 +4860,23 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
           };
           store.setDraftWriteReceipt(actionId, receipt);
           const parsed = await parseSafeGmailDraft(current.message);
-          const {exactState, ...output} =
-            await exactDraftOutput(api, store, approved, {message: current.message, parsed});
-          if (await gmailDraftFingerprint(parsed, current.message.threadId) !== output.outputFingerprint) {
+          const provider = {message: current.message, parsed};
+          const fingerprint = await gmailDraftFingerprint(parsed, current.message.threadId);
+          const {exactState, ...output} = await exactDraftOutput(api, store, approved, provider);
+          if (!await holdsDraftOutput(api, store, approved, provider, fingerprint, {exactState, ...output})) {
             throw new Error(
               "The reconciled Gmail draft no longer matches the approved create action.");
           }
           store.completeDraftWrite(actionId, {
             ...receipt,
             ...output,
-            fingerprint: output.outputFingerprint,
+            fingerprint,
             appliedAttachments: await captureDraftAttachmentIdentities(
               exactState.attachments, parsed, current.message.id),
           }, approved.fingerprint);
           return;
         }
-        const spec = sourceSnapshot
-          ? await exactSpecWithSource(
-            api, store, draftSpec(action.draft), sourceSnapshot,
-            action.draft.source?.format === "inline",
-            await uploadedInputs(store, action.draft.attachments))
-          : draftSpec(action.draft, await materializeDraftAttachments(store, action.draft));
-        const message = api.buildOutbound(spec);
+        const message = await draftWriteMessage(api, store, action.draft, sourceSnapshot);
         const created = await applyUncertainWrite(
           store, actionId, () => api.createDraft(message.raw, action.draft.threadId));
         const receipt = {
@@ -4900,7 +4917,7 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
         const currentFingerprint = await gmailDraftFingerprint(parsed, current.message.threadId);
         // Re-keying fails on a drifted draft, so a fresh write must reach the fences below first.
         const reconciled = reconciling ? await exactDraftOutput(api, store, approved, provider) : undefined;
-        if (reconciled ? await holdsDraftOutput(approved, provider, currentFingerprint, reconciled)
+        if (reconciled ? await holdsDraftOutput(api, store, approved, provider, currentFingerprint, reconciled)
             : currentFingerprint === approved.fingerprint) {
           const {exactState, ...output} = reconciled ?? await exactDraftOutput(api, store, approved);
           store.completeMatchingDraftUpdate(actionId, {
@@ -4925,14 +4942,7 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
           throw new Error(
             "The Gmail draft changed outside this approval sequence; refusing to apply a different update.");
         }
-        const sourceSnapshot = action.sourceAttachment;
-        const spec = sourceSnapshot
-          ? await exactSpecWithSource(
-            api, store, draftSpec(action.after), sourceSnapshot,
-            action.after.source?.format === "inline",
-            await uploadedInputs(store, action.after.attachments))
-          : draftSpec(action.after, await materializeDraftAttachments(store, action.after, provider));
-        const message = api.buildOutbound(spec);
+        const message = await draftWriteMessage(api, store, action.after, action.sourceAttachment, provider);
         const updated = await applyUncertainWrite(
           store, actionId, () => api.updateDraft(id, message.raw, action.after.threadId));
         if (updated.id !== id) {
