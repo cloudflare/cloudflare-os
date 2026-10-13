@@ -37,7 +37,9 @@ const splitAtQuery = (url: string): [path: string, tail: string] => {
 /**
  * The host and path segments a URL needs to match a pattern, as URLPattern normalizes them: up to
  * the first optional segment (`:rest*`, `*?`), with regexes and `+` dropped from parameter names,
- * so a completion holds plain placeholders. Null for a pattern this browser can't parse.
+ * so a completion holds plain placeholders. A parameter that chooses between words
+ * (`:kind(room|dm)`) completes to its first word, since a placeholder would ask the user to spell
+ * the choice. Null for a pattern this browser can't parse.
  */
 const requiredSegments = (pattern: string): string[] | null => {
   let parsed: URLPattern
@@ -51,7 +53,8 @@ const requiredSegments = (pattern: string): string[] | null => {
     ...parsed.pathname.split('/').slice(1),
   ]
   const optional = segments.findIndex(segment => segment !== '*' && /[?*]$/.test(segment))
-  return segments.slice(0, optional < 0 ? undefined : optional).map(segment => segment.replace(/\(.*\)|\+$/g, ''))
+  return segments.slice(0, optional < 0 ? undefined : optional).map(segment =>
+    segment.replace(/^:\w+\(([\w-]+)(?:\|[\w-]+)*\)$/, '$1').replace(/\(.*\)|\+$/g, ''))
 }
 
 /**

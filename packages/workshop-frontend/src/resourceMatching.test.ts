@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { classifyMatch, completeUrl, getPlaceholderRanges } from './resourceMatching'
 
-const CHAT_SPACE = 'https://chat.google.com/room/:spaceId'
-const CHAT_THREAD = 'https://chat.google.com/room/:spaceId/:threadId{/:messageId}?'
+const CHAT_SPACE = 'https://chat.google.com/:kind(room|dm)/:spaceId'
+const CHAT_THREAD = 'https://chat.google.com/:kind(room|dm)/:spaceId/:threadId{/:messageId}?'
 const NETSUITE_CUSTOMER = 'https://acme.app.netsuite.com/app/common/entity/custjob.nl?id=:customerId'
 
 describe('classifyMatch', () => {
@@ -37,6 +37,13 @@ describe('classifyMatch', () => {
   ])('completes %s through its required segments only, in plain placeholders', (typed, pattern, suffix, value) => {
     expect(classifyMatch(typed, pattern)).toEqual({ type: 'prefix', suffix })
     expect(classifyMatch(typed + value, pattern)).toEqual({ type: 'full' })
+  })
+
+  it('completes a choice between words to its first word', () => {
+    expect(classifyMatch('https://chat.google.com/', CHAT_SPACE)).toEqual({ type: 'prefix', suffix: 'room/:spaceId' })
+    expect(classifyMatch('https://chat.google.com/ro', CHAT_SPACE)).toEqual({ type: 'prefix', suffix: 'om/:spaceId' })
+    expect(classifyMatch('https://chat.google.com/dm/nAs4SyAAAAE/HyxlRqVDmjs/HyxlRqVDmjs?cls=10', CHAT_THREAD))
+      .toEqual({ type: 'full' })
   })
 
   it("holds a link to the pattern's parameter constraints", () => {
