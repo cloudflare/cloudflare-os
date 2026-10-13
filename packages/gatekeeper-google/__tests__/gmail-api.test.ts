@@ -924,6 +924,32 @@ describe("Gmail recipient and MIME construction", () => {
     expect(legacy).toEqual(await parseGmailDraft(source));
   });
 
+  it("reproduces the pre-upgrade builder only in historical mode", async () => {
+    const nested = "From: a@example.com\r\nSubject: Nested\r\n\r\nNested body";
+    const spec = {
+      from: "me@example.com", to: ["to@example.com"], cc: [], bcc: [], subject: "Historical",
+      text: "Body", html: '<p><img src="cid:image@example.com"></p>', messageId: "<m@example.com>",
+      attachments: [
+        {filename: "image.png", contentType: "image/png", data: btoa("png"), disposition: "inline" as const,
+          contentId: "<image@example.com>", description: "Image"},
+        {filename: "nested.eml", contentType: "message/rfc822", data: btoa(nested),
+          disposition: "attachment" as const, description: "Nested"},
+        {filename: "tail.bin", contentType: "application/octet-stream", data: btoa("tail"),
+          disposition: "attachment" as const, description: "Tail"},
+      ],
+    };
+    const parts = async (historical: boolean) => (await parseGmailDraft({
+      id: "draft", threadId: "thread", internalDate: "1", raw: buildEncodedEmail(spec, historical),
+    })).attachments.map(part => [part.filename, atob(part.data.replace(/\s/g, ""))]);
+
+    expect(await parts(false)).toEqual([["image.png", "png"], ["nested.eml", nested], ["tail.bin", "tail"]]);
+    // The old builder classified the inline image as a regular attachment too, and left MIMEText's
+    // extra CRLF inside the non-final nested message.
+    expect(await parts(true)).toEqual([
+      ["image.png", "png"], ["image.png", "png"], ["nested.eml", `${nested}\r\n`], ["tail.bin", "tail"],
+    ]);
+  });
+
   it.each(["text/calendar", "application/ics"].flatMap(mediaType =>
     ["\n", "\r", "\r\n", ""].map(ending => ({mediaType, ending}))))(
     "round-trips uploaded $mediaType bytes with line ending $ending through edits",

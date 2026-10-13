@@ -4847,28 +4847,51 @@ describe("Gmail pending sends", () => {
       if (operation === "update") expect(parsed.text).toContain("After");
     });
 
-  // An inline-forward draft as the old builder wrote it from a source holding [nested.eml, tail.bin]:
-  // that builder left an extra CRLF inside the non-final unencoded nested message.
-  const historicalNestedForward = async () => {
+  // An inline-forward draft as the old builder wrote it from a source with these attachments.
+  const historicalForward = async (spec: Partial<GmailOutboundSpec>) => {
     const harness = mailHarness();
-    const nested = "From: a@example.com\r\nSubject: Nested\r\n\r\nNested body";
-    const source = harness.receive({attachments: [
-      {filename: "nested.eml", contentType: "message/rfc822", data: btoa(nested),
-        disposition: "attachment", description: "Nested message"},
-      {filename: "tail.bin", contentType: "application/octet-stream", data: btoa("tail"),
-        disposition: "attachment", description: "Tail"},
-    ]});
+    const source = harness.receive(spec);
     const session = await harness.gatekeeper.startSession(approvalQueue());
     const draft = await (await session.getMessage(source.id)).createForwardDraft(["to@example.com"], "Before");
     await harness.gatekeeper.applyAction(1);
     const written = [...harness.drafts.values()][0];
     const parsed = await parseGmailDraft(fakeMailRaw(written));
     written.raw = buildEncodedEmail({...parsed, from: ME, messageId: parsed.messageId!, bcc: []}, true);
-    return {...harness, draft, written, nested};
+    return {...harness, draft, written};
   };
+  // The old builder left an extra CRLF inside this non-final unencoded nested message.
+  const nested = "From: a@example.com\r\nSubject: Nested\r\n\r\nNested body";
+  const historicalNestedForward = () => historicalForward({attachments: [
+    {filename: "nested.eml", contentType: "message/rfc822", data: btoa(nested),
+      disposition: "attachment", description: "Nested message"},
+    {filename: "tail.bin", contentType: "application/octet-stream", data: btoa("tail"),
+      disposition: "attachment", description: "Tail"},
+  ]});
+
+  it.each(["update", "delete", "send"] as const)(
+    "applies a fresh %s to an inline forward with a CID image the old builder wrote", async operation => {
+      // The old builder classified the inline image as a regular attachment as well.
+      const {gatekeeper, draft, drafts, mailbox} = await historicalForward({
+        html: '<p>Source <img src="cid:image@example.com"></p>',
+        attachments: [
+          {filename: "image.png", contentType: "image/png", data: btoa("png"), disposition: "inline",
+            contentId: "<image@example.com>", description: "Image"},
+          {filename: "tail.bin", contentType: "application/octet-stream", data: btoa("tail"),
+            disposition: "attachment", description: "Tail"},
+        ],
+      });
+      if (operation === "update") await draft.update({text: "After"});
+      else if (operation === "delete") await draft.delete();
+      else await draft.send();
+
+      await gatekeeper.applyAction(2);
+
+      expect(drafts.size).toBe(operation === "update" ? 1 : 0);
+      expect(mailbox.filter(mail => mail.labelIds.includes("SENT"))).toHaveLength(operation === "send" ? 1 : 0);
+    });
 
   it("applies a fresh update to an inline forward whose nested message the old builder wrote", async () => {
-    const {gatekeeper, draft, written, nested} = await historicalNestedForward();
+    const {gatekeeper, draft, written} = await historicalNestedForward();
     await draft.update({text: "After"});
 
     await gatekeeper.applyAction(2);
@@ -4879,7 +4902,7 @@ describe("Gmail pending sends", () => {
   });
 
   it("applies a pre-upgrade update to an inline forward whose nested message the old builder wrote", async () => {
-    const {gatekeeper, draft, written, nested, storage, values} = await historicalNestedForward();
+    const {gatekeeper, draft, written, storage, values} = await historicalNestedForward();
     await draft.update({text: "After"});
     // The old worker staged the update with its unprefixed fingerprint of the draft Gmail holds.
     const action = await values.get<StoredCalendarAction>("pending:action:2");

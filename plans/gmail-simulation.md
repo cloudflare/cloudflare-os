@@ -117,8 +117,10 @@ of archives and label changes, each needing a round trip to the user.
      pending for. A fresh action on an inline forward Gmail holds as the old builder wrote it,
      verified by its historical fingerprint, expects that exact revision rather than the rebuilt
      output; the write or send itself still uses the rebuilt, byte-exact output. A forward's
-     historical fingerprint is taken from a rebuild that reproduces the old builder, including
-     the extra CRLF it left inside non-final unencoded nested messages. Only attachment state an
+     historical fingerprint is taken from a rebuild that reproduces the old builder: its source
+     parts as the old parser decoded them, its placeholder filename (which made MIMEText emit an
+     inline part as a regular attachment too), and the extra CRLF it left inside non-final
+     unencoded nested messages. Only attachment state an
      old action captured (marked `historicalAttachments` once it is rebased) is correlated to
      provider parts through the legacy parse, and it is re-keyed to their exact bytes, not
      emitted as normalized calendar content; byte-exact state never is, so recovery cannot adopt
