@@ -324,15 +324,15 @@ describe("conversion boundary display", () => {
   });
 });
 
+const work = (sequence: number) => message(sequence, {
+  type: "message",
+  message: "",
+  toolCalls: [{ toolCallId: `read-${sequence}`, toolName: "readFile", input: { filename: "a" } }],
+});
+
 // Only the agent reads a catalog change (see AiChatMessageBody "catalogChange"), so the transcript
 // shows nothing for it, even between the steps of one run of work.
 describe("catalog changes", () => {
-  const work = (sequence: number) => message(sequence, {
-    type: "message",
-    message: "",
-    toolCalls: [{ toolCallId: `read-${sequence}`, toolName: "readFile", input: { filename: "a" } }],
-  });
-
   it("shows nothing, and keeps a run of work in one row", () => {
     const entries = buildChatDisplayEntries([
       work(1),

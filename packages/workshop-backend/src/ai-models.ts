@@ -521,15 +521,17 @@ function makeHandle(args: HandleArgs): ModelHandle {
         },
         // Rewrites of the request pi built from `transcript`, each a no-op for payloads it doesn't
         // apply to: PDF attachments ride pi image parts and become the provider's native document
-        // blocks (see chat-attachment-pdf.ts), and with caching on, the leading system prompt is
-        // split after its static text (see system-prompt-blocks.ts), and a split request drops
-        // pi's per-chat prompt cache key (see withoutPromptCacheKey).
+        // blocks (see chat-attachment-pdf.ts), Gemini function calls without a thought signature
+        // get Google's stand-in (see signGeminiFunctionCalls), and with caching on, the leading
+        // system prompt is split after its static text (see system-prompt-blocks.ts), and a split
+        // request drops pi's per-chat prompt cache key (see withoutPromptCacheKey).
         onPayload: async (payload, payloadModel) => {
           const replaced = await options.onPayload?.(payload, payloadModel);
           const bridged = bridgePdfAttachments(args.model.api, replaced ?? payload) ?? replaced;
-          if (options.cacheRetention === "none") return bridged;
-          const split = splitSystemPrompt(args.model, transcript, bridged ?? payload);
-          if (split === undefined) return bridged;
+          const signed = signGeminiFunctionCalls(args.model, bridged ?? payload) ?? bridged;
+          if (options.cacheRetention === "none") return signed;
+          const split = splitSystemPrompt(args.model, transcript, signed ?? payload);
+          if (split === undefined) return signed;
           return withoutPromptCacheKey(args.model, split) ?? split;
         },
       };
@@ -553,6 +555,33 @@ function withoutPromptCacheKey(model: Model<Api>, payload: unknown): object | un
   }
   const { prompt_cache_key, ...rest } = payload;
   return rest;
+}
+
+// Gemini 3 rejects a request whose current turn holds a function call without a thought signature.
+// The synthetic calls history replay adds (see makeReplayObservation in agent.ts) have none, nor do
+// calls another model made, so they get the value Google documents for a call the model didn't
+// make. pi can't send it: it passes on only base64 signatures.
+function signGeminiFunctionCalls(model: Model<Api>, payload: unknown): object | undefined {
+  if (model.api !== "google-generative-ai" || typeof payload !== "object" || payload === null ||
+      !("contents" in payload) || !Array.isArray(payload.contents)) {
+    return undefined;
+  }
+  let signed = false;
+  const contents = payload.contents.map((content: unknown) => {
+    if (typeof content !== "object" || content === null || !("parts" in content) ||
+        !Array.isArray(content.parts)) {
+      return content;
+    }
+    return {...content, parts: content.parts.map((part: unknown) => {
+      if (typeof part !== "object" || part === null || !("functionCall" in part) ||
+          "thoughtSignature" in part) {
+        return part;
+      }
+      signed = true;
+      return {...part, thoughtSignature: "skip_thought_signature_validator"};
+    })};
+  });
+  return signed ? {...payload, contents} : undefined;
 }
 
 /**

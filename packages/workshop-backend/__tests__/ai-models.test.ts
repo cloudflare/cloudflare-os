@@ -1,13 +1,14 @@
 import { z } from "zod";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SUGGESTED_MODELS, type AiChatAuthorInfo, type AiModelConfig, type BuiltInReasoning,
 } from "@gadgets/workshop-shared/api";
-import { Type } from "@earendil-works/pi-ai";
+import { Type, type AssistantMessage, type ToolResultMessage } from "@earendil-works/pi-ai";
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models";
 import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";
 import { serializeAdminConfig } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig } from "../src/storage-schema/admin-settings-storage.js";
+import { zeroUsage } from "../src/ai-invoke.js";
 import {
   gatewayBuiltInReasoning, gatewayReasoningLevels, getModel, isRuntimeModel,
   LanguageModelGatekeeper, type ModelHandle,
@@ -1574,6 +1575,67 @@ describe("PDF attachment bridging", () => {
       type: "input_image",
       image_url: "data:image/png;base64,iVBOR",
     }));
+  }, 15000);
+});
+
+describe("Gemini function call signatures", () => {
+  beforeEach(() => {
+    capturedRequests.length = 0;
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // Gemini 3 rejects a request whose current turn holds a function call without a thought
+  // signature, which history replay's synthetic calls lack. pi's Google adapter refuses an injected
+  // fetch, so the request is read from the global one.
+  it("gives a call the model didn't make Google's stand-in, and keeps the model's own", async () => {
+    vi.stubGlobal("fetch", fetchStub);
+    const handle = getModel(env(), {
+      provider: "google",
+      model: "gemini-3.6-flash",
+      apiToken: "ignored-in-gateway-mode",
+    }, INITIATOR);
+    // One step of a tool loop: the call, then its result.
+    const step = (id: string, thoughtSignature?: string): [AssistantMessage, ToolResultMessage] => [{
+      role: "assistant",
+      content: [{
+        type: "toolCall", id, name: "observeUserChanges", arguments: {},
+        ...(thoughtSignature !== undefined && { thoughtSignature }),
+      }],
+      api: handle.model.api,
+      provider: handle.model.provider,
+      model: handle.model.id,
+      usage: zeroUsage(),
+      stopReason: "toolUse",
+      timestamp: 0,
+    }, {
+      role: "toolResult",
+      toolCallId: id,
+      toolName: "observeUserChanges",
+      content: [{ type: "text", text: "ok" }],
+      isError: false,
+      timestamp: 0,
+    }];
+    const stream = handle.stream(handle.model, {
+      messages: [
+        { role: "user", content: "hello", timestamp: 0 },
+        ...step("model-call", "c2lnbmF0dXJl"),
+        ...step("synthetic_3"),
+      ],
+    }, { maxRetries: 0 });
+    expect((await stream.result()).stopReason).toBe("error");
+
+    const part = z.object({
+      functionCall: z.object({}).optional(),
+      thoughtSignature: z.string().optional(),
+    });
+    const body = z.object({ contents: z.array(z.object({ parts: z.array(part) })) })
+        .parse(JSON.parse(capturedRequests[0].body));
+    expect(body.contents.flatMap(content => content.parts)
+        .filter(entry => entry.functionCall !== undefined)
+        .map(entry => entry.thoughtSignature))
+        .toEqual(["c2lnbmF0dXJl", "skip_thought_signature_validator"]);
   }, 15000);
 });
 

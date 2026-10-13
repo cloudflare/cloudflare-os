@@ -95,6 +95,9 @@ export function findCatalogChanges(
   });
 }
 
+const serializedEntries = (catalog: AgentCatalog | null) =>
+    new Set(catalog?.entries.map(entry => JSON.stringify(entry)));
+
 /**
  * What the agent is told about a resource that changed since it last saw it (`before`): the entries
  * added and those no longer listed, as JSON like the system prompt shows them.
@@ -106,10 +109,8 @@ export function formatCatalogChange(
     return `${binding} is now always available in your env.` +
         formatAgentCatalogPrompt(resource.catalog);
   }
-  let entries = (catalog: AgentCatalog | null) =>
-      new Set(catalog?.entries.map(entry => JSON.stringify(entry)));
-  let was = entries(before.catalog);
-  let now = entries(resource.catalog);
+  let was = serializedEntries(before.catalog);
+  let now = serializedEntries(resource.catalog);
   let added = [...now].filter(entry => !was.has(entry));
   let dropped = [...was].filter(entry => !now.has(entry));
   let lines = [`The catalog of ${binding} changed outside this conversation.`];

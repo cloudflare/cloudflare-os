@@ -130,13 +130,17 @@ describe("boundAgentCatalog", () => {
   });
 });
 
-describe("catalog changes", () => {
-  let skill = (title: string) => ({id: title, title, description: `The ${title} skill.`});
-  let skills = (...titles: string[]): AlwaysAvailableResource =>
-    ({name: "CONTEXT", title: "Skills", catalog: {entries: titles.map(skill)}});
-  let unloaded: AlwaysAvailableResource = {name: "CONTEXT", title: "Skills", catalog: null};
-  let seen = (resource: AlwaysAvailableResource) => new Map([[resource.name, resource]]);
+let skill = (title: string) => ({id: title, title, description: `The ${title} skill.`});
+let skills = (...titles: string[]): AlwaysAvailableResource =>
+  ({name: "CONTEXT", title: "Skills", catalog: {entries: titles.map(skill)}});
+let unloaded: AlwaysAvailableResource = {name: "CONTEXT", title: "Skills", catalog: null};
+let seen = (resource: AlwaysAvailableResource) => new Map([[resource.name, resource]]);
+let note = (sequence: number, resource: AlwaysAvailableResource): AiChatMessage => ({
+  chatId: 1, sequence, timestamp: new Date(0), author: {type: "agent", id: "m", name: "M"},
+  type: "catalogChange", resources: [resource],
+});
 
+describe("catalog changes", () => {
   it("reports a changed catalog and a resource the agent hasn't seen, not an unchanged one", () => {
     let tasks: AlwaysAvailableResource = {name: "TASKS", title: "Tasks", catalog: null};
     expect(findCatalogChanges(seen(skills("Tax")), [skills("Tax", "Travel"), tasks]))
@@ -162,10 +166,6 @@ describe("catalog changes", () => {
   });
 
   it("applies only the changes recorded before a sequence", () => {
-    let note = (sequence: number, resource: AlwaysAvailableResource): AiChatMessage => ({
-      chatId: 1, sequence, timestamp: new Date(0), author: {type: "agent", id: "m", name: "M"},
-      type: "catalogChange", resources: [resource],
-    });
     let messages = [note(3, skills("Tax", "Travel")), note(7, skills("Travel"))];
 
     expect(seenAlwaysAvailableResources([skills("Tax")], messages, 7).get("CONTEXT"))

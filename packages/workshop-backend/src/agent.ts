@@ -8,7 +8,8 @@ import {
   Type, getSystemMessageText, isRetryableAssistantError, toToolDeclaration,
 } from "@earendil-works/pi-ai";
 import type {
-  AssistantMessage, ImageContent, Message, SystemMessage, TSchema, TextContent, ToolCall, Usage,
+  AssistantMessage, ImageContent, Message, SystemMessage, TSchema, TextContent, ToolCall,
+  ToolResultMessage, Usage,
 } from "@earendil-works/pi-ai";
 import {
   runAgentLoopContinue, type AgentContext, type AgentEvent, type AgentTool,
@@ -1407,6 +1408,29 @@ function makeReplayAssistantMessage(
   };
 }
 
+// Builds the synthetic observeUserChanges call and result that tell the model about something
+// outside its own tool calls (the user's edits, a revert, a catalog change), keyed by the chat
+// message that records it. The result is plain text, not JSON: a JSON-escaped diff full of quotes
+// and braces would be needlessly hard to read, and the result is only ever fed to the model.
+function makeReplayObservation(
+    sequence: number, text: string, model: ModelHandle["model"], timestamp: number)
+    : [AssistantMessage, ToolResultMessage] {
+  let toolCallId = `synthetic_${sequence}`;
+  return [
+    makeReplayAssistantMessage(
+        [{type: "toolCall", id: toolCallId, name: "observeUserChanges", arguments: {}}],
+        model, timestamp),
+    {
+      role: "toolResult",
+      toolCallId,
+      toolName: "observeUserChanges",
+      content: [{type: "text", text}],
+      isError: false,
+      timestamp,
+    },
+  ];
+}
+
 // Builds an AgentTool while keeping `execute`'s params typed by its TypeBox schema; the cast to
 // the untyped AgentTool erases the parameter type (pi validates tool-call arguments against the
 // schema before calling execute, so the runtime types are guaranteed).
@@ -2026,30 +2050,14 @@ async function runAgentPass(
   let alwaysAvailableResourcesPrompt = alwaysAvailable.length > 0
       ? formatAlwaysAvailableResourcesPrompt(alwaysAvailable) : "";
 
-  // Tells the model what changed in each resource since it last saw it, as a synthetic
-  // observeUserChanges call (see the "catalogChange" message).
+  // Tells the model what changed in each resource since it last saw it (see the "catalogChange"
+  // message).
   let replayCatalogChange = (
       sequence: number, resources: AlwaysAvailableResource[], timestamp: number) => {
     let seen = seenAlwaysAvailableResources(listedResources, chatMessages, sequence);
-    let toolCallId = `synthetic_${sequence}`;
-    modelMessages.push(makeReplayAssistantMessage([{
-      type: "toolCall",
-      id: toolCallId,
-      name: "observeUserChanges",
-      arguments: {},
-    }], handle.model, timestamp));
-    modelMessages.push({
-      role: "toolResult",
-      toolCallId,
-      toolName: "observeUserChanges",
-      content: [{
-        type: "text",
-        text: resources.map(resource => formatCatalogChange(resource, seen.get(resource.name)))
-            .join("\n\n"),
-      }],
-      isError: false,
-      timestamp,
-    });
+    let text = resources.map(resource => formatCatalogChange(resource, seen.get(resource.name)))
+        .join("\n\n");
+    modelMessages.push(...makeReplayObservation(sequence, text, handle.model, timestamp));
   };
 
   // Rebuild the code the compacted prefix left behind: first the checkpoint's pins establish
@@ -2585,23 +2593,8 @@ async function runAgentPass(
                   "available; read the files to see their current content.)");
             }
             if (observations.length > 0) {
-              let toolCallId = `synthetic_${msg.sequence}`;
-              modelMessages.push(makeReplayAssistantMessage([{
-                type: "toolCall",
-                id: toolCallId,
-                name: "observeUserChanges",
-                arguments: {},
-              }], handle.model, msgTimestamp));
-              modelMessages.push({
-                role: "toolResult",
-                toolCallId,
-                toolName: "observeUserChanges",
-                // Plain text, not JSON: a JSON-escaped diff full of quotes and braces would be
-                // needlessly hard to read, and the result is only ever fed to the model.
-                content: [{type: "text", text: observations.join("\n\n")}],
-                isError: false,
-                timestamp: msgTimestamp,
-              });
+              modelMessages.push(...makeReplayObservation(
+                  msg.sequence, observations.join("\n\n"), handle.model, msgTimestamp));
             }
           }
         }
@@ -2638,14 +2631,6 @@ async function runAgentPass(
         break;
 
       case "revert": {
-        // Synthetic message.
-        let toolCallId = `synthetic_${msg.sequence}`;
-        modelMessages.push(makeReplayAssistantMessage([{
-          type: "toolCall",
-          id: toolCallId,
-          name: "observeUserChanges",
-          arguments: {},
-        }], handle.model, msgTimestamp));
         // Name the first change the revert discarded: the earliest batch still proposed when it
         // was recorded. A revert reaching into the summarized turns can't be named that way, since
         // the batches it may have discarded there aren't replayed.
@@ -2654,23 +2639,16 @@ async function runAgentPass(
             : foldProposedChanges(chatMessages.slice(0, msgIndex))
                 .find(batch => batch.sequence >= msg.revertFrom);
         let revertedFromChangeId = firstReverted && changeIdMap.get(firstReverted.sequence);
-        modelMessages.push({
-          role: "toolResult",
-          toolCallId,
-          toolName: "observeUserChanges",
-          content: [{
-            type: "text",
-            text: revertsSummarizedTurns
+        modelMessages.push(...makeReplayObservation(
+            msg.sequence,
+            revertsSummarizedTurns
                 ? "The user reverted all pending changes from a point in the summarized " +
                   "earlier turns onward."
                 : revertedFromChangeId === undefined ? "The user discarded pending changes."
                 : `The user reverted all changes starting from change ${revertedFromChangeId} ` +
                   `onward. The files have returned to the state they were in immediately ` +
                   `before change ${revertedFromChangeId}.`,
-          }],
-          isError: false,
-          timestamp: msgTimestamp,
-        });
+            handle.model, msgTimestamp));
         break;
       }
 
