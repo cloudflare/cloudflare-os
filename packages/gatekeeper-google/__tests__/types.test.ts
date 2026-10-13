@@ -127,6 +127,33 @@ function vendorBundle(): string {
 }
 
 describe("embedded agent declarations", () => {
+  it("exposes binary uploads and removable draft attachments without message write authority", () => {
+    const types = source("types.txt");
+    expect(compileAgentTypes(types + `
+declare const draft: GmailDraft;
+declare const message: GmailMessage;
+const file: GmailAttachmentInput = {
+  filename: "report.pdf", mimeType: "application/pdf", content: new ArrayBuffer(1),
+};
+const compose: GmailComposeOptions = {attachments: [file]};
+const reply: GmailReplyOptions = {attachments: [file]};
+const initial: GmailDraftInput = {attachments: [file]};
+const added: Promise<GmailDraftAttachment> = draft.addAttachment(file);
+const entries: Promise<GmailDraftAttachmentEntry[]> = draft.attachments();
+declare const draftAttachment: GmailDraftAttachment;
+const readable: GmailAttachment = draftAttachment;
+const removed: Promise<void> = draftAttachment.remove();
+// @ts-expect-error Patches cannot replace all attachments.
+const patch: GmailDraftPatch = {attachments: [file]};
+// @ts-expect-error Message attachment capabilities remain read-only.
+readable.remove();
+// @ts-expect-error Uploads take exact binary buffers, not base64 strings.
+const encoded: GmailAttachmentInput = {filename: "file", mimeType: "text/plain", content: "YQ=="};
+// @ts-expect-error Messages cannot add attachments.
+message.addAttachment(file);
+`).filter(message => !message.includes("'cloudflare:workers'"))).toEqual([]);
+  });
+
   it("compiles the exact Google Doc agent declaration bundle without module dependencies", () => {
     expect(compileAgentTypes(docBundle())).toEqual([]);
   });

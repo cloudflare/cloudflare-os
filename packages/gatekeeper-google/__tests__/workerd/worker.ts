@@ -8,7 +8,8 @@ import type {
 } from "@gadgets/workshop-shared/gatekeeper";
 import {TestGitCache} from "../test-git-cache";
 import type {
-  GmailComposeOptions, GmailDraftInput, GmailDraftPatch, GmailMessage, GmailMessageEntry,
+  GmailAttachmentInput, GmailComposeOptions, GmailDraftAttachment, GmailDraftAttachmentEntry,
+  GmailDraftInput, GmailDraftPatch, GmailMessage, GmailMessageEntry,
   GmailMessageInfo, GmailReplyOptions, GmailScopedSession, GmailSession, GmailThread,
 } from "../../src/types";
 import type {
@@ -367,6 +368,10 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     this.#gatekeeper(facetName, id, props);
   }
 
+  restartGatekeeper(facetName: string): void {
+    this.ctx.facets.abort(facetName, new Error("test: restart"));
+  }
+
   async applyAction(
       facetName: string, id: string, props: GmailGatekeeperImplProps,
       actionId: number,
@@ -465,7 +470,8 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
       facetName: string, id: string, props: GmailGatekeeperImplProps,
       operations: StorageOperation[],
   ): Promise<void> {
-    (this.#gatekeeper(facetName, id, props) as unknown as TestGmail)
+    // Awaited so a following restart cannot abort the write, and lose it, while it is in flight.
+    await (this.#gatekeeper(facetName, id, props) as unknown as TestGmail)
       .applyTestStorage(operations);
   }
 
@@ -748,6 +754,29 @@ testGmailPrototype.runTestOperation = async function(
     return await session.getMailboxAddress();
   case "session.send":
     return await session.send(id as string[], value as string, extra as string, options as GmailComposeOptions);
+  case "session.sendCaptureFailure":
+  case "session.createDraftCaptureFailure": {
+    const capture = GmailForwardSnapshotStore.prototype.capture;
+    let captures = 0;
+    GmailForwardSnapshotStore.prototype.capture = async function(bytes) {
+      if (++captures === 2) throw new Error("test: attachment capture failed");
+      return await capture.call(this, bytes);
+    };
+    try {
+      if (operation === "session.sendCaptureFailure") {
+        return await session.send(id as string[], value as string, extra as string,
+          options as GmailComposeOptions);
+      }
+      const draft = await session.createDraft(id as GmailDraftInput);
+      try {
+        return await draft.getMetadata();
+      } finally {
+        disposeRpc(draft);
+      }
+    } finally {
+      GmailForwardSnapshotStore.prototype.capture = capture;
+    }
+  }
   case "session.listThreads": {
     const cursor = await session.listThreads();
     try {
@@ -1101,6 +1130,50 @@ testGmailPrototype.runTestOperation = async function(
         for (const entry of entries) disposeRpc(entry.attachment);
       }
     } finally {
+      disposeRpc(draft);
+    }
+  }
+  case "draft.addAttachment": {
+    const draft = await session.getDraft(id as string);
+    try {
+      const attachment = await draft.addAttachment(value as GmailAttachmentInput);
+      try {
+        return {info: await attachment.getMetadata(), content: await attachment.getContent()};
+      } finally {
+        disposeRpc(attachment);
+      }
+    } finally {
+      disposeRpc(draft);
+    }
+  }
+  case "draft.removeAttachment":
+  case "draft.removeAttachmentAcrossEdit":
+  case "draft.addAttachmentAcrossEdit": {
+    const draft = await session.getDraft(id as string);
+    let entries: GmailDraftAttachmentEntry[] = [];
+    let added: GmailDraftAttachment | undefined;
+    try {
+      if (operation !== "draft.addAttachmentAcrossEdit") entries = await draft.attachments();
+      const attachment = operation === "draft.addAttachmentAcrossEdit"
+        ? (added = await draft.addAttachment(value as GmailAttachmentInput))
+        : entries[value as number]?.attachment;
+      if (!attachment) throw new Error("No such draft attachment index.");
+      if (operation === "draft.removeAttachment") return await attachment.remove();
+      const before = {info: await attachment.getMetadata(), content: await attachment.getContent()};
+      await draft.update(extra as GmailDraftPatch);
+      const after = {info: await attachment.getMetadata(), content: await attachment.getContent()};
+      await attachment.remove();
+      const remaining = await draft.attachments();
+      try {
+        return {before, after, remaining: await Promise.all(remaining.map(async entry => ({
+          info: entry.info, content: await entry.attachment.getContent(),
+        })))};
+      } finally {
+        for (const entry of remaining) disposeRpc(entry.attachment);
+      }
+    } finally {
+      if (added) disposeRpc(added);
+      for (const entry of entries) disposeRpc(entry.attachment);
       disposeRpc(draft);
     }
   }

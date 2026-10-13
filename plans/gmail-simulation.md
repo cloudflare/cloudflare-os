@@ -103,10 +103,20 @@ of archives and label changes, each needing a round trip to the user.
    body and attachments the user is being asked to approve. There are two small exceptions:
    - the `Date` header is stamped when the email is actually sent, so the read-back shows the
      submission time instead;
-   - a draft's attachments are read from the Gmail draft, not stored with the action. If someone
-     edits the draft in Gmail while its send is pending, the read-back shows the edit. The send
-     then fails when approved, because `applyAction()` still checks the draft against what was
-     approved.
+   - existing provider attachment bytes are read from the Gmail draft. Uploaded files instead
+     have integrity-checked chunk-store references shared by actions and the active draft, so
+     they remain readable before approval and across restarts. If someone edits the draft in
+     Gmail while its send is pending, provider-backed reads can show that edit; approval still
+     checks the complete draft fingerprint and refuses a changed snapshot.
+     New persisted fingerprints are prefixed `v2:` and preserve exact attachment bytes. Existing
+     unprefixed preconditions and uncertain-send fingerprints retain historical verification;
+     an old draft write rebases its successor to the provider's byte-exact revision. An old
+     update whose write is being reconciled also accepts the old builder's output by its
+     historical fingerprint; creates carry no fingerprint that dates them, so they are held to
+     byte-exact output. An old send fingerprint is replaced only on a retry no attempt is
+     pending for. Legacy attachment metadata is correlated to the exact provider parts, not
+     emitted as normalized calendar content. A `v2:` precondition never falls back to the
+     historical parser.
 
 4. **Where exact simulation isn't possible, show the agent's change and document the gap.** In some
    places Gmail's data can't be reconciled with a pending action, mostly free-text search. There the

@@ -153,6 +153,67 @@ User — see Step 4.)
 
 You can also see your connected accounts and add and remove them in the settings (accessed through the account menu in the upper-right).
 
+## Gmail attachments
+
+New messages, replies, forwards, and their draft-creation methods accept
+`attachments?: GmailAttachmentInput[]`. Each input is a regular file with a filename,
+MIME media type, and exact `ArrayBuffer` bytes; strings, base64 inputs, inline uploads,
+and multipart container uploads are not supported.
+
+For example, given an exported PDF as `pdfBytes: ArrayBuffer`:
+
+```ts
+using draft = await gmail.createDraft({
+  to: ["recipient@example.com"],
+  subject: "Cloudflare at a Glance",
+  text: "Attached is the one-page overview.",
+  attachments: [{
+    filename: "cloudflare-at-a-glance.pdf",
+    mimeType: "application/pdf",
+    content: pdfBytes,
+  }],
+});
+```
+
+For an existing draft, `draft.addAttachment(input)` returns a readable, removable
+`GmailDraftAttachment`. `draft.attachments()` lists `{info, attachment}` entries, and
+`entry.attachment.remove()` removes that exact part, even when filenames are duplicated.
+Dispose attachment capabilities when finished. `draft.update()` preserves attachments;
+it does not replace their list. Message attachment capabilities remain read-only.
+
+Replies include only supplied files. Forwards preserve the original attachments and
+inline parts, then append supplied files. A forward draft's preserved source parts are
+immutable; its added files can be removed.
+
+Files may be empty, but each upload is limited to **10 MiB**. Filenames must be nonempty
+and contain no path separators or control characters; `.` and `..` are refused.
+The upload's `filename` is authoritative: redundant MIME `name`/`name*` parameters are
+discarded, while other media-type parameters such as `charset` are preserved.
+Outgoing MIME is limited to **25 MiB**, including transfer encoding and message headers.
+The binding's existing **50 MiB** retained-file quota is shared by uploads and forward
+source snapshots, including uploads in active drafts.
+
+Uploaded bytes are captured in the existing integrity-checked chunk store, not embedded
+in queued-action metadata. Pending reads expose the files before approval, and body edits
+and Durable Object restarts preserve their exact bytes. Approval descriptions include
+filename, media type, size, and SHA-256, with uploaded bytes marked as incomplete for
+human review. Files remain retained while a pending action or active draft references
+them and are released when the last reference is removed. Rejecting a prerequisite
+invalidates dependent edits; reject those edits too to release their references.
+
+Calendar files retain their original line endings and charset rather than being normalized.
+Nested `message/rfc822` files also retain their exact bytes, including trailing line endings,
+through edits and sends; duplicate `.eml` filenames and identical files remain separate parts.
+Provider draft rewrites correlate attachment identities by metadata and SHA-256 in the actual
+MIME order, so queued edits and removals still select the right part when inline parts move.
+An imported attachment without a disposition keeps its identity when a draft rewrite
+emits the regular `attachment` disposition.
+
+Draft and send fingerprints are prefixed `v2:` and hash attachment bytes exactly. Approvals
+queued before that upgrade keep their unprefixed fingerprints and still apply, including a send
+whose response was lost, which is reconciled rather than sent again. See
+`plans/gmail-simulation.md` for how they are verified.
+
 ## Google Chat and Gmail new-message hooks (optional)
 
 Gadgets can watch a Chat conversation for new messages (see `docs/google-chat-capabilities.md`),
