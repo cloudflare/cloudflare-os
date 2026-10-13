@@ -102,7 +102,7 @@ export default function ResourcePicker({
 
   // Fills in the suggested completion and selects its first placeholder, or else the end of the URL.
   const refine = (suffix: string, replaceSearch?: boolean) => {
-    const newUrl = replaceSearch ? suffix.replace(/\*$/, '') : completeUrl(searchText, suffix)
+    const newUrl = completeUrl(replaceSearch ? '' : searchText, suffix)
     const [placeholder = { start: newUrl.length, end: newUrl.length }] = getPlaceholderRanges(newUrl)
     onRefine?.(newUrl, placeholder.start, placeholder.end)
   }
@@ -189,16 +189,16 @@ export default function ResourcePicker({
 
   // --- Filtering and classification logic ---
 
-  const lowerSearch = searchText.toLowerCase().trim()
+  const trimmedSearch = searchText.trim()
+  const lowerSearch = trimmedSearch.toLowerCase()
 
   const allResourceItems = allVendors.flatMap(v =>
     v.supportedResources.map(r => ({ resource: r, vendor: v }))
   )
 
   // The first placeholder (:name or *) still in the search URL, which blocks choosing an account.
-  const trimmedSearch = searchText.trim()
-  const [firstPlaceholder] = lowerSearch ? getPlaceholderRanges(trimmedSearch) : []
-  const searchHasPlaceholders = firstPlaceholder !== undefined
+  const [firstPlaceholder] = getPlaceholderRanges(trimmedSearch)
+  const unfilledPlaceholder = firstPlaceholder && trimmedSearch.slice(firstPlaceholder.start, firstPlaceholder.end)
 
   type MatchedResource = {
     resource: SupportedResource
@@ -367,7 +367,7 @@ export default function ResourcePicker({
           refine(item.suffix, item.replaceSearch)
         } else if (item.type === 'account') {
           // Don't allow account activation if the URL still has placeholders.
-          if (searchHasPlaceholders) return
+          if (unfilledPlaceholder) return
           const accountData = allAccounts.get(item.accountId)
           if (accountData && !accountData.credentialsValid) {
             handleReconnect(item.accountId)
@@ -530,7 +530,7 @@ export default function ResourcePicker({
                     <div
                       key={account.id}
                       onClick={() => {
-                        if (searchHasPlaceholders) return
+                        if (unfilledPlaceholder) return
                         if (needsAccess) {
                           if (!isGranting) void handleGrantResourceAccess(account.id, missingGrants)
                         } else if (isExpired || isReconnecting) {
@@ -540,10 +540,10 @@ export default function ResourcePicker({
                         }
                       }}
                       className={`${PICKER_ROW} ${isActive ? PICKER_ROW_ACTIVE : ''} ${
-                        ((isExpired && !isReconnecting) || needsAccess || searchHasPlaceholders) ? 'opacity-70' : ''
+                        ((isExpired && !isReconnecting) || needsAccess || unfilledPlaceholder) ? 'opacity-70' : ''
                       }`}
                       style={{
-                        cursor: searchHasPlaceholders ? 'default' : (isReconnecting || isGranting) ? 'wait' : 'pointer',
+                        cursor: unfilledPlaceholder ? 'default' : (isReconnecting || isGranting) ? 'wait' : 'pointer',
                       }}
                     >
                       <GatekeeperIcon
@@ -563,9 +563,9 @@ export default function ResourcePicker({
                           </span>
                         )}
                       </span>
-                      {searchHasPlaceholders ? (
+                      {unfilledPlaceholder ? (
                         <span className="flex-shrink-0 text-[11.5px] leading-4 text-kumo-subtle">
-                          Fill in <span className="font-mono">{trimmedSearch.slice(firstPlaceholder.start, firstPlaceholder.end)}</span> first
+                          Fill in <span className="font-mono">{unfilledPlaceholder}</span> first
                         </span>
                       ) : isReconnecting || isGranting ? (
                         <div className="h-3 w-3 flex-shrink-0 animate-spin rounded-full border-2 border-kumo-brand border-t-transparent" />

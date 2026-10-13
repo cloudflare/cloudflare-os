@@ -394,20 +394,19 @@ export function matchesResourceUrlPattern(pattern: string, url: string): boolean
   const URLPatternCtor = (globalThis as { URLPattern?: new (p: string) => { test(u: string): boolean } }).URLPattern;
   if (!URLPatternCtor) return false;
   let compiled: { test(u: string): boolean };
-  let parsed: URL;
+  let toggled: URL;
   try {
     compiled = new URLPatternCtor(pattern);
-    parsed = new URL(url);
+    toggled = new URL(url);
   } catch {
     return false;
   }
   // Also try the path with its trailing slash toggled, since URLPattern distinguishes the two and
   // we don't know which form the pattern expects. The path, not the whole URL, since the URL may
   // end in a query or fragment.
-  const toggled = new URL(parsed);
-  toggled.pathname = parsed.pathname.endsWith('/')
-    ? stripTrailingSlashes(parsed.pathname) : `${parsed.pathname}/`;
-  return compiled.test(parsed.href) || compiled.test(toggled.href);
+  toggled.pathname = toggled.pathname.endsWith('/')
+    ? stripTrailingSlashes(toggled.pathname) : `${toggled.pathname}/`;
+  return compiled.test(url) || compiled.test(toggled.href);
 }
 
 export type ResolveRequestedResourceResult =

@@ -60,6 +60,10 @@ const requiredSegments = (pattern: string): string[][] | null => {
     WORD_CHOICE.exec(segment)?.[1].split('|') ?? [segment.replace(/\(.*\)|\+$/g, '')])
 }
 
+// The picker classifies every resource on each keystroke, so each pattern is parsed once. The
+// patterns are the deployment's resource types, a fixed set, so the cache needs no bound.
+const segmentsByPattern = new Map<string, string[][] | null>()
+
 /**
  * Classify a search URL, which may be half-typed and lack its scheme, against a resource pattern.
  * 'full' when it names a resource the pattern matches, by the URLPattern test the backend applies;
@@ -69,7 +73,8 @@ export function classifyMatch(search: string, pattern: string): MatchClassificat
   const typed = search.trim()
   if (matchesResourceUrlPattern(pattern, normalizeResourceUrl(typed))) return { type: 'full' }
 
-  const parts = requiredSegments(pattern)
+  let parts = segmentsByPattern.get(pattern)
+  if (parts === undefined) segmentsByPattern.set(pattern, parts = requiredSegments(pattern))
   if (!parts) return { type: 'none' }
   const words = parts.map(([word]) => word)
 
@@ -84,8 +89,8 @@ export function classifyMatch(search: string, pattern: string): MatchClassificat
   for (const [i, part] of parts.entries()) {
     const segment = segments[i]
     if (segment === undefined) return { type: 'prefix', suffix: `/${words.slice(i).join('/')}` }
-    const matches = part.some(word => word === '*' || word.startsWith(':') ? segment !== ''
-      : i === 0 && word.startsWith('*.') ? segment.endsWith(word.slice(1).toLowerCase())
+    const matches = part.some(word => (word === '*' || word.startsWith(':')) ? segment !== ''
+      : (i === 0 && word.startsWith('*.')) ? segment.endsWith(word.slice(1).toLowerCase())
       : segment === word.toLowerCase())
     if (matches) continue
     // The segment still being typed completes to a word of this part, then the rest of the pattern.
