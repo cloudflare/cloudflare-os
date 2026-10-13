@@ -39,11 +39,26 @@ describe('classifyMatch', () => {
     expect(classifyMatch(typed + value, pattern)).toEqual({ type: 'full' })
   })
 
-  it('completes a choice between words to its first word', () => {
-    expect(classifyMatch('https://chat.google.com/', CHAT_SPACE)).toEqual({ type: 'prefix', suffix: 'room/:spaceId' })
-    expect(classifyMatch('https://chat.google.com/ro', CHAT_SPACE)).toEqual({ type: 'prefix', suffix: 'om/:spaceId' })
+  it.each([
+    ['https://chat.google.com/', 'room/:spaceId'],
+    ['https://chat.google.com/ro', 'om/:spaceId'],
+    ['https://chat.google.com/d', 'm/:spaceId'],
+    ['https://chat.google.com/dm/', ':spaceId'],
+  ])('completes %s with whichever word of a choice it has begun, else the first', (typed, suffix) => {
+    expect(classifyMatch(typed, CHAT_SPACE)).toEqual({ type: 'prefix', suffix })
+  })
+
+  it('accepts every word of a choice', () => {
+    expect(classifyMatch('https://chat.google.com/dm/nAs4SyAAAAE', CHAT_THREAD)).toEqual({ type: 'prefix', suffix: '/:threadId' })
     expect(classifyMatch('https://chat.google.com/dm/nAs4SyAAAAE/HyxlRqVDmjs/HyxlRqVDmjs?cls=10', CHAT_THREAD))
       .toEqual({ type: 'full' })
+  })
+
+  it.each([
+    ['h', CHAT_THREAD, 'ttps://chat.google.com/room/:spaceId/:threadId'],
+    ['https://', 'https://x.com/:username([A-Za-z0-9_]{1,15})', 'x.com/:username'],
+  ])('completes the scheme %s in plain placeholders', (typed, pattern, suffix) => {
+    expect(classifyMatch(typed, pattern)).toEqual({ type: 'prefix', suffix })
   })
 
   it("holds a link to the pattern's parameter constraints", () => {

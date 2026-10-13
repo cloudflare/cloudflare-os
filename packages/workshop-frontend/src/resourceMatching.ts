@@ -34,14 +34,17 @@ const splitAtQuery = (url: string): [path: string, tail: string] => {
   return at < 0 ? [url, ''] : [url.slice(0, at), url.slice(at)]
 }
 
+/** A parameter choosing between words, such as `:kind(room|dm)`, capturing the words. */
+const WORD_CHOICE = /^:\w+\(([\w-]+(?:\|[\w-]+)*)\)$/
+
 /**
  * The host and path segments a URL needs to match a pattern, as URLPattern normalizes them: up to
- * the first optional segment (`:rest*`, `*?`), with regexes and `+` dropped from parameter names,
- * so a completion holds plain placeholders. A parameter that chooses between words
- * (`:kind(room|dm)`) completes to its first word, since a placeholder would ask the user to spell
- * the choice. Null for a pattern this browser can't parse.
+ * the first optional segment (`:rest*`, `*?`), each as the words it accepts. A {@link WORD_CHOICE}
+ * accepts each of its words; any other parameter drops its regex and `+`, so a completion, which
+ * spells each segment's first word, holds plain placeholders. Null for a pattern this browser can't
+ * parse.
  */
-const requiredSegments = (pattern: string): string[] | null => {
+const requiredSegments = (pattern: string): string[][] | null => {
   let parsed: URLPattern
   try {
     parsed = new URLPattern(pattern)
@@ -54,7 +57,7 @@ const requiredSegments = (pattern: string): string[] | null => {
   ]
   const optional = segments.findIndex(segment => segment !== '*' && /[?*]$/.test(segment))
   return segments.slice(0, optional < 0 ? undefined : optional).map(segment =>
-    segment.replace(/^:\w+\(([\w-]+)(?:\|[\w-]+)*\)$/, '$1').replace(/\(.*\)|\+$/g, ''))
+    WORD_CHOICE.exec(segment)?.[1].split('|') ?? [segment.replace(/\(.*\)|\+$/g, '')])
 }
 
 /**
@@ -66,26 +69,29 @@ export function classifyMatch(search: string, pattern: string): MatchClassificat
   const typed = search.trim()
   if (matchesResourceUrlPattern(pattern, normalizeResourceUrl(typed))) return { type: 'full' }
 
-  // A scheme still being typed ("h", "https:/"): the suffix is the rest of the pattern.
-  if (typed.length <= pattern.indexOf('://') + 3 && pattern.toLowerCase().startsWith(typed.toLowerCase())) {
-    return { type: 'prefix', suffix: pattern.slice(typed.length) }
-  }
-
   const parts = requiredSegments(pattern)
   if (!parts) return { type: 'none' }
+  const words = parts.map(([word]) => word)
+
+  // A scheme still being typed ("h", "https:/") completes to the whole pattern.
+  const scheme = pattern.slice(0, pattern.indexOf('://') + 3)
+  if (scheme.toLowerCase().startsWith(typed.toLowerCase())) {
+    return { type: 'prefix', suffix: scheme.slice(typed.length) + words.join('/') }
+  }
+
   const [path] = splitAtQuery(typed.replace(/^https?:\/\//i, ''))
   const segments = path.toLowerCase().split('/')
   for (const [i, part] of parts.entries()) {
     const segment = segments[i]
-    if (segment === undefined) return { type: 'prefix', suffix: `/${parts.slice(i).join('/')}` }
-    const matches = part === '*' || part.startsWith(':') ? segment !== ''
-      : i === 0 && part.startsWith('*.') ? segment.endsWith(part.slice(1).toLowerCase())
-      : segment === part.toLowerCase()
+    if (segment === undefined) return { type: 'prefix', suffix: `/${words.slice(i).join('/')}` }
+    const matches = part.some(word => word === '*' || word.startsWith(':') ? segment !== ''
+      : i === 0 && word.startsWith('*.') ? segment.endsWith(word.slice(1).toLowerCase())
+      : segment === word.toLowerCase())
     if (matches) continue
-    // The segment still being typed completes to this part, followed by the rest of the pattern.
-    if (i === segments.length - 1 && !part.startsWith('*') && part.toLowerCase().startsWith(segment)) {
-      return { type: 'prefix', suffix: [part.slice(segment.length), ...parts.slice(i + 1)].join('/') }
-    }
+    // The segment still being typed completes to a word of this part, then the rest of the pattern.
+    const word = i === segments.length - 1
+      ? part.find(word => !word.startsWith('*') && word.toLowerCase().startsWith(segment)) : undefined
+    if (word) return { type: 'prefix', suffix: [word.slice(segment.length), ...words.slice(i + 1)].join('/') }
     return { type: 'none' }
   }
   return { type: 'none' }
