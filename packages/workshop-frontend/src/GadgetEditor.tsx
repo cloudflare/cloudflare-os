@@ -59,6 +59,7 @@ import { GadgetPresence } from './components/GadgetPresence'
 import BlueprintModal from './BlueprintModal'
 import { UpdateFromBlueprintDialog } from './features/blueprint-updates/UpdateFromBlueprintDialog'
 import { useBlueprintUpdateAvailable } from './features/blueprint-updates/useBlueprintUpdateAvailable'
+import { reportVisibleChat } from './features/notifications/visibleChat'
 import TopBarNotice from './TopBarNotice'
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from './components/WorkshopControls'
 import { useActionEntries, useActions } from './useActions'
@@ -1159,6 +1160,14 @@ export default function GadgetEditor() {
       replace: true,
     })
   }, [showChatParam, id, navigate, setWorkspaceVisibility, exitGadgetFullscreen])
+
+  // Notifications skip the chat on screen: not one covered by full-screen preview or, on a phone,
+  // by the workspace pane.
+  useEffect(() => reportVisibleChat(() =>
+    effectiveSelectedChatId === null || isGadgetFullscreen || (showFullEditor && isSinglePaneLayout())
+      ? null
+      : { workspaceId: id!, chatId: effectiveSelectedChatId }
+  ), [id, effectiveSelectedChatId, isGadgetFullscreen, showFullEditor])
 
   // ── navigation helper ────────────────────────────────────────────────────────
   const navigateToChat = useCallback(

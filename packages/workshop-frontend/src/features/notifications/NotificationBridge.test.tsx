@@ -9,12 +9,10 @@ import type {
   AuthenticatedApi, NotificationSubscriber, UserNotification,
 } from "@gadgets/workshop-shared/api";
 import { NotificationBridge } from "./NotificationBridge";
+import { reportVisibleChat } from "./visibleChat";
 
 const addToast = vi.fn<(options: { actions: { onClick: () => void }[] }) => void>();
-const router = {
-  navigate: vi.fn<(options: object) => void>(),
-  state: { location: { pathname: "/", search: {} as { chat?: number } } },
-};
+const router = { navigate: vi.fn<(options: object) => void>() };
 
 vi.mock("@cloudflare/kumo", () => ({ useKumoToastManager: () => ({ add: addToast }) }));
 vi.mock("@tanstack/react-router", () => ({ useRouter: () => router }));
@@ -55,7 +53,6 @@ describe("NotificationBridge", () => {
   beforeEach(() => {
     addToast.mockClear();
     router.navigate.mockClear();
-    router.state.location = { pathname: "/", search: {} };
     setVisibility("visible");
     subscribers = [];
     dispose = vi.fn<() => void>();
@@ -129,15 +126,15 @@ describe("NotificationBridge", () => {
     });
   });
 
-  it("does not announce a task whose chat is already open", async () => {
+  it("does not announce a task whose chat is on screen", async () => {
     await render();
-    router.state.location = { pathname: "/workspace/workspace-1", search: { chat: 1 } };
+    const withdraw = reportVisibleChat(() => ({ workspaceId: "workspace-1", chatId: 1 }));
     await act(() => subscribers[0].notify(notification));
     expect(addToast).not.toHaveBeenCalled();
 
-    router.state.location = { pathname: "/workspace/workspace-1", search: { chat: 2 } };
-    await act(() => subscribers[0].notify(notification));
+    await act(() => subscribers[0].notify({ ...notification, chatId: 2 }));
     expect(addToast).toHaveBeenCalledOnce();
+    withdraw();
   });
 
   it("registers the native app's device and reports the outcome", async () => {
