@@ -4931,6 +4931,20 @@ describe("Gmail pending sends", () => {
         .toEqual([["image.png", "png"], ["invite.ics", lfCalendar], ["tail.bin", "x".repeat(lfCalendar.length)]]);
     });
 
+  it("lists an applied forward's source part whose filename has surrounding spaces", async () => {
+    const {gatekeeper, receive} = mailHarness();
+    const source = receive({attachments: [{filename: " spaced.bin ", contentType: "application/octet-stream",
+      data: btoa("spaced"), disposition: "attachment", description: "Spaced"}]});
+    const session = await gatekeeper.startSession(approvalQueue());
+    const draft = await (await session.getMessage(source.id)).createForwardDraft(["to@example.com"], "Before");
+    await gatekeeper.applyAction(1);
+
+    const entries = await draft.attachments();
+
+    expect(entries.map(entry => entry.info.filename)).toEqual([" spaced.bin "]);
+    expect(new TextDecoder().decode(await entries[0].attachment.getContent())).toBe("spaced");
+  });
+
   it("reads same-named inline and regular forward parts as their own bytes", async () => {
     const {gatekeeper, receive} = mailHarness();
     const source = receive();

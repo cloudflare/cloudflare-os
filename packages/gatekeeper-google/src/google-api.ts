@@ -1870,7 +1870,8 @@ function classifyGmailPart(part: GmailPayloadPart, isRelatedRepresentation = fal
       ? "inline" as const
       : null;
   const contentId = cleanContentId(headerValue(part.headers, "Content-ID"));
-  const filename = part.filename?.trim() || null;
+  // A blank filename is none, but a named part keeps its exact name, as the raw MIME parser does.
+  const filename = part.filename?.trim() ? part.filename : null;
   const mimeType = part.mimeType?.toLowerCase();
   const isText = mimeType === "text/plain" || mimeType === "text/html";
   const isBody = isText && !filename && disposition !== "attachment" &&
