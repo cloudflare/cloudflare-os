@@ -1,5 +1,86 @@
 This project is building a platform for "vibe coded" personal applications and AI agents that run inside a strong sandbox.
 
+## Replica OT discipline
+
+- Integrations calculate filesystem deltas; the kernel validates scope/anchors and uses the existing
+  shared OT engine to order them. Never reconstruct canonical operations by diffing resulting text:
+  repeated text can give the same bytes a different insertion position and change collision results.
+- Preserve composed deltas across accepts/compaction and retain anchor history for live replica leases.
+  Test actual operation sequences and compact wire/storage size, not only final file contents.
+- Replica ingestion must enforce the originating chat's file-tool permissions, including spawned
+  agents' gadget-write prohibition, on both live and stored paths. Fault only touched edit bases.
+- First-write gadget pins must also be prepared on the stored replica path after approval/eviction,
+  against the lease's immutable base; verify that the resulting proposal can actually be accepted.
+- Text attachment projection must obey the OT text limit, not only the upload byte limit. Reserve
+  existing base/accepted/pending root names using metadata so uploads never replace workspace work.
+- Diagnose agent stalls with content-free queued/started/completed barrier and model-dispatch
+  breadcrumbs. A created stream does not mean provider response headers have arrived.
+- Match terminal journals to the active continuation before skipping inference after reset. Model
+  recovery failures must persist a terminal lifecycle outbox before removing the active record.
+- A persisted pause marker distinguishes interrupted suspension teardown from an authorized wake-up.
+  Recovery cancellation still needs idle bookkeeping, fenced against a newer live execution.
+- Bound replica correction receipts before the persistence barrier, not only incoming/accepted OTs:
+  a no-op against a stale cursor can require large canonical corrections.
+- Serialize replica receipt/version checks with live appends, so expected duplicate/CAS retries
+  never latch a fatal persistence error. Terminal replica cleanup is registered, ACK-fenced and
+  has a fixed durable deadline that renewal cannot extend.
+- Drain ordinary step buffers inside that same serialized callback, not while enqueueing it:
+  a replica append can yield before its commit, and an ordinary step must never take those edits.
+- Journal authorized connection wake-ups on their original continuation before yielding, including
+  before the pause is recorded and during lifecycle cleanup; consume them after teardown or reset.
+- Approval wake-ups do not require effect-redelivery permission. Recheck the active continuation
+  and terminal journal after lifecycle awaits; accepting an old card cannot wake a newer prompt.
+- Cache freshness does not reserve an upload filename. Recheck allocated roots at the message
+  transaction against replica writes that can arrive during preparation.
+- Bound canonical RPC pages by serialized bytes as well as rows, using the existing OT estimator
+  without copying text. Advance cursor/hasMore only over events actually returned.
+- Replica leaf enumeration excludes directories. Reuse file-tool tree-entry writability checks
+  before accepting mutations, rather than treating an absent leaf as proof of an absent path.
+- Compare large upload round trips with byte length plus native hashes, not element-by-element
+  assertion walkers. Dispose test client/notification capabilities before graceful DO eviction.
+- Attachment projection must commit with its validated message. Prefetch bytes/tree metadata first;
+  a rejected send must leave uploads staged and must not consume a workspace filename.
+- Lifecycle callbacks retain registration-scoped worktree selections; never rebuild their authority
+  from the latest bindings. Validate transforms before buffering, so malformed model edits become
+  recorded tool errors rather than losing the whole step and its explanatory transcript.
+- Approval concurrency tests must release their effect barrier before awaiting joined approvals;
+  otherwise a test can deadlock against correct single-flight behavior.
+- Match the Node version pinned in CI when diagnosing test failures. A newer Node major can shadow
+  jsdom's `localStorage`; excessive parallel workerd fleets can also cause exit 137 locally.
+- On this Mac, check power logs when unrelated suites expire together: system sleep advances
+  watchdog deadlines. Use a test-scoped `caffeinate -i` when needed; do not disable screen locking.
+  Thermal-emergency sleep can override it; reduce test concurrency rather than bypassing thermal safety.
+- Verify newly added regressions actually execute with direct Vitest or `vp run --no-cache`;
+  a successful cached run can replay an older test count, especially for untracked test files.
+- To select backend unit files, invoke Vitest directly after codegen: arguments to the compound
+  `test:run` script reach only its final integration-suite command, not its first unit-suite command.
+
+## Durable Object reset discipline
+
+Durable Objects reset frequently, including during long RPC calls. Treat resets as a normal
+operating condition for every feature, not just a deployment event.
+
+- Persist workflow identity, authorized intent, progress, receipts and retry deadlines before
+  asynchronous effects. In-memory promises, timers, locks and RPC handles are disposable; use
+  durable alarms/outboxes to reconstruct progress without another browser request.
+- A lost response does not mean an operation failed. Reconcile stable effect IDs and durable
+  receipts before retrying. Never blindly repeat non-idempotent effects across an unjournalled
+  boundary; surface an indeterminate outcome when safe reconciliation is impossible.
+- Recovery retains the original approval, caller, logical turn and resource scope. Recheck
+  revocation; never borrow a later turn's authority. Fence cleanup against new work and persist
+  checkpoint results before releasing leases or destroying external resources.
+- Persistent capabilities must be minted by the DO invocation that stores them. Test-pool
+  wrappers and another DO's I/O handles cannot substitute for native persistent capabilities.
+- Graceful test eviction waits for in-flight RPCs. Use the abrupt-reset helper when testing an
+  open replica's recovery boundary, rather than increasing timeouts to wait for it to drain.
+- Test real eviction and faults before dispatch, after effects but before ACK, after ACK but
+  before local persistence, and during cleanup. Check both eventual progress and absence of
+  duplicate effects, lost acknowledged edits or widened authority.
+- Log bounded lifecycle/recovery identities, state and timings, never prompts, commands,
+  credentials or file contents. Document unavoidable loss/ambiguity boundaries explicitly.
+
+For the generic integration/replica contract, see `docs/agent-worktree-replicas.md`.
+
 The following files are commonly important to reference:
 
 * packages/workshop-shared/node_modules/capnweb/README.md: Explains how to use Cap'n Web RPC, which is used extensively for client-server communications.

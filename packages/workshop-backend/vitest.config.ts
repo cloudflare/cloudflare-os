@@ -5,6 +5,7 @@ import { defineConfig } from 'vitest/config'
 import { cloudflareTest } from '@cloudflare/vitest-pool-workers'
 import { COMPATIBILITY_DATE } from '@gadgets/scripts/worker-config'
 import capnwebValidate from 'capnweb-validate/vite'
+import { buildSync } from 'esbuild'
 
 // Wrangler ships `*.txt` imports as Text modules (its default module rules; see
 // src/text-modules.d.ts), but this config drives the pool from inline miniflare settings, and
@@ -58,6 +59,13 @@ export default {
 };
 `
 
+// The replica leaves the kernel Worker in production. Bundle the test consumer separately so
+// file streams cross that boundary too, rather than just the test pool's instrumented DOs.
+const replicaTransferWorker = buildSync({
+  entryPoints: [path.resolve(import.meta.dirname, '__tests__/replica-transfer-worker.ts')],
+  bundle: true, write: false, format: 'esm', target: 'es2022', external: ['cloudflare:*', 'node:*'],
+}).outputFiles[0].text
+
 /**
  * Tests run inside workerd (via vitest-pool-workers) so they exercise the same runtime APIs as
  * production -- e.g. Uint8Array.toHex/fromHex and crypto.subtle used by the sharing module. Most
@@ -83,6 +91,13 @@ export default defineConfig({
           script: spanRecorder,
           compatibilityDate: COMPATIBILITY_DATE,
           compatibilityFlags: ['experimental', 'streaming_tail_worker'],
+        }, {
+          name: 'replica-transfer',
+          modules: true,
+          script: replicaTransferWorker,
+          compatibilityDate: COMPATIBILITY_DATE,
+          compatibilityFlags: ['experimental', 'nodejs_compat'],
+          durableObjects: { TRANSFER: { className: 'TestReplicaTransfer', useSQLite: true } },
         }],
         bindings: { PUBLIC_BASE_URL: 'https://workshop.example/' },
         // The overseer loads gadget code through this, so a test can run a real gadget facet.
@@ -91,11 +106,13 @@ export default defineConfig({
         r2Buckets: ['BLUEPRINT_CONTENT'],
         durableObjects: {
           TEST_OVERSEER: { className: 'OverseerDurableObject', useSQLite: true },
+          TEST_REPLICA_TRANSFER: { className: 'TestReplicaTransfer', scriptName: 'replica-transfer', useSQLite: true },
           TEST_USER: { className: 'UserDurableObject', useSQLite: true },
           TEST_PENDING_LOGIN: { className: 'PendingLogin', useSQLite: true },
           // Never addressed by name: a binding is what puts the class in `ctx.exports`, from
           // which the overseer instantiates it (with props) as one of its own facets.
           TEST_AGENT_SPAWNER: { className: 'AgentSpawnerGatekeeper', useSQLite: true },
+          TEST_INTEGRATION_ACTION_GATEKEEPER: { className: 'IntegrationTestActionGatekeeper', useSQLite: true },
           TEST_USER_DIRECTORY: { className: 'UserDirectoryDurableObject', useSQLite: true },
           // Likewise only reached through `ctx.exports`, by the overseer deleting a blueprint.
           TEST_ADMIN_SETTINGS: { className: 'AdminSettings', useSQLite: true },

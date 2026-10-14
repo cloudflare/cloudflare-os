@@ -17,6 +17,7 @@
 // `Adapter` type is the root interface implemented by the service binding.
 
 import type { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
+import type { AgentContext, GatekeeperActionContext } from "./agent-integration";
 
 /**
  * A pagination cursor.
@@ -948,6 +949,13 @@ export interface Gatekeeper<Session> extends DurableObject {
    */
   gitPull?(oids: GitOid[], cache: RpcStub<GitCache>, hints: GitPullHints): Promise<void>;
 
+  /**
+   * Stream a native Git v2 fetch for an already-advertised commit in this resource. The provider
+   * must reject requests for any other object/ref or command; credentials never enter the guest.
+   * Unlike gitPull, the pack bypasses the DO object cache and goes straight to a local Git client.
+   */
+  gitReadPack?(commit: GitOid, request: Uint8Array): Promise<ReadableStream<Uint8Array>>;
+
   // ---------------------------------------------------------------------------
   // Callbacks invoked by the overseer to apply (or reject) actions that were previously queued
   // for approval via the ApprovalQueue.
@@ -979,6 +987,13 @@ export interface Gatekeeper<Session> extends DurableObject {
    * declaration).
    */
   applyAction(action: number, cache: RpcStub<GitCache>): Promise<void>;
+
+  /**
+   * Optional contextual dispatch for integrations explicitly enabled by trusted configuration.
+   * Supplies fresh capabilities after approval, not the queue-time session. The kernel never
+   * falls back to applyAction after attempting this method: a partial apply must not run twice.
+   */
+  applyActionInContext?(action: number, context: RpcStub<GatekeeperActionContext>): Promise<void>;
 
   /**
    * Indicates that an action was rejected by the user. The gatekeeper should clean up any
@@ -1127,6 +1142,12 @@ export interface SlashCommandProvider extends RpcTarget {
  * called before applying them.
  */
 export interface ApprovalQueue extends ObservationAuthorizer {
+  /**
+   * Agent invocation context, or null outside an eligible agent session. Lifecycle and replica
+   * permissions require independent trusted grants; a singleton cannot assert those permissions.
+   */
+  getAgentContext(): Promise<AgentContext | null>;
+
   // TODO: Method to indicate that the gadget tried to perform an action that the gatekeeper itself
   //   hasn't been authorized to do (e.g. the user hasn't authorized the right OAuth scopes). The
   //   system should direct the user to the right UI to authorize the action.

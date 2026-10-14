@@ -90,6 +90,7 @@ import {
   normalizeTagSummary,
 } from "./git-commits";
 import GITHUB_LOGO_SVG from "./github-logo.svg";
+import { validateBootstrapFetch } from "@gadgets/gatekeeper-kit/git-bootstrap";
 import type {
   GitHubActor,
   GitHubBranchFilter,
@@ -3943,6 +3944,14 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     await this.#withApi(api => pullGitObjectsIntoCache(
       body => api.fetchGitUploadPack(this.ctx.props.owner, this.ctx.props.repo, body),
       oids, hints, cache));
+  }
+
+  /** Repository-scoped exact-commit fetch; credentials remain in this provider's transport. */
+  async gitReadPack(commit: GitOid, request: Uint8Array): Promise<ReadableStream<Uint8Array>> {
+    validateBootstrapFetch(commit, request);
+    const response = await this.#withApi(api => api.fetchGitUploadPack(this.ctx.props.owner, this.ctx.props.repo, request));
+    if (!response.body) throw new Error("Git provider returned no pack stream.");
+    return response.body;
   }
 
   async applyAction(actionId: number, cache: RpcStub<GitCache>): Promise<void> {

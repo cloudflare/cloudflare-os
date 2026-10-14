@@ -1243,7 +1243,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return result;
   }
 
-  async listGatekeeperVendors(filter: GatekeeperVendorFilter = {})
+  /**
+   * Agent discovery also offers optional ambient accounts, including accounts already added
+   * outside this chat. Resource pickers keep the default resource-only list.
+   */
+  async listGatekeeperVendors(filter: GatekeeperVendorFilter = {}, includeAmbient = false)
       : Promise<GatekeeperVendorInfo[]> {
     let options = {
       userId: this.storage.profile.get().id
@@ -1272,9 +1276,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           ]);
           let enabledResources =
               filterEnabledResources(config, id, supportedResources);
+          if (description.autoProvisionsAccount &&
+              ambientGatekeeperMode(config, id) === "disabled") return null;
           if (enabledResources.length == 0) {
-            // Every resource for this vendor is disabled (or it advertised none) — hide the vendor.
-            return null;
+            if (!includeAmbient || !description.autoProvisionsAccount) return null;
           }
 
           return {id, description, supportedResources: enabledResources};

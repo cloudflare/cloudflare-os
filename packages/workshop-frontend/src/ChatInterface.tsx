@@ -4475,8 +4475,24 @@ function ChatInterface({
     }
   };
 
-  // Open the gatekeeper modal pre-seeded with the agent's requested vendor/resource.
-  const handleAcceptConnection = (msg: AiChatMessage & { type: "connectionRequest" }) => {
+  // Ambient accounts need explicit opt-in but no OAuth/resource picker.
+  const handleAcceptConnection = async (msg: AiChatMessage & { type: "connectionRequest" }) => {
+    if (msg.connectionType === "ambient") {
+      setProcessingConnections((prev) => new Set(prev).add(msg.requestId));
+      try {
+        await overseer.acceptConnectionRequest(msg.requestId);
+      } catch (err) {
+        console.error("Failed to connect ambient integration:", err);
+        toasts.add({ title: "Failed to add connection", variant: "error" });
+      } finally {
+        setProcessingConnections((prev) => {
+          const next = new Set(prev);
+          next.delete(msg.requestId);
+          return next;
+        });
+      }
+      return;
+    }
     setConnectionAccept({
       requestId: msg.requestId,
       vendorId: msg.vendorId,
@@ -4892,6 +4908,11 @@ function ChatInterface({
                   {msg.reason}
                 </p>
               )}
+              {msg.connectionType === "ambient" && (
+                <p className="mt-1 text-[13px] leading-[18px] text-kumo-subtle">
+                  Add this integration to your account. Actions still require approval.
+                </p>
+              )}
             </div>
             {isPending && (
               <div className="ml-3 flex flex-shrink-0 items-center gap-2 self-center text-[13px] leading-4">
@@ -4909,7 +4930,7 @@ function ChatInterface({
                   disabled={isProc}
                   className="cursor-pointer rounded-md bg-kumo-brand px-3 py-1 font-medium text-white transition-[opacity,transform] duration-150 ease-out hover:opacity-90 focus-visible:outline-none active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  Set up
+                  {msg.connectionType === "ambient" ? "Connect" : "Set up"}
                 </button>
               </div>
             )}

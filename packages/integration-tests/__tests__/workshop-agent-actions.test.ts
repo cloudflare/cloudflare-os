@@ -289,11 +289,7 @@ it.concurrent.each(["retry", "reject"] as const)(
   }
 });
 
-// Known bug, kept as a deterministic repro: Overseer.approveAction checks `pending`, then awaits
-// applyPendingAction before marking the action approved, so two concurrent approvals (separate
-// approval surfaces, tabs, or a retry after a dropped WebSocket) both dispatch the apply, and a
-// non-idempotent gatekeeper writes twice. Drop `.fails` once approval claims the action first.
-it.concurrent.fails("approving one action twice at once applies it once", async () => {
+it.concurrent("approving one action twice at once applies it once", async () => {
   await using session = await openSession(models.script([{ text: "Ready." }]), "agentdoubleapprove");
   const label = labelOf(session);
   // A workspace is listed, so withOwnerWorkspace can open it, once it has seen activity.
@@ -309,14 +305,16 @@ it.concurrent.fails("approving one action twice at once applies it once", async 
 
     await control("hold-next-apply", { label });
     const first = ws.approveAction(action.id);
+    let second: PromiseLike<unknown> | undefined;
     try {
       await waitFor("the first apply to be held", async () => await applyAttempts(label) === 1 || null);
-      await expect(() => ws.approveAction(action.id)).rejects.toThrow(`Action is not pending: ${action.id}`);
+      // Concurrent approvals join the same apply; neither can finish until the barrier opens.
+      second = ws.approveAction(action.id);
     } finally {
       await control("release-apply", { label });
-      await Promise.allSettled([first]);
+      await Promise.allSettled([first, second]);
     }
-    await first;
+    await Promise.all([first, second]);
 
     expect(await applyAttempts(label)).toBe(1);
     expect(await actionState(label)).toEqual({ pending: [], value: 23, applyCount: 1 });

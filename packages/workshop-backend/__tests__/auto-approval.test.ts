@@ -82,6 +82,61 @@ function flush(): Promise<void> {
 }
 
 describe("AutoApprovalDrainer.drain", () => {
+  it.each(["unapproved ancestor", "unrelated manual action", "unrelated approved intent"] as const)(
+    "does not skip an %s to auto-approve a follow-up", async gate => {
+      const storage = makeStorage();
+      enableRule(storage);
+      putAction(storage, 1, {autoApprovable: false});
+      putAction(storage, 2, {autoApprovable: false});
+      putAction(storage, 3);
+      storage.actions.put({...getAction(storage, 1), followupActionIds: [3]});
+      if (gate !== "unapproved ancestor") storage.actionApplications.put({id: 1, phase: "apply",
+        resolvedBy: ENABLER, autoApproved: false, retryAt: Date.now() + 60_000});
+      if (gate === "unrelated approved intent") storage.actionApplications.put({id: 2, phase: "apply",
+        resolvedBy: ENABLER, autoApproved: false, retryAt: Date.now() + 60_000});
+      const apply = makeImmediateApply(storage);
+      await new AutoApprovalDrainer(storage, apply.applyFn).drain(GK);
+      expect(apply.calls).toEqual([]);
+      expect(getAction(storage, 3).state).toBe("pending");
+    });
+
+  it("unblocks existing follow-ups when their rule is enabled without applying unrelated later actions", async () => {
+    const storage = makeStorage();
+    putAction(storage, 1, {autoApprovable: false});
+    putAction(storage, 2);
+    putAction(storage, 3);
+    storage.actions.put({...getAction(storage, 1), followupActionIds: [2]});
+    storage.actionApplications.put({id: 1, phase: "apply", resolvedBy: ENABLER,
+      autoApproved: false, retryAt: Date.now() + 60_000});
+    const apply = makeImmediateApply(storage), drainer = new AutoApprovalDrainer(storage, apply.applyFn);
+    await drainer.drain(GK);
+    expect(apply.calls).toEqual([]);
+    enableRule(storage);
+    await drainer.drain(GK);
+    expect(apply.calls).toEqual([2]);
+    expect(getAction(storage, 1).state).toBe("pending");
+    expect(getAction(storage, 3).state).toBe("pending");
+  });
+
+  it("coalesces overlapping follow-up passes across nested authorized ancestors", async () => {
+    const storage = makeStorage();
+    enableRule(storage);
+    for (const id of [1, 2]) {
+      putAction(storage, id, {autoApprovable: false});
+      storage.actions.put({...getAction(storage, id), followupActionIds: [id + 1]});
+      storage.actionApplications.put({id, phase: "apply", resolvedBy: ENABLER,
+        autoApproved: false, retryAt: Date.now() + 60_000});
+    }
+    putAction(storage, 3);
+    const apply = makeControlledApply(storage), drainer = new AutoApprovalDrainer(storage, apply.applyFn);
+    const one = drainer.drain(GK), two = drainer.drain(GK);
+    await flush();
+    expect(apply.calls).toEqual([3]);
+    apply.releaseNext();
+    await Promise.all([one, two]);
+    expect(apply.calls).toEqual([3]);
+  });
+
   it("applies all eligible pending actions in ascending id order", async () => {
     let storage = makeStorage();
     enableRule(storage);

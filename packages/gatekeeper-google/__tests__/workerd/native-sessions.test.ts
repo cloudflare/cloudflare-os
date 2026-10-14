@@ -45,6 +45,8 @@ async function getAccessToken(): Promise<string> {
 }
 
 class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
+  async getAgentContext(): Promise<null> { return null; }
+
   readonly observations: ObservationDescription[] = [];
 
   async authorizeObservation(description: ObservationDescription): Promise<void> {

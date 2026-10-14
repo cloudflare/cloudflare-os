@@ -18,6 +18,7 @@
     "./credentials": "./src/credentials.ts",
     "./cursors": "./src/cursors.ts",
     "./endpoint": "./src/endpoint.ts",
+    "./git-bootstrap": "./src/git-bootstrap.ts",
     "./git-diff": "./src/git-diff.ts",
     "./git-objects": "./src/git-objects.ts",
     "./git-transport": "./src/git-transport.ts",

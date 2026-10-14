@@ -854,7 +854,7 @@ each row it returns: a filter that drops whole pages otherwise pays for up to te
 
 `git-transport`, `git-objects`, and `git-diff` implement the worktree contract in
 `plans/worktrees.md` §3 for any smart-HTTP host. The gatekeeper supplies a fetch callback that adds
-the URL, credentials, and timeouts; the kit owns the framing. Two rules of the framing are easy to
+the URL, credentials, and timeouts; the kit owns the framing. Two rules of DO cache-pull framing are easy to
 break from the outside and fail late when broken:
 
 - **Never send a `have`.** A `have` asserts full reachability of that commit, but every pull here
@@ -882,6 +882,15 @@ pushes)`, the gatekeeper filtering the pushes to that branch; the same call give
 `expectedOldSha`, so the simulated head and the compare-and-swap agree. Provider patches go through
 `parseUnifiedPatch`, one file's patch at a time, which shares `diffTextLines`'s hunk shape, so a
 simulated diff and a provider diff read alike.
+
+Container bootstrap is a separate path: `Gatekeeper.gitReadPack()` returns the native Git v2
+response directly, without demultiplexing it into the DO cache, buffering it, or base64 encoding.
+GitHub and GitLab implement it using `git-bootstrap.validateBootstrapFetch()` before their existing
+authenticated upload-pack transport. The kernel grants the advertised immutable commit and closes
+the bootstrap capability after hydration; the validator permits only that commit at depth one,
+not ref discovery or arbitrary URLs. The container's own complete Git object store may send
+native `have` negotiation lines (unlike a partial DO cache). All provider and Access credentials
+stay in the gatekeeper. A provider-neutral contract still needs an adapter on each provider.
 
 ## Other module boundaries
 

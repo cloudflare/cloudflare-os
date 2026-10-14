@@ -1822,7 +1822,8 @@ describe("applying a blueprint to a gadget", () => {
       let [call] = [...impl.storage.chats.list({ prefix: `${keyString(1)}.` })]
           .flatMap(message => message.type === "message" ? message.toolCalls ?? [] : []);
       expect(call).toMatchObject({ toolName: "createGadget" });
-      expect(call.error).toMatch(/Too many code changes in one step/);
+      // Schema validation now enforces the same raised cap before the step-buffer check.
+      expect(call.error).toMatch(/code change is too large/);
 
       // The call still leaves the gadget it created, with no files. Nothing says it was made
       // from the release, so accepting it does not put the release in its history...

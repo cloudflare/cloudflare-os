@@ -1,6 +1,6 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
+import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName, modelKind, isTextLikeAttachmentMimeType } from '@gadgets/workshop-shared/api'
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
@@ -13,7 +13,7 @@ import { keyString } from "@gadgets/typed-storage";
 import type { ListOptions } from "@gadgets/typed-storage";
 import {
   actionLastChangedKey, chatChangeClientKey, chatKey, chatKeyPrefix, makeOverseerStorage,
-  type ActionRecord, type ActiveAgentRecord, type AgentSpawnerBindingProps,
+  type ActionRecord, type ActionApplication, type ActiveAgentRecord, type AgentSpawnerBindingProps,
   type AiChatAgentContext, type BindingRecord,
   type BlueprintGadgetRecord, type BoundHookRecord, type ChatBindingEntry,
   type ChatChangeBoundaryRecord, type ChatChangeRecord, type CompactionCheckpoint,
@@ -29,7 +29,7 @@ import {
 import { GitCacheImpl, WorkspaceGitCache } from "./git-cache";
 import {
   OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToBlueprintUpstreams,
-  migrateToGitStorage, migrateToMultiGadget, migrateToWorkpieceTypes,
+  migrateToGitStorage, migrateToMultiGadget, migrateToWorkpieceTypes, migrateToWorktreeReplicas,
 } from "./storage-schema/overseer-migrations";
 import type { Usage } from "@earendil-works/pi-ai";
 import {
@@ -44,13 +44,14 @@ import {
   getAiGatewayLogCost,
   type AiGatewayLogRoute,
 } from "./ai-gateway";
-import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
+import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, assertAgentMayModifyWorkpiece, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
 import { scanWorkpieceForGrep, type GrepScan } from "./grep";
 import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
-import { chatChangeStatuses, foldCompactedCode } from "./agent-compaction";
+import { chatChangeStatuses, foldCompactedCode, foldProposedChanges, replayChatBindings } from "./agent-compaction";
+import {prepareWorktreeBaseChanges} from "./worktree-base-changes";
 import { ambientGatekeeperMode } from "./provisioning-policy";
 import {
   blueprintContentKey, deleteBlueprintContent, readBlueprintRelease, sanitizeBlueprintOutput,
@@ -63,6 +64,15 @@ import { encodeGitTree, gitObjectOid, parseGitCommitRefs } from "./git-codec";
 import {
   listFeaturedBlueprintsFromKv, readBlueprintKvRecord, type BlueprintKvRecord,
 } from "./storage-schema/blueprints-kv";
+import type { AgentContext, AgentTurnInfo, AgentTurnParticipant, GatekeeperActionContext, WorkspaceReplica,
+  WorktreeBase, WorktreeBaseEntry, WorktreeChange, WorktreeChangesPage, WorktreeReplicaBatch,
+  WorktreeReplicaReceipt, WorkspaceCheckpoint } from "@gadgets/workshop-shared/agent-integration";
+import { WorktreeReplicaSession, requireReplicaPath, type WorktreeReplicaHost,
+  type WorktreeReplicaLease, type WorktreeReplicaCommit } from "./worktree-replica";
+import { replicaCommitPack } from "./replica-git";
+import type { Cursor } from "@gadgets/workshop-shared/gatekeeper";
+import { agentIntegrationGrant, beginIntegrationTurn, closeIntegrationTurn, requireIntegrationTurn,
+  deliverIntegrationEvent, type AgentIntegrationOrigin } from "./agent-integration";
 import { WebFetchEnv } from "./web-fetch";
 import { UserDurableObject, type UserChatContext } from "./user";
 import type { AgentSpawnerBinding, CallableAgent, SpawnCallableOptions } from "./agent-spawner-binding";
@@ -77,7 +87,7 @@ import { AutoApprovalDrainer, autoApprovalRule } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
-import { isLoopLimitError, retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
+import { isLoopLimitError, isDoResetError, retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
 import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
 import type { CreationApproval, GadgetExportFormat } from "@gadgets/workshop-shared/api";
 import {
@@ -242,6 +252,11 @@ type PreparedChatMessage = {
   skillName?: string;
 };
 
+type PreparedAttachmentsWorktree = {
+  commitId: string;
+  bindingName: string;
+};
+
 // getAgentCatalog is optional on Gatekeeper; ambient capsules always implement it. After confirming
 // the gatekeeper is an ambient capsule, we view its facet through this derived (Pick + Required)
 // shape to call it — same optional-method-on-a-stub pattern as user.ts's SingletonAccountStub.
@@ -372,6 +387,21 @@ function validateBlueprintScreenshotUpload(screenshot: BlueprintScreenshotUpload
 
 const MAX_CHAT_ATTACHMENTS_PER_MESSAGE = 5;
 const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 5 * 1024 * 1024;
+
+// A maximum-size canonical CodeChange must fit in one page. Its size estimate already charges
+// every path and change node; the event projection adds only these small per-file wrappers.
+// The 24 MiB page cap leaves framing headroom below Workers RPC's 32 MiB value ceiling.
+const REPLICA_EVENT_CHANGE_OVERHEAD = 64;
+const REPLICA_EVENTS_BYTE_BUDGET = 24 * 1024 * 1024;
+const CHAT_ATTACHMENT_EXTENSION_BY_MIME = new Map([
+  ["text/csv", ".csv"],
+  ["application/json", ".json"],
+  ["text/markdown", ".md"],
+  ["application/xml", ".xml"],
+  ["text/xml", ".xml"],
+  ["application/yaml", ".yaml"],
+  ["text/yaml", ".yaml"],
+]);
 // Staged attachments (not associated with chat) older than this may be deleted when the gadget next stages an attachment.
 const MAX_STAGED_CHAT_ATTACHMENT_AGE_MS = 24 * 60 * 60 * 1000;
 const CHAT_ATTACHMENT_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -693,6 +723,8 @@ class OverseerImpl implements AgentHooks {
   // Set of chatIds that currently have a running agent turn. Feeds the alarm (see
   // #agentKeepAliveTime) and lets `alarm()` wait for all agents to finish.
   #runningAgents = new Set<number>();
+  #integrationDeliveries = new Map<string, Promise<void>>();
+  #actionApplications = new Map<number, Promise<void>>();
 
   // Ambient connections whose getAgentCatalog() answered null, which the contract makes permanent
   // for the connection. Held in memory only: a gatekeeper that gains a catalog in a later version
@@ -941,6 +973,11 @@ class OverseerImpl implements AgentHooks {
       times.push(nextDeliveredRecord.deliveredAt + AGENT_RESPONSE_DELIVERED_RETENTION_MS);
     }
 
+    const integrationRetry = [...this.storage.agentIntegrationParticipants.retryAt.list({ limit: 1 })][0];
+    if (integrationRetry?.retryAt !== undefined) times.push(integrationRetry.retryAt);
+    const applicationRetry = [...this.storage.actionApplications.retryAt.list({ limit: 1 })][0];
+    if (applicationRetry) times.push(applicationRetry.retryAt);
+
     if (times.length > 0) {
       this.ctx.storage.setAlarm(Math.min(...times));
     } else {
@@ -966,6 +1003,8 @@ class OverseerImpl implements AgentHooks {
           this.waitForAllAgentsToComplete(),
           this.drainAllPendingAgentCalls(),
           this.deliverReadyExternalMessageResponses(),
+          this.retryAgentIntegrationEvents(),
+          this.recoverActionApplications(),
         ]);
         for (let result of results) {
           if (result.status === "rejected") throw result.reason;
@@ -1006,18 +1045,65 @@ class OverseerImpl implements AgentHooks {
   // DO (we don't persist the secret API token), then runs the agent loop, which rebuilds its state
   // by replaying the persisted chat log.
   async #resumeAgent(record: ActiveAgentRecord, liveChat: LiveChatContext) {
+    if (!this.storage.activeAgents.get(record.chatId) || liveChat.cancelController.signal.aborted) {
+      await this.#finishAgentRecovery(record, liveChat);
+      return;
+    }
+    if (!record.continuationId || record.requestKey === undefined) {
+      record = {...record, continuationId: record.continuationId ?? crypto.randomUUID(),
+        requestKey: record.requestKey ?? this.#agentRequestKey(record.chatId)};
+      this.storage.activeAgents.put(record);
+    }
+    const closed = this.storage.agentIntegrationTurns.get(record.chatId);
+    const paused = this.storage.pausedAgents.get(record.chatId);
+    const suspending = closed?.state === "suspended" &&
+        paused?.continuationId === record.continuationId;
+    if ((closed?.closing?.kind === "finished" || closed?.closing?.kind === "suspended") &&
+        (closed.state === "finished" || suspending) &&
+        (closed.continuationId !== undefined ? closed.continuationId === record.continuationId
+          : closed.requestKey === record.requestKey)) {
+      // The model finished or paused before reset, but teardown still owns activeAgents.
+      // An authorized wake-up removes pausedAgents before recovery, unlike this interrupted pause.
+      try { await this.closeAgentIntegrationTurn(record.chatId, closed.closing.reason); }
+      catch (error) {
+        if (isDoResetError(error)) { this.#deferAgentResume(record, liveChat); return; }
+        this.logger.warn("interrupted agent cleanup deferred", {event: "agent.resume.cleanup.deferred", error});
+      }
+      await this.#finishAgentRecovery(record, liveChat, suspending);
+      return;
+    }
     let aiModel: UserAiModelRecord | undefined;
     try {
-      let user = this.users.get(this.users.idFromString(record.initiatorUserId));
-      let userMeta = await user.getChatContext(record.modelId);
+      // Reconcile approved effects before opening a new segment: the command still has
+      // authority for the original turn, and inference must not race its completion.
+      const applications = [...this.storage.actionApplications.list()];
+      for (const application of applications) {
+        const action = this.storage.actions.get(application.id);
+        if (action?.type === "action" && action.caller.from === "agent" &&
+            action.caller.chatId === record.chatId && action.state === "pending") {
+          await this.applyPendingAction(action, application.resolvedBy, application.autoApproved, undefined, application.resumeUserId);
+        }
+      }
+      let userMeta = await retryOnDoReset(() =>
+        this.users.get(this.users.idFromString(record.initiatorUserId)).getChatContext(record.modelId), this.logger);
       aiModel = userMeta.aiModel;
     } catch (err) {
+      if (isDoResetError(err)) {
+        this.#deferAgentResume(record, liveChat);
+        return;
+      }
       this.logger.error("error resolving model while resuming agent", {
         event: "agent.resume.model.resolve.failed",
         chatId: record.chatId, modelId: record.modelId, error: err,
       });
     }
 
+    const active = this.storage.activeAgents.get(record.chatId);
+    if (liveChat.cancelController.signal.aborted || !active) {
+      await this.#finishAgentRecovery(record, liveChat);
+      return;
+    }
+    if (!this.#runningAgents.has(record.chatId) || active.continuationId !== record.continuationId) return;
     if (!aiModel) {
       // The model is no longer available; we can't resume. Post an error and clear state. Clear
       // `activeAgent` and tear down the registry/record atomically (matching `#runAgentTurn`'s
@@ -1025,20 +1111,58 @@ class OverseerImpl implements AgentHooks {
       this.postAgentErrorMessage(record.chatId, record.initiator,
           "Agent interrupted due to server restart and could not be resumed because its AI " +
           "model is no longer available.");
-      let meta = this.storage.chatMeta.get(record.chatId);
-      if (meta) {
-        delete meta.activeAgent;
-        meta.lastActive = this.getChatTimestamp();
-        this.storage.chatMeta.put(meta);
+      try { await this.closeAgentIntegrationTurn(record.chatId, "failed"); }
+      catch (error) {
+        if (isDoResetError(error)) { this.#deferAgentResume(record, liveChat); return; }
+        this.logger.warn("interrupted agent cleanup deferred", {event: "agent.resume.cleanup.deferred", error});
       }
-      this.#unregisterRunningAgent(record.chatId);
-      this.#finishAgentTurn(record.chatId);
+      await this.#finishAgentRecovery(record, liveChat);
       return;
     }
 
+    const meta = this.storage.chatMeta.get(record.chatId);
+    if (!meta) { this.#unregisterRunningAgent(record.chatId); return; }
+    meta.activeAgent = aiModel.profile;
+    this.storage.chatMeta.put(meta);
+    this.storage.pausedAgents.delete(record.chatId);
+
     await this.#runAgentTurn(
-        record.chatId, aiModel, record.initiator, record.initiatorUserId, record.callbackInitiated,
-        liveChat);
+        record.chatId, aiModel, record.initiator, record.initiatorUserId,
+        record.continuationId!, record.callbackInitiated, liveChat);
+  }
+
+  // Recovery can end before entering the agent loop's finally. Fence its teardown across awaits:
+  // cancellation may have removed the row, or a newer execution may now own this chat.
+  async #finishAgentRecovery(record: ActiveAgentRecord, liveChat: LiveChatContext,
+      preservePause = false): Promise<void> {
+    const ownsChat = () => this.#liveChats.get(record.chatId) === liveChat &&
+        (!this.storage.activeAgents.get(record.chatId) ||
+          this.storage.activeAgents.get(record.chatId)?.continuationId === record.continuationId);
+    if (!ownsChat()) return;
+    await this.reconcilePendingGadgets(record.chatId);
+    if (!ownsChat()) return;
+    const meta = this.storage.chatMeta.get(record.chatId);
+    if (meta) {
+      delete meta.activeAgent;
+      meta.lastActive = this.getChatTimestamp();
+      this.storage.chatMeta.put(meta);
+    }
+    if (!preservePause) this.storage.pausedAgents.delete(record.chatId);
+    this.#worktreeReplicaTurns.delete(record.chatId);
+    this.#unregisterRunningAgent(record.chatId);
+    this.#finishAgentTurn(record.chatId);
+  }
+
+  // The durable activeAgents row is the restart backstop; the timer only avoids a
+  // tight retry loop when another DO is temporarily resetting in this incarnation.
+  #deferAgentResume(record: ActiveAgentRecord, liveChat: LiveChatContext): void {
+    this.ctx.waitUntil((async () => {
+      await scheduler.wait(1_000);
+      if (liveChat.cancelController.signal.aborted ||
+          this.storage.activeAgents.get(record.chatId)?.continuationId === record.continuationId) {
+        await this.#resumeAgent(record, liveChat);
+      }
+    })());
   }
 
   // The hand-off once a chat's turn is over and its running-agent state has been torn down: drop
@@ -1053,6 +1177,8 @@ class OverseerImpl implements AgentHooks {
 
     if (this.hasPendingAgentCalls(chatId)) {
       this.drainPendingAgentCalls(chatId);
+    } else if (this.storage.pausedAgents.get(chatId)?.resumeRequested) {
+      this.ctx.waitUntil(this.resumePausedAgent(chatId));
     } else {
       this.#deliverWaitingExternalMessageResponse(chatId);
     }
@@ -1110,11 +1236,13 @@ class OverseerImpl implements AgentHooks {
         migrateToActionIndexes(this);
         migrateToWorkpieceTypes(this);
         migrateToBlueprintUpstreams(this);
+        migrateToWorktreeReplicas(this);
       }).then(() => this.#resumeInterruptedAgents(), () => {});
     } else {
       migrateToActionIndexes(this);
       migrateToWorkpieceTypes(this);
       migrateToBlueprintUpstreams(this);
+      migrateToWorktreeReplicas(this);
       this.#resumeInterruptedAgents();
     }
   }
@@ -1125,13 +1253,21 @@ class OverseerImpl implements AgentHooks {
   // any blocked event is delivered) so that if we were called at the start of the alarm handler,
   // it'll recognize that agents are running and wait for them.
   #resumeInterruptedAgents(): void {
+    // Durable approved intent is independent of browser lifetime and model inference.
+    this.ctx.waitUntil(this.recoverActionApplications());
     for (let record of Array.from(this.storage.activeAgents.list())) {
       // Register the running agent immediately (see above), and create the LiveChatContext
       // synchronously, so that cancellations are immediately respected.
       this.#registerRunningAgent(record.chatId);
       let liveChat = this.#getLiveChat(record.chatId);
 
-      this.#resumeAgent(record, liveChat);
+      this.ctx.waitUntil(this.#resumeAgent(record, liveChat));
+    }
+    // A reset can land after teardown cleared activeAgents but before its queued wake-up ran.
+    for (const record of this.storage.pausedAgents.list()) {
+      if (record.resumeRequested && !this.#runningAgents.has(record.chatId)) {
+        this.ctx.waitUntil(this.resumePausedAgent(record.chatId));
+      }
     }
 
     // Backwards compatibility: Prior to the introduction of the `activeAgents` table, we could
@@ -1620,6 +1756,11 @@ class OverseerImpl implements AgentHooks {
         .filter(meta => this.proposedChangeWorkpieceIds(meta.id, meta).includes(id));
     let facetName = this.gadgetFacetName(id);
     this.storage.gadgets.delete(id);  // notifies workpiece subscribers
+    // Deleting through this index invalidates its live iterator.
+    const prefixes = [...this.storage.worktreeBaseChanges.byWorkpiece.get(id)];
+    for (const prefix of prefixes) {
+      this.storage.worktreeBaseChanges.deleteRecord(prefix);
+    }
     this.#runningChatIds.delete(id);
     this.ctx.facets.delete(facetName);
     for (let meta of proposingChats) this.storage.chatMeta.put(meta);
@@ -2275,7 +2416,8 @@ class OverseerImpl implements AgentHooks {
   #appendChatChangeRow(chatId: number, meta: AiChatMetadata, author: AiChatAuthorInfo,
                        change: CodeChange,
                        newPins: ChatGadgetPinState[], contentAfter: CodeContent | undefined,
-                       submission?: {clientId: string, seq: number}): ChatChangeRecord {
+                       submission?: {clientId: string, seq: number},
+                       sourceReplica?: ChatChangeRecord["sourceReplica"]): ChatChangeRecord {
     let codeBase = this.chatCodeBase(meta);
     codeBase.pins.push(...newPins);
     let revision = codeBase.revision + 1;
@@ -2290,6 +2432,7 @@ class OverseerImpl implements AgentHooks {
       author,
       change,
       ...(submission !== undefined ? {submission} : {}),
+      ...(sourceReplica !== undefined ? {sourceReplica} : {}),
     };
     this.storage.chatChanges.put(row);
 
@@ -2340,8 +2483,16 @@ class OverseerImpl implements AgentHooks {
   // are no longer bridgeable at all.
   #pruneRetiredChatChanges(chatId: number): void {
     let cutoff = Date.now() - CHAT_CHANGE_RETIRED_TTL_MS;
+    const turn = this.storage.agentIntegrationTurns.get(chatId);
+    const anchors = [...this.storage.worktreeReplicaLeases.list()].filter(lease =>
+      lease.chatId === chatId && !lease.released && lease.expiresAt > Date.now() &&
+      lease.turnId === turn?.turnId && lease.checkpoint).map(lease => {
+        const [generation, revision] = lease.checkpoint!.cursor.split(":").slice(-2).map(Number);
+        return {generation, revision};
+      });
     for (let row of Array.from(this.storage.chatChanges.list({prefix: chatKeyPrefix(chatId)}))) {
-      if (row.retired && row.timestamp.getTime() < cutoff) {
+      if (row.retired && row.timestamp.getTime() < cutoff && !anchors.some(anchor =>
+          anchor.generation === row.generation && row.revision > anchor.revision)) {
         this.storage.chatChanges.deleteRecord(row);
       }
     }
@@ -2659,14 +2810,25 @@ class OverseerImpl implements AgentHooks {
         addedBindings: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[],
         worktreeCommits: {worktreeId: WorkpieceId, commit: string, previousHead: string}[],
         blueprintMerges: BlueprintMerge[],
+        replicaCommit?: WorktreeReplicaCommit,
+        replicaExpectedVersion?: string,
       },
       usage?: Usage, aiGatewayLogId?: string,
       aiGatewayLogRoute?: AiGatewayLogRoute): Promise<boolean> {
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) return false;  // chat deleted mid-turn
 
-    for (let {change} of step.changes) {
-      validateCodeChangeSchema(change);
+    for (const [changeIndex, {change}] of step.changes.entries()) {
+      try { validateCodeChangeSchema(change); }
+      catch (error) {
+        this.logger.error("invalid agent transform rejected at persistence", {
+          event: "agent.step.change.invalid", chatId, changeStage: "persist", changeIndex, ...agentCodeChangeShape(change),
+        });
+        throw error;
+      }
+      if (step.replicaCommit) for (const id of changedGadgets(change)) {
+        assertAgentMayModifyWorkpiece(this.getChatAgentContext(chatId), this.isWorktree(id));
+      }
     }
 
     // The worktrees this step pins: every worktree of this chat its rows or commits touch that
@@ -2694,7 +2856,7 @@ class OverseerImpl implements AgentHooks {
     let baseFilesByCommit = new Map<string, Map<string, string>>();
     let worktreeBases = new Map<WorkpieceId, string>();
     let worktreeSeeds = new Map<string, string | null>();
-    if (step.changes.length > 0) {
+    if (step.changes.length > 0 || step.replicaCommit !== undefined) {
       let content = await this.getCurrentChatContent(chatId, meta);
       worktreeBases = new Map([...this.worktreePinBases(meta), ...worktreePins]);
       if (worktreeBases.size > 0) {
@@ -2722,6 +2884,16 @@ class OverseerImpl implements AgentHooks {
 
     try {
       return this.storage.transaction(() => {
+        if (step.replicaCommit !== undefined) {
+          const lease = this.requireReplicaLease(step.replicaCommit.leaseId);
+          if (step.replicaExpectedVersion !== undefined &&
+              this.replicaVersion(lease) !== step.replicaExpectedVersion) {
+            throw new ReplicaChangedError();
+          }
+          if (this.storage.worktreeReplicaCommits.get(step.replicaCommit.id)) {
+            throw new ReplicaChangedError();
+          }
+        }
         let fresh = this.storage.chatMeta.get(chatId);
         if (!fresh) return false;  // chat deleted during the prefetches
 
@@ -2752,7 +2924,7 @@ class OverseerImpl implements AgentHooks {
           }
           let content = cached.content;
 
-          for (let {change, pin} of step.changes) {
+          for (let {change, pin, replica} of step.changes) {
             let newPins: ChatGadgetPinState[] = [];
             if (pin !== undefined) {
               let pins = this.chatCodeBase(fresh).pins;
@@ -2783,12 +2955,26 @@ class OverseerImpl implements AgentHooks {
             content = seeded;
             validateCodeChangeContent(change, content);
             content = applyCodeChange(content, change);
-            this.#appendChatChangeRow(chatId, fresh, author, change, newPins, content);
+            this.#appendChatChangeRow(chatId, fresh, author, change, newPins, content, undefined,
+              replica && step.replicaCommit ? {leaseId: step.replicaCommit.leaseId,
+                batchId: step.replicaCommit.receipt.batchId} : undefined);
           }
         }
 
+        if (step.replicaCommit !== undefined) {
+          // Even a no-op acceptance needs its own stream marker. Reusing the preceding cursor
+          // would falsely label that unrelated DO edit as the replica's echo.
+          const fresh = this.storage.chatMeta.get(chatId)!;
+          const cached = this.#chatContentCache.get(chatId);
+          if (!cached) throw new Error("Replica acceptance requires materialized chat content.");
+          this.#appendChatChangeRow(chatId, fresh, author, {}, [], cached.content, undefined,
+            {leaseId: step.replicaCommit.leaseId, batchId: step.replicaCommit.receipt.batchId});
+          step.replicaCommit.receipt.committedAt = this.replicaCursor(
+              this.requireReplicaLease(step.replicaCommit.leaseId));
+          this.storage.worktreeReplicaCommits.put(step.replicaCommit);
+        }
         this.addChatMessages(chatId, author, msgs, usage, aiGatewayLogId, aiGatewayLogRoute);
-        return this.materializeChatChanges(chatId, undefined, {
+        let materialized = this.materializeChatChanges(chatId, undefined, {
           author,
           allowDuringTurn: true,
           createdGadgets: step.createdGadgets,
@@ -2797,6 +2983,7 @@ class OverseerImpl implements AgentHooks {
           worktreeCommits: step.worktreeCommits,
           blueprintMerges: step.blueprintMerges,
         }) !== undefined;
+        return materialized;
       });
     } catch (err) {
       // The transaction rolled the rows back, but the append path already advanced the
@@ -3586,7 +3773,7 @@ class OverseerImpl implements AgentHooks {
   // The body of Overseer.mergeChanges(), running under the chat's operation lock (callers
   // hold withChatLock). `clientUserId` feeds analytics only.
   async mergeChanges(chatId: number, userMeta: UserChatContext, clientUserId: string)
-                     : Promise<MergeChangesResult> {
+      : Promise<MergeChangesResult> {
     let meta = this.assertChatNotActive(chatId);
 
     // Always merge *everything* the chat proposes: sweep live change rows into a "changes" message
@@ -3610,6 +3797,11 @@ class OverseerImpl implements AgentHooks {
     let entryCodeBase = this.chatCodeBase(meta);
     let generationToken = entryCodeBase.generation;
     let revisionToken = entryCodeBase.revision;
+    // Preserve the actual transforms before the accept closes this epoch. Re-diffing its
+    // flattened Git tree would lose positional intent in repeated text.
+    const history = this.loadChatHistory(chatId);
+    const acceptedBatches = foldProposedChanges(history.chatMessages,
+      history.checkpoint?.proposedChange ? [{sequence: -1, change: history.checkpoint.proposedChange}] : []);
 
     // Message statuses drive excluding reverted creations from coverage below. The map stays
     // valid through the whole accept: the sequence-token revalidation after the awaits
@@ -3843,6 +4035,15 @@ class OverseerImpl implements AgentHooks {
       }
     }
 
+    // Prepare and bound every prefix before any merge notification or epoch reset can escape.
+    const prefixUpdates = [...worktreeAccepts].flatMap(([worktreeId, pinBase]) => {
+      const record = this.storage.gadgets.get(worktreeId);
+      if (record?.type !== "worktree" || record.pinBase === pinBase) return [];
+      const previous = [...this.storage.worktreeBaseChanges.byWorkpiece.get(worktreeId)];
+      return [{record, pinBase, previous,
+        changes: prepareWorktreeBaseChanges(worktreeId, previous, acceptedBatches)}];
+    });
+
     // Everything above this point awaited, so the chat and workspace may have moved in the
     // meantime; re-validate before mutating. The chat lock excludes sibling merge/revert/
     // update-from-mainline calls, but an accept from *another* chat can advance a head, an agent
@@ -3882,147 +4083,159 @@ class OverseerImpl implements AgentHooks {
     // to a vendorless connection, is in nobody's verification scope.
     let useScopeBefore = this.#accountRequiringUseScope();
 
-    // Promote provisional gadgets whose creation is covered by this merge: accepting the chat's
-    // changes through `mergeThrough` makes them permanent workspace members. Each covered
-    // creation sits on an unmerged, unreverted "changes" message at `pending.sequence` (a
-    // merged one's gadget is already promoted, and a reverted one's is excluded here exactly as
-    // the toCommit loop excluded it), and is in `commits`, so every promoted gadget gets a head
-    // in the fast-forward step below -- possibly an empty tree.
-    for (let gadget of this.listPendingGadgets(chatId)) {
-      if (gadget.pending!.sequence !== undefined && gadget.pending!.sequence <= mergeThrough &&
-          !revertedStamp(gadget.pending)) {
-        delete gadget.pending;
-        this.storage.gadgets.put(gadget);
-        this.recordGadgetAnalytics({
-          event_name: "workpiece_created",
-          user_id: clientUserId,
-          workpiece_id: gadget.id,
-          source: "chat",
-        });
-      }
-    }
-
-    // Likewise promote provisional binding edges covered by this merge; this is also the moment
-    // an edge becomes visible to mainline loads and the derived workspace default binding list.
-    // (Reverted additions only survive on a reverted creation's record -- the revert deletes
-    // covered edges synchronously otherwise -- but exclude them the same way for coherence.)
-    for (let gadget of this.storage.gadgets.list()) {
-      if (gadget.type !== "gadget") continue;  // worktrees have no binding edges
-      let promoted = false;
-      for (let edge of Object.values(gadget.bindings)) {
-        if (edge.pending?.chatId === chatId && edge.pending.sequence !== undefined &&
-            edge.pending.sequence <= mergeThrough && !revertedStamp(edge.pending)) {
-          delete edge.pending;
-          promoted = true;
+    try {
+      this.ctx.storage.transactionSync(() => {
+        // Prefix writes have no external subscribers. Complete all of them before publishing
+        // pins or messages, and roll the whole accept back if any bounded write still fails.
+        for (const {previous, changes} of prefixUpdates) {
+          for (const item of previous) this.storage.worktreeBaseChanges.deleteRecord(item);
+          for (const item of changes) this.storage.worktreeBaseChanges.put(item);
         }
-      }
-      if (promoted) {
-        this.storage.gadgets.put(gadget);
-      }
-    }
+        // Promote provisional gadgets whose creation is covered by this merge: accepting the chat's
+        // changes through `mergeThrough` makes them permanent workspace members. Each covered
+        // creation sits on an unmerged, unreverted "changes" message at `pending.sequence` (a
+        // merged one's gadget is already promoted, and a reverted one's is excluded here exactly as
+        // the toCommit loop excluded it), and is in `commits`, so every promoted gadget gets a head
+        // in the fast-forward step below -- possibly an empty tree.
+        for (let gadget of this.listPendingGadgets(chatId)) {
+          if (gadget.pending!.sequence !== undefined && gadget.pending!.sequence <= mergeThrough &&
+              !revertedStamp(gadget.pending)) {
+            delete gadget.pending;
+            this.storage.gadgets.put(gadget);
+            this.recordGadgetAnalytics({
+              event_name: "workpiece_created",
+              user_id: clientUserId,
+              workpiece_id: gadget.id,
+              source: "chat",
+            });
+          }
+        }
 
-    // Fast-forward each committed gadget's head.
-    for (let {gadgetId, commitId} of commits) {
-      let record = this.storage.gadgets.get(gadgetId)!;
-      if (record.type !== "gadget") continue;  // unreachable: only gadgets are committed
-      record.commitId = commitId;
-      this.storage.gadgets.put(record);
-    }
+        // Likewise promote provisional binding edges covered by this merge; this is also the moment
+        // an edge becomes visible to mainline loads and the derived workspace default binding list.
+        // (Reverted additions only survive on a reverted creation's record -- the revert deletes
+        // covered edges synchronously otherwise -- but exclude them the same way for coherence.)
+        for (let gadget of this.storage.gadgets.list()) {
+          if (gadget.type !== "gadget") continue;  // worktrees have no binding edges
+          let promoted = false;
+          for (let edge of Object.values(gadget.bindings)) {
+            if (edge.pending?.chatId === chatId && edge.pending.sequence !== undefined &&
+                edge.pending.sequence <= mergeThrough && !revertedStamp(edge.pending)) {
+              delete edge.pending;
+              promoted = true;
+            }
+          }
+          if (promoted) {
+            this.storage.gadgets.put(gadget);
+          }
+        }
 
-    // Each gadget the chat proposed merging a blueprint release into now follows that
-    // blueprint, at that release, which its head's history holds: from just above, or from
-    // before. (A gadget whose creation this merge did not cover is no part of it.)
-    for (let [gadgetId, {blueprintId, commitId}] of blueprintMerges) {
-      let record = this.storage.gadgets.get(gadgetId);
-      if (record?.type !== "gadget" || record.pending) continue;
-      record.upstream = {blueprintId, commitId};
-      this.storage.gadgets.put(record);
-    }
+        // Fast-forward each committed gadget's head.
+        for (let {gadgetId, commitId} of commits) {
+          let record = this.storage.gadgets.get(gadgetId)!;
+          if (record.type !== "gadget") continue;  // unreachable: only gadgets are committed
+          record.commitId = commitId;
+          this.storage.gadgets.put(record);
+        }
 
-    // Bump the loader-cache counter so cached workers reload with the new heads (and promoted
-    // records) visible.
-    this.bumpVersion();
-    let timestamp = this.getChatTimestamp();
+        // Each gadget the chat proposed merging a blueprint release into now follows that
+        // blueprint, at that release, which its head's history holds: from just above, or from
+        // before. (A gadget whose creation this merge did not cover is no part of it.)
+        for (let [gadgetId, {blueprintId, commitId}] of blueprintMerges) {
+          let record = this.storage.gadgets.get(gadgetId);
+          if (record?.type !== "gadget" || record.pending) continue;
+          record.upstream = {blueprintId, commitId};
+          this.storage.gadgets.put(record);
+        }
 
-    let mergeSequence = this.nextChatSequence(chatId);
-    this.storage.chats.put({
-      chatId,
-      sequence: mergeSequence,
-      timestamp,
-      author: userMeta.profile,
+        // Bump the loader-cache counter so cached workers reload with the new heads (and promoted
+        // records) visible.
+        this.bumpVersion();
+        let timestamp = this.getChatTimestamp();
 
-      type: "merge",
-      mergeThrough,
-      commits,
-      // The merge closes the chat's epoch (see the reset below); content reconstruction
-      // restarts here. Historical (pre-git) merges lack this, which is how replay tells them
-      // apart. (Merges from before worktrees pinned on modification also carry `worktreePins`,
-      // which readers still honor; nothing writes it anymore.)
-      epochBoundary: true,
-    });
+        let mergeSequence = this.nextChatSequence(chatId);
+        this.storage.chats.put({
+          chatId,
+          sequence: mergeSequence,
+          timestamp,
+          author: userMeta.profile,
 
-    // The boundary map for the straggler bridge: per gadget, the commit whose tree equals the
-    // chat's content at this reset. A committed gadget's is the commit just written; an
-    // uncommitted pin had no net change relative to its mergedCommit (that's why it wasn't
-    // committed), so its content equals head exactly when mergedCommit == head -- otherwise the
-    // reset visibly changes the gadget's content (the pin evaporates and the chat snaps to a
-    // head it never merged), making it bridge-ineligible and reported in
-    // `prior.discontinuousGadgets` so clients rebuild it from head.
-    let boundaries: ChatChangeBoundaryRecord["boundaries"] =
-        commits.map(({gadgetId, commitId}) => ({gadgetId, commitId}));
-    let committedIds = new Set(commits.map(commit => commit.gadgetId));
-    let discontinuousGadgets: WorkpieceId[] = [];
-    for (let pin of freshCodeBase.pins) {
-      if (committedIds.has(pin.gadgetId)) continue;
-      // A worktree's new accepted commit is by construction the commit whose tree equals the
-      // chat's content at this reset, so it is bridge-eligible and never discontinuous: a
-      // bridged row re-pins the worktree at it (the base submitCodeChange requires). (A
-      // worktree pin whose record has vanished -- a reverted creation surviving a failed reap
-      // -- falls through to the null branch.)
-      let accepted = worktreeAccepts.get(pin.gadgetId);
-      if (accepted !== undefined) {
-        boundaries.push({gadgetId: pin.gadgetId, commitId: accepted});
-        continue;
-      }
-      let record = this.storage.gadgets.get(pin.gadgetId);
-      let head = record?.type === "gadget" ? record.commitId : undefined;
-      if (head !== undefined && head === pin.mergedCommit) {
-        boundaries.push({gadgetId: pin.gadgetId, commitId: head});
-      } else {
-        boundaries.push({gadgetId: pin.gadgetId, commitId: null});
-        discontinuousGadgets.push(pin.gadgetId);
-      }
-    }
+          type: "merge",
+          mergeThrough,
+          commits,
+          // The merge closes the chat's epoch (see the reset below); content reconstruction
+          // restarts here. Historical (pre-git) merges lack this, which is how replay tells them
+          // apart. (Merges from before worktrees pinned on modification also carry `worktreePins`,
+          // which readers still honor; nothing writes it anymore.)
+          epochBoundary: true,
+        });
 
-    // Close the epoch: everything the chat proposed now lives in commits, so the chat's code
-    // base resets to empty -- every pin evaporates, the change stream restarts at revision 0 under
-    // a new generation, and subsequent edits re-pin lazily against the new heads -- for a
-    // worktree, against its accepted commit, advanced here to the commit planned above. The
-    // bump is content-preserving: the closed generation's rows are retired (not deleted) as the
-    // transform window, the boundary record above opens the straggler bridge, and `prior` tells
-    // clients how to hand off (see ChatCodeBase.prior). The reset lands on the freshly-read
-    // meta so concurrent changes to other fields (e.g. a title rename during the awaits)
-    // survive.
-    this.#retireChatChanges(this.listLiveChatChanges(chatId, generationToken));
-    this.#pruneRetiredChatChanges(chatId);
-    this.storage.chatChangeBoundaries.put(
-        {chatId, generation: generationToken, finalRevision: revisionToken, boundaries});
-    this.#chatContentCache.delete(chatId);
-    freshMeta.codeBase = {
-      pins: [],
-      generation: generationToken + 1,
-      revision: 0,
-      epoch: mergeSequence,
-      prior: {generation: generationToken, finalRevision: revisionToken, discontinuousGadgets},
-    };
-    freshMeta.lastActive = timestamp;
-    this.storage.chatMeta.put(freshMeta);
-    for (let [worktreeId, newPinBase] of worktreeAccepts) {
-      let record = this.storage.gadgets.get(worktreeId);
-      if (record?.type === "worktree" && record.pinBase !== newPinBase) {
-        record.pinBase = newPinBase;
-        this.storage.gadgets.put(record);
-      }
+        // The boundary map for the straggler bridge: per gadget, the commit whose tree equals the
+        // chat's content at this reset. A committed gadget's is the commit just written; an
+        // uncommitted pin had no net change relative to its mergedCommit (that's why it wasn't
+        // committed), so its content equals head exactly when mergedCommit == head -- otherwise the
+        // reset visibly changes the gadget's content (the pin evaporates and the chat snaps to a
+        // head it never merged), making it bridge-ineligible and reported in
+        // `prior.discontinuousGadgets` so clients rebuild it from head.
+        let boundaries: ChatChangeBoundaryRecord["boundaries"] =
+            commits.map(({gadgetId, commitId}) => ({gadgetId, commitId}));
+        let committedIds = new Set(commits.map(commit => commit.gadgetId));
+        let discontinuousGadgets: WorkpieceId[] = [];
+        for (let pin of freshCodeBase.pins) {
+          if (committedIds.has(pin.gadgetId)) continue;
+          // A worktree's new accepted commit is by construction the commit whose tree equals the
+          // chat's content at this reset, so it is bridge-eligible and never discontinuous: a
+          // bridged row re-pins the worktree at it (the base submitCodeChange requires). (A
+          // worktree pin whose record has vanished -- a reverted creation surviving a failed reap
+          // -- falls through to the null branch.)
+          let accepted = worktreeAccepts.get(pin.gadgetId);
+          if (accepted !== undefined) {
+            boundaries.push({gadgetId: pin.gadgetId, commitId: accepted});
+            continue;
+          }
+          let record = this.storage.gadgets.get(pin.gadgetId);
+          let head = record?.type === "gadget" ? record.commitId : undefined;
+          if (head !== undefined && head === pin.mergedCommit) {
+            boundaries.push({gadgetId: pin.gadgetId, commitId: head});
+          } else {
+            boundaries.push({gadgetId: pin.gadgetId, commitId: null});
+            discontinuousGadgets.push(pin.gadgetId);
+          }
+        }
+
+        // Close the epoch: everything the chat proposed now lives in commits, so the chat's code
+        // base resets to empty -- every pin evaporates, the change stream restarts at revision 0 under
+        // a new generation, and subsequent edits re-pin lazily against the new heads -- for a
+        // worktree, against its accepted commit, advanced here to the commit planned above. The
+        // bump is content-preserving: the closed generation's rows are retired (not deleted) as the
+        // transform window, the boundary record above opens the straggler bridge, and `prior` tells
+        // clients how to hand off (see ChatCodeBase.prior). The reset lands on the freshly-read
+        // meta so concurrent changes to other fields (e.g. a title rename during the awaits)
+        // survive.
+        this.#retireChatChanges(this.listLiveChatChanges(chatId, generationToken));
+        this.#pruneRetiredChatChanges(chatId);
+        this.storage.chatChangeBoundaries.put(
+            {chatId, generation: generationToken, finalRevision: revisionToken, boundaries});
+        this.#chatContentCache.delete(chatId);
+        freshMeta.codeBase = {
+          pins: [],
+          generation: generationToken + 1,
+          revision: 0,
+          epoch: mergeSequence,
+          prior: {generation: generationToken, finalRevision: revisionToken, discontinuousGadgets},
+        };
+        freshMeta.lastActive = timestamp;
+        this.storage.chatMeta.put(freshMeta);
+        for (const {record, pinBase} of prefixUpdates) {
+          record.replicaBaseCommit ??= record.pinBase;
+          record.pinBase = pinBase;
+          this.storage.gadgets.put(record);
+        }
+      });
+    } catch (error) {
+      this.invalidateChatContent(chatId);
+      this.#liveWindowCache.delete(chatId);
+      throw error;
     }
 
     // Maybe generate gadget title if this was the first accepted code. (A merge covering only
@@ -4716,16 +4929,54 @@ class OverseerImpl implements AgentHooks {
   // was applied automatically. For an auto-approval, `resolvedBy` is the user who enabled the rule.
   // A creation also needs `creation`: the verifier of the account the approver chose to create it
   // in, and what they chose in that account's creation configurator.
-  async applyPendingAction(record: ActionRecord & {type: "action"},
-                           resolvedBy: AiChatAuthorInfo, autoApproved: boolean,
-                           creation?: {creator: Fetcher<GatekeeperUserVerifier>,
-                                       configuration: string | null}): Promise<void> {
+  applyPendingAction(record: ActionRecord & {type: "action"},
+      resolvedBy: AiChatAuthorInfo, autoApproved: boolean,
+      creation?: {creator: Fetcher<GatekeeperUserVerifier>, configuration: string | null},
+      resumeUserId?: string): Promise<void> {
+    const running = this.#actionApplications.get(record.id);
+    if (running) return running;
+    const promise = Promise.resolve().then(async () => {
+      const current = this.storage.actions.get(record.id);
+      if (!current || current.type !== "action") throw new Error("Action no longer exists.");
+      if (current.state === "approved") return;
+      if (current.state !== "pending") throw new Error("Action is not pending.");
+      let application = this.storage.actionApplications.get(record.id);
+      if (!application && current.action !== "create" && current.contextualApply && this.integrationGrant(current.gatekeeperId).recoverableActions) {
+        application = { id: record.id, resolvedBy, autoApproved, resumeUserId,
+          phase: "apply", retryAt: Date.now() + 1_000 };
+        this.storage.actionApplications.put(application);
+        this.#updateAlarm();
+        await this.ctx.storage.sync();
+      }
+      try {
+        await this.#applyPendingAction(current, application?.resolvedBy ?? resolvedBy,
+          application?.autoApproved ?? autoApproved, creation);
+        if (application) {
+          application = { ...application, phase: "resume", retryAt: Date.now() };
+          this.storage.actionApplications.put(application);
+          await this.#finishActionApplication(application);
+        }
+      } catch (error) {
+        // A normal handler error retains the explicit manual retry path. A reset/lost reply
+        // retains approved intent; only the opt-in receiver may reconcile/redeliver it.
+        if (application?.phase === "resume" || isDoResetError(error)) {
+          if (application) this.storage.actionApplications.put({ ...application, retryAt: Date.now() + 1_000 });
+        } else this.storage.actionApplications.delete(record.id);
+        throw error;
+      } finally { this.#updateAlarm(); }
+    }).finally(() => { this.#actionApplications.delete(record.id); });
+    this.#actionApplications.set(record.id, promise);
+    return promise;
+  }
+
+  async #applyPendingAction(record: ActionRecord & {type: "action"},
+      resolvedBy: AiChatAuthorInfo, autoApproved: boolean,
+      creation?: {creator: Fetcher<GatekeeperUserVerifier>, configuration: string | null}): Promise<void> {
     let id = record.gatekeeperId;
-    // A created resource exists only once its creation applies, and that stays pending until then.
     if (record.action !== "create" && this.#creationPending(id)) {
       throw new Error("This resource doesn't exist yet. Approve its creation first.");
     }
-    let gatekeeper = await this.getGatekeeperFacet(record.gatekeeperId);
+    let gatekeeper = await this.getGatekeeperFacet(id);
     let created: {class: GatekeeperClass, resourceUrl: string} | undefined;
     if (record.action === "create") {
       if (!creation) throw new Error("Choose one of your accounts to create this resource in.");
@@ -4734,13 +4985,26 @@ class OverseerImpl implements AgentHooks {
       created = await (gatekeeper as unknown as Fetcher<Gatekeeper<any> &
           Required<Pick<Gatekeeper<any>, "applyCreation">>>)
           .applyCreation(creation.creator, creation.configuration);
+    } else if (record.contextualApply) {
+      const grant = this.integrationGrant(id);
+      if (!grant.contextualActions) {
+        throw new Error("Contextual action permission was revoked. This action cannot be applied.");
+      }
+      // Every redelivery path (including active-agent restoration before retryAt) reaches this
+      // effect boundary. A durable approval is not permission to bypass a revoked recovery grant.
+      if (this.storage.actionApplications.get(record.id) && !grant.recoverableActions) {
+        throw new Error("Automatic action recovery permission was revoked.");
+      }
+      // Trusted configuration selects this optional dispatch; never fall back after an effect.
+      await (gatekeeper as unknown as Fetcher<Gatekeeper<any> &
+          Required<Pick<Gatekeeper<any>, "applyActionInContext">>>)
+          .applyActionInContext(record.action, new GatekeeperActionContextImpl(this, record));
     } else {
-      // The apply-time cache stub is scoped to the gatekeeper AND to this action (approval can
-      // happen long after the session that queued it, so the queue-time stub is gone) -- the
-      // binding that makes buildPack() serve exactly this action's pending-push closure.
-      await gatekeeper.applyAction(record.action,
-          new GitCacheImpl(this.gitCache, record.gatekeeperId, record.id));
+      await gatekeeper.applyAction(record.action, new GitCacheImpl(this.gitCache, id, record.id));
     }
+    // A long-running receiver may have submitted child approvals while this RPC was open.
+    const latest = this.storage.actions.get(record.id);
+    if (latest?.type === "action") record = latest;
     record.state = "approved";
     record.appliedAt = new Date();
     record.resolvedBy = resolvedBy;
@@ -4778,6 +5042,118 @@ class OverseerImpl implements AgentHooks {
     }
     // Also when a rule applies it: a user's "always approve" answers a pending request that way.
     this.traceAgentActionApproval(record, "approved");
+  }
+
+  // Alarm-driven recovery of already-authorized actions, never approval of pending requests.
+  async recoverActionApplications(): Promise<void> {
+    const due = [...this.storage.actionApplications.retryAt.list({ end: Date.now() + 1 })];
+    await Promise.all(due.map(async application => {
+      const started = performance.now();
+      try {
+        const record = this.storage.actions.get(application.id);
+        if (!record || record.type !== "action" || record.state === "rejected") {
+          this.storage.actionApplications.delete(application.id);
+        } else if (record.state === "approved" || application.phase === "resume") {
+          await this.#finishActionApplication(application);
+        } else {
+          await this.applyPendingAction(record, application.resolvedBy, application.autoApproved, undefined, application.resumeUserId);
+        }
+      } catch (error) {
+        const latest = this.storage.actionApplications.get(application.id);
+        if (latest) this.storage.actionApplications.put({ ...latest, retryAt: Date.now() + 1_000 });
+        this.logger.warn("approved action recovery deferred", {
+          event: "action.recovery.deferred", actionId: application.id, error,
+        });
+      } finally {
+        this.logger.info("approved action recovery reconciled", {
+          event: "action.recovery.finished", actionId: application.id, operation: `action.recovery.${application.phase}`,
+          durationMs: performance.now() - started,
+          statusText: this.storage.actionApplications.get(application.id) ? "pending" : "reconciled",
+        });
+      }
+    }));
+    this.#updateAlarm();
+  }
+
+  async #finishActionApplication(application: ActionApplication): Promise<void> {
+    const record = this.storage.actions.get(application.id);
+    if (record?.type === "action" && record.caller.from === "agent" && record.description.awaitDecision) {
+      if (!await this.resumeAfterActionDecision(record.caller.chatId, record.id, application.resolvedBy,
+          application.resumeUserId)) {
+        this.storage.actionApplications.put({ ...application, phase: "resume", retryAt: Date.now() + 1_000 });
+        return;
+      }
+    }
+    this.storage.actionApplications.delete(application.id);
+  }
+
+  // Recovery and the live client share the same segment-scoped decision and durable wake-up.
+  async resumeAfterActionDecision(chatId: number, approvedId: number, author: AiChatAuthorInfo,
+      fallbackUserId?: string): Promise<boolean> {
+    const awaited: (ActionRecord & { type: "action" })[] = [];
+    for (const msg of this.storage.chats.list({ prefix: `${keyString(chatId)}.`, reverse: true })) {
+      if (msg.type === "agentCallback" || msg.type === "message" &&
+          (msg.author.type === "user" || msg.author.type === "gadget")) break;
+      if (msg.type === "action") {
+        const record = this.storage.actions.get(msg.actionId);
+        if (record?.type === "action" && record.caller.from === "agent" && record.description.awaitDecision) awaited.push(record);
+      }
+    }
+    if (!awaited.some(record => record.id === approvedId) || awaited.some(record => record.state !== "approved")) return true;
+    const approved = awaited.find(record => record.id === approvedId)!;
+    if (approved.decisionResumed) return true;
+    const origin = approved.integrationOrigin;
+    if (origin) {
+      const turn = this.storage.agentIntegrationTurns.get(chatId);
+      if (turn?.turnId !== origin.turnId || turn.segmentId !== origin.segmentId || turn.state === "finished") return true;
+    }
+    const record = this.storage.actions.get(approvedId);
+    if (record?.type === "action" && !record.decisionNotified) this.storage.transaction(() => {
+      this.addChatMessages(chatId, author, [{ type: "agentNudge", text:
+        `The changes you submitted have been approved and applied: ${awaited.toReversed().map(r => `"${r.description.title}"`).join(", ")}. Reads now reflect them.` }]);
+      this.storage.actions.put({ ...record, decisionNotified: true });
+    });
+    // The resumer journals the wake-up on the submitting continuation before checking busy
+    // state. This decision must survive suspension cleanup even without effect redelivery.
+    await this.resumePausedAgent(chatId, fallbackUserId, author, awaited.map(record => record.id));
+    return true;
+  }
+
+  // Persist active resumption before starting async model resolution, so another reset or
+  // concurrent approval neither loses this wake-up nor starts a duplicate agent loop.
+  async resumePausedAgent(chatId: number, fallbackUserId?: string, author?: AiChatAuthorInfo,
+      decisionIds?: number[]): Promise<void> {
+    const decisions = decisionIds?.map(id => this.storage.actions.get(id))
+      .filter((record): record is ActionRecord & {type: "action"} => record?.type === "action");
+    if (decisions?.every(record => record.decisionResumed)) return;
+    // Accepting a connection during a suspended callback is still an authorized wake-up.
+    // Persist it before yielding; teardown (or constructor recovery) consumes this exact pause.
+    const paused = this.storage.pausedAgents.get(chatId);
+    const active = this.storage.activeAgents.get(chatId);
+    let record = paused ?? active;
+    if (!record && fallbackUserId && author) {
+      const message = [...this.storage.chats.list({ prefix: `${keyString(chatId)}.`, reverse: true })]
+        .find(msg => msg.author.type === "agent");
+      if (message) record = { chatId, initiatorUserId: fallbackUserId, modelId: message.author.id,
+        initiator: author, callbackInitiated: false };
+    }
+    if (!record) throw new Error("Paused agent origin unavailable; manual resumption is required.");
+    this.storage.transaction(() => {
+      (paused || !active ? this.storage.pausedAgents : this.storage.activeAgents).put({...record!, resumeRequested: true});
+      // Consume every decision in this suspension together: another browser/recovery call
+      // must not re-arm this marker after the next segment has removed it.
+      for (const decision of decisions ?? []) this.storage.actions.put({...decision, decisionResumed: true});
+    });
+    await this.waitForChatMessagePreparation(chatId);
+    const meta = this.storage.chatMeta.get(chatId);
+    if (!meta || meta.activeAgent || this.#runningAgents.has(chatId)) return;
+    record = this.storage.pausedAgents.get(chatId);
+    if (!record?.resumeRequested) return;
+    delete record.resumeRequested;
+    this.storage.activeAgents.put(record);
+    this.storage.pausedAgents.delete(chatId);
+    this.#registerRunningAgent(chatId);
+    this.ctx.waitUntil(this.#resumeAgent(record, this.#getLiveChat(chatId)));
   }
 
   // Traces an approval step for an action an agent turn submitted.
@@ -5026,6 +5402,13 @@ class OverseerImpl implements AgentHooks {
   // the currently-running execution resolve. See executeCodeMode.
   #activeWorktreeTurns = new Map<number,
       {access: WorktreeTurnAccess, initiator: AiChatAuthorInfo, executionId: string}>();
+  #worktreeReplicaTurns = new Map<number, { access: WorktreeTurnAccess, author: AiChatAuthorInfo,
+    bindings: () => ReadonlyMap<string, ChatBindingEntry> }>();
+
+  registerWorktreeReplicaTurn(chatId: number, access: WorktreeTurnAccess, author: AiChatAuthorInfo,
+      bindings: () => ReadonlyMap<string, ChatBindingEntry>): void {
+    this.#worktreeReplicaTurns.set(chatId, { access, author, bindings });
+  }
 
   // Maps chat ID to action numbers recently performed by that chat's agent. These are drained into
   // the chat log after the tool returns. `awaitDecision` is true if any captured action needs it.
@@ -5136,7 +5519,18 @@ class OverseerImpl implements AgentHooks {
     if (!content || content.state.type !== "committed" || content.state.chatId !== chatId) {
       throw new Error("Chat attachment not found.");
     }
-    return content.data;
+    if (content.data !== undefined) return content.data;
+    if (content.state.workspaceCommitId === undefined ||
+        content.state.workspacePath === undefined) {
+      throw new Error("Chat attachment has no stored content.");
+    }
+    const entry = await this.gitCache.pathEntryAtCommit(
+        content.state.workspaceCommitId, content.state.workspacePath);
+    if (!entry || entry.kind === "dir" || entry.kind === "submodule") {
+      throw new Error("Chat attachment content is missing from Git.");
+    }
+    return (await this.gitCache.ensureObject(entry.oid,
+      {type: "blob", referencedBy: entry.referencedBy})).payload;
   }
 
   // Prepare a stored chat message for delivery to a client: inline image attachment bytes
@@ -5155,10 +5549,169 @@ class OverseerImpl implements AgentHooks {
         return a;
       }
       let content = this.storage.chatAttachmentContent.get(a.id);
-      if (!content) return a;
+      if (!content?.data) return a;
       return {...a, content: content.data};
     });
     return {...msg, attachments};
+  }
+
+  #attachmentWorkspaceFilename(
+      attachment: ChatAttachmentRef, used: Set<string>): string {
+    let supplied = attachment.name?.replaceAll("\\", "/").split("/").at(-1);
+    let fallbackExtension = CHAT_ATTACHMENT_EXTENSION_BY_MIME.get(attachment.mimeType) ?? ".txt";
+    let filename = (supplied || `attachment-${attachment.id.slice(0, 8)}${fallbackExtension}`)
+        // eslint-disable-next-line no-control-regex -- Uploaded filenames must exclude ASCII control characters.
+        .replace(/[\u0000-\u001f\u007f]/g, "_").trim();
+    if (!filename || filename === "." || filename === ".." || filename.toLowerCase() === ".git") {
+      filename = `attachment-${attachment.id.slice(0, 8)}${fallbackExtension}`;
+    }
+    filename = filename.slice(0, 200);
+
+    let dot = filename.lastIndexOf(".");
+    let stem = dot > 0 ? filename.slice(0, dot) : filename;
+    let extension = dot > 0 ? filename.slice(dot) : "";
+    let candidate = filename;
+    for (let suffix = 2; used.has(candidate); suffix++) {
+      candidate = `${stem}-${suffix}${extension}`;
+    }
+    used.add(candidate);
+    return candidate;
+  }
+
+  async #prepareWorkspaceAttachmentFiles(
+      chatId: number, attachments: ChatAttachmentRef[] | undefined): Promise<Map<string, string>> {
+    let used = new Set<string>();
+    for (let record of this.storage.chatAttachmentContent.list()) {
+      if (record.state.type === "committed" && record.state.chatId === chatId &&
+          record.state.workspacePath !== undefined) {
+        used.add(record.state.workspacePath);
+      }
+    }
+
+    const worktree = this.#attachmentsWorktree(chatId);
+    if (worktree && attachments?.some(attachment => isTextLikeAttachmentMimeType(attachment.mimeType))) {
+      // Uploads use root filenames. Reserve base and overlay root names (including directories)
+      // without loading file contents, so an upload cannot overwrite agent-created work.
+      for (const entry of await this.gitCache.listCommitTreePaths(worktree.pinBase)) used.add(entry.path);
+      for (const {path} of this.storage.worktreeBaseChanges.byWorkpiece.get(worktree.id)) used.add(path.split("/")[0]);
+      for (const [path] of this.#replicaOverlay(chatId)[worktree.id] ?? []) used.add(path.split("/")[0]);
+    }
+
+    let files = new Map<string, string>();
+    for (let attachment of attachments ?? []) {
+      if (!isTextLikeAttachmentMimeType(attachment.mimeType)) continue;
+      let content = this.storage.chatAttachmentContent.get(attachment.id);
+      if (!content || content.state.type !== "staged") {
+        throw new Error("Chat attachment is no longer available.");
+      }
+      // The OT engine is UTF-16 text. Invalid UTF-8 stays an ordinary byte attachment,
+      // never a lossy replacement-character worktree. Keep a UTF-8 BOM as actual content.
+      let text: string;
+      try { text = new TextDecoder("utf-8", {fatal: true, ignoreBOM: true}).decode(content.data); }
+      catch { continue; }
+      let path = this.#attachmentWorkspaceFilename(attachment, used);
+      attachment.workspacePath = path;
+      files.set(path, text);
+    }
+    return files;
+  }
+
+  #attachmentsWorktree(chatId: number): WorktreeRecord | undefined {
+    let id = this.getChatAgentContext(chatId).attachments?.worktreeId;
+    let record = id === undefined ? undefined : this.storage.gadgets.get(id);
+    return record?.type === "worktree" && record.chatId === chatId ? record : undefined;
+  }
+
+  async #writeWorkspaceAttachmentCommit(
+      files: ReadonlyMap<string, string>, author: AiChatAuthorInfo): Promise<string | undefined> {
+    if (files.size === 0) return undefined;
+    return await this.gitStore.writeFilesAsCommit(files, {
+      parents: [],
+      author: commitIdentityForAuthor(author),
+      message: "Store uploaded chat attachments",
+      timestamp: new Date(),
+    });
+  }
+
+  async #prepareAttachmentsWorktree(
+      chatId: number, files: ReadonlyMap<string, string>, author: AiChatAuthorInfo)
+      : Promise<PreparedAttachmentsWorktree | undefined> {
+    if (files.size === 0 || this.#attachmentsWorktree(chatId) !== undefined) return undefined;
+    let bindingName = fallbackBindingName(
+        "ATTACHMENTS", name => this.chatScopeNames(chatId).has(name));
+    let commitId = (await this.#writeWorkspaceAttachmentCommit(files, author))!;
+    return {commitId, bindingName};
+  }
+
+  #installAttachmentsWorktree(
+      chatId: number, prepared: PreparedAttachmentsWorktree): WorktreeRecord {
+    let existing = this.#attachmentsWorktree(chatId);
+    if (existing !== undefined) return existing;
+
+    let context = this.getChatAgentContext(chatId);
+    let taken = this.chatScopeNames(chatId);
+    let bindingName = fallbackBindingName(
+        prepared.bindingName, name => taken.has(name));
+    let record: WorktreeRecord = {
+      type: "worktree",
+      id: this.allocateWorkpieceId(),
+      title: "Attachments",
+      created: new Date(),
+      chatId,
+      baseCommit: prepared.commitId,
+      headCommit: prepared.commitId,
+      pinBase: prepared.commitId,
+    };
+
+    this.storage.gadgets.put(record);
+    context.attachments = {worktreeId: record.id, bindingName};
+    if (context.bindings !== undefined) context.bindings[bindingName] = record.id;
+    this.storage.chatContext.put(context);
+    return record;
+  }
+
+  // Validate the entire batch before any subscriber sees its message or first change row.
+  #prepareWorkspaceAttachmentChanges(
+      chatId: number, worktree: WorktreeRecord, files: ReadonlyMap<string, string>)
+      : {change: CodeChange, content: CodeContent}[] {
+    const current = this.storage.gadgets.get(worktree.id);
+    if (current?.type !== "worktree" || current.chatId !== chatId || current.pinBase !== worktree.pinBase) {
+      throw new Error("Attachment worktree changed while preparing the message; retry.");
+    }
+    const meta = this.getChatMetaOrThrow(chatId), base = this.chatCodeBase(meta);
+    const cached = this.#chatContentCache.get(chatId);
+    if (!cached || cached.generation !== base.generation || cached.revision !== base.revision) {
+      throw new Error("Attachment workspace changed while preparing the message; retry.");
+    }
+    let content = cached.content;
+    const prepared: {change: CodeChange, content: CodeContent}[] = [];
+    for (let [path, text] of files) {
+      // Replica ingestion can advance the namespace during the preparation awaits. The
+      // current cache includes those touched paths; its freshness alone doesn't reserve names.
+      for (const existing of content.get(worktree.id)?.keys() ?? []) {
+        if (existing === path || existing.startsWith(path + "/")) {
+          throw new Error("Attachment workspace changed while preparing the message; retry.");
+        }
+      }
+      const change: CodeChange = {[worktree.id]: [[path, {set: text}]]};
+      validateCodeChangeSchema(change);
+      validateCodeChangeContent(change, content);
+      content = applyCodeChange(content, change);
+      prepared.push({change, content});
+    }
+    return prepared;
+  }
+
+  #appendWorkspaceAttachments(
+      chatId: number, worktree: WorktreeRecord,
+      prepared: {change: CodeChange, content: CodeContent}[], author: AiChatAuthorInfo): void {
+    for (const {change, content} of prepared) {
+      const meta = this.getChatMetaOrThrow(chatId), base = this.chatCodeBase(meta);
+      const pins = base.pins.some(pin => pin.gadgetId === worktree.id) ? [] :
+        [{gadgetId: worktree.id, baseCommit: worktree.pinBase, mergedCommit: worktree.pinBase}];
+      this.#appendChatChangeRow(chatId, meta, author, change, pins, content);
+      this.materializeChatChanges(chatId, undefined, {author, allowDuringTurn: true});
+    }
   }
 
   // Look up the attachments that the client wants to send.
@@ -5185,13 +5738,15 @@ class OverseerImpl implements AgentHooks {
       if (!content || content.state.type !== "staged") {
         throw new Error("Chat attachment not found.");
       }
-      assertChatAttachmentSupportedByProvider(provider, content.state.mimeType, content.data.byteLength);
-      total += content.data.byteLength;
+      let data = content.data;
+      if (data === undefined) throw new Error("Staged chat attachment has no content.");
+      assertChatAttachmentSupportedByProvider(provider, content.state.mimeType, data.byteLength);
+      total += data.byteLength;
       result.push({
         id,
         mimeType: content.state.mimeType,
         name: content.state.name,
-        size: content.data.byteLength,
+        size: data.byteLength,
       });
     }
     if (total > MAX_CHAT_ATTACHMENT_TOTAL_BYTES) {
@@ -5200,18 +5755,34 @@ class OverseerImpl implements AgentHooks {
     return result;
   }
 
-  commitChatAttachments(chatId: number, attachments?: ChatAttachmentRef[]): void {
+  commitChatAttachments(
+      chatId: number, attachments?: ChatAttachmentRef[], workspaceCommitId?: string): void {
     for (let attachment of attachments ?? []) {
       let id = validateChatAttachmentId(attachment.id);
       let content = this.storage.chatAttachmentContent.get(id);
       if (!content || content.state.type !== "staged") {
         throw new Error("Chat attachment is no longer available.");
       }
-      this.storage.chatAttachmentContent.put({
-        fileId: id,
-        data: content.data,
-        state: {type: "committed", chatId},
-      });
+      if (attachment.workspacePath !== undefined) {
+        if (workspaceCommitId === undefined) {
+          throw new Error("Workspace attachment is missing its Git source commit.");
+        }
+        this.storage.chatAttachmentContent.put({
+          fileId: id,
+          state: {
+            type: "committed",
+            chatId,
+            workspacePath: attachment.workspacePath,
+            workspaceCommitId,
+          },
+        });
+      } else {
+        this.storage.chatAttachmentContent.put({
+          fileId: id,
+          data: content.data,
+          state: {type: "committed", chatId},
+        });
+      }
     }
   }
 
@@ -5351,8 +5922,35 @@ class OverseerImpl implements AgentHooks {
   }
 
   async submitAction(gatekeeperId: number, action: number | "create",
-                     description: ActionDescription, caller: GatekeeperCaller)
+                     description: ActionDescription, caller: GatekeeperCaller,
+                     integrationOrigin?: AgentIntegrationOrigin, continuationOf?: number)
       : Promise<void> {
+    let parent: (ActionRecord & { type: "action" }) | undefined;
+    if (continuationOf !== undefined) {
+      const candidate = this.storage.actions.get(continuationOf);
+      const application = this.storage.actionApplications.get(continuationOf);
+      const grant = this.integrationGrant(gatekeeperId);
+      if (candidate?.type !== "action" || candidate.gatekeeperId !== gatekeeperId ||
+          candidate.caller.from !== "agent" || !candidate.integrationOrigin ||
+          candidate.state !== "pending" || !candidate.description.awaitDecision || application?.phase !== "apply" ||
+          !grant.contextualActions || !grant.recoverableActions)
+        throw new Error("The originating action is not being applied with recoverable authority.");
+      parent = candidate;
+      const turn = this.storage.agentIntegrationTurns.get(candidate.integrationOrigin.chatId);
+      integrationOrigin = { ...candidate.integrationOrigin, segmentId: turn?.segmentId ?? "" };
+      requireIntegrationTurn(turn, integrationOrigin, "applyingAction");
+      caller = candidate.caller;
+      for (const id of candidate.followupActionIds ?? []) {
+        const prior = this.storage.actions.get(id);
+        if (prior?.type === "action" && prior.action === action) {
+          if (JSON.stringify(prior.description) !== JSON.stringify(description))
+            throw new Error("Follow-up action ID was reused with a different description.");
+          return;
+        }
+      }
+      if ((candidate.followupActionIds?.length ?? 0) >= 32)
+        throw new Error("Follow-up approval budget exceeded.");
+    }
     // An in-flight facet RPC can outlive removeGatekeeper, and a pending action on a removed
     // connection could never be approved or rejected (both dereference the facet).
     let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
@@ -5360,6 +5958,10 @@ class OverseerImpl implements AgentHooks {
       throw new Error(
           "This action was blocked because the connection it was submitted through has been " +
           "removed from this workspace.");
+    }
+    if (integrationOrigin) {
+      requireIntegrationTurn(this.storage.agentIntegrationTurns.get(integrationOrigin.chatId),
+          integrationOrigin, parent ? "applyingAction" : "running");
     }
 
     // Restricted mode: the approver vouches for the text they read, and a push's commits cannot
@@ -5396,7 +5998,9 @@ class OverseerImpl implements AgentHooks {
       createdAt: new Date(),
       state: "pending",
       type: "action",
-      description
+      description,
+      integrationOrigin,
+      contextualApply: this.integrationGrant(gatekeeperId).contextualActions === true,
     };
 
     // The marking walk stamps the verified push closure "pending push" -- the read grant that
@@ -5407,8 +6011,15 @@ class OverseerImpl implements AgentHooks {
         this.gitCache.markPushClosure(gatekeeperId, actionId, description.pushedCommits);
       }
       this.storage.actions.put(record);
+      if (parent) {
+        this.storage.actions.put({ ...parent, followupActionIds: [...(parent.followupActionIds ?? []), actionId] });
+        // No executeCode call will consume a command's late approvals. Publish the existing
+        // action card now, in the same durable transaction as the deduplication receipt.
+        this.addChatMessages(parent.integrationOrigin!.chatId,
+          this.storage.actionApplications.get(parent.id)!.resolvedBy, [{ type: "action", actionId }]);
+      }
     });
-    this.#associateAction(caller, actionId);
+    if (!parent) this.#associateAction(caller, actionId);
 
     // Same auto-approval gate the drainer uses, named because awaitDecision uses it too. The drain
     // is deferred because applying calls back into the gatekeeper facet still awaiting submitAction.
@@ -5418,7 +6029,7 @@ class OverseerImpl implements AgentHooks {
     // Only agent turns suspend on awaitDecision, and only when a manual decision is pending: on this
     // action, or on an earlier one the in-order drain stops at. Auto-approved actions keep the
     // seamless behavior the user opted into.
-    if (caller.from === "agent" && description.awaitDecision && (!willAutoApprove ||
+    if (!parent && caller.from === "agent" && description.awaitDecision && (!willAutoApprove ||
         [...this.storage.actions.pendingByGatekeeper.get(gatekeeperId)].some(queued =>
             queued.type === "action" &&
             autoApprovalRule(this.storage, gatekeeperId, queued.description) === undefined))) {
@@ -5811,6 +6422,522 @@ class OverseerImpl implements AgentHooks {
     return facet.startSession(new ApprovalQueueImpl(this, id, caller));
   }
 
+  integrationGrant(gatekeeperId: number) {
+    this.assertGatekeeperUsable(gatekeeperId);
+    const record = this.storage.gatekeepers.get(gatekeeperId);
+    if (!record) throw new Error("Agent integration connection was removed.");
+    const vendorId = gatekeeperVendorId(record);
+    return vendorId ? agentIntegrationGrant(this.env.AGENT_INTEGRATION_GRANTS, vendorId) : {};
+  }
+
+  // Freeze names and immutable bases at the capability-minting boundary. The live agent map
+  // includes worktrees created this step; the stored map is used after an approval suspends it.
+  replicaSelection(chatId: number): WorktreeBase[] {
+    let names = new Map<WorkpieceId, string>();
+    const context = this.getChatAgentContext(chatId);
+    const active = this.#worktreeReplicaTurns.get(chatId);
+    if (active) {
+      for (const [name, entry] of active.bindings()) {
+        if (entry.type === "workpiece" && !names.has(entry.id)) names.set(entry.id, name);
+      }
+    } else {
+      const checkpoint = this.getActiveChatCompaction(chatId);
+      const initial = new Map<string, ChatBindingEntry>(checkpoint?.chatBindings ?? []);
+      for (const [name, id] of Object.entries(context.bindings ?? {})) {
+        if (!initial.has(name)) initial.set(name, {type: "workpiece", id});
+      }
+      const messages = this.storage.chats.list({prefix: chatKeyPrefix(chatId),
+        start: checkpoint && chatKey(chatId, checkpoint.compactedTo)});
+      for (const [name, entry] of replayChatBindings(messages, initial)) {
+        if (entry.type === "workpiece" && !names.has(entry.id)) names.set(entry.id, name);
+      }
+    }
+    const meta = this.storage.chatMeta.get(chatId);
+    const pins = meta ? new Map(this.chatCodeBase(meta).pins.map(pin => [pin.gadgetId, pin.baseCommit])) : new Map<number, string>();
+    return [...names].flatMap(([id, binding]) => {
+      const piece = this.storage.gadgets.get(id);
+      if (!piece || (piece.type === "worktree" && piece.chatId !== chatId) ||
+          (piece.type === "gadget" && piece.pending && piece.pending.chatId !== chatId)) return [];
+      const source = piece.type === "gadget" ? "gadget" as const :
+        context.attachments?.worktreeId === id ? "attachments" as const : "repository" as const;
+      return [{ checkoutId: id, binding,
+        // Accepted auto-commits exist only in the DO. Git hydration must keep the original
+        // source commit as the immutable lower; captured local commits and pending changes
+        // are materialized above it during bootstrap.
+        baseCommit: piece.type === "worktree" ? piece.replicaBaseCommit ?? piece.pinBase :
+          active?.access.getBaseCommit(id) ?? pins.get(id) ??
+          piece.commitId ?? null,
+        baseTree: null, source }];
+    });
+  }
+
+  openWorktreeReplica(gatekeeperId: number, origin: AgentIntegrationOrigin,
+      phase: AgentTurnInfo["phase"]): Fetcher<WorkspaceReplica> {
+    if (!this.integrationGrant(gatekeeperId).worktreeReplica ||
+        (phase !== "running" && phase !== "applyingAction")) {
+      throw new Error("Worktree replication has not been granted to this integration.");
+    }
+    requireIntegrationTurn(this.storage.agentIntegrationTurns.get(origin.chatId), origin, phase);
+    const selection = this.replicaSelection(origin.chatId);
+    const worktrees = origin.worktrees ?? [];
+    if (!worktrees.length || worktrees.some(tree => !selection.some(current =>
+        current.checkoutId === tree.checkoutId && current.baseCommit === tree.baseCommit))) {
+      throw new Error("Replica selection is empty or its bases changed while awaiting approval.");
+    }
+    const leases = [...this.storage.worktreeReplicaLeases.list()];
+    for (const lease of leases) {
+      const meta = this.storage.chatMeta.get(lease.chatId);
+      const epochChanged = lease.checkpoint && (!meta ||
+        Number(lease.checkpoint.cursor.split(":").at(-2)) !== this.chatCodeBase(meta).generation);
+      if (lease.released || lease.expiresAt <= Date.now() ||
+          this.storage.agentIntegrationTurns.get(lease.chatId)?.turnId !== lease.turnId || epochChanged) {
+        const receipts = [...this.storage.worktreeReplicaCommits.byLease.get(lease.id)];
+        for (const receipt of receipts) {
+          this.storage.worktreeReplicaCommits.delete(receipt.id);
+        }
+        this.storage.worktreeReplicaLeases.delete(lease.id);
+      } else if (lease.chatId === origin.chatId && lease.turnId === origin.turnId &&
+          lease.gatekeeperId === gatekeeperId && lease.worktrees.length === worktrees.length &&
+          lease.worktrees.every((tree, index) => tree.checkoutId === worktrees[index].checkoutId &&
+            tree.baseCommit === worktrees[index].baseCommit)) {
+        return this.ctx.exports.WorkspaceReplicaEndpoint({ props: { overseerId: this.ctx.id.toString(), leaseId: lease.id } });
+      }
+    }
+    const lease: WorktreeReplicaLease = { id: crypto.randomUUID(), gatekeeperId, chatId: origin.chatId,
+      turnId: origin.turnId, expiresAt: Date.now() + 60_000, worktrees };
+    this.storage.worktreeReplicaLeases.put(lease);
+    return this.ctx.exports.WorkspaceReplicaEndpoint({ props: { overseerId: this.ctx.id.toString(), leaseId: lease.id } });
+  }
+
+  requireReplicaLease(id: string): WorktreeReplicaLease {
+    const lease = this.storage.worktreeReplicaLeases.get(id);
+    const turn = lease && this.storage.agentIntegrationTurns.get(lease.chatId);
+    if (!lease || lease.released || lease.expiresAt <= Date.now() || turn?.turnId !== lease.turnId ||
+        !this.integrationGrant(lease.gatekeeperId).worktreeReplica) throw new Error("Replica lease expired or revoked.");
+    if (turn.state === "finished" && (!lease.cleanupDeadline || lease.cleanupDeadline <= Date.now() ||
+        ![...this.storage.agentIntegrationParticipants.byTurn.get(turn.turnId)].some(participant =>
+          participant.gatekeeperId === lease.gatekeeperId && participant.pending.some(event =>
+            event.kind === "finished" && event.eventId === turn.closing?.eventId)))) {
+      throw new Error("Replica lease expired or revoked after turn termination.");
+    }
+    const meta = this.storage.chatMeta.get(lease.chatId);
+    if (!meta || lease.checkpoint &&
+        Number(lease.checkpoint.cursor.split(":").at(-2)) !== this.chatCodeBase(meta).generation) {
+      throw new Error("Replica epoch changed; acquire a new lease and checkpoint.");
+    }
+    const current = this.replicaSelection(lease.chatId);
+    for (const tree of lease.worktrees) {
+      if (!current.some(item => item.checkoutId === tree.checkoutId && item.baseCommit === tree.baseCommit)) {
+        throw new Error("Replica worktree grant or immutable base changed.");
+      }
+      const piece = this.storage.gadgets.get(tree.checkoutId);
+      if (piece?.type === "worktree" && piece.sourceGatekeeperId !== undefined) {
+        this.assertGatekeeperUsable(piece.sourceGatekeeperId);
+        if (!this.storage.gatekeepers.get(piece.sourceGatekeeperId)) throw new Error("Replica source disconnected.");
+      }
+    }
+    return lease;
+  }
+
+  replicaCursor(lease: WorktreeReplicaLease): string {
+    const meta = this.storage.chatMeta.get(lease.chatId);
+    if (!meta) throw new Error("Replica chat was deleted.");
+    const base = this.chatCodeBase(meta);
+    return `${lease.id}:${base.generation}:${base.revision}`;
+  }
+
+  replicaVersion(lease: WorktreeReplicaLease): string {
+    return `${this.replicaCursor(lease)}:${this.#worktreeReplicaTurns.get(lease.chatId)?.access.getRevision?.() ?? "stored"}`;
+  }
+
+  #replicaEntries = new Map<string, Promise<WorktreeBaseEntry[]>>();
+
+  #replicaOverlay(chatId: number): CodeChange {
+    const history = this.loadChatHistory(chatId);
+    let result = foldCompactedCode(history.chatMessages, Infinity, history.checkpoint).proposedChange ?? {};
+    const meta = this.storage.chatMeta.get(chatId)!;
+    for (const row of this.listLiveChatChanges(chatId, this.chatCodeBase(meta).generation)) {
+      result = composeCodeChange(result, row.change);
+    }
+    return result;
+  }
+
+  getWorkspaceReplicaSession(id: string): WorktreeReplicaSession {
+    // Minting reveals no data. Each method and cursor page checks the lease before use;
+    // doing it here too makes a failed pipelined lookup leak a second rejected RPC promise.
+    const requireTree = (lease: WorktreeReplicaLease, checkoutId: number) => {
+      this.requireReplicaLease(lease.id);
+      const tree = lease.worktrees.find(tree => tree.checkoutId === checkoutId);
+      if (!tree) throw new Error("Checkout is outside the replica grant.");
+      return tree;
+    };
+    const entries: WorktreeReplicaHost["entries"] = async (lease, checkoutId) => {
+      const tree = requireTree(lease, checkoutId);
+      const key = `${lease.id}:${checkoutId}`;
+      if (!this.#replicaEntries.has(key)) {
+        if (this.#replicaEntries.size > 64) this.#replicaEntries.clear();
+        this.#replicaEntries.set(key, (async () => {
+          if (!tree.baseCommit) return [];
+          const paths = await this.gitCache.listCommitTreePaths(tree.baseCommit, "", { recursive: true });
+          const result: WorktreeBaseEntry[] = [];
+          for (const entry of paths) {
+            if (entry.kind === "dir") continue;
+            requireReplicaPath(entry.path);
+            result.push({ path: entry.path, oid: entry.oid, mode: entry.kind === "executable" ? "100755" :
+              entry.kind === "symlink" ? "120000" : entry.kind === "submodule" ? "160000" : "100644" });
+          }
+          if (result.length > 100_000) throw new Error("Replica base exceeds the entry budget.");
+          return result;
+        })());
+      }
+      try { return await this.#replicaEntries.get(key)!; }
+      catch (error) { this.#replicaEntries.delete(key); throw error; }
+    };
+    const baseFile: WorktreeReplicaHost["baseFile"] = async (lease, checkoutId, path) => {
+      requireReplicaPath(path);
+      const tree = requireTree(lease, checkoutId);
+      const entry = tree.baseCommit && await this.gitCache.pathEntryAtCommit(tree.baseCommit, path);
+      if (!entry || entry.kind === "dir" || entry.kind === "submodule") throw new Error("No readable base file at this path.");
+      return (await this.gitCache.ensureObject(entry.oid, { type: "blob", referencedBy: entry.referencedBy })).payload;
+    };
+    const host: WorktreeReplicaHost = {
+      requireLease: id => this.requireReplicaLease(id), saveLease: lease => {
+        const current = this.requireReplicaLease(lease.id);
+        this.storage.worktreeReplicaLeases.put({...lease, cleanupDeadline: current.cleanupDeadline,
+          expiresAt: Math.min(lease.expiresAt, current.cleanupDeadline ?? Infinity)});
+      },
+      entries, baseFile,
+      anchorFile: async (lease, checkoutId, path) => {
+        requireTree(lease, checkoutId);
+        const tree = lease.checkpoint!.worktrees.find(tree => tree.checkoutId === checkoutId)!;
+        const commit = tree.acceptedCommit ?? tree.baseCommit;
+        if (!commit) return null;
+        const entry = await this.gitCache.pathEntryAtCommit(commit, path);
+        if (!entry || entry.kind === "dir" || entry.kind === "submodule") return null;
+        const bytes = (await this.gitCache.ensureObject(entry.oid,
+          {type: "blob", referencedBy: entry.referencedBy})).payload;
+        const text = new TextDecoder("utf-8", {fatal: true, ignoreBOM: true}).decode(bytes);
+        if (text.includes("\0")) throw new Error("Replica mutations of binary files are unsupported.");
+        return text;
+      },
+      assertPathWritable: async (lease, checkoutId, path) => {
+        const tree = requireTree(lease, checkoutId);
+        const commit = tree.acceptedCommit ?? tree.baseCommit;
+        if (commit) await this.gitCache.assertWorktreePathWritable(commit, path);
+      },
+      gitPack: async (lease, checkoutId, request) => {
+        const commit = lease.worktrees.find(tree => tree.checkoutId === checkoutId)?.baseCommit;
+        if (!commit) throw new Error("Repository has no immutable source commit.");
+        const metadata = this.storage.gitObjectMetadata.get(commit);
+        const sources = [...new Set([...(metadata?.onRemote ?? []), ...(metadata?.pullableFrom ?? [])])];
+        for (const source of sources) {
+          if (!this.storage.gatekeepers.get(source)) continue;
+          // Optional RPC methods cannot be probed through a stub. The declared interface is the
+          // type of this facet; an unsupported provider rejects and the next provenance is tried.
+          const facet = await this.getGatekeeperFacet(source) as Fetcher<Gatekeeper<any> &
+            Required<Pick<Gatekeeper<any>, "gitReadPack">>>;
+          try {
+            return await facet.gitReadPack(commit, request);
+          } catch { /* No arbitrary URL or unscoped credential fallback. */ }
+        }
+        throw new Error("No authorized source can hydrate this immutable Git commit.");
+      },
+      commitPack: (lease, checkoutId) => {
+        const piece = this.storage.gadgets.get(checkoutId);
+        const tree = lease.checkpoint!.worktrees.find(tree => tree.checkoutId === checkoutId)!;
+        return replicaCommitPack(this.gitCache, tree, () => {
+          if (this.requireReplicaLease(lease.id).gitBootstrapClosed) throw new Error("Git bootstrap is closed.");
+        }, piece?.type === "worktree" ? piece.baseCommit : tree.baseCommit);
+      },
+      capture: async lease => {
+        const active = this.#worktreeReplicaTurns.get(lease.chatId)?.access;
+        if (active?.flushReplica && !await active.flushReplica({}, active.getRevision?.() ?? 0)) {
+          throw new Error("Workspace changed during checkpoint capture; retry.");
+        }
+        const cursor = this.replicaCursor(lease);
+        const pending = this.#replicaOverlay(lease.chatId);
+        if (this.replicaCursor(lease) !== cursor) throw new Error("Workspace changed during checkpoint capture; retry.");
+        const changes: WorktreeChange[] = [];
+        const pendingOverlay: WorktreeChange[] = [];
+        let overlayBytes = 0;
+        for (const tree of lease.worktrees) {
+          const piece = this.storage.gadgets.get(tree.checkoutId);
+          tree.acceptedCommit = piece?.type === "worktree" ? piece.pinBase : tree.baseCommit;
+          tree.headCommit = piece?.type === "worktree" ? piece.headCommit : tree.baseCommit;
+          const root = tree.baseCommit && await this.gitCache.pathEntryAtCommit(tree.baseCommit, "");
+          tree.baseTree = root ? root.oid : null;
+          // Accepted commits already represent the prefix exactly. Reconstruct only touched
+          // anchors from that captured identity; never compose/store an unbounded prefix here.
+          const composed = {[tree.checkoutId]: pending[tree.checkoutId] ?? []};
+          // Bound the stored transforms, not their resulting full files or a JSON copy.
+          overlayBytes += codeChangeSerializedSize(composed) + 256 * (composed[tree.checkoutId]?.length ?? 0);
+          if (overlayBytes > 1024 * 1024) throw new Error("Replica checkpoint transforms exceed their storage budget.");
+          for (const [path, change] of composed[tree.checkoutId] ?? []) {
+            requireReplicaPath(path);
+            changes.push({checkoutId: tree.checkoutId, path, change});
+          }
+          for (const [path, change] of pending[tree.checkoutId] ?? []) {
+            requireReplicaPath(path);
+            pendingOverlay.push({checkoutId: tree.checkoutId, path, change});
+            overlayBytes += codeChangeSerializedSize({[tree.checkoutId]: [[path, change]]}) + 256;
+          }
+        }
+        if (overlayBytes > 1024 * 1024) throw new Error("Replica checkpoint transforms exceed their storage budget.");
+        if (this.replicaCursor(lease) !== cursor) throw new Error("Workspace changed during checkpoint capture; retry.");
+        for (const tree of lease.worktrees) {
+          const piece = this.storage.gadgets.get(tree.checkoutId);
+          if (piece?.type === "worktree" &&
+              (piece.pinBase !== tree.acceptedCommit || piece.headCommit !== tree.headCommit)) {
+            throw new Error("Workspace heads changed during checkpoint capture; retry.");
+          }
+        }
+        const refreshed = this.requireReplicaLease(lease.id);
+        this.storage.worktreeReplicaLeases.put({ ...refreshed, worktrees: lease.worktrees });
+        return { cursor, overlay: changes, pendingOverlay };
+      },
+      events: (lease, cursor, limit) => {
+        this.requireReplicaLease(lease.id);
+        const match = new RegExp(`^${lease.id}:(\\d+):(\\d+)$`).exec(cursor);
+        const meta = this.storage.chatMeta.get(lease.chatId)!;
+        const base = this.chatCodeBase(meta);
+        const checkpointRevision = Number(lease.checkpoint?.cursor.split(":").at(-1));
+        if (!match || !Number.isSafeInteger(Number(match[2])) || Number(match[1]) !== base.generation ||
+            Number(match[2]) < checkpointRevision || Number(match[2]) > base.revision) throw new Error("Replica cursor expired.");
+        const after = Number(match[2]), through = Math.min(base.revision, after + limit);
+        const events: WorktreeChangesPage["events"] = [];
+        let bytes = 256, returnedThrough = after;
+        for (let revision = after + 1; revision <= through; ++revision) {
+          const row = this.storage.chatChanges.get(chatKey(lease.chatId, base.generation, revision));
+          if (!row) throw new Error("Replica cursor history expired; acquire a new lease and checkpoint.");
+          const scoped: CodeChange = {};
+          for (const tree of lease.worktrees) {
+            if (row.change[tree.checkoutId]?.length) scoped[tree.checkoutId] = row.change[tree.checkoutId];
+          }
+          const event = { cursor: `${lease.id}:${row.generation}:${row.revision}`, ...(row.sourceReplica?.leaseId === lease.id
+            ? {sourceBatchId: row.sourceReplica.batchId} : {}),
+            changes: lease.worktrees.flatMap(tree => (row.change[tree.checkoutId] ?? []).map(([path, change]) =>
+              ({ checkoutId: tree.checkoutId, path, change }))) };
+          const size = codeChangeSerializedSize(scoped) + REPLICA_EVENT_CHANGE_OVERHEAD * event.changes.length +
+            256 + 2 * (event.cursor.length + (event.sourceBatchId?.length ?? 0));
+          if (bytes + size > REPLICA_EVENTS_BYTE_BUDGET) {
+            if (!events.length) throw new Error("Replica event exceeds its transfer budget.");
+            break;
+          }
+          bytes += size;
+          events.push(event);
+          returnedThrough = row.revision;
+        }
+        return { events, cursor: events.at(-1)?.cursor ?? cursor, hasMore: returnedThrough < base.revision };
+      },
+      flush: async lease => {
+        const active = this.#worktreeReplicaTurns.get(lease.chatId)?.access;
+        return active?.flushReplica ? active.flushReplica({}, active.getRevision?.() ?? 0) : true;
+      },
+      version: lease => this.replicaVersion(lease), getCommit: id => this.storage.worktreeReplicaCommits.get(id),
+      commit: async (lease, version, change, receipt) => {
+        this.requireReplicaLease(lease.id);
+        if (this.replicaVersion(lease) !== version) return false;
+        const active = this.#worktreeReplicaTurns.get(lease.chatId);
+        try {
+          if (active?.access.flushReplica) return await active.access.flushReplica(change, active.access.getRevision?.() ?? 0, receipt, () => {
+            this.requireReplicaLease(lease.id);
+            return this.replicaVersion(lease) === version && !this.storage.worktreeReplicaCommits.get(receipt.id);
+          });
+          // A suspended/recovered turn needs the same first-write gadget pins as the live path.
+          // Use the lease's immutable base, never a newer mainline head; the barrier validates it.
+          const pins = this.chatCodeBase(this.storage.chatMeta.get(lease.chatId)!).pins;
+          const changes: AgentStepChange[] = Object.entries(change).map(([key, entries]) => {
+            const gadgetId = Number(key), isWorktree = this.isWorktree(gadgetId);
+            assertAgentMayModifyWorkpiece(this.getChatAgentContext(lease.chatId), isWorktree);
+            const baseCommit = lease.worktrees.find(tree => tree.checkoutId === gadgetId)?.baseCommit;
+            return {change: {[gadgetId]: entries}, replica: true,
+              ...(!isWorktree && baseCommit && !pins.some(pin => pin.gadgetId === gadgetId)
+                ? {pin: {gadgetId, baseCommit}} : {})};
+          });
+          return await this.commitAgentStep(lease.chatId, { type: "agent", id: lease.gatekeeperId.toString(), name: "Worktree replica" }, [], {
+            changes, createdGadgets: [], createdWorktrees: [],
+            addedBindings: [], worktreeCommits: [], blueprintMerges: [], replicaCommit: receipt, replicaExpectedVersion: version });
+        } catch (error) { if (error instanceof ReplicaChangedError) return false; throw error; }
+      },
+    };
+    return new WorktreeReplicaSession(host, id);
+  }
+
+  captureIntegrationOrigin(caller: GatekeeperCaller): AgentIntegrationOrigin | undefined {
+    if (caller.from !== "agent") return undefined;
+    const turn = this.storage.agentIntegrationTurns.get(caller.chatId);
+    return turn?.state === "running"
+      ? { chatId: turn.chatId, turnId: turn.turnId, segmentId: turn.segmentId,
+          worktrees: this.replicaSelection(caller.chatId) } : undefined;
+  }
+
+  getIntegrationContext(gatekeeperId: number, origin: AgentIntegrationOrigin | undefined,
+      phase: AgentTurnInfo["phase"] = "running"): AgentContext | null {
+    if (!origin) return null;
+    const grant = this.integrationGrant(gatekeeperId);
+    if (!grant.lifecycle && !grant.contextualActions && !grant.worktreeReplica) return null;
+    requireIntegrationTurn(this.storage.agentIntegrationTurns.get(origin.chatId), origin, phase);
+    return new AgentContextImpl(this, gatekeeperId, origin, phase);
+  }
+
+  async registerIntegrationParticipant(gatekeeperId: number, origin: AgentIntegrationOrigin,
+      phase: AgentTurnInfo["phase"], participant: Fetcher<AgentTurnParticipant>): Promise<void> {
+    if (!this.integrationGrant(gatekeeperId).lifecycle) {
+      throw new Error("Lifecycle participation has not been granted to this integration.");
+    }
+    const turn = this.storage.agentIntegrationTurns.get(origin.chatId);
+    requireIntegrationTurn(turn, origin, phase);
+    if (!turn || turn.state === "finished" || phase === "finishing" || phase === "suspending") {
+      throw new Error("Cannot register a participant while closing a turn.");
+    }
+    const id = `${origin.turnId}:${gatekeeperId}`;
+    if (!this.storage.agentIntegrationParticipants.get(id)) {
+      this.storage.agentIntegrationParticipants.put({ id, gatekeeperId, participant,
+        turnId: origin.turnId, chatId: origin.chatId,
+        worktrees: origin.worktrees,
+        pending: turn.closing ? [turn.entry, turn.closing] : [turn.entry],
+        retryAt: Date.now() + 30_000 });
+      this.#updateAlarm();
+    }
+    await this.#deliverIntegrationParticipant(id);
+  }
+
+  async #deliverIntegrationParticipant(id: string): Promise<void> {
+    const running = this.#integrationDeliveries.get(id);
+    if (running) return running;
+    const delivery = (async () => {
+      for (;;) {
+        const record = this.storage.agentIntegrationParticipants.get(id);
+        const event = record?.pending[0];
+        if (!record || !event) return;
+        const turn = this.storage.agentIntegrationTurns.get(record.chatId);
+        try {
+          const permitted = this.storage.gatekeepers.get(record.gatekeeperId) !== undefined &&
+              this.integrationGrant(record.gatekeeperId).lifecycle;
+          if (!turn || turn.turnId !== event.turnId || turn.segmentId !== event.segmentId) {
+            throw new Error("Pending lifecycle cleanup must complete before starting another segment.");
+          }
+          // An entry callback may be retried after cleanup started. Its fresh capability must
+          // reflect the durable closing state, not reopen command execution for the old event.
+          const phase = turn.state === "finished" ? "finishing"
+            : turn.state === "suspended" ? "suspending" : "running";
+          // Revocation forbids new work, not cleanup of resources already opened. Retain
+          // terminal callbacks (and retries), but discard undelivered entry callbacks.
+          if (permitted || event.kind === "suspended" || event.kind === "finished") {
+            await deliverIntegrationEvent(() => record.participant.onAgentTurnEvent(event,
+              new AgentContextImpl(this, record.gatekeeperId, {
+                chatId: record.chatId, turnId: event.turnId, segmentId: event.segmentId,
+                worktrees: record.worktrees,
+              }, phase)));
+          }
+        } catch (error) {
+          const latest = this.storage.agentIntegrationParticipants.get(id);
+          if (latest) {
+            latest.retryAt = Date.now() + 30_000;
+            this.storage.agentIntegrationParticipants.put(latest);
+            this.#updateAlarm();
+          }
+          throw error;
+        }
+        // Re-read after the RPC: turn cleanup may have appended another event meanwhile.
+        const latest = this.storage.agentIntegrationParticipants.get(id);
+        if (latest?.pending[0]?.eventId === event.eventId) {
+          latest.pending.shift();
+          if (latest.pending.length) latest.retryAt = Date.now() + 30_000;
+          else delete latest.retryAt;
+          if (event.kind === "finished") this.storage.agentIntegrationParticipants.delete(id);
+          else this.storage.agentIntegrationParticipants.put(latest);
+        }
+      }
+    })();
+    this.#integrationDeliveries.set(id, delivery);
+    try { await delivery; }
+    finally { this.#integrationDeliveries.delete(id); this.#updateAlarm(); }
+  }
+
+  async retryAgentIntegrationEvents(): Promise<void> {
+    const pending = [...this.storage.agentIntegrationParticipants.retryAt.list({ end: Date.now() + 1 })];
+    await Promise.all(pending.map(record => this.#deliverIntegrationParticipant(record.id)));
+  }
+
+  async closeAgentIntegrationTurn(chatId: number,
+      outcome: Parameters<typeof closeIntegrationTurn>[1]): Promise<void> {
+    const turn = this.storage.agentIntegrationTurns.get(chatId);
+    if (!turn) return;
+    const closed = closeIntegrationTurn(turn, outcome);
+    // Indexed updates may start another kv.list(); never retain an iterator across them.
+    const participants = [...this.storage.agentIntegrationParticipants.byTurn.get(turn.turnId)];
+    this.storage.transaction(() => {
+      this.storage.agentIntegrationTurns.put(closed);
+      if (closed.state === "finished" && turn.state !== "finished") {
+        // Final sync needs residual authority, but only registered cleanup participants retain it.
+        // Give it the callback's existing one-hour bound, fixed before dispatch and never renewed.
+        const leases = [...this.storage.worktreeReplicaLeases.list()];
+        for (const lease of leases) {
+          if (lease.turnId === turn.turnId && !lease.released && lease.expiresAt > Date.now() &&
+              participants.some(participant => participant.gatekeeperId === lease.gatekeeperId)) {
+            this.storage.worktreeReplicaLeases.put({...lease, cleanupDeadline: Date.now() + 60 * 60 * 1_000});
+          }
+        }
+      }
+      for (const record of participants) {
+        if (!record.pending.some(event => event.eventId === closed.closing!.eventId)) {
+          record.pending.push(closed.closing!);
+          // Persist a retry deadline before crossing the RPC boundary, including DO eviction.
+          record.retryAt = Date.now() + 30_000;
+          this.storage.agentIntegrationParticipants.put(record);
+        }
+      }
+    });
+    this.#updateAlarm();
+    await Promise.all([...this.storage.agentIntegrationParticipants.byTurn.get(turn.turnId)]
+      .map(record => this.#deliverIntegrationParticipant(record.id)));
+  }
+
+  #agentRequestKey(chatId: number): string {
+    const request = [...this.storage.chats.list({ prefix: `${keyString(chatId)}.`, reverse: true })]
+      .find(message => message.type === "agentCallback" ||
+        message.type === "message" && message.author.type !== "agent");
+    return String(request?.sequence ?? this.nextChatSequencePeek(chatId));
+  }
+
+  async beginAgentIntegrationTurn(chatId: number, requestKey = this.#agentRequestKey(chatId)): Promise<void> {
+    if (!this.env.AGENT_INTEGRATION_GRANTS) return;
+    const active = this.storage.activeAgents.get(chatId);
+    let previous = this.storage.agentIntegrationTurns.get(chatId);
+    if (previous && previous.state !== "finished" && previous.requestKey !== requestKey) {
+      // Superseding a paused prompt terminates it; its suspended event has already been delivered.
+      previous = { ...previous, closing: undefined };
+      this.storage.agentIntegrationTurns.put(previous);
+      await this.closeAgentIntegrationTurn(chatId, "abandoned");
+      previous = this.storage.agentIntegrationTurns.get(chatId);
+    }
+    if (previous) {
+      await Promise.all([...this.storage.agentIntegrationParticipants.byTurn.get(previous.turnId)]
+        .map(record => this.#deliverIntegrationParticipant(record.id)));
+    }
+    const current = this.storage.activeAgents.get(chatId);
+    if (current?.continuationId !== active?.continuationId || active && !current) {
+      throw new Error("Agent continuation canceled or superseded during lifecycle startup.");
+    }
+    // Cancellation and other terminal delivery can replace this journal while the outbox awaits.
+    previous = this.storage.agentIntegrationTurns.get(chatId);
+    const next = beginIntegrationTurn(previous, chatId, requestKey);
+    next.continuationId = current?.continuationId;
+    const participants = [...this.storage.agentIntegrationParticipants.byTurn.get(next.turnId)];
+    this.storage.transaction(() => {
+      this.storage.agentIntegrationTurns.put(next);
+      for (const record of participants) {
+        record.pending.push(next.entry);
+        record.retryAt = Date.now() + 30_000;
+        this.storage.agentIntegrationParticipants.put(record);
+      }
+    });
+    this.#updateAlarm();
+    await Promise.all([...this.storage.agentIntegrationParticipants.byTurn.get(next.turnId)]
+      .map(record => this.#deliverIntegrationParticipant(record.id)));
+  }
+
   // Sessions are authorized and verified only at open(), so widening what a live session's holder
   // must be verified against leaves that session holding unverified access. Restart everyone --
   // the same mechanism used when access is revoked -- so each client's next open() re-runs
@@ -6028,7 +7155,9 @@ class OverseerImpl implements AgentHooks {
       chatId: number, timestamp: Date, author: AiChatAuthorInfo,
       prepared: PreparedChatMessage, capsules: CapsuleSpecifier[] | undefined,
       attachments: ChatAttachmentRef[] | undefined,
-      formats: MessageFormatRef[] | undefined): number | undefined {
+      formats: MessageFormatRef[] | undefined,
+      attachmentsWorktree?: PreparedAttachmentsWorktree,
+      attachmentSourceCommit?: string): number | undefined {
     this.#validateCapsules(chatId, capsules);
     // Format references describe the text the user wrote, which for a slash command is its
     // arguments, what the transcript shows, not the message the provider expanded them into.
@@ -6046,7 +7175,10 @@ class OverseerImpl implements AgentHooks {
         ...(prepared.skillName ? {skillName: prepared.skillName} : {}),
       });
       if (prepared.message === undefined) return;
-      this.commitChatAttachments(chatId, attachments);
+      if (attachmentsWorktree !== undefined) {
+        this.#installAttachmentsWorktree(chatId, attachmentsWorktree);
+      }
+      this.commitChatAttachments(chatId, attachments, attachmentSourceCommit);
       let messageSequence = this.nextChatSequence(chatId);
       this.storage.chats.put({
         chatId,
@@ -6065,7 +7197,10 @@ class OverseerImpl implements AgentHooks {
 
     if (prepared.message === undefined) return;
 
-    this.commitChatAttachments(chatId, attachments);
+    if (attachmentsWorktree !== undefined) {
+      this.#installAttachmentsWorktree(chatId, attachmentsWorktree);
+    }
+    this.commitChatAttachments(chatId, attachments, attachmentSourceCommit);
     let messageSequence = this.nextChatSequence(chatId);
     this.storage.chats.put({
       chatId,
@@ -6106,10 +7241,12 @@ class OverseerImpl implements AgentHooks {
     // No code base is established at creation: gadgets pin lazily, when their code is first
     // modified in the chat (see ChatCodeBase). Until then the chat reads committed code live at
     // each gadget's current head.
-    let chatId!: number;
+    let chatId = this.nextChatId();
+    let attachmentFiles = await this.#prepareWorkspaceAttachmentFiles(chatId, canonicalAttachments);
+    let attachmentsWorktree = await this.#prepareAttachmentsWorktree(
+        chatId, attachmentFiles, userMeta.profile);
     let timestamp = this.getChatTimestamp();
     this.ctx.storage.transactionSync(() => {
-      chatId = this.nextChatId();
       let meta: AiChatMetadata = {
         id: chatId,
         title: "New Chat",   // filled in later by AI
@@ -6122,7 +7259,8 @@ class OverseerImpl implements AgentHooks {
       this.storage.chatMeta.put(meta);
 
       let promptSequence = this.#commitPreparedChatMessage(
-          chatId, timestamp, userMeta.profile, prepared, capsules, canonicalAttachments, formats);
+          chatId, timestamp, userMeta.profile, prepared, capsules, canonicalAttachments, formats,
+          attachmentsWorktree, attachmentsWorktree?.commitId);
       if (responseTargetRegistration) {
         if (promptSequence === undefined) {
           throw new Error("External messages require a prompt.");
@@ -6186,9 +7324,31 @@ class OverseerImpl implements AgentHooks {
     let prepared = await this.#prepareChatMessage(
         message, (canonicalAttachments?.length ?? 0) > 0);
 
+    let attachmentFiles = await this.#prepareWorkspaceAttachmentFiles(chatId, canonicalAttachments);
+    let attachmentsWorktree = this.#attachmentsWorktree(chatId);
+    let preparedAttachmentsWorktree: PreparedAttachmentsWorktree | undefined;
+    let attachmentSourceCommit: string | undefined;
+    if (attachmentsWorktree !== undefined) {
+      attachmentSourceCommit = await this.#writeWorkspaceAttachmentCommit(
+          attachmentFiles, userMeta.profile);
+      // Prefetch only. Workspace rows and attachment references land with the validated message.
+      if (attachmentFiles.size) {
+        await this.getCurrentChatContent(chatId, this.getChatMetaOrThrow(chatId));
+        for (const path of attachmentFiles.keys()) {
+          await this.gitCache.assertWorktreePathWritable(attachmentsWorktree.pinBase, path);
+        }
+      }
+    } else {
+      preparedAttachmentsWorktree = await this.#prepareAttachmentsWorktree(
+          chatId, attachmentFiles, userMeta.profile);
+      attachmentSourceCommit = preparedAttachmentsWorktree?.commitId;
+    }
+
     let meta = this.assertChatNotActive(chatId, true);
     let result = this.materializeChatChanges(chatId, meta);
     if (result) meta = result.meta;
+    const attachmentChanges = attachmentsWorktree && attachmentFiles.size
+      ? this.#prepareWorkspaceAttachmentChanges(chatId, attachmentsWorktree, attachmentFiles) : [];
     meta.lastActive = this.getChatTimestamp();
     // A built-in command runs a turn without a prompt: `/compact` compacts and ends.
     let runsAgentTurn = prepared.message !== undefined ||
@@ -6196,23 +7356,33 @@ class OverseerImpl implements AgentHooks {
     if (runsAgentTurn && userMeta.aiModel) {
       meta.activeAgent = userMeta.aiModel.profile;
     }
-    this.ctx.storage.transactionSync(() => {
-      this.storage.chatMeta.put(meta);
-      let promptSequence = this.#commitPreparedChatMessage(
-          chatId, meta.lastActive, userMeta.profile, prepared, capsules, canonicalAttachments,
-          formats);
-      if (responseTargetRegistration) {
-        if (promptSequence === undefined) {
-          throw new Error("External messages require a prompt.");
+    try {
+      this.ctx.storage.transactionSync(() => {
+        this.storage.chatMeta.put(meta);
+        let promptSequence = this.#commitPreparedChatMessage(
+            chatId, meta.lastActive, userMeta.profile, prepared, capsules, canonicalAttachments,
+            formats, preparedAttachmentsWorktree, attachmentSourceCommit);
+        if (attachmentsWorktree && attachmentFiles.size) {
+          this.#appendWorkspaceAttachments(chatId, attachmentsWorktree, attachmentChanges, userMeta.profile);
         }
-        this.registerExternalMessageResponseTarget(
-          responseTargetRegistration.idempotencyKey,
-          chatId,
-          promptSequence,
-          responseTargetRegistration.chatGatewayRpcTarget,
-        );
-      }
-    });
+        if (responseTargetRegistration) {
+          if (promptSequence === undefined) {
+            throw new Error("External messages require a prompt.");
+          }
+          this.registerExternalMessageResponseTarget(
+            responseTargetRegistration.idempotencyKey,
+            chatId,
+            promptSequence,
+            responseTargetRegistration.chatGatewayRpcTarget,
+          );
+        }
+      });
+    } catch (error) {
+      // The row appender updates disposable caches too; discard them after storage rollback.
+      this.invalidateChatContent(chatId);
+      this.#liveWindowCache.delete(chatId);
+      throw error;
+    }
 
     if (runsAgentTurn && userMeta.aiModel) {
       let needsAgentTurnKeepAlive = responseTargetRegistration !== undefined;
@@ -6352,6 +7522,13 @@ class OverseerImpl implements AgentHooks {
   }
 
   cancelAgent(chatId: number) {
+    this.storage.activeAgents.delete(chatId);
+    this.storage.pausedAgents.delete(chatId);
+    // Cancellation must survive an eviction before the in-memory controller is observed.
+    const turn = this.storage.agentIntegrationTurns.get(chatId);
+    if (turn && turn.state !== "finished") {
+      this.ctx.waitUntil(this.closeAgentIntegrationTurn(chatId, "canceled"));
+    }
     let ctx = this.#liveChats.get(chatId);
     if (ctx) {
       ctx.cancelController.abort(new Error("User requested to stop agent."));
@@ -6536,23 +7713,28 @@ class OverseerImpl implements AgentHooks {
     // Register before starting the turn so registration always precedes the turn's teardown
     // (`#unregisterRunningAgent`, in `#runAgentTurn`'s finally).
     this.#registerRunningAgent(chatId);
+    this.storage.pausedAgents.delete(chatId);
+    let continuationId = crypto.randomUUID();
     this.storage.activeAgents.put({
       chatId,
       initiatorUserId,
       modelId: aiModel.profile.id,
       initiator,
       callbackInitiated,
+      continuationId,
+      requestKey: this.#agentRequestKey(chatId),
     });
 
     let liveChat = this.#getLiveChat(chatId);
     let turn = this.#runAgentTurn(
-        chatId, aiModel, initiator, initiatorUserId, callbackInitiated, liveChat);
+        chatId, aiModel, initiator, initiatorUserId, continuationId, callbackInitiated, liveChat);
     if (keepAlive) this.ctx.waitUntil(turn);
   }
 
   #runAgentTurn(chatId: number, aiModel: UserAiModelRecord,
                 initiator: AiChatAuthorInfo,
                 initiatorUserId: string,
+                continuationId: string,
                 callbackInitiated: boolean,
                 liveChat: LiveChatContext): Promise<void> {
     return obsContext.with({
@@ -6561,12 +7743,14 @@ class OverseerImpl implements AgentHooks {
       chatId,
       modelId: aiModel.profile.id,
     }, () => this.#runAgentTurnWithContext(
-        chatId, aiModel, initiator, initiatorUserId, callbackInitiated, liveChat));
+        chatId, aiModel, initiator, initiatorUserId, continuationId,
+        callbackInitiated, liveChat));
   }
 
   async #runAgentTurnWithContext(chatId: number, aiModel: UserAiModelRecord,
                                  initiator: AiChatAuthorInfo,
                                  initiatorUserId: string,
+                                 continuationId: string,
                                  callbackInitiated: boolean,
                                  liveChat: LiveChatContext): Promise<void> {
     // When this turn is billed to the user's own Cloudflare account, we refresh their cached credit
@@ -6574,6 +7758,8 @@ class OverseerImpl implements AgentHooks {
     // reflects the spend this turn just incurred, rather than waiting for the cache TTL to lapse.
     let byokOwnerStub: DurableObjectStub<UserDurableObject> | undefined;
     let finished = false;
+    let integrationOutcome: Parameters<typeof closeIntegrationTurn>[1] = "failed";
+    let interrupted = false;
     let startedAt = Date.now();
     const turnLogger = this.logger.with({
       operation: "agent.run",
@@ -6585,6 +7771,10 @@ class OverseerImpl implements AgentHooks {
     });
 
     try {
+      await this.beginAgentIntegrationTurn(chatId, this.storage.activeAgents.get(chatId)?.requestKey);
+      // An explicit shutdown fences re-entry only for the remainder of the turn that requested
+      // it. Starting a later turn for this chat clears that latch while retaining its snapshot.
+
       // The trace span covers the turn's setup and run, not the teardown below, which can start the
       // chat's next turn.
       await traceAgentTurn(this.getChatAgentContext(chatId), liveChat.cancelController.signal,
@@ -6643,15 +7833,27 @@ class OverseerImpl implements AgentHooks {
         let controller = liveChat.cancelController;
         controller.signal.throwIfAborted();
 
-        await runAgent(
+        let disposition = await runAgent(
             this, chosenModel, chatId, aiModel.profile, controller.signal, initiator, aiModel.config);
         finished = true;
+        integrationOutcome = disposition === "awaitingActionDecision" ? "approval"
+          : disposition === "awaitingConnection" ? "connection" : "completed";
         turnLogger.debug("agent run finished", {
           event: "agent.run.finished", outcome: "ok",
           durationMs: Date.now() - startedAt,
         });
       });
     } catch (err: unknown) {
+      if (isDoResetError(err) && !liveChat.cancelController.signal.aborted) {
+        // Rebuild from the committed model/tool log. External effects recover through
+        // their own journals; this is not permission to repeat arbitrary writes.
+        interrupted = true;
+        turnLogger.warn("agent invocation interrupted; resumption scheduled", {
+          event: "agent.resume.reset", error: err,
+        });
+        return;
+      }
+      if (liveChat.cancelController.signal.aborted) integrationOutcome = "canceled";
       // A failed model request surfaces as AgentTurnError (pi reports provider failures as data;
       // runAgent converts them back to a throw), carrying the failing request's HTTP status when
       // one was observed.
@@ -6686,36 +7888,56 @@ class OverseerImpl implements AgentHooks {
 
       this.postAgentErrorMessage(chatId, aiModel.profile, errorMessage);
     } finally {
-      // If this turn billed the user's own Cloudflare account, refresh their cached balance now (in
-      // the background) so the next turn's billing decision reflects the spend just incurred. Runs
-      // on both the success and error paths — an "insufficient funds" failure is exactly when an
-      // up-to-date balance matters most.
-      if (byokOwnerStub) {
-        this.ctx.waitUntil(refreshCachedBalance(this.env, byokOwnerStub));
-      }
+      if (interrupted) {
+        const active = this.storage.activeAgents.get(chatId);
+        if (active) this.#deferAgentResume(active, liveChat);
+      } else {
+        if (["approval", "connection"].includes(integrationOutcome)) {
+          const active = this.storage.activeAgents.get(chatId);
+          if (active) this.storage.pausedAgents.put(active);
+        } else this.storage.pausedAgents.delete(chatId);
+        this.#worktreeReplicaTurns.delete(chatId);
+        try {
+          await this.closeAgentIntegrationTurn(chatId, integrationOutcome);
+        } catch (error) {
+          // The persisted callback outbox survives the invocation; the shared alarm retries it.
+          turnLogger.error("agent integration cleanup deferred", {
+            event: "agent.integration.cleanup.deferred", error,
+          });
+        }
+        // If this turn billed the user's own Cloudflare account, refresh their cached balance now (in
+        // the background) so the next turn's billing decision reflects the spend just incurred. Runs
+        // on both the success and error paths — an "insufficient funds" failure is exactly when an
+        // up-to-date balance matters most.
+        if (byokOwnerStub) {
+          this.ctx.waitUntil(refreshCachedBalance(this.env, byokOwnerStub));
+        }
 
-      // Reap any provisional gadget this turn created whose creating step never reached its
-      // barrier (the turn erred or was aborted mid-step): the record is unstamped and the
-      // step's message is by construction lost, so nothing in the log backs it. Never throws,
-      // so it can't mask an error propagating out of the turn.
-      await this.reconcilePendingGadgets(chatId);
+        // Container cleanup belongs to the lifecycle outbox. Canonical files remain in the DO;
+        // an interrupted cleanup must not restart inference or silently replay a command.
+        // Reap any provisional gadget this turn created whose creating step never reached its
+        // barrier (the turn erred or was aborted mid-step): the record is unstamped and the
+        // step's message is by construction lost, so nothing in the log backs it. Never throws,
+        // so it can't mask an error propagating out of the turn.
+        await this.reconcilePendingGadgets(chatId);
 
-      // Note: We no longer emit a stream "clear" event here. The client performs a full clear of
-      // provisional streaming state when it observes that the agent is no longer running (i.e. when
-      // chat metadata's activeAgent becomes unset, which happens just below).
+        // Note: We no longer emit a stream "clear" event here. The client performs a full clear of
+        // provisional streaming state when it observes that the agent is no longer running (i.e. when
+        // chat metadata's activeAgent becomes unset, which happens just below).
 
-      let meta = this.storage.chatMeta.get(chatId);
-      if (meta) {
-        delete meta.activeAgent;
-        meta.lastActive = this.getChatTimestamp();
-        this.storage.chatMeta.put(meta);
-      }
+        let meta = this.storage.chatMeta.get(chatId);
+        if (meta) {
+          delete meta.activeAgent;
+          meta.lastActive = this.getChatTimestamp();
+          this.storage.chatMeta.put(meta);
+        }
 
-      // Tear down the registry entry, persistent `activeAgents` record, and keep-alive alarm in the
-      // same synchronous step as clearing `activeAgent` above, so the chat never appears idle while
-      // stale records of this agent linger. If pending calls below restart the agent, it'll
-      // re-register everything consistently.
-      this.#unregisterRunningAgent(chatId);
+        // Tear down the registry entry, persistent `activeAgents` record, and keep-alive alarm in the
+        // same synchronous step as clearing `activeAgent` above, so the chat never appears idle while
+        // stale records of this agent linger. If pending calls below restart the agent, it'll
+        // re-register everything consistently.
+        this.#unregisterRunningAgent(chatId);
+
 
       if (finished && meta) {
         // Classified here, past the turn's last await, so a decision made as it ended counts.
@@ -6737,8 +7959,8 @@ class OverseerImpl implements AgentHooks {
               }));
         }
       }
-
-      this.#finishAgentTurn(chatId);
+        this.#finishAgentTurn(chatId);
+      }
     }
   }
 
@@ -6988,7 +8210,15 @@ class OverseerImpl implements AgentHooks {
   //
   // The session is reached through the owner's stored connected account, not by asserting the owner's
   // identity to the vendor — so the capability is the account the user actually holds.
-  async ensureAmbientCapsules(): Promise<void> {
+  #ambientCapsulesPromise?: Promise<void>;
+
+  ensureAmbientCapsules(): Promise<void> {
+    // open() and an in-chat opt-in can overlap across account/class RPCs.
+    return this.#ambientCapsulesPromise ??= this.#ensureAmbientCapsules()
+        .finally(() => { this.#ambientCapsulesPromise = undefined; });
+  }
+
+  async #ensureAmbientCapsules(): Promise<void> {
     let ownerId = this.ownerId;
     if (!ownerId) return;
     let ownerDo = this.ownerUserDo();
@@ -7095,6 +8325,7 @@ class OverseerImpl implements AgentHooks {
       // meaning "unrestricted"): the workspace default binding list.
       taken = new Set(Object.keys(this.defaultBindingList()));
     }
+    if (context.attachments !== undefined) taken.add(context.attachments.bindingName);
     taken.add(GIT_BINDING_NAME);
     for (let msg of chatMessages ?? this.storage.chats.list({prefix: chatKeyPrefix(chatId)})) {
       if (msg.type === "message") {
@@ -7241,6 +8472,12 @@ class OverseerImpl implements AgentHooks {
         }
       } else {
         Object.assign(seed, this.defaultBindingList());
+      }
+
+      let attachments = context.attachments;
+      if (attachments !== undefined &&
+          this.storage.gadgets.get(attachments.worktreeId)?.type === "worktree") {
+        seed[attachments.bindingName] = attachments.worktreeId;
       }
 
       // A new seed never takes the automatic env.GIT's name, which a chat binding would shadow
@@ -7475,7 +8712,12 @@ class OverseerImpl implements AgentHooks {
         result.push({name, target, title: gadget.title, isGadget: true});
         continue;
       }
-      if (gadget) continue;  // a worktree never seeds a chat
+      if (gadget?.type === "worktree" &&
+          context.attachments?.worktreeId === gadget.id && gadget.chatId === chatId) {
+        result.push({name, target, title: gadget.title, isGadget: false});
+        continue;
+      }
+      if (gadget) continue;  // ordinary agent-created worktrees never seed a chat
       let gk = this.storage.gatekeepers.get(target);
       if (!gk || !this.gatekeeperUsable(gk.id)) continue;
       let info: SeedBindingInfo =
@@ -8395,7 +9637,7 @@ class OverseerImpl implements AgentHooks {
       return this.#vendorsCache.promise;
     }
     let promise = retryOnDoReset(
-        () => this.#ownerUserStub().listGatekeeperVendors(), this.logger);
+        () => this.#ownerUserStub().listGatekeeperVendors({}, true), this.logger);
     // Don't cache failures: drop the entry so the next call retries.
     promise.catch(() => {
       if (this.#vendorsCache?.promise === promise) this.#vendorsCache = null;
@@ -8445,6 +9687,12 @@ class OverseerImpl implements AgentHooks {
           `${vendors.map(v => v.id).join(", ") || "(none)"}.`;
     }
     if (vendor.supportedResources.length === 0) {
+      if (vendor.description.autoProvisionsAccount) {
+        return `Vendor "${vendorId}" (${vendor.description.displayName}) provides an ambient ` +
+            `account integration. Call requestConnection with vendorId="${vendorId}", a ` +
+            `bindingName and reason, omitting resourceUrl. The workspace owner can connect it ` +
+            `directly in chat; this does not approve any subsequent actions.`;
+      }
       return `Vendor "${vendorId}" (${vendor.description.displayName}) offers no connectable ` +
           `resources.`;
     }
@@ -8485,8 +9733,15 @@ class OverseerImpl implements AgentHooks {
     // Resolve the exact resource this request maps to, using the same precedence the accept modal
     // uses. If it can't be resolved, REJECT the request: otherwise the user would get an accept
     // card that opens a blank "create new connection" picker. The agent is told what to fix.
-    let resolved = resolveRequestedResource(vendor.supportedResources, input.resourceUrl);
-    if (!resolved.ok) {
+    const ambient = vendor.description.autoProvisionsAccount &&
+        vendor.supportedResources.length === 0;
+    if (ambient && input.resourceUrl !== undefined) {
+      return {requested: false, message: `Omit resourceUrl when requesting the ambient ` +
+          `"${vendor.description.displayName}" integration.`};
+    }
+    let resolved = ambient ? undefined :
+        resolveRequestedResource(vendor.supportedResources, input.resourceUrl);
+    if (resolved && !resolved.ok) {
       return { requested: false, message:
           `Cannot request a connection for "${vendor.description.displayName}": ${resolved.reason}` };
     }
@@ -8498,9 +9753,10 @@ class OverseerImpl implements AgentHooks {
       vendorId: input.vendorId,
       vendorName: vendor.description.displayName,
       vendorLogoUrl: vendor.description.logo?.url,
-      resourceTitle: resolved.resource.title,
+      ...(ambient ? {connectionType: "ambient"} : {}),
+      resourceTitle: resolved?.ok ? resolved.resource.title : undefined,
       resourceUrl: input.resourceUrl,
-      resourceUrlPattern: resolved.resource.urlPattern,
+      resourceUrlPattern: resolved?.ok ? resolved.resource.urlPattern : undefined,
       reason: input.reason,
       state: "pending",
       // Claims the name in the chat's scope from this moment until denial; on acceptance the
@@ -9448,6 +10704,11 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    */
   async alarm() {
     await this.impl.runAlarmTasks();
+  }
+
+  /** Only the lease ID is accepted; the returned session never exposes the overseer or Git KV. */
+  getWorkspaceReplicaSession(leaseId: string): WorktreeReplicaSession {
+    return this.impl.getWorkspaceReplicaSession(leaseId);
   }
 
   // Initialize a brand-new workspace's storage. (Before git-backed code storage this also wrote
@@ -10836,7 +12097,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let creator = action.action === "create" && creation && vendorId
         ? await this.#clientUser.getVerifier(creation.accountId, vendorId) : null;
     await this.impl.applyPendingAction(action, profile, false,
-        creator ? {creator, configuration: creation?.configuration ?? null} : undefined);
+        creator ? {creator, configuration: creation?.configuration ?? null} : undefined,
+        this.#clientUser.id.toString());
 
     // If this was an awaited agent action, resume only after all awaited actions in the turn are
     // approved. If applyPendingAction throws, the action stays pending and the turn stays suspended.
@@ -10949,42 +12211,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   // awaited actions approved. Scoping to the current turn keeps older actions out of it: a rejected
   // one can't block future resumes, and approving one can't restart a newer turn.
   async #maybeResumeAfterActionDecision(chatId: number, approvedId: number): Promise<void> {
-    let awaited: (ActionRecord & {type: "action"})[] = [];
-    for (let msg of this.impl.storage.chats.list(
-        {prefix: chatKeyPrefix(chatId), reverse: true})) {
-      // Stop at whatever started the current turn: a user/gadget message or a gadget callback.
-      // (agentNudge is mid-turn, so it isn't a boundary.)
-      if (msg.type === "agentCallback") break;
-      if (msg.type === "message" &&
-          (msg.author.type === "user" || msg.author.type === "gadget")) {
-        break;
-      }
-      if (msg.type === "action") {
-        let record = this.impl.storage.actions.get(msg.actionId);
-        if (record && record.type === "action" &&
-            record.caller.from === "agent" && record.description.awaitDecision) {
-          awaited.push(record);
-        }
-      }
-    }
-    awaited.reverse();  // Present titles chronologically.
-
-    // Only resume when every awaited action in the turn has been decided and all were approved.
-    if (!awaited.some(r => r.id === approvedId)) return;    // Approved an older turn's action.
-    if (awaited.some(r => r.state === "pending")) return;   // Still waiting on a decision.
-    if (awaited.some(r => r.state === "rejected")) return;  // Denial leaves the turn ended.
-
-    // Persist one note for replay; raw action cards are not surfaced to the LLM. Concurrent
-    // approvals could both pass the gate above and append duplicate notes (the DO input gate is
-    // open across these awaits), but that's cosmetic — #resumeSuspendedAgent still starts one turn.
-    let titleList = awaited.map(r => `"${r.description.title}"`).join(", ");
-    let summary =
-        `The changes you submitted have been approved and applied: ${titleList}. ` +
-        `Reads now reflect them.`;
-    let author = await this.#getClientProfile();
-    this.impl.addChatMessages(chatId, author, [{type: "message", message: summary}]);
-
-    await this.#resumeSuspendedAgent(chatId);
+    await this.impl.resumeAfterActionDecision(chatId, approvedId, await this.#getClientProfile(),
+      this.#clientUser.id.toString());
   }
 
   async rejectAction(id: number): Promise<void> {
@@ -11026,6 +12254,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // Resolve the rejecter's identity before notifying the gatekeeper, so a failed profile fetch
     // can't leave the action rejected with the gatekeeper but still "pending" in storage.
     let profile = await this.#getClientProfile();
+
+    if (this.impl.storage.actionApplications.get(id))
+      throw new Error("Action approval is already being applied or recovered; inspect its execution receipt.");
 
     await gatekeeper.rejectAction(action.action);
 
@@ -11137,6 +12368,11 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   // Restart a suspended agent turn after its outcome is recorded in chat history (accepted
   // connection, or all awaited actions approved). Denials intentionally don't call this.
   async #resumeSuspendedAgent(chatId: number): Promise<void> {
+    if (this.impl.storage.pausedAgents.get(chatId) ||
+        this.impl.storage.chatMeta.get(chatId)?.activeAgent && this.impl.storage.activeAgents.get(chatId)) {
+      await this.impl.resumePausedAgent(chatId);
+      return;
+    }
     await this.impl.waitForChatMessagePreparation(chatId);
     let meta = this.impl.storage.chatMeta.get(chatId);
     if (!meta) return;  // Chat deleted.
@@ -11194,10 +12430,30 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async acceptConnectionRequest(
-      requestId: string, result: {gatekeeperId: number}): Promise<void> {
+      requestId: string, result?: {gatekeeperId: number}): Promise<void> {
     let msg = this.#findConnectionRequest(requestId);
     if (msg.state !== "pending") {
       throw new Error(`Connection request is not pending: ${requestId}`);
+    }
+
+    if (msg.connectionType === "ambient") {
+      if (!this.isOwner) throw new Error("Only the workspace owner can add an ambient account.");
+      if (result) throw new Error("Ambient requests cannot select a resource gatekeeper.");
+      // Opt-in is a human decision, not something the agent or vendor can assert. The user DO
+      // rechecks current provisioning policy (the discovery cache may now be stale).
+      await this.#owner.provisionAmbientAccount(msg.vendorId);
+      await this.slashCommandsReady;
+      await this.impl.ensureAmbientCapsules();
+      const capsule = [...this.impl.storage.gatekeepers.list()].find(gk =>
+        gk.creationSpec?.type === "ambient" && gk.creationSpec.vendorId === msg.vendorId);
+      if (!capsule) throw new Error("The connected account provides no available agent binding.");
+      result = {gatekeeperId: capsule.id};
+      // Account provisioning releases the input gate. Don't overwrite a concurrent denial or
+      // another acceptance; retrying provisioning itself is safe and reuses the account.
+      msg = this.#findConnectionRequest(requestId);
+      if (msg.state !== "pending") throw new Error(`Connection request is not pending: ${requestId}`);
+    } else if (!result) {
+      throw new Error("A resource connection request requires a gatekeeper id.");
     }
 
     msg.state = "accepted";
@@ -11211,15 +12467,21 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     // Don't resume until every connection request from this turn was accepted. Scanning newest
     // first bounds the lookup to the current turn and usually finds a pending sibling immediately.
+    let currentRequest = false;
     for (let sibling of this.impl.storage.chats.list(
         {prefix: chatKeyPrefix(msg.chatId), reverse: true})) {
-      if (sibling.type === "connectionRequest" && sibling.state !== "accepted") return;
+      if (sibling.type === "connectionRequest") {
+        if (sibling.requestId === requestId) currentRequest = true;
+        if (sibling.state !== "accepted") return;
+      }
       if (sibling.type === "agentCallback" ||
           (sibling.type === "message" &&
            (sibling.author.type === "user" || sibling.author.type === "gadget"))) {
         break;
       }
     }
+    // Accepting an earlier card connects the resource, but never authorizes a newer prompt.
+    if (!currentRequest) return;
     await this.#resumeSuspendedAgent(msg.chatId);
   }
 
@@ -11360,11 +12622,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   // Fetch the bytes of a committed chat attachment over the authenticated RPC connection. The
   // caller already has its canonical metadata from the ChatAttachmentRef in the message.
   async getChatAttachmentContent(chatId: number, id: string): Promise<Uint8Array> {
-    let content = this.impl.storage.chatAttachmentContent.get(validateChatAttachmentId(id));
-    if (!content || content.state.type !== "committed" || content.state.chatId !== chatId) {
-      throw new Error("Chat attachment not found.");
-    }
-    return content.data;
+    return await this.impl.getChatAttachmentData(chatId, id);
   }
 
   async deleteChatAttachment(id: string): Promise<void> {
@@ -12146,7 +13404,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
       : Promise<Array<{ gatekeeperId: WorkpieceId; actionKind: ActionKind }>> {
     this.#deny();
   }
-  async acceptConnectionRequest(_requestId: string, _result: {gatekeeperId: number}): Promise<void> { this.#deny(); }
+  async acceptConnectionRequest(_requestId: string, _result?: {gatekeeperId: number}): Promise<void> { this.#deny(); }
   async denyConnectionRequest(_requestId: string): Promise<void>  { this.#deny(); }
   async subscribeToActions(
       subscriber: RpcStub<ActionsSubscriber>, _startAfter?: Date): Promise<RpcStub<{}>> {
@@ -12761,7 +14019,127 @@ function makeHookFiringCallback(impl: OverseerImpl, hookId: number): NativeRpcSt
 }
 
 @validateRpc()
+class ReplicaChangedError extends Error {}
+
+// Workers RPC erases variadic tuple types in TextChange while preserving the wire value.
+// Revalidate that value before restoring its canonical type at this native-RPC boundary.
+function replicaChangeFromRpc(change: unknown): WorktreeChange["change"] {
+  const result = change as WorktreeChange["change"];
+  validateCodeChangeSchema({ 1: [["replica", result]] });
+  return result;
+}
+
+@validateRpc()
+class ReplicaOverlayCursor extends NativeRpcTarget implements Cursor<WorktreeChange> {
+  constructor(private cursor: Awaited<ReturnType<NativeRpcStub<WorktreeReplicaSession>["readOverlay"]>>) { super(); }
+  async next(): Promise<WorktreeChange[] | null> {
+    const page = await this.cursor.next();
+    return page?.map(item => ({ ...item, change: replicaChangeFromRpc(item.change) })) ?? null;
+  }
+  [Symbol.dispose](): void { this.cursor[Symbol.dispose](); }
+}
+
+/** Persistent, lease-only callback. Each request re-enters and revalidates the authoritative DO. */
+@validateRpc()
+export class WorkspaceReplicaEndpoint extends WorkerEntrypoint<Cloudflare.Env,
+    { overseerId: string; leaseId: string }> implements WorkspaceReplica {
+  async #session() {
+    return this.ctx.exports.OverseerDurableObject.get(
+      this.ctx.exports.OverseerDurableObject.idFromString(this.ctx.props.overseerId))
+      .getWorkspaceReplicaSession(this.ctx.props.leaseId);
+  }
+  async checkpoint(): Promise<WorkspaceCheckpoint> { using session = await this.#session(); return await session.checkpoint(); }
+  async listBaseEntries(id: string, checkoutId: number): Promise<Cursor<WorktreeBaseEntry>> {
+    using session = await this.#session(); return await session.listBaseEntries(id, checkoutId);
+  }
+  async readBaseFile(id: string, checkoutId: number, path: string): Promise<ReadableStream<Uint8Array>> {
+    // Await the native stream transfer before disposing the session that owns the pending RPC.
+    using session = await this.#session(); return await session.readBaseFile(id, checkoutId, path);
+  }
+  async readGitPack(id: string, checkoutId: number, request: Uint8Array): Promise<ReadableStream<Uint8Array>> {
+    using session = await this.#session(); return await session.readGitPack(id, checkoutId, request);
+  }
+  async readCommitPack(id: string, checkoutId: number): Promise<ReadableStream<Uint8Array>> {
+    using session = await this.#session(); return await session.readCommitPack(id, checkoutId);
+  }
+  async closeGitBootstrap(id: string): Promise<void> {
+    using session = await this.#session(); await session.closeGitBootstrap(id);
+  }
+  async readOverlay(id: string): Promise<Cursor<WorktreeChange>> {
+    using session = await this.#session(); return new ReplicaOverlayCursor(await session.readOverlay(id));
+  }
+  async changesSince(cursor: string, limit: number): Promise<WorktreeChangesPage> {
+    using session = await this.#session();
+    const page = await session.changesSince(cursor, limit);
+    return { ...page, events: page.events.map(event => ({ ...event,
+      changes: event.changes.map(item => ({ ...item, change: replicaChangeFromRpc(item.change) })) })) };
+  }
+  async submitBatch(batch: WorktreeReplicaBatch): Promise<WorktreeReplicaReceipt> {
+    using session = await this.#session();
+    const receipt = await session.submitBatch(batch);
+    return { ...receipt, corrections: receipt.corrections.map(item => ({ ...item, change: replicaChangeFromRpc(item.change) })) };
+  }
+  async renew(): Promise<void> { using session = await this.#session(); await session.renew(); }
+  async release(): Promise<void> { using session = await this.#session(); await session.release(); }
+}
+
+class AgentContextImpl extends NativeRpcTarget implements AgentContext {
+  constructor(private impl: OverseerImpl, private gatekeeperId: number,
+      private origin: AgentIntegrationOrigin, private phase: AgentTurnInfo["phase"]) { super(); }
+
+  async getTurn(): Promise<AgentTurnInfo> {
+    if (this.phase !== "suspending" && this.phase !== "finishing") {
+      const grant = this.impl.integrationGrant(this.gatekeeperId);
+      if (!grant.lifecycle && !grant.contextualActions && !grant.worktreeReplica) {
+        throw new Error("Agent integration grant revoked.");
+      }
+    }
+    return requireIntegrationTurn(this.impl.storage.agentIntegrationTurns.get(this.origin.chatId),
+        this.origin, this.phase);
+  }
+
+  async participate(participant: Fetcher<AgentTurnParticipant>): Promise<void> {
+    await this.getTurn();
+    await this.impl.registerIntegrationParticipant(this.gatekeeperId, this.origin, this.phase, participant);
+  }
+
+  async openWorktreeReplica(): Promise<Fetcher<WorkspaceReplica>> {
+    await this.getTurn();
+    return this.impl.openWorktreeReplica(this.gatekeeperId, this.origin, this.phase);
+  }
+}
+
+@validateRpc()
+class GatekeeperActionContextImpl extends NativeRpcTarget implements GatekeeperActionContext {
+  constructor(private impl: OverseerImpl, private record: ActionRecord & { type: "action" }) { super(); }
+
+  async getGitCache(): Promise<GitCache> {
+    this.impl.integrationGrant(this.record.gatekeeperId);
+    return new GitCacheImpl(this.impl.gitCache, this.record.gatekeeperId, this.record.id);
+  }
+
+  async getAgentContext(): Promise<AgentContext | null> {
+    // Approval may be retried after the same logical turn resumes in a new segment. Mint a
+    // fresh capability for that segment, retaining the queue-time mount selection. Existing
+    // session capabilities remain segment-fenced, and a later prompt cannot adopt this action.
+    let origin = this.record.integrationOrigin;
+    const turn = origin && this.impl.storage.agentIntegrationTurns.get(origin.chatId);
+    if (origin && turn?.turnId === origin.turnId && turn.state !== "finished") {
+      origin = { ...origin, segmentId: turn.segmentId };
+    }
+    return this.impl.getIntegrationContext(this.record.gatekeeperId,
+        origin, "applyingAction");
+  }
+
+  async submitAction(action: number, description: ActionDescription): Promise<void> {
+    return this.impl.submitAction(this.record.gatekeeperId, action, description,
+        this.record.caller, this.record.integrationOrigin, this.record.id);
+  }
+}
+
+@validateRpc()
 class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
+  readonly #integrationOrigin: AgentIntegrationOrigin | undefined;
   // `hookId` is set only on the queue startHook returns with each firing: that queue is held by
   // the gatekeeper across awaits (even other DOs), so like the firing's callback it revalidates
   // the hook per call -- otherwise a firing raced by a disable/delete could keep authorizing
@@ -12771,6 +14149,16 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
   constructor(private impl: OverseerImpl, private gatekeeperId: number,
               private caller: GatekeeperCaller, private hookId?: number) {
     super();
+    if (caller.from === "agent") {
+      const grant = impl.integrationGrant(gatekeeperId);
+      this.#integrationOrigin = grant.lifecycle || grant.contextualActions || grant.worktreeReplica
+        ? impl.captureIntegrationOrigin(caller) : undefined;
+    }
+  }
+
+  async getAgentContext(): Promise<AgentContext | null> {
+    if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
+    return this.impl.getIntegrationContext(this.gatekeeperId, this.#integrationOrigin);
   }
 
   authorizeObservation(description: ObservationDescription): Promise<void> {
@@ -12784,7 +14172,8 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
 
   submitAction(action: number, description: ActionDescription): Promise<void> {
     if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
-    return this.impl.submitAction(this.gatekeeperId, action, description, this.caller);
+    return this.impl.submitAction(this.gatekeeperId, action, description, this.caller,
+        this.#integrationOrigin);
   }
 
   bindHook<Hook extends RpcTarget>(

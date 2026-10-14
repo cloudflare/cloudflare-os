@@ -76,7 +76,7 @@ type TestExports = {
 // return-type inference collapses several of these returns to `never`, while the runtime objects
 // are exactly the production ones.
 type Pages<T> = { next(): Promise<T[] | null> };
-type GatekeeperFacet = {
+type GatekeeperFacet = Pick<GitLabGatekeeperImpl, "gitReadPack"> & {
   describe(): Promise<{ url: string; title: string; snippet: string; suggestedBindingName: string; tsType: string }>;
   projectMetadata(): Promise<GitLabProjectMetadata>;
   openIssue(id: string): Promise<GitLabIssueDetails>;
@@ -310,6 +310,11 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   async gitPull(facetName: string, props: GatekeeperProps, oids: string[], cache: RpcStub<GitCache>, hints: GitPullHints):
       Promise<Outcome<void>> {
     return await outcome(() => this.#gatekeeper(facetName, props).gitPull(oids, cache, hints));
+  }
+
+  async gitReadPack(facetName: string, props: GatekeeperProps, commit: string, request: Uint8Array):
+      Promise<Outcome<ReadableStream<Uint8Array>>> {
+    return await outcome(() => this.#gatekeeper(facetName, props).gitReadPack(commit, request));
   }
 
   /** `addObserver` with a verifier minted for `observerUserObjectId`'s account. */

@@ -156,6 +156,74 @@ describe('ChatInterface action refresh', () => {
   })
 })
 
+describe('ChatInterface ambient connection requests', () => {
+  const pendingConnection: AiChatMessage & { type: 'connectionRequest' } = {
+    chatId: 1, sequence: 1, timestamp: new Date(), author: actionMessage.author,
+    type: 'connectionRequest', requestId: '1:container', vendorId: 'container',
+    vendorName: 'Linux Container', connectionType: 'ambient', bindingName: 'CONTAINER',
+    reason: 'Run unit tests.', state: 'pending',
+  }
+
+  async function showConnection() {
+    const server = makeOverseer()
+    const accept = vi.fn<(requestId: string) => Promise<void>>(async () => {})
+    const deny = vi.fn<(requestId: string) => Promise<void>>(async () => {})
+    Object.assign(server.overseer, { acceptConnectionRequest: accept, denyConnectionRequest: deny })
+    const chat = withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    ])
+    await renderChat(server.overseer, { selectedChatId: 1 })
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [] })
+    chat.emitMessage(pendingConnection)
+    const button = [...document.querySelectorAll('button')].find(b => b.textContent === 'Connect')!
+    expect(button).toBeDefined()
+    return { accept, deny, chat, button }
+  }
+
+  it('offers an in-chat opt-in and accepts without a resource picker or fabricated gatekeeper id', async () => {
+    const { accept, chat, button } = await showConnection()
+    expect(document.body.textContent).toContain('Connect Linux Container')
+    expect(document.body.textContent).toContain('Actions still require approval.')
+    expect(accept).not.toHaveBeenCalled()
+    await act(async () => button.click())
+    expect(accept).toHaveBeenCalledExactlyOnceWith('1:container')
+    chat.emitMessage({ ...pendingConnection, state: 'accepted', gatekeeperId: 42 })
+    expect(document.body.textContent).toContain('Connected')
+    expect([...document.querySelectorAll('button')].some(b => b.textContent === 'Connect')).toBe(false)
+  })
+
+  it('disables repeated acceptance while the connection is being provisioned', async () => {
+    const { accept, button } = await showConnection()
+    let finish!: () => void
+    accept.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve }))
+    await act(async () => button.click())
+    expect(button.disabled).toBe(true)
+    button.click()
+    expect(accept).toHaveBeenCalledOnce()
+    await act(async () => finish())
+    expect(button.disabled).toBe(false)
+  })
+
+  it('leaves failed connections retryable', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { accept, button } = await showConnection()
+    accept.mockRejectedValueOnce(new Error('temporarily unavailable'))
+    await act(async () => button.click())
+    expect(button.disabled).toBe(false)
+    await act(async () => button.click())
+    expect(accept).toHaveBeenCalledTimes(2)
+  })
+
+  it('denies without accepting or provisioning', async () => {
+    const { accept, deny } = await showConnection()
+    const button = [...document.querySelectorAll('button')].find(b => b.textContent === 'Deny')!
+    await act(async () => button.click())
+    expect(deny).toHaveBeenCalledExactlyOnceWith('1:container')
+    expect(accept).not.toHaveBeenCalled()
+  })
+})
+
 // A pending action whose description runs to several paragraphs: what the approver has to read
 // in full when the workspace is restricted.
 const longDescription = [

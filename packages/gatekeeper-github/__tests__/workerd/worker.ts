@@ -163,7 +163,7 @@ type SeedFacet = { seed(entries: Record<string, unknown>): Promise<void> };
 // The facet methods TestHooks forwards to, spelled structurally: workers-types' `Fetcher<T>`
 // return-type inference collapses several of these returns to `never` (its `Serializable`
 // heuristic gives up on them), while the runtime objects are exactly the production ones.
-type GatekeeperFacet = {
+type GatekeeperFacet = Pick<GitHubGatekeeperImpl, "gitReadPack"> & {
   preparePush(branch: string, commitId: string, force: boolean, cache: RpcStub<GitCache>)
     : Promise<PushActionData | null>;
   prepareCreatePullRequest(options: GitHubCreatePullRequestOptions)
@@ -421,6 +421,11 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     facetName: string, props: GatekeeperProps, commitId: string,
   ): Promise<Outcome<boolean>> {
     return await outcome(() => this.#gatekeeper(facetName, props).isSimulatedCommitId(commitId));
+  }
+
+  async gitReadPack(facetName: string, props: GatekeeperProps, commit: string, request: Uint8Array):
+      Promise<Outcome<ReadableStream<Uint8Array>>> {
+    return await outcome(() => this.#gatekeeper(facetName, props).gitReadPack(commit, request));
   }
 
   async getCommit(

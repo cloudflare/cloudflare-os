@@ -22,6 +22,7 @@ import {
   stripTrailingSlashes,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { ArrayCursor } from "@gadgets/gatekeeper-kit/cursors";
+import { validateBootstrapFetch } from "@gadgets/gatekeeper-kit/git-bootstrap";
 import {
   MAX_DIFF_BLOB_BYTES,
   changedPathsBetweenTrees,
@@ -2666,6 +2667,15 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     const projectPath = this.#projectPath();
     await this.#withApi(api => pullGitObjectsIntoCache(
       body => api.fetchGitUploadPack(projectPath, body), oids, hints, cache));
+  }
+
+  /** Project-scoped exact-commit fetch; OAuth and Access credentials stay in the transport. */
+  async gitReadPack(commit: GitOid, request: Uint8Array): Promise<ReadableStream<Uint8Array>> {
+    validateBootstrapFetch(commit, request);
+    const projectPath = this.#projectPath();
+    const response = await this.#withApi(api => api.fetchGitUploadPack(projectPath, request));
+    if (!response.body) throw new Error("Git provider returned no pack stream.");
+    return response.body;
   }
 
   /**

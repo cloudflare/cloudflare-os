@@ -20,6 +20,8 @@ import {
 class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   readonly observations: ObservationDescription[] = [];
 
+  async getAgentContext(): Promise<null> { return null; }
+
   async authorizeObservation(description: ObservationDescription): Promise<void> {
     this.observations.push(description);
   }
