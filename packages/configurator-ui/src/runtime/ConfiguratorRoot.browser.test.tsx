@@ -10,6 +10,7 @@ import { Autocomplete } from "./Autocomplete.tsx";
 import { CheckboxList } from "./CheckboxList.tsx";
 import { ConfiguratorRoot } from "./ConfiguratorRoot.tsx";
 import { Field } from "./Field.tsx";
+import { RadioCards } from "./RadioCards.tsx";
 import { collectResourceUrl, createSession, type ConfiguratorSession } from "./session.ts";
 import { createConfiguratorStore } from "./store.ts";
 
@@ -216,6 +217,35 @@ describe("CheckboxList", () => {
     await expect.element(page.getByRole("checkbox", { name: "Tool 1", exact: true })).toBeVisible();
     expect(load.mock.calls).toEqual([["a"], ["b"]]);
   });
+
+  it("starts a list with a new name unfiltered", async () => {
+    const { session } = await mount(serverToolsSpec(async server => tools.map(tool => ({ ...tool, title: `${server} ${tool.title}` }))));
+    await userEvent.fill(page.getByRole("searchbox", { name: "Filter options" }), "a Tool 1");
+    await act(() => session.store.setValues({ server: "b" }));
+    await expect.element(page.getByRole("searchbox", { name: "Filter options" })).toHaveValue("");
+    await expect.element(page.getByRole("checkbox", { name: "b Tool 11", exact: true })).toBeVisible();
+  });
+});
+
+describe("RadioCards", () => {
+  it("names the group after its field and each card after its own title", async () => {
+    await mount({
+      initial: { mode: "all" },
+      resourceUrl: () => "https://example.com/",
+      render: ({ values, setValues }) => (
+        <Field label="Tools">
+          <RadioCards value={values.mode} onChange={mode => setValues({ mode })} options={[
+            { value: "all", title: "All tools", description: "Every tool." },
+            { value: "choose", title: "Choose tools", description: "Only the ones ticked." },
+          ]} />
+        </Field>
+      ),
+    });
+    await expect.element(page.getByRole("radiogroup", { name: "Tools" })).toBeVisible();
+    await expect.element(page.getByRole("radio", { name: /^All tools/ })).toBeChecked();
+    await userEvent.click(page.getByText("Choose tools"));
+    await expect.element(page.getByRole("radio", { name: /^Choose tools/ })).toBeChecked();
+  });
 });
 
 const autocompleteSpec = (loadOptions: (query: string) => Promise<ConfiguratorUIOption[]>, onClear?: () => void): Spec => ({
@@ -296,6 +326,21 @@ describe("Autocomplete", () => {
     await userEvent.click(page.getByRole("button", { name: "Clear selection" }));
     expect(onClear).toHaveBeenCalledOnce();
     await expect.element(input()).toHaveValue("");
+  });
+
+  // Base UI keeps the popup open when its clear button empties the input.
+  it("lists everything again when a choice is cleared with the popup open", async () => {
+    const loadOptions = vi.fn(folders);
+    await mount(autocompleteSpec(loadOptions));
+    await userEvent.click(input());
+    await userEvent.click(page.getByRole("option", { name: /Projects/ }));
+    await userEvent.click(input());
+    await expect.element(page.getByRole("option", { name: /Proposals/ })).not.toBeInTheDocument();
+
+    // Not by role: while the popup is open, Base UI hides everything outside it from the a11y tree.
+    await userEvent.click(page.elementLocator(document.querySelector('[aria-label="Clear selection"]')!));
+    await expect.element(page.getByRole("option", { name: /Proposals/ })).toBeVisible();
+    expect(loadOptions).toHaveBeenLastCalledWith("");
   });
 
   it("shows a pre-filled value as typed text until it has a title", async () => {
