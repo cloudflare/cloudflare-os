@@ -19,6 +19,30 @@
 // Everything below the following line is returned to agents via `describeBinding`.
 // ---- BEGIN AGENT API ----
 
+/** An immutable whole-file payload; its identity alone grants no read access. */
+export interface BytesRef {
+  /** Git blob object ID returned by finishUpload. */
+  oid: string;
+  /** Exact payload length in bytes. */
+  byteLength: number;
+}
+
+/** Length and digest of the frozen payload to upload. */
+export interface ByteUploadDescription {
+  /** Exact total number of bytes. */
+  byteLength: number;
+  /** Lowercase SHA-256 of the complete payload. */
+  sha256: string;
+}
+
+/** Durable upload progress, reusable after a lost response. */
+export interface ByteUploadStatus {
+  /** Next durable append offset; earlier bytes may be replayed only if identical. */
+  offset: number;
+  /** Present only after complete length and digest verification. */
+  finished?: BytesRef;
+}
+
 /**
  * The `env.GIT` binding, available in every gadget's `env` and in the agent's `executeCode` env.
  * Provides programmatic access to the workspace's git objects.
@@ -115,6 +139,19 @@ export interface Worktree {
    * executable bit; newly created files are regular non-executable files.
    */
   writeFile(path: string, text: string): Promise<void>;
+
+  /** Begin/resume immutable raw-byte staging. Uploads alone do not change a file. */
+  beginUpload(uploadId: string, description: ByteUploadDescription): Promise<ByteUploadStatus>;
+  /** Append/replay raw bytes; acknowledged offset survives DO reset. */
+  writeUpload(uploadId: string, offset: number, stream: ReadableStream<Uint8Array>): Promise<number>;
+  /** Return a durable staging/finish receipt. */
+  getUploadStatus(uploadId: string): Promise<ByteUploadStatus>;
+  /** Verify length/digest, publish the Git blob, and return its OID reference. */
+  finishUpload(uploadId: string): Promise<BytesRef>;
+  /** Stream current file bytes, preserving binary contents; absence is an error. */
+  readBytes(path: string, range?: {offset: number; length: number}): Promise<ReadableStream<Uint8Array>>;
+  /** Create/replace opaque binary content with a staged postimage (whole-file replacement semantics). */
+  writeBytes(path: string, value: {base: BytesRef}): Promise<void>;
 
   /** Delete a file. */
   deleteFile(path: string): Promise<void>;

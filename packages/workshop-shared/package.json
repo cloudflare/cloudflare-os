@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "type": "module",
   "exports": {
+    "./byte-change": {
+      "types": "./src/byte-change.ts",
+      "import": "./src/byte-change.ts"
+    },
     "./api": {
       "types": "./src/api.ts",
       "import": "./src/api.ts"

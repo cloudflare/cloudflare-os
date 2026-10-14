@@ -1,4 +1,5 @@
 import type { FileAtCommit, TreeNode } from '@gadgets/workshop-shared/api'
+import type { FileContent } from '@gadgets/workshop-shared/code-change'
 
 // The displayed shape of a workpiece's files: the content base's tree (Overseer.listTree(), see
 // TreeNode) with the chat's overlay folded in. Pure derivations, kept apart from the view so the
@@ -182,7 +183,7 @@ export function resolveRenamePath(path: string, name: string): string | null {
  * reported as modified.
  */
 export function fileChangeStatus(
-  displayed: string | null,
+  displayed: FileContent | null,
   original: FileAtCommit | undefined,
   hasReviewBase: boolean,
 ): FileChangeStatus | undefined {
@@ -245,7 +246,7 @@ function hasTreeLeaf(nodes: readonly TreeNode[], path: string): boolean {
  */
 export function deriveChanges(
   touchedPaths: readonly string[],
-  displayed: (path: string) => string | null | undefined,
+  displayed: (path: string) => FileContent | null | undefined,
   originals: ReadonlyMap<string, FileAtCommit>,
   hasReviewBase: boolean,
   merged: ReadonlyMap<string, FileChangeStatus> = new Map(),

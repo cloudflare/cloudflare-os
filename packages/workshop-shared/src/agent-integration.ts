@@ -1,5 +1,6 @@
 import type { RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type { FileChange } from "./code-change";
+import type { BytesRef, ByteValue } from "./byte-change";
 import type { ActionDescription, Cursor, GitCache } from "./gatekeeper";
 
 /** Fresh capabilities supplied when applying an action after an arbitrary approval delay. */
@@ -69,6 +70,18 @@ export interface AgentTurnParticipant extends WorkerEntrypoint {
 
 /** Persistent kernel endpoint scoped by a durable, expiring replica grant and epoch. */
 export interface WorkspaceReplica extends WorkerEntrypoint {
+  /** Begin or resume raw-byte staging under this lease; does not mutate visible files. */
+  beginUpload(uploadId: string, description: ByteUploadDescription): Promise<ByteUploadStatus>;
+  /** Append/replay raw bytes at a durable offset; conflicting retries fail closed. */
+  writeUpload(uploadId: string, offset: number, stream: ReadableStream<Uint8Array>): Promise<number>;
+  /** Read a durable offset/finish receipt after eviction or a lost response. */
+  getUploadStatus(uploadId: string): Promise<ByteUploadStatus>;
+  /** Verify the frozen payload, publish its Git blob, and return the OID before any batch uses it. */
+  finishUpload(uploadId: string): Promise<BytesRef>;
+  /** Stream only references staged by this lease or visible in its selected canonical worktrees. */
+  readBytes(ref: BytesRef, range?: {offset: number; length: number}): Promise<ReadableStream<Uint8Array>>;
+  /** Resolve a byte-coordinate anchor at a consumed cursor; authority remains path/lease scoped. */
+  readByteAnchor(checkoutId: number, path: string, cursor: string): Promise<{value: ByteValue | null; version: string | null}>;
   /** Capture immutable bases and a consistent pending-transform overlay for granted mounts. */
   checkpoint(): Promise<WorkspaceCheckpoint>;
   /** Enumerate only this checkpoint's immutable base entries. */
@@ -91,6 +104,22 @@ export interface WorkspaceReplica extends WorkerEntrypoint {
   renew(): Promise<void>;
   /** Fence future requests from this epoch without undoing already accepted transforms. */
   release(): Promise<void>;
+}
+
+/** Digest of the frozen upload, not of a mutable live source file. */
+export interface ByteUploadDescription {
+  /** Exact total bytes, with no arbitrary per-file cap. */
+  byteLength: number;
+  /** Lowercase SHA-256 of the complete payload. */
+  sha256: string;
+}
+
+/** Durable staging receipt; finished references are immutable, but still confer no read authority. */
+export interface ByteUploadStatus {
+  /** Next durable append offset; retries may replay already stored matching bytes. */
+  offset: number;
+  /** Present only after complete length/digest verification. */
+  finished?: BytesRef;
 }
 
 /** Consistent, scoped bootstrap anchor; required journal history is retained while its lease is live. */
@@ -171,8 +200,8 @@ export interface WorktreeReplicaBatch {
   files: {
     /** Checkout within the grant. */ checkoutId: number;
     /** Normalized relative path. */ path: string;
-    /** SHA-256 of acknowledged UTF-8 text; null denotes absence, not an empty file. */ baseHash: string | null;
-    /** Frozen UTF-16 set/edit/remove OT; null captures an unchanged requested path. */ change: FileChange | null;
+    /** Text SHA-256 or opaque byte-version identity; null denotes absence, not an empty file. */ baseHash: string | null;
+    /** Frozen text/byte mutation; null captures an unchanged requested path. */ change: FileChange | null;
   }[];
 }
 
@@ -188,6 +217,7 @@ export interface WorktreeReplicaReceipt {
   accepted: {
     /** Granted checkout. */ checkoutId: number;
     /** Normalized touched path. */ path: string;
-    /** SHA-256 of accepted UTF-8 text; null denotes absence. */ hash: string | null;
+    /** Text SHA-256 or opaque byte-version identity; null denotes absence. */ hash: string | null;
+    /** Byte postimage for updating the replica's metadata anchor without reading/hashing the file. */ bytes?: ByteValue;
   }[];
 }

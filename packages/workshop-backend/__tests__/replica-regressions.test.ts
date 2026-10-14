@@ -57,6 +57,41 @@ async function open(impl: Impl, chatId = 1, gatekeeperId = 31) {
 }
 
 describe("replica review regressions over durable kernel storage", () => {
+  it("resumes binary staging and reconciles a published batch after real DO eviction", async () => {
+    const name = crypto.randomUUID(), data = new Uint8Array(300_000).map((_, i) => i % 251);
+    const sha256 = new Uint8Array(await crypto.subtle.digest("SHA-256", data)).toHex();
+    const saved = await inKernel(name, async impl => {
+      const tree = await worktree(impl);
+      await impl.beginAgentIntegrationTurn(1);
+      const replica = await open(impl);
+      const checkpoint = await replica.checkpoint();
+      await replica.beginUpload("frozen-binary", {byteLength: data.length, sha256});
+      await replica.writeUpload("frozen-binary", 0, new Response(data.subarray(0, 4096)).body!);
+      return {treeId: tree.id, leaseId: checkpoint.cursor.split(":")[0], cursor: checkpoint.cursor};
+    });
+    await abortAllDurableObjects();
+    const published = await inKernel(name, async impl => {
+      const replica = impl.getWorkspaceReplicaSession(saved.leaseId);
+      expect((await replica.getUploadStatus("frozen-binary")).offset).toBe(4096);
+      await replica.writeUpload("frozen-binary", 4096, new Response(data.subarray(4096)).body!);
+      const ref = await replica.finishUpload("frozen-binary");
+      const batch = {batchId: "publish-binary", baseCursor: saved.cursor, files: [
+        {checkoutId: saved.treeId, path: "image.bin", baseHash: null, change: {setBytes: {base: ref}}},
+      ]};
+      const receipt = await replica.submitBatch(batch);
+      await impl.ctx.storage.sync();
+      return {batch, receipt, ref};
+    });
+    await abortAllDurableObjects();
+    await inKernel(name, async impl => {
+      const replica = impl.getWorkspaceReplicaSession(saved.leaseId);
+      expect(await replica.finishUpload("frozen-binary")).toEqual(published.ref);
+      expect(await replica.submitBatch(published.batch)).toEqual(published.receipt);
+      expect(new Uint8Array(await new Response(await replica.readBytes(published.ref)).arrayBuffer())).toEqual(data);
+      expect([...impl.storage.worktreeReplicaCommits.list()].filter(row => row.id.endsWith(":publish-binary"))).toHaveLength(1);
+    });
+  });
+
   it.each([false, true])("exports the actual base header for a byte-hydrated repository (migrated pin: %s)", migrated => inKernel(crypto.randomUUID(), async impl => {
     const tree = await worktree(impl);
     let base = tree.baseCommit;
@@ -912,17 +947,35 @@ describe("replica review regressions over durable kernel storage", () => {
       expect(await impl.getChatAttachmentData(chatId, id)).toEqual(bytes);
       const attachment = impl.storage.chatAttachmentContent.get(id)!;
       const context = impl.getChatAgentContext(chatId);
+      expect(context.attachments).toBeDefined();
+      expect(attachment.data).toBeUndefined();
+      const tree = impl.storage.gadgets.get(context.attachments!.worktreeId)!;
       if (bytes[0] === 255) {
-        expect(context.attachments).toBeUndefined();
-        expect(attachment.data).toEqual(bytes);
+        expect(tree.type).toBe("worktree");
+        if (tree.type !== "worktree") throw new Error("missing attachments worktree");
+        const value = await impl.readByteFileAtCommit(tree.baseCommit, "input.csv");
+        expect(value).toBeDefined();
+        expect(new Uint8Array(await new Response(impl.byteStore.read(value!.base)).arrayBuffer())).toEqual(bytes);
       } else {
-        expect(context.attachments).toBeDefined();
-        expect(attachment.data).toBeUndefined();
-        const tree = impl.storage.gadgets.get(context.attachments!.worktreeId)!;
         expect(tree.type === "worktree" && await impl.readFileAtCommit(tree.baseCommit, "input.csv")).toBe("\ufeffA");
       }
     }),
   );
+
+  it("retains bounded image bytes for synchronous client hydration", () => inKernel(crypto.randomUUID(), async impl => {
+    const bytes = Uint8Array.of(137, 80, 78, 71), id = crypto.randomUUID();
+    impl.storage.chatAttachmentContent.put({fileId: id, data: bytes, state: {
+      type: "staged", uploadedAt: Date.now(), mimeType: "image/png", name: "image.png",
+    }});
+    const chatId = await impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()),
+      {profile: USER}, "Inspect this image", undefined, [{id}]);
+    const content = impl.storage.chatAttachmentContent.get(id)!;
+    expect(content.state).toMatchObject({type: "committed", chatId, workspacePath: "image.png"});
+    expect(content.data).toEqual(bytes);
+    const message = [...impl.storage.chats.list()].find(message => message.type === "message" &&
+      message.attachments?.some(attachment => attachment.id === id))!;
+    expect(impl.hydrateChatMessageForClient(message).attachments?.[0].content).toEqual(bytes);
+  }));
 
   it.each([false, true])("projects text uploads beyond the former file-size cap (existing worktree: %s)", existing => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());

@@ -4,15 +4,20 @@ import type { Cursor } from "@gadgets/workshop-shared/gatekeeper";
 import type { WorktreeBaseEntry, WorktreeChange, WorktreeChangesPage,
   WorktreeReplicaBatch, WorktreeReplicaReceipt, WorkspaceCheckpoint, WorkspaceReplica }
   from "@gadgets/workshop-shared/agent-integration";
-import { applyCodeChange, composeCodeChange, codeChangeSerializedSize, type CodeChange }
+import { applyCodeChange, composeCodeChange, codeChangeSerializedSize, type CodeChange, type CodeContent, type FileContent }
   from "@gadgets/workshop-shared/code-change";
-import { mergeReplicaBatch, replicaTextHash, type ReplicaBatch } from "./workspace-replica";
+import { mergeReplicaBatch, replicaContentHash, type ReplicaBatch } from "./workspace-replica";
+import type { ByteStore } from "./byte-store";
+import type { ByteUploadDescription, ByteUploadStatus } from "@gadgets/workshop-shared/agent-integration";
+import type { BytesRef, ByteValue } from "@gadgets/workshop-shared/byte-change";
 
 import type { WorktreeReplicaLease, WorktreeReplicaCommit } from "./storage-schema/overseer-storage";
 export type { WorktreeReplicaLease, WorktreeReplicaCommit } from "./storage-schema/overseer-storage";
 
 /** Kernel storage/OT plumbing, not a parallel RPC interface. */
 export interface WorktreeReplicaHost {
+  bytes?: ByteStore;
+  baseBytes?(lease: WorktreeReplicaLease, checkoutId: number, path: string): Promise<ByteValue | null>;
   requireLease(id: string): WorktreeReplicaLease;
   saveLease(lease: WorktreeReplicaLease): void;
   capture(lease: WorktreeReplicaLease): Promise<{ cursor: string; overlay: WorktreeChange[]; pendingOverlay?: WorktreeChange[] }>;
@@ -20,6 +25,9 @@ export interface WorktreeReplicaHost {
   baseFile(lease: WorktreeReplicaLease, checkoutId: number, path: string): Promise<Uint8Array>;
   /** Read one anchor from the captured accepted commit, without flattening its cumulative OTs. */
   anchorFile?(lease: WorktreeReplicaLease, checkoutId: number, path: string): Promise<string | null>;
+  /** Read one binary anchor from the captured accepted commit. */
+  anchorBytes?(lease: WorktreeReplicaLease, checkoutId: number, path: string): Promise<ByteValue | null>;
+  baseStream?(lease: WorktreeReplicaLease, checkoutId: number, path: string): Promise<ReadableStream<Uint8Array>>;
   /** Reuse ordinary file-tool checks against the immutable tree, including directory entries. */
   assertPathWritable(lease: WorktreeReplicaLease, checkoutId: number, path: string): Promise<void>;
   /** Fetch only a lease-selected immutable repository commit, without storing its blobs. */
@@ -47,8 +55,63 @@ export function requireReplicaPath(path: string): void {
 @validateRpc()
 export class WorktreeReplicaSession extends RpcTarget implements Pick<WorkspaceReplica,
   "checkpoint" | "listBaseEntries" | "readBaseFile" | "readOverlay" | "changesSince" |
-  "readGitPack" | "readCommitPack" | "closeGitBootstrap" | "submitBatch" | "renew" | "release"> {
+  "readGitPack" | "readCommitPack" | "closeGitBootstrap" | "submitBatch" | "renew" | "release" |
+  "beginUpload" | "writeUpload" | "getUploadStatus" | "finishUpload" | "readBytes" | "readByteAnchor"> {
   constructor(private host: WorktreeReplicaHost, private leaseId: string) { super(); }
+
+  #bytes(): ByteStore {
+    this.host.requireLease(this.leaseId);
+    if (!this.host.bytes) throw new Error("Byte staging is unsupported."); return this.host.bytes;
+  }
+  async beginUpload(id: string, description: ByteUploadDescription): Promise<ByteUploadStatus> {
+    const row = await this.#bytes().begin(this.leaseId, id, description.byteLength, description.sha256);
+    this.host.requireLease(this.leaseId);
+    return {offset: row.offset, ...(row.finished ? {finished: row.finished} : {})};
+  }
+  async writeUpload(id: string, offset: number, stream: ReadableStream<Uint8Array>): Promise<number> {
+    return this.#bytes().write(this.leaseId, id, offset, stream, () => this.host.requireLease(this.leaseId));
+  }
+  async getUploadStatus(id: string): Promise<ByteUploadStatus> {
+    const row = this.#bytes().status(this.leaseId, id);
+    return {offset: row.offset, ...(row.finished ? {finished: row.finished} : {})};
+  }
+  async finishUpload(id: string): Promise<BytesRef> {
+    return this.#bytes().finish(this.leaseId, id, () => this.host.requireLease(this.leaseId));
+  }
+  async readBytes(ref: BytesRef, range?: {offset: number; length: number}): Promise<ReadableStream<Uint8Array>> {
+    const bytes = this.#bytes();
+    this.#requireByteAuthority(ref);
+    return bytes.read(ref, range?.offset, range?.length, () => this.host.requireLease(this.leaseId));
+  }
+  async readByteAnchor(checkoutId: number, path: string, cursor: string): Promise<{value: ByteValue | null; version: string | null}> {
+    requireReplicaPath(path);
+    const lease = this.host.requireLease(this.leaseId);
+    if (!lease.checkpoint || !lease.worktrees.some(t => t.checkoutId === checkoutId)) throw new Error("Checkout is outside this replica grant.");
+    const value = await this.#anchor(lease, checkoutId, path, cursor, true);
+    if (typeof value === "string") throw new Error("Anchor is text, not binary.");
+    this.host.requireLease(this.leaseId);
+    return {value, version: await replicaContentHash(value)};
+  }
+  #requireByteAuthority(ref: BytesRef): void {
+    const lease = this.host.requireLease(this.leaseId);
+    if (this.#bytes().isFinishedFor(this.leaseId, ref)) return;
+    const includes = (changes: WorktreeChange[]) => changes.some(({change}) =>
+      byteRefs(change).some(r => r.oid === ref.oid && r.byteLength === ref.byteLength));
+    if (includes(lease.checkpoint?.overlay ?? [])) return;
+    if (lease.checkpoint) {
+      let cursor = lease.checkpoint.cursor;
+      while (true) {
+        const page = this.host.events(lease, cursor, 128);
+        for (const event of page.events) if (includes(event.changes)) return;
+        if (!page.hasMore) break;
+        if (page.cursor === cursor) throw new Error("Replica journal made no progress.");
+        cursor = page.cursor;
+      }
+    }
+    // Store scopes contain only complete uploads minted to this lease. Canonical references
+    // are permitted only when present in its captured selection, never by guessing a global ID.
+    throw new Error("Byte reference is outside this replica grant.");
+  }
 
   async checkpoint(): Promise<WorkspaceCheckpoint> {
     let lease = this.host.requireLease(this.leaseId);
@@ -74,6 +137,7 @@ export class WorktreeReplicaSession extends RpcTarget implements Pick<WorkspaceR
   async readBaseFile(checkpointId: string, checkoutId: number, path: string): Promise<ReadableStream<Uint8Array>> {
     requireReplicaPath(path);
     const lease = this.#checkpoint(checkpointId, checkoutId);
+    if (this.host.baseStream) return this.host.baseStream(lease, checkoutId, path);
     const bytes = await this.host.baseFile(lease, checkoutId, path);
     this.host.requireLease(this.leaseId);
     // One bounded blob per request; no whole-repository content in an RPC return value.
@@ -154,10 +218,12 @@ export class WorktreeReplicaSession extends RpcTarget implements Pick<WorkspaceR
           seen.add(key);
           await this.host.assertPathWritable(lease, file.checkoutId, file.path);
           // Reconstruct exactly the anchor the caller claims, never trust a supplied 'before'.
-          const anchor = await this.#anchor(lease, file.checkoutId, file.path, batch.baseCursor);
-          if (await replicaTextHash(anchor) !== file.baseHash)
+          const binary = file.baseHash?.startsWith("bytes:") ?? false;
+          const anchor = await this.#anchor(lease, file.checkoutId, file.path, batch.baseCursor, binary);
+          if (await replicaContentHash(anchor) !== file.baseHash)
             throw new Error("Replica anchor does not match the consumed canonical cursor.");
           anchored.push({path: file.path, before: anchor, change: file.change});
+          for (const ref of file.change ? byteRefs(file.change) : []) this.#requireByteAuthority(ref);
         }
         if (!files.length) continue;
         const merged = await mergeReplicaBatch(tree.checkoutId, { batchId: batch.batchId, files: anchored },
@@ -165,7 +231,8 @@ export class WorktreeReplicaSession extends RpcTarget implements Pick<WorkspaceR
         change = composeCodeChange(change, merged.change);
         receipt.corrections.push(...merged.ack.changes.map(([path, correction]) => ({ checkoutId: tree.checkoutId, path, change: correction })));
         for (const [path, content] of merged.ack.accepted)
-          receipt.accepted.push({checkoutId: tree.checkoutId, path, hash: await replicaTextHash(content)});
+          receipt.accepted.push({checkoutId: tree.checkoutId, path, hash: await replicaContentHash(content),
+            ...(content !== null && typeof content !== "string" ? {bytes: content} : {})});
       }
       if (seen.size !== batch.files.length) throw new Error("Replica batch names an ungranted checkout.");
       if (codeChangeSerializedSize(change) > 1024 * 1024) throw new Error("Replica OT transaction exceeds its budget.");
@@ -174,7 +241,8 @@ export class WorktreeReplicaSession extends RpcTarget implements Pick<WorkspaceR
       // Reuse the conservative V8 OT estimate and allow ample framing for each receipt object.
       const receiptBytes = 512 + 2 * (commitId.length + lease.id.length + digest.length +
           receipt.batchId.length + receipt.committedAt.length) +
-        receipt.accepted.reduce((bytes, file) => bytes + 128 + 2 * (file.path.length + (file.hash?.length ?? 0)), 0) +
+        receipt.accepted.reduce((bytes, file) => bytes + 128 + 2 * (file.path.length + (file.hash?.length ?? 0)) +
+          (file.bytes ? codeChangeSerializedSize({[file.checkoutId]: [[file.path, {setBytes: file.bytes}]]}) : 0), 0) +
         receipt.corrections.reduce((bytes, file) => bytes + 128 +
           codeChangeSerializedSize({[file.checkoutId]: [[file.path, file.change]]}), 0);
       if (receiptBytes > 1024 * 1024) {
@@ -204,37 +272,43 @@ export class WorktreeReplicaSession extends RpcTarget implements Pick<WorkspaceR
     return lease;
   }
 
-  async #anchor(lease: WorktreeReplicaLease, checkoutId: number, path: string, cursor: string): Promise<string | null> {
-    if (this.host.anchorFile && lease.checkpoint!.pendingOverlay !== undefined) {
-      const text = await this.host.anchorFile(lease, checkoutId, path);
-      let content = new Map([[checkoutId, new Map(text === null ? [] : [[path, text]])]]);
-      for (const item of lease.checkpoint!.pendingOverlay) if (item.checkoutId === checkoutId && item.path === path) {
-        content = applyCodeChange(content, {[checkoutId]: [[path, item.change]]});
-      }
-      content = applyCodeChange(content, this.#changes(lease, lease.checkpoint!.cursor,
-        [{checkoutId, path}], cursor));
-      return content.get(checkoutId)?.get(path) ?? null;
+  async #anchor(lease: WorktreeReplicaLease, checkoutId: number, path: string, cursor: string, binary = false): Promise<FileContent | null> {
+    let change: CodeChange = {};
+    const anchorFile = this.host.anchorFile;
+    const accepted = anchorFile !== undefined && lease.checkpoint!.pendingOverlay !== undefined;
+    const overlay = accepted ? lease.checkpoint!.pendingOverlay! : lease.checkpoint!.overlay;
+    for (const item of overlay) if (item.checkoutId === checkoutId && item.path === path) {
+      change = composeCodeChange(change, {[checkoutId]: [[path, item.change]]});
     }
-    // Legacy checkpoints and hosts retain the original upstream-anchored operations.
-    let bytes: Uint8Array;
-    try { bytes = await this.host.baseFile(lease, checkoutId, path); }
-    catch (error) {
-      // Absence is determined by tree metadata, not by swallowing authorization/pull errors.
-      if ((await this.host.entries(lease, checkoutId)).some(entry => entry.path === path)) throw error;
-      bytes = new Uint8Array();
-    }
-    const exists = (await this.host.entries(lease, checkoutId)).some(entry => entry.path === path);
-    const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
-    if (text.includes("\0")) throw new Error("Replica mutations of binary files are unsupported.");
-    let content = new Map([[checkoutId, new Map(exists ? [[path, text]] : [])]]);
-    const apply = (changes: WorktreeChange[]) => {
-      for (const item of changes) if (item.checkoutId === checkoutId && item.path === path) {
-        content = applyCodeChange(content, { [checkoutId]: [[path, item.change]] });
+    change = composeCodeChange(change, this.#changes(lease, lease.checkpoint!.cursor, [{checkoutId, path}], cursor));
+    const operation = change[checkoutId]?.[0]?.[1];
+    let content: CodeContent = new Map();
+    // A replacement/removal already describes the anchor, regardless of the base's encoding.
+    // Only untouched files and text edits need an immutable base read.
+    if (!operation || "edit" in operation) {
+      if (!operation && binary) {
+        const readBytes = accepted ? this.host.anchorBytes : this.host.baseBytes;
+        if (!readBytes) throw new Error("Replica binary anchors require the byte API.");
+        const value = await readBytes(lease, checkoutId, path);
+        content = new Map([[checkoutId, new Map(value ? [[path, value]] : [])]]);
+      } else if (accepted) {
+        const text = await anchorFile(lease, checkoutId, path);
+        content = new Map([[checkoutId, new Map(text === null ? [] : [[path, text]])]]);
+      } else {
+        let bytes: Uint8Array;
+        try { bytes = await this.host.baseFile(lease, checkoutId, path); }
+        catch (error) {
+          // Absence is determined by metadata, not by swallowing authorization/pull errors.
+          if ((await this.host.entries(lease, checkoutId)).some(entry => entry.path === path)) throw error;
+          bytes = new Uint8Array();
+        }
+        const exists = (await this.host.entries(lease, checkoutId)).some(entry => entry.path === path);
+        const text = new TextDecoder("utf-8", {fatal: true, ignoreBOM: true}).decode(bytes);
+        if (text.includes("\0")) throw new Error("Replica binary anchors require the byte API.");
+        content = new Map([[checkoutId, new Map(exists ? [[path, text]] : [])]]);
       }
-    };
-    apply(lease.checkpoint!.overlay);
-    content = applyCodeChange(content, this.#changes(lease, lease.checkpoint!.cursor,
-      [{checkoutId, path}], cursor));
+    }
+    content = applyCodeChange(content, change);
     return content.get(checkoutId)?.get(path) ?? null;
   }
 
@@ -259,6 +333,10 @@ export class WorktreeReplicaSession extends RpcTarget implements Pick<WorkspaceR
     }
     return change;
   }
+}
+
+function byteRefs(change: import("@gadgets/workshop-shared/code-change").FileChange): BytesRef[] {
+  return "setBytes" in change ? [change.setBytes.base] : [];
 }
 
 @validateRpc()

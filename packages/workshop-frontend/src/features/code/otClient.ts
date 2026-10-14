@@ -4,7 +4,7 @@ import type {
 } from '@gadgets/workshop-shared/api'
 import {
   applyCodeChange, changedGadgets, composeCodeChange, transformCodeChange,
-  type CodeContent, type CodeChange, type FileChange,
+  type CodeContent, type CodeChange, type FileChange, type FileContent,
 } from '@gadgets/workshop-shared/code-change'
 
 // The chat-level OT client: the classic two-buffer client behind the code view.
@@ -88,12 +88,13 @@ export interface ChatContentReader {
 }
 
 /**
- * One file of a chat's content, as of when the snapshot was read: its text, `null` where the
+ * One file of a chat's content, as of when the snapshot was read: text or opaque byte metadata,
+ * `null` where the
  * chat removed it, or `undefined` where the chat has not touched it, which leaves it with the
  * text of the pin's base commit (or, for a workpiece the chat has not pinned, of its accepted
  * commit).
  */
-export type ChatContentSnapshot = (gadgetId: WorkpieceId, path: string) => string | null | undefined
+export type ChatContentSnapshot = (gadgetId: WorkpieceId, path: string) => FileContent | null | undefined
 
 /** A remote content change to one file, for open editors to apply as a remote transaction. */
 export interface RemoteFileEvent {
@@ -336,8 +337,8 @@ export class ChatOtClient {
     return this.#display.has(gadgetId)
   }
 
-  /** The workpiece's displayed touched paths and their text; undefined when not covered. */
-  getFiles(gadgetId: WorkpieceId): ReadonlyMap<string, string> | undefined {
+  /** The workpiece's touched paths; byte values are opaque, never loaded by the text editor. */
+  getFiles(gadgetId: WorkpieceId): ReadonlyMap<string, FileContent> | undefined {
     return this.#display.get(gadgetId)
   }
 
@@ -345,8 +346,10 @@ export class ChatOtClient {
   snapshot(): ChatContentSnapshot {
     const display = this.#display
     const removed = new Map([...display.keys()].map(id => [id, this.getRemovedPaths(id)]))
-    return (gadgetId, path) =>
-      display.get(gadgetId)?.get(path) ?? (removed.get(gadgetId)?.has(path) ? null : undefined)
+    return (gadgetId, path) => {
+      const value = display.get(gadgetId)?.get(path)
+      return value ?? (removed.get(gadgetId)?.has(path) ? null : undefined)
+    }
   }
 
   /**
@@ -793,7 +796,7 @@ export class ChatOtClient {
       if (discontinuous.has(gadgetId)) continue
       const files = this.#applied.get(gadgetId)
       if (files === undefined) continue
-      const kept = new Map<string, string>()
+      const kept = new Map<string, FileContent>()
       for (const path of paths) {
         const text = files.get(path)
         if (text !== undefined) kept.set(path, text)

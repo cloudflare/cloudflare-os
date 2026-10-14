@@ -47,7 +47,7 @@ export async function replicaCommitPack(cache: WorkspaceGitCache, tree: Worktree
   // the real header too, retaining the shallow boundary without retransmitting base files.
   if (tree.baseCommit) add(tree.baseCommit, "commit");
   async function* contents() {
-    for (const [oid, hint] of objects) yield await read(oid, hint.type, hint.referencedBy);
+    for (const [oid, hint] of objects) yield await cache.packObject(oid, hint, requireLive);
     requireLive();
   }
   return buildPackStream(objects.size, contents());

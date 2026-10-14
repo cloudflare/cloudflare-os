@@ -4,6 +4,10 @@ import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, Work
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
+import { requireTextFiles, type FileContent } from "@gadgets/workshop-shared/code-change";
+import { ByteStore } from "./byte-store";
+import type { ByteValue, BytesRef } from "@gadgets/workshop-shared/byte-change";
+import type { ByteUploadDescription, ByteUploadStatus } from "@gadgets/workshop-shared/agent-integration";
 import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
@@ -706,6 +710,7 @@ class OverseerImpl implements AgentHooks {
   // The workspace's git object store, holding all gadgets' committed code (see git-store.ts).
   // One instance per DO so isomorphic-git's parse cache is shared.
   readonly gitStore: GitStore;
+  readonly byteStore: ByteStore;
 
   // The gatekeeper-facing git cache layer over the same store: provenance metadata, the pull
   // driver, and push authorization (see git-cache.ts). Per-gatekeeper GitCache stubs are minted
@@ -1187,10 +1192,12 @@ class OverseerImpl implements AgentHooks {
   constructor(public ctx: DurableObjectState, public env: Cloudflare.Env) {
     this.logger = logger.with({ gadgetId: ctx.id.toString() });
     this.storage = makeOverseerStorage(ctx.storage);
-    this.gitStore = new GitStore(this.storage.gitObjects);
+    this.byteStore = new ByteStore(this.storage.byteObjects, this.storage.byteChunks, this.storage.byteUploads,
+      () => ctx.storage.sync(), this.storage.byteGrants, this.storage.gitByteBlobs);
+    this.gitStore = new GitStore(this.storage.gitObjects, this.byteStore, this.storage.gitByteBlobs);
     this.gitCache = new WorkspaceGitCache(this.storage, {
       pull: (gatekeeperId, oids, hints) => this.#pullGitObjects(gatekeeperId, oids, hints),
-    });
+    }, this.byteStore);
     this.users = this.ctx.exports.UserDurableObject;
     this.ownerId = this.storage.ownerId.get();
 
@@ -1997,6 +2004,22 @@ class OverseerImpl implements AgentHooks {
     return this.gitCache.readFileAtCommitIfExists(commit, path);
   }
 
+  /** Resolve one regular Git blob to durable byte storage, never materializing a repository. */
+  async readByteFileAtCommit(commit: string, path: string, scope = "kernel"): Promise<ByteValue | undefined> {
+    await this.gitCache.assertWorktreePathWritable(commit, path);
+    const entry = await this.gitCache.pathEntryAtCommit(commit, path);
+    if (!entry) return undefined;
+    const stored = this.storage.gitByteBlobs.get(entry.oid);
+    if (stored) {
+      const ref = this.byteStore.reference(entry.oid);
+      await this.byteStore.grant(scope, ref); return {base: ref};
+    }
+    const object = await this.gitCache.ensureObject(entry.oid, {type: "blob", referencedBy: entry.referencedBy});
+    const bytes = await this.byteStore.import(scope, object.payload);
+    if (bytes.oid !== entry.oid) throw new Error("Git blob payload does not match its object ID.");
+    return {base: bytes};
+  }
+
   // AgentHooks implementation: the same read, plus the blob's oid for the read's stamp.
   readFileAtCommitWithOid(commit: string, path: string)
       : Promise<{text: string, oid: string} | undefined> {
@@ -2227,7 +2250,7 @@ class OverseerImpl implements AgentHooks {
       // Commits are immutable, so a prefetched text can never go stale; a row appended during
       // the awaits that needs an unprefetched base is caught in the tail and retried.
       let worktreeBases = this.worktreePinBases(meta);
-      let seeds = new Map<string, string | null>();
+      let seeds = new Map<string, FileContent | null>();
       if (worktreeBases.size > 0) {
         let probe = content;
         for (let row of this.listLiveChatChanges(chatId, codeBase.generation)) {
@@ -2276,7 +2299,7 @@ class OverseerImpl implements AgentHooks {
   // synchronous tail can re-seed without awaiting.
   async #prefetchWorktreeSeeds(content: CodeContent, change: CodeChange,
                                worktreeBases: Map<WorkpieceId, string>,
-                               seeds: Map<string, string | null>): Promise<CodeContent> {
+                               seeds: Map<string, FileContent | null>): Promise<CodeContent> {
     let result = content;
     for (let [key, entries] of Object.entries(change)) {
       let worktreeId = Number(key);
@@ -2305,7 +2328,7 @@ class OverseerImpl implements AgentHooks {
   // retries the whole read).
   #applyPrefetchedWorktreeSeeds(content: CodeContent, change: CodeChange,
                                 worktreeBases: Map<WorkpieceId, string>,
-                                seeds: Map<string, string | null>): CodeContent | null {
+                                seeds: Map<string, FileContent | null>): CodeContent | null {
     let result = content;
     for (let [key, entries] of Object.entries(change)) {
       let worktreeId = Number(key);
@@ -2801,6 +2824,16 @@ class OverseerImpl implements AgentHooks {
   // so a mid-barrier exception, itself a bug, can leak broadcasts for rolled-back rows. The
   // in-memory content/byte caches *are* restored on rollback (dropped, to rebuild from
   // storage), or they would serve content the rows no longer back.
+  // All publication paths validate durable sources before ACK; text-only gadgets cannot
+  // acquire byte state that their runtime cannot compile or display.
+  #validateByteChanges(change: CodeChange): void {
+    for (const [id, entries] of Object.entries(change)) for (const [, file] of entries) {
+      if (!("setBytes" in file)) continue;
+      if (!this.isWorktree(Number(id))) throw new Error("Binary mutations require a worktree.");
+      this.byteStore.require(file.setBytes.base);
+    }
+  }
+
   async commitAgentStep(chatId: number, author: AiChatAuthorInfo,
       msgs: AiChatMessageBodyWithModelData[],
       step: {
@@ -2819,7 +2852,7 @@ class OverseerImpl implements AgentHooks {
     if (!meta) return false;  // chat deleted mid-turn
 
     for (const [changeIndex, {change}] of step.changes.entries()) {
-      try { validateCodeChangeSchema(change); }
+      try { validateCodeChangeSchema(change); this.#validateByteChanges(change); }
       catch (error) {
         this.logger.error("invalid agent transform rejected at persistence", {
           event: "agent.step.change.invalid", chatId, changeStage: "persist", changeIndex, ...agentCodeChangeShape(change),
@@ -3033,6 +3066,7 @@ class OverseerImpl implements AgentHooks {
       : Promise<{generation: number, revision: number}> {
     this.getChatMetaOrThrow(chatId);  // fail fast
     this.#validateSubmissionShape(submission);
+    this.#validateByteChanges(submission.change);
     let digest = await submissionDigest(submission);
 
     // Dedupe by (user, clientId, seq) before anything that can reject the base: a retry of an
@@ -3474,7 +3508,7 @@ class OverseerImpl implements AgentHooks {
     for (let {record, pin} of stale) {
       let base = await this.gitStore.readCommitFiles(pin.mergedCommit);
       let mainlineFiles = await this.gitStore.readCommitFiles(record.commitId!);
-      let chatFiles = content.get(pin.gadgetId) ?? new Map<string, string>();
+      let chatFiles = requireTextFiles(content.get(pin.gadgetId) ?? new Map());
       let result = threeWayMerge(base, mainlineFiles, chatFiles,
           {base: "merged base", ours: "mainline", theirs: "this chat"});
       merges.push({pin, head: record.commitId!, bindingName: record.bindingName, chatFiles,
@@ -3889,7 +3923,7 @@ class OverseerImpl implements AgentHooks {
         // awaiting cleanup.
         continue;
       }
-      let files = chatContent.get(record.id) ?? new Map<string, string>();
+      let files = requireTextFiles(chatContent.get(record.id) ?? new Map());
       let pin = pins.get(record.id);
       let mergedCommit = pin?.mergedCommit;
       let baseFiles = mergedCommit !== undefined
@@ -4012,7 +4046,7 @@ class OverseerImpl implements AgentHooks {
           // or null for one whose folded outcome is absence (a deletion). Touched-but-unchanged
           // paths fold to identical blobs, so tree equality below still detects "clean".
           let files = chatContent.get(pin.gadgetId);
-          let changes = new Map<string, string | null>();
+          let changes = new Map<string, FileContent | null>();
           for (let path of touched) changes.set(path, files?.get(path) ?? null);
           let flattened: string;
           try {
@@ -4554,8 +4588,7 @@ class OverseerImpl implements AgentHooks {
         // The cache key snapshotted the chat's next sequence, so exclude any batch recorded
         // after it (a fresh load with a fresh key sees those). Live rows are likewise excluded;
         // callers that want them reflected materialize first, exactly as drafts always worked.
-        files = (await this.buildChatContent(chatId!, sequence! - 1)).get(gadgetId)
-            ?? new Map<string, string>();
+        files = requireTextFiles((await this.buildChatContent(chatId!, sequence! - 1)).get(gadgetId) ?? new Map());
       } else {
         let commitId = this.getGadgetHead(gadgetId);
         files = commitId !== undefined
@@ -5529,6 +5562,9 @@ class OverseerImpl implements AgentHooks {
     if (!entry || entry.kind === "dir" || entry.kind === "submodule") {
       throw new Error("Chat attachment content is missing from Git.");
     }
+    const blob = this.storage.gitByteBlobs.get(entry.oid);
+    if (blob) return this.byteStore.readSmall(
+      this.byteStore.reference(entry.oid), MAX_CHAT_ATTACHMENT_TOTAL_BYTES);
     return (await this.gitCache.ensureObject(entry.oid,
       {type: "blob", referencedBy: entry.referencedBy})).payload;
   }
@@ -5579,7 +5615,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   async #prepareWorkspaceAttachmentFiles(
-      chatId: number, attachments: ChatAttachmentRef[] | undefined): Promise<Map<string, string>> {
+      chatId: number, attachments: ChatAttachmentRef[] | undefined): Promise<Map<string, FileContent>> {
     let used = new Set<string>();
     for (let record of this.storage.chatAttachmentContent.list()) {
       if (record.state.type === "committed" && record.state.chatId === chatId &&
@@ -5589,7 +5625,7 @@ class OverseerImpl implements AgentHooks {
     }
 
     const worktree = this.#attachmentsWorktree(chatId);
-    if (worktree && attachments?.some(attachment => isTextLikeAttachmentMimeType(attachment.mimeType))) {
+    if (worktree && attachments?.length) {
       // Uploads use root filenames. Reserve base and overlay root names (including directories)
       // without loading file contents, so an upload cannot overwrite agent-created work.
       for (const entry of await this.gitCache.listCommitTreePaths(worktree.pinBase)) used.add(entry.path);
@@ -5597,21 +5633,23 @@ class OverseerImpl implements AgentHooks {
       for (const [path] of this.#replicaOverlay(chatId)[worktree.id] ?? []) used.add(path.split("/")[0]);
     }
 
-    let files = new Map<string, string>();
+    let files = new Map<string, FileContent>();
     for (let attachment of attachments ?? []) {
-      if (!isTextLikeAttachmentMimeType(attachment.mimeType)) continue;
       let content = this.storage.chatAttachmentContent.get(attachment.id);
-      if (!content || content.state.type !== "staged") {
+      if (!content || content.state.type !== "staged" || content.data === undefined) {
         throw new Error("Chat attachment is no longer available.");
       }
-      // The OT engine is UTF-16 text. Invalid UTF-8 stays an ordinary byte attachment,
-      // never a lossy replacement-character worktree. Keep a UTF-8 BOM as actual content.
-      let text: string;
-      try { text = new TextDecoder("utf-8", {fatal: true, ignoreBOM: true}).decode(content.data); }
-      catch { continue; }
+      // Text keeps its UTF-16 OT semantics; undecodable or explicitly binary uploads use
+      // immutable bytes. Keep a UTF-8 BOM as actual content.
+      let value: FileContent | undefined;
+      if (isTextLikeAttachmentMimeType(attachment.mimeType)) {
+        try { const text = new TextDecoder("utf-8", {fatal: true, ignoreBOM: true}).decode(content.data); if (!text.includes("\0")) value = text; }
+        catch { /* Preserve undecodable uploads as bytes, not lossy text. */ }
+      }
+      value ??= {base: await this.byteStore.import(`attachments:${chatId}`, content.data)};
       let path = this.#attachmentWorkspaceFilename(attachment, used);
       attachment.workspacePath = path;
-      files.set(path, text);
+      files.set(path, value);
     }
     return files;
   }
@@ -5623,7 +5661,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   async #writeWorkspaceAttachmentCommit(
-      files: ReadonlyMap<string, string>, author: AiChatAuthorInfo): Promise<string | undefined> {
+      files: ReadonlyMap<string, FileContent>, author: AiChatAuthorInfo): Promise<string | undefined> {
     if (files.size === 0) return undefined;
     return await this.gitStore.writeFilesAsCommit(files, {
       parents: [],
@@ -5634,7 +5672,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   async #prepareAttachmentsWorktree(
-      chatId: number, files: ReadonlyMap<string, string>, author: AiChatAuthorInfo)
+      chatId: number, files: ReadonlyMap<string, FileContent>, author: AiChatAuthorInfo)
       : Promise<PreparedAttachmentsWorktree | undefined> {
     if (files.size === 0 || this.#attachmentsWorktree(chatId) !== undefined) return undefined;
     let bindingName = fallbackBindingName(
@@ -5672,7 +5710,7 @@ class OverseerImpl implements AgentHooks {
 
   // Validate the entire batch before any subscriber sees its message or first change row.
   #prepareWorkspaceAttachmentChanges(
-      chatId: number, worktree: WorktreeRecord, files: ReadonlyMap<string, string>)
+      chatId: number, worktree: WorktreeRecord, files: ReadonlyMap<string, FileContent>)
       : {change: CodeChange, content: CodeContent}[] {
     const current = this.storage.gadgets.get(worktree.id);
     if (current?.type !== "worktree" || current.chatId !== chatId || current.pinBase !== worktree.pinBase) {
@@ -5693,7 +5731,7 @@ class OverseerImpl implements AgentHooks {
           throw new Error("Attachment workspace changed while preparing the message; retry.");
         }
       }
-      const change: CodeChange = {[worktree.id]: [[path, {set: text}]]};
+      const change: CodeChange = {[worktree.id]: [[path, typeof text === "string" ? {set: text} : {setBytes: text}]]};
       validateCodeChangeSchema(change);
       validateCodeChangeContent(change, content);
       content = applyCodeChange(content, change);
@@ -5769,6 +5807,10 @@ class OverseerImpl implements AgentHooks {
         }
         this.storage.chatAttachmentContent.put({
           fileId: id,
+          // Client message hydration is synchronous. Retain bounded image bytes for previews
+          // until that API can stream the immutable Git-backed attachment instead.
+          ...(isAllowedChatAttachmentImageMimeType(attachment.mimeType)
+            ? {data: content.data} : {}),
           state: {
             type: "committed",
             chatId,
@@ -6606,7 +6648,20 @@ class OverseerImpl implements AgentHooks {
         this.storage.worktreeReplicaLeases.put({...lease, cleanupDeadline: current.cleanupDeadline,
           expiresAt: Math.min(lease.expiresAt, current.cleanupDeadline ?? Infinity)});
       },
-      entries, baseFile,
+      entries, baseFile, bytes: this.byteStore,
+      baseStream: async (lease, checkoutId, path) => {
+        const tree = requireTree(lease, checkoutId);
+        const entry = tree.baseCommit && await this.gitCache.pathEntryAtCommit(tree.baseCommit, path);
+        if (!entry || entry.kind === "dir" || entry.kind === "submodule") throw new Error("No readable base file at this path.");
+        const object = await this.gitCache.packObject(entry.oid, {type: "blob", referencedBy: entry.referencedBy}, () => this.requireReplicaLease(lease.id));
+        this.requireReplicaLease(lease.id);
+        if ("stream" in object) return object.stream;
+        return new ReadableStream({start(c) {c.enqueue(object.payload); c.close();}});
+      },
+      baseBytes: async (lease, checkoutId, path) => {
+        const tree = requireTree(lease, checkoutId);
+        return tree.baseCommit ? await this.readByteFileAtCommit(tree.baseCommit, path, lease.id) ?? null : null;
+      },
       anchorFile: async (lease, checkoutId, path) => {
         requireTree(lease, checkoutId);
         const tree = lease.checkpoint!.worktrees.find(tree => tree.checkoutId === checkoutId)!;
@@ -6619,6 +6674,12 @@ class OverseerImpl implements AgentHooks {
         const text = new TextDecoder("utf-8", {fatal: true, ignoreBOM: true}).decode(bytes);
         if (text.includes("\0")) throw new Error("Replica mutations of binary files are unsupported.");
         return text;
+      },
+      anchorBytes: async (lease, checkoutId, path) => {
+        requireTree(lease, checkoutId);
+        const tree = lease.checkpoint!.worktrees.find(tree => tree.checkoutId === checkoutId)!;
+        const commit = tree.acceptedCommit ?? tree.baseCommit;
+        return commit ? await this.readByteFileAtCommit(commit, path, lease.id) ?? null : null;
       },
       assertPathWritable: async (lease, checkoutId, path) => {
         const tree = requireTree(lease, checkoutId);
@@ -14049,6 +14110,24 @@ export class WorkspaceReplicaEndpoint extends WorkerEntrypoint<Cloudflare.Env,
       .getWorkspaceReplicaSession(this.ctx.props.leaseId);
   }
   async checkpoint(): Promise<WorkspaceCheckpoint> { using session = await this.#session(); return await session.checkpoint(); }
+  async beginUpload(id: string, description: ByteUploadDescription): Promise<ByteUploadStatus> {
+    using session = await this.#session(); return await session.beginUpload(id, description);
+  }
+  async writeUpload(id: string, offset: number, stream: ReadableStream<Uint8Array>): Promise<number> {
+    using session = await this.#session(); return await session.writeUpload(id, offset, stream);
+  }
+  async getUploadStatus(id: string): Promise<ByteUploadStatus> {
+    using session = await this.#session(); return await session.getUploadStatus(id);
+  }
+  async finishUpload(id: string): Promise<BytesRef> { using session = await this.#session(); return await session.finishUpload(id); }
+  async readBytes(ref: BytesRef, range?: {offset: number; length: number}): Promise<ReadableStream<Uint8Array>> {
+    using session = await this.#session(); return await session.readBytes(ref, range);
+  }
+  async readByteAnchor(checkoutId: number, path: string, cursor: string): Promise<{value: ByteValue | null; version: string | null}> {
+    using session = await this.#session(); const result = await session.readByteAnchor(checkoutId, path, cursor);
+    return {...result, value: result.value === null ? null :
+      (replicaChangeFromRpc({setBytes: result.value}) as {setBytes: ByteValue}).setBytes};
+  }
   async listBaseEntries(id: string, checkoutId: number): Promise<Cursor<WorktreeBaseEntry>> {
     using session = await this.#session(); return await session.listBaseEntries(id, checkoutId);
   }
@@ -14077,7 +14156,9 @@ export class WorkspaceReplicaEndpoint extends WorkerEntrypoint<Cloudflare.Env,
   async submitBatch(batch: WorktreeReplicaBatch): Promise<WorktreeReplicaReceipt> {
     using session = await this.#session();
     const receipt = await session.submitBatch(batch);
-    return { ...receipt, corrections: receipt.corrections.map(item => ({ ...item, change: replicaChangeFromRpc(item.change) })) };
+    return { ...receipt, corrections: receipt.corrections.map(item => ({ ...item, change: replicaChangeFromRpc(item.change) })),
+      accepted: receipt.accepted.map(item => ({checkoutId: item.checkoutId, path: item.path, hash: item.hash,
+        ...(item.bytes ? {bytes: (replicaChangeFromRpc({setBytes: item.bytes}) as {setBytes: ByteValue}).setBytes} : {})})) };
   }
   async renew(): Promise<void> { using session = await this.#session(); await session.renew(); }
   async release(): Promise<void> { using session = await this.#session(); await session.release(); }

@@ -235,6 +235,35 @@ async function compactBatch(before: string | null, after: string | null): Promis
 }
 
 describe("scoped native worktree replica protocol", () => {
+  it.each(["journal", "checkpoint"])("reconstructs removed/replaced binary anchors from the %s without decoding the old base", async source => {
+    const f = fixture("\0binary");
+    const removed: WorktreeChangeEvent["changes"][number] = {checkoutId: 7, path: "a.txt", change: {remove: true}};
+    if (source === "checkpoint") {
+      f.remoteChange({7: [["a.txt", removed.change]]});
+      f.host.capture = async () => ({cursor: "cursor-1", overlay: [removed]});
+      await f.session.checkpoint();
+    } else {
+      await f.session.checkpoint();
+      f.remoteChange({7: [["a.txt", removed.change]]});
+    }
+    const readBase = vi.fn(async () => {throw new Error("must not read superseded binary base");});
+    f.host.baseFile = readBase;
+    f.host.baseBytes = readBase;
+    expect(await f.session.readByteAnchor(7, "a.txt", "cursor-1")).toEqual({value: null, version: null});
+    const unchanged = await f.session.submitBatch({batchId: "absent", baseCursor: "cursor-1", files: [
+      {checkoutId: 7, path: "a.txt", baseHash: null, change: null},
+    ]});
+    expect(unchanged.accepted[0].hash).toBeNull();
+    const created = await f.session.submitBatch({batchId: "recreate", baseCursor: unchanged.committedAt, files: [
+      {checkoutId: 7, path: "a.txt", baseHash: null, change: {set: "hello"}},
+    ]});
+    await f.session.submitBatch({batchId: "edit-text", baseCursor: created.committedAt, files: [
+      {checkoutId: 7, path: "a.txt", baseHash: await replicaTextHash("hello"), change: {edit: [5, [0, "!"]]}},
+    ]});
+    expect(f.content.get(7)?.get("a.txt")).toBe("hello!");
+    expect(readBase).not.toHaveBeenCalled();
+  });
+
   it("rejects oversized canonical correction receipts before the barrier and permits a bounded retry", async () => {
     const f = fixture(null);
     await f.session.checkpoint();

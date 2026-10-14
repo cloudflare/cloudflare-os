@@ -368,7 +368,7 @@ export default function WorkpieceCodeInterface({
                 activeOverlayRef.current = null
               }
               dispatchFileChange(event.gadgetId, event.path,
-                clientText !== undefined ? { set: clientText } : { remove: true })
+                typeof clientText === 'string' ? { set: clientText } : { remove: true })
               retryPreviewAttachRef.current?.()
               continue
             }
@@ -410,7 +410,7 @@ export default function WorkpieceCodeInterface({
               // client -- the incremental change's offsets are against the client's pre-row
               // content, not the previewed document -- and re-anchor the preview on top.
               dispatchFileChange(event.gadgetId, event.path,
-                text !== undefined ? { set: text } : { remove: true })
+                typeof text === 'string' ? { set: text } : { remove: true })
               retryPreviewAttachRef.current?.()
               continue
             }
@@ -511,7 +511,7 @@ export default function WorkpieceCodeInterface({
       const files = client.getFiles(gadgetId)
       if (files !== undefined) {
         const text = files.get(path)
-        if (text !== undefined) return { text }
+        if (text !== undefined) return typeof text === 'string' ? { text } : {}
         if (client.getRemovedPaths(gadgetId).has(path)) return {}
       }
       if (gadgetId !== workpieceIdRef.current) return undefined
@@ -818,7 +818,7 @@ export default function WorkpieceCodeInterface({
   // chat's, or -- for a path the chat removed -- null. Undefined means the path is untouched
   // and its text is the content base's (readDisplayedText and the active-file resolution below
   // complete the picture).
-  const overlayText = (path: string): string | undefined | null => {
+  const overlayText = (path: string): ReturnType<import('./otClient').ChatContentSnapshot> => {
     const preview = previewOverrides.get(path)
     if (preview !== undefined) return preview
     if (chatFiles !== undefined) {
@@ -1144,7 +1144,7 @@ export default function WorkpieceCodeInterface({
         const files = client.getFiles(gadgetId)
         if (files !== undefined) {
           const text = files.get(path)
-          if (text !== undefined) return text
+          if (text !== undefined) return typeof text === 'string' ? text : undefined
           if (client.getRemovedPaths(gadgetId).has(path)) return undefined
         }
         const base = contentBaseRef.current
@@ -1214,7 +1214,7 @@ export default function WorkpieceCodeInterface({
   // unreadable).
   const readDisplayedText = async (filename: string): Promise<string | null> => {
     const overlaid = overlayText(filename)
-    if (overlaid !== undefined) return overlaid
+    if (overlaid !== undefined) return typeof overlaid === 'string' ? overlaid : null
     return readBaseText(filename)
   }
 
@@ -1271,8 +1271,8 @@ export default function WorkpieceCodeInterface({
     const chatFilesNow = target.client.getFiles(target.gadgetId)
     const text = chatFilesNow?.get(oldName) ??
       (target.client.getRemovedPaths(target.gadgetId).has(oldName) ? null : baseText)
-    if (text === null) {
-      toasts.add({ title: 'File not found', variant: 'error' })
+    if (typeof text !== 'string') {
+      toasts.add({ title: 'Only text files can be renamed in this editor', variant: 'error' })
       return
     }
     if (chatFilesNow?.has(newName) || fileExists(newName)) {
@@ -1367,7 +1367,9 @@ export default function WorkpieceCodeInterface({
   if (activeFile !== null) {
     const overlaid = overlayText(activeFile)
     if (overlaid !== undefined) {
-      activeResolved = overlaid !== null ? { kind: 'text', text: overlaid } : { kind: 'absent' }
+      activeResolved = overlaid === null ? { kind: 'absent' }
+        : typeof overlaid === 'string' ? { kind: 'text', text: overlaid }
+        : { kind: 'unreadable', message: 'Binary content cannot be displayed in the text editor.' }
     } else if (contentBase !== undefined) {
       activeResolved = activeBaseFiles.get(activeFile)
     }
