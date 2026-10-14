@@ -1,0 +1,37 @@
+packages/workshop-frontend/src/features/ai-models/ReasoningLevelSelect.tsx
+  s_b935ef13c35665::t_f1ace35ff6afbe 1-74
+packages/workshop-backend/src/admin-settings.ts
+  s_b935ef13c35665::t_db4ebef2f92401 11
+  s_b935ef13c35665::t_f5f404cbfd3cc5 14,455-460,500
+packages/workshop-backend/src/ai-models.ts
+  s_b935ef13c35665::t_f5f404cbfd3cc5 32,34,393-406
+  s_b935ef13c35665::t_ad754e5c34e335 407-408
+packages/workshop-backend/src/agent-compaction.ts
+  s_b935ef13c35665::t_f5f404cbfd3cc5 45-56
+  s_b935ef13c35665::t_b76f0c567f1618 44
+packages/workshop-shared/src/api.ts
+  s_b935ef13c35665::t_550ebf69cc867a 1685-1689,1694-1695,1699,1713,1715-1716
+packages/workshop-frontend/src/features/ai-models/GatewayModelRow.tsx
+  s_b935ef13c35665::t_f1ace35ff6afbe 2-3,11,13-14,215-224,240-245
+  s_b935ef13c35665::t_1303a545a77d6a 246
+packages/workshop-frontend/src/features/ai-models/CompactionBudgetHelp.tsx
+  s_b935ef13c35665::t_f1ace35ff6afbe 1-37
+packages/workshop-frontend/src/features/ai-models/modelForm.ts
+  s_b935ef13c35665::t_f1ace35ff6afbe 41-43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c544dd66c43e2f6b9e782223c9b0736db0a20843",
+  "prompts": {},
+  "sessions": {
+    "s_b935ef13c35665": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "58c3f333-baff-470f-84e4-eccedd1e8e9f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
