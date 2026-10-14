@@ -96,6 +96,8 @@ jobs:
               --filter=!@gadgets/workshop-backend
               --filter=!@gadgets/workshop-frontend
               --filter=!@gadgets/integration-tests
+            # configurator-ui's browser suite and generated-frame test.
+            chromium: true
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -117,8 +119,10 @@ jobs:
           cache: false
           run-install: true
 
-      # The frontend's browser suite (`vitest.browser.config.ts`) runs in Chromium, which
-      # Playwright downloads outside node_modules; `--with-deps` adds the system libraries it needs.
+      # The frontend's and configurator-ui's browser suites (`vitest.browser.config.ts`), and
+      # configurator-ui's generated-frame test, run in Chromium, which Playwright downloads outside
+      # node_modules; both packages pin the catalog `playwright`, so one install serves them.
+      # `--with-deps` adds the system libraries it needs.
       - name: Install Chromium for the browser suite
         if: ${{ matrix.chromium }}
         run: pnpm --filter @gadgets/workshop-frontend exec playwright install --with-deps chromium
