@@ -99,7 +99,7 @@ export const findUnresolvedConflicts = async (
   const untouched = new Map<string, ConflictedFile[]>()
   for (const file of files) {
     const text = content(file.workpieceId, file.path)
-    texts.set(file, text)
+    texts.set(file, typeof text === 'object' && text !== null ? null : text)
     const base = text === undefined ? baseOf(file.workpieceId) : undefined
     if (base !== undefined) untouched.set(base, [...untouched.get(base) ?? [], file])
   }
