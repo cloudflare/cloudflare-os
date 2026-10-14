@@ -741,12 +741,24 @@ export type StoredAssistantMessage = Omit<AssistantMessage, "content"> & {
   content: (TextContent | ThinkingContent | StoredToolCall)[];
 };
 
-// One agent step's model-facing snapshot (see StoredAssistantMessage), keyed by the
-// chatId.sequence of the step's "message" record.
-type ChatModelDataRecord = {
+/** One binary image from a tool result, persisted without base64 expansion. */
+export type StoredToolResultImage = {
+  data: Uint8Array;
+  mimeType: string;
+};
+
+/** One agent step's server-only model data, including non-text tool-result content. */
+export type StoredAgentStepModelData = {
+  message: StoredAssistantMessage;
+  toolResultImages?: {toolCallId: string; images: StoredToolResultImage[]}[];
+};
+
+// One agent step's model-facing snapshot, keyed by the chatId.sequence of the step's "message"
+// record. The intersection preserves the original on-disk shape while letting new records carry
+// tool-result images beside the assistant message.
+type ChatModelDataRecord = StoredAgentStepModelData & {
   chatId: number;
   sequence: number;
-  message: StoredAssistantMessage;
 };
 
 // A call made on a callable agent (the `self` object or a spawnCallable() stub) that has not yet

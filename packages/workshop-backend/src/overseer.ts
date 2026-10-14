@@ -19,7 +19,7 @@ import {
   type ChatChangeBoundaryRecord, type ChatChangeRecord, type CompactionCheckpoint,
   type ExternalChatRecord, type ExternalMessageRecord, type GadgetRecord, type GatekeeperCaller,
   type GatekeeperClass, type GatekeeperRecord, type ObserverRecord, type OverseerStorage,
-  type StoredAssistantMessage, type StoredChatMessage, type StoredChatMetadata,
+  type StoredAgentStepModelData, type StoredChatMessage, type StoredChatMetadata,
   type WorkpieceRecord, type WorktreeRecord,
 } from "./storage-schema/overseer-storage";
 import type { UserAiModelRecord, WorkspaceOutputEntry } from "./storage-schema/user-storage";
@@ -44,7 +44,12 @@ import {
   getAiGatewayLogCost,
   type AiGatewayLogRoute,
 } from "./ai-gateway";
-import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
+import {
+  AgentGadgetInfo, AgentHooks, formatMissingBlueprintBindings, GIT_BINDING_NAME,
+  MAX_CODE_MODE_IMAGE_BYTES_PER_STEP, MAX_CODE_MODE_IMAGES_PER_STEP, runAgent, SeedBindingInfo,
+  summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory,
+  type WorktreeTurnAccess,
+} from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
 import { scanWorkpieceForGrep, type GrepScan } from "./grep";
@@ -103,7 +108,7 @@ import agent from "agent.js";
 
 export default class extends WorkerEntrypoint {
   verify() {}
-  async run(self, restoreForger) {
+  async run(self, restoreForger, output) {
     let env = this.env;
     if (restoreForger) {
       // Graft the well-known \`restore\` symbol onto each service-binding stub in env, so the
@@ -122,7 +127,7 @@ export default class extends WorkerEntrypoint {
         }
       }
     }
-    let result = await agent(self, env, this.ctx);
+    let result = await agent(self, env, this.ctx, output);
     if (result !== undefined) console.log("Return value:", result);
   }
 }
@@ -195,7 +200,8 @@ let RESTORE_FORGER_WORKER: WorkerLoaderWorkerCode = {
 
 interface CodeModeEntrypoint extends WorkerEntrypoint {
   verify(): void;
-  run(self?: unknown, restoreForger?: NativeRpcStub<RestoreForgerImpl>): Promise<void>;
+  run(self?: unknown, restoreForger?: NativeRpcStub<RestoreForgerImpl>,
+      output?: NativeRpcStub<CodeModeOutputImpl>): Promise<void>;
 }
 
 interface RestoreForgerEntrypoint extends WorkerEntrypoint {
@@ -226,6 +232,128 @@ class RestoreForgerImpl extends NativeRpcTarget {
     return this.#impl.forgeRestoreStubForBinding(
         this.#chatId, this.#bindings, bindingName, params);
   }
+}
+
+/** One image emitted explicitly by executed code for the current model turn. */
+export type CodeModeImage = {
+  data: Uint8Array;
+  mimeType: "image/png" | "image/jpeg" | "image/webp";
+};
+
+// The smallest absolute per-axis limit among the model providers that accept these image parts.
+const MAX_CODE_MODE_IMAGE_DIMENSION = 8_000;
+
+type ImageDimensions = {width: number; height: number};
+
+function readBigEndian16(data: Uint8Array, offset: number): number {
+  return data[offset] << 8 | data[offset + 1];
+}
+
+function readBigEndian32(data: Uint8Array, offset: number): number {
+  return (data[offset] * 0x1000000 + (data[offset + 1] << 16) +
+    (data[offset + 2] << 8) + data[offset + 3]) >>> 0;
+}
+
+function imageDimensions(
+    data: Uint8Array, mimeType: CodeModeImage["mimeType"]): ImageDimensions | undefined {
+  if (mimeType === "image/png") {
+    if (data.length < 24 || data[0] !== 0x89 || data[1] !== 0x50 || data[2] !== 0x4e ||
+        data[3] !== 0x47 || data[4] !== 0x0d || data[5] !== 0x0a || data[6] !== 0x1a ||
+        data[7] !== 0x0a || readBigEndian32(data, 8) !== 13 || data[12] !== 0x49 ||
+        data[13] !== 0x48 || data[14] !== 0x44 || data[15] !== 0x52) return;
+    let width = readBigEndian32(data, 16);
+    let height = readBigEndian32(data, 20);
+    return width > 0 && height > 0 ? {width, height} : undefined;
+  }
+
+  if (mimeType === "image/jpeg") {
+    if (data.length < 4 || data[0] !== 0xff || data[1] !== 0xd8) return;
+    let frameMarkers = new Set([
+      0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf,
+    ]);
+    let offset = 2;
+    while (offset < data.length) {
+      if (data[offset++] !== 0xff) return;
+      while (data[offset] === 0xff) offset++;
+      let marker = data[offset++];
+      if (marker === 0xd9 || marker === 0xda || marker === undefined) return;
+      if (marker === 0x01 || marker >= 0xd0 && marker <= 0xd7) continue;
+      if (offset + 1 >= data.length) return;
+      let length = readBigEndian16(data, offset);
+      if (length < 2 || offset + length > data.length) return;
+      if (frameMarkers.has(marker)) {
+        if (length < 8) return;
+        let height = readBigEndian16(data, offset + 3);
+        let width = readBigEndian16(data, offset + 5);
+        return width > 0 && height > 0 ? {width, height} : undefined;
+      }
+      offset += length;
+    }
+    return;
+  }
+
+  if (data.length < 25 || data[0] !== 0x52 || data[1] !== 0x49 || data[2] !== 0x46 ||
+      data[3] !== 0x46 || data[8] !== 0x57 || data[9] !== 0x45 || data[10] !== 0x42 ||
+      data[11] !== 0x50) return;
+  let chunk = String.fromCharCode(data[12], data[13], data[14], data[15]);
+  if (chunk === "VP8X" && data.length >= 30) {
+    let width = 1 + data[24] + (data[25] << 8) + (data[26] << 16);
+    let height = 1 + data[27] + (data[28] << 8) + (data[29] << 16);
+    return {width, height};
+  }
+  if (chunk === "VP8 " && data.length >= 30 && data[23] === 0x9d && data[24] === 0x01 &&
+      data[25] === 0x2a) {
+    let width = (data[26] | data[27] << 8) & 0x3fff;
+    let height = (data[28] | data[29] << 8) & 0x3fff;
+    return width > 0 && height > 0 ? {width, height} : undefined;
+  }
+  if (chunk === "VP8L" && data[20] === 0x2f) {
+    return {
+      width: 1 + data[21] + ((data[22] & 0x3f) << 8),
+      height: 1 + (data[22] >> 6) + (data[23] << 2) + ((data[24] & 0x0f) << 10),
+    };
+  }
+}
+
+/** Host-owned sink passed to executeCode; it can emit pixels but conveys no new authority. */
+export class CodeModeOutputImpl extends NativeRpcTarget {
+  readonly #images: CodeModeImage[] = [];
+  #bytes = 0;
+
+  image(data: Uint8Array, mimeType: string): void {
+    if (this.#images.length >= MAX_CODE_MODE_IMAGES_PER_STEP) {
+      throw new Error(
+          `executeCode can emit at most ${MAX_CODE_MODE_IMAGES_PER_STEP} images per agent step.`);
+    }
+    if (mimeType !== "image/png" && mimeType !== "image/jpeg" && mimeType !== "image/webp") {
+      throw new Error("executeCode emitted an unsupported image type.");
+    }
+    if (!(data instanceof Uint8Array)) {
+      throw new Error("executeCode image data must be a Uint8Array.");
+    }
+    if (data.byteLength <= 0 || data.byteLength > MAX_CODE_MODE_IMAGE_BYTES_PER_STEP ||
+        this.#bytes + data.byteLength > MAX_CODE_MODE_IMAGE_BYTES_PER_STEP) {
+      throw new Error("executeCode image output exceeds 6 MiB per agent step.");
+    }
+    let dimensions = imageDimensions(data, mimeType);
+    if (!dimensions) throw new Error("executeCode image bytes do not match their MIME type.");
+    if (dimensions.width > MAX_CODE_MODE_IMAGE_DIMENSION ||
+        dimensions.height > MAX_CODE_MODE_IMAGE_DIMENSION) {
+      throw new Error(
+          `executeCode image dimensions ${dimensions.width} x ${dimensions.height} exceed ` +
+          `${MAX_CODE_MODE_IMAGE_DIMENSION}px per axis.`);
+    }
+    this.#bytes += data.byteLength;
+    this.#images.push({data: data.slice(), mimeType});
+  }
+
+  /**
+   * Return the collected images to the host. Native Workers RPC exposes prototype methods, so
+   * keeping this as an instance function makes the sink write-only to remote holders.
+   */
+  readonly takeImages = (): CodeModeImage[] => {
+    return [...this.#images];
+  };
 }
 
 // =======================================================================================
@@ -8126,7 +8254,7 @@ class OverseerImpl implements AgentHooks {
       // (atomic under the output gate), so the two can never disagree. Destructured off `msg`
       // above so it can't leak into the client-visible record.
       if (modelData) {
-        this.storage.chatModelData.put({chatId, sequence, message: modelData});
+        this.storage.chatModelData.put({chatId, sequence, ...modelData});
       }
     }
 
@@ -8152,8 +8280,9 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
-  getChatModelData(chatId: number, sequence: number): StoredAssistantMessage | undefined {
-    return this.storage.chatModelData.get(chatKey(chatId, sequence))?.message;
+  getChatModelData(chatId: number, sequence: number): StoredAgentStepModelData | undefined {
+    let record = this.storage.chatModelData.get(chatKey(chatId, sequence));
+    return record && {message: record.message, toolResultImages: record.toolResultImages};
   }
 
   // Adds an inference cost (in dollars) to a chat's running total and the workspace-wide total.
@@ -8218,7 +8347,7 @@ class OverseerImpl implements AgentHooks {
                         bindings: Record<string, ChatBindingEntry>,
                         onOutputText?: (delta: string) => void,
                         worktreeTurn?: WorktreeTurnAccess)
-      : Promise<string> {
+      : Promise<{output: string, images: CodeModeImage[]}> {
     let bytes = new Uint8Array(16);
     crypto.getRandomValues(bytes);
     let executionId: string = bytes.toBase64();
@@ -8281,10 +8410,12 @@ class OverseerImpl implements AgentHooks {
       }});
 
       let error: string | undefined;
+      const output = new CodeModeOutputImpl();
       try {
         // The forger is a transient stub argument, so the capability to forge persistent
         // gadget-restore stubs lives exactly as long as this run() call.
-        await entrypoint.run(selfStub, new RestoreForgerImpl(this, chatId, bindings));
+        await entrypoint.run(
+            selfStub, new RestoreForgerImpl(this, chatId, bindings), output);
       } catch (err) {
         if (err instanceof Error && err.stack) {
           error = err.stack;
@@ -8315,7 +8446,7 @@ class OverseerImpl implements AgentHooks {
         log = "(function succeeded with no output)";
       }
 
-      return log;
+      return {output: log, images: output.takeImages()};
     } finally {
       // Guarded by executionId so this cleanup can never clobber a newer registration.
       if (this.#activeWorktreeTurns.get(chatId)?.executionId === executionId) {
