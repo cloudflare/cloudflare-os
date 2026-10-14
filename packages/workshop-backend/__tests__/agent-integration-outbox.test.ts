@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { evictDurableObject, runInDurableObject } from "cloudflare:test";
+import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import type { OverseerDurableObject } from "../src/overseer";
 import type { IntegrationTestParticipant, IntegrationTestActionGatekeeper } from "./test-worker";
