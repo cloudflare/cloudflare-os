@@ -55,6 +55,7 @@ export const Autocomplete = ({
   const loadOptionsRef = useRef(loadOptions);
   loadOptionsRef.current = loadOptions;
   const load = async (text: string) => {
+    clearTimeout(timerRef.current);
     const request = ++requestRef.current;
     setSuggestions({ status: "loading" });
     try {
@@ -123,14 +124,13 @@ export const Autocomplete = ({
         isItemEqualToValue={sameOption}
         onOpenChange={next => {
           setOpen(next);
-          if (next) {
-            clearTimeout(timerRef.current);
-            // From the store, not this render: typing that opens the popup has already stored its text.
-            void load(store.getState().queries[queryName] ?? "");
-          }
+          // From the store, not this render: typing that opens the popup has already stored its text.
+          if (next) void load(store.getState().queries[queryName] ?? "");
         }}
         onInputValueChange={(text, details) => {
           store.setQuery(queryName, text);
+          // Base UI's clear button leaves the popup open, listing what answered the cleared text.
+          if (details.reason === "clear-press" && open) void load("");
           if (details.reason !== "input-change") return;
           // Typing over a choice abandons it.
           if (value) onChange(null);

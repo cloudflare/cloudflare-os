@@ -68,7 +68,10 @@ export const CheckboxList = ({
   const store = useConfiguratorStore();
   const fieldLabel = useFieldLabel();
   const [load, setLoad] = useState(() => cachedLoad(store, name));
-  const [filter, setFilter] = useState("");
+  // Belongs to the list it was typed into: a list shown under a new name starts unfiltered.
+  const [typed, setTyped] = useState({ name, text: "" });
+  const filter = typed.name === name ? typed.text : "";
+  const setFilter = (text: string) => setTyped({ name, text });
   // Read from the effect so that an inline `loadOptions`, new on every render, does not reload.
   const loadOptionsRef = useRef(loadOptions);
   loadOptionsRef.current = loadOptions;
