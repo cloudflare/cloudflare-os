@@ -68,12 +68,9 @@ describe("Google resource configurators", () => {
     await expect(new DriveFolderConfiguratorUI(async () => token("access-token"))
       .listDriveFolders("Team"))
       .resolves.toEqual([
-        { value: "mine", title: "Team plans", subtitle: "My Drive", meta: "mine" },
-        { value: "shared-with-me", title: "Team budget", subtitle: "Ada", meta: "…-with-me" },
-        {
-          value: "in-drive", title: "Team drive folder", subtitle: "In a shared drive",
-          meta: "in-drive",
-        },
+        { value: "mine", title: "Team plans", subtitle: "My Drive" },
+        { value: "shared-with-me", title: "Team budget", subtitle: "Ada" },
+        { value: "in-drive", title: "Team drive folder", subtitle: "In a shared drive" },
       ]);
     expect(calls).toHaveLength(1);
     expect(calls[0].searchParams.get("corpora")).toBe("allDrives");
@@ -84,7 +81,8 @@ describe("Google resource configurators", () => {
   });
 
   // Duplicate folder names across shared drives are ordinary, and every other column matches, so
-  // without a differentiator the user cannot see which capability they are about to grant.
+  // without a differentiator the user cannot see which capability they are about to grant. A unique
+  // name needs none.
   it("tells same-named folders apart", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({
       files: [
@@ -96,6 +94,10 @@ describe("Google resource configurators", () => {
           id: "1AbCdEfGhIjKlMnOpQrStUv_marketing", name: "Engineering", driveId: "drive-2",
           capabilities: { canListChildren: true },
         },
+        {
+          id: "1AbCdEfGhIjKlMnOpQrStUv_roadmap", name: "Engineering roadmap", driveId: "drive-1",
+          capabilities: { canListChildren: true },
+        },
       ],
     })));
 
@@ -105,8 +107,9 @@ describe("Google resource configurators", () => {
     expect(options.map(option => [option.title, option.subtitle])).toEqual([
       ["Engineering", "In a shared drive"],
       ["Engineering", "In a shared drive"],
+      ["Engineering roadmap", "In a shared drive"],
     ]);
-    expect(options.map(option => option.meta)).toEqual(["…platform", "…arketing"]);
+    expect(options.map(option => option.meta)).toEqual(["…platform", "…arketing", undefined]);
   });
 
   it("offers every calendar the account can write, including limited writers", async () => {
