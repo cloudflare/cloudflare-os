@@ -104,14 +104,18 @@ Keep the iframe-facing capability narrow, only what's necessary to provide desir
 
 #### Optional helper: `@gadgets/configurator-ui`
 
-For simple configuration UIs, consider using `@gadgets/configurator-ui`. It provides the basic form components that look consistent to the Gadget Workshop and a build script that turns `src/configurator/*-ui.tsx` into `iframeHtml`. Gatekeepers with more specialized UI needs can produce their own `iframeHtml`.
+For configuration UIs, use `@gadgets/configurator-ui`. It provides form components built on Kumo (rendered with Preact standing in for React inside the frame) that look and behave like the rest of the Workshop, and a build that turns `src/configurator/*-ui.tsx` into `iframeHtml`. Gatekeepers with needs the components cannot meet can produce their own `iframeHtml`.
+
+Components: `Section`, `Field`, `TextInput`, `RadioCards`, `CheckboxList` (multi-select; refuses more than 200 options rather than truncating), `Autocomplete` (search-as-you-type, one result), and `HierarchyPicker` (browse a hierarchy — the root, a container, or a leaf — with breadcrumbs, optional search, paging and `loadItem` for pre-filled values; nodes name icons the configurator supplies in `icons`). The runtime strips control and bidi-formatting characters from titles, subtitles and meta it shows, since those come from third parties.
 
 If you use this:
 
 - UI modules live in `src/configurator/*-ui.tsx`.
 - `resourceUrl()` returns the selected resource URL.
 - `src/configurator/*-types.d.ts` describes the iframe-facing `ui` API.
-- `scripts/build-gatekeeper-configurator.ts` generates `src/generated/*.txt`.
+- Each module is compiled on its own: it may import only `@gadgets/configurator-ui` and types. URL grammar it shares with the server is copied, and a test keeps the copies in step.
+- The frame's content security policy allows exactly the scripts the build wrote (by hash) and no network access; anything the UI needs goes through `ui`.
+- `scripts/build-gatekeeper-configurator.ts` generates `src/generated/*.txt`, using the runtime and build in `packages/configurator-ui` (`src/runtime/`, `build/`).
 - Nothing invokes `build-gatekeeper-configurator.ts` by hand. `vite.config.ts` re-exports the
   shared `build` and `build:configurator` Vite+ tasks from
   `scripts/gatekeeper-configurator-vite-config.ts`; `build` is just `tsc` and depends on
@@ -135,7 +139,7 @@ When something already knows the exact resource — most importantly an AI agent
   },
   ```
 
-  The runtime seeds these values before first render and reflects them in `Autocomplete`/`TextInput`/`RadioCards` inputs. Make sure your `resourceUrl(values)` and `initialValuesFromResourceUrl(url)` are inverses so a prefilled form round-trips to the same URL. **Every gatekeeper with selectable resources should support this** so agents can fully pre-configure a connection.
+  The runtime seeds these values before first render and reflects them in `Autocomplete`/`TextInput`/`RadioCards`/`HierarchyPicker` inputs. Make sure your `resourceUrl(values)` and `initialValuesFromResourceUrl(url)` are inverses so a prefilled form round-trips to the same URL. **Every gatekeeper with selectable resources should support this** so agents can fully pre-configure a connection.
 
 ### Step 7: STOP — Ask operator whether to proceed to phase 2
 

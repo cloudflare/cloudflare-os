@@ -6,6 +6,7 @@ dist/
 # Generated gatekeeper UI bundles, rebuilt as a prerequisite of build/deploy
 packages/gatekeeper-*/src/generated/*-configurator-ui.txt
 packages/gatekeeper-*/src/generated/*-configurator-ui.js*
+packages/gatekeeper-*/src/generated/configurator-runtime.js*
 packages/gatekeeper-*/src/generated/app.txt
 # Bundled blueprints (regenerated at build time from BUNDLED_BLUEPRINTS_DIR).
 packages/workshop-backend/src/generated/bundled-blueprints.ts
