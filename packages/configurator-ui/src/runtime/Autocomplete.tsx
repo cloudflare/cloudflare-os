@@ -1,5 +1,5 @@
 import { Combobox } from "@cloudflare/kumo/components/combobox";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from "react";
 import type { AutocompleteProps, ConfiguratorUIOption } from "../index.ts";
 import { failureMessage, sanitizeOptions } from "./options.ts";
 import { reportFrontendIssue } from "./reporting.ts";
@@ -18,6 +18,13 @@ const POPUP_MARGIN = 12;
 const POPUP_HEIGHT_VARIABLE = "--configurator-popup-max-height";
 
 const sameOption = (a: ConfiguratorUIOption, b: ConfiguratorUIOption) => a.value === b.value;
+
+/** On hover, a row cut short by the popup's width offers its whole text as a tooltip. */
+const showWholeIfClipped = (option: ConfiguratorUIOption) => (event: PointerEvent<HTMLElement>) => {
+  const row = event.currentTarget;
+  const clipped = Array.from(row.children).some(part => part.scrollWidth > part.clientWidth);
+  row.title = clipped ? [option.title, option.subtitle, option.meta].filter(Boolean).join("\n") : "";
+};
 
 /**
  * Searches the gatekeeper as the user types and selects one result. The input shows the typed query
@@ -144,15 +151,16 @@ export const Autocomplete = ({
         <Combobox.TriggerInput placeholder={placeholder} autoComplete="off" />
         <Combobox.Content
           collisionAvoidance={{ side: "none" }}
-          className="max-h-(--configurator-popup-max-height)"
+          className="w-(--anchor-width) max-h-(--configurator-popup-max-height)"
         >
           {status ? (
             <div role="status" className="px-3.5 py-1.5 text-sm text-kumo-subtle">{status}</div>
           ) : null}
           <Combobox.List>
             {(option: ConfiguratorUIOption) => (
-              <Combobox.Item key={option.value} value={option}>
-                <span className="flex min-w-0 items-baseline gap-2">
+              // Kumo's `1fr` column grows to its longest row; `minmax(0,1fr)` lets rows truncate.
+              <Combobox.Item key={option.value} value={option} className="grid-cols-[minmax(0,1fr)_16px]">
+                <span className="flex min-w-0 items-baseline gap-2" onPointerEnter={showWholeIfClipped(option)}>
                   <span className="truncate">{option.title}</span>
                   {option.subtitle ? (
                     <span className="min-w-0 flex-1 truncate text-sm text-kumo-subtle">

@@ -12,6 +12,8 @@ import { transpileConfiguratorModule } from "./module.ts";
 import { buildConfiguratorRuntime } from "./runtime.ts";
 
 const sourceBase = "app:///gatekeeper/test/configurator";
+const LONG_FOLDER = "Foo Bar Baz Qux - The Very Long Quux Corge Grault Garply Waldo Fred Plugh Xyzzy Thud, " +
+  "Wibble Wobble Wubble Flob";
 
 const FOLDER_PICKER = `
 import { Autocomplete, Field, Section, h } from "@gadgets/configurator-ui";
@@ -50,7 +52,7 @@ type HostGlobals = {
 /** The Workshop's side, reduced to what the frame sees: `ResourceConfiguratorHost` and a gatekeeper. */
 const HOST_SCRIPT = `
 import { RpcTarget, newMessagePortRpcSession } from "capnweb";
-const folders = ["Projects", "Proposals", "Personal"];
+const folders = ["Projects", "Proposals", "Personal", ${JSON.stringify(LONG_FOLDER)}];
 const events = globalThis.events = [];
 class Gatekeeper extends RpcTarget {
   async searchFolders(query) {
@@ -165,6 +167,27 @@ describe("generated configurator frame", () => {
       expect(sizes.some(([, height, layoutHeight]) => height > layoutHeight + 40)).toBe(true);
       // A script the policy refused, or a missing global, would show here.
       expect(consoleErrors).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
+  // Only the generated frame has the runtime's styles, so only here can a row overflow the popup.
+  it("cuts a long option short to the popup's width, and offers it whole on hover", async () => {
+    const { page, frame } = await host(await frameHtml(FOLDER_PICKER, false));
+    try {
+      await frame().getByRole("combobox", { name: "Folder" }).click();
+      const long = frame().getByRole("option", { name: LONG_FOLDER });
+      await long.waitFor();
+      expect(await frame().getByRole("listbox").evaluate(list => list.scrollWidth - list.clientWidth)).toBe(0);
+
+      const tooltip = (option: typeof long) =>
+        option.evaluate(node => node.querySelector<HTMLElement>("[title]")?.title ?? "");
+      await long.hover();
+      expect(await tooltip(long)).toBe(LONG_FOLDER);
+      const short = frame().getByRole("option", { name: "Projects" });
+      await short.hover();
+      expect(await tooltip(short)).toBe("");
     } finally {
       await page.close();
     }
