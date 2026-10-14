@@ -113,14 +113,26 @@ function optionMatches(parts: (string | undefined)[], query: string): boolean {
 }
 
 /**
- * Adds the tail of a Drive ID to each result whose name another result shares, which is enough to
+ * When two names would look the same in the picker. First the name as the configurator runtime
+ * shows it (`packages/configurator-ui/src/runtime/options.ts`: controls and bidi formatting
+ * stripped, then clipped to 240), so any two the runtime shows identically match; then folded
+ * further, past what the runtime strips, because a false match costs only an ID tail.
+ */
+function sameNameKey(title: string): string {
+  let shown = title.replace(/[\p{Cc}\p{Bidi_Control}]/gu, "").slice(0, 240);
+  return shown.normalize("NFKC").replace(/[\p{C}\p{Z}]/gu, "").toLowerCase();
+}
+
+/**
+ * Adds the tail of a Drive ID to each result whose name looks like another's, which is enough to
  * tell them apart. Duplicate names are ordinary, and the picker's other columns can match too, so
- * without it the user cannot see which capability they are granting; a unique name needs no ID.
+ * without it the user cannot see which capability they are granting; a distinct name needs no ID.
  */
 function tellApartSameNamed(options: ConfiguratorOption[]): ConfiguratorOption[] {
+  let keys = options.map(option => sameNameKey(option.title));
   let counts = new Map<string, number>();
-  for (let { title } of options) counts.set(title, (counts.get(title) ?? 0) + 1);
-  return options.map(option => counts.get(option.title)! > 1
+  for (let key of keys) counts.set(key, (counts.get(key) ?? 0) + 1);
+  return options.map((option, index) => counts.get(keys[index])! > 1
     ? { ...option, meta: option.value.length > 8 ? `…${option.value.slice(-8)}` : option.value }
     : option);
 }
