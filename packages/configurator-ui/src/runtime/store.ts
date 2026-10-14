@@ -14,7 +14,7 @@ export type ConfiguratorState = Readonly<{
   /** Enabled CheckboxLists whose options failed to load; any one blocks collection. */
   failedLists: ReadonlySet<string>;
   viewport: ParentViewport;
-  /** Bumped when the host window resizes, which closes any open popup. */
+  /** Bumped when the host window resizes or focus leaves the frame, closing any open popup. */
   popupCloseRequests: number;
 }>;
 

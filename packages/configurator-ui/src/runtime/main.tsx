@@ -63,6 +63,9 @@ const start = async () => {
   const session = createSession({ spec, ui, store: createConfiguratorStore(values, queries) },
     ready => host.setSelectionReady(ready));
   ConfiguratorFrame.attach(frame, session);
+  // Base UI dismisses a popup when focus moves elsewhere in this document; moving to the host is
+  // not seen as such, so the popup would otherwise stay open over the host's controls.
+  window.addEventListener("blur", () => session.store.requestPopupClose());
   root.render(<ConfiguratorRoot session={session} />);
 };
 

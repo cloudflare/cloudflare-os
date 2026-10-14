@@ -95,6 +95,7 @@ beforeAll(async () => {
   });
   hostPage = `<!DOCTYPE html><html><body>
 <iframe id="frame" sandbox="allow-scripts" style="width:600px;height:80px;border:0"></iframe>
+<button id="host-control">Add connection</button>
 <script type="module">${bundled.outputFiles[0]!.text}</script>
 </body></html>`;
 });
@@ -188,6 +189,23 @@ describe("generated configurator frame", () => {
       const short = frame().getByRole("option", { name: "Projects" });
       await short.hover();
       expect(await tooltip(short)).toBe("");
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
+  // Base UI sees focus move only within the frame's document, which leaving for the host is not.
+  it("closes its popup when focus leaves the frame for the host", async () => {
+    const { page, frame } = await host(await frameHtml(FOLDER_PICKER, false));
+    try {
+      const option = frame().getByRole("option", { name: "Projects" });
+      for (const leave of [() => page.keyboard.press("Tab"), () => page.click("#host-control")]) {
+        await frame().getByRole("combobox", { name: "Folder" }).click();
+        await option.waitFor();
+        await leave();
+        expect(await page.locator("#host-control").evaluate(node => node.matches(":focus"))).toBe(true);
+        await option.waitFor({ state: "hidden" });
+      }
     } finally {
       await page.close();
     }

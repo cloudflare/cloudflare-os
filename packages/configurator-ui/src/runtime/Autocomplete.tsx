@@ -81,7 +81,7 @@ export const Autocomplete = ({
     requestRef.current++;
   }, []);
 
-  // The host resized its window: the popup's position is stale, so close it.
+  // The host resized its window, so the popup's position is stale, or focus left for the host.
   const seenCloseRequests = useRef(closeRequests);
   useEffect(() => {
     if (closeRequests === seenCloseRequests.current) return;
