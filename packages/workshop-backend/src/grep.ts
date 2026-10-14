@@ -125,7 +125,9 @@ export async function scanWorkpieceForGrep(
   for (let candidate of [...candidates.values()]
       .toSorted((a, b) => a.path < b.path ? -1 : 1)) {
     if (!("oid" in candidate)) {
-      files.push({ path: candidate.path, text: overlay.get(candidate.path)! });
+      const text = overlay.get(candidate.path)!;
+      if (typeof text === "string") files.push({ path: candidate.path, text });
+      else errorByFile.set(candidate.path, "Binary content requires byte operations.");
       continue;
     }
     if (skipped.has(candidate.oid)) continue;

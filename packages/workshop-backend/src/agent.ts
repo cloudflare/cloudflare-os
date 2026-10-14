@@ -1,7 +1,9 @@
-import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
+import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, validateBindingName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replaceSpanChange, validateCodeChangeSchema,
-  type CodeContent, type CodeChange, type FileChange } from '@gadgets/workshop-shared/code-change';
+  requireTextContent, type FileContent, type CodeContent, type CodeChange,
+  type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
+import { decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType } from './chat-attachment-validation';
 import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger, obsContext } from "./observability";
 import { createTracer } from "@gadgets/observability/tracing";
@@ -116,7 +118,7 @@ export interface WorktreeTurnAccess {
    * the tree -- worktree content is never materialized whole). Also exactly the overlay an
    * explicit commit()'s tree build applies over the pin base, together with getRemovedPaths().
    */
-  getOverlayFiles(worktreeId: WorkpieceId): ReadonlyMap<string, string>;
+  getOverlayFiles(worktreeId: WorkpieceId): ReadonlyMap<string, FileContent>;
 
   /** Paths whose latest change is a removal: absent from the overlay, but not from the base. */
   getRemovedPaths(worktreeId: WorkpieceId): ReadonlySet<string>;
@@ -1671,7 +1673,7 @@ async function runAgentPass(
       let base = observeHead(id) ?? hooks.getWorktreePinBase(id);
       if (base !== undefined) return await hooks.readFileAtCommitWithOid(base, filename);
     }
-    let text = sessionContent.get(id)?.get(filename) ?? await readWorktreeBase(id, filename);
+    let text = requireTextContent(sessionContent.get(id)?.get(filename)) ?? await readWorktreeBase(id, filename);
     return text === undefined ? undefined : {text};
   };
 
@@ -1760,6 +1762,10 @@ async function runAgentPass(
         }
         let newContent = sessionContent.get(id)?.get(filename);
         if (oldContent === newContent) continue;
+        if ((newContent !== undefined && typeof newContent !== "string") ||
+            (oldContent !== undefined && typeof oldContent !== "string")) {
+          fileDiffParts.push(`${filename}: binary content changed`); continue;
+        }
         let diff = formatUnifiedDiff(
             filename, oldContent ?? "", newContent ?? "", oldContent !== undefined, true);
         if (diff) {
@@ -1918,7 +1924,7 @@ async function runAgentPass(
       let removed = worktreeRemovedPaths.get(workpieceId);
       for (let [filename, stamp] of files) {
         let text = content?.get(filename);
-        if (text !== undefined) {
+        if (typeof text === "string") {
           files.set(filename, await blobOid(text));
         } else if (stamp === undefined || removed?.has(filename)) {
           files.delete(filename);
@@ -2175,22 +2181,23 @@ async function runAgentPass(
               let attachmentParts = await Promise.all(msg.attachments.map(
                   async (attachment): Promise<(TextContent | ImageContent)[]> => {
                 let filename = attachment.name ? ` (${attachment.name})` : "";
+                let workspaceLocation = attachment.workspacePath && agentContext.attachments
+                    ? `; workspace file env.${agentContext.attachments.bindingName}/` +
+                      attachment.workspacePath
+                    : "";
                 let data = await hooks.getChatAttachmentData(chatId, attachment.id);
-                if (attachment.mimeType.startsWith("image/")) {
-                  return [{
+                let text = decodeChatAttachmentText(attachment.mimeType, data);
+                if (isAllowedChatAttachmentImageMimeType(attachment.mimeType)) {
+                  return [{type: "text", text: `\n\n[Attached image${filename}${workspaceLocation}]`}, {
                     type: "image",
                     data: data.toBase64(),
                     mimeType: attachment.mimeType,
                   }];
-                } else if (isTextLikeAttachmentMimeType(attachment.mimeType)) {
-                  let workspaceLocation = attachment.workspacePath && agentContext.attachments
-                      ? `; workspace file env.${agentContext.attachments.bindingName}/` +
-                        attachment.workspacePath
-                      : "";
+                } else if (text !== undefined) {
                   return [{
                     type: "text",
                     text: `\n\n[Attached text file${filename}${workspaceLocation}]\n` +
-                        new TextDecoder().decode(data),
+                        text,
                   }];
                 } else if (attachment.mimeType === PDF_MIME_TYPE &&
                            modelApiSupportsPdfAttachments(handle.model.api)) {
@@ -2199,17 +2206,16 @@ async function runAgentPass(
                   // before the request goes out (see chat-attachment-pdf.ts). The text part
                   // carries the filename, which the disguised part cannot.
                   return [
-                    {type: "text", text: `\n\n[Attached PDF file${filename}]`},
+                    {type: "text", text: `\n\n[Attached PDF file${filename}${workspaceLocation}]`},
                     {type: "image", data: data.toBase64(), mimeType: attachment.mimeType},
                   ];
                 } else {
-                  // Attachment types the current model can't take -- a PDF after the chat moved
-                  // to a Workers AI/Ollama model, or types some providers accepted before the pi
-                  // migration -- degrade to a text marker rather than failing the whole replay.
+                  // Model input support does not restrict workspace files. Never decode binary
+                  // uploads lossily or send unsupported formats to a provider as image parts.
                   return [{
                     type: "text",
-                    text: `\n\n[Attached file${filename} (${attachment.mimeType}) omitted — ` +
-                        `this file type is not supported by the current model]`,
+                    text: `\n\n[Attached file${filename} (${attachment.mimeType})${workspaceLocation}; ` +
+                        `binary contents are not inlined. Use byte-aware tools to inspect the workspace file.]`,
                   }];
                 }
               }));
@@ -2327,7 +2333,7 @@ async function runAgentPass(
                       await ensureReplayContentForWrite(workpieceId, msg.sequence);
                     }
                     let value: string | null =
-                        sessionContent.get(workpieceId)?.get(toolCall.input.filename) ??
+                        requireTextContent(sessionContent.get(workpieceId)?.get(toolCall.input.filename)) ??
                         await faultWorktreeBase(workpieceId, toolCall.input.filename) ?? null;
                     for (let edit of pendingReplayEdits) {
                       if (edit.workpieceId === workpieceId &&
@@ -2927,7 +2933,7 @@ async function runAgentPass(
     getOverlayFiles: id => sessionContent.get(id) ?? new Map(),
     getRemovedPaths: id => worktreeRemovedPaths.get(id) ?? new Set(),
     readFile: async (id, path) =>
-        sessionContent.get(id)?.get(path) ?? await readWorktreeBase(id, path),
+        requireTextContent(sessionContent.get(id)?.get(path)) ?? await readWorktreeBase(id, path),
     appendChange: (id, path, change) => {
       appendAgentEdit(id, {[id]: [[path, change]]});
       // A write leaves the caller knowing the file's exact content, so it counts as a read for
@@ -3433,6 +3439,7 @@ async function runAgentPass(
           if (before === undefined) {
             throw new Error("File does not exist.");
           }
+          if (typeof before !== "string") throw new Error("Binary content requires byte operations.");
           let pos = findEditPos(before, textToReplace);
           if (replacement !== textToReplace) {
             let edit = replaceSpanChange(before.length, pos, textToReplace, replacement);

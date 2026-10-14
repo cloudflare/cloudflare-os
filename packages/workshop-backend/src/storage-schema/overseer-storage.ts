@@ -28,6 +28,28 @@ import {
   type GatekeeperCreationSpec, type PermissionEdge, type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import type { CodeChange } from "@gadgets/workshop-shared/code-change";
+import type { BytesRef } from "@gadgets/workshop-shared/byte-change";
+
+/** Internal chunk root for a finished whole-file payload; never crosses an RPC boundary. */
+export interface ByteObjectRecord {
+  id: string;
+  byteLength: number;
+}
+/** Bounded raw bytes, mutable during staging and immutable after the upload finishes. */
+export interface ByteChunkRecord { id: string; data: Uint8Array; }
+/** Git-cache blob whose immutable contents live under an internal chunk root. */
+export interface GitByteBlobRecord { oid: string; bytes: ByteObjectRecord; }
+/** Explicit scoped authority for an immutable Git blob reference delivered through a worktree read. */
+export interface ByteGrantRecord { id: string; scope: string; bytes: BytesRef; }
+/** Durable staging/finish receipt, scoped to the original writer capability. */
+export interface ByteUploadRecord {
+  id: string;
+  byteLength: number;
+  sha256: string;
+  offset: number;
+  root: ByteObjectRecord;
+  finished?: BytesRef;
+}
 import type { ChatGatewayRpcTarget } from "@gadgets/workshop-shared/external-message-gateway";
 import type {
   ActionDescription, ActionKind, Gatekeeper, GitObjectType, GitOid, HookController,
@@ -587,7 +609,7 @@ export type AiChatAgentContext = {
    */
   alwaysAvailableCapsuleIds?: WorkpieceId[];
 
-  /** Chat-private Git worktree receiving uploaded text attachments, including after seeding. */
+  /** Chat-private Git worktree receiving all uploaded attachments, including after seeding. */
   attachments?: {worktreeId: WorkpieceId, bindingName: string};
 
   /**
@@ -837,12 +859,12 @@ type ChatAttachmentContentRecord = {
   };
 } | {
   fileId: string;
-  /** Retained only for binary attachments and text attachments committed before Git ingress. */
+  /** Retained for inline image previews and legacy attachments committed before Git ingress. */
   data?: Uint8Array;
   state: {
     type: "committed";
     chatId: number;
-    /** Path in the chat's attachments worktree, for text attachments provisioned there. */
+    /** Path in the chat's attachments worktree, independent of the uploaded file's format. */
     workspacePath?: string;
     /** Immutable Git commit holding the upload's original text for replay and download. */
     workspaceCommitId?: string;
@@ -1257,6 +1279,11 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       gitObjects: collection<GitObjectRecord>()({
         primaryKey: "oid",
       }),
+      byteObjects: collection<ByteObjectRecord>()({primaryKey: "id"}),
+      byteChunks: collection<ByteChunkRecord>()({primaryKey: "id"}),
+      byteUploads: collection<ByteUploadRecord>()({primaryKey: "id"}),
+      gitByteBlobs: collection<GitByteBlobRecord>()({primaryKey: "oid"}),
+      byteGrants: collection<ByteGrantRecord>()({primaryKey: "id"}),
 
       // Per-oid provenance and push-authorization metadata over `gitObjects`: which gatekeepers'
       // remotes provably hold each object, which claim to (pull routing), and which queued

@@ -23,6 +23,7 @@
 // reports unconsumed input, which DecompressionStream cannot do.
 
 import { constants, deflateSync, inflateSync } from "node:zlib";
+import { createHash } from "node:crypto";
 import { Inflate, deflate } from "pako";
 import type { GitObjectType, GitOid } from "@gadgets/workshop-shared/gatekeeper";
 import type { CommitSignature } from "./worktree-binding";
@@ -438,6 +439,13 @@ export interface PackableObject {
   payload: Uint8Array;
 }
 
+/** A chunk-backed object for bounded-memory pack export; stream must emit exactly byteLength. */
+export interface StreamPackableObject {
+  type: GitObjectType;
+  byteLength: number;
+  stream: ReadableStream<Uint8Array>;
+}
+
 const PACK_TYPE_CODES: Partial<Record<GitObjectType, number>> =
     { commit: 1, tree: 2, blob: 3, tag: 4 };
 const PACK_CODE_TYPES: Record<number, GitObjectType> =
@@ -467,6 +475,52 @@ export async function buildPackBytes(objects: readonly PackableObject[]): Promis
 
   chunks.push(new Uint8Array(await crypto.subtle.digest("SHA-1", concatBytes(chunks))));
   return chunks;
+}
+
+/** Stream a known object closure with memory bounded by one object, not the whole pack. */
+export function buildPackStream(count: number, objects: AsyncIterable<PackableObject | StreamPackableObject>): ReadableStream<Uint8Array> {
+  async function* chunks() {
+    const hash = createHash("sha1");
+    const header = new Uint8Array(12);
+    header.set(ENCODER.encode("PACK"));
+    new DataView(header.buffer).setUint32(4, 2);
+    new DataView(header.buffer).setUint32(8, count);
+    hash.update(header);
+    yield header;
+    let emitted = 0;
+    for await (const object of objects) {
+      if ("stream" in object) {
+        const entry = packEntryHeader(PACK_TYPE_CODES[object.type]!, object.byteLength);
+        hash.update(entry); yield entry;
+        let length = 0;
+        const input = object.stream.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({transform(chunk, c) {
+          length += chunk.byteLength;
+          if (length > object.byteLength) throw new Error("Git object stream exceeds its declared length.");
+          c.enqueue(chunk);
+        }, flush() { if (length !== object.byteLength) throw new Error("Git object stream is incomplete."); }}));
+        for await (const chunk of input.pipeThrough(new CompressionStream("deflate"))) {
+          hash.update(chunk); yield chunk;
+        }
+        ++emitted; continue;
+      }
+      const entry = packEntryHeader(PACK_TYPE_CODES[object.type]!, object.payload.byteLength);
+      const bytes = deflateSync(object.payload, {level: constants.Z_BEST_SPEED});
+      hash.update(entry); hash.update(bytes);
+      yield entry; yield bytes;
+      ++emitted;
+    }
+    if (emitted !== count) throw new Error("Git pack object count changed.");
+    yield new Uint8Array(hash.digest());
+  }
+  const iterator = chunks();
+  return new ReadableStream({
+    type: "bytes",
+    async pull(controller) {
+      const item = await iterator.next();
+      if (item.done) controller.close(); else controller.enqueue(item.value);
+    },
+    async cancel() { await iterator.return(undefined); },
+  }, {highWaterMark: 0});
 }
 
 // Encodes a pack entry header: 4 bits of size and the 3-bit type code in the first byte, then

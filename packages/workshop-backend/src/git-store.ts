@@ -59,7 +59,10 @@ import {
 import diff3Merge from "diff3";
 import type { Collection } from "@gadgets/typed-storage";
 import type { AiChatAuthorInfo, CommitIdentity, CommitInfo } from "@gadgets/workshop-shared/api";
-import type { GitObjectRecord } from "./storage-schema/overseer-storage";
+import type { GitObjectRecord, GitByteBlobRecord } from "./storage-schema/overseer-storage";
+import type { ByteStore } from "./byte-store";
+import { decodeBlobText, MAX_GIT_OBJECT_SIZE } from "./git-cache";
+import type { FileContent } from "@gadgets/workshop-shared/code-change";
 import {
   encodeGitCommit,
   encodeLooseObject,
@@ -203,7 +206,7 @@ export interface WriteCommitOptions {
 }
 
 // A parsed-but-unwritten tree: file contents at the leaves, subtrees within.
-type TreeNode = Map<string, TreeNode | string>;
+type TreeNode = Map<string, TreeNode | FileContent>;
 
 /**
  * A git object database over a `gitObjects` collection.
@@ -220,7 +223,8 @@ export class GitStore {
   #fs: PromiseFsClient;
   #cache: object = {};
 
-  constructor(objects: Collection<GitObjectRecord, string>) {
+  constructor(objects: Collection<GitObjectRecord, string>,
+    private byteStore?: ByteStore, private byteBlobs?: Collection<GitByteBlobRecord, string>) {
     this.#objects = objects;
     this.#fs = makeGitObjectsFs(objects);
   }
@@ -231,7 +235,7 @@ export class GitStore {
    * oids.
    */
   async writeFilesAsCommit(
-      files: ReadonlyMap<string, string>, options: WriteCommitOptions): Promise<string> {
+      files: ReadonlyMap<string, FileContent>, options: WriteCommitOptions): Promise<string> {
     return await this.writeCommitForTree(
         await this.#writeTreeNode(buildTreeNode(files), ""), options);
   }
@@ -344,7 +348,7 @@ export class GitStore {
    * pruned, as git requires.
    */
   async writeChangedFilesAsCommit(
-      changes: ReadonlyMap<string, string | null>,
+      changes: ReadonlyMap<string, FileContent | null>,
       options: WriteCommitOptions & { treeBase: string }): Promise<string> {
     return await this.writeCommitForTree(
         await this.writeChangedTree(options.treeBase, changes), options);
@@ -359,7 +363,7 @@ export class GitStore {
    * to write any commit at all.
    */
   async writeChangedTree(
-      treeBase: string, changes: ReadonlyMap<string, string | null>): Promise<string> {
+      treeBase: string, changes: ReadonlyMap<string, FileContent | null>): Promise<string> {
     let baseTree = await this.commitTree(treeBase);
     // No changes: the base's tree, by oid. Rebuilding reads each tree it descends into, and this
     // store holds only what has been pulled -- a worktree committed untouched may never have
@@ -442,7 +446,7 @@ export class GitStore {
   async #writeTreeNode(node: TreeNode, prefix: string): Promise<string> {
     let entries: TreeEntry[] = [];
     for (let [name, child] of node) {
-      if (typeof child === "string") {
+      if (!(child instanceof Map)) {
         let oid = await this.#writeFileBlob(prefix + name, child);
         entries.push({ mode: "100644", path: name, oid, type: "blob" });
       } else {
@@ -456,7 +460,13 @@ export class GitStore {
 
   // Writes a file's text as a blob. The size limit is storage's own, on the deflated object; this
   // only names the file in the error, and says what to do about it.
-  async #writeFileBlob(path: string, text: string): Promise<string> {
+  async #writeFileBlob(path: string, text: FileContent): Promise<string> {
+    if (typeof text !== "string") {
+      if (!this.byteStore || !this.byteBlobs) throw new Error("Byte storage is unavailable.");
+      const bytes = this.byteStore.resolve(text);
+      if (!this.byteBlobs.get(bytes.oid)) throw new Error("Git blob is unavailable.");
+      return bytes.oid;
+    }
     try {
       return await writeBlob({ fs: this.#fs, gitdir: GITDIR, blob: new TextEncoder().encode(text) });
     } catch (err) {
@@ -477,9 +487,11 @@ export class GitStore {
       if (entry.type === "tree") {
         await this.#collectTreeFiles(entry.oid, `${path}/`, out);
       } else if (entry.type === "blob" && (entry.mode === "100644" || entry.mode === "100755")) {
-        let { blob } = await readBlob(
-            { fs: this.#fs, gitdir: GITDIR, oid: entry.oid, cache: this.#cache });
-        out.set(path, new TextDecoder().decode(blob));
+        const stored = this.byteBlobs?.get(entry.oid);
+        const blob = stored
+          ? this.byteStore!.readSmall(this.byteStore!.reference(entry.oid), MAX_GIT_OBJECT_SIZE)
+          : (await readBlob({ fs: this.#fs, gitdir: GITDIR, oid: entry.oid, cache: this.#cache })).blob;
+        out.set(path, decodeBlobText(blob, path));
       } else {
         throw new Error(`unsupported tree entry at ${path}: mode ${entry.mode}`);
       }
@@ -489,11 +501,11 @@ export class GitStore {
 
 // A parsed-but-unwritten change set: new file contents (or null = delete) at the leaves,
 // touched subtrees within. The writeChangedFilesAsCommit analog of TreeNode.
-type ChangeNode = Map<string, ChangeNode | string | null>;
+type ChangeNode = Map<string, ChangeNode | FileContent | null>;
 
 // Converts a flat `path -> text | null` change map into nested nodes, with the same path-shape
 // validation as buildTreeNode.
-function buildChangeNode(changes: ReadonlyMap<string, string | null>): ChangeNode {
+function buildChangeNode(changes: ReadonlyMap<string, FileContent | null>): ChangeNode {
   let root: ChangeNode = new Map();
   for (let [path, content] of changes) {
     let segments = path.split("/");
@@ -524,7 +536,7 @@ function buildChangeNode(changes: ReadonlyMap<string, string | null>): ChangeNod
 // Converts a flat `path -> text` map into nested tree nodes, validating path shape as we go:
 // git can't represent empty segments or "."/"..", and a path can't be both a file and a
 // directory.
-function buildTreeNode(files: ReadonlyMap<string, string>): TreeNode {
+function buildTreeNode(files: ReadonlyMap<string, FileContent>): TreeNode {
   let root: TreeNode = new Map();
   for (let [path, content] of files) {
     let segments = path.split("/");
@@ -542,7 +554,7 @@ function buildTreeNode(files: ReadonlyMap<string, string>): TreeNode {
         if (existing === undefined) {
           existing = new Map();
           node.set(segment, existing);
-        } else if (typeof existing === "string") {
+        } else if (!(existing instanceof Map)) {
           throw new Error(`conflicting file paths at: ${path}`);
         }
         node = existing;

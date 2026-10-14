@@ -3977,9 +3977,9 @@ export type ChatAttachmentHandle = {
 /**
  * Attachment metadata returned to clients.
  *
- * For image attachments, `content` carries the full image bytes inline so the client can render
- * them in the chat without an extra round trip. For other attachments, fetch the bytes on demand
- * via `Overseer.getChatAttachmentContent()`.
+ * For supported inline image formats, `content` carries the image bytes so the client can render
+ * them without an extra round trip. For other attachments, fetch the bytes on demand via
+ * `Overseer.getChatAttachmentContent()`.
  */
 export type ChatAttachmentRef = ChatAttachmentHandle & {
   mimeType: string;
@@ -3987,8 +3987,8 @@ export type ChatAttachmentRef = ChatAttachmentHandle & {
   size: number;
 
   /**
-   * Path of this attachment in the chat's attachments worktree, when its contents can participate
-   * in the text/OT workspace. Binary image and PDF attachments remain model inputs only for now.
+   * Path in the chat's attachments worktree, preserving uploaded bytes for every file format.
+   * Absent only on legacy attachments committed before workspace ingress was introduced.
    */
   workspacePath?: string;
 

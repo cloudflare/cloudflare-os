@@ -16,17 +16,21 @@ import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import type { CommitMetadata, CommitSignature, Git, Worktree } from "./worktree-binding";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
-import { applyCodeChange, type FileChange } from "@gadgets/workshop-shared/code-change";
+import { applyCodeChange, requireTextContent, type FileChange, type FileContent } from "@gadgets/workshop-shared/code-change";
 import type { CommitObject } from "isomorphic-git";
 
 import type { WorkspaceGitCache } from "./git-cache";
 import type { GitStore } from "./git-store";
+import type { ByteStore } from "./byte-store";
+import type { ByteValue } from "@gadgets/workshop-shared/byte-change";
 import type { WorktreeTurnAccess } from "./agent";
 import { WorktreeSessionImpl, type WorktreeRecordView, type WorktreeSessionHost }
   from "./worktree-session";
 
 /** What the binding needs from the overseer: the workspace's git plumbing. */
 export interface GitBindingHost {
+  byteStore?: ByteStore;
+  readByteFileAtCommit?(commit: string, path: string, scope?: string): Promise<ByteValue | undefined>;
   gitCache: WorkspaceGitCache;
   gitStore: GitStore;
 }
@@ -45,12 +49,14 @@ const IN_MEMORY_WORKTREE_ID = 0;
  * across an await sees a consistent snapshot.
  */
 class InMemoryWorktree implements WorktreeTurnAccess, WorktreeSessionHost {
+  readonly byteScope = `memory-worktree:${crypto.randomUUID()}`;
   #head: string;
-  #files = new Map<string, string>();  // replaced, never mutated
+  #files = new Map<string, FileContent>();  // replaced, never mutated
   #removed = new Set<string>();  // likewise
 
   constructor(readonly gitCache: WorkspaceGitCache, readonly gitStore: GitStore,
-              private base: string) {
+              private base: string, readonly byteStore?: ByteStore,
+              readonly readByteFileAtCommit?: GitBindingHost["readByteFileAtCommit"]) {
     this.#head = base;
   }
 
@@ -71,7 +77,7 @@ class InMemoryWorktree implements WorktreeTurnAccess, WorktreeSessionHost {
     return undefined;
   }
 
-  getOverlayFiles(): ReadonlyMap<string, string> {
+  getOverlayFiles(): ReadonlyMap<string, FileContent> {
     return this.#files;
   }
 
@@ -81,12 +87,12 @@ class InMemoryWorktree implements WorktreeTurnAccess, WorktreeSessionHost {
 
   async readFile(_worktreeId: unknown, path: string): Promise<string | undefined> {
     let existing = this.#files.get(path);
-    if (existing !== undefined) return existing;
+    if (existing !== undefined) return requireTextContent(existing);
     if (this.#removed.has(path)) return undefined;
     let text = await this.gitCache.readFileAtCommitIfExists(this.base, path);
     // A concurrent call may have written or deleted the file while the read was in flight;
     // its change wins over the base text.
-    if (this.#files.has(path)) return this.#files.get(path);
+    if (this.#files.has(path)) return requireTextContent(this.#files.get(path));
     if (this.#removed.has(path) || text === undefined) return undefined;
     // Fault the base text into the overlay, so a following edit applies against it.
     this.#files = new Map(this.#files).set(path, text);
@@ -124,7 +130,8 @@ export class GitImpl extends RpcTarget implements Git {
 
   async newWorktree(commitId: string): Promise<Worktree> {
     let base = await this.host.gitCache.fetchCommit(commitId);
-    let worktree = new InMemoryWorktree(this.host.gitCache, this.host.gitStore, base);
+    let worktree = new InMemoryWorktree(this.host.gitCache, this.host.gitStore, base,
+      this.host.byteStore, this.host.readByteFileAtCommit?.bind(this.host));
     return new WorktreeSessionImpl(worktree, IN_MEMORY_WORKTREE_ID, worktree, this.author);
   }
 

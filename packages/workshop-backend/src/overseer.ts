@@ -1,9 +1,9 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName, modelKind, isTextLikeAttachmentMimeType } from '@gadgets/workshop-shared/api'
+import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
-  type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
+  requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
@@ -45,6 +45,8 @@ import {
   type AiGatewayLogRoute,
 } from "./ai-gateway";
 import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
+import type { ByteValue } from '@gadgets/workshop-shared/byte-change';
+import { ByteStore } from './byte-store';
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
 import { scanWorkpieceForGrep, type GrepScan } from "./grep";
@@ -81,7 +83,8 @@ import { isLoopLimitError, retryOnDoReset, wrapDoStubForTelemetry } from "./do-r
 import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
 import type { CreationApproval, GadgetExportFormat } from "@gadgets/workshop-shared/api";
 import {
-  assertChatAttachmentSupportedByProvider,
+  assertChatAttachmentSize,
+  decodeChatAttachmentText,
   isAllowedChatAttachmentImageMimeType,
   validateChatAttachmentUpload,
 } from "./chat-attachment-validation";
@@ -386,6 +389,12 @@ const CHAT_ATTACHMENT_EXTENSION_BY_MIME = new Map([
   ["text/xml", ".xml"],
   ["application/yaml", ".yaml"],
   ["text/yaml", ".yaml"],
+  ["text/plain", ".txt"],
+  ["image/jpeg", ".jpg"],
+  ["image/png", ".png"],
+  ["image/webp", ".webp"],
+  ["application/pdf", ".pdf"],
+  ["application/zip", ".zip"],
 ]);
 // Staged attachments (not associated with chat) older than this may be deleted when the gadget next stages an attachment.
 const MAX_STAGED_CHAT_ATTACHMENT_AGE_MS = 24 * 60 * 60 * 1000;
@@ -691,6 +700,7 @@ class OverseerImpl implements AgentHooks {
   // The workspace's git object store, holding all gadgets' committed code (see git-store.ts).
   // One instance per DO so isomorphic-git's parse cache is shared.
   readonly gitStore: GitStore;
+  readonly byteStore: ByteStore;
 
   // The gatekeeper-facing git cache layer over the same store: provenance metadata, the pull
   // driver, and push authorization (see git-cache.ts). Per-gatekeeper GitCache stubs are minted
@@ -1076,10 +1086,12 @@ class OverseerImpl implements AgentHooks {
   constructor(public ctx: DurableObjectState, public env: Cloudflare.Env) {
     this.logger = logger.with({ gadgetId: ctx.id.toString() });
     this.storage = makeOverseerStorage(ctx.storage);
-    this.gitStore = new GitStore(this.storage.gitObjects);
+    this.byteStore = new ByteStore(this.storage.byteObjects, this.storage.byteChunks, this.storage.byteUploads,
+      () => ctx.storage.sync(), this.storage.byteGrants, this.storage.gitByteBlobs);
+    this.gitStore = new GitStore(this.storage.gitObjects, this.byteStore, this.storage.gitByteBlobs);
     this.gitCache = new WorkspaceGitCache(this.storage, {
       pull: (gatekeeperId, oids, hints) => this.#pullGitObjects(gatekeeperId, oids, hints),
-    });
+    }, this.byteStore);
     this.users = this.ctx.exports.UserDurableObject;
     this.ownerId = this.storage.ownerId.get();
 
@@ -1871,6 +1883,22 @@ class OverseerImpl implements AgentHooks {
     return this.gitCache.readFileAtCommitIfExists(commit, path);
   }
 
+  /** Resolve one regular Git blob to durable byte storage, never materializing a repository. */
+  async readByteFileAtCommit(commit: string, path: string, scope = "kernel"): Promise<ByteValue | undefined> {
+    await this.gitCache.assertWorktreePathWritable(commit, path);
+    const entry = await this.gitCache.pathEntryAtCommit(commit, path);
+    if (!entry) return undefined;
+    const stored = this.storage.gitByteBlobs.get(entry.oid);
+    if (stored) {
+      const ref = this.byteStore.reference(entry.oid);
+      await this.byteStore.grant(scope, ref); return {base: ref};
+    }
+    const object = await this.gitCache.ensureObject(entry.oid, {type: "blob", referencedBy: entry.referencedBy});
+    const bytes = await this.byteStore.import(scope, object.payload);
+    if (bytes.oid !== entry.oid) throw new Error("Git blob payload does not match its object ID.");
+    return {base: bytes};
+  }
+
   // AgentHooks implementation: the same read, plus the blob's oid for the read's stamp.
   readFileAtCommitWithOid(commit: string, path: string)
       : Promise<{text: string, oid: string} | undefined> {
@@ -2101,7 +2129,7 @@ class OverseerImpl implements AgentHooks {
       // Commits are immutable, so a prefetched text can never go stale; a row appended during
       // the awaits that needs an unprefetched base is caught in the tail and retried.
       let worktreeBases = this.worktreePinBases(meta);
-      let seeds = new Map<string, string | null>();
+      let seeds = new Map<string, FileContent | null>();
       if (worktreeBases.size > 0) {
         let probe = content;
         for (let row of this.listLiveChatChanges(chatId, codeBase.generation)) {
@@ -2150,7 +2178,7 @@ class OverseerImpl implements AgentHooks {
   // synchronous tail can re-seed without awaiting.
   async #prefetchWorktreeSeeds(content: CodeContent, change: CodeChange,
                                worktreeBases: Map<WorkpieceId, string>,
-                               seeds: Map<string, string | null>): Promise<CodeContent> {
+                               seeds: Map<string, FileContent | null>): Promise<CodeContent> {
     let result = content;
     for (let [key, entries] of Object.entries(change)) {
       let worktreeId = Number(key);
@@ -2179,7 +2207,7 @@ class OverseerImpl implements AgentHooks {
   // retries the whole read).
   #applyPrefetchedWorktreeSeeds(content: CodeContent, change: CodeChange,
                                 worktreeBases: Map<WorkpieceId, string>,
-                                seeds: Map<string, string | null>): CodeContent | null {
+                                seeds: Map<string, FileContent | null>): CodeContent | null {
     let result = content;
     for (let [key, entries] of Object.entries(change)) {
       let worktreeId = Number(key);
@@ -2665,6 +2693,16 @@ class OverseerImpl implements AgentHooks {
   // so a mid-barrier exception, itself a bug, can leak broadcasts for rolled-back rows. The
   // in-memory content/byte caches *are* restored on rollback (dropped, to rebuild from
   // storage), or they would serve content the rows no longer back.
+  // All publication paths validate durable sources before ACK; text-only gadgets cannot
+  // acquire byte state that their runtime cannot compile or display.
+  #validateByteChanges(change: CodeChange): void {
+    for (const [id, entries] of Object.entries(change)) for (const [, file] of entries) {
+      if (!("setBytes" in file)) continue;
+      if (!this.isWorktree(Number(id))) throw new Error("Binary mutations require a worktree.");
+      this.byteStore.require(file.setBytes.base);
+    }
+  }
+
   async commitAgentStep(chatId: number, author: AiChatAuthorInfo,
       msgs: AiChatMessageBodyWithModelData[],
       step: {
@@ -2688,6 +2726,7 @@ class OverseerImpl implements AgentHooks {
         });
         throw error;
       }
+      this.#validateByteChanges(change);
     }
 
     // The worktrees this step pins: every worktree of this chat its rows or commits touch that
@@ -2867,6 +2906,7 @@ class OverseerImpl implements AgentHooks {
       : Promise<{generation: number, revision: number}> {
     this.getChatMetaOrThrow(chatId);  // fail fast
     this.#validateSubmissionShape(submission);
+    this.#validateByteChanges(submission.change);
     let digest = await submissionDigest(submission);
 
     // Dedupe by (user, clientId, seq) before anything that can reject the base: a retry of an
@@ -3308,7 +3348,7 @@ class OverseerImpl implements AgentHooks {
     for (let {record, pin} of stale) {
       let base = await this.gitStore.readCommitFiles(pin.mergedCommit);
       let mainlineFiles = await this.gitStore.readCommitFiles(record.commitId!);
-      let chatFiles = content.get(pin.gadgetId) ?? new Map<string, string>();
+      let chatFiles = requireTextFiles(content.get(pin.gadgetId) ?? new Map());
       let result = threeWayMerge(base, mainlineFiles, chatFiles,
           {base: "merged base", ours: "mainline", theirs: "this chat"});
       merges.push({pin, head: record.commitId!, bindingName: record.bindingName, chatFiles,
@@ -3718,7 +3758,7 @@ class OverseerImpl implements AgentHooks {
         // awaiting cleanup.
         continue;
       }
-      let files = chatContent.get(record.id) ?? new Map<string, string>();
+      let files = requireTextFiles(chatContent.get(record.id) ?? new Map());
       let pin = pins.get(record.id);
       let mergedCommit = pin?.mergedCommit;
       let baseFiles = mergedCommit !== undefined
@@ -3841,7 +3881,7 @@ class OverseerImpl implements AgentHooks {
           // or null for one whose folded outcome is absence (a deletion). Touched-but-unchanged
           // paths fold to identical blobs, so tree equality below still detects "clean".
           let files = chatContent.get(pin.gadgetId);
-          let changes = new Map<string, string | null>();
+          let changes = new Map<string, FileContent | null>();
           for (let path of touched) changes.set(path, files?.get(path) ?? null);
           let flattened: string;
           try {
@@ -4362,8 +4402,7 @@ class OverseerImpl implements AgentHooks {
         // The cache key snapshotted the chat's next sequence, so exclude any batch recorded
         // after it (a fresh load with a fresh key sees those). Live rows are likewise excluded;
         // callers that want them reflected materialize first, exactly as drafts always worked.
-        files = (await this.buildChatContent(chatId!, sequence! - 1)).get(gadgetId)
-            ?? new Map<string, string>();
+        files = requireTextFiles((await this.buildChatContent(chatId!, sequence! - 1)).get(gadgetId) ?? new Map());
       } else {
         let commitId = this.getGadgetHead(gadgetId);
         files = commitId !== undefined
@@ -5167,6 +5206,9 @@ class OverseerImpl implements AgentHooks {
     if (!entry || entry.kind === "dir" || entry.kind === "submodule") {
       throw new Error("Chat attachment content is missing from Git.");
     }
+    const blob = this.storage.gitByteBlobs.get(entry.oid);
+    if (blob) return this.byteStore.readSmall(
+      this.byteStore.reference(entry.oid), MAX_CHAT_ATTACHMENT_TOTAL_BYTES);
     return (await this.gitCache.ensureObject(entry.oid,
       {type: "blob", referencedBy: entry.referencedBy})).payload;
   }
@@ -5196,14 +5238,23 @@ class OverseerImpl implements AgentHooks {
   #attachmentWorkspaceFilename(
       attachment: ChatAttachmentRef, used: Set<string>): string {
     let supplied = attachment.name?.replaceAll("\\", "/").split("/").at(-1);
-    let fallbackExtension = CHAT_ATTACHMENT_EXTENSION_BY_MIME.get(attachment.mimeType) ?? ".txt";
+    let fallbackExtension = CHAT_ATTACHMENT_EXTENSION_BY_MIME.get(attachment.mimeType) ?? ".bin";
     let filename = (supplied || `attachment-${attachment.id.slice(0, 8)}${fallbackExtension}`)
         // eslint-disable-next-line no-control-regex -- Uploaded filenames must exclude ASCII control characters.
         .replace(/[\u0000-\u001f\u007f]/g, "_").trim();
     if (!filename || filename === "." || filename === ".." || filename.toLowerCase() === ".git") {
       filename = `attachment-${attachment.id.slice(0, 8)}${fallbackExtension}`;
     }
-    filename = filename.slice(0, 200);
+    // Git encodes paths as UTF-8. Keep both the recorded path and the Linux filename valid,
+    // leaving room below NAME_MAX for collision suffixes.
+    let prefix = "", bytes = 0;
+    const encoder = new TextEncoder();
+    for (const character of filename.toWellFormed()) {
+      bytes += encoder.encode(character).byteLength;
+      if (bytes > 200) break;
+      prefix += character;
+    }
+    filename = prefix;
 
     let dot = filename.lastIndexOf(".");
     let stem = dot > 0 ? filename.slice(0, dot) : filename;
@@ -5217,7 +5268,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   async #prepareWorkspaceAttachmentFiles(
-      chatId: number, attachments: ChatAttachmentRef[] | undefined): Promise<Map<string, string>> {
+      chatId: number, attachments: ChatAttachmentRef[] | undefined): Promise<Map<string, FileContent>> {
     let used = new Set<string>();
     for (let record of this.storage.chatAttachmentContent.list()) {
       if (record.state.type === "committed" && record.state.chatId === chatId &&
@@ -5227,28 +5278,29 @@ class OverseerImpl implements AgentHooks {
     }
 
     const worktree = this.#attachmentsWorktree(chatId);
-    if (worktree && attachments?.some(attachment => isTextLikeAttachmentMimeType(attachment.mimeType))) {
+    if (worktree && attachments?.length) {
       // Uploads use root filenames. Reserve base and overlay root names (including directories)
       // without loading file contents, so an upload cannot overwrite agent-created work.
       for (const entry of await this.gitCache.listCommitTreePaths(worktree.pinBase)) used.add(entry.path);
       for (const [path] of this.#pendingWorkspaceChanges(chatId)[worktree.id] ?? []) used.add(path.split("/")[0]);
     }
 
-    let files = new Map<string, string>();
+    let files = new Map<string, FileContent>();
     for (let attachment of attachments ?? []) {
-      if (!isTextLikeAttachmentMimeType(attachment.mimeType)) continue;
       let content = this.storage.chatAttachmentContent.get(attachment.id);
-      if (!content || content.state.type !== "staged") {
+      if (!content || content.state.type !== "staged" || content.data === undefined) {
         throw new Error("Chat attachment is no longer available.");
       }
-      // The OT engine is UTF-16 text. Invalid UTF-8 stays an ordinary byte attachment,
-      // never a lossy replacement-character worktree. Keep a UTF-8 BOM as actual content.
-      let text: string;
-      try { text = new TextDecoder("utf-8", {fatal: true, ignoreBOM: true}).decode(content.data); }
-      catch { continue; }
       let path = this.#attachmentWorkspaceFilename(attachment, used);
+      // Keep text OTs where they fit, including a preserved UTF-8 BOM. A supported upload
+      // can exceed the OT record budget; use the same immutable byte ingress as binary files
+      // rather than accepting it on the first message but rejecting it on later messages.
+      const text = decodeChatAttachmentText(attachment.mimeType, content.data);
+      const value: FileContent = text !== undefined && (worktree === undefined ||
+          codeChangeSerializedSize({[worktree.id]: [[path, {set: text}]]}) <= MAX_CODE_CHANGE_SIZE) ? text
+          : {base: await this.byteStore.import(`attachments:${chatId}`, content.data)};
       attachment.workspacePath = path;
-      files.set(path, text);
+      files.set(path, value);
     }
     return files;
   }
@@ -5270,7 +5322,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   async #writeWorkspaceAttachmentCommit(
-      files: ReadonlyMap<string, string>, author: AiChatAuthorInfo): Promise<string | undefined> {
+      files: ReadonlyMap<string, FileContent>, author: AiChatAuthorInfo): Promise<string | undefined> {
     if (files.size === 0) return undefined;
     return await this.gitStore.writeFilesAsCommit(files, {
       parents: [],
@@ -5281,7 +5333,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   async #prepareAttachmentsWorktree(
-      chatId: number, files: ReadonlyMap<string, string>, author: AiChatAuthorInfo)
+      chatId: number, files: ReadonlyMap<string, FileContent>, author: AiChatAuthorInfo)
       : Promise<PreparedAttachmentsWorktree | undefined> {
     if (files.size === 0 || this.#attachmentsWorktree(chatId) !== undefined) return undefined;
     let bindingName = fallbackBindingName(
@@ -5319,7 +5371,7 @@ class OverseerImpl implements AgentHooks {
 
   // Validate the entire batch before any subscriber sees its message or first change row.
   #prepareWorkspaceAttachmentChanges(
-      chatId: number, worktree: WorktreeRecord, files: ReadonlyMap<string, string>)
+      chatId: number, worktree: WorktreeRecord, files: ReadonlyMap<string, FileContent>)
       : {change: CodeChange, content: CodeContent}[] {
     const current = this.storage.gadgets.get(worktree.id);
     if (current?.type !== "worktree" || current.chatId !== chatId || current.pinBase !== worktree.pinBase) {
@@ -5340,7 +5392,7 @@ class OverseerImpl implements AgentHooks {
           throw new Error("Attachment workspace changed while preparing the message; retry.");
         }
       }
-      const change: CodeChange = {[worktree.id]: [[path, {set: text}]]};
+      const change: CodeChange = {[worktree.id]: [[path, typeof text === "string" ? {set: text} : {setBytes: text}]]};
       validateCodeChangeSchema(change);
       validateCodeChangeContent(change, content);
       content = applyCodeChange(content, change);
@@ -5367,7 +5419,6 @@ class OverseerImpl implements AgentHooks {
   // upload records before the message is stored in chat history.
   canonicalizeChatAttachmentRefs(
     attachments?: ChatAttachmentHandle[],
-    provider?: AiModelConfig["provider"],
   ): ChatAttachmentRef[] | undefined {
     if (!attachments || attachments.length === 0) return undefined;
     if (attachments.length > MAX_CHAT_ATTACHMENTS_PER_MESSAGE) {
@@ -5387,7 +5438,7 @@ class OverseerImpl implements AgentHooks {
       }
       let data = content.data;
       if (data === undefined) throw new Error("Staged chat attachment has no content.");
-      assertChatAttachmentSupportedByProvider(provider, content.state.mimeType, data.byteLength);
+      assertChatAttachmentSize(data.byteLength);
       total += data.byteLength;
       result.push({
         id,
@@ -5416,6 +5467,10 @@ class OverseerImpl implements AgentHooks {
         }
         this.storage.chatAttachmentContent.put({
           fileId: id,
+          // Client message hydration is synchronous. Retain bounded image bytes for previews
+          // until that API can stream the immutable Git-backed attachment instead.
+          ...(isAllowedChatAttachmentImageMimeType(attachment.mimeType)
+            ? {data: content.data} : {}),
           state: {
             type: "committed",
             chatId,
@@ -6324,8 +6379,7 @@ class OverseerImpl implements AgentHooks {
     if (typeof initialMessage !== "string" && (capsules?.length || attachments?.length)) {
       throw new Error("Slash commands cannot include resources or attachments.");
     }
-    let canonicalAttachments = this.canonicalizeChatAttachmentRefs(
-        attachments, userMeta.aiModel?.config.provider);
+    let canonicalAttachments = this.canonicalizeChatAttachmentRefs(attachments);
     let prepared = await this.#prepareChatMessage(
         initialMessage, (canonicalAttachments?.length ?? 0) > 0);
 
@@ -6408,8 +6462,7 @@ class OverseerImpl implements AgentHooks {
     if (typeof message !== "string" && (capsules?.length || attachments?.length)) {
       throw new Error("Slash commands cannot include resources or attachments.");
     }
-    let canonicalAttachments = this.canonicalizeChatAttachmentRefs(
-        attachments, userMeta.aiModel?.config.provider);
+    let canonicalAttachments = this.canonicalizeChatAttachmentRefs(attachments);
     this.assertChatNotActive(chatId);
     using _chatMessageReservation = this.reserveChatMessagePreparation(chatId);
     let prepared = await this.#prepareChatMessage(
@@ -11632,18 +11685,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async uploadChatAttachment(
     attachment: ChatAttachmentUpload,
-    modelId: string | null,
+    _modelId: string | null,
   ): Promise<ChatAttachmentHandle> {
-    let provider: AiModelConfig["provider"] | undefined;
-    if (modelId !== null) {
-      provider = (await retryOnDoReset(
-          () => this.#clientUser.getChatContext(modelId), this.impl.logger))
-          .aiModel?.config.provider;
-    }
-    attachment = validateChatAttachmentUpload(
-      attachment,
-      provider,
-    );
+    attachment = validateChatAttachmentUpload(attachment);
 
     this.impl.sweepStagedChatAttachments();
 

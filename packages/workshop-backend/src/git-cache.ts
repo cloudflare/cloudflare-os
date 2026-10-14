@@ -49,9 +49,10 @@ import {
   type TreeNode,
   type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
-import type { GitObjectMetadataRecord, GitObjectRecord } from "./storage-schema/overseer-storage";
+import type { GitObjectMetadataRecord, GitObjectRecord, GitByteBlobRecord } from "./storage-schema/overseer-storage";
+import type { ByteStore } from "./byte-store";
 import {
-  buildPackBytes,
+  buildPackStream,
   decodeLooseObject,
   decodePackStream,
   encodeLooseObject,
@@ -64,6 +65,7 @@ import {
   validateGitOid,
   type GitTreeEntry,
   type PackableObject,
+  type StreamPackableObject,
 } from "./git-codec";
 import { createWorkshopLogger } from "./observability";
 
@@ -109,6 +111,7 @@ export const EAGER_BLOB_LIMIT = 64 * 1024;
 /** The slice of the Overseer's typed storage the git cache operates on. */
 export interface GitCacheStorage {
   gitObjects: Collection<GitObjectRecord, string>;
+  gitByteBlobs?: Collection<GitByteBlobRecord, string>;
   gitObjectMetadata: Collection<GitObjectMetadataRecord, string> & {
     byPendingPushAction: NonUniqueIndex<GitObjectMetadataRecord, number>;
   };
@@ -208,7 +211,7 @@ const TEXT_DECODER_STRICT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: t
  * reads) all funnel through it.
  */
 export class WorkspaceGitCache {
-  constructor(private storage: GitCacheStorage, private puller: GitPullDelegate) {
+  constructor(private storage: GitCacheStorage, private puller: GitPullDelegate, private bytes?: ByteStore) {
     // Subscribing catches every object stored, whoever stores it: a gatekeeper's put, an import,
     // or GitStore writing through isomorphic-git, which knows nothing of this class.
     //
@@ -229,13 +232,26 @@ export class WorkspaceGitCache {
 
   /** Whether the store holds the object locally (no view scoping, no pulls). */
   hasLocalObject(oid: GitOid): boolean {
-    return this.storage.gitObjects.get(oid) !== undefined;
+    return this.storage.gitObjects.get(oid) !== undefined || this.storage.gitByteBlobs?.get(oid) !== undefined;
   }
 
   /** Reads and decodes a locally-stored object, or undefined (no view scoping, no pulls). */
   readLocalObject(oid: GitOid): PackableObject | undefined {
+    const blob = this.storage.gitByteBlobs?.get(oid);
+    if (blob && this.bytes) {
+      if (blob.bytes.byteLength > MAX_GIT_OBJECT_SIZE) throw new GitObjectTooLargeError(oid, blob.bytes.byteLength);
+      return {type: "blob", payload: this.bytes.readSmall(this.bytes.reference(oid), MAX_GIT_OBJECT_SIZE)};
+    }
     let record = this.storage.gitObjects.get(oid);
     return record === undefined ? undefined : decodeLooseObject(record.data);
+  }
+  /** Stream locally authored chunk-backed blobs; ordinary small Git objects retain their codec. */
+  async packObject(oid: string, hint: {type: GitObjectType; referencedBy?: string}, requireLive = () => {}): Promise<StreamPackableObject | PackableObject> {
+    requireLive();
+    const blob = this.storage.gitByteBlobs?.get(oid);
+    if (blob && this.bytes) return {type: "blob", byteLength: blob.bytes.byteLength,
+      stream: this.bytes.read(this.bytes.reference(oid), 0, blob.bytes.byteLength, requireLive)};
+    return this.ensureObject(oid, hint);
   }
 
   /**
@@ -1101,6 +1117,7 @@ export class WorkspaceGitCache {
       }
       meta.pendingPush.push({ gatekeeperId, actionId });
       this.storage.gitObjectMetadata.put(meta);  // also lands in byPendingPushAction
+      if (this.storage.gitByteBlobs?.get(oid)) continue;
       let local = this.readLocalObject(oid);
       if (local !== undefined) stack.push(...this.#referentEntries(oid, local));
     }
@@ -1192,14 +1209,9 @@ export class WorkspaceGitCache {
       // rather than silently not delivering, so this terminates.
     }
 
-    let objects = this.#recordsMarkedFor(actionId).map(mark => this.readLocalObject(mark.oid)!);
-    let chunks = await buildPackBytes(objects);
-    return new ReadableStream<Uint8Array>({
-      start(controller) {
-        for (let chunk of chunks) controller.enqueue(chunk);
-        controller.close();
-      },
-    });
+    const marks = this.#recordsMarkedFor(actionId), cache = this;
+    async function* objects() { for (const mark of marks) yield await cache.packObject(mark.oid, {type: mark.type}); }
+    return buildPackStream(marks.length, objects());
   }
 
   // -------------------------------------------------------------------------------------
@@ -1263,6 +1275,7 @@ export class WorkspaceGitCache {
         this.storage.gitObjectMetadata.put(meta);
       }
       if (wasSource) continue;
+      if (this.storage.gitByteBlobs?.get(oid)) continue;
       let local = this.readLocalObject(oid);
       if (local !== undefined) stack.push(...this.#referentEntries(oid, local));
     }
@@ -1411,9 +1424,8 @@ function tooLargeMessage(path: string): string {
   return `${path} is too large to read (over ${MAX_GIT_OBJECT_SIZE} bytes)`;
 }
 
-// Decodes a blob's payload as strict UTF-8 text, throwing the path-flavored
-// UnreadableContentError for binary content (NUL bytes or invalid UTF-8).
-function decodeBlobText(payload: Uint8Array, path: string): string {
+/** Decode a Git payload as strict text, independently of its loose/chunk-backed storage. */
+export function decodeBlobText(payload: Uint8Array, path: string): string {
   if (payload.includes(0)) throw new UnreadableContentError(`${path} is not a text file`);
   try {
     return TEXT_DECODER_STRICT.decode(payload);

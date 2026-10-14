@@ -48,6 +48,7 @@
 
 import { ChangeSet, Text } from "@codemirror/state";
 import fastDiff from "fast-diff";
+import { validateBytesRef, type ByteValue } from "./byte-change";
 
 // =======================================================================================
 // Wire types
@@ -65,16 +66,32 @@ import fastDiff from "fast-diff";
 export type TextChange = (number | [number, ...string[]])[];
 
 /**
- * One file's part of a `CodeChange`. A file's state is a string or absent, and exactly one of
- * the three variants applies:
+ * One file's part of a `CodeChange`. A file is text, a byte postimage, or absent. Exactly one
+ * variant applies; byte operations never reinterpret text's UTF-16 coordinates:
  * - `{edit}`: transform the existing text (invalid if the file is absent, or if its length
  *   doesn't match the change's before-length);
  * - `{set}`: create the file or wholesale-replace its content -- valid against any state,
  *   including absent;
  * - `{remove}`: delete the file. Valid against any state (deleting an absent file is a no-op),
  *   which keeps `remove` composable and transformable without knowing the base.
+ * - `{setBytes}`: create/replace with an immutable byte postimage, against any state;
  */
-export type FileChange = { edit: TextChange } | { set: string } | { remove: true };
+export type FileChange = { edit: TextChange } | { set: string } | { remove: true }
+  | { setBytes: ByteValue };
+
+/** Text remains UTF-16; opaque byte postimages use immutable payload references. */
+export type FileContent = string | ByteValue;
+
+/** Assert text at text-only tool/runtime boundaries; never reinterpret byte offsets as UTF-16. */
+export function requireTextContent(value: FileContent | undefined): string | undefined {
+  if (value !== undefined && typeof value !== "string") throw new Error("Binary content requires byte operations.");
+  return value;
+}
+
+/** Validate a gadget's text-only file map without silently dropping binary files. */
+export function requireTextFiles(files: ReadonlyMap<string, FileContent>): Map<string, string> {
+  return new Map([...files].map(([path, value]) => [path, requireTextContent(value)!]));
+}
 
 /**
  * One code change: for each touched gadget, a list of `[path, FileChange]` entries. Keys of the
@@ -106,7 +123,7 @@ export type CodeChange = { [gadgetId: number]: [path: string, change: FileChange
  * paths. For a worktree this holds only the paths a chat has touched -- a base tree is never
  * materialized whole (see Overseer.readFilesAtCommit()).
  */
-export type GadgetFiles = Map<string, string>;
+export type GadgetFiles = Map<string, FileContent>;
 
 /**
  * The code content of a chat (or any other collection of gadgets' files), keyed by gadget id.
@@ -167,6 +184,8 @@ export function codeChangeSerializedSize(change: CodeChange): number {
       bytes += SERIALIZED_ENTRY_OVERHEAD + 2 * path.length;
       if ("set" in fileChange) {
         bytes += 2 * fileChange.set.length;
+      } else if ("setBytes" in fileChange) {
+        bytes += byteFileChangeSize(fileChange);
       } else if ("edit" in fileChange) {
         for (let section of fileChange.edit) {
           bytes += SERIALIZED_SECTION_OVERHEAD;
@@ -195,6 +214,10 @@ function toChangeSet(change: TextChange): ChangeSet {
 // boundary, so "\r", "\r\n", "\u2028", "\u2029", and NUL stay inside their lines.
 function applyTextChange(text: string, change: TextChange): string {
   return toChangeSet(change).apply(Text.of(text.split("\n"))).toString();
+}
+
+function byteFileChangeSize(change: {setBytes: ByteValue}): number {
+  return 128 + 2 * change.setBytes.base.oid.length;
 }
 
 // Iterates a CodeChange's gadget entries as numeric ids. Assumes canonical keys
@@ -251,6 +274,8 @@ export function applyCodeChange(content: CodeContent, change: CodeChange): CodeC
     for (let [path, fileChange] of fileChanges) {
       if ("set" in fileChange) {
         files.set(path, fileChange.set);
+      } else if ("setBytes" in fileChange) {
+        files.set(path, fileChange.setBytes);
       } else if ("remove" in fileChange) {
         files.delete(path);
       } else {
@@ -258,6 +283,7 @@ export function applyCodeChange(content: CodeContent, change: CodeChange): CodeC
         if (existing === undefined) {
           throw new Error(`edit of absent file: gadget ${gadgetId} ${path}`);
         }
+        if (typeof existing !== "string") throw new Error("Text edit requires a text base.");
         files.set(path, applyTextChange(existing, fileChange.edit));
       }
     }
@@ -317,12 +343,13 @@ function composeFileChange(
   if (a === undefined) return b!;
   if (b === undefined) return a;
   // b is later: its `set` or `remove` wholesale-supersedes whatever a did.
-  if ("set" in b || "remove" in b) return b;
+  if ("set" in b || "setBytes" in b || "remove" in b) return b;
   // b is an edit of a's result.
   if ("set" in a) return { set: applyTextChange(a.set, b.edit) };
   if ("remove" in a) {
     throw new Error(`cannot compose edit after remove: gadget ${gadgetId} ${path}`);
   }
+  if (!("edit" in a)) throw new Error("Cannot compose text edit over binary content.");
   return { edit: toChangeSet(a.edit).compose(toChangeSet(b.edit)).toJSON() };
 }
 
@@ -421,7 +448,9 @@ export function diffFiles(before: CodeContent, after: CodeContent): CodeChange {
       if (beforeText === afterText) continue;
       if (afterText === undefined) {
         files.set(path, { remove: true });
-      } else if (beforeText === undefined) {
+      } else if (typeof afterText !== "string") {
+        files.set(path, {setBytes: afterText});
+      } else if (typeof beforeText !== "string") {
         files.set(path, { set: afterText });
       } else {
         files.set(path, { edit: diffTextChange(beforeText, afterText) });
@@ -564,14 +593,24 @@ function validateFileChangeSchema(where: string, fileChange: FileChange, budget:
   // `applyCodeChange` tests `set` before `edit` while `transformCodeChange` tests `edit` first,
   // so a two-variant FileChange would be read differently by two replicas and diverge them.
   let keys = Object.keys(fileChange);
-  if (keys.length !== 1 || !["edit", "set", "remove"].includes(keys[0])) {
-    throw new Error(`file change must have exactly one of edit/set/remove: ${where}`);
+  if (keys.length !== 1 || !["edit", "set", "remove", "setBytes"].includes(keys[0])) {
+    throw new Error(`file change must have exactly one of edit/set/remove/setBytes: ${where}`);
   }
   if ("set" in fileChange) {
     if (2 * fileChange.set.length > budget) throw new Error("code change is too large");
     return 2 * fileChange.set.length;
   }
   if ("remove" in fileChange) return 0;
+  if ("setBytes" in fileChange) {
+    // Reject legacy splice metadata rather than silently interpreting a delta as its base.
+    if (Object.keys(fileChange.setBytes).length !== 1 || !("base" in fileChange.setBytes)) {
+      throw new Error(`Binary content must name a whole-file payload: ${where}`);
+    }
+    validateBytesRef(fileChange.setBytes.base);
+    const cost = byteFileChangeSize(fileChange);
+    if (cost > budget) throw new Error("code change is too large");
+    return cost;
+  }
   // ChangeSet.fromJSON is not strict enough on its own -- it accepts negative and non-integer
   // section lengths, sections that neither retain, delete, nor insert (free padding that would
   // evade the size caps), and inserted "line" strings containing "\n" (which desynchronize the
@@ -640,6 +679,7 @@ export function validateCodeChangeContent(change: CodeChange, content: CodeConte
       } else if ("edit" in fileChange) {
         let text = content.get(gadgetId)?.get(path);
         if (text === undefined) throw new Error(`edit of absent file: ${where}`);
+        if (typeof text !== "string") throw new Error(`Text edit requires a text base: ${where}`);
         let changes = toChangeSet(fileChange.edit);
         if (changes.length !== text.length) {
           throw new Error(`file change edit length mismatch: ${where}: ` +
