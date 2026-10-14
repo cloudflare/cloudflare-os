@@ -16,14 +16,14 @@ const CANVA_REVOKE_URL = "https://api.canva.com/rest/v1/oauth/revoke";
 const DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS = 4 * 60 * 60;
 
 /**
- * Scopes requested during connect. These cover everything `CanvaAccountSession` exposes today:
+ * Scopes requested during connect. These cover exactly what `CanvaAccountSession` exposes today:
  * profile, design listing/metadata, design creation, folder browsing, and reading image assets
- * that appear in folder listings.
+ * that appear in folder listings. `design:content:read` is deliberately absent: nothing reads page
+ * content or exports yet, and a consent screen should ask only for what the code uses.
  */
 export const OAUTH_SCOPES = [
   "profile:read",
   "design:meta:read",
-  "design:content:read",
   "design:content:write",
   "asset:read",
   "folder:read",

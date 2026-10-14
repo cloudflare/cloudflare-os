@@ -30,8 +30,8 @@ your own Canva integration in the Developer Portal.
    > Canva, like most OAuth providers, does not accept `localhost` as a redirect host for
    > non-HTTPS URLs — use the loopback IP literal `127.0.0.1`. Replace host/port with your
    > `BASE_URL` when not running locally (production must use HTTPS).
-4. Under **Scopes**, enable: `design:meta:read`, `design:content:read`, `design:content:write`,
-   `asset:read`, `folder:read`, `profile:read`.
+4. Under **Scopes**, enable: `design:meta:read`, `design:content:write`, `asset:read`,
+   `folder:read`, `profile:read`.
 5. Copy the **Client ID**, then generate and copy a **Client secret**.
 
 ### Step 2: Configure your local environment
