@@ -10,6 +10,7 @@ packages/gatekeeper-email/src/email.ts
 packages/gatekeeper-google/src/google.ts
   s_664125cd80dfd6::t_96371cb1c6f5ec 381-382
   s_664125cd80dfd6::t_7b1223b6be6af2 383-384
+  s_99c5462c433ffc::t_76211a7f8e5b46 3
 packages/gatekeeper-homeassistant/src/homeassistant.ts
   s_664125cd80dfd6::t_96371cb1c6f5ec 6,367-368
   s_664125cd80dfd6::t_e2397cbd57b067 369-370
@@ -57,6 +58,14 @@ packages/gatekeeper-scheduler/src/scheduler.ts
       "agent_id": {
         "tool": "claude",
         "id": "a41dd87a-7e4a-4acc-8c7e-eae5a69b4d55",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_99c5462c433ffc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20bc3079-0386-4add-8723-190aaca5307f",
         "model": "claude-opus-5-5"
       },
       "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
