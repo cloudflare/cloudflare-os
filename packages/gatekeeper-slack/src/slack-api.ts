@@ -93,6 +93,7 @@ type RawConversation = {
   team_id?: string;
   context_team_id?: string;
   shared_team_ids?: string[];
+  internal_team_ids?: string[];
   name?: string;
   is_channel?: boolean;
   is_group?: boolean;
@@ -647,6 +648,9 @@ export class SlackApi {
   }
 
   async #assertConversationWorkspace(channel: RawConversation, teamId: string): Promise<void> {
+    // Slack Connect can name only external workspaces in shared_team_ids. Its internal
+    // workspace membership is reported separately; the requested viewing context is not proof.
+    if (channel.internal_team_ids?.includes(teamId)) return;
     // Shared channels belong to several workspaces. Their host is not their access boundary.
     if (channel.shared_team_ids?.length) {
       if (channel.shared_team_ids.includes(teamId)) return;

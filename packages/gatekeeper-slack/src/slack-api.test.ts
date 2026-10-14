@@ -377,6 +377,72 @@ describe("Slack org installations", () => {
     expect(history.items[0].permalink).toContain("https://tone.slack.com/");
   });
 
+  it.each([false, true])("reads a Slack Connect channel with internal membership (private %s)", async isPrivate => {
+    mockSlack();
+    // Captured Slack Connect shape: shared_team_ids names only the external workspace;
+    // internal_team_ids identifies the selected workspace within our Enterprise org.
+    channel = { id: "CONE", name: "external", is_private: isPrivate, is_ext_shared: true,
+      context_team_id: "TONE", shared_team_ids: ["TEXTERNAL"], internal_team_ids: ["TONE"],
+      connected_team_ids: ["EEXTERNAL", "EORG"] };
+    let client = api();
+    await expect(client.getConversationInfo("CONE")).resolves.toMatchObject({ id: "CONE",
+      kind: isPrivate ? "private_channel" : "public_channel" });
+    await expect(client.listHistory("CONE", undefined, 1))
+        .resolves.toMatchObject({ items: [{ text: "test" }] });
+    await expect(client.listReplies("CONE", "123.000001", undefined, 1))
+        .resolves.toMatchObject({ items: [{ text: "test" }] });
+    await expect(client.listConversationMembers("CONE", undefined, 10))
+        .resolves.toMatchObject({ items: ["WSELF"] });
+    await expect(client.searchMessages("test", undefined, 10))
+        .resolves.toMatchObject({ items: [{ channelId: "CONE", message: { text: "test" } }] });
+    for (let method of ["conversations.info", "conversations.history", "conversations.replies", "conversations.members"]) {
+      expect(requests.find(url => url.pathname.endsWith(method))?.searchParams.get("client_context_team_id")).toBe("TONE");
+    }
+    expect(requests.find(url => url.pathname.endsWith("search.messages"))?.searchParams.get("team_id")).toBe("TONE");
+    expect(requests.some(url => url.pathname.endsWith("conversations.list"))).toBe(false);
+  });
+
+  it("recognizes internal channel membership without a shared-team array", async () => {
+    mockSlack(); channel = { id: "CONE", internal_team_ids: ["TONE"] };
+    await expect(api().getConversationInfo("CONE")).resolves.toMatchObject({ id: "CONE" });
+    expect(requests.some(url => url.pathname.endsWith("conversations.list"))).toBe(false);
+  });
+
+  it("denies a Slack Connect channel attached only to another internal workspace", async () => {
+    mockSlack();
+    channel = { id: "CONE", team_id: "TONE", context_team_id: "TONE", is_ext_shared: true,
+      shared_team_ids: ["TEXTERNAL"], internal_team_ids: ["TTWO"], connected_team_ids: ["EORG"] };
+    let client = api();
+    await expect(client.getConversationInfo("CONE")).rejects.toMatchObject({ code: "access_denied" });
+    await expect(client.listHistory("CONE", undefined, 1)).rejects.toMatchObject({ code: "access_denied" });
+    await expect(client.listReplies("CONE", "123.000001", undefined, 1)).rejects.toMatchObject({ code: "access_denied" });
+    await expect(client.listConversationMembers("CONE", undefined, 10)).rejects.toMatchObject({ code: "access_denied" });
+    await expect(client.searchMessages("test", undefined, 10)).rejects.toMatchObject({ code: "access_denied" });
+    for (let method of ["conversations.history", "conversations.replies", "conversations.members"]) {
+      expect(requests.some(url => url.pathname.endsWith(method))).toBe(false);
+    }
+  });
+
+  it("still requires app and user workspace access before accepting internal channel membership", async () => {
+    mockSlack(); memberTeams = ["TTWO"];
+    channel = { id: "CONE", internal_team_ids: ["TONE"], shared_team_ids: ["TEXTERNAL"] };
+    await expect(api().getConversationInfo("CONE")).rejects.toMatchObject({ code: "team_access_not_granted" });
+    expect(requests.some(url => url.pathname.endsWith("conversations.info"))).toBe(false);
+  });
+
+  it("preserves provider denial even when channel metadata names the selected workspace", async () => {
+    mockSlack(); channel.internal_team_ids = ["TONE"];
+    let fetchSlack = fetch;
+    vi.stubGlobal("fetch", async (input: string) => {
+      if (input.includes("conversations.info")) {
+        return Response.json({ ok: false, error: "not_in_channel", channel });
+      }
+      return fetchSlack(input);
+    });
+    await expect(api().listHistory("CONE", undefined, 1)).rejects.toMatchObject({ code: "not_in_channel" });
+    expect(requests.some(url => url.pathname.endsWith("conversations.history"))).toBe(false);
+  });
+
   it("proves a metadata-less DM through workspace-scoped discovery", async () => {
     mockSlack(); channel = { id: "DONE", is_im: true };
     await expect(api().listHistory("DONE", undefined, 1)).resolves.toMatchObject({ items: [{ text: "test" }] });
