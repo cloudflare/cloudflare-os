@@ -62,6 +62,38 @@ const COMMAND: ActionDescription = { title: "Command", description: "Run pwd", i
 const APPROVER = { type: "user" as const, id: "approver", name: "Approver" };
 
 describe("agent integration over persistent native RPC", () => {
+  it("retains registration-scoped worktrees in started and resumed callbacks after eviction", async () => {
+    const name = crypto.randomUUID();
+    let checkoutId: number;
+    await inKernel(async (impl, participant) => {
+      impl.env.AGENT_INTEGRATION_GRANTS = '{"container":{"lifecycle":true,"worktreeReplica":true}}';
+      const timestamp = impl.getChatTimestamp();
+      impl.storage.chatMeta.put({id: CHAT, title: "Callbacks", started: timestamp, lastActive: timestamp});
+      const commit = await impl.gitStore.writeFilesAsCommit(new Map([["a.txt", "base"]]), {
+        parents: [], author: {name: "Test", email: "test@example.com"}, message: "Base", timestamp: new Date(0),
+      });
+      const tree = await impl.createWorktree("Repo", CHAT, commit);
+      checkoutId = tree.id;
+      impl.storage.chatContext.put({chatId: CHAT, bindings: {REPO: tree.id}});
+      impl.addChatMessages(CHAT, APPROVER, [{type: "message", message: "Work with REPO."}]);
+      await impl.beginAgentIntegrationTurn(CHAT);
+      await participant.setCaptureReplica(true);
+      await impl.registerIntegrationParticipant(GATEKEEPER, origin(impl), "running", participant);
+      await impl.closeAgentIntegrationTurn(CHAT, "approval");
+      const later = await impl.createWorktree("Later repo", CHAT, commit);
+      impl.storage.chatContext.put({chatId: CHAT, bindings: {REPO: tree.id, LATER: later.id}});
+      await impl.ctx.storage.sync();
+    }, name);
+    await evictDurableObject(env.TEST_OVERSEER.getByName(name));
+    await inKernel(async (impl, participant) => {
+      impl.env.AGENT_INTEGRATION_GRANTS = '{"container":{"lifecycle":true,"worktreeReplica":true}}';
+      await impl.beginAgentIntegrationTurn(CHAT);
+      const calls = (await participant.calls()).filter(call => call.checkoutIds !== undefined);
+      expect(calls.map(call => call.event.kind)).toEqual(["started", "resumed"]);
+      expect(calls.map(call => call.checkoutIds)).toEqual([[checkoutId], [checkoutId]]);
+      await impl.closeAgentIntegrationTurn(CHAT, "completed");
+    }, name);
+  });
 
   it("passes the real approval queue's context into a native gatekeeper session", async () => inKernel(async impl => {
     const handler = actionFacet(impl);
@@ -90,6 +122,18 @@ describe("agent integration over persistent native RPC", () => {
     expect(calls.map(call => call.event.kind)).toEqual(["started", "suspended", "resumed", "finished"]);
     expect(calls.map(call => call.turn.phase)).toEqual(["running", "suspending", "running", "finishing"]);
     expect([...impl.storage.agentIntegrationParticipants.list()]).toEqual([]);
+  }));
+
+  it("supplies context for a replica-only grant without granting lifecycle participation", async () => inKernel(async (impl, participant) => {
+    const handler = actionFacet(impl);
+    impl.env.AGENT_INTEGRATION_GRANTS = '{"container":{"worktreeReplica":true}}';
+    try {
+      await impl.beginAgentIntegrationTurn(CHAT);
+      using session = await impl.openGatekeeperSession(GATEKEEPER, handler.facet, {from: "agent", chatId: CHAT});
+      expect(session.turn?.turnId).toBe(origin(impl).turnId);
+      await expect(impl.registerIntegrationParticipant(GATEKEEPER, origin(impl), "running", participant))
+        .rejects.toThrow(/not been granted/);
+    } finally { handler.restore(); }
   }));
 
   it("starts a new turn for an independent callback, but resumes approval nudges", async () => inKernel(async (impl, participant) => {
@@ -214,6 +258,17 @@ describe("agent integration over persistent native RPC", () => {
     expect(() => impl.getIntegrationContext(GATEKEEPER, first, "applyingAction")).toThrow(/expired/);
     await expect(impl.submitAction(GATEKEEPER, 1, { title: "Old command", description: "Old request", implementsRevert: false },
       { from: "agent", chatId: CHAT }, first)).rejects.toThrow(/expired/);
+    await impl.closeAgentIntegrationTurn(CHAT, "completed");
+  }));
+
+  it("requires a separate explicit grant for worktree replication", async () => inKernel(async (impl, participant) => {
+    await impl.beginAgentIntegrationTurn(CHAT);
+    const first = origin(impl);
+    expect(impl.getIntegrationContext(GATEKEEPER, undefined)).toBeNull();
+    await expect(impl.getIntegrationContext(GATEKEEPER, first)!.openWorktreeReplica()).rejects.toThrow(/not been granted/);
+    impl.env.AGENT_INTEGRATION_GRANTS = '{}';
+    expect(impl.getIntegrationContext(GATEKEEPER, first)).toBeNull();
+    await expect(impl.registerIntegrationParticipant(GATEKEEPER, first, "running", participant)).rejects.toThrow(/not been granted/);
     await impl.closeAgentIntegrationTurn(CHAT, "completed");
   }));
 

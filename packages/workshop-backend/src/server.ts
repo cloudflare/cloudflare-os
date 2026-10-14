@@ -66,6 +66,7 @@ export { UserDurableObject, GatekeeperConnectCallbackImpl };
 export { OverseerDurableObject, GatekeeperLoopback, GatekeeperHookLoopback,
     CodeModeTailLoopback, AgentSpawnerGatekeeper, GadgetTailLoopback,
     AgentSelfLoopback };
+export { WorkspaceReplicaEndpoint } from "./overseer";
 
 // Re-export service-binding entrypoint for external channel integrations.
 export { ExternalMessageGateway };

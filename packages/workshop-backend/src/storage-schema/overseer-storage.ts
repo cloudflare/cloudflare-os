@@ -27,7 +27,7 @@ import {
   type BlueprintOutput, type ChatGadgetPinRecord, type CollaboratorRole, type GadgetUpstream,
   type GatekeeperCreationSpec, type PermissionEdge, type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
-import type { CodeChange } from "@gadgets/workshop-shared/code-change";
+import type { CodeChange, FileChange } from "@gadgets/workshop-shared/code-change";
 import type { ChatGatewayRpcTarget } from "@gadgets/workshop-shared/external-message-gateway";
 import type {
   ActionDescription, ActionKind, Gatekeeper, GitObjectType, GitOid, HookController,
@@ -35,7 +35,8 @@ import type {
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { SpawnCallableOptions } from "../agent-spawner-binding";
 import type {
-  AgentTurnEvent, AgentTurnParticipant,
+  AgentTurnEvent, AgentTurnParticipant, WorktreeBase, WorktreeChange,
+  WorktreeReplicaReceipt, WorkspaceCheckpoint,
 } from "@gadgets/workshop-shared/agent-integration";
 
 /** Durable logical-turn identity, independent of the invocation that happens to execute it. */
@@ -52,7 +53,10 @@ export type AgentIntegrationTurn = {
 };
 
 /** Queue-time origin captured by a context or action; never resolves against a later turn. */
-export type AgentIntegrationOrigin = Pick<AgentIntegrationTurn, "chatId" | "turnId" | "segmentId">;
+export type AgentIntegrationOrigin = Pick<AgentIntegrationTurn, "chatId" | "turnId" | "segmentId"> & {
+  /** Queue-time selection; approval cannot acquire later-added mounts. */
+  worktrees?: WorktreeBase[];
+};
 
 /** Persistent callback and outbox, scoped to one binding and one logical turn. */
 export type AgentIntegrationParticipantRecord = {
@@ -61,8 +65,39 @@ export type AgentIntegrationParticipantRecord = {
   turnId: string;
   chatId: number;
   participant: Fetcher<AgentTurnParticipant>;
+  /** Registration-time replica selection; lifecycle retries must not acquire later bindings. */
+  worktrees?: WorktreeBase[];
   pending: AgentTurnEvent[];
   retryAt?: number;
+};
+
+/** Persisted checkpoint and lease; IDs are bearer capabilities, not workspace lookup keys. */
+export type WorktreeReplicaLease = {
+  id: string;
+  gatekeeperId: number;
+  chatId: number;
+  turnId: string;
+  expiresAt: number;
+  /** Fixed terminal cleanup boundary; renewal cannot extend it or survive callback ACK. */
+  cleanupDeadline?: number;
+  released?: boolean;
+  /** Bootstrap authority is one-shot even if the replica remains live for synchronization. */
+  gitBootstrapClosed?: boolean;
+  worktrees: WorktreeBase[];
+  checkpoint?: WorkspaceCheckpoint & {
+    /** Legacy upstream-anchored operations; new checkpoints retain only pending operations. */
+    overlay: WorktreeChange[];
+    /** Bootstrap operations above the accepted commit; absent on legacy checkpoints. */
+    pendingOverlay?: WorktreeChange[];
+  };
+};
+
+/** Written in the same transaction as canonical OTs, never in a subsequent RPC. */
+export type WorktreeReplicaCommit = {
+  id: string;
+  leaseId: string;
+  digest: string;
+  receipt: WorktreeReplicaReceipt;
 };
 
 // =======================================================================================
@@ -302,6 +337,9 @@ export type WorktreeRecord = {
    */
   pinBase: string;
 
+  /** Immutable hydration anchor for the composed accepted OT prefix; absent until first accept. */
+  replicaBaseCommit?: string;
+
   /**
    * Never set: a worktree has no workspace-level binding name -- the name it was created under
    * lives only in its chat's binding map, so two chats can each have a worktree named `REPO`.
@@ -331,6 +369,15 @@ export type WorktreeRecord = {
  * lack the discriminant on disk and are stamped `type: "gadget"` by migrateToWorkpieceTypes.
  */
 export type WorkpieceRecord = GadgetRecord | WorktreeRecord;
+
+/** One bounded, ordered chunk of the accepted transforms from the hydration anchor to pinBase. */
+export type WorktreeBaseChangeRecord = {
+  workpieceId: WorkpieceId;
+  path: string;
+  change: FileChange;
+  /** Subsequent chunks for this path; absent on the first chunk and on pre-chunking records. */
+  part?: number;
+};
 
 // =======================================================================================
 // Git object store
@@ -930,6 +977,9 @@ export type ChatChangeRecord = {
   /** The submission echo for user rows (see AiChatSubscriber.changeApplied); absent otherwise. */
   submission?: {clientId: string, seq: number};
 
+  /** Provenance of this row, not of other edits flushed in the same agent step. */
+  sourceReplica?: {leaseId: string, batchId: string};
+
   /**
    * Set when the row is no longer live: a "changes" message has materialized it (its change is part
    * of the message), or its generation was closed by a merge's epoch reset. Retired rows are
@@ -1216,6 +1266,7 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //       where the chat log still told: those an agent created from a blueprint name it,
       //       and those created from scratch name none. Every gadget created from here on has
       //       an `upstream` once it is permanent.
+      //   6 = durable integration/replica journals and accepted worktree OT prefixes.
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)
@@ -1282,12 +1333,23 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
     },
 
     collections: {
+      worktreeBaseChanges: collection<WorktreeBaseChangeRecord>()({
+        // Keep first-chunk keys compatible; subsequent keys cannot collide with numeric old keys.
+        primaryKey: record => record.part === undefined ? `${keyString(record.workpieceId)}.${record.path}` :
+          `chunk.${keyString(record.workpieceId)}.${keyString(record.part)}.${record.path}`,
+        nonUniqueIndexes: {byWorkpiece: (record: WorktreeBaseChangeRecord) => record.workpieceId},
+      }),
       pausedAgents: collection<ActiveAgentRecord>()({primaryKey: "chatId"}),
       actionApplications: collection<ActionApplication>()({
         primaryKey: "id",
         nonUniqueIndexes: {retryAt: (record: ActionApplication) => record.retryAt},
       }),
       agentIntegrationTurns: collection<AgentIntegrationTurn>()({primaryKey: "chatId"}),
+      worktreeReplicaLeases: collection<WorktreeReplicaLease>()({primaryKey: "id"}),
+      worktreeReplicaCommits: collection<WorktreeReplicaCommit>()({
+        primaryKey: "id",
+        nonUniqueIndexes: {byLease: (record: WorktreeReplicaCommit) => record.leaseId},
+      }),
       agentIntegrationParticipants: collection<AgentIntegrationParticipantRecord>()({
         primaryKey: "id",
         nonUniqueIndexes: {

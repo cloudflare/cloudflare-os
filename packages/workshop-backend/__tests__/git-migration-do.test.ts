@@ -21,6 +21,7 @@ import type { OverseerDurableObject } from "../src/overseer.js";
 import { HISTORY_COMMIT_GAP_MS } from "../src/storage-schema/overseer-git-migration";
 import {
   OVERSEER_STORAGE_VERSION, UPSTREAM_BACKFILL_MESSAGE_LIMIT, migrateToBlueprintUpstreams,
+  migrateToWorktreeReplicas,
 } from "../src/storage-schema/overseer-migrations";
 import {
   LegacyWorkspace, MINUTE, T0, USER, expectHeadsMatchDoc, readDocFiles, setFile,
@@ -392,8 +393,29 @@ describe("the blueprint-upstream backfill via the Overseer constructor", () => {
       let unread = { value: { list: () => { throw new Error("read a chat"); } } };
       let storage = Object.create(impl.storage, { chatMeta: unread, chats: unread });
       migrateToBlueprintUpstreams(Object.create(impl, { storage: { value: storage } }));
+      expect(impl.storage.version.get()).toBe(5);
+      migrateToWorktreeReplicas(Object.create(impl, { storage: { value: storage } }));
 
       expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
+    });
+  });
+});
+
+describe("worktree replica storage migration", () => {
+  it("upgrades a version-five workspace on wake without eagerly loading its files", async () => {
+    const name = "replica-migration-" + crypto.randomUUID();
+    await inOverseer(name, async impl => {
+      impl.storage.chatContext.put({chatId: 1, bindings: {REPO: 7}});
+      impl.storage.version.put(5);
+    });
+    await abortAllDurableObjects();
+    await inOverseer(name, async impl => {
+      expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
+      expect(impl.storage.chatContext.get(1)).toEqual({chatId: 1, bindings: {REPO: 7}});
+      expect([...impl.storage.worktreeBaseChanges.list()]).toEqual([]);
+      expect([...impl.storage.worktreeReplicaLeases.list()]).toEqual([]);
+      expect([...impl.storage.actionApplications.list()]).toEqual([]);
+      expect([...impl.storage.gitObjects.list()]).toEqual([]);
     });
   });
 });

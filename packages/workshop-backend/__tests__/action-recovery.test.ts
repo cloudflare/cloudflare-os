@@ -100,7 +100,7 @@ describe("durable approved-action recovery", () => {
         impl.storage.activeAgents.put({chatId: 1, initiatorUserId: "invalid-do-id", modelId: "missing",
           initiator: APPROVER, callbackInitiated: false, continuationId: crypto.randomUUID()});
         grantSpy = vi.spyOn(Object.getPrototypeOf(impl), "integrationGrant").mockReturnValue({
-          lifecycle: true, contextualActions: true, recoverableActions: false,
+          lifecycle: true, contextualActions: true, recoverableActions: false, worktreeReplica: false,
         });
         await impl.ctx.storage.sync();
       });

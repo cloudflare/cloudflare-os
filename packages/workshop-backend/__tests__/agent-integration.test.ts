@@ -8,8 +8,8 @@ const id = () => `identity-${++nextId}`;
 describe("trusted integration grants", () => {
   it("requires exact per-vendor opt-in, separate from ambience", () => {
     const config = '{"container":{"lifecycle":true},"other":{"contextualActions":true}}';
-    expect(agentIntegrationGrant(config, "container")).toEqual({ lifecycle: true, contextualActions: false, recoverableActions: false });
-    expect(agentIntegrationGrant(config, "other")).toEqual({ lifecycle: false, contextualActions: true, recoverableActions: false });
+    expect(agentIntegrationGrant(config, "container")).toEqual({ lifecycle: true, contextualActions: false, worktreeReplica: false, recoverableActions: false });
+    expect(agentIntegrationGrant(config, "other")).toEqual({ lifecycle: false, contextualActions: true, worktreeReplica: false, recoverableActions: false });
     expect(agentIntegrationGrant(config, "Container")).toEqual({});
     expect(agentIntegrationGrant(undefined, "container")).toEqual({});
   });
@@ -18,9 +18,14 @@ describe("trusted integration grants", () => {
     '{"container":{"contextualActions":1}}'])("fails closed on %s", config => {
     expect(agentIntegrationGrant(config, "container")).toEqual({});
   });
+  it("requires a separate explicit replica grant", () => {
+    expect(agentIntegrationGrant('{"container":{"worktreeReplica":true}}', "container"))
+      .toEqual({ lifecycle: false, contextualActions: false, worktreeReplica: true, recoverableActions: false });
+    expect(agentIntegrationGrant('{"container":{"arbitraryOidRead":true}}', "container")).toEqual({});
+  });
   it("requires explicit administrator opt-in for idempotent approval recovery", () => {
     expect(agentIntegrationGrant('{"container":{"recoverableActions":true}}', "container"))
-      .toEqual({ lifecycle: false, contextualActions: false, recoverableActions: true });
+      .toEqual({ lifecycle: false, contextualActions: false, worktreeReplica: false, recoverableActions: true });
     expect(agentIntegrationGrant('{"container":{"recoverableActions":"true"}}', "container")).toEqual({});
   });
 });

@@ -229,6 +229,15 @@ describe("integration cleanup at agent recovery boundaries", () => {
     const name = crypto.randomUUID(), stub = env.TEST_OVERSEER.getByName(name);
     await runInDurableObject(stub, async instance => {
       const impl = instance.impl, participant = await prepare(impl, name);
+      impl.env.AGENT_INTEGRATION_GRANTS = '{"container":{"lifecycle":true,"worktreeReplica":true}}';
+      const commit = await impl.gitStore.writeFilesAsCommit(new Map([["a.txt", "base"]]), {
+        parents: [], author: {name: "Test", email: "test@example.com"}, message: "Base", timestamp: new Date(0),
+      });
+      const tree = await impl.createWorktree("Repo", 1, commit);
+      impl.storage.chatContext.put({chatId: 1, bindings: {REPO: tree.id}, alwaysAvailableCapsuleIds: []});
+      const origin = impl.captureIntegrationOrigin({from: "agent", chatId: 1})!;
+      const replica = await impl.getIntegrationContext(31, origin)!.openWorktreeReplica();
+      const leaseId = (await replica.checkpoint()).cursor.split(":")[0];
       const turn = impl.storage.agentIntegrationTurns.get(1)!;
       const turnId = turn.turnId;
       impl.storage.activeAgents.put({chatId: 1, initiatorUserId: "unused", modelId: MODEL.profile.id,
@@ -243,6 +252,7 @@ describe("integration cleanup at agent recovery boundaries", () => {
       await beginning;
       await impl.closeAgentIntegrationTurn(1, "canceled");
       expect(impl.storage.agentIntegrationTurns.get(1)).toMatchObject({turnId, state: "finished", closing: {reason: "canceled"}});
+      await expect(impl.getWorkspaceReplicaSession(leaseId).renew()).rejects.toThrow(/expired|termination/);
       expect((await participant.calls()).filter(call => call.event.kind === "resumed")).toEqual([]);
       expect([...impl.storage.agentIntegrationParticipants.list()]).toEqual([]);
       await impl.ctx.storage.sync();
