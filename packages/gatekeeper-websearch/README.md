@@ -15,8 +15,10 @@ The admin Gatekeepers panel sets the mode, like every auto-provisioned gatekeepe
 - **Disabled**: no one gets it, and existing accounts go dormant.
 
 A user who has it gets a `WEB_SEARCH` binding in the agent's `executeCode`, in every workspace. The
-agent can bind it into a gadget with `setGadgetBinding`. The binding appears in chats that start
-after the workspace next opens, because a chat's bindings are fixed when it starts.
+agent can bind it into a gadget with `setGadgetBinding`. The binding appears when the workspace
+next opens, from the next turn of each chat, including chats that started before. The agent is
+told about it in that chat; the system prompt doesn't change. A spawned agent's chat keeps the
+bindings its spawner gave it.
 
 A change of mode, or a user turning it off, also takes effect when each workspace next opens. Until
 then, its open chats and scheduled gadgets can still search. Uninstalling the Worker stops every

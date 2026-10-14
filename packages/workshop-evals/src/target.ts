@@ -1,10 +1,20 @@
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { RpcStub } from "capnweb";
 import {
   openAgentSession, type AgentSessionOptions, type WorkshopAgentSession,
 } from "@gadgets/integration-tests/agent-session";
 import { startHarness, type Harness, type WorkerConfig } from "@gadgets/integration-tests/harness";
 import { NetworkInterceptor } from "@gadgets/integration-tests/network-interceptor";
 import { HTTPS_ONLY_PROVIDERS, type AiModelProvider } from "@gadgets/workshop-shared/api";
+import type { ContextApi } from "../../gatekeeper-context/src/context-types.js";
 import type { EvalModel } from "./config.js";
+import type { EvalSkill } from "./task.js";
+
+// The Skills library, the real Context gatekeeper, which a turn's `skills` write to. It is optional
+// and lists no connectable resources, so a user who never turns it on doesn't see it.
+const SKILLS_VENDOR_ID = "context";
+const SKILLS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../../gatekeeper-context");
 
 /**
  * Gateway access uses one of the backend's two AiGatewayConfig transports. With
@@ -214,7 +224,9 @@ function workshopFor(access: LocalModelAccess, model: EvalModel): Promise<Harnes
   if (workshop === undefined) {
     unconfirmedRuntimes++;
     workshop = startHarness({
-      gatekeepers: [],
+      gatekeepers: [
+        { binding: "CONTEXT", dir: SKILLS_DIR, patch: config => { delete config.build; } },
+      ],
       enableGadgetExecution: true,
       ...(access.kind === "gateway"
         ? { patchWorkshop: (config: WorkerConfig) => configureGateway(config, access, model) }
@@ -265,4 +277,22 @@ export async function openLocalEvalTarget(
   };
   const session = await openAgentSession(workshop.url, options);
   return { session, [Symbol.asyncDispose]: () => session.close() };
+}
+
+/** Turn on Skills for the session's user and add `skills` to a new private collection there. */
+export async function addSkills(
+    session: WorkshopAgentSession, skills: readonly EvalSkill[]): Promise<void> {
+  await session.enableAmbientGatekeeper(SKILLS_VENDOR_ID);
+  const app = await session.openGatekeeperApp(SKILLS_VENDOR_ID);
+  // The Workshop hands over a management app untyped; this one is the Context Library's.
+  using library = app.ui as unknown as RpcStub<ContextApi>;
+  const collection =
+      await library.createContextCollection("My skills", "Skills I wrote.", "private");
+  for (const skill of skills) {
+    await library.createContextSkill(collection.id, `${skill.name}/SKILL.md`, {
+      description: skill.description,
+      body: `---\nname: ${JSON.stringify(skill.name)}\n` +
+        `description: ${JSON.stringify(skill.description)}\n---\n\n${skill.instructions}\n`,
+    });
+  }
 }

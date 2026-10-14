@@ -161,6 +161,32 @@ it.concurrent("a catalog change keeps each request a prefix of the next, and the
   expect(JSON.stringify(messages.at(-1))).not.toContain("Tax rules");
 });
 
+// An always-available resource the workspace gains after the chat started joins the chat's env on
+// its next turn. The system prompt keeps the list the chat started with, so the agent is told.
+it.concurrent("a resource gained mid-chat keeps each request a prefix, and the agent can use it",
+    async () => {
+  const model = models.script([
+    { text: "First reply." },
+    { toolCall: { id: "read-value", name: "executeCode", arguments: { code: READ_TEST_VALUE } } },
+    { text: "The test value is 42." },
+  ]);
+  await using session = await openAgentSession(harness.url, {
+    modelId: SCRIPTED_MODEL_ID,
+    userModel: model.userModel,
+  });
+
+  expect((await session.runTurn("First question")).outcome).toEqual({ status: "completed" });
+  await session.enableAmbientGatekeeper(TEST_VENDOR_ID);
+  expect((await session.runTurn("Read the test value.")).outcome).toEqual({ status: "completed" });
+
+  expect(model.requests).toHaveLength(3);
+  expectEachRequestExtendsThePrevious(model.requests);
+  const [, second, third] = model.requests.map(request => REQUEST.parse(request).messages);
+  expect(JSON.stringify(second?.at(-1))).toContain("`env.TEST_AMBIENT` (");
+  expect(JSON.stringify(second?.at(-1))).toContain("is now always available");
+  expect(JSON.stringify(third?.at(-1))).toContain("42");
+});
+
 // `/compact` never prompts the model, so the change is reported on the turn after it, and the
 // checkpoint lists the catalogs the summarized turns saw.
 it.concurrent("compacting after a catalog change keeps the catalogs the chat saw", async () => {

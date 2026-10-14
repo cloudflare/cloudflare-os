@@ -7030,8 +7030,9 @@ class OverseerImpl implements AgentHooks {
       try {
         let cls = await ownerDo.getSingletonGatekeeperClass(account.accountId);
         if (!cls) return;
-        // Provision as an unnamed record: it reaches the agent through each chat's env (named at
-        // seed time from the gatekeeper's suggested binding name), not as any gadget's binding.
+        // Provision as an unnamed record: it reaches the agent through each chat's env (named from
+        // the gatekeeper's suggested binding name when the chat takes it in; see
+        // prepareChatBindings), not as any gadget's binding.
         await this.addGatekeeper(
             cls,
             {type: "ambient", vendorId: account.vendorId, accountId: account.accountId},
@@ -7051,8 +7052,8 @@ class OverseerImpl implements AgentHooks {
   // enforced by the byBindingName index), then every permanent binding edge under its edge name,
   // skipping names already taken. Gadget entries therefore take precedence, and edge-name
   // collisions across gadgets resolve to the lowest gadget ID. Renames, unbinds, and deletions
-  // are reflected automatically -- no maintenance hooks -- while frozen per-chat seeds keep
-  // existing chats unaffected.
+  // are reflected automatically -- no maintenance hooks -- while per-chat seeds keep existing
+  // chats unaffected.
   defaultBindingList(): Record<string, WorkpieceId> {
     // Null prototype so binding names from before name validation existed can't collide with
     // Object.prototype members.
@@ -7071,8 +7072,8 @@ class OverseerImpl implements AgentHooks {
     return result;
   }
 
-  // Every binding name currently claimed in the given chat's scope: the frozen seed layer (or,
-  // for a chat that hasn't been seeded yet, the prospective seed it would freeze -- see
+  // Every binding name currently claimed in the given chat's scope: the seed layer (or, for a
+  // chat that hasn't been seeded yet, the prospective seed it would take -- see
   // prepareChatBindings) and the names recorded on log messages (pasted resources, live
   // connection requests, created gadgets, the arguments of delivered agent calls). Every name is
   // stamped on its message when it is claimed, so this is a plain scan. Callers that already
@@ -7184,6 +7185,22 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
+  // The binding name an ambient resource takes in a chat: its gatekeeper's suggested binding name,
+  // made unique.
+  async #ambientBindingName(gatekeeperId: WorkpieceId, isTaken: (name: string) => boolean)
+      : Promise<string> {
+    let suggested: string | undefined;
+    try {
+      suggested =
+          (await (await this.getGatekeeperFacet(gatekeeperId)).describe()).suggestedBindingName;
+    } catch (err) {
+      this.logger.warn("failed to fetch suggested binding name for ambient resource", {
+        event: "chat.binding.ambient.describe.failed", gatekeeperId, error: err,
+      });
+    }
+    return fallbackBindingName(suggested || "RESOURCE", isTaken);
+  }
+
   // Prepare and return the chat's seed binding layer, including the always-available (ambient)
   // resources with their discovery catalogs. Called at agent turn start, before history replay.
   //
@@ -7192,8 +7209,9 @@ class OverseerImpl implements AgentHooks {
   //     workspace default binding list, spawned chats their frozen spawner env (resolving an
   //     old-style allowlist the same way the storage migration does). Chats created before named
   //     chat bindings are seeded here on their next turn, with zero upfront migration.
-  //   - The ambient resource set is frozen on first use (ordered by gatekeeper id) and folded
-  //     into the seed map, each named by its gatekeeper's suggested binding name.
+  //   - The ambient resource set is captured on first use (ordered by gatekeeper id) and folded
+  //     into the seed map, each named by its gatekeeper's suggested binding name. A regular chat
+  //     then takes in each ambient resource the workspace gains later, on its next turn.
   //   - Persisted messages that introduced resources but carry no binding name yet -- pasted
   //     resources, plus connection requests from before agents named their own -- are named
   //     (via the quick model when configured, else the gatekeeper's suggested name) and stamped,
@@ -7205,9 +7223,9 @@ class OverseerImpl implements AgentHooks {
     let dirty = false;
 
     if (context.alwaysAvailableCapsuleIds === undefined) {
-      // Freeze the ambient set + order on first use. Ordered by gatekeeper id (immutable) for
-      // determinism. New singletons the owner gains only appear in chats started afterwards; a
-      // since-disconnected one stays in the frozen list but becomes inert.
+      // Capture the ambient set + order on first use. Ordered by gatekeeper id (immutable) for
+      // determinism. A since-disconnected one stays in the list but becomes inert; ones the
+      // workspace gains later are appended below.
       context.alwaysAvailableCapsuleIds = [...this.storage.gatekeepers.list()]
           .filter(gk => gk.creationSpec?.type === "ambient")
           .map(gk => gk.id)
@@ -7247,7 +7265,7 @@ class OverseerImpl implements AgentHooks {
       // (see getEnvForAgent). The name can still arrive from before it was reserved -- a legacy
       // gadget binding in the default list, or an old spawner's frozen env -- so such an entry is
       // renamed rather than dropped, keeping its target reachable. (A chat seeded before the
-      // reservation keeps its GIT binding: seeds are frozen.)
+      // reservation keeps its GIT binding: a seed entry is never renamed.)
       let isSeedNameTaken = (name: string) => name in seed || name === GIT_BINDING_NAME;
       if (GIT_BINDING_NAME in seed) {
         let target = seed[GIT_BINDING_NAME];
@@ -7261,16 +7279,8 @@ class OverseerImpl implements AgentHooks {
       for (let id of ambientIds) {
         if (seededTargets.has(id)) continue;
         let gk = this.storage.gatekeepers.get(id);
-        if (!gk) continue;  // disconnected since the freeze -- inert, no name needed
-        let suggested: string | undefined;
-        try {
-          suggested = (await (await this.getGatekeeperFacet(id)).describe()).suggestedBindingName;
-        } catch (err) {
-          this.logger.warn("failed to fetch suggested binding name for ambient resource", {
-            event: "chat.binding.ambient.describe.failed", gatekeeperId: id, error: err,
-          });
-        }
-        seed[fallbackBindingName(suggested || "RESOURCE", isSeedNameTaken)] = id;
+        if (!gk) continue;  // disconnected since the chat took it in -- inert, no name needed
+        seed[await this.#ambientBindingName(id, isSeedNameTaken)] = id;
       }
 
       context.bindings = seed;
@@ -7365,6 +7375,31 @@ class OverseerImpl implements AgentHooks {
       }
     }
 
+    // A regular chat also takes in each ambient resource the workspace gained after the chat
+    // started (e.g. the owner turned on Web Search), deduped against every name in its scope. The
+    // system prompt keeps the list the chat started with; the agent learns of the new resource from
+    // a "catalogChange" message instead (see agent.ts). A spawned chat's env stays its spawner's
+    // (see #useScopeGatekeeperIds).
+    if (!context.spawnerConfig) {
+      let known = new Set(ambientIds);
+      let gained = [...this.storage.gatekeepers.list()]
+          .filter(gk => gk.creationSpec?.type === "ambient" && !known.has(gk.id))
+          .map(gk => gk.id)
+          .toSorted((a, b) => a - b);
+      for (let id of gained) {
+        if (nameByTarget.has(id)) continue;  // a legacy chat's new seed can already bind it
+        let name = await this.#ambientBindingName(id, n => taken.has(n));
+        seedMap[name] = id;
+        taken.add(name);
+        nameByTarget.set(id, name);
+      }
+      if (gained.length > 0) {
+        ambientIds = [...ambientIds, ...gained];
+        context.alwaysAvailableCapsuleIds = ambientIds;
+        dirty = true;
+      }
+    }
+
     if (anythingToName) {
       let quick = await this.#getNamingQuickModel();
 
@@ -7434,7 +7469,7 @@ class OverseerImpl implements AgentHooks {
         .filter(id => this.gatekeeperUsable(id) && !this.#catalogless.has(id))
         .map(async (gatekeeperId): Promise<[number, AgentCatalog | null]> => {
           let record = this.storage.gatekeepers.get(gatekeeperId);
-          if (!record) return [gatekeeperId, null];  // disconnected since the chat froze its set.
+          if (!record) return [gatekeeperId, null];  // disconnected since the chat took it in.
           try {
             // getAgentCatalog is optional on Gatekeeper; ambient resources always implement it (the
             // agent relies on it for discovery), answering null when they have none, so we view the
@@ -10505,7 +10540,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async createGadget(title: string, chatId?: number, bindingName?: string)
       : Promise<RpcStub<GadgetClient>> {
-    // When creating within a chat, names already claimed in that chat's scope (its frozen seed
+    // When creating within a chat, names already claimed in that chat's scope (its seed
     // plus log-derived bindings) are off-limits too: the chat's binding map is keyed by name,
     // so on replay the existing binding would win and the new gadget would never be addressable
     // under its promised name.

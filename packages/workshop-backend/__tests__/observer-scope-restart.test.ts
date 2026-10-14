@@ -1094,3 +1094,43 @@ describe("ambient catalogs", () => {
     expect(other.find(seed => seed.target === 2)?.catalog).toBeNull();
   }));
 });
+
+describe("ambient resources a chat gains", () => {
+  it("join a regular chat under a name free in its scope, never a spawned chat's env",
+      () => withImpl(async (impl) => {
+    impl.getGatekeeperFacet = (id: number) => ({
+      describe: async () =>
+          ({ title: `T${id}`, url: "https://example.com", suggestedBindingName: "RES" }),
+      getAgentCatalog: async () => null,
+    });
+    let addAmbient = (id: number) => {
+      seedGatekeeper(impl, id);
+      let record = impl.storage.gatekeepers.get(id);
+      record.creationSpec = { type: "ambient", vendorId: `v${id}` };
+      impl.storage.gatekeepers.put(record);
+    };
+    addAmbient(1);
+    for (let chatId of [1, 2]) {
+      impl.storage.chatMeta.put(
+          { id: chatId, title: "Chat", started: new Date(0), lastActive: new Date(chatId) });
+    }
+    impl.storage.chatContext.put({
+      chatId: 2, spawnerConfig: { displayName: "Spawner", modelId: "m", env: {} }, bindings: {},
+    });
+    await impl.prepareChatBindings(1, []);
+    await impl.prepareChatBindings(2, []);
+
+    // The owner turns on another ambient gatekeeper after the user pasted a resource that the chat
+    // named RES_2.
+    addAmbient(3);
+    let pasted = {
+      type: "message", sequence: 3, capsules: [{ gatekeeperId: 9, bindingName: "RES_2" }],
+    };
+    let seeds: SeedBindingInfo[] = await impl.prepareChatBindings(1, [pasted]);
+    await impl.prepareChatBindings(2, []);
+
+    expect(impl.getChatAgentContext(1).bindings).toEqual({ RES: 1, RES_3: 3 });
+    expect(seeds.find(seed => seed.target === 3)).toMatchObject({ name: "RES_3", catalog: null });
+    expect(impl.getChatAgentContext(2).bindings).toEqual({});
+  }));
+});

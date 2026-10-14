@@ -3809,14 +3809,15 @@ export type AiChatMessageBody = {
   type: "useGadget";
 } | {
   /**
-   * The catalogs of always-available resources changed after the agent's system prompt listed
-   * them, e.g. a skill was added to the Context Library. The agent writes this before the model
-   * request that first sees the change, and tells the model what changed, so the system prompt can
-   * stay the same for the whole chat. Clients show nothing for it.
+   * The always-available resources changed after the agent's system prompt listed them: a
+   * catalog changed, e.g. a skill was added to the Context Library, or the chat gained a resource,
+   * e.g. the owner turned on Web Search. The agent writes this before the model request that first
+   * sees the change, and tells the model what changed, so the system prompt can stay the same for
+   * the whole chat. Clients show nothing for it.
    */
   type: "catalogChange";
 
-  /** Each changed resource, as it is now. */
+  /** Each changed or new resource, as it is now. */
   resources: AlwaysAvailableResource[];
 } | {
   /**

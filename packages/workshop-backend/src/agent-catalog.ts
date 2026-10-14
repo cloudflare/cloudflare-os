@@ -99,14 +99,16 @@ const serializedEntries = (catalog: AgentCatalog | null) =>
     new Set(catalog?.entries.map(entry => JSON.stringify(entry)));
 
 /**
- * What the agent is told about a resource that changed since it last saw it (`before`): the entries
- * added and those no longer listed, as JSON like the system prompt shows them.
+ * What the agent is told about a resource that changed since it last saw it (`before`), or that it
+ * hasn't seen: the entries added and those no longer listed, as JSON like the system prompt shows
+ * them.
  */
 export function formatCatalogChange(
     resource: AlwaysAvailableResource, before: AlwaysAvailableResource | undefined): string {
   let binding = `\`env.${resource.name}\` (${resource.title})`;
   if (before === undefined) {
-    return `${binding} is now always available in your env.` +
+    return `${binding} is now always available in your env. Use ` +
+        `describeBinding("${resource.name}") to learn its API before using it.` +
         formatAgentCatalogPrompt(resource.catalog);
   }
   let was = serializedEntries(before.catalog);

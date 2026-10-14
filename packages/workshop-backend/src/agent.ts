@@ -2019,8 +2019,9 @@ async function runAgentPass(
 
   // Load the chat's seed binding layer (lazily seeding/naming as needed -- this call is also the
   // chokepoint that stamps binding names onto persisted messages that lack them, which the replay
-  // below relies on). The seed is frozen per chat, so the prompt content derived from it stays in
-  // the cacheable prefix; chat-local bindings accumulate on top during replay.
+  // below relies on). The seed grows only by the always-available resources the chat gains, which
+  // the prompt doesn't list (see below), so the prompt content derived from it stays in the
+  // cacheable prefix; chat-local bindings accumulate on top during replay.
   let seedBindings = await hooks.prepareChatBindings(chatId, chatMessages);
   for (let seed of seedBindings) {
     if (!chatBindings.has(seed.name)) {
@@ -2041,8 +2042,9 @@ async function runAgentPass(
   // Always-available resources (e.g. the Context Library) describe the agent's environment, so
   // they're announced in the system prompt (slot 1, below) alongside the bindings list rather
   // than as a synthetic user turn. The prompt lists them as this part of the chat first saw them,
-  // so it stays the same when a catalog changes; the model is told of the change instead (see
-  // AiChatAgentContext.alwaysAvailableResources). One the chat can no longer reach drops out.
+  // so it stays the same when a catalog changes or the chat gains a resource; the model is told
+  // instead (see AiChatAgentContext.alwaysAvailableResources). One the chat can no longer reach
+  // drops out.
   let currentResources = alwaysAvailableResources(seedBindings);
   let listedResources = checkpoint?.alwaysAvailableResources ??
       agentContext.alwaysAvailableResources ?? currentResources;
