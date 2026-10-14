@@ -3986,6 +3986,12 @@ export type ChatAttachmentRef = ChatAttachmentHandle & {
   name?: string;
   size: number;
 
+  /**
+   * Path of this attachment in the chat's attachments worktree, when its contents can participate
+   * in the text/OT workspace. Binary image and PDF attachments remain model inputs only for now.
+   */
+  workspacePath?: string;
+
   /** Inlined bytes for small image attachments. Present only for images. */
   content?: Uint8Array;
 };

@@ -587,6 +587,9 @@ export type AiChatAgentContext = {
    */
   alwaysAvailableCapsuleIds?: WorkpieceId[];
 
+  /** Chat-private Git worktree receiving uploaded text attachments, including after seeding. */
+  attachments?: {worktreeId: WorkpieceId, bindingName: string};
+
   /**
    * The part of the agent's system prompt that lists the workspace's gadgets, each with its files
    * and bindings, saved when the chat's first turn built it.
@@ -826,17 +829,24 @@ export type ExternalChatRecord = {
 type ChatAttachmentContentRecord = {
   fileId: string;
   data: Uint8Array;
-  state:
-    | {
-        type: "staged";
-        uploadedAt: number;
-        mimeType: string;
-        name?: string;
-      }
-    | {
-        type: "committed";
-        chatId: number;
-      };
+  state: {
+    type: "staged";
+    uploadedAt: number;
+    mimeType: string;
+    name?: string;
+  };
+} | {
+  fileId: string;
+  /** Retained only for binary attachments and text attachments committed before Git ingress. */
+  data?: Uint8Array;
+  state: {
+    type: "committed";
+    chatId: number;
+    /** Path in the chat's attachments worktree, for text attachments provisioned there. */
+    workspacePath?: string;
+    /** Immutable Git commit holding the upload's original text for replay and download. */
+    workspaceCommitId?: string;
+  };
 };
 
 // =======================================================================================

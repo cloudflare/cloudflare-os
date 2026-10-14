@@ -1146,7 +1146,7 @@ async function formatBlueprintProposal(
 }
 
 let READ_FILE_TOOL_DESCRIPTION = `
-Read the content of a file owned by a workpiece (a gadget or worktree) in your \`env\`. If a file changes after you read it, you will either be informed of the change or the outdated result will be replaced with a note telling you to re-read the file; otherwise there is no need to read a file again after you have already read it once. This cannot read chat attachments; attachments are provided directly in the conversation.
+Read the content of a file owned by a workpiece (a gadget or worktree) in your \`env\`. If a file changes after you read it, you will either be informed of the change or the outdated result will be replaced with a note telling you to re-read the file; otherwise there is no need to read a file again after you have already read it once. Uploaded text attachments are also available in the chat's attachments worktree when the system prompt lists one.
 
 For a large file, pass \`startLine\` and \`lineCount\` to read a window of it; the result then ends with a line giving the range shown and the \`startLine\` to continue from. Use \`grep\` to find the lines you need first.
 `.trim();
@@ -2183,9 +2183,14 @@ async function runAgentPass(
                     mimeType: attachment.mimeType,
                   }];
                 } else if (isTextLikeAttachmentMimeType(attachment.mimeType)) {
+                  let workspaceLocation = attachment.workspacePath && agentContext.attachments
+                      ? `; workspace file env.${agentContext.attachments.bindingName}/` +
+                        attachment.workspacePath
+                      : "";
                   return [{
                     type: "text",
-                    text: `\n\n[Attached text file${filename}]\n${new TextDecoder().decode(data)}`,
+                    text: `\n\n[Attached text file${filename}${workspaceLocation}]\n` +
+                        new TextDecoder().decode(data),
                   }];
                 } else if (attachment.mimeType === PDF_MIME_TYPE &&
                            modelApiSupportsPdfAttachments(handle.model.api)) {
