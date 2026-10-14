@@ -187,6 +187,20 @@ describe("Google resource configurators", () => {
       .rejects.toThrow("Google Calendar API request failed: 403");
   });
 
+  // A shared file or folder can be named to look like one of the user's own.
+  it("tells apart folders whose names only look the same", async () => {
+    let long = "x".repeat(240);
+    let names = ["Budget", "Budget\u200e", "budget\u200b", "Budget plan", `${long}A`, `${long}B`];
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      files: names.map((name, index) => ({ id: `id${index}`, name, capabilities: { canListChildren: true } })),
+    })));
+
+    const options = await new DriveFolderConfiguratorUI(async () => token("access-token"))
+      .listDriveFolders("Budget");
+
+    expect(options.map(option => option.meta)).toEqual(["id0", "id1", "id2", undefined, "id4", "id5"]);
+  });
+
   it("refreshes a rejected Calendar access token", async () => {
     let getToken = vi.fn(async (opts?: AccessTokenRequest) =>
       token(opts?.forceRefresh ? "fresh" : "stale"));
