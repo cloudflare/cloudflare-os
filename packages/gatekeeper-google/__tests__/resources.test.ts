@@ -245,6 +245,46 @@ describe("resourceUrlPatternsToOAuthScopes", () => {
     expect(recordedResourceUrlPatterns(grant)).toEqual([GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern]);
   });
 
+  // `freeBusy.query` accepts only `calendar`, `calendar.readonly`, `calendar.freebusy` and
+  // `calendar.events.freebusy`. With `calendar.events` alone Google answers 403
+  // ACCESS_TOKEN_SCOPE_INSUFFICIENT, which failed every checkAvailability and every all-visible
+  // observer check.
+  it("asks a Calendar connection for a scope free/busy accepts", () => {
+    expect(resourceUrlPatternsToOAuthScopes([GOOGLE_CALENDAR_RESOURCE.urlPattern])).toEqual([
+      ...IDENTITY_SCOPES,
+      "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+      "https://www.googleapis.com/auth/calendar.events",
+      "https://www.googleapis.com/auth/calendar.events.freebusy",
+    ]);
+  });
+
+  it("re-prompts a Calendar grant made before availability had its own scope", () => {
+    const grant = {
+      resourceUrlPatterns: [GOOGLE_CALENDAR_RESOURCE.urlPattern],
+      oauthScopes: [
+        ...IDENTITY_SCOPES,
+        "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+        "https://www.googleapis.com/auth/calendar.events",
+      ],
+    };
+    expect(grantedResourceUrlPatterns(grant)).toEqual([]);
+    expect(recordedResourceUrlPatterns(grant)).toEqual([GOOGLE_CALENDAR_RESOURCE.urlPattern]);
+  });
+
+  // Free/busy already worked for an account holding a whole-calendar scope, so it keeps its grant.
+  it("covers Calendar free/busy with a whole-calendar grant", () => {
+    for (const wider of [
+      "https://www.googleapis.com/auth/calendar",
+      "https://www.googleapis.com/auth/calendar.readonly",
+    ]) {
+      expect(resourcesCoveredByScopes([GOOGLE_CALENDAR_RESOURCE.urlPattern], [
+        "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+        "https://www.googleapis.com/auth/calendar.events",
+        wider,
+      ])).toEqual([GOOGLE_CALENDAR_RESOURCE.urlPattern]);
+    }
+  });
+
   it("deduplicates scopes shared between resources", () => {
     let scopes = resourceUrlPatternsToOAuthScopes(
       [GOOGLE_DOC_RESOURCE.urlPattern, GOOGLE_SHEETS_RESOURCE.urlPattern]);

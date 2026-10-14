@@ -88,7 +88,8 @@ included). Across all resource types, the gatekeeper can request:
 - `spreadsheets.readonly` to read native Sheets opened from account-wide, folder, or exact-file Drive bindings.
 - `presentations` to read, edit, and create directly selected presentations, and to render slide thumbnails; `presentations.readonly` to read and render native Slides opened from account-wide, folder, or exact-file Drive bindings. Google counts each thumbnail as an expensive read, limited to 60 a minute per user and 300 per project.
 - `calendar.calendarlist.readonly` so the resource picker can list calendars.
-- `calendar.events` to manage selected calendar and check calendar availability.
+- `calendar.events` to read and manage the selected calendar.
+- `calendar.events.freebusy` to check availability, which `calendar.events` does not cover. Adding it retracted every existing Calendar grant that lacks a whole-calendar scope: owners re-consent the next time they connect a calendar, and an existing binding checks availability only after its account reconnects or grants Calendar again.
 - `chat.spaces.readonly`, `chat.messages`, and `chat.memberships.readonly` for every Chat resource. A whole-account Chat connection adds `chat.users.readstate.readonly` for its unread-only search, and `chat.spaces.create` and `directory.readonly` to start direct messages and group chats with people in the connected account's Workspace directory. Starting a conversation is its own approval kind, separate from sending in an existing one, and people outside the organization can't be added to a new conversation.
 - `bigquery` for BigQuery dry-runs and queries. This is intentionally broader than `bigquery.readonly` because dry-runs use `jobs.insert`; the gatekeeper enforces read-only SQL and resource scope checks before running queries.
 

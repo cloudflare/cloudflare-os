@@ -258,6 +258,9 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
       // Read-only calendar list, used to power the calendar picker when connecting a calendar.
       "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
       "https://www.googleapis.com/auth/calendar.events",
+      // Free/busy, which `calendar.events` does not cover: Google refuses `freeBusy.query` without
+      // this, `calendar.freebusy` (the account's own calendars only), or a whole-calendar scope.
+      "https://www.googleapis.com/auth/calendar.events.freebusy",
     ],
   },
   {
@@ -440,6 +443,9 @@ const SCOPE_COVERED_BY: Record<string, readonly string[]> = {
   "https://www.googleapis.com/auth/spreadsheets": [DRIVE_READWRITE_SCOPE],
   [DRIVE_READONLY_SCOPE]: [DRIVE_READWRITE_SCOPE],
   [DRIVE_FILE_SCOPE]: [DRIVE_READWRITE_SCOPE],
+  "https://www.googleapis.com/auth/calendar.events.freebusy": [
+    "https://www.googleapis.com/auth/calendar", "https://www.googleapis.com/auth/calendar.readonly",
+  ],
   "https://www.googleapis.com/auth/chat.spaces.readonly": [
     "https://www.googleapis.com/auth/chat.spaces",
   ],
