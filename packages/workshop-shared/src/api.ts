@@ -2810,6 +2810,9 @@ export interface Overseer extends RpcTarget {
    * If a slash command produces no message, only its visible invocation event is committed and the
    * agent does not run.
    * Slash-command requests cannot include capsules or attachments.
+   * While the agent is running, plain text is queued as steering for the next model request.
+   * Steering cannot include capsules, attachments, formats, or slash commands, and ignores
+   * `modelId`, retaining the running agent's model. Queued text is preserved when stopped.
    *
    * `modelId` is one of the IDs in the result of `listModels()`, or null to inhibit AI response
    * (useful when using chat to talk between humans).
@@ -3113,6 +3116,16 @@ export interface Overseer extends RpcTarget {
   previewRevokeShareLink(linkId: string): Promise<AffectedCollaborator[]>;
 }
 
+/** A durably queued text-only steering message; it becomes ordinary history when picked up. */
+export type AiChatSteeringMessage = {
+  /** The person who submitted the message. */
+  author: AiChatAuthorInfo;
+  /** Plain message text, without attachments, resources, formats, or slash commands. */
+  message: string;
+  /** When the message was queued. */
+  timestamp: Date;
+};
+
 export type AiChatMetadata = {
   id: number,
   title: string,
@@ -3124,6 +3137,9 @@ export type AiChatMetadata = {
    * chat.
    */
   activeAgent?: AiChatAuthorInfo,
+
+  /** Text messages waiting to steer the agent at its next model-request boundary, in send order. */
+  steeringMessages?: AiChatSteeringMessage[],
 
   /**
    * The workpieces to which this chat has proposed changes that have not been accepted yet

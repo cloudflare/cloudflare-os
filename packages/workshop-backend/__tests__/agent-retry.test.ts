@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import {
-  createFauxCore, fauxAssistantMessage, fauxText, fauxThinking, type AssistantMessage,
+  createFauxCore, fauxAssistantMessage, fauxText, fauxThinking, type AssistantMessage, type Context,
 } from "@earendil-works/pi-ai";
 import type {
   AiChatAuthorInfo, AiChatMessage, AiChatMetadata, AiChatStreamEvent,
@@ -25,7 +25,7 @@ declare module "cloudflare:workers" {
 interface OverseerInternals extends AgentHooks {
   storage: {
     gadgets: { put(record: GadgetRecord): void };
-    chatMeta: { put(meta: AiChatMetadata): void };
+    chatMeta: { put(meta: AiChatMetadata): void; get(chatId: number): AiChatMetadata | undefined };
     chats: { put(message: AiChatMessage): void, list(): Iterable<AiChatMessage> };
   };
   nextChatSequence(chatId: number): number;
@@ -70,6 +70,30 @@ async function runScriptedTurn(
   return events;
 }
 
+async function runSteeringTurn(
+    impl: OverseerInternals,
+    onRequest: (index: number, context: Context) => void,
+    steps: AssistantMessage[]): Promise<void> {
+  let faux = createFauxCore({ models: [{ id: "faux-model" }] });
+  faux.setResponses(steps);
+  let index = 0;
+  const stream: typeof faux.stream = (...args) => {
+    onRequest(index++, args[1]);
+    return faux.stream(...args);
+  };
+  await runAgent(impl, { model: faux.getModel(), stream }, CHAT_ID,
+      { type: "agent", id: "faux-model", name: "Faux" }, new AbortController().signal, OWNER,
+      { provider: "cloudflare", model: "faux-model", apiToken: "" });
+}
+
+function queueSteering(impl: OverseerInternals, ...messages: string[]): void {
+  let meta = impl.storage.chatMeta.get(CHAT_ID)!;
+  meta.steeringMessages = messages.map(message => ({
+    author: OWNER, message, timestamp: new Date(),
+  }));
+  impl.storage.chatMeta.put(meta);
+}
+
 function streamedText(events: AiChatStreamEvent[]): string {
   return events.flatMap(event => event.type === "textDelta" ? [event.delta] : []).join("");
 }
@@ -108,5 +132,57 @@ describe("transient model failures", () => {
           { stopReason: "error", errorMessage: "400 Invalid request" }),
       fauxAssistantMessage(fauxText("Never requested.")),
     ])).rejects.toThrow("400 Invalid request");
+  }));
+});
+
+describe("steering", () => {
+  it("picks up queued text after the current response, in order, even when Pi would stop",
+      () => withImpl(async impl => {
+    seedChat(impl);
+    const requests: string[] = [];
+    await runSteeringTurn(impl, (index, context) => {
+      requests.push(JSON.stringify(context));
+      if (index === 0) {
+        queueSteering(impl, "Use a table instead", "Keep it short");
+        // Queueing does not insert text ahead of the in-flight assistant response.
+        expect([...impl.storage.chats.list()].filter(msg => msg.chatId === CHAT_ID))
+          .toHaveLength(1);
+      }
+    }, [
+      fauxAssistantMessage(fauxText("Initial response.")),
+      fauxAssistantMessage(fauxText("Steered response.")),
+    ]);
+    expect(requests).toHaveLength(2);
+    expect(requests[0]).not.toContain("Use a table instead");
+    expect(requests[1]).toContain("Initial response.");
+    expect(requests[1]).toContain("Use a table instead");
+    expect(requests[1]).toContain("Keep it short");
+    const messages = [...impl.storage.chats.list()].filter(msg => msg.chatId === CHAT_ID);
+    expect(messages.flatMap(msg => msg.type === "message" ? [msg.message] : []))
+      .toEqual(["Hi", "Initial response.", "Use a table instead", "Keep it short", "Steered response."]);
+    expect(impl.storage.chatMeta.get(CHAT_ID)?.steeringMessages).toBeUndefined();
+    expect(impl.consumeSteeringMessages(CHAT_ID)).toEqual([]);
+  }));
+
+  it("replays stored steering when the durable history has a completed assistant tail",
+      () => withImpl(async impl => {
+    seedChat(impl);
+    impl.storage.chats.put({
+      chatId: CHAT_ID, sequence: impl.nextChatSequence(CHAT_ID), timestamp: new Date(),
+      author: {type: "agent", id: "faux-model", name: "Faux"},
+      type: "message", message: "Already completed.",
+    });
+    queueSteering(impl, "One more thing");
+    const requests: string[] = [];
+    await runSteeringTurn(impl, (_index, context) => requests.push(JSON.stringify(context)), [
+      fauxAssistantMessage(fauxText("Handled it.")),
+    ]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toContain("Already completed.");
+    expect(requests[0]).toContain("One more thing");
+    expect([...impl.storage.chats.list()].filter(msg =>
+      msg.chatId === CHAT_ID && msg.type === "message" && msg.message === "One more thing"))
+      .toHaveLength(1);
+    expect(impl.consumeSteeringMessages(CHAT_ID)).toEqual([]);
   }));
 });

@@ -6463,6 +6463,25 @@ function ChatInterface({
               {/* ── Bottom: input, update state, and cost ──────────────── */}
               <div className={`flex-shrink-0 bg-kumo-base ${sidebarMode ? "" : "border-t border-kumo-line"}`}>
                 <div className={useConstrainedChatWidth ? "mx-auto w-full max-w-[920px]" : ""}>
+                  {(isAgentActive || (currentChatMetadata?.steeringMessages?.length ?? 0) > 0) && (
+                    <div className="px-4 pt-3 text-xs text-kumo-subtle" role="status" aria-live="polite">
+                      <p>{isAgentActive
+                        ? "Send text to steer the agent before its next response. Stop ends the current run."
+                        : "Queued steering will be picked up when the agent resumes."}</p>
+                      {(currentChatMetadata?.steeringMessages?.length ?? 0) > 0 && (
+                        <div className="mt-2 rounded-lg border border-kumo-line bg-kumo-tint p-3">
+                          <p className="font-medium">Queued steering messages</p>
+                          <ol className="mt-1 max-h-40 list-inside list-decimal space-y-1 overflow-auto">
+                            {currentChatMetadata?.steeringMessages?.map((item, index) => (
+                              <li key={index} className="break-words whitespace-pre-wrap">
+                                {item.message}
+                              </li>
+                            ))}
+                          </ol>
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {/* Remount all transient composer state when the conversation changes. */}
                   <ChatComposer
                     key={`${workspaceId}:${selectedChatId}`}

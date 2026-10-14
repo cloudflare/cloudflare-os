@@ -1,4 +1,4 @@
-import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
+import { AiChatMessage, AiChatMetadata, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replaceSpanChange,
   type CodeContent, type CodeChange, type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
@@ -314,6 +314,12 @@ export interface AgentHooks {
    * pass can compact or persist steps.
    */
   loadChatHistory(chatId: number): ChatHistory;
+
+  /** Read waiting steering without retiring it, for the next request's compaction estimate. */
+  peekSteeringMessages(chatId: number): NonNullable<AiChatMetadata["steeringMessages"]>;
+
+  /** Atomically move queued steering into ordinary history, returning it in send order. */
+  consumeSteeringMessages(chatId: number): NonNullable<AiChatMetadata["steeringMessages"]>;
 
   /** Publish a compaction checkpoint: later history loads start from it. */
   commitChatCompaction(chatId: number, checkpoint: CompactionCheckpoint): void;
@@ -1422,6 +1428,13 @@ export async function runAgent(
   let retries = 0;
   while (true) {
     let history = hooks.loadChatHistory(chatId);
+    // A resumed pass may end in an assistant message. Append waiting steering before replay,
+    // rather than letting the completed-tail guard mistake it for a turn with nothing to do.
+    // Do not change the meaning of a pending /compact command.
+    if (!isCompactionTurn(history.chatMessages) &&
+        hooks.consumeSteeringMessages(chatId).length > 0) {
+      history = hooks.loadChatHistory(chatId);
+    }
     let outcome = await runAgentPass(
         hooks, handle, chatId, author, history, abortSignal, initiator, modelConfig);
     if (outcome.type === "transientFailure") {
@@ -4117,6 +4130,14 @@ async function runAgentPass(
     // prompt and tool declarations now ride the leading system message in pi's transcript.
     convertToLlm: (messages) => messages as Message[],
     toolExecution: "sequential",
+    // Pi polls before requests, never mid-tool-batch. Between steps, turn_end has already
+    // persisted the assistant and tools; persist steering too so retries replay what Pi saw.
+    getSteeringMessages: async () => {
+      if (abortSignal.aborted || connectionRequested || awaitingActionDecision) return [];
+      return hooks.consumeSteeringMessages(chatId).map(({message, timestamp}) => ({
+        role: "user" as const, content: message, timestamp: timestamp.getTime(),
+      }));
+    },
     maxTokens: maxOutputTokens,
     finishTurn: ({message, toolResults}) => {
       if (message.stopReason === "error" || message.stopReason === "aborted") return;
@@ -4138,15 +4159,20 @@ async function runAgentPass(
           awaitingActionDecision) {
         return {action: "end"};
       }
-      // The model stopped on its own; there is no next request to make room for.
-      if (toolResults.length === 0) return;
-      // Otherwise the next request is this step's measured prompt plus the tool results just
-      // produced, weighed as the model will see them (pi's `details` can carry a second copy of a
+      // Steering can require another request even after a final text-only response.
+      let steering = hooks.peekSteeringMessages(chatId);
+      if (toolResults.length === 0 && steering.length === 0) return;
+      // Otherwise the next request is this step's measured prompt plus the tool results and
+      // queued steering, weighed as the model will see them (pi's `details` can carry a second copy of a
       // large output). Without usage there is nothing to measure against, so reload: the
       // turn-start check estimates the whole prompt, as it does for that case there.
       let measured = message.usage.totalTokens;
-      let next = measured + estimateProjectionTokens(
-          toolResults.map(({details: _, ...message}) => ({message})));
+      let next = measured + estimateProjectionTokens([
+        ...toolResults.map(({details: _, ...message}) => ({message})),
+        ...steering.map(({message, timestamp}) => ({message: {
+          role: "user" as const, content: message, timestamp: timestamp.getTime(),
+        }})),
+      ]);
       if (measured <= 0 || shouldCompactChat(next, inputBudget)) {
         reloadForCompaction = true;
         // The rerun's fresh preview manager knows of no active file; end this one's marker here,

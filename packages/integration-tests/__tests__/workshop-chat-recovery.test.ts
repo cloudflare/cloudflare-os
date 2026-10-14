@@ -91,7 +91,7 @@ it.concurrent("a transient provider failure is retried, and the turn answers wit
 });
 
 it.concurrent(
-    "a provider failure leaves the chat idle, retry answers once, and a busy chat refuses messages",
+    "a provider failure can be retried, and stopping preserves queued steering once",
     async () => {
   const outage = { error: { status: 500, message: "scripted provider outage" } };
   // The turn retries the failed request twice before it reports the error.
@@ -99,6 +99,7 @@ it.concurrent(
     outage, outage, outage,
     { text: "Retry succeeded." },
     { pending: true },
+    { text: "Handled queued steering." },
   ]);
   const [owner] = nextUsernames("recoveryowner");
   using publicApi = connect(harness.url);
@@ -136,16 +137,34 @@ it.concurrent(
   try {
     await ws.sendChatMessage(chatId, "Hold open", SCRIPTED_MODEL_ID);
     await waitFor("the pending model request", async () => model.requests.length === 5 || null);
-    await expect(ws.sendChatMessage(chatId, "Rejected", SCRIPTED_MODEL_ID))
-      .rejects.toThrow("Agent is running, wait for it to finish.");
+    await expect(ws.sendChatMessage(chatId, {
+      id: { builtin: true, commandId: "compact" }, args: "",
+    }, SCRIPTED_MODEL_ID)).rejects.toThrow("steering must be plain text");
+    await expect(ws.sendChatMessage(chatId, "x".repeat(32 * 1024 + 1), SCRIPTED_MODEL_ID))
+      .rejects.toThrow("steering queue is full");
+    await ws.sendChatMessage(chatId, "First steering", SCRIPTED_MODEL_ID);
+    await ws.sendChatMessage(chatId, "Second steering", SCRIPTED_MODEL_ID);
+    const busy = (await ws.listChats()).find(chat => chat.id === chatId)!;
+    expect(busy.steeringMessages?.map(item => item.message))
+      .toEqual(["First steering", "Second steering"]);
+    expect(model.requests).toHaveLength(5);
     history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
-    expect(history).not.toContainEqual(expect.objectContaining({
-      type: "message",
-      message: "Rejected",
-    }));
+    expect(messageTexts(history)).not.toContain("First steering");
   } finally {
     await ws.stopAgent(chatId);
   }
+  await waitForIdleChat(ws, chatId);
+  history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
+  expect(messageTexts(history).slice(-2)).toEqual(["First steering", "Second steering"]);
+  expect((await ws.listChats()).find(chat => chat.id === chatId)?.steeringMessages)
+    .toBeUndefined();
+  await ws.retryAgent(chatId, SCRIPTED_MODEL_ID);
+  await waitForIdleChat(ws, chatId);
+  expect(JSON.stringify(model.requests[5])).toContain("First steering");
+  expect(JSON.stringify(model.requests[5])).toContain("Second steering");
+  history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
+  expect(messageTexts(history).filter(text => text === "First steering")).toHaveLength(1);
+  expect(messageTexts(history).at(-1)).toBe("Handled queued steering.");
 });
 
 it.concurrent("stopping a running agent keeps its completed steps and leaves the chat usable",

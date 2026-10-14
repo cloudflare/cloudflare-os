@@ -59,7 +59,7 @@ describe("ChatComposer", () => {
     testState.gatekeeperModalProps = undefined;
   });
 
-  it("sends on Enter without clearing document changes made while sending", async () => {
+  it.each([false, true])("sends on Enter without clearing edits while sending (agent active: %s)", async (isAgentActive) => {
     let finishSend: (() => void) | undefined;
     const onSend = vi.fn<Parameters<typeof ChatComposer>[0]["onSend"]>(
       () => new Promise<void>((resolve) => { finishSend = resolve; }),
@@ -74,7 +74,7 @@ describe("ChatComposer", () => {
         createCapsuleGatekeeper={async () => null}
         getOverseer={() => overseer}
         onSend={onSend}
-        isAgentActive={false}
+        isAgentActive={isAgentActive}
         models={[]}
         selectedModel={{ id: "model-a" }}
         onModelChange={() => {}}
@@ -115,6 +115,46 @@ describe("ChatComposer", () => {
     expect(textarea.value).toBe("Next question");
     expect(textarea.disabled).toBe(false);
     expect(testState.addToast).not.toHaveBeenCalled();
+  });
+
+  it("queues steering independently of Stop while the agent is active", async () => {
+    const onStop = vi.fn<() => void>();
+    const onSend = vi.fn<Parameters<typeof ChatComposer>[0]["onSend"]>(async () => {});
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root!.render(
+      <ChatComposer
+        createCapsuleGatekeeper={async () => null}
+        getOverseer={() => ({} as RpcStub<Overseer>)}
+        onSend={onSend}
+        isAgentActive={true}
+        onStop={onStop}
+        models={[]}
+        selectedModel={{ id: "model-a" }}
+        onModelChange={() => {}}
+      />,
+    ));
+    const textarea = container.querySelector<HTMLTextAreaElement>('[role="combobox"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(
+        textarea,
+        "Keep it short",
+      );
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const stop = container.querySelector<HTMLButtonElement>('[aria-label="Stop agent"]')!;
+    const send = container.querySelector<HTMLButtonElement>('[aria-label="Queue steering message"]')!;
+    expect(stop).not.toBeNull();
+    expect(send.disabled).toBe(false);
+    await act(async () => send.click());
+    expect(onSend).toHaveBeenCalledExactlyOnceWith(
+      "Keep it short", "model-a", undefined, undefined, undefined,
+    );
+    expect(onStop).not.toHaveBeenCalled();
+    expect(textarea.value).toBe("");
+    await act(async () => stop.click());
+    expect(onStop).toHaveBeenCalledOnce();
   });
 
   it.each([

@@ -6176,6 +6176,26 @@ class OverseerImpl implements AgentHooks {
     if (typeof message !== "string" && (capsules?.length || attachments?.length)) {
       throw new Error("Slash commands cannot include resources or attachments.");
     }
+    let activeMeta = this.getChatMetaOrThrow(chatId);
+    if (activeMeta.activeAgent) {
+      if (typeof message !== "string" || capsules?.length || attachments?.length ||
+          formats?.length || responseTargetRegistration) {
+        throw new Error("While the agent is running, steering must be plain text without attachments, resources, formats, or slash commands.");
+      }
+      let text = message.trim();
+      if (!text) throw new Error("Steering messages cannot be empty.");
+      let queued = activeMeta.steeringMessages ?? [];
+      if (queued.length >= 20 || text.length + queued.reduce(
+          (total, item) => total + item.message.length, 0) > 32 * 1024) {
+        throw new Error("The steering queue is full. Wait for the agent to pick up queued messages.");
+      }
+      activeMeta.lastActive = this.getChatTimestamp();
+      activeMeta.steeringMessages = [...queued, {
+        author: userMeta.profile, message: text, timestamp: activeMeta.lastActive,
+      }];
+      this.storage.chatMeta.put(activeMeta);
+      return;
+    }
     let canonicalAttachments = this.canonicalizeChatAttachmentRefs(
         attachments, userMeta.aiModel?.config.provider);
     this.assertChatNotActive(chatId);
@@ -6195,8 +6215,12 @@ class OverseerImpl implements AgentHooks {
     }
     this.ctx.storage.transactionSync(() => {
       this.storage.chatMeta.put(meta);
+      // A denied permission/connection can leave steering waiting on an idle chat. Preserve its
+      // send order ahead of this new prompt, without changing the old decision's resume boundary.
+      let steering = this.consumeSteeringMessages(chatId);
+      let timestamp = steering.length > 0 ? this.getChatTimestamp() : meta.lastActive;
       let promptSequence = this.#commitPreparedChatMessage(
-          chatId, meta.lastActive, userMeta.profile, prepared, capsules, canonicalAttachments,
+          chatId, timestamp, userMeta.profile, prepared, capsules, canonicalAttachments,
           formats);
       if (responseTargetRegistration) {
         if (promptSequence === undefined) {
@@ -6480,6 +6504,26 @@ class OverseerImpl implements AgentHooks {
     };
   }
 
+  peekSteeringMessages(chatId: number): NonNullable<AiChatMetadata["steeringMessages"]> {
+    return this.storage.chatMeta.get(chatId)?.steeringMessages ?? [];
+  }
+
+  // Queue retirement and transcript appends share a transaction: a restart cannot lose text or
+  // inject it twice. The queue is metadata, not history, until the current step has been saved.
+  consumeSteeringMessages(chatId: number): NonNullable<AiChatMetadata["steeringMessages"]> {
+    return this.ctx.storage.transactionSync(() => {
+      let meta = this.storage.chatMeta.get(chatId);
+      let queued = meta?.steeringMessages ?? [];
+      if (!meta || queued.length === 0) return [];
+      delete meta.steeringMessages;
+      this.storage.chatMeta.put(meta);
+      for (let {author, message} of queued) {
+        this.addChatMessages(chatId, author, [{type: "message", message}]);
+      }
+      return queued;
+    });
+  }
+
   // Publishes a checkpoint: stores it and points the chat at it. `runAgent` produces the checkpoint,
   // for both automatic compaction and `/compact`, so there is one path here rather than two.
   //
@@ -6701,6 +6745,15 @@ class OverseerImpl implements AgentHooks {
       // provisional streaming state when it observes that the agent is no longer running (i.e. when
       // chat metadata's activeAgent becomes unset, which happens just below).
 
+      // Text sent after Pi's final poll (including during the cleanup await above) must not
+      // be stranded. Preserve it in history on stop/failure; on a normal finish run it next,
+      // unless a permission/connection decision is blocking continuation.
+      let awaitingDecision = this.#awaitsDecision(chatId);
+      // Keep steering out of the transcript while suspended: a user-message boundary would
+      // hide the awaited action from the approval-resume scan.
+      let queuedSteering = awaitingDecision ? [] : this.consumeSteeringMessages(chatId);
+      let continueSteering = queuedSteering.length > 0 && finished && !awaitingDecision &&
+          !liveChat.cancelController.signal.aborted;
       let meta = this.storage.chatMeta.get(chatId);
       if (meta) {
         delete meta.activeAgent;
@@ -6714,9 +6767,7 @@ class OverseerImpl implements AgentHooks {
       // re-register everything consistently.
       this.#unregisterRunningAgent(chatId);
 
-      if (finished && meta) {
-        // Classified here, past the turn's last await, so a decision made as it ended counts.
-        let awaitingDecision = this.#awaitsDecision(chatId);
+      if (finished && meta && !continueSteering) {
         // Only a person waits on their own turn, including one their approval resumed: callbacks
         // and spawned agents finish unattended.
         if (awaitingDecision || initiator.type === "user") {
@@ -6736,6 +6787,13 @@ class OverseerImpl implements AgentHooks {
       }
 
       this.#finishAgentTurn(chatId);
+      // Pending callbacks may already have started the next turn with the newly appended text.
+      let nextMeta = this.storage.chatMeta.get(chatId);
+      if (continueSteering && nextMeta && !nextMeta.activeAgent) {
+        nextMeta.activeAgent = aiModel.profile;
+        this.storage.chatMeta.put(nextMeta);
+        this.startAgent(chatId, aiModel, initiator, initiatorUserId, callbackInitiated);
+      }
     }
   }
 

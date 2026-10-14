@@ -340,6 +340,10 @@ export const ChatComposer = ({
   }, [activeUrl]);
 
   const isBlocked = !!blockedReason;
+  const steeringHasUnsupportedContent = isAgentActive && (
+    selectedSlashCommand !== null || capsules.length > 0 ||
+    pendingAttachments.length > 0 || formatTokens.length > 0
+  );
 
   // A disabled textarea stops firing mouse events, so drop the hover state the token hit-testing
   // below leaves behind; otherwise the cursor outlives `disabled:cursor-not-allowed`.
@@ -451,6 +455,14 @@ export const ChatComposer = ({
 
   const handleSend = async () => {
     if (sendInFlightRef.current || isSending || isBlocked) return;
+    if (steeringHasUnsupportedContent) {
+      toasts.add({
+        title: "Steering messages must be plain text",
+        description: "Wait for the agent to finish before sending attachments, resources, formats, or slash commands.",
+        variant: "error",
+      });
+      return;
+    }
     setSendHiccup(null);
     const attachmentsSnapshot = pendingAttachments;
     const readyAttachments = attachmentsSnapshot
@@ -647,7 +659,7 @@ export const ChatComposer = ({
   const hasUnreadyAttachment = pendingAttachments.some(
     (attachment) => attachment.uploadState !== "ready",
   );
-  const canSend = !isSending && !isAgentActive && !isBlocked &&
+  const canSend = !isSending && !isBlocked && !steeringHasUnsupportedContent &&
     (inputValue.trim().length > 0 || selectedSlashCommand !== null || hasReadyAttachment) &&
     !hasUnreadyAttachment && !isCreatingResource;
   return (
@@ -788,7 +800,7 @@ export const ChatComposer = ({
                 isBlocked
                   ? blockedReason
                   : isAgentActive
-                    ? "Waiting for agent…"
+                    ? "Send text to steer the agent…"
                     : newChat
                       ? "Start a new conversation…"
                       : "Ask a follow-up…"
@@ -868,7 +880,7 @@ export const ChatComposer = ({
                 // Enter sends message (unless Shift is held)
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
-                  if (!isAgentActive && !isBlocked) submitMessage();
+                  if (!isBlocked) submitMessage();
                   return;
                 }
                 if (activeUrl) {
@@ -956,7 +968,7 @@ export const ChatComposer = ({
                 selectedModel={selectedModel}
                 onModelChange={onModelChange}
               />
-              {isAgentActive && onStop ? (
+              {isAgentActive && onStop && (
                 <WorkshopIconButton
                   onClick={onStop}
                   tone="primary"
@@ -972,13 +984,13 @@ export const ChatComposer = ({
                     <rect x="5" y="5" width="14" height="14" rx="2" />
                   </svg>
                 </WorkshopIconButton>
-              ) : (
-                <WorkshopIconButton
+              )}
+              <WorkshopIconButton
                   onClick={submitMessage}
                   disabled={!canSend}
                   tone="primary"
                   className="!h-10 !w-10 disabled:cursor-not-allowed disabled:opacity-30 sm:!h-8 sm:!w-8"
-                  aria-label="Send message"
+                  aria-label={isAgentActive ? "Queue steering message" : "Send message"}
                 >
                   {/* Arrow-up icon */}
                   <svg
@@ -993,7 +1005,6 @@ export const ChatComposer = ({
                     <polyline points="5 12 12 5 19 12" />
                   </svg>
                 </WorkshopIconButton>
-              )}
           </div>
         </div>
       </div>
