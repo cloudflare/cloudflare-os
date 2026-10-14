@@ -279,7 +279,7 @@ export default function OnboardingWizard({
   const handleConnect = async (vendorId: string) => {
     setConnectingVendorId(vendorId)
     try {
-      openConnectWindow(await authenticatedApi.connectAccount(vendorId))
+      await openConnectWindow(await authenticatedApi.connectAccount(vendorId), authenticatedApi)
     } catch (err) {
       console.error('Failed to start connection:', err)
       toasts.add({ title: 'Failed to start connection', variant: 'error' })

@@ -399,7 +399,7 @@ export default function ResourcePicker({
   const handleConnectNew = async (vendorId: string, resourceUrlPatterns?: string[]) => {
     setConnectingVendor(vendorId)
     try {
-      openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns))
+      await openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns), authenticatedApi)
     } catch (error) {
       console.error('Failed to initiate connection:', error)
       toasts.add({ title: 'Failed to start connection flow', variant: 'error' })
@@ -416,7 +416,7 @@ export default function ResourcePicker({
     try {
       const flow = await authenticatedApi.ensureAccountResources(accountId, resourceUrlPatterns)
       if (flow) {
-        openConnectWindow(flow)
+        await openConnectWindow(flow, authenticatedApi)
         toasts.add({ title: 'Grant the additional access in the pop-up window.', variant: 'success' })
       }
     } catch (error) {
@@ -432,8 +432,8 @@ export default function ResourcePicker({
   const handleReconnect = useCallback(async (accountId: number) => {
     setReconnectingAccount(accountId)
     try {
-      openConnectWindow(await authenticatedApi.reconnectAccount(accountId))
-      // The popup redeems the ticket itself; the account arrives through the accounts subscription,
+      await openConnectWindow(await authenticatedApi.reconnectAccount(accountId), authenticatedApi)
+      // After ticket redemption the account arrives through the accounts subscription,
       // whose add() with credentialsValid: true clears the reconnectingAccount state.
     } catch (error) {
       console.error('Failed to initiate reconnection:', error)

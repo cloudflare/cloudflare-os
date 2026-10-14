@@ -5,7 +5,8 @@ browser that started it. The pieces: the **ticket** (`ConnectHandoff` in
 `packages/workshop-shared/src/gatekeeper.ts`), the **nonce** (`ConnectFlowStart` in
 `packages/workshop-shared/src/api.ts`), the gatekeeper's completion page (`connectHandoffPageHtml` in
 `packages/gatekeeper-kit/src/connect-pages.ts`), the Workshop's `/connect/handoff` page
-(`packages/workshop-frontend/src/ConnectHandoffPage.tsx`) and the server side
+(`packages/workshop-frontend/src/ConnectHandoffPage.tsx`, plus `BrowserConnectHandoffPage.tsx` for
+desktop redemption) and the server side
 (`packages/workshop-backend/src/connect-handoff.ts`, `user.ts`, `auth/login-flow.ts`).
 
 ## The threat, and the ticket
@@ -87,7 +88,9 @@ tab holds only the `attempt` capability and no id at all.
 1. The tab calls `AuthenticatedApi.connectAccount(vendorId)` (or `reconnectAccount` /
    `ensureAccountResources`). The user DO asks the vendor for the flow `url`, mints the nonce with
    `openConnectFlow`, and returns `{ url, nonce }`.
-2. `openConnectWindow(flow)` opens the disowned popup carrying the nonce and navigates it to `url`.
+2. `await openConnectWindow(flow, authenticatedApi)` opens the disowned popup carrying the nonce
+   and navigates it to `url`. Awaiting it also handles native completion (below); desktop still
+   returns as soon as the popup opens.
 3. The popup traverses the gatekeeper and the provider. On success the gatekeeper calls
    `callback.complete(user)`; `GatekeeperConnectCallbackImpl` (in `user.ts`) forwards to
    `stagePendingConnect`, which stores the ticket's hash and returns `{ targetOrigin, ticket }`.
@@ -137,6 +140,40 @@ sequenceDiagram
     Popup->>Popup: window.close()
     WS-->>Tab: subscribeConnectedAccounts: add(account)
 ```
+
+## Native system-browser transport
+
+The native shells cannot use a blank `window.open()` popup, and provider authentication must not
+run inside an embedded WebView. `openDisownedPopup` therefore checks the versioned
+`cloudflareOSNative.authentication` capability before using the desktop path. This one hook covers
+connect, reconnect, resource grants and gatekeeper sign-in; vendors need no mobile-specific logic.
+
+The transport is in `src/features/native-app/authPopup.ts` (under `packages/workshop-frontend`):
+
+1. The initiating WebView keeps the original flow nonce and authenticated API (or login attempt)
+   in memory. It generates a random correlation ID and calls `authentication.open(id, url)` with
+   its own origin's `/connect/handoff#native-auth=<encoded {id,url}>` bootstrap URL. No install
+   hostname is hardcoded. Neither the nonce nor the app's session token enters the browser.
+2. The system browser's handoff page stores only `{id, expiresAt}` in its own sessionStorage and
+   navigates to the flow URL. The gatekeeper/provider flow and backend staging are unchanged.
+3. On return to `/connect/handoff#<ticket>`, the browser consumes its correlation record, strips
+   the fragment, and navigates to the app-owned HTTPS callback
+   `https://os.cloudflare.app/authpopup#id=<id>&ticket=<ticket>`. Both values stay in the fragment;
+   the landing server never needs to receive them. This is a transport return, not redemption.
+4. iOS uses `ASWebAuthenticationSession`; Android uses an Auth Tab, with a verified App Link
+   fallback for older Custom Tabs. Native code validates the exact callback host/path, correlation
+   ID and ticket shape, then sends a `cloudflare-os:auth-popup` event only to the originating
+   install's main-frame WebView. Wrong, stale or unsolicited callbacks cannot complete a flow.
+5. The WebView redeems the ticket with its retained nonce over `completeConnectHandoff`, or calls
+   `confirmLogin` and continues polling its original login attempt. All server-side user, account,
+   nonce, expiry and single-use checks still apply. Native cancellation/failure rejects the
+   awaiting caller, and listeners expire after 30 minutes or are removed when closed/replaced.
+
+Deploy the frontend and update **both native apps** to use this transport. Older native binaries
+without the optional capability keep the desktop behavior; a frontend-only rollout cannot teach
+them to open a system authentication browser. The canonical callback domain must already associate
+the installed app/signing identity (iOS associated domains; Android Digital Asset Links). The
+Android app claims `/authpopup` separately from its install-session `/oauthredirect` callback.
 
 ## Sign-in
 

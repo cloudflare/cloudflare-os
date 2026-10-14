@@ -101,7 +101,7 @@ export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCance
     setStarting(flow)
     try {
       const started = await start()
-      if (started) openConnectWindow(started)
+      if (started) await openConnectWindow(started, authenticatedApi)
     } catch (err) {
       console.error('Failed to start connection flow:', err)
       toasts.add({ title: 'Failed to start connection flow', variant: 'error' })

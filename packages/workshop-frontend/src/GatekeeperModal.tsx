@@ -586,7 +586,7 @@ export default function GatekeeperModal({
   const handleConnectAccount = async (vendorId: string, resourceUrlPatterns?: string[]) => {
     setConnectingVendor(vendorId)
     try {
-      openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns))
+      await openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns), authenticatedApi)
       toasts.add({ title: 'Complete the account connection in the pop-up window.', variant: 'success' })
     } catch (error) {
       console.error('Failed to initiate connection:', error)
@@ -608,10 +608,10 @@ export default function GatekeeperModal({
     try {
       const flow = await authenticatedApi.ensureAccountResources(accountId, missing)
       if (flow) {
-        openConnectWindow(flow)
+        await openConnectWindow(flow, authenticatedApi)
         toasts.add({ title: 'Grant the additional access in the pop-up window.', variant: 'success' })
       }
-      // The popup redeems the ticket itself; the new grant arrives via subscribeConnectedAccounts(),
+      // After ticket redemption the new grant arrives via subscribeConnectedAccounts(),
       // the account's flag then clears and the configurator loads automatically.
     } catch (error) {
       console.error('Failed to request additional access:', error)
@@ -627,7 +627,7 @@ export default function GatekeeperModal({
   const handleReconnectAccount = async (accountId: number) => {
     setReconnectingAccountId(accountId)
     try {
-      openConnectWindow(await authenticatedApi.reconnectAccount(accountId))
+      await openConnectWindow(await authenticatedApi.reconnectAccount(accountId), authenticatedApi)
       toasts.add({ title: 'Complete the account reconnect in the pop-up window.', variant: 'success' })
     } catch (error) {
       console.error('Failed to initiate reconnect:', error)

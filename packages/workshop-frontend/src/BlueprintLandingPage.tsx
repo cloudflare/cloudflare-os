@@ -218,7 +218,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     if (!authenticatedApi) return
     setConnectingVendor(vendorId)
     try {
-      openConnectWindow(await authenticatedApi.connectAccount(vendorId))
+      await openConnectWindow(await authenticatedApi.connectAccount(vendorId), authenticatedApi)
       toasts.add({ title: 'Complete the account connection in the pop-up window.', variant: 'success' })
     } catch (err) {
       console.error('Failed to initiate connection:', err)
@@ -232,7 +232,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     if (!authenticatedApi) return
     setReconnectingAccountId(accountId)
     try {
-      openConnectWindow(await authenticatedApi.reconnectAccount(accountId))
+      await openConnectWindow(await authenticatedApi.reconnectAccount(accountId), authenticatedApi)
       toasts.add({ title: 'Complete the account reconnect in the pop-up window.', variant: 'success' })
     } catch (err) {
       console.error('Failed to initiate reconnect:', err)

@@ -10,6 +10,7 @@ export type CloudflareOSNative = {
   loginReady: () => void
   returnToInstalls: () => void
   notifications?: NativeNotificationBridge
+  authentication?: { open: (id: string, url: string) => void; close: (id: string) => void }
 }
 
 type NativeAppWindow = Window & { cloudflareOSNative?: CloudflareOSNative }

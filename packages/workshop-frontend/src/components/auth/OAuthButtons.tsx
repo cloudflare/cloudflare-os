@@ -3,6 +3,7 @@ import { RpcStub } from 'capnweb'
 import { PublicApi, AuthVendorInfo } from '@gadgets/workshop-shared/api'
 import { Button, Banner } from '@cloudflare/kumo'
 import { openDisownedPopup, uniquePopupName } from '../../connectHandoff'
+import type { AuthPopup } from '../../features/native-app/authPopup'
 
 interface OAuthButtonsProps {
   rpcStub: RpcStub<PublicApi>
@@ -27,6 +28,8 @@ const RECEIVE_POLL_MS = 1000
  * `attempt.receive()`, which releases the session token only once the ticket is confirmed and only
  * to the holder of the `attempt` capability; the popup never sees the token. On success the token
  * is stored and the app re-authenticates.
+ * In native apps the same helper opens the system browser and returns its one-time ticket here
+ * for confirmation with the retained nonce. The browser never receives that nonce or the token.
  *
  * A newer attempt waits for the previous one's in-flight `receive()` before tearing it down: the
  * server releases the token exactly once, so a call cancelled mid-flight could discard a token
@@ -83,9 +86,10 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
       // Disowned like connect popups: sign-in providers are admin-allowlisted, but the popup
       // traverses provider pages all the same, and none of them gets a handle on this tab. The
       // nonce rides along in the popup's own storage for the handoff page to present.
-      let popup: Window
+      let popup: AuthPopup
       try {
-        popup = openDisownedPopup(url, uniquePopupName('gatekeeper-login'), { kind: 'login', nonce })
+        popup = openDisownedPopup(url, uniquePopupName('gatekeeper-login'), { kind: 'login', nonce },
+          ticket => rpcStub.confirmLogin(ticket, nonce))
       } catch (err) {
         dispose()
         throw err
@@ -97,6 +101,7 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
         // The receive() call in flight, if any, as a promise that settles once its outcome has been
         // handled here; never rejects.
         let inflight: Promise<void> | null = null
+        void popup.completion?.catch(err => finish(() => reject(err)))
         const poll = window.setInterval(() => {
           // Not necessarily a cancellation: the popup closes itself after confirming, and a
           // provider that swaps browsing context groups (COOP) reports it closed while the flow is
@@ -123,6 +128,7 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
           settled = true
           attemptRef.current = null
           clearInterval(poll)
+          try { popup.close() } catch { /* cross-origin or already gone */ }
           dispose()
           fn()
         }
@@ -132,8 +138,6 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
           return received
         }
       })
-      // Best-effort: the page closes itself anyway, and a COOP swap leaves the handle dead.
-      try { popup.close() } catch { /* severed */ }
       if (!mountedRef.current) return  // user navigated away mid-flow; drop the result
       localStorage.setItem('authToken', token)
       if (onSuccess) onSuccess()

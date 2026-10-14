@@ -31,6 +31,7 @@ function fakePopup() {
 }
 
 describe('openConnectWindow', () => {
+  const api = { completeConnectHandoff: vi.fn<(ticket: string, nonce: string) => Promise<void>>().mockResolvedValue(undefined) }
   afterEach(() => {
     vi.restoreAllMocks()
     sessionStorage.clear()
@@ -40,7 +41,7 @@ describe('openConnectWindow', () => {
     const popup = fakePopup()
     const open = vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window)
 
-    expect(openConnectWindow({ url: 'https://gk.example/connect', nonce: NONCE })).toBe(popup)
+    expect(openConnectWindow({ url: 'https://gk.example/connect', nonce: NONCE }, api)).toBe(popup)
     expect(open).toHaveBeenCalledExactlyOnceWith('', expect.stringMatching(/^gadgets-connect-/), FEATURES)
     expect(open.mock.calls[0][1]).not.toContain('noopener')
     expect(open.mock.calls[0][2]).not.toContain('noopener')
@@ -57,7 +58,7 @@ describe('openConnectWindow', () => {
     const popup = fakePopup()
     vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window)
 
-    openConnectWindow({ url: 'https://gk.example/connect', nonce: NONCE })
+    openConnectWindow({ url: 'https://gk.example/connect', nonce: NONCE }, api)
 
     expect(popup.sessionStorage.setItem).toHaveBeenCalledExactlyOnceWith(
       HANDOFF_KEY, JSON.stringify({ kind: 'connect', nonce: NONCE }))
@@ -72,9 +73,9 @@ describe('openConnectWindow', () => {
       .mockReturnValueOnce(first as unknown as Window)
       .mockReturnValueOnce(second as unknown as Window)
 
-    openConnectWindow({ url: 'https://gk.example/one', nonce: NONCE })
+    openConnectWindow({ url: 'https://gk.example/one', nonce: NONCE }, api)
     expect(first.close).not.toHaveBeenCalled()
-    openConnectWindow({ url: 'https://gk.example/two', nonce: 'c'.repeat(64) })
+    openConnectWindow({ url: 'https://gk.example/two', nonce: 'c'.repeat(64) }, api)
 
     expect(first.close).toHaveBeenCalledOnce()
     expect(second.close).not.toHaveBeenCalled()
@@ -85,7 +86,7 @@ describe('openConnectWindow', () => {
   it('tells the user when the browser blocked the popup', () => {
     vi.spyOn(window, 'open').mockReturnValue(null)
 
-    expect(() => openConnectWindow({ url: 'https://gk.example/connect', nonce: NONCE }))
+    expect(() => openConnectWindow({ url: 'https://gk.example/connect', nonce: NONCE }, api))
       .toThrow('Pop-up blocked. Please allow pop-ups and try again.')
   })
 
@@ -96,7 +97,7 @@ describe('openConnectWindow', () => {
     popup.sessionStorage.setItem.mockImplementation(() => { throw new DOMException('denied', 'SecurityError') })
     vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window)
 
-    expect(() => openConnectWindow({ url: 'https://gk.example/connect', nonce: NONCE }))
+    expect(() => openConnectWindow({ url: 'https://gk.example/connect', nonce: NONCE }, api))
       .toThrow(/blocks storage in pop-ups/)
     expect(popup.close).toHaveBeenCalledOnce()
     expect(popup.location.replace).not.toHaveBeenCalled()
