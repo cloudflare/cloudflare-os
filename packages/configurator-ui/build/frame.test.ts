@@ -182,7 +182,7 @@ describe("generated configurator frame", () => {
       expect(await frame().getByRole("listbox").evaluate(list => list.scrollWidth - list.clientWidth)).toBe(0);
 
       const tooltip = (option: typeof long) =>
-        option.evaluate(node => node.querySelector<HTMLElement>("[title]")?.title ?? "");
+        option.evaluate(node => node.querySelector("[title]")?.getAttribute("title") ?? "");
       await long.hover();
       expect(await tooltip(long)).toBe(LONG_FOLDER);
       const short = frame().getByRole("option", { name: "Projects" });
