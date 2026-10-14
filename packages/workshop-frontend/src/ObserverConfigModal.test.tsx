@@ -135,7 +135,7 @@ function mockConnectPopup() {
   const popup = {
     close() {},
     opener: window as Window | null,
-    sessionStorage: { setItem: vi.fn<(key: string, value: string) => void>() },
+    sessionStorage: { setItem: vi.fn<(key: string, value: string) => void>(), removeItem: vi.fn<(key: string) => void>() },
     location: { replace: vi.fn<(url: string) => void>() },
   }
   vi.spyOn(window, 'open').mockImplementation(() => popup as unknown as Window)

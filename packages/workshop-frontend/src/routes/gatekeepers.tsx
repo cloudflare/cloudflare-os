@@ -26,6 +26,7 @@ import { useDocumentTitle } from '../useDocumentTitle'
 import { useSiteName } from '../ServerConfigContext'
 import { AccountsSubscriberAdapter } from '../accountsSubscriber'
 import { openConnectWindow } from '../connectHandoff'
+import { AuthPopupCancelledError } from '../features/native-app/authPopup'
 
 export const Route = createFileRoute('/gatekeepers')({
   component: ConnectorsPage,
@@ -581,8 +582,9 @@ function ConnectorsPage() {
       }
       handleCloseModal()
     } catch (err) {
+      if (err instanceof AuthPopupCancelledError) return
       console.error('Failed to connect account:', err)
-      toasts.add({ title: 'Failed to start connection', variant: 'error' })
+      toasts.add({ title: err instanceof Error ? err.message : 'Could not complete connection', variant: 'error' })
     } finally {
       setConnecting(false)
     }
@@ -600,8 +602,9 @@ function ConnectorsPage() {
       // After ticket redemption the new grant arrives via subscribeConnectedAccounts(),
       // and the toggle reflects it once `grantedResourceUrlPatterns` updates.
     } catch (err) {
+      if (err instanceof AuthPopupCancelledError) return
       console.error('Failed to expand account access:', err)
-      toasts.add({ title: 'Failed to request additional access', variant: 'error' })
+      toasts.add({ title: err instanceof Error ? err.message : 'Failed to request additional access', variant: 'error' })
     } finally {
       setEnsuringResourceUrlPatterns((prev) =>
         prev.filter((p) => !resourceUrlPatterns.includes(p)),
@@ -633,8 +636,9 @@ function ConnectorsPage() {
     try {
       await openConnectWindow(await authenticatedApi.reconnectAccount(accountId), authenticatedApi)
     } catch (err) {
+      if (err instanceof AuthPopupCancelledError) return
       console.error('Failed to reconnect account:', err)
-      toasts.add({ title: 'Failed to reconnect account', variant: 'error' })
+      toasts.add({ title: err instanceof Error ? err.message : 'Failed to reconnect account', variant: 'error' })
     } finally {
       setReconnectingAccountId(null)
     }

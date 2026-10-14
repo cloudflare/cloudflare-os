@@ -18,7 +18,11 @@ const ConnectHandoffPage = () => {
     window.history.replaceState(window.history.state, '', window.location.pathname)
     window.location.replace(relay.destination)
   }, [relay])
-  return relay ? <p role="status">Returning to Cloudflare OS…</p> : <BrowserConnectHandoffPage />
+  return relay ? (
+    <div className="flex min-h-full items-center justify-center bg-kumo-base p-6 text-center text-kumo-default">
+      <p role="status">{relay.record ? 'Opening sign-in…' : 'Returning to Cloudflare OS…'}</p>
+    </div>
+  ) : <BrowserConnectHandoffPage />
 }
 
 export default ConnectHandoffPage

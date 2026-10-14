@@ -12,6 +12,7 @@ import {
 } from './components/pickerRows'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
 import { openConnectWindow } from './connectHandoff'
+import { AuthPopupCancelledError } from './features/native-app/authPopup'
 
 export interface VendorOption {
   id: string
@@ -401,8 +402,9 @@ export default function ResourcePicker({
     try {
       await openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns), authenticatedApi)
     } catch (error) {
+      if (error instanceof AuthPopupCancelledError) return
       console.error('Failed to initiate connection:', error)
-      toasts.add({ title: 'Failed to start connection flow', variant: 'error' })
+      toasts.add({ title: error instanceof Error ? error.message : 'Could not complete connection flow', variant: 'error' })
     } finally {
       setConnectingVendor(null)
     }
@@ -416,12 +418,13 @@ export default function ResourcePicker({
     try {
       const flow = await authenticatedApi.ensureAccountResources(accountId, resourceUrlPatterns)
       if (flow) {
-        await openConnectWindow(flow, authenticatedApi)
-        toasts.add({ title: 'Grant the additional access in the pop-up window.', variant: 'success' })
+        const outcome = await openConnectWindow(flow, authenticatedApi)
+        toasts.add({ title: outcome === 'connected' ? 'Access granted.' : 'Grant the additional access in the pop-up window.', variant: 'success' })
       }
     } catch (error) {
+      if (error instanceof AuthPopupCancelledError) return
       console.error('Failed to request additional access:', error)
-      toasts.add({ title: 'Failed to request additional access', variant: 'error' })
+      toasts.add({ title: error instanceof Error ? error.message : 'Failed to request additional access', variant: 'error' })
     } finally {
       setGrantingAccount(current => current === accountId ? null : current)
     }
@@ -436,8 +439,9 @@ export default function ResourcePicker({
       // After ticket redemption the account arrives through the accounts subscription,
       // whose add() with credentialsValid: true clears the reconnectingAccount state.
     } catch (error) {
+      if (error instanceof AuthPopupCancelledError) { setReconnectingAccount(null); return }
       console.error('Failed to initiate reconnection:', error)
-      toasts.add({ title: 'Failed to start re-authentication flow', variant: 'error' })
+      toasts.add({ title: error instanceof Error ? error.message : 'Could not complete re-authentication flow', variant: 'error' })
       setReconnectingAccount(null)
     }
   }, [authenticatedApi])

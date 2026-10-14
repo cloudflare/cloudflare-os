@@ -13,16 +13,18 @@ const testState = vi.hoisted(() => ({
 }))
 
 vi.mock('./useAuth', () => ({
-  useAuth: () => ({
+  useAuth: vi.fn<typeof import('./useAuth').useAuth>(() => ({
+    token: null, error: null,
     isAuthenticated: testState.authenticatedApi !== null,
     authenticatedApi: testState.authenticatedApi,
     isLoading: testState.isLoading,
     login: vi.fn<(token: string) => void>(),
     logout: vi.fn<() => void>(),
-  }),
+  })),
 }))
 
 import ConnectHandoffPage from './ConnectHandoffPage'
+import { useAuth } from './useAuth'
 import { RpcContext } from './RpcContext'
 import { HANDOFF_KEY, HANDOFF_PATH } from './connectHandoff'
 import { NATIVE_AUTH_KEY, nativeAuthStartUrl } from './features/native-app/authPopup'
@@ -57,6 +59,7 @@ describe('ConnectHandoffPage', () => {
     completeConnectHandoff.mockReset()
     confirmLogin.mockReset()
     close.mockReset()
+    vi.mocked(useAuth).mockClear()
     testState.isLoading = false
     testState.authenticatedApi = null
     provider = { stub, connectionLost: false }
@@ -103,16 +106,18 @@ describe('ConnectHandoffPage', () => {
   }
 
   it('bootstraps the native browser once under StrictMode without authenticating or redeeming', async () => {
-    const id = 'c'.repeat(64), url = 'https://gk.example/connect'
+    vi.stubGlobal('location', { origin: 'https://workshop.example' })
+    const id = 'c'.repeat(64), url = 'https://workshop.example/gatekeeper/example/connect'
     const hash = new URL(nativeAuthStartUrl(url, id)).hash
     const replace = vi.fn<(url: string) => void>()
-    vi.stubGlobal('location', { hash, pathname: HANDOFF_PATH, replace })
+    vi.stubGlobal('location', { origin: 'https://workshop.example', hash, pathname: HANDOFF_PATH, replace })
     const page = await render({ strict: true })
     expect(replace).toHaveBeenCalledExactlyOnceWith(url)
     expect(JSON.parse(sessionStorage.getItem(NATIVE_AUTH_KEY)!)).toEqual({
       id, expiresAt: expect.any(Number),
     })
-    expect(page.textContent).toContain('Returning to Cloudflare OS')
+    expect(page.textContent).toContain('Opening sign-in')
+    expect(useAuth).not.toHaveBeenCalled()
     expect(confirmLogin).not.toHaveBeenCalled()
     expect(completeConnectHandoff).not.toHaveBeenCalled()
   })

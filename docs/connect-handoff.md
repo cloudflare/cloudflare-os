@@ -110,7 +110,7 @@ tab holds only the `attempt` capability and no id at all.
 6. The user DO activates the grant (`putConnectedAccount` for a connect; `commitReconnect(stageId)`
    plus `markCredentialsRestored` for a restore) and notifies subscribers. The tab that started the
    flow learns of the account through `subscribeConnectedAccounts()`, which every screen already
-   uses; nothing in the tab awaits the redemption.
+   uses. On desktop nothing in the tab awaits redemption; native callers await in-app completion.
 
 ```mermaid
 sequenceDiagram
@@ -150,12 +150,14 @@ connect, reconnect, resource grants and gatekeeper sign-in; vendors need no mobi
 
 The transport is in `src/features/native-app/authPopup.ts` (under `packages/workshop-frontend`):
 
-1. The initiating WebView keeps the original flow nonce and authenticated API (or login attempt)
+1. The initiating WebView keeps the original flow nonce and auth-session owner (or login attempt)
    in memory. It generates a random correlation ID and calls `authentication.open(id, url)` with
    its own origin's `/connect/handoff#native-auth=<encoded {id,url}>` bootstrap URL. No install
    hostname is hardcoded. Neither the nonce nor the app's session token enters the browser.
 2. The system browser's handoff page stores only `{id, expiresAt}` in its own sessionStorage and
-   navigates to the flow URL. The gatekeeper/provider flow and backend staging are unchanged.
+   navigates to the flow URL. Both entry points require HTTPS, the current install's origin and a
+   `/gatekeeper/` path: the bootstrap cannot redirect to an arbitrary external HTTPS site. The
+   gatekeeper/provider flow and backend staging are unchanged.
 3. On return to `/connect/handoff#<ticket>`, the browser consumes its correlation record, strips
    the fragment, and navigates to the app-owned HTTPS callback
    `https://os.cloudflare.app/authpopup#id=<id>&ticket=<ticket>`. Both values stay in the fragment;
@@ -168,12 +170,21 @@ The transport is in `src/features/native-app/authPopup.ts` (under `packages/work
    `confirmLogin` and continues polling its original login attempt. All server-side user, account,
    nonce, expiry and single-use checks still apply. Native cancellation/failure rejects the
    awaiting caller, and listeners expire after 30 minutes or are removed when closed/replaced.
+   Connect completion uses the initiating `useAuth` owner's current connection, confirms the same
+   user, and retains the ticket across broken-transport replacement. Live-session server failures
+   are surfaced without retries. Logout or a different user cannot receive the pending grant.
+   `openConnectWindow` always returns a promise: `opened` on desktop, `connected` after native
+   redemption. Billing refreshes only after that redemption (in addition to ordinary focus refresh).
+   Native sign-in also offers Cancel sign-in, since older Custom Tabs may not report dismissal.
 
 Deploy the frontend and update **both native apps** to use this transport. Older native binaries
 without the optional capability keep the desktop behavior; a frontend-only rollout cannot teach
 them to open a system authentication browser. The canonical callback domain must already associate
 the installed app/signing identity (iOS associated domains; Android Digital Asset Links). The
 Android app claims `/authpopup` separately from its install-session `/oauthredirect` callback.
+The fixed app-owned callback is deliberately independent of the selected install. An alternate
+native client must coordinate its own callback constant, shell validation and domain associations;
+changing an install setting alone cannot register a different application's return endpoint.
 
 ## Sign-in
 
@@ -183,7 +194,7 @@ The popup has no session, so the shape differs in who redeems what.
    `PendingLogin` DO by its hash, calls `begin()` on it, hands the gatekeeper a
    `LoginConnectCallbackImpl`, and returns `{ url, nonce, attempt }`.
 2. `OAuthButtons` opens the same disowned popup (`openDisownedPopup(url,
-   uniquePopupName('gatekeeper-login'), { kind: 'login', nonce })`) and polls `attempt.receive()`
+   uniquePopupName('gatekeeper-login'), { kind: 'login', nonce }, completeNative)`) and polls `attempt.receive()`
    every second (`RECEIVE_POLL_MS`).
 3. The gatekeeper calls `complete(user)`. `LoginConnectCallbackImpl` reads the verified email, mints
    a session, and parks the `"<email>:<secret>"` token in the `PendingLogin` DO under the hash of a
@@ -271,8 +282,10 @@ to secure and test. The redirect is the single transport, and it works for a gat
   valid" (whose copy says to reload). An old kit's completion page reaches nobody. Every RPC shape
   change in this repo has the same stale-tab window, and there is no reload mechanism for it.
 - Each connect costs one SPA load in the popup (the handoff page), with its own WebSocket session.
-- A connect completes even if the Workshop tab was closed: the popup redeems the ticket itself, and
-  the account is in the user's list the next time any tab subscribes.
+- A desktop connect completes even if the Workshop tab was closed: the popup redeems the ticket
+  itself, and the account is in the user's list the next time any tab subscribes. Native completion
+  requires the initiating WebView to remain alive: its nonce is deliberately never persisted or
+  sent to the system browser.
 
 ## Shared gatekeeper
 

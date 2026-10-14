@@ -14,7 +14,7 @@ import OAuthButtons from './OAuthButtons'
 
 const VENDORS: AuthVendorInfo[] = [{ vendorId: 'github', displayName: 'GitHub' }]
 const NONCE = 'b'.repeat(64)
-const URL = 'https://gk.example/login'
+const URL = 'https://workshop.example/gatekeeper/example/login'
 const FEATURES = 'popup,width=520,height=680'
 const TOKEN = 'alice@example.com:secret'
 
@@ -39,6 +39,7 @@ function fakePopup() {
     openerAtReplace: undefined as Window | null | undefined,
     sessionStorage: {
       store,
+      removeItem: (key: string) => { store.delete(key) },
       setItem: vi.fn<(key: string, value: string) => void>((key, value) => { store.set(key, value) }),
     },
     location: {
@@ -68,7 +69,10 @@ describe('OAuthButtons', () => {
   const button = () => container!.querySelector('button')!
   const clickSignIn = () => act(async () => { button().click() })
 
-  beforeEach(() => { vi.useFakeTimers() })
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.stubGlobal('location', { origin: 'https://workshop.example' })
+  })
 
   afterEach(() => {
     act(() => root?.unmount())
@@ -140,6 +144,29 @@ describe('OAuthButtons', () => {
     expect(receive).not.toHaveBeenCalled()
     expect(button().disabled).toBe(false)
     expect(container!.textContent).toContain('Authentication was cancelled')
+  })
+
+  it('lets the user cancel a native tab that never reports its dismissal', async () => {
+    const authentication = { open: vi.fn<(id: string, url: string) => void>(), close: vi.fn<(id: string) => void>() }
+    vi.stubGlobal('cloudflareOSNative', {
+      version: 1, isAvailable: () => true, loginReady: vi.fn<() => void>(), returnToInstalls: vi.fn<() => void>(), authentication,
+    })
+    const dispose = vi.fn<() => void>()
+    receive.mockResolvedValue(null)
+    const stub = { startGatekeeperLogin: async () => ({ url: URL, nonce: NONCE,
+      attempt: { receive, [Symbol.dispose]: dispose } }) } as unknown as RpcStub<PublicApi>
+    mount(stub)
+    await clickSignIn()
+    await settle()
+    const cancel = Array.from(container!.querySelectorAll('button')).find(b => b.textContent === 'Cancel sign-in')!
+    expect(cancel).toBeDefined()
+    await act(async () => cancel.click())
+    await tick()
+    expect(dispose).toHaveBeenCalledOnce()
+    expect(authentication.close).toHaveBeenCalledOnce()
+    expect(receive).not.toHaveBeenCalled()
+    expect(button().disabled).toBe(false)
+    expect(container!.textContent).not.toContain('Authentication was cancelled')
   })
 
   it('keeps the button pending while receive() answers null', async () => {

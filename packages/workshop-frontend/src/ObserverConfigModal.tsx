@@ -18,6 +18,7 @@ import { WorkshopButton } from './components/WorkshopControls'
 import Avatar from './components/Avatar'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
 import { openConnectWindow } from './connectHandoff'
+import { AuthPopupCancelledError } from './features/native-app/authPopup'
 
 // Shown when a non-owner opens a shared Gadget that reads data through one or more gatekeeper
 // bindings, and they haven't yet chosen which of their own connected accounts to use for each one.
@@ -209,8 +210,9 @@ export default function ObserverConfigModal({
         ), authenticatedApi)
       }
     } catch (err) {
+      if (err instanceof AuthPopupCancelledError) return
       console.error('Failed to initiate connection:', err)
-      toasts.add({ title: 'Failed to start connection flow', variant: 'error' })
+      toasts.add({ title: err instanceof Error ? err.message : 'Could not complete connection flow', variant: 'error' })
     } finally {
       setConnecting(null)
     }
@@ -222,8 +224,9 @@ export default function ObserverConfigModal({
       // After ticket redemption the restored account arrives through the subscription.
       await openConnectWindow(await authenticatedApi.reconnectAccount(accountId), authenticatedApi)
     } catch (err) {
+      if (err instanceof AuthPopupCancelledError) return
       console.error('Failed to initiate reconnection:', err)
-      toasts.add({ title: 'Failed to start re-authentication flow', variant: 'error' })
+      toasts.add({ title: err instanceof Error ? err.message : 'Could not complete re-authentication flow', variant: 'error' })
     } finally {
       setReconnecting(null)
     }
@@ -264,8 +267,9 @@ export default function ObserverConfigModal({
         })
       }
     } catch (err) {
+      if (err instanceof AuthPopupCancelledError) return
       console.error('Failed to request additional access:', err)
-      toasts.add({ title: 'Failed to request additional access', variant: 'error' })
+      toasts.add({ title: err instanceof Error ? err.message : 'Failed to request additional access', variant: 'error' })
     } finally {
       setGranting(null)
     }

@@ -4,6 +4,7 @@ import { PublicApi, AuthVendorInfo } from '@gadgets/workshop-shared/api'
 import { Button, Banner } from '@cloudflare/kumo'
 import { openDisownedPopup, uniquePopupName } from '../../connectHandoff'
 import type { AuthPopup } from '../../features/native-app/authPopup'
+import { nativeApp } from '../../features/native-app/nativeApp'
 
 interface OAuthButtonsProps {
   rpcStub: RpcStub<PublicApi>
@@ -38,6 +39,7 @@ const RECEIVE_POLL_MS = 1000
 export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButtonsProps) {
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState<string | null>(null)
+  const [cancellable, setCancellable] = useState(false)
 
   // The attempt in flight, if any, as the function that tears it down: waits for a receive() still
   // in flight, then stops the poll and disposes the login RPC (Cap'n Web treats this as a
@@ -127,6 +129,7 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
           if (settled) return
           settled = true
           attemptRef.current = null
+          setCancellable(false)
           clearInterval(poll)
           try { popup.close() } catch { /* cross-origin or already gone */ }
           dispose()
@@ -137,6 +140,7 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
           if (!settled) finish(() => reject(CANCELLED))
           return received
         }
+        setCancellable(true)
       })
       if (!mountedRef.current) return  // user navigated away mid-flow; drop the result
       localStorage.setItem('authToken', token)
@@ -147,6 +151,11 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
       setError(err instanceof Error ? err.message : 'Could not sign in')
       setPending(null)
     }
+  }
+
+  const cancel = async () => {
+    const received = await attemptRef.current?.()
+    if (mountedRef.current && !received) setPending(null)
   }
 
   return (
@@ -172,6 +181,9 @@ export default function OAuthButtons({ rpcStub, vendors, onSuccess }: OAuthButto
           Continue with {vendor.displayName}
         </Button>
       ))}
+      {pending !== null && cancellable && nativeApp()?.authentication && (
+        <Button variant="ghost" className="w-full" onClick={cancel}>Cancel sign-in</Button>
+      )}
     </div>
   )
 }

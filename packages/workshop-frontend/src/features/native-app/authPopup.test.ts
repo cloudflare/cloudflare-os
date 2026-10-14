@@ -1,12 +1,19 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { nativeAuthRelay, nativeAuthStartUrl, NATIVE_AUTH_EVENT, openNativeAuthPopup } from './authPopup'
 import { openConnectWindow } from '../../connectHandoff'
+import { NativeConnectSession } from './connectSession'
 
 const ID = 'a'.repeat(64), TICKET = 'b'.repeat(64), NONCE = 'c'.repeat(64)
-const FLOW = 'https://gatekeeper.example/connect?secret=flow'
+const FLOW = 'https://workshop.example/gatekeeper/example/connect?secret=flow'
+const track = (completeConnectHandoff: (ticket: string, nonce: string) => Promise<void>) => {
+  const api = { completeConnectHandoff, onRpcBroken: vi.fn<(callback: (error: unknown) => void) => void>() }
+  new NativeConnectSession().track(api, Promise.resolve({ type: 'user', id: 'alice', name: 'Alice' }))
+  return api
+}
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers() })
+beforeEach(() => vi.stubGlobal('location', { origin: 'https://workshop.example' }))
 
 const bridge = () => {
   const authentication = { open: vi.fn<(id: string, url: string) => void>(), close: vi.fn<(id: string) => void>() }
@@ -28,7 +35,7 @@ describe('native auth transport', () => {
     const auth = bridge()
     const open = vi.spyOn(window, 'open')
     const completeConnectHandoff = vi.fn<(ticket: string, nonce: string) => Promise<void>>().mockResolvedValue(undefined)
-    const completion = openConnectWindow({ url: FLOW, nonce: NONCE }, { completeConnectHandoff })
+    const completion = openConnectWindow({ url: FLOW, nonce: NONCE }, track(completeConnectHandoff))
     const [id, url] = auth.open.mock.calls[0]
     expect(open).not.toHaveBeenCalled()
     expect(url).toContain('/connect/handoff#native-auth=')
@@ -48,6 +55,14 @@ describe('native auth transport', () => {
     const popup = openNativeAuthPopup(FLOW, complete)!
     result(auth.open.mock.calls[0][0], TICKET)
     await expect(popup.completion).rejects.toThrow('expired ticket')
+  })
+
+  it('cleans up if the native bridge throws before opening', () => {
+    const auth = bridge()
+    auth.open.mockImplementation(() => { throw new Error('cannot open browser') })
+    const remove = vi.spyOn(window, 'removeEventListener')
+    expect(() => openNativeAuthPopup(FLOW, vi.fn<(ticket: string) => Promise<void>>())).toThrow('cannot open browser')
+    expect(remove).toHaveBeenCalledWith(NATIVE_AUTH_EVENT, expect.any(Function))
   })
 
   it.each([undefined, 'invalid'])('rejects cancelled or malformed results (%s)', async ticket => {
@@ -86,7 +101,7 @@ describe('native auth transport', () => {
 
   it('cancels the previous connect attempt when a new flow replaces it', async () => {
     const auth = bridge(), completeConnectHandoff = vi.fn<(ticket: string, nonce: string) => Promise<void>>().mockResolvedValue(undefined)
-    const api = { completeConnectHandoff }
+    const api = track(completeConnectHandoff)
     const first = openConnectWindow({ url: FLOW, nonce: NONCE }, api)
     const cancelled = Promise.resolve(first).catch((error: unknown) => error)
     const second = openConnectWindow({ url: FLOW, nonce: 'e'.repeat(64) }, api)
@@ -121,8 +136,12 @@ describe('external browser relay', () => {
     expect(nativeAuthRelay('#' + TICKET, 'garbage', 1000)).toBeNull()
   })
 
-  it.each(['http://provider.example', 'javascript:alert(1)', 'https://user:password@provider.example'])('rejects unsafe provider URL %s', url => {
+  it.each(['http://provider.example', 'javascript:alert(1)', 'https://user:password@workshop.example/gatekeeper/x',
+    'https://attacker.example/gatekeeper/x', 'https://workshop.example/not-a-gatekeeper',
+    'https://workshop.example/gatekeeper/../elsewhere', 'https://workshop.example:444/gatekeeper/x',
+  ])('rejects unsafe provider URL %s at both native start and browser bootstrap', url => {
     const hash = '#native-auth=' + encodeURIComponent(JSON.stringify({ id: ID, url }))
     expect(nativeAuthRelay(hash, null, 1000)).toBeNull()
+    expect(() => nativeAuthStartUrl(url, ID)).toThrow(/Authentication must start/)
   })
 })

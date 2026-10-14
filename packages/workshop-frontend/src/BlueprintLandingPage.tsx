@@ -24,6 +24,7 @@ import { useDocumentTitle } from './useDocumentTitle'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
 import { useDialogSelectPortalContainer } from './useDialogSelectPortalContainer'
 import { openConnectWindow } from './connectHandoff'
+import { AuthPopupCancelledError } from './features/native-app/authPopup'
 
 interface Props {
   rpcStub: RpcStub<PublicApi>
@@ -218,11 +219,12 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     if (!authenticatedApi) return
     setConnectingVendor(vendorId)
     try {
-      await openConnectWindow(await authenticatedApi.connectAccount(vendorId), authenticatedApi)
-      toasts.add({ title: 'Complete the account connection in the pop-up window.', variant: 'success' })
+      const outcome = await openConnectWindow(await authenticatedApi.connectAccount(vendorId), authenticatedApi)
+      toasts.add({ title: outcome === 'connected' ? 'Account connected.' : 'Complete the account connection in the pop-up window.', variant: 'success' })
     } catch (err) {
+      if (err instanceof AuthPopupCancelledError) return
       console.error('Failed to initiate connection:', err)
-      toasts.add({ title: 'Failed to start connection flow', variant: 'error' })
+      toasts.add({ title: err instanceof Error ? err.message : 'Could not complete connection flow', variant: 'error' })
     } finally {
       setConnectingVendor(null)
     }
@@ -232,11 +234,12 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
     if (!authenticatedApi) return
     setReconnectingAccountId(accountId)
     try {
-      await openConnectWindow(await authenticatedApi.reconnectAccount(accountId), authenticatedApi)
-      toasts.add({ title: 'Complete the account reconnect in the pop-up window.', variant: 'success' })
+      const outcome = await openConnectWindow(await authenticatedApi.reconnectAccount(accountId), authenticatedApi)
+      toasts.add({ title: outcome === 'connected' ? 'Account reconnected.' : 'Complete the account reconnect in the pop-up window.', variant: 'success' })
     } catch (err) {
+      if (err instanceof AuthPopupCancelledError) { setReconnectingAccountId(null); return }
       console.error('Failed to initiate reconnect:', err)
-      toasts.add({ title: 'Failed to start reconnect flow', variant: 'error' })
+      toasts.add({ title: err instanceof Error ? err.message : 'Could not complete reconnect flow', variant: 'error' })
       setReconnectingAccountId(null)
     }
   }, [authenticatedApi, toasts])

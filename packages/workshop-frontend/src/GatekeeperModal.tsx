@@ -38,6 +38,7 @@ import { useSiteName } from './ServerConfigContext'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
 import { useDialogSelectPortalContainer } from './useDialogSelectPortalContainer'
 import { openConnectWindow } from './connectHandoff'
+import { AuthPopupCancelledError } from './features/native-app/authPopup'
 
 export interface GatekeeperModalProps {
   open: boolean
@@ -586,12 +587,13 @@ export default function GatekeeperModal({
   const handleConnectAccount = async (vendorId: string, resourceUrlPatterns?: string[]) => {
     setConnectingVendor(vendorId)
     try {
-      await openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns), authenticatedApi)
-      toasts.add({ title: 'Complete the account connection in the pop-up window.', variant: 'success' })
+      const outcome = await openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns), authenticatedApi)
+      toasts.add({ title: outcome === 'connected' ? 'Account connected.' : 'Complete the account connection in the pop-up window.', variant: 'success' })
     } catch (error) {
+      if (error instanceof AuthPopupCancelledError) return
       console.error('Failed to initiate connection:', error)
       reportIssue('gatekeeper.connect-start', error, { gatekeeperVendorId: vendorId })
-      toasts.add({ title: 'Failed to start connection flow', variant: 'error' })
+      toasts.add({ title: error instanceof Error ? error.message : 'Could not complete connection flow', variant: 'error' })
     } finally {
       setConnectingVendor(null)
     }
@@ -608,17 +610,18 @@ export default function GatekeeperModal({
     try {
       const flow = await authenticatedApi.ensureAccountResources(accountId, missing)
       if (flow) {
-        await openConnectWindow(flow, authenticatedApi)
-        toasts.add({ title: 'Grant the additional access in the pop-up window.', variant: 'success' })
+        const outcome = await openConnectWindow(flow, authenticatedApi)
+        toasts.add({ title: outcome === 'connected' ? 'Access granted.' : 'Grant the additional access in the pop-up window.', variant: 'success' })
       }
       // After ticket redemption the new grant arrives via subscribeConnectedAccounts(),
       // the account's flag then clears and the configurator loads automatically.
     } catch (error) {
+      if (error instanceof AuthPopupCancelledError) return
       console.error('Failed to request additional access:', error)
       reportIssue('gatekeeper.resource-grant', error, {
         gatekeeperVendorId: selectedConnection?.vendorId,
       })
-      toasts.add({ title: 'Failed to request additional access', variant: 'error' })
+      toasts.add({ title: error instanceof Error ? error.message : 'Failed to request additional access', variant: 'error' })
     } finally {
       setGrantingAccountId(null)
     }
@@ -627,14 +630,15 @@ export default function GatekeeperModal({
   const handleReconnectAccount = async (accountId: number) => {
     setReconnectingAccountId(accountId)
     try {
-      await openConnectWindow(await authenticatedApi.reconnectAccount(accountId), authenticatedApi)
-      toasts.add({ title: 'Complete the account reconnect in the pop-up window.', variant: 'success' })
+      const outcome = await openConnectWindow(await authenticatedApi.reconnectAccount(accountId), authenticatedApi)
+      toasts.add({ title: outcome === 'connected' ? 'Account reconnected.' : 'Complete the account reconnect in the pop-up window.', variant: 'success' })
     } catch (error) {
+      if (error instanceof AuthPopupCancelledError) return
       console.error('Failed to initiate reconnect:', error)
       reportIssue('gatekeeper.reconnect-start', error, {
         gatekeeperVendorId: selectedConnection?.vendorId,
       })
-      toasts.add({ title: 'Failed to start reconnect flow', variant: 'error' })
+      toasts.add({ title: error instanceof Error ? error.message : 'Could not complete reconnect flow', variant: 'error' })
     } finally {
       setReconnectingAccountId(null)
     }
