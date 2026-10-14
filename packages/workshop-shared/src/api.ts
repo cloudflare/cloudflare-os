@@ -679,6 +679,9 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   listGadgets(): Promise<GadgetMetadataWithTimestamps[]>;
 
+  /** Pin or unpin this workspace in the user's list. */
+  setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void>;
+
   /**
    * List the outputs of all the user's workspaces. Used to display the Outputs page, which lets
    * the user find things they made without remembering which workspace they made them in.
@@ -2459,9 +2462,6 @@ export interface Overseer extends RpcTarget {
 
   /** Change the workspace title. */
   setTitle(title: string): Promise<void>;
-
-  /** Pin or unpin this workspace in the user's list. */
-  setPinned(pinned: boolean): Promise<void>;
 
   /**
    * Instruct the workspace to delete itself, removing it from the User's workspace list and

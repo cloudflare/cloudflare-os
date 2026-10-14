@@ -142,15 +142,12 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
   const onTogglePin = useCallback(async (g: GadgetMetadataWithTimestamps) => {
     const newPinned = !g.pinned
     setGadgets((prev) => prev.map((x) => (x.id === g.id ? { ...x, pinned: newPinned } : x)))
-    const overseer = authenticatedApi.openGadget(g.id) // pipelining
     try {
-      await overseer.setPinned(newPinned)
+      await authenticatedApi.setWorkspacePinned(g.id, newPinned)
     } catch (err) {
       console.error('Failed to toggle pin:', err)
       setGadgets((prev) => prev.map((x) => (x.id === g.id ? { ...x, pinned: g.pinned } : x)))
       toasts.add({ title: 'Failed to update favorite', variant: 'error' })
-    } finally {
-      overseer[Symbol.dispose]()
     }
   }, [authenticatedApi, toasts])
 

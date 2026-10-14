@@ -353,6 +353,10 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return retryOnDoReset(() => this.#user.listGadgets());
   }
 
+  async setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void> {
+    return retryOnDoReset(() => this.#user.updatePinned(workspaceId, pinned));
+  }
+
   listOutputs(): Promise<ListOutputsResult> {
     return this.#user.listOutputs();
   }

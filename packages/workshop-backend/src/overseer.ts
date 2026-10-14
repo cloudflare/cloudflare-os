@@ -10495,10 +10495,6 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     await this.#owner.updateTitle(this.impl.ctx.id.toString(), title);
   }
 
-  async setPinned(pinned: boolean): Promise<void> {
-    await this.#clientUser.updatePinned(this.impl.ctx.id.toString(), pinned);
-  }
-
   async subscribeToWorkpieces(subscriber: RpcStub<WorkpiecesSubscriber>): Promise<RpcStub<{}>> {
     return this.#subscriptionLease(this.impl.subscribeToWorkpieces(subscriber, true));
   }
@@ -12097,7 +12093,6 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   // --- Denied methods (build-only) ---
 
   async setTitle(_title: string): Promise<void> { this.#deny(); }
-  async setPinned(_pinned: boolean): Promise<void> { this.#deny(); }
   async deleteSelf(): Promise<void> { this.#deny(); }
   async createGadget(_title: string): Promise<RpcStub<GadgetClient>> { this.#deny(); }
   async submitCodeChange(_chatId: number, _submission: CodeChangeSubmission)

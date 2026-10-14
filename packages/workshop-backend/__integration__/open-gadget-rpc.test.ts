@@ -197,7 +197,7 @@ describe("user-DO reset flags", () => {
 // The asymmetric reset a retained-stub design can't absorb: the USER DO resets while the
 // workspace (Overseer) DO keeps running. The Overseer used to mint its owner/clientUser stubs
 // once at open(); after the user DO's incarnation died, every user-DO-carrying call on the
-// still-open session — newChat, listModels, createGadget, setPinned — failed against the
+// still-open session — newChat, listModels, createGadget — failed against the
 // poisoned stub until the WebSocket reconnected. The session capabilities now mint a fresh stub
 // per call, so the first post-reset call simply restarts the object — no reset flags needed,
 // which is also why this is testable despite local aborts rejecting flagless (see above).

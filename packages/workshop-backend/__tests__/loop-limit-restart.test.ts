@@ -70,7 +70,7 @@ function rejectUserCalls(impl: any, error: unknown): string[] {
     setGadgetLastActive: reject("setGadgetLastActive"),
     syncWorkspaceOutputs: reject("syncWorkspaceOutputs"),
     listProvidedAccounts: reject("listProvidedAccounts"),
-    updatePinned: reject("updatePinned"),
+    listModels: reject("listModels"),
     getChatContext: reject("getChatContext"),
   };
   impl.users = { idFromString: (id: string) => id, get: () => user };
@@ -145,16 +145,16 @@ describe("restarting a workspace whose loop counter is exhausted", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     let error = new Error(LOOP_LIMIT_MESSAGE);
     let calls = rejectUserCalls(impl, error);
-    // A real build client interface whose user stubs are the real impl's: setPinned goes through
+    // A real build client interface whose user stubs are the real impl's: listModels goes through
     // OverseerClientInterface.#clientUser.
     let client = await openFakeOverseer({}, { impl: {
       users: impl.users,
       wrapUserDo: (stub: unknown) => impl.wrapUserDo(stub),
     } });
 
-    await expect(client.setPinned(true)).rejects.toBe(error);
+    await expect(client.listModels()).rejects.toBe(error);
 
-    expect(calls).toEqual(["updatePinned"]);
+    expect(calls).toEqual(["listModels"]);
     expect(restarts).toEqual([RESTART_REASON]);
   }));
 

@@ -285,10 +285,8 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
         return b.lastActive.getTime() - a.lastActive.getTime()
       })
     })
-    // Use promise pipelining — call setPinned without awaiting openGadget first
-    const overseer = authenticatedApi.openGadget(gadget.id)
     try {
-      await overseer.setPinned(newPinned)
+      await authenticatedApi.setWorkspacePinned(gadget.id, newPinned)
     } catch (err) {
       console.error('Failed to pin workspace:', err)
       setGadgets(prev => {
@@ -300,8 +298,6 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
         })
       })
       toasts.add({ title: 'Failed to update favorite status', variant: 'error' })
-    } finally {
-      (await overseer)[Symbol.dispose]()
     }
   }
 
