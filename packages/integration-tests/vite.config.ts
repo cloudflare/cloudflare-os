@@ -8,13 +8,16 @@ import {
 export default {
   run: {
     tasks: {
-      /** Builds the fixture and orders both validated Workers before test files start. */
+      /** Builds the fixture and orders every validated Worker global setup requires. */
       'build:test-gatekeeper': {
         command: withTestTimeout(
           'capnweb-validate build --cwd fixtures/gatekeeper-test --out .wrangler/validate',
         ),
         cache: false,
-        dependsOn: ['@gadgets/workshop-backend#build:integration-worker'],
+        dependsOn: [
+          '@gadgets/workshop-backend#build:integration-worker',
+          '@gadgets/gatekeeper-context#build:integration-worker',
+        ],
       },
       /**
        * gatekeeper-google as the release before the hook delivery queue moved, for the suite that
