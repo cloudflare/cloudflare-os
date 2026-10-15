@@ -37,7 +37,46 @@ function request(body: URLSearchParams, options?: {
 }
 
 describe("device session callback", () => {
-  it("redeems a staged transfer through the Worker route exactly once", async () => {
+  it.each([1024, 49152, 65535])("delivers desktop ciphertext only to the fixed loopback route at port %s", async (port) => {
+    const consume = vi.fn().mockResolvedValue(handoff);
+    const desktopState = `desktop-v1.${port}.${"a".repeat(43)}`;
+    const response = await deviceSessionCallback(
+      request(new URLSearchParams({ ...fields, state: desktopState })), consume,
+    );
+    expect(consume).toHaveBeenCalledWith(userDoId, desktopState, ticket);
+    expect(response.status).toBe(303);
+    const callback = new URL(response.headers.get("Location")!);
+    expect(callback.origin + callback.pathname).toBe(`http://127.0.0.1:${port}/oauthredirect`);
+    expect(Object.fromEntries(callback.searchParams)).toEqual({
+      cfos_callback: "install-connected",
+      state: desktopState,
+      ...handoff,
+    });
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
+  });
+
+  it("rejects malformed desktop destinations before consuming the ticket", async () => {
+    const consume = vi.fn();
+    for (const suffix of ["80", "1023", "65536", "049152", "localhost", "49152.evil"]) {
+      const response = await deviceSessionCallback(request(new URLSearchParams({
+        ...fields, state: `desktop-v1.${suffix}.${"a".repeat(43)}`,
+      })), consume);
+      expect(response.status).toBe(400);
+    }
+    for (const nonce of ["", "a".repeat(42), "a".repeat(44)]) {
+      const response = await deviceSessionCallback(request(new URLSearchParams({
+        ...fields, state: `desktop-v1.49152.${nonce}`,
+      })), consume);
+      expect(response.status).toBe(400);
+    }
+    expect(consume).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["mobile", state, "https://os.cloudflare.app/oauthredirect"],
+    ["desktop", `desktop-v1.49152.${"a".repeat(43)}`, "http://127.0.0.1:49152/oauthredirect"],
+  ])("redeems a %s transfer through the Worker route exactly once", async (_kind, attemptState, destination) => {
     const user = env.TEST_USER.getByName(`device-session-route-${crypto.randomUUID()}`);
     await user.authenticateFromCfAccess("route-user@example.com", true);
     const key = await crypto.subtle.generateKey(
@@ -45,14 +84,14 @@ describe("device session callback", () => {
     const publicKey = new Uint8Array(
         await crypto.subtle.exportKey("raw", key.publicKey) as ArrayBuffer)
         .toBase64({ alphabet: "base64url", omitPadding: true });
-    const start = await user.stageDeviceSessionHandoff(publicKey, state);
-    const body = new URLSearchParams({ ...start, state });
+    const start = await user.stageDeviceSessionHandoff(publicKey, attemptState);
+    const body = new URLSearchParams({ ...start, state: attemptState });
 
     const response = await server.fetch(request(body), env, createExecutionContext());
     expect(response.status).toBe(303);
     const callback = new URL(response.headers.get("Location")!);
-    expect(callback.origin + callback.pathname).toBe("https://os.cloudflare.app/oauthredirect");
-    expect(callback.searchParams.get("state")).toBe(state);
+    expect(callback.origin + callback.pathname).toBe(destination);
+    expect(callback.searchParams.get("state")).toBe(attemptState);
     expect(callback.searchParams.get("ciphertext")).toBeTruthy();
 
     const replay = await server.fetch(request(body), env, createExecutionContext());
