@@ -108,6 +108,13 @@ if (frontendReportingEnabled) {
 
 const MAX_OPTIONS = 200;
 const root = document.getElementById("root");
+// Each render rebuilds the tree, and a live region inserted with its text may not be announced, so
+// info Notices are announced through this one region that outlives renders.
+const noticeAnnouncer = document.body.appendChild(el("div", {
+  className: "visually-hidden",
+  role: "status",
+  "aria-live": "polite",
+}));
 let host;
 let ui;
 let spec;
@@ -127,7 +134,14 @@ let checkboxFilterByName = {};
 let renderedCheckboxNames = new Set();
 let isRendering = false;
 let renderFailed = false;
-let suppressAutocompleteFocusRefresh = false;
+// Set while render() puts focus back where it was, so an Autocomplete does not mistake that for
+// the user focusing it and reopen its suggestions.
+let isRestoringFocus = false;
+// The latest render's debounced suggestion refresh for each Autocomplete, so typing that withdraws a
+// value (and so re-renders the field) loads suggestions in the field that replaced it.
+let autocompleteRefreshByName = {};
+// The text of the last info Notice the current render produced, for the announcer.
+let renderedInfoNotice = "";
 let renderGeneration = 0;
 let parentViewport = { iframeTop: 0, viewportHeight: 0 };
 let Section;
@@ -136,6 +150,8 @@ let TextInput;
 let RadioCards;
 let CheckboxList;
 let Autocomplete;
+let Button;
+let Notice;
 
 function childrenArray(children) {
   const items = Array.isArray(children) ? children : [children];
@@ -179,12 +195,26 @@ function postHeightAfterLayout() {
   });
 }
 
+// A Button has no name to find it by after a render rebuilds the tree, so it is found again by its
+// label, and by its position among the rendered Buttons when no Button has that label any more.
 function getFocusState() {
-  return document.activeElement instanceof HTMLInputElement ? {
-    name: document.activeElement.getAttribute("data-configurator-input"),
-    start: document.activeElement.selectionStart,
-    end: document.activeElement.selectionEnd,
-    direction: document.activeElement.selectionDirection,
+  const active = document.activeElement;
+  if (active instanceof HTMLButtonElement && active.hasAttribute("data-configurator-button")) {
+    const buttons = [...document.querySelectorAll("[data-configurator-button]")];
+    const label = active.textContent;
+    return {
+      button: {
+        label,
+        ordinal: buttons.filter(button => button.textContent === label).indexOf(active),
+        index: buttons.indexOf(active),
+      },
+    };
+  }
+  return active instanceof HTMLInputElement ? {
+    name: active.getAttribute("data-configurator-input"),
+    start: active.selectionStart,
+    end: active.selectionEnd,
+    direction: active.selectionDirection,
   } : null;
 }
 
@@ -217,6 +247,10 @@ function setValues(patch) {
 
 function clearFields(...names) {
   for (const name of names.flat()) delete queryByName[name];
+}
+
+function ensureResources(resourceUrlPatterns) {
+  return Promise.resolve(host.ensureResources(resourceUrlPatterns));
 }
 
 function el(tag, props = {}, children = []) {
@@ -574,7 +608,6 @@ const components = {
             onclick: () => {
               queryByName[queryName] = option.title;
               input.value = option.title;
-              suppressAutocompleteFocusRefresh = true;
               onChange(option.value);
               closePopup();
             },
@@ -609,19 +642,16 @@ const components = {
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(refreshNow, 180);
     }
+    autocompleteRefreshByName[queryName] = refresh;
 
     input.addEventListener("input", () => {
       if (disabled) return;
       queryByName[queryName] = input.value;
       if (value) onChange(null);
-      refresh();
+      autocompleteRefreshByName[queryName]();
     });
     input.addEventListener("focus", () => {
-      if (suppressAutocompleteFocusRefresh) {
-        suppressAutocompleteFocusRefresh = false;
-        return;
-      }
-      refreshNow();
+      if (!isRestoringFocus) refreshNow();
     });
     input.addEventListener("blur", () => setTimeout(closePopup, 120));
     inputWrapper.append(input);
@@ -633,7 +663,6 @@ const components = {
         onclick: () => {
           queryByName[queryName] = "";
           input.value = "";
-          suppressAutocompleteFocusRefresh = true;
           if (onClear) onClear();
           else onChange(null);
           closePopup();
@@ -643,6 +672,28 @@ const components = {
     wrapper.append(inputWrapper, popup);
     return wrapper;
   },
+
+  // aria-disabled rather than disabled, so a Button that disables itself on click keeps focus.
+  Button({ children, onClick, disabled, variant }) {
+    return el("button", {
+      type: "button",
+      className: variant === "secondary" ? "button secondary" : "button primary",
+      "data-configurator-button": "",
+      "aria-disabled": disabled ? "true" : undefined,
+      onclick: () => {
+        if (!disabled) onClick();
+      },
+    }, childrenArray(children));
+  },
+
+  Notice({ children, tone }) {
+    if (tone === "error") {
+      return el("div", { className: "notice notice-error", role: "alert" }, childrenArray(children));
+    }
+    const notice = el("div", { className: "notice" }, childrenArray(children));
+    renderedInfoNotice = notice.textContent;
+    return notice;
+  },
 };
 
 Section = components.Section;
@@ -651,6 +702,8 @@ TextInput = components.TextInput;
 RadioCards = components.RadioCards;
 CheckboxList = components.CheckboxList;
 Autocomplete = components.Autocomplete;
+Button = components.Button;
+Notice = components.Notice;
 
 function render(focusState = undefined, preserveCheckboxScroll = false) {
   if (!root || !spec) return;
@@ -662,10 +715,11 @@ function render(focusState = undefined, preserveCheckboxScroll = false) {
     : null;
   renderGeneration++;
   renderedCheckboxNames = new Set();
+  renderedInfoNotice = "";
   isRendering = true;
   try {
     root.replaceChildren(el("div", { id: "layout-root" }, [
-      spec.render({ ui, values, setValues, clearFields, components }),
+      spec.render({ ui, values, setValues, clearFields, ensureResources, components }),
     ]));
     if (checkboxScrollOffsets) {
       for (const list of root.querySelectorAll(".checkbox-list[data-name]")) {
@@ -675,15 +729,10 @@ function render(focusState = undefined, preserveCheckboxScroll = false) {
       }
     }
     pruneCheckboxEntries(checkboxOptionsByName, renderedCheckboxNames);
-    if (focusState?.name) {
-      const input = root.querySelector('[data-configurator-input="' + CSS.escape(focusState.name) + '"]');
-      if (input instanceof HTMLInputElement) {
-        input.focus();
-        if (focusState.start !== null && focusState.end !== null) {
-          input.setSelectionRange(Math.min(focusState.start, input.value.length), Math.min(focusState.end, input.value.length), focusState.direction ?? "none");
-        }
-      }
+    if (noticeAnnouncer.textContent !== renderedInfoNotice) {
+      noticeAnnouncer.textContent = renderedInfoNotice;
     }
+    restoreFocus(focusState);
     renderFailed = false;
     postSelectionState();
     postHeightAfterLayout();
@@ -693,6 +742,31 @@ function render(focusState = undefined, preserveCheckboxScroll = false) {
     throw error;
   } finally {
     isRendering = false;
+  }
+}
+
+function restoreFocus(focusState) {
+  isRestoringFocus = true;
+  try {
+    if (focusState?.name) {
+      const input = root.querySelector('[data-configurator-input="' + CSS.escape(focusState.name) + '"]');
+      if (input instanceof HTMLInputElement) {
+        input.focus();
+        if (focusState.start !== null && focusState.end !== null) {
+          input.setSelectionRange(Math.min(focusState.start, input.value.length), Math.min(focusState.end, input.value.length), focusState.direction ?? "none");
+        }
+      }
+    } else if (focusState?.button) {
+      const buttons = [...root.querySelectorAll("[data-configurator-button]")];
+      const { label, ordinal, index } = focusState.button;
+      const sameLabel = buttons.filter(button => button.textContent === label);
+      // A Button whose step is over (such as Convert once the copy is made) hands focus to the
+      // first control left, rather than dropping it to the body.
+      (sameLabel[ordinal] ?? sameLabel[0] ?? buttons[index] ??
+        root.querySelector("[data-configurator-input], [data-configurator-button]"))?.focus();
+    }
+  } finally {
+    isRestoringFocus = false;
   }
 }
 
@@ -808,7 +882,7 @@ async function main() {
   host = newMessagePortRpcSession(port1, new ResourceConfiguratorIframe());
   ui = host.gatekeeper;
 
-  Object.assign(globalThis, { h, Fragment, Section, Field, TextInput, RadioCards, CheckboxList, Autocomplete });
+  Object.assign(globalThis, { h, Fragment, Section, Field, TextInput, RadioCards, CheckboxList, Autocomplete, Button, Notice });
   spec = new Function(${JSON.stringify(configuratorUIModuleSource)})();
   if (!spec) throw new Error("Configurator UI module did not define a configurator UI.");
   values = { ...(spec.initial || {}) };
@@ -984,6 +1058,15 @@ window.addEventListener("touchmove", event => {
     .checkbox-row.selected .checkbox-meta { background: var(--color-kumo-base, #fff); }
     .checkbox-subtitle { overflow: hidden; color: var(--color-kumo-subtle, #7d746c); font-size: 12px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
     .checkbox-empty { margin: 0; color: var(--color-kumo-subtle, #7d746c); font-size: 12px; }
+    .button { display: inline-flex; height: 32px; align-items: center; justify-content: center; border: 1px solid var(--color-kumo-line, #ded7d0); border-radius: 8px; padding: 0 12px; font: inherit; font-size: 13px; font-weight: 500; line-height: 18px; cursor: pointer; }
+    .button.primary { border-color: var(--color-kumo-default, #2f261f); background: var(--color-kumo-default, #2f261f); color: var(--color-kumo-base, #fff); }
+    .button.secondary { background: var(--color-kumo-base, #fff); color: inherit; }
+    .button.secondary:hover:not([aria-disabled="true"]) { background: var(--color-kumo-elevated, #f8f5f1); }
+    .button:focus-visible { outline: 2px solid var(--color-kumo-ring, #ff6a00); outline-offset: 1px; }
+    .button[aria-disabled="true"] { cursor: not-allowed; opacity: .55; }
+    .notice { margin: 0; border: 1px solid var(--color-kumo-line, #ded7d0); border-radius: 8px; padding: 8px 10px; background: var(--color-kumo-elevated, #f8f5f1); font-size: 12px; line-height: 16px; }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    .notice-error { border-color: var(--color-kumo-danger-line); background: var(--color-kumo-danger-tint); color: var(--color-kumo-danger, #c2410c); }
     .radio-title { font-weight: 600; }
     .radio-description { color: var(--color-kumo-subtle, #7d746c); font-size: 12px; line-height: 16px; }
     .error { white-space: pre-wrap; color: var(--color-kumo-danger); border: 1px solid var(--color-kumo-danger-line); border-radius: 10px; padding: 10px; background: var(--color-kumo-danger-tint); }

@@ -33,11 +33,59 @@ const checkboxConfiguratorSource =
   '        onChange={tools => setValues({ tools })} /></div>;\n' +
   '  },\n' +
   '};\n';
+const actionConfiguratorSource =
+  'import { Button, Notice, h } from "@gadgets/configurator-ui";\n' +
+  'export default {\n' +
+  '  initial: { answer: null, failure: null, disabledClicks: "0", copyOffered: false, started: false, finished: false },\n' +
+  '  resourceUrl() { return "https://example.com/"; },\n' +
+  '  render({ values, setValues, ensureResources }) {\n' +
+  '    const request = patterns => ensureResources(patterns).then(\n' +
+  '      answer => setValues({ answer: String(answer) }),\n' +
+  '      error => setValues({ failure: error.message }));\n' +
+  '    return <div>\n' +
+  '      {values.copyOffered ? <Button variant="secondary" onClick={() => {}}>Use the copy made on 1 Oct</Button> : null}\n' +
+  '      <Button onClick={() => request(["https://example.com/grant"])}>Convert</Button>\n' +
+  '      <Button variant="secondary" onClick={() => request(["https://example.com/refused"])}>Refused</Button>\n' +
+  '      <Button variant="secondary" disabled\n' +
+  '        onClick={() => setValues({ disabledClicks: String(Number(values.disabledClicks) + 1) })}>\n' +
+  '        Use the copy</Button>\n' +
+  '      <Button variant="secondary" onClick={() => setValues({ copyOffered: !values.copyOffered })}>Offer copy</Button>\n' +
+  '      <Button disabled={values.started} onClick={() => setValues({ started: true })}>Start</Button>\n' +
+  '      {values.finished ? null : <Button onClick={() => setValues({ finished: true })}>Finish</Button>}\n' +
+  '      <p id="disabled-clicks">{values.disabledClicks}</p>\n' +
+  '      <Notice>{values.answer === null ? "Waiting" : `Granted: ${values.answer}`}</Notice>\n' +
+  '      {values.failure ? <Notice tone="error">{values.failure}</Notice> : null}\n' +
+  '    </div>;\n' +
+  '  },\n' +
+  '};\n';
+// The pick withdraws the old value, then sets the new one once its (simulated) inspection settles,
+// as the Google configurators do: two renders after one pick.
+const autocompleteConfiguratorSource =
+  'import { Autocomplete, h } from "@gadgets/configurator-ui";\n' +
+  'export default {\n' +
+  '  initial: { fileId: null, inspected: null },\n' +
+  '  render({ values, setValues }) {\n' +
+  '    return <div>\n' +
+  '      <Autocomplete name="fileId" value={values.fileId} placeholder="Search files"\n' +
+  '        loadOptions={async () => {\n' +
+  '          globalThis.autocompleteLoads = (globalThis.autocompleteLoads ?? 0) + 1;\n' +
+  '          return [{ value: "file-1", title: "Budget" }];\n' +
+  '        }}\n' +
+  '        onChange={fileId => {\n' +
+  '          setValues({ fileId: null, inspected: null });\n' +
+  '          if (fileId) Promise.resolve().then(() => setValues({ fileId, inspected: fileId }));\n' +
+  '        }} />\n' +
+  '      {values.inspected ? <p id="inspected">{values.inspected}</p> : null}\n' +
+  '    </div>;\n' +
+  '  },\n' +
+  '};\n';
 let fixtureDir: string;
 let disabledFixtureDir: string;
 let devModeFixtureDir: string;
 let devEnvWithoutDevFlagFixtureDir: string;
 let checkboxFixtureDir: string;
+let actionFixtureDir: string;
+let autocompleteFixtureDir: string;
 
 // `envFile` is the `.env.*` file that enables reporting, so which one is written decides which build
 // mode picks it up. `staleArtifacts` pre-seeds the outputs a reporting-disabled build must remove.
@@ -73,9 +121,16 @@ async function readRuntime(directory: string): Promise<string> {
   return decodeURIComponent(match[1]);
 }
 
+const RENDERED_SELECTORS = {
+  checkbox: ".checkbox-rows",
+  "render-error": ".error",
+  button: "button[data-configurator-button]",
+  autocomplete: ".autocomplete input",
+};
+
 async function runConfiguratorRuntime(
   directory: string,
-  waitFor: "checkbox" | "render-error" = "checkbox",
+  waitFor: keyof typeof RENDERED_SELECTORS = "checkbox",
 ) {
   const dom = new JSDOM("<!DOCTYPE html><div id=\"root\"></div>", {
     pretendToBeVisual: true,
@@ -94,6 +149,7 @@ async function runConfiguratorRuntime(
     class RpcTarget {}
     const CSS = { escape: value => String(value) };
     globalThis.selectionReadyEvents = [];
+    globalThis.ensureResourcesCalls = [];
     function newMessagePortRpcSession(_port, iframe) {
       globalThis.configuratorIframe = iframe;
       return {
@@ -114,20 +170,24 @@ async function runConfiguratorRuntime(
         },
         resize() {},
         forwardScroll() {},
+        ensureResources(patterns) {
+          globalThis.ensureResourcesCalls.push(patterns);
+          return patterns[0].endsWith("/refused")
+            ? Promise.reject(new Error("The user closed the pop-up."))
+            : Promise.resolve(false);
+        },
       };
     }
     ${runtime}
   `);
 
   for (let attempt = 0; attempt < 20; attempt++) {
-    if (waitFor === "checkbox"
-        ? dom.window.document.querySelector(".checkbox-rows")
-        : dom.window.document.querySelector(".error")) return dom;
+    if (dom.window.document.querySelector(RENDERED_SELECTORS[waitFor])) return dom;
     await new Promise(done => setTimeout(done, 0));
   }
   const error = dom.window.document.getElementById("root")?.textContent;
   dom.window.close();
-  throw new Error(`Configurator did not render its checkbox list: ${error}`);
+  throw new Error(`Configurator did not render ${RENDERED_SELECTORS[waitFor]}: ${error}`);
 }
 
 function readConfiguratorModule(runtime: string): string {
@@ -209,6 +269,10 @@ before(async () => {
     { envFile: ".env.development", staleArtifacts: true });
   checkboxFixtureDir = await createFixture(
     "configurator-checkbox-", { source: checkboxConfiguratorSource });
+  actionFixtureDir = await createFixture(
+    "configurator-action-", { source: actionConfiguratorSource });
+  autocompleteFixtureDir = await createFixture(
+    "configurator-autocomplete-", { source: autocompleteConfiguratorSource });
 });
 
 after(async () => {
@@ -217,6 +281,8 @@ after(async () => {
   await rm(devModeFixtureDir, { recursive: true, force: true });
   await rm(devEnvWithoutDevFlagFixtureDir, { recursive: true, force: true });
   await rm(checkboxFixtureDir, { recursive: true, force: true });
+  await rm(actionFixtureDir, { recursive: true, force: true });
+  await rm(autocompleteFixtureDir, { recursive: true, force: true });
 });
 
 describe("generated configurator error reporting", () => {
@@ -450,6 +516,230 @@ describe("generated configurator checkbox behavior", () => {
       filter.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
 
       assert.equal(root.querySelector(".checkbox-rows")?.scrollTop, 0);
+    } finally {
+      dom.window.close();
+    }
+  });
+});
+
+function buttonNamed(dom: InstanceType<typeof JSDOM>, name: string) {
+  const button = [...dom.window.document.querySelectorAll("button")]
+    .find(candidate => candidate.textContent?.trim() === name);
+  assert.ok(button, `expected a ${name} button`);
+  return button;
+}
+
+async function settle(): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt++) await new Promise(done => setTimeout(done, 0));
+}
+
+describe("generated configurator actions", () => {
+  it("passes a render context's resource request to the host and returns its answer", async () => {
+    const dom = await runConfiguratorRuntime(actionFixtureDir, "button");
+    try {
+      const runtime = dom.window as unknown as { ensureResourcesCalls: string[][] };
+      buttonNamed(dom, "Convert").click();
+      await settle();
+
+      // Arrays from the JSDOM realm, copied so deepEqual compares contents rather than prototypes.
+      assert.deepEqual(
+        Array.from(runtime.ensureResourcesCalls, call => [...call]), [["https://example.com/grant"]]);
+      const status = dom.window.document.querySelector('[role="status"]');
+      assert.equal(status?.textContent, "Granted: false");
+      assert.equal(dom.window.document.querySelector('[role="alert"]'), null);
+    } finally {
+      dom.window.close();
+    }
+  });
+
+  it("surfaces the host's refusal to the configurator", async () => {
+    const dom = await runConfiguratorRuntime(actionFixtureDir, "button");
+    try {
+      buttonNamed(dom, "Refused").click();
+      await settle();
+
+      const alert = dom.window.document.querySelector('[role="alert"]');
+      assert.equal(alert?.textContent, "The user closed the pop-up.");
+      assert.equal(dom.window.document.querySelector('[role="status"]')?.textContent, "Waiting");
+    } finally {
+      dom.window.close();
+    }
+  });
+
+  it("renders Buttons as non-submitting buttons and ignores a disabled one", async () => {
+    const dom = await runConfiguratorRuntime(actionFixtureDir, "button");
+    try {
+      const runtime = dom.window as unknown as { ensureResourcesCalls: string[][] };
+      const convert = buttonNamed(dom, "Convert");
+      const disabled = buttonNamed(dom, "Use the copy");
+      assert.equal(convert.type, "button");
+      assert.equal(convert.getAttribute("aria-disabled"), null);
+      assert.equal(disabled.type, "button");
+      // Still focusable and clickable as far as the DOM is concerned, so the runtime must drop it.
+      assert.equal(disabled.disabled, false);
+      assert.equal(disabled.getAttribute("aria-disabled"), "true");
+
+      disabled.click();
+      await settle();
+
+      assert.equal(dom.window.document.getElementById("disabled-clicks")?.textContent, "0");
+      assert.equal(runtime.ensureResourcesCalls.length, 0);
+      assert.equal(buttonNamed(dom, "Use the copy").getAttribute("aria-disabled"), "true");
+    } finally {
+      dom.window.close();
+    }
+  });
+
+  it("keeps keyboard focus on the activated Button across the re-render it causes", async () => {
+    const dom = await runConfiguratorRuntime(actionFixtureDir, "button");
+    try {
+      const refused = buttonNamed(dom, "Refused");
+      refused.focus();
+      refused.click();
+      await settle();
+
+      assert.notEqual(buttonNamed(dom, "Refused"), refused, "the click should re-render the form");
+      assert.equal(dom.window.document.activeElement, buttonNamed(dom, "Refused"));
+    } finally {
+      dom.window.close();
+    }
+  });
+
+  it("keeps focus on a Button that disables itself in the render its click causes", async () => {
+    const dom = await runConfiguratorRuntime(actionFixtureDir, "button");
+    try {
+      const start = buttonNamed(dom, "Start");
+      start.focus();
+      start.click();
+
+      const rendered = buttonNamed(dom, "Start");
+      assert.notEqual(rendered, start, "the click should re-render the form");
+      assert.equal(rendered.getAttribute("aria-disabled"), "true");
+      assert.equal(dom.window.document.activeElement, rendered);
+    } finally {
+      dom.window.close();
+    }
+  });
+
+  it("moves focus to the first control left when the focused Button leaves the form", async () => {
+    const dom = await runConfiguratorRuntime(actionFixtureDir, "button");
+    try {
+      const finish = buttonNamed(dom, "Finish");
+      finish.focus();
+      finish.click();
+
+      assert.equal(
+        [...dom.window.document.querySelectorAll("button")].some(button => button.textContent === "Finish"),
+        false);
+      assert.equal(dom.window.document.activeElement, buttonNamed(dom, "Convert"));
+    } finally {
+      dom.window.close();
+    }
+  });
+
+  it("finds the focused Button by its label when another Button appears before it", async () => {
+    const dom = await runConfiguratorRuntime(actionFixtureDir, "button");
+    try {
+      buttonNamed(dom, "Offer copy").focus();
+      buttonNamed(dom, "Offer copy").click();
+      assert.ok(buttonNamed(dom, "Use the copy made on 1 Oct"));
+      assert.equal(dom.window.document.activeElement, buttonNamed(dom, "Offer copy"));
+
+      buttonNamed(dom, "Offer copy").click();
+      assert.equal(
+        [...dom.window.document.querySelectorAll("button")]
+          .some(button => button.textContent === "Use the copy made on 1 Oct"),
+        false);
+      assert.equal(dom.window.document.activeElement, buttonNamed(dom, "Offer copy"));
+    } finally {
+      dom.window.close();
+    }
+  });
+
+  it("announces info Notices through one persistent live region, once per change", async () => {
+    const dom = await runConfiguratorRuntime(actionFixtureDir, "button");
+    try {
+      const document = dom.window.document;
+      const regions = document.querySelectorAll('[role="status"]');
+      assert.equal(regions.length, 1);
+      const region = regions[0];
+      assert.equal(region.getAttribute("aria-live"), "polite");
+      assert.equal(document.getElementById("root")?.contains(region), false);
+      assert.equal(region.textContent, "Waiting");
+      assert.equal(document.querySelector(".notice")?.textContent, "Waiting");
+
+      const mutations: unknown[] = [];
+      const observer = new dom.window.MutationObserver((records: unknown[]) => mutations.push(...records));
+      observer.observe(region, { childList: true, characterData: true, subtree: true });
+      try {
+        // Re-renders without changing the info text: nothing is announced again.
+        buttonNamed(dom, "Offer copy").click();
+        buttonNamed(dom, "Offer copy").click();
+        await settle();
+        assert.equal(mutations.length, 0);
+
+        buttonNamed(dom, "Convert").click();
+        await settle();
+        assert.ok(mutations.length > 0);
+        assert.equal(document.querySelectorAll('[role="status"]')[0], region);
+        assert.equal(region.textContent, "Granted: false");
+      } finally {
+        observer.disconnect();
+      }
+    } finally {
+      dom.window.close();
+    }
+  });
+
+  it("does not reopen an Autocomplete's suggestions when re-renders restore its focus", async () => {
+    const dom = await runConfiguratorRuntime(autocompleteFixtureDir, "autocomplete");
+    try {
+      const document = dom.window.document;
+      const runtime = dom.window as unknown as { autocompleteLoads?: number };
+      const input = document.querySelector(".autocomplete input");
+      assert.ok(input);
+      input.focus();
+      await settle();
+      assert.equal(runtime.autocompleteLoads, 1);
+      const option = document.querySelector(".autocomplete-option");
+      assert.ok(option, "focusing the input should list suggestions");
+
+      option.click();
+      await settle();
+
+      assert.equal(document.getElementById("inspected")?.textContent, "file-1");
+      assert.equal(document.activeElement, document.querySelector(".autocomplete input"));
+      assert.equal(runtime.autocompleteLoads, 1);
+      assert.equal(document.querySelector(".autocomplete-popup")?.style.display, "none");
+    } finally {
+      dom.window.close();
+    }
+  });
+
+  it("loads suggestions for typing that withdraws an Autocomplete's picked value", async () => {
+    const dom = await runConfiguratorRuntime(autocompleteFixtureDir, "autocomplete");
+    try {
+      const document = dom.window.document;
+      const runtime = dom.window as unknown as { autocompleteLoads?: number };
+      document.querySelector(".autocomplete input")?.focus();
+      await settle();
+      document.querySelector(".autocomplete-option")?.click();
+      await settle();
+      assert.equal(document.getElementById("inspected")?.textContent, "file-1");
+      assert.equal(runtime.autocompleteLoads, 1);
+
+      const input = document.querySelector(".autocomplete input");
+      assert.ok(input);
+      input.value = "Bud";
+      input.dispatchEvent(new dom.window.Event("input"));
+      await new Promise(done => setTimeout(done, 250));
+      await settle();
+
+      assert.equal(document.getElementById("inspected"), null);
+      assert.equal(runtime.autocompleteLoads, 2);
+      const popup = document.querySelector(".autocomplete-popup");
+      assert.equal(popup?.style.display, "block");
+      assert.equal(popup?.querySelector(".autocomplete-option-title")?.textContent, "Budget");
     } finally {
       dom.window.close();
     }
