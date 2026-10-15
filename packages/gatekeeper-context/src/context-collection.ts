@@ -1,15 +1,19 @@
-// One collection's metadata and documents. Metadata changes update the private owner library or the
-// public domain registry.
+// One collection's metadata, documents, and access grants. Metadata changes update the creator's
+// library or the public domain registry; grant changes update the grantee's library.
 
 import { DurableObject } from "cloudflare:workers";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import {
-  ContextCollectionContent, ContextCollectionMetadata, ContextCollectionVisibility,
+  ContextCollectionContent, ContextCollectionMember, ContextCollectionMetadata,
+  ContextCollectionRole, ContextCollectionSharing, ContextCollectionVisibility,
   ContextDocument, ContextDocumentSummary,
   ContextGitTokenCreateResult, ContextGitTokenList,
   DEFAULT_DOCUMENT_CONTENT_TYPE, DEFAULT_GIT_BRANCH, MAX_DOCUMENT_BODY_BYTES,
   contentTypeFromPath, isTextContentType, VENDOR_ID,
 } from "./context-types.js";
+import {
+  type CollectionAccess, collectionPermissions,
+} from "./collection-access.js";
 import { metadataToSummary } from "./collection-kv.js";
 import { domainName } from "./domain.js";
 import {
@@ -118,18 +122,47 @@ type StoredContextCollectionMetadata = Omit<ContextCollectionMetadata, "content"
   content?: ContextCollectionContent;
 };
 
+type GrantRecord = {
+  accountId: string;
+  role: ContextCollectionRole;
+  /** Workshop display name when granted; absent for a creator migrated from `ownerAccountId`. */
+  displayName?: string;
+  grantedAt: Date;
+};
+
+// Which account minted a git write token, so losing write access can revoke it. Tokens minted
+// before sharing existed have no record and are left alone.
+type GitTokenIssuerRecord = {
+  tokenId: string;
+  accountId: string;
+};
+
+// Bump when grants need rebuilding from older storage.
+const ACL_VERSION = 1;
+
+const NOT_FOUND = "Collection not found or you don't have access.";
+
+// Members list owners first, then editors, then viewers.
+const ROLE_ORDER: Record<ContextCollectionRole, number> = { owner: 0, editor: 1, viewer: 2 };
+
 function makeContextCollectionStorage(storage: DurableObjectStorage) {
   return createTypedStorage(storage, {
     collections: {
       documents: collection<ContextRecord>()({ primaryKey: "path" }),
       // Data needed to list skills without loading document bodies.
       skillIndex: collection<SkillIndexEntry>()({ primaryKey: "path" }),
+      // Private collections only: every account's role. Authoritative for access.
+      grants: collection<GrantRecord>()({ primaryKey: "accountId" }),
+      gitTokenIssuers: collection<GitTokenIssuerRecord>()({ primaryKey: "tokenId" }),
     },
     singletons: {
       // Sharing domain for cross-DO references.
       sharingDomain: "",
-      // Private owner account id; empty for public collections.
+      // The creating account (its owned index lists this collection); empty for public
+      // collections. Authority comes from `grants`, which started with this account as owner.
       ownerAccountId: "",
+      everyoneCanView: false,
+      aclVersion: 0,
       metadata: <StoredContextCollectionMetadata>{
         id: "",
         title: "",
@@ -170,10 +203,10 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     return this.storage.sharingDomain.get();
   }
 
-  // The owner's UserLibraryDurableObject (private collections only), within this collection's domain.
-  #ownerLibrary() {
+  // An account's UserLibraryDurableObject, within this collection's domain.
+  #library(accountId: string) {
     let ns = this.ctx.exports.UserLibraryDurableObject;
-    return ns.get(ns.idFromName(domainName(this.#domain(), this.storage.ownerAccountId.get())));
+    return ns.get(ns.idFromName(domainName(this.#domain(), accountId)));
   }
 
   #registry() {
@@ -217,6 +250,10 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     }
     this.storage.sharingDomain.put(sharingDomain);
     this.storage.ownerAccountId.put(ownerAccountId);
+    if (metadata.visibility === "private" && ownerAccountId) {
+      this.storage.grants.put({ accountId: ownerAccountId, role: "owner", grantedAt: metadata.created });
+    }
+    this.storage.aclVersion.put(ACL_VERSION);
     if (metadata.content.source === "git") {
       metadata.content = {
         source: "git",
@@ -236,6 +273,187 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     // Old storage records won't have `content` set, so we need to default these values in
     // at the API layer.
     return { ...meta, content: meta.content ?? { source: "web" } };
+  }
+
+  // --- Access ---
+
+  // Collections created before sharing existed get their creator as sole owner.
+  #ensureGrants(): void {
+    if (this.storage.aclVersion.get() === ACL_VERSION) return;
+    let meta = this.storage.metadata.get();
+    // Not a collection (yet): write nothing, so probing an unknown ID creates no storage.
+    if (!meta.id) return;
+    let creator = this.storage.ownerAccountId.get();
+    this.storage.transaction(() => {
+      if (meta.visibility === "private" && creator && !this.storage.grants.get(creator)) {
+        this.storage.grants.put({ accountId: creator, role: "owner", grantedAt: meta.created });
+      }
+      this.storage.aclVersion.put(ACL_VERSION);
+    });
+  }
+
+  /** The account's standing here; `collection-access.ts` interprets it. */
+  getAccess(accountId: string): CollectionAccess {
+    this.#ensureGrants();
+    let meta = this.storage.metadata.get();
+    let grants = [...this.storage.grants.list()];
+    let everyoneCanView = this.storage.everyoneCanView.get();
+    let role = meta.visibility === "private"
+      ? grants.find(grant => grant.accountId === accountId)?.role ?? null
+      : null;
+    return {
+      exists: !!meta.id,
+      visibility: meta.visibility,
+      role,
+      everyoneCanView,
+      hasOwner: grants.some(grant => grant.role === "owner"),
+      shared: everyoneCanView || grants.some(grant => grant.accountId !== accountId),
+    };
+  }
+
+  /** What a library lists for this collection, or null unless the account holds a role on it. */
+  getLibraryEntry(accountId: string):
+      { metadata: ContextCollectionMetadata; access: CollectionAccess } | null {
+    let access = this.getAccess(accountId);
+    if (!access.exists || access.role === null) return null;
+    return { metadata: this.getMetadata(), access };
+  }
+
+  /** Members and everyone-viewability, for an account holding a role on this collection. */
+  getSharing(accountId: string): ContextCollectionSharing {
+    let access = this.getAccess(accountId);
+    if (!access.exists || access.role === null) throw new Error(NOT_FOUND);
+    let members: ContextCollectionMember[] = [...this.storage.grants.list()]
+      .toSorted((left, right) =>
+        ROLE_ORDER[left.role] - ROLE_ORDER[right.role]
+        || left.grantedAt.valueOf() - right.grantedAt.valueOf())
+      .map(grant => ({
+        memberId: grant.accountId,
+        role: grant.role,
+        displayName: grant.displayName,
+        isViewer: grant.accountId === accountId,
+      }));
+    return { members, everyoneCanView: access.everyoneCanView, hasOwner: access.hasOwner };
+  }
+
+  // Throws unless `actorId` may give `targetId` the role `role`, or remove them (null).
+  #authorizeGrantChange(actorId: string, targetId: string, role: ContextCollectionRole | null): void {
+    let access = this.getAccess(actorId);
+    if (!access.exists || access.role === null) throw new Error(NOT_FOUND);
+    let current = this.storage.grants.get(targetId)?.role;
+    // Anyone may leave; every other change needs sharing rights.
+    if (actorId !== targetId || role !== null) {
+      let permissions = collectionPermissions(access, false);
+      if (!permissions.canShare) {
+        throw new Error("Only editors and owners can change who has access to this collection.");
+      }
+      if ((role === "owner" || current === "owner") && !permissions.canManageOwners) {
+        throw new Error("Only owners can change who owns this collection.");
+      }
+    }
+    if (current === "owner" && role !== "owner"
+        && [...this.storage.grants.list()].filter(grant => grant.role === "owner").length === 1) {
+      throw new Error("A collection needs an owner. Make someone else an owner first.");
+    }
+  }
+
+  /**
+   * Give an account a role, recording it in the account's library first. Only the grant confers
+   * access and every listing re-checks it here, so an index entry left by a failed grant is never
+   * shown, and repeating the share completes it.
+   */
+  async share(
+      actorId: string, recipientId: string, role: ContextCollectionRole,
+      displayName: string): Promise<void> {
+    this.#authorizeGrantChange(actorId, recipientId, role);
+    await this.#library(recipientId).addSharedCollection(this.getMetadata().id);
+    await this.#setGrant(actorId, recipientId, role, displayName);
+  }
+
+  async setMemberRole(actorId: string, memberId: string, role: ContextCollectionRole): Promise<void> {
+    if (!this.storage.grants.get(memberId)) throw new Error("That person no longer has access.");
+    await this.#setGrant(actorId, memberId, role);
+  }
+
+  async #setGrant(
+      actorId: string, targetId: string, role: ContextCollectionRole,
+      displayName?: string): Promise<void> {
+    // Authorized again: an earlier await may have let another change in.
+    this.#authorizeGrantChange(actorId, targetId, role);
+    let previous = this.storage.grants.get(targetId);
+    this.storage.grants.put({
+      accountId: targetId,
+      role,
+      displayName: displayName ?? previous?.displayName,
+      grantedAt: previous?.grantedAt ?? new Date(),
+    });
+    if (previous && previous.role !== "viewer" && role === "viewer") {
+      await this.#revokeIssuedGitTokens(targetId);
+    }
+  }
+
+  /** Remove a member; an account removing itself leaves the collection. */
+  async removeMember(actorId: string, memberId: string): Promise<void> {
+    this.#authorizeGrantChange(actorId, memberId, null);
+    if (!this.storage.grants.get(memberId)) return;
+    this.storage.grants.delete(memberId);
+    try {
+      await this.#library(memberId).forgetCollection(this.getMetadata().id);
+    } catch (err) {
+      // Harmless: listings drop an entry whose account holds no role here.
+      logger.warn("failed to remove collection from a former member's library", {
+        event: "collection.member.library.remove.failed", collectionId: this.getMetadata().id,
+        error: err,
+      });
+    }
+    await this.#afterGrantRemoved(memberId);
+  }
+
+  /**
+   * The account was disconnected: drop its grant. Its library is wiped separately. A collection
+   * left with no grants is deleted unless everyone can view it; one still shared with others
+   * survives, without an owner if this was the last.
+   */
+  async removeAccount(accountId: string): Promise<void> {
+    this.#ensureGrants();
+    if (!this.storage.grants.get(accountId)) return;
+    this.storage.grants.delete(accountId);
+    await this.#afterGrantRemoved(accountId);
+  }
+
+  async #afterGrantRemoved(accountId: string): Promise<void> {
+    await this.#revokeIssuedGitTokens(accountId);
+    // Nobody can reach it any more.
+    if ([...this.storage.grants.list()].length === 0 && !this.storage.everyoneCanView.get()) {
+      await this.deleteSelf();
+    }
+  }
+
+  async setEveryoneCanView(actorId: string, everyoneCanView: boolean): Promise<void> {
+    let access = this.getAccess(actorId);
+    if (!access.exists || access.role === null) throw new Error(NOT_FOUND);
+    if (!collectionPermissions(access, false).canShare) {
+      throw new Error("Only editors and owners can change who has access to this collection.");
+    }
+    this.storage.everyoneCanView.put(everyoneCanView);
+  }
+
+  // A token's issuer lost write access: revoke what they minted, so the change is not merely hidden.
+  async #revokeIssuedGitTokens(accountId: string): Promise<void> {
+    let issued = [...this.storage.gitTokenIssuers.list()].filter(record => record.accountId === accountId);
+    if (issued.length === 0 || !this.env.ARTIFACTS) return;
+    let id = this.getMetadata().id;
+    let repo = await this.env.ARTIFACTS.get(id);
+    for (let record of issued) {
+      try {
+        await repo.revokeToken(record.tokenId);
+        this.storage.gitTokenIssuers.delete(record.tokenId);
+      } catch (err) {
+        logger.error("failed to revoke a git token after its issuer lost write access", {
+          event: "artifacts.issuer.token.revoke.failed", collectionId: id, error: err,
+        });
+      }
+    }
   }
 
   #parseAgentSkill(record: ContextRecord) {
@@ -715,11 +933,13 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     await this.#refreshArtifactSource();
   }
 
-  async createGitToken(): Promise<ContextGitTokenCreateResult> {
+  /** Mint a mirror write token, recording `issuerId` so losing write access revokes it. */
+  async createGitToken(issuerId: string): Promise<ContextGitTokenCreateResult> {
     let meta = this.getMetadata();
     if (meta.content.source !== "git") throw new Error("Collection is not git-based.");
     let repo = await this.#artifacts().get(meta.id);
     let token = await repo.createToken("write", GIT_TOKEN_TTL_SECONDS);
+    this.storage.gitTokenIssuers.put({ tokenId: token.id, accountId: issuerId });
     return {
       id: token.id,
       plaintext: token.plaintext,
@@ -749,7 +969,9 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     if (!this.#isGitBased()) throw new Error("Collection is not git-based.");
     let meta = this.getMetadata();
     let repo = await this.#artifacts().get(meta.id);
-    return repo.revokeToken(tokenId);
+    let revoked = await repo.revokeToken(tokenId);
+    this.storage.gitTokenIssuers.delete(tokenId);
+    return revoked;
   }
 
   #isGitBased(): boolean {
@@ -900,7 +1122,14 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       if (meta.visibility === "public") {
         await this.#registry().removePublic(this.#domain(), id);
       } else {
-        await this.#ownerLibrary().removeOwnedCollection(id);
+        await this.#library(this.storage.ownerAccountId.get()).removeOwnedCollection(id);
+        // Best-effort: listings already drop entries for a deleted collection.
+        await Promise.all([...this.storage.grants.list()].map(grant =>
+          this.#library(grant.accountId).forgetCollection(id).catch((err) => {
+            logger.warn("failed to remove deleted collection from a member's library", {
+              event: "collection.delete.library.remove.failed", collectionId: id, error: err,
+            });
+          })));
       }
     }
 
@@ -917,21 +1146,6 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     await this.ctx.storage.deleteAll();
   }
 
-  /** Account revocation clears the whole user-library index separately; don't update it per item. */
-  async deleteForRevokedOwner(): Promise<void> {
-    let meta = this.getMetadata();
-    if (meta.content.source === "git" && meta.id && this.env.ARTIFACTS) {
-      await this.env.ARTIFACTS.delete(meta.id).catch((err) => {
-        logger.warn("failed to delete Artifacts repo while revoking context collection owner", {
-          event: "artifacts.repo.delete.for.revoked.owner.failed",
-          collectionId: meta.id,
-          error: err,
-        });
-      });
-    }
-    await this.ctx.storage.deleteAll();
-  }
-
   // --- Propagation ---
 
   // Refresh this collection's denormalized summary in its index.
@@ -942,7 +1156,7 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     if (meta.visibility === "public") {
       await this.#registry().syncPublic(this.#domain(), summary);
     } else {
-      await this.#ownerLibrary().updateOwnedCollection(meta.id, summary);
+      await this.#library(this.storage.ownerAccountId.get()).updateOwnedCollection(meta.id, summary);
     }
   }
 }

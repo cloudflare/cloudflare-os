@@ -14,7 +14,8 @@ move them, and new product behavior must not depend on adding more directory hie
 nodes remain only to preserve collections that already use older nested layouts.
 
 Selecting a skill still opens the existing collection editor, which remains the general-purpose
-document editing surface.
+document editing surface. Every reader can also open a collection from its row menu, so collections
+that contain only ordinary documents remain reachable.
 
 ## Legacy directories
 
@@ -45,12 +46,31 @@ organizational directory.
 
 ## Permissions and sources
 
-Skill and directory actions are offered only when the account can write the collection and the
-collection is web-backed. Git-backed collections remain read-only at the skill level but owners and
-admins can still edit their collection settings, manage Git tokens, refresh them, or delete them.
-Otherwise read-only collections expose no mutation actions and are not offered as Add Skill targets.
-If loading a collection's documents fails, that collection also fails closed as non-writable for
-skill mutations in the current view.
+Collection actions follow `getContextCollectionPermissions`. Skill and directory actions are offered
+only when the account can edit the collection and the collection is web-backed. Git-backed
+collections remain read-only at the skill level, but editors, owners, and admins can still edit
+their collection settings, manage Git tokens, and refresh them. Sharing is offered on editable
+private collections, and deleting the whole collection only to owners and admins. Viewers keep
+navigation, previews, downloads, and opening the collection. Otherwise read-only collections expose
+no mutation actions and are not offered as Add Skill targets. If loading a collection's documents
+or permissions fails, that collection fails closed as non-writable in the current view.
+
+Collection labels come from the viewer's live membership: deployment-public collections show
+Organization, an owned collection shows Private or, once anyone else can read it, Shared, and a
+collection someone else shared shows Shared with you and the viewer's role. Collection titles need
+not be unique; these labels tell same-titled collections apart.
+
+## Sharing
+
+The Share dialog adds people through the Workshop's host-owned person picker
+(`useSelectUsers()` in `bridge.ts`). Each picker session gets its own receiver that fixes the
+collection and the role chosen when the picker opened, and shares with each picked person as soon as
+they are delivered; a backend refusal rejects that delivery, so the picker shows the message beside
+the person. Cancelling the picker does not undo shares already delivered.
+
+Anyone a collection was shared with as a viewer or editor can leave it from the collection's row menu,
+including viewers, who cannot open the Share dialog. Owners leave from the Share dialog, which knows
+whether another owner remains.
 
 The server remains the authority for every mutation. The client-side checks control affordances and
 provide earlier feedback; they are not the security boundary.
