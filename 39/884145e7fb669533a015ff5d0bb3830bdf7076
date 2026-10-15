@@ -1,0 +1,40 @@
+packages/gatekeeper-google/__tests__/office-conversion.test.ts
+  s_26cbe985980ef3::t_6b37c5d6116e89 5-6,54-60
+  s_26cbe985980ef3::t_cdc1103a6f1fde 61,63-68
+  s_26cbe985980ef3::t_02242d614f7904 62
+packages/gatekeeper-google/src/configurator/google-slides-configurator-ui.tsx
+  s_26cbe985980ef3::t_396d1b983b41eb 174,203-205,212-220,226-230,232
+  s_26cbe985980ef3::t_9832e50627a8bf 167-173
+packages/gatekeeper-google/src/configurator/google-sheets-configurator-ui.tsx
+  s_26cbe985980ef3::t_396d1b983b41eb 174,203-205,212-220,226-230,232
+  s_26cbe985980ef3::t_9832e50627a8bf 167-173
+packages/gatekeeper-google/__tests__/configurator-office-flow.test.ts
+  s_26cbe985980ef3::t_cdc1103a6f1fde 454,456-488
+  s_26cbe985980ef3::t_376882812ec16b 275,286-301,435-453
+  s_26cbe985980ef3::t_2c46999afa50a7 455
+packages/gatekeeper-google/__tests__/workerd/configurators.test.ts
+  s_26cbe985980ef3::t_d4e1f43becf9a6 474-486
+packages/gatekeeper-google/src/office-conversion.ts
+  s_26cbe985980ef3::t_3be08caf6d7dec 207,229-233,239
+  s_26cbe985980ef3::t_6b37c5d6116e89 93-97,99,101-109,119
+  s_26cbe985980ef3::t_9832e50627a8bf 98,100,251
+packages/gatekeeper-google/src/configurator/google-doc-configurator-ui.tsx
+  s_26cbe985980ef3::t_396d1b983b41eb 174,203-205,212-220,226-230,232
+  s_26cbe985980ef3::t_9832e50627a8bf 167-173
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "39884145e7fb669533a015ff5d0bb3830bdf7076",
+  "prompts": {},
+  "sessions": {
+    "s_26cbe985980ef3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3b4bf2e-39a8-4dfe-ac8e-27372e182258",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
