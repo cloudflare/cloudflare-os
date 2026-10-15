@@ -772,6 +772,20 @@ describe("recorded account grants", () => {
     expect(grantedResourceUrlPatterns(grant)).toEqual([GMAIL_RESOURCE.urlPattern]);
   });
 
+  // Calendar gained calendar.events.freebusy after this generation was written. Its earlier scopes
+  // were never requested by anything else, so a reconnect still asks for Calendar, and with it the
+  // new scope, while the Workshop reports the grant as missing. Either scope alone proves nothing.
+  it("keeps an outgrown Calendar grant requestable for a scope-only account", () => {
+    const calendarList = "https://www.googleapis.com/auth/calendar.calendarlist.readonly";
+    const events = "https://www.googleapis.com/auth/calendar.events";
+    const grant = { oauthScopes: [...IDENTITY_SCOPES, calendarList, events] };
+    expect(recordedResourceUrlPatterns(grant)).toEqual([GOOGLE_CALENDAR_RESOURCE.urlPattern]);
+    expect(grantedResourceUrlPatterns(grant)).toEqual([]);
+    for (const scope of [calendarList, events]) {
+      expect(recordedResourceUrlPatterns({ oauthScopes: [...IDENTITY_SCOPES, scope] })).toEqual([]);
+    }
+  });
+
   // A urlPattern retired by a later deploy. Keeping it would make every reconnect throw on an
   // unknown pattern; the account re-consents under the live pattern instead.
   it("drops a retired pattern from a recorded grant", () => {

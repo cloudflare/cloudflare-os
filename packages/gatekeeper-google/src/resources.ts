@@ -204,6 +204,19 @@ export const SCOPE_DERIVED_RESOURCE_URL_PATTERNS = [
 ];
 
 /**
+ * Scopes that still prove a scope-only account chose a resource whose requirements have since grown.
+ *
+ * Only scopes no other resource has ever requested belong here, so holding them cannot be a side
+ * effect of some other grant. Calendar's are its scopes from before it needed free/busy.
+ */
+const SCOPE_DERIVED_INTENT_SCOPES: Partial<Record<string, readonly string[]>> = {
+  [GOOGLE_CALENDAR_RESOURCE.urlPattern]: [
+    "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+    "https://www.googleapis.com/auth/calendar.events",
+  ],
+};
+
+/**
  * The user scopes the Chat resources need.
  *
  * `chat.messages` rather than the narrower `chat.messages.readonly` plus `chat.messages.create`
@@ -508,8 +521,9 @@ export type RecordedResourceGrant = {
  * scope-only generation is filtered by its own scopes, because there the list is an *inference* and
  * not a statement of intent: unfiltered, a Gmail-only account reconnecting would be asked to grant
  * writable Docs, writable Calendar, Sheets and BigQuery, and would have them recorded once it
- * accepted. That generation cannot express an outgrown grant either — a resource whose scopes it no
- * longer covers is indistinguishable from one it never held — so there is nothing to keep.
+ * accepted. That generation can express an outgrown grant only through
+ * {@link SCOPE_DERIVED_INTENT_SCOPES}; otherwise a resource whose scopes it no longer covers is
+ * indistinguishable from one it never held, so there is nothing to keep.
  *
  * A `urlPattern` a later deploy renamed is read under its new name. One it retired is dropped: it
  * maps to no scopes, so requesting it would throw and take the reconnect that repairs the account
@@ -522,7 +536,11 @@ export function recordedResourceUrlPatterns(grant: RecordedResourceGrant): strin
         .filter(pattern => KNOWN_RESOURCE_PATTERNS.has(pattern));
   }
   if (grant.oauthScopes === undefined) return [...LEGACY_GRANTED_RESOURCE_URL_PATTERNS];
-  return resourcesCoveredByScopes(SCOPE_DERIVED_RESOURCE_URL_PATTERNS, grant.oauthScopes);
+  let granted = new Set(grant.oauthScopes);
+  let covered = new Set(
+    resourcesCoveredByScopes(SCOPE_DERIVED_RESOURCE_URL_PATTERNS, grant.oauthScopes));
+  return SCOPE_DERIVED_RESOURCE_URL_PATTERNS.filter(pattern => covered.has(pattern) ||
+    (SCOPE_DERIVED_INTENT_SCOPES[pattern]?.every(scope => granted.has(scope)) ?? false));
 }
 
 /**
