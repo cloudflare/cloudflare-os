@@ -1784,7 +1784,7 @@ async function runAgentPass(
   // changed (see applyReplayedPin). The one way knowledge goes stale is another chat's accept
   // moving an unpinned gadget's head, and a stamp is checked against the head at
   // the two points where it would otherwise be trusted: editFile's gate on an unpinned gadget,
-  // and the establishment of a pin (anchorKnowledgeToPin), after which reads are session-served
+  // and the establishment of a pin (knowledgeAtPin), after which reads are session-served
   // and the gate is skipped. At an epoch boundary session-tracking entries take an oid stamp of
   // their own (resetSessionEpoch). Deliberately not carried across a compaction boundary: a
   // read the summary swallowed no longer tells the agent what the text is, so re-reading is
@@ -1806,10 +1806,12 @@ async function runAgentPass(
   // pin at the same commit); idempotent, since a second call finds nothing stamped. Worktrees
   // need none of this: only this chat's accept moves the commit an unpinned worktree reads at,
   // and stamps carried across that accept are of content it committed, so a worktree's stamps
-  // always match its pin base.
-  let anchorKnowledgeToPin = async (gadgetId: WorkpieceId, baseCommit: string) => {
+  // always match its pin base. Prepare a copy: live tools install it only after the edit
+  // buffers successfully, so a rejected or no-op edit cannot settle reads without a pin.
+  let knowledgeAtPin = async (gadgetId: WorkpieceId, baseCommit: string) => {
     let files = filesRead.get(gadgetId);
     if (files === undefined) return;
+    files = new Map(files);
     for (let [filename, stamp] of files) {
       if (stamp === undefined) continue;
       if (await hooks.fileOidAtCommit(baseCommit, filename) === stamp) {
@@ -1818,6 +1820,7 @@ async function runAgentPass(
         files.delete(filename);
       }
     }
+    return files;
   };
 
   // Resolve a file tool's optional `workpiece` parameter -- the chat binding name of the target
@@ -1887,7 +1890,7 @@ async function runAgentPass(
   // editFile forces a re-read.
   //
   // A stamped entry normally carries over untouched: its workpiece was unpinned (a pinned
-  // gadget's stamps were settled by anchorKnowledgeToPin), so the session holds nothing of the
+  // gadget's stamps were settled by knowledgeAtPin), so the session holds nothing of the
   // file and the stamp is as true after the accept as before. The exception is a worktree,
   // whose stamps are never settled at its pin: a *user* edit of a file the model read unpinned
   // lands in the session content while the entry keeps the pre-edit stamp (the model's own
@@ -1952,7 +1955,8 @@ async function runAgentPass(
     sessionContent = new Map(sessionContent);
     sessionContent.set(pin.gadgetId, files);
     pinnedGadgets.add(pin.gadgetId);
-    await anchorKnowledgeToPin(pin.gadgetId, pin.baseCommit);
+    let knowledge = await knowledgeAtPin(pin.gadgetId, pin.baseCommit);
+    if (knowledge !== undefined) filesRead.set(pin.gadgetId, knowledge);
     return forgotten.toSorted();
   };
 
@@ -3288,7 +3292,7 @@ async function runAgentPass(
           // The first write to an unpinned gadget with committed code pins it at the current
           // head (a whole-file overwrite is coherent against any base, so no read gate here --
           // but the gadget's *other* stamped reads are settled against that head now, see
-          // anchorKnowledgeToPin). Gadgets with no committed code stay unpinned; their content
+          // knowledgeAtPin). Gadgets with no committed code stay unpinned; their content
           // builds up from changes. (A worktree's first-write pin needs no declaration;
           // appendAgentEdit handles it.)
           let pin: {baseCommit: string, baseFiles: Map<string, string>} | undefined;
@@ -3296,14 +3300,15 @@ async function runAgentPass(
             let head = hooks.getGadgetHead(resolved.workpieceId);
             if (head !== undefined) {
               pin = {baseCommit: head, baseFiles: await hooks.readCommitFiles(head)};
-              await anchorKnowledgeToPin(resolved.workpieceId, head);
             }
           }
 
+          let knowledge = pin && await knowledgeAtPin(resolved.workpieceId, pin.baseCommit);
           // A whole-file write is a `set`: valid against any state, so replay and concurrent
           // transforms can never mis-anchor it.
           appendAgentEdit(resolved.workpieceId,
               {[resolved.workpieceId]: [[filename, {set: newContent}]]}, pin);
+          if (knowledge !== undefined) filesRead.set(resolved.workpieceId, knowledge);
 
           // The agent knows exactly what's in the file, so add it to the `filesRead` set so
           // that it can make further edits without rewriting.
@@ -3372,8 +3377,6 @@ async function runAgentPass(
               }
               if (!hooks.isWorktree(resolved.workpieceId)) {
                 pin = {baseCommit: head, baseFiles: await hooks.readCommitFiles(head)};
-                // This file passed the gate; the gadget's other stamped reads are settled here.
-                await anchorKnowledgeToPin(resolved.workpieceId, head);
               }
             }
           }
@@ -3394,8 +3397,10 @@ async function runAgentPass(
           let pos = findEditPos(before, textToReplace);
           if (replacement !== textToReplace) {
             let edit = replaceSpanChange(before.length, pos, textToReplace, replacement);
+            let knowledge = pin && await knowledgeAtPin(resolved.workpieceId, pin.baseCommit);
             appendAgentEdit(
                 resolved.workpieceId, {[resolved.workpieceId]: [[filename, {edit}]]}, pin);
+            if (knowledge !== undefined) filesRead.set(resolved.workpieceId, knowledge);
             // Like writeFile: the agent knows the file's exact resulting content, so the entry
             // becomes session knowledge (the gadget is pinned now, so a commit stamp -- which
             // predates this edit -- would be the wrong thing to carry forward).
