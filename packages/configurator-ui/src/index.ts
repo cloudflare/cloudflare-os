@@ -22,6 +22,14 @@ export type ConfiguratorUIRenderContext<
    * this helper makes no assumptions about it beyond passing it through to the render function.
    */
   ui: TUI;
+  /**
+   * Ask Workshop to make sure the connected account holds grants covering `resourceUrlPatterns`,
+   * asking the user for consent when it does not. Resolves true when the account already holds
+   * them. Otherwise Workshop opens the provider's consent pop-up and resolves false, so re-check
+   * through `ui`. Rejects when the request fails or Workshop sees the user cancel. Call it from a
+   * click handler, so the browser allows the pop-up.
+   */
+  ensureResources(resourceUrlPatterns: string[]): Promise<boolean>;
 }
 
 
@@ -156,6 +164,27 @@ export function Autocomplete(_props: {
   disabled?: boolean;
 }): unknown {
   throw new Error("Autocomplete is provided by the configurator UI sandbox runtime.");
+}
+
+/**
+ * Button component provided by the sandbox runtime. A disabled Button stays focusable but ignores
+ * clicks.
+ */
+export function Button(_props: {
+  children?: unknown;
+  onClick(): void;
+  disabled?: boolean;
+  variant?: "primary" | "secondary";
+}): unknown {
+  throw new Error("Button is provided by the configurator UI sandbox runtime.");
+}
+
+/**
+ * Inline message provided by the sandbox runtime. An `info` notice is announced politely, an
+ * `error` notice assertively.
+ */
+export function Notice(_props: { children?: unknown; tone?: "info" | "error" }): unknown {
+  throw new Error("Notice is provided by the configurator UI sandbox runtime.");
 }
 
 /** JSX factory provided by the sandbox runtime. */

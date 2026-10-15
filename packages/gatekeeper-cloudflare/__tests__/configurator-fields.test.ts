@@ -51,6 +51,7 @@ function renderWith(values: { accountId: string | null; workerName: string | nul
     values,
     setValues: patch => void patches.push(patch),
     clearFields: (...names) => void cleared.push(...names),
+    ensureResources: async () => { throw new Error("render must not request resources"); },
     ui: new Proxy({}, {
       get() { throw new Error("render must not call the ui capability"); },
     }) as never,

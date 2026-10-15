@@ -515,6 +515,16 @@ export interface ResourceConfiguratorHost extends RpcTarget {
    * when user expects the connections modal to scroll.
    */
   forwardScroll(deltaX: number, deltaY: number): void;
+
+  /**
+   * Ask Workshop to make sure the account the configurator was opened for holds grants covering
+   * `resourceUrlPatterns`, asking the user for consent when it does not. Resolves true when the
+   * account already holds them. Otherwise Workshop opens the provider's consent pop-up and resolves
+   * false, and the configurator learns the outcome by re-checking through its own gatekeeper
+   * capability. Rejects when the request fails or Workshop sees the user cancel. Call it from a
+   * click in the iframe, so the browser allows the pop-up.
+   */
+  ensureResources(resourceUrlPatterns: string[]): Promise<boolean>;
 }
 
 /**
