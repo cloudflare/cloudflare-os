@@ -751,6 +751,8 @@ export interface AuthenticatedApi extends RpcTarget {
    * on a connected account, expanding if needed. Returns a flow to open as a disowned popup (as for
    * connectAccount()) to authorize them, or null if nothing was needed. Completion is redeemed via
    * completeConnectHandoff(); the updated grant is then observable via subscribeConnectedAccounts().
+   * Returning null also re-reads the account's description, so a list of granted resource types
+   * that was out of date is corrected and observable the same way.
    */
   ensureAccountResources(accountId: number, resourceUrlPatterns: string[]): Promise<ConnectFlowStart | null>;
 
