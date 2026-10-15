@@ -1,5 +1,5 @@
 import { RpcStub } from "capnweb";
-import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, UserNotification, type DeviceSessionHandoffStart } from '@gadgets/workshop-shared/api';
+import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
@@ -485,11 +485,25 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return new RpcStub<{}>({ [Symbol.dispose]: unsubscribe });
   }
 
+  /** See `AuthenticatedApi.setWorkspaceNotificationMute()`. */
+  async setWorkspaceNotificationMute(workspaceId: string, mute: NotificationMute | null)
+      : Promise<void> {
+    let record = this.storage.gadgets.get(workspaceId);
+    if (!record) throw new Error("No such workspace belonging to user.");
+    record.notificationMute = mute ?? undefined;
+    this.storage.gadgets.put(record);
+  }
+
   /**
    * Offer a notification to visible clients; push it to every registered device unless one
-   * acknowledges within 3s.
+   * acknowledges within 3s. A finished task in a workspace the user muted goes nowhere.
    */
   async publishNotification(notification: UserNotification): Promise<void> {
+    let mute = this.storage.gadgets.get(notification.workspaceId)?.notificationMute;
+    if (notification.kind === "taskCompleted" && mute &&
+        ("indefinite" in mute || mute.until.getTime() > Date.now())) {
+      return;
+    }
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let acknowledged = await Promise.race([
       Promise.any([...this.#notificationSubscribers.values()]

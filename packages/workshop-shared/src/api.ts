@@ -196,6 +196,9 @@ export type UserNotification = {
   chatTitle: string;
 };
 
+/** How long a workspace's notifications stay muted: until a time, or until the user unmutes it. */
+export type NotificationMute = { until: Date, indefinite?: never } | { indefinite: true, until?: never };
+
 /** Callback used by `AuthenticatedApi.subscribeToNotifications()`. */
 export interface NotificationSubscriber extends RpcTarget {
   /**
@@ -519,6 +522,12 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   subscribeToNotifications(
       subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>>;
+
+  /**
+   * Mute a workspace in the user's list, so its finished tasks notify no tab or device, or unmute
+   * it with null. Permission requests still come through.
+   */
+  setWorkspaceNotificationMute(workspaceId: string, mute: NotificationMute | null): Promise<void>;
 
   /**
    * List the user's configured AI models of one kind, by default the language models, which can
@@ -2006,6 +2015,9 @@ export type GadgetMetadata = {
 
   /** Whether the user has pinned this gadget to the top of their list. */
   pinned?: boolean;
+
+  /** Set while the user has muted this workspace's notifications. */
+  notificationMute?: NotificationMute;
 
   /**
    * Set when the gadget is not owned by the current user. Presence of this field indicates the

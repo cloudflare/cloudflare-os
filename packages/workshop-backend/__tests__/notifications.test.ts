@@ -134,12 +134,12 @@ describe("notification service", () => {
 
 // RPC exposes prototype methods only, as the browser's NotificationSubscriberImpl defines them.
 class Subscriber extends RpcTarget {
-  constructor(private readonly answer: () => Promise<void>) {
+  constructor(private readonly answer: (notification: UserNotification) => Promise<void>) {
     super();
   }
 
-  notify(): Promise<void> {
-    return this.answer();
+  notify(notification: UserNotification): Promise<void> {
+    return this.answer(notification);
   }
 }
 
@@ -189,6 +189,33 @@ describe("UserDurableObject notifications", () => {
   it("pushes to the registered phone when the tab does not answer within 3s", async () => {
     vi.useFakeTimers();
     expect(await publish(() => new Promise<void>(() => {}))).toEqual([ONE]);
+  });
+
+  // A muted workspace stays quiet about finished tasks, but a task stuck on the user still asks.
+  it("sends a muted workspace's permission requests to tabs and devices, and its finished tasks once the mute ends",
+      async () => {
+    let fetcher = stubService();
+    let offered: string[] = [];
+    let { workspaceId } = NOTIFICATION;
+    await inUser(async user => {
+      await user.newGadget(workspaceId, NOTIFICATION.chatTitle);
+      await user.registerNotificationDevice("a".repeat(64));
+      // A hidden tab: offered everything, shows nothing, so each offer also falls back to push.
+      await user.subscribeToNotifications(new RpcStub(new Subscriber(async notification => {
+        offered.push(notification.kind);
+        throw new Error("hidden");
+      })) as unknown as RpcStub<NotificationSubscriber>);
+      await user.setWorkspaceNotificationMute(workspaceId, { indefinite: true });
+      await user.publishNotification(NOTIFICATION);
+      await user.publishNotification({ ...NOTIFICATION, kind: "permissionRequested" });
+      await user.setWorkspaceNotificationMute(workspaceId, { until: new Date(Date.now() + 60_000) });
+      await user.publishNotification(NOTIFICATION);
+      await user.setWorkspaceNotificationMute(workspaceId, { until: new Date(Date.now() - 1) });
+      await user.publishNotification(NOTIFICATION);
+    });
+    expect(offered).toEqual(["permissionRequested", "taskCompleted"]);
+    expect(bodies(fetcher, "/v1/deliveries").map(({ type }) => type))
+        .toEqual(["permission_requested", "task_completed"]);
   });
 
   it("pushes to each device's latest subscription", async () => {
