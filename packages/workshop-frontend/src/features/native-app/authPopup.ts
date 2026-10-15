@@ -65,7 +65,7 @@ export const openNativeAuthPopup = (
   timer = setTimeout(() => {
     cleanup()
     controller.abort(new Error('Authentication expired. Please try again.'))
-    bridge.close(id)
+    try { bridge.close(id) } catch { /* Expiry must settle even if the native browser is already gone. */ }
     rejectCompletion(new Error('Authentication expired. Please try again.'))
   }, LIFETIME)
   try { bridge.open(id, startUrl) } catch (error) {

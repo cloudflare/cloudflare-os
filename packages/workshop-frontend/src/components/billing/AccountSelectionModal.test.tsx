@@ -51,6 +51,53 @@ const complete = async () => {
 }
 
 describe('global native billing account selection', () => {
+  it.each(['focus', 'native completion', 'auth change'])('handles an explicit billing choice after %s', async refresh => {
+    const api = makeApi()
+    api.getCloudflareUsage.mockResolvedValue(usage(true))
+    api.listCloudflareAccounts.mockResolvedValue([
+      { accountId: 'first', accountName: 'First account' },
+      { accountId: 'second', accountName: 'Second account' },
+    ])
+    await render(api)
+    const second = document.body.querySelector<HTMLInputElement>('input[value="second"]')!
+    await act(async () => second.click())
+    expect(second.checked).toBe(true)
+
+    let finishList!: (list: CloudflareAccountOption[]) => void
+    api.listCloudflareAccounts.mockImplementationOnce(() => new Promise(resolve => { finishList = resolve }))
+    if (refresh === 'focus') {
+      await act(async () => window.dispatchEvent(new Event('focus')))
+    } else if (refresh === 'native completion') {
+      await complete()
+    } else {
+      await render(api)
+    }
+    expect(Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Save')!.disabled).toBe(true)
+    await act(async () => finishList([
+      { accountId: 'first', accountName: 'First account' },
+      { accountId: 'second', accountName: 'Second account' },
+    ]))
+    const save = Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Save')!
+    await act(async () => save.click())
+    expect(api.selectCloudflareAccount).toHaveBeenCalledExactlyOnceWith(refresh === 'focus' ? 'second' : 'first')
+  })
+
+  it('does not preserve a billing choice removed from the refreshed account list', async () => {
+    const api = makeApi()
+    api.getCloudflareUsage.mockResolvedValue(usage(true))
+    api.listCloudflareAccounts.mockResolvedValue([
+      { accountId: 'first', accountName: 'First account' },
+      { accountId: 'second', accountName: 'Second account' },
+    ])
+    await render(api)
+    await act(async () => document.body.querySelector<HTMLInputElement>('input[value="second"]')!.click())
+    api.listCloudflareAccounts.mockResolvedValue([{ accountId: 'first', accountName: 'First account' }])
+    await act(async () => window.dispatchEvent(new Event('focus')))
+    const save = Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Save')!
+    await act(async () => save.click())
+    expect(api.selectCloudflareAccount).toHaveBeenCalledExactlyOnceWith('first')
+  })
+
   it.each([false, true])('opens after redemption despite a late pre-redemption focus response (reconnected: %s)', async reconnected => {
     const first = makeApi(), next = reconnected ? makeApi() : first
     await render(first)

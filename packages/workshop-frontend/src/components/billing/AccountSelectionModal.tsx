@@ -21,11 +21,11 @@ export default function AccountSelectionModal() {
   const [saving, setSaving] = useState(false)
   const refreshVersion = useRef(0)
 
-  const check = useCallback(async () => {
+  const check = useCallback(async (preserveChoice = false) => {
     if (!auth) return
     const version = ++refreshVersion.current
     setAccounts(null)
-    setChosen(undefined)
+    if (!preserveChoice) setChosen(undefined)
     try {
       const u: CloudflareUsageInfo = await auth.authenticatedApi.getCloudflareUsage()
       if (version !== refreshVersion.current) return
@@ -35,7 +35,7 @@ export default function AccountSelectionModal() {
       const list: CloudflareAccountOption[] = await auth.authenticatedApi.listCloudflareAccounts()
       if (version !== refreshVersion.current) return
       setAccounts(list)
-      setChosen(list[0]?.accountId)
+      setChosen(previous => list.some(account => account.accountId === previous) ? previous : list[0]?.accountId)
     } catch {
       if (version === refreshVersion.current) setAccounts([])
     }
@@ -44,13 +44,15 @@ export default function AccountSelectionModal() {
   useEffect(() => {
     if (!limitsEnabled || !auth) return
     check()
-    const onFocus = () => { void check() }
+    // Focus is not a new connection: retain the user's choice if it is still available.
+    const onFocus = () => { void check(true) }
+    const onNativeComplete = () => { void check() }
     window.addEventListener('focus', onFocus)
-    window.addEventListener(NATIVE_CONNECT_COMPLETE_EVENT, onFocus)
+    window.addEventListener(NATIVE_CONNECT_COMPLETE_EVENT, onNativeComplete)
     return () => {
       ++refreshVersion.current
       window.removeEventListener('focus', onFocus)
-      window.removeEventListener(NATIVE_CONNECT_COMPLETE_EVENT, onFocus)
+      window.removeEventListener(NATIVE_CONNECT_COMPLETE_EVENT, onNativeComplete)
     }
   }, [limitsEnabled, auth, check])
 
@@ -117,7 +119,7 @@ export default function AccountSelectionModal() {
               <Button variant="ghost" onClick={() => setNeedsSelection(false)}>
                 Dismiss
               </Button>
-              <Button variant="secondary" onClick={() => { void check() }}>
+              <Button variant="secondary" onClick={() => { void check(true) }}>
                 Try again
               </Button>
             </>
@@ -126,7 +128,7 @@ export default function AccountSelectionModal() {
               variant="primary"
               onClick={save}
               loading={saving}
-              disabled={!chosen || saving}
+              disabled={accounts === null || !chosen || saving}
             >
               Save
             </Button>

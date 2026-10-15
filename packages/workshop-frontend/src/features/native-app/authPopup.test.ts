@@ -87,6 +87,24 @@ describe('native auth transport', () => {
     expect(complete).not.toHaveBeenCalled()
   })
 
+  it('settles an expired connect even if the native browser is already gone', async () => {
+    vi.useFakeTimers()
+    const auth = bridge(), complete = vi.fn<(ticket: string, nonce: string) => Promise<void>>()
+    auth.close.mockImplementation(() => { throw new Error('Native browser already gone') })
+    const controller = new AbortController()
+    const settled = vi.fn<(error: unknown) => void>()
+    const completion = openConnectWindow({ url: FLOW, nonce: NONCE }, track(complete), controller.signal)
+      .catch(settled)
+    await vi.advanceTimersByTimeAsync(30 * 60 * 1000)
+    expect(settled).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: expect.stringContaining('expired') }))
+    controller.abort()
+    result(auth.open.mock.calls[0][0], TICKET)
+    await completion
+    expect(auth.close).toHaveBeenCalledOnce()
+    expect(settled).toHaveBeenCalledOnce()
+    expect(complete).not.toHaveBeenCalled()
+  })
+
   it('closes the native browser when the caller cancels and ignores its late result', async () => {
     const auth = bridge(), complete = vi.fn<(ticket: string) => Promise<void>>()
     const popup = openNativeAuthPopup(FLOW, complete)!
