@@ -161,9 +161,12 @@ export class IntegrationTestActionGatekeeper extends DurableObject<Cloudflare.En
   async getAutoApprovableActions() { return []; }
   /** A source fixture that recognizes exactly one remote commit, never DO auto-commits. */
   allowGitCommit(commit: string): void { this.ctx.storage.kv.put("gitCommit", commit); }
-  async gitReadPack(commit: string, request: Uint8Array): Promise<ReadableStream<Uint8Array>> {
-    if (commit !== this.ctx.storage.kv.get("gitCommit")) throw new Error("Unknown remote commit");
-    return new Response(request).body!;
+  async gitPull(oids: string[], options: import("@gadgets/workshop-shared/gatekeeper").GitPullHints): Promise<ReadableStream<Uint8Array>> {
+    if (oids.length !== 1 || oids[0] !== this.ctx.storage.kv.get("gitCommit")) throw new Error("Unknown remote commit");
+    if (options.type !== "commit" || options.commitHistory.kind !== "depth" ||
+        options.commitHistory.depth !== 1 || options.filterBlobSize !== undefined ||
+        options.filterTreeDepth !== undefined) throw new Error("Expected a complete depth-one checkout");
+    return new Response(Uint8Array.of(1, 255)).body!;
   }
   async startSession(queue: RpcStub<ApprovalQueue>): Promise<{ turn: AgentTurnInfo | null }> {
     using borrowed = queue;

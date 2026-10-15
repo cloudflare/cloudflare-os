@@ -72,7 +72,7 @@ describe("replica review regressions over durable kernel storage", () => {
     await impl.beginAgentIntegrationTurn(1);
     const replica = await open(impl), checkpoint = await replica.checkpoint();
     expect(checkpoint.worktrees[0]).toMatchObject({source: "repository", baseCommit: base, acceptedCommit: base, headCommit: base});
-    await expect((async () => { await replica.readGitPack(checkpoint.checkpointId, tree.id, new Uint8Array()); })())
+    await expect((async () => { await replica.readGitPack(checkpoint.checkpointId, tree.id); })())
       .rejects.toThrow(/No authorized source/);
     const entries = await replica.listBaseEntries(checkpoint.checkpointId, tree.id);
     expect((await entries.next())?.map(entry => entry.path)).toEqual(["a.txt"]);

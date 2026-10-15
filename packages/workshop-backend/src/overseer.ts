@@ -6629,7 +6629,7 @@ class OverseerImpl implements AgentHooks {
         const commit = tree.acceptedCommit ?? tree.baseCommit;
         if (commit) await this.gitCache.assertWorktreePathWritable(commit, path);
       },
-      gitPack: async (lease, checkoutId, request) => {
+      gitPack: async (lease, checkoutId) => {
         const commit = lease.worktrees.find(tree => tree.checkoutId === checkoutId)?.baseCommit;
         if (!commit) throw new Error("Repository has no immutable source commit.");
         const metadata = this.storage.gitObjectMetadata.get(commit);
@@ -6639,9 +6639,9 @@ class OverseerImpl implements AgentHooks {
           // Optional RPC methods cannot be probed through a stub. The declared interface is the
           // type of this facet; an unsupported provider rejects and the next provenance is tried.
           const facet = await this.getGatekeeperFacet(source) as Fetcher<Gatekeeper<any> &
-            Required<Pick<Gatekeeper<any>, "gitReadPack">>>;
+            Required<Pick<Gatekeeper<any>, "gitPull">>>;
           try {
-            return await facet.gitReadPack(commit, request);
+            return await facet.gitPull([commit], {type: "commit", commitHistory: {kind: "depth", depth: 1}});
           } catch { /* No arbitrary URL or unscoped credential fallback. */ }
         }
         throw new Error("No authorized source can hydrate this immutable Git commit.");
@@ -14060,8 +14060,8 @@ export class WorkspaceReplicaEndpoint extends WorkerEntrypoint<Cloudflare.Env,
     // Await the native stream transfer before disposing the session that owns the pending RPC.
     using session = await this.#session(); return await session.readBaseFile(id, checkoutId, path);
   }
-  async readGitPack(id: string, checkoutId: number, request: Uint8Array): Promise<ReadableStream<Uint8Array>> {
-    using session = await this.#session(); return await session.readGitPack(id, checkoutId, request);
+  async readGitPack(id: string, checkoutId: number): Promise<ReadableStream<Uint8Array>> {
+    using session = await this.#session(); return await session.readGitPack(id, checkoutId);
   }
   async readCommitPack(id: string, checkoutId: number): Promise<ReadableStream<Uint8Array>> {
     using session = await this.#session(); return await session.readCommitPack(id, checkoutId);

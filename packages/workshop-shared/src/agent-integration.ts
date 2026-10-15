@@ -75,8 +75,11 @@ export interface WorkspaceReplica extends WorkerEntrypoint {
   listBaseEntries(checkpointId: string, checkoutId: number): Promise<Cursor<WorktreeBaseEntry>>;
   /** Stream enumerated immutable base content without applying OTs; Gitlinks have no content. */
   readBaseFile(checkpointId: string, checkoutId: number, path: string): Promise<ReadableStream<Uint8Array>>;
-  /** Bootstrap-only, commit-scoped Git v2 fetch; streams the provider pack without caching it. */
-  readGitPack(checkpointId: string, checkoutId: number, request: Uint8Array): Promise<ReadableStream<Uint8Array>>;
+  /**
+   * Bootstrap-only raw PACK for the checkpoint's immutable repository commit, without DO caching.
+   * Includes complete trees/blobs at depth one; native import must record that shallow boundary.
+   */
+  readGitPack(checkpointId: string, checkoutId: number): Promise<ReadableStream<Uint8Array>>;
   /** Bootstrap-only pack of the captured local heads above the base; no arbitrary OID requests. */
   readCommitPack(checkpointId: string, checkoutId: number): Promise<ReadableStream<Uint8Array>>;
   /** Irreversibly close Git bootstrap for this lease before exposing the guest to agent commands. */

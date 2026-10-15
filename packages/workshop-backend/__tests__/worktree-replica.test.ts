@@ -76,7 +76,7 @@ describe("kernel replica capability over native RPC", () => {
         expect(checkpoint.worktrees[0].baseCommit).toBe(commit);
         expect(checkpoint.worktrees[0].acceptedCommit).toBe(accepted.pinBase);
         expect(checkpoint.worktrees[0].headCommit).toBe(explicitHead);
-        expect(await new Response(await replica.readGitPack(checkpoint.checkpointId, tree.id, Uint8Array.of(1, 255))).arrayBuffer())
+        expect(await new Response(await replica.readGitPack(checkpoint.checkpointId, tree.id)).arrayBuffer())
           .toEqual(Uint8Array.of(1, 255).buffer);
         expect(await new Response(await replica.readBaseFile(checkpoint.checkpointId, tree.id, "a.txt")).text()).toBe("base\n");
         const cursor = await replica.readOverlay(checkpoint.checkpointId);
@@ -309,17 +309,16 @@ describe("scoped native worktree replica protocol", () => {
   it("closes Git bootstrap independently of ongoing OT replication", async () => {
     const f = fixture();
     let calls = 0;
-    f.host.gitPack = async (_lease, checkoutId, request) => {
+    f.host.gitPack = async (_lease, checkoutId) => {
       expect(checkoutId).toBe(7); ++calls;
-      return new Response(request).body!;
+      return new Response(Uint8Array.of(0, 255, 128)).body!;
     };
     const checkpoint = await f.session.checkpoint();
     const bytes = Uint8Array.of(0, 255, 128);
-    expect(new Uint8Array(await new Response(await f.session.readGitPack(checkpoint.checkpointId, 7, bytes)).arrayBuffer())).toEqual(bytes);
-    await expect(f.session.readGitPack(checkpoint.checkpointId, 99, bytes)).rejects.toThrow();
-    await expect(f.session.readGitPack(checkpoint.checkpointId, 7, new Uint8Array(65537))).rejects.toThrow();
+    expect(new Uint8Array(await new Response(await f.session.readGitPack(checkpoint.checkpointId, 7)).arrayBuffer())).toEqual(bytes);
+    await expect(f.session.readGitPack(checkpoint.checkpointId, 99)).rejects.toThrow();
     await f.session.closeGitBootstrap(checkpoint.checkpointId);
-    await expect(f.session.readGitPack(checkpoint.checkpointId, 7, bytes)).rejects.toThrow(/closed|revoked/);
+    await expect(f.session.readGitPack(checkpoint.checkpointId, 7)).rejects.toThrow(/closed|revoked/);
     await f.session.submitBatch(await batch());
     expect(calls).toBe(1);
   });
@@ -332,7 +331,7 @@ describe("scoped native worktree replica protocol", () => {
       else f.revoke();
       return new ReadableStream({cancel() {canceled = true;}});
     };
-    await expect(f.session.readGitPack(checkpoint.checkpointId, 7, Uint8Array.of(1))).rejects.toThrow();
+    await expect(f.session.readGitPack(checkpoint.checkpointId, 7)).rejects.toThrow();
     expect(canceled).toBe(true);
   });
   it("exports the immutable base and checkpoint overlay separately", async () => {

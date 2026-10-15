@@ -23,7 +23,7 @@ export interface WorktreeReplicaHost {
   /** Reuse ordinary file-tool checks against the immutable tree, including directory entries. */
   assertPathWritable(lease: WorktreeReplicaLease, checkoutId: number, path: string): Promise<void>;
   /** Fetch only a lease-selected immutable repository commit, without storing its blobs. */
-  gitPack?(lease: WorktreeReplicaLease, checkoutId: number, request: Uint8Array): Promise<ReadableStream<Uint8Array>>;
+  gitPack?(lease: WorktreeReplicaLease, checkoutId: number): Promise<ReadableStream<Uint8Array>>;
   /** Export only local commit identities captured by this checkpoint. */
   commitPack?(lease: WorktreeReplicaLease, checkoutId: number): Promise<ReadableStream<Uint8Array>>;
   events(lease: WorktreeReplicaLease, cursor: string, limit: number): WorktreeChangesPage;
@@ -93,14 +93,14 @@ export class WorktreeReplicaSession extends RpcTarget implements Pick<WorkspaceR
     return this.host.commitPack(lease, checkoutId);
   }
 
-  async readGitPack(checkpointId: string, checkoutId: number, request: Uint8Array): Promise<ReadableStream<Uint8Array>> {
+  async readGitPack(checkpointId: string, checkoutId: number): Promise<ReadableStream<Uint8Array>> {
     const lease = this.#checkpoint(checkpointId, checkoutId);
-    if (lease.gitBootstrapClosed || request.byteLength > 64 * 1024 ||
+    if (lease.gitBootstrapClosed ||
         lease.worktrees.find(tree => tree.checkoutId === checkoutId)?.source !== "repository") {
       throw new Error("Git bootstrap is closed or outside the granted repository.");
     }
     if (!this.host.gitPack) throw new Error("This repository source does not support native Git hydration.");
-    const stream = await this.host.gitPack(lease, checkoutId, request);
+    const stream = await this.host.gitPack(lease, checkoutId);
     try {
       if (this.host.requireLease(this.leaseId).gitBootstrapClosed) throw new Error("Git bootstrap was revoked.");
     } catch (error) {
