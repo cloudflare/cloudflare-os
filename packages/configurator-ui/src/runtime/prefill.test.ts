@@ -8,11 +8,12 @@ import { defaultValuesFromResourceUrl, prefill } from "./prefill.ts";
 describe("defaultValuesFromResourceUrl", () => {
   const pattern = "https://drive.google.com/drive/folders/:folderId";
 
-  it("extracts named groups with or without a trailing slash", () => {
+  it("extracts named groups with or without a trailing slash, before a query too", () => {
     for (const url of [
       "https://drive.google.com/drive/folders/FOLDER123",
       "https://drive.google.com/drive/folders/FOLDER123/",
       "https://drive.google.com/drive/folders/FOLDER123//",
+      "https://drive.google.com/drive/folders/FOLDER123/?usp=sharing",
     ]) {
       expect(defaultValuesFromResourceUrl(url, pattern)).toEqual({ folderId: "FOLDER123" });
     }
