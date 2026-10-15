@@ -84,6 +84,7 @@ export async function openFakeOverseer(
       assertGatekeeperUsable: () => {},
       ensureAmbientCapsules: async () => {},
       markOutputsDirty: () => {},
+      trackUnreadReader: () => {},
       joinSession: () => () => {},
       joinPresence: () => () => {},
       joinOutputsFanout: () => () => {},

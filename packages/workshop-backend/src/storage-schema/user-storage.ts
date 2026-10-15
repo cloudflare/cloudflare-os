@@ -6,7 +6,7 @@
 
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type {
-  AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput,
+  AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput, ChatReadState,
   GadgetMetadata, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import type { AccountDescription, GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
@@ -120,6 +120,13 @@ export type GadgetRecord = GadgetMetadata & {
   // GadgetMetadata).
 };
 
+/** Workspace-authoritative thread head, without any user read state. */
+export type ChatTimelineHead = Pick<ChatReadState,
+    "chatId" | "chatTitle" | "latestSequence" | "latestMessagePreview" | "latestActivityAt"> & {
+  /** Existing history starts read on upgrade; new items start beyond this boundary. */
+  initialReadThroughSequence?: number;
+};
+
 /**
  * One output of a workspace, as pushed into a user's output index by the Overseer that owns it
  * (see `syncWorkspaceOutputs()`). Carries only what the workspace itself knows: its title,
@@ -157,6 +164,15 @@ export type CloudflareBilling = {
 export function makeUserStorage(storage: DurableObjectStorage) {
   return createTypedStorage(storage, {
     collections: {
+      unreadWorkspaceVersions: collection<{workspaceId: string; version: number}>()({
+        primaryKey: "workspaceId",
+      }),
+      chatReadStates: collection<ChatReadState>()({
+        primaryKey: record => `${record.workspaceId}:${record.chatId}`,
+        nonUniqueIndexes: {
+          byWorkspace(record: ChatReadState) { return record.workspaceId; },
+        },
+      }),
       aiModels: collection<UserAiModelRecord>()({
         primaryKey: record => record.profile.id,
       }),
@@ -217,6 +233,7 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       // device that registers again replaces its own subscription. Only this installation's signing
       // key can deliver to them.
       notificationSubscriptions: <Record<string, string>>{},
+      unreadRevision: 0,
 
       // Set once the user's pre-existing workspaces have been asked to populate the outputs index
       // (see #backfillOutputs()). Workspaces created since push on their own.

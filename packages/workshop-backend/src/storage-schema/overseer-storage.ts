@@ -1125,6 +1125,11 @@ export type BlueprintGadgetRecord = {
 export function makeOverseerStorage(storage: DurableObjectStorage) {
   return createTypedStorage(storage, {
     singletons: {
+      // Monotonic source ordering and persisted retry deadline for the user's unread projection.
+      chatTimelineVersion: 0,
+      chatTimelineDirty: false,
+      chatTimelineRetryAt: 0,
+      unreadBaseline: <Record<number, number> | undefined>undefined,
       // Initialized on first startup.
       ownerId: <string | undefined>undefined,
 
@@ -1222,6 +1227,12 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
     },
 
     collections: {
+      // Only established build-role readers receive chat metadata. Reverified before delivery.
+      unreadReaders: collection<{userId: string; profileId: string}>()({primaryKey: "userId"}),
+      chatTimelineOutbox: collection<{
+        sequence: number;
+        userId: string;
+      }>()({ primaryKey: "userId" }),
       // READ-ONLY LEGACY: the pre-git-storage incremental code log, tightly-packed from version 1
       // (there's no entry for version 0, the starting empty state). Nothing writes it anymore --
       // mainline code lives in `gitObjects` as commits -- and it is read only by the git-storage

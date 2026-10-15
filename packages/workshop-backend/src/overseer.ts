@@ -22,7 +22,7 @@ import {
   type StoredAssistantMessage, type StoredChatMessage, type StoredChatMetadata,
   type WorkpieceRecord, type WorktreeRecord,
 } from "./storage-schema/overseer-storage";
-import type { UserAiModelRecord, WorkspaceOutputEntry } from "./storage-schema/user-storage";
+import type { ChatTimelineHead, UserAiModelRecord, WorkspaceOutputEntry } from "./storage-schema/user-storage";
 import {
   GitStore, commitIdentityForAuthor, filesEqual, threeWayMerge, type MergeResult,
 } from "./git-store";
@@ -939,6 +939,10 @@ class OverseerImpl implements AgentHooks {
 
     let times: number[] = [];
 
+    if ([...this.storage.chatTimelineOutbox.list({ limit: 1 })].length) {
+      times.push(this.storage.chatTimelineRetryAt.get() || Date.now());
+    }
+
     // Outstanding agent work: see #agentKeepAliveTime for why it is set once and held.
     let hasAgentWork = this.#runningAgents.size > 0 ||
         [...this.storage.activeAgents.list()].some(r => this.storage.chatMeta.get(r.chatId)?.activeAgent) ||
@@ -992,6 +996,7 @@ class OverseerImpl implements AgentHooks {
           this.waitForAllAgentsToComplete(),
           this.drainAllPendingAgentCalls(),
           this.deliverReadyExternalMessageResponses(),
+          this.deliverChatTimelines(),
         ]);
         for (let result of results) {
           if (result.status === "rejected") throw result.reason;
@@ -1008,6 +1013,120 @@ class OverseerImpl implements AgentHooks {
         this.#updateAlarm(failed ? Date.now() + AGENT_KEEPALIVE_ALARM_MS : 0);
       }
     }
+  }
+
+  #timelineDelivery: Promise<void> | undefined;
+
+  /** Replay the durable unread projection without replaying transient alerts or push sends. */
+  deliverChatTimelines(immediate = false): Promise<void> {
+    if (this.#timelineDelivery) return this.#timelineDelivery;
+    immediate = this.#flushTimelineRecipients() || immediate;
+    if (!immediate && this.storage.chatTimelineRetryAt.get() > Date.now()) return Promise.resolve();
+    this.#timelineDelivery = (async () => {
+      // Do not hold a storage cursor across RPC or deletion; concurrent turns can queue more.
+      let pending = [...this.storage.chatTimelineOutbox.list()];
+      while (pending.length) {
+        for (let record of pending) {
+          let user = this.users.get(this.users.idFromString(record.userId));
+          if (record.userId !== this.ownerId) {
+            let reader = this.storage.unreadReaders.get(record.userId);
+            let role = reader && await this.authorizeCollaborator(reader.profileId, user,
+                {requireRole: "build"});
+            if (role !== "build") {
+              await user.forgetWorkspaceChats(this.ctx.id.toString());
+              this.storage.unreadReaders.delete(record.userId);
+              this.storage.chatTimelineOutbox.delete(record.userId);
+              continue;
+            }
+          }
+          // Storage subscribers run BEFORE their write, in its transaction. They journal only the
+          // dirty version; read the committed timeline here, after the synchronous write finishes.
+          // Capture version + heads together after authorization's awaits, never mix two versions.
+          let version = this.storage.chatTimelineVersion.get();
+          let heads = this.chatTimelineHeads();
+          await user.syncWorkspaceChats(this.ctx.id.toString(), version, heads);
+          // A lost ACK leaves the same sequence queued; the receiver durably deduplicates it.
+          if ((this.storage.chatTimelineOutbox.get(record.userId)?.sequence ?? Infinity) <= version) {
+            this.storage.chatTimelineOutbox.delete(record.userId);
+          }
+        }
+        this.#flushTimelineRecipients();
+        pending = [...this.storage.chatTimelineOutbox.list()];
+      }
+      this.storage.chatTimelineRetryAt.put(0);
+    })().catch(error => {
+      this.storage.chatTimelineRetryAt.put(Date.now() + 30_000);
+      throw error;
+    }).finally(() => {
+      this.#timelineDelivery = undefined;
+      this.#updateAlarm();
+    });
+    return this.#timelineDelivery;
+  }
+
+  // Storage subscribers must not list: their caller may already hold the DO's only KV iterator.
+  // Journal dirtiness in the source transaction, then fan out and arm recovery before any RPC.
+  queueUnreadSnapshot(): void {
+    if (!this.ownerId) return;
+    this.storage.chatTimelineVersion.put(this.storage.chatTimelineVersion.get() + 1);
+    this.storage.chatTimelineDirty.put(true);
+    this.#scheduleTimelineDelivery();
+  }
+
+  #scheduleTimelineDelivery(): void {
+    this.ctx.waitUntil(Promise.resolve().then(() => {
+      this.#updateAlarm();
+      return this.deliverChatTimelines();
+    }).catch(error => {
+      this.logger.warn("timeline index delivery deferred", {
+        event: "chat.unread.delivery.deferred", error,
+      });
+    }));
+  }
+
+  #flushTimelineRecipients(): boolean {
+    if (!this.storage.chatTimelineDirty.get() || !this.ownerId) return false;
+    let firstPending = [...this.storage.chatTimelineOutbox.list({limit: 1})].length === 0;
+    // Try live delivery below; the alarm is the durable fallback, not an immediate competing
+    // invocation that would enter the agent keep-alive handler on every timeline append.
+    if (firstPending) this.storage.chatTimelineRetryAt.put(Date.now() + 30_000);
+    let sequence = this.storage.chatTimelineVersion.get();
+    for (let userId of new Set([this.ownerId,
+        ...[...this.storage.unreadReaders.list()].map(reader => reader.userId)])) {
+      this.storage.chatTimelineOutbox.put({sequence, userId});
+    }
+    this.storage.chatTimelineDirty.put(false);
+    this.#updateAlarm();
+    return firstPending;
+  }
+
+  chatTimelineHeads(): ChatTimelineHead[] {
+    let baseline = this.storage.unreadBaseline.get();
+    return [...this.storage.chatMeta.list()].map(meta => {
+      let latestSequence = -1;
+      let latestActivityAt: Date | undefined;
+      let latestMessagePreview = "";
+      for (let msg of this.storage.chats.list({prefix: chatKeyPrefix(meta.id), reverse: true})) {
+        if (msg.type === "catalogChange") continue;
+        if (latestSequence < 0) {
+          latestSequence = msg.sequence;
+          latestActivityAt = msg.timestamp;
+        }
+        // Internal command expansions and reasoning/tool-only messages aren't visible chat text.
+        if (msg.type !== "message" || msg.generatedBySlashCommandSequence !== undefined) continue;
+        latestMessagePreview = msg.message.trim().split(/[\r\n]/, 1)[0].slice(0, 240);
+        if (!latestMessagePreview && msg.attachments?.length) latestMessagePreview = "Attachment";
+        if (latestMessagePreview) break;
+      }
+      return {chatId: meta.id, chatTitle: meta.title, latestSequence,
+        latestMessagePreview, latestActivityAt,
+        initialReadThroughSequence: baseline?.[meta.id] ?? -1};
+    });
+  }
+
+  trackUnreadReader(userId: string, profileId: string): void {
+    this.storage.unreadReaders.put({userId, profileId});
+    this.queueUnreadSnapshot();
   }
 
   #deleteExternalMessageResponseDeliveryRecord(record: ExternalMessageRecord): void {
@@ -1198,7 +1317,35 @@ class OverseerImpl implements AgentHooks {
       }
     // Resume outside the critical section, before blocked events are delivered. On failure,
     // blockConcurrencyWhile already aborted the object; consume its rejection and retry on wake.
-    }).then(() => this.#resumeInterruptedAgents(), () => {});
+    }).then(() => {
+      this.#initializeReadTracking();
+      this.#resumeInterruptedAgents();
+    }, () => {});
+  }
+
+  #initializeReadTracking(): void {
+    if (!this.storage.unreadBaseline.get()) {
+      this.storage.unreadBaseline.put(Object.fromEntries(
+          this.chatTimelineHeads().map(head => [head.chatId, head.latestSequence])));
+    }
+    // The stored timeline is the source of truth, including writes outside addChatMessages
+    // (slash commands, reverts, errors), renames and deletion. Never derive unread from toasts.
+    const invalidate = () => this.queueUnreadSnapshot();
+    const subscriber = {add: invalidate, update: invalidate, remove: invalidate};
+    this.storage.chats.subscribe(subscriber);
+    // Revocation cleanup must survive a reset before the best-effort listing refresh. Reuse the
+    // projection journal; delivery reauthorizes readers even if no further chat activity occurs.
+    this.storage.collaborators.subscribe(subscriber);
+    this.storage.shareKeys.subscribe(subscriber);
+    this.storage.chatMeta.subscribe({
+      add: () => this.queueUnreadSnapshot(),
+      update: (old, next) => {
+        if (old.title !== next.title) this.queueUnreadSnapshot();
+      },
+      remove: () => this.queueUnreadSnapshot(),
+    });
+    // An interrupted source invocation may have persisted dirtiness but not fanned it out yet.
+    if (this.storage.chatTimelineDirty.get()) this.#scheduleTimelineDelivery();
   }
 
   // Resume any agent turns that were left running by a previous instance of this DO (i.e. were
@@ -9714,6 +9861,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    *   alarm() itself runs). If the DO dies *while* the alarm is running, the system retries the
    *   alarm, picking the work up yet again.
    * - External-message responses ready to deliver, and delivered records due to be swept.
+   * - Durable unread projections queued for a user's badge, including retries after a reset.
    *
    * See OverseerImpl.runAlarmTasks for how the concerns are run together.
    */
@@ -9862,6 +10010,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
         }
         // Catch up whatever happened while they were away; changes from here on reach them
         // through the session fan-out (joinOutputsFanout).
+        if (role === "build") this.impl.trackUnreadReader(userId, profileId);
         await this.impl.syncOutputsTo(clientUser);
       })();
     }
@@ -9877,6 +10026,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       return new UseOverseerInterface(
           this.impl, profileId, userId, notifyClosed.dup());
     }
+
+    if (isOwner) this.impl.trackUnreadReader(userId, profileId);
 
     return new OverseerClientInterface(
         this.impl, profileId, userId, isOwner, notifyClosed.dup(),

@@ -58,6 +58,7 @@ function fakeUsers(impl: any): void {
   impl.users = {
     idFromString: (id: string) => id,
     get: () => ({
+      syncWorkspaceChats: async () => {},
       getChatContext: async (modelId: string | null) => ({
         profile: OWNER,
         ...(modelId ? { aiModel: { profile: MODEL, config: BROKEN_MODEL_CONFIG } } : {}),
@@ -75,7 +76,7 @@ function gatedFakeUsers(impl: any): () => void {
   let realGet = impl.users.get;
   impl.users.get = () => {
     let user = realGet();
-    return { getChatContext: async (modelId: string | null) => {
+    return { syncWorkspaceChats: async () => {}, getChatContext: async (modelId: string | null) => {
       await gate;
       return user.getChatContext(modelId);
     } };
@@ -268,7 +269,7 @@ describe("durable agent calls", () => {
     seedChat(impl);
     impl.users = {
       idFromString: (id: string) => id,
-      get: () => ({ getChatContext: async (modelId: string | null) => {
+      get: () => ({ syncWorkspaceChats: async () => {}, getChatContext: async (modelId: string | null) => {
         if (modelId) throw new Error(`No such model: ${modelId}`);
         return { profile: OWNER };
       } }),
@@ -291,9 +292,10 @@ describe("durable agent calls", () => {
     seedChat(impl);
     impl.users = {
       idFromString: (id: string) => id,
-      get: () => ({ getChatContext: async () => { throw new Error("user DO unreachable"); } }),
+      get: () => ({ syncWorkspaceChats: async () => {}, getChatContext: async () => { throw new Error("user DO unreachable"); } }),
     };
 
+    await impl.deliverChatTimelines(true);
     expect(await impl.ctx.storage.getAlarm()).toBeNull();
     await deliver(impl, "retryLater", []);
     await new Promise(resolve => setTimeout(resolve, 20));
@@ -340,6 +342,7 @@ describe("durable agent calls", () => {
     await handler;
     expect(impl.storage.chatMeta.get(CHAT_ID).activeAgent).toBeUndefined();
     expect(messages(impl).map(msg => msg.type)).toEqual(["agentCallback", "error"]);
+    await impl.deliverChatTimelines(true);
     expect(await impl.ctx.storage.getAlarm()).toBeNull();
   }));
 
@@ -355,7 +358,7 @@ describe("durable agent calls", () => {
     let realGet = impl.users.get;
     impl.users.get = () => {
       let user = realGet();
-      return { getChatContext: async (modelId: string | null) => {
+      return { syncWorkspaceChats: async () => {}, getChatContext: async (modelId: string | null) => {
         if (++lookups === 2) await lookupGate;
         return user.getChatContext(modelId);
       } };
@@ -404,7 +407,7 @@ describe("durable agent calls", () => {
     seedChat(impl);
     impl.users = {
       idFromString: (id: string) => id,
-      get: () => ({ getChatContext: async () => { throw new Error("user DO unreachable"); } }),
+      get: () => ({ syncWorkspaceChats: async () => {}, getChatContext: async () => { throw new Error("user DO unreachable"); } }),
     };
     await deliver(impl, "stillUnreachable", []);
     await new Promise(resolve => setTimeout(resolve, 20));
@@ -463,6 +466,7 @@ describe("durable agent calls", () => {
     releases[1]();
     await waitFor(() => impl.storage.chatMeta.get(CHAT_ID).activeAgent === undefined &&
         messages(impl).filter(msg => msg.type === "error").length === 2);
+    await impl.deliverChatTimelines(true);
     expect(await impl.ctx.storage.getAlarm()).toBeNull();
 
     // ...and the next work to become outstanding gets a fresh time, not the stale one.

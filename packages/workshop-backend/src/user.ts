@@ -1,4 +1,5 @@
 import { RpcStub } from "capnweb";
+import type { ChatReadReceipt, UnreadStateSubscriber, UserUnreadState } from "@gadgets/workshop-shared/api";
 import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
@@ -9,6 +10,7 @@ import {
   makeUserStorage, type BlueprintUserRecord, type CloudflareBilling, type ConnectedAccountRecord,
   type GadgetRecord, type PendingConnectFlow, type PendingDeviceHandoffRecord,
   type PendingHandoffRecord, type UserAiModelRecord, type UserStorage, type WorkspaceOutputEntry,
+  type ChatTimelineHead,
 } from "./storage-schema/user-storage.js";
 import { recordAnalytics } from "./analytics";
 import { createWorkshopLogger } from "./observability";
@@ -204,6 +206,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   private vendors: Map<string, Service<GatekeeperVendor>>;
   private adminSettings: DurableObjectNamespace<AdminSettings>;
   #notificationSubscribers = new Map<object, RpcStub<NotificationSubscriber>>();
+  #unreadSubscribers = new Map<object, RpcStub<UnreadStateSubscriber>>();
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -477,7 +480,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         { ...this.storage.notificationSubscriptions.get(), [deviceKey]: subscriptionId });
   }
 
-  /** Subscribe a visible authenticated client to live user notifications. */
+  /** Subscribe an authenticated client, including background listeners, to live notifications. */
   async subscribeToNotifications(
       subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>> {
     subscriber = subscriber.dup();
@@ -500,6 +503,125 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (!record) throw new Error("No such workspace belonging to user.");
     record.notificationMute = mute ?? undefined;
     this.storage.gadgets.put(record);
+  }
+
+  /** Fetch unread state without causing an alert or read receipt. */
+  async getUnreadState(): Promise<UserUnreadState> {
+    return this.#unreadSnapshot();
+  }
+
+  #unreadSnapshot(): UserUnreadState {
+    let chats = [...this.storage.chatReadStates.list()].filter(chat => {
+      let workspace = this.storage.gadgets.get(chat.workspaceId);
+      return workspace && workspace.role !== "use";
+    });
+    let unreadChatCount = chats.filter(chat => chat.latestSequence > chat.readThroughSequence).length;
+    return { revision: this.storage.unreadRevision.get(), unreadChatCount, chats };
+  }
+
+  /** Install the listener before sending its initial snapshot, avoiding a fetch/watch gap. */
+  async subscribeToUnreadState(subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>> {
+    subscriber = subscriber.dup();
+    let token = {};
+    this.#unreadSubscribers.set(token, subscriber);
+    let unsubscribe = () => {
+      let existing = this.#unreadSubscribers.get(token);
+      if (!existing) return;
+      this.#unreadSubscribers.delete(token);
+      existing[Symbol.dispose]();
+    };
+    subscriber.onRpcBroken(unsubscribe);
+    this.ctx.waitUntil(subscriber.updated(this.#unreadSnapshot()).catch(unsubscribe));
+    return new RpcStub<{}>({ [Symbol.dispose]: unsubscribe });
+  }
+
+  #unreadChanged(): void {
+    this.storage.unreadRevision.put(this.storage.unreadRevision.get() + 1);
+    let snapshot = this.#unreadSnapshot();
+    for (let [token, subscriber] of this.#unreadSubscribers) {
+      this.ctx.waitUntil(subscriber.updated(snapshot).catch(() => {
+        if (this.#unreadSubscribers.delete(token)) subscriber[Symbol.dispose]();
+      }));
+    }
+  }
+
+  /**
+   * Replace a workspace's timeline index without replacing the user's read cursors. The durable
+   * workspace version fences delayed snapshots, including snapshots preceding a thread deletion.
+   */
+  async syncWorkspaceChats(workspaceId: string, version: number, heads: ChatTimelineHead[]): Promise<void> {
+    let workspace = this.storage.gadgets.get(workspaceId);
+    if (!workspace || workspace.role === "use") return;
+    if ((this.storage.unreadWorkspaceVersions.get(workspaceId)?.version ?? -1) >= version) return;
+    let ids = new Set(heads.map(head => head.chatId));
+    let previous = [...this.storage.chatReadStates.byWorkspace.get(workspaceId)];
+    let changed = false;
+    for (let record of previous) {
+      if (!ids.has(record.chatId)) {
+        this.storage.chatReadStates.deleteRecord(record);
+        changed = true;
+      }
+    }
+    for (let head of heads) {
+      let old = this.storage.chatReadStates.get(`${workspaceId}:${head.chatId}`);
+      if (old?.chatTitle === head.chatTitle && old.latestSequence === head.latestSequence &&
+          old.latestMessagePreview === head.latestMessagePreview &&
+          old.latestActivityAt?.getTime() === head.latestActivityAt?.getTime()) continue;
+      let {initialReadThroughSequence, ...timeline} = head;
+      this.storage.chatReadStates.put({ ...timeline, workspaceId,
+        readThroughSequence: old?.readThroughSequence ?? initialReadThroughSequence ?? -1,
+        readEpoch: old?.readEpoch ?? 0 });
+      changed = true;
+    }
+    this.storage.unreadWorkspaceVersions.put({ workspaceId, version });
+    if (changed) this.#unreadChanged();
+  }
+
+  /** Advance a cursor, never clearing activity beyond what the client observed. */
+  async markChatRead(receipt: ChatReadReceipt): Promise<void> {
+    await this.markChatsRead([receipt]);
+  }
+
+  /** Apply a snapshot-fenced workspace/all-read command atomically. */
+  async markChatsRead(receipts: ChatReadReceipt[]): Promise<void> {
+    for (let {throughSequence} of receipts) {
+      if (!Number.isSafeInteger(throughSequence) || throughSequence < -1) {
+        throw new Error("Invalid timeline sequence.");
+      }
+    }
+    let changed = false;
+    for (let {workspaceId, chatId, throughSequence, readEpoch} of receipts) {
+      let record = this.storage.chatReadStates.get(`${workspaceId}:${chatId}`);
+      if (!record || record.readEpoch !== readEpoch) continue;
+      let through = Math.min(throughSequence, record.latestSequence);
+      if (through <= record.readThroughSequence) continue;
+      this.storage.chatReadStates.put({...record, readThroughSequence: through});
+      changed = true;
+    }
+    if (changed) this.#unreadChanged();
+  }
+
+  /** Rewind once per observed epoch; a lost ACK or old device cannot undo a later read. */
+  async markChatUnread(workspaceId: string, chatId: number, fromSequence: number,
+                       readEpoch: number): Promise<void> {
+    let record = this.storage.chatReadStates.get(`${workspaceId}:${chatId}`);
+    if (!record || record.readEpoch !== readEpoch) return;
+    if (!Number.isSafeInteger(fromSequence) || fromSequence < 0 ||
+        fromSequence > record.latestSequence) throw new Error("Invalid timeline sequence.");
+    this.storage.chatReadStates.put({...record, readThroughSequence: fromSequence - 1,
+      readEpoch: record.readEpoch + 1});
+    this.#unreadChanged();
+  }
+
+  /** Remove inaccessible timeline metadata while retaining the stale-delivery fence. */
+  async forgetWorkspaceChats(workspaceId: string): Promise<void> {
+    this.#forgetUnreadWorkspace(workspaceId);
+  }
+
+  #forgetUnreadWorkspace(workspaceId: string): void {
+    let hadChats = [...this.storage.chatReadStates.byWorkspace.get(workspaceId)].length > 0;
+    this.storage.chatReadStates.byWorkspace.delete(workspaceId);
+    if (hadChats) this.#unreadChanged();
   }
 
   /**
@@ -593,6 +715,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         lastActive: now,
       });
     }
+    if (role === "use") this.#forgetUnreadWorkspace(gadgetId);
   }
 
   /**
@@ -605,6 +728,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (!record?.owner) return;
     record.role = role;
     this.storage.gadgets.put(record);
+    if (role === "use") this.#forgetUnreadWorkspace(gadgetId);
   }
 
   /**
@@ -617,6 +741,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (record && record.owner) {
       this.storage.gadgets.delete(gadgetId);
       this.storage.outputs.byWorkspace.delete(gadgetId);
+      this.#forgetUnreadWorkspace(gadgetId);
     }
   }
 
@@ -966,6 +1091,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   async deleteGadget(id: string): Promise<void> {
     this.storage.gadgets.delete(id);
     this.storage.outputs.byWorkspace.delete(id);
+    this.#forgetUnreadWorkspace(id);
   }
 
   /**
