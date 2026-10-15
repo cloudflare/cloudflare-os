@@ -430,6 +430,26 @@ describe('BlueprintLandingPage gatekeeper configuration', () => {
     expect(findButton('Change')).toBeUndefined()
   })
 
+  it('keeps a saved connection while a restarted subscription replays its accounts', async () => {
+    const harness = gatekeeperApi([GMAIL_PATTERN], [CALENDAR_PATTERN])
+    await render(harness)
+    await saveCalendarConnection()
+
+    // A new session whose subscription has replayed account 7 but not yet account 8 or ready().
+    testState.authenticatedApi = {
+      ...(harness.api as object),
+      subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
+        subscriber.add(7, googleAccount(7, [GMAIL_PATTERN]), GOOGLE_VENDOR, [CALENDAR_RESOURCE], true, 'google')
+        return subscription()
+      },
+    } as unknown as RpcStub<AuthenticatedApi>
+    await act(async () => root!.render(
+      <BlueprintLandingPage rpcStub={publicApi(CALENDAR_BLUEPRINT)} />,
+    ))
+
+    expect(findButton('Create Gadget')).toBeDefined()
+  })
+
   it('invalidates a saved connection when its account loses the required grant', async () => {
     const harness = gatekeeperApi([CALENDAR_PATTERN])
     await render(harness)

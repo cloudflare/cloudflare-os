@@ -194,8 +194,13 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
       return
     }
     let cancelled = false
+    let replayed = false
     const accountMap = new Map<number, AccountOption>()
     accountsRef.current = accountMap
+    // A subscription replays the accounts it already has before `ready()`. Publishing earlier
+    // would let a restarted subscription show a partial list, and saved connections for accounts
+    // not yet replayed would briefly read as unavailable.
+    const publish = () => { if (replayed) setAccounts(Array.from(accountMap.values())) }
 
     const subscriber = new AccountsSubscriberAdapter({
       add({ id: accountId, description, vendor, supportedResources, credentialsValid, vendorId }) {
@@ -204,7 +209,7 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
           id: accountId, description, vendorId, vendorDescription: vendor,
           supportedResources, credentialsValid,
         })
-        setAccounts(Array.from(accountMap.values()))
+        publish()
         if (credentialsValid) {
           setReconnectingAccountId(prev => prev === accountId ? null : prev)
         }
@@ -212,7 +217,12 @@ export default function BlueprintLandingPage({ rpcStub }: Props) {
       remove(accountId) {
         if (cancelled) return
         accountMap.delete(accountId)
-        setAccounts(Array.from(accountMap.values()))
+        publish()
+      },
+      ready() {
+        if (cancelled) return
+        replayed = true
+        publish()
       },
     })
 
