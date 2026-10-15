@@ -285,6 +285,31 @@ describe("loading", () => {
     expect(option("Stale.pdf").elements()).toHaveLength(0);
   });
 
+  // Collapsing to the loading line in between would make every navigation jump twice.
+  it("keeps its height while the next location loads, then takes the new listing's", async () => {
+    const folders = [..."ABCDEFGHIJKL"].map((letter): Item =>
+      ({ id: letter, title: `Folder ${letter}`, kind: "container" }));
+    let opened: PromiseWithResolvers<ConfiguratorUIHierarchyPage> | undefined;
+    const loadItems = vi.fn<LoadItems>(({ parentId }) => {
+      if (parentId === "drive") return Promise.resolve({ items: folders });
+      opened = Promise.withResolvers();
+      return opened.promise;
+    });
+    await render({ loadItems });
+    await expect.element(option("Folder A")).toBeVisible();
+    const height = () => list().element().parentElement!.getBoundingClientRect().height;
+    const full = height();
+
+    await userEvent.click(option("Folder A"));
+    await expect.poll(() => opened).toBeDefined();
+    await expect.element(list()).toHaveAttribute("aria-busy", "true");
+    expect(height()).toBe(full);
+
+    await act(() => opened!.resolve({ items: [q1] }));
+    await expect.element(option("Q1.pdf")).toBeVisible();
+    expect(height()).toBeLessThan(full);
+  });
+
   it("appends the next page in the order the source gives", async () => {
     const zeta: Item = { id: "zeta", title: "Zeta", kind: "leaf" };
     const alpha: Item = { id: "alpha", title: "Alpha", kind: "leaf" };

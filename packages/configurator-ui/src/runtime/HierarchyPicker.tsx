@@ -6,6 +6,7 @@ import {
   isValidElement,
   useEffect,
   useEffectEvent,
+  useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent,
@@ -154,6 +155,8 @@ const Navigator = (props: HierarchyPickerProps) => {
   const [openedWith, setOpenedWith] = useState<Item | null>(
     () => value === root.id && root.selectable === true ? asContainer(root) : null);
   const listRef = useRef<HTMLDivElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const shownHeight = useRef(0);
   const focusFirstRow = useRef(false);
   // Bumped whenever the listing a response would update is replaced, so a late page is dropped.
   const generation = useRef(0);
@@ -217,6 +220,20 @@ const Navigator = (props: HierarchyPickerProps) => {
   const status = fresh?.status ?? "loading";
   const items = fresh?.items ?? [];
   const activeIndex = Math.max(0, items.findIndex(item => item.id === activeId));
+
+  // While the next listing loads, the list keeps the height it last showed one at, rather than
+  // collapsing to the loading line and springing back when the listing arrives. Set before paint,
+  // so the collapsed list is never drawn.
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    if (status === "loading") {
+      viewport.style.minHeight = `${shownHeight.current}px`;
+    } else {
+      viewport.style.minHeight = "";
+      shownHeight.current = viewport.offsetHeight;
+    }
+  });
 
   // Once a navigation started from the list has a listing, focus lands on its first row; until
   // then it waits on the list itself, since the row that started it is gone.
@@ -429,7 +446,7 @@ const Navigator = (props: HierarchyPickerProps) => {
           {metaLabel}
         </div>
       )}
-      <div className="max-h-80 overflow-y-auto p-1">
+      <div ref={viewportRef} className={cn("max-h-80 overflow-y-auto p-1", status === "loading" && "flex flex-col")}>
         <div
           ref={listRef}
           role="listbox"
@@ -479,7 +496,8 @@ const Navigator = (props: HierarchyPickerProps) => {
             );
           })}
         </div>
-        <div className="flex flex-wrap items-center gap-2 px-2 py-1 text-sm text-kumo-subtle empty:hidden">
+        <div className={cn("flex flex-wrap items-center gap-2 px-2 py-1 text-sm text-kumo-subtle empty:hidden",
+          status === "loading" && "m-auto")}>
           {status === "loading" && <span aria-hidden="true"><Loader size="sm" /></span>}
           <div role="status" aria-live="polite" className={cn(status === "failed" && "text-kumo-danger")}>
             {announcement}
