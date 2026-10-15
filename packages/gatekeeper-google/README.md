@@ -222,28 +222,38 @@ Google delivers both through Pub/Sub, Chat's by Workspace Events and Gmail's by 
 this needs a public URL and these steps in the same Cloud project as the OAuth client:
 
 1. Enable the **Google Workspace Events API**, the **Cloud Pub/Sub API**, and the **Gmail API**.
-2. Create a Pub/Sub topic, and grant both `chat-api-push@system.gserviceaccount.com` and
-   `gmail-api-push@system.gserviceaccount.com` the **Pub/Sub Publisher** role on it.
-3. Create a service account for push authentication (it needs no roles).
-4. Create a **push** subscription on the topic with endpoint
+2. Create a Pub/Sub topic for Chat, granting `chat-api-push@system.gserviceaccount.com` the
+   **Pub/Sub Publisher** role on it, and one for Gmail, granting
+   `gmail-api-push@system.gserviceaccount.com` the same role. One topic granting both may serve
+   for both.
+3. Create a service account for push authentication (it needs no roles). Whoever creates the push
+   subscriptions needs `iam.serviceAccounts.actAs` on it (e.g. **Service Account User**). Pub/Sub
+   signs push tokens as its service agent, `service-PROJECT_NUMBER@gcp-sa-pubsub.iam.gserviceaccount.com`,
+   which needs `iam.serviceAccounts.getOpenIdToken` on this account. Its default **Cloud Pub/Sub
+   Service Agent** role on the project includes that; only if it lacks the permission, grant it
+   **Service Account Token Creator** on this service account.
+4. Create a **push** subscription on each topic with endpoint
    `${BASE_URL}/pubsub` (e.g. `https://example.com/gatekeeper/google/pubsub`), **Enable
    authentication** with the service account from step 3, and audience set to that same endpoint.
-5. Set both values for this worker (in `.env` locally):
+5. Set these values for this worker (in `.env` locally), both topics to the same one if it serves
+   for both:
 
    ```bash
-   PUBSUB_TOPIC=projects/your-project/topics/your-topic
+   PUBSUB_CHAT_TOPIC=projects/your-project/topics/your-chat-topic
+   PUBSUB_GMAIL_TOPIC=projects/your-project/topics/your-gmail-topic
    PUBSUB_PUSH_SERVICE_ACCOUNT=your-push-account@your-project.iam.gserviceaccount.com
    ```
 
 If the deployment sits behind Cloudflare Access, add a bypass for `/gatekeeper/google/pubsub`;
 the worker instead accepts only pushes whose Google-signed token names that endpoint as audience
-and `PUBSUB_PUSH_SERVICE_ACCOUNT` as sender. That token proves a push came through the push
-subscription, not who published to the topic, so the topic's Pub/Sub principals are trusted with
+and `PUBSUB_PUSH_SERVICE_ACCOUNT` as sender. That token proves a push came through a push
+subscription, not who published to its topic, so each topic's Pub/Sub principals are trusted with
 hooked messages: anyone who can subscribe to it reads them all, and anyone who can publish to it
-can inject messages into hooks. Grant those roles to no one beyond step 2. A Gmail push carries
-only a mailbox address and a history ID, so a forged one can only make the worker read that
-mailbox's new history with the connected account's own credentials. Without these settings hooks
-are refused and everything else works as before.
+can inject messages into hooks of either kind, since a push is routed by its shape rather than
+its topic. Grant those roles to no one beyond step 2. A Gmail push carries only a mailbox address
+and a history ID, so a forged one can only make the worker read that mailbox's new history with
+the connected account's own credentials. Without its topic and the push service account a kind of
+hook is refused, and everything else works as before.
 
 Disconnecting a Google account drops its hooks from the mailbox's and each space's driver, so
 nothing goes on reading or renewing with credentials that are gone; a watch or subscription no

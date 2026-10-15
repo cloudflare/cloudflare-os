@@ -51,7 +51,7 @@ import type {
 } from "./chat-types";
 import type { ChatMessageRaw } from "./chat-api";
 import type { ChatHookDelivery, ChatHookParams, ChatMessageHookTarget } from "./chat-hooks";
-import { pushHooksConfigured, type PushHooksEnv } from "./pubsub-push";
+import { chatHooksConfigured, type PushHooksEnv } from "./pubsub-push";
 import { getGoogleAccountProfile } from "./google-api";
 import { AccessTokenCache } from "./auth-retry";
 import { CursorPager, CursorPagerOptions } from "./cursor";
@@ -1536,7 +1536,7 @@ export class GoogleChatGatekeeperImpl
     queue: SharedApprovalQueue, self: ChatUser, spaceName: string, threadName: string | undefined,
     hook: RpcStub<ChatMessageHookTarget>,
   ): Promise<void> {
-    if (!pushHooksConfigured(this.env)) {
+    if (!chatHooksConfigured(this.env)) {
       throw new Error("Google Chat hooks are not configured on this deployment.");
     }
     const params: ChatHookParams = { spaceName, ...(threadName !== undefined ? { threadName } : {}) };

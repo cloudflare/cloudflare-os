@@ -424,10 +424,10 @@ export class GmailHookDriver extends DurableObject<Env> {
     return this.#watching.run("watch", async () => {
       let watch: { expiration: number };
       try {
-        watch = await api.watch(this.env.PUBSUB_TOPIC!);
+        watch = await api.watch(this.env.PUBSUB_GMAIL_TOPIC!);
       } catch (cause) {
         if (!(cause instanceof GmailApiError && (cause.status === 400 || cause.status === 403))) throw cause;
-        throw new Error(`Gmail refused to watch this mailbox [http=${cause.status}]. Check that PUBSUB_TOPIC is in the OAuth client's Cloud project and grants gmail-api-push@system.gserviceaccount.com the Pub/Sub Publisher role; a 403 can also mean Gmail is rate-limiting this account.`, { cause });
+        throw new Error(`Gmail refused to watch this mailbox [http=${cause.status}]. Check that PUBSUB_GMAIL_TOPIC is in the OAuth client's Cloud project and grants gmail-api-push@system.gserviceaccount.com the Pub/Sub Publisher role; a 403 can also mean Gmail is rate-limiting this account.`, { cause });
       }
       this.ctx.storage.kv.put<Watch>("watch", {
         expiration: watch.expiration, renewAt: Date.now() + WATCH_RENEW_INTERVAL_MS,

@@ -63,7 +63,7 @@ import {ApprovalQueueRpcTarget, RpcCursor, SharedApprovalQueue} from "./shared-a
 import {
   UNDELIVERED_GMAIL_LABELS, type GmailHookDelivery, type GmailHookParams, type GmailMessageHookTarget,
 } from "./gmail-hooks";
-import {pushHooksConfigured, type PushHooksEnv} from "./pubsub-push";
+import {gmailHooksConfigured, type PushHooksEnv} from "./pubsub-push";
 import TYPES_CODE from "./types.txt";
 
 type Env = Cloudflare.Env & PushHooksEnv;
@@ -4878,7 +4878,7 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
 
   async #subscribe(
       ctx: GmailContext, threadId: string | undefined, hook: RpcStub<GmailMessageHookTarget>): Promise<void> {
-    if (!pushHooksConfigured(this.env)) throw new Error("Gmail hooks are not configured on this deployment.");
+    if (!gmailHooksConfigured(this.env)) throw new Error("Gmail hooks are not configured on this deployment.");
     if (ctx.searchQuery !== undefined) {
       throw new Error(
         "A Gmail search binding can't be watched for new mail. Connect the inbox or a label instead.");

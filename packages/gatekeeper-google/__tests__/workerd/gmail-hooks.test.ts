@@ -69,6 +69,8 @@ type MockGmail = {
   records: Array<{id: string; message: {id: string; threadId: string; labelIds?: string[]}}>;
   messages: Map<string, MockMessage>;
   watches: number;
+  /** The topic each users.watch call asked Gmail to publish to. */
+  watchTopics: string[];
   /** Statuses the next users.watch calls fail with. */
   watchFailures: number[];
   /** Make history.list answer 404, as for a start history ID too old to read from. */
@@ -87,7 +89,7 @@ type MockGmail = {
 
 function mockGmail(): MockGmail {
   const gmail: MockGmail = {
-    profileEmail: MAILBOX, historyId: 1000, records: [], messages: new Map(), watches: 0,
+    profileEmail: MAILBOX, historyId: 1000, records: [], messages: new Map(), watches: 0, watchTopics: [],
     watchFailures: [], historyExpired: false, otherAccountTokens: new Set(), reconnectAfterProfile: false,
     requests: [],
   };
@@ -138,6 +140,8 @@ function mockGmail(): MockGmail {
     }
     if (path === "/watch" && method === "POST") {
       gmail.watches++;
+      const {topicName} = JSON.parse(init.body as string) as {topicName: string};
+      gmail.watchTopics.push(topicName);
       const status = gmail.watchFailures.shift();
       if (status !== undefined) return json({error: {code: status}}, status);
       return json({historyId: String(gmail.historyId), expiration: String(Date.now() + 7 * 24 * HOUR)});
@@ -411,6 +415,12 @@ it("shares one watch between a mailbox's hooks, renews it daily, and retries a f
   expect(gmail.watches).toBe(3);
   await later(HOUR);
   expect(gmail.watches).toBe(4);
+});
+
+it("has Gmail publish to the deployment's Gmail topic, not its Chat topic", async () => {
+  const gmail = mockGmail();
+  await enable(await connect());
+  expect(gmail.watchTopics).toEqual(["projects/test/topics/gmail"]);
 });
 
 it("doesn't deliver mail that arrived before the hook was enabled", async () => {

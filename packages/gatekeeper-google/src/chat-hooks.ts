@@ -261,7 +261,7 @@ export class ChatHookDriver extends DurableObject<Env> {
   #subscribe({ spaceName, authority, userObjectId }: Registration): Promise<void> {
     return this.#subscribing.run(authority, async () => {
       const api = new WorkspaceEventsApi(this.#tokens(userObjectId));
-      const created = await api.create(spaceName, this.env.PUBSUB_TOPIC!);
+      const created = await api.create(spaceName, this.env.PUBSUB_CHAT_TOPIC!);
       if (created.authority !== authority) {
         await api.delete(created.name);
         throw new Error("This Google Chat connection now belongs to a different Google account. Reconnect the original account.");

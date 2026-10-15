@@ -28,12 +28,17 @@ const PUBSUB_TOPIC = "projects/workshop-test/topics/hooks";
 const PUSH_ACCOUNT = "push@workshop-test.iam.gserviceaccount.com";
 const CHAT_MESSAGE_CREATED = "google.workspace.chat.message.v1.created";
 
-/** The settings every build is booted with: OAuth credentials, and push delivery for hooks. */
+/**
+ * The settings every build is booted with: OAuth credentials, and push delivery for hooks. The base
+ * release reads one `PUBSUB_TOPIC` for both kinds of hook and this tree a topic per kind, here the
+ * same one, as a deployment upgrading keeps its topic.
+ */
 function configure(config: WorkerConfig): void {
   delete config.build;
   config.vars = {
     ...config.vars, BASE_URL: GOOGLE_BASE_URL, CLIENT_ID: "test-client", CLIENT_SECRET: "test-secret",
-    PUBSUB_TOPIC, PUBSUB_PUSH_SERVICE_ACCOUNT: PUSH_ACCOUNT,
+    PUBSUB_TOPIC, PUBSUB_CHAT_TOPIC: PUBSUB_TOPIC, PUBSUB_GMAIL_TOPIC: PUBSUB_TOPIC,
+    PUBSUB_PUSH_SERVICE_ACCOUNT: PUSH_ACCOUNT,
   };
 }
 
