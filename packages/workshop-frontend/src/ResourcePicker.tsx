@@ -253,13 +253,14 @@ export default function ResourcePicker({
     }))
   }
 
-  // Sort: full matches first, prefix second, text-only (none) third.
-  // Within each group, sort by URL pattern so less-specific patterns (shorter paths)
-  // appear before more-specific ones, grouping related patterns logically.
+  // Sort: full matches first, prefix second, text-only (none) third. Full matches keep the order
+  // the gatekeeper declared, which lists its most specific pattern first (a GitLab MR before its
+  // project), as resolving a URL takes the first match. Other groups sort by URL pattern so
+  // less-specific patterns (shorter paths) appear before more-specific ones.
   const classOrder = { full: 0, prefix: 1, none: 2 }
   matchedResources.sort((a, b) =>
     classOrder[a.classification] - classOrder[b.classification]
-    || a.resource.urlPattern.localeCompare(b.resource.urlPattern)
+    || (a.classification === 'full' ? 0 : a.resource.urlPattern.localeCompare(b.resource.urlPattern))
   )
 
   // HTTP wildcard (`https://*`) shouldn't match when specific resources also match.

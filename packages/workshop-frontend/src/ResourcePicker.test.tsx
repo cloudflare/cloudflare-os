@@ -95,4 +95,35 @@ describe('ResourcePicker', () => {
     act(() => row.click())
     expect(onSelectAccount).not.toHaveBeenCalled()
   })
+
+  it('lists full matches in the order the gatekeeper declared them', async () => {
+    // GitLab declares its merge-request pattern before the project pattern that also matches it.
+    const resources: SupportedResource[] = [
+      { urlPattern: 'https://gitlab.com/:project+/-/merge_requests/:iid{/*}?', title: 'GitLab Merge Request', description: '' },
+      { urlPattern: 'https://gitlab.com/:project+', title: 'GitLab Project', description: '' },
+    ]
+    const vendor = { displayName: 'GitLab', url: 'https://gitlab.com' }
+    const authenticatedApi = {
+      subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
+        subscriber.ready()
+        return Object.assign(Promise.resolve(), { [Symbol.dispose]: () => {} })
+      },
+      listGatekeeperVendors: async () => [{ id: 'gitlab', description: vendor, supportedResources: resources }],
+    } as unknown as RpcStub<AuthenticatedApi>
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(
+      <ResourcePicker
+        authenticatedApi={authenticatedApi}
+        searchText="https://gitlab.com/group/repo/-/merge_requests/12"
+        onSelectAccount={() => {}}
+      />,
+    ))
+
+    const text = container.textContent!
+    expect(text.indexOf('GitLab Merge Request')).toBeGreaterThanOrEqual(0)
+    expect(text.indexOf('GitLab Merge Request')).toBeLessThan(text.indexOf('GitLab Project'))
+  })
 })
