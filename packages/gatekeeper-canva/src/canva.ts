@@ -3,7 +3,6 @@ import { validateRpc, skipRpcValidation } from "capnweb-validate";
 import {
   stripTrailingSlashes,
   type AccountDescription,
-  type ActionDescription,
   type ApprovalQueue,
   type ConnectHandoff,
   type Gatekeeper,
@@ -21,6 +20,8 @@ import {
   connectHandoffPageHtml, errorPageHtml, htmlResponse, INVALID_LINK_HTML,
 } from "@gadgets/gatekeeper-kit/connect-pages";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
+import { buildDescription, type RenderedDescription } from "@gadgets/gatekeeper-kit/action-description";
+import { clearCredentialExpiryLatch, notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
 import {
   ACCESS_TOKEN_SAFETY_MS, CONNECT_TIMEOUT_MS, INITIATION_NONCE_LIFETIME_MS, NONCE_BYTES,
   OAUTH_NONCE_LIFETIME_MS, constantTimeEqual, generateNonce,
@@ -335,7 +336,7 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   async prepareReconnect(initiationNonce: string): Promise<void> {
-    this.ctx.storage.kv.put("expiredNotified", false);
+    clearCredentialExpiryLatch(this.ctx.storage.kv);
     this.ctx.storage.kv.put<StoredNonce>("nonce", {
       value: initiationNonce,
       expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS,
@@ -431,7 +432,7 @@ export class UserAccount extends DurableObject<Env> {
 
   #storeCredentials(credentials: StoredCredentials): void {
     this.ctx.storage.kv.put("credentials", credentials);
-    this.ctx.storage.kv.put("expiredNotified", false);
+    clearCredentialExpiryLatch(this.ctx.storage.kv);
   }
 
   // A refresh in flight for this DO activation. Canva's refresh tokens are single-use, so two
@@ -473,10 +474,8 @@ export class UserAccount extends DurableObject<Env> {
   }
 
   async noteCredentialsExpired(): Promise<void> {
-    if (this.ctx.storage.kv.get<boolean>("expiredNotified")) return;
-    this.ctx.storage.kv.put("expiredNotified", true);
-    const callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
-    if (callback) await callback.credentialsExpired();
+    await notifyCredentialsExpiredOnce(this.ctx.storage.kv,
+      this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback"), "canva");
   }
 
   /** An abandoned connect flow: no credentials ever arrived, so forget the DO entirely. */
@@ -649,6 +648,8 @@ type GenerateDesignAction = BaseAction & {
 type TransformImageAction = BaseAction & {
   type: "transformImage";
   assetId: string;
+  /** The source asset's name as read at prepare time, so the approver sees which image it is. */
+  sourceName: string;
   transformations: CanvaImageTransformation[];
   name?: string;
 };
@@ -760,6 +761,54 @@ function isExpiredJob(error: unknown, startedAt: number): boolean {
 /** Lists a transformation's steps for an approval card, e.g. "background removal". */
 function describeTransformations(transformations: CanvaImageTransformation[]): string {
   return transformations.map(step => step.type.replaceAll("_", " ")).join(", then ");
+}
+
+const CREDITS_WARNING = "**This spends your Canva AI credits.** They are not refunded if the result is unwanted.";
+
+/**
+ * The approver-facing text for a prepared action, rendered from the payload that will be applied,
+ * so every title, brief, asset id and option the agent chose is there to read in full. Agent-chosen
+ * text goes in fields, never in the prose, which approval surfaces render as Markdown.
+ */
+function describeCanvaAction(action: CanvaAction): RenderedDescription {
+  switch (action.type) {
+    case "createDesign": {
+      const builder = buildDescription(
+        `Create a new, empty ${describeDesignType(action.designType)} in the connected Canva account.`)
+        .inline("Design type", action.designType.type === "preset"
+          ? action.designType.name : `${action.designType.width}×${action.designType.height}px`);
+      if (action.title !== undefined) builder.inline("Title", action.title);
+      if (action.assetId !== undefined) {
+        builder.inline("Asset placed on the first page", action.assetId);
+      }
+      return builder.finish();
+    }
+    case "generateDesign": {
+      const builder = buildDescription(
+        `Ask Canva's AI to generate ${describeDesignType(action.designType)} from the brief below. ` +
+        `The design is saved to your Canva account once generation finishes; the agent follows ` +
+        `progress with listGeneratedDesigns().`)
+        .prose(CREDITS_WARNING)
+        .inline("Design type", action.designType.name)
+        .verbatim("Brief", action.brief);
+      if (action.outline !== undefined) {
+        builder.json(`Outline (${action.outline.sections.length} slides)`, action.outline);
+      }
+      return builder.finish();
+    }
+    case "transformImage": {
+      const builder = buildDescription(
+        `Apply ${describeTransformations(action.transformations)} to the Canva image asset below, ` +
+        `saving the result as a new asset in your Canva Uploads. The original is not changed; the ` +
+        `agent follows progress with listImageTransformations().`)
+        .prose(CREDITS_WARNING)
+        .inline("Source asset", action.sourceName)
+        .inline("Source asset ID", action.assetId)
+        .list("Steps", action.transformations.map(step => step.type));
+      if (action.name !== undefined) builder.inline("New asset name", action.name);
+      return builder.finish();
+    }
+  }
 }
 
 function describeDesignType(designType: CanvaDesignType): string {
@@ -1018,13 +1067,14 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
   }
 
   prepareTransformImage(
-    assetId: string, transformations: CanvaImageTransformation[], options: CanvaTransformImageOptions,
+    source: CanvaImageAsset, transformations: CanvaImageTransformation[], options: CanvaTransformImageOptions,
   ): TransformImageAction {
     return {
       approvalId: this.#counter("approval"),
       submittedAt: Date.now(),
       type: "transformImage",
-      assetId,
+      assetId: source.id,
+      sourceName: source.name,
       transformations,
       ...(options.name !== undefined ? { name: options.name } : {}),
     };
@@ -1075,11 +1125,12 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
   async submitActionForApproval(
     queue: RpcStub<ApprovalQueue>,
     action: CanvaAction,
-    description: ActionDescription,
+    presentation: { title: string; implementsRevert: boolean; awaitDecision?: boolean },
   ): Promise<void> {
     this.ctx.storage.kv.put<StoredActionRecord>(this.#actionKey(action.approvalId), { action, state: "staged" });
     try {
-      await queue.submitAction(action.approvalId, description);
+      // The text comes from the prepared payload, not the caller, so it always shows what applies.
+      await queue.submitAction(action.approvalId, { ...presentation, ...describeCanvaAction(action) });
     } catch (error) {
       this.ctx.storage.kv.delete(this.#actionKey(action.approvalId));
       throw error;
@@ -1296,11 +1347,8 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
     }
 
     const action = this.#gk.prepareCreateDesign(designType, opts);
-    const titled = opts.title ? ` titled "${opts.title}"` : "";
     await this.#gk.submitActionForApproval(this.#queue, action, {
-      title: `Create Canva design${titled}`,
-      description: `Create ${describeDesignType(designType)}${titled} in the connected Canva account` +
-        `${opts.assetId ? `, placing asset ${opts.assetId} on the first page` : ""}.`,
+      title: `Create a Canva ${designType.type === "preset" ? designType.name : "design"}`,
       // The Connect API cannot delete a design, so the user has to undo this one by hand.
       implementsRevert: false,
       // Not simulated: the design does not exist until approved, so the agent should not read
@@ -1349,14 +1397,8 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
     }
 
     const action = this.#gk.prepareGenerateDesign(brief, designType, opts);
-    const slides = opts.outline ? ` with a ${opts.outline.sections.length}-slide outline` : "";
     await this.#gk.submitActionForApproval(this.#queue, action, {
       title: `Generate a Canva ${designType.name} with AI`,
-      description:
-        `Ask Canva's AI to generate ${describeDesignType(designType)}${slides} from this brief:\n\n` +
-        `> ${brief.replaceAll("\n", "\n> ")}\n\n` +
-        `**This spends your Canva AI credits.** The design is saved to your Canva account once ` +
-        `generation finishes; the agent can follow progress with listGeneratedDesigns().`,
       // The Connect API cannot delete a design, and credits are not refundable.
       implementsRevert: false,
       // Not simulated and asynchronous: nothing exists until approved and generated.
@@ -1411,15 +1453,9 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
     // refused before anything is queued. This read is itself an observation.
     const source = await this.getImageAsset(assetId);
     const steps = transformations.map(step => ({ type: step.type }));
-    const action = this.#gk.prepareTransformImage(source.id, steps, opts);
-    const named = opts.name ? ` named "${opts.name}"` : "";
+    const action = this.#gk.prepareTransformImage(source, steps, opts);
     await this.#gk.submitActionForApproval(this.#queue, action, {
-      title: `Transform Canva image "${source.name}"`,
-      description:
-        `Apply ${describeTransformations(steps)} to the Canva image asset "${source.name}" ` +
-        `(id ${source.id}), saving the result as a new asset${named} in your Canva Uploads. The ` +
-        `original is not changed.\n\n**This spends your Canva AI credits.** The agent can follow ` +
-        `progress with listImageTransformations().`,
+      title: `Transform a Canva image: ${describeTransformations(steps)}`,
       // The Connect API cannot delete an asset, and credits are not refundable.
       implementsRevert: false,
       // Not simulated and asynchronous: nothing exists until approved and processed.
