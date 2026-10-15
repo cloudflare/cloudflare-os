@@ -327,7 +327,12 @@ const DRIVE_RESOURCE_PATTERNS = new Set([
 export const SUPPORTED_RESOURCES: SupportedResource[] = RESOURCE_SCOPES.map(entry => entry.resource);
 const KNOWN_RESOURCE_PATTERNS = new Set(SUPPORTED_RESOURCES.map(resource => resource.urlPattern));
 
-/** Former `urlPattern`s of live resources, so a grant recorded under one is read under its new name. */
+/**
+ * Former `urlPattern`s of live resources, so a grant recorded under one is read under its new name.
+ * Only this gatekeeper's own records are translated. The Workshop keeps a resource type's
+ * `urlPattern` elsewhere too, compared exactly: an admin's opt-out saved under a former name no
+ * longer disables the resource, and a blueprint binding saved under one finds no account for it.
+ */
 const RENAMED_RESOURCE_PATTERNS: Record<string, string> = {
   "https://chat.google.com/room/:spaceId": GOOGLE_CHAT_SPACE_RESOURCE.urlPattern,
   "https://chat.google.com/room/:spaceId/:threadId": GOOGLE_CHAT_THREAD_RESOURCE.urlPattern,
