@@ -1,10 +1,78 @@
 import { describe, expect, it } from "vitest";
 import {
   assertChatAttachmentSize,
+  canInlineChatAttachmentImage,
   decodeChatAttachmentText,
   isAllowedChatAttachmentImageMimeType,
   validateChatAttachmentUpload,
 } from "../src/chat-attachment-validation.js";
+
+function imageHeader(format: string, width: number, height: number): {mimeType: string; bytes: Uint8Array} {
+  if (format === "jpeg") return {mimeType: "image/jpeg", bytes: Uint8Array.of(
+    0xff, 0xd8, 0xff, 0xe1, 0, 4, 0, 0, // Metadata before the progressive frame header.
+    0xff, 0xff, 0xc2, 0, 11, 8, height >> 8, height, width >> 8, width, 1, 1, 0x11, 0,
+  )};
+  const bytes = new Uint8Array(30), view = new DataView(bytes.buffer);
+  if (format === "png") {
+    bytes.set([137, 80, 78, 71, 13, 10, 26, 10]);
+    view.setUint32(8, 13); view.setUint32(12, 0x49484452);
+    view.setUint32(16, width); view.setUint32(20, height);
+    return {mimeType: "image/png", bytes};
+  }
+  bytes.set(new TextEncoder().encode("RIFF"));
+  view.setUint32(4, bytes.length - 8, true);
+  bytes.set(new TextEncoder().encode(`WEBP${format}`), 8);
+  view.setUint32(16, 10, true);
+  if (format === "VP8X") {
+    for (let i = 0; i < 3; ++i) {
+      bytes[24 + i] = (width - 1) >>> (8 * i);
+      bytes[27 + i] = (height - 1) >>> (8 * i);
+    }
+  } else if (format === "VP8L") {
+    bytes[20] = 0x2f;
+    view.setUint32(21, (width - 1) | ((height - 1) << 14), true);
+  } else {
+    bytes.set([0x9d, 1, 0x2a], 23);
+    // Top bits encode scaling, not pixel dimensions.
+    view.setUint16(26, width | 0x4000, true); view.setUint16(28, height | 0x8000, true);
+  }
+  return {mimeType: "image/webp", bytes};
+}
+
+describe("canInlineChatAttachmentImage", () => {
+  it.each(["png", "jpeg", "VP8X", "VP8L", "VP8 "].flatMap(format => [
+    {width: 1, height: 1, allowed: true},
+    {width: 8000, height: 1, allowed: true},
+    {width: 1, height: 8000, allowed: true},
+    {width: 8001, height: 1, allowed: false},
+    {width: 1, height: 8001, allowed: false},
+  ].map(size => ({format, ...size}))))(
+    "$format $width×$height: inline=$allowed", ({format, width, height, allowed}) => {
+      const {mimeType, bytes} = imageHeader(format, width, height);
+      // Views can start at a nonzero buffer offset (for example, a Node Buffer).
+      const padded = new Uint8Array(bytes.length + 7); padded.set(bytes, 7);
+      expect(canInlineChatAttachmentImage(mimeType, padded.subarray(7))).toBe(allowed);
+    },
+  );
+
+  it.each(["png", "jpeg", "VP8X", "VP8L", "VP8 "])("keeps truncated %s dimension metadata workspace-only", format => {
+    const {mimeType, bytes} = imageHeader(format, 1, 1);
+    const dimensionBytes = format === "png" ? 24 : format === "VP8L" ? 25 : bytes.length;
+    expect(canInlineChatAttachmentImage(mimeType, bytes)).toBe(true);
+    for (let length = 0; length < dimensionBytes; ++length) {
+      expect(canInlineChatAttachmentImage(mimeType, bytes.subarray(0, length))).toBe(false);
+    }
+  });
+
+  it("does not inline zero-sized, unknown, or malformed image headers", () => {
+    for (const format of ["png", "jpeg"]) {
+      const {mimeType, bytes} = imageHeader(format, 0, 1);
+      expect(canInlineChatAttachmentImage(mimeType, bytes)).toBe(false);
+    }
+    expect(canInlineChatAttachmentImage("image/gif", new Uint8Array())).toBe(false);
+    expect(canInlineChatAttachmentImage("image/jpeg", Uint8Array.of(0xff, 0xd8, 0xff, 0xe1, 0, 0))).toBe(false);
+  });
+});
 
 describe("assertChatAttachmentSize", () => {
   it("enforces the per-file byte limit of 4 MiB", () => {

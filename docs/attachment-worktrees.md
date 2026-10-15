@@ -32,7 +32,9 @@ Download/replay reads the original upload's immutable Git blob, not a subsequent
 workspace file. Legacy attachments without Git source metadata keep their old read behavior.
 Model requests inline only compatible image/document inputs and valid text; other files are
 identified by workspace path, never lossy UTF-8 replacement characters or an unsupported
-provider content part. New images are read from the same immutable blob for previews; there
+provider content part. Images with an edge above 8000 pixels or unrecognized dimension headers
+stay workspace-only on every model replay; no resize/transcode changes their original bytes.
+New images are read from the same immutable blob for previews; there
 is no separate payload copy in attachment records. Existing limits remain: 4 MiB per file,
 5 MiB and five files per message.
 

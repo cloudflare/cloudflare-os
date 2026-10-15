@@ -239,8 +239,8 @@ export class WorkspaceGitCache {
   readLocalObject(oid: GitOid): PackableObject | undefined {
     const blob = this.storage.gitByteBlobs?.get(oid);
     if (blob && this.bytes) {
-      if (blob.bytes.byteLength > MAX_GIT_OBJECT_SIZE) throw new GitObjectTooLargeError(oid, blob.bytes.byteLength);
-      return {type: "blob", payload: this.bytes.readSmall(this.bytes.reference(oid), MAX_GIT_OBJECT_SIZE)};
+      // The remote-fetch cap does not restrict reads of content already stored locally.
+      return {type: "blob", payload: this.bytes.readSmall(this.bytes.reference(oid), blob.bytes.byteLength)};
     }
     let record = this.storage.gitObjects.get(oid);
     return record === undefined ? undefined : decodeLooseObject(record.data);

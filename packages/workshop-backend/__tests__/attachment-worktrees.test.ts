@@ -8,6 +8,7 @@ import {createFauxCore, fauxAssistantMessage, fauxText, type Message} from "@ear
 import type {OverseerDurableObject} from "../src/overseer";
 import type {UserDurableObject} from "../src/user";
 import type {CodeChange} from "@gadgets/workshop-shared/code-change";
+import {MAX_GIT_OBJECT_SIZE} from "../src/git-cache";
 declare module "cloudflare:workers" { interface ProvidedEnv {
   TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
   TEST_USER: DurableObjectNamespace<UserDurableObject>;
@@ -23,6 +24,35 @@ async function step(impl: Impl, chatId: number, change: CodeChange) {
     createdWorktrees: [], addedBindings: [], worktreeCommits: [], blueprintMerges: []});
 }
 describe("attachment worktree ingress", () => {
+  it("keeps large local text readable after byte access and DO eviction", async () => {
+    const name = crypto.randomUUID();
+    const text = "a".repeat(MAX_GIT_OBJECT_SIZE + 1);
+    let commit: string, oid: string;
+    await inKernel(name, async impl => {
+      commit = await impl.gitStore.writeFilesAsCommit(new Map([["large.txt", text]]), {
+        parents: [], author: {name: "Test", email: "test@example.com"},
+        message: "Large local text", timestamp: new Date(0),
+      });
+      expect(await impl.readFileAtCommit(commit, "large.txt")).toBe(text);
+      const ref = await impl.readByteFileAtCommit(commit, "large.txt");
+      expect(ref?.byteLength).toBe(text.length);
+      oid = ref!.oid;
+      expect(impl.gitCache.readLocalObject(oid)?.payload.byteLength).toBe(text.length);
+      expect(await impl.readFileAtCommit(commit, "large.txt")).toBe(text);
+      expect((await impl.gitStore.readCommitFiles(commit)).get("large.txt")).toBe(text);
+      // Both storage representations must retain the same local-read semantics.
+      impl.storage.gitObjects.delete(oid);
+      await impl.ctx.storage.sync();
+    });
+    await abortAllDurableObjects();
+    await inKernel(name, async impl => {
+      expect(impl.storage.gitObjects.get(oid)).toBeUndefined();
+      expect(impl.gitCache.readLocalObject(oid)?.payload.byteLength).toBe(text.length);
+      expect(await impl.readFileAtCommit(commit, "large.txt")).toBe(text);
+      expect((await impl.gitStore.readCommitFiles(commit)).get("large.txt")).toBe(text);
+    });
+  });
+
   it.each([Uint8Array.of(239, 187, 191, 65), Uint8Array.of(255, 65)])(
     "preserves attachment bytes without lossy UTF-8 projection (%j)", bytes => inKernel(crypto.randomUUID(), async impl => {
       const id = crypto.randomUUID();
@@ -143,7 +173,7 @@ describe("attachment worktree ingress", () => {
   }));
 
   const binaryFiles = [
-    {name: "photo.png", mimeType: "image/png", content: Uint8Array.of(137, 80, 78, 71, 0, 255)},
+    {name: "photo.png", mimeType: "image/png", content: Uint8Array.fromBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==")},
     {name: "report.pdf", mimeType: "application/pdf", content: new TextEncoder().encode("%PDF-1.7")},
     {name: "archive.zip", mimeType: "application/zip", content: Uint8Array.of(80, 75, 3, 4, 0, 255)},
     {name: "sheet.xlsx", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", content: Uint8Array.of(80, 75, 0, 255)},
@@ -261,6 +291,45 @@ describe("attachment worktree ingress", () => {
       if (file.mimeType !== "image/png") expect(text).toContain("binary contents are not inlined");
     }),
   );
+
+  it.each([
+    {name: "panorama.png", base64: "iVBORw0KGgoAAAANSUhEUgAAIygAAAABCAAAAACWSFqZAAAAH0lEQVR4nO3BAQEAAACCIP+vbkhAAQAAAAAAAADAgQEjKQABNueTHwAAAABJRU5ErkJggg=="},
+    {name: "screenshot.png", base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAACMoCAAAAADkiOyqAAAAKElEQVR4nO3BAQ0AAADCoPdPbQ8HFAAAAAAAAAAAAAAAAAAAAAAADwZGUAABmYkvJwAAAABJRU5ErkJggg=="},
+  ])("keeps oversized $name byte-exact and out of first-turn and replay model inputs", file => inKernel(crypto.randomUUID(), async impl => {
+    // Valid 9000×1 / 1×9000 PNGs, not merely forged dimension headers.
+    const bytes = Uint8Array.fromBase64(file.base64);
+    const blob = await impl.byteStore.import("client-upload", bytes);
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const chatId = await impl.newChat(user, {profile: USER}, "Inspect the image", undefined,
+      [{oid: blob.oid, mimeType: "image/png", name: file.name}]);
+    const faux = createFauxCore({models: [{id: "faux-model"}]});
+    faux.setResponses([fauxAssistantMessage(fauxText("First turn")), fauxAssistantMessage(fauxText("Second turn"))]);
+    const requests: Message[][] = [];
+    for (let turn = 0; turn < 2; ++turn) {
+      if (turn > 0) await impl.sendChatMessage(user, {profile: USER}, chatId, "Follow up");
+      await runAgent(impl, {model: faux.getModel(), stream: (model, context, options) => {
+        requests.push(structuredClone(context.messages));
+        return faux.stream(model, context, options);
+      }}, chatId, AUTHOR, new AbortController().signal, USER,
+      {provider: "cloudflare", model: "faux-model", apiToken: ""});
+    }
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      const input = request.find(message => message.role === "user")!;
+      if (!Array.isArray(input.content)) throw new Error("Expected attachment parts");
+      expect(input.content.some(part => part.type === "image")).toBe(false);
+      const text = input.content.flatMap(part => part.type === "text" ? [part.text] : []).join("");
+      expect(text).toContain(`workspace file env.SCRATCH/${file.name}`);
+      expect(text).toContain("binary contents are not inlined");
+    }
+    const message = [...impl.storage.chats.list()].find(message => message.type === "message" && message.attachments?.length);
+    if (!message || message.type !== "message") throw new Error("Missing attachment");
+    expect(await impl.getChatAttachmentData(chatId, message.attachments![0].id)).toEqual(bytes);
+    const tree = impl.storage.gadgets.get(impl.getChatAgentContext(chatId).attachments!.worktreeId)!;
+    if (tree.type !== "worktree") throw new Error("Expected scratch worktree");
+    const value = await impl.readByteFileAtCommit(tree.baseCommit, file.name);
+    expect(await new Response(impl.byteStore.read(value!)).bytes()).toEqual(bytes);
+  }));
 
   it("never scans attachment payloads on text-only sends or namespace allocation", () => inKernel(crypto.randomUUID(), async impl => {
     const list = vi.spyOn(impl.storage.chatAttachmentContent, "list")

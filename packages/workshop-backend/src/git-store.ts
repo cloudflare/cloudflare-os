@@ -61,7 +61,7 @@ import type { Collection } from "@gadgets/typed-storage";
 import type { AiChatAuthorInfo, CommitIdentity, CommitInfo } from "@gadgets/workshop-shared/api";
 import type { GitObjectRecord, GitByteBlobRecord } from "./storage-schema/overseer-storage";
 import type { ByteStore } from "./byte-store";
-import { decodeBlobText, MAX_GIT_OBJECT_SIZE } from "./git-cache";
+import { decodeBlobText } from "./git-cache";
 import type { FileContent } from "@gadgets/workshop-shared/code-change";
 import {
   encodeGitCommit,
@@ -488,7 +488,7 @@ export class GitStore {
       } else if (entry.type === "blob" && (entry.mode === "100644" || entry.mode === "100755")) {
         const stored = this.byteBlobs?.get(entry.oid);
         const blob = stored
-          ? this.byteStore!.readSmall(this.byteStore!.reference(entry.oid), MAX_GIT_OBJECT_SIZE)
+          ? this.byteStore!.readSmall(this.byteStore!.reference(entry.oid), stored.bytes.byteLength)
           : (await readBlob({ fs: this.#fs, gitdir: GITDIR, oid: entry.oid, cache: this.#cache })).blob;
         out.set(path, decodeBlobText(blob, path));
       } else {
