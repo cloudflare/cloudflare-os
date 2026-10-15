@@ -151,7 +151,7 @@ export interface Worktree {
   /** Stream current file bytes, preserving binary contents; absence is an error. */
   readBytes(path: string, range?: {offset: number; length: number}): Promise<ReadableStream<Uint8Array>>;
   /** Create/replace opaque binary content with a staged postimage (whole-file replacement semantics). */
-  writeBytes(path: string, value: {base: BytesRef}): Promise<void>;
+  writeBytes(path: string, value: BytesRef): Promise<void>;
 
   /** Delete a file. */
   deleteFile(path: string): Promise<void>;

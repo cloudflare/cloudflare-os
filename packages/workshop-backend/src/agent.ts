@@ -1148,7 +1148,7 @@ async function formatBlueprintProposal(
 }
 
 let READ_FILE_TOOL_DESCRIPTION = `
-Read the content of a file owned by a workpiece (a gadget or worktree) in your \`env\`. If a file changes after you read it, you will either be informed of the change or the outdated result will be replaced with a note telling you to re-read the file; otherwise there is no need to read a file again after you have already read it once. Uploaded text attachments are also available in the chat's attachments worktree when the system prompt lists one.
+Read the content of a file owned by a workpiece (a gadget or worktree) in your \`env\`. If a file changes after you read it, you will either be informed of the change or the outdated result will be replaced with a note telling you to re-read the file; otherwise there is no need to read a file again after you have already read it once. Uploaded files are also available in the chat's scratch worktree when the system prompt lists one; use it for plans and other working files too. Use byte-aware binding operations for binary files.
 
 For a large file, pass \`startLine\` and \`lineCount\` to read a window of it; the result then ends with a line giving the range shown and the \`startLine\` to continue from. Use \`grep\` to find the lines you need first.
 `.trim();

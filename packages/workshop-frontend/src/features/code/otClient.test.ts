@@ -67,7 +67,7 @@ function row(generation: number, revision: number, change: CodeChange,
 describe('ChatOtClient', () => {
   it('keeps byte changes visible as opaque paths without fetching or showing old text', async () => {
     const h = new TestHarness()
-    const value = {base: {oid: '1'.repeat(40), byteLength: 3}}
+    const value = {oid: '1'.repeat(40), byteLength: 3}
     h.client.setDurableState({rowsThrough: 0, codeBase: {
       pins: [{gadgetId: 1, baseCommit: 'c1', mergedCommit: 'c1'}], generation: 0, revision: 3,
     }})
@@ -77,7 +77,7 @@ describe('ChatOtClient', () => {
     expect(h.client.getFiles(1)?.get('image.bin')).toEqual(value)
     expect(h.client.snapshot()(1, 'image.bin')).toEqual(value)
     expect(h.client.snapshot()(1, 'untouched')).toBeUndefined()
-    const replacement = {base: {oid: '2'.repeat(40), byteLength: 2}}
+    const replacement = {oid: '2'.repeat(40), byteLength: 2}
     h.client.pushRow(row(0, 2, {1: [['image.bin', {setBytes: replacement}]]}))
     await flush()
     expect(h.client.snapshot()(1, 'image.bin')).toEqual(replacement)

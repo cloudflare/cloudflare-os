@@ -101,27 +101,30 @@ it.concurrent("persists an ordered human-only chat without starting an agent", a
   await workspace.deleteSelf();
 });
 
-it.concurrent("a chat attachment is readable only through its chat, and a discarded upload is gone",
+it.concurrent("Git blob uploads are reusable, workspace-local, and downloadable only through their chat",
     async () => {
   using publicApi = connect(requireHarness().url);
   using authenticated = await signUp(publicApi, username());
   using ws = await authenticated.newGadget();
 
   const content = new TextEncoder().encode("only chat A");
-  const sent = await ws.uploadChatAttachment({ mimeType: "text/plain", content, name: "a.txt" }, null);
+  const oid = await ws.uploadBlob(content);
+  expect(await ws.uploadBlob(content)).toBe(oid);
+  const sent = {oid, mimeType: "text/plain", name: "a.txt"};
   const chatA = await ws.newChat("With attachment", null, undefined, [sent]);
   const chatB = await ws.newChat("Without attachment", null);
+  const message = (await ws.getChatHistory(chatA)).messages.find(m => m.type === "message");
+  if (message?.type !== "message" || !message.attachments?.length) throw new Error("Missing attachment");
+  const attachmentId = message.attachments[0].id;
 
-  expect(new TextDecoder().decode(await ws.getChatAttachmentContent(chatA, sent.id))).toBe("only chat A");
-  await expect(ws.getChatAttachmentContent(chatB, sent.id)).rejects.toThrow("Chat attachment not found.");
+  expect(new TextDecoder().decode(await ws.getChatAttachmentContent(chatA, attachmentId))).toBe("only chat A");
+  await expect(ws.getChatAttachmentContent(chatB, attachmentId)).rejects.toThrow("Chat attachment not found.");
 
-  const discarded = await ws.uploadChatAttachment(
-      { mimeType: "text/plain", content: new TextEncoder().encode("never sent"), name: "b.txt" }, null);
-  await ws.deleteChatAttachment(discarded.id);
-  await expect(ws.sendChatMessage(chatB, "Late attachment", null, undefined, [discarded]))
-    .rejects.toThrow("Chat attachment not found.");
-  const { messages } = await ws.getChatHistory(chatB);
-  expect(messages).not.toContainEqual(expect.objectContaining({ message: "Late attachment" }));
+  await ws.sendChatMessage(chatB, "Reuse uploaded bytes", null, undefined, [sent]);
+  using otherWorkspace = await authenticated.newGadget();
+  await expect(otherWorkspace.newChat("Unknown blob", null, undefined, [sent]))
+    .rejects.toThrow("Unknown immutable Git blob reference.");
+  await otherWorkspace.deleteSelf();
 
   await ws.deleteSelf();
 });

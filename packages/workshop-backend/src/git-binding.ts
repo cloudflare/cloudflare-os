@@ -22,7 +22,7 @@ import type { CommitObject } from "isomorphic-git";
 import type { WorkspaceGitCache } from "./git-cache";
 import type { GitStore } from "./git-store";
 import type { ByteStore } from "./byte-store";
-import type { ByteValue } from "@gadgets/workshop-shared/byte-change";
+import type { BytesRef } from "@gadgets/workshop-shared/code-change";
 import type { WorktreeTurnAccess } from "./agent";
 import { WorktreeSessionImpl, type WorktreeRecordView, type WorktreeSessionHost }
   from "./worktree-session";
@@ -30,7 +30,7 @@ import { WorktreeSessionImpl, type WorktreeRecordView, type WorktreeSessionHost 
 /** What the binding needs from the overseer: the workspace's git plumbing. */
 export interface GitBindingHost {
   byteStore?: ByteStore;
-  readByteFileAtCommit?(commit: string, path: string, scope?: string): Promise<ByteValue | undefined>;
+  readByteFileAtCommit?(commit: string, path: string, scope?: string): Promise<BytesRef | undefined>;
   gitCache: WorkspaceGitCache;
   gitStore: GitStore;
 }

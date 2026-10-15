@@ -122,10 +122,8 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   listSlashCommands: ws => ws.listSlashCommands(),
   newChat: ws => ws.newChat("Hello", null),
   sendChatMessage: ws => ws.sendChatMessage(1, "Hello", null),
-  uploadChatAttachment: ws =>
-    ws.uploadChatAttachment({ mimeType: "text/plain", content: new Uint8Array() }, null),
+  uploadBlob: ws => ws.uploadBlob(new Uint8Array()),
   getChatAttachmentContent: ws => ws.getChatAttachmentContent(1, "attachment"),
-  deleteChatAttachment: ws => ws.deleteChatAttachment("attachment"),
   setChatTitle: ws => ws.setChatTitle(1, "Title"),
   mergeChanges: ws => ws.mergeChanges(1),
   updateChatFromMainline: ws => ws.updateChatFromMainline(1),

@@ -199,9 +199,8 @@ it.concurrent("an attachment reaches the model in its turn and stays in later tu
   const model = models.script([{ text: "Got it." }, { text: "The attachment test." }]);
   using owner = await newWorkspace(model, "attachment");
   const { ws } = owner;
-  const upload = await ws.uploadChatAttachment(
-      { mimeType: "text/plain", content: new TextEncoder().encode(notes), name: "agenda.txt" },
-      SCRIPTED_MODEL_ID);
+  const upload = {oid: await ws.uploadBlob(new TextEncoder().encode(notes)),
+    mimeType: "text/plain", name: "agenda.txt"};
 
   const chatId = await ws.newChat("Read the agenda.", SCRIPTED_MODEL_ID, undefined, [upload]);
   await settle(ws, model, chatId, 1);

@@ -23,7 +23,6 @@ export type ComposerAttachment = {
 
 type ComposerAttachmentsOptions = {
   getOverseer: () => Promise<RpcStub<Overseer>> | RpcStub<Overseer>;
-  modelId: string | null;
   onError: (message: string) => void;
 };
 
@@ -32,12 +31,10 @@ const errorMessage = (error: unknown, fallback: string) =>
 
 export const useComposerAttachments = ({
   getOverseer,
-  modelId,
   onError,
 }: ComposerAttachmentsOptions) => {
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const attachmentsRef = useRef<ComposerAttachment[]>([]);
-  const stagedCleanupRef = useRef(new Map<string, () => void>());
   const mountedRef = useRef(true);
   const getOverseerRef = useRef(getOverseer);
   const onErrorRef = useRef(onError);
@@ -60,9 +57,7 @@ export const useComposerAttachments = ({
       attachmentsRef.current = [];
       for (const attachment of abandoned) {
         if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
-        stagedCleanupRef.current.get(attachment.id)?.();
       }
-      stagedCleanupRef.current.clear();
     };
   }, []);
 
@@ -71,24 +66,17 @@ export const useComposerAttachments = ({
     blob: Blob,
     mimeType: string,
     name: string | undefined,
-    uploadModelId: string | null,
   ) => {
     try {
       const content = new Uint8Array(await blob.arrayBuffer());
       if (!mountedRef.current || !attachmentsRef.current.some((item) => item.id === id)) return;
       const overseer = await getOverseerRef.current();
       if (!mountedRef.current || !attachmentsRef.current.some((item) => item.id === id)) return;
-      const ref = await overseer.uploadChatAttachment({ mimeType, content, name }, uploadModelId);
-      const deleteUpload = () => {
-        void overseer.deleteChatAttachment(ref.id).catch(() => {
-          // Cleanup is best-effort because the owner may already have disposed its Overseer.
-        });
-      };
+      const oid = await overseer.uploadBlob(content);
       if (!mountedRef.current || !attachmentsRef.current.some((item) => item.id === id)) {
-        deleteUpload();
         return;
       }
-      stagedCleanupRef.current.set(id, deleteUpload);
+      const ref: ChatAttachmentHandle = {oid, mimeType, name};
       updateAttachments((current) => current.map((item) =>
         item.id === id ? { ...item, uploadState: "ready", ref } : item));
     } catch (error) {
@@ -156,15 +144,13 @@ export const useComposerAttachments = ({
         uploadState: "uploading",
       };
       updateAttachments((current) => [...current, attachment]);
-      void uploadAttachment(id, blob, mimeType, file.name || undefined, modelId);
+      void uploadAttachment(id, blob, mimeType, file.name || undefined);
     }
   };
 
   const removeAttachment = (id: string) => {
     const attachment = attachmentsRef.current.find((item) => item.id === id);
     if (attachment?.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
-    stagedCleanupRef.current.get(id)?.();
-    stagedCleanupRef.current.delete(id);
     updateAttachments((current) => current.filter((item) => item.id !== id));
   };
 
@@ -172,7 +158,6 @@ export const useComposerAttachments = ({
     const sentIds = new Set(sent.map((attachment) => attachment.id));
     for (const attachment of sent) {
       if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
-      stagedCleanupRef.current.delete(attachment.id);
     }
     updateAttachments((current) => current.filter((attachment) => !sentIds.has(attachment.id)));
   };

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Collection } from "@gadgets/typed-storage";
-import { validateBytesRef, type BytesRef, type ByteValue } from "@gadgets/workshop-shared/byte-change";
+import { validateBytesRef, type BytesRef } from "@gadgets/workshop-shared/code-change";
 import type { ByteObjectRecord, ByteChunkRecord, ByteUploadRecord, ByteGrantRecord, GitByteBlobRecord } from "./storage-schema/overseer-storage";
 
 /** Maximum buffered payload per storage/read operation; unrelated to a file's total size. */
@@ -34,11 +34,6 @@ export class ByteStore {
   /** Check the Git identity against durable chunk-backed storage, rather than trusting wire metadata. */
   require(ref: BytesRef): void {
     this.#root(ref);
-  }
-  /** Resolve a whole-file value; binary deltas are deliberately unsupported. */
-  resolve(value: ByteValue): BytesRef {
-    if (Object.keys(value).length !== 1 || !("base" in value)) throw new Error("Binary content must name a whole-file payload.");
-    this.require(value.base); return value.base;
   }
   #chunk(ref: ByteObjectRecord, index: number): Uint8Array {
     const data = this.chunks.get(`${ref.id}:${index}`)?.data;

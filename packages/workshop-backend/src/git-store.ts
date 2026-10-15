@@ -463,9 +463,8 @@ export class GitStore {
   async #writeFileBlob(path: string, text: FileContent): Promise<string> {
     if (typeof text !== "string") {
       if (!this.byteStore || !this.byteBlobs) throw new Error("Byte storage is unavailable.");
-      const bytes = this.byteStore.resolve(text);
-      if (!this.byteBlobs.get(bytes.oid)) throw new Error("Git blob is unavailable.");
-      return bytes.oid;
+      this.byteStore.require(text);
+      return text.oid;
     }
     try {
       return await writeBlob({ fs: this.#fs, gitdir: GITDIR, blob: new TextEncoder().encode(text) });

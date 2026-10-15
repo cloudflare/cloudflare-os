@@ -48,7 +48,7 @@
 
 import { ChangeSet, Text } from "@codemirror/state";
 import fastDiff from "fast-diff";
-import { validateBytesRef, type ByteValue } from "./byte-change";
+import type { GitOid } from "./gatekeeper";
 
 // =======================================================================================
 // Wire types
@@ -65,6 +65,23 @@ import { validateBytesRef, type ByteValue } from "./byte-change";
  */
 export type TextChange = (number | [number, ...string[]])[];
 
+/** An immutable whole-file Git blob; its identity alone grants no read access. */
+export interface BytesRef {
+  /** Git blob object ID computed from the complete payload. */
+  oid: GitOid;
+  /** Exact payload length in bytes, checked against stored metadata before use. */
+  byteLength: number;
+}
+
+/** Validate whole-file blob metadata without granting access to the named payload. */
+export function validateBytesRef(ref: BytesRef): void {
+  if (typeof ref !== "object" || ref === null || Object.keys(ref).length !== 2 ||
+      !("oid" in ref) || !("byteLength" in ref) || !/^[0-9a-f]{40}$/.test(ref.oid) ||
+      !Number.isSafeInteger(ref.byteLength) || ref.byteLength < 0) {
+    throw new Error("Invalid immutable byte reference.");
+  }
+}
+
 /**
  * One file's part of a `CodeChange`. A file is text, a byte postimage, or absent. Exactly one
  * variant applies; byte operations never reinterpret text's UTF-16 coordinates:
@@ -77,10 +94,10 @@ export type TextChange = (number | [number, ...string[]])[];
  * - `{setBytes}`: create/replace with an immutable byte postimage, against any state;
  */
 export type FileChange = { edit: TextChange } | { set: string } | { remove: true }
-  | { setBytes: ByteValue };
+  | { setBytes: BytesRef };
 
 /** Text remains UTF-16; opaque byte postimages use immutable payload references. */
-export type FileContent = string | ByteValue;
+export type FileContent = string | BytesRef;
 
 /** Assert text at text-only tool/runtime boundaries; never reinterpret byte offsets as UTF-16. */
 export function requireTextContent(value: FileContent | undefined): string | undefined {
@@ -216,8 +233,8 @@ function applyTextChange(text: string, change: TextChange): string {
   return toChangeSet(change).apply(Text.of(text.split("\n"))).toString();
 }
 
-function byteFileChangeSize(change: {setBytes: ByteValue}): number {
-  return 128 + 2 * change.setBytes.base.oid.length;
+function byteFileChangeSize(change: {setBytes: BytesRef}): number {
+  return 96 + 2 * change.setBytes.oid.length;
 }
 
 // Iterates a CodeChange's gadget entries as numeric ids. Assumes canonical keys
@@ -602,11 +619,7 @@ function validateFileChangeSchema(where: string, fileChange: FileChange, budget:
   }
   if ("remove" in fileChange) return 0;
   if ("setBytes" in fileChange) {
-    // Reject legacy splice metadata rather than silently interpreting a delta as its base.
-    if (Object.keys(fileChange.setBytes).length !== 1 || !("base" in fileChange.setBytes)) {
-      throw new Error(`Binary content must name a whole-file payload: ${where}`);
-    }
-    validateBytesRef(fileChange.setBytes.base);
+    validateBytesRef(fileChange.setBytes);
     const cost = byteFileChangeSize(fileChange);
     if (cost > budget) throw new Error("code change is too large");
     return cost;

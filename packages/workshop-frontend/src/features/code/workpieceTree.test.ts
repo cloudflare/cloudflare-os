@@ -154,8 +154,8 @@ describe('fileChangeStatus', () => {
   })
 
   it('compares against the review base', () => {
-    expect(fileChangeStatus({base: {oid: '1'.repeat(40), byteLength: 3}}, {kind: 'absent'}, true)).toBe('added')
-    expect(fileChangeStatus({base: {oid: '1'.repeat(40), byteLength: 3}}, {kind: 'text', text: 'old'}, true)).toBe('modified')
+    expect(fileChangeStatus({oid: '1'.repeat(40), byteLength: 3}, {kind: 'absent'}, true)).toBe('added')
+    expect(fileChangeStatus({oid: '1'.repeat(40), byteLength: 3}, {kind: 'text', text: 'old'}, true)).toBe('modified')
     expect(fileChangeStatus('x', { kind: 'absent' }, true)).toBe('added')
     expect(fileChangeStatus(null, { kind: 'absent' }, true)).toBe('unchanged')
     expect(fileChangeStatus(null, { kind: 'text', text: 'x' }, true)).toBe('deleted')

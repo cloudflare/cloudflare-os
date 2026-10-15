@@ -489,9 +489,12 @@ it.concurrent("deleting a chat drops its provisional gadget, binding claim and a
     if (data === null) throw new Error("The test connection was not created");
     const dataId = await data.getId();
     using app = await ws.createGadget("App", undefined, "APP");
-    const upload = await ws.uploadChatAttachment(
-        { mimeType: "text/plain", content: new TextEncoder().encode("chat A notes"), name: "notes.txt" }, null);
+    const upload = {oid: await ws.uploadBlob(new TextEncoder().encode("chat A notes")),
+      mimeType: "text/plain", name: "notes.txt"};
     const chatA = await ws.newChat("A", null, undefined, [upload]);
+    const message = (await ws.getChatHistory(chatA)).messages.find(m => m.type === "message");
+    if (message?.type !== "message" || !message.attachments?.length) throw new Error("Missing attachment");
+    const attachmentId = message.attachments[0].id;
     const chatB = await ws.newChat("B", null);
     using draft = await ws.createGadget("Draft", chatA, "DRAFT");
     const draftId = await draft.getId();
@@ -501,13 +504,13 @@ it.concurrent("deleting a chat drops its provisional gadget, binding claim and a
         .rejects.toThrow('The gadget name "DRAFT" is claimed by a gadget still pending in another chat');
     await expect(app.bind("DATA", dataId, chatB))
         .rejects.toThrow('The binding name "DATA" is already proposed by another chat.');
-    expect(new TextDecoder().decode(await ws.getChatAttachmentContent(chatA, upload.id))).toBe("chat A notes");
+    expect(new TextDecoder().decode(await ws.getChatAttachmentContent(chatA, attachmentId))).toBe("chat A notes");
 
     await ws.deleteChat(chatA);
 
     await waitFor("the provisional gadget's removal", async () =>
       workpieces.summaries.has(draftId) ? null : true);
-    await expect(ws.getChatAttachmentContent(chatA, upload.id)).rejects.toThrow("Chat attachment not found.");
+    await expect(ws.getChatAttachmentContent(chatA, attachmentId)).rejects.toThrow("Chat attachment not found.");
     using _replacement = await ws.createGadget("Draft", chatB, "DRAFT");
     await app.bind("DATA", dataId, chatB);
     expect(await app.listBindings(chatB))

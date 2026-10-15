@@ -6,7 +6,6 @@ import { makeOverseerStorage } from "../src/storage-schema/overseer-storage";
 import { GitStore } from "../src/git-store";
 import { WorkspaceGitCache } from "../src/git-cache";
 import { buildPackStream, parseGitCommitRefs, parseGitTree, decodeLooseObject } from "../src/git-codec";
-import type { ByteValue } from "@gadgets/workshop-shared/byte-change";
 
 function fixture() {
   const storage = makeOverseerStorage(makeMockStorage());
@@ -47,9 +46,8 @@ it("keeps large replacements immutable, references compact and streaming buffers
   const {store} = fixture(), data = new Uint8Array(16 * 1024 * 1024).fill(17);
   const original = await store.import("kernel", data);
   const replacement = data.slice(); replacement.set([0, 255], BYTE_CHUNK_SIZE - 1);
-  const value: ByteValue = {base: await store.import("kernel", replacement)};
-  const ref = store.resolve(value);
-  expect(JSON.stringify(value).length).toBeLessThan(500);
+  const ref = await store.import("kernel", replacement);
+  expect(JSON.stringify(ref).length).toBeLessThan(500);
   let total = 0;
   for await (const chunk of store.read(ref)) { expect(chunk.length).toBeLessThanOrEqual(BYTE_CHUNK_SIZE); total += chunk.length; }
   expect(total).toBe(data.length);
@@ -89,7 +87,7 @@ it("commits byte-backed blobs with real Git identities and streams a pack", asyn
   const bytes = new Uint8Array([0, 255, 42]), ref = await store.import("a", bytes);
   const git = new GitStore(storage.gitObjects, store, storage.gitByteBlobs);
   const empty = await git.writeFilesAsCommit(new Map(), {parents: [], author: {name: "Test", email: "test@example.com"}, message: "empty", timestamp: new Date()});
-  const commit = await git.writeChangedFilesAsCommit(new Map([["image.bin", {base: ref}]]), {treeBase: empty, parents: [empty], author: {name: "Test", email: "test@example.com"}, message: "bytes", timestamp: new Date()});
+  const commit = await git.writeChangedFilesAsCommit(new Map([["image.bin", ref]]), {treeBase: empty, parents: [empty], author: {name: "Test", email: "test@example.com"}, message: "bytes", timestamp: new Date()});
   const root = parseGitCommitRefs(decodeLooseObject(storage.gitObjects.get(commit)!.data).payload).tree;
   const blob = parseGitTree(decodeLooseObject(storage.gitObjects.get(root)!.data).payload)[0].oid;
   expect(blob).toBe(createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex"));
@@ -109,14 +107,14 @@ it("decodes byte-backed text by content and keeps identical Git blob mappings st
   const first = await store.import("a", payload);
   const firstRoot = storage.gitByteBlobs.get(first.oid)!.bytes;
   const second = await store.import("b", payload);
-  const commit = await git.writeFilesAsCommit(new Map([["a.txt", {base: first}]]), options);
+  const commit = await git.writeFilesAsCommit(new Map([["a.txt", first]]), options);
   expect(await git.readCommitFiles(commit)).toEqual(new Map([["a.txt", text]]));
-  expect(await git.writeFilesAsCommit(new Map([["a.txt", {base: second}]]), options)).toBe(commit);
+  expect(await git.writeFilesAsCommit(new Map([["a.txt", second]]), options)).toBe(commit);
   expect(second).toEqual(first);
   expect(storage.gitByteBlobs.get(first.oid)?.bytes).toEqual(firstRoot);
   for (const data of [Uint8Array.of(0), Uint8Array.of(255)]) {
     const ref = await store.import("a", data);
-    const binary = await git.writeFilesAsCommit(new Map([["a.bin", {base: ref}]]), options);
+    const binary = await git.writeFilesAsCommit(new Map([["a.bin", ref]]), options);
     await expect(git.readCommitFiles(binary)).rejects.toThrow(/not a text file/);
   }
 });

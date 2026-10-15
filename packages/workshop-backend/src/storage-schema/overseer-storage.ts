@@ -27,8 +27,7 @@ import {
   type BlueprintOutput, type ChatGadgetPinRecord, type CollaboratorRole, type GadgetUpstream,
   type GatekeeperCreationSpec, type PermissionEdge, type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
-import type { CodeChange } from "@gadgets/workshop-shared/code-change";
-import type { BytesRef } from "@gadgets/workshop-shared/byte-change";
+import type { CodeChange, BytesRef } from "@gadgets/workshop-shared/code-change";
 
 /** Internal chunk root for a finished whole-file payload; never crosses an RPC boundary. */
 export interface ByteObjectRecord {
@@ -864,9 +863,11 @@ type ChatAttachmentContentRecord = {
   state: {
     type: "committed";
     chatId: number;
+    /** Original upload blob; new uploads keep no separate attachment byte copy. */
+    oid?: string;
     /** Path in the chat's attachments worktree, independent of the uploaded file's format. */
     workspacePath?: string;
-    /** Immutable Git commit holding the upload's original text for replay and download. */
+    /** Legacy immutable Git source commit for replay and download. */
     workspaceCommitId?: string;
   };
 };
@@ -1511,9 +1512,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         primaryKey: "id"
       }),
 
-      // Attachment bytes. Before an attachment is committed to a chat message, this also carries
-      // the temporary metadata needed to construct its ChatAttachmentRef. Once committed, the
-      // message owns that metadata and this record retains only the bytes and owning chat ID.
+      // Chat-scoped attachment source metadata. New uploads point to immutable Git blobs;
+      // legacy records can still hold staged or committed bytes.
       chatAttachmentContent: collection<ChatAttachmentContentRecord>()({
         primaryKey: "fileId",
         nonUniqueIndexes: {

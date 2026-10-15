@@ -210,8 +210,8 @@ describe("listFiles", () => {
       impl.readByteFileAtCommit(commit, "a.txt", "reader-b"),
     ]);
     expect(a).toEqual(b);
-    expect(impl.byteStore.isFinishedFor("reader-a", a.base)).toBe(true);
-    expect(impl.byteStore.isFinishedFor("reader-b", a.base)).toBe(true);
+    expect(impl.byteStore.isFinishedFor("reader-a", a)).toBe(true);
+    expect(impl.byteStore.isFinishedFor("reader-b", a)).toBe(true);
     expect(await impl.gitStore.readCommitFiles(commit)).toEqual(new Map([["a.txt", "same text\n"]]));
   }));
 
@@ -226,18 +226,18 @@ describe("listFiles", () => {
       return session.finishUpload(uploadId);
     };
     const original = await stage("original", Uint8Array.of(0, 255, 3, 4));
-    await session.writeBytes("image.bin", {base: original});
+    await session.writeBytes("image.bin", original);
     const replacement = await stage("replacement", Uint8Array.of(0, 5, 0, 3, 4));
-    await session.writeBytes("image.bin", {base: replacement});
+    await session.writeBytes("image.bin", replacement);
     expect(new Uint8Array(await new Response(await session.readBytes("image.bin")).arrayBuffer())).toEqual(Uint8Array.of(0, 5, 0, 3, 4));
     const commit = await session.commit("binary replacement");
     await turn.barrier();
     expect(impl.getWorktreeRecord(id).headCommit).toBe(commit);
     const value = await impl.readByteFileAtCommit(commit, "image.bin");
-    expect(new Uint8Array(await new Response(impl.byteStore.read(value.base)).arrayBuffer())).toEqual(Uint8Array.of(0, 5, 0, 3, 4));
+    expect(new Uint8Array(await new Response(impl.byteStore.read(value)).arrayBuffer())).toEqual(Uint8Array.of(0, 5, 0, 3, 4));
     await expect(session.readFile("image.bin")).rejects.toThrow(/Binary/);
     const outside = await impl.byteStore.import("unrelated", Uint8Array.of(8));
-    await expect(session.writeBytes("outside.bin", {base: outside})).rejects.toThrow(/outside/);
+    await expect(session.writeBytes("outside.bin", outside)).rejects.toThrow(/outside/);
     await session.deleteFile("image.bin");
     const deleted = await session.commit("delete binary");
     await turn.barrier();

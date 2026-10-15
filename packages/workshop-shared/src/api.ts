@@ -26,6 +26,7 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { AccountDescription, ActionKind, ActionDescription, AgentCatalog, AvatarImage, GatekeeperUiFrame, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
 import type { CodeChange } from "./code-change.js";
+import type { GitOid } from "./gatekeeper.js";
 import type { UiFeatureFlags } from "./feature-flags.js";
 
 export const SERVICE_SALT = new Uint8Array([
@@ -2853,13 +2854,12 @@ export interface Overseer extends RpcTarget {
                   formats?: MessageFormatRef[]): Promise<void>;
 
   /**
-   * Upload an attachment for use in a future chat message. This way by the time the user wants to
-   * send the message, likely uploading is complete. `modelId` determines whether the
-   * selected provider can receive a raw file attachment.
-   *
-   * Pass the returned handle to newChat() or sendChatMessage() to commit the attachment into chat history.
+   * Store raw bytes as an immutable Git blob and return its OID after durable storage.
+   * Retrying identical bytes returns the same OID. This does not change any worktree or message.
+   * Use the OID in a chat attachment, or in a worktree's whole-file `setBytes` change together
+   * with the payload's byte length. An OID from another workspace grants no access here.
    */
-  uploadChatAttachment(attachment: ChatAttachmentUpload, modelId: string | null): Promise<ChatAttachmentHandle>;
+  uploadBlob(content: Uint8Array): Promise<GitOid>;
 
   /**
    * Fetch the bytes of a committed chat attachment over RPC. The canonical metadata is already
@@ -2867,9 +2867,6 @@ export interface Overseer extends RpcTarget {
    * only to download non-image attachments on demand.
    */
   getChatAttachmentContent(chatId: number, id: string): Promise<Uint8Array>;
-
-  /** Delete an uploaded attachment that the user explicitly removed before sending the message. */
-  deleteChatAttachment(id: string): Promise<void>;
 
   /**
    * Update the title of a chat. Usually not needed as a title is generated automatically from
@@ -3954,23 +3951,19 @@ export type AlwaysAvailableResource = {
 };
 
 /**
- * Bytes to upload as a chat attachment.
- *
- * The server stores the bytes and returns the handle to pass when sending the message.
- */
-export type ChatAttachmentUpload = {
-  mimeType: string;
-  content: Uint8Array;
-  name?: string;
-};
-
-/**
- * Handle for an attachment that has been uploaded but not yet sent as part of a message.
- *
- * Pass this back unchanged when sending the chat message.
+ * A previously uploaded blob to attach to a chat message, with display/model-input metadata.
+ * The blob must have been uploaded in this workspace. Attachment limits and MIME signatures
+ * are checked when sending. The ID-only variant accepts legacy staged uploads.
  */
 export type ChatAttachmentHandle = {
-  /** Clients must not infer storage paths from this ID or construct handles by hand. */
+  /** Immutable Git blob returned by `uploadBlob()`. */
+  oid: GitOid;
+  /** MIME type of this use of the blob; it does not change the stored bytes. */
+  mimeType: string;
+  /** Original display filename, sanitized when sending. */
+  name?: string;
+} | {
+  /** Legacy staged-upload ID; new clients use a blob OID instead. */
   id: string;
 };
 
@@ -3981,13 +3974,17 @@ export type ChatAttachmentHandle = {
  * them without an extra round trip. For other attachments, fetch the bytes on demand via
  * `Overseer.getChatAttachmentContent()`.
  */
-export type ChatAttachmentRef = ChatAttachmentHandle & {
+export type ChatAttachmentRef = {
+  /** Chat-owned attachment identity used for downloads and message rendering. */
+  id: string;
+  /** Original immutable upload blob. Absent on legacy attachments. */
+  oid?: GitOid;
   mimeType: string;
   name?: string;
   size: number;
 
   /**
-   * Path in the chat's attachments worktree, preserving uploaded bytes for every file format.
+   * Path in the chat's scratch worktree, preserving uploaded bytes for every file format.
    * Absent only on legacy attachments committed before workspace ingress was introduced.
    */
   workspacePath?: string;

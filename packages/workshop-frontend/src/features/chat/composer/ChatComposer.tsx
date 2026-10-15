@@ -169,7 +169,6 @@ export const ChatComposer = ({
     removeAttachment,
   } = useComposerAttachments({
     getOverseer,
-    modelId: selectedModel?.id ?? null,
     onError: (message) => toasts.add({ title: message, variant: "error" }),
   });
   const {

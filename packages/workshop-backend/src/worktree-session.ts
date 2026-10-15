@@ -27,14 +27,13 @@ import type {
   WorktreeFileEntry,
 } from "./worktree-binding";
 import type { AiChatAuthorInfo, WorkpieceId } from "@gadgets/workshop-shared/api";
-import { diffFiles, validateCodeChangeSchema, type FileChange, type FileContent } from "@gadgets/workshop-shared/code-change";
+import { diffFiles, validateCodeChangeSchema, type FileChange, type FileContent, type BytesRef } from "@gadgets/workshop-shared/code-change";
 
 import { UnreadableContentError, type WorkspaceGitCache } from "./git-cache";
 import { commitIdentityForAuthor, type GitStore } from "./git-store";
 import { formatUnifiedDiff, type WorktreeTurnAccess } from "./agent";
 import { formatGrep, matchLines, scanWorkpieceForGrep } from "./grep";
 import type { ByteStore } from "./byte-store";
-import type { ByteValue, BytesRef } from "@gadgets/workshop-shared/byte-change";
 import type { ByteUploadDescription, ByteUploadStatus } from "./worktree-binding";
 
 /**
@@ -45,7 +44,7 @@ export interface WorktreeSessionHost {
   /** Private staging namespace for an ephemeral worktree; persistent worktrees use their ID. */
   byteScope?: string;
   byteStore?: ByteStore;
-  readByteFileAtCommit?(commit: string, path: string, scope?: string): Promise<ByteValue | undefined>;
+  readByteFileAtCommit?(commit: string, path: string, scope?: string): Promise<BytesRef | undefined>;
   gitCache: WorkspaceGitCache;
   gitStore: GitStore;
   getWorktreeRecord(id: WorkpieceId): WorktreeRecordView;
@@ -207,15 +206,14 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
       if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0 || offset + length > bytes.length) throw new Error("Invalid byte range.");
       return new ReadableStream({start(c) { c.enqueue(bytes.slice(offset, offset + length)); c.close(); }});
     }
-    const ref = this.#bytes().resolve(value);
-    return this.#bytes().read(ref, range?.offset, range?.length, () => { this.#pinBase(); });
+    return this.#bytes().read(value, range?.offset, range?.length, () => { this.#pinBase(); });
   }
-  async writeBytes(path: string, value: ByteValue): Promise<void> {
+  async writeBytes(path: string, value: BytesRef): Promise<void> {
     const change = {setBytes: value};
     validateCodeChangeSchema({[this.worktreeId]: [[path, change]]});
     await this.host.gitCache.assertWorktreePathWritable(this.#pinBase(), path);
-    if (!this.#bytes().isFinishedFor(this.#byteScope(), value.base)) throw new Error("Byte source is outside this worktree scope.");
-    this.#bytes().resolve(value); this.#pinBase();
+    if (!this.#bytes().isFinishedFor(this.#byteScope(), value)) throw new Error("Byte source is outside this worktree scope.");
+    this.#bytes().require(value); this.#pinBase();
     this.turn.appendChange(this.worktreeId, path, change);
   }
   async writeFile(path: string, text: string): Promise<void> {

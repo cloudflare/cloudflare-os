@@ -1,5 +1,4 @@
 import { isTextLikeAttachmentMimeType } from "@gadgets/workshop-shared/api";
-import type { ChatAttachmentUpload } from "@gadgets/workshop-shared/api";
 import { PDF_MIME_TYPE } from "./chat-attachment-pdf";
 
 // A conservative per-file size that model APIs generally accept; providers' own limits vary by
@@ -17,7 +16,7 @@ const IMAGE_SIGNATURES = new Map<string, readonly (number | null)[]>([
   ]],
 ]);
 
-// Magic-number prefixes checked at upload. Like the image signatures, the PDF one ("%PDF-")
+// Magic-number prefixes checked when attaching. Like the image signatures, the PDF one ("%PDF-")
 // only stops mislabeled uploads at the door; nothing here parses the content.
 const CONTENT_SIGNATURES = new Map<string, readonly (number | null)[]>([
   ...IMAGE_SIGNATURES,
@@ -42,10 +41,10 @@ export function assertChatAttachmentSize(byteLength: number): void {
   }
 }
 
-/** Normalize and validate attachment bytes before staging them in chat storage. */
-export function validateChatAttachmentUpload(
-  attachment: ChatAttachmentUpload,
-): ChatAttachmentUpload {
+/** Normalize and validate an upload's metadata and bytes before attaching it to a message. */
+export function validateChatAttachmentUpload<T extends {
+  mimeType: string; content: Uint8Array; name?: string;
+}>(attachment: T): T {
   attachment.name = sanitizeChatAttachmentName(attachment.name);
   attachment.mimeType = sanitizeChatAttachmentMimeType(attachment.mimeType);
   assertChatAttachmentSize(attachment.content.byteLength);
