@@ -141,7 +141,7 @@ export const BIGQUERY_RESOURCE: SupportedResource = {
  */
 export const GOOGLE_DRIVE_RESOURCE: SupportedResource = {
   urlPattern: "https://drive.google.com/drive/my-drive",
-  title: "Google Drive Account",
+  title: "Google Drive",
   description:
       "Find files and folders anywhere this Google account can read in Drive, including shared " +
       "drives. Full-text search examines indexed file content, descriptions, and OCR text; search " +
