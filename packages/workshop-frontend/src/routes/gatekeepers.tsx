@@ -1,6 +1,6 @@
 import { logRpcFailure } from '../rpcErrors'
 import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useKumoToastManager } from '@cloudflare/kumo'
 import {
   MagnifyingGlass,
@@ -27,6 +27,7 @@ import { useSiteName } from '../ServerConfigContext'
 import { AccountsSubscriberAdapter } from '../accountsSubscriber'
 import { openConnectWindow } from '../connectHandoff'
 import { AuthPopupCancelledError } from '../features/native-app/authPopup'
+import { nativeApp } from '../features/native-app/nativeApp'
 
 export const Route = createFileRoute('/gatekeepers')({
   component: ConnectorsPage,
@@ -467,10 +468,14 @@ function ConnectorsPage() {
 
   const [modalTarget, setModalTarget] = useState<ModalTarget>(null)
   const [connecting, setConnecting] = useState(false)
+  const [canCancelConnect, setCanCancelConnect] = useState(false)
+  const connectCancellation = useRef<AbortController | null>(null)
   const [disconnecting, setDisconnecting] = useState(false)
 
   const [reconnectingAccountId, setReconnectingAccountId] = useState<number | null>(null)
   const [ensuringResourceUrlPatterns, setEnsuringResourceUrlPatterns] = useState<string[]>([])
+
+  useEffect(() => () => connectCancellation.current?.abort(), [])
 
   useEffect(() => {
     localStorage.setItem('gatekeepers-view', view)
@@ -568,6 +573,8 @@ function ConnectorsPage() {
   const handleConfirmConnect = async (resourceUrlPatterns?: string[]) => {
     if (!modalTarget || modalTarget.kind !== 'connect') return
     const vendorId = modalTarget.vendorId
+    const cancellation = new AbortController()
+    connectCancellation.current = cancellation
     setConnecting(true)
     try {
       if (isTargetAmbient) {
@@ -578,7 +585,9 @@ function ConnectorsPage() {
         // If the gatekeeper provides a management UI, its nav entry should appear without a reload.
         refreshGatekeeperApps(authenticatedApi)
       } else {
-        await openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns), authenticatedApi)
+        const flow = await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns)
+        setCanCancelConnect(!!nativeApp()?.authentication)
+        await openConnectWindow(flow, authenticatedApi, cancellation.signal)
       }
       handleCloseModal()
     } catch (err) {
@@ -586,6 +595,8 @@ function ConnectorsPage() {
       console.error('Failed to connect account:', err)
       toasts.add({ title: err instanceof Error ? err.message : 'Could not complete connection', variant: 'error' })
     } finally {
+      connectCancellation.current = null
+      setCanCancelConnect(false)
       setConnecting(false)
     }
   }
@@ -862,6 +873,7 @@ function ConnectorsPage() {
           color={activeVendor.description.color}
           autoProvisions={isTargetAmbient}
           connecting={connecting}
+          onCancelConnect={canCancelConnect ? () => connectCancellation.current?.abort() : undefined}
           onConfirm={handleConfirmConnect}
           accountDescription={activeAccount?.accountDescription}
           credentialsValid={activeAccount?.credentialsValid}

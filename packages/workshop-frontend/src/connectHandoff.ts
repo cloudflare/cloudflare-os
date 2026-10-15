@@ -7,7 +7,7 @@
 // authenticated connection when the system browser returns. Redeeming activates the grant.
 
 import type { AuthenticatedApi, ConnectFlowStart } from '@gadgets/workshop-shared/api'
-import { NATIVE_AUTH_KEY, openNativeAuthPopup, type AuthPopup } from './features/native-app/authPopup'
+import { AuthPopupCancelledError, NATIVE_AUTH_KEY, openNativeAuthPopup, type AuthPopup } from './features/native-app/authPopup'
 import { nativeConnectCompletion } from './features/native-app/connectSession'
 
 /** Host the backend (and, through the router, every gatekeeper) is served from. */
@@ -118,10 +118,13 @@ let lastConnectPopup: AuthPopup | null = null
  * account arrives in this tab through `subscribeConnectedAccounts()`. In native apps the caller
  * awaits ticket redemption on its own API instead; the nonce never enters the system browser.
  * Resolves to `opened` on desktop, or `connected` after native redemption. Rejects when opening,
- * authentication or redemption fails, or the native user cancels.
+ * authentication or redemption fails, or the native user cancels. A caller's optional signal
+ * closes its pending native popup and cancels redemption/reconnect recovery.
  */
 export async function openConnectWindow(flow: ConnectFlowStart,
-  api: Pick<AuthenticatedApi, 'completeConnectHandoff'>): Promise<'opened' | 'connected'> {
+  api: Pick<AuthenticatedApi, 'completeConnectHandoff'>,
+  signal?: AbortSignal): Promise<'opened' | 'connected'> {
+  if (signal?.aborted) throw new AuthPopupCancelledError()
   if (lastConnectPopup) {
     try { lastConnectPopup.close() } catch { /* cross-origin or already gone */ }
   }
@@ -130,9 +133,16 @@ export async function openConnectWindow(flow: ConnectFlowStart,
     nativeConnectCompletion(api, flow.nonce))
   lastConnectPopup = popup
   if (!popup.completion) return 'opened'
-  await popup.completion
-  window.dispatchEvent(new Event(NATIVE_CONNECT_COMPLETE_EVENT))
-  return 'connected'
+  const cancel = () => popup.close()
+  signal?.addEventListener('abort', cancel, { once: true })
+  if (signal?.aborted) cancel()
+  try {
+    await popup.completion
+    window.dispatchEvent(new Event(NATIVE_CONNECT_COMPLETE_EVENT))
+    return 'connected'
+  } finally {
+    signal?.removeEventListener('abort', cancel)
+  }
 }
 
 /**

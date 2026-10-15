@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { nativeAuthRelay, nativeAuthStartUrl, NATIVE_AUTH_EVENT, openNativeAuthPopup } from './authPopup'
+import { AuthPopupCancelledError, nativeAuthRelay, nativeAuthStartUrl, NATIVE_AUTH_EVENT, openNativeAuthPopup } from './authPopup'
 import { openConnectWindow } from '../../connectHandoff'
 import { NativeConnectSession } from './connectSession'
 
@@ -112,6 +112,42 @@ describe('native auth transport', () => {
     result(newId, TICKET)
     await second
     expect(completeConnectHandoff).toHaveBeenCalledExactlyOnceWith(TICKET, 'e'.repeat(64))
+  })
+
+  it.each([false, true])('lets a connect caller cancel without a native dismissal event (close throws: %s)', async closeThrows => {
+    const auth = bridge(), complete = vi.fn<(ticket: string, nonce: string) => Promise<void>>().mockResolvedValue(undefined)
+    auth.close.mockImplementation(() => { if (closeThrows) throw new Error('Native browser already gone') })
+    const controller = new AbortController()
+    const completion = openConnectWindow({ url: FLOW, nonce: NONCE }, track(complete), controller.signal)
+      .catch((error: unknown) => error)
+    const id = auth.open.mock.calls[0][0]
+    try {
+      window.dispatchEvent(new Event('focus'))
+      controller.abort()
+      await Promise.resolve()
+      expect(auth.close).toHaveBeenCalledExactlyOnceWith(id)
+      await expect(completion).resolves.toBeInstanceOf(AuthPopupCancelledError)
+      result(id, TICKET)
+      expect(complete).not.toHaveBeenCalled()
+    } finally {
+      result(id)
+      await completion
+    }
+  })
+
+  it('does not open a flow whose caller already cancelled', async () => {
+    const auth = bridge(), complete = vi.fn<(ticket: string, nonce: string) => Promise<void>>()
+    const controller = new AbortController()
+    controller.abort()
+    const completion = openConnectWindow({ url: FLOW, nonce: NONCE }, track(complete), controller.signal)
+      .catch((error: unknown) => error)
+    try {
+      expect(auth.open).not.toHaveBeenCalled()
+      await expect(completion).resolves.toBeInstanceOf(AuthPopupCancelledError)
+    } finally {
+      auth.open.mock.calls.forEach(([id]) => result(id))
+      await completion
+    }
   })
 })
 

@@ -78,7 +78,7 @@ export const openNativeAuthPopup = (
       if (closed) return
       cleanup()
       controller.abort(new AuthPopupCancelledError())
-      bridge.close(id)
+      try { bridge.close(id) } catch { /* Closing the browser is best-effort; cancellation must settle. */ }
       rejectCompletion(new AuthPopupCancelledError())
     },
     completion,

@@ -175,7 +175,11 @@ The transport is in `src/features/native-app/authPopup.ts` (under `packages/work
    are surfaced without retries. Logout or a different user cannot receive the pending grant.
    `openConnectWindow` always returns a promise: `opened` on desktop, `connected` after native
    redemption. Billing refreshes only after that redemption (in addition to ordinary focus refresh).
-   Native sign-in also offers Cancel sign-in, since older Custom Tabs may not report dismissal.
+   Since older Custom Tabs may not report dismissal, native sign-in offers Cancel sign-in and the
+   Gatekeepers connect modal offers Cancel connection. The latter aborts its caller-owned signal
+   passed to `openConnectWindow(flow, api, signal)`, closes the native browser best-effort and
+   settles the pending flow without reporting an error. Closing the route also aborts that flow;
+   late native results cannot redeem it, and the modal can retry immediately after cancellation.
 
 Deploy the frontend and update **both native apps** to use this transport. Older native binaries
 without the optional capability keep the desktop behavior; a frontend-only rollout cannot teach
