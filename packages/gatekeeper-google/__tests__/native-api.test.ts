@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GoogleDocsApi, type GoogleDocsTab } from "../src/docs-api";
 import { GOOGLE_SHEET_MIME_TYPE } from "../src/drive-session";
-import { explainUnopenedSpreadsheet, GoogleSheetsApi } from "../src/sheets-api";
+import { explainUnopenedFile } from "../src/office-conversion";
+import { GoogleSheetsApi } from "../src/sheets-api";
 import { GoogleApiError, readGoogleJson } from "../src/google-response";
 
 const token = async () => "access-token";
@@ -367,29 +368,29 @@ describe("native Google content API safety", () => {
   });
 });
 
-describe("explainUnopenedSpreadsheet", () => {
+describe("explainUnopenedFile for a spreadsheet", () => {
   const unopened = new GoogleApiError(
     "Google Sheets get spreadsheet failed [http=400]", "FAILED_PRECONDITION");
   const XLSX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
   it("tells the caller to convert a file Drive says is not a Google Sheet", async () => {
-    const explained = await explainUnopenedSpreadsheet(unopened, async () => XLSX_MIME_TYPE);
+    const explained = await explainUnopenedFile("sheets", unopened, async () => XLSX_MIME_TYPE);
 
     expect(explained).toBeInstanceOf(Error);
     expect((explained as Error).message)
-      .toMatch(/is not a Google Sheet, such as an \.xlsx.*Save as Google Sheets/);
+      .toMatch(/is an Office file, such as \.xlsx.*offers to make a Google Sheets copy/);
   });
 
   it("keeps the original error for a native Google Sheet", async () => {
-    await expect(explainUnopenedSpreadsheet(unopened, async () => GOOGLE_SHEET_MIME_TYPE))
+    await expect(explainUnopenedFile("sheets", unopened, async () => GOOGLE_SHEET_MIME_TYPE))
       .resolves.toBe(unopened);
   });
 
   it("keeps the original error when Drive cannot say what the file is", async () => {
-    await expect(explainUnopenedSpreadsheet(unopened, async () => {
+    await expect(explainUnopenedFile("sheets", unopened, async () => {
       throw new Error("Google Drive get file failed [http=403]");
     })).resolves.toBe(unopened);
-    await expect(explainUnopenedSpreadsheet(unopened, async () => undefined))
+    await expect(explainUnopenedFile("sheets", unopened, async () => undefined))
       .resolves.toBe(unopened);
   });
 
@@ -398,7 +399,7 @@ describe("explainUnopenedSpreadsheet", () => {
       "Google Sheets get spreadsheet failed [http=403]", "PERMISSION_DENIED");
     const mimeType = vi.fn(async () => XLSX_MIME_TYPE);
 
-    await expect(explainUnopenedSpreadsheet(denied, mimeType)).resolves.toBe(denied);
+    await expect(explainUnopenedFile("sheets", denied, mimeType)).resolves.toBe(denied);
     expect(mimeType).not.toHaveBeenCalled();
   });
 });

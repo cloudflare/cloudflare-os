@@ -9,9 +9,11 @@ import { AccessTokenCache, type AccessTokenRequest } from "./auth-retry";
 import {
   boundProps, createFileOnce, isSimulated, UNCREATED_FILE_ID, type SimulatedFileProps,
 } from "./creation";
+import { DriveApi } from "./drive-api";
 import { unguardedNativeRead, type NativeRead } from "./drive-session";
 import type { GoogleVerifierApi } from "./google-verifier-types";
 import { Mutex } from "./mutex";
+import { explainUnopenedFile } from "./office-conversion";
 import { ReadGate } from "./read-gate";
 import { nativeFileUrl } from "./resources";
 import { batchKind, SLIDES_ACTIONS } from "./slides-actions";
@@ -98,6 +100,7 @@ export class GoogleSlidesGatekeeperImpl
   });
 
   #api = new GoogleSlidesApi((opts?: AccessTokenRequest) => this.#tokens.get(opts));
+  #drive = new DriveApi((opts?: AccessTokenRequest) => this.#tokens.get(opts));
   #presentationId = isSimulated(this.ctx.props) ? UNCREATED_FILE_ID : this.ctx.props.presentationId;
   #journal = new ActionJournal<SlidesAction>(this.ctx.storage.kv, { namespace: "slides" });
   #actions = SLIDES_ACTIONS.bind(this.#journal, { api: this.#api, presentationId: this.#presentationId });
@@ -122,8 +125,11 @@ export class GoogleSlidesGatekeeperImpl
         tsType: "GooglePresentationSession",
       };
     }
-    let title = await this.#api.getPresentationTitle(props.presentationId) ??
-      "Untitled presentation";
+    let title = await this.#api.getPresentationTitle(props.presentationId)
+      .catch(async (error: unknown) => {
+        throw await explainUnopenedFile(
+          "slides", error, async () => (await this.#drive.getFile(props.presentationId)).mimeType);
+      }) ?? "Untitled presentation";
     return {
       url: nativeFileUrl("slides", props.presentationId),
       title,

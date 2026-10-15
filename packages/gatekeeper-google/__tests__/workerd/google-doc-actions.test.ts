@@ -2,6 +2,7 @@ import { abortAllDurableObjects, env } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { googleDocActionTab } from "../../src/google";
 import { MARKDOWN_RENDERING_VERSION } from "../../src/markdown-converter";
+import { officeFileError } from "../../src/office-conversion";
 import type { GoogleDocsTab } from "../../src/docs-api";
 import { buildTab } from "../doc-fixture";
 
@@ -82,6 +83,10 @@ function paragraphsIn(text: string, range: { startIndex: number; endIndex: numbe
 
 /** The tab a single-tab document has, and the one the tab-agnostic tests exercise. */
 const MAIN_TAB = "tab-1";
+const DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+/** Google's own words for refusing an Office file, which nothing of ours may repeat. */
+const OFFICE_REFUSAL =
+  "This operation is not supported for this document. The document must not be an Office file.";
 
 /**
  * A batch either carries the edit and its marker, or deletes a marker on its own; or a create; or
@@ -116,6 +121,10 @@ class DocsModel {
   driveModifiedTime = "2026-01-02T03:04:05Z";
   /** What Drive answers with instead of that time, if anything. */
   driveFailure: { status: number; reason?: string } | "malformed" | null = null;
+  /** The file's type as Drive reports it, when it reports one. */
+  driveMimeType: string | undefined;
+  /** Whether Google refuses every content edit as it refuses one to an Office file. */
+  refusesEdits = false;
   readonly deletedMarkerIds: string[] = [];
   /** Marker ID to its name and owning tab. */
   readonly markers = new Map<string, { name: string; tabId: string }>();
@@ -249,8 +258,10 @@ class DocsModel {
         return Response.json(
           { error: { code: status, errors: reason ? [{ reason }] : [] } }, { status });
       }
-      return Response.json(
-        { id: "doc-1", name: "Test document", modifiedTime: this.driveModifiedTime });
+      return Response.json({
+        id: "doc-1", name: "Test document", modifiedTime: this.driveModifiedTime,
+        ...this.driveMimeType ? { mimeType: this.driveMimeType } : {},
+      });
     }
     if (url.hostname !== "docs.googleapis.com") {
       throw new Error(`Unexpected provider request: ${url}`);
@@ -288,6 +299,11 @@ class DocsModel {
     };
     let isDelete = body.requests.length === 1 && !!body.requests[0].deleteNamedRange;
     await this.#hold(isDelete ? "cleanup" : "content");
+    if (!isDelete && this.refusesEdits) {
+      return Response.json({
+        error: { code: 400, status: "FAILED_PRECONDITION", message: OFFICE_REFUSAL },
+      }, { status: 400 });
+    }
     if (isDelete && this.cleanupFailures > 0) {
       this.cleanupFailures--;
       throw new Error("cleanup failed");
@@ -2168,5 +2184,67 @@ describe("appending to an empty Google Doc", () => {
     expect(await hooks().readContent("chip-doc-append")).toBe("\n\nadded\n");
     expect(await hooks().applyAction("chip-doc-append", actionId)).toBeNull();
     expect(docs.text()).toBe("\nadded");
+  });
+});
+
+// Docs reads a .docx as though it were native and refuses only edits, so describe() asks Drive.
+describe("a Google Doc that is an Office file", () => {
+  it("refuses to describe a file Drive reports as an Office document", async () => {
+    let docs = new DocsModel();
+    docs.driveMimeType = DOCX;
+    docs.install();
+
+    await expect(Promise.resolve(hooks().describe("office-docx")))
+      .rejects.toThrow(officeFileError("doc").message);
+    expect(docs.driveFetches).toBe(1);
+  });
+
+  it("describes a native Doc after Drive confirms its type", async () => {
+    let docs = new DocsModel();
+    docs.driveMimeType = "application/vnd.google-apps.document";
+    docs.install();
+
+    expect(await hooks().describe("office-native"))
+      .toMatchObject({ title: "Test document", url: "https://docs.google.com/document/d/doc-1/edit" });
+    expect(docs.driveFetches).toBe(1);
+  });
+
+  it.each([
+    ["a grant without the Drive scope", { status: 403, reason: "insufficientPermissions" }],
+    ["a Drive outage", { status: 500 }],
+  ] as const)("describes the document as it reads when Drive cannot answer, as with %s", async (
+    _case, failure,
+  ) => {
+    let docs = new DocsModel();
+    docs.driveFailure = failure;
+    docs.install();
+
+    expect(await hooks().describe(`office-drive-${failure.status}`))
+      .toMatchObject({ title: "Test document" });
+  });
+
+  it("explains an approved edit Google refuses on a bound Office file", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    let actionId = await hooks().submitAppend("office-edit", "added");
+    docs.driveMimeType = DOCX;
+    docs.refusesEdits = true;
+
+    let message = await hooks().applyAction("office-edit", actionId);
+
+    expect(message).toBe(officeFileError("doc").message);
+    expect(message).not.toContain(OFFICE_REFUSAL);
+    expect(docs.text()).toBe("");
+  });
+
+  it("keeps Google's status for a refused edit on a native Doc", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    let actionId = await hooks().submitAppend("office-edit-native", "added");
+    docs.driveMimeType = "application/vnd.google-apps.document";
+    docs.refusesEdits = true;
+
+    expect(await hooks().applyAction("office-edit-native", actionId))
+      .toBe("Google Docs batch update document failed [http=400]");
   });
 });

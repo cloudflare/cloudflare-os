@@ -14,6 +14,10 @@ import type { GoogleDocConfiguratorRpc } from "./configurator/google-doc-configu
 import type { GoogleSheetsConfiguratorRpc } from "./configurator/google-sheets-configurator-types";
 import type { GoogleSlidesConfiguratorRpc } from "./configurator/google-slides-configurator-types";
 import type { ConfiguratorOption } from "./configurator/configurator-option";
+import {
+  OFFICE_KINDS, officeLabel, type OfficeConversion, type OfficeConversionResult,
+  type OfficeFileInspection, type OfficeKind,
+} from "./office-conversion";
 import type {
   ChatAccountConfiguratorRpc,
 } from "./configurator/chat-account-configurator-types";
@@ -30,6 +34,7 @@ import type { DriveFolderConfiguratorRpc } from "./configurator/drive-folder-con
 type ConfiguratorTokenGetter = (opts?: AccessTokenRequest) => Promise<GoogleAccessToken>;
 
 const googleTokenGetters = new WeakMap<object, ConfiguratorTokenGetter>();
+const officeConversions = new WeakMap<object, OfficeConversion>();
 const calendarConfiguratorCaches = new WeakMap<object, Promise<ConfiguratorOption[]>>();
 const bigQueryConfiguratorCaches = new WeakMap<object, Map<string, ConfiguratorOption[]>>();
 const BIGQUERY_CONFIGURATOR_CACHE_MAX_ENTRIES = 200;
@@ -44,6 +49,12 @@ function googleToken(target: object, opts?: AccessTokenRequest): Promise<GoogleA
   let getToken = googleTokenGetters.get(target);
   if (!getToken) throw new Error("Google configurator is not initialized.");
   return getToken(opts);
+}
+
+function officeConversion(target: object): OfficeConversion {
+  let conversion = officeConversions.get(target);
+  if (!conversion) throw new Error("Google configurator is not initialized.");
+  return conversion;
 }
 
 /** A provider that re-asks on every call, so `fetchWithAuthRetry` can refresh a rejected token. */
@@ -125,17 +136,23 @@ function chatSpaceOption(space: ChatSpaceInfo, title = space.name): Configurator
   };
 }
 
+/**
+ * Recent files of `kind`'s native type, and the Office files a connect converts into one. An Office
+ * file is named with its extension, unless its name already ends with it.
+ */
 async function listDriveFiles(
   target: object,
   query: string,
-  mimeType: string,
-  resourceName: string,
+  kind: OfficeKind,
 ): Promise<ConfiguratorOption[]> {
   let drive = new DriveApi(googleTokenProvider(target));
+  let { nativeMimeType, officeMimeTypes, resourceTitle } = OFFICE_KINDS[kind];
 
   let { files } = await withDriveApiEnabled(
-    `${resourceName} search requires the Google Drive API to be enabled for this OAuth project.`,
-    () => drive.listFiles({ mimeType, namePrefix: query }),
+    `Google ${resourceTitle} search requires the Google Drive API to be enabled for this OAuth project.`,
+    () => drive.listFiles({
+      mimeTypes: [nativeMimeType, ...Object.keys(officeMimeTypes)], namePrefix: query,
+    }),
   );
 
   return files.map(file => {
@@ -144,7 +161,10 @@ async function listDriveFiles(
       owner?.displayName ?? owner?.emailAddress,
       file.modifiedTime ? `Modified ${new Date(file.modifiedTime).toLocaleDateString()}` : undefined,
     ].filter(Boolean).join(" · ");
-    return { value: file.id, title: file.name, subtitle };
+    let label = officeLabel(kind, file.mimeType);
+    if (label === undefined) return { value: file.id, title: file.name, subtitle };
+    let title = file.name.toLowerCase().endsWith(`.${label}`) ? file.name : `${file.name} (${label})`;
+    return { value: file.id, title, subtitle, meta: `Makes a Google ${resourceTitle} copy` };
   });
 }
 
@@ -255,45 +275,87 @@ export class BigQueryConfiguratorUI extends RpcTarget implements BigQueryConfigu
 // RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
 @validateRpc()
 export class GoogleDocConfiguratorUI extends RpcTarget implements GoogleDocConfiguratorRpc {
-  constructor(getToken: () => Promise<GoogleAccessToken>) {
+  constructor(getToken: () => Promise<GoogleAccessToken>, conversion: OfficeConversion) {
     super();
     googleTokenGetters.set(this, getToken);
+    officeConversions.set(this, conversion);
   }
 
   async listDocs(query: string): Promise<ConfiguratorOption[]> {
-    return listDriveFiles(
-      this, query, "application/vnd.google-apps.document", "Google Docs",
-    );
+    return listDriveFiles(this, query, "doc");
+  }
+
+  /** Whether `fileId` is native, an Office file this kind converts, or neither. */
+  async inspectFile(fileId: string): Promise<OfficeFileInspection> {
+    return officeConversion(this).inspectFile(fileId);
+  }
+
+  /** Whether the account holds the grant {@link convertFile} needs to make a copy. */
+  async hasConversionAccess(): Promise<boolean> {
+    return officeConversion(this).hasConversionAccess();
+  }
+
+  /** Makes a native copy of Office file `fileId`, or confirms and returns the copy `reuse` names. */
+  async convertFile(fileId: string, opts?: { reuse?: string }): Promise<OfficeConversionResult> {
+    return officeConversion(this).convertFile(fileId, opts);
   }
 }
 
 // RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
 @validateRpc()
 export class GoogleSheetsConfiguratorUI extends RpcTarget implements GoogleSheetsConfiguratorRpc {
-  constructor(getToken: () => Promise<GoogleAccessToken>) {
+  constructor(getToken: () => Promise<GoogleAccessToken>, conversion: OfficeConversion) {
     super();
     googleTokenGetters.set(this, getToken);
+    officeConversions.set(this, conversion);
   }
 
   async listSpreadsheets(query: string): Promise<ConfiguratorOption[]> {
-    return listDriveFiles(
-      this, query, "application/vnd.google-apps.spreadsheet", "Google Sheets",
-    );
+    return listDriveFiles(this, query, "sheets");
+  }
+
+  /** Whether `fileId` is native, an Office file this kind converts, or neither. */
+  async inspectFile(fileId: string): Promise<OfficeFileInspection> {
+    return officeConversion(this).inspectFile(fileId);
+  }
+
+  /** Whether the account holds the grant {@link convertFile} needs to make a copy. */
+  async hasConversionAccess(): Promise<boolean> {
+    return officeConversion(this).hasConversionAccess();
+  }
+
+  /** Makes a native copy of Office file `fileId`, or confirms and returns the copy `reuse` names. */
+  async convertFile(fileId: string, opts?: { reuse?: string }): Promise<OfficeConversionResult> {
+    return officeConversion(this).convertFile(fileId, opts);
   }
 }
 
 // RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
 @validateRpc()
 export class GoogleSlidesConfiguratorUI extends RpcTarget implements GoogleSlidesConfiguratorRpc {
-  constructor(getToken: () => Promise<GoogleAccessToken>) {
+  constructor(getToken: () => Promise<GoogleAccessToken>, conversion: OfficeConversion) {
     super();
     googleTokenGetters.set(this, getToken);
+    officeConversions.set(this, conversion);
   }
 
   async listPresentations(query: string): Promise<ConfiguratorOption[]> {
-    return listDriveFiles(
-      this, query, "application/vnd.google-apps.presentation", "Google Slides",
-    );
+    return listDriveFiles(this, query, "slides");
+  }
+
+  /** Whether `fileId` is native, an Office file this kind converts, or neither. */
+  async inspectFile(fileId: string): Promise<OfficeFileInspection> {
+    return officeConversion(this).inspectFile(fileId);
+  }
+
+  /** Whether the account holds the grant {@link convertFile} needs to make a copy. */
+  async hasConversionAccess(): Promise<boolean> {
+    return officeConversion(this).hasConversionAccess();
+  }
+
+  /** Makes a native copy of Office file `fileId`, or confirms and returns the copy `reuse` names. */
+  async convertFile(fileId: string, opts?: { reuse?: string }): Promise<OfficeConversionResult> {
+    return officeConversion(this).convertFile(fileId, opts);
   }
 }
 

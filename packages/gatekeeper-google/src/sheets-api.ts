@@ -3,8 +3,7 @@ import type {
   SpreadsheetValueMode,
 } from "./sheets-read-types";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
-import { GOOGLE_SHEET_MIME_TYPE } from "./drive-session";
-import { GoogleApiError, readGoogleJson } from "./google-response";
+import { readGoogleJson } from "./google-response";
 import {
   baseFormats, FORMAT_READ_FIELDS, type BaseFormats, type RestFormatSheet,
 } from "./sheets-format";
@@ -115,23 +114,6 @@ export class SheetsWriteRefused extends Error {
   constructor(readonly status: number) {
     super(`Google Sheets refused the update [http=${status}]`);
   }
-}
-
-/**
- * Google's refusal to open a spreadsheet explained, when Drive confirms the file is not a native
- * Google Sheet (such as an .xlsx); otherwise `error` itself. The status alone does not say why.
- */
-export async function explainUnopenedSpreadsheet(
-  error: unknown, mimeType: () => Promise<string | undefined>,
-): Promise<unknown> {
-  if (!(error instanceof GoogleApiError) || error.providerStatus !== "FAILED_PRECONDITION") {
-    return error;
-  }
-  let type = await mimeType().catch(() => undefined);
-  if (type === undefined || type === GOOGLE_SHEET_MIME_TYPE) return error;
-  return new Error(
-    "Google Sheets cannot open this file because it is not a Google Sheet, such as an .xlsx. " +
-    "Open it in Google Sheets, choose File > Save as Google Sheets, and use the copy instead.");
 }
 
 /**

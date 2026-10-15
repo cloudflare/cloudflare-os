@@ -317,6 +317,37 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
   },
 ];
 
+/**
+ * Wider Drive grants. `drive.readonly` is requested only by {@link OFFICE_IMPORT_GRANT}; full
+ * `drive` never is, and appears only in {@link SCOPE_COVERED_BY}, where it truthfully subsumes the
+ * narrow requirements.
+ */
+const DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
+const DRIVE_READWRITE_SCOPE = "https://www.googleapis.com/auth/drive";
+const DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+
+/**
+ * The grant that lets a connect dialog copy a Drive Office file into a native Google file:
+ * `drive.readonly` to see and read a source this OAuth client did not create, and `drive.file` to
+ * create the copy.
+ *
+ * A private grant, not a resource: it is absent from {@link SUPPORTED_RESOURCES}, so nothing lists,
+ * offers or binds it, and only the configurators' Convert button asks for it. Its scopes reach
+ * Drive content beyond any bound resource, so binding scope is enforced by the gatekeepers' code.
+ */
+export const OFFICE_IMPORT_GRANT = "https://docs.google.com/import";
+
+/** Grants requested and recorded like resources, but never bindable or shown to the Workshop. */
+const PRIVATE_GRANT_SCOPES: {urlPattern: string, scopes: string[]}[] = [
+  { urlPattern: OFFICE_IMPORT_GRANT, scopes: [DRIVE_READONLY_SCOPE, DRIVE_FILE_SCOPE] },
+];
+
+/** Every grant's scopes, resources first: what consent asks for and what coverage is checked on. */
+const GRANT_SCOPES = [
+  ...RESOURCE_SCOPES.map(({resource, scopes}) => ({urlPattern: resource.urlPattern, scopes})),
+  ...PRIVATE_GRANT_SCOPES,
+];
+
 const DRIVE_RESOURCE_PATTERNS = new Set([
   GOOGLE_DRIVE_RESOURCE.urlPattern,
   GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern,
@@ -325,7 +356,13 @@ const DRIVE_RESOURCE_PATTERNS = new Set([
 
 /** Every grantable resource, in declaration order. */
 export const SUPPORTED_RESOURCES: SupportedResource[] = RESOURCE_SCOPES.map(entry => entry.resource);
-const KNOWN_RESOURCE_PATTERNS = new Set(SUPPORTED_RESOURCES.map(resource => resource.urlPattern));
+const KNOWN_RESOURCE_PATTERNS = new Set(GRANT_SCOPES.map(entry => entry.urlPattern));
+const PRIVATE_GRANT_PATTERNS = new Set(PRIVATE_GRANT_SCOPES.map(entry => entry.urlPattern));
+
+/** Whether `pattern` is a private grant, which an account description leaves out. */
+export function isPrivateGrant(pattern: string): boolean {
+  return PRIVATE_GRANT_PATTERNS.has(pattern);
+}
 
 /**
  * Former `urlPattern`s of live resources, so a grant recorded under one is read under its new name.
@@ -343,14 +380,7 @@ export function hasDriveResourceGrant(resourceUrlPatterns: readonly string[]): b
   return resourceUrlPatterns.some(pattern => DRIVE_RESOURCE_PATTERNS.has(pattern));
 }
 
-/**
- * Wider Drive grants an account may already hold. Never requested here; they appear only in
- * {@link SCOPE_COVERED_BY}, where they truthfully subsume the narrow requirements.
- */
-const DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
-const DRIVE_READWRITE_SCOPE = "https://www.googleapis.com/auth/drive";
-
-/** Rejects any pattern that is not a known grantable resource. */
+/** Rejects any pattern that is not a known grantable resource or private grant. */
 export function validateResourceUrlPatterns(resourceUrlPatterns: readonly string[]): void {
   let unknown = resourceUrlPatterns.filter(pattern => !KNOWN_RESOURCE_PATTERNS.has(pattern));
   if (unknown.length > 0) {
@@ -358,13 +388,13 @@ export function validateResourceUrlPatterns(resourceUrlPatterns: readonly string
   }
 }
 
-/** The OAuth scopes required by the explicit grantable resource `urlPattern`s. */
+/** The OAuth scopes required by the explicit grantable resource and private grant `urlPattern`s. */
 export function resourceUrlPatternsToOAuthScopes(resourceUrlPatterns: readonly string[]): string[] {
   validateResourceUrlPatterns(resourceUrlPatterns);
 
   let scopes = new Set<string>(IDENTITY_SCOPES);
-  for (let entry of RESOURCE_SCOPES) {
-    if (resourceUrlPatterns.includes(entry.resource.urlPattern)) {
+  for (let entry of GRANT_SCOPES) {
+    if (resourceUrlPatterns.includes(entry.urlPattern)) {
       for (let scope of entry.scopes) scopes.add(scope);
     }
   }
@@ -392,6 +422,8 @@ const SCOPE_COVERED_BY: Record<string, readonly string[]> = {
     "https://www.googleapis.com/auth/presentations", DRIVE_READONLY_SCOPE, DRIVE_READWRITE_SCOPE,
   ],
   "https://www.googleapis.com/auth/spreadsheets": [DRIVE_READWRITE_SCOPE],
+  [DRIVE_READONLY_SCOPE]: [DRIVE_READWRITE_SCOPE],
+  [DRIVE_FILE_SCOPE]: [DRIVE_READWRITE_SCOPE],
   "https://www.googleapis.com/auth/chat.spaces.readonly": [
     "https://www.googleapis.com/auth/chat.spaces",
   ],
@@ -422,10 +454,10 @@ export function resourcesCoveredByScopes(
     grantedOAuthScopes: readonly string[]): string[] {
   let granted = new Set(grantedOAuthScopes);
   let requested = new Set(resourceUrlPatterns);
-  return RESOURCE_SCOPES
-      .filter(entry => requested.has(entry.resource.urlPattern) &&
+  return GRANT_SCOPES
+      .filter(entry => requested.has(entry.urlPattern) &&
                        entry.scopes.every(scope => oauthScopeCovers(scope, granted)))
-      .map(entry => entry.resource.urlPattern);
+      .map(entry => entry.urlPattern);
 }
 
 /**

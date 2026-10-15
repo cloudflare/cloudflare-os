@@ -14,7 +14,10 @@ vi.mock("@gadgets/configurator-ui", () => ({
     component, props, children,
   }),
   Autocomplete: "Autocomplete",
+  Button: "Button",
   Field: "Field",
+  Fragment: "Fragment",
+  Notice: "Notice",
   RadioCards: "RadioCards",
   Section: "Section",
   TextInput: "TextInput",
@@ -28,12 +31,14 @@ import gmailConfigurator from "../src/configurator/gmail-configurator-ui";
 import chatAccountConfigurator from "../src/configurator/chat-account-configurator-ui";
 import chatSpaceConfigurator from "../src/configurator/chat-space-configurator-ui";
 import chatThreadConfigurator from "../src/configurator/chat-thread-configurator-ui";
+import googleDocConfigurator from "../src/configurator/google-doc-configurator-ui";
+import googleSheetsConfigurator from "../src/configurator/google-sheets-configurator-ui";
 import googleSlidesConfigurator from "../src/configurator/google-slides-configurator-ui";
 import {
   GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE,
   GOOGLE_CHAT_THREAD_RESOURCE,
-  GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE,
-  GOOGLE_SLIDES_RESOURCE,
+  GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
+  GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE,
   parseResourceUrl,
 } from "../src/resources";
 
@@ -347,11 +352,47 @@ describe("Drive configurator URLs", () => {
   });
 });
 
-describe("Google Slides configurator URLs", () => {
-  it("mints a presentation URL the server parses and the prefill reads back", () => {
-    let values = { presentationId: "1AbC-dEf_9xYz" };
-    let url = configurableUrl(googleSlidesConfigurator, values);
-    expect(parseResourceUrl(url)).toEqual({ kind: "slides", presentationId: values.presentationId });
-    expect(valuesFromUrlPattern(url, GOOGLE_SLIDES_RESOURCE.urlPattern)).toEqual(values);
+describe.each([
+  ["Docs", googleDocConfigurator, GOOGLE_DOC_RESOURCE, "document", "docId", "doc", "documentId"],
+  ["Sheets", googleSheetsConfigurator, GOOGLE_SHEETS_RESOURCE, "spreadsheets", "spreadsheetId",
+    "sheets", "spreadsheetId"],
+  ["Slides", googleSlidesConfigurator, GOOGLE_SLIDES_RESOURCE, "presentation", "presentationId",
+    "slides", "presentationId"],
+] as const)("Google %s configurator URLs", (
+  _title, configurator, resource, path, field, kind, targetField,
+) => {
+  // The prefill asks what the file is; a native one fills the ID field as it is.
+  const nativeUi = { inspectFile: vi.fn(async () => ({ type: "native" })) } as never;
+  const prefill = (resourceUrl: string, ui: never = nativeUi) =>
+    configurator.initialValuesFromResourceUrl!({
+      resourceUrl, resourceUrlPattern: resource.urlPattern, ui,
+    });
+
+  it("mints a URL the server parses and the prefill reads back", async () => {
+    const values = { [field]: "1AbC-dEf_9xYz" };
+    const url = configurableUrl(configurator, values);
+    expect(parseResourceUrl(url)).toEqual({ kind, [targetField]: "1AbC-dEf_9xYz" });
+    await expect(prefill(url)).resolves.toEqual(values);
+  });
+
+  // The shape an Office file's URL takes when it is pasted into chat.
+  it("reads a pasted editor URL the way the server does", async () => {
+    const pasted = `https://docs.google.com/${path}/d/1AbC-dEf_9xYz/edit?rtpof=true&sd=true`;
+    expect(parseResourceUrl(pasted)).toEqual({ kind, [targetField]: "1AbC-dEf_9xYz" });
+    await expect(prefill(pasted)).resolves.toEqual({ [field]: "1AbC-dEf_9xYz" });
+  });
+
+  it.for([
+    `https://docs.google.com/${path}/u/0/`,
+    "not a url",
+  ])("prefills nothing, and asks nothing, for %s, which the server would not bind", async url => {
+    expect(() => parseResourceUrl(url)).toThrow();
+    await expect(prefill(url, noUi)).resolves.toEqual({});
+  });
+
+  // The server binds the segment as it is; the prefill leaves an ID outside Drive's alphabet,
+  // which no Drive file has, to be chosen by hand rather than sent to `inspectFile`.
+  it("prefills nothing, and asks nothing, for an ID outside Drive's alphabet", async () => {
+    await expect(prefill(`https://docs.google.com/${path}/d/bad%2Fid/edit`, noUi)).resolves.toEqual({});
   });
 });

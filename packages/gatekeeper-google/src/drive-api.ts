@@ -2,6 +2,9 @@
 
 import type { DriveObservation } from "./drive-observers";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
+import { obsContext } from "./observability";
+
+const logger = obsContext.createLogger({ component: "gatekeeper.google.drive", vendorId: "google" });
 
 const DRIVE_API_BASE = "https://www.googleapis.com/drive/v3";
 const DRIVE_BATCH_URL = "https://www.googleapis.com/batch/drive/v3";
@@ -86,6 +89,58 @@ export const DRIVE_FILE_ITEM_FIELDS = [
 
 /** Drive returns only requested fields, so this mask and {@link DriveFile} travel together. */
 const DRIVE_FILE_FIELDS = `incompleteSearch,nextPageToken,files(${DRIVE_FILE_ITEM_FIELDS})`;
+
+/** What converting a file reads of its source. */
+export type DriveConversionSource = {
+  id: string;
+  name: string;
+  mimeType?: string;
+  modifiedTime?: string;
+  /** Bytes, as a decimal string. */
+  size?: string;
+  parents?: string[];
+  driveId?: string;
+  trashed?: boolean;
+  canCopy?: boolean;
+};
+
+/** Field mask for {@link DriveConversionSource}; its own, so agent listings never widen. */
+const CONVERSION_SOURCE_FIELDS =
+  "id,name,mimeType,modifiedTime,size,parents,driveId,trashed,capabilities(canCopy)";
+
+/** A native copy made from an Office file, as Drive describes it. */
+export type DriveConvertedCopy = {
+  id: string;
+  name: string;
+  mimeType?: string;
+  parents?: string[];
+  createdTime?: string;
+  trashed?: boolean;
+  /** Whether the connected account may edit it; a copy another user made may be visible too. */
+  canEdit?: boolean;
+  appProperties?: Record<string, string>;
+};
+
+/** Field mask for {@link DriveConvertedCopy}. */
+const CONVERTED_COPY_FIELDS =
+  "id,name,mimeType,parents,createdTime,trashed,capabilities(canEdit),appProperties";
+
+/** The app property naming the file a copy was converted from. */
+export const CONVERTED_FROM_PROPERTY = "gadgetsConvertedFrom";
+/** The app property recording the source's `modifiedTime` when it was copied. */
+export const SOURCE_MODIFIED_PROPERTY = "gadgetsSourceModified";
+
+/** Where a native copy landed: in the source's folder, or in My Drive when that could not take it. */
+export type DriveCopyLocation = "besideOriginal" | "myDrive";
+
+/** Drive's alias for the connected account's My Drive root folder. */
+const MY_DRIVE_ROOT = "root";
+
+/** Clauses only the gatekeeper's own lookups add, never built from agent or iframe input. */
+type InternalDriveQuery = {
+  /** Files whose {@link CONVERTED_FROM_PROPERTY} names this source. */
+  convertedFrom?: string;
+};
 
 /** Structured Drive search clauses. Every populated field is AND-ed. */
 export type DriveFileQuery = {
@@ -238,6 +293,10 @@ async function driveError(response: Response): Promise<Error> {
   return new DriveApiRequestError(response.status, reason);
 }
 
+function megabytes(bytes: number): string {
+  return String(Math.ceil(bytes / (1024 * 1024)));
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -315,6 +374,95 @@ function parseDriveFile(value: unknown): DriveFile {
   };
 }
 
+function optionalAppProperties(value: unknown): Record<string, string> | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value) || Object.values(value).some(entry => typeof entry !== "string")) {
+    throw new Error("Invalid Google Drive file appProperties");
+  }
+  return value as Record<string, string>;
+}
+
+function requireIdAndName(value: unknown): Record<string, unknown> & { id: string; name: string } {
+  if (!isRecord(value) || typeof value.id !== "string" || typeof value.name !== "string") {
+    throw new Error("Invalid Google Drive file response");
+  }
+  return value as Record<string, unknown> & { id: string; name: string };
+}
+
+function parseConversionSource(value: unknown): DriveConversionSource {
+  let file = requireIdAndName(value);
+  let canCopy: boolean | undefined;
+  if (file.capabilities !== undefined) {
+    if (!isRecord(file.capabilities)) throw new Error("Invalid Google Drive file capabilities");
+    canCopy = optionalBoolean(file.capabilities.canCopy, "file capabilities.canCopy");
+  }
+  let parents = optionalParents(file.parents);
+  let trashed = optionalBoolean(file.trashed, "file trashed");
+  return {
+    id: file.id,
+    name: file.name,
+    ...optionalFields(file, ["mimeType", "modifiedTime", "size", "driveId"]),
+    ...(parents ? { parents } : {}),
+    ...(trashed === undefined ? {} : { trashed }),
+    ...(canCopy === undefined ? {} : { canCopy }),
+  };
+}
+
+function parseConvertedCopy(value: unknown): DriveConvertedCopy {
+  let file = requireIdAndName(value);
+  let canEdit: boolean | undefined;
+  if (file.capabilities !== undefined) {
+    if (!isRecord(file.capabilities)) throw new Error("Invalid Google Drive file capabilities");
+    canEdit = optionalBoolean(file.capabilities.canEdit, "file capabilities.canEdit");
+  }
+  let parents = optionalParents(file.parents);
+  let trashed = optionalBoolean(file.trashed, "file trashed");
+  let appProperties = optionalAppProperties(file.appProperties);
+  return {
+    id: file.id,
+    name: file.name,
+    ...optionalFields(file, ["mimeType", "createdTime"]),
+    ...(parents ? { parents } : {}),
+    ...(trashed === undefined ? {} : { trashed }),
+    ...(canEdit === undefined ? {} : { canEdit }),
+    ...(appProperties ? { appProperties } : {}),
+  };
+}
+
+/** Whether Drive refused because the token lacks a scope the request needs. */
+export function isInsufficientScope(error: unknown): boolean {
+  return error instanceof DriveApiRequestError && error.status === 403 &&
+    error.reason === "insufficientPermissions";
+}
+
+const RATE_LIMIT_REASONS = new Set(["rateLimitExceeded", "userRateLimitExceeded", "dailyLimitExceeded"]);
+
+/**
+ * A failed conversion request in our own words, from the status and reason alone; anything that
+ * is not a Drive HTTP failure is returned as it is.
+ */
+export function conversionError(error: unknown): unknown {
+  if (!(error instanceof DriveApiRequestError)) return error;
+  let { status, reason } = error;
+  if (status === 404) {
+    return new Error(
+      "Google Drive could not find this file, or the connected account cannot open it.");
+  }
+  if (status === 429 || (status === 403 && reason !== undefined && RATE_LIMIT_REASONS.has(reason))) {
+    return new Error("Google Drive is limiting requests from this account. Try again in a minute.");
+  }
+  if (status === 403 && reason === "cannotCopyFile") {
+    return new Error("The owner of this file has turned off copying, so Google Drive cannot copy it.");
+  }
+  if (status === 403 && reason === "storageQuotaExceeded") {
+    return new Error("The connected Google account has no Drive storage left for the copy.");
+  }
+  if (isInsufficientScope(error)) {
+    return new Error("The connected Google account has not granted access to copy Drive files.");
+  }
+  return new Error(`Google Drive could not make the copy [http=${status}].`);
+}
+
 /**
  * Parses one batch part's body as the scope node for `fileId`.
  *
@@ -348,8 +496,11 @@ function literalClause(field: string, operator: string, value: string): string {
   return `${field} ${operator} '${escapeDriveQueryLiteral(value)}'`;
 }
 
-/** Assembles a Drive `q` from structured values. Trashed files are always excluded. */
-export function buildDriveQuery(query: DriveFileQuery): string {
+/**
+ * Assembles a Drive `q` from structured values. Trashed files are always excluded. `internal`
+ * carries clauses only the gatekeeper's own lookups pass.
+ */
+export function buildDriveQuery(query: DriveFileQuery, internal: InternalDriveQuery = {}): string {
   let clauses = ["trashed = false"];
   if (query.mimeType?.trim()) {
     clauses.push(literalClause("mimeType", "=", query.mimeType.trim()));
@@ -378,6 +529,10 @@ export function buildDriveQuery(query: DriveFileQuery): string {
     }
     let inParents = (id: string) => `'${escapeDriveQueryLiteral(id)}' in parents`;
     clauses.push(parents.length === 1 ? inParents(parents[0]) : `(${parents.map(inParents).join(" or ")})`);
+  }
+  if (internal.convertedFrom !== undefined) {
+    clauses.push(`appProperties has { key='${CONVERTED_FROM_PROPERTY}' and value='${
+      escapeDriveQueryLiteral(internal.convertedFrom)}' }`);
   }
   return clauses.join(" and ");
 }
@@ -509,6 +664,146 @@ export class DriveApi {
       throw new Error("Invalid Google Drive file capabilities");
     }
     return optionalBoolean(capabilities?.canEdit, "file capabilities") === true;
+  }
+
+  /** What converting `fileId` needs to know about it. */
+  async getConversionSource(fileId: string): Promise<DriveConversionSource> {
+    let params = new URLSearchParams({ fields: CONVERSION_SOURCE_FIELDS, supportsAllDrives: "true" });
+    return parseConversionSource(await this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params));
+  }
+
+  /** A copy {@link copyAsNative} may have made, with the app properties that say what from. */
+  async getConvertedCopy(fileId: string): Promise<DriveConvertedCopy> {
+    let params = new URLSearchParams({ fields: CONVERTED_COPY_FIELDS, supportsAllDrives: "true" });
+    return parseConvertedCopy(await this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params));
+  }
+
+  /**
+   * Untrashed native copies of `sourceId` this OAuth client made that the account can edit, newest
+   * first. App properties are private to the client that set them, so another app's copies never
+   * match; they are not private to a user, so a copy another user of this client made in a folder
+   * the account can see may match too. Edit access only ensures that edits to the copy work.
+   */
+  async findConvertedCopies(sourceId: string, nativeMimeType: string): Promise<DriveConvertedCopy[]> {
+    let params = new URLSearchParams({
+      q: buildDriveQuery({ mimeType: nativeMimeType }, { convertedFrom: sourceId }),
+      pageSize: "10",
+      orderBy: "createdTime desc",
+      fields: `files(${CONVERTED_COPY_FIELDS})`,
+      spaces: "drive",
+      corpora: "allDrives",
+      supportsAllDrives: "true",
+      includeItemsFromAllDrives: "true",
+    });
+    let body = await this.#getUnknown("/files", params);
+    if (!isRecord(body)) throw new Error("Invalid Google Drive file-list response");
+    if (body.files === undefined) return [];
+    if (!Array.isArray(body.files)) throw new Error("Invalid Google Drive file-list response");
+    return body.files.map(parseConvertedCopy).filter(copy =>
+      copy.appProperties?.[CONVERTED_FROM_PROPERTY] === sourceId &&
+      copy.mimeType === nativeMimeType && copy.trashed !== true && copy.canEdit === true);
+  }
+
+  /** Whether the connected account may add files to folder `folderId`, as Drive reports it. */
+  async canAddChildren(folderId: string): Promise<boolean> {
+    let params = new URLSearchParams({
+      fields: "capabilities(canAddChildren)", supportsAllDrives: "true",
+    });
+    let body = await this.#getUnknown(`/files/${encodeURIComponent(folderId)}`, params);
+    let capabilities = isRecord(body) ? body.capabilities : undefined;
+    if (capabilities !== undefined && !isRecord(capabilities)) {
+      throw new Error("Invalid Google Drive file capabilities");
+    }
+    return optionalBoolean(capabilities?.canAddChildren, "file capabilities") === true;
+  }
+
+  /** The largest file, in bytes, Drive converts into native `mimeType`, if it says. */
+  async getMaxImportSize(mimeType: string): Promise<number | undefined> {
+    let body = await this.#getUnknown("/about", new URLSearchParams({ fields: "maxImportSizes" }));
+    let sizes = isRecord(body) ? body.maxImportSizes : undefined;
+    if (!isRecord(sizes)) return undefined;
+    let size = Number(optionalString(sizes[mimeType], "maxImportSizes"));
+    return Number.isSafeInteger(size) && size > 0 ? size : undefined;
+  }
+
+  /**
+   * Copies `fileId` into a file of native `mimeType`, which Drive converts, in folder `parents`.
+   * The folder is always named: Drive gives a copy without parents the original's.
+   *
+   * Never replayed on a 5xx or a network error: a lost response may still have made a copy, and a
+   * replay would make a second. {@link findConvertedCopies} is the recovery.
+   */
+  async copyAsNative(fileId: string, copy: {
+    name: string;
+    mimeType: string;
+    parents: string[];
+    appProperties: Record<string, string>;
+  }): Promise<DriveConvertedCopy> {
+    let params = new URLSearchParams({ supportsAllDrives: "true", fields: CONVERTED_COPY_FIELDS });
+    let response = await fetchWithAuthRetry(
+      `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}/copy?${params}`,
+      {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: copy.name,
+          mimeType: copy.mimeType,
+          parents: copy.parents,
+          appProperties: copy.appProperties,
+        }),
+      },
+      this.getAccessToken);
+    if (!response.ok) throw await driveError(response);
+    let text = await readBoundedText(
+      response, MAX_JSON_RESPONSE_BYTES, "Google Drive response was too large");
+    let made = parseConvertedCopy(parseDriveJson(text, "response"));
+    if (made.mimeType !== copy.mimeType) {
+      throw new Error("Google Drive made a copy of a different type than was asked for");
+    }
+    return made;
+  }
+
+  /**
+   * Converts `source` into a native file named `name`, beside the original when its folder takes
+   * new files and in My Drive's root otherwise, tagged with the app properties that let a later
+   * lookup find it.
+   *
+   * The folder is chosen from its `canAddChildren`, not from a failed copy, and always named: a
+   * copy without parents would inherit the original's. A source larger than Drive imports into
+   * `mimeType` is refused before anything is copied; when Drive's limit cannot be read, the copy
+   * is attempted and Drive decides.
+   */
+  async makeNativeCopy(source: DriveConversionSource, name: string, mimeType: string)
+      : Promise<{ copy: DriveConvertedCopy; location: DriveCopyLocation }> {
+    let size = source.size === undefined ? NaN : Number(source.size);
+    if (Number.isFinite(size)) {
+      let max = await this.getMaxImportSize(mimeType).catch((error: unknown) => {
+        logger.warn("could not read Drive's import size limit; copying without the check", {
+          event: "google.office.import-size.unavailable", fileId: source.id,
+          ...(error instanceof DriveApiRequestError ? {
+            httpStatus: error.status, ...(error.reason ? { providerReasons: [error.reason] } : {}),
+          } : { error }),
+        });
+        return undefined;
+      });
+      if (max !== undefined && size > max) {
+        throw new Error(
+          `This file is ${megabytes(size)} MB, larger than the ${megabytes(max)} MB Google Drive ` +
+          "converts into this format.");
+      }
+    }
+    let parent = source.parents?.[0];
+    let besideOriginal = parent !== undefined && await this.canAddChildren(parent).catch(() => false);
+    let copy = await this.copyAsNative(source.id, {
+      name,
+      mimeType,
+      parents: [besideOriginal ? parent! : MY_DRIVE_ROOT],
+      appProperties: {
+        [CONVERTED_FROM_PROPERTY]: source.id,
+        ...(source.modifiedTime ? { [SOURCE_MODIFIED_PROPERTY]: source.modifiedTime } : {}),
+      },
+    });
+    return { copy, location: besideOriginal ? "besideOriginal" : "myDrive" };
   }
 
   /** Fresh access checks for typed file and folder disclosure units. */

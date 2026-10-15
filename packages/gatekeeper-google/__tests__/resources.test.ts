@@ -4,9 +4,10 @@ import {
   GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE, GOOGLE_DOC_RESOURCE,
   GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE,
   GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE, IDENTITY_SCOPES,
-  LEGACY_GRANTED_RESOURCE_URL_PATTERNS, RESOURCE_BY_KIND, RESOURCE_SCOPES,
+  LEGACY_GRANTED_RESOURCE_URL_PATTERNS, OFFICE_IMPORT_GRANT, RESOURCE_BY_KIND, RESOURCE_SCOPES,
   SCOPE_DERIVED_RESOURCE_URL_PATTERNS, SUPPORTED_RESOURCES, creatableKind,
-  grantedResourceUrlPatterns, hasDriveResourceGrant, nativeFileUrl, parseResourceUrl,
+  grantedResourceUrlPatterns, hasDriveResourceGrant, isPrivateGrant,
+  nativeFileUrl, parseResourceUrl,
   recordedResourceUrlPatterns, resourceUrlPatternsToOAuthScopes, resourcesCoveredByScopes,
   validateResourceUrlPatterns,
 } from "../src/resources";
@@ -755,5 +756,86 @@ describe("recorded account grants", () => {
     };
     expect(recordedResourceUrlPatterns(grant)).toEqual(renamed);
     expect(grantedResourceUrlPatterns(grant)).toEqual(renamed);
+  });
+});
+
+describe("Office import grant", () => {
+  const DRIVE_READONLY = "https://www.googleapis.com/auth/drive.readonly";
+  const DRIVE_FILE = "https://www.googleapis.com/auth/drive.file";
+  const DRIVE = "https://www.googleapis.com/auth/drive";
+  const NATIVE = [GOOGLE_DOC_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE]
+    .map(resource => resource.urlPattern);
+
+  it("is a private grant, not a resource anything can list, offer or bind", () => {
+    expect(OFFICE_IMPORT_GRANT).toBe("https://docs.google.com/import");
+    expect(isPrivateGrant(OFFICE_IMPORT_GRANT)).toBe(true);
+    expect(SUPPORTED_RESOURCES.map(resource => resource.urlPattern)).not.toContain(OFFICE_IMPORT_GRANT);
+    expect(RESOURCE_SCOPES.map(entry => entry.resource.urlPattern)).not.toContain(OFFICE_IMPORT_GRANT);
+    expect(Object.values(RESOURCE_BY_KIND).map(resource => resource.urlPattern))
+      .not.toContain(OFFICE_IMPORT_GRANT);
+    for (let resource of SUPPORTED_RESOURCES) expect(isPrivateGrant(resource.urlPattern)).toBe(false);
+  });
+
+  it("stays out of the frozen inference lists", () => {
+    expect(SCOPE_DERIVED_RESOURCE_URL_PATTERNS).not.toContain(OFFICE_IMPORT_GRANT);
+    expect(LEGACY_GRANTED_RESOURCE_URL_PATTERNS).not.toContain(OFFICE_IMPORT_GRANT);
+  });
+
+  // connectAccount requests every supported resource when the caller names none.
+  it("is not part of a first connection's request-everything default", () => {
+    let everything = resourceUrlPatternsToOAuthScopes(
+      SUPPORTED_RESOURCES.map(resource => resource.urlPattern));
+    expect(everything).not.toContain(DRIVE_READONLY);
+    expect(everything).not.toContain(DRIVE_FILE);
+  });
+
+  it("can never be bound", () => {
+    expect(() => parseResourceUrl(OFFICE_IMPORT_GRANT)).toThrow("Unsupported Google Docs resource URL");
+  });
+
+  it("validates as a known pattern and asks for drive.readonly and drive.file only", () => {
+    expect(() => validateResourceUrlPatterns([OFFICE_IMPORT_GRANT])).not.toThrow();
+    expect(resourceUrlPatternsToOAuthScopes([OFFICE_IMPORT_GRANT]))
+      .toEqual([...IDENTITY_SCOPES, DRIVE_READONLY, DRIVE_FILE]);
+  });
+
+  it("is covered by its own scopes or by full drive, and by nothing narrower", () => {
+    expect(resourcesCoveredByScopes([OFFICE_IMPORT_GRANT], [DRIVE_READONLY, DRIVE_FILE]))
+      .toEqual([OFFICE_IMPORT_GRANT]);
+    expect(resourcesCoveredByScopes([OFFICE_IMPORT_GRANT], [DRIVE])).toEqual([OFFICE_IMPORT_GRANT]);
+    expect(resourcesCoveredByScopes([OFFICE_IMPORT_GRANT], [DRIVE_READONLY])).toEqual([]);
+    expect(resourcesCoveredByScopes([OFFICE_IMPORT_GRANT], [DRIVE_FILE])).toEqual([]);
+    expect(resourcesCoveredByScopes([OFFICE_IMPORT_GRANT],
+      resourceUrlPatternsToOAuthScopes(NATIVE))).toEqual([]);
+  });
+
+  it("implies no Drive resource and no other resource, alone or beside Docs, Sheets and Slides", () => {
+    for (let resourceUrlPatterns of [[OFFICE_IMPORT_GRANT], [...NATIVE, OFFICE_IMPORT_GRANT]]) {
+      let grant = {
+        resourceUrlPatterns,
+        oauthScopes: resourceUrlPatternsToOAuthScopes(resourceUrlPatterns),
+      };
+      let granted = grantedResourceUrlPatterns(grant);
+      expect(granted.toSorted()).toEqual(resourceUrlPatterns.toSorted());
+      expect(hasDriveResourceGrant(granted)).toBe(false);
+    }
+    // An account recorded before it named its resources infers only what predates recording.
+    let scopeOnly = { oauthScopes: resourceUrlPatternsToOAuthScopes([OFFICE_IMPORT_GRANT]) };
+    expect(grantedResourceUrlPatterns(scopeOnly)).toEqual([]);
+    expect(recordedResourceUrlPatterns(scopeOnly)).toEqual([]);
+  });
+
+  it("is reported held, and re-requested on reconnect, once recorded", () => {
+    let grant = {
+      resourceUrlPatterns: [GOOGLE_SHEETS_RESOURCE.urlPattern, OFFICE_IMPORT_GRANT],
+      oauthScopes: resourceUrlPatternsToOAuthScopes(
+        [GOOGLE_SHEETS_RESOURCE.urlPattern, OFFICE_IMPORT_GRANT]),
+    };
+    expect(grantedResourceUrlPatterns(grant)).toContain(OFFICE_IMPORT_GRANT);
+    expect(recordedResourceUrlPatterns(grant)).toContain(OFFICE_IMPORT_GRANT);
+    // A declined scope retracts it, but the reconnect still asks again.
+    let declined = { ...grant, oauthScopes: resourceUrlPatternsToOAuthScopes([GOOGLE_SHEETS_RESOURCE.urlPattern]) };
+    expect(grantedResourceUrlPatterns(declined)).toEqual([GOOGLE_SHEETS_RESOURCE.urlPattern]);
+    expect(recordedResourceUrlPatterns(declined)).toContain(OFFICE_IMPORT_GRANT);
   });
 });

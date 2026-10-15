@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DRIVE_FILE_ITEM_FIELDS, DriveApi, DriveApiDisabledError, DriveApiRequestError,
-  FOLDER_MIME_TYPE, MAX_QUERY_PARENTS, buildDriveQuery, escapeDriveQueryLiteral,
+  FOLDER_MIME_TYPE, MAX_QUERY_PARENTS, buildDriveQuery, conversionError, escapeDriveQueryLiteral,
+  isInsufficientScope, type DriveConversionSource,
 } from "../src/drive-api";
 
 /** Google's real error envelope for an API that is not enabled on the project. */
@@ -59,7 +60,10 @@ function batchResponse(results: { status: number; body?: string; contentId?: str
   return new Response(body, { headers: { "Content-Type": `multipart/mixed; boundary=${boundary}` } });
 }
 
-afterEach(() => { vi.unstubAllGlobals(); });
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe("escapeDriveQueryLiteral", () => {
   it("leaves an ordinary value alone", () => {
@@ -931,5 +935,290 @@ describe("auth retry", () => {
     await expect(drive.listFiles())
       .rejects.toThrow("Google Drive API request failed: 503 (backendError)");
     expect(calls).toHaveLength(3);
+  });
+});
+
+const SHEET = "application/vnd.google-apps.spreadsheet";
+const DOC = "application/vnd.google-apps.document";
+const SLIDES = "application/vnd.google-apps.presentation";
+
+/** Google's refusal prose, which no error or log of ours may repeat. */
+const PROVIDER_PROSE = "The user has exceeded their Drive storage quota for Acme Q3.xlsx";
+
+const providerError = (status: number, reason: string) => new Response(JSON.stringify({
+  error: { code: status, message: PROVIDER_PROSE, errors: [{ reason, message: PROVIDER_PROSE }] },
+}), { status });
+
+const copied = (overrides: Record<string, unknown> = {}) => jsonResponse({
+  id: "copy-1", name: "Budget", mimeType: SHEET, parents: ["folder-1"],
+  appProperties: { gadgetsConvertedFrom: "src-1" }, ...overrides,
+});
+
+describe("conversion source", () => {
+  it("asks for its own field mask, leaving the agent-facing mask alone", async () => {
+    let calls = stubFetch([jsonResponse({
+      id: "src-1", name: "Budget.xlsx", mimeType: "application/vnd.ms-excel", trashed: false,
+      parents: ["folder-1"], modifiedTime: "2026-10-01T00:00:00Z", size: "2048",
+      capabilities: { canCopy: true }, owners: [{ emailAddress: "someone@example.com" }],
+    })]);
+
+    let source = await api().getConversionSource("src-1");
+
+    expect(calls[0].url.pathname).toBe("/drive/v3/files/src-1");
+    expect(calls[0].url.searchParams.get("fields")).toBe(
+      "id,name,mimeType,modifiedTime,size,parents,driveId,trashed,capabilities(canCopy)");
+    expect(calls[0].url.searchParams.get("supportsAllDrives")).toBe("true");
+    expect(source).toEqual({
+      id: "src-1", name: "Budget.xlsx", mimeType: "application/vnd.ms-excel", trashed: false,
+      parents: ["folder-1"], modifiedTime: "2026-10-01T00:00:00Z", size: "2048", canCopy: true,
+    });
+    expect(DRIVE_FILE_ITEM_FIELDS).not.toContain("canCopy");
+  });
+
+  it("rejects a non-boolean canCopy instead of guessing", async () => {
+    stubFetch([jsonResponse({ id: "src-1", name: "a", capabilities: { canCopy: "yes" } })]);
+    await expect(api().getConversionSource("src-1")).rejects.toThrow("canCopy");
+  });
+});
+
+describe("copyAsNative", () => {
+  it.each([
+    ["spreadsheet", SHEET],
+    ["document", DOC],
+    ["presentation", SLIDES],
+  ])("POSTs a %s copy with the name, type, parent and app properties", async (_kind, mimeType) => {
+    let calls = stubFetch([copied({ mimeType })]);
+    let appProperties = { gadgetsConvertedFrom: "src-1", gadgetsSourceModified: "2026-10-01T00:00:00Z" };
+
+    let copy = await api().copyAsNative("src-1", {
+      name: "Budget", mimeType, parents: ["folder-1"], appProperties,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].method).toBe("POST");
+    expect(calls[0].url.origin + calls[0].url.pathname)
+      .toBe("https://www.googleapis.com/drive/v3/files/src-1/copy");
+    expect(calls[0].url.searchParams.get("supportsAllDrives")).toBe("true");
+    expect(calls[0].url.searchParams.get("fields")).toContain("appProperties");
+    expect(JSON.parse(calls[0].body!)).toEqual({
+      name: "Budget", mimeType, parents: ["folder-1"], appProperties,
+    });
+    expect(copy).toMatchObject({ id: "copy-1", name: "Budget", mimeType });
+  });
+
+  it("never replays a copy whose response was a 5xx, which may still have made one", async () => {
+    let calls = stubFetch(() => new Response("{}", { status: 503 }));
+    await expect(api().copyAsNative("src-1", { name: "a", mimeType: SHEET, parents: ["root"], appProperties: {} }))
+      .rejects.toMatchObject({ status: 503 });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("never replays a copy lost to a network error", async () => {
+    let attempts = 0;
+    vi.stubGlobal("fetch", async () => {
+      attempts++;
+      throw new TypeError("network connection lost");
+    });
+    await expect(api().copyAsNative("src-1", { name: "a", mimeType: SHEET, parents: ["root"], appProperties: {} }))
+      .rejects.toThrow("network connection lost");
+    expect(attempts).toBe(1);
+  });
+
+  it("refuses a copy Drive made of another type than asked", async () => {
+    stubFetch([copied({ mimeType: "application/vnd.ms-excel" })]);
+    await expect(api().copyAsNative("src-1", { name: "a", mimeType: SHEET, parents: ["root"], appProperties: {} }))
+      .rejects.toThrow("different type");
+  });
+});
+
+const source = (overrides: Partial<DriveConversionSource> = {}): DriveConversionSource => ({
+  id: "src-1", name: "Budget.xlsx", parents: ["folder-1"], modifiedTime: "2026-10-01T00:00:00Z",
+  ...overrides,
+});
+
+describe("makeNativeCopy", () => {
+
+  it("copies beside the original when its folder takes new files", async () => {
+    let calls = stubFetch([jsonResponse({ capabilities: { canAddChildren: true } }), copied()]);
+
+    let made = await api().makeNativeCopy(source(), "Budget", SHEET);
+
+    expect(made.location).toBe("besideOriginal");
+    expect(calls[0].url.pathname).toBe("/drive/v3/files/folder-1");
+    expect(calls[0].url.searchParams.get("fields")).toBe("capabilities(canAddChildren)");
+    expect(calls[0].url.searchParams.get("supportsAllDrives")).toBe("true");
+    expect(JSON.parse(calls[1].body!)).toEqual({
+      name: "Budget", mimeType: SHEET, parents: ["folder-1"],
+      appProperties: { gadgetsConvertedFrom: "src-1", gadgetsSourceModified: "2026-10-01T00:00:00Z" },
+    });
+  });
+
+  it.each([
+    ["cannot take new files", () => jsonResponse({ capabilities: { canAddChildren: false } })],
+    ["cannot be read", () => providerError(404, "notFound")],
+    ["reports no capability", () => jsonResponse({})],
+  ])("copies into My Drive's root when the original's folder %s", async (_case, folder) => {
+    let calls = stubFetch([folder(), copied({ parents: ["0AJroot"] })]);
+
+    let made = await api().makeNativeCopy(source(), "Budget", SHEET);
+
+    expect(made.location).toBe("myDrive");
+    expect(calls).toHaveLength(2);
+    // Named outright: a copy sent without parents would inherit the original's folder.
+    expect(JSON.parse(calls[1].body!).parents).toEqual(["root"]);
+  });
+
+  it("copies into My Drive's root, asking about no folder, when the source has no parent", async () => {
+    let calls = stubFetch([copied({ parents: ["0AJroot"] })]);
+
+    let made = await api().makeNativeCopy(source({ parents: undefined }), "Budget", SHEET);
+
+    expect(made.location).toBe("myDrive");
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0].body!).parents).toEqual(["root"]);
+  });
+
+  it("refuses a source larger than Drive converts into the type, before copying", async () => {
+    let calls = stubFetch([jsonResponse({ maxImportSizes: { [DOC]: "10485760", [SHEET]: "104857600" } })]);
+
+    await expect(api().makeNativeCopy(source({ size: "10485761" }), "Report", DOC))
+      .rejects.toThrow("This file is 11 MB, larger than the 10 MB Google Drive converts into this format.");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url.pathname).toBe("/drive/v3/about");
+    expect(calls[0].url.searchParams.get("fields")).toBe("maxImportSizes");
+  });
+
+  it("copies a source within the limit", async () => {
+    let calls = stubFetch([
+      jsonResponse({ maxImportSizes: { [DOC]: "10485760" } }),
+      jsonResponse({ capabilities: { canAddChildren: true } }),
+      copied({ mimeType: DOC }),
+    ]);
+    await expect(api().makeNativeCopy(source({ size: "10485760" }), "Report", DOC))
+      .resolves.toMatchObject({ location: "besideOriginal" });
+    expect(calls.map(call => call.method ?? "GET")).toEqual(["GET", "GET", "POST"]);
+  });
+
+  it.each([
+    ["is refused", () => providerError(403, "forbidden")],
+    ["answers with something unreadable", () => new Response("not json", { status: 200 })],
+  ])("copies without the size check, and says so, when Drive's limit read %s", async (_case, about) => {
+    let warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let calls = stubFetch([about(), jsonResponse({ capabilities: { canAddChildren: true } }), copied()]);
+
+    await expect(api().makeNativeCopy(source({ size: "999999999" }), "Budget", SHEET))
+      .resolves.toMatchObject({ location: "besideOriginal" });
+
+    expect(calls.map(call => call.method ?? "GET")).toEqual(["GET", "GET", "POST"]);
+    let logged = warn.mock.calls.map(args => JSON.stringify(args)).join("\n");
+    expect(logged).toContain("google.office.import-size.unavailable");
+    expect(logged).not.toContain("Acme");
+  });
+
+  it("skips the size check when the source has no size or Drive names no limit", async () => {
+    let unsized = stubFetch([jsonResponse({ capabilities: { canAddChildren: true } }), copied()]);
+    await api().makeNativeCopy(source(), "Budget", SHEET);
+    expect(unsized.some(call => call.url.pathname.endsWith("/about"))).toBe(false);
+
+    let unlisted = stubFetch([
+      jsonResponse({ maxImportSizes: { [DOC]: "10" } }),
+      jsonResponse({ capabilities: { canAddChildren: true } }),
+      copied(),
+    ]);
+    await expect(api().makeNativeCopy(source({ size: "999999999" }), "Budget", SHEET))
+      .resolves.toMatchObject({ location: "besideOriginal" });
+    expect(unlisted).toHaveLength(3);
+  });
+
+  it("leaves out the source-modified property when Drive gave no modification time", async () => {
+    let calls = stubFetch([copied()]);
+    await api().makeNativeCopy(source({ parents: undefined, modifiedTime: undefined }), "Budget", SHEET);
+    expect(JSON.parse(calls[0].body!).appProperties).toEqual({ gadgetsConvertedFrom: "src-1" });
+  });
+});
+
+describe("converted copies lookup", () => {
+  it("escapes the source ID in the internal app-property clause", () => {
+    expect(buildDriveQuery({ mimeType: SHEET }, { convertedFrom: "a'b\\c" })).toBe(
+      `trashed = false and mimeType = '${SHEET}' and ` +
+      "appProperties has { key='gadgetsConvertedFrom' and value='a\\'b\\\\c' }");
+  });
+
+  it("adds no app-property clause to an ordinary query", () => {
+    expect(buildDriveQuery({ namePrefix: "gadgetsConvertedFrom" })).not.toContain("appProperties");
+  });
+
+  it("searches every drive and keeps only live, editable copies of the source in the native type", async () => {
+    let editable = { capabilities: { canEdit: true } };
+    let calls = stubFetch([jsonResponse({
+      files: [
+        { id: "a", name: "Budget", mimeType: SHEET, trashed: false, createdTime: "2026-10-02T00:00:00Z",
+          appProperties: { gadgetsConvertedFrom: "src-1" }, ...editable },
+        { id: "b", name: "Other", mimeType: SHEET, trashed: false,
+          appProperties: { gadgetsConvertedFrom: "src-2" }, ...editable },
+        { id: "c", name: "Budget", mimeType: DOC, trashed: false,
+          appProperties: { gadgetsConvertedFrom: "src-1" }, ...editable },
+        { id: "d", name: "Budget", mimeType: SHEET, trashed: true,
+          appProperties: { gadgetsConvertedFrom: "src-1" }, ...editable },
+        // Another user of the deployment's copy in a folder shared with this account.
+        { id: "e", name: "Budget", mimeType: SHEET, trashed: false,
+          appProperties: { gadgetsConvertedFrom: "src-1" }, capabilities: { canEdit: false } },
+        { id: "f", name: "Budget", mimeType: SHEET, trashed: false,
+          appProperties: { gadgetsConvertedFrom: "src-1" } },
+      ],
+    })]);
+
+    let copies = await api().findConvertedCopies("src-1", SHEET);
+
+    expect(copies.map(copy => copy.id)).toEqual(["a"]);
+    expect(copies[0].canEdit).toBe(true);
+    expect(copies[0].createdTime).toBe("2026-10-02T00:00:00Z");
+    let params = calls[0].url.searchParams;
+    expect(params.get("q")).toBe(buildDriveQuery({ mimeType: SHEET }, { convertedFrom: "src-1" }));
+    expect(params.get("corpora")).toBe("allDrives");
+    expect(params.get("includeItemsFromAllDrives")).toBe("true");
+    expect(params.get("supportsAllDrives")).toBe("true");
+    expect(params.get("fields")).toContain("appProperties");
+    expect(params.get("fields")).toContain("capabilities(canEdit)");
+  });
+
+  it("rejects app properties that are not strings", async () => {
+    stubFetch([jsonResponse({ files: [{ id: "a", name: "a", appProperties: { n: 1 } }] })]);
+    await expect(api().findConvertedCopies("src-1", SHEET)).rejects.toThrow("appProperties");
+  });
+});
+
+/** The error a copy Google refuses with `status` and `reason` fails with. */
+async function failedCopy(status: number, reason: string): Promise<unknown> {
+  stubFetch([providerError(status, reason)]);
+  return api().copyAsNative("src-1", { name: "a", mimeType: SHEET, parents: ["root"], appProperties: {} })
+    .catch(error => error);
+}
+
+describe("conversion errors", () => {
+
+  it.each([
+    [404, "notFound", "Google Drive could not find this file, or the connected account cannot open it."],
+    [403, "cannotCopyFile", "The owner of this file has turned off copying, so Google Drive cannot copy it."],
+    [403, "storageQuotaExceeded", "The connected Google account has no Drive storage left for the copy."],
+    [403, "userRateLimitExceeded", "Google Drive is limiting requests from this account. Try again in a minute."],
+    [429, "rateLimitExceeded", "Google Drive is limiting requests from this account. Try again in a minute."],
+    [403, "insufficientPermissions", "The connected Google account has not granted access to copy Drive files."],
+    [400, "badRequest", "Google Drive could not make the copy [http=400]."],
+  ])("explains a %i %s in its own words", async (status, reason, message) => {
+    let explained = conversionError(await failedCopy(status, reason)) as Error;
+    expect(explained.message).toBe(message);
+    expect(explained.message).not.toContain("Acme");
+  });
+
+  it("recognizes only a 403 insufficientPermissions as a missing scope", async () => {
+    expect(isInsufficientScope(await failedCopy(403, "insufficientPermissions"))).toBe(true);
+    expect(isInsufficientScope(await failedCopy(403, "cannotCopyFile"))).toBe(false);
+    expect(isInsufficientScope(new Error("insufficientPermissions"))).toBe(false);
+  });
+
+  it("returns an error that is not a Drive HTTP failure unchanged", () => {
+    let error = new Error("This file is 11 MB");
+    expect(conversionError(error)).toBe(error);
   });
 });

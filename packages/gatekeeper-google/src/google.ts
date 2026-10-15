@@ -108,9 +108,12 @@ import {
   GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
   GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE, RESOURCE_BY_KIND,
   SUPPORTED_RESOURCES, creatableKind, nativeFileUrl,
-  grantedResourceUrlPatterns, hasDriveResourceGrant, parseResourceUrl,
-  recordedResourceUrlPatterns, type RecordedResourceGrant,
+  grantedResourceUrlPatterns, hasDriveResourceGrant, isPrivateGrant, OFFICE_IMPORT_GRANT,
+  parseResourceUrl, recordedResourceUrlPatterns, type RecordedResourceGrant,
 } from "./resources";
+import {
+  explainUnopenedFile, OfficeConversion, officeFileError, officeLabel, type OfficeKind,
+} from "./office-conversion";
 import {
   beginStoredOAuthFlow, claimStoredOAuthFlow, mergeGrantedResources, prepareOAuthFlow,
   shouldDeleteCredentialsOnAlarm, type OAuthFlowMode,
@@ -792,7 +795,9 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     let token = await tokenPromise;
     let description = await getGoogleAccountDescription(token.token);
 
-    description.grantedResourceUrlPatterns = await grantedResourcesPromise;
+    // A private grant is the gatekeeper's own business, never a resource the Workshop can bind.
+    description.grantedResourceUrlPatterns =
+      (await grantedResourcesPromise).filter(pattern => !isPrivateGrant(pattern));
     return description;
   }
 
@@ -891,6 +896,10 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     let id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
     let account = this.ctx.exports.UserAccount.get(id);
     let getToken = async (opts?: AccessTokenRequest) => await account.getAccessToken(opts);
+    // The grant is read on every call, since it arrives through a pop-up while the dialog is open.
+    let officeConversion = (kind: OfficeKind) => new OfficeConversion(
+      kind, async opts => (await getToken(opts)).token,
+      async () => (await account.getGrantedResourceUrlPatterns()).includes(OFFICE_IMPORT_GRANT));
 
     if (resourceUrlPattern === BIGQUERY_RESOURCE.urlPattern) {
       return {
@@ -916,21 +925,21 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     if (resourceUrlPattern === GOOGLE_DOC_RESOURCE.urlPattern) {
       return {
         iframeHtml: GOOGLE_DOC_CONFIGURATOR_HTML,
-        ui: new RpcStub(new GoogleDocConfiguratorUI(getToken)),
+        ui: new RpcStub(new GoogleDocConfiguratorUI(getToken, officeConversion("doc"))),
       };
     }
 
     if (resourceUrlPattern === GOOGLE_SHEETS_RESOURCE.urlPattern) {
       return {
         iframeHtml: GOOGLE_SHEETS_CONFIGURATOR_HTML,
-        ui: new RpcStub(new GoogleSheetsConfiguratorUI(getToken)),
+        ui: new RpcStub(new GoogleSheetsConfiguratorUI(getToken, officeConversion("sheets"))),
       };
     }
 
     if (resourceUrlPattern === GOOGLE_SLIDES_RESOURCE.urlPattern) {
       return {
         iframeHtml: GOOGLE_SLIDES_CONFIGURATOR_HTML,
-        ui: new RpcStub(new GoogleSlidesConfiguratorUI(getToken)),
+        ui: new RpcStub(new GoogleSlidesConfiguratorUI(getToken, officeConversion("slides"))),
       };
     }
 
@@ -1897,6 +1906,11 @@ export class GoogleDocGatekeeperImpl
     }
     let api = new GoogleDocsApi(opts => this.#getAccessToken(opts));
     let doc = await api.getDocumentMetadata(props.documentId);
+    // Docs reads an Office file as though it were native but refuses every edit to it, so only
+    // Drive can say. When Drive cannot answer, the document is described as it reads.
+    let mimeType = await new DriveApi(opts => this.#getAccessToken(opts))
+      .getFile(props.documentId).then(file => file.mimeType, () => undefined);
+    if (officeLabel("doc", mimeType) !== undefined) throw officeFileError("doc");
     return {
       url: nativeFileUrl("doc", props.documentId),
       title: doc.title,
@@ -2020,6 +2034,9 @@ export class GoogleDocGatekeeperImpl
           name: writeMarkerName,
           rangeStart: tab.bodyEndIndex - 1,
           tabId: tab.tabId,
+        }).catch(async (error: unknown) => {
+          throw await explainUnopenedFile("doc", error, async () =>
+            (await new DriveApi(opts => this.#getAccessToken(opts)).getFile(documentId)).mimeType);
         });
         if (!result.writeMarkerId) {
           throw new Error(`Google Docs did not return a write marker for action ${actionId}`);
