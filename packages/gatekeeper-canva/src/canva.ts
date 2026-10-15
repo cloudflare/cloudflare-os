@@ -33,6 +33,7 @@ import {
   type CanvaFolderResponse,
   type CanvaGenerationJobResponse,
   type CanvaImageAssetResponse,
+  type CanvaImageTransformationJobResponse,
   type CanvaThumbnailResponse,
 } from "./canva-api";
 import {
@@ -50,11 +51,14 @@ import type {
   CanvaGenerationDesignType,
   CanvaGenerationJob,
   CanvaImageAsset,
+  CanvaImageTransformation,
+  CanvaImageTransformationJob,
   CanvaListDesignsOptions,
   CanvaListFolderItemsOptions,
   CanvaPage,
   CanvaProfile,
   CanvaThumbnail,
+  CanvaTransformImageOptions,
 } from "./types";
 import TYPES_CODE from "./types.txt";
 import CANVA_LOGO_SVG from "./canva-logo.svg";
@@ -193,10 +197,13 @@ function normalizeFolder(folder: CanvaFolderResponse): CanvaFolder {
 }
 
 function normalizeImageAsset(image: CanvaImageAssetResponse): CanvaImageAsset {
+  const { width, height } = image.metadata ?? {};
   return {
     id: image.id,
     name: image.name,
     tags: image.tags ?? [],
+    owner: image.owner ? { userId: image.owner.user_id, teamId: image.owner.team_id } : null,
+    dimensions: width !== undefined && height !== undefined ? { width, height } : null,
     thumbnail: normalizeThumbnail(image.thumbnail),
     createdAt: isoFromUnixSeconds(image.created_at),
     updatedAt: isoFromUnixSeconds(image.updated_at),
@@ -639,7 +646,14 @@ type GenerateDesignAction = BaseAction & {
   outline?: CanvaGenerateDesignOptions["outline"];
 };
 
-type CanvaAction = CreateDesignAction | GenerateDesignAction;
+type TransformImageAction = BaseAction & {
+  type: "transformImage";
+  assetId: string;
+  transformations: CanvaImageTransformation[];
+  name?: string;
+};
+
+type CanvaAction = CreateDesignAction | GenerateDesignAction | TransformImageAction;
 
 /** The Canva job an applied generateDesign action started, updated as it is polled. */
 type GenerationState = {
@@ -647,6 +661,18 @@ type GenerationState = {
   startedAt: number;
   status: CanvaGenerationJob["status"];
   design?: CanvaDesign;
+  error?: { code: string; message: string };
+};
+
+/**
+ * The Canva job an applied transformImage action started. `jobId` is absent when Canva finished
+ * the job inside the creation call, which it may do for a quick transformation.
+ */
+type TransformationState = {
+  jobId?: string;
+  startedAt: number;
+  status: CanvaImageTransformationJob["status"];
+  asset?: CanvaImageAsset;
   error?: { code: string; message: string };
 };
 
@@ -659,6 +685,8 @@ type StoredActionRecord = {
   createdDesign?: { id: string; editUrl: string };
   /** Set once a generateDesign action is applied. */
   generation?: GenerationState;
+  /** Set once a transformImage action is applied. */
+  transformation?: TransformationState;
 };
 
 // How long applied/rejected action records are retained before being pruned from DO storage.
@@ -691,6 +719,11 @@ const GENERATION_JOB_LIFETIME_MS = 24 * 60 * 60 * 1000;
 // How many generation jobs listGeneratedDesigns reports (newest first).
 const GENERATION_LIST_MAX = 20;
 
+// Canva's documented bounds for image transformation requests.
+const TRANSFORMATION_TYPES = new Set(["background_removal"]);
+const TRANSFORMATIONS_MAX = 20;
+const TRANSFORMATION_NAME_MAX = 255;
+
 /** Converts a polled job into the state stored on its action record. */
 function generationStateFromJob(
   job: CanvaGenerationJobResponse, startedAt: number,
@@ -699,6 +732,34 @@ function generationStateFromJob(
   if (job.status === "success" && job.result) state.design = normalizeDesign(job.result.design);
   if (job.status === "failed" && job.error) state.error = { code: job.error.code, message: job.error.message };
   return state;
+}
+
+/** Converts a polled transformation job into the state stored on its action record. */
+function transformationStateFromJob(
+  job: CanvaImageTransformationJobResponse, startedAt: number,
+): TransformationState {
+  const state: TransformationState = { startedAt, status: job.status };
+  if (job.id !== undefined) state.jobId = job.id;
+  if (job.status === "success" && job.result) state.asset = normalizeImageAsset(job.result.asset);
+  if (job.status === "failed" && job.error) state.error = { code: job.error.code, message: job.error.message };
+  return state;
+}
+
+const EXPIRED_JOB_ERROR = { code: "expired", message: "The job expired on Canva before it completed." };
+
+/**
+ * Whether a failed poll means the job aged out rather than vanished. Canva forgets a generation job
+ * 24 hours after it starts; the transformation docs don't state a lifetime, so the same window is
+ * applied there. An earlier 404 is passed through, since it means something is wrong.
+ */
+function isExpiredJob(error: unknown, startedAt: number): boolean {
+  return error instanceof CanvaApiError && error.status === 404
+    && Date.now() - startedAt > GENERATION_JOB_LIFETIME_MS;
+}
+
+/** Lists a transformation's steps for an approval card, e.g. "background removal". */
+function describeTransformations(transformations: CanvaImageTransformation[]): string {
+  return transformations.map(step => step.type.replaceAll("_", " ")).join(", then ");
 }
 
 function describeDesignType(designType: CanvaDesignType): string {
@@ -780,7 +841,24 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
       teamId: me.team_user.team_id,
       displayName: profile.profile.display_name,
       canGenerateDesigns: capabilities.capabilities.includes("design_generation"),
+      canRemoveBackgrounds: capabilities.capabilities.includes("background_removal"),
     };
+  }
+
+  async getImageAsset(assetId: string): Promise<CanvaImageAsset> {
+    let asset: CanvaImageAssetResponse;
+    try {
+      asset = await this.#withApi(api => api.getAsset(assetId));
+    } catch (error) {
+      if (error instanceof CanvaApiError && error.status === 404) {
+        throw new Error(`No Canva asset found with id "${assetId}", or you do not have access to it.`, { cause: error });
+      }
+      throw error;
+    }
+    if (asset.type === "video") {
+      throw new Error(`Canva asset "${assetId}" is a video, not an image.`);
+    }
+    return normalizeImageAsset(asset);
   }
 
   async listDesigns(options: CanvaListDesignsOptions): Promise<CanvaPage<CanvaDesign>> {
@@ -934,16 +1012,63 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
       const job = await this.#withApi(api => api.getDesignGeneration(current.jobId));
       return generationStateFromJob(job, current.startedAt);
     } catch (error) {
-      // Canva forgets a job 24 hours after it starts, so a 404 past that point is the job aging out
-      // rather than vanishing; an earlier 404 is passed through since it means something is wrong.
-      const expired = error instanceof CanvaApiError && error.status === 404
-        && Date.now() - current.startedAt > GENERATION_JOB_LIFETIME_MS;
-      if (!expired) throw error;
-      return {
-        ...current,
-        status: "failed",
-        error: { code: "expired", message: "The generation job expired on Canva before it completed." },
-      };
+      if (!isExpiredJob(error, current.startedAt)) throw error;
+      return { ...current, status: "failed", error: EXPIRED_JOB_ERROR };
+    }
+  }
+
+  prepareTransformImage(
+    assetId: string, transformations: CanvaImageTransformation[], options: CanvaTransformImageOptions,
+  ): TransformImageAction {
+    return {
+      approvalId: this.#counter("approval"),
+      submittedAt: Date.now(),
+      type: "transformImage",
+      assetId,
+      transformations,
+      ...(options.name !== undefined ? { name: options.name } : {}),
+    };
+  }
+
+  /** The transformation jobs this binding has started, newest first; see listGeneratedDesigns. */
+  async listImageTransformations(): Promise<CanvaImageTransformationJob[]> {
+    const applied: Array<[string, StoredActionRecord]> = [];
+    for (const [key, record] of this.ctx.storage.kv.list<StoredActionRecord>({ prefix: "retiredAction:" })) {
+      if (record.action.type === "transformImage" && record.state === "approved" && record.transformation) {
+        applied.push([key, record]);
+      }
+    }
+    applied.sort((a, b) => b[1].action.submittedAt - a[1].action.submittedAt);
+
+    const jobs: CanvaImageTransformationJob[] = [];
+    for (const [key, record] of applied.slice(0, GENERATION_LIST_MAX)) {
+      const action = record.action as TransformImageAction;
+      let transformation = record.transformation!;
+      if (transformation.status === "in_progress" && transformation.jobId !== undefined) {
+        transformation = await this.#refreshTransformation(transformation, transformation.jobId);
+        record.transformation = transformation;
+        this.ctx.storage.kv.put(key, record);
+      }
+      jobs.push({
+        id: transformation.jobId ?? null,
+        sourceAssetId: action.assetId,
+        transformations: action.transformations,
+        startedAt: new Date(transformation.startedAt).toISOString(),
+        status: transformation.status,
+        asset: transformation.asset ?? null,
+        error: transformation.error ?? null,
+      });
+    }
+    return jobs;
+  }
+
+  async #refreshTransformation(current: TransformationState, jobId: string): Promise<TransformationState> {
+    try {
+      const job = await this.#withApi(api => api.getImageTransformation(jobId));
+      return transformationStateFromJob(job, current.startedAt);
+    } catch (error) {
+      if (!isExpiredJob(error, current.startedAt)) throw error;
+      return { ...current, status: "failed", error: EXPIRED_JOB_ERROR };
     }
   }
 
@@ -1007,6 +1132,29 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
         record.generation = generationStateFromJob(job, startedAt);
         break;
       }
+      case "transformImage": {
+        const startedAt = Date.now();
+        let job: CanvaImageTransformationJobResponse;
+        try {
+          job = await this.#withApi(api => api.createImageTransformation({
+            asset_id: action.assetId,
+            transformations: action.transformations,
+            ...(action.name !== undefined ? { name: action.name } : {}),
+          }));
+        } catch (error) {
+          // A 403 here is most often a connection made before this gatekeeper requested asset:write,
+          // which only a fresh consent can widen. Say so rather than leave the user guessing.
+          if (error instanceof CanvaApiError && error.status === 403) {
+            throw new Error(
+              "Canva refused the image transformation. If this Canva account was connected before " +
+              "image transformation was added, disconnect and reconnect it to grant the asset:write " +
+              "scope; otherwise the user's plan may not include this feature.", { cause: error });
+          }
+          throw error;
+        }
+        record.transformation = transformationStateFromJob(job, startedAt);
+        break;
+      }
     }
   }
 
@@ -1027,6 +1175,16 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
     const record = this.#requireRecord(actionId);
     if (record.state !== "approved") {
       return { message: "This action has not been applied, so there is nothing to revert.", canRetry: false };
+    }
+    if (record.action.type === "transformImage") {
+      // The source asset was never touched; only the new asset would need removing.
+      const asset = record.transformation?.asset;
+      const which = asset ? ` The new asset is "${asset.name}" (id ${asset.id}).` : "";
+      return {
+        message: "The Connect API cannot delete an asset, so remove the transformed image from your " +
+          `Canva Uploads by hand if you don't want it.${which} The AI credits it consumed are not refunded.`,
+        canRetry: false,
+      };
     }
     // The Connect API has no endpoint to delete a design, so the best we can do is point at it.
     const editUrl = record.createdDesign?.editUrl ?? record.generation?.design?.editUrl;
@@ -1212,6 +1370,69 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
     await this.#queue.authorizeObservation({
       title: "Read Canva generation jobs",
       description: `Read ${jobs.length} design generation job(s) started from this connection` +
+        ` (${finished} finished).`,
+    });
+    return jobs;
+  }
+
+  async getImageAsset(assetId: string): Promise<CanvaImageAsset> {
+    if (assetId.trim() === "") throw new Error("getImageAsset(): assetId must be a non-empty string.");
+    const asset = await this.#gk.getImageAsset(assetId.trim());
+    await this.#queue.authorizeObservation({
+      title: `Read image asset "${asset.name}"`,
+      description: `Read metadata for the Canva image asset "${asset.name}".`,
+    });
+    return asset;
+  }
+
+  @skipRpcValidation()
+  async transformImage(
+    assetId: string, transformations: CanvaImageTransformation[], options?: CanvaTransformImageOptions,
+  ): Promise<void> {
+    if (typeof assetId !== "string" || assetId.trim() === "") {
+      throw new Error("transformImage(): assetId must be a non-empty string.");
+    }
+    if (!Array.isArray(transformations) || transformations.length === 0
+        || transformations.length > TRANSFORMATIONS_MAX) {
+      throw new Error(`transformImage(): transformations must have 1 to ${TRANSFORMATIONS_MAX} steps.`);
+    }
+    for (const step of transformations) {
+      if (!step || typeof step !== "object" || !TRANSFORMATION_TYPES.has(step.type)) {
+        throw new Error(`transformImage(): each step must be { type: "background_removal" }.`);
+      }
+    }
+    const opts = options ?? {};
+    if (opts.name !== undefined && (typeof opts.name !== "string" || opts.name.trim() === ""
+        || opts.name.length > TRANSFORMATION_NAME_MAX)) {
+      throw new Error(`transformImage(): name must be 1 to ${TRANSFORMATION_NAME_MAX} characters when provided.`);
+    }
+
+    // Read the source first so the approval card can name it, and so a video or a missing asset is
+    // refused before anything is queued. This read is itself an observation.
+    const source = await this.getImageAsset(assetId);
+    const steps = transformations.map(step => ({ type: step.type }));
+    const action = this.#gk.prepareTransformImage(source.id, steps, opts);
+    const named = opts.name ? ` named "${opts.name}"` : "";
+    await this.#gk.submitActionForApproval(this.#queue, action, {
+      title: `Transform Canva image "${source.name}"`,
+      description:
+        `Apply ${describeTransformations(steps)} to the Canva image asset "${source.name}" ` +
+        `(id ${source.id}), saving the result as a new asset${named} in your Canva Uploads. The ` +
+        `original is not changed.\n\n**This spends your Canva AI credits.** The agent can follow ` +
+        `progress with listImageTransformations().`,
+      // The Connect API cannot delete an asset, and credits are not refundable.
+      implementsRevert: false,
+      // Not simulated and asynchronous: nothing exists until approved and processed.
+      awaitDecision: true,
+    });
+  }
+
+  async listImageTransformations(): Promise<CanvaImageTransformationJob[]> {
+    const jobs = await this.#gk.listImageTransformations();
+    const finished = jobs.filter(job => job.status === "success").length;
+    await this.#queue.authorizeObservation({
+      title: "Read Canva image transformation jobs",
+      description: `Read ${jobs.length} image transformation job(s) started from this connection` +
         ` (${finished} finished).`,
     });
     return jobs;

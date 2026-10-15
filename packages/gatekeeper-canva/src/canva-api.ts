@@ -82,6 +82,10 @@ export type CanvaImageAssetResponse = {
   thumbnail?: CanvaThumbnailResponse;
   created_at: number;
   updated_at: number;
+  /** Present on a full asset (GET /assets/{id}, transformation results), absent in folder listings. */
+  type?: "image" | "video";
+  owner?: CanvaTeamUserResponse;
+  metadata?: { type: "image" | "video"; width?: number; height?: number };
 };
 
 export type CanvaFolderItemResponse =
@@ -118,6 +122,27 @@ export type CanvaGenerationJobResponse = {
   status: "in_progress" | "success" | "failed";
   /** Present only when `status` is "success". */
   result?: { design: CanvaDesignResponse };
+  /** Present only when `status` is "failed". */
+  error?: { code: string; message: string };
+};
+
+// Image transformation (POST /image-transformations, GET /image-transformations/{jobId}). Also a
+// preview API. Needs asset:read and asset:write.
+
+export type CanvaImageTransformationRequest = { type: "background_removal" };
+
+export type CanvaCreateImageTransformationRequest = {
+  asset_id: string;
+  transformations: CanvaImageTransformationRequest[];
+  name?: string;
+};
+
+export type CanvaImageTransformationJobResponse = {
+  /** Absent when the job finished during creation: there is then nothing to poll. */
+  id?: string;
+  status: "in_progress" | "success" | "failed";
+  /** Present only when `status` is "success". */
+  result?: { asset: CanvaImageAssetResponse };
   /** Present only when `status` is "failed". */
   error?: { code: string; message: string };
 };
@@ -239,6 +264,36 @@ export class CanvaApi {
   async getDesignGeneration(jobId: string): Promise<CanvaGenerationJobResponse> {
     const result = await this.#request<{ job: CanvaGenerationJobResponse }>(
       "GET", `generations/${encodeURIComponent(jobId)}`);
+    return result.job;
+  }
+
+  // --- Assets ---
+
+  /** GET /assets/{id}: one asset (image or video) with owner and dimensions. 404 if missing. */
+  async getAsset(assetId: string): Promise<CanvaImageAssetResponse> {
+    const result = await this.#request<{ asset: CanvaImageAssetResponse }>(
+      "GET", `assets/${encodeURIComponent(assetId)}`);
+    return result.asset;
+  }
+
+  // --- Image transformation ---
+
+  /**
+   * POST /image-transformations: start a transformation job. Spends the user's AI credits. The job
+   * may already be finished in the response, in which case it carries no `id`.
+   */
+  async createImageTransformation(
+    body: CanvaCreateImageTransformationRequest,
+  ): Promise<CanvaImageTransformationJobResponse> {
+    const result = await this.#request<{ job: CanvaImageTransformationJobResponse }>(
+      "POST", "image-transformations", { body });
+    return result.job;
+  }
+
+  /** GET /image-transformations/{jobId}: poll a transformation job. Free to call. */
+  async getImageTransformation(jobId: string): Promise<CanvaImageTransformationJobResponse> {
+    const result = await this.#request<{ job: CanvaImageTransformationJobResponse }>(
+      "GET", `image-transformations/${encodeURIComponent(jobId)}`);
     return result.job;
   }
 

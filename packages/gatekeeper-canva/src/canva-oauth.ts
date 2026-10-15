@@ -17,15 +17,20 @@ const DEFAULT_ACCESS_TOKEN_LIFETIME_SECONDS = 4 * 60 * 60;
 
 /**
  * Scopes requested during connect. These cover exactly what `CanvaAccountSession` exposes today:
- * profile, design listing/metadata, design creation, folder browsing, and reading image assets
- * that appear in folder listings. `design:content:read` is deliberately absent: nothing reads page
- * content or exports yet, and a consent screen should ask only for what the code uses.
+ * profile and capabilities, design listing/metadata, design creation and AI generation, folder
+ * browsing, reading image assets, and image transformation (which writes a new asset, hence
+ * `asset:write`). `design:content:read` is deliberately absent: nothing reads page content or
+ * exports yet, and a consent screen should ask only for what the code uses.
+ *
+ * Adding a scope here does not widen existing connections: an account connected before the
+ * addition keeps its narrower grant until the user reconnects.
  */
 export const OAUTH_SCOPES = [
   "profile:read",
   "design:meta:read",
   "design:content:write",
   "asset:read",
+  "asset:write",
   "folder:read",
 ];
 

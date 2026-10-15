@@ -8,11 +8,12 @@
 //
 // Reads are observations: they are logged and may be blocked by policy, but need no approval.
 // Writes are actions: they are queued for the user's approval and nothing reaches Canva until the
-// action is approved. There are two, `createDesign()` and `generateDesign()`, and neither is
-// simulated — each returns once queued, and nothing appears in `listDesigns()` until the user
-// approves it and Canva has done the work. The harness pauses the agent until the user decides, so
-// after an action resolves the agent should read back: `listDesigns()` for a created design, and
-// `listGeneratedDesigns()` for a generated one (generation is asynchronous on Canva's side).
+// action is approved. There are three, `createDesign()`, `generateDesign()` and `transformImage()`,
+// and none is simulated — each returns once queued, and nothing exists until the user approves it
+// and Canva has done the work. The harness pauses the agent until the user decides, so after an
+// action resolves the agent should read back: `listDesigns()` for a created design,
+// `listGeneratedDesigns()` for a generated one, and `listImageTransformations()` for a transformed
+// image (the last two are asynchronous jobs on Canva's side).
 //
 // Pagination follows Canva's own model: a page returns an opaque `continuation` token when more
 // results exist, and the caller passes it back to fetch the next page. A page may contain fewer
@@ -56,6 +57,11 @@ export type CanvaProfile = {
    * `generateDesign()` will be refused by Canva at apply time, so check this before offering it.
    */
   canGenerateDesigns: boolean;
+  /**
+   * Whether this user's plan allows background removal (a premium feature). When false, a
+   * `transformImage()` with a "background_removal" step will be refused by Canva at apply time.
+   */
+  canRemoveBackgrounds: boolean;
 };
 
 /** Metadata for a Canva design. */
@@ -97,14 +103,18 @@ export type CanvaFolder = {
   updatedAt: string;
 };
 
-/** Metadata for an image asset stored in a folder. */
+/** Metadata for an image asset in the user's Canva account. */
 export type CanvaImageAsset = {
-  /** Asset ID. */
+  /** Asset ID, e.g. "Msd59349ff". */
   id: string;
   /** Asset name. */
   name: string;
   /** Tags the user has applied to the asset. */
   tags: string[];
+  /** The asset's owner. Null when Canva omits it, as it does in folder listings. */
+  owner: CanvaUserRef | null;
+  /** Pixel dimensions, when Canva reports them (folder listings omit them). */
+  dimensions: { width: number; height: number } | null;
   /** Thumbnail, if Canva has rendered one. */
   thumbnail: CanvaThumbnail | null;
   /** ISO 8601 timestamp of when the asset was created. */
@@ -215,6 +225,45 @@ export type CanvaGenerateDesignOptions = {
   outline?: { sections: CanvaGenerationSection[] };
 };
 
+/**
+ * One step of an image transformation. Only background removal exists today; it takes no
+ * parameters, keeps the foreground subject, and makes the background transparent. Output is capped
+ * at 10 megapixels (larger sources are scaled down).
+ */
+export type CanvaImageTransformation = { type: "background_removal" };
+
+/** Options for `transformImage()`. */
+export type CanvaTransformImageOptions = {
+  /**
+   * Name for the new asset, 1 to 255 characters. Defaults to the source asset's name. Not
+   * localised, so write it in the user's language.
+   */
+  name?: string;
+};
+
+/** One image transformation job started from this connection, as returned by `listImageTransformations()`. */
+export type CanvaImageTransformationJob = {
+  /** Canva's job ID. Null when the job finished during creation and Canva issued no ID. */
+  id: string | null;
+  /** The source asset. It is never modified; the result is a new asset. */
+  sourceAssetId: string;
+  /** The transformations requested, in order. */
+  transformations: CanvaImageTransformation[];
+  /** ISO 8601 timestamp of when the job was started on Canva. */
+  startedAt: string;
+  /** "in_progress" while Canva is working; "success" once the new asset exists; "failed" otherwise. */
+  status: "in_progress" | "success" | "failed";
+  /** The new image asset. Present only when `status` is "success". */
+  asset: CanvaImageAsset | null;
+  /**
+   * Why the transformation failed. Present only when `status` is "failed". `code` is
+   * "no_foreground_found" when the image has no subject to keep, "quota_exceeded" when the user's AI
+   * credits ran out, "internal_error" when Canva could not complete the job, or "expired" when the
+   * job aged out before completing.
+   */
+  error: { code: string; message: string } | null;
+};
+
 /** One design generation job started from this connection, as returned by `listGeneratedDesigns()`. */
 export type CanvaGenerationJob = {
   /** Canva's job ID. */
@@ -316,6 +365,45 @@ export interface CanvaAccountSession {
    * before they started are not included.
    */
   listGeneratedDesigns(): Promise<CanvaGenerationJob[]>;
+
+  // --- Image assets ---
+
+  /**
+   * Get metadata for an image asset by ID. Observation.
+   *
+   * Asset IDs come from `listFolderItems()` entries of type "image", or from a finished
+   * `listImageTransformations()` job. Throws if the asset does not exist, is not an image (Canva
+   * also stores videos as assets), or the connected user cannot access it.
+   */
+  getImageAsset(assetId: string): Promise<CanvaImageAsset>;
+
+  /**
+   * Queue one or more transformations of an image asset, producing a new asset. Action.
+   *
+   * This spends the user's Canva AI credit allowance, so it always requires approval. The source
+   * asset is left untouched. Resolves as soon as the request is queued, not when the new asset
+   * exists: once the user approves, the gatekeeper starts the job on Canva, which usually completes
+   * within seconds. Call `listImageTransformations()` to follow it and get the new asset's ID.
+   * Check `getProfile().canRemoveBackgrounds` first; Canva refuses background removal for users on
+   * plans without it.
+   *
+   * @param assetId The source image asset. It must have finished uploading.
+   * @param transformations 1 to 20 steps, applied in order.
+   * @param options An optional name for the new asset.
+   */
+  transformImage(
+    assetId: string,
+    transformations: CanvaImageTransformation[],
+    options?: CanvaTransformImageOptions,
+  ): Promise<void>;
+
+  /**
+   * The image transformation jobs started from this connection, newest first. Observation.
+   *
+   * Refreshes the status of any job still in progress before returning, so calling this a few
+   * times, a few seconds apart, is how to wait for a transformation to finish.
+   */
+  listImageTransformations(): Promise<CanvaImageTransformationJob[]>;
 
   // --- Folders ---
 
