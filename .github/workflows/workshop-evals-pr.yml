@@ -211,7 +211,7 @@ jobs:
 
       - name: Upload ${{ matrix.revision }} results
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: workshop-evals-run-${{ matrix.revision }}
           path: ${{ runner.temp }}/run
@@ -234,7 +234,7 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.store) }}
     steps:
       - name: Download ${{ matrix.revision }} results
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: workshop-evals-run-${{ matrix.revision }}
           path: run
@@ -258,7 +258,7 @@ jobs:
 
       - name: Store ${{ matrix.task }}
         if: steps.clean.outputs.clean == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: workshop-evals-${{ matrix.name }}
           path: run/${{ matrix.revision }}/${{ matrix.task }}.json
@@ -299,7 +299,7 @@ jobs:
       # Each leg's files sit under its revision, so merging gives one layout for one leg or two.
       - name: Download this run's results
         if: needs.plan.outputs.legs != ''
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: workshop-evals-run-*
           path: runs
@@ -315,7 +315,7 @@ jobs:
         run: node scripts/evals/workflow.ts join runs artifacts
 
       - name: Upload baseline trajectories
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: workshop-evals-baseline
           path: artifacts/baseline/results.json
@@ -324,7 +324,7 @@ jobs:
           retention-days: 30
 
       - name: Upload candidate trajectories
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: workshop-evals-candidate
           path: artifacts/candidate/results.json
@@ -348,7 +348,7 @@ jobs:
           cat artifacts/comparison/comparison.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload comparison
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: workshop-evals-comparison
           path: artifacts/comparison
@@ -397,19 +397,19 @@ jobs:
         run: echo /artifacts/ >> .git/info/exclude
 
       - name: Download baseline trajectories
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: workshop-evals-baseline
           path: artifacts/baseline
 
       - name: Download candidate trajectories
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: workshop-evals-candidate
           path: artifacts/candidate
 
       - name: Download deterministic comparison
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: workshop-evals-comparison
           path: artifacts/comparison
