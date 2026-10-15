@@ -1,6 +1,6 @@
 import { Button } from "@cloudflare/kumo/components/button";
 import { Checkbox } from "@cloudflare/kumo/components/checkbox";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useLayoutEffect, useState } from "react";
 import type { CheckboxListProps, ConfiguratorUIOption } from "../index.ts";
 import { useFieldLabel } from "./Field.tsx";
 import { FilterInput } from "./FilterInput.tsx";
@@ -9,12 +9,12 @@ import {
 } from "./options.ts";
 import { reportFrontendIssue } from "./reporting.ts";
 import type { ConfiguratorStore } from "./store.ts";
-import { useConfiguratorStore } from "./storeContext.ts";
+import { useConfiguratorState, useConfiguratorStore } from "./storeContext.ts";
 
 type Load =
-  | { name: string; status: "loading" }
-  | { name: string; status: "ready"; options: ConfiguratorUIOption[] }
-  | { name: string; status: "failed"; message: string };
+  | { status: "loading" }
+  | { status: "ready"; options: ConfiguratorUIOption[] }
+  | { status: "failed"; message: string };
 
 /** The filter only earns its space once the list is long enough to scroll. */
 const FILTER_THRESHOLD = 6;
@@ -48,7 +48,7 @@ const startLoad = (
   const existing = loads.get(name);
   if (existing) return existing;
   const load: OptionsLoad = {
-    promise: Promise.resolve().then(loadOptions).then(options => sanitizeOptions(options, "refuse")),
+    promise: Promise.resolve().then(() => loadOptions()).then(options => sanitizeOptions(options, "refuse")),
   };
   load.promise.then(options => {
     load.options = options;
@@ -59,42 +59,35 @@ const startLoad = (
 
 const cachedLoad = (store: ConfiguratorStore, name: string): Load => {
   const options = loadsOf(store).get(name)?.options;
-  return options ? { name, status: "ready", options } : { name, status: "loading" };
+  return options ? { status: "ready", options } : { status: "loading" };
 };
 
-export const CheckboxList = ({
+const NamedCheckboxList = ({
   name, value, loadOptions, onChange, allSelected = false, disabled = false,
 }: CheckboxListProps) => {
   const store = useConfiguratorStore();
   const fieldLabel = useFieldLabel();
-  const [load, setLoad] = useState(() => cachedLoad(store, name));
-  // Belongs to the list it was typed into: a list shown under a new name starts unfiltered.
-  const [typed, setTyped] = useState({ name, text: "" });
-  const filter = typed.name === name ? typed.text : "";
-  const setFilter = (text: string) => setTyped({ name, text });
-  // Read from the effect so that an inline `loadOptions`, new on every render, does not reload.
-  const loadOptionsRef = useRef(loadOptions);
-  loadOptionsRef.current = loadOptions;
+  const [current, setLoad] = useState(() => cachedLoad(store, name));
+  const filter = useConfiguratorState(state => state.filters[name] ?? "");
+  // An inline `loadOptions` is new on every render, and must not reload.
+  const load = useEffectEvent(loadOptions);
 
   useEffect(() => {
-    // Even when cached: an earlier name's failure left here would flash back if that name returns.
-    setLoad(shown => shown.name === name ? shown : cachedLoad(store, name));
-    const { promise, options } = startLoad(store, name, () => loadOptionsRef.current());
+    const { promise, options } = startLoad(store, name, load);
     if (options) return;
     let cancelled = false;
     promise.then(loaded => {
-      if (!cancelled) setLoad({ name, status: "ready", options: loaded });
+      if (!cancelled) setLoad({ status: "ready", options: loaded });
     }, error => {
       if (cancelled) return;
       reportFrontendIssue("configurator.checkbox-list-load", error);
-      setLoad({ name, status: "failed", message: failureMessage(error, "Could not load options.") });
+      setLoad({ status: "failed", message: failureMessage(error, "Could not load options.") });
     });
     return () => {
       cancelled = true;
     };
   }, [store, name]);
 
-  const current = load.name === name ? load : cachedLoad(store, name);
   const blocking = current.status === "failed" && !disabled;
   // A layout effect, so the failure is on record before anything collects in the same turn.
   useLayoutEffect(() => {
@@ -136,7 +129,7 @@ export const CheckboxList = ({
     <div data-name={name} className="grid gap-2">
       {showFilter ? (
         <FilterInput label="Filter options" placeholder="Filter..." value={filter} disabled={disabled}
-          onChange={setFilter} />
+          onChange={text => store.setFilter(name, text)} />
       ) : null}
 
       <div className="flex items-baseline justify-between gap-3">
@@ -216,3 +209,6 @@ export const CheckboxList = ({
     </div>
   );
 };
+
+/** Mounted afresh for each name, so nothing one list loaded or failed shows under another's. */
+export const CheckboxList = (props: CheckboxListProps) => <NamedCheckboxList key={props.name} {...props} />;
