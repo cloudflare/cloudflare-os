@@ -24,6 +24,7 @@ import { useAuthenticatedApi } from './AuthContext'
 import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControls'
 import ResourceConfiguratorHost from './ResourceConfiguratorHost'
 import { disposeConfiguratorFrame } from './disposeConfiguratorFrame'
+import { requestAccountResources } from './requestAccountResources'
 import {
   AgentSpawnerConfigForm,
   SpawnerEnvRow,
@@ -72,6 +73,11 @@ export interface GatekeeperModalProps {
   initialVendorId?: string
   initialResourceUrl?: string
   initialResourceUrlPattern?: string
+  /**
+   * Optional pre-seed: the connected account to select for the pre-seeded connection. Ignored when
+   * it is not a valid account of `initialVendorId` that supports that connection.
+   */
+  initialAccountId?: number
 }
 
 type ConnectionTypeId =
@@ -183,7 +189,7 @@ function accountSupportsConnection(account: AccountOption, connection: Connectio
 
 export default function GatekeeperModal({
   open, onClose, getOverseer, onCreated, spawnerEnvCandidates,
-  initialVendorId, initialResourceUrl, initialResourceUrlPattern,
+  initialVendorId, initialResourceUrl, initialResourceUrlPattern, initialAccountId,
 }: GatekeeperModalProps) {
   const { authenticatedApi } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
@@ -223,6 +229,11 @@ export default function GatekeeperModal({
   // doesn't clobber the user's edits.
   const spawnerEnvCandidatesRef = useRef(spawnerEnvCandidates)
   spawnerEnvCandidatesRef.current = spawnerEnvCandidates
+
+  // The initialAccountId still to apply this open: cleared once applied or once the user picks an
+  // account or a connection, so it never overrides a choice. Accounts arrive one at a time, so it
+  // may outlive the first account selection.
+  const pendingInitialAccountIdRef = useRef<number | null>(null)
 
   const configuratorFrameRef = useRef<ConfiguratorFrameState | null>(null)
   const configuratorCollectResourceUrlRef = useRef<(() => Promise<string>) | null>(null)
@@ -349,6 +360,7 @@ export default function GatekeeperModal({
 
     let cancelled = false
 
+    pendingInitialAccountIdRef.current = initialAccountId ?? null
     setSelectedConnectionId(null)
     setSearchText('')
     setExpandedGroups(new Set())
@@ -522,12 +534,21 @@ export default function GatekeeperModal({
 
   useEffect(() => {
     if (!selectedConnection?.vendorId) return
+    const initialAccount = selectedConnection.vendorId === initialVendorId
+      ? matchingAccounts.find(account =>
+        account.id === pendingInitialAccountIdRef.current && account.credentialsValid)
+      : undefined
+    if (initialAccount) {
+      pendingInitialAccountIdRef.current = null
+      setSelectedAccountId(initialAccount.id)
+      return
+    }
     const currentIsValid = selectedAccountId !== null
       && matchingAccounts.some(account => account.id === selectedAccountId && account.credentialsValid)
     if (currentIsValid) return
     const firstValidAccount = matchingAccounts.find(account => account.credentialsValid)
     setSelectedAccountId(firstValidAccount?.id ?? null)
-  }, [selectedConnection, matchingAccounts, selectedAccountId])
+  }, [selectedConnection, matchingAccounts, selectedAccountId, initialVendorId])
 
   useEffect(() => {
     const resourceUrlPattern = selectedConnection?.resourceUrlPattern ?? null
@@ -576,7 +597,13 @@ export default function GatekeeperModal({
     }
   }, [open, authenticatedApi, selectedConnection?.id, selectedConnection?.resourceUrlPattern, selectedAccount?.id, hasMissingResourceGrants])
 
+  const handleSelectAccount = (accountId: number) => {
+    pendingInitialAccountIdRef.current = null
+    setSelectedAccountId(accountId)
+  }
+
   const handleSelectConnection = (connection: ConnectionType) => {
+    pendingInitialAccountIdRef.current = null
     setSelectedConnectionId(connection.id)
     if (!connection.vendorId) return
     const firstValidAccount = accounts.find(account => account.credentialsValid && accountSupportsConnection(account, connection))
@@ -608,11 +635,7 @@ export default function GatekeeperModal({
     if (missing.length === 0) return
     setGrantingAccountId(accountId)
     try {
-      const flow = await authenticatedApi.ensureAccountResources(accountId, missing)
-      if (flow) {
-        const outcome = await openConnectWindow(flow, authenticatedApi)
-        toasts.add({ title: outcome === 'connected' ? 'Access granted.' : 'Grant the additional access in the pop-up window.', variant: 'success' })
-      }
+      await requestAccountResources(authenticatedApi, toasts, accountId, missing)
       // After ticket redemption the new grant arrives via subscribeConnectedAccounts(),
       // the account's flag then clears and the configurator loads automatically.
     } catch (error) {
@@ -828,7 +851,7 @@ export default function GatekeeperModal({
                     reconnectingAccountId={reconnectingAccountId}
                     requiredResourceUrlPatterns={requiredResourceUrlPatterns(selectedConnection)}
                     grantingAccountId={grantingAccountId}
-                    onSelect={setSelectedAccountId}
+                    onSelect={handleSelectAccount}
                     onConnect={() => {
                       if (!selectedConnection.vendorId) return
                       const required = requiredResourceUrlPatterns(selectedConnection)
@@ -849,6 +872,10 @@ export default function GatekeeperModal({
                     disabled={needsAccount && !selectedAccount}
                     onCollectResourceUrlChange={handleConfiguratorCollectResourceUrlChange}
                     onSelectionReadyChange={setConfiguratorSelectionReady}
+                    onEnsureResources={configuratorFrameState
+                      ? patterns => requestAccountResources(
+                        authenticatedApi, toasts, configuratorFrameState.accountId, patterns)
+                      : undefined}
                     initialResourceUrl={prefilledResourceUrl ?? undefined}
                     resourceUrlPattern={selectedConnection.resourceUrlPattern}
                   />

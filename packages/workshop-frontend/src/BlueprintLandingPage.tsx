@@ -24,6 +24,7 @@ import { useDocumentTitle } from './useDocumentTitle'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
 import { useDialogSelectPortalContainer } from './useDialogSelectPortalContainer'
 import { openConnectWindow } from './connectHandoff'
+import { requestAccountResources } from './requestAccountResources'
 import { AuthPopupCancelledError } from './features/native-app/authPopup'
 
 interface Props {
@@ -1565,6 +1566,9 @@ function formatSuggestedResource(resourceUrl: string): string {
   }
 }
 
+// A started configurator frame and the account it was started on.
+type FrameState = { key: number, frame: ResourceConfiguratorFrame, accountId: number }
+
 // Renders the connection-wizard-style UI for a single gatekeeper binding: an account chooser
 // scoped to the binding's required resource type, plus the vendor-supplied resource configurator
 // iframe. The URL is collected from the iframe at submit time via `collectResourceUrl()`.
@@ -1601,6 +1605,7 @@ function BlueprintGatekeeperBindingField({
   onReadyChange: (ready: boolean) => void
   onCollectorChange: (collect: (() => Promise<string>) | null) => void
 }) {
+  const toasts = useKumoToastManager()
   const vendor = useMemo(
     () => vendors.find(v => v.id.toLowerCase() === binding.gatekeeperName.toLowerCase()) ?? null,
     [vendors, binding.gatekeeperName],
@@ -1661,13 +1666,13 @@ function BlueprintGatekeeperBindingField({
 
   // Configurator iframe state. We re-spin the iframe whenever the (account, resource) pair
   // changes; each frame is disposed when replaced or when the component unmounts.
-  const [frameState, setFrameState] = useState<{ key: number, frame: ResourceConfiguratorFrame } | null>(null)
+  const [frameState, setFrameState] = useState<FrameState | null>(null)
   const [frameLoading, setFrameLoading] = useState(false)
   const [frameError, setFrameError] = useState<string | null>(null)
-  const frameRef = useRef<{ key: number, frame: ResourceConfiguratorFrame } | null>(null)
+  const frameRef = useRef<FrameState | null>(null)
   const frameKeyRef = useRef(0)
 
-  const replaceFrameState = useCallback((next: { key: number, frame: ResourceConfiguratorFrame } | null) => {
+  const replaceFrameState = useCallback((next: FrameState | null) => {
     const prev = frameRef.current
     if (prev?.frame !== next?.frame) disposeConfiguratorFrame(prev?.frame ?? null)
     frameRef.current = next
@@ -1706,18 +1711,19 @@ function BlueprintGatekeeperBindingField({
     }
 
     let cancelled = false
+    const accountId = selectedAccount.id
     setFrameLoading(true)
     setFrameError(null)
     onReadyChangeRef.current(false)
     replaceFrameState(null)
 
-    authenticatedApi.startResourceConfigurator(selectedAccount.id, resource.urlPattern)
+    authenticatedApi.startResourceConfigurator(accountId, resource.urlPattern)
       .then(frame => {
         if (cancelled) {
           disposeConfiguratorFrame(frame)
           return
         }
-        replaceFrameState({ key: ++frameKeyRef.current, frame })
+        replaceFrameState({ key: ++frameKeyRef.current, frame, accountId })
       })
       .catch(err => {
         console.error('Failed to start resource configurator:', err)
@@ -1794,6 +1800,10 @@ function BlueprintGatekeeperBindingField({
               topOffset={10}
               onCollectResourceUrlChange={stableOnCollectorChange}
               onSelectionReadyChange={stableOnReadyChange}
+              onEnsureResources={frameState
+                ? patterns => requestAccountResources(
+                  authenticatedApi, toasts, frameState.accountId, patterns)
+                : undefined}
               initialResourceUrl={initialResourceUrl}
               resourceUrlPattern={binding.typeUrlPattern}
             />

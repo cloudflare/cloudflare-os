@@ -6,7 +6,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import type {
-  ConnectedAccountsSubscriber, CreationApproval, Overseer,
+  ConnectedAccountsSubscriber, ConnectFlowStart, CreationApproval, Overseer,
 } from '@gadgets/workshop-shared/api'
 import type { AccountDescription, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
 
@@ -20,7 +20,17 @@ const testState = vi.hoisted(() => ({
   reportReady: null as ((ready: boolean) => void) | null,
   collect: null as ((frame: Frame) => Promise<string>) | null,
   toasts: [] as unknown[],
+  subscriber: null as ConnectedAccountsSubscriber | null,
+  // The mounted configurator's access-request handler, and how many configurators have mounted.
+  ensureResources: null as ((patterns: string[]) => Promise<boolean>) | null,
+  mounts: 0,
 }))
+
+const { openConnectWindow } = vi.hoisted(() => ({
+  openConnectWindow: vi.fn<(flow: ConnectFlowStart, api: unknown) => Promise<'opened' | 'connected'>>(),
+}))
+
+vi.mock('../connectHandoff', () => ({ openConnectWindow }))
 
 vi.mock('@cloudflare/kumo', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@cloudflare/kumo')>()),
@@ -37,12 +47,18 @@ vi.mock('../ResourceConfiguratorHost', async () => {
   type Callbacks = {
     onCollectResourceUrlChange?: (collect: (() => Promise<string>) | null) => void
     onSelectionReadyChange?: (ready: boolean | null) => void
+    onEnsureResources?: (patterns: string[]) => Promise<boolean>
   }
 
   // Like SandboxedResourceConfigurator: readiness resets when a frame mounts and unmounts, and the
   // collector reads the mounted frame.
-  const Configurator = ({ frame, onCollectResourceUrlChange, onSelectionReadyChange }:
+  const Configurator = ({ frame, onCollectResourceUrlChange, onSelectionReadyChange, onEnsureResources }:
     Callbacks & { frame: Frame }) => {
+    useEffect(() => { testState.mounts++ }, [])
+    useEffect(() => {
+      testState.ensureResources = onEnsureResources ?? null
+      return () => { testState.ensureResources = null }
+    }, [onEnsureResources])
     useLayoutEffect(() => {
       onSelectionReadyChange?.(null)
       testState.reportReady = ready => onSelectionReadyChange?.(ready)
@@ -92,6 +108,9 @@ const deferred = <T,>(): Deferred<T> => {
 type Start = { accountId: number; frame: Deferred<object>; disposed: number }
 let starts: Start[] = []
 
+const ensureAccountResources =
+  vi.fn<(accountId: number, patterns: string[]) => Promise<ConnectFlowStart | null>>()
+
 let root: Root | undefined
 let container: HTMLDivElement | undefined
 
@@ -104,6 +123,11 @@ afterEach(() => {
   testState.reportReady = null
   testState.collect = null
   testState.toasts = []
+  testState.subscriber = null
+  testState.ensureResources = null
+  testState.mounts = 0
+  ensureAccountResources.mockReset()
+  openConnectWindow.mockReset()
 })
 
 async function renderModal() {
@@ -120,6 +144,7 @@ async function renderModal() {
       supportedResources: [{ urlPattern: PATTERN, creatable: true, creationConfigurator: true }],
     }],
     subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
+      testState.subscriber = subscriber
       subscriber.add(5, { uniqueName: 'work' } as AccountDescription, {} as VendorDescription, [],
           true, 'google')
       subscriber.add(6, { uniqueName: 'home' } as AccountDescription, {} as VendorDescription, [],
@@ -128,6 +153,7 @@ async function renderModal() {
       return Object.assign(Promise.resolve({}), { [Symbol.dispose]: () => {} })
     },
     startCreationConfigurator,
+    ensureAccountResources,
   }
   const overseer = {
     getGatekeeperById: async () => ({
@@ -284,5 +310,50 @@ describe('CreationAccountModal', () => {
     await act(async () => approveButton().click())
     expect(onChoose).toHaveBeenCalledExactlyOnceWith(
       { accountId: 6, configuration: 'settings from frame-6' })
+  })
+})
+
+describe('CreationAccountModal configurator access requests', () => {
+  const IMPORT_GRANT = 'https://drive.google.com/file/d/*'
+
+  it('resolves true without a pop-up when the account already holds the grants', async () => {
+    ensureAccountResources.mockResolvedValue(null)
+    await renderModal()
+    await resolveStart(0)
+
+    await expect(testState.ensureResources!([IMPORT_GRANT])).resolves.toBe(true)
+
+    expect(ensureAccountResources).toHaveBeenCalledExactlyOnceWith(5, [IMPORT_GRANT])
+    expect(openConnectWindow).not.toHaveBeenCalled()
+    expect(testState.toasts).toEqual([])
+  })
+
+  it('asks for the account the configurator was started on', async () => {
+    ensureAccountResources.mockResolvedValue(null)
+    const { startCreationConfigurator } = await renderModal()
+    await act(async () => accountButton('home').click())
+    await resolveStart(0)
+    await resolveStart(1)
+
+    expect(startCreationConfigurator).toHaveBeenLastCalledWith(6, PATTERN)
+    await testState.ensureResources!([IMPORT_GRANT])
+    expect(ensureAccountResources).toHaveBeenCalledExactlyOnceWith(6, [IMPORT_GRANT])
+  })
+
+  it('keeps the selection and the configurator when a grant arrives for the account', async () => {
+    const { startCreationConfigurator, onChoose } = await renderModal()
+    await resolveStart(0)
+    expect(testState.mounts).toBe(1)
+
+    await act(async () => testState.subscriber!.add(5,
+      { uniqueName: 'work', grantedResourceUrlPatterns: [IMPORT_GRANT] } as AccountDescription,
+      {} as VendorDescription, [], true, 'google'))
+
+    expect(startCreationConfigurator).toHaveBeenCalledExactlyOnceWith(5, PATTERN)
+    expect(starts[0].disposed).toBe(0)
+    expect(testState.mounts).toBe(1)
+    reportReady()
+    await act(async () => approveButton().click())
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith({ accountId: 5, configuration: 'settings from frame-5' })
   })
 })

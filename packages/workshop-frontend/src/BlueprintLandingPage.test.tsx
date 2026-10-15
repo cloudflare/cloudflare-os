@@ -31,6 +31,11 @@ const testState = vi.hoisted(() => ({
     initialResourceUrl?: string,
     resourceUrlPattern?: string,
   }[],
+  // The mounted configurator frame and the access-request handler its host was given.
+  configurator: null as {
+    frame: ResourceConfiguratorFrame
+    ensureResources: ((patterns: string[]) => Promise<boolean>) | undefined
+  } | null,
 }))
 
 const openConnectWindow = vi.hoisted(() =>
@@ -62,6 +67,7 @@ vi.mock('./ResourceConfiguratorHost', async () => {
     resourceUrlPattern,
     onCollectResourceUrlChange,
     onSelectionReadyChange,
+    onEnsureResources,
   }: {
     frame: ResourceConfiguratorFrame | null
     loading: boolean
@@ -70,8 +76,12 @@ vi.mock('./ResourceConfiguratorHost', async () => {
     resourceUrlPattern?: string
     onCollectResourceUrlChange?: (collect: (() => Promise<string>) | null) => void
     onSelectionReadyChange?: (ready: boolean | null) => void
+    onEnsureResources?: (patterns: string[]) => Promise<boolean>
   }) => {
     const mounted = Boolean(frame && !loading && !disabled)
+    useEffect(() => {
+      testState.configurator = frame ? { frame, ensureResources: onEnsureResources } : null
+    }, [frame, onEnsureResources])
     useEffect(() => {
       if (!mounted) return
       testState.configuratorMounts.push({ initialResourceUrl, resourceUrlPattern })
@@ -586,5 +596,107 @@ describe('BlueprintLandingPage gatekeeper configuration', () => {
     })
 
     await act(async () => resolveGrant!(null))
+  })
+})
+
+// Switches the binding to the second account and waits for its configurator.
+const selectSecondAccount = async () => {
+  const account = Array.from(document.body.querySelectorAll('button'))
+    .find(button => button.textContent?.startsWith('account-2'))!
+  await act(async () => account.click())
+  await vi.waitFor(() => expect(testState.configurator?.frame.iframeHtml).toBe('frame-2'))
+  return testState.configurator!.ensureResources!
+}
+
+describe('BlueprintLandingPage configurator access requests', () => {
+  const RESOURCE = {
+    urlPattern: 'https://catalog.example.com/*',
+    title: 'Service catalog',
+    description: 'Example service catalog',
+  }
+  const IMPORT_GRANT = 'https://catalog.example.com/import'
+  const VENDOR = { displayName: 'Service catalog', url: 'https://catalog.example.com/' }
+  const GATEKEEPER_BLUEPRINT: BlueprintPublicInfo = {
+    ...BLUEPRINT,
+    metadata: {
+      ...BLUEPRINT.metadata,
+      bindings: {
+        CATALOG: {
+          type: 'gatekeeper',
+          title: 'Catalog',
+          description: '',
+          gatekeeperName: 'catalog',
+          typeUrlPattern: RESOURCE.urlPattern,
+        },
+      },
+    },
+  }
+
+  const startResourceConfigurator = vi.fn<(accountId: number, pattern: string) => Promise<object>>()
+  const ensureAccountResources =
+    vi.fn<(accountId: number, patterns: string[]) => Promise<ConnectFlowStart | null>>()
+
+  let root: Root | undefined
+  let rootContainer: HTMLDivElement | undefined
+
+  afterEach(() => {
+    act(() => root?.unmount())
+    rootContainer?.remove()
+    testState.authenticatedApi = null
+    testState.configurator = null
+    startResourceConfigurator.mockReset()
+    ensureAccountResources.mockReset()
+    openConnectWindow.mockClear()
+  })
+
+  // Opens the binding's configuration, which starts a configurator on the first account.
+  const openBinding = async () => {
+    startResourceConfigurator.mockImplementation(async accountId => ({
+      iframeHtml: `frame-${accountId}`,
+      ui: { [Symbol.dispose]() {} },
+    }))
+    testState.authenticatedApi = {
+      ...authenticatedApi(),
+      listGatekeeperVendors: async () => [{ id: 'catalog', description: VENDOR, supportedResources: [RESOURCE] }],
+      subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
+        for (const id of [1, 2]) {
+          subscriber.add(id, { uniqueName: `account-${id}`, avatar: { url: VENDOR.url } }, VENDOR, [RESOURCE], true, 'catalog')
+        }
+        subscriber.ready()
+        return subscription()
+      },
+      startResourceConfigurator,
+      ensureAccountResources,
+    } as unknown as RpcStub<AuthenticatedApi>
+    rootContainer = document.createElement('div')
+    document.body.appendChild(rootContainer)
+    root = createRoot(rootContainer)
+
+    await act(async () => root!.render(<BlueprintLandingPage rpcStub={publicApi(GATEKEEPER_BLUEPRINT)} />))
+    await act(async () => { await Promise.resolve() })
+    const configure = Array.from(document.body.querySelectorAll('button'))
+      .find(button => button.textContent === 'Configure')!
+    await act(async () => configure.click())
+    await vi.waitFor(() => expect(testState.configurator?.frame.iframeHtml).toBe('frame-1'))
+  }
+
+  it('resolves true without a pop-up when the account already holds the grants', async () => {
+    ensureAccountResources.mockResolvedValue(null)
+    await openBinding()
+
+    await expect(testState.configurator!.ensureResources!([IMPORT_GRANT])).resolves.toBe(true)
+
+    expect(ensureAccountResources).toHaveBeenCalledExactlyOnceWith(1, [IMPORT_GRANT])
+    expect(openConnectWindow).not.toHaveBeenCalled()
+  })
+
+  it('asks for the account the configurator was started on', async () => {
+    ensureAccountResources.mockResolvedValue(null)
+    await openBinding()
+    const ensureResources = await selectSecondAccount()
+
+    expect(startResourceConfigurator).toHaveBeenLastCalledWith(2, RESOURCE.urlPattern)
+    await ensureResources([IMPORT_GRANT])
+    expect(ensureAccountResources).toHaveBeenCalledExactlyOnceWith(2, [IMPORT_GRANT])
   })
 })
