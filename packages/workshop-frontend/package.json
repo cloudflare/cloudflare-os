@@ -54,7 +54,7 @@
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^5.2.0",
     "@vitest/browser-playwright": "catalog:",
-    "jsdom": "^26.1.0",
+    "jsdom": "^30.1.1",
     "playwright": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
