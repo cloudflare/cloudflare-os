@@ -208,13 +208,13 @@ export function matchesResource(search: string, resource: SupportedResource): bo
 }
 
 /**
- * Normalize a resource URL for sending to the backend. Prepends https:// if no protocol
+ * Normalize a resource URL for sending to the backend. Prepends https:// if no scheme
  * is present, and strips a trailing /* wildcard (which is just "everything under here").
  */
 export function normalizeResourceUrl(url: string): string {
   let normalized = url.trim()
-  // Default to https:// if no protocol specified.
-  if (normalized && !/^https?:\/\//i.test(normalized)) {
+  // Default to https:// if no scheme specified.
+  if (normalized && !/^[a-z][a-z0-9+.-]*:\/\//i.test(normalized)) {
     normalized = 'https://' + normalized
   }
   // Strip trailing /* wildcard — it's not meaningful for the backend.
