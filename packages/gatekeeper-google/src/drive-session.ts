@@ -2,8 +2,8 @@ import { isObservationRefused } from "@gadgets/gatekeeper-kit/observers";
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { CursorPager, type Pager } from "./cursor";
 import {
-  DriveApiRequestError, FOLDER_MIME_TYPE, MAX_QUERY_PARENTS, isListableFolderFile,
-  isListableFolderNode,
+  DriveApiRequestError, FOLDER_MIME_TYPE, MAX_QUERY_PARENTS, SHORTCUT_MIME_TYPE,
+  isListableFolderFile, isListableFolderNode,
   type DriveApi, type DriveFile, type DriveListFilesOptions, type DriveScopeNode,
 } from "./drive-api";
 import {
@@ -17,7 +17,6 @@ import type {
   DriveScope, DriveSearchQuery,
 } from "./drive-types";
 
-const SHORTCUT_MIME_TYPE = "application/vnd.google-apps.shortcut";
 /** Exact MIME type for native Google Docs files. */
 export const GOOGLE_DOC_MIME_TYPE = "application/vnd.google-apps.document";
 /** Exact MIME type for native Google Sheets files. */

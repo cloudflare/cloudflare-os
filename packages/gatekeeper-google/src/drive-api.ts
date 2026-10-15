@@ -21,6 +21,9 @@ export const MAX_QUERY_PARENTS = 50;
 /** Exact MIME type Drive gives a native folder. A shortcut to one has its own type, not this. */
 export const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 
+/** MIME type of a shortcut, which stands for the file or folder in its `shortcutDetails`. */
+export const SHORTCUT_MIME_TYPE = "application/vnd.google-apps.shortcut";
+
 /** The subset of Drive's file resource this gatekeeper asks for. */
 export type DriveFile = {
   id: string;
@@ -156,6 +159,8 @@ export type DriveFileQuery = {
   modifiedBefore?: string;
   /** Proven parent folders; a file matches when any one of them is its direct parent. */
   directParentIds?: readonly string[];
+  /** Only files shared with this account by others, as Drive's "Shared with me" lists them. */
+  sharedWithMe?: boolean;
 };
 
 /**
@@ -181,6 +186,11 @@ export type DriveListFilesOptions = DriveFileQuery & {
 };
 
 export type DriveFileList = { files: DriveFile[]; nextPageToken?: string };
+
+/** A shared drive this account is a member of. Its id is also its root folder's. */
+export type DriveSharedDrive = { id: string; name: string };
+
+export type DriveSharedDriveList = { drives: DriveSharedDrive[]; nextPageToken?: string };
 
 /** Drive refused because the API is not enabled on this OAuth project. */
 export class DriveApiDisabledError extends Error {}
@@ -530,6 +540,7 @@ export function buildDriveQuery(query: DriveFileQuery, internal: InternalDriveQu
     let inParents = (id: string) => `'${escapeDriveQueryLiteral(id)}' in parents`;
     clauses.push(parents.length === 1 ? inParents(parents[0]) : `(${parents.map(inParents).join(" or ")})`);
   }
+  if (query.sharedWithMe) clauses.push("sharedWithMe = true");
   if (internal.convertedFrom !== undefined) {
     clauses.push(`appProperties has { key='${CONVERTED_FROM_PROPERTY}' and value='${
       escapeDriveQueryLiteral(internal.convertedFrom)}' }`);
@@ -653,6 +664,29 @@ export class DriveApi {
   async getFile(fileId: string): Promise<DriveFile> {
     let params = new URLSearchParams({ fields: DRIVE_FILE_ITEM_FIELDS, supportsAllDrives: "true" });
     return parseDriveFile(await this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params));
+  }
+
+  /** One page of the shared drives this account is a member of. */
+  async listSharedDrives(options: { pageSize?: number; pageToken?: string } = {}):
+      Promise<DriveSharedDriveList> {
+    let params = new URLSearchParams({
+      pageSize: String(options.pageSize ?? 100),
+      fields: "nextPageToken,drives(id,name)",
+    });
+    if (options.pageToken) params.set("pageToken", options.pageToken);
+    let body = await this.#getUnknown("/drives", params);
+    let rawDrives = isRecord(body) ? body.drives ?? [] : undefined;
+    if (!isRecord(body) || !Array.isArray(rawDrives)) {
+      throw new Error("Invalid Google Drive shared-drive list response");
+    }
+    let drives = rawDrives.map((drive: unknown) => {
+      if (!isRecord(drive) || typeof drive.id !== "string" || typeof drive.name !== "string") {
+        throw new Error("Invalid Google Drive shared drive");
+      }
+      return { id: drive.id, name: drive.name };
+    });
+    let nextPageToken = optionalString(body.nextPageToken, "nextPageToken");
+    return { drives, ...(nextPageToken ? { nextPageToken } : {}) };
   }
 
   /** Whether the connected account may edit a file's content, as Drive reports it. */

@@ -82,9 +82,7 @@ import {
   GoogleDocConfiguratorUI,
   GoogleSheetsConfiguratorUI,
   GoogleSlidesConfiguratorUI,
-  DriveAccountConfiguratorUI,
-  DriveFileConfiguratorUI,
-  DriveFolderConfiguratorUI,
+  DriveConfiguratorUI,
 } from "./google-configurators";
 import BIGQUERY_CONFIGURATOR_HTML from "./generated/bigquery-configurator-ui.txt";
 import CALENDAR_CONFIGURATOR_HTML from "./generated/calendar-configurator-ui.txt";
@@ -95,9 +93,7 @@ import GMAIL_CONFIGURATOR_HTML from "./generated/gmail-configurator-ui.txt";
 import GOOGLE_DOC_CONFIGURATOR_HTML from "./generated/google-doc-configurator-ui.txt";
 import GOOGLE_SHEETS_CONFIGURATOR_HTML from "./generated/google-sheets-configurator-ui.txt";
 import GOOGLE_SLIDES_CONFIGURATOR_HTML from "./generated/google-slides-configurator-ui.txt";
-import DRIVE_ACCOUNT_CONFIGURATOR_HTML from "./generated/drive-account-configurator-ui.txt";
-import DRIVE_FILE_CONFIGURATOR_HTML from "./generated/drive-file-configurator-ui.txt";
-import DRIVE_FOLDER_CONFIGURATOR_HTML from "./generated/drive-folder-configurator-ui.txt";
+import DRIVE_CONFIGURATOR_HTML from "./generated/drive-configurator-ui.txt";
 import GOOGLE_LOGO_SVG from "./google-logo.svg";
 import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS } from "./auth-retry";
@@ -964,24 +960,13 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       };
     }
 
-    if (resourceUrlPattern === GOOGLE_DRIVE_RESOURCE.urlPattern) {
+    // One picker for the whole account, a folder or a file (see SupportedResource.groupedWith).
+    if (resourceUrlPattern === GOOGLE_DRIVE_RESOURCE.urlPattern ||
+        resourceUrlPattern === GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern ||
+        resourceUrlPattern === GOOGLE_DRIVE_FILE_RESOURCE.urlPattern) {
       return {
-        iframeHtml: DRIVE_ACCOUNT_CONFIGURATOR_HTML,
-        ui: new RpcStub(new DriveAccountConfiguratorUI()),
-      };
-    }
-
-    if (resourceUrlPattern === GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern) {
-      return {
-        iframeHtml: DRIVE_FOLDER_CONFIGURATOR_HTML,
-        ui: new RpcStub(new DriveFolderConfiguratorUI(getToken)),
-      };
-    }
-
-    if (resourceUrlPattern === GOOGLE_DRIVE_FILE_RESOURCE.urlPattern) {
-      return {
-        iframeHtml: DRIVE_FILE_CONFIGURATOR_HTML,
-        ui: new RpcStub(new DriveFileConfiguratorUI(getToken)),
+        iframeHtml: DRIVE_CONFIGURATOR_HTML,
+        ui: new RpcStub(new DriveConfiguratorUI(getToken)),
       };
     }
 

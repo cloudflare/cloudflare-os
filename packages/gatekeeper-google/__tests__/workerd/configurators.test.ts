@@ -9,10 +9,11 @@ import {
   calendarPickerRank, hasCalendarPrivateAccessRole, hasCalendarWriteRole,
 } from "../../src/calendar-api";
 import {
-  BigQueryConfiguratorUI, CalendarConfiguratorUI, DriveFolderConfiguratorUI, GoogleDocConfiguratorUI,
+  BigQueryConfiguratorUI, CalendarConfiguratorUI, DriveConfiguratorUI, GoogleDocConfiguratorUI,
   GoogleSheetsConfiguratorUI, GoogleSlidesConfiguratorUI,
 } from "../../src/google-configurators";
 import type { GoogleAccessToken } from "../../src/google-api";
+import { FOLDER_MIME_TYPE as FOLDER, SHORTCUT_MIME_TYPE as SHORTCUT } from "../../src/drive-api";
 import { OfficeConversion } from "../../src/office-conversion";
 import {
   GOOGLE_DOC_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE, OFFICE_IMPORT_GRANT,
@@ -42,74 +43,183 @@ describe("Google resource configurators", () => {
       .resolves.toBe("person@example.com");
   });
 
-  // One provider page across every corpus the account reaches. A continuation token is normal for
-  // an interactive picker, so it must neither be followed nor treated as a failure.
-  it("offers listable folders from every corpus in one all-drives request", async () => {
-    const calls: URL[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
-      calls.push(new URL(input instanceof Request ? input.url : input.toString()));
-      return Response.json({
-        nextPageToken: "next",
-        files: [
-          { id: "mine", name: "Team plans", capabilities: { canListChildren: true } },
-          {
-            id: "shared-with-me", name: "Team budget",
-            owners: [{ displayName: "Ada" }], capabilities: { canListChildren: true },
-          },
-          {
-            id: "in-drive", name: "Team drive folder", driveId: "drive-1",
-            capabilities: { canListChildren: true },
-          },
-          { id: "metadata-only", name: "Team archive", capabilities: { canListChildren: false } },
+  describe("Drive picker", () => {
+    const picker = () => new DriveConfiguratorUI(async () => token("access-token"));
+
+    /** Answers each Drive request from `routes` by path, recording every URL asked for. */
+    const stubDrive = (routes: Record<string, unknown>) => {
+      const calls: URL[] = [];
+      vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+        const url = new URL(input instanceof Request ? input.url : input.toString());
+        calls.push(url);
+        const path = url.pathname.replace(/^\/drive\/v3/, "");
+        return path in routes
+          ? Response.json(routes[path])
+          : Response.json({ error: { code: 404, message: "File not found" } }, { status: 404 });
+      }));
+      return calls;
+    };
+
+    // My Drive's root can be bound only by its real ID: the folder scope refuses the `root` alias.
+    it("opens on the account's groupings, with My Drive by its real ID", async () => {
+      stubDrive({ "/files/root": { id: "0AMyRoot", name: "My Drive" } });
+
+      await expect(picker().listDriveNodes("drive", "", null)).resolves.toEqual({
+        nodes: [
+          { id: "folder:0AMyRoot", title: "My Drive", kind: "folder", listable: true },
+          { id: "shared-drives", title: "Shared drives", kind: "group" },
+          { id: "shared-with-me", title: "Shared with me", kind: "group" },
         ],
       });
-    }));
+    });
 
-    await expect(new DriveFolderConfiguratorUI(async () => token("access-token"))
-      .listDriveFolders("Team"))
-      .resolves.toEqual([
-        { value: "mine", title: "Team plans", subtitle: "My Drive" },
-        { value: "shared-with-me", title: "Team budget", subtitle: "Ada" },
-        { value: "in-drive", title: "Team drive folder", subtitle: "In a shared drive" },
+    it("lists a folder's children folders first, a shortcut standing for its target", async () => {
+      const calls = stubDrive({
+        "/files": {
+          nextPageToken: "page-3",
+          files: [
+            { id: "sub", name: "Plans", mimeType: FOLDER, capabilities: { canListChildren: true } },
+            { id: "locked", name: "Archive", mimeType: FOLDER, capabilities: { canListChildren: false } },
+            {
+              id: "doc", name: "Notes", mimeType: "application/vnd.google-apps.document",
+              modifiedTime: "2026-10-01T10:00:00Z",
+            },
+            {
+              id: "link", name: "Team folder", mimeType: SHORTCUT,
+              shortcutDetails: { targetId: "team", targetMimeType: FOLDER },
+            },
+            { id: "dangling", name: "Gone", mimeType: SHORTCUT, shortcutDetails: {} },
+          ],
+        },
+      });
+
+      await expect(picker().listDriveNodes("folder:F1", "", "page-2")).resolves.toEqual({
+        nodes: [
+          { id: "folder:sub", title: "Plans", kind: "folder", listable: true },
+          { id: "folder:locked", title: "Archive", kind: "folder", listable: false },
+          {
+            id: "file:doc", title: "Notes", kind: "file", mimeType: "application/vnd.google-apps.document",
+            modifiedTime: "2026-10-01T10:00:00Z",
+          },
+          { id: "folder:team", title: "Team folder", kind: "folder", listable: true },
+        ],
+        nextCursor: "page-3",
+      });
+      expect(calls[0].searchParams.get("q")).toBe("trashed = false and 'F1' in parents");
+      expect(calls[0].searchParams.get("corpora")).toBe("allDrives");
+      expect(calls[0].searchParams.get("orderBy")).toBe("folder,name");
+      expect(calls[0].searchParams.get("pageToken")).toBe("page-2");
+    });
+
+    it("lists the shared drives and what is shared with this account", async () => {
+      const calls = stubDrive({
+        "/drives": { drives: [{ id: "0ADrive", name: "Engineering" }] },
+        "/files": { files: [{ id: "s1", name: "Budget", mimeType: "application/pdf" }] },
+      });
+      const browser = picker();
+
+      await expect(browser.listDriveNodes("shared-drives", "", null)).resolves.toEqual({
+        nodes: [{ id: "folder:0ADrive", title: "Engineering", kind: "sharedDrive" }],
+      });
+      await expect(browser.listDriveNodes("shared-with-me", "", null)).resolves.toEqual({
+        nodes: [{ id: "file:s1", title: "Budget", kind: "file", mimeType: "application/pdf" }],
+      });
+      expect(calls[1].searchParams.get("q")).toBe("trashed = false and sharedWithMe = true");
+    });
+
+    // Search spans every corpus wherever the picker is open, so each result says whose it is.
+    it("searches every drive by name, saying where each result lives", async () => {
+      const calls = stubDrive({
+        "/files": {
+          files: [
+            { id: "mine", name: "Team plans", mimeType: FOLDER, capabilities: { canListChildren: true } },
+            { id: "theirs", name: "Team budget", owners: [{ displayName: "Ada" }] },
+            { id: "in-drive", name: "Team drive notes", driveId: "drive-1" },
+          ],
+        },
+      });
+
+      const { nodes } = await picker().listDriveNodes("folder:F1", "Team", null);
+
+      expect(nodes.map(node => [node.id, node.detail])).toEqual([
+        ["folder:mine", "My Drive"],
+        ["file:theirs", "Ada"],
+        ["file:in-drive", "In a shared drive"],
       ]);
-    expect(calls).toHaveLength(1);
-    expect(calls[0].searchParams.get("corpora")).toBe("allDrives");
-    expect(calls[0].searchParams.get("q")).toBe(
-      "trashed = false and mimeType = 'application/vnd.google-apps.folder' and " +
-      "name contains 'Team'",
-    );
-  });
+      expect(calls[0].searchParams.get("corpora")).toBe("allDrives");
+      expect(calls[0].searchParams.get("q")).toBe("trashed = false and name contains 'Team'");
+    });
 
-  // Duplicate folder names across shared drives are ordinary, and every other column matches, so
-  // without a differentiator the user cannot see which capability they are about to grant. A unique
-  // name needs none.
-  it("tells same-named folders apart", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
-      files: [
-        {
-          id: "1AbCdEfGhIjKlMnOpQrStUv_platform", name: "Engineering", driveId: "drive-1",
+    // Duplicate names are ordinary, and a shared file can be named to look like one of the user's
+    // own, so without a differentiator the user cannot see which capability they are granting. A
+    // unique name needs none.
+    it("tells apart nodes whose names look the same", async () => {
+      const long = "x".repeat(240);
+      const names = ["Budget", "Budget\u200e", "budget\u200b", "Budget plan", `${long}A`, `${long}B`];
+      stubDrive({
+        "/files": {
+          files: [
+            ...names.map((name, index) => ({ id: `id${index}`, name })),
+            { id: "1AbCdEfGhIjKlMnOpQrStUv_platform", name: "Engineering", driveId: "d1" },
+          ],
+        },
+      });
+
+      const { nodes } = await picker().listDriveNodes("drive", "Budget", null);
+
+      expect(nodes.map(node => node.detail)).toEqual([
+        "My Drive · id0", "My Drive · id1", "My Drive · id2", "My Drive", "My Drive · id4",
+        "My Drive · id5", "In a shared drive",
+      ]);
+    });
+
+    it("finds a pre-filled file with the folders it lives in", async () => {
+      stubDrive({
+        "/files/F9": { id: "F9", name: "Q3.pdf", mimeType: "application/pdf", parents: ["A"] },
+        "/files/A": { id: "A", name: "Reports", mimeType: FOLDER, parents: ["0AMyRoot"] },
+        "/files/0AMyRoot": { id: "0AMyRoot", name: "My Drive", mimeType: FOLDER },
+        "/files/root": { id: "0AMyRoot", name: "My Drive", mimeType: FOLDER },
+      });
+
+      await expect(picker().getDriveNode("file:F9")).resolves.toEqual({
+        id: "file:F9", title: "Q3.pdf", kind: "file", mimeType: "application/pdf",
+        path: [{ id: "folder:0AMyRoot", title: "My Drive" }, { id: "folder:A", title: "Reports" }],
+      });
+    });
+
+    it("places a pre-filled folder in its shared drive", async () => {
+      stubDrive({
+        "/files/D2": {
+          id: "D2", name: "Specs", mimeType: FOLDER, driveId: "0ADrive", parents: ["0ADrive"],
           capabilities: { canListChildren: true },
         },
-        {
-          id: "1AbCdEfGhIjKlMnOpQrStUv_marketing", name: "Engineering", driveId: "drive-2",
-          capabilities: { canListChildren: true },
-        },
-        {
-          id: "1AbCdEfGhIjKlMnOpQrStUv_roadmap", name: "Engineering roadmap", driveId: "drive-1",
-          capabilities: { canListChildren: true },
-        },
-      ],
-    })));
+        "/files/0ADrive": { id: "0ADrive", name: "Engineering", mimeType: FOLDER, driveId: "0ADrive" },
+      });
 
-    const options = await new DriveFolderConfiguratorUI(async () => token("access-token"))
-      .listDriveFolders("Engineering");
+      await expect(picker().getDriveNode("folder:D2")).resolves.toMatchObject({
+        id: "folder:D2",
+        path: [{ id: "shared-drives", title: "Shared drives" }, { id: "folder:0ADrive", title: "Engineering" }],
+      });
+    });
 
-    expect(options.map(option => [option.title, option.subtitle])).toEqual([
-      ["Engineering", "In a shared drive"],
-      ["Engineering", "In a shared drive"],
-      ["Engineering roadmap", "In a shared drive"],
-    ]);
-    expect(options.map(option => option.meta)).toEqual(["…platform", "…arketing", undefined]);
+    // A partial path would show the node somewhere it is not.
+    it("leaves out the path of a file shared from a folder this account cannot see", async () => {
+      stubDrive({ "/files/S1": { id: "S1", name: "Shared", mimeType: "text/plain", parents: ["hidden"] } });
+
+      const node = await picker().getDriveNode("file:S1");
+
+      expect(node).toMatchObject({ id: "file:S1" });
+      expect(node).not.toHaveProperty("path");
+    });
+
+    it("finds nothing for an id naming the wrong kind of node, or one this account cannot see", async () => {
+      stubDrive({ "/files/D1": { id: "D1", name: "A folder", mimeType: FOLDER } });
+      const browser = picker();
+
+      await expect(browser.getDriveNode("file:D1")).resolves.toBeNull();
+      await expect(browser.getDriveNode("folder:missing")).resolves.toBeNull();
+      await expect(browser.getDriveNode("shared-drives")).resolves.toBeNull();
+    });
   });
 
   it("offers every calendar the account can write, including limited writers", async () => {
@@ -185,20 +295,6 @@ describe("Google resource configurators", () => {
 
     await expect(new CalendarConfiguratorUI(getToken).canWriteCalendar("shared@example.com"))
       .rejects.toThrow("Google Calendar API request failed: 403");
-  });
-
-  // A shared file or folder can be named to look like one of the user's own.
-  it("tells apart folders whose names only look the same", async () => {
-    let long = "x".repeat(240);
-    let names = ["Budget", "Budget\u200e", "budget\u200b", "Budget plan", `${long}A`, `${long}B`];
-    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
-      files: names.map((name, index) => ({ id: `id${index}`, name, capabilities: { canListChildren: true } })),
-    })));
-
-    const options = await new DriveFolderConfiguratorUI(async () => token("access-token"))
-      .listDriveFolders("Budget");
-
-    expect(options.map(option => option.meta)).toEqual(["id0", "id1", "id2", undefined, "id4", "id5"]);
   });
 
   it("refreshes a rejected Calendar access token", async () => {
