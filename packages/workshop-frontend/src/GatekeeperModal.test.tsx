@@ -17,6 +17,11 @@ const testState = vi.hoisted(() => ({
   toasts: [] as { title: string, variant: string }[],
   frameKeys: [] as number[],
   ensureResources: null as ((patterns: string[]) => Promise<boolean>) | null,
+  configurator: null as {
+    acceptedResourceUrlPatterns: readonly string[]
+    initialResourceUrl?: string
+    resourceUrlPattern?: string
+  } | null,
 }))
 
 const { openConnectWindow } = vi.hoisted(() => ({
@@ -44,6 +49,9 @@ vi.mock('./ResourceConfiguratorHost', async () => {
     frameKey,
     loading,
     disabled,
+    acceptedResourceUrlPatterns,
+    initialResourceUrl,
+    resourceUrlPattern,
     onCollectResourceUrlChange,
     onSelectionReadyChange,
     onEnsureResources,
@@ -52,10 +60,16 @@ vi.mock('./ResourceConfiguratorHost', async () => {
     frameKey: number | null
     loading: boolean
     disabled: boolean
+    acceptedResourceUrlPatterns: readonly string[]
+    initialResourceUrl?: string
+    resourceUrlPattern?: string
     onCollectResourceUrlChange?: (collect: (() => Promise<string>) | null) => void
     onSelectionReadyChange?: (ready: boolean | null) => void
     onEnsureResources?: (patterns: string[]) => Promise<boolean>
   }) => {
+    useEffect(() => {
+      testState.configurator = { acceptedResourceUrlPatterns, initialResourceUrl, resourceUrlPattern }
+    }, [acceptedResourceUrlPatterns, initialResourceUrl, resourceUrlPattern])
     const mounted = Boolean(frame && !loading && !disabled)
     useEffect(() => {
       testState.ensureResources = mounted ? onEnsureResources ?? null : null
@@ -160,11 +174,13 @@ afterEach(() => {
   api.startResourceConfigurator.mockReset()
   api.ensureAccountResources.mockReset()
   openConnectWindow.mockReset()
+  testState.configurator = null
   vi.unstubAllGlobals()
 })
 
 async function renderModal(props: {
   initialVendorId?: string
+  initialResourceUrl?: string
   initialResourceUrlPattern?: string
   initialAccountId?: number
 } = {}, apiOptions: Parameters<typeof authenticatedApi>[0] = {}) {
@@ -198,6 +214,84 @@ describe('GatekeeperModal configurator readiness', () => {
     const addConnection = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
       .find(button => button.textContent === 'Add connection')!
     expect(addConnection.disabled).toBe(true)
+  })
+})
+
+describe('GatekeeperModal grouped resource types', () => {
+  const CATALOG = {
+    urlPattern: 'https://catalog.example.com/:path+',
+    title: 'Whole catalog',
+    description: 'Every service',
+    grantable: true,
+  }
+  const SERVICE = {
+    urlPattern: 'https://catalog.example.com/services/:id',
+    title: 'Service',
+    description: 'One service',
+    grantable: true,
+    groupedWith: CATALOG.urlPattern,
+  }
+  // The catalog's pattern also matches a service's URL, as a GitLab project's matches a merge
+  // request's, so the vendor declares the more specific type first: resolving a URL takes the first
+  // match.
+  const GROUPED = { resource: SERVICE, otherResources: [CATALOG] }
+  const BOTH_GRANTED = [CATALOG.urlPattern, SERVICE.urlPattern]
+
+  const buttonLabels = () => Array.from(document.body.querySelectorAll('button'), button => button.textContent)
+
+  it('lists grouped types as one card', async () => {
+    await renderModal({}, { ...GROUPED, granted: BOTH_GRANTED })
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[aria-controls="connection-group-panel-vendor:catalog"]')).not.toBeNull()
+    })
+    await act(async () => document.body.querySelector<HTMLButtonElement>(
+      '[aria-controls="connection-group-panel-vendor:catalog"]')!.click())
+
+    expect(Array.from(document.getElementById('connection-group-panel-vendor:catalog')!
+      .querySelectorAll('button p:first-child'), title => title.textContent)).toEqual([CATALOG.title])
+  })
+
+  // The agent asked for a service, so the card that picks services opens on it, while the user may
+  // still choose anything the card offers.
+  it('opens an agent request for a grouped type on its card, pre-filled', async () => {
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      disconnect() {}
+    })
+    const initialResourceUrl = 'https://catalog.example.com/services/s1'
+    await renderModal(
+      { initialVendorId: 'catalog', initialResourceUrl, initialResourceUrlPattern: SERVICE.urlPattern },
+      { ...GROUPED, granted: BOTH_GRANTED },
+    )
+
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[data-testid="resource-configurator"]')).not.toBeNull()
+    })
+    expect(api.startResourceConfigurator.mock.calls).toEqual([[1, CATALOG.urlPattern]])
+    expect(testState.configurator).toEqual({
+      acceptedResourceUrlPatterns: [SERVICE.urlPattern, CATALOG.urlPattern],
+      initialResourceUrl,
+      resourceUrlPattern: SERVICE.urlPattern,
+    })
+  })
+
+  // The configurator can return any of the card's types, so the account must hold every one first.
+  it('asks an account missing a grouped type to grant it before the configurator opens', async () => {
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      disconnect() {}
+    })
+    api.ensureAccountResources.mockResolvedValue(null)
+    await renderModal({ initialVendorId: 'catalog', initialResourceUrlPattern: CATALOG.urlPattern }, {
+      ...GROUPED,
+      granted: [CATALOG.urlPattern],
+    })
+
+    await vi.waitFor(() => expect(buttonLabels()).toContain('Grant access'))
+    expect(document.body.querySelector('[data-testid="resource-configurator"]')).toBeNull()
+    await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .find(button => button.textContent === 'Grant access')!.click())
+    expect(api.ensureAccountResources.mock.calls).toEqual([[1, [SERVICE.urlPattern]]])
   })
 })
 

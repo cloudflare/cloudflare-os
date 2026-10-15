@@ -43,9 +43,10 @@ describe("prefill", () => {
     resourceUrl: "https://drive.google.com/drive/folders/F1",
     resourceUrlPattern: "https://drive.google.com/drive/folders/:folderId",
   };
+  const context = { ui: null };
 
   it("opens on the initial values with the resource's values on top, each shown as typed", async () => {
-    expect(await prefill(spec(), null, async () => initialResource)).toEqual({
+    expect(await prefill(spec(), context, async () => initialResource)).toEqual({
       values: { folderId: "F1", mode: "read" },
       queries: { folderId: "F1" },
     });
@@ -53,15 +54,15 @@ describe("prefill", () => {
 
   it("asks the spec to map the URL when it can", async () => {
     const mapped = spec({ initialValuesFromResourceUrl: async ({ resourceUrl }) => ({ mode: resourceUrl }) });
-    expect((await prefill(mapped, null, async () => initialResource)).values)
+    expect((await prefill(mapped, context, async () => initialResource)).values)
       .toEqual({ folderId: null, mode: initialResource.resourceUrl });
   });
 
   it("opens blank when there is no resource or it cannot be read", async () => {
     const blank = { values: { folderId: null, mode: "read" }, queries: {} };
-    expect(await prefill(spec(), null, async () => null)).toEqual(blank);
-    expect(await prefill(spec(), null, () => Promise.reject(new Error("gone")))).toEqual(blank);
+    expect(await prefill(spec(), context, async () => null)).toEqual(blank);
+    expect(await prefill(spec(), context, () => Promise.reject(new Error("gone")))).toEqual(blank);
     const throwing = spec({ initialValuesFromResourceUrl: () => { throw new Error("unparseable"); } });
-    expect(await prefill(throwing, null, async () => initialResource)).toEqual(blank);
+    expect(await prefill(throwing, context, async () => initialResource)).toEqual(blank);
   });
 });

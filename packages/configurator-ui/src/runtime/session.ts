@@ -1,11 +1,11 @@
-import type { ConfiguratorUISpec } from "../index.ts";
+import type { ConfiguratorUIHostContext, ConfiguratorUISpec } from "../index.ts";
 import type { ConfiguratorStore } from "./store.ts";
 
 /**
  * One running configurator: the gatekeeper's module, its `ui` capability, its state, and whether
  * what it currently shows can be trusted to describe what would be collected.
  */
-export type ConfiguratorSession<TUI = unknown> = {
+export type ConfiguratorSession<TUI = unknown> = ConfiguratorUIHostContext & {
   spec: ConfiguratorUISpec<TUI>;
   ui: TUI;
   store: ConfiguratorStore;
@@ -26,7 +26,7 @@ export type ConfiguratorSession<TUI = unknown> = {
 
 /** Creates a session whose readiness reports reach the host once per change. */
 export const createSession = <TUI,>(
-  init: Pick<ConfiguratorSession<TUI>, "spec" | "ui" | "store" | "ensureResources">,
+  init: Pick<ConfiguratorSession<TUI>, "spec" | "ui" | "store" | "ensureResources" | "acceptedResourceUrlPatterns">,
   setSelectionReady: (ready: boolean) => void,
 ): ConfiguratorSession<TUI> => {
   let lastPosted: boolean | undefined;
@@ -63,7 +63,8 @@ const assertCollectable = (session: ConfiguratorSession): void => {
 export const collectResourceUrl = async (session: ConfiguratorSession): Promise<string> => {
   assertCollectable(session);
   const renderedValues = session.store.getState().values;
-  const resourceUrl = await session.spec.resourceUrl({ values: renderedValues, ui: session.ui });
+  const { spec, ui, acceptedResourceUrlPatterns } = session;
+  const resourceUrl = await spec.resourceUrl({ values: renderedValues, ui, acceptedResourceUrlPatterns });
   assertCollectable(session);
   if (session.store.getState().values !== renderedValues) {
     throw new Error("Configurator changed while its resource URL was being collected. Please try again.");

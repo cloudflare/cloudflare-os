@@ -108,9 +108,11 @@ type ConnectionType = {
   // token like `text-kumo-strong` (near-white in dark mode) would vanish on it.
   // Pin the glyph to a dark color that reads on the light tile in both themes.
   iconColor?: string
+  // The card's own type; the configurator starts for it.
   resourceUrlPattern?: string
-  // Whether this resource type is independently grantable.
-  grantable?: boolean
+  // The resource types the card's configurator may return (see SupportedResource.groupedWith), in
+  // the order the vendor declared them.
+  resources?: SupportedResource[]
 }
 
 type VendorOption = {
@@ -153,31 +155,58 @@ function platformConnectionTypes(siteName: string): ConnectionType[] {
   ]
 }
 
-function connectionForResource(vendor: VendorOption, resource: SupportedResource): ConnectionType {
+/**
+ * One card per group of a vendor's resource types (see SupportedResource.groupedWith), led by the
+ * type the group is named after, or by its first other type if an administrator disabled that one.
+ */
+function connectionsForVendor(vendor: VendorOption): ConnectionType[] {
+  const groups = new Map<string, SupportedResource[]>()
+  for (const resource of vendor.supportedResources) {
+    const key = resource.groupedWith ?? resource.urlPattern
+    const group = groups.get(key)
+    if (group) group.push(resource)
+    else groups.set(key, [resource])
+  }
+  return Array.from(groups, ([key, members]) => connectionForResources(
+    vendor, members.find(resource => resource.urlPattern === key) ?? members[0], members))
+}
+
+function connectionForResources(
+  vendor: VendorOption, lead: SupportedResource, resources: SupportedResource[],
+): ConnectionType {
   return {
-    id: `resource:${vendor.id}:${resource.urlPattern}`,
+    id: `resource:${vendor.id}:${lead.urlPattern}`,
     vendorId: vendor.id,
     // Group by stable vendor ID, not displayName, so two distinct vendors that
     // happen to share a display name don't get merged into the same group.
     groupKey: `vendor:${vendor.id}`,
     groupLabel: vendor.description.displayName,
-    title: resource.title,
+    title: lead.title,
     vendor: vendor.description.displayName,
-    description: resource.description,
+    description: lead.description,
     icon: Database,
-    iconUrl: resource.icon?.url,
+    iconUrl: lead.icon?.url,
     logoUrl: vendor.description.logo?.url,
     accent: vendor.description.color,
-    resourceUrlPattern: resource.urlPattern,
-    grantable: Boolean(resource.grantable),
+    resourceUrlPattern: lead.urlPattern,
+    resources,
   }
 }
 
-// The grantable resource `urlPattern`s a connection requires before its configurator can load.
+// The grantable resource `urlPattern`s a connection requires before its configurator can load: one
+// for each type the configurator may return.
 function requiredResourceUrlPatterns(connection: ConnectionType): string[] {
-  return connection.grantable && connection.resourceUrlPattern
-    ? [connection.resourceUrlPattern]
-    : []
+  return (connection.resources ?? [])
+    .filter(resource => resource.grantable)
+    .map(resource => resource.urlPattern)
+}
+
+// A URL's own type on the connection, if it names one: the first match in the vendor's declared
+// order, which lists its most specific pattern first, skipping the whole-instance catch-all
+// (mirroring the backend's resolveRequestedResource).
+function resourceForUrl(connection: ConnectionType, url: string): SupportedResource | undefined {
+  return connection.resources?.find(resource =>
+    resource.urlPattern !== 'https://*' && matchesResourceUrlPattern(resource.urlPattern, url))
 }
 
 function accountSupportsConnection(account: AccountOption, connection: ConnectionType): boolean {
@@ -257,8 +286,7 @@ export default function GatekeeperModal({
   const siteName = useSiteName()
   const allConnections = useMemo(() => [
     ...platformConnectionTypes(siteName),
-    ...vendors.flatMap(vendor => vendor.supportedResources
-      .map(resource => connectionForResource(vendor, resource))),
+    ...vendors.flatMap(connectionsForVendor),
   ], [siteName, vendors])
 
   const selectedConnection = useMemo(
@@ -281,21 +309,18 @@ export default function GatekeeperModal({
 
     let match: ConnectionType | undefined
     if (initialResourceUrlPattern) {
-      // Authoritative: select the exact resource the backend resolved to.
-      match = vendorConnections.find(c => c.resourceUrlPattern === initialResourceUrlPattern)
+      // Authoritative: select the card that picks the exact resource the backend resolved to.
+      match = vendorConnections.find(c =>
+        c.resources?.some(resource => resource.urlPattern === initialResourceUrlPattern))
     }
     if (!match && initialResourceUrl) {
-      // Fallback: match the raw URL. Skip the catch-all here so a specific resource type wins
-      // (mirrors the backend); matchesResourceUrlPattern tolerates trailing-slash differences.
-      match = vendorConnections.find(c =>
-        !!c.resourceUrlPattern &&
-        c.resourceUrlPattern !== 'https://*' &&
-        matchesResourceUrlPattern(c.resourceUrlPattern, initialResourceUrl))
+      // Fallback: match the raw URL; matchesResourceUrlPattern tolerates trailing-slash differences.
+      match = vendorConnections.find(c => resourceForUrl(c, initialResourceUrl))
     }
     // Still nothing: prefer the whole-instance catch-all ("https://*") if offered (e.g. Home
     // Assistant), else the sole resource type if there's just one.
     match = match
-      ?? vendorConnections.find(c => c.resourceUrlPattern === 'https://*')
+      ?? vendorConnections.find(c => c.resources?.some(resource => resource.urlPattern === 'https://*'))
       ?? (vendorConnections.length === 1 ? vendorConnections[0] : undefined)
     if (match) setSelectedConnectionId(match.id)
   }, [open, initialVendorId, initialResourceUrl, initialResourceUrlPattern, allConnections, selectedConnectionId])
@@ -462,10 +487,8 @@ export default function GatekeeperModal({
         connection.description,
       ].join(' ').toLowerCase()
       const matchesText = query.split(/\s+/).every(token => haystack.includes(token))
-      const matchesUrl = query.length >= 3 &&
-        connection.resourceUrlPattern !== undefined &&
-        connection.resourceUrlPattern !== 'https://*' &&
-        classifyMatch(query, connection.resourceUrlPattern).type !== 'none'
+      const matchesUrl = query.length >= 3 && Boolean(connection.resources?.some(({ urlPattern }) =>
+        urlPattern !== 'https://*' && classifyMatch(query, urlPattern).type !== 'none'))
       return matchesText || matchesUrl
     })
   }, [allConnections, searchText])
@@ -508,16 +531,14 @@ export default function GatekeeperModal({
   ) ?? null
   const needsAccount = Boolean(selectedConnection?.vendorId)
 
-  // When the agent's request supplied a concrete resource URL that matches the selected resource
-  // type's pattern, pass it to the configurator so its form opens pre-filled (and editable). This
-  // is general across gatekeepers: the iframe runtime seeds the form from the URL (via the
-  // configurator's initialValuesFromResourceUrl hook, or a URLPattern-group fallback). Excludes the
-  // whole-instance catch-all, which has no per-resource inputs.
-  const prefilledResourceUrl = useMemo(() => {
-    const pattern = selectedConnection?.resourceUrlPattern
-    if (!pattern || pattern === 'https://*' || !initialResourceUrl) return null
-    return matchesResourceUrlPattern(pattern, initialResourceUrl) ? initialResourceUrl : null
-  }, [selectedConnection?.resourceUrlPattern, initialResourceUrl])
+  // When the agent's request supplied a concrete resource URL of one of the selected card's types,
+  // pass it to the configurator so its form opens pre-filled (and editable). This is general across
+  // gatekeepers: the iframe runtime seeds the form from the URL (via the configurator's
+  // initialValuesFromResourceUrl hook, or a URLPattern-group fallback). Excludes the whole-instance
+  // catch-all, which has no per-resource inputs.
+  const prefilledResource = selectedConnection && initialResourceUrl
+    ? resourceForUrl(selectedConnection, initialResourceUrl)
+    : undefined
 
   // Grantable resources the chosen connection needs that the selected account hasn't granted yet.
   // Until these are granted, the resource configurator can't load and the binding can't be created
@@ -876,8 +897,9 @@ export default function GatekeeperModal({
                       ? patterns => requestAccountResources(
                         authenticatedApi, toasts, configuratorFrameState.accountId, patterns)
                       : undefined}
-                    initialResourceUrl={prefilledResourceUrl ?? undefined}
-                    resourceUrlPattern={selectedConnection.resourceUrlPattern}
+                    initialResourceUrl={prefilledResource ? initialResourceUrl : undefined}
+                    resourceUrlPattern={prefilledResource?.urlPattern}
+                    acceptedResourceUrlPatterns={(selectedConnection.resources ?? []).map(resource => resource.urlPattern)}
                   />
                 )}
 

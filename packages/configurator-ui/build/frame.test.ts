@@ -58,6 +58,15 @@ export default {
 };
 `;
 
+const ACCEPTED_TYPES = `
+import { h } from "@gadgets/configurator-ui";
+export default {
+  initial: {},
+  isReady: ({ acceptedResourceUrlPatterns }) => acceptedResourceUrlPatterns?.length === 1,
+  resourceUrl: ({ acceptedResourceUrlPatterns }) => acceptedResourceUrlPatterns[0],
+  render: ({ acceptedResourceUrlPatterns }) => <p>Accepts {acceptedResourceUrlPatterns.join(", ")}</p>,
+};
+`;
 /** Built once per variant, as the build script builds it once per run. */
 const runtimes = new Map<boolean, Promise<ConfiguratorRuntime>>();
 
@@ -92,6 +101,7 @@ class Gatekeeper extends RpcTarget {
 class Host extends RpcTarget {
   get gatekeeper() { return new Gatekeeper(); }
   async getInitialResource() { return null; }
+  async getAcceptedResourceUrlPatterns() { return ["https://files.example.com/folders/*"]; }
   resize(height, layoutHeight) {
     events.push(["resize", height, layoutHeight]);
     document.getElementById("frame").style.height = height + "px";
@@ -201,6 +211,18 @@ describe("generated configurator frame", () => {
       expect(sizes.some(([, height, layoutHeight]) => height > layoutHeight + 40)).toBe(true);
       // A script the policy refused, or a missing global, would show here.
       expect(consoleErrors).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
+  it("tells the module which resource types the host accepts", async () => {
+    const { page, frame, events } = await host(await frameHtml(ACCEPTED_TYPES, false));
+    try {
+      await frame().getByText("Accepts https://files.example.com/folders/*").waitFor();
+      await expect.poll(async () => (await events()).filter(([kind]) => kind === "ready").at(-1))
+        .toEqual(["ready", true]);
+      expect(await collect(page)).toEqual({ url: "https://files.example.com/folders/*" });
     } finally {
       await page.close();
     }
