@@ -11,6 +11,11 @@ export type ConfiguratorState = Readonly<{
    * become a value, and so `clearFields` can drop it without touching the value.
    */
   queries: Readonly<Record<string, string>>;
+  /**
+   * The text typed into each CheckboxList's filter, by list name. Kept for the life of the frame, as
+   * the old runtime kept it, so a list shown again under a name it had before keeps its filter.
+   */
+  filters: Readonly<Record<string, string>>;
   /** Enabled CheckboxLists whose options failed to load; any one blocks collection. */
   failedLists: ReadonlySet<string>;
   viewport: ParentViewport;
@@ -25,6 +30,7 @@ export type ConfiguratorStore = {
   setValues(patch: Partial<ConfiguratorUIValues>): void;
   clearFields(...names: string[]): void;
   setQuery(name: string, query: string): void;
+  setFilter(name: string, filter: string): void;
   setListFailed(name: string, failed: boolean): void;
   setViewport(viewport: ParentViewport): void;
   requestPopupClose(): void;
@@ -37,6 +43,7 @@ export const createConfiguratorStore = (
   let state: ConfiguratorState = {
     values: { ...initialValues },
     queries: { ...initialQueries },
+    filters: {},
     failedLists: new Set(),
     viewport: { iframeTop: 0, viewportHeight: 0 },
     popupCloseRequests: 0,
@@ -64,6 +71,10 @@ export const createConfiguratorStore = (
     setQuery(name, query) {
       if (state.queries[name] === query) return;
       update({ queries: { ...state.queries, [name]: query } });
+    },
+    setFilter(name, filter) {
+      if (state.filters[name] === filter) return;
+      update({ filters: { ...state.filters, [name]: filter } });
     },
     setListFailed(name, failed) {
       if (state.failedLists.has(name) === failed) return;

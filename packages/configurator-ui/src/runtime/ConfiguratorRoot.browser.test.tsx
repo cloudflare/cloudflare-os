@@ -218,12 +218,17 @@ describe("CheckboxList", () => {
     expect(load.mock.calls).toEqual([["a"], ["b"]]);
   });
 
-  it("starts a list with a new name unfiltered", async () => {
+  it("starts a list with a new name unfiltered, and gives a name it had before its filter back", async () => {
     const { session } = await mount(serverToolsSpec(async server => tools.map(tool => ({ ...tool, title: `${server} ${tool.title}` }))));
-    await userEvent.fill(page.getByRole("searchbox", { name: "Filter options" }), "a Tool 1");
+    const filter = page.getByRole("searchbox", { name: "Filter options" });
+    await userEvent.fill(filter, "a Tool 1");
     await act(() => session.store.setValues({ server: "b" }));
-    await expect.element(page.getByRole("searchbox", { name: "Filter options" })).toHaveValue("");
+    await expect.element(filter).toHaveValue("");
     await expect.element(page.getByRole("checkbox", { name: "b Tool 11", exact: true })).toBeVisible();
+
+    await act(() => session.store.setValues({ server: "a" }));
+    await expect.element(filter).toHaveValue("a Tool 1");
+    await expect.element(page.getByRole("button", { name: "Select 3 shown" })).toBeVisible();
   });
 });
 
