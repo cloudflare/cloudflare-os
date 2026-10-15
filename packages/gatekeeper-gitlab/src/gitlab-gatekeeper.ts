@@ -2030,6 +2030,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         break;
       }
       case "createMergeRequest": {
+        await this.#requireMergeRequestBranches(action);
         let response;
         try {
           response = await this.#withApi(api => api.createMergeRequest(projectPath, {
@@ -2043,9 +2044,9 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
             squash: action.options.squash,
           }));
         } catch (error) {
-          // The typical cause is ordering: the merge request was queued against a branch whose
-          // push is still awaiting approval, and this action was approved first. It stays
-          // pending; applying it again after the push works.
+          // A push still queued for the source branch, against a branch that exists (or arrived
+          // only after the check above), is the likely cause of a refusal. It stays pending;
+          // applying it again after the push works.
           if (error instanceof GitLabApiError && (error.status === 400 || error.status === 409 || error.status === 422) &&
               this.#pendingPushActions(action.options.sourceBranch).length > 0) {
             throw new Error(
@@ -2157,6 +2158,35 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
 
     this.#markActionApproved(action);
     this.#clearCaches();
+  }
+
+  /**
+   * Apply-time check that both branches of a merge request exist on GitLab, before it is asked to
+   * create one. GitLab cannot be relied on to refuse: its branch-existence validation is behind
+   * the `validate_merge_request_branch_existence` flag (18.11, off by default), so without it
+   * GitLab creates a merge request with no diff, and its processing of the push that later
+   * creates the branch can close that merge request as having lost its source branch. A branch a
+   * queued push creates means this was approved ahead of that push: it stays pending and applies
+   * once the push has. A push that only advances an existing branch is no reason to wait, since
+   * GitLab updates the merge request when its branch moves.
+   */
+  async #requireMergeRequestBranches(action: CreateMergeRequestAction): Promise<void> {
+    const projectPath = this.#projectPath();
+    const { sourceBranch, targetBranch } = action.options;
+    const branches = [["source", sourceBranch], ["target", targetBranch]] as const;
+    const found = await Promise.all(branches.map(([, branch]) =>
+      this.#withApi(api => api.getBranch(projectPath, branch))));
+    for (const [index, [role, branch]] of branches.entries()) {
+      if (found[index] !== null) continue;
+      if (this.#pendingPushActions(branch).length > 0) {
+        throw new Error(
+          `Cannot create this merge request yet: its ${role} branch "${branch}" is created by a queued ` +
+          `push that has not been applied. Approve the push to "${branch}" first, then approve this merge request.`);
+      }
+      throw new Error(
+        `Cannot create this merge request: its ${role} branch "${branch}" does not exist in ${projectPath}. ` +
+        `It may have been deleted since the merge request was queued.`);
+    }
   }
 
   async #updateIssuable(kind: EntityKind, realId: string, patch: {

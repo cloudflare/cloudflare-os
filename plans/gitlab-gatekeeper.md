@@ -678,8 +678,13 @@ in `github.ts` is the checklist. Divergences:
   `POST` with `labels` and pre-resolved `assignee_ids` likewise (title prefixed `Draft: ` when
   `draft` and not already prefixed), a `409` surfaced
   verbatim (the generic REST meaning is "a conflicting resource already exists" — an MR for these
-  branches), the GitHub "approve the push first" guard kept for a `400`/`409` when the source
-  branch has a queued push; `changeState` → `PUT {state_event}`; `addLabels`/`removeLabels` →
+  branches). Unlike GitHub, GitLab cannot be relied on to refuse a missing branch: its check is
+  behind the `validate_merge_request_branch_existence` flag (18.11, off by default), and without
+  it GitLab creates an MR with no diff that its processing of the push which then creates the
+  branch can close. So apply reads both branches live first, and refuses with "approve the push
+  first" (the action stays pending) when one is missing and a queued push creates it, or as
+  missing otherwise; the GitHub guard on a `400`/`409` stays for a queued push to an existing
+  source branch; `changeState` → `PUT {state_event}`; `addLabels`/`removeLabels` →
   `PUT {add_labels}` / `{remove_labels}` — atomic deltas, so a label a human added meanwhile is
   never clobbered; `previousLabels` is captured for revert; `postComment` → `POST …/notes`,
   revert info `{type: "note", kind, noteId}`;

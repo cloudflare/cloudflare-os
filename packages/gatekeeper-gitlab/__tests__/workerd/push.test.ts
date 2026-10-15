@@ -598,6 +598,77 @@ describe("applying a push", () => {
   });
 });
 
+/**
+ * GitLab does not refuse a merge request from a branch it lacks (that check is behind a flag, off
+ * by default): it creates one with no diff, and the push that then creates the branch can close
+ * it. So the fake accepts every create, as GitLab does; returns how many were sent.
+ */
+function acceptingCreates(gitlab: GitFake): () => number {
+  gitlab.on("POST", new RegExp(`^/api/v4/projects/${P}/merge_requests$`), () =>
+    json({ ...fx.mergeRequestResponse.data, iid: 200, source_project_id: 1, target_project_id: 1 }, { status: 201 }));
+  return () => gitlab.count("POST", new RegExp(`^/api/v4/projects/${P}/merge_requests$`));
+}
+
+describe("applying a merge request queued behind a push", () => {
+  it("stays pending, without creating it on GitLab, until the push that creates its branch applies", async () => {
+    const { gitlab, props, name } = await setup();
+    const creates = acceptingCreates(gitlab);
+    const cache = cacheWithChain().withCommit(OTHER, commitPayload(TREE1, [], "root"));
+    const push = await unwrap(await hooks().queueAction(name, props, "preparePush", ["feature", OTHER, false, stubOf(cache)], DESC));
+    const mr = await unwrap(await hooks().queueAction(name, props, "prepareCreateMergeRequest",
+      [{ title: "Feature", sourceBranch: "feature", targetBranch: "main" }], DESC));
+
+    // Approved out of order: refused before GitLab is asked, naming the push it waits on.
+    await expect(unwrap(await hooks().applyAction(name, props, mr.approvalId)))
+      .rejects.toThrow(/Approve the push to "feature" first, then approve this merge request/);
+    expect(creates()).toBe(0);
+
+    gitlab.respondToPush("unpack ok", "ok refs/heads/feature");
+    await unwrap(await hooks().applyAction(name, props, push.approvalId, stubOf(cache)));
+    gitlab.branches.set("feature", OTHER);
+    await unwrap(await hooks().applyAction(name, props, mr.approvalId));
+    expect(creates()).toBe(1);
+  });
+
+  it("waits on a queued push that creates its target branch too", async () => {
+    const { gitlab, props, name } = await setup();
+    const creates = acceptingCreates(gitlab);
+    gitlab.branches.set("feature", BASE);
+    const cache = cacheWithChain().withCommit(OTHER, commitPayload(TREE1, [], "root"));
+    await queuePush(name, props, "release", OTHER, false, cache);
+    const mr = await unwrap(await hooks().queueAction(name, props, "prepareCreateMergeRequest",
+      [{ title: "Feature", sourceBranch: "feature", targetBranch: "release" }], DESC));
+    await expect(unwrap(await hooks().applyAction(name, props, mr.approvalId)))
+      .rejects.toThrow(/Approve the push to "release" first/);
+    expect(creates()).toBe(0);
+  });
+
+  it("is refused, not created without a branch, when its branch was deleted after it was queued", async () => {
+    const { gitlab, props, name } = await setup();
+    const creates = acceptingCreates(gitlab);
+    gitlab.branches.set("feature", BASE);
+    const mr = await unwrap(await hooks().queueAction(name, props, "prepareCreateMergeRequest",
+      [{ title: "Feature", sourceBranch: "feature", targetBranch: "main" }], DESC));
+    gitlab.branches.delete("feature");
+    await expect(unwrap(await hooks().applyAction(name, props, mr.approvalId)))
+      .rejects.toThrow(/source branch "feature" does not exist in group\/sub\/project/);
+    expect(creates()).toBe(0);
+  });
+
+  it("applies ahead of a queued push to a branch that already exists", async () => {
+    // GitLab updates an open merge request when its existing source branch moves, so a push that
+    // only advances the branch is no reason to hold the merge request back.
+    const { gitlab, props, name } = await setup();
+    const creates = acceptingCreates(gitlab);
+    gitlab.branches.set("feature", BASE);
+    await queuePush(name, props, "feature", HEAD1, false, cacheWithChain());
+    const mr = await unwrap(await hooks().queueAction(name, props, "prepareCreateMergeRequest",
+      [{ title: "Feature", sourceBranch: "feature", targetBranch: "main" }], DESC));
+    await unwrap(await hooks().applyAction(name, props, mr.approvalId));
+    expect(creates()).toBe(1);
+  });
+});
+
 describe("rejecting a push", () => {
   it("cascades to a queued merge request whose source branch the push would have created", async () => {
     const { props, name } = await setup();
