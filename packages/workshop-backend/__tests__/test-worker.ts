@@ -2,6 +2,8 @@
 // the real Durable Objects and callbacks) plus test-only entrypoints that stand in for other Workers.
 
 import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint, restore } from "cloudflare:workers";
+import type { AgentContext, AgentTurnEvent, AgentTurnInfo, AgentTurnParticipant,
+  GatekeeperActionContext } from "@gadgets/workshop-shared/agent-integration";
 import type {
   AccountDescription,
   AppUiContext,
@@ -80,6 +82,39 @@ export class FakeGatekeeperVerifier
     implements GatekeeperUserVerifier {
   identify(): string {
     return this.ctx.props.name;
+  }
+}
+
+const lifecycleCalls = new Map<string, {fail: boolean; reregister: boolean;
+  calls: {event: AgentTurnEvent; turn: AgentTurnInfo}[]}>();
+
+/** Native persistent entrypoint, minted by the same DO invocation which stores it. */
+export class TestLifecycleParticipant extends WorkerEntrypoint<unknown, {name: string}>
+    implements AgentTurnParticipant {
+  #state() {
+    let state = lifecycleCalls.get(this.ctx.props.name);
+    if (!state) lifecycleCalls.set(this.ctx.props.name, state = {fail: false, reregister: false, calls: []});
+    return state;
+  }
+  async onAgentTurnEvent(event: AgentTurnEvent, context: RpcStub<AgentContext>): Promise<void> {
+    using borrowed = context;
+    this.#state().calls.push({event, turn: await borrowed.getTurn()});
+    if (this.#state().reregister && event.kind !== "finished" && event.kind !== "suspended") {
+      const exports = this.ctx.exports as typeof this.ctx.exports & {
+        TestLifecycleParticipant(options: {props: {name: string}}): Fetcher<TestLifecycleParticipant>;
+      };
+      await borrowed.participate(exports.TestLifecycleParticipant({props: this.ctx.props}));
+    }
+    if (this.#state().fail) throw new Error("Reply lost after receiver handled event");
+  }
+  setFailure(fail: boolean): void { this.#state().fail = fail; }
+  setReregister(): void { this.#state().reregister = true; }
+  calls(): {event: AgentTurnEvent; turn: AgentTurnInfo}[] { return this.#state().calls; }
+  async actionTurn(context: RpcStub<GatekeeperActionContext>): Promise<AgentTurnInfo | null> {
+    using borrowed = context;
+    using _cache = await borrowed.getGitCache();
+    using agent = await borrowed.getAgentContext();
+    return agent ? await agent.getTurn() : null;
   }
 }
 

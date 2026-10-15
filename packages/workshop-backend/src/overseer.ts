@@ -14,6 +14,7 @@ import type { ListOptions } from "@gadgets/typed-storage";
 import {
   actionLastChangedKey, chatChangeClientKey, chatKey, chatKeyPrefix, makeOverseerStorage,
   type ActionRecord, type ActiveAgentRecord, type AgentSpawnerBindingProps,
+  type AgentIntegrationOrigin,
   type AiChatAgentContext, type BindingRecord,
   type BlueprintGadgetRecord, type BoundHookRecord, type ChatBindingEntry,
   type ChatChangeBoundaryRecord, type ChatChangeRecord, type CompactionCheckpoint,
@@ -28,7 +29,7 @@ import {
 } from "./git-store";
 import { GitCacheImpl, WorkspaceGitCache } from "./git-cache";
 import {
-  OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToBlueprintUpstreams,
+  OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToBlueprintUpstreams, migrateToAgentIntegrations,
   migrateToGitStorage, migrateToMultiGadget, migrateToWorkpieceTypes,
 } from "./storage-schema/overseer-migrations";
 import type { Usage } from "@earendil-works/pi-ai";
@@ -46,6 +47,8 @@ import {
 } from "./ai-gateway";
 import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
+import type { AgentContext } from "@gadgets/workshop-shared/agent-integration";
+import { AgentIntegrations, GatekeeperActionContextImpl, agentIntegrationGrant } from "./agent-integration";
 import { GitImpl } from "./git-binding";
 import { GadgetExportsImpl } from "./exports-session";
 import { scanWorkpieceForGrep, type GrepScan } from "./grep";
@@ -680,6 +683,7 @@ type SessionKind = CollaboratorRole | "owner";
 
 class OverseerImpl implements AgentHooks {
   public storage: OverseerStorage;
+  readonly integrations: AgentIntegrations;
   readonly logger: ReturnType<typeof createWorkshopLogger>;
 
   // Identifies this DO instance. Sent to chat subscribers so they can detect a full server
@@ -920,6 +924,20 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
+  closeAgentsForDeletion(): void {
+    this.storage.transaction(() => {
+      this.storage.deleting.put(true);
+      // Buffer before writes (including lifecycle subscribers), preserving the single KV cursor.
+      for (const call of Array.from(this.storage.pendingAgentCalls.list())) this.storage.pendingAgentCalls.deleteRecord(call);
+      for (const row of Array.from(this.storage.activeAgents.list())) {
+        this.storage.activeAgents.delete(row.chatId);
+        const meta = this.storage.chatMeta.get(row.chatId);
+        if (meta?.activeAgent) { delete meta.activeAgent; this.storage.chatMeta.put(meta); }
+      }
+    });
+    this.destroyAllLiveChats();
+  }
+
   // Register a newly-started (or resumed) agent turn. Called at the start of `startAgent` /
   // `#resumeAgent`, in the same synchronous step that sets `chatMeta.activeAgent` and writes the
   // `activeAgents` record, so that the three representations of "an agent is running for this chat"
@@ -936,6 +954,10 @@ class OverseerImpl implements AgentHooks {
   #unregisterRunningAgent(chatId: number, retainRecord = false) {
     this.#runningAgents.delete(chatId);
     if (!retainRecord) this.storage.activeAgents.delete(chatId);
+    else if (!this.storage.chatMeta.get(chatId)?.activeAgent) {
+      const row = this.storage.activeAgents.get(chatId);
+      if (row) this.integrations.emit(row, "suspended");
+    }
     this.#updateAlarm();
     if (this.#runningAgents.size === 0) {
       // One -> zero running agents: wake any `alarm()` waiter.
@@ -958,6 +980,8 @@ class OverseerImpl implements AgentHooks {
     if (this.#inAlarmHandler) return;
 
     let times: number[] = [];
+    const delivery = [...this.storage.agentParticipants.retryAt.list({limit: 1})][0];
+    if (delivery?.retryAt !== undefined) times.push(delivery.retryAt);
 
     // Outstanding agent work: see #agentKeepAliveTime for why it is set once and held.
     let hasAgentWork = this.#runningAgents.size > 0 ||
@@ -1005,6 +1029,9 @@ class OverseerImpl implements AgentHooks {
     this.#inAlarmHandler = true;
     this.#scheduledAlarm = undefined; // A success recomputes the next alarm from settled state.
     let failed = false;
+    // The shared alarm may await a long-running turn. Delivery retries must not wait behind it;
+    // the outbox/deadline, not this disposable timer, remains the recovery authority.
+    const deliveryTimer = setInterval(() => this.ctx.waitUntil(this.integrations.deliverDue()), 30_000);
     try {
       do {
         this.#resumeInterruptedAgents();
@@ -1012,6 +1039,7 @@ class OverseerImpl implements AgentHooks {
           this.waitForAllAgentsToComplete(),
           this.drainAllPendingAgentCalls(),
           this.deliverReadyExternalMessageResponses(),
+          this.integrations.deliverDue(),
         ]);
         for (let result of results) {
           if (result.status === "rejected") throw result.reason;
@@ -1022,6 +1050,7 @@ class OverseerImpl implements AgentHooks {
       failed = true;
       throw error;
     } finally {
+      clearInterval(deliveryTimer);
       this.#inAlarmHandler = false;
       this.#agentKeepAliveTime = undefined;
       if (!failed || retryCount >= ALARM_MAX_RETRIES) {
@@ -1174,6 +1203,11 @@ class OverseerImpl implements AgentHooks {
   constructor(public ctx: DurableObjectState, public env: Cloudflare.Env) {
     this.logger = logger.with({ gadgetId: ctx.id.toString() });
     this.storage = makeOverseerStorage(ctx.storage);
+    this.integrations = new AgentIntegrations(this, () => {
+      this.#updateAlarm();
+      // Defer RPC until the transaction that wrote the receipt has closed.
+      this.ctx.waitUntil(Promise.resolve().then(() => this.integrations.deliverDue()));
+    });
     this.gitStore = new GitStore(this.storage.gitObjects);
     this.gitCache = new WorkspaceGitCache(this.storage, {
       pull: (gatekeeperId, oids, hints) => this.#pullGitObjects(gatekeeperId, oids, hints),
@@ -1210,6 +1244,7 @@ class OverseerImpl implements AgentHooks {
       migrateToActionIndexes(this);
       migrateToWorkpieceTypes(this);
       migrateToBlueprintUpstreams(this);
+      migrateToAgentIntegrations(this);
       // Do not replace an existing alarm during constructor recovery: setAlarm would reset the
       // platform's retry budget. Cache its time before registering any recovered executions.
       this.#scheduledAlarm = await this.ctx.storage.getAlarm();
@@ -1226,6 +1261,7 @@ class OverseerImpl implements AgentHooks {
   // before any blocked event is delivered, so at the start of the alarm handler
   // it'll recognize that agents are running and wait for them.
   #resumeInterruptedAgents(): void {
+    if (this.storage.deleting.get()) { this.closeAgentsForDeletion(); return; }
     for (let record of Array.from(this.storage.activeAgents.list())) {
       if (this.#runningAgents.has(record.chatId)) continue;
       if (!this.storage.chatMeta.get(record.chatId)?.activeAgent) {
@@ -2512,6 +2548,7 @@ class OverseerImpl implements AgentHooks {
       overseerId: this.ctx.id.toString(),
       target,
       caller,
+      integrationOrigin: target.type === "gatekeeper" ? this.captureIntegrationOrigin(caller, target.id) : undefined,
     };
     return this.ctx.exports.GatekeeperLoopback({props});
   }
@@ -4885,8 +4922,17 @@ class OverseerImpl implements AgentHooks {
       // The apply-time cache stub is scoped to the gatekeeper AND to this action (approval can
       // happen long after the session that queued it, so the queue-time stub is gone) -- the
       // binding that makes buildPack() serve exactly this action's pending-push closure.
-      await gatekeeper.applyAction(record.action,
-          new GitCacheImpl(this.gitCache, record.gatekeeperId, record.id));
+      if (record.contextualApply) {
+        if (!this.integrationGrant(record.gatekeeperId).contextualActions) {
+          throw new Error("Contextual action access revoked; legacy dispatch is not a fallback.");
+        }
+        using context = new GatekeeperActionContextImpl(this, record);
+        await (gatekeeper as Fetcher<Gatekeeper<any> &
+          Required<Pick<Gatekeeper<any>, "applyActionInContext">>>).applyActionInContext(record.action, context);
+      } else {
+        await gatekeeper.applyAction(record.action,
+            new GitCacheImpl(this.gitCache, record.gatekeeperId, record.id));
+      }
     }
     record.state = "approved";
     record.appliedAt = new Date();
@@ -5099,7 +5145,8 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Open the session behind a binding loopback.
-  startGatekeeperSession(target: BindingLoopbackTarget, caller: GatekeeperCaller): Promise<any> {
+  startGatekeeperSession(target: BindingLoopbackTarget, caller: GatekeeperCaller,
+      integrationOrigin?: AgentIntegrationOrigin): Promise<any> {
     switch (target.type) {
       case "gadget": {
         if (caller.from === "agent") {
@@ -5111,7 +5158,7 @@ class OverseerImpl implements AgentHooks {
 
       case "gatekeeper":
         return this.getGatekeeperFacet(target.id)
-            .then(facet => this.openGatekeeperSession(target.id, facet, caller));
+            .then(facet => this.openGatekeeperSession(target.id, facet, caller, integrationOrigin ?? null));
 
       case "worktree": {
         // The programmatic Worktree binding (worktree-session.ts). A worktree's uncommitted
@@ -5803,8 +5850,10 @@ class OverseerImpl implements AgentHooks {
   }
 
   async submitAction(gatekeeperId: number, action: number | "create",
-                     description: ActionDescription, caller: GatekeeperCaller)
+                     description: ActionDescription, caller: GatekeeperCaller,
+                     integrationOrigin?: AgentIntegrationOrigin)
       : Promise<void> {
+    if (integrationOrigin) this.integrations.turn(integrationOrigin, "running");
     // An in-flight facet RPC can outlive removeGatekeeper, and a pending action on a removed
     // connection could never be approved or rejected (both dereference the facet).
     let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
@@ -5850,6 +5899,10 @@ class OverseerImpl implements AgentHooks {
       type: "action",
       description
     };
+    if (action !== "create" && this.integrationGrant(gatekeeperId).contextualActions) {
+      record.contextualApply = true;
+      record.integrationOrigin = integrationOrigin;
+    }
 
     // The marking walk stamps the verified push closure "pending push" -- the read grant that
     // lets the gatekeeper simulate the queued push -- in the same transaction that persists the
@@ -6256,11 +6309,27 @@ class OverseerImpl implements AgentHooks {
   // startGatekeeperSession alike -- passes through here, so this is where a connection still
   // blocked pending a scope-widening restart is refused (see #gatekeepersPendingRestart).
   openGatekeeperSession<Session extends RpcCompatible<Session>>(
-      id: number, facet: Fetcher<Gatekeeper<Session>>, caller: GatekeeperCaller)
+      id: number, facet: Fetcher<Gatekeeper<Session>>, caller: GatekeeperCaller,
+      integrationOrigin: AgentIntegrationOrigin | null | undefined = this.captureIntegrationOrigin(caller, id))
       : Promise<RpcStub<Session>> {
     this.assertGatekeeperUsable(id);
+    if (integrationOrigin) this.integrations.checkContext(id, integrationOrigin, "running");
     // @ts-expect-error TODO: Remove annotation when Cap'n Web fixes cyclic type issues
-    return facet.startSession(new ApprovalQueueImpl(this, id, caller));
+    return facet.startSession(new ApprovalQueueImpl(this, id, caller, undefined, integrationOrigin ?? undefined));
+  }
+
+  integrationGrant(gatekeeperId: number) {
+    if (this.storage.deleting.get()) return {};
+    this.assertGatekeeperUsable(gatekeeperId);
+    const record = this.storage.gatekeepers.get(gatekeeperId);
+    const vendorId = record && gatekeeperVendorId(record);
+    return vendorId ? agentIntegrationGrant(this.env.AGENT_INTEGRATION_GRANTS, vendorId) : {};
+  }
+
+  captureIntegrationOrigin(caller: GatekeeperCaller, gatekeeperId: number): AgentIntegrationOrigin | undefined {
+    if (caller.from !== "agent") return;
+    const grant = this.integrationGrant(gatekeeperId);
+    if (grant.lifecycle || grant.contextualActions) return this.integrations.capture(caller.chatId);
   }
 
   // Sessions are authorized and verified only at open(), so widening what a live session's holder
@@ -7055,6 +7124,7 @@ class OverseerImpl implements AgentHooks {
              initiator: AiChatAuthorInfo, initiatorUserId: string,
              callbackInitiated: boolean = false,
              keepAlive: boolean = false): void {
+    if (this.storage.deleting.get()) throw new Error("Workspace deletion is in progress.");
     // Register before starting the turn so registration always precedes the turn's teardown
     // (`#unregisterRunningAgent`, in `#runAgentTurn`'s finally).
     this.#registerRunningAgent(chatId);
@@ -7098,6 +7168,8 @@ class OverseerImpl implements AgentHooks {
     // reflects the spend this turn just incurred, rather than waiting for the cache TTL to lapse.
     let byokOwnerStub: DurableObjectStub<UserDurableObject> | undefined;
     let finished = false;
+    let lifecycleReady = false;
+    let lifecycleDeferred = false;
     let startedAt = Date.now();
     const turnLogger = this.logger.with({
       operation: "agent.run",
@@ -7109,6 +7181,14 @@ class OverseerImpl implements AgentHooks {
     });
 
     try {
+      await this.integrations.drain(chatId);
+      if (!owns()) return;
+      liveChat.cancelController.signal.throwIfAborted();
+      this.integrations.enter(chatId);
+      await this.integrations.drain(chatId);
+      if (!owns()) return;
+      liveChat.cancelController.signal.throwIfAborted();
+      lifecycleReady = true;
       // The trace span covers the turn's setup and run, not the teardown below, which can start the
       // chat's next turn.
       await traceAgentTurn(this.getChatAgentContext(chatId), liveChat.cancelController.signal,
@@ -7180,6 +7260,13 @@ class OverseerImpl implements AgentHooks {
       });
     } catch (err: unknown) {
       if (!owns()) return;
+      if (!lifecycleReady && !liveChat.cancelController.signal.aborted) {
+        lifecycleDeferred = true;
+        turnLogger.warn("agent entry awaiting lifecycle delivery", {
+          event: "agent.lifecycle.entry.deferred", error: err,
+        });
+        return;
+      }
       // A failed model request surfaces as AgentTurnError (pi reports provider failures as data;
       // runAgent converts them back to a throw), carrying the failing request's HTTP status when
       // one was observed.
@@ -7214,7 +7301,11 @@ class OverseerImpl implements AgentHooks {
 
       this.postAgentErrorMessage(chatId, aiModel.profile, errorMessage);
     } finally {
-      if (owns()) {
+      if (owns() && lifecycleDeferred) {
+        // Keep #797's runnable row/busy marker. The existing alarm retries this entry without
+        // issuing inference or inventing another continuation state.
+        this.#unregisterRunningAgent(chatId, true);
+      } else if (owns()) {
         // If this turn billed the user's own Cloudflare account, refresh their cached balance now (in
         // the background) so the next turn's billing decision reflects the spend just incurred. Runs
         // on both the success and error paths — an "insufficient funds" failure is exactly when an
@@ -7268,7 +7359,7 @@ class OverseerImpl implements AgentHooks {
   async deliverAgentCallback(
       chatId: number, methodName: string, args: unknown[],
       initiatorUserId: string, initiatorModelId: string | null): Promise<void> {
-    if (!this.ownerId) throw new Error("Workspace has been deleted.");
+    if (!this.ownerId || this.storage.deleting.get()) throw new Error("Workspace has been deleted or is being deleted.");
 
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) throw new Error("No such chatId: " + chatId);
@@ -8997,6 +9088,7 @@ class OverseerImpl implements AgentHooks {
   // No await: the decision, its model-visible note, busy state, execution row and alarm all
   // precede model lookup. Live resumption and restart recovery then use the same #resumeAgent.
   resumeAgentAfterDecision(chatId: number, decisionId?: number | string): void {
+    if (this.storage.deleting.get()) return;
     let meta = this.storage.chatMeta.get(chatId);
     if (meta?.activeAgent) return; // Teardown rechecks after releasing this execution.
     let record = this.storage.activeAgents.get(chatId);
@@ -10503,8 +10595,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async startGatekeeperSession(
-      target: BindingLoopbackTarget, caller: GatekeeperCaller): Promise<any> {
-    return this.impl.startGatekeeperSession(target, caller);
+      target: BindingLoopbackTarget, caller: GatekeeperCaller,
+      integrationOrigin?: AgentIntegrationOrigin): Promise<any> {
+    return this.impl.startGatekeeperSession(target, caller, integrationOrigin);
   }
 
   startGatekeeperHook(id: number): NativeRpcStub<RpcTarget> {
@@ -10672,6 +10765,7 @@ type GatekeeperLoopbackProps = {
   target: BindingLoopbackTarget;
 
   caller: GatekeeperCaller;
+  integrationOrigin?: AgentIntegrationOrigin;
 };
 
 type BindingLoopbackTarget = {
@@ -10715,7 +10809,7 @@ export class GatekeeperLoopback extends WorkerEntrypoint<Cloudflare.Env, Gatekee
 
     // @ts-ignore: LSP-only RPC types bug, "type instantiation is excessively deep"
     let session = stub.startGatekeeperSession(
-        this.ctx.props.target, this.ctx.props.caller);
+        this.ctx.props.target, this.ctx.props.caller, this.ctx.props.integrationOrigin);
 
     return new Proxy(session, {
       get(target, prop, receiver) {
@@ -11234,7 +11328,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     }
     let startedAt = Date.now();
 
-    this.impl.destroyAllLiveChats();
+    this.impl.closeAgentsForDeletion();
+    await this.impl.integrations.drain();
     // TODO: Revoke user sessions.
 
     // Disable all enabled hooks so that the gatekeepers stop delivering events to this gadget.
@@ -13278,28 +13373,40 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
   // containsRestrictedData). Session queues (openGatekeeperSession) pass no hookId: they are
   // bounded by the facet's in-DO lifetime, which the session chokepoints already gate.
   constructor(private impl: OverseerImpl, private gatekeeperId: number,
-              private caller: GatekeeperCaller, private hookId?: number) {
+              private caller: GatekeeperCaller, private hookId?: number,
+              private integrationOrigin?: AgentIntegrationOrigin) {
     super();
   }
 
-  authorizeObservation(description: ObservationDescription): Promise<void> {
+  #check() {
     if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
+    if (this.integrationOrigin) this.impl.integrations.checkContext(this.gatekeeperId, this.integrationOrigin, "running");
+  }
+
+  async getAgentContext(): Promise<AgentContext | null> {
+    this.#check();
+    return this.impl.integrations.context(this.gatekeeperId, this.integrationOrigin);
+  }
+
+  authorizeObservation(description: ObservationDescription): Promise<void> {
+    this.#check();
     return this.impl.authorizeObservation(this.gatekeeperId, description, this.caller);
   }
 
   async getGitCache(): Promise<GitCache> {
+    this.#check();
     return new GitCacheImpl(this.impl.gitCache, this.gatekeeperId);
   }
 
   submitAction(action: number, description: ActionDescription): Promise<void> {
-    if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
-    return this.impl.submitAction(this.gatekeeperId, action, description, this.caller);
+    this.#check();
+    return this.impl.submitAction(this.gatekeeperId, action, description, this.caller, this.integrationOrigin);
   }
 
   bindHook<Hook extends RpcTarget>(
         controller: Fetcher<HookController<Hook>>, callback: NativeRpcStub<Hook>,
         description: HookDescription): Promise<void> {
-    if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
+    this.#check();
     return this.impl.bindHook(this.gatekeeperId, controller, callback, description, this.caller);
   }
 }

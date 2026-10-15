@@ -34,6 +34,7 @@ import type {
   HookDescription, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { SpawnCallableOptions } from "../agent-spawner-binding";
+import type { AgentTurnEvent, AgentTurnParticipant } from "@gadgets/workshop-shared/agent-integration";
 
 // =======================================================================================
 // Workpieces
@@ -427,6 +428,10 @@ export type ActionRecord = {
   description: ActionDescription;
   resolvedBy?: AiChatAuthorInfo;  // set when resolved (approved/rejected); absent while pending (or legacy)
   autoApproved?: boolean;         // set when applied by an auto-approval rule rather than a human
+  /** Captured at submission; a later prompt must never supply this action's context. */
+  integrationOrigin?: AgentIntegrationOrigin;
+  /** Dispatch choice fixed at queue time; revocation fails closed without legacy fallback. */
+  contextualApply?: true;
 } | {
   type: "observation";
   description: ObservationDescription;
@@ -748,6 +753,23 @@ export type ActiveAgentRecord = {
   callbackInitiated: boolean;
   /** Model-lookup attempts since the last successful preparation, bounded across DO resets. */
   resumeAttempts?: number;
+  /** Optional identity for integrations; readiness and progress still come from the chat log. */
+  integration?: {turnId: string; segmentId: string};
+};
+
+/** A capability's original scope, never inferred from whichever prompt happens to run later. */
+export type AgentIntegrationOrigin = {chatId: number; turnId: string; segmentId: string};
+
+/** Delivery receipts only: no copy of turn progress, waits, model, caller, or execution status. */
+export type AgentParticipantRecord = {
+  id: string;
+  chatId: number;
+  gatekeeperId: number;
+  turnId: string;
+  participant: Fetcher<AgentTurnParticipant>;
+  pending: AgentTurnEvent[];
+  lastEvent?: string;
+  retryAt?: number;
 };
 
 /**
@@ -1142,6 +1164,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
     singletons: {
       // Initialized on first startup.
       ownerId: <string | undefined>undefined,
+      // A failed lifecycle cleanup leaves deletion retryable, but must not restart agent work.
+      deleting: false,
 
       // Version of this DO's storage schema, gating lazy migrations. Used to trigger migrations
       // at construction time.
@@ -1171,6 +1195,7 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //       where the chat log still told: those an agent created from a blueprint name it,
       //       and those created from scratch name none. Every gadget created from here on has
       //       an `upstream` once it is permanent.
+      //   6 = optional integration identities and an initially empty lifecycle callback outbox.
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)
@@ -1383,6 +1408,14 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // `ActiveAgentRecord`.
       activeAgents: collection<ActiveAgentRecord>()({
         primaryKey: "chatId"
+      }),
+
+      agentParticipants: collection<AgentParticipantRecord>()({
+        primaryKey: "id",
+        nonUniqueIndexes: {
+          byChat: (r: AgentParticipantRecord) => r.chatId,
+          retryAt: (r: AgentParticipantRecord) => r.retryAt ?? null,
+        },
       }),
 
       gadgetResponseDeliveries: collection<ExternalMessageRecord>()({
