@@ -152,7 +152,7 @@ const Navigator = (props: HierarchyPickerProps) => {
   // What opening the location selected: itself, or nothing. Choosing the selected leaf again returns
   // to it, so unchoosing never selects more than the user had.
   const [openedWith, setOpenedWith] = useState<Item | null>(
-    () => value === root.id ? asContainer(root) : null);
+    () => value === root.id && root.selectable === true ? asContainer(root) : null);
   const listRef = useRef<HTMLDivElement>(null);
   const focusFirstRow = useRef(false);
   // Bumped whenever the listing a response would update is replaced, so a late page is dropped.
@@ -174,7 +174,7 @@ const Navigator = (props: HierarchyPickerProps) => {
         if (item) {
           setChosen(item);
           setLocation(locationOf(item));
-          setOpenedWith(item.kind === "container" ? item : null);
+          setOpenedWith(item.kind === "container" && item.selectable ? item : null);
         }
         setPendingPrefill(null);
       }, error => {

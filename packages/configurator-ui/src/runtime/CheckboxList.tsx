@@ -72,9 +72,9 @@ const NamedCheckboxList = ({
   // An inline `loadOptions` is new on every render, and must not reload.
   const load = useEffectEvent(loadOptions);
 
+  // Followed even when it has settled: it may have done so since this render read the cache.
   useEffect(() => {
-    const { promise, options } = startLoad(store, name, load);
-    if (options) return;
+    const { promise } = startLoad(store, name, load);
     let cancelled = false;
     promise.then(loaded => {
       if (!cancelled) setLoad({ status: "ready", options: loaded });

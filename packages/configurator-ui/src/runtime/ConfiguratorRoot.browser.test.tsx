@@ -218,6 +218,22 @@ describe("CheckboxList", () => {
     expect(load.mock.calls).toEqual([["a"], ["b"]]);
   });
 
+  // Preact runs effects a frame after it renders, and a load can settle in between.
+  it("shows a load in flight that settles between its name's render and effect", async () => {
+    const pending = deferred<ConfiguratorUIOption[]>();
+    const load = vi.fn((server: string) => server === "a" ? pending.promise : Promise.resolve(tools));
+    const { session } = await mount(serverToolsSpec(load));
+    await act(() => session.store.setValues({ server: "b" }));
+    await expect.element(page.getByRole("checkbox", { name: "Tool 1", exact: true })).toBeVisible();
+
+    // Outside act, which would run the effect before the load could settle.
+    session.store.setValues({ server: "a" });
+    await Promise.resolve();
+    expect(page.getByText("Loading...").elements()).toHaveLength(1);
+    pending.resolve(tools);
+    await expect.element(page.getByRole("checkbox", { name: "Tool 1", exact: true })).toBeVisible();
+  });
+
   it("starts a list with a new name unfiltered, and gives a name it had before its filter back", async () => {
     const { session } = await mount(serverToolsSpec(async server => tools.map(tool => ({ ...tool, title: `${server} ${tool.title}` }))));
     const filter = page.getByRole("searchbox", { name: "Filter options" });
@@ -353,5 +369,20 @@ describe("Autocomplete", () => {
     spec.initial = { folderId: "F1" };
     await mount(spec, { folderId: "F1" });
     await expect.element(input()).toHaveValue("F1");
+  });
+
+  // Preact runs effects a frame after it renders, and a click can land in between.
+  it("keeps the focus it was given before its first effects ran", async () => {
+    const spec = autocompleteSpec(folders);
+    const session = createSession({ spec, ui: null, store: createConfiguratorStore(spec.initial) }, () => {});
+    container = document.body.appendChild(document.createElement("div"));
+    root = createRoot(container);
+    // Outside act, which would run the effects at once.
+    root.render(<ConfiguratorRoot session={session} />);
+    const field = input().element() as HTMLInputElement;
+    field.focus();
+    // Preact flushes effects in a task its next animation frame queues; this one is queued after it.
+    await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve)));
+    expect(document.activeElement).toBe(field);
   });
 });
