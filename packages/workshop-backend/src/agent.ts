@@ -2681,7 +2681,7 @@ async function runAgentPass(
       }
 
       case "agentNudge":
-        // Obsolete: no longer emitted, replayed for old chat logs only.
+        // A decision resume's durable handoff, without impersonating a new user prompt.
         modelMessages.push({ role: "user", content: msg.text, timestamp: msgTimestamp });
         break;
 

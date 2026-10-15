@@ -100,7 +100,7 @@ const RETRY_JITTER_MS = 250;
  * storage-timeout resets arrive in), a deliberate divergence from the never-retry-`overloaded`
  * guidance in the error-handling docs linked above. Bare `retryable` (connection lost to a
  * possibly-live object) retries only if it isn't shedding load. */
-function shouldRetryAfterReset(e: unknown): boolean {
+export function shouldRetryAfterReset(e: unknown): boolean {
   if (typeof e !== "object" || e === null) return false;
   const flags = e as { durableObjectReset?: unknown; retryable?: unknown; overloaded?: unknown };
   if (flags.durableObjectReset === true) return true;

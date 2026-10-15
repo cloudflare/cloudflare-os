@@ -720,9 +720,9 @@ export type CompactionCheckpoint = {
 
 /**
  * Server-only record describing an in-progress agent turn, enabling resumption after a server
- * restart. Keyed by chatId. A record is present (mirroring `chatMeta.activeAgent`) for exactly as
- * long as an agent turn is, or should be, running. On startup, the set of these records identifies
- * which agents were interrupted by a restart and need to be resumed.
+ * restart. Keyed by chatId. `chatMeta.activeAgent` identifies runnable records; a paused turn
+ * retains its record (and original authority) until its logged decisions are ready. No separate
+ * wait state is stored: the chat log already contains the requests and their outcomes.
  *
  * Note we deliberately do NOT store the resolved `AiModelConfig` here, because it contains a secret
  * API token. Instead we store enough to re-fetch it from the initiator's user DO on resume.

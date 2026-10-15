@@ -77,7 +77,7 @@ import { AutoApprovalDrainer, autoApprovalRule } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
-import { isLoopLimitError, retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
+import { isLoopLimitError, retryOnDoReset, shouldRetryAfterReset, wrapDoStubForTelemetry } from "./do-retry";
 import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
 import type { CreationApproval, GadgetExportFormat } from "@gadgets/workshop-shared/api";
 import {
@@ -694,6 +694,10 @@ class OverseerImpl implements AgentHooks {
   // #agentKeepAliveTime) and lets `alarm()` wait for all agents to finish.
   #runningAgents = new Set<number>();
 
+  // A failed replay-safe model lookup hands the existing row back to the alarm. The platform's
+  // retryCount bounds retries; no timer or new durable retry state is needed.
+  #resumeErrors = new Map<number, unknown>();
+
   // Ambient connections whose getAgentCatalog() answered null, which the contract makes permanent
   // for the connection. Held in memory only: a gatekeeper that gains a catalog in a later version
   // is asked again on the next activation, so every chat converges. Ids are never reused, so an
@@ -717,6 +721,8 @@ class OverseerImpl implements AgentHooks {
 
   // True while alarm() runs (see runAlarmTasks); #updateAlarm defers to its end.
   #inAlarmHandler = false;
+  #alarmRetryCount = 0;
+  #scheduledAlarm: number | null | undefined;
 
   // Drains of pending agent calls currently in flight, by chat (see drainPendingAgentCalls).
   #pendingCallDrains = new Map<number, Promise<void>>();
@@ -863,6 +869,14 @@ class OverseerImpl implements AgentHooks {
   // (Undelivered calls to the agent live in storage -- `pendingAgentCalls` -- not here; deleteChat
   // removes them itself.)
   destroyLiveChat(chatId: number) {
+    this.#resumeErrors.delete(chatId);
+    this.#unregisterRunningAgent(chatId);
+    let meta = this.storage.chatMeta.get(chatId);
+    if (meta?.activeAgent) {
+      delete meta.activeAgent;
+      this.storage.chatMeta.put(meta);
+      this.#updateAlarm();
+    }
     let ctx = this.#liveChats.get(chatId);
     if (!ctx) return;
 
@@ -888,14 +902,13 @@ class OverseerImpl implements AgentHooks {
     this.#updateAlarm();
   }
 
-  // Tear down all bookkeeping for a finished agent turn: remove it from the in-memory registry,
-  // delete its persistent `activeAgents` record, and recompute the alarm. MUST be called
-  // synchronously together with clearing `chatMeta.activeAgent`, so that the moment the chat is
-  // observably idle, no stale records of the previous agent remain (which would otherwise
-  // interfere if the user immediately starts a new agent).
-  #unregisterRunningAgent(chatId: number) {
+  // Release a running execution and recompute the alarm. A decision pause or retryable model
+  // lookup retains the existing record; completion deletes it. MUST be called
+  // synchronously together with clearing `chatMeta.activeAgent`. An idle retained row is only
+  // the original authority for the log's current decision; starting new work replaces it.
+  #unregisterRunningAgent(chatId: number, retainRecord = false) {
     this.#runningAgents.delete(chatId);
-    this.storage.activeAgents.delete(chatId);
+    if (!retainRecord) this.storage.activeAgents.delete(chatId);
     this.#updateAlarm();
     if (this.#runningAgents.size === 0) {
       // One -> zero running agents: wake any `alarm()` waiter.
@@ -920,6 +933,7 @@ class OverseerImpl implements AgentHooks {
 
     // Outstanding agent work: see #agentKeepAliveTime for why it is set once and held.
     let hasAgentWork = this.#runningAgents.size > 0 ||
+        [...this.storage.activeAgents.list()].some(r => this.storage.chatMeta.get(r.chatId)?.activeAgent) ||
         Array.from(this.storage.pendingAgentCalls.list({ limit: 1 })).length > 0;
     if (!hasAgentWork) {
       this.#agentKeepAliveTime = undefined;
@@ -941,11 +955,11 @@ class OverseerImpl implements AgentHooks {
       times.push(nextDeliveredRecord.deliveredAt + AGENT_RESPONSE_DELIVERED_RETENTION_MS);
     }
 
-    if (times.length > 0) {
-      this.ctx.storage.setAlarm(Math.min(...times));
-    } else {
-      this.ctx.storage.deleteAlarm();
-    }
+    let next = times.length > 0 ? Math.min(...times) : null;
+    if (next === this.#scheduledAlarm) return;
+    this.#scheduledAlarm = next;
+    if (next === null) this.ctx.storage.deleteAlarm();
+    else this.ctx.storage.setAlarm(next);
   }
 
   // The body of the alarm handler: perform every concern the alarm exists for, together, and hold
@@ -958,10 +972,14 @@ class OverseerImpl implements AgentHooks {
   // here; the recompute at the end re-arms the alarm for them, starting a fresh keep-alive period
   // from now rather than re-firing on the time that has just passed. A delivery failure is
   // rethrown once everything else has settled, so the platform retries the alarm.
-  async runAlarmTasks(): Promise<void> {
+  async runAlarmTasks(retryCount = 0): Promise<void> {
     this.#inAlarmHandler = true;
+    this.#alarmRetryCount = retryCount;
+    this.#scheduledAlarm = undefined; // A success recomputes the next alarm from settled state.
+    let failed = false;
     try {
       do {
+        this.#resumeInterruptedAgents();
         let results = await Promise.allSettled([
           this.waitForAllAgentsToComplete(),
           this.drainAllPendingAgentCalls(),
@@ -970,11 +988,16 @@ class OverseerImpl implements AgentHooks {
         for (let result of results) {
           if (result.status === "rejected") throw result.reason;
         }
+        if (this.#resumeErrors.size > 0) throw this.#resumeErrors.values().next().value;
       } while (this.#runningAgents.size > 0 || this.#pendingCallDrains.size > 0);
+    } catch (error) {
+      failed = true;
+      throw error; // Leave the failed alarm to the platform's bounded retry/backoff.
     } finally {
       this.#inAlarmHandler = false;
+      this.#alarmRetryCount = 0;
       this.#agentKeepAliveTime = undefined;
-      this.#updateAlarm();
+      if (!failed) this.#updateAlarm();
     }
   }
 
@@ -997,42 +1020,88 @@ class OverseerImpl implements AgentHooks {
   // Resolves once no agents are running. Used by `alarm()` to keep the DO alive until all running
   // agents complete.
   async waitForAllAgentsToComplete(): Promise<void> {
-    if (this.#runningAgents.size === 0) return;
-
-    await new Promise<void>(resolve => { this.#allAgentsIdleWaiters.push(resolve); });
+    // Teardown can synchronously hand off to a resumed execution before these waiters run.
+    while (this.#runningAgents.size > 0) {
+      await new Promise<void>(resolve => { this.#allAgentsIdleWaiters.push(resolve); });
+    }
   }
 
   // Resume a single interrupted agent turn. Re-resolves the model config from the initiator's user
   // DO (we don't persist the secret API token), then runs the agent loop, which rebuilds its state
   // by replaying the persisted chat log.
   async #resumeAgent(record: ActiveAgentRecord, liveChat: LiveChatContext) {
+    let owns = () => this.#liveChats.get(record.chatId) === liveChat &&
+        this.storage.chatMeta.get(record.chatId)?.activeAgent !== undefined;
+    let finish = () => {
+      if (!owns()) return;
+      let meta = this.storage.chatMeta.get(record.chatId)!;
+      delete meta.activeAgent;
+      this.storage.chatMeta.put(meta);
+      this.#unregisterRunningAgent(record.chatId);
+      this.#finishAgentTurn(record.chatId);
+    };
+    // A reset can land after a request or final response committed but before teardown. Honor
+    // that logged pause/completion instead of issuing another model request.
+    let wait = this.#decisionWait(record.chatId);
+    if (wait !== undefined) {
+      let meta = this.storage.chatMeta.get(record.chatId);
+      if (meta) {
+        delete meta.activeAgent;
+        this.storage.chatMeta.put(meta);
+      }
+      this.#unregisterRunningAgent(record.chatId, !!wait);
+      this.#finishAgentTurn(record.chatId);
+      return;
+    }
     let aiModel: UserAiModelRecord | undefined;
+    let failure: unknown;
+    let leaveSession = () => {};
+    using _resumeSession = {[Symbol.dispose]: () => leaveSession()};
     try {
-      let user = this.users.get(this.users.idFromString(record.initiatorUserId));
-      let userMeta = await user.getChatContext(record.modelId);
+      let userMeta = await retryOnDoReset(() => this.users.get(
+          this.users.idFromString(record.initiatorUserId)).getChatContext(record.modelId), this.logger);
       aiModel = userMeta.aiModel;
+      if (this.ownerId && record.initiator.type === "user" && record.initiatorUserId !== this.ownerId) {
+        let user = this.users.get(this.users.idFromString(record.initiatorUserId));
+        if (!await this.authorizeCollaborator(record.initiator.id, user, {requireRole: "build"})) {
+          throw new Error("The original initiator no longer has build access to this workspace.");
+        }
+        // Keep verification live through inference, including after the approving client leaves.
+        leaveSession = this.joinSession("build");
+      }
     } catch (err) {
-      this.logger.error("error resolving model while resuming agent", {
-        event: "agent.resume.model.resolve.failed",
+      failure = err;
+      aiModel = undefined;
+      this.logger.error("error preparing agent resumption", {
+        event: "agent.resume.prepare.failed",
         chatId: record.chatId, modelId: record.modelId, error: err,
       });
     }
+
+    // Message preparation can start during the lookup. Let it commit first; a newer prompt or
+    // Stop must win over this resume, including when the lookup itself failed.
+    for (let preparation; (preparation = this.waitForChatMessagePreparation(record.chatId));) {
+      await preparation;
+    }
+    if (!owns()) return;
+    if (liveChat.cancelController.signal.aborted) { finish(); return; }
+    // Read the current alarm's count after the await: constructor recovery can have started this
+    // lookup before the alarm invocation (and its retry count) was delivered.
+    if (failure && shouldRetryAfterReset(failure) && this.#alarmRetryCount < 3) {
+      this.#resumeErrors.set(record.chatId, failure);
+      this.#unregisterRunningAgent(record.chatId, true);
+      return;
+    }
+    this.#resumeErrors.delete(record.chatId);
 
     if (!aiModel) {
       // The model is no longer available; we can't resume. Post an error and clear state. Clear
       // `activeAgent` and tear down the registry/record atomically (matching `#runAgentTurn`'s
       // finally).
-      this.postAgentErrorMessage(record.chatId, record.initiator,
-          "Agent interrupted due to server restart and could not be resumed because its AI " +
-          "model is no longer available.");
-      let meta = this.storage.chatMeta.get(record.chatId);
-      if (meta) {
-        delete meta.activeAgent;
-        meta.lastActive = this.getChatTimestamp();
-        this.storage.chatMeta.put(meta);
-      }
-      this.#unregisterRunningAgent(record.chatId);
-      this.#finishAgentTurn(record.chatId);
+      this.postAgentErrorMessage(record.chatId, this.storage.chatMeta.get(record.chatId)!.activeAgent!,
+          failure ? `The agent could not be resumed: ${stringifyError(failure)}` :
+          "The agent could not be resumed because its AI model is no longer available.");
+      finish();
       return;
     }
 
@@ -1054,7 +1123,10 @@ class OverseerImpl implements AgentHooks {
     if (this.hasPendingAgentCalls(chatId)) {
       this.drainPendingAgentCalls(chatId);
     } else {
-      this.#deliverWaitingExternalMessageResponse(chatId);
+      this.resumeAgentAfterDecision(chatId);
+      if (!this.storage.chatMeta.get(chatId)?.activeAgent) {
+        this.#deliverWaitingExternalMessageResponse(chatId);
+      }
     }
   }
 
@@ -1092,45 +1164,39 @@ class OverseerImpl implements AgentHooks {
       remove: () => this.markOutputsDirty(),
     });
 
-    if (this.storage.version.get() === 1) {
-      // The workspace predates git-backed code storage (version 2, see the `version` singleton):
-      // synthesize commits from the legacy code log before anything else runs. This migration
-      // awaits (git object writes, the owner-identity fetch), which a constructor cannot, so it
-      // runs under blockConcurrencyWhile: no event -- including the alarm handler -- is
-      // delivered until it completes, and a failure aborts the DO so the next wake retries.
-      // Agent resumption waits for it (resuming earlier would let turns interleave with the
-      // migration's rewrites of the very chat state they read) but runs *after* the critical
-      // section ends, via .then() rather than inside the callback, so the resumed turns' work
-      // doesn't inherit it. The continuation is a microtask, so it still runs before any
-      // blocked event (including the alarm handler) is delivered. On failure there is nothing
-      // to do -- blockConcurrencyWhile has already aborted the DO -- but the rejection must be
-      // consumed so it doesn't also surface as an unhandled rejection.
-      this.ctx.blockConcurrencyWhile(async () => {
-        await migrateToGitStorage(this);
-        migrateToActionIndexes(this);
-        migrateToWorkpieceTypes(this);
-        migrateToBlueprintUpstreams(this);
-      }).then(() => this.#resumeInterruptedAgents(), () => {});
-    } else {
+    this.ctx.blockConcurrencyWhile(async () => {
+      if (this.storage.version.get() === 1) await migrateToGitStorage(this);
       migrateToActionIndexes(this);
       migrateToWorkpieceTypes(this);
       migrateToBlueprintUpstreams(this);
-      this.#resumeInterruptedAgents();
-    }
+      // Do not replace an existing alarm during constructor recovery: setAlarm would reset the
+      // platform's retry budget. Cache its time before registering any recovered executions.
+      this.#scheduledAlarm = await this.ctx.storage.getAlarm();
+      if ([...this.storage.activeAgents.list()].some(r => this.storage.chatMeta.get(r.chatId)?.activeAgent)) {
+        this.#agentKeepAliveTime = this.#scheduledAlarm ?? undefined;
+      }
+    // Resume outside the critical section, before blocked events are delivered. On failure,
+    // blockConcurrencyWhile already aborted the object; consume its rejection and retry on wake.
+    }).then(() => this.#resumeInterruptedAgents(), () => {});
   }
 
   // Resume any agent turns that were left running by a previous instance of this DO (i.e. were
-  // interrupted by a server restart). Called synchronously from the constructor (or, when a
-  // storage migration must run first, as soon as its blockConcurrencyWhile completes -- before
-  // any blocked event is delivered) so that if we were called at the start of the alarm handler,
+  // interrupted by a server restart). Called as soon as constructor initialization completes,
+  // before any blocked event is delivered, so at the start of the alarm handler
   // it'll recognize that agents are running and wait for them.
   #resumeInterruptedAgents(): void {
     for (let record of Array.from(this.storage.activeAgents.list())) {
+      if (this.#runningAgents.has(record.chatId)) continue;
+      if (!this.storage.chatMeta.get(record.chatId)?.activeAgent) {
+        this.resumeAgentAfterDecision(record.chatId);
+        continue;
+      }
       // Register the running agent immediately (see above), and create the LiveChatContext
       // synchronously, so that cancellations are immediately respected.
       this.#registerRunningAgent(record.chatId);
       let liveChat = this.#getLiveChat(record.chatId);
 
+      this.#resumeErrors.delete(record.chatId);
       this.#resumeAgent(record, liveChat);
     }
 
@@ -4766,6 +4832,11 @@ class OverseerImpl implements AgentHooks {
       this.storage.actions.put(record);
       if (gatekeeperRecord) this.storage.gatekeepers.put(gatekeeperRecord);
     });
+    // No await between the decision write and the durable execution claim. This also covers
+    // auto-approval, rather than relying on a client's continuation after this promise resolves.
+    if (record.caller.from === "agent" && record.description.awaitDecision) {
+      this.resumeAgentAfterDecision(record.caller.chatId, record.id);
+    }
     if (gatekeeperRecord) {
       // Restart the facet on the new class before anything else reaches it.
       this.ctx.facets.abort(`gatekeeper${id}`,
@@ -4819,6 +4890,8 @@ class OverseerImpl implements AgentHooks {
         // them now.
         if (!this.storage.chatMeta.get(chatId)?.activeAgent && this.hasPendingAgentCalls(chatId)) {
           this.drainPendingAgentCalls(chatId);
+        } else {
+          this.resumeAgentAfterDecision(chatId);
         }
       },
     };
@@ -6352,9 +6425,27 @@ class OverseerImpl implements AgentHooks {
   }
 
   cancelAgent(chatId: number) {
+    // Stop is durable even if the DO disappears before the aborted task's finally runs.
+    this.storage.activeAgents.delete(chatId);
+    this.#resumeErrors.delete(chatId);
+    let author = this.storage.chatMeta.get(chatId)?.activeAgent ?? this.#decisionWait(chatId)?.agent;
+    if (author) this.addChatMessages(chatId, author,
+        [{type: "agentNudge", text: "The user stopped this turn. Wait for a new request."}]);
     let ctx = this.#liveChats.get(chatId);
     if (ctx) {
       ctx.cancelController.abort(new Error("User requested to stop agent."));
+    }
+    // A retryable lookup has already released its task to the alarm, so no finally is left to
+    // clear the busy marker. Stop must finish that handoff synchronously too.
+    if (!this.#runningAgents.has(chatId)) {
+      let meta = this.storage.chatMeta.get(chatId);
+      if (meta?.activeAgent) {
+        delete meta.activeAgent;
+        meta.lastActive = this.getChatTimestamp();
+        this.storage.chatMeta.put(meta);
+      }
+      this.#updateAlarm();
+      this.#finishAgentTurn(chatId);
     }
   }
 
@@ -6536,6 +6627,7 @@ class OverseerImpl implements AgentHooks {
     // Register before starting the turn so registration always precedes the turn's teardown
     // (`#unregisterRunningAgent`, in `#runAgentTurn`'s finally).
     this.#registerRunningAgent(chatId);
+    this.#resumeErrors.delete(chatId);
     this.storage.activeAgents.put({
       chatId,
       initiatorUserId,
@@ -6569,6 +6661,7 @@ class OverseerImpl implements AgentHooks {
                                  initiatorUserId: string,
                                  callbackInitiated: boolean,
                                  liveChat: LiveChatContext): Promise<void> {
+    let owns = () => this.#liveChats.get(chatId) === liveChat;
     // When this turn is billed to the user's own Cloudflare account, we refresh their cached credit
     // balance once the turn completes (see the `finally` below) so the next billing decision
     // reflects the spend this turn just incurred, rather than waiting for the cache TTL to lapse.
@@ -6595,6 +6688,8 @@ class OverseerImpl implements AgentHooks {
         // reconcilePendingGadgets). The model then simply re-creates a reaped gadget if it still
         // wants it.
         await this.reconcilePendingGadgets(chatId);
+        if (!owns()) return;
+        liveChat.cancelController.signal.throwIfAborted();
 
         // Turn-start materialization: live rows recorded before this turn (user edits, for turns
         // not started via sendChatMessage -- callbacks, resumes) become a durable "changes"
@@ -6652,6 +6747,7 @@ class OverseerImpl implements AgentHooks {
         });
       });
     } catch (err: unknown) {
+      if (!owns()) return;
       // A failed model request surfaces as AgentTurnError (pi reports provider failures as data;
       // runAgent converts them back to a throw), carrying the failing request's HTTP status when
       // one was observed.
@@ -6686,59 +6782,67 @@ class OverseerImpl implements AgentHooks {
 
       this.postAgentErrorMessage(chatId, aiModel.profile, errorMessage);
     } finally {
-      // If this turn billed the user's own Cloudflare account, refresh their cached balance now (in
-      // the background) so the next turn's billing decision reflects the spend just incurred. Runs
-      // on both the success and error paths — an "insufficient funds" failure is exactly when an
-      // up-to-date balance matters most.
-      if (byokOwnerStub) {
-        this.ctx.waitUntil(refreshCachedBalance(this.env, byokOwnerStub));
-      }
+      if (owns()) {
+        // If this turn billed the user's own Cloudflare account, refresh their cached balance now (in
+        // the background) so the next turn's billing decision reflects the spend just incurred. Runs
+        // on both the success and error paths — an "insufficient funds" failure is exactly when an
+        // up-to-date balance matters most.
+        if (byokOwnerStub) {
+          this.ctx.waitUntil(refreshCachedBalance(this.env, byokOwnerStub));
+        }
 
-      // Reap any provisional gadget this turn created whose creating step never reached its
-      // barrier (the turn erred or was aborted mid-step): the record is unstamped and the
-      // step's message is by construction lost, so nothing in the log backs it. Never throws,
-      // so it can't mask an error propagating out of the turn.
-      await this.reconcilePendingGadgets(chatId);
+        // Reap any provisional gadget this turn created whose creating step never reached its
+        // barrier (the turn erred or was aborted mid-step): the record is unstamped and the
+        // step's message is by construction lost, so nothing in the log backs it. Never throws,
+        // so it can't mask an error propagating out of the turn.
+        await this.reconcilePendingGadgets(chatId);
+        if (owns()) {
+          // Note: We no longer emit a stream "clear" event here. The client performs a full clear of
+          // provisional streaming state when it observes that the agent is no longer running (i.e. when
+          // chat metadata's activeAgent becomes unset, which happens just below).
 
-      // Note: We no longer emit a stream "clear" event here. The client performs a full clear of
-      // provisional streaming state when it observes that the agent is no longer running (i.e. when
-      // chat metadata's activeAgent becomes unset, which happens just below).
+          let meta = this.storage.chatMeta.get(chatId);
+          if (meta) {
+            delete meta.activeAgent;
+            meta.lastActive = this.getChatTimestamp();
+            this.storage.chatMeta.put(meta);
+          }
 
-      let meta = this.storage.chatMeta.get(chatId);
-      if (meta) {
-        delete meta.activeAgent;
-        meta.lastActive = this.getChatTimestamp();
-        this.storage.chatMeta.put(meta);
-      }
+          // Keep only an unfinished decision's original caller/model. An approval during teardown
+          // may already be ready; #finishAgentTurn claims it in this same synchronous span.
+          if (meta && liveChat.cancelController.signal.aborted && this.#decisionWait(chatId)) {
+            // A tool that was already in flight may have committed its card after Stop's boundary.
+            this.addChatMessages(chatId, initiator,
+                [{type: "agentNudge", text: "The user stopped this turn. Wait for a new request."}]);
+          }
+          let wait = this.#decisionWait(chatId);
+          this.#unregisterRunningAgent(chatId,
+              finished && !liveChat.cancelController.signal.aborted && !!meta && !!wait && !wait.denied);
 
-      // Tear down the registry entry, persistent `activeAgents` record, and keep-alive alarm in the
-      // same synchronous step as clearing `activeAgent` above, so the chat never appears idle while
-      // stale records of this agent linger. If pending calls below restart the agent, it'll
-      // re-register everything consistently.
-      this.#unregisterRunningAgent(chatId);
+          if (finished && meta) {
+            // Classified here, past the turn's last await, so a decision made as it ended counts.
+            let awaitingDecision = this.#awaitsDecision(chatId);
+            // Only a person waits on their own turn, including one their approval resumed: callbacks
+            // and spawned agents finish unattended.
+            if (awaitingDecision || initiator.type === "user") {
+              this.ctx.waitUntil(this.users.get(this.users.idFromString(initiatorUserId))
+                  .publishNotification({
+                    id: crypto.randomUUID(),
+                    kind: awaitingDecision ? "permissionRequested" : "taskCompleted",
+                    workspaceId: this.ctx.id.toString(),
+                    chatId,
+                    chatTitle: meta.title,
+                  }).catch(error => {
+                    turnLogger.warn("notification publish failed", {
+                      event: "notification.publish.failed", error,
+                    });
+                  }));
+            }
+          }
 
-      if (finished && meta) {
-        // Classified here, past the turn's last await, so a decision made as it ended counts.
-        let awaitingDecision = this.#awaitsDecision(chatId);
-        // Only a person waits on their own turn, including one their approval resumed: callbacks
-        // and spawned agents finish unattended.
-        if (awaitingDecision || initiator.type === "user") {
-          this.ctx.waitUntil(this.users.get(this.users.idFromString(initiatorUserId))
-              .publishNotification({
-                id: crypto.randomUUID(),
-                kind: awaitingDecision ? "permissionRequested" : "taskCompleted",
-                workspaceId: this.ctx.id.toString(),
-                chatId,
-                chatTitle: meta.title,
-              }).catch(error => {
-                turnLogger.warn("notification publish failed", {
-                  event: "notification.publish.failed", error,
-                });
-              }));
+          this.#finishAgentTurn(chatId);
         }
       }
-
-      this.#finishAgentTurn(chatId);
     }
   }
 
@@ -8388,24 +8492,86 @@ class OverseerImpl implements AgentHooks {
     return result;
   }
 
-  // Whether the chat's current turn waits on the user's decision on a connection or action. Scans
-  // back to whatever started the turn, as #maybeResumeAfterActionDecision does.
+  // Whether the current turn is waiting for a decision (used by notifications).
   #awaitsDecision(chatId: number): boolean {
+    return this.#decisionWait(chatId)?.pending ?? false;
+  }
+
+  // The log is the wait record. A nudge is the consumption boundary for a previous decision,
+  // just as a real prompt/callback is the boundary for a new turn. Check connections AND actions
+  // together: accepting one kind must not bypass an unanswered request of the other kind.
+  #decisionWait(chatId: number) {
+    let actionIds: number[] = [];
+    let requestIds: string[] = [];
+    let titles: string[] = [];
+    let pending = false;
+    let denied = false;
+    let agent: AiChatAuthorInfo | undefined;
     for (let msg of this.storage.chats.list({prefix: chatKeyPrefix(chatId), reverse: true})) {
-      if (msg.type === "agentCallback") return false;
-      if (msg.type === "message" && (msg.author.type === "user" || msg.author.type === "gadget")) {
-        return false;
+      if (msg.type === "agentCallback" || msg.type === "agentNudge" ||
+          (msg.type === "message" && (msg.author.type === "user" || msg.author.type === "gadget"))) {
+        break;
       }
-      if (msg.type === "connectionRequest" && msg.state === "pending") return true;
+      // Null means a committed final response, not an interrupted segment to run again.
+      // It also consumed any earlier inline approvals without suspending.
+      if (!actionIds.length && !requestIds.length && msg.type === "message" &&
+          msg.author.type === "agent" && !msg.toolCalls?.length) return null;
+      if (msg.author.type === "agent") agent ??= msg.author;
+      if (msg.type === "connectionRequest" && msg.author.type === "agent") {
+        requestIds.push(msg.requestId);
+        pending ||= msg.state === "pending";
+        denied ||= msg.state === "denied";
+      }
       if (msg.type === "action") {
         let record = this.storage.actions.get(msg.actionId);
         if (record?.type === "action" && record.caller.from === "agent" &&
-            record.description.awaitDecision && record.state === "pending") {
-          return true;
+            record.description.awaitDecision) {
+          actionIds.push(record.id);
+          titles.push(record.description.title);
+          pending ||= record.state === "pending";
+          denied ||= record.state === "rejected";
         }
       }
     }
-    return false;
+    return agent && (actionIds.length || requestIds.length)
+        ? {agent, actionIds, requestIds, titles: titles.toReversed(), pending, denied}
+        : undefined;
+  }
+
+  // Old paused chats have no execution row. Before applying a decision, adopt the existing
+  // client's authority once, without model/profile I/O. New pauses always retain their row.
+  rememberDecisionInitiator(chatId: number, userId: string, profile: AiChatAuthorInfo): void {
+    if (this.storage.activeAgents.get(chatId) || this.storage.chatMeta.get(chatId)?.activeAgent) return;
+    let wait = this.#decisionWait(chatId);
+    if (!wait) return;
+    this.storage.activeAgents.put({chatId, modelId: wait.agent.id, initiatorUserId: userId,
+      initiator: profile, callbackInitiated: false});
+  }
+
+  // No await: the decision, its model-visible note, busy state, execution row and alarm all
+  // precede model lookup. Live resumption and restart recovery then use the same #resumeAgent.
+  resumeAgentAfterDecision(chatId: number, decisionId?: number | string): void {
+    let meta = this.storage.chatMeta.get(chatId);
+    if (meta?.activeAgent) return; // Teardown rechecks after releasing this execution.
+    let record = this.storage.activeAgents.get(chatId);
+    if (!record) return;
+    let wait = this.#decisionWait(chatId);
+    if (wait && decisionId !== undefined && !(typeof decisionId === "number"
+        ? wait.actionIds.includes(decisionId) : wait.requestIds.includes(decisionId))) return;
+    if (!meta || !wait || wait.denied) {
+      this.storage.activeAgents.delete(chatId);
+      return;
+    }
+    if (wait.pending || this.isPreparingChatMessage(chatId)) return;
+    let text = wait.titles.length
+        ? `The changes you submitted have been approved and applied: ${wait.titles.map(t => `"${t}"`).join(", ")}. Reads now reflect them.`
+        : "The requested connections have been accepted. Continue using the connected resources.";
+    this.addChatMessages(chatId, record.initiator, [{type: "agentNudge", text}]);
+    meta.activeAgent = wait.agent;
+    meta.lastActive = this.getChatTimestamp();
+    this.storage.chatMeta.put(meta);
+    this.#registerRunningAgent(chatId);
+    this.#resumeAgent(record, this.#getLiveChat(chatId));
   }
 
   // --- Connection-request hooks ---
@@ -9481,8 +9647,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    *
    * See OverseerImpl.runAlarmTasks for how the concerns are run together.
    */
-  async alarm() {
-    await this.impl.runAlarmTasks();
+  async alarm(info?: AlarmInvocationInfo) {
+    await this.impl.runAlarmTasks(info?.retryCount);
   }
 
   // Initialize a brand-new workspace's storage. (Before git-backed code storage this also wrote
@@ -10862,18 +11028,15 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // Resolve the approver's identity before applying, so a failed profile fetch can't leave the
     // action applied in the world but still "pending" in storage.
     let profile = await this.#getClientProfile();
+    if (action.caller.from === "agent" && action.description.awaitDecision) {
+      this.impl.rememberDecisionInitiator(action.caller.chatId, this.#clientUser.id.toString(), profile);
+    }
     // A creation is made in the account the approver chose, whose verifier carries its authority.
     let vendorId = gatekeeperVendorId(this.impl.storage.gatekeepers.get(action.gatekeeperId));
     let creator = action.action === "create" && creation && vendorId
         ? await this.#clientUser.getVerifier(creation.accountId, vendorId) : null;
     await this.impl.applyPendingAction(action, profile, false,
         creator ? {creator, configuration: creation?.configuration ?? null} : undefined);
-
-    // If this was an awaited agent action, resume only after all awaited actions in the turn are
-    // approved. If applyPendingAction throws, the action stays pending and the turn stays suspended.
-    if (action.caller.from === "agent" && action.description.awaitDecision) {
-      await this.#maybeResumeAfterActionDecision(action.caller.chatId, action.id);
-    }
 
     // Clearing this manual gate may unblock later auto-eligible pending actions on the same
     // gatekeeper, so cascade a drain (in-order) once this one is applied.
@@ -10887,21 +11050,22 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // suspended on a manual action can also be waiting on them. Accepted cost: one applied here
     // (e.g. a retried auto-apply failure) can resume a turn that never suspended.
     let awaited = new Map<number, number>();  // action id -> chat id
+    let profile: AiChatAuthorInfo | undefined;
     for (let record of this.impl.storage.actions.pendingByGatekeeper.get(gatekeeperId)) {
       if (record.type === "action" && record.caller.from === "agent" &&
           record.description.awaitDecision) {
         awaited.set(record.id, record.caller.chatId);
+        if (!this.impl.storage.activeAgents.get(record.caller.chatId)) {
+          profile ??= await this.#getClientProfile();
+          this.impl.rememberDecisionInitiator(record.caller.chatId, this.#clientUser.id.toString(), profile);
+        }
       }
     }
     await this.impl.drainAutoApprovals(gatekeeperId);
-    // No caller awaits a drain, so log each failed resume rather than letting it end the loop.
+    // The shared apply path claims new turns; this also covers legacy rows adopted above.
     for (let [id, chatId] of awaited) {
       if (this.impl.storage.actions.get(id)?.state !== "approved") continue;
-      await this.#maybeResumeAfterActionDecision(chatId, id).catch(error => {
-        this.impl.logger.error("failed to resume agent after auto-approval", {
-          event: "agent.resume.failed", chatId, error,
-        });
-      });
+      this.impl.resumeAgentAfterDecision(chatId, id);
     }
   }
 
@@ -10976,47 +11140,6 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return this.impl.deleteHook(id);
   }
 
-  // Resume a turn suspended on awaitDecision once approving `approvedId` leaves all of that turn's
-  // awaited actions approved. Scoping to the current turn keeps older actions out of it: a rejected
-  // one can't block future resumes, and approving one can't restart a newer turn.
-  async #maybeResumeAfterActionDecision(chatId: number, approvedId: number): Promise<void> {
-    let awaited: (ActionRecord & {type: "action"})[] = [];
-    for (let msg of this.impl.storage.chats.list(
-        {prefix: chatKeyPrefix(chatId), reverse: true})) {
-      // Stop at whatever started the current turn: a user/gadget message or a gadget callback.
-      // (agentNudge is mid-turn, so it isn't a boundary.)
-      if (msg.type === "agentCallback") break;
-      if (msg.type === "message" &&
-          (msg.author.type === "user" || msg.author.type === "gadget")) {
-        break;
-      }
-      if (msg.type === "action") {
-        let record = this.impl.storage.actions.get(msg.actionId);
-        if (record && record.type === "action" &&
-            record.caller.from === "agent" && record.description.awaitDecision) {
-          awaited.push(record);
-        }
-      }
-    }
-    awaited.reverse();  // Present titles chronologically.
-
-    // Only resume when every awaited action in the turn has been decided and all were approved.
-    if (!awaited.some(r => r.id === approvedId)) return;    // Approved an older turn's action.
-    if (awaited.some(r => r.state === "pending")) return;   // Still waiting on a decision.
-    if (awaited.some(r => r.state === "rejected")) return;  // Denial leaves the turn ended.
-
-    // Persist one note for replay; raw action cards are not surfaced to the LLM. Concurrent
-    // approvals could both pass the gate above and append duplicate notes (the DO input gate is
-    // open across these awaits), but that's cosmetic — #resumeSuspendedAgent still starts one turn.
-    let titleList = awaited.map(r => `"${r.description.title}"`).join(", ");
-    let summary =
-        `The changes you submitted have been approved and applied: ${titleList}. ` +
-        `Reads now reflect them.`;
-    let author = await this.#getClientProfile();
-    this.impl.addChatMessages(chatId, author, [{type: "message", message: summary}]);
-
-    await this.#resumeSuspendedAgent(chatId);
-  }
 
   async rejectAction(id: number): Promise<void> {
     let action = this.impl.storage.actions.get(id);
@@ -11048,6 +11171,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         record.resolvedBy = profile;
         this.impl.storage.actions.put(record);
         this.impl.traceAgentActionApproval(record, "denied");
+        if (record.caller.from === "agent") {
+          this.impl.resumeAgentAfterDecision(record.caller.chatId, record.id);
+        }
       }
       return;
     }
@@ -11070,6 +11196,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       this.impl.storage.actions.put(action);
     });
     this.impl.traceAgentActionApproval(action, "denied");
+    if (action.caller.from === "agent") {
+      this.impl.resumeAgentAfterDecision(action.caller.chatId, action.id);
+    }
 
     // Deny leaves the turn ended, like denyConnectionRequest. The rejected record also prevents a
     // sibling approval from resuming this turn. Like an approval, though, clearing this manual gate
@@ -11165,70 +11294,22 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     throw new Error(`No such connection request: ${requestId}`);
   }
 
-  // Restart a suspended agent turn after its outcome is recorded in chat history (accepted
-  // connection, or all awaited actions approved). Denials intentionally don't call this.
-  async #resumeSuspendedAgent(chatId: number): Promise<void> {
-    await this.impl.waitForChatMessagePreparation(chatId);
-    let meta = this.impl.storage.chatMeta.get(chatId);
-    if (!meta) return;  // Chat deleted.
-    if (meta.activeAgent) return;  // Already running; it'll pick up the change on its next read.
-
-    // Recover the model this thread was using. getChatContext(null) does NOT resolve a model, so we
-    // find the id from the most recent agent-authored message (its author.id is the model id).
-    let agent: AiChatAuthorInfo | undefined;
-    for (let msg of this.impl.storage.chats.list({prefix: chatKeyPrefix(chatId), reverse: true})) {
-      if (msg.author.type === "agent") {
-        agent = msg.author;
-        break;
-      }
-    }
-
-    let userMeta: UserChatContext;
-    try {
-      userMeta = await retryOnDoReset(
-          () => this.#clientUser.getChatContext(agent?.id ?? null), this.impl.logger);
-    } catch (err) {
-      // The outcome that triggered this resume is already recorded, so the caller's approval or
-      // accept must not fail because the thread's model stopped resolving (deleted, or disabled by
-      // an administrator). Say why in the chat, as that agent, and leave the turn ended. With no
-      // agent message there is no one to attribute the error to.
-      if (!agent) throw err;
-      this.impl.logger.error("error resolving model while resuming suspended agent", {
-        event: "agent.resume.suspended.model.resolve.failed",
-        chatId, modelId: agent.id, error: err,
-      });
-      // A turn that started during the lookup is not waiting on this one.
-      if (this.impl.storage.chatMeta.get(chatId)?.activeAgent) return;
-      this.impl.postAgentErrorMessage(chatId, agent,
-          `The agent could not be resumed: ${stringifyError(err)}`);
-      return;
-    }
-    if (!userMeta.aiModel) return;  // No model resolved; nothing to resume.
-
-    let preparation = this.impl.waitForChatMessagePreparation(chatId);
-    if (preparation) {
-      await preparation;
-      return this.#resumeSuspendedAgent(chatId);
-    }
-
-    // Re-read after the await: another concurrent accept may have started the agent in the
-    // meantime. Avoid starting a second agent loop for the same chat.
-    let fresh = this.impl.storage.chatMeta.get(chatId);
-    if (!fresh || fresh.activeAgent) return;
-
-    fresh.activeAgent = userMeta.aiModel.profile;
-    fresh.lastActive = this.impl.getChatTimestamp();
-    this.impl.storage.chatMeta.put(fresh);
-
-    this.impl.startAgent(chatId, userMeta.aiModel, userMeta.profile,
-                         this.#clientUser.id.toString());
-  }
 
   async acceptConnectionRequest(
       requestId: string, result: {gatekeeperId: number}): Promise<void> {
     let msg = this.#findConnectionRequest(requestId);
     if (msg.state !== "pending") {
       throw new Error(`Connection request is not pending: ${requestId}`);
+    }
+    if (!this.impl.storage.activeAgents.get(msg.chatId)) {
+      // Main discarded the original authority of paused turns. Adopt the explicit approver,
+      // matching its old behavior; new pauses already retain their original execution row.
+      let profile = await this.#getClientProfile();
+      msg = this.#findConnectionRequest(requestId);
+      if (msg.state !== "pending") {
+        throw new Error(`Connection request is not pending: ${requestId}`);
+      }
+      this.impl.rememberDecisionInitiator(msg.chatId, this.#clientUser.id.toString(), profile);
     }
 
     msg.state = "accepted";
@@ -11240,18 +11321,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     msg.timestamp = this.impl.getChatTimestamp();
     this.impl.storage.chats.put(msg);  // fires the subscriber update() → re-delivers the card
 
-    // Don't resume until every connection request from this turn was accepted. Scanning newest
-    // first bounds the lookup to the current turn and usually finds a pending sibling immediately.
-    for (let sibling of this.impl.storage.chats.list(
-        {prefix: chatKeyPrefix(msg.chatId), reverse: true})) {
-      if (sibling.type === "connectionRequest" && sibling.state !== "accepted") return;
-      if (sibling.type === "agentCallback" ||
-          (sibling.type === "message" &&
-           (sibling.author.type === "user" || sibling.author.type === "gadget"))) {
-        break;
-      }
-    }
-    await this.#resumeSuspendedAgent(msg.chatId);
+    this.impl.resumeAgentAfterDecision(msg.chatId, requestId);
   }
 
   async denyConnectionRequest(requestId: string): Promise<void> {
@@ -11263,6 +11333,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     msg.state = "denied";
     msg.timestamp = this.impl.getChatTimestamp();
     this.impl.storage.chats.put(msg);  // fires the subscriber update() → re-delivers the card
+    this.impl.resumeAgentAfterDecision(msg.chatId, requestId);
 
     // Intentionally do NOT resume the agent on deny. The agent's turn already ended when it made the
     // request; leaving it ended lets the user say what they want done instead, rather than forcing
@@ -11689,6 +11760,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let result = this.impl.materializeChatChanges(chatId, meta);
     if (result) meta = result.meta;
 
+    // An explicit retry starts a fresh segment, rather than inheriting an older decision wait
+    // if this execution is interrupted before it can commit its first response.
+    this.impl.addChatMessages(chatId, userMeta.profile,
+        [{type: "agentNudge", text: "Retry the previous request."}]);
     meta.activeAgent = userMeta.aiModel.profile;
     meta.lastActive = this.impl.getChatTimestamp();
     this.impl.storage.chatMeta.put(meta);
