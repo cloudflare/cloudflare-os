@@ -19,9 +19,10 @@ unread when they receive content. Empty threads are read.
 State is per authenticated user, per instance, synchronized across devices. Only the owner and
 established build collaborators receive thread metadata. Use-only collaborators do not. Deleting
 a thread/workspace, dismissing/revoking access, or downgrading to use-only removes its projection.
-Shared-workspace recipients are reauthorized on every delivery attempt, including retries while
-disconnected. A previously unopened shared workspace is indexed when its build collaborator first
-opens it; this does not expand discovery or sharing authority.
+Shared-workspace recipients are reauthorized before every metadata delivery, including retries while
+disconnected. Empty snapshots only remove metadata and do not register observers. A previously
+unopened shared workspace is indexed when its build collaborator first opens it; this does not
+expand discovery or sharing authority.
 
 ## Authenticated API
 
@@ -82,7 +83,9 @@ an old window cannot immediately clear a deliberate unread marker, and lost-ACK 
 - Thread menus offer Mark thread read/unread; workspace menus offer Mark workspace read.
 - Each rendered timeline item offers Mark unread from here. The new-items divider moves there.
 - Opening an unread thread loads checkpoint history back to its first unread item and positions
-  it in view. Jump to first unread remains available as the pointer advances.
+  it in view. Failed history loads keep automatic receipts paused; Jump to first unread retries
+  the load, and explicit Mark thread read can release it. Jump remains available as the pointer
+  advances.
 - Automatic reads require a visible document, focused window, visible chat pane and an item's
   bottom edge in the scroll viewport. Fetching/opening a history page alone never reads it.
 - The visit's divider stays in place after reading, showing where new activity began. Explicit
@@ -114,9 +117,16 @@ persisted dirtiness if the source invocation was interrupted before fanout.
 Each recipient has one coalesced pending version. Delivery rechecks current authority, captures
 the committed head set and source version together, and awaits the User DO's durable receipt
 before deleting that version. Writes during an in-flight RPC remain dirty/pending and are drained
-again. Dispatch failures persist a 30-second retry deadline in the shared alarm. A lost response,
+again. A failed recipient stays queued without blocking other recipients or spinning in the same
+drain. Failures persist a 30-second retry deadline in the shared alarm. A lost response,
 or interruption after ACK before cleanup, retries the same version safely. In-memory drains and
 subscriptions are disposable. Callback failure never rolls back a cursor.
+
+Workspace deletion persists its intent before removing any user's listing and read state. It
+uses the same recipient journal, without requiring observer access for removal. The listing
+removal fences delayed snapshots; only after every tracked recipient acknowledges cleanup does
+the Overseer delete its own storage. Alarms resume interrupted deletion without another user action,
+and a deleting workspace refuses new opens and does not resume agent turns.
 
 Only the read-state projection is replayed. Existing transient toast/mobile-push sends are not
 blindly retried, and this feature does not claim exactly-once OS alert presentation.
@@ -145,6 +155,7 @@ Unit/component tests cover partial and bulk reads, source ordering, manual-unrea
 cross-device updates, initial history baselines, user/role isolation, deletion, viewport visibility,
 history loading, reset resubscription and cleanup. Recovery tests exercise real DO eviction before
 dispatch, a lost ACK, and interruption after ACK before outbox cleanup, without repeating alerts.
+Deletion recovery covers those boundaries and interruption before workspace storage deletion.
 The integration test drives the real validated Cap'n Web API through two owner WebSocket sessions,
 a build collaborator and a use-only collaborator, including appends, rename and deletion.
 Chromium tests verify actual viewport geometry, focus, and pointer input for marking unread.

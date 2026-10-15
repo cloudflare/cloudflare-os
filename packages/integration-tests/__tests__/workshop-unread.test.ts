@@ -131,10 +131,12 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
   );
   const other = await workspace.newChat("Another thread", null);
   await waitFor("another unread thread", async () =>
-    (await owner.getUnreadState()).chats.some((chat) => chat.chatId === other) ? true : null,
+    (await owner.getUnreadState()).chats.some((chat) => chat.chatId === other) &&
+    (await builder.getUnreadState()).chats.some((chat) => chat.chatId === other) ? true : null,
   );
   await workspace.deleteSelf();
   await waitFor("workspace removal", async () =>
-    (await owner.getUnreadState()).chats.length === 0 ? true : null,
+    first.state?.chats.length === 0 && second.state?.chats.length === 0 &&
+    (await builder.getUnreadState()).chats.length === 0 ? true : null,
   );
 });

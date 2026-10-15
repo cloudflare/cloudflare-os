@@ -939,7 +939,8 @@ class OverseerImpl implements AgentHooks {
 
     let times: number[] = [];
 
-    if ([...this.storage.chatTimelineOutbox.list({ limit: 1 })].length) {
+    if (this.storage.deletingWorkspace.get() ||
+        [...this.storage.chatTimelineOutbox.list({ limit: 1 })].length) {
       times.push(this.storage.chatTimelineRetryAt.get() || Date.now());
     }
 
@@ -1023,37 +1024,62 @@ class OverseerImpl implements AgentHooks {
     immediate = this.#flushTimelineRecipients() || immediate;
     if (!immediate && this.storage.chatTimelineRetryAt.get() > Date.now()) return Promise.resolve();
     this.#timelineDelivery = (async () => {
+      let failures = new Map<string, unknown>();
       // Do not hold a storage cursor across RPC or deletion; concurrent turns can queue more.
       let pending = [...this.storage.chatTimelineOutbox.list()];
       while (pending.length) {
         for (let record of pending) {
-          let user = this.users.get(this.users.idFromString(record.userId));
-          if (record.userId !== this.ownerId) {
-            let reader = this.storage.unreadReaders.get(record.userId);
-            let role = reader && await this.authorizeCollaborator(reader.profileId, user,
-                {requireRole: "build"});
-            if (role !== "build") {
-              await user.forgetWorkspaceChats(this.ctx.id.toString());
-              this.storage.unreadReaders.delete(record.userId);
+          try {
+            let user = this.users.get(this.users.idFromString(record.userId));
+            if (this.storage.deletingWorkspace.get()) {
+              // Removing the listing also fences any delayed snapshot. Cleanup is idempotent,
+              // and its journal survives resets and lost ACKs until all recipients are done.
+              await user.deleteGadget(this.ctx.id.toString());
               this.storage.chatTimelineOutbox.delete(record.userId);
               continue;
             }
-          }
-          // Storage subscribers run BEFORE their write, in its transaction. They journal only the
-          // dirty version; read the committed timeline here, after the synchronous write finishes.
-          // Capture version + heads together after authorization's awaits, never mix two versions.
-          let version = this.storage.chatTimelineVersion.get();
-          let heads = this.chatTimelineHeads();
-          await user.syncWorkspaceChats(this.ctx.id.toString(), version, heads);
-          // A lost ACK leaves the same sequence queued; the receiver durably deduplicates it.
-          if ((this.storage.chatTimelineOutbox.get(record.userId)?.sequence ?? Infinity) <= version) {
-            this.storage.chatTimelineOutbox.delete(record.userId);
+            // An empty snapshot only removes metadata; no observer verification is needed.
+            // In particular, opening an empty workspace must not register observers twice.
+            if (record.userId !== this.ownerId && [...this.storage.chatMeta.list({limit: 1})].length) {
+              let reader = this.storage.unreadReaders.get(record.userId);
+              let role = reader && await this.authorizeCollaborator(reader.profileId, user,
+                  {requireRole: "build"});
+              // Deletion may have been requested during verification. Leave this recipient
+              // queued for cleanup rather than disclosing another snapshot.
+              if (this.storage.deletingWorkspace.get()) continue;
+              if (role !== "build") {
+                await user.forgetWorkspaceChats(this.ctx.id.toString());
+                this.storage.unreadReaders.delete(record.userId);
+                this.storage.chatTimelineOutbox.delete(record.userId);
+                continue;
+              }
+            }
+            // Storage subscribers run BEFORE their write, in its transaction. They journal only
+            // the dirty version; read the committed timeline after the synchronous write finishes.
+            // Capture version + heads together after authorization's awaits, never mix versions.
+            let version = this.storage.chatTimelineVersion.get();
+            let heads = this.chatTimelineHeads();
+            await user.syncWorkspaceChats(this.ctx.id.toString(), version, heads);
+            // A lost ACK leaves the same sequence queued; the receiver durably deduplicates it.
+            if ((this.storage.chatTimelineOutbox.get(record.userId)?.sequence ?? Infinity) <= version) {
+              this.storage.chatTimelineOutbox.delete(record.userId);
+            }
+          } catch (error) {
+            // A disconnected account may require interactive repair. Keep its intent, but do
+            // not block other users or immediately retry it in this drain's next pass.
+            failures.set(record.userId, error);
           }
         }
         this.#flushTimelineRecipients();
-        pending = [...this.storage.chatTimelineOutbox.list()];
+        pending = [...this.storage.chatTimelineOutbox.list()].filter(record => !failures.has(record.userId));
       }
+      if (failures.size) throw failures.values().next().value;
       this.storage.chatTimelineRetryAt.put(0);
+      if (this.storage.deletingWorkspace.get()) {
+        // No delivery state is discarded until all recipients have durably removed the workspace.
+        await this.ctx.storage.deleteAll();
+        this.ownerId = undefined;
+      }
     })().catch(error => {
       this.storage.chatTimelineRetryAt.put(Date.now() + 30_000);
       throw error;
@@ -1125,8 +1151,16 @@ class OverseerImpl implements AgentHooks {
   }
 
   trackUnreadReader(userId: string, profileId: string): void {
+    if (this.storage.deletingWorkspace.get()) return;
     this.storage.unreadReaders.put({userId, profileId});
     this.queueUnreadSnapshot();
+  }
+
+  /** Persist deletion and finish recipient cleanup before discarding this workspace's storage. */
+  async deleteWorkspace(): Promise<void> {
+    this.storage.deletingWorkspace.put(true);
+    this.queueUnreadSnapshot();
+    await this.deliverChatTimelines(true);
   }
 
   #deleteExternalMessageResponseDeliveryRecord(record: ExternalMessageRecord): void {
@@ -1319,7 +1353,7 @@ class OverseerImpl implements AgentHooks {
     // blockConcurrencyWhile already aborted the object; consume its rejection and retry on wake.
     }).then(() => {
       this.#initializeReadTracking();
-      this.#resumeInterruptedAgents();
+      if (!this.storage.deletingWorkspace.get()) this.#resumeInterruptedAgents();
     }, () => {});
   }
 
@@ -1345,7 +1379,9 @@ class OverseerImpl implements AgentHooks {
       remove: () => this.queueUnreadSnapshot(),
     });
     // An interrupted source invocation may have persisted dirtiness but not fanned it out yet.
-    if (this.storage.chatTimelineDirty.get()) this.#scheduleTimelineDelivery();
+    if (this.storage.chatTimelineDirty.get() || this.storage.deletingWorkspace.get()) {
+      this.#scheduleTimelineDelivery();
+    }
   }
 
   // Resume any agent turns that were left running by a previous instance of this DO (i.e. were
@@ -9898,6 +9934,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
              notifyClosed: NativeRpcStub<() => void>,
              shareKey?: string,
              configureObservers?: RpcStub<ObserverConfigCallback>): Promise<Overseer> {
+    if (this.impl.storage.deletingWorkspace.get()) {
+      throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceNotFound);
+    }
     let firstOpen = !this.impl.ownerId;
     if (firstOpen) {
       // This Overseer hasn't been initialized yet.
@@ -11024,8 +11063,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     }
 
     await this.impl.ctx.blockConcurrencyWhile(async () => {
-      await this.#owner.deleteGadget(this.impl.ctx.id.toString());
-      await this.impl.ctx.storage.deleteAll();
+      await this.impl.deleteWorkspace();
       this.impl.recordGadgetAnalytics({
         event_name: "gadget_deleted",
         user_id: this.#clientUser.id.toString(),
@@ -11034,7 +11072,6 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       // deleter has nothing to reopen, so close it first. Best-effort: throwing here resets the DO.
       await this.notifyClosed().catch(() => {});
       this.impl.scheduleAccessRestart("Gadget restarted because the workspace was deleted.");
-      this.impl.ownerId = undefined;
     });
 
     this.impl.logger.info("deleted workspace", {

@@ -1129,6 +1129,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       chatTimelineVersion: 0,
       chatTimelineDirty: false,
       chatTimelineRetryAt: 0,
+      // Retain deletion intent and recipient cleanup until every User DO acknowledges it.
+      deletingWorkspace: false,
       unreadBaseline: <Record<number, number> | undefined>undefined,
       // Initialized on first startup.
       ownerId: <string | undefined>undefined,

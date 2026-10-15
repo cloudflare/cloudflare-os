@@ -106,6 +106,7 @@ export async function openFakeOverseer(
         }),
       },
       storage: Object.assign(storage, {
+        deletingWorkspace: { get: () => false },
         containsRestrictedData: { get: () => false },
         title: { get: () => "Test Workspace" },
       }),
