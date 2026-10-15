@@ -208,6 +208,16 @@ describe("pre-fill", () => {
     expect(onChange).toHaveBeenLastCalledWith("drive",
       { id: "drive", title: "My Drive", kind: "container", selectable: true });
   });
+
+  it.each([
+    ["container", "Theirs.pdf", { initial: "shared", loadItem: async () => shared }],
+    ["root", "Budget.xlsx", { initial: "drive", root: { id: "drive", title: "My Drive" } }],
+  ])("clears rather than returning to an unselectable pre-filled %s", async (_, leaf, props) => {
+    const onChange = await render({ loadItems: source(), ...props });
+    await userEvent.click(option(leaf));
+    await userEvent.click(option(leaf));
+    expect(onChange).toHaveBeenLastCalledWith(null, null);
+  });
 });
 
 describe("a value the module sets", () => {

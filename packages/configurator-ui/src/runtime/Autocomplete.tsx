@@ -82,9 +82,12 @@ export const Autocomplete = ({
     requestRef.current++;
   }, []);
 
-  // The host resized its window, so the popup's position is stale, or focus left for the host. On
-  // mount this does nothing: the popup starts closed and focus cannot yet be inside.
+  // The host resized its window, so the popup's position is stale, or focus left for the host. A
+  // request since mount only: effects run a frame late, and the user may have opened it already.
+  const seenCloseRequests = useRef(closeRequests);
   useEffect(() => {
+    if (closeRequests === seenCloseRequests.current) return;
+    seenCloseRequests.current = closeRequests;
     setOpen(false);
     if (anchorRef.current?.contains(document.activeElement)) {
       (document.activeElement as HTMLElement).blur();
