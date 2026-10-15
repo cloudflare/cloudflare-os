@@ -32,6 +32,7 @@ import {
   WorktreeSummary,
   BlueprintOutput,
   WorkpiecesSubscriber,
+  NotificationMute,
 } from '@gadgets/workshop-shared/api'
 import ObserverConfigModal from './ObserverConfigModal'
 import WorkpieceCodeInterface from './features/code/WorkpieceCodeInterface'
@@ -60,6 +61,8 @@ import BlueprintModal from './BlueprintModal'
 import { UpdateFromBlueprintDialog } from './features/blueprint-updates/UpdateFromBlueprintDialog'
 import { useBlueprintUpdateAvailable } from './features/blueprint-updates/useBlueprintUpdateAvailable'
 import { reportVisibleChat } from './features/notifications/visibleChat'
+import { WorkspaceNotificationsMenu } from './features/notifications/WorkspaceNotificationsMenu'
+import { logRpcFailure } from './rpcErrors'
 import TopBarNotice from './TopBarNotice'
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from './components/WorkshopControls'
 import { useActionEntries, useActions } from './useActions'
@@ -1405,6 +1408,25 @@ export default function GadgetEditor() {
     authenticatedApi.whoami().then(setUserInfo).catch(() => {})
   }, [authenticatedApi])
 
+  // ── notification mute ─────────────────────────────────────────────────────────
+  // The user's mute of this workspace lives on the workspace's record in their own list, which the
+  // Overseer's metadata doesn't carry. Tagged with its workspace because a toast's "Open task" or
+  // the browser's Back navigates between workspaces without remounting the editor.
+  const [workspaceMute, setWorkspaceMute] =
+    useState<{ workspaceId: string, mute?: NotificationMute }>()
+  useEffect(() => {
+    if (!id) return
+    let cancelled = false
+    authenticatedApi.listGadgets().then(gadgets => {
+      if (cancelled) return
+      setWorkspaceMute({
+        workspaceId: id,
+        mute: gadgets.find(workspace => workspace.id === id)?.notificationMute,
+      })
+    }, err => logRpcFailure('Failed to load workspace notification mute:', err))
+    return () => { cancelled = true }
+  }, [authenticatedApi, id])
+
   // ── title save/cancel ─────────────────────────────────────────────────────────
   const titleSaveInFlight = useRef(false)
   const handleSaveTitle = async () => {
@@ -1791,6 +1813,14 @@ export default function GadgetEditor() {
             <DropdownMenu.Item onClick={() => setShareModalOpen(true)} className={MENU_ITEM}>
               Share workspace
             </DropdownMenu.Item>
+            {workspaceMute && workspaceMute.workspaceId === id && (
+              <WorkspaceNotificationsMenu
+                workspaceId={workspaceMute.workspaceId}
+                mute={workspaceMute.mute}
+                onMuteChange={mute => setWorkspaceMute(prev =>
+                  prev?.workspaceId === workspaceMute.workspaceId ? { ...prev, mute } : prev)}
+              />
+            )}
             {/* App-only actions are left out for a worktree rather than shown disabled, as the
                 desktop header leaves out its full-screen button. */}
             {selectedWorkpieceSummary?.type !== 'worktree' && (

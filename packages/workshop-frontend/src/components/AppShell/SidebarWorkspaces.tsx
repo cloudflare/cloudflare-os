@@ -23,6 +23,7 @@ import {
   GadgetMetadataWithTimestamps,
   Overseer,
   AiChatAuthorInfo,
+  NotificationMute,
 } from '@gadgets/workshop-shared/api'
 import { useAuthenticatedApi } from '../../AuthContext'
 import ShareModal from '../../ShareModal'
@@ -50,6 +51,7 @@ type WorkspacesContextValue = {
   onTogglePin: (g: GadgetMetadataWithTimestamps) => void
   onRename: (g: GadgetMetadataWithTimestamps, newTitle: string) => void
   onShare: (g: GadgetMetadataWithTimestamps) => void
+  onNotificationMuteChange: (g: GadgetMetadataWithTimestamps, mute: NotificationMute | undefined) => void
   onDelete: (g: GadgetMetadataWithTimestamps) => void
 }
 
@@ -183,6 +185,9 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
     }
   }, [authenticatedApi, toasts])
 
+  const onNotificationMuteChange = (g: GadgetMetadataWithTimestamps, mute: NotificationMute | undefined) =>
+    setGadgets((prev) => prev.map((x) => (x.id === g.id ? { ...x, notificationMute: mute } : x)))
+
   const handleDeleteConfirm = useCallback(async () => {
     if (!deleteTarget) return
     setIsDeleting(true)
@@ -221,6 +226,7 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
     onTogglePin,
     onRename,
     onShare,
+    onNotificationMuteChange,
     onDelete: setDeleteTarget,
   }
 
@@ -301,6 +307,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
     onTogglePin,
     onRename,
     onShare,
+    onNotificationMuteChange,
     onDelete,
   } = useWorkspacesContext()
 
@@ -319,6 +326,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
             onTogglePin={onTogglePin}
             onRename={onRename}
             onShare={onShare}
+            onNotificationMuteChange={onNotificationMuteChange}
             onDelete={onDelete}
           />
         ))}
@@ -352,6 +360,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
                 onTogglePin={onTogglePin}
                 onRename={onRename}
                 onShare={onShare}
+                onNotificationMuteChange={onNotificationMuteChange}
                 onDelete={onDelete}
               />
             ))}
@@ -385,6 +394,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
                   onTogglePin={onTogglePin}
                   onRename={onRename}
                   onShare={onShare}
+                  onNotificationMuteChange={onNotificationMuteChange}
                   onDelete={onDelete}
                 />
               ))}
