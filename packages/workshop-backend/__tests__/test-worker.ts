@@ -37,6 +37,12 @@ export class OverseerDurableObject extends RealOverseerDurableObject {
     restoreTargets.set(ctx, this);
   }
 
+  /** Transfer a real endpoint over RPC, rather than leaking a DO-owned stub out of a test callback. */
+  testReplicaEndpoint(leaseId: string) {
+    return this.ctx.exports.WorkspaceReplicaEndpoint({ props: {
+      overseerId: this.ctx.id.toString(), leaseId,
+    } });
+  }
 }
 /**
  * The `self` object / spawnCallable() stub entrypoint, named explicitly for the same reason as the
@@ -47,6 +53,7 @@ export { AgentSelfLoopback } from "../src/server.js";
 export { GatekeeperLoopback, GadgetTailLoopback } from "../src/server.js";
 /** What an executeCode run's tail worker is minted from, likewise. */
 export { CodeModeTailLoopback } from "../src/server.js";
+export { WorkspaceReplicaEndpoint } from "../src/server.js";
 /**
  * The Workshop's connect callback, reachable through `ctx.exports`: the pool derives those from this
  * module's own declarations, so an entrypoint a test reaches that way has to be named here rather
@@ -107,7 +114,7 @@ export class FakeGatekeeperAccount
   }
 }
 
-const integrationCallbacks = new Map<string, { fail: boolean;
+const integrationCallbacks = new Map<string, { fail: boolean; captureReplica?: boolean;
   blocked?: {kind: AgentTurnEvent["kind"]; wait: Promise<void>; release: () => void};
   calls: { event: AgentTurnEvent; turn: AgentTurnInfo; checkoutIds?: number[] }[] }>();
 
@@ -126,7 +133,11 @@ export class IntegrationTestParticipant extends WorkerEntrypoint<unknown, { name
     const blocked = this.#state().blocked;
     if (blocked?.kind === event.kind) await blocked.wait;
     if (this.#state().fail) throw new Error("participant unavailable");
-
+    if (this.#state().captureReplica && call.turn.phase === "running") {
+      const replica = await borrowed.openWorktreeReplica();
+      try { call.checkoutIds = (await replica.checkpoint()).worktrees.map(tree => tree.checkoutId); }
+      finally { await replica.release(); }
+    }
   }
   setFailure(fail: boolean): void { this.#state().fail = fail; }
   block(kind: AgentTurnEvent["kind"]): void {
@@ -138,6 +149,7 @@ export class IntegrationTestParticipant extends WorkerEntrypoint<unknown, { name
     this.#state().blocked?.release();
     delete this.#state().blocked;
   }
+  setCaptureReplica(capture: boolean): void { this.#state().captureReplica = capture; }
   calls() { return this.#state().calls; }
 }
 
@@ -149,9 +161,12 @@ export class IntegrationTestActionGatekeeper extends DurableObject<Cloudflare.En
   async getAutoApprovableActions() { return []; }
   /** A source fixture that recognizes exactly one remote commit, never DO auto-commits. */
   allowGitCommit(commit: string): void { this.ctx.storage.kv.put("gitCommit", commit); }
-  async gitReadPack(commit: string, request: Uint8Array): Promise<ReadableStream<Uint8Array>> {
-    if (commit !== this.ctx.storage.kv.get("gitCommit")) throw new Error("Unknown remote commit");
-    return new Response(request).body!;
+  async gitPull(oids: string[], options: import("@gadgets/workshop-shared/gatekeeper").GitPullHints): Promise<ReadableStream<Uint8Array>> {
+    if (oids.length !== 1 || oids[0] !== this.ctx.storage.kv.get("gitCommit")) throw new Error("Unknown remote commit");
+    if (options.type !== "commit" || options.commitHistory.kind !== "depth" ||
+        options.commitHistory.depth !== 1 || options.filterBlobSize !== undefined ||
+        options.filterTreeDepth !== undefined) throw new Error("Expected a complete depth-one checkout");
+    return new Response(Uint8Array.of(1, 255)).body!;
   }
   async startSession(queue: RpcStub<ApprovalQueue>): Promise<{ turn: AgentTurnInfo | null }> {
     using borrowed = queue;

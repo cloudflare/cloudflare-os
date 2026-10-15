@@ -6,6 +6,7 @@ export type { AgentIntegrationOrigin, AgentIntegrationTurn, AgentIntegrationPart
 export type AgentIntegrationGrant = {
   lifecycle?: boolean;
   contextualActions?: boolean;
+  worktreeReplica?: boolean;
   /** Opt-in to durable approval redelivery; the integration must durably deduplicate effects. */
   recoverableActions?: boolean;
 };
@@ -18,15 +19,17 @@ export function agentIntegrationGrant(config: string | undefined, vendorId: stri
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
     const grant: unknown = Object.getOwnPropertyDescriptor(parsed, vendorId)?.value;
     if (!grant || typeof grant !== "object" || Array.isArray(grant)) return {};
-    if (Object.keys(grant).some(key => !["lifecycle", "contextualActions", "recoverableActions"].includes(key))) return {};
+    if (Object.keys(grant).some(key => !["lifecycle", "contextualActions", "worktreeReplica", "recoverableActions"].includes(key))) return {};
     const lifecycle: unknown = Object.getOwnPropertyDescriptor(grant, "lifecycle")?.value;
     const contextualActions: unknown = Object.getOwnPropertyDescriptor(grant, "contextualActions")?.value;
+    const worktreeReplica: unknown = Object.getOwnPropertyDescriptor(grant, "worktreeReplica")?.value;
     const recoverableActions: unknown = Object.getOwnPropertyDescriptor(grant, "recoverableActions")?.value;
     if ((lifecycle !== undefined && typeof lifecycle !== "boolean") ||
         (contextualActions !== undefined && typeof contextualActions !== "boolean") ||
+        (worktreeReplica !== undefined && typeof worktreeReplica !== "boolean") ||
         (recoverableActions !== undefined && typeof recoverableActions !== "boolean")) return {};
     return { lifecycle: lifecycle === true, contextualActions: contextualActions === true,
-      recoverableActions: recoverableActions === true };
+      worktreeReplica: worktreeReplica === true, recoverableActions: recoverableActions === true };
   } catch {
     return {};
   }

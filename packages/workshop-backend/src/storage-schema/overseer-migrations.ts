@@ -29,7 +29,17 @@ import type { UserDurableObject } from "../user";
  * new workspace is born at (so it has nothing to migrate). The migrations themselves name
  * their versions literally, since each one's source and target are fixed for good.
  */
-export const OVERSEER_STORAGE_VERSION = 5;
+export const OVERSEER_STORAGE_VERSION = 6;
+
+/**
+ * Version 5 -> 6: enable integration journals and accepted worktree OT prefixes.
+ * The new collections start empty; existing worktrees use their current accepted commit as
+ * hydration anchor until their next accept. Legacy actions retain their manual retry contract.
+ */
+export function migrateToWorktreeReplicas(host: OverseerMigrationHost): void {
+  if (host.storage.version.get() !== 5) return;
+  host.ctx.storage.transactionSync(() => host.storage.version.put(6));
+}
 
 /**
  * The most chat messages that migrateToBlueprintUpstreams() reads, over all of a workspace's

@@ -29,7 +29,7 @@ import {
 import { GitCacheImpl, WorkspaceGitCache } from "./git-cache";
 import {
   OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToBlueprintUpstreams,
-  migrateToGitStorage, migrateToMultiGadget, migrateToWorkpieceTypes,
+  migrateToGitStorage, migrateToMultiGadget, migrateToWorkpieceTypes, migrateToWorktreeReplicas,
 } from "./storage-schema/overseer-migrations";
 import type { Usage } from "@earendil-works/pi-ai";
 import {
@@ -44,13 +44,14 @@ import {
   getAiGatewayLogCost,
   type AiGatewayLogRoute,
 } from "./ai-gateway";
-import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
+import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, assertAgentMayModifyWorkpiece, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
 import { scanWorkpieceForGrep, type GrepScan } from "./grep";
 import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
-import { chatChangeStatuses, foldCompactedCode } from "./agent-compaction";
+import { chatChangeStatuses, foldCompactedCode, foldProposedChanges, replayChatBindings } from "./agent-compaction";
+import {prepareWorktreeBaseChanges} from "./worktree-base-changes";
 import { ambientGatekeeperMode } from "./provisioning-policy";
 import {
   blueprintContentKey, deleteBlueprintContent, readBlueprintRelease, sanitizeBlueprintOutput,
@@ -63,7 +64,13 @@ import { encodeGitTree, gitObjectOid, parseGitCommitRefs } from "./git-codec";
 import {
   listFeaturedBlueprintsFromKv, readBlueprintKvRecord, type BlueprintKvRecord,
 } from "./storage-schema/blueprints-kv";
-import type { AgentContext, AgentTurnInfo, AgentTurnParticipant, GatekeeperActionContext } from "@gadgets/workshop-shared/agent-integration";
+import type { AgentContext, AgentTurnInfo, AgentTurnParticipant, GatekeeperActionContext, WorkspaceReplica,
+  WorktreeBase, WorktreeBaseEntry, WorktreeChange, WorktreeChangesPage, WorktreeReplicaBatch,
+  WorktreeReplicaReceipt, WorkspaceCheckpoint } from "@gadgets/workshop-shared/agent-integration";
+import { WorktreeReplicaSession, requireReplicaPath, type WorktreeReplicaHost,
+  type WorktreeReplicaLease, type WorktreeReplicaCommit } from "./worktree-replica";
+import { replicaCommitPack } from "./replica-git";
+import type { Cursor } from "@gadgets/workshop-shared/gatekeeper";
 import { agentIntegrationGrant, beginIntegrationTurn, closeIntegrationTurn, requireIntegrationTurn,
   deliverIntegrationEvent, type AgentIntegrationOrigin } from "./agent-integration";
 import { WebFetchEnv } from "./web-fetch";
@@ -381,6 +388,11 @@ function validateBlueprintScreenshotUpload(screenshot: BlueprintScreenshotUpload
 const MAX_CHAT_ATTACHMENTS_PER_MESSAGE = 5;
 const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 5 * 1024 * 1024;
 
+// A maximum-size canonical CodeChange must fit in one page. Its size estimate already charges
+// every path and change node; the event projection adds only these small per-file wrappers.
+// The 24 MiB page cap leaves framing headroom below Workers RPC's 32 MiB value ceiling.
+const REPLICA_EVENT_CHANGE_OVERHEAD = 64;
+const REPLICA_EVENTS_BYTE_BUDGET = 24 * 1024 * 1024;
 const CHAT_ATTACHMENT_EXTENSION_BY_MIME = new Map([
   ["text/csv", ".csv"],
   ["application/json", ".json"],
@@ -1136,6 +1148,7 @@ class OverseerImpl implements AgentHooks {
       this.storage.chatMeta.put(meta);
     }
     if (!preservePause) this.storage.pausedAgents.delete(record.chatId);
+    this.#worktreeReplicaTurns.delete(record.chatId);
     this.#unregisterRunningAgent(record.chatId);
     this.#finishAgentTurn(record.chatId);
   }
@@ -1223,11 +1236,13 @@ class OverseerImpl implements AgentHooks {
         migrateToActionIndexes(this);
         migrateToWorkpieceTypes(this);
         migrateToBlueprintUpstreams(this);
+        migrateToWorktreeReplicas(this);
       }).then(() => this.#resumeInterruptedAgents(), () => {});
     } else {
       migrateToActionIndexes(this);
       migrateToWorkpieceTypes(this);
       migrateToBlueprintUpstreams(this);
+      migrateToWorktreeReplicas(this);
       this.#resumeInterruptedAgents();
     }
   }
@@ -1741,6 +1756,11 @@ class OverseerImpl implements AgentHooks {
         .filter(meta => this.proposedChangeWorkpieceIds(meta.id, meta).includes(id));
     let facetName = this.gadgetFacetName(id);
     this.storage.gadgets.delete(id);  // notifies workpiece subscribers
+    // Deleting through this index invalidates its live iterator.
+    const prefixes = [...this.storage.worktreeBaseChanges.byWorkpiece.get(id)];
+    for (const prefix of prefixes) {
+      this.storage.worktreeBaseChanges.deleteRecord(prefix);
+    }
     this.#runningChatIds.delete(id);
     this.ctx.facets.delete(facetName);
     for (let meta of proposingChats) this.storage.chatMeta.put(meta);
@@ -2396,7 +2416,8 @@ class OverseerImpl implements AgentHooks {
   #appendChatChangeRow(chatId: number, meta: AiChatMetadata, author: AiChatAuthorInfo,
                        change: CodeChange,
                        newPins: ChatGadgetPinState[], contentAfter: CodeContent | undefined,
-                       submission?: {clientId: string, seq: number}): ChatChangeRecord {
+                       submission?: {clientId: string, seq: number},
+                       sourceReplica?: ChatChangeRecord["sourceReplica"]): ChatChangeRecord {
     let codeBase = this.chatCodeBase(meta);
     codeBase.pins.push(...newPins);
     let revision = codeBase.revision + 1;
@@ -2411,6 +2432,7 @@ class OverseerImpl implements AgentHooks {
       author,
       change,
       ...(submission !== undefined ? {submission} : {}),
+      ...(sourceReplica !== undefined ? {sourceReplica} : {}),
     };
     this.storage.chatChanges.put(row);
 
@@ -2461,8 +2483,16 @@ class OverseerImpl implements AgentHooks {
   // are no longer bridgeable at all.
   #pruneRetiredChatChanges(chatId: number): void {
     let cutoff = Date.now() - CHAT_CHANGE_RETIRED_TTL_MS;
+    const turn = this.storage.agentIntegrationTurns.get(chatId);
+    const anchors = [...this.storage.worktreeReplicaLeases.list()].filter(lease =>
+      lease.chatId === chatId && !lease.released && lease.expiresAt > Date.now() &&
+      lease.turnId === turn?.turnId && lease.checkpoint).map(lease => {
+        const [generation, revision] = lease.checkpoint!.cursor.split(":").slice(-2).map(Number);
+        return {generation, revision};
+      });
     for (let row of Array.from(this.storage.chatChanges.list({prefix: chatKeyPrefix(chatId)}))) {
-      if (row.retired && row.timestamp.getTime() < cutoff) {
+      if (row.retired && row.timestamp.getTime() < cutoff && !anchors.some(anchor =>
+          anchor.generation === row.generation && row.revision > anchor.revision)) {
         this.storage.chatChanges.deleteRecord(row);
       }
     }
@@ -2780,6 +2810,8 @@ class OverseerImpl implements AgentHooks {
         addedBindings: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[],
         worktreeCommits: {worktreeId: WorkpieceId, commit: string, previousHead: string}[],
         blueprintMerges: BlueprintMerge[],
+        replicaCommit?: WorktreeReplicaCommit,
+        replicaExpectedVersion?: string,
       },
       usage?: Usage, aiGatewayLogId?: string,
       aiGatewayLogRoute?: AiGatewayLogRoute): Promise<boolean> {
@@ -2793,6 +2825,9 @@ class OverseerImpl implements AgentHooks {
           event: "agent.step.change.invalid", chatId, changeStage: "persist", changeIndex, ...agentCodeChangeShape(change),
         });
         throw error;
+      }
+      if (step.replicaCommit) for (const id of changedGadgets(change)) {
+        assertAgentMayModifyWorkpiece(this.getChatAgentContext(chatId), this.isWorktree(id));
       }
     }
 
@@ -2821,7 +2856,7 @@ class OverseerImpl implements AgentHooks {
     let baseFilesByCommit = new Map<string, Map<string, string>>();
     let worktreeBases = new Map<WorkpieceId, string>();
     let worktreeSeeds = new Map<string, string | null>();
-    if (step.changes.length > 0) {
+    if (step.changes.length > 0 || step.replicaCommit !== undefined) {
       let content = await this.getCurrentChatContent(chatId, meta);
       worktreeBases = new Map([...this.worktreePinBases(meta), ...worktreePins]);
       if (worktreeBases.size > 0) {
@@ -2849,6 +2884,16 @@ class OverseerImpl implements AgentHooks {
 
     try {
       return this.storage.transaction(() => {
+        if (step.replicaCommit !== undefined) {
+          const lease = this.requireReplicaLease(step.replicaCommit.leaseId);
+          if (step.replicaExpectedVersion !== undefined &&
+              this.replicaVersion(lease) !== step.replicaExpectedVersion) {
+            throw new ReplicaChangedError();
+          }
+          if (this.storage.worktreeReplicaCommits.get(step.replicaCommit.id)) {
+            throw new ReplicaChangedError();
+          }
+        }
         let fresh = this.storage.chatMeta.get(chatId);
         if (!fresh) return false;  // chat deleted during the prefetches
 
@@ -2879,7 +2924,7 @@ class OverseerImpl implements AgentHooks {
           }
           let content = cached.content;
 
-          for (let {change, pin} of step.changes) {
+          for (let {change, pin, replica} of step.changes) {
             let newPins: ChatGadgetPinState[] = [];
             if (pin !== undefined) {
               let pins = this.chatCodeBase(fresh).pins;
@@ -2910,12 +2955,26 @@ class OverseerImpl implements AgentHooks {
             content = seeded;
             validateCodeChangeContent(change, content);
             content = applyCodeChange(content, change);
-            this.#appendChatChangeRow(chatId, fresh, author, change, newPins, content);
+            this.#appendChatChangeRow(chatId, fresh, author, change, newPins, content, undefined,
+              replica && step.replicaCommit ? {leaseId: step.replicaCommit.leaseId,
+                batchId: step.replicaCommit.receipt.batchId} : undefined);
           }
         }
 
+        if (step.replicaCommit !== undefined) {
+          // Even a no-op acceptance needs its own stream marker. Reusing the preceding cursor
+          // would falsely label that unrelated DO edit as the replica's echo.
+          const fresh = this.storage.chatMeta.get(chatId)!;
+          const cached = this.#chatContentCache.get(chatId);
+          if (!cached) throw new Error("Replica acceptance requires materialized chat content.");
+          this.#appendChatChangeRow(chatId, fresh, author, {}, [], cached.content, undefined,
+            {leaseId: step.replicaCommit.leaseId, batchId: step.replicaCommit.receipt.batchId});
+          step.replicaCommit.receipt.committedAt = this.replicaCursor(
+              this.requireReplicaLease(step.replicaCommit.leaseId));
+          this.storage.worktreeReplicaCommits.put(step.replicaCommit);
+        }
         this.addChatMessages(chatId, author, msgs, usage, aiGatewayLogId, aiGatewayLogRoute);
-        return this.materializeChatChanges(chatId, undefined, {
+        let materialized = this.materializeChatChanges(chatId, undefined, {
           author,
           allowDuringTurn: true,
           createdGadgets: step.createdGadgets,
@@ -2924,6 +2983,7 @@ class OverseerImpl implements AgentHooks {
           worktreeCommits: step.worktreeCommits,
           blueprintMerges: step.blueprintMerges,
         }) !== undefined;
+        return materialized;
       });
     } catch (err) {
       // The transaction rolled the rows back, but the append path already advanced the
@@ -3713,7 +3773,7 @@ class OverseerImpl implements AgentHooks {
   // The body of Overseer.mergeChanges(), running under the chat's operation lock (callers
   // hold withChatLock). `clientUserId` feeds analytics only.
   async mergeChanges(chatId: number, userMeta: UserChatContext, clientUserId: string)
-                     : Promise<MergeChangesResult> {
+      : Promise<MergeChangesResult> {
     let meta = this.assertChatNotActive(chatId);
 
     // Always merge *everything* the chat proposes: sweep live change rows into a "changes" message
@@ -3737,6 +3797,11 @@ class OverseerImpl implements AgentHooks {
     let entryCodeBase = this.chatCodeBase(meta);
     let generationToken = entryCodeBase.generation;
     let revisionToken = entryCodeBase.revision;
+    // Preserve the actual transforms before the accept closes this epoch. Re-diffing its
+    // flattened Git tree would lose positional intent in repeated text.
+    const history = this.loadChatHistory(chatId);
+    const acceptedBatches = foldProposedChanges(history.chatMessages,
+      history.checkpoint?.proposedChange ? [{sequence: -1, change: history.checkpoint.proposedChange}] : []);
 
     // Message statuses drive excluding reverted creations from coverage below. The map stays
     // valid through the whole accept: the sequence-token revalidation after the awaits
@@ -3970,6 +4035,15 @@ class OverseerImpl implements AgentHooks {
       }
     }
 
+    // Prepare and bound every prefix before any merge notification or epoch reset can escape.
+    const prefixUpdates = [...worktreeAccepts].flatMap(([worktreeId, pinBase]) => {
+      const record = this.storage.gadgets.get(worktreeId);
+      if (record?.type !== "worktree" || record.pinBase === pinBase) return [];
+      const previous = [...this.storage.worktreeBaseChanges.byWorkpiece.get(worktreeId)];
+      return [{record, pinBase, previous,
+        changes: prepareWorktreeBaseChanges(worktreeId, previous, acceptedBatches)}];
+    });
+
     // Everything above this point awaited, so the chat and workspace may have moved in the
     // meantime; re-validate before mutating. The chat lock excludes sibling merge/revert/
     // update-from-mainline calls, but an accept from *another* chat can advance a head, an agent
@@ -4009,147 +4083,159 @@ class OverseerImpl implements AgentHooks {
     // to a vendorless connection, is in nobody's verification scope.
     let useScopeBefore = this.#accountRequiringUseScope();
 
-    // Promote provisional gadgets whose creation is covered by this merge: accepting the chat's
-    // changes through `mergeThrough` makes them permanent workspace members. Each covered
-    // creation sits on an unmerged, unreverted "changes" message at `pending.sequence` (a
-    // merged one's gadget is already promoted, and a reverted one's is excluded here exactly as
-    // the toCommit loop excluded it), and is in `commits`, so every promoted gadget gets a head
-    // in the fast-forward step below -- possibly an empty tree.
-    for (let gadget of this.listPendingGadgets(chatId)) {
-      if (gadget.pending!.sequence !== undefined && gadget.pending!.sequence <= mergeThrough &&
-          !revertedStamp(gadget.pending)) {
-        delete gadget.pending;
-        this.storage.gadgets.put(gadget);
-        this.recordGadgetAnalytics({
-          event_name: "workpiece_created",
-          user_id: clientUserId,
-          workpiece_id: gadget.id,
-          source: "chat",
-        });
-      }
-    }
-
-    // Likewise promote provisional binding edges covered by this merge; this is also the moment
-    // an edge becomes visible to mainline loads and the derived workspace default binding list.
-    // (Reverted additions only survive on a reverted creation's record -- the revert deletes
-    // covered edges synchronously otherwise -- but exclude them the same way for coherence.)
-    for (let gadget of this.storage.gadgets.list()) {
-      if (gadget.type !== "gadget") continue;  // worktrees have no binding edges
-      let promoted = false;
-      for (let edge of Object.values(gadget.bindings)) {
-        if (edge.pending?.chatId === chatId && edge.pending.sequence !== undefined &&
-            edge.pending.sequence <= mergeThrough && !revertedStamp(edge.pending)) {
-          delete edge.pending;
-          promoted = true;
+    try {
+      this.ctx.storage.transactionSync(() => {
+        // Prefix writes have no external subscribers. Complete all of them before publishing
+        // pins or messages, and roll the whole accept back if any bounded write still fails.
+        for (const {previous, changes} of prefixUpdates) {
+          for (const item of previous) this.storage.worktreeBaseChanges.deleteRecord(item);
+          for (const item of changes) this.storage.worktreeBaseChanges.put(item);
         }
-      }
-      if (promoted) {
-        this.storage.gadgets.put(gadget);
-      }
-    }
+        // Promote provisional gadgets whose creation is covered by this merge: accepting the chat's
+        // changes through `mergeThrough` makes them permanent workspace members. Each covered
+        // creation sits on an unmerged, unreverted "changes" message at `pending.sequence` (a
+        // merged one's gadget is already promoted, and a reverted one's is excluded here exactly as
+        // the toCommit loop excluded it), and is in `commits`, so every promoted gadget gets a head
+        // in the fast-forward step below -- possibly an empty tree.
+        for (let gadget of this.listPendingGadgets(chatId)) {
+          if (gadget.pending!.sequence !== undefined && gadget.pending!.sequence <= mergeThrough &&
+              !revertedStamp(gadget.pending)) {
+            delete gadget.pending;
+            this.storage.gadgets.put(gadget);
+            this.recordGadgetAnalytics({
+              event_name: "workpiece_created",
+              user_id: clientUserId,
+              workpiece_id: gadget.id,
+              source: "chat",
+            });
+          }
+        }
 
-    // Fast-forward each committed gadget's head.
-    for (let {gadgetId, commitId} of commits) {
-      let record = this.storage.gadgets.get(gadgetId)!;
-      if (record.type !== "gadget") continue;  // unreachable: only gadgets are committed
-      record.commitId = commitId;
-      this.storage.gadgets.put(record);
-    }
+        // Likewise promote provisional binding edges covered by this merge; this is also the moment
+        // an edge becomes visible to mainline loads and the derived workspace default binding list.
+        // (Reverted additions only survive on a reverted creation's record -- the revert deletes
+        // covered edges synchronously otherwise -- but exclude them the same way for coherence.)
+        for (let gadget of this.storage.gadgets.list()) {
+          if (gadget.type !== "gadget") continue;  // worktrees have no binding edges
+          let promoted = false;
+          for (let edge of Object.values(gadget.bindings)) {
+            if (edge.pending?.chatId === chatId && edge.pending.sequence !== undefined &&
+                edge.pending.sequence <= mergeThrough && !revertedStamp(edge.pending)) {
+              delete edge.pending;
+              promoted = true;
+            }
+          }
+          if (promoted) {
+            this.storage.gadgets.put(gadget);
+          }
+        }
 
-    // Each gadget the chat proposed merging a blueprint release into now follows that
-    // blueprint, at that release, which its head's history holds: from just above, or from
-    // before. (A gadget whose creation this merge did not cover is no part of it.)
-    for (let [gadgetId, {blueprintId, commitId}] of blueprintMerges) {
-      let record = this.storage.gadgets.get(gadgetId);
-      if (record?.type !== "gadget" || record.pending) continue;
-      record.upstream = {blueprintId, commitId};
-      this.storage.gadgets.put(record);
-    }
+        // Fast-forward each committed gadget's head.
+        for (let {gadgetId, commitId} of commits) {
+          let record = this.storage.gadgets.get(gadgetId)!;
+          if (record.type !== "gadget") continue;  // unreachable: only gadgets are committed
+          record.commitId = commitId;
+          this.storage.gadgets.put(record);
+        }
 
-    // Bump the loader-cache counter so cached workers reload with the new heads (and promoted
-    // records) visible.
-    this.bumpVersion();
-    let timestamp = this.getChatTimestamp();
+        // Each gadget the chat proposed merging a blueprint release into now follows that
+        // blueprint, at that release, which its head's history holds: from just above, or from
+        // before. (A gadget whose creation this merge did not cover is no part of it.)
+        for (let [gadgetId, {blueprintId, commitId}] of blueprintMerges) {
+          let record = this.storage.gadgets.get(gadgetId);
+          if (record?.type !== "gadget" || record.pending) continue;
+          record.upstream = {blueprintId, commitId};
+          this.storage.gadgets.put(record);
+        }
 
-    let mergeSequence = this.nextChatSequence(chatId);
-    this.storage.chats.put({
-      chatId,
-      sequence: mergeSequence,
-      timestamp,
-      author: userMeta.profile,
+        // Bump the loader-cache counter so cached workers reload with the new heads (and promoted
+        // records) visible.
+        this.bumpVersion();
+        let timestamp = this.getChatTimestamp();
 
-      type: "merge",
-      mergeThrough,
-      commits,
-      // The merge closes the chat's epoch (see the reset below); content reconstruction
-      // restarts here. Historical (pre-git) merges lack this, which is how replay tells them
-      // apart. (Merges from before worktrees pinned on modification also carry `worktreePins`,
-      // which readers still honor; nothing writes it anymore.)
-      epochBoundary: true,
-    });
+        let mergeSequence = this.nextChatSequence(chatId);
+        this.storage.chats.put({
+          chatId,
+          sequence: mergeSequence,
+          timestamp,
+          author: userMeta.profile,
 
-    // The boundary map for the straggler bridge: per gadget, the commit whose tree equals the
-    // chat's content at this reset. A committed gadget's is the commit just written; an
-    // uncommitted pin had no net change relative to its mergedCommit (that's why it wasn't
-    // committed), so its content equals head exactly when mergedCommit == head -- otherwise the
-    // reset visibly changes the gadget's content (the pin evaporates and the chat snaps to a
-    // head it never merged), making it bridge-ineligible and reported in
-    // `prior.discontinuousGadgets` so clients rebuild it from head.
-    let boundaries: ChatChangeBoundaryRecord["boundaries"] =
-        commits.map(({gadgetId, commitId}) => ({gadgetId, commitId}));
-    let committedIds = new Set(commits.map(commit => commit.gadgetId));
-    let discontinuousGadgets: WorkpieceId[] = [];
-    for (let pin of freshCodeBase.pins) {
-      if (committedIds.has(pin.gadgetId)) continue;
-      // A worktree's new accepted commit is by construction the commit whose tree equals the
-      // chat's content at this reset, so it is bridge-eligible and never discontinuous: a
-      // bridged row re-pins the worktree at it (the base submitCodeChange requires). (A
-      // worktree pin whose record has vanished -- a reverted creation surviving a failed reap
-      // -- falls through to the null branch.)
-      let accepted = worktreeAccepts.get(pin.gadgetId);
-      if (accepted !== undefined) {
-        boundaries.push({gadgetId: pin.gadgetId, commitId: accepted});
-        continue;
-      }
-      let record = this.storage.gadgets.get(pin.gadgetId);
-      let head = record?.type === "gadget" ? record.commitId : undefined;
-      if (head !== undefined && head === pin.mergedCommit) {
-        boundaries.push({gadgetId: pin.gadgetId, commitId: head});
-      } else {
-        boundaries.push({gadgetId: pin.gadgetId, commitId: null});
-        discontinuousGadgets.push(pin.gadgetId);
-      }
-    }
+          type: "merge",
+          mergeThrough,
+          commits,
+          // The merge closes the chat's epoch (see the reset below); content reconstruction
+          // restarts here. Historical (pre-git) merges lack this, which is how replay tells them
+          // apart. (Merges from before worktrees pinned on modification also carry `worktreePins`,
+          // which readers still honor; nothing writes it anymore.)
+          epochBoundary: true,
+        });
 
-    // Close the epoch: everything the chat proposed now lives in commits, so the chat's code
-    // base resets to empty -- every pin evaporates, the change stream restarts at revision 0 under
-    // a new generation, and subsequent edits re-pin lazily against the new heads -- for a
-    // worktree, against its accepted commit, advanced here to the commit planned above. The
-    // bump is content-preserving: the closed generation's rows are retired (not deleted) as the
-    // transform window, the boundary record above opens the straggler bridge, and `prior` tells
-    // clients how to hand off (see ChatCodeBase.prior). The reset lands on the freshly-read
-    // meta so concurrent changes to other fields (e.g. a title rename during the awaits)
-    // survive.
-    this.#retireChatChanges(this.listLiveChatChanges(chatId, generationToken));
-    this.#pruneRetiredChatChanges(chatId);
-    this.storage.chatChangeBoundaries.put(
-        {chatId, generation: generationToken, finalRevision: revisionToken, boundaries});
-    this.#chatContentCache.delete(chatId);
-    freshMeta.codeBase = {
-      pins: [],
-      generation: generationToken + 1,
-      revision: 0,
-      epoch: mergeSequence,
-      prior: {generation: generationToken, finalRevision: revisionToken, discontinuousGadgets},
-    };
-    freshMeta.lastActive = timestamp;
-    this.storage.chatMeta.put(freshMeta);
-    for (let [worktreeId, newPinBase] of worktreeAccepts) {
-      let record = this.storage.gadgets.get(worktreeId);
-      if (record?.type === "worktree" && record.pinBase !== newPinBase) {
-        record.pinBase = newPinBase;
-        this.storage.gadgets.put(record);
-      }
+        // The boundary map for the straggler bridge: per gadget, the commit whose tree equals the
+        // chat's content at this reset. A committed gadget's is the commit just written; an
+        // uncommitted pin had no net change relative to its mergedCommit (that's why it wasn't
+        // committed), so its content equals head exactly when mergedCommit == head -- otherwise the
+        // reset visibly changes the gadget's content (the pin evaporates and the chat snaps to a
+        // head it never merged), making it bridge-ineligible and reported in
+        // `prior.discontinuousGadgets` so clients rebuild it from head.
+        let boundaries: ChatChangeBoundaryRecord["boundaries"] =
+            commits.map(({gadgetId, commitId}) => ({gadgetId, commitId}));
+        let committedIds = new Set(commits.map(commit => commit.gadgetId));
+        let discontinuousGadgets: WorkpieceId[] = [];
+        for (let pin of freshCodeBase.pins) {
+          if (committedIds.has(pin.gadgetId)) continue;
+          // A worktree's new accepted commit is by construction the commit whose tree equals the
+          // chat's content at this reset, so it is bridge-eligible and never discontinuous: a
+          // bridged row re-pins the worktree at it (the base submitCodeChange requires). (A
+          // worktree pin whose record has vanished -- a reverted creation surviving a failed reap
+          // -- falls through to the null branch.)
+          let accepted = worktreeAccepts.get(pin.gadgetId);
+          if (accepted !== undefined) {
+            boundaries.push({gadgetId: pin.gadgetId, commitId: accepted});
+            continue;
+          }
+          let record = this.storage.gadgets.get(pin.gadgetId);
+          let head = record?.type === "gadget" ? record.commitId : undefined;
+          if (head !== undefined && head === pin.mergedCommit) {
+            boundaries.push({gadgetId: pin.gadgetId, commitId: head});
+          } else {
+            boundaries.push({gadgetId: pin.gadgetId, commitId: null});
+            discontinuousGadgets.push(pin.gadgetId);
+          }
+        }
+
+        // Close the epoch: everything the chat proposed now lives in commits, so the chat's code
+        // base resets to empty -- every pin evaporates, the change stream restarts at revision 0 under
+        // a new generation, and subsequent edits re-pin lazily against the new heads -- for a
+        // worktree, against its accepted commit, advanced here to the commit planned above. The
+        // bump is content-preserving: the closed generation's rows are retired (not deleted) as the
+        // transform window, the boundary record above opens the straggler bridge, and `prior` tells
+        // clients how to hand off (see ChatCodeBase.prior). The reset lands on the freshly-read
+        // meta so concurrent changes to other fields (e.g. a title rename during the awaits)
+        // survive.
+        this.#retireChatChanges(this.listLiveChatChanges(chatId, generationToken));
+        this.#pruneRetiredChatChanges(chatId);
+        this.storage.chatChangeBoundaries.put(
+            {chatId, generation: generationToken, finalRevision: revisionToken, boundaries});
+        this.#chatContentCache.delete(chatId);
+        freshMeta.codeBase = {
+          pins: [],
+          generation: generationToken + 1,
+          revision: 0,
+          epoch: mergeSequence,
+          prior: {generation: generationToken, finalRevision: revisionToken, discontinuousGadgets},
+        };
+        freshMeta.lastActive = timestamp;
+        this.storage.chatMeta.put(freshMeta);
+        for (const {record, pinBase} of prefixUpdates) {
+          record.replicaBaseCommit ??= record.pinBase;
+          record.pinBase = pinBase;
+          this.storage.gadgets.put(record);
+        }
+      });
+    } catch (error) {
+      this.invalidateChatContent(chatId);
+      this.#liveWindowCache.delete(chatId);
+      throw error;
     }
 
     // Maybe generate gadget title if this was the first accepted code. (A merge covering only
@@ -5320,6 +5406,13 @@ class OverseerImpl implements AgentHooks {
   // the currently-running execution resolve. See executeCodeMode.
   #activeWorktreeTurns = new Map<number,
       {access: WorktreeTurnAccess, initiator: AiChatAuthorInfo, executionId: string}>();
+  #worktreeReplicaTurns = new Map<number, { access: WorktreeTurnAccess, author: AiChatAuthorInfo,
+    bindings: () => ReadonlyMap<string, ChatBindingEntry> }>();
+
+  registerWorktreeReplicaTurn(chatId: number, access: WorktreeTurnAccess, author: AiChatAuthorInfo,
+      bindings: () => ReadonlyMap<string, ChatBindingEntry>): void {
+    this.#worktreeReplicaTurns.set(chatId, { access, author, bindings });
+  }
 
   // Maps chat ID to action numbers recently performed by that chat's agent. These are drained into
   // the chat log after the tool returns. `awaitDecision` is true if any captured action needs it.
@@ -5504,7 +5597,8 @@ class OverseerImpl implements AgentHooks {
       // Uploads use root filenames. Reserve base and overlay root names (including directories)
       // without loading file contents, so an upload cannot overwrite agent-created work.
       for (const entry of await this.gitCache.listCommitTreePaths(worktree.pinBase)) used.add(entry.path);
-      for (const [path] of this.#pendingWorkspaceChanges(chatId)[worktree.id] ?? []) used.add(path.split("/")[0]);
+      for (const {path} of this.storage.worktreeBaseChanges.byWorkpiece.get(worktree.id)) used.add(path.split("/")[0]);
+      for (const [path] of this.#replicaOverlay(chatId)[worktree.id] ?? []) used.add(path.split("/")[0]);
     }
 
     let files = new Map<string, string>();
@@ -5524,16 +5618,6 @@ class OverseerImpl implements AgentHooks {
       files.set(path, text);
     }
     return files;
-  }
-
-  #pendingWorkspaceChanges(chatId: number): CodeChange {
-    const history = this.loadChatHistory(chatId);
-    let result = foldCompactedCode(history.chatMessages, Infinity, history.checkpoint).proposedChange ?? {};
-    const meta = this.storage.chatMeta.get(chatId)!;
-    for (const row of this.listLiveChatChanges(chatId, this.chatCodeBase(meta).generation)) {
-      result = composeCodeChange(result, row.change);
-    }
-    return result;
   }
 
   #attachmentsWorktree(chatId: number): WorktreeRecord | undefined {
@@ -6350,18 +6434,352 @@ class OverseerImpl implements AgentHooks {
     return vendorId ? agentIntegrationGrant(this.env.AGENT_INTEGRATION_GRANTS, vendorId) : {};
   }
 
+  // Freeze names and immutable bases at the capability-minting boundary. The live agent map
+  // includes worktrees created this step; the stored map is used after an approval suspends it.
+  replicaSelection(chatId: number): WorktreeBase[] {
+    let names = new Map<WorkpieceId, string>();
+    const context = this.getChatAgentContext(chatId);
+    const active = this.#worktreeReplicaTurns.get(chatId);
+    if (active) {
+      for (const [name, entry] of active.bindings()) {
+        if (entry.type === "workpiece" && !names.has(entry.id)) names.set(entry.id, name);
+      }
+    } else {
+      const checkpoint = this.getActiveChatCompaction(chatId);
+      const initial = new Map<string, ChatBindingEntry>(checkpoint?.chatBindings ?? []);
+      for (const [name, id] of Object.entries(context.bindings ?? {})) {
+        if (!initial.has(name)) initial.set(name, {type: "workpiece", id});
+      }
+      const messages = this.storage.chats.list({prefix: chatKeyPrefix(chatId),
+        start: checkpoint && chatKey(chatId, checkpoint.compactedTo)});
+      for (const [name, entry] of replayChatBindings(messages, initial)) {
+        if (entry.type === "workpiece" && !names.has(entry.id)) names.set(entry.id, name);
+      }
+    }
+    const meta = this.storage.chatMeta.get(chatId);
+    const pins = meta ? new Map(this.chatCodeBase(meta).pins.map(pin => [pin.gadgetId, pin.baseCommit])) : new Map<number, string>();
+    return [...names].flatMap(([id, binding]) => {
+      const piece = this.storage.gadgets.get(id);
+      if (!piece || (piece.type === "worktree" && piece.chatId !== chatId) ||
+          (piece.type === "gadget" && piece.pending && piece.pending.chatId !== chatId)) return [];
+      const source = piece.type === "gadget" ? "gadget" as const :
+        context.attachments?.worktreeId === id ? "attachments" as const : "repository" as const;
+      return [{ checkoutId: id, binding,
+        // Accepted auto-commits exist only in the DO. Git hydration must keep the original
+        // source commit as the immutable lower; captured local commits and pending changes
+        // are materialized above it during bootstrap.
+        baseCommit: piece.type === "worktree" ? piece.replicaBaseCommit ?? piece.pinBase :
+          active?.access.getBaseCommit(id) ?? pins.get(id) ??
+          piece.commitId ?? null,
+        baseTree: null, source }];
+    });
+  }
+
+  openWorktreeReplica(gatekeeperId: number, origin: AgentIntegrationOrigin,
+      phase: AgentTurnInfo["phase"]): Fetcher<WorkspaceReplica> {
+    if (!this.integrationGrant(gatekeeperId).worktreeReplica ||
+        (phase !== "running" && phase !== "applyingAction")) {
+      throw new Error("Worktree replication has not been granted to this integration.");
+    }
+    requireIntegrationTurn(this.storage.agentIntegrationTurns.get(origin.chatId), origin, phase);
+    const selection = this.replicaSelection(origin.chatId);
+    const worktrees = origin.worktrees ?? [];
+    if (!worktrees.length || worktrees.some(tree => !selection.some(current =>
+        current.checkoutId === tree.checkoutId && current.baseCommit === tree.baseCommit))) {
+      throw new Error("Replica selection is empty or its bases changed while awaiting approval.");
+    }
+    const leases = [...this.storage.worktreeReplicaLeases.list()];
+    for (const lease of leases) {
+      const meta = this.storage.chatMeta.get(lease.chatId);
+      const epochChanged = lease.checkpoint && (!meta ||
+        Number(lease.checkpoint.cursor.split(":").at(-2)) !== this.chatCodeBase(meta).generation);
+      if (lease.released || lease.expiresAt <= Date.now() ||
+          this.storage.agentIntegrationTurns.get(lease.chatId)?.turnId !== lease.turnId || epochChanged) {
+        const receipts = [...this.storage.worktreeReplicaCommits.byLease.get(lease.id)];
+        for (const receipt of receipts) {
+          this.storage.worktreeReplicaCommits.delete(receipt.id);
+        }
+        this.storage.worktreeReplicaLeases.delete(lease.id);
+      } else if (lease.chatId === origin.chatId && lease.turnId === origin.turnId &&
+          lease.gatekeeperId === gatekeeperId && lease.worktrees.length === worktrees.length &&
+          lease.worktrees.every((tree, index) => tree.checkoutId === worktrees[index].checkoutId &&
+            tree.baseCommit === worktrees[index].baseCommit)) {
+        return this.ctx.exports.WorkspaceReplicaEndpoint({ props: { overseerId: this.ctx.id.toString(), leaseId: lease.id } });
+      }
+    }
+    const lease: WorktreeReplicaLease = { id: crypto.randomUUID(), gatekeeperId, chatId: origin.chatId,
+      turnId: origin.turnId, expiresAt: Date.now() + 60_000, worktrees };
+    this.storage.worktreeReplicaLeases.put(lease);
+    return this.ctx.exports.WorkspaceReplicaEndpoint({ props: { overseerId: this.ctx.id.toString(), leaseId: lease.id } });
+  }
+
+  requireReplicaLease(id: string): WorktreeReplicaLease {
+    const lease = this.storage.worktreeReplicaLeases.get(id);
+    const turn = lease && this.storage.agentIntegrationTurns.get(lease.chatId);
+    if (!lease || lease.released || lease.expiresAt <= Date.now() || turn?.turnId !== lease.turnId ||
+        !this.integrationGrant(lease.gatekeeperId).worktreeReplica) throw new Error("Replica lease expired or revoked.");
+    if (turn.state === "finished" && (!lease.cleanupDeadline || lease.cleanupDeadline <= Date.now() ||
+        ![...this.storage.agentIntegrationParticipants.byTurn.get(turn.turnId)].some(participant =>
+          participant.gatekeeperId === lease.gatekeeperId && participant.pending.some(event =>
+            event.kind === "finished" && event.eventId === turn.closing?.eventId)))) {
+      throw new Error("Replica lease expired or revoked after turn termination.");
+    }
+    const meta = this.storage.chatMeta.get(lease.chatId);
+    if (!meta || lease.checkpoint &&
+        Number(lease.checkpoint.cursor.split(":").at(-2)) !== this.chatCodeBase(meta).generation) {
+      throw new Error("Replica epoch changed; acquire a new lease and checkpoint.");
+    }
+    const current = this.replicaSelection(lease.chatId);
+    for (const tree of lease.worktrees) {
+      if (!current.some(item => item.checkoutId === tree.checkoutId && item.baseCommit === tree.baseCommit)) {
+        throw new Error("Replica worktree grant or immutable base changed.");
+      }
+      const piece = this.storage.gadgets.get(tree.checkoutId);
+      if (piece?.type === "worktree" && piece.sourceGatekeeperId !== undefined) {
+        this.assertGatekeeperUsable(piece.sourceGatekeeperId);
+        if (!this.storage.gatekeepers.get(piece.sourceGatekeeperId)) throw new Error("Replica source disconnected.");
+      }
+    }
+    return lease;
+  }
+
+  replicaCursor(lease: WorktreeReplicaLease): string {
+    const meta = this.storage.chatMeta.get(lease.chatId);
+    if (!meta) throw new Error("Replica chat was deleted.");
+    const base = this.chatCodeBase(meta);
+    return `${lease.id}:${base.generation}:${base.revision}`;
+  }
+
+  replicaVersion(lease: WorktreeReplicaLease): string {
+    return `${this.replicaCursor(lease)}:${this.#worktreeReplicaTurns.get(lease.chatId)?.access.getRevision?.() ?? "stored"}`;
+  }
+
+  #replicaEntries = new Map<string, Promise<WorktreeBaseEntry[]>>();
+
+  #replicaOverlay(chatId: number): CodeChange {
+    const history = this.loadChatHistory(chatId);
+    let result = foldCompactedCode(history.chatMessages, Infinity, history.checkpoint).proposedChange ?? {};
+    const meta = this.storage.chatMeta.get(chatId)!;
+    for (const row of this.listLiveChatChanges(chatId, this.chatCodeBase(meta).generation)) {
+      result = composeCodeChange(result, row.change);
+    }
+    return result;
+  }
+
+  getWorkspaceReplicaSession(id: string): WorktreeReplicaSession {
+    // Minting reveals no data. Each method and cursor page checks the lease before use;
+    // doing it here too makes a failed pipelined lookup leak a second rejected RPC promise.
+    const requireTree = (lease: WorktreeReplicaLease, checkoutId: number) => {
+      this.requireReplicaLease(lease.id);
+      const tree = lease.worktrees.find(tree => tree.checkoutId === checkoutId);
+      if (!tree) throw new Error("Checkout is outside the replica grant.");
+      return tree;
+    };
+    const entries: WorktreeReplicaHost["entries"] = async (lease, checkoutId) => {
+      const tree = requireTree(lease, checkoutId);
+      const key = `${lease.id}:${checkoutId}`;
+      if (!this.#replicaEntries.has(key)) {
+        if (this.#replicaEntries.size > 64) this.#replicaEntries.clear();
+        this.#replicaEntries.set(key, (async () => {
+          if (!tree.baseCommit) return [];
+          const paths = await this.gitCache.listCommitTreePaths(tree.baseCommit, "", { recursive: true });
+          const result: WorktreeBaseEntry[] = [];
+          for (const entry of paths) {
+            if (entry.kind === "dir") continue;
+            requireReplicaPath(entry.path);
+            result.push({ path: entry.path, oid: entry.oid, mode: entry.kind === "executable" ? "100755" :
+              entry.kind === "symlink" ? "120000" : entry.kind === "submodule" ? "160000" : "100644" });
+          }
+          if (result.length > 100_000) throw new Error("Replica base exceeds the entry budget.");
+          return result;
+        })());
+      }
+      try { return await this.#replicaEntries.get(key)!; }
+      catch (error) { this.#replicaEntries.delete(key); throw error; }
+    };
+    const baseFile: WorktreeReplicaHost["baseFile"] = async (lease, checkoutId, path) => {
+      requireReplicaPath(path);
+      const tree = requireTree(lease, checkoutId);
+      const entry = tree.baseCommit && await this.gitCache.pathEntryAtCommit(tree.baseCommit, path);
+      if (!entry || entry.kind === "dir" || entry.kind === "submodule") throw new Error("No readable base file at this path.");
+      return (await this.gitCache.ensureObject(entry.oid, { type: "blob", referencedBy: entry.referencedBy })).payload;
+    };
+    const host: WorktreeReplicaHost = {
+      requireLease: id => this.requireReplicaLease(id), saveLease: lease => {
+        const current = this.requireReplicaLease(lease.id);
+        this.storage.worktreeReplicaLeases.put({...lease, cleanupDeadline: current.cleanupDeadline,
+          expiresAt: Math.min(lease.expiresAt, current.cleanupDeadline ?? Infinity)});
+      },
+      entries, baseFile,
+      anchorFile: async (lease, checkoutId, path) => {
+        requireTree(lease, checkoutId);
+        const tree = lease.checkpoint!.worktrees.find(tree => tree.checkoutId === checkoutId)!;
+        const commit = tree.acceptedCommit ?? tree.baseCommit;
+        if (!commit) return null;
+        const entry = await this.gitCache.pathEntryAtCommit(commit, path);
+        if (!entry || entry.kind === "dir" || entry.kind === "submodule") return null;
+        const bytes = (await this.gitCache.ensureObject(entry.oid,
+          {type: "blob", referencedBy: entry.referencedBy})).payload;
+        const text = new TextDecoder("utf-8", {fatal: true, ignoreBOM: true}).decode(bytes);
+        if (text.includes("\0")) throw new Error("Replica mutations of binary files are unsupported.");
+        return text;
+      },
+      assertPathWritable: async (lease, checkoutId, path) => {
+        const tree = requireTree(lease, checkoutId);
+        const commit = tree.acceptedCommit ?? tree.baseCommit;
+        if (commit) await this.gitCache.assertWorktreePathWritable(commit, path);
+      },
+      gitPack: async (lease, checkoutId) => {
+        const commit = lease.worktrees.find(tree => tree.checkoutId === checkoutId)?.baseCommit;
+        if (!commit) throw new Error("Repository has no immutable source commit.");
+        const metadata = this.storage.gitObjectMetadata.get(commit);
+        const sources = [...new Set([...(metadata?.onRemote ?? []), ...(metadata?.pullableFrom ?? [])])];
+        for (const source of sources) {
+          if (!this.storage.gatekeepers.get(source)) continue;
+          // Optional RPC methods cannot be probed through a stub. The declared interface is the
+          // type of this facet; an unsupported provider rejects and the next provenance is tried.
+          const facet = await this.getGatekeeperFacet(source) as Fetcher<Gatekeeper<any> &
+            Required<Pick<Gatekeeper<any>, "gitPull">>>;
+          try {
+            return await facet.gitPull([commit], {type: "commit", commitHistory: {kind: "depth", depth: 1}});
+          } catch { /* No arbitrary URL or unscoped credential fallback. */ }
+        }
+        throw new Error("No authorized source can hydrate this immutable Git commit.");
+      },
+      commitPack: (lease, checkoutId) => {
+        const piece = this.storage.gadgets.get(checkoutId);
+        const tree = lease.checkpoint!.worktrees.find(tree => tree.checkoutId === checkoutId)!;
+        return replicaCommitPack(this.gitCache, tree, () => {
+          if (this.requireReplicaLease(lease.id).gitBootstrapClosed) throw new Error("Git bootstrap is closed.");
+        }, piece?.type === "worktree" ? piece.baseCommit : tree.baseCommit);
+      },
+      capture: async lease => {
+        const active = this.#worktreeReplicaTurns.get(lease.chatId)?.access;
+        if (active?.flushReplica && !await active.flushReplica({}, active.getRevision?.() ?? 0)) {
+          throw new Error("Workspace changed during checkpoint capture; retry.");
+        }
+        const cursor = this.replicaCursor(lease);
+        const pending = this.#replicaOverlay(lease.chatId);
+        if (this.replicaCursor(lease) !== cursor) throw new Error("Workspace changed during checkpoint capture; retry.");
+        const changes: WorktreeChange[] = [];
+        const pendingOverlay: WorktreeChange[] = [];
+        let overlayBytes = 0;
+        for (const tree of lease.worktrees) {
+          const piece = this.storage.gadgets.get(tree.checkoutId);
+          tree.acceptedCommit = piece?.type === "worktree" ? piece.pinBase : tree.baseCommit;
+          tree.headCommit = piece?.type === "worktree" ? piece.headCommit : tree.baseCommit;
+          const root = tree.baseCommit && await this.gitCache.pathEntryAtCommit(tree.baseCommit, "");
+          tree.baseTree = root ? root.oid : null;
+          // Accepted commits already represent the prefix exactly. Reconstruct only touched
+          // anchors from that captured identity; never compose/store an unbounded prefix here.
+          const composed = {[tree.checkoutId]: pending[tree.checkoutId] ?? []};
+          // Bound the stored transforms, not their resulting full files or a JSON copy.
+          overlayBytes += codeChangeSerializedSize(composed) + 256 * (composed[tree.checkoutId]?.length ?? 0);
+          if (overlayBytes > 1024 * 1024) throw new Error("Replica checkpoint transforms exceed their storage budget.");
+          for (const [path, change] of composed[tree.checkoutId] ?? []) {
+            requireReplicaPath(path);
+            changes.push({checkoutId: tree.checkoutId, path, change});
+          }
+          for (const [path, change] of pending[tree.checkoutId] ?? []) {
+            requireReplicaPath(path);
+            pendingOverlay.push({checkoutId: tree.checkoutId, path, change});
+            overlayBytes += codeChangeSerializedSize({[tree.checkoutId]: [[path, change]]}) + 256;
+          }
+        }
+        if (overlayBytes > 1024 * 1024) throw new Error("Replica checkpoint transforms exceed their storage budget.");
+        if (this.replicaCursor(lease) !== cursor) throw new Error("Workspace changed during checkpoint capture; retry.");
+        for (const tree of lease.worktrees) {
+          const piece = this.storage.gadgets.get(tree.checkoutId);
+          if (piece?.type === "worktree" &&
+              (piece.pinBase !== tree.acceptedCommit || piece.headCommit !== tree.headCommit)) {
+            throw new Error("Workspace heads changed during checkpoint capture; retry.");
+          }
+        }
+        const refreshed = this.requireReplicaLease(lease.id);
+        this.storage.worktreeReplicaLeases.put({ ...refreshed, worktrees: lease.worktrees });
+        return { cursor, overlay: changes, pendingOverlay };
+      },
+      events: (lease, cursor, limit) => {
+        this.requireReplicaLease(lease.id);
+        const match = new RegExp(`^${lease.id}:(\\d+):(\\d+)$`).exec(cursor);
+        const meta = this.storage.chatMeta.get(lease.chatId)!;
+        const base = this.chatCodeBase(meta);
+        const checkpointRevision = Number(lease.checkpoint?.cursor.split(":").at(-1));
+        if (!match || !Number.isSafeInteger(Number(match[2])) || Number(match[1]) !== base.generation ||
+            Number(match[2]) < checkpointRevision || Number(match[2]) > base.revision) throw new Error("Replica cursor expired.");
+        const after = Number(match[2]), through = Math.min(base.revision, after + limit);
+        const events: WorktreeChangesPage["events"] = [];
+        let bytes = 256, returnedThrough = after;
+        for (let revision = after + 1; revision <= through; ++revision) {
+          const row = this.storage.chatChanges.get(chatKey(lease.chatId, base.generation, revision));
+          if (!row) throw new Error("Replica cursor history expired; acquire a new lease and checkpoint.");
+          const scoped: CodeChange = {};
+          for (const tree of lease.worktrees) {
+            if (row.change[tree.checkoutId]?.length) scoped[tree.checkoutId] = row.change[tree.checkoutId];
+          }
+          const event = { cursor: `${lease.id}:${row.generation}:${row.revision}`, ...(row.sourceReplica?.leaseId === lease.id
+            ? {sourceBatchId: row.sourceReplica.batchId} : {}),
+            changes: lease.worktrees.flatMap(tree => (row.change[tree.checkoutId] ?? []).map(([path, change]) =>
+              ({ checkoutId: tree.checkoutId, path, change }))) };
+          const size = codeChangeSerializedSize(scoped) + REPLICA_EVENT_CHANGE_OVERHEAD * event.changes.length +
+            256 + 2 * (event.cursor.length + (event.sourceBatchId?.length ?? 0));
+          if (bytes + size > REPLICA_EVENTS_BYTE_BUDGET) {
+            if (!events.length) throw new Error("Replica event exceeds its transfer budget.");
+            break;
+          }
+          bytes += size;
+          events.push(event);
+          returnedThrough = row.revision;
+        }
+        return { events, cursor: events.at(-1)?.cursor ?? cursor, hasMore: returnedThrough < base.revision };
+      },
+      flush: async lease => {
+        const active = this.#worktreeReplicaTurns.get(lease.chatId)?.access;
+        return active?.flushReplica ? active.flushReplica({}, active.getRevision?.() ?? 0) : true;
+      },
+      version: lease => this.replicaVersion(lease), getCommit: id => this.storage.worktreeReplicaCommits.get(id),
+      commit: async (lease, version, change, receipt) => {
+        this.requireReplicaLease(lease.id);
+        if (this.replicaVersion(lease) !== version) return false;
+        const active = this.#worktreeReplicaTurns.get(lease.chatId);
+        try {
+          if (active?.access.flushReplica) return await active.access.flushReplica(change, active.access.getRevision?.() ?? 0, receipt, () => {
+            this.requireReplicaLease(lease.id);
+            return this.replicaVersion(lease) === version && !this.storage.worktreeReplicaCommits.get(receipt.id);
+          });
+          // A suspended/recovered turn needs the same first-write gadget pins as the live path.
+          // Use the lease's immutable base, never a newer mainline head; the barrier validates it.
+          const pins = this.chatCodeBase(this.storage.chatMeta.get(lease.chatId)!).pins;
+          const changes: AgentStepChange[] = Object.entries(change).map(([key, entries]) => {
+            const gadgetId = Number(key), isWorktree = this.isWorktree(gadgetId);
+            assertAgentMayModifyWorkpiece(this.getChatAgentContext(lease.chatId), isWorktree);
+            const baseCommit = lease.worktrees.find(tree => tree.checkoutId === gadgetId)?.baseCommit;
+            return {change: {[gadgetId]: entries}, replica: true,
+              ...(!isWorktree && baseCommit && !pins.some(pin => pin.gadgetId === gadgetId)
+                ? {pin: {gadgetId, baseCommit}} : {})};
+          });
+          return await this.commitAgentStep(lease.chatId, { type: "agent", id: lease.gatekeeperId.toString(), name: "Worktree replica" }, [], {
+            changes, createdGadgets: [], createdWorktrees: [],
+            addedBindings: [], worktreeCommits: [], blueprintMerges: [], replicaCommit: receipt, replicaExpectedVersion: version });
+        } catch (error) { if (error instanceof ReplicaChangedError) return false; throw error; }
+      },
+    };
+    return new WorktreeReplicaSession(host, id);
+  }
+
   captureIntegrationOrigin(caller: GatekeeperCaller): AgentIntegrationOrigin | undefined {
     if (caller.from !== "agent") return undefined;
     const turn = this.storage.agentIntegrationTurns.get(caller.chatId);
     return turn?.state === "running"
-      ? { chatId: turn.chatId, turnId: turn.turnId, segmentId: turn.segmentId } : undefined;
+      ? { chatId: turn.chatId, turnId: turn.turnId, segmentId: turn.segmentId,
+          worktrees: this.replicaSelection(caller.chatId) } : undefined;
   }
 
   getIntegrationContext(gatekeeperId: number, origin: AgentIntegrationOrigin | undefined,
       phase: AgentTurnInfo["phase"] = "running"): AgentContext | null {
     if (!origin) return null;
     const grant = this.integrationGrant(gatekeeperId);
-    if (!grant.lifecycle && !grant.contextualActions) return null;
+    if (!grant.lifecycle && !grant.contextualActions && !grant.worktreeReplica) return null;
     requireIntegrationTurn(this.storage.agentIntegrationTurns.get(origin.chatId), origin, phase);
     return new AgentContextImpl(this, gatekeeperId, origin, phase);
   }
@@ -6380,6 +6798,7 @@ class OverseerImpl implements AgentHooks {
     if (!this.storage.agentIntegrationParticipants.get(id)) {
       this.storage.agentIntegrationParticipants.put({ id, gatekeeperId, participant,
         turnId: origin.turnId, chatId: origin.chatId,
+        worktrees: origin.worktrees,
         pending: turn.closing ? [turn.entry, turn.closing] : [turn.entry],
         retryAt: Date.now() + 30_000 });
       this.#updateAlarm();
@@ -6412,6 +6831,7 @@ class OverseerImpl implements AgentHooks {
             await deliverIntegrationEvent(() => record.participant.onAgentTurnEvent(event,
               new AgentContextImpl(this, record.gatekeeperId, {
                 chatId: record.chatId, turnId: event.turnId, segmentId: event.segmentId,
+                worktrees: record.worktrees,
               }, phase)));
           }
         } catch (error) {
@@ -6453,6 +6873,17 @@ class OverseerImpl implements AgentHooks {
     const participants = [...this.storage.agentIntegrationParticipants.byTurn.get(turn.turnId)];
     this.storage.transaction(() => {
       this.storage.agentIntegrationTurns.put(closed);
+      if (closed.state === "finished" && turn.state !== "finished") {
+        // Final sync needs residual authority, but only registered cleanup participants retain it.
+        // Give it the callback's existing one-hour bound, fixed before dispatch and never renewed.
+        const leases = [...this.storage.worktreeReplicaLeases.list()];
+        for (const lease of leases) {
+          if (lease.turnId === turn.turnId && !lease.released && lease.expiresAt > Date.now() &&
+              participants.some(participant => participant.gatekeeperId === lease.gatekeeperId)) {
+            this.storage.worktreeReplicaLeases.put({...lease, cleanupDeadline: Date.now() + 60 * 60 * 1_000});
+          }
+        }
+      }
       for (const record of participants) {
         if (!record.pending.some(event => event.eventId === closed.closing!.eventId)) {
           record.pending.push(closed.closing!);
@@ -7469,6 +7900,7 @@ class OverseerImpl implements AgentHooks {
           const active = this.storage.activeAgents.get(chatId);
           if (active) this.storage.pausedAgents.put(active);
         } else this.storage.pausedAgents.delete(chatId);
+        this.#worktreeReplicaTurns.delete(chatId);
         try {
           await this.closeAgentIntegrationTurn(chatId, integrationOutcome);
         } catch (error) {
@@ -10276,6 +10708,11 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    */
   async alarm() {
     await this.impl.runAlarmTasks();
+  }
+
+  /** Only the lease ID is accepted; the returned session never exposes the overseer or Git KV. */
+  getWorkspaceReplicaSession(leaseId: string): WorktreeReplicaSession {
+    return this.impl.getWorkspaceReplicaSession(leaseId);
   }
 
   // Initialize a brand-new workspace's storage. (Before git-backed code storage this also wrote
@@ -13585,6 +14022,71 @@ function makeHookFiringCallback(impl: OverseerImpl, hookId: number): NativeRpcSt
   }));
 }
 
+@validateRpc()
+class ReplicaChangedError extends Error {}
+
+// Workers RPC erases variadic tuple types in TextChange while preserving the wire value.
+// Revalidate that value before restoring its canonical type at this native-RPC boundary.
+function replicaChangeFromRpc(change: unknown): WorktreeChange["change"] {
+  const result = change as WorktreeChange["change"];
+  validateCodeChangeSchema({ 1: [["replica", result]] });
+  return result;
+}
+
+@validateRpc()
+class ReplicaOverlayCursor extends NativeRpcTarget implements Cursor<WorktreeChange> {
+  constructor(private cursor: Awaited<ReturnType<NativeRpcStub<WorktreeReplicaSession>["readOverlay"]>>) { super(); }
+  async next(): Promise<WorktreeChange[] | null> {
+    const page = await this.cursor.next();
+    return page?.map(item => ({ ...item, change: replicaChangeFromRpc(item.change) })) ?? null;
+  }
+  [Symbol.dispose](): void { this.cursor[Symbol.dispose](); }
+}
+
+/** Persistent, lease-only callback. Each request re-enters and revalidates the authoritative DO. */
+@validateRpc()
+export class WorkspaceReplicaEndpoint extends WorkerEntrypoint<Cloudflare.Env,
+    { overseerId: string; leaseId: string }> implements WorkspaceReplica {
+  async #session() {
+    return this.ctx.exports.OverseerDurableObject.get(
+      this.ctx.exports.OverseerDurableObject.idFromString(this.ctx.props.overseerId))
+      .getWorkspaceReplicaSession(this.ctx.props.leaseId);
+  }
+  async checkpoint(): Promise<WorkspaceCheckpoint> { using session = await this.#session(); return await session.checkpoint(); }
+  async listBaseEntries(id: string, checkoutId: number): Promise<Cursor<WorktreeBaseEntry>> {
+    using session = await this.#session(); return await session.listBaseEntries(id, checkoutId);
+  }
+  async readBaseFile(id: string, checkoutId: number, path: string): Promise<ReadableStream<Uint8Array>> {
+    // Await the native stream transfer before disposing the session that owns the pending RPC.
+    using session = await this.#session(); return await session.readBaseFile(id, checkoutId, path);
+  }
+  async readGitPack(id: string, checkoutId: number): Promise<ReadableStream<Uint8Array>> {
+    using session = await this.#session(); return await session.readGitPack(id, checkoutId);
+  }
+  async readCommitPack(id: string, checkoutId: number): Promise<ReadableStream<Uint8Array>> {
+    using session = await this.#session(); return await session.readCommitPack(id, checkoutId);
+  }
+  async closeGitBootstrap(id: string): Promise<void> {
+    using session = await this.#session(); await session.closeGitBootstrap(id);
+  }
+  async readOverlay(id: string): Promise<Cursor<WorktreeChange>> {
+    using session = await this.#session(); return new ReplicaOverlayCursor(await session.readOverlay(id));
+  }
+  async changesSince(cursor: string, limit: number): Promise<WorktreeChangesPage> {
+    using session = await this.#session();
+    const page = await session.changesSince(cursor, limit);
+    return { ...page, events: page.events.map(event => ({ ...event,
+      changes: event.changes.map(item => ({ ...item, change: replicaChangeFromRpc(item.change) })) })) };
+  }
+  async submitBatch(batch: WorktreeReplicaBatch): Promise<WorktreeReplicaReceipt> {
+    using session = await this.#session();
+    const receipt = await session.submitBatch(batch);
+    return { ...receipt, corrections: receipt.corrections.map(item => ({ ...item, change: replicaChangeFromRpc(item.change) })) };
+  }
+  async renew(): Promise<void> { using session = await this.#session(); await session.renew(); }
+  async release(): Promise<void> { using session = await this.#session(); await session.release(); }
+}
+
 class AgentContextImpl extends NativeRpcTarget implements AgentContext {
   constructor(private impl: OverseerImpl, private gatekeeperId: number,
       private origin: AgentIntegrationOrigin, private phase: AgentTurnInfo["phase"]) { super(); }
@@ -13592,7 +14094,7 @@ class AgentContextImpl extends NativeRpcTarget implements AgentContext {
   async getTurn(): Promise<AgentTurnInfo> {
     if (this.phase !== "suspending" && this.phase !== "finishing") {
       const grant = this.impl.integrationGrant(this.gatekeeperId);
-      if (!grant.lifecycle && !grant.contextualActions) {
+      if (!grant.lifecycle && !grant.contextualActions && !grant.worktreeReplica) {
         throw new Error("Agent integration grant revoked.");
       }
     }
@@ -13605,6 +14107,10 @@ class AgentContextImpl extends NativeRpcTarget implements AgentContext {
     await this.impl.registerIntegrationParticipant(this.gatekeeperId, this.origin, this.phase, participant);
   }
 
+  async openWorktreeReplica(): Promise<Fetcher<WorkspaceReplica>> {
+    await this.getTurn();
+    return this.impl.openWorktreeReplica(this.gatekeeperId, this.origin, this.phase);
+  }
 }
 
 @validateRpc()
@@ -13649,7 +14155,7 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
     super();
     if (caller.from === "agent") {
       const grant = impl.integrationGrant(gatekeeperId);
-      this.#integrationOrigin = grant.lifecycle || grant.contextualActions
+      this.#integrationOrigin = grant.lifecycle || grant.contextualActions || grant.worktreeReplica
         ? impl.captureIntegrationOrigin(caller) : undefined;
     }
   }

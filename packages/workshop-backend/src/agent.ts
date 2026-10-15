@@ -39,8 +39,16 @@ import {
   type CompactionProjectionMessage,
 } from "./agent-compaction";
 import { formatGrep, type GrepScan } from "./grep";
+import type { WorktreeReplicaCommit } from "./worktree-replica";
 
 const logger = createWorkshopLogger("workshop.agent");
+
+/** Apply the same spawned-agent write restriction to file tools and replica ingestion. */
+export function assertAgentMayModifyWorkpiece(context: AiChatAgentContext, isWorktree: boolean): void {
+  if (context.spawnerConfig && !isWorktree) {
+    throw new Error("You do not have permission to edit this gadget's code.");
+  }
+}
 
 /** Content-free counters for rejected transforms; diagnostics must contain no paths or text. */
 export function agentCodeChangeShape(change: CodeChange) {
@@ -74,6 +82,9 @@ export const MAX_TOOL_RESULT_CHARS = 32 * 1024;
 export interface AgentStepChange {
   /** The tool call's edit, exactly as it will be recorded (and broadcast) as a row. */
   change: CodeChange;
+
+  /** This edit came from the replica acceptance, rather than an ordinary buffered tool call. */
+  replica?: true;
 
   /**
    * Present on the step's first write to an unpinned gadget with committed code: the head the
@@ -134,6 +145,13 @@ export interface WorktreeTurnAccess {
    * base-entry write rules; this applies the same step budget the file tools do.
    */
   appendChange(worktreeId: WorkpieceId, path: string, change: FileChange): void;
+
+  /** Changes when a tool mutates the turn overlay; guards asynchronous replica reads. */
+  getRevision?(): number;
+
+  /** Durably accept a replica batch; validate its receipt/version inside the serialized barrier. */
+  flushReplica?(change: CodeChange, revision: number,
+    commit?: WorktreeReplicaCommit, validate?: () => boolean): Promise<boolean>;
 
   /**
    * Buffer a commit() head advancement for the step barrier, which validates the previousHead
@@ -295,6 +313,9 @@ export function makeStoredAssistantMessage(message: AssistantMessage): StoredAss
  *   overseer.ts?
  */
 export interface AgentHooks {
+  /** Register the current in-memory file view for generic replica synchronization. */
+  registerWorktreeReplicaTurn?(chatId: number, access: WorktreeTurnAccess, author: AiChatAuthorInfo,
+      bindings: () => ReadonlyMap<string, ChatBindingEntry>): void;
   getChatAgentContext(chatId: number): AiChatAgentContext;
 
   /** Records the chat's AiChatAgentContext.workspacePrompt. */
@@ -340,6 +361,8 @@ export interface AgentHooks {
         addedBindings: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[],
         worktreeCommits: {worktreeId: WorkpieceId, commit: string, previousHead: string}[],
         blueprintMerges: BlueprintMerge[],
+        /** Idempotent receipt for changes accepted from a gatekeeper's replica. */
+        replicaCommit?: WorktreeReplicaCommit,
       },
       usage?: Usage, aiGatewayLogId?: string,
       aiGatewayLogRoute?: AiGatewayLogRoute): Promise<boolean>;
@@ -1635,6 +1658,11 @@ async function runAgentPass(
     if (base === undefined) return undefined;
     let text = await hooks.readFileAtCommit(base, filename);
     if (text === undefined) return undefined;
+    // A replica sync can await this fetch while an ordinary file tool edits the same path.
+    // Do not let the completed lazy read overwrite that newer session content.
+    if (worktreeRemovedPaths.get(worktreeId)?.has(filename)) return undefined;
+    let current = sessionContent.get(worktreeId)?.get(filename);
+    if (current !== undefined) return current;
     sessionContent = new Map(sessionContent);
     let files = new Map(sessionContent.get(worktreeId));
     files.set(filename, text);
@@ -2054,9 +2082,7 @@ async function runAgentPass(
   // Refuses a file-tool write the chat may not make: a spawned agent runs with no user present to
   // review changes, so it may modify only worktrees, never a gadget's code.
   let assertMayModifyWorkpiece = (workpieceId: WorkpieceId) => {
-    if (agentContext.spawnerConfig && !hooks.isWorktree(workpieceId)) {
-      throw new Error("You do not have permission to edit this gadget's code.");
-    }
+    assertAgentMayModifyWorkpiece(agentContext, hooks.isWorktree(workpieceId));
   };
 
   // Always-available resources (e.g. the Context Library) describe the agent's environment, so
@@ -2787,19 +2813,18 @@ async function runAgentPass(
   }
 
   // The step buffer: the current step's tool edits, applied to the session content as they
-  // buffer but durable (and broadcast) only at the step's persistence barrier
-  // (AgentHooks.commitAgentStep), so a crash loses the whole step -- transcript and effects
-  // together -- and the resumed model re-runs it cleanly. Turn-owned and passed explicitly
-  // where needed (the barrier now; executeCodeMode once worktree writes join it). `bytes` is
+  // buffer until a step barrier or replica acknowledgement makes them durable and broadcasts
+  // them. Replica barriers can persist file effects before the tool transcript completes;
+  // after a crash, validated edits must detect any already-applied effects on retry. `bytes` is
   // the buffered changes' summed codeChangeSerializedSize, checked against MAX_CODE_CHANGE_SIZE
   // at each write call (see appendAgentEdit).
   let stepBuffer = {changes: [] as AgentStepChange[], bytes: 0};
 
   // (A crashed predecessor leaves no stranded state to recover here: each step's rows, pins,
   // creation/binding stamps and messages are committed in one barrier transaction, so replay of
-  // the surviving log accounts for everything durable, and a mid-step crash durably kept
-  // nothing but unstamped registry records -- reaped by reconcilePendingGadgets before this
-  // turn started.)
+  // the surviving log accounts for everything durable. A replica barrier is an additional
+  // such transaction even if its shell command's transcript is still incomplete. Unstamped
+  // registry records are reaped by reconcilePendingGadgets before this turn started.)
 
   // Error-path notes for tool calls, merged into the persisted tool-call log at the turn_end
   // barrier. A tool that fails throws (so the model sees an error result), but pi's conversion
@@ -2826,7 +2851,7 @@ async function runAgentPass(
   let awaitingActionDecision = false;
 
   // Buffer one file edit into the step and apply it to the session content; it becomes durable
-  // (row + broadcast) only at the step's persistence barrier. The first write to an unpinned
+  // (row + broadcast) at the next step or replica persistence barrier. The first write to an unpinned
   // gadget with committed code pins it at the given head -- always the current head, never the
   // head an earlier read of this turn observed: a pin at an older head would silently drop
   // whatever another chat accepted since (editFile's gate is what stops an edit anchored to
@@ -2835,21 +2860,30 @@ async function runAgentPass(
   // within the step, later tools read the edit through the session content. The first write to
   // an unpinned worktree pins it too, at its accepted commit, with nothing to declare (see
   // pinWorktreeInSession).
+  let workspaceRevision = 0;
+  let stepBarrier: Promise<void> = Promise.resolve();
+  let stepBarrierError: unknown;
   const progressLogger = logger.with({chatId, executionId: crypto.randomUUID()});
   let barrierSequence = 0;
-  let persistStep = async <T>(operation: () => Promise<T>): Promise<T> => {
-    const sequence = ++barrierSequence, startedAt = Date.now();
-    progressLogger.debug("agent persistence started", {event: "agent.step.persist.started", sequence});
-    try {
-      const result = await operation();
+  let persistStep = <T>(operation: () => Promise<T>, isDurabilityFailure = () => true): Promise<T> => {
+    const sequence = ++barrierSequence, queuedAt = Date.now();
+    progressLogger.debug("agent persistence queued", {event: "agent.step.persist.queued", sequence});
+    let result = stepBarrier.then(async () => {
+      if (stepBarrierError !== undefined) throw stepBarrierError;
+      progressLogger.debug("agent persistence started", {event: "agent.step.persist.started", sequence,
+        durationMs: Date.now() - queuedAt});
+      return await operation();
+    });
+    // A failed durability barrier is fatal, including to concurrently queued replica work.
+    stepBarrier = result.then(() => {
       progressLogger.debug("agent persistence completed", {event: "agent.step.persist.completed", sequence,
-        durationMs: Date.now() - startedAt});
-      return result;
-    } catch (error) {
+        durationMs: Date.now() - queuedAt});
+    }, error => {
+      if (isDurabilityFailure()) stepBarrierError = error;
       progressLogger.debug("agent persistence failed", {event: "agent.step.persist.failed", sequence,
-        durationMs: Date.now() - startedAt});
-      throw error;
-    }
+        durationMs: Date.now() - queuedAt});
+    });
+    return result;
   };
   let appendAgentEdit = (
       workpieceId: WorkpieceId, change: CodeChange,
@@ -2892,8 +2926,61 @@ async function runAgentPass(
     stepBuffer.bytes += size;
     if (pin !== undefined) pinnedGadgets.add(workpieceId);
     sessionContent = newContent;
+    ++workspaceRevision;
     pinWorktreeInSession(workpieceId);
     noteWorktreeRemovals(change);
+  };
+
+  let appendReplicaChanges = async (change: CodeChange, revision?: number) => {
+    let prepared: {workpieceId: number, entries: CodeChange[number],
+      pin?: {baseCommit: string, baseFiles: Map<string, string>}}[] = [];
+    for (let [key, entries] of Object.entries(change)) {
+      let workpieceId = Number(key);
+      assertMayModifyWorkpiece(workpieceId);
+      let pin: {baseCommit: string, baseFiles: Map<string, string>} | undefined;
+      if (hooks.isWorktree(workpieceId)) {
+        // A replica can edit a file no DO tool has read. Fault only the touched edit bases,
+        // using the same lazy, tombstone-aware read path as ordinary file operations.
+        for (const [path, fileChange] of entries) if ("edit" in fileChange) {
+          await readWorktreeBase(workpieceId, path);
+        }
+      } else if (!pinnedGadgets.has(workpieceId)) {
+        let head = hooks.getGadgetHead(workpieceId);
+        if (head !== undefined) {
+          pin = {baseCommit: head, baseFiles: await hooks.readCommitFiles(head)};
+          await anchorKnowledgeToPin(workpieceId, head);
+        }
+      }
+      prepared.push({workpieceId, entries, pin});
+    }
+    // Source reads may yield to another edit. Validate once, before the synchronous batch,
+    // rather than after each append (which itself advances workspaceRevision).
+    if (revision !== undefined && revision !== workspaceRevision) return false;
+    // Appending one checkout at a time must not leave a rejected batch partially buffered.
+    // Preflight the same per-checkout framing and applicability against an immutable view.
+    validateCodeChangeSchema(change);
+    const size = prepared.reduce((bytes, item) => bytes +
+      codeChangeSerializedSize({[item.workpieceId]: item.entries}), 0);
+    if (stepBuffer.bytes + size > MAX_CODE_CHANGE_SIZE) {
+      throw new Error("Too many code changes in one step. End this response; the changes made so far " +
+        "are being saved, and you can continue the work in your next step.");
+    }
+    let content = sessionContent;
+    for (const {workpieceId, entries, pin} of prepared) {
+      if (pin) {
+        content = new Map(content);
+        content.set(workpieceId, pin.baseFiles);
+      }
+      content = applyCodeChange(content, {[workpieceId]: entries});
+    }
+    for (let {workpieceId, entries, pin} of prepared) {
+      appendAgentEdit(workpieceId, {[workpieceId]: entries}, pin);
+      stepBuffer.changes.at(-1)!.replica = true;
+      for (let [path, fileChange] of entries) {
+        if (!("remove" in fileChange)) markFileRead(workpieceId, path);
+      }
+    }
+    return true;
   };
 
   // commit() head advancements buffered this step (see WorktreeTurnAccess.appendCommit),
@@ -2908,13 +2995,15 @@ async function runAgentPass(
   // consistent worktree. Passed to executeCodeMode, which serves it to the chat's worktree env
   // bindings for the duration of each execution.
   let worktreeTurnAccess: WorktreeTurnAccess = {
+    getRevision: () => workspaceRevision,
     getBaseCommit: worktreeBase,
     getBufferedHead: id =>
         pendingWorktreeCommits.findLast(entry => entry.worktreeId === id)?.commit,
     getOverlayFiles: id => sessionContent.get(id) ?? new Map(),
     getRemovedPaths: id => worktreeRemovedPaths.get(id) ?? new Set(),
-    readFile: async (id, path) =>
-        sessionContent.get(id)?.get(path) ?? await readWorktreeBase(id, path),
+    readFile: async (id, path) => hooks.isWorktree(id)
+        ? sessionContent.get(id)?.get(path) ?? await readWorktreeBase(id, path)
+        : (await readToolFile(id, path))?.text,
     appendChange: (id, path, change) => {
       appendAgentEdit(id, {[id]: [[path, change]]});
       // A write leaves the caller knowing the file's exact content, so it counts as a read for
@@ -2925,7 +3014,41 @@ async function runAgentPass(
       pendingWorktreeCommits.push({worktreeId: id, commit, previousHead});
       pinWorktreeInSession(id);
     },
+    flushReplica: (change, revision, replicaCommit, validate) => {
+      let committing = false;
+      return persistStep(async () => {
+        // Serialize receipt/version checks with append and persistence. A duplicate no-op does
+        // not advance the in-memory revision, but must never reach the durable barrier twice.
+        // Validation failures before committing remain request errors, not fatal storage errors.
+        if ((validate && !validate()) || revision !== workspaceRevision || !await appendReplicaChanges(change, revision)) {
+          return false;
+        }
+        // Live shell effects deliberately become durable before their eventual tool-result
+        // transcript. A crashed command must not lose the whole command's workspace edits.
+        let changes = stepBuffer.changes;
+        stepBuffer.changes = [];
+        stepBuffer.bytes = 0;
+        let createdGadgets = pendingCreatedGadgets;
+        pendingCreatedGadgets = [];
+        let createdWorktrees = pendingCreatedWorktrees;
+        pendingCreatedWorktrees = [];
+        let addedBindings = pendingAddedBindings;
+        pendingAddedBindings = [];
+        let worktreeCommits = pendingWorktreeCommits;
+        pendingWorktreeCommits = [];
+        let blueprintMerges = pendingBlueprintMerges;
+        pendingBlueprintMerges = [];
+        committing = true;
+        if (await hooks.commitAgentStep(chatId, author, [], {
+          changes, createdGadgets, createdWorktrees, addedBindings, worktreeCommits,
+          blueprintMerges, replicaCommit,
+        })) ++nextChangeId;
+        return true;
+      }, () => committing);
+    },
   };
+
+  hooks.registerWorktreeReplicaTurn?.(chatId, worktreeTurnAccess, author, () => chatBindings);
 
   let emitStreamEvent = (event: AiChatStreamEvent) => {
     hooks.emitChatStreamEvent(chatId, event);
@@ -4142,8 +4265,8 @@ async function runAgentPass(
         // The barrier itself: one transaction persists the step's messages and its buffered
         // effects -- rows, the step's single "changes" message, retirement, registry stamps --
         // so the effects are durable iff the transcript that explains them is. The buffer is
-        // drained before the call. If the barrier throws, the turn dies with it, and re-delivering
-        // the effects would be wrong.
+        // drained inside the serialized operation, so it cannot take an in-flight replica's edits.
+        // If the barrier throws, the turn dies with it and re-delivering the effects would be wrong.
         await persistStep(async () => {
           let stepChanges = stepBuffer.changes;
           stepBuffer.changes = [];
