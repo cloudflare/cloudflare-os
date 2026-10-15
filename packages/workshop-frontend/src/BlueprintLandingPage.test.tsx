@@ -461,7 +461,6 @@ describe('BlueprintLandingPage gatekeeper configuration', () => {
     await vi.waitFor(() => expect(harness.startResourceConfigurator)
       .toHaveBeenCalledExactlyOnceWith(7, CALENDAR_PATTERN))
     await vi.waitFor(() => expect(testState.configuratorMounts).toEqual([{
-      hidden: undefined,
       initialResourceUrl: undefined,
       resourceUrlPattern: CALENDAR_PATTERN,
     }]))
@@ -494,6 +493,35 @@ describe('BlueprintLandingPage gatekeeper configuration', () => {
     await act(async () => harness.addAccount(8, [CALENDAR_PATTERN]))
     expect(findButton('Grant access')).toBeUndefined()
     expect(document.body.querySelector('[data-testid="resource-configurator"]')).not.toBeNull()
+  })
+
+  it('selects an account that already holds the grant over one listed first', async () => {
+    const harness = gatekeeperApi([GMAIL_PATTERN], [CALENDAR_PATTERN])
+    await render(harness)
+
+    await act(async () => findButton('Configure')!.click())
+
+    await vi.waitFor(() => expect(harness.startResourceConfigurator)
+      .toHaveBeenCalledExactlyOnceWith(8, CALENDAR_PATTERN))
+    expect(harness.ensureAccountResources).not.toHaveBeenCalled()
+  })
+
+  it('matches the gatekeeper name case-insensitively', async () => {
+    const harness = gatekeeperApi([CALENDAR_PATTERN])
+    await render(harness, {
+      ...CALENDAR_BLUEPRINT,
+      metadata: {
+        ...CALENDAR_BLUEPRINT.metadata,
+        bindings: {
+          CALENDAR: { ...CALENDAR_BLUEPRINT.metadata.bindings.CALENDAR, gatekeeperName: 'Google' },
+        },
+      },
+    })
+
+    await act(async () => findButton('Configure')!.click())
+
+    await vi.waitFor(() => expect(harness.startResourceConfigurator)
+      .toHaveBeenCalledExactlyOnceWith(7, CALENDAR_PATTERN))
   })
 
   it('expands the account whose Grant access button was clicked', async () => {

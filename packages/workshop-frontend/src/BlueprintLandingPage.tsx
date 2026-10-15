@@ -1592,7 +1592,7 @@ function BlueprintGatekeeperBindingField({
   onCollectorChange: (collect: (() => Promise<string>) | null) => void
 }) {
   const vendor = useMemo(
-    () => vendors.find(v => v.id === binding.gatekeeperName) ?? null,
+    () => vendors.find(v => v.id.toLowerCase() === binding.gatekeeperName.toLowerCase()) ?? null,
     [vendors, binding.gatekeeperName],
   )
   const resource = useMemo(
@@ -1601,9 +1601,9 @@ function BlueprintGatekeeperBindingField({
   )
 
   const matchingAccounts = useMemo(() => accounts.filter(account =>
-    account.vendorId === binding.gatekeeperName &&
+    account.vendorId === vendor?.id &&
     account.supportedResources.some(r => r.urlPattern === binding.typeUrlPattern)
-  ), [accounts, binding.gatekeeperName, binding.typeUrlPattern])
+  ), [accounts, vendor?.id, binding.typeUrlPattern])
 
   const selectedAccountId = (value as any).accountId ?? null
   const selectedAccount = matchingAccounts.find(a => a.id === selectedAccountId && a.credentialsValid) ?? null
@@ -1634,19 +1634,20 @@ function BlueprintGatekeeperBindingField({
   useEffect(() => { onReadyChangeRef.current = onReadyChange }, [onReadyChange])
   useEffect(() => { onCollectorChangeRef.current = onCollectorChange }, [onCollectorChange])
 
-  // Auto-select the first valid account once accounts arrive.
+  // Auto-select an account once accounts arrive, preferring one that needs no further grant.
   useEffect(() => {
     if (selectedAccountId !== null
         && matchingAccounts.some(a => a.id === selectedAccountId && a.credentialsValid)) {
       return
     }
-    const first = matchingAccounts.find(a => a.credentialsValid)
+    const first = matchingAccounts.find(a => accountCanConfigureBinding(binding, a))
+      ?? matchingAccounts.find(a => a.credentialsValid)
     if (first) {
       onChangeRef.current({ accountId: first.id, resourceUrl: undefined } as any)
     } else if (selectedAccountId !== null) {
       onChangeRef.current({ accountId: undefined, resourceUrl: undefined } as any)
     }
-  }, [matchingAccounts, selectedAccountId])
+  }, [binding, matchingAccounts, selectedAccountId])
 
   // Configurator iframe state. We re-spin the iframe whenever the (account, resource) pair
   // changes; each frame is disposed when replaced or when the component unmounts.
@@ -1746,10 +1747,10 @@ function BlueprintGatekeeperBindingField({
       <AccountChooser
         accounts={matchingAccounts}
         selectedAccountId={selectedAccountId}
-        vendorId={binding.gatekeeperName}
+        vendorId={vendor.id}
         vendorName={vendor.description.displayName}
         resourceTitle={resource.title}
-        connecting={connectingVendor === binding.gatekeeperName}
+        connecting={connectingVendor === vendor.id}
         reconnectingAccountId={reconnectingAccountId}
         requiredResourceUrlPatterns={requiredResourceUrlPatterns}
         grantingAccountId={grantingAccountId}
@@ -1758,7 +1759,7 @@ function BlueprintGatekeeperBindingField({
           resourceUrl: id === selectedAccountId ? initialResourceUrl : undefined,
         } as any)}
         onConnect={() => onConnectAccount(
-          binding.gatekeeperName,
+          vendor.id,
           requiredResourceUrlPatterns.length > 0 ? requiredResourceUrlPatterns : undefined,
         )}
         onGrantAccess={(id) => onGrantAccountResources(id, missingResourceUrlPatternsFor(id))}
