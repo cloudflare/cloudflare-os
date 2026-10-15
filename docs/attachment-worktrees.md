@@ -17,6 +17,10 @@ Git objects are not deleted while another attachment or worktree may still refer
 Valid UTF-8 text without NUL bytes retains the existing text OTs, including a preserved BOM.
 Later text uploads that exceed the OT record budget use an immutable blob reference instead,
 so the same upload size limit applies to initial and subsequent messages.
+Text reads and grep decode those references by content without changing their stored form.
+Text edits over an uncommitted blob replacement remain unsupported; this does not change OT
+composition or introduce binary deltas. Whole-file replacements and edits after committing
+the blob as a Git base keep their existing semantics.
 Other content uses the shared whole-file representation: `setBytes: {oid, byteLength}`
 names an immutable whole-file Git blob. Payloads are stored in bounded raw-byte chunks, not
 embedded or base64-encoded in an OT. Binary changes are whole-file replacements or deletions;
@@ -29,7 +33,12 @@ needing a separate attachment download path. The container-specific replica API 
 the replica/binary follow-up PRs; this attachment ingress does not require a container.
 
 Download/replay reads the original upload's immutable Git blob, not a subsequently edited
-workspace file. Legacy attachments without Git source metadata keep their old read behavior.
+workspace file. On the next message or agent turn, legacy attachments are migrated lazily,
+one payload at a time, into the same scratch worktree. Each original blob reference and file
+projection publish atomically; a reset resumes without duplicate files. Previously projected
+files are not overwritten, even if the agent has edited or renamed them. Original payload
+copies are dropped only after their immutable blob is durable. Compatibility readers remain
+for chats not yet visited and old staged-upload handles; this is not a bulk deletion policy.
 Model requests inline only compatible image/document inputs and valid text; other files are
 identified by workspace path, never lossy UTF-8 replacement characters or an unsupported
 provider content part. Images with an edge above 8000 pixels or unrecognized dimension headers
@@ -40,7 +49,7 @@ is no separate payload copy in attachment records. Existing limits remain: 4 MiB
 
 Filename allocation reserves existing base and pending root names, including directories.
 Prior names are read from chat-scoped message metadata, never from a workspace-wide payload
-scan. Messages without uploads do no attachment-namespace work.
+scan. After the one-time legacy migration, messages without uploads do no attachment-namespace work.
 Names are well-formed Unicode, truncated at code-point boundaries to 200 UTF-8 bytes before
 collision suffixes, so recorded Git paths round-trip and materialize on Linux.
 Projection commits with the validated user message; failed sends leave blobs available and

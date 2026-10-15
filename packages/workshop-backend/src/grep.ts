@@ -59,6 +59,7 @@ export async function scanWorkpieceForGrep(
     let overlayText = overlay.get(scope);
     if (scope !== "" && overlayText !== undefined) {
       candidates.set(scope, { path: scope });
+      namedFiles.add(scope);
       single = typeof pathArg === "string";
       continue;
     }
@@ -124,18 +125,17 @@ export async function scanWorkpieceForGrep(
   let files: GrepFile[] = [];
   for (let candidate of [...candidates.values()]
       .toSorted((a, b) => a.path < b.path ? -1 : 1)) {
-    if (!("oid" in candidate)) {
-      const text = overlay.get(candidate.path)!;
-      if (typeof text === "string") files.push({ path: candidate.path, text });
-      else errorByFile.set(candidate.path, "Binary content requires byte operations.");
-      continue;
-    }
-    if (skipped.has(candidate.oid)) continue;
+    if ("oid" in candidate && skipped.has(candidate.oid)) continue;
     try {
-      files.push({
-        path: candidate.path,
-        text: await gitCache.readTextBlob(candidate.oid, candidate.base, candidate.path),
-      });
+      let text: string;
+      if ("oid" in candidate) {
+        text = await gitCache.readTextBlob(candidate.oid, candidate.base, candidate.path);
+      } else {
+        const value = overlay.get(candidate.path)!;
+        text = typeof value === "string" ? value
+          : await gitCache.readTextBlob(value.oid, undefined, candidate.path);
+      }
+      files.push({path: candidate.path, text});
     } catch (err) {
       if (err instanceof UnreadableContentError) {
         errorByFile.set(candidate.path, err.message);

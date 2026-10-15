@@ -44,7 +44,6 @@ export interface WorktreeSessionHost {
   /** Private staging namespace for an ephemeral worktree; persistent worktrees use their ID. */
   byteScope?: string;
   byteStore?: ByteStore;
-  readByteFileAtCommit?(commit: string, path: string, scope?: string): Promise<BytesRef | undefined>;
   gitCache: WorkspaceGitCache;
   gitStore: GitStore;
   getWorktreeRecord(id: WorkpieceId): WorktreeRecordView;
@@ -190,8 +189,8 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
     const value = overlay.get(path);
     if (value !== undefined) return value;
     if (this.turn.getRemovedPaths(this.worktreeId).has(path)) throw new Error(`${path}: no such file`);
-    if (!this.host.readByteFileAtCommit) throw new Error("Byte storage is unavailable.");
-    const base = await this.host.readByteFileAtCommit(this.#pinBase(), path, this.#byteScope());
+    const base = await this.host.gitCache.fileBytesAtCommit(this.#pinBase(), path);
+    if (base) await this.#bytes().grant(this.#byteScope(), base);
     this.#pinBase();
     if (!base) throw new Error(`${path}: no such file`);
     const current = this.turn.getOverlayFiles(this.worktreeId).get(path);

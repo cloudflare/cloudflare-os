@@ -16,13 +16,12 @@ import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import type { CommitMetadata, CommitSignature, Git, Worktree } from "./worktree-binding";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
-import { applyCodeChange, requireTextContent, type FileChange, type FileContent } from "@gadgets/workshop-shared/code-change";
+import { applyCodeChange, type FileChange, type FileContent } from "@gadgets/workshop-shared/code-change";
 import type { CommitObject } from "isomorphic-git";
 
 import type { WorkspaceGitCache } from "./git-cache";
 import type { GitStore } from "./git-store";
 import type { ByteStore } from "./byte-store";
-import type { BytesRef } from "@gadgets/workshop-shared/code-change";
 import type { WorktreeTurnAccess } from "./agent";
 import { WorktreeSessionImpl, type WorktreeRecordView, type WorktreeSessionHost }
   from "./worktree-session";
@@ -30,7 +29,6 @@ import { WorktreeSessionImpl, type WorktreeRecordView, type WorktreeSessionHost 
 /** What the binding needs from the overseer: the workspace's git plumbing. */
 export interface GitBindingHost {
   byteStore?: ByteStore;
-  readByteFileAtCommit?(commit: string, path: string, scope?: string): Promise<BytesRef | undefined>;
   gitCache: WorkspaceGitCache;
   gitStore: GitStore;
 }
@@ -55,8 +53,7 @@ class InMemoryWorktree implements WorktreeTurnAccess, WorktreeSessionHost {
   #removed = new Set<string>();  // likewise
 
   constructor(readonly gitCache: WorkspaceGitCache, readonly gitStore: GitStore,
-              private base: string, readonly byteStore?: ByteStore,
-              readonly readByteFileAtCommit?: GitBindingHost["readByteFileAtCommit"]) {
+              private base: string, readonly byteStore?: ByteStore) {
     this.#head = base;
   }
 
@@ -86,13 +83,15 @@ class InMemoryWorktree implements WorktreeTurnAccess, WorktreeSessionHost {
   }
 
   async readFile(_worktreeId: unknown, path: string): Promise<string | undefined> {
+    const textOf = (value: FileContent) => typeof value === "string" ? value
+      : this.gitCache.readTextBlob(value.oid, undefined, path);
     let existing = this.#files.get(path);
-    if (existing !== undefined) return requireTextContent(existing);
+    if (existing !== undefined) return textOf(existing);
     if (this.#removed.has(path)) return undefined;
     let text = await this.gitCache.readFileAtCommitIfExists(this.base, path);
     // A concurrent call may have written or deleted the file while the read was in flight;
     // its change wins over the base text.
-    if (this.#files.has(path)) return requireTextContent(this.#files.get(path));
+    if (this.#files.has(path)) return textOf(this.#files.get(path)!);
     if (this.#removed.has(path) || text === undefined) return undefined;
     // Fault the base text into the overlay, so a following edit applies against it.
     this.#files = new Map(this.#files).set(path, text);
@@ -131,7 +130,7 @@ export class GitImpl extends RpcTarget implements Git {
   async newWorktree(commitId: string): Promise<Worktree> {
     let base = await this.host.gitCache.fetchCommit(commitId);
     let worktree = new InMemoryWorktree(this.host.gitCache, this.host.gitStore, base,
-      this.host.byteStore, this.host.readByteFileAtCommit?.bind(this.host));
+      this.host.byteStore);
     return new WorktreeSessionImpl(worktree, IN_MEMORY_WORKTREE_ID, worktree, this.author);
   }
 

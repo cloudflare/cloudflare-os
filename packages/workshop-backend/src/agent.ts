@@ -1,6 +1,6 @@
 import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, validateBindingName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replaceSpanChange, validateCodeChangeSchema,
-  requireTextContent, type FileContent, type CodeContent, type CodeChange,
+  type FileContent, type CodeContent, type CodeChange,
   type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 import { canInlineChatAttachmentImage, decodeChatAttachmentText } from './chat-attachment-validation';
@@ -1657,6 +1657,14 @@ async function runAgentPass(
       worktreeRemovedPaths.get(worktreeId)?.has(filename)
           ? undefined : await faultWorktreeBase(worktreeId, filename);
 
+  // Reading a blob-backed UTF-8 upload must not change its representation: text edits over
+  // byte replacements still require a separate composition protocol.
+  let readSessionText = async (id: WorkpieceId, filename: string): Promise<string | undefined> => {
+    const value = sessionContent.get(id)?.get(filename);
+    return value === undefined || typeof value === "string" ? value
+      : hooks.readBlobText(value.oid, filename);
+  };
+
   // A file as readFile shows it, or undefined if it does not exist. An unpinned workpiece with
   // committed code is read live at its base -- a gadget's head (fixed for the turn; see
   // observeHead) or a worktree's accepted commit -- by path, never by materializing the tree,
@@ -1673,7 +1681,7 @@ async function runAgentPass(
       let base = observeHead(id) ?? hooks.getWorktreePinBase(id);
       if (base !== undefined) return await hooks.readFileAtCommitWithOid(base, filename);
     }
-    let text = requireTextContent(sessionContent.get(id)?.get(filename)) ?? await readWorktreeBase(id, filename);
+    let text = await readSessionText(id, filename) ?? await readWorktreeBase(id, filename);
     return text === undefined ? undefined : {text};
   };
 
@@ -2332,14 +2340,16 @@ async function runAgentPass(
                     if (hooks.isWorktree(workpieceId)) {
                       await ensureReplayContentForWrite(workpieceId, msg.sequence);
                     }
-                    let value: string | null =
-                        requireTextContent(sessionContent.get(workpieceId)?.get(toolCall.input.filename)) ??
+                    const edits = pendingReplayEdits.filter(edit => edit.workpieceId === workpieceId &&
+                      edit.filename === toolCall.input.filename);
+                    const lastWrite = edits.findLastIndex(edit => edit.toolName === "writeFile");
+                    // A whole-file write supersedes even an unreadable binary base. Do not
+                    // read that obsolete base before replaying the successful replacement.
+                    let value: string | null = lastWrite >= 0 ? null
+                      : await readSessionText(workpieceId, toolCall.input.filename) ??
                         await faultWorktreeBase(workpieceId, toolCall.input.filename) ?? null;
-                    for (let edit of pendingReplayEdits) {
-                      if (edit.workpieceId === workpieceId &&
-                          edit.filename === toolCall.input.filename) {
-                        value = applyPendingEditToText(value, edit);
-                      }
+                    for (let edit of edits.slice(Math.max(0, lastWrite))) {
+                      value = applyPendingEditToText(value, edit);
                     }
                     if (value === null) {
                       throw new Error("File does not exist.");
@@ -2933,7 +2943,7 @@ async function runAgentPass(
     getOverlayFiles: id => sessionContent.get(id) ?? new Map(),
     getRemovedPaths: id => worktreeRemovedPaths.get(id) ?? new Set(),
     readFile: async (id, path) =>
-        requireTextContent(sessionContent.get(id)?.get(path)) ?? await readWorktreeBase(id, path),
+        await readSessionText(id, path) ?? await readWorktreeBase(id, path),
     appendChange: (id, path, change) => {
       appendAgentEdit(id, {[id]: [[path, change]]});
       // A write leaves the caller knowing the file's exact content, so it counts as a read for

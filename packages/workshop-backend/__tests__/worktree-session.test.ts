@@ -203,15 +203,19 @@ describe("listFiles", () => {
     expect(await impl.gitStore.readCommitFiles(commit)).toEqual(new Map([["a.txt", text + "edited\n"]]));
   }));
 
-  it("gives concurrent byte imports the same immutable Git identity and separate read grants", () => withImpl(async impl => {
+  it("resolves immutable byte identities without granting authority; sessions grant their own scopes", () => withImpl(async impl => {
     const commit = await commitFiles(impl, {"a.txt": "same text\n"});
     const [a, b] = await Promise.all([
-      impl.readByteFileAtCommit(commit, "a.txt", "reader-a"),
-      impl.readByteFileAtCommit(commit, "a.txt", "reader-b"),
+      impl.gitCache.fileBytesAtCommit(commit, "a.txt"),
+      impl.gitCache.fileBytesAtCommit(commit, "a.txt"),
     ]);
     expect(a).toEqual(b);
-    expect(impl.byteStore.isFinishedFor("reader-a", a)).toBe(true);
-    expect(impl.byteStore.isFinishedFor("reader-b", a)).toBe(true);
+    expect([...impl.storage.byteGrants.list()]).toEqual([]);
+    addChat(impl, 1);
+    const {session, id} = await createWorktreeSession(impl, 1, commit);
+    await session.readBytes("a.txt");
+    expect(impl.byteStore.isFinishedFor(`worktree:${id}`, a)).toBe(true);
+    expect(impl.byteStore.isFinishedFor("unrelated", a)).toBe(false);
     expect(await impl.gitStore.readCommitFiles(commit)).toEqual(new Map([["a.txt", "same text\n"]]));
   }));
 
@@ -233,7 +237,7 @@ describe("listFiles", () => {
     const commit = await session.commit("binary replacement");
     await turn.barrier();
     expect(impl.getWorktreeRecord(id).headCommit).toBe(commit);
-    const value = await impl.readByteFileAtCommit(commit, "image.bin");
+    const value = await impl.gitCache.fileBytesAtCommit(commit, "image.bin");
     expect(new Uint8Array(await new Response(impl.byteStore.read(value)).arrayBuffer())).toEqual(Uint8Array.of(0, 5, 0, 3, 4));
     await expect(session.readFile("image.bin")).rejects.toThrow(/Binary/);
     const outside = await impl.byteStore.import("unrelated", Uint8Array.of(8));
@@ -241,7 +245,7 @@ describe("listFiles", () => {
     await session.deleteFile("image.bin");
     const deleted = await session.commit("delete binary");
     await turn.barrier();
-    expect(await impl.readByteFileAtCommit(deleted, "image.bin")).toBeUndefined();
+    expect(await impl.gitCache.fileBytesAtCommit(deleted, "image.bin")).toBeUndefined();
   }));
   it("surfaces all five entry kinds, non-recursively and recursively",
       () => withImpl(async impl => {

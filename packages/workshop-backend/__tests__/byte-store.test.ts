@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { ByteStore, BYTE_CHUNK_SIZE } from "../src/byte-store";
 import { makeMockStorage } from "./mock-storage";
 import { makeOverseerStorage } from "../src/storage-schema/overseer-storage";
@@ -11,7 +11,7 @@ function fixture() {
   const storage = makeOverseerStorage(makeMockStorage());
   let flushes = 0;
   const store = new ByteStore(storage.byteObjects, storage.byteChunks, storage.byteUploads,
-    async () => { ++flushes; }, storage.byteGrants, storage.gitByteBlobs);
+    async () => { ++flushes; }, storage.byteGrants, storage.gitByteBlobs, callback => storage.transaction(callback));
   return {storage, store, flushes: () => flushes};
 }
 function stream(bytes: Uint8Array, fail = false) {
@@ -23,13 +23,53 @@ const oid = (bytes: Uint8Array) => createHash("sha1")
   .update(`blob ${bytes.byteLength}\0`).update(bytes).digest("hex");
 const read = (body: ReadableStream<Uint8Array>) => new Response(body).bytes();
 
+it("imports local bytes in one durable flush without staging rows or duplicate chunks", async () => {
+  const {store, storage, flushes} = fixture();
+  const data = new Uint8Array(5 * 1024 * 1024).fill(19);
+  const ref = await store.import(undefined, data);
+  expect(flushes()).toBe(1);
+  expect([...storage.byteUploads.list()]).toEqual([]);
+  expect([...storage.byteGrants.list()]).toEqual([]);
+  const chunks = [...storage.byteChunks.list()];
+  expect(chunks).toHaveLength(Math.ceil(data.length / BYTE_CHUNK_SIZE));
+  expect(chunks.every(chunk => chunk.data.length <= BYTE_CHUNK_SIZE &&
+    chunk.data.buffer.byteLength <= BYTE_CHUNK_SIZE)).toBe(true);
+  expect(await store.import("reader", data)).toEqual(ref);
+  expect(flushes()).toBe(2);
+  expect([...storage.byteChunks.list()].map(chunk => chunk.id)).toEqual(chunks.map(chunk => chunk.id));
+  expect(store.isFinishedFor("reader", ref)).toBe(true);
+  expect(hash(await read(store.read(ref)))).toEqual(hash(data));
+});
+
+it("rolls back failed local publication and safely retries a lost import acknowledgement", async () => {
+  const {storage, store} = fixture();
+  const data = new Uint8Array(BYTE_CHUNK_SIZE + 1).fill(23);
+  const putChunk = storage.byteChunks.put.bind(storage.byteChunks);
+  const put = vi.spyOn(storage.byteChunks, "put").mockImplementationOnce(putChunk)
+    .mockImplementationOnce(() => { throw new Error("storage failed"); });
+  await expect(store.import("reader", data)).rejects.toThrow("storage failed");
+  expect([...storage.byteObjects.list()]).toEqual([]);
+  expect([...storage.byteChunks.list()]).toEqual([]);
+  expect([...storage.byteGrants.list()]).toEqual([]);
+  expect([...storage.gitByteBlobs.list()]).toEqual([]);
+  put.mockRestore();
+  const uncertain = new ByteStore(storage.byteObjects, storage.byteChunks, storage.byteUploads,
+    async () => { throw new Error("lost acknowledgement"); }, storage.byteGrants, storage.gitByteBlobs,
+    callback => storage.transaction(callback));
+  await expect(uncertain.import("reader", data)).rejects.toThrow("lost acknowledgement");
+  const chunks = [...storage.byteChunks.list()];
+  const ref = await store.import("reader", data);
+  expect([...storage.byteChunks.list()]).toEqual(chunks);
+  expect(await read(store.read(ref))).toEqual(data);
+});
+
 it("resumes persisted offsets after a disconnect, verifies retries and returns a stable finished receipt", async () => {
   const {store, storage} = fixture(), data = new Uint8Array(BYTE_CHUNK_SIZE * 2 + 31).map((_, i) => i % 251);
   await store.begin("lease-a", "upload", data.length, hash(data));
   await expect(store.write("lease-a", "upload", 0, stream(data.subarray(0, BYTE_CHUNK_SIZE), true), () => {})).rejects.toThrow("disconnect");
   expect(store.status("lease-a", "upload").offset).toBe(BYTE_CHUNK_SIZE);
   const resumed = new ByteStore(storage.byteObjects, storage.byteChunks, storage.byteUploads,
-    async () => {}, storage.byteGrants, storage.gitByteBlobs);
+    async () => {}, storage.byteGrants, storage.gitByteBlobs, callback => storage.transaction(callback));
   await resumed.write("lease-a", "upload", 0, stream(data.subarray(0, BYTE_CHUNK_SIZE)), () => {});
   await expect(resumed.write("lease-a", "upload", 0, stream(new Uint8Array(BYTE_CHUNK_SIZE)), () => {})).rejects.toThrow("changed durable");
   await resumed.write("lease-a", "upload", BYTE_CHUNK_SIZE, stream(data.subarray(BYTE_CHUNK_SIZE)), () => {});
@@ -61,7 +101,7 @@ it("resumes non-aligned partial blocks without publishing staged bytes", async (
   await store.write("a", "partial", 0, stream(data.subarray(0, 4193)), () => {});
   expect(() => store.reference(oid(data))).toThrow(/Unknown/);
   const resumed = new ByteStore(storage.byteObjects, storage.byteChunks, storage.byteUploads,
-    async () => {}, storage.byteGrants, storage.gitByteBlobs);
+    async () => {}, storage.byteGrants, storage.gitByteBlobs, callback => storage.transaction(callback));
   await resumed.write("a", "partial", 0, stream(data.subarray(0, 4193)), () => {});
   await resumed.write("a", "partial", 4193, stream(data.subarray(4193)), () => {});
   const ref = await resumed.finish("a", "partial", () => {});

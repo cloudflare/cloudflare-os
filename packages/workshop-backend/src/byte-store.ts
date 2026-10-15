@@ -3,7 +3,7 @@ import type { Collection } from "@gadgets/typed-storage";
 import { validateBytesRef, type BytesRef } from "@gadgets/workshop-shared/code-change";
 import type { ByteObjectRecord, ByteChunkRecord, ByteUploadRecord, ByteGrantRecord, GitByteBlobRecord } from "./storage-schema/overseer-storage";
 
-/** Maximum buffered payload per storage/read operation; unrelated to a file's total size. */
+/** Conservative per-operation buffer bound, not a measured throughput optimum or file-size cap. */
 export const BYTE_CHUNK_SIZE = 256 * 1024;
 
 /** Durable raw-byte staging that publishes chunk-backed blobs into the workspace Git cache. */
@@ -11,7 +11,8 @@ export class ByteStore {
   constructor(private objects: Collection<ByteObjectRecord, string>,
     private chunks: Collection<ByteChunkRecord, string>, private uploads: Collection<ByteUploadRecord, string>,
     private sync: () => Promise<void>, private grants: Collection<ByteGrantRecord, string>,
-    private blobs: Collection<GitByteBlobRecord, string>) {}
+    private blobs: Collection<GitByteBlobRecord, string>,
+    private transaction: <T>(callback: () => T) => T) {}
 
   #root(ref: BytesRef): ByteObjectRecord {
     validateBytesRef(ref);
@@ -149,12 +150,26 @@ export class ByteStore {
     this.grants.put({id: `${scope}:${ref.oid}`, scope, bytes: ref});
     await this.sync(); return ref;
   }
-  /** Import a known local payload with the same staging/durability rules. */
-  async import(scope: string, bytes: Uint8Array): Promise<BytesRef> {
-    const id = crypto.randomUUID(), sha = createHash("sha256").update(bytes).digest("hex");
-    await this.begin(scope, id, bytes.byteLength, sha);
-    await this.write(scope, id, 0, new ReadableStream({start(c) { c.enqueue(bytes); c.close(); }}), () => {});
-    return this.finish(scope, id, () => {});
+  /** Publish bytes already in memory in one transaction/flush, optionally granting the caller read access. */
+  async import(scope: string | undefined, bytes: Uint8Array): Promise<BytesRef> {
+    const ref = {oid: createHash("sha1").update(`blob ${bytes.byteLength}\0`).update(bytes).digest("hex"),
+      byteLength: bytes.byteLength};
+    this.transaction(() => {
+      if (this.blobs.get(ref.oid)) {
+        this.require(ref);
+      } else {
+        const root = {id: crypto.randomUUID(), byteLength: bytes.byteLength};
+        for (let offset = 0; offset < bytes.byteLength; offset += BYTE_CHUNK_SIZE) {
+          this.chunks.put({id: `${root.id}:${offset / BYTE_CHUNK_SIZE}`,
+            data: bytes.slice(offset, offset + BYTE_CHUNK_SIZE)});
+        }
+        this.objects.put(root);
+        this.blobs.put({oid: ref.oid, bytes: root});
+      }
+      if (scope !== undefined) this.grants.put({id: `${scope}:${ref.oid}`, scope, bytes: ref});
+    });
+    await this.sync();
+    return ref;
   }
   /** Stream a validated range, checking revocation on every chunk without a whole-file buffer. */
   read(ref: BytesRef, offset = 0, length = ref.byteLength - offset, requireLive = () => {}): ReadableStream<Uint8Array> {

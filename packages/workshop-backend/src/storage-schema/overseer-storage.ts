@@ -611,6 +611,9 @@ export type AiChatAgentContext = {
   /** Chat-private Git worktree receiving all uploaded attachments, including after seeding. */
   attachments?: {worktreeId: WorkpieceId, bindingName: string};
 
+  /** Legacy originals have been published as blobs and projected into this chat's scratch worktree. */
+  attachmentsMigrated?: true;
+
   /**
    * The part of the agent's system prompt that lists the workspace's gadgets, each with its files
    * and bindings, saved when the chat's first turn built it.

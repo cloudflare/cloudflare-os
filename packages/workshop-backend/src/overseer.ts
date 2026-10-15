@@ -3,7 +3,7 @@ import { validateRpc } from "capnweb-validate";
 import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
-  requireTextFiles, type FileContent, type CodeContent, type CodeChange, type BytesRef } from "@gadgets/workshop-shared/code-change";
+  requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
@@ -1084,7 +1084,8 @@ class OverseerImpl implements AgentHooks {
     this.logger = logger.with({ gadgetId: ctx.id.toString() });
     this.storage = makeOverseerStorage(ctx.storage);
     this.byteStore = new ByteStore(this.storage.byteObjects, this.storage.byteChunks, this.storage.byteUploads,
-      () => ctx.storage.sync(), this.storage.byteGrants, this.storage.gitByteBlobs);
+      () => ctx.storage.sync(), this.storage.byteGrants, this.storage.gitByteBlobs,
+      callback => this.storage.transaction(callback));
     this.gitStore = new GitStore(this.storage.gitObjects, this.byteStore, this.storage.gitByteBlobs);
     this.gitCache = new WorkspaceGitCache(this.storage, {
       pull: (gatekeeperId, oids, hints) => this.#pullGitObjects(gatekeeperId, oids, hints),
@@ -1878,22 +1879,6 @@ class OverseerImpl implements AgentHooks {
   // the way unpinned gadget reads are served too.
   readFileAtCommit(commit: string, path: string): Promise<string | undefined> {
     return this.gitCache.readFileAtCommitIfExists(commit, path);
-  }
-
-  /** Resolve one regular Git blob to durable byte storage, never materializing a repository. */
-  async readByteFileAtCommit(commit: string, path: string, scope = "kernel"): Promise<BytesRef | undefined> {
-    await this.gitCache.assertWorktreePathWritable(commit, path);
-    const entry = await this.gitCache.pathEntryAtCommit(commit, path);
-    if (!entry) return undefined;
-    const stored = this.storage.gitByteBlobs.get(entry.oid);
-    if (stored) {
-      const ref = this.byteStore.reference(entry.oid);
-      await this.byteStore.grant(scope, ref); return ref;
-    }
-    const object = await this.gitCache.ensureObject(entry.oid, {type: "blob", referencedBy: entry.referencedBy});
-    const bytes = await this.byteStore.import(scope, object.payload);
-    if (bytes.oid !== entry.oid) throw new Error("Git blob payload does not match its object ID.");
-    return bytes;
   }
 
   // AgentHooks implementation: the same read, plus the blob's oid for the read's stamp.
@@ -5288,7 +5273,8 @@ class OverseerImpl implements AgentHooks {
       // Uploads use root filenames. Reserve base and overlay root names (including directories)
       // without loading file contents, so an upload cannot overwrite agent-created work.
       for (const entry of await this.gitCache.listCommitTreePaths(worktree.pinBase)) used.add(entry.path);
-      for (const [path] of this.#pendingWorkspaceChanges(chatId)[worktree.id] ?? []) used.add(path.split("/")[0]);
+      const content = await this.getCurrentChatContent(chatId, this.getChatMetaOrThrow(chatId));
+      for (const path of content.get(worktree.id)?.keys() ?? []) used.add(path.split("/")[0]);
     }
 
     let files = new Map<string, FileContent>();
@@ -5312,14 +5298,52 @@ class OverseerImpl implements AgentHooks {
     return files;
   }
 
-  #pendingWorkspaceChanges(chatId: number): CodeChange {
-    const history = this.loadChatHistory(chatId);
-    let result = foldCompactedCode(history.chatMessages, Infinity, history.checkpoint).proposedChange ?? {};
-    const meta = this.storage.chatMeta.get(chatId)!;
-    for (const row of this.listLiveChatChanges(chatId, this.chatCodeBase(meta).generation)) {
-      result = composeCodeChange(result, row.change);
+  // Migrate only the chat being used, one payload at a time. Each file's projection and
+  // original-download reference publish together, so a reset retries without duplicating it.
+  async #migrateChatAttachments(chatId: number): Promise<void> {
+    if (this.getChatAgentContext(chatId).attachmentsMigrated) return;
+    const messages = [...this.storage.chats.list({prefix: chatKeyPrefix(chatId)})];
+    for (const message of messages) {
+      if (message.type !== "message") continue;
+      for (const attachment of message.attachments ?? []) {
+        const source = this.storage.chatAttachmentContent.get(attachment.id);
+        if (source?.state.type !== "committed" || source.state.chatId !== chatId) continue;
+        if (source.state.oid !== undefined && attachment.workspacePath !== undefined) continue;
+        const bytes = source.state.oid !== undefined ? this.byteStore.reference(source.state.oid)
+          : await this.byteStore.import(undefined, await this.getChatAttachmentData(chatId, attachment.id));
+        const projected = {...attachment, oid: bytes.oid};
+        const files = attachment.workspacePath === undefined
+          ? await this.#prepareWorkspaceAttachmentFiles(chatId, [projected]) : new Map<string, FileContent>();
+        const worktree = this.#attachmentsWorktree(chatId);
+        const prepared = await this.#prepareAttachmentsWorktree(chatId, files, message.author);
+        const changes = worktree && files.size
+          ? this.#prepareWorkspaceAttachmentChanges(chatId, worktree, files) : [];
+        this.storage.transaction(() => {
+          if (!this.storage.chatMeta.get(chatId)) return;
+          const current = this.storage.chats.get(chatKey(chatId, message.sequence));
+          if (current?.type !== "message") return;
+          const ref = current.attachments?.find(ref => ref.id === attachment.id);
+          if (!ref) return;
+          const stored = this.storage.chatAttachmentContent.get(ref.id);
+          if (stored?.state.type !== "committed" || stored.state.chatId !== chatId) return;
+          if (stored.state.oid !== undefined && ref.workspacePath !== undefined) return;
+          if (this.#attachmentsWorktree(chatId)?.id !== worktree?.id) {
+            throw new Error("Scratch worktree changed during attachment migration; retry.");
+          }
+          if (prepared) this.#installAttachmentsWorktree(chatId, prepared);
+          if (worktree) this.#appendWorkspaceAttachments(chatId, worktree, changes, message.author);
+          Object.assign(ref, projected);
+          this.storage.chats.put(current);
+          this.storage.chatAttachmentContent.put({fileId: ref.id, state: {
+            type: "committed", chatId, oid: bytes.oid, workspacePath: ref.workspacePath,
+          }});
+        });
+        await this.ctx.storage.sync();
+      }
     }
-    return result;
+    if (this.storage.chatMeta.get(chatId)) {
+      this.storage.chatContext.put({...this.getChatAgentContext(chatId), attachmentsMigrated: true});
+    }
   }
 
   #attachmentsWorktree(chatId: number): WorktreeRecord | undefined {
@@ -6422,6 +6446,7 @@ class OverseerImpl implements AgentHooks {
         meta.activeAgent = userMeta.aiModel.profile;
       }
       this.storage.chatMeta.put(meta);
+      this.storage.chatContext.put({...this.getChatAgentContext(chatId), attachmentsMigrated: true});
 
       let promptSequence = this.#commitPreparedChatMessage(
           chatId, timestamp, userMeta.profile, prepared, capsules, canonicalAttachments, formats,
@@ -6485,6 +6510,7 @@ class OverseerImpl implements AgentHooks {
     let canonicalAttachments = this.canonicalizeChatAttachmentRefs(attachments);
     this.assertChatNotActive(chatId);
     using _chatMessageReservation = this.reserveChatMessagePreparation(chatId);
+    await this.#migrateChatAttachments(chatId);
     let prepared = await this.#prepareChatMessage(
         message, (canonicalAttachments?.length ?? 0) > 0);
 
@@ -6977,6 +7003,7 @@ class OverseerImpl implements AgentHooks {
         let controller = liveChat.cancelController;
         controller.signal.throwIfAborted();
 
+        await this.#migrateChatAttachments(chatId);
         await runAgent(
             this, chosenModel, chatId, aiModel.profile, controller.signal, initiator, aiModel.config);
         finished = true;

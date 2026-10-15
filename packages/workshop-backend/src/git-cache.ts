@@ -51,6 +51,7 @@ import {
 } from "@gadgets/workshop-shared/api";
 import type { GitObjectMetadataRecord, GitObjectRecord, GitByteBlobRecord } from "./storage-schema/overseer-storage";
 import type { ByteStore } from "./byte-store";
+import type { BytesRef } from "@gadgets/workshop-shared/code-change";
 import {
   buildPackStream,
   decodeLooseObject,
@@ -533,6 +534,22 @@ export class WorkspaceGitCache {
    */
   async readFileAtCommitIfExists(commitOid: GitOid, path: string): Promise<string | undefined> {
     return (await this.readFileAtCommitWithOid(commitOid, path))?.text;
+  }
+
+  /** Resolve one regular file to immutable byte storage; the caller, not the cache, grants access. */
+  async fileBytesAtCommit(commitOid: GitOid, path: string): Promise<BytesRef | undefined> {
+    if (!this.bytes) throw new Error("Byte storage is unavailable.");
+    const {tree, entry} = await this.#resolveEntryAt(commitOid, path);
+    if (!entry) return undefined;
+    if (entry.mode === "40000") throw new Error(`${path} is a directory`);
+    if (entry.mode === "160000") throw new Error(submoduleMessage(path, entry.oid));
+    if (entry.mode === "120000") {
+      throw new Error(symlinkMessage(path, await this.#readBlob(entry.oid, tree, path)));
+    }
+    if (this.storage.gitByteBlobs?.get(entry.oid)) return this.bytes.reference(entry.oid);
+    const ref = await this.bytes.import(undefined, await this.#readBlob(entry.oid, tree, path));
+    if (ref.oid !== entry.oid) throw new Error("Git blob payload does not match its object ID.");
+    return ref;
   }
 
   /**

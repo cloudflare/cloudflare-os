@@ -4,7 +4,7 @@ import {abortAllDurableObjects, runInDurableObject} from "cloudflare:test";
 import {buildPackStream, decodePackStream} from "../src/git-codec";
 import {validateChatAttachmentUpload} from "../src/chat-attachment-validation";
 import {runAgent} from "../src/agent";
-import {createFauxCore, fauxAssistantMessage, fauxText, type Message} from "@earendil-works/pi-ai";
+import {createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall, type Message} from "@earendil-works/pi-ai";
 import type {OverseerDurableObject} from "../src/overseer";
 import type {UserDurableObject} from "../src/user";
 import type {CodeChange} from "@gadgets/workshop-shared/code-change";
@@ -23,7 +23,160 @@ async function step(impl: Impl, chatId: number, change: CodeChange) {
   await impl.commitAgentStep(chatId, AUTHOR, [], {changes: [{change}], createdGadgets: [],
     createdWorktrees: [], addedBindings: [], worktreeCommits: [], blueprintMerges: []});
 }
+async function scriptedTurn(impl: Impl, chatId: number, calls: ReturnType<typeof fauxToolCall>[]) {
+  // Isolate file operations from compaction of the legacy model-inline attachment payload.
+  const faux = createFauxCore({models: [{id: "faux-model", contextWindow: 8_000_000}]});
+  const requests: Message[][] = [];
+  faux.setResponses(calls.length
+    ? [fauxAssistantMessage(calls, {stopReason: "toolUse"}), fauxAssistantMessage(fauxText("Done"))]
+    : [fauxAssistantMessage(fauxText("Done"))]);
+  await runAgent(impl, {model: faux.getModel(), stream: (model, context, options) => {
+    requests.push(structuredClone(context.messages));
+    return faux.stream(model, context, options);
+  }}, chatId, AUTHOR, new AbortController().signal, USER,
+  {provider: "cloudflare", model: "faux-model", apiToken: "", contextWindow: 8_000_000});
+  return requests;
+}
+const fileToolResults = (messages: Message[]) => messages.flatMap(message =>
+  message.role === "toolResult" && message.toolName !== "observeUserChanges"
+    ? [{toolName: message.toolName, content: message.content, isError: message.isError}] : []);
 describe("attachment worktree ingress", () => {
+  it("normalizes legacy source metadata without overwriting an already edited scratch file", () => inKernel(crypto.randomUUID(), async impl => {
+    const user = env.TEST_USER.getByName(crypto.randomUUID()), id = crypto.randomUUID();
+    const original = new TextEncoder().encode("original\n");
+    impl.storage.chatAttachmentContent.put({fileId: id, data: original, state: {
+      type: "staged", uploadedAt: Date.now(), mimeType: "text/plain", name: "notes.txt",
+    }});
+    const chatId = await impl.newChat(user, {profile: USER}, "Inspect", undefined, [{id}]);
+    const context = impl.getChatAgentContext(chatId);
+    const worktreeId = context.attachments!.worktreeId;
+    delete context.attachmentsMigrated;
+    impl.storage.chatContext.put(context);
+    await step(impl, chatId, {[worktreeId]: [["notes.txt", {remove: true}], ["renamed.txt", {set: "edited\n"}]]});
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "Continue");
+    const content = await impl.getCurrentChatContent(chatId, impl.storage.chatMeta.get(chatId)!);
+    expect(content.get(worktreeId)?.has("notes.txt")).toBe(false);
+    expect(content.get(worktreeId)?.get("renamed.txt")).toBe("edited\n");
+    expect(await impl.getChatAttachmentData(chatId, id)).toEqual(original);
+    expect(impl.storage.chatAttachmentContent.get(id)?.state).toHaveProperty("oid");
+  }));
+
+  it.each([false, true])("resumes legacy migration after eviction into one %s existing scratch worktree", async existing => {
+    const name = crypto.randomUUID();
+    const ids = [crypto.randomUUID(), crypto.randomUUID()];
+    const originals = [new TextEncoder().encode("legacy text\n"), Uint8Array.of(0, 255, 17)];
+    let chatId: number, worktreeId: number;
+    await inKernel(name, async impl => {
+      const user = env.TEST_USER.getByName(crypto.randomUUID());
+      const seed = await impl.byteStore.import("client-upload", new TextEncoder().encode("seed\n"));
+      chatId = await impl.newChat(user, {profile: USER}, "Old attachments", undefined,
+        existing ? [{oid: seed.oid, mimeType: "text/plain", name: "seed.txt"}] : undefined);
+      const message = [...impl.storage.chats.list()].find(message => message.type === "message")!;
+      if (message.type !== "message") throw new Error("Expected message");
+      message.attachments = [...message.attachments ?? [], ...ids.map((id, i) => ({
+        id, mimeType: i ? "application/octet-stream" : "text/plain", name: "legacy.txt", size: originals[i].length,
+      }))];
+      impl.storage.chats.put(message);
+      ids.forEach((id, i) => impl.storage.chatAttachmentContent.put({fileId: id, data: originals[i],
+        state: {type: "committed", chatId}}));
+      const context = impl.getChatAgentContext(chatId);
+      delete context.attachmentsMigrated;
+      impl.storage.chatContext.put(context);
+      const importBytes = impl.byteStore.import.bind(impl.byteStore);
+      const fault = vi.spyOn(impl.byteStore, "import")
+        .mockImplementationOnce(importBytes).mockRejectedValueOnce(new Error("migration interrupted"));
+      try {
+        await expect(impl.sendChatMessage(user, {profile: USER}, chatId, "Continue"))
+          .rejects.toThrow("migration interrupted");
+      } finally { fault.mockRestore(); }
+      worktreeId = impl.getChatAgentContext(chatId).attachments!.worktreeId;
+      expect(impl.storage.chatAttachmentContent.get(ids[0])?.data).toBeUndefined();
+      expect(impl.storage.chatAttachmentContent.get(ids[1])?.data).toEqual(originals[1]);
+      await impl.ctx.storage.sync();
+    });
+    await abortAllDurableObjects();
+    await inKernel(name, async impl => {
+      const user = env.TEST_USER.getByName(crypto.randomUUID());
+      await impl.sendChatMessage(user, {profile: USER}, chatId, "Retry");
+      const context = impl.getChatAgentContext(chatId);
+      expect(context.attachmentsMigrated).toBe(true);
+      expect(context.attachments?.worktreeId).toBe(worktreeId);
+      const content = await impl.getCurrentChatContent(chatId, impl.storage.chatMeta.get(chatId)!);
+      const base = impl.getWorktreePinBase(worktreeId)!;
+      const paths = new Set([...(await impl.gitCache.listCommitTreePaths(base)).map(entry => entry.path),
+        ...content.get(worktreeId)?.keys() ?? []]);
+      expect(paths).toEqual(new Set(existing ? ["seed.txt", "legacy.txt", "legacy-2.txt"] : ["legacy.txt", "legacy-2.txt"]));
+      for (const [i, id] of ids.entries()) {
+        expect(await impl.getChatAttachmentData(chatId, id)).toEqual(originals[i]);
+        expect(impl.storage.chatAttachmentContent.get(id)?.data).toBeUndefined();
+        await expect(impl.getChatAttachmentData(chatId + 1, id)).rejects.toThrow("not found");
+      }
+      const rows = [...impl.storage.chats.list()];
+      await impl.sendChatMessage(user, {profile: USER}, chatId, "Again");
+      expect([...impl.storage.chats.list()].filter(message => message.type === "changes"))
+        .toEqual(rows.filter(message => message.type === "changes"));
+      const requests = await scriptedTurn(impl, chatId, []);
+      expect(JSON.stringify(requests)).toContain("workspace file env.SCRATCH/legacy-2.txt");
+    });
+  });
+
+  it("reads and greps a full-size text upload without changing its byte-backed OT state", () => inKernel(crypto.randomUUID(), async impl => {
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const small = await impl.byteStore.import("client-upload", new TextEncoder().encode("seed"));
+    const chatId = await impl.newChat(user, {profile: USER}, "Seed", undefined,
+      [{oid: small.oid, mimeType: "text/plain", name: "seed.txt"}]);
+    const text = "first line\nneedle\n" + "padding\n".repeat(524286);
+    // Exact upload cap, with short lines so the model requests only a small window.
+    const bytes = new TextEncoder().encode(text.padEnd(4 * 1024 * 1024, "x").slice(0, 4 * 1024 * 1024));
+    const ref = await impl.byteStore.import("client-upload", bytes);
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "Inspect", undefined,
+      [{oid: ref.oid, mimeType: "text/plain", name: "large.txt"}]);
+    const worktree = impl.getChatAgentContext(chatId).attachments!.worktreeId;
+    const requests = await scriptedTurn(impl, chatId, [
+      fauxToolCall("readFile", {workpiece: "SCRATCH", filename: "large.txt", lineCount: 2}),
+      fauxToolCall("grep", {workpiece: "SCRATCH", path: "large.txt", pattern: "needle"}),
+    ]);
+    const results = fileToolResults(requests.at(-1)!);
+    expect(results).toHaveLength(2);
+    for (const result of results) {
+      expect(result.isError).toBe(false);
+      expect(JSON.stringify(result.content)).toContain("needle");
+    }
+    expect((await impl.getCurrentChatContent(chatId, impl.storage.chatMeta.get(chatId)!))
+      .get(worktree)?.get("large.txt")).toEqual(ref);
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "Follow up");
+    const replay = fileToolResults((await scriptedTurn(impl, chatId, [])).at(-1)!);
+    expect(replay).toEqual(results);
+  }));
+
+  it.each([false, true])("replays text replacements over a binary %s overlay without reading the obsolete base", existing => inKernel(crypto.randomUUID(), async impl => {
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const ref = await impl.byteStore.import("client-upload", Uint8Array.of(0, 255));
+    const chatId = await impl.newChat(user, {profile: USER}, "Start", undefined,
+      existing ? undefined : [{oid: ref.oid, mimeType: "application/octet-stream", name: "data.bin"}]);
+    if (existing) {
+      const seed = await impl.byteStore.import("client-upload", new TextEncoder().encode("seed"));
+      await impl.sendChatMessage(user, {profile: USER}, chatId, "Seed", undefined,
+        [{oid: seed.oid, mimeType: "text/plain", name: "seed.txt"}]);
+      await impl.sendChatMessage(user, {profile: USER}, chatId, "Binary", undefined,
+        [{oid: ref.oid, mimeType: "application/octet-stream", name: "data.bin"}]);
+    }
+    const requests = await scriptedTurn(impl, chatId, [
+      fauxToolCall("writeFile", {workpiece: "SCRATCH", filename: "data.bin", content: "replacement\n"}),
+      fauxToolCall("readFile", {workpiece: "SCRATCH", filename: "data.bin"}),
+      fauxToolCall("editFile", {workpiece: "SCRATCH", filename: "data.bin", textToReplace: "replacement", replacement: "edited"}),
+      fauxToolCall("readFile", {workpiece: "SCRATCH", filename: "data.bin"}),
+    ]);
+    const results = fileToolResults(requests.at(-1)!);
+    expect(results).toHaveLength(4);
+    for (const result of results) expect(result.isError).toBe(false);
+    expect(JSON.stringify(results[1])).toContain("replacement");
+    expect(JSON.stringify(results[3])).toContain("edited");
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "Follow up");
+    const replay = fileToolResults((await scriptedTurn(impl, chatId, [])).at(-1)!);
+    expect(replay).toEqual(results);
+  }));
+
   it("keeps large local text readable after byte access and DO eviction", async () => {
     const name = crypto.randomUUID();
     const text = "a".repeat(MAX_GIT_OBJECT_SIZE + 1);
@@ -34,7 +187,7 @@ describe("attachment worktree ingress", () => {
         message: "Large local text", timestamp: new Date(0),
       });
       expect(await impl.readFileAtCommit(commit, "large.txt")).toBe(text);
-      const ref = await impl.readByteFileAtCommit(commit, "large.txt");
+      const ref = await impl.gitCache.fileBytesAtCommit(commit, "large.txt");
       expect(ref?.byteLength).toBe(text.length);
       oid = ref!.oid;
       expect(impl.gitCache.readLocalObject(oid)?.payload.byteLength).toBe(text.length);
@@ -69,7 +222,7 @@ describe("attachment worktree ingress", () => {
       const tree = impl.storage.gadgets.get(context.attachments!.worktreeId)!;
       if (tree.type !== "worktree") throw new Error("Expected attachments worktree");
       if (bytes[0] === 255) {
-        const value = await impl.readByteFileAtCommit(tree.baseCommit, "input.csv");
+        const value = await impl.gitCache.fileBytesAtCommit(tree.baseCommit, "input.csv");
         expect(await new Response(impl.byteStore.read(value!)).bytes()).toEqual(bytes);
         await expect(impl.readFileAtCommit(tree.baseCommit, "input.csv")).rejects.toThrow(/not a text file/);
       } else {
@@ -172,6 +325,23 @@ describe("attachment worktree ingress", () => {
     expect(content.get(worktreeId)?.get("report-2.csv")).toBe("uploaded");
   }));
 
+  it("reuses deleted generated names but keeps historical upload names reserved", () => inKernel(crypto.randomUUID(), async impl => {
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const original = await impl.byteStore.import("client-upload", new TextEncoder().encode("original"));
+    const chatId = await impl.newChat(user, {profile: USER}, "Seed", undefined,
+      [{oid: original.oid, mimeType: "text/plain", name: "upload.txt"}]);
+    const id = impl.getChatAgentContext(chatId).attachments!.worktreeId;
+    await step(impl, chatId, {[id]: [["generated.txt", {set: "temporary"}]]});
+    await step(impl, chatId, {[id]: [["generated.txt", {remove: true}], ["upload.txt", {remove: true}]]});
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "Upload", undefined, [
+      {oid: original.oid, mimeType: "text/plain", name: "generated.txt"},
+      {oid: original.oid, mimeType: "text/plain", name: "upload.txt"},
+    ]);
+    const message = [...impl.storage.chats.list()].findLast(message => message.type === "message")!;
+    if (message.type !== "message") throw new Error("Expected message");
+    expect(message.attachments?.map(ref => ref.workspacePath)).toEqual(["generated.txt", "upload-2.txt"]);
+  }));
+
   const binaryFiles = [
     {name: "photo.png", mimeType: "image/png", content: Uint8Array.fromBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==")},
     {name: "report.pdf", mimeType: "application/pdf", content: new TextEncoder().encode("%PDF-1.7")},
@@ -205,7 +375,7 @@ describe("attachment worktree ingress", () => {
       if (existing) await impl.sendChatMessage(user, {profile: USER}, chatId, "Another file", undefined, [upload]);
       const worktreeId = impl.getChatAgentContext(chatId).attachments!.worktreeId;
       const overlay = (await impl.getCurrentChatContent(chatId, impl.storage.chatMeta.get(chatId)!)).get(worktreeId)?.get(name);
-      const value = overlay ?? await impl.readByteFileAtCommit(impl.getWorktreePinBase(worktreeId)!, name);
+      const value = overlay ?? await impl.gitCache.fileBytesAtCommit(impl.getWorktreePinBase(worktreeId)!, name);
       if (typeof value !== "object") throw new Error("Expected opaque byte content");
       expect(value.byteLength).toBe(bytes.byteLength);
       expect(await new Response(impl.byteStore.read(value)).bytes()).toEqual(bytes);
@@ -260,7 +430,7 @@ describe("attachment worktree ingress", () => {
     await abortAllDurableObjects();
     await inKernel(name, async impl => {
       expect(await impl.getChatAttachmentData(chatId, id)).toEqual(original);
-      const value = await impl.readByteFileAtCommit(impl.getWorktreePinBase(worktreeId)!, "data.bin");
+      const value = await impl.gitCache.fileBytesAtCommit(impl.getWorktreePinBase(worktreeId)!, "data.bin");
       expect(await new Response(impl.byteStore.read(value!)).bytes()).toEqual(updated);
       await expect(impl.getChatAttachmentData(chatId + 1, id)).rejects.toThrow("not found");
     });
@@ -327,7 +497,7 @@ describe("attachment worktree ingress", () => {
     expect(await impl.getChatAttachmentData(chatId, message.attachments![0].id)).toEqual(bytes);
     const tree = impl.storage.gadgets.get(impl.getChatAgentContext(chatId).attachments!.worktreeId)!;
     if (tree.type !== "worktree") throw new Error("Expected scratch worktree");
-    const value = await impl.readByteFileAtCommit(tree.baseCommit, file.name);
+    const value = await impl.gitCache.fileBytesAtCommit(tree.baseCommit, file.name);
     expect(await new Response(impl.byteStore.read(value!)).bytes()).toEqual(bytes);
   }));
 

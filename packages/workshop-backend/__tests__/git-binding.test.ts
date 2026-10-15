@@ -63,6 +63,34 @@ function seedGadget(impl: any, id: number, bindings: Record<string, unknown> = {
 }
 
 describe("env.GIT worktrees", () => {
+  it("reads and greps blob-backed UTF-8 over RPC while rejecting binary text reads", () => withImpl(async impl => {
+    const base = await commitFiles(impl, {});
+    using git = new RpcStub(await openGit(impl));
+    using worktree = await git.newWorktree(base);
+    for (const [i, data] of [new TextEncoder().encode("\ufeffhello😀\n"), Uint8Array.of(0, 255)].entries()) {
+      const uploadId = `bytes-${i}`, path = `file-${i}`;
+      await worktree.beginUpload(uploadId, {byteLength: data.length,
+        sha256: new Uint8Array(await crypto.subtle.digest("SHA-256", data)).toHex()});
+      await worktree.writeUpload(uploadId, 0, new Response(data).body!);
+      const ref = await worktree.finishUpload(uploadId);
+      await worktree.writeBytes(path, ref);
+      if (i === 0) {
+        expect(await worktree.readFile(path)).toBe("\ufeffhello😀\n");
+        expect(await worktree.structuredGrep(/hello/, path)).toEqual({
+          matches: [{file: path, line: 1, text: "\ufeffhello😀"}], errors: [],
+        });
+      } else {
+        // Vitest subscribes more than once; normalize workerd's RPC thenable first.
+        await expect(Promise.resolve(worktree.readFile(path))).rejects.toThrow("not a text file");
+        await expect(Promise.resolve(worktree.grep(/hello/, path))).rejects.toThrow("not a text file");
+        const scan = await worktree.structuredGrep(/hello/);
+        expect(scan.matches).toHaveLength(1);
+        expect(scan.errors).toEqual([{file: path, error: `${path} is not a text file`}]);
+      }
+      expect(await new Response(await worktree.readBytes(path)).bytes()).toEqual(data);
+    }
+  }));
+
   it("read a commit's tree", () => withImpl(async impl => {
     for (let object of FIXTURE_OBJECTS) {
       if (PACKED_OIDS.includes(object.oid)) {
