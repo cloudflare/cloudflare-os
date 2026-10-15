@@ -1,0 +1,29 @@
+packages/workshop-frontend/src/features/deployment-updates/DurationSetting.tsx
+  s_99c5462c433ffc::t_79a7d4c4e56bc2 1-101
+packages/workshop-frontend/src/features/deployment-updates/AdminUpdatesPanel.tsx
+  s_99c5462c433ffc::t_62d663ce864361 5,9,21,212,216-217,219,221-224,226,233-236,240,246-249
+packages/workshop-frontend/src/features/deployment-updates/AdminUpdatesPanel.test.tsx
+  s_99c5462c433ffc::t_62d663ce864361 43,51,67
+  s_99c5462c433ffc::t_6177000f26998c 8,47-49,52,56,60-61,463,473,491
+  s_99c5462c433ffc::t_167d2d45e938c8 476,479,496,499,503
+packages/workshop-frontend/src/features/deployment-updates/DurationSetting.test.tsx
+  s_99c5462c433ffc::t_804256e0b93232 1-237
+packages/workshop-frontend/src/features/deployment-updates/updateStatusFixture.ts
+  s_99c5462c433ffc::t_62d663ce864361 16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d934d1a61974368e9171cd30670598445e7c9731",
+  "prompts": {},
+  "sessions": {
+    "s_99c5462c433ffc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20bc3079-0386-4add-8723-190aaca5307f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

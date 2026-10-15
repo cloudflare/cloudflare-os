@@ -1,0 +1,45 @@
+packages/workshop-shared/src/api.ts
+  s_99c5462c433ffc::t_b4c0f374c75a8e 1064-1065,1067-1070,1084,1206-1207,1209,1514-1518,1520
+packages/workshop-backend/__tests__/deployment-updates.test.ts
+  s_99c5462c433ffc::t_01a3a391ef3639 6,25-26,39,44,369,373,458,470-499,628-629,632,634,641,644,646,651-666,682,689,693
+packages/workshop-backend/__tests__/admin-config.test.ts
+  s_99c5462c433ffc::t_8eedb35ef426ce 2-3,391,396,404,421-424,428-429,433-452
+packages/workshop-backend/src/admin-config.ts
+  s_99c5462c433ffc::t_970683db3b84cd 12,284-285,287-297,372-374
+packages/workshop-backend/src/admin-settings.ts
+  s_99c5462c433ffc::t_8c2f080810def0 1,9,54-57,308,331-337,1198-1199
+packages/workshop-backend/src/storage-schema/admin-settings-storage.ts
+  s_99c5462c433ffc::t_970683db3b84cd 12-13,111-112,163
+packages/workshop-backend/src/deployment-updates.ts
+  s_99c5462c433ffc::t_970683db3b84cd 8-11,138-139,141-142,144-146,150,179
+AGENTS.md
+  s_99c5462c433ffc::t_6e54b0a5c67341 81
+packages/workshop-frontend/src/features/deployment-updates/DurationSetting.tsx
+  s_99c5462c433ffc::t_79a7d4c4e56bc2 1-101
+packages/workshop-frontend/src/features/deployment-updates/AdminUpdatesPanel.tsx
+  s_99c5462c433ffc::t_62d663ce864361 5,9,21,212,216-217,219,221-224,226,233-236,240,246-249
+packages/workshop-frontend/src/features/deployment-updates/AdminUpdatesPanel.test.tsx
+  s_99c5462c433ffc::t_62d663ce864361 43,51,67
+  s_99c5462c433ffc::t_6177000f26998c 8,47-49,52,56,60-61,463,473,491
+  s_99c5462c433ffc::t_167d2d45e938c8 476,479,496,499,503
+packages/workshop-frontend/src/features/deployment-updates/DurationSetting.test.tsx
+  s_99c5462c433ffc::t_804256e0b93232 1-237
+packages/workshop-frontend/src/features/deployment-updates/updateStatusFixture.ts
+  s_99c5462c433ffc::t_62d663ce864361 16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4d95f1fc01525b5784e89c02ab9d57c23a4f330a",
+  "prompts": {},
+  "sessions": {
+    "s_99c5462c433ffc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20bc3079-0386-4add-8723-190aaca5307f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
