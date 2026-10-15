@@ -30,6 +30,15 @@ describe('classifyMatch', () => {
   })
 
   it.each([
+    ['h', 'ttps://acme.app.netsuite.com/app/common/entity/custjob.nl?id='],
+    ['https://acme.app.netsuite.com/', 'app/common/entity/custjob.nl?id='],
+    ['https://acme.app.netsuite.com/app/common/entity/custjob.nl', '?id='],
+  ])("completes %s through the pattern's query, leaving its value to type", (typed, suffix) => {
+    expect(classifyMatch(typed, NETSUITE_CUSTOMER)).toEqual({ type: 'prefix', suffix })
+    expect(classifyMatch(completeUrl(typed, suffix) + '42', NETSUITE_CUSTOMER)).toEqual({ type: 'full' })
+  })
+
+  it.each([
     ['https://linear.app/acme/issue/', 'https://linear.app/:workspace/issue/:issueId{/:rest}*', ':issueId', 'ENG-1'],
     ['https://acme.atlassian.net/wiki/spaces/ENG/pages/', 'https://*.atlassian.net/wiki/spaces/:spaceKey/pages/:pageId/*?', ':pageId', '123'],
     ['https://x.com/jack/status/', 'https://x.com/*/status/:postId{/*}?', ':postId', '1'],

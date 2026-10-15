@@ -37,14 +37,17 @@ const splitAtQuery = (url: string): [path: string, tail: string] => {
 /** A parameter choosing between words, such as `:kind(room|dm)`, capturing the words. */
 const WORD_CHOICE = /^:\w+\(([\w-]+(?:\|[\w-]+)*)\)$/
 
+type Requirements = { parts: string[][]; query: string }
+
 /**
- * The host and path segments a URL needs to match a pattern, as URLPattern normalizes them: up to
- * the first optional segment (`:rest*`, `*?`), each as the words it accepts. A {@link WORD_CHOICE}
- * accepts each of its words; any other parameter drops its regex and `+`, so a completion, which
- * spells each segment's first word, holds plain placeholders. Null for a pattern this browser can't
- * parse.
+ * What a URL needs to match a pattern, as URLPattern normalizes it: the host and path segments up to
+ * the first optional one (`:rest*`, `*?`), each as the words it accepts, then the query. A
+ * {@link WORD_CHOICE} accepts each of its words; any other parameter drops its regex and `+`, so a
+ * completion, which spells each segment's first word, holds plain placeholders. A query keeps its
+ * names but not its values, which are left for the user to type, as a value starting with a colon is
+ * not a placeholder. Null for a pattern this browser can't parse.
  */
-const requiredSegments = (pattern: string): string[][] | null => {
+const requirements = (pattern: string): Requirements | null => {
   let parsed: URLPattern
   try {
     parsed = new URLPattern(pattern)
@@ -56,13 +59,16 @@ const requiredSegments = (pattern: string): string[][] | null => {
     ...parsed.pathname.split('/').slice(1),
   ]
   const optional = segments.findIndex(segment => segment !== '*' && /[?*]$/.test(segment))
-  return segments.slice(0, optional < 0 ? undefined : optional).map(segment =>
-    WORD_CHOICE.exec(segment)?.[1].split('|') ?? [segment.replace(/\(.*\)|\+$/g, '')])
+  return {
+    parts: segments.slice(0, optional < 0 ? undefined : optional).map(segment =>
+      WORD_CHOICE.exec(segment)?.[1].split('|') ?? [segment.replace(/\(.*\)|\+$/g, '')]),
+    query: parsed.search === '*' ? '' : `?${parsed.search.replace(/:\w+(\(.*?\))?/g, '')}`,
+  }
 }
 
 // The picker classifies every resource on each keystroke, so each pattern is parsed once. The
 // patterns are the deployment's resource types, a fixed set, so the cache needs no bound.
-const segmentsByPattern = new Map<string, string[][] | null>()
+const requirementsByPattern = new Map<string, Requirements | null>()
 
 /**
  * Classify a search URL, which may be half-typed and lack its scheme, against a resource pattern.
@@ -73,24 +79,27 @@ export function classifyMatch(search: string, pattern: string): MatchClassificat
   const typed = search.trim()
   if (matchesResourceUrlPattern(pattern, normalizeResourceUrl(typed))) return { type: 'full' }
 
-  let parts = segmentsByPattern.get(pattern)
-  if (parts === undefined) segmentsByPattern.set(pattern, parts = requiredSegments(pattern))
-  if (!parts) return { type: 'none' }
+  let required = requirementsByPattern.get(pattern)
+  if (required === undefined) requirementsByPattern.set(pattern, required = requirements(pattern))
+  if (!required) return { type: 'none' }
+  const { parts } = required
   const words = parts.map(([word]) => word)
 
   // A scheme still being typed ("h", "https:/") completes to the whole pattern.
   const scheme = pattern.slice(0, pattern.indexOf('://') + 3)
   if (scheme.toLowerCase().startsWith(typed.toLowerCase())) {
-    return { type: 'prefix', suffix: scheme.slice(typed.length) + words.join('/') }
+    return { type: 'prefix', suffix: scheme.slice(typed.length) + words.join('/') + required.query }
   }
 
-  const [path] = splitAtQuery(typed.replace(/^https?:\/\//i, ''))
+  const [path, tail] = splitAtQuery(typed.replace(/^https?:\/\//i, ''))
+  // A link's own query stays as it is, so only a link without one completes to the pattern's.
+  const query = tail ? '' : required.query
   // A host matches in any case, as URLPattern lowercases the pattern's; a path only in its own.
   const [host, ...rest] = path.split('/')
   const segments = [host.toLowerCase(), ...rest]
   for (const [i, part] of parts.entries()) {
     const segment = segments[i]
-    if (segment === undefined) return { type: 'prefix', suffix: `/${words.slice(i).join('/')}` }
+    if (segment === undefined) return { type: 'prefix', suffix: `/${words.slice(i).join('/')}${query}` }
     const matches = part.some(word => (word === '*' || word.startsWith(':')) ? segment !== ''
       : (i === 0 && word.startsWith('*.')) ? segment.endsWith(word.slice(1))
       : segment === word)
@@ -98,10 +107,11 @@ export function classifyMatch(search: string, pattern: string): MatchClassificat
     // The segment still being typed completes to a word of this part, then the rest of the pattern.
     const word = i === segments.length - 1
       ? part.find(word => !word.startsWith('*') && word.startsWith(segment)) : undefined
-    if (word) return { type: 'prefix', suffix: [word.slice(segment.length), ...words.slice(i + 1)].join('/') }
+    if (word) return { type: 'prefix', suffix: [word.slice(segment.length), ...words.slice(i + 1)].join('/') + query }
     return { type: 'none' }
   }
-  return { type: 'none' }
+  // The path is all there, so all a full match can still lack is the pattern's query.
+  return query ? { type: 'prefix', suffix: query } : { type: 'none' }
 }
 
 /** Appends a `classifyMatch` suffix to a URL's path, keeping any query or fragment after it. */
