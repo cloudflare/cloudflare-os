@@ -1,0 +1,82 @@
+packages/workshop-backend/src/admin-settings.ts
+  s_664125cd80dfd6::t_082874cf359fa0 365-367,369-380,382-383,386,390-403,405-408
+  s_664125cd80dfd6::t_ba39b022f3569a 21,25,28-29,348-359,361-364,368,381,384-385,387-389,404
+  s_664125cd80dfd6::t_9cc4486c2dcdf2 27
+  s_664125cd80dfd6::t_1a5142e239f5cf 26
+  s_99c5462c433ffc::t_a640f92ae4621b 54-57,305-308,331-337,1196-1197
+  s_99c5462c433ffc::t_9d106f363da40c 1198-1199
+packages/workshop-backend/src/deployment-updates.ts
+  s_664125cd80dfd6::t_103ad8367f50de 163
+  s_664125cd80dfd6::t_6724c974a00728 19
+  s_664125cd80dfd6::t_096928d435af17 21-26,45-46,48-49,53-96,152-153,156-157,161-162,164-165,180-181
+  s_99c5462c433ffc::t_a640f92ae4621b 9,136-137,139-140,142,147-148,176
+packages/workshop-backend/src/storage-schema/admin-settings-storage.ts
+  s_664125cd80dfd6::t_6724c974a00728 206-209
+  s_99c5462c433ffc::t_a640f92ae4621b 12,110-111,162
+packages/workshop-backend/__tests__/deployment-updates.test.ts
+  s_664125cd80dfd6::t_f5f7791b249bfd 3,5,974-986,989-992,994-995,997
+  s_664125cd80dfd6::t_49b16bf74a1aa3 987-988,993,996
+  s_664125cd80dfd6::t_103ad8367f50de 858-861,863-867,869,902
+  s_664125cd80dfd6::t_1bab6112050741 181,927,937,939-940,945-946,948,1011-1029
+  s_664125cd80dfd6::t_7b46d18848e06c 45
+  s_664125cd80dfd6::t_36475d417d313b 7,9-11,78,93-97,113-115,129-180,481-483,821-857,862,868,870-874,877-882,887-892,894-901,903-926,928-936,938,941-944,947,949-966
+  s_664125cd80dfd6::t_67184134f4aa90 29-30,34,44,46-47,296-311,315,317,323,325,331,333,339,341,347-348,358,361,371,378,384,393,440,500-501,508,663,692-693,697,719
+  s_664125cd80dfd6::t_e9e6dab9e829fe 13-15,21,182,967-973,998-1010,1030
+  s_664125cd80dfd6::t_9d9f09d6840788 875-876,883-886,893
+  s_664125cd80dfd6::t_6e2696d9dcfaec 183
+  s_99c5462c433ffc::t_56569abe91de4c 37-40,42-43,367-370,372,453-474,598,600-602,605,607,614,617,619,639,646,649-651
+packages/workshop-backend/src/server.ts
+  s_664125cd80dfd6::t_1a5142e239f5cf 44-49,891,895-896,899
+  s_664125cd80dfd6::t_b0035b23e8d763 50,886-887,890,897-898,900-904
+  s_664125cd80dfd6::t_410524926c1fc1 34,888-889,892-894
+  s_664125cd80dfd6::t_7a5ab5c82ea664 905
+packages/workshop-frontend/src/features/deployment-updates/AdminUpdatesPanel.test.tsx
+  s_664125cd80dfd6::t_186132a37a12cf 249,250
+  s_99c5462c433ffc::t_d4b2f31560259c 43,47-48,50-61,66,420,427,430,448-461
+packages/gatekeeper-gitlab/src/gitlab.ts
+  s_99c5462c433ffc::t_f5ceda2dbcf651 26,235-236
+  s_99c5462c433ffc::t_9a8dea5b3dc989 237-238
+packages/gatekeeper-websearch/src/worker.ts
+  s_99c5462c433ffc::t_f5ceda2dbcf651 21,195-197
+  s_99c5462c433ffc::t_3b7a96e26b9729 198-199
+packages/gatekeeper-x/src/x.ts
+  s_99c5462c433ffc::t_f5ceda2dbcf651 27,289-290
+  s_99c5462c433ffc::t_8b6672099bbcaa 291-292
+packages/workshop-shared/src/api.ts
+  s_99c5462c433ffc::t_213ec490e5dc0e 1064-1068,1081,1202-1206,1510-1516
+  s_99c5462c433ffc::t_e9942ea9b5bd27 1063,1517
+packages/workshop-backend/__tests__/admin-config.test.ts
+  s_99c5462c433ffc::t_56569abe91de4c 2,391-396,401,409-410,426-430,434-435,439
+packages/workshop-backend/src/admin-config.ts
+  s_99c5462c433ffc::t_a640f92ae4621b 284-286,288-290,365-367
+packages/workshop-frontend/src/features/deployment-updates/HoursSetting.tsx
+  s_99c5462c433ffc::t_d4b2f31560259c 7,11,15,18-19,33-35,54
+packages/workshop-frontend/src/features/deployment-updates/AdminUpdatesPanel.tsx
+  s_99c5462c433ffc::t_d4b2f31560259c 20,171-172,186-196
+packages/workshop-frontend/src/features/deployment-updates/updateStatusFixture.ts
+  s_99c5462c433ffc::t_d4b2f31560259c 16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "566ba253ee914b602204a2b59adfb6ade88b4f6f",
+  "prompts": {},
+  "sessions": {
+    "s_664125cd80dfd6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a41dd87a-7e4a-4acc-8c7e-eae5a69b4d55",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_99c5462c433ffc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20bc3079-0386-4add-8723-190aaca5307f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
