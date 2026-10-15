@@ -174,6 +174,26 @@ describe("Calendar configurator URLs", () => {
     expect(ui.canWriteCalendar).toHaveBeenCalledExactlyOnceWith("creator@example.com");
   });
 
+  // The runtime discards every seeded value when the initializer throws, which silently turned a
+  // requested all-visible connection into a this-calendar one.
+  it("keeps the requested availability mode when the calendar lookup fails", async () => {
+    const ui = {
+      getPrimaryCalendarId: vi.fn(),
+      canWriteCalendar: vi.fn(async () => { throw new Error("[http=503]"); }),
+      listCalendars: vi.fn(),
+    } as unknown as CalendarConfiguratorRpc;
+
+    const values = await calendarConfigurator.initialValuesFromResourceUrl!({
+      resourceUrl:
+        "https://calendar.google.com/calendar/shared%40example.com/?availability=allVisible",
+      resourceUrlPattern: GOOGLE_CALENDAR_RESOURCE.urlPattern,
+      ui,
+    });
+
+    expect(values).toEqual({ availabilityMode: "allVisible" });
+    expect(calendarConfigurator.isReady!({ values })).toBe(false);
+  });
+
   it("keeps a suggested calendar when the recipient can write it", async () => {
     const ui = {
       getPrimaryCalendarId: vi.fn(),
