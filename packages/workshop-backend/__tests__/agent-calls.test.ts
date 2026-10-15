@@ -8,13 +8,14 @@
 // is replaced with a fake whose model config makes the turn fail before any network access, so
 // the real turn machinery -- including the `finally` that drains -- runs without a model.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { abortAllDurableObjects, runInDurableObject } from "cloudflare:test";
 import { keyString } from "@gadgets/typed-storage";
 import type { AgentSpawnerConfig, AiChatAuthorInfo, AiChatMessage } from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { AgentSpawnerBinding } from "../src/agent-spawner-binding";
+import { OVERSEER_STORAGE_VERSION } from "../src/storage-schema/overseer-migrations";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -47,6 +48,7 @@ function freshImpl(fn: (impl: any, instance: OverseerDurableObject) => Promise<v
 }
 
 function seedChat(impl: any): void {
+  impl.storage.version.put(OVERSEER_STORAGE_VERSION);
   impl.ownerId = OWNER_USER_ID;
   impl.storage.chatMeta.put(
       { id: CHAT_ID, title: "Callable agent", started: new Date(0), lastActive: new Date(0) });
@@ -128,6 +130,93 @@ async function spawnerBinding(impl: any, config = SPAWNER_CONFIG): Promise<Agent
 }
 
 describe("durable agent calls", () => {
+  it("rejects new calls and turn starts while workspace deletion is pending", () => freshImpl(async impl => {
+    seedChat(impl);
+    impl.storage.deletingWorkspace.put(true);
+
+    await expect(deliver(impl, "tooLate", [])).rejects.toThrow("Workspace has been deleted.");
+    impl.startAgent(CHAT_ID, { profile: MODEL, config: BROKEN_MODEL_CONFIG }, OWNER, OWNER_USER_ID);
+
+    expect(pendingCalls(impl)).toEqual([]);
+    expect([...impl.storage.activeAgents.list()]).toEqual([]);
+    expect(messages(impl)).toEqual([]);
+    await impl.waitForAllAgentsToComplete();
+  }));
+
+  it.each(["model resolved", "model failed", "storage cleared"])(
+      "does not continue a queued call after deletion (%s)", outcome => freshImpl(async impl => {
+    using _snapshots = vi.spyOn(impl, "deliverChatTimelines").mockResolvedValue(undefined);
+    seedChat(impl);
+    fakeUsers(impl);
+    const user = impl.users.get();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const lookup = vi.fn(async (modelId: string | null) => {
+      await gate;
+      if (outcome === "model failed") throw new Error("model unavailable");
+      return user.getChatContext(modelId);
+    });
+    impl.users.get = () => ({ ...user, getChatContext: lookup });
+    const start = vi.spyOn(impl, "startAgent").mockImplementation(() => {});
+
+    await deliver(impl, "waiting", []);
+    const drain = impl.drainPendingAgentCalls(CHAT_ID);
+    impl.storage.deletingWorkspace.put(true);
+    if (outcome === "storage cleared") {
+      await impl.ctx.storage.deleteAll();
+      impl.ownerId = undefined;
+    }
+    release();
+    await drain;
+
+    expect(lookup).toHaveBeenCalledTimes(1); // No profile-only fallback after deletion either.
+    expect(start).not.toHaveBeenCalled();
+    expect(pendingCalls(impl)).toHaveLength(outcome === "storage cleared" ? 0 : 1);
+    expect(messages(impl)).toEqual([]);
+    expect([...impl.storage.agentCallbackArgs.list()]).toEqual([]);
+  }));
+
+  it("leaves a queued call untouched if deletion begins during message preparation", () => freshImpl(async impl => {
+    using _snapshots = vi.spyOn(impl, "deliverChatTimelines").mockResolvedValue(undefined);
+    seedChat(impl);
+    const release = gatedFakeUsers(impl);
+    const start = vi.spyOn(impl, "startAgent").mockImplementation(() => {});
+    const preparation = vi.spyOn(impl, "waitForChatMessagePreparation");
+    await deliver(impl, "waiting", []);
+    const drain = impl.drainPendingAgentCalls(CHAT_ID);
+    const reservation = impl.reserveChatMessagePreparation(CHAT_ID);
+    release();
+    await waitFor(() => preparation.mock.calls.length > 0);
+
+    impl.storage.deletingWorkspace.put(true);
+    reservation[Symbol.dispose]();
+    await drain;
+
+    expect(start).not.toHaveBeenCalled();
+    expect(pendingCalls(impl)).toHaveLength(1);
+    expect(messages(impl)).toEqual([]);
+  }));
+
+  it("stops turn setup if deletion begins while orphan cleanup is pending", () => freshImpl(async impl => {
+    using _snapshots = vi.spyOn(impl, "deliverChatTimelines").mockResolvedValue(undefined);
+    seedChat(impl);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const cleanup = vi.spyOn(impl, "reconcilePendingGadgets").mockImplementation(() => gate);
+    const materialize = vi.spyOn(impl, "materializeChatChanges");
+    impl.startAgent(CHAT_ID, { profile: MODEL, config: BROKEN_MODEL_CONFIG }, OWNER, OWNER_USER_ID);
+    await waitFor(() => cleanup.mock.calls.length > 0);
+
+    impl.storage.deletingWorkspace.put(true);
+    release();
+    await impl.waitForAllAgentsToComplete();
+
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(materialize).not.toHaveBeenCalled();
+    expect(messages(impl)).toEqual([]);
+    expect([...impl.storage.activeAgents.list()]).toEqual([]);
+  }));
+
   it("a call to an idle chat is recorded, then appended and the agent started",
       () => freshImpl(async impl => {
     seedChat(impl);
@@ -624,6 +713,8 @@ describe("durable agent calls", () => {
       // The real user DO answers the drain after the restart (its default profile, no model), so
       // the record must name a genuine id in its namespace.
       userId = impl.users.newUniqueId().toString();
+      impl.storage.ownerId.put(userId);
+      impl.ownerId = userId;
       impl.storage.pendingAgentCalls.put({
         chatId: CHAT_ID, callId: 0, methodName: "survivor", args: [7], argsSummary: "[7]",
         initiatorUserId: userId, initiatorModelId: null,
@@ -649,6 +740,8 @@ describe("durable agent calls", () => {
     await withImpl(name, async impl => {
       seedChat(impl);
       let userId = impl.users.newUniqueId().toString();
+      impl.storage.ownerId.put(userId);
+      impl.ownerId = userId;
       // A turn interrupted by the restart, whose model the real user DO no longer knows...
       impl.storage.chatMeta.put({ ...impl.storage.chatMeta.get(CHAT_ID), activeAgent: MODEL });
       impl.storage.activeAgents.put({

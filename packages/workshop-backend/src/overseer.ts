@@ -900,6 +900,12 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
+  // Deletion intent survives resets; once cleanup finishes, the absent owner remains the fence
+  // for continuations whose awaits outlived deleteAll().
+  #canRunAgents(): boolean {
+    return !!this.ownerId && !this.storage.deletingWorkspace.get();
+  }
+
   // Register a newly-started (or resumed) agent turn. Called at the start of `startAgent` /
   // `#resumeAgent`, in the same synchronous step that sets `chatMeta.activeAgent` and writes the
   // `activeAgents` record, so that the three representations of "an agent is running for this chat"
@@ -1077,8 +1083,9 @@ class OverseerImpl implements AgentHooks {
       this.storage.chatTimelineRetryAt.put(0);
       if (this.storage.deletingWorkspace.get()) {
         // No delivery state is discarded until all recipients have durably removed the workspace.
-        await this.ctx.storage.deleteAll();
+        // Fence continuations before deleteAll clears the persisted deletion intent.
         this.ownerId = undefined;
+        await this.ctx.storage.deleteAll();
       }
     })().catch(error => {
       this.storage.chatTimelineRetryAt.put(Date.now() + 30_000);
@@ -1159,6 +1166,7 @@ class OverseerImpl implements AgentHooks {
   /** Persist deletion and finish recipient cleanup before discarding this workspace's storage. */
   async deleteWorkspace(): Promise<void> {
     this.storage.deletingWorkspace.put(true);
+    this.destroyAllLiveChats();
     this.queueUnreadSnapshot();
     await this.deliverChatTimelines(true);
   }
@@ -1257,6 +1265,11 @@ class OverseerImpl implements AgentHooks {
     for (let preparation; (preparation = this.waitForChatMessagePreparation(record.chatId));) {
       await preparation;
     }
+    if (!this.#canRunAgents()) {
+      this.#unregisterRunningAgent(record.chatId);
+      this.#finishAgentTurn(record.chatId);
+      return;
+    }
     if (!owns()) return;
     if (liveChat.cancelController.signal.aborted) { finish(); return; }
     if (failure && shouldRetryAfterReset(failure) && resumeAttempts < AGENT_RESUME_MAX_ATTEMPTS) {
@@ -1293,6 +1306,7 @@ class OverseerImpl implements AgentHooks {
     // A turn started by the drain gets a fresh context, and with it a fresh cancel controller --
     // this one may have been aborted.
     this.#liveChats.delete(chatId);
+    if (!this.#canRunAgents()) return;
 
     if (this.hasPendingAgentCalls(chatId)) {
       this.drainPendingAgentCalls(chatId);
@@ -1389,6 +1403,7 @@ class OverseerImpl implements AgentHooks {
   // before any blocked event is delivered, so at the start of the alarm handler
   // it'll recognize that agents are running and wait for them.
   #resumeInterruptedAgents(): void {
+    if (!this.#canRunAgents()) return;
     for (let record of Array.from(this.storage.activeAgents.list())) {
       if (this.#runningAgents.has(record.chatId)) continue;
       if (!this.storage.chatMeta.get(record.chatId)?.activeAgent) {
@@ -6875,6 +6890,7 @@ class OverseerImpl implements AgentHooks {
              initiator: AiChatAuthorInfo, initiatorUserId: string,
              callbackInitiated: boolean = false,
              keepAlive: boolean = false): void {
+    if (!this.#canRunAgents()) return;
     // Register before starting the turn so registration always precedes the turn's teardown
     // (`#unregisterRunningAgent`, in `#runAgentTurn`'s finally).
     this.#registerRunningAgent(chatId);
@@ -6912,7 +6928,7 @@ class OverseerImpl implements AgentHooks {
                                  initiatorUserId: string,
                                  callbackInitiated: boolean,
                                  liveChat: LiveChatContext): Promise<void> {
-    let owns = () => this.#liveChats.get(chatId) === liveChat;
+    let owns = () => this.#canRunAgents() && this.#liveChats.get(chatId) === liveChat;
     // When this turn is billed to the user's own Cloudflare account, we refresh their cached credit
     // balance once the turn completes (see the `finally` below) so the next billing decision
     // reflects the spend this turn just incurred, rather than waiting for the cache TTL to lapse.
@@ -6957,6 +6973,7 @@ class OverseerImpl implements AgentHooks {
         if (this.ownerId) {
           let ownerStub = this.users.get(this.users.idFromString(this.ownerId));
           let usage = await checkUsageAndBalance(this.env, ownerStub);
+          if (!this.#canRunAgents()) return;
           if (!usage.allowed) {
             turn.setErrorType("usage_limit");
             this.postAgentErrorMessage(chatId, aiModel.profile,
@@ -6978,6 +6995,7 @@ class OverseerImpl implements AgentHooks {
         }
 
         let sessionAffinity = await computeSessionAffinity(this.ctx.id.toString(), chatId);
+        if (!this.#canRunAgents()) return;
         let chosenModel = getModel(
             this.env, aiModel.config, initiator, {
               sessionAffinity,
@@ -7078,6 +7096,10 @@ class OverseerImpl implements AgentHooks {
           this.#finishAgentTurn(chatId);
         }
       }
+      if (!this.#canRunAgents()) {
+        this.#unregisterRunningAgent(chatId);
+        this.#finishAgentTurn(chatId);
+      }
     }
   }
 
@@ -7087,7 +7109,7 @@ class OverseerImpl implements AgentHooks {
   async deliverAgentCallback(
       chatId: number, methodName: string, args: unknown[],
       initiatorUserId: string, initiatorModelId: string | null): Promise<void> {
-    if (!this.ownerId) throw new Error("Workspace has been deleted.");
+    if (!this.#canRunAgents()) throw new Error("Workspace has been deleted.");
 
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) throw new Error("No such chatId: " + chatId);
@@ -7172,6 +7194,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   async #drainPendingAgentCalls(chatId: number): Promise<void> {
+    if (!this.#canRunAgents()) return;
     let author: AiChatAuthorInfo | undefined;
     try {
       let [first] = Array.from(this.storage.pendingAgentCalls.list(
@@ -7190,10 +7213,12 @@ class OverseerImpl implements AgentHooks {
       try {
         userMeta = await user.getChatContext(first.initiatorModelId);
       } catch (err) {
+        if (!this.#canRunAgents()) return;
         if (first.initiatorModelId === null) throw err;  // nothing model-related to fall back from
         modelError = err;
         userMeta = await user.getChatContext(null);
       }
+      if (!this.#canRunAgents()) return;
       author = this.gadgetAuthorFor(userMeta.profile);
 
       // getChatContext() waits on the user's Durable Object. A user message may start an agent
@@ -7202,6 +7227,7 @@ class OverseerImpl implements AgentHooks {
       let preparation = this.waitForChatMessagePreparation(chatId);
       while (preparation) {
         await preparation;
+        if (!this.#canRunAgents()) return;
         preparation = this.waitForChatMessagePreparation(chatId);
       }
       let meta = this.storage.chatMeta.get(chatId);
@@ -7257,6 +7283,7 @@ class OverseerImpl implements AgentHooks {
       this.startAgent(chatId, userMeta.aiModel, author, initiatorUserId,
                       /* callbackInitiated */ true);
     } catch (err) {
+      if (!this.#canRunAgents()) return;
       this.logger.error("failed to deliver pending agent calls", {
         event: "agent.callback.start.failed", error: err, chatId,
       });
@@ -8804,6 +8831,7 @@ class OverseerImpl implements AgentHooks {
   // No await: the decision, its model-visible note, busy state, execution row and alarm all
   // precede model lookup. Live resumption and restart recovery then use the same #resumeAgent.
   resumeAgentAfterDecision(chatId: number, decisionId?: number | string): void {
+    if (!this.#canRunAgents()) return;
     let meta = this.storage.chatMeta.get(chatId);
     if (meta?.activeAgent) return; // Teardown rechecks after releasing this execution.
     let record = this.storage.activeAgents.get(chatId);

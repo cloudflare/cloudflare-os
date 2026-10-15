@@ -298,6 +298,128 @@ describe("durable unread projection outbox", () => {
     },
   );
 
+  it("does not deliver queued agent calls from the recovery alarm while deletion is pending", async () => {
+    const { stub, recipientId } = await setup();
+    await withImpl(stub, async (impl) => {
+      impl.storage.pendingAgentCalls.put({
+        chatId: 1, callId: 0, methodName: "queued", args: [], argsSummary: "",
+        initiatorUserId: recipientId, initiatorModelId: "model",
+      });
+      const restore = interceptRemoval(impl, async () => { throw new Error("cleanup unavailable"); });
+      try {
+        await expect(impl.deleteWorkspace()).rejects.toThrow("cleanup unavailable");
+      } finally {
+        restore();
+      }
+    });
+    await evictDurableObject(stub);
+
+    using lookup = vi.spyOn(UserDurableObject.prototype, "getChatContext").mockResolvedValue({
+      profile: { type: "user", id: "owner", name: "Owner" },
+      aiModel: {
+        profile: { type: "agent", id: "model", name: "Model" },
+        config: { provider: "cloudflare", model: "@cf/test/model", apiToken: "" },
+      },
+    });
+    let restore!: () => void;
+    let start!: ReturnType<typeof vi.spyOn<Impl, "startAgent">>;
+    await withImpl(stub, async (impl) => {
+      restore = interceptRemoval(impl, async () => { throw new Error("cleanup unavailable"); });
+      start = vi.spyOn(impl, "startAgent").mockImplementation(() => {});
+      impl.storage.chatTimelineRetryAt.put(0);
+    });
+    try {
+      await expect(runDurableObjectAlarm(stub)).rejects.toThrow("cleanup unavailable");
+      await withImpl(stub, async (impl) => {
+        expect(impl.storage.deletingWorkspace.get()).toBe(true);
+        expect([...impl.storage.pendingAgentCalls.list()]).toHaveLength(1);
+        expect([...impl.storage.chats.list()].map(message => message.type)).toEqual(["message"]);
+        expect([...impl.storage.activeAgents.list()]).toEqual([]);
+        expect(start).not.toHaveBeenCalled();
+        expect(lookup).not.toHaveBeenCalled();
+      });
+    } finally {
+      restore();
+      start.mockRestore();
+    }
+
+    await withImpl(stub, async (impl) => { impl.storage.chatTimelineRetryAt.put(0); });
+    await runDurableObjectAlarm(stub);
+    await withImpl(stub, async (impl) => {
+      expect(impl.ownerId).toBeUndefined();
+      expect([...impl.storage.pendingAgentCalls.list()]).toEqual([]);
+    });
+  });
+
+  it("fences turn startup while deleteAll has cleared deletion intent but has not returned", async () => {
+    const { stub, recipientId } = await setup();
+    await withImpl(stub, async (impl) => {
+      const deleteAll = impl.ctx.storage.deleteAll.bind(impl.ctx.storage);
+      let cleared!: () => void;
+      const storageCleared = new Promise<void>(resolve => { cleared = resolve; });
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      using _remove = vi.spyOn(impl.ctx.storage, "deleteAll").mockImplementation(async () => {
+        await deleteAll();
+        cleared();
+        await gate;
+      });
+      const deletion = impl.deleteWorkspace();
+      try {
+        await storageCleared;
+        expect(impl.storage.deletingWorkspace.get()).toBe(false);
+        impl.startAgent(1, {
+          profile: { type: "agent", id: "model", name: "Model" },
+          config: { provider: "cloudflare", model: "@cf/test/model", apiToken: "" },
+        }, { type: "user", id: "owner", name: "Owner" }, recipientId);
+        expect([...impl.storage.activeAgents.list()]).toEqual([]);
+      } finally {
+        release();
+        await deletion;
+        await impl.waitForAllAgentsToComplete();
+      }
+    });
+  });
+
+  it.each([true, false])("stops an interrupted turn whose model lookup outlives deletion (model available: %s)", async (available) => {
+    const { stub, recipientId } = await setup();
+    await withImpl(stub, async (impl) => {
+      const initiator = { type: "user" as const, id: "owner", name: "Owner" };
+      impl.storage.activeAgents.put({
+        chatId: 1, initiatorUserId: recipientId, modelId: "gone-model", initiator,
+        callbackInitiated: false,
+      });
+      impl.storage.chatMeta.put({
+        ...impl.storage.chatMeta.get(1)!, activeAgent: { type: "agent", id: "gone-model", name: "Model" },
+      });
+    });
+    await evictDurableObject(stub);
+
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    using lookup = vi.spyOn(UserDurableObject.prototype, "getChatContext").mockImplementation(async () => {
+      await gate;
+      return {
+        profile: { type: "user", id: "owner", name: "Owner" },
+        ...(available ? { aiModel: {
+          profile: { type: "agent" as const, id: "gone-model", name: "Model" },
+          config: { provider: "cloudflare" as const, model: "@cf/test/model", apiToken: "" },
+        } } : {}),
+      };
+    });
+    await withImpl(stub, async (impl) => {
+      using cleanup = vi.spyOn(impl, "reconcilePendingGadgets");
+      impl.storage.deletingWorkspace.put(true);
+      release();
+      await impl.waitForAllAgentsToComplete();
+
+      expect(lookup).toHaveBeenCalledTimes(1);
+      expect(cleanup).not.toHaveBeenCalled();
+      expect([...impl.storage.chats.list()].map(message => message.type)).toEqual(["message"]);
+      expect([...impl.storage.activeAgents.list()]).toEqual([]);
+    });
+  });
+
   it("delivers persisted intent after real Overseer eviction without replaying OS/push alerts", async () => {
     const { stub, recipientId } = await setup();
     using alerts = vi.spyOn(UserDurableObject.prototype, "publishNotification");

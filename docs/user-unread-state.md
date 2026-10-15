@@ -126,7 +126,9 @@ Workspace deletion persists its intent before removing any user's listing and re
 uses the same recipient journal, without requiring observer access for removal. The listing
 removal fences delayed snapshots; only after every tracked recipient acknowledges cleanup does
 the Overseer delete its own storage. Alarms resume interrupted deletion without another user action,
-and a deleting workspace refuses new opens and does not resume agent turns.
+and a deleting workspace refuses new opens, agent callbacks and turn starts. Queued callbacks
+remain untouched until cleanup removes the source storage; recovery alarms and continuations
+returning from model lookup or message preparation cannot resume work during deletion.
 
 Only the read-state projection is replayed. Existing transient toast/mobile-push sends are not
 blindly retried, and this feature does not claim exactly-once OS alert presentation.
