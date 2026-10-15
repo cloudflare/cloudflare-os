@@ -13,7 +13,7 @@
 // Durable Object and keeps a page's result independent of what earlier pages returned.
 
 import type {
-  ChatListMessagesOptions, ChatMessageInfo, ChatPerson, ChatReaction, ChatUser,
+  ChatListMessagesOptions, ChatMessageInfo, ChatReaction, ChatUser,
 } from "./chat-types";
 import { chatTimeInWindow } from "./chat-api";
 
@@ -41,8 +41,8 @@ export type ChatSendMessageAction = ChatActionBase & {
 
 /** A direct message or group chat that a queued send creates. */
 export type ChatNewConversation = {
-  /** Everyone besides the connected user, as the directory resolved them when it was queued. */
-  members: ChatPerson[];
+  /** Everyone besides the connected user, as a known Chat id or a directory profile. */
+  members: Array<{ id: string; name?: string; email?: string }>;
   /** Makes creating the conversation idempotent across a retried apply. */
   requestId: string;
 };

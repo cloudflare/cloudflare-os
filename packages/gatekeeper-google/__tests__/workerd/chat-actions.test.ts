@@ -1710,13 +1710,30 @@ describe("Starting Google Chat conversations", () => {
     expect(backend.state.deletes).toEqual([messageName("M1")]);
   });
 
+  it("creates a direct message from a known same-organization Chat user ID", async () => {
+    const {backend, chat} = accountChat();
+    backend.state.directory = [];
+    using account = await chat.account();
+
+    using _message = (await account.sendDirectMessage(["users/200"], "hello")).message;
+    expect((await chat.readQueue()).submissions[0].description).toMatchObject({
+      title: "Start a Google Chat conversation with users/200",
+      fields: [
+        {label: "People", kind: "list", items: ["users/200"]},
+        {label: "Message", kind: "text", value: "hello"},
+      ],
+    });
+
+    await chat.applyAction(1);
+    expect(backend.state.setups).toMatchObject([{spaceType: "DIRECT_MESSAGE", members: ["users/200"]}]);
+    expect(backend.state.creates.map(create => create.body.text)).toEqual(["hello"]);
+  });
+
   it("refuses to start a conversation with anyone outside the directory, or with yourself", async () => {
     const {backend, chat} = accountChat();
     using account = await chat.account();
     await expect(Promise.resolve(account.sendDirectMessage(["eve@elsewhere.test"], "hi")))
       .rejects.toThrow(/eve@elsewhere\.test.*directory/);
-    await expect(Promise.resolve(account.sendDirectMessage(["users/200"], "hi")))
-      .rejects.toThrow(/email address/);
     await expect(Promise.resolve(account.sendDirectMessage([BOB.email, "ada@example.com"], "hi")))
       .rejects.toThrow(/yourself/);
     expect((await chat.readQueue()).submissions).toEqual([]);
