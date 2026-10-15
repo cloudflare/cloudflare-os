@@ -117,7 +117,6 @@ export const NotificationBridge = ({
     let updateSubscription = () => {
       subscription?.[Symbol.dispose]();
       subscription = undefined;
-      if (document.visibilityState !== "visible") return;
 
       let live = false;
       let subscriber = new NotificationSubscriberImpl(notification => {
@@ -150,12 +149,11 @@ export const NotificationBridge = ({
       });
     };
 
-    document.addEventListener("visibilitychange", updateSubscription);
     updateSubscription();
     return () => {
-      document.removeEventListener("visibilitychange", updateSubscription);
-      subscription?.[Symbol.dispose]();
+      const previous = subscription;
       subscription = undefined;
+      previous?.[Symbol.dispose]();
     };
   }, [authenticatedApi, router]);
 
