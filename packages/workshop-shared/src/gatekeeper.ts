@@ -923,8 +923,9 @@ export interface Gatekeeper<Session> extends DurableObject {
   getSlashCommandProvider?(): Promise<SlashCommandProvider>;
 
   /**
-   * Request that the gatekeeper populate the git cache with the given objects (e.g., a git
-   * commit), as well as related objects (e.g., the commit's file tree, parents, etc.).
+   * Stream a self-contained Git pack containing the requested objects and related objects
+   * selected by `options`. The stream contains raw PACK bytes, not Git protocol framing, and
+   * must not require delta bases from an earlier fetch.
    *
    * The overseer will only ever pull objects that it knows the gatekeeper has, for one of the
    * following reasons:
@@ -934,27 +935,17 @@ export interface Gatekeeper<Session> extends DurableObject {
    * * The object had been populated by this gatekeeper in the past, but was subsequently evicted
    *   from the cache.
    *
-   * The Gatekeeper must put() each of the given objects into the cache (or throw an exception),
-   * with one carve-out: a requested *blob* that the hints' own `filterBlobSize` suppressed is
-   * reported by returning successfully without it, not by throwing. The overseer surfaces that
-   * absence to the agent as an oversized-file read error.
+   * Each requested object must be included or the stream must fail. A requested blob suppressed
+   * by `filterBlobSize` may be omitted; cache ingestion surfaces that as an oversized-file error.
    *
-   * The Gatekeeper MAY also put other related objects into the cache. `hints` provides hints
-   * about what objects the caller would like to have prefetched into the cache, but the
-   * gatekeeper is not technically required to honor these hints. (Failing to prefetch related
-   * objects may lead to performance problems, however.)
+   * With no filters, the pack must contain the complete trees and blobs for the requested
+   * commits. This supports native Git hydration as well as lazy cache population. Consumers own
+   * their storage/transfer limits: a full checkout must not inherit the DO cache's size limit.
    *
    * If the gatekeeper ever uses `GitCache`, it MUST implement `gitPull()`. Otherwise, it can leave
    * the method unimplemented.
    */
-  gitPull?(oids: GitOid[], cache: RpcStub<GitCache>, hints: GitPullHints): Promise<void>;
-
-  /**
-   * Stream a native Git v2 fetch for an already-advertised commit in this resource. The provider
-   * must reject requests for any other object/ref or command; credentials never enter the guest.
-   * Unlike gitPull, the pack bypasses the DO object cache and goes straight to a local Git client.
-   */
-  gitReadPack?(commit: GitOid, request: Uint8Array): Promise<ReadableStream<Uint8Array>>;
+  gitPull?(oids: GitOid[], options: GitPullHints): Promise<ReadableStream<Uint8Array>>;
 
   // ---------------------------------------------------------------------------
   // Callbacks invoked by the overseer to apply (or reject) actions that were previously queued
@@ -1724,7 +1715,7 @@ export interface GitCache extends RpcTarget {
   /**
    * Consumes a standard git packfile, storing each object in it as `put()` would, and returns
    * the oids of those now in the cache. An object too large to store is measured and left out of
-   * the result rather than thrown on, which is how a `gitPull()` notices it.
+   * the result rather than thrown on; the kernel uses this to recognize oversized-file reads.
    *
    * The pack is decoded in one pass, so a delta must follow its base, as in every pack
    * `git upload-pack` sends. Objects are stored as the pack streams in, and its commits last,
@@ -1757,8 +1748,8 @@ export interface GitCache extends RpcTarget {
 /**
  * Hints provided to `Gatekeeper.gitPull()` which may help the gatekeeper decide how much to pull.
  *
- * Hints are advisory: honoring them well affects performance, not correctness (with one
- * exception -- see `Gatekeeper.gitPull()`'s carve-out for blobs suppressed by `filterBlobSize`).
+ * Filters may over-fetch, but must not omit objects when no filter is requested. See
+ * `Gatekeeper.gitPull()` for the complete-tree and self-contained-pack requirements.
  *
  * The options are designed with the details of the standard git protocol in mind.
  */

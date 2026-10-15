@@ -75,7 +75,7 @@ import {
   GitRefUpdateRejectedError,
   ZERO_OID,
   emptyPackBytes,
-  pullGitObjectsIntoCache,
+  pullGitPack,
   pushGitRefUpdate,
   simulateBranchHead,
   validateBranchName,
@@ -90,7 +90,6 @@ import {
   normalizeTagSummary,
 } from "./git-commits";
 import GITHUB_LOGO_SVG from "./github-logo.svg";
-import { validateBootstrapFetch } from "@gadgets/gatekeeper-kit/git-bootstrap";
 import type {
   GitHubActor,
   GitHubBranchFilter,
@@ -3929,29 +3928,13 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   }
 
   /**
-   * `Gatekeeper.gitPull()`: fetch the requested objects from this repo over git smart-HTTP
-   * (protocol v2) and deposit them in the workspace git cache. The gatekeeper contributes only
-   * protocol framing -- the kit's git-transport composes the fetch command from the hints and strips
-   * the response down to the raw pack body, which streams into `cache.consumePack()` for
-   * overseer-side decoding, hash verification, and storage -- and retains nothing locally.
-   *
-   * No observation is recorded: a pull is overseer-initiated population of the workspace cache
-   * with objects whose commit ids were already returned (and advertised) by observed session
-   * reads, not a new agent-visible read; observer access to the git data rides the same
-   * repo-level ACL as everything else here (strategy B).
+   * Stream a self-contained raw pack through this resource's authenticated transport.
+   * No new observation: the kernel only requests objects from previously observed commits.
+   * Cache ingestion and native checkout share this path; credentials never enter the guest.
    */
-  async gitPull(oids: GitOid[], cache: RpcStub<GitCache>, hints: GitPullHints): Promise<void> {
-    await this.#withApi(api => pullGitObjectsIntoCache(
-      body => api.fetchGitUploadPack(this.ctx.props.owner, this.ctx.props.repo, body),
-      oids, hints, cache));
-  }
-
-  /** Repository-scoped exact-commit fetch; credentials remain in this provider's transport. */
-  async gitReadPack(commit: GitOid, request: Uint8Array): Promise<ReadableStream<Uint8Array>> {
-    validateBootstrapFetch(commit, request);
-    const response = await this.#withApi(api => api.fetchGitUploadPack(this.ctx.props.owner, this.ctx.props.repo, request));
-    if (!response.body) throw new Error("Git provider returned no pack stream.");
-    return response.body;
+  async gitPull(oids: GitOid[], options: GitPullHints): Promise<ReadableStream<Uint8Array>> {
+    return this.#withApi(api => pullGitPack(
+      body => api.fetchGitUploadPack(this.ctx.props.owner, this.ctx.props.repo, body), oids, options));
   }
 
   async applyAction(actionId: number, cache: RpcStub<GitCache>): Promise<void> {

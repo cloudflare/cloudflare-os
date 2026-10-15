@@ -1,4 +1,4 @@
-import { DELIM_PKT, FLUSH_PKT, encodePktLine } from "@gadgets/gatekeeper-kit/git-transport";
+import { buildGitFetchRequest, FLUSH_PKT, encodePktLine } from "@gadgets/gatekeeper-kit/git-transport";
 import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GatekeeperProps } from "./worker";
@@ -8,14 +8,11 @@ afterEach(() => vi.unstubAllGlobals());
 const COMMIT = "a".repeat(40);
 const PACK = new Uint8Array([0, 128, 255, 80, 65, 67, 75]);
 
-function request(commit = COMMIT): Uint8Array {
-  const parts = [encodePktLine("command=fetch"), DELIM_PKT, encodePktLine(`want ${commit}`),
-    encodePktLine("deepen 1"), encodePktLine("done"), FLUSH_PKT];
-  const body = new Uint8Array(parts.reduce((size, part) => size + part.length, 0));
-  let offset = 0;
-  for (const part of parts) { body.set(part, offset); offset += part.length; }
-  return body;
-}
+const OPTIONS = {type: "commit", commitHistory: {kind: "depth", depth: 1}} as const;
+const request = () => buildGitFetchRequest([COMMIT], OPTIONS);
+const response = () => new Blob([
+  encodePktLine("packfile"), new Uint8Array([...new TextEncoder().encode((PACK.length + 5).toString(16).padStart(4, "0")), 1, ...PACK]), FLUSH_PKT,
+]);
 
 async function propsFor(resourceKind: GatekeeperProps["resourceKind"]): Promise<GatekeeperProps> {
   const id = env.USER_ACCOUNT.newUniqueId();
@@ -25,7 +22,7 @@ async function propsFor(resourceKind: GatekeeperProps["resourceKind"]): Promise<
   return { userObjectId: id.toString(), resourceKind, owner: "acme", repo: "widgets", issueNumber: 1 };
 }
 
-describe("shared native GitHub bootstrap validation", () => {
+describe("unified GitHub pack stream", () => {
   it.each(["repo", "issue", "pull"] as const)("preserves streaming through a %s binding", async kind => {
     const props = await propsFor(kind);
     const body = request();
@@ -39,22 +36,25 @@ describe("shared native GitHub bootstrap validation", () => {
       expect(upstream.headers.get("git-protocol")).toBe("version=2");
       expect(upstream.headers.get("authorization")).toBe(`Basic ${btoa("x-access-token:test-token")}`);
       expect(new Uint8Array(await upstream.arrayBuffer())).toEqual(body);
-      return new Response(PACK, { headers: { "Content-Type": "application/x-git-upload-pack-result" } });
+      return new Response(response(), { headers: { "Content-Type": "application/x-git-upload-pack-result" } });
     });
     const hooks = env.TEST_HOOKS.get(env.TEST_HOOKS.idFromName("hooks"));
-    const outcome = await hooks.gitReadPack(`bootstrap-${kind}`, props, COMMIT, body);
+    const outcome = await hooks.gitPull(`bootstrap-${kind}`, props, [COMMIT], OPTIONS);
     if ("error" in outcome) throw new Error(outcome.error);
     expect(new Uint8Array(await new Response(outcome.ok).arrayBuffer())).toEqual(PACK);
     expect(calls).toHaveLength(2);
   });
 
-  it("rejects another commit before contacting any upstream endpoint", async () => {
+  it("rejects an invalid object id without sending an upload-pack request", async () => {
     const props = await propsFor("repo");
-    const fetch = vi.fn();
+    const fetch = vi.fn(async (input: string | URL | Request) => {
+      expect(String(input)).not.toContain("git-upload-pack");
+      return Response.json({id: 1});
+    });
     vi.stubGlobal("fetch", fetch);
     const hooks = env.TEST_HOOKS.get(env.TEST_HOOKS.idFromName("hooks"));
-    expect(await hooks.gitReadPack("bootstrap-invalid", props, COMMIT, request("b".repeat(40))))
+    expect(await hooks.gitPull("bootstrap-invalid", props, ["refs/heads/main"], OPTIONS))
       .toHaveProperty("error");
-    expect(fetch).not.toHaveBeenCalled();
+    expect(fetch.mock.calls.every(([input]) => !String(input).includes("git-upload-pack"))).toBe(true);
   });
 });

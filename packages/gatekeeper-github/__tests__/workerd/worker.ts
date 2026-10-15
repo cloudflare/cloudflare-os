@@ -11,7 +11,7 @@
 import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint, restore } from "cloudflare:workers";
 import type {
   AccountDescription, ActionDescription, ConnectHandoff, GatekeeperUser, GitCache, HookController,
-  HookDescription,
+  HookDescription, GitPullHints,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { GitHubGatekeeperImpl, GitHubHookDriver as GitHubHookDriverImpl, type GitHubVerifierApi } from "../../src/github.js";
 import type { GitHubHookParams } from "../../src/github-hooks.js";
@@ -163,7 +163,7 @@ type SeedFacet = { seed(entries: Record<string, unknown>): Promise<void> };
 // The facet methods TestHooks forwards to, spelled structurally: workers-types' `Fetcher<T>`
 // return-type inference collapses several of these returns to `never` (its `Serializable`
 // heuristic gives up on them), while the runtime objects are exactly the production ones.
-type GatekeeperFacet = Pick<GitHubGatekeeperImpl, "gitReadPack"> & {
+type GatekeeperFacet = Pick<GitHubGatekeeperImpl, "gitPull"> & {
   preparePush(branch: string, commitId: string, force: boolean, cache: RpcStub<GitCache>)
     : Promise<PushActionData | null>;
   prepareCreatePullRequest(options: GitHubCreatePullRequestOptions)
@@ -423,9 +423,9 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     return await outcome(() => this.#gatekeeper(facetName, props).isSimulatedCommitId(commitId));
   }
 
-  async gitReadPack(facetName: string, props: GatekeeperProps, commit: string, request: Uint8Array):
+  async gitPull(facetName: string, props: GatekeeperProps, oids: string[], options: GitPullHints):
       Promise<Outcome<ReadableStream<Uint8Array>>> {
-    return await outcome(() => this.#gatekeeper(facetName, props).gitReadPack(commit, request));
+    return await outcome(() => this.#gatekeeper(facetName, props).gitPull(oids, options));
   }
 
   async getCommit(

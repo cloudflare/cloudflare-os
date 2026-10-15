@@ -883,14 +883,15 @@ pushes)`, the gatekeeper filtering the pushes to that branch; the same call give
 `parseUnifiedPatch`, one file's patch at a time, which shares `diffTextLines`'s hunk shape, so a
 simulated diff and a provider diff read alike.
 
-Container bootstrap is a separate path: `Gatekeeper.gitReadPack()` returns the native Git v2
-response directly, without demultiplexing it into the DO cache, buffering it, or base64 encoding.
-GitHub and GitLab implement it using `git-bootstrap.validateBootstrapFetch()` before their existing
-authenticated upload-pack transport. The kernel grants the advertised immutable commit and closes
-the bootstrap capability after hydration; the validator permits only that commit at depth one,
-not ref discovery or arbitrary URLs. The container's own complete Git object store may send
-native `have` negotiation lines (unlike a partial DO cache). All provider and Access credentials
-stay in the gatekeeper. A provider-neutral contract still needs an adapter on each provider.
+Both lazy DO reads and native container hydration use `Gatekeeper.gitPull(oids, options)`.
+The provider composes a typed fetch with `git-transport.pullGitPack()` and returns a backpressured
+raw PACK stream, without buffering or base64 encoding. The DO feeds it to its bounded cache
+decoder; containers feed it directly to native Git without the DO cache's transfer limit.
+The kernel chooses the advertised immutable commit, requests depth one with no tree/blob filters,
+and closes the bootstrap capability after hydration. No caller-supplied Git commands, ref
+discovery, arbitrary URLs, or provider credentials cross the bootstrap interface. Packs are
+self-contained (no `have` negotiation or thin-pack dependencies). Native consumers must record
+their shallow boundary because the raw pack does not carry Git protocol shallow-info.
 
 ## Other module boundaries
 

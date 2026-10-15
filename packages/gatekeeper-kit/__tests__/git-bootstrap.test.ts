@@ -1,20 +1,13 @@
 /// <reference types="node" />
 
-import { describe, expect, it } from "vitest";
-import { execFile, execFileSync, spawn } from "node:child_process";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { expect, it } from "vitest";
+import { execFileSync, spawn } from "node:child_process";
+import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createServer } from "node:http";
-import { promisify } from "node:util";
-import { validateBootstrapFetch } from "../src/git-bootstrap";
-import { DELIM_PKT, FLUSH_PKT, encodePktLine } from "../src/git-transport";
-
-const oid = "a".repeat(40);
-const request = (arguments_: string[], suffix: Uint8Array[] = []) => Buffer.concat([
-  encodePktLine("command=fetch"), encodePktLine("agent=git/2.39.5"), DELIM_PKT,
-  ...arguments_.map(encodePktLine), FLUSH_PKT, ...suffix,
-]);
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { pullGitPack } from "../src/git-transport";
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", ["-C", cwd, "-c", "commit.gpgSign=false", ...args], {
@@ -24,99 +17,47 @@ function git(cwd: string, ...args: string[]): string {
   }).trim();
 }
 
-describe("immutable Git bootstrap capability", () => {
-  it("allows a shallow fetch and native Git's negotiation options", () => {
-    validateBootstrapFetch(oid, request([`want ${oid}`, "deepen 1", "done"]));
-    validateBootstrapFetch(oid, request(["thin-pack", "ofs-delta", "no-progress", "include-tag", "sideband-all",
-      `want ${oid}`, "deepen 1", `have ${"b".repeat(40)}`, "done"]));
-  });
-
-  it.each<[string, string[]]>([
-    ["another commit", [`want ${"b".repeat(40)}`, "deepen 1", "done"]],
-    ["duplicate want", [`want ${oid}`, `want ${oid}`, "deepen 1", "done"]],
-    ["deeper history", [`want ${oid}`, "deepen 10", "done"]],
-    ["unbounded history", [`want ${oid}`, "done"]],
-    ["filtered tree", [`want ${oid}`, "deepen 1", "filter blob:none", "done"]],
-    ["ref name", ["want refs/heads/main", "deepen 1", "done"]],
-    ["second command", [`want ${oid}`, "deepen 1", "command=ls-refs"]],
-  ])("rejects %s", (_label, arguments_) => {
-    expect(() => validateBootstrapFetch(oid, request(arguments_))).toThrow();
-  });
-
-  it.each([FLUSH_PKT, DELIM_PKT, encodePktLine(`want ${oid}`)])("rejects data after the final flush (%j)", suffix => {
-    expect(() => validateBootstrapFetch(oid, request([`want ${oid}`, "deepen 1", "done"], [suffix]))).toThrow();
-  });
-
-  it("rejects invalid commit ids, framing, encoding, discovery, and oversized requests", () => {
-    for (const commit of ["main", "a".repeat(39), "A".repeat(40)])
-      expect(() => validateBootstrapFetch(commit, request([`want ${oid}`, "deepen 1", "done"]))).toThrow();
-    for (const bytes of [new Uint8Array(65537), new TextEncoder().encode("0003"), new TextEncoder().encode("0008x"),
-      new Uint8Array([48, 48, 48, 53, 255]),
-      Buffer.concat([encodePktLine("command=ls-refs"), FLUSH_PKT]),
-      Buffer.concat([encodePktLine("command=fetch"), FLUSH_PKT])])
-      expect(() => validateBootstrapFetch(oid, bytes)).toThrow();
-  });
-
-  it("serves native Git's actual v2 request without exposing ref discovery or credentials", async () => {
-    const root = await mkdtemp(join(tmpdir(), "workshop-git-bootstrap-"));
-    const source = join(root, "repo.git"), checkout = join(root, "checkout");
-    let server: ReturnType<typeof createServer> | undefined;
-    try {
-      await mkdir(source);
-      git(source, "init", "--quiet");
-      await writeFile(join(source, "a.txt"), "first\n");
-      git(source, "add", "a.txt");
-      git(source, "commit", "--quiet", "-m", "first");
-      await writeFile(join(source, "a.txt"), "second\n");
-      git(source, "commit", "--quiet", "-am", "second");
-      const commit = git(source, "rev-parse", "HEAD");
-      const calls: string[] = [];
-      server = createServer(async (req, res) => {
-        calls.push(`${req.method} ${req.url}`);
-        // The bridge advertises capabilities itself; the upstream never sees discovery.
-        if (req.method === "GET") {
-          res.setHeader("content-type", "application/x-git-upload-pack-advertisement");
-          res.end(Buffer.concat([
-            ...["version 2", "agent=workshop", "fetch=shallow", "object-format=sha1"].map(encodePktLine), FLUSH_PKT,
-          ]));
-          return;
-        }
-        const chunks: Buffer[] = [];
-        for await (const chunk of req) chunks.push(chunk);
-        const body = Buffer.concat(chunks);
-        try { validateBootstrapFetch(commit, body); } catch { res.writeHead(403).end(); return; }
-        const backend = spawn("git", ["http-backend"], {
-          env: { ...process.env, GIT_PROJECT_ROOT: root, GIT_HTTP_EXPORT_ALL: "1", GIT_PROTOCOL: "version=2",
-            PATH_INFO: "/repo.git/git-upload-pack", REQUEST_METHOD: "POST",
-            CONTENT_TYPE: "application/x-git-upload-pack-request", CONTENT_LENGTH: String(body.length) },
-          stdio: ["pipe", "pipe", "ignore"],
-        });
-        backend.stdin.end(body);
-        // Fixtures are tiny; production returns the HTTP body stream without collecting it.
-        const output: Buffer[] = [];
-        for await (const chunk of backend.stdout) output.push(chunk);
-        const all = Buffer.concat(output), headersEnd = all.indexOf("\r\n\r\n");
-        res.setHeader("content-type", "application/x-git-upload-pack-result");
-        res.end(all.subarray(headersEnd + 4));
+it("hydrates a complete depth-one native checkout from the same raw pack API as lazy DO reads", async () => {
+  const root = await mkdtemp(join(tmpdir(), "workshop-git-pull-"));
+  const source = join(root, "source"), checkout = join(root, "checkout");
+  try {
+    await mkdir(source); await mkdir(checkout);
+    git(source, "init", "--quiet");
+    await writeFile(join(source, "a.txt"), "first\n");
+    git(source, "add", "."); git(source, "commit", "--quiet", "-m", "first");
+    await writeFile(join(source, "a.txt"), "second\n");
+    const binary = Uint8Array.of(0, 128, 255, 13, 10);
+    await mkdir(join(source, "nested"));
+    await writeFile(join(source, "nested", "attachment.bin"), binary);
+    git(source, "add", "."); git(source, "commit", "--quiet", "-m", "second");
+    const commit = git(source, "rev-parse", "HEAD");
+    git(checkout, "init", "--quiet");
+    const pack = await pullGitPack(async body => {
+      const backend = spawn("git", ["upload-pack", "--stateless-rpc", source], {
+        env: {...process.env, GIT_PROTOCOL: "version=2"},
+        stdio: ["pipe", "pipe", "inherit"],
       });
-      await new Promise<void>((resolve, reject) => {
-        server!.once("error", reject);
-        server!.listen(0, "127.0.0.1", resolve);
-      });
-      const address = server.address();
-      if (!address || typeof address === "string") throw new Error("No fixture port");
-      await mkdir(checkout);
-      git(checkout, "init", "--quiet");
-      await promisify(execFile)("git", ["-C", checkout, "-c", "protocol.version=2", "-c", "credential.helper=",
-        "fetch", "--no-tags", "--depth=1", `http://127.0.0.1:${address.port}/repo.git`, commit]);
-      expect(git(checkout, "rev-parse", "FETCH_HEAD")).toBe(commit);
-      expect(git(checkout, "rev-list", "--count", "FETCH_HEAD")).toBe("1");
-      expect(git(checkout, "show", "FETCH_HEAD:a.txt")).toBe("second");
-      expect(calls).toEqual(["GET /repo.git/info/refs?service=git-upload-pack", "POST /repo.git/git-upload-pack"]);
-      expect(git(checkout, "remote")).toBe("");
-    } finally {
-      if (server?.listening) await new Promise<void>((resolve, reject) => server!.close(error => error ? reject(error) : resolve()));
-      await rm(root, { recursive: true, force: true });
-    }
-  }, 15_000);
-});
+      backend.stdin.end(body);
+      return new Response(Readable.toWeb(backend.stdout) as unknown as ReadableStream<Uint8Array>);
+    }, [commit], {type: "commit", commitHistory: {kind: "depth", depth: 1}});
+    // Raw PACK does not include the protocol's shallow-info section. Record the known boundary
+    // before strict native import, otherwise Git quite correctly rejects its absent parents.
+    await writeFile(join(checkout, ".git", "shallow"), commit + "\n");
+    const importer = spawn("git", ["-C", checkout, "index-pack", "--stdin", "--strict"],
+      {stdio: ["pipe", "ignore", "inherit"]});
+    const finished = new Promise<number | null>((resolve, reject) => {
+      importer.on("error", reject); importer.on("exit", resolve);
+    });
+    await pipeline(Readable.fromWeb(pack as unknown as import("node:stream/web").ReadableStream<Uint8Array>), importer.stdin);
+    expect(await finished).toBe(0);
+    git(checkout, "update-ref", "refs/heads/workshop", commit);
+    git(checkout, "read-tree", "--reset", "-u", commit);
+    expect(git(checkout, "rev-list", "--count", commit)).toBe("1");
+    expect(await readFile(join(checkout, "a.txt"), "utf8")).toBe("second\n");
+    expect(new Uint8Array(await readFile(join(checkout, "nested", "attachment.bin")))).toEqual(binary);
+    expect(git(checkout, "remote")).toBe("");
+    expect(git(checkout, "config", "--local", "--list")).not.toMatch(/https|credential|token/);
+  } finally {
+    await rm(root, {recursive: true, force: true});
+  }
+}, 15_000);

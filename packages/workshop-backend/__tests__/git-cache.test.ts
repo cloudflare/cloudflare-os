@@ -1104,7 +1104,7 @@ describe("consumePack", () => {
         .toStrictEqual([G1, G2]);
   });
 
-  it("consumes a pack another Worker streams in, as a gatekeeper's arrives", async () => {
+  it("consumes a raw pack returned by another Worker, preserving its provenance", async () => {
     // The other tests build a byte stream. A gatekeeper sends a default stream, which the
     // decoder's BYOB reader refuses when handed one directly ("This ReadableStream does not
     // support BYOB reads"); it works only because Workers RPC delivers it as a byte stream.
@@ -1116,19 +1116,20 @@ describe("consumePack", () => {
         "sender.js": `
           import { WorkerEntrypoint } from "cloudflare:workers";
           export default class extends WorkerEntrypoint {
-            send(cache, pack) {
+            gitPull(pack) {
               let pos = 0;
-              return cache.consumePack(new ReadableStream({
+              return new ReadableStream({
                 pull(controller) {
                   if (pos < pack.byteLength) controller.enqueue(pack.slice(pos, pos += 100));
                   else controller.close();
                 },
-              }));
+              });
             }
           }`,
       },
     })).getEntrypoint();
-    let stored = await sender.send(new GitCacheImpl(t.cache, G1), b64Bytes(PACK_OFS_DELTA));
+    let stored = await t.cache.consumePackFromGatekeeper(G1,
+      await sender.gitPull(b64Bytes(PACK_OFS_DELTA)));
     expect(new Set(stored)).toStrictEqual(new Set(PACKED_OIDS));
     for (let oid of PACKED_OIDS) {
       expect(t.cache.readLocalObject(oid)).toStrictEqual(fixture(oid));

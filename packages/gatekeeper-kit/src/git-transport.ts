@@ -4,8 +4,7 @@
 //
 // - The protocol v2 *fetch* client behind `Gatekeeper.gitPull()`: pkt-line framing, fetch-command
 //   composition from `GitPullHints`, and sideband demultiplexing of the packfile response. The
-//   raw pack body streams into `GitCache.consumePack()`, which decodes, hash-verifies, and
-//   stores every object overseer-side.
+//   raw pack body streams into the DO cache decoder or directly into native Git.
 // - The *send-pack* client behind the `push` action: the ref-update command block, pack body
 //   composition (the pack bytes themselves come from `GitCache.buildPack()` -- no pack encoding
 //   here either), and report-status response parsing.
@@ -33,13 +32,6 @@
 
 import type { GitOid, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
 import { readBytesCapped, ResponseTooLargeError } from "./response-body";
-
-/**
- * Maximum raw HTTP body size accepted from one upload-pack fetch, enforced while streaming (the
- * transfer-size limiter pattern from gatekeeper-context's artifact-sync, same 64MB budget --
- * also matching the cap the overseer's `consumePack()` applies to the pack itself).
- */
-export const MAX_GIT_FETCH_BYTES = 64 << 20;
 
 /** The `agent` capability sent with every request, mirroring the REST layer's User-Agent. */
 const GIT_AGENT = "cloudflare-gadgets";
@@ -268,40 +260,37 @@ const BAND_ERROR = 3;
 /**
  * Strip a v2 fetch response's protocol framing, yielding the raw pack bytes: skip the sections
  * preceding `packfile` (`acknowledgments`/`shallow-info`/`wanted-refs` -- their content is
- * irrelevant here, since every fetch is independent and nothing tracks shallow boundaries),
+ * not part of PACK; native consumers record their requested shallow boundary themselves),
  * then demultiplex the packfile section's sideband (band 1 = pack data, band 2 = progress,
  * discarded, band 3 = fatal server error). An `ERR` pkt or band-3 message fails the stream with
- * the server's message; `maxBytes` bounds the raw body (see MAX_GIT_FETCH_BYTES); a response
+ * the server's message; optional `maxBytes` bounds the raw body; a response
  * that ends without a flush-pkt, or without ever reaching a packfile section, is an error --
- * a truncated pack must never look like a short success. `onFailure` is told what the stream
- * failed with, which a reader across an RPC hop never learns.
+ * a truncated pack must never look like a short success.
  */
 export function demuxGitFetchResponse(
   body: ReadableStream<Uint8Array>,
-  maxBytes: number,
-  onFailure?: (error: unknown) => void,
+  maxBytes = Infinity,
 ): ReadableStream<Uint8Array> {
-  let iterator = demuxPackData(body, maxBytes);
+  let reader = body.getReader();
+  let iterator = demuxPackData(reader, maxBytes);
   return new ReadableStream({
     async pull(controller) {
-      let next = await iterator.next().catch((error: unknown) => {
-        onFailure?.(error);
-        throw error;
-      });
+      let next = await iterator.next();
       if (next.done) controller.close();
       else controller.enqueue(next.value);
     },
     async cancel() {
+      // Interrupt an in-flight read before asking the generator to return.
+      await reader.cancel().catch(() => {});
       await iterator.return(undefined);
     },
-  });
+  }, {highWaterMark: 0});
 }
 
 async function* demuxPackData(
-  body: ReadableStream<Uint8Array>,
+  reader: ReadableStreamDefaultReader<Uint8Array>,
   maxBytes: number,
 ): AsyncGenerator<Uint8Array, void, unknown> {
-  let reader = body.getReader();
   try {
     let parser = new PktLineParser();
     let received = 0;
@@ -358,31 +347,16 @@ async function* demuxPackData(
 // Pull driver
 
 /**
- * The one method of `GitCache` this module needs; structural so both an `RpcStub<GitCache>` and
- * a test fake satisfy it.
- */
-export type GitPackSink = {
-  consumePack(pack: ReadableStream<Uint8Array>): Promise<GitOid[]>;
-};
-
-/**
  * The whole of a `gitPull()`: compose the fetch command, POST it via the caller-supplied
  * transport (which owns the URL, auth, and HTTP-level error handling), strip the response's
- * protocol framing, stream the raw pack into `cache.consumePack()`, and verify every requested
- * oid is among the stored objects.
- *
- * One deliberate carve-out, mirroring the `Gatekeeper.gitPull()` contract: when the request was
- * a blob fetch bounded by the hints' own `filterBlobSize`, a requested blob missing from the
- * stored list is reported by returning successfully without it -- `consumePack()` measures,
- * records, and skips an object over the storable size cap (so later reads fail fast on the
- * recorded size), and the overseer surfaces the absence as its oversized-file read error.
+ * protocol framing and return a backpressured raw pack stream. Consumers enforce their own
+ * storage limits and verify the requested objects; full native checkouts bypass the DO cache.
  */
-export async function pullGitObjectsIntoCache(
+export async function pullGitPack(
   fetchUploadPack: (requestBody: Uint8Array) => Promise<Response>,
   oids: GitOid[],
   hints: GitPullHints,
-  cache: GitPackSink,
-): Promise<void> {
+): Promise<ReadableStream<Uint8Array>> {
   let response = await fetchUploadPack(buildGitFetchRequest(oids, hints));
   if (!response.ok) {
     // The caller's transport normally throws its own richer error first (e.g. GitHubApi's
@@ -393,20 +367,7 @@ export async function pullGitObjectsIntoCache(
   if (response.body === null) {
     throw new Error("git fetch failed: response had no body");
   }
-  // A failed pack stream reaches consumePack() across RPC only as a premature disconnect, so
-  // that is what it rejects with; the stream's own failure says why.
-  let failure: unknown;
-  let pack = demuxGitFetchResponse(response.body, MAX_GIT_FETCH_BYTES, error => {
-    failure = error;
-  });
-  let stored = new Set(await cache.consumePack(pack).catch((error: unknown) => {
-    throw failure ?? error;
-  }));
-  let missing = oids.filter(oid => !stored.has(oid));
-  if (missing.length > 0 && !(hints.type === "blob" && hints.filterBlobSize !== undefined)) {
-    throw new Error(`git fetch did not provide the requested object${
-        missing.length === 1 ? "" : "s"} ${missing.join(", ")}`);
-  }
+  return demuxGitFetchResponse(response.body);
 }
 
 // =======================================================================================
@@ -586,7 +547,7 @@ export async function pushGitRefUpdate(
 
   let response = await fetchReceivePack(body);
   if (!response.ok) {
-    // Defensive backstop, as in pullGitObjectsIntoCache: the transport normally throws first.
+    // Defensive backstop, as in pullGitPack: the transport normally throws first.
     await response.body?.cancel().catch(() => {});
     throw new Error(`git push failed: HTTP ${response.status}`);
   }

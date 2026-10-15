@@ -16,12 +16,12 @@ merge request), the same worktree integration (commit ids advertised, `gitPull()
 smart-HTTP, `push()` as a queued action), and the same review and merge flows expressed in GitLab's
 own terms. See `plans/gitlab-gatekeeper.md` for the design record.
 
-Container hydration also implements `gitReadPack()`: the kernel grants an immutable commit from
-the connected project, and a native Git client receives its shallow fetch response as a binary
-stream without populating the DO object cache. GitHub and GitLab use the same exact-commit request
-validator; neither permits ref discovery or arbitrary clone URLs through this hook. OAuth and
-optional Cloudflare Access credentials remain in the gatekeeper's transport, including on
-self-hosted instances. This requires the kernel's worktree-replica bootstrap support.
+Container hydration uses the same `gitPull(oids, options)` raw-pack stream as lazy DO reads.
+The kernel grants an immutable commit from the connected project and requests its complete tree
+at depth one. Native Git imports the pack without populating the DO object cache. No encoded Git
+commands, ref discovery, or arbitrary clone URLs cross this interface. OAuth and optional
+Cloudflare Access credentials remain in the gatekeeper's transport, including on self-hosted
+instances. This requires the kernel's worktree-replica bootstrap support.
 
 ## Setting up GitLab OAuth credentials
 

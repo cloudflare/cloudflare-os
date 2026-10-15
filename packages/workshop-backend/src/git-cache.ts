@@ -122,8 +122,8 @@ export interface GitCacheStorage {
  */
 export interface GitPullDelegate {
   /**
-   * Invoke `Gatekeeper.gitPull(oids, cache, hints)` on the given gatekeeper, passing it a cache
-   * stub scoped to itself. Must throw if the gatekeeper record no longer exists (provenance
+   * Invoke `Gatekeeper.gitPull(oids, hints)` and consume its pack with that source's provenance
+   * and the cache's size limits. Must throw if the gatekeeper record no longer exists (provenance
    * loss: the error should tell the user to reconnect) or if the pull fails.
    */
   pull(gatekeeperId: WorkpieceId, oids: GitOid[], hints: GitPullHints): Promise<void>;
