@@ -167,10 +167,11 @@ export class GoogleSlidesGatekeeperImpl
     );
   }
 
-  async applyCreation(creator: Fetcher<GatekeeperUserVerifier>)
+  async applyCreation(creator: Fetcher<GatekeeperUserVerifier>, configuration: string | null)
       : Promise<{class: DurableObjectClass<Gatekeeper<any>>, resourceUrl: string}> {
     return this.#creating.run(async () => {
-      let { userObjectId, fileId, resourceUrl } = await createFileOnce(this.ctx, creator, "slides",
+      let { userObjectId, fileId, resourceUrl } = await createFileOnce(
+          this.ctx, creator, "slides", configuration,
           (title, tokens) => new GoogleSlidesApi(tokens).createPresentation(title));
       return {
         class: this.ctx.exports.GoogleSlidesGatekeeperImpl({props: {userObjectId, presentationId: fileId}}),

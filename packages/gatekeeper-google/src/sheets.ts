@@ -232,10 +232,11 @@ export class GoogleSheetsGatekeeperImpl
     );
   }
 
-  async applyCreation(creator: Fetcher<GatekeeperUserVerifier>)
+  async applyCreation(creator: Fetcher<GatekeeperUserVerifier>, configuration: string | null)
       : Promise<{class: DurableObjectClass<Gatekeeper<any>>, resourceUrl: string}> {
     return this.#creating.run(async () => {
-      let { userObjectId, fileId, resourceUrl } = await createFileOnce(this.ctx, creator, "sheets",
+      let { userObjectId, fileId, resourceUrl } = await createFileOnce(
+          this.ctx, creator, "sheets", configuration,
           (title, tokens) => new GoogleSheetsApi(tokens).createSpreadsheet(title));
       return {
         class: this.ctx.exports.GoogleSheetsGatekeeperImpl({props: {userObjectId, spreadsheetId: fileId}}),

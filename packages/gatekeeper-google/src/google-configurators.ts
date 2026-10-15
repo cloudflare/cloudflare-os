@@ -22,6 +22,9 @@ import type { ChatThreadConfiguratorRpc } from "./configurator/chat-thread-confi
 import type { DriveAccountConfiguratorRpc } from "./configurator/drive-account-configurator-types";
 import type { DriveFileConfiguratorRpc } from "./configurator/drive-file-configurator-types";
 import type { DriveFolderConfiguratorRpc } from "./configurator/drive-folder-configurator-types";
+import type {
+  CreationFolderConfiguratorRpc,
+} from "./configurator/creation-folder-configurator-types";
 
 /**
  * Mints an access token for a configurator, forwarding `AccessTokenRequest` to the `UserAccount`
@@ -407,5 +410,33 @@ export class DriveFolderConfiguratorUI extends RpcTarget implements DriveFolderC
         : file.owners?.[0]?.displayName ?? file.owners?.[0]?.emailAddress ?? "My Drive",
       meta: idTail(file.id),
     }));
+  }
+}
+
+@validateRpc()
+export class CreationFolderConfiguratorUI extends RpcTarget implements CreationFolderConfiguratorRpc {
+  constructor(getToken: () => Promise<GoogleAccessToken>) {
+    super();
+    googleTokenGetters.set(this, getToken);
+  }
+
+  /**
+   * One page of folders this account can add files to, across My Drive, "Shared with me", and
+   * every shared drive it belongs to. A new file is shared like its folder, so each folder known to
+   * be shared says so. None says it isn't: Drive doesn't define whether its `shared` counts sharing
+   * a folder inherits from its parent, and a wrong "not shared" would hide who can read the file.
+   */
+  async listCreationFolders(query: string): Promise<ConfiguratorOption[]> {
+    let drive = new DriveApi(googleTokenProvider(this));
+    let { files } = await withDriveApiEnabled(
+      "Drive folder search requires the Google Drive API to be enabled for this OAuth project.",
+      () => drive.listFiles({
+        mimeType: FOLDER_MIME_TYPE, namePrefix: query, corpus: { kind: "allDrives" },
+      }),
+    );
+    return files.filter(file => file.capabilities?.canAddChildren === true).map(file => {
+      let subtitle = file.driveId ? "In a shared drive" : file.shared ? "Shared" : undefined;
+      return { value: file.id, title: file.name, ...subtitle && { subtitle }, meta: idTail(file.id) };
+    });
   }
 }

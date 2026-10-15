@@ -2088,9 +2088,11 @@ describe("creating a Google Doc", () => {
     expect(docs.creates).toHaveLength(1);
   });
 
-  it("does not create again when reading the new document back fails", async () => {
+  // An account connected before per-resource grants may hold `documents` and no Drive scope at all.
+  it("does not create again, or need Drive, when reading the new document back fails", async () => {
     let docs = new DocsModel();
     docs.readFailures = 1;
+    docs.driveFailure = { status: 403, reason: "insufficientPermissions" };
     docs.install();
     await hooks().createResource("create-doc-readback", DOC_PATTERN, "Plan");
 
@@ -2098,6 +2100,7 @@ describe("creating a Google Doc", () => {
       .toEqual({ error: "Google Docs get document failed [http=404]" });
     expect(await hooks().applyCreation("create-doc-readback")).toEqual({ resourceUrl: CREATED_DOC_URL });
     expect(docs.creates).toHaveLength(1);
+    expect(docs.driveFetches).toBe(0);
   });
 
   it("creates again after Google refused the create", async () => {

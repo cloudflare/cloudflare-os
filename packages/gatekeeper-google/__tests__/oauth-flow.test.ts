@@ -23,6 +23,7 @@ describe("stored OAuth flow", () => {
         ...IDENTITY_SCOPES,
         "https://www.googleapis.com/auth/documents",
         "https://www.googleapis.com/auth/drive.metadata.readonly",
+        "https://www.googleapis.com/auth/drive.file",
       ],
     });
     let claimedDocs = claimStoredOAuthFlow(kv, "oauth-docs", 3_000);

@@ -28,6 +28,16 @@ export class UserAccount extends DurableObject<Env> {
   async getAccessToken(): Promise<GoogleAccessToken> {
     return { token: `test-access-token:${this.ctx.id}`, expires: new Date(8640000000000000) };
   }
+
+  /** Every test account holds `drive.file` unless denyPlacement() was called on it. */
+  async canPlaceCreatedFiles(): Promise<boolean> {
+    return this.ctx.storage.kv.get("placementDenied") === undefined;
+  }
+
+  /** Make this an account connected before `drive.file` was requested. */
+  async denyPlacement(): Promise<void> {
+    this.ctx.storage.kv.put("placementDenied", true);
+  }
 }
 
 type GatekeeperProps = { userObjectId: string; documentId: string };
@@ -137,15 +147,15 @@ export class TestHooks extends DurableObject<Env> {
   }
 
   /**
-   * Approve the creation into `userName`'s account. The returned class is only kept: the overseer
-   * restarts the facet on it afterwards, which adoptCreated() does.
+   * Approve the creation into `userName`'s account, placed as `configuration` says. The returned
+   * class is only kept: the overseer restarts the facet on it afterwards, which adoptCreated() does.
    */
-  async applyCreation(facetName: string, userName = "test-user")
+  async applyCreation(facetName: string, userName = "test-user", configuration: string | null = null)
       : Promise<{ resourceUrl: string } | { error: string }> {
     let userObjectId = this.ctx.exports.UserAccount.idFromName(userName).toString();
     try {
       let created = await (this.#gatekeeper(facetName) as unknown as Gatekeeper<any>)
-        .applyCreation!(this.ctx.exports.GoogleVerifier({ props: { userObjectId } }), null);
+        .applyCreation!(this.ctx.exports.GoogleVerifier({ props: { userObjectId } }), configuration);
       this.#created.set(facetName, created.class);
       return { resourceUrl: created.resourceUrl };
     } catch (error) {
@@ -159,6 +169,13 @@ export class TestHooks extends DurableObject<Env> {
     if (!created) throw new Error(`No creation applied on ${facetName}`);
     this.ctx.facets.abort(facetName, new Error("Connection restarted because its resource was created."));
     this.#classes.set(facetName, created);
+  }
+
+  /** Make `userName`'s account one connected before `drive.file` was requested. */
+  async denyPlacement(userName: string): Promise<void> {
+    // `exports` is typed with the real UserAccount; this worker exports the fake above.
+    let account = this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromName(userName));
+    await (account as unknown as DurableObjectStub<UserAccount>).denyPlacement();
   }
 
   async describe(facetName: string): Promise<ResourceDescription> {

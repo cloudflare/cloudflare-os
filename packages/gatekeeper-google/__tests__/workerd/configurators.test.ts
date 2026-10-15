@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AccessTokenRequest } from "../../src/auth-retry";
 import {
-  BigQueryConfiguratorUI, CalendarConfiguratorUI, DriveFolderConfiguratorUI,
+  BigQueryConfiguratorUI, CalendarConfiguratorUI, CreationFolderConfiguratorUI,
+  DriveFolderConfiguratorUI,
 } from "../../src/google-configurators";
 import type { GoogleAccessToken } from "../../src/google-api";
 
@@ -90,6 +91,32 @@ describe("Google resource configurators", () => {
       ["Engineering", "In a shared drive"],
     ]);
     expect(options.map(option => option.meta)).toEqual(["…platform", "…arketing"]);
+  });
+
+  // A folder the account can only read would fail the move after the file was created.
+  it("offers only folders a new file can be added to, saying who else sees it", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      files: [
+        { id: "mine", name: "Plans", shared: false, capabilities: { canAddChildren: true } },
+        { id: "team", name: "Team", shared: true, capabilities: { canAddChildren: true } },
+        {
+          id: "in-drive", name: "Drive folder", driveId: "drive-1", shared: false,
+          capabilities: { canAddChildren: true },
+        },
+        {
+          id: "read-only", name: "Archive", shared: true,
+          capabilities: { canListChildren: true, canAddChildren: false },
+        },
+      ],
+    })));
+
+    await expect(new CreationFolderConfiguratorUI(async () => token("access-token"))
+      .listCreationFolders(""))
+      .resolves.toEqual([
+        { value: "mine", title: "Plans", meta: "mine" },
+        { value: "team", title: "Team", subtitle: "Shared", meta: "team" },
+        { value: "in-drive", title: "Drive folder", subtitle: "In a shared drive", meta: "in-drive" },
+      ]);
   });
 
   it("refreshes a rejected Calendar access token", async () => {

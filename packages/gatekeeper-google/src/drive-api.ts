@@ -30,7 +30,8 @@ export type DriveFile = {
   owners?: { displayName?: string; emailAddress?: string }[];
   webViewLink?: string;
   trashed?: boolean;
-  capabilities?: { canListChildren?: boolean };
+  shared?: boolean;
+  capabilities?: { canListChildren?: boolean; canAddChildren?: boolean };
   shortcutDetails?: { targetId?: string; targetMimeType?: string };
 };
 
@@ -79,8 +80,8 @@ export function isListableFolderFile(file: DriveFile): boolean {
 
 /** The per-file field mask. `getFile` sends this; {@link DRIVE_FILE_FIELDS} wraps it for lists. */
 export const DRIVE_FILE_ITEM_FIELDS = [
-  "id", "name", "mimeType", "modifiedTime", "size", "parents", "driveId", "trashed",
-  "owners(displayName,emailAddress)", "webViewLink", "capabilities(canListChildren)",
+  "id", "name", "mimeType", "modifiedTime", "size", "parents", "driveId", "trashed", "shared",
+  "owners(displayName,emailAddress)", "webViewLink", "capabilities(canListChildren,canAddChildren)",
   "shortcutDetails(targetId,targetMimeType)",
 ].join(",");
 
@@ -297,10 +298,17 @@ function parseDriveFile(value: unknown): DriveFile {
   let capabilities: DriveFile["capabilities"];
   if (value.capabilities !== undefined) {
     let canListChildren = optionalCanListChildren(value.capabilities);
-    capabilities = canListChildren === undefined ? {} : { canListChildren };
+    let canAddChildren = optionalBoolean(
+      (value.capabilities as Record<string, unknown>).canAddChildren,
+      "file capabilities.canAddChildren");
+    capabilities = {
+      ...(canListChildren === undefined ? {} : { canListChildren }),
+      ...(canAddChildren === undefined ? {} : { canAddChildren }),
+    };
   }
   let parents = optionalParents(value.parents);
   let trashed = optionalBoolean(value.trashed, "file trashed");
+  let shared = optionalBoolean(value.shared, "file shared");
   return {
     id: value.id,
     name: value.name,
@@ -310,6 +318,7 @@ function parseDriveFile(value: unknown): DriveFile {
     ...(parents ? { parents } : {}),
     ...(owners ? { owners } : {}),
     ...(trashed === undefined ? {} : { trashed }),
+    ...(shared === undefined ? {} : { shared }),
     ...(capabilities ? { capabilities } : {}),
     ...(shortcutDetails ? { shortcutDetails } : {}),
   };
@@ -509,6 +518,17 @@ export class DriveApi {
       throw new Error("Invalid Google Drive file capabilities");
     }
     return optionalBoolean(capabilities?.canEdit, "file capabilities") === true;
+  }
+
+  /** Adds `parentId` to a file's parents and removes `removeParentIds`. */
+  async moveFile(fileId: string, parentId: string, removeParentIds: readonly string[]): Promise<void> {
+    let params = new URLSearchParams({ addParents: parentId, fields: "id", supportsAllDrives: "true" });
+    if (removeParentIds.length > 0) params.set("removeParents", removeParentIds.join(","));
+    let response = await fetchWithAuthRetry(
+      `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?${params}`,
+      { method: "PATCH", headers: { "Content-Type": "application/json" }, body: "{}" },
+      this.getAccessToken);
+    if (!response.ok) throw await driveError(response);
   }
 
   /** Fresh access checks for typed file and folder disclosure units. */

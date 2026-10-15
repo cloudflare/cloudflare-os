@@ -40,6 +40,7 @@ export const GOOGLE_DOC_RESOURCE: SupportedResource = {
   description: "Read and edit documents you choose.",
   grantable: true,
   creatable: true,
+  creationConfigurator: true,
 };
 
 /**
@@ -54,6 +55,7 @@ export const GOOGLE_SHEETS_RESOURCE: SupportedResource = {
     "rows, columns, and formatting, with your approval.",
   grantable: true,
   creatable: true,
+  creationConfigurator: true,
 };
 
 /** A single Google Slides presentation. */
@@ -66,6 +68,7 @@ export const GOOGLE_SLIDES_RESOURCE: SupportedResource = {
     "backgrounds and theme colours.",
   grantable: true,
   creatable: true,
+  creationConfigurator: true,
 };
 
 /** A single Google Calendar. */
@@ -226,6 +229,8 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
       "https://www.googleapis.com/auth/documents",
       // Read-only Drive file metadata, used to power the doc picker when connecting a Google Doc.
       "https://www.googleapis.com/auth/drive.metadata.readonly",
+      // Moves a document this gatekeeper created into the folder its approver chose.
+      "https://www.googleapis.com/auth/drive.file",
     ],
   },
   {
@@ -234,6 +239,8 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
       "https://www.googleapis.com/auth/spreadsheets",
       // Read-only Drive file metadata, used to power the spreadsheet picker.
       "https://www.googleapis.com/auth/drive.metadata.readonly",
+      // Moves a spreadsheet this gatekeeper created into the folder its approver chose.
+      "https://www.googleapis.com/auth/drive.file",
     ],
   },
   {
@@ -242,6 +249,8 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
       "https://www.googleapis.com/auth/presentations",
       // Read-only Drive file metadata, used to power the presentation picker.
       "https://www.googleapis.com/auth/drive.metadata.readonly",
+      // Moves a presentation this gatekeeper created into the folder its approver chose.
+      "https://www.googleapis.com/auth/drive.file",
     ],
   },
   {
@@ -375,6 +384,7 @@ const SCOPE_COVERED_BY: Record<string, readonly string[]> = {
     "https://www.googleapis.com/auth/presentations", DRIVE_READONLY_SCOPE, DRIVE_READWRITE_SCOPE,
   ],
   "https://www.googleapis.com/auth/spreadsheets": [DRIVE_READWRITE_SCOPE],
+  "https://www.googleapis.com/auth/drive.file": [DRIVE_READWRITE_SCOPE],
   "https://www.googleapis.com/auth/chat.spaces.readonly": [
     "https://www.googleapis.com/auth/chat.spaces",
   ],
@@ -460,6 +470,16 @@ export function recordedResourceUrlPatterns(grant: RecordedResourceGrant): strin
 export function grantedResourceUrlPatterns(grant: RecordedResourceGrant): string[] {
   if (grant.oauthScopes === undefined) return [...LEGACY_GRANTED_RESOURCE_URL_PATTERNS];
   return resourcesCoveredByScopes(recordedResourceUrlPatterns(grant), grant.oauthScopes);
+}
+
+/**
+ * Whether an account's recorded consent lets the gatekeeper move a file it created into a folder:
+ * `drive.file`, or the full `drive` covering it. An account that recorded no scopes was connected
+ * before `drive.file` was ever requested, so it can't, whatever grant it is reported to hold.
+ */
+export function placesCreatedFiles(grant: RecordedResourceGrant): boolean {
+  return grant.oauthScopes !== undefined &&
+    oauthScopeCovers("https://www.googleapis.com/auth/drive.file", new Set(grant.oauthScopes));
 }
 
 /** A resource URL resolved to the binding parameters its gatekeeper takes. */

@@ -4,6 +4,7 @@ import { createObservabilityContext } from "@gadgets/observability/observability
 export type GoogleObservabilityFields = {
   actionId: number | string;
   fileId: string;
+  folderId: string;
   httpStatus: number;
   messageId: string;
   operation: string;

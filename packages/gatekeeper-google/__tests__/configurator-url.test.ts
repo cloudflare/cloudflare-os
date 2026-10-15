@@ -24,6 +24,7 @@ import driveFileConfigurator from "../src/configurator/drive-file-configurator-u
 import calendarConfigurator from "../src/configurator/calendar-configurator-ui";
 import type { CalendarConfiguratorRpc } from "../src/configurator/calendar-configurator-types";
 import driveFolderConfigurator from "../src/configurator/drive-folder-configurator-ui";
+import creationFolderConfigurator from "../src/configurator/creation-folder-configurator-ui";
 import gmailConfigurator from "../src/configurator/gmail-configurator-ui";
 import chatAccountConfigurator from "../src/configurator/chat-account-configurator-ui";
 import chatSpaceConfigurator from "../src/configurator/chat-space-configurator-ui";
@@ -275,6 +276,21 @@ describe("Drive configurator URLs", () => {
     let folderUrl = configurableUrl(driveFolderConfigurator, folderValues);
     expect(valuesFromUrlPattern(folderUrl, GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern))
       .toEqual(folderValues);
+  });
+});
+
+describe("Creation folder configurator URLs", () => {
+  it("starts ready on My Drive, and waits for a folder once one is wanted", () => {
+    let { initial } = creationFolderConfigurator;
+    expect(creationFolderConfigurator.isReady({ values: initial })).toBe(true);
+    expect(parseResourceUrl(configurableUrl(creationFolderConfigurator, initial)))
+      .toEqual({ kind: "driveAccount" });
+
+    expect(creationFolderConfigurator.isReady({ values: { location: "folder" } })).toBe(false);
+    let values = { location: "folder", folderId: "folder/id with spaces" } as const;
+    expect(creationFolderConfigurator.isReady({ values })).toBe(true);
+    expect(parseResourceUrl(configurableUrl(creationFolderConfigurator, values)))
+      .toEqual({ kind: "driveFolder", folderId: values.folderId });
   });
 });
 

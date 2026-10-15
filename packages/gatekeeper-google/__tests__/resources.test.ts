@@ -7,8 +7,8 @@ import {
   LEGACY_GRANTED_RESOURCE_URL_PATTERNS, RESOURCE_BY_KIND, RESOURCE_SCOPES,
   SCOPE_DERIVED_RESOURCE_URL_PATTERNS, SUPPORTED_RESOURCES, creatableKind,
   grantedResourceUrlPatterns, hasDriveResourceGrant, nativeFileUrl, parseResourceUrl,
-  recordedResourceUrlPatterns, resourceUrlPatternsToOAuthScopes, resourcesCoveredByScopes,
-  validateResourceUrlPatterns,
+  placesCreatedFiles, recordedResourceUrlPatterns, resourceUrlPatternsToOAuthScopes,
+  resourcesCoveredByScopes, validateResourceUrlPatterns,
 } from "../src/resources";
 
 /** The message `parseResourceUrl` rejects `url` with. Fails the test if it accepts it. */
@@ -185,6 +185,7 @@ describe("resourceUrlPatternsToOAuthScopes", () => {
       ...IDENTITY_SCOPES,
       "https://www.googleapis.com/auth/spreadsheets",
       "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/drive.file",
     ]);
   });
 
@@ -695,6 +696,19 @@ describe("recorded account grants", () => {
   it("falls back to the historical grant for a pre-recording account", () => {
     expect(recordedResourceUrlPatterns({})).toEqual(LEGACY_GRANTED_RESOURCE_URL_PATTERNS);
     expect(grantedResourceUrlPatterns({})).toEqual(LEGACY_GRANTED_RESOURCE_URL_PATTERNS);
+  });
+
+  // It still reports the Doc grant, so nothing else stops a folder move it can't make.
+  it("lets only a grant holding drive.file, or drive, place created files in folders", () => {
+    expect(placesCreatedFiles({})).toBe(false);
+    expect(placesCreatedFiles({ oauthScopes: [
+      "https://www.googleapis.com/auth/documents",
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+    ] })).toBe(false);
+    expect(placesCreatedFiles({
+      oauthScopes: resourceUrlPatternsToOAuthScopes([GOOGLE_DOC_RESOURCE.urlPattern]),
+    })).toBe(true);
+    expect(placesCreatedFiles({ oauthScopes: ["https://www.googleapis.com/auth/drive"] })).toBe(true);
   });
 
   it("infers every pre-recording resource a scope-only account's scopes cover", () => {

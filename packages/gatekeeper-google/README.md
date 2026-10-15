@@ -80,7 +80,8 @@ included). Across all resource types, the gatekeeper can request:
 - `openid`, `userinfo.profile`, and `userinfo.email` to identify the connected account.
 - `gmail.modify` for Gmail thread reads, organization, replies, forwards, and sending. This single scope already includes label access and sending.
 - `documents` for direct Google Docs reads, edits, and creation; `documents.readonly` for native Docs opened from account-wide, folder, or exact-file Drive bindings.
-- `drive.metadata.readonly` for the Docs, Sheets, Slides, and folder pickers, account-wide Drive discovery, exact-file metadata, folder descendant proofs, and native-file scope checks. Google classifies this as a restricted scope, so every Drive resource here needs restricted-scope verification.
+- `drive.metadata.readonly` for the Docs, Sheets, Slides, folder, and creation-folder pickers, account-wide Drive discovery, exact-file metadata, folder descendant proofs, and native-file scope checks. Google classifies this as a restricted scope, so every Drive resource here needs restricted-scope verification.
+- `drive.file`, with the Docs, Sheets, and Slides scopes, to move a file the gatekeeper created into the folder its approver chose (see [Creating files](#creating-files)). It is a non-sensitive scope reaching only files this app created, and Google lets it place one in any folder the account can add files to, with no grant on the folder. Adding it retracted every recorded Docs, Sheets, and Slides grant: owners re-consent the next time they connect one or approve a creation, and collaborators observing an existing binding are asked to grant again the next time they open its workspace. An account holding full `drive` keeps its grants. An account connected before per-resource scope tracking keeps its implicit Docs grant, so it is never asked for `drive.file`, and none holds it. Until it reconnects it can create a Doc in My Drive, which needs no Drive scope, and a folder is refused before anything is created, asking it to reconnect.
 - `spreadsheets` to read metadata, bounded cell ranges and their formatting from directly selected spreadsheets, edit their values, sheets, rows, columns and formatting with approval, and create spreadsheets. The switch from `spreadsheets.readonly` retracted every existing Sheets grant, including one derived from `drive.readonly`: owners re-consent the next time they connect a spreadsheet, and collaborators observing an existing Sheets binding are asked to grant read-write `spreadsheets` the next time they open its workspace. A `spreadsheets` grant covers the Drive resources' `spreadsheets.readonly`.
 - `spreadsheets.readonly` to read native Sheets opened from account-wide, folder, or exact-file Drive bindings.
 - `presentations` to read, edit, and create directly selected presentations, and to render slide thumbnails; `presentations.readonly` to read and render native Slides opened from account-wide, folder, or exact-file Drive bindings. Google counts each thumbnail as an expensive read, limited to 60 a minute per user and 300 per project.
@@ -280,10 +281,14 @@ with a title slide, which queues changes as usual. Of the default theme's layout
 five (title slide, section header, title and body, title only, and blank); the others become
 available once the presentation exists. Nothing reaches Google and no account is involved.
 
-The approver picks which of their connected Google accounts to create the file in; it lands in
-that account's My Drive, and the binding switches to the real file. Doc edits queued against the
-simulation then apply to the created document like any other edit, and Slides changes apply to the
-created presentation unchanged.
+The approver picks which of their connected Google accounts to create the file in, and where in
+that account's Drive: the top of My Drive (the default) or a folder the account can add files to,
+in My Drive, Shared with me, or a shared drive. The picker marks each folder that is shared or in
+a shared drive, because the file is shared like its folder: in a team folder the team can read it,
+in My Drive root only its creator can. It never marks one as not shared, since Drive doesn't say
+whether a folder's `shared` flag counts sharing it inherits from its parent. The binding then
+switches to the real file. Doc edits queued against the simulation then apply to the created
+document like any other edit, and Slides changes apply to the created presentation unchanged.
 
 That works for Slides because Google gives every new presentation the same object IDs (master
 `simple-light-2`, title slide `p`, and layouts `p2` to `p12`, seen both on a personal account
@@ -297,12 +302,35 @@ compares them with the committed recording instead. Should Google's new presenta
 queued change naming a slide, element or layout the created presentation lacks fails when
 approved, writing nothing.
 
+The Docs, Sheets and Slides create calls can't name a folder, so the gatekeeper creates the file in
+My Drive and then moves it (Drive `files.update` with `addParents` and `removeParents`). Creating
+it with Drive's `files.create` instead would lose what the simulation relies on: the spreadsheet's
+locale-independent `Sheet1` and the fixed object IDs of a new presentation (above). The chosen
+folder is checked before anything is created: one that is missing, trashed, not a folder, or that
+the account can't add files to is refused, as is any folder for an account whose recorded grant
+lacks `drive.file`, which the move needs. So a choice that can be checked in advance orphans no
+file. Google can still refuse a move these checks allow, as a shared drive's policy may; the file
+then waits in My Drive. A file meant for My Drive needs no Drive call at all.
+
+The gatekeeper records where it last put the file, and every approval, retries included, brings the
+file to that approval's choice before the binding switches, so nothing queued against it applies
+elsewhere. After a move whose outcome is unknown (its reply was lost), the next approval reads the
+file's parents and moves it from wherever it is. Google's sharing roles still apply: moving a file
+within a shared drive takes a Content manager, and out of one a Manager, so a Contributor's retry
+that would move it again fails ([shared drive roles](https://support.google.com/a/users/answer/12380484)). A failed
+move leaves the creation pending, with the file in the wrong place, and the error links the file so
+the approver can see where it is. A retry by a different approver binds the file in the first
+approver's account only where it already is; anything else would use the first approver's
+authority to carry out the second's choice, so it is refused, asking the first approver to approve
+it. If the created file is deleted before a retry needs to move it, the error says to reject the
+creation.
+
 Google's create calls take no idempotency key. A retried approval after a lost reply binds the file
 already created (the gatekeeper records it), but a file can still be orphaned in the approver's
 Drive: a create request that times out or fails with a 5xx after Google acted, a crash between
 Google's reply and that record being written, or a creation rejected after an approval whose
-success was lost. Every created file's ID is logged (`google.creation.file.created`), so an orphan
-can be found.
+success was lost. Every created file's ID is logged with the folder it was created for
+(`google.creation.file.created`), so an orphan can be found.
 
 ## Google Docs request costs
 
