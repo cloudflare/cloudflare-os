@@ -181,6 +181,12 @@ type AgentPassOutcome =
   | {type: "compacted"; checkpoint: CompactionCheckpoint}
   | {type: "transientFailure"; error: AgentTurnError};
 
+type AgentProgress = {
+  logger: typeof logger;
+  barrierSequence: number;
+  modelRequestSequence: number;
+};
+
 /**
  * Summary of one of the workspace's gadgets, as needed by the agent: identity and its named
  * bindings. See AgentHooks.listGadgetInfo().
@@ -1459,11 +1465,17 @@ export async function runAgent(
     abortSignal: AbortSignal,
     initiator: AiChatAuthorInfo,
     modelConfig: AiModelConfig): Promise<void> {
+  // Provider retries and compaction reloads are passes of this execution, not new executions.
+  const progress: AgentProgress = {
+    logger: logger.with({chatId, executionId: crypto.randomUUID()}),
+    barrierSequence: 0,
+    modelRequestSequence: 0,
+  };
   let retries = 0;
   while (true) {
     let history = hooks.loadChatHistory(chatId);
     let outcome = await runAgentPass(
-        hooks, handle, chatId, author, history, abortSignal, initiator, modelConfig);
+        hooks, handle, chatId, author, history, abortSignal, initiator, modelConfig, progress);
     if (outcome.type === "transientFailure") {
       if (++retries > TRANSIENT_FAILURE_RETRIES) throw outcome.error;
       // The failed request persisted nothing, so the retry starts from the last saved step. What
@@ -1485,7 +1497,9 @@ async function runAgentPass(
     {checkpoint, chatMessages, measuredTokens}: ChatHistory,
     abortSignal: AbortSignal,
     initiator: AiChatAuthorInfo,
-    modelConfig: AiModelConfig): Promise<AgentPassOutcome> {
+    modelConfig: AiModelConfig,
+    progress: AgentProgress): Promise<AgentPassOutcome> {
+  const progressLogger = progress.logger;
 
   // The workspace's gadget registry, snapshotted at the start of the turn (gadgets provisional
   // to other chats are excluded -- they belong to those chats' proposed changes). This is the
@@ -2799,20 +2813,8 @@ async function runAgentPass(
   // barrier persists the action before the loop ends and waits for approval to resume it.
   let awaitingActionDecision = false;
 
-  // Buffer one file edit into the step and apply it to the session content; it becomes durable
-  // (row + broadcast) only at the step's persistence barrier. The first write to an unpinned
-  // gadget with committed code pins it at the given head -- always the current head, never the
-  // head an earlier read of this turn observed: a pin at an older head would silently drop
-  // whatever another chat accepted since (editFile's gate is what stops an edit anchored to
-  // such a read; a whole-file write needs no such check). The
-  // pin is validated and mirrored into the chat's code base when the barrier appends the row;
-  // within the step, later tools read the edit through the session content. The first write to
-  // an unpinned worktree pins it too, at its accepted commit, with nothing to declare (see
-  // pinWorktreeInSession).
-  const progressLogger = logger.with({chatId, executionId: crypto.randomUUID()});
-  let barrierSequence = 0;
   let persistStep = async <T>(operation: () => Promise<T>): Promise<T> => {
-    const sequence = ++barrierSequence, startedAt = Date.now();
+    const sequence = ++progress.barrierSequence, startedAt = Date.now();
     progressLogger.debug("agent persistence started", {event: "agent.step.persist.started", sequence});
     try {
       const result = await operation();
@@ -2825,6 +2827,17 @@ async function runAgentPass(
       throw error;
     }
   };
+
+  // Buffer one file edit into the step and apply it to the session content; it becomes durable
+  // (row + broadcast) only at the step's persistence barrier. The first write to an unpinned
+  // gadget with committed code pins it at the given head -- always the current head, never the
+  // head an earlier read of this turn observed: a pin at an older head would silently drop
+  // whatever another chat accepted since (editFile's gate is what stops an edit anchored to
+  // such a read; a whole-file write needs no such check). The
+  // pin is validated and mirrored into the chat's code base when the barrier appends the row;
+  // within the step, later tools read the edit through the session content. The first write to
+  // an unpinned worktree pins it too, at its accepted commit, with nothing to declare (see
+  // pinWorktreeInSession).
   let appendAgentEdit = (
       workpieceId: WorkpieceId, change: CodeChange,
       pin?: {baseCommit: string, baseFiles: Map<string, string>}) => {
@@ -4171,9 +4184,8 @@ async function runAgentPass(
     tools: toolList,
   };
 
-  let modelRequestSequence = 0;
   const progressStream: ModelHandle["stream"] = (...args) => {
-    const sequence = ++modelRequestSequence, startedAt = Date.now();
+    const sequence = ++progress.modelRequestSequence, startedAt = Date.now();
     progressLogger.debug("agent model request dispatched", {event: "agent.model.dispatch", sequence});
     try {
       const stream = handle.stream(...args);
