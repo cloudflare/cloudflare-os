@@ -51,7 +51,7 @@ describe("timeline read/unread experience", () => {
   const loadEarlier = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
   const navigate = vi.fn<() => void>();
 
-  const View = ({ oldest = 0 }: { oldest?: number }) => {
+  const View = ({ oldest = 0, loadingEarlier = false }: { oldest?: number; loadingEarlier?: boolean }) => {
     const viewport = useRef<HTMLDivElement>(null);
     return (
       <div ref={viewport} data-viewport>
@@ -60,7 +60,7 @@ describe("timeline read/unread experience", () => {
           chatId={1}
           container={viewport}
           oldestSequence={oldest}
-          loadingEarlier={false}
+          loadingEarlier={loadingEarlier}
           loadEarlier={loadEarlier}
           onUnreadNavigation={navigate}
           className=""
@@ -194,14 +194,50 @@ describe("timeline read/unread experience", () => {
   });
 
   it("loads older history before acknowledging a newer page, without endlessly retrying a failed page", async () => {
+    visibleBottom = 350; // The newer page would otherwise acknowledge items past unseen history.
+    loadEarlier.mockRejectedValueOnce(new Error("History unavailable"));
     await render(<View oldest={2} />);
     await update(snapshot(1, 0));
+    await render(<View oldest={2} loadingEarlier />);
+    await render(<View oldest={2} />);
     await settle();
     expect(loadEarlier).toHaveBeenCalledOnce();
     expect(markChatRead).not.toHaveBeenCalled();
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    await settle();
+    expect(markChatRead).not.toHaveBeenCalled();
+    const retry = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Jump to first unread",
+    );
+    await act(async () => retry!.click());
+    expect(loadEarlier).toHaveBeenCalledTimes(2);
     await render(<View oldest={0} />);
     await settle();
     expect(navigate).toHaveBeenCalled();
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: "workspace", chatId: 1, throughSequence: 2, readEpoch: 0,
+    });
+  });
+
+  it("allows explicit mark-read to release a failed history jump", async () => {
+    visibleBottom = 350;
+    await render(<View oldest={2} />);
+    await update(snapshot(1, 0));
+    await settle();
+    expect(markChatRead).not.toHaveBeenCalled();
+    const markRead = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Mark thread read",
+    );
+    await act(async () => markRead!.click());
+    expect(markChatRead).toHaveBeenCalledOnce();
+    await update(snapshot(2, 2));
+    await settle();
+    markChatRead.mockClear();
+    await update(snapshot(3, 1));
+    await settle();
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({
+      workspaceId: "workspace", chatId: 1, throughSequence: 2, readEpoch: 0,
+    });
   });
 
   it("cleans viewport listeners/timers on leaving and preserves the visit divider as receipts advance", async () => {

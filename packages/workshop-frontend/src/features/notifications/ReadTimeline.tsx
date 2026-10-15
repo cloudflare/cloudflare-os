@@ -39,7 +39,8 @@ export const ReadTimeline = ({
     (item) => item.workspaceId === workspaceId && item.chatId === chatId,
   );
   const [visit, setVisit] = useState<{ epoch: number; divider?: number; paused: boolean }>();
-  const [jump, setJump] = useState(true);
+  // A new request also retries a failed page when navigation is already pending; zero is idle.
+  const [jump, setJump] = useState(1);
   const root = useRef<HTMLDivElement>(null);
   const pending = useRef(-1);
   const requestedPage = useRef<number | undefined>(undefined);
@@ -61,7 +62,7 @@ export const ReadTimeline = ({
         jumpSequence.current = divider;
         requestedPage.current = undefined;
         onUnreadNavigation();
-        setJump(true);
+        setJump((request) => request + 1);
       }
     } else if (visit.paused && chat.readThroughSequence >= chat.latestSequence) {
       setVisit({ ...visit, paused: false });
@@ -73,15 +74,21 @@ export const ReadTimeline = ({
   // Walk checkpoint pages until the boundary is present, then position before acknowledging any
   // viewport. Read state isn't advanced merely because the newest history page was fetched.
   useEffect(() => {
-    if (!jump || !visit || visit.divider === undefined) {
-      if (visit) setJump(false);
+    if (
+      !jump ||
+      !visit ||
+      visit.divider === undefined ||
+      (chat && chat.readThroughSequence >= chat.latestSequence)
+    ) {
+      if (visit) setJump(0);
       return;
     }
     if (oldestSequence === undefined || loadingEarlier) return;
     const target = jumpSequence.current ?? visit.divider;
     if (oldestSequence > target && oldestSequence > 0) {
       if (requestedPage.current === oldestSequence) {
-        setJump(false);
+        // The previous load failed or made no progress. Keep receipts blocked until the
+        // boundary is present, the user retries navigation, or explicitly marks the thread read.
         return;
       }
       requestedPage.current = oldestSequence;
@@ -95,10 +102,10 @@ export const ReadTimeline = ({
         container.current.scrollTop +=
           item.getBoundingClientRect().top - container.current.getBoundingClientRect().top;
       }
-      setJump(false);
+      setJump(0);
     });
     return () => cancelAnimationFrame(frame);
-  }, [jump, visit, oldestSequence, loadingEarlier, loadEarlier, container]);
+  }, [jump, visit, chat, oldestSequence, loadingEarlier, loadEarlier, container]);
 
   useEffect(() => {
     const viewport = container.current;
@@ -185,7 +192,7 @@ export const ReadTimeline = ({
                 jumpSequence.current = chat.readThroughSequence + 1;
                 requestedPage.current = undefined;
                 onUnreadNavigation();
-                setJump(true);
+                setJump((request) => request + 1);
               }}
             >
               Jump to first unread
