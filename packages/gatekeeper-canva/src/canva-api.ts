@@ -22,8 +22,13 @@ export class CanvaApiError extends Error {
   /** 401 = expired/invalid token. 403 is a scope or permission problem, not an auth failure. */
   isAuthError: boolean;
 
+  /**
+   * `message` is Canva's own text, which is often generic ("Unable to fetch designs"). The thrown
+   * message prefixes the status and code so a log line or an agent-visible error says whether the
+   * request was malformed (400), rate limited (429), or failed on Canva's side (5xx).
+   */
   constructor(status: number, message: string, code?: string, details?: unknown) {
-    super(message);
+    super(`Canva API ${status}${code ? ` (${code})` : ""}: ${message}`);
     this.name = "CanvaApiError";
     this.status = status;
     this.code = code;
