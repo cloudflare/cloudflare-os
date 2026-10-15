@@ -1,7 +1,7 @@
 import {
   stripTrailingSlashes, type ResourceConfiguratorHost,
 } from "@gadgets/workshop-shared/gatekeeper";
-import type { ConfiguratorUISpec, ConfiguratorUIValues } from "../index.ts";
+import type { ConfiguratorUIHostContext, ConfiguratorUISpec, ConfiguratorUIValues } from "../index.ts";
 import { reportFrontendIssue } from "./reporting.ts";
 
 /** The resource a configurator opens pre-filled to, as `ResourceConfiguratorHost` reports it. */
@@ -52,7 +52,7 @@ export type Prefill = { values: ConfiguratorUIValues; queries: Record<string, st
  */
 export const prefill = async <TUI,>(
   spec: ConfiguratorUISpec<TUI>,
-  ui: TUI,
+  context: ConfiguratorUIHostContext & { ui: TUI },
   loadInitialResource: () => Promise<InitialResource>,
 ): Promise<Prefill> => {
   const values: ConfiguratorUIValues = { ...spec.initial };
@@ -69,7 +69,7 @@ export const prefill = async <TUI,>(
   let seeded: Partial<ConfiguratorUIValues> | null;
   try {
     seeded = spec.initialValuesFromResourceUrl
-      ? await spec.initialValuesFromResourceUrl({ ...initialResource, ui })
+      ? await spec.initialValuesFromResourceUrl({ ...initialResource, ...context })
       : defaultValuesFromResourceUrl(initialResource.resourceUrl, initialResource.resourceUrlPattern);
   } catch (error) {
     reportFrontendIssue("configurator.initial-values-load", error);

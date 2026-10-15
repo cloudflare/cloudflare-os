@@ -61,13 +61,25 @@ const host = newMessagePortRpcSession<ResourceConfiguratorHost>(port1, frame);
 reportSize(host);
 forwardScrolls(host);
 
+/**
+ * The types the host accepts a URL of, or undefined from a Workshop too old to have the method. Not
+ * reported: a gatekeeper's new frames reach tabs still running the Workshop they were built after.
+ */
+const loadAcceptedResourceUrlPatterns = async (): Promise<readonly string[] | undefined> => {
+  try {
+    return await host.getAcceptedResourceUrlPatterns();
+  } catch {
+    return undefined;
+  }
+};
+
 const start = async () => {
-  const ui = host.gatekeeper;
   const spec = loadModule();
-  const { values, queries } = await prefill(spec, ui, () => host.getInitialResource());
+  const context = { ui: host.gatekeeper, acceptedResourceUrlPatterns: await loadAcceptedResourceUrlPatterns() };
+  const { values, queries } = await prefill(spec, context, () => host.getInitialResource());
   const session = createSession({
     spec,
-    ui,
+    ...context,
     store: createConfiguratorStore(values, queries),
     // A plain promise for the module, rather than the RPC promise a stub method returns.
     ensureResources: async patterns => await host.ensureResources(patterns),

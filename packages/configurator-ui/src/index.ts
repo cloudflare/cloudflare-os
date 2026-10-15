@@ -9,11 +9,21 @@ export type ConfiguratorUIOption = {
   meta?: string;
 }
 
+/** What the Workshop tells every configurator UI callback about where it runs. */
+export type ConfiguratorUIHostContext = {
+  /**
+   * The resource types (urlPatterns) the Workshop asks this configurator to choose among; absent
+   * when it did not say (an older Workshop, which takes any). A configurator that can return several
+   * types offers only these.
+   */
+  acceptedResourceUrlPatterns?: readonly string[];
+};
+
 /** Data and helper callbacks passed to a configurator UI render function. */
 export type ConfiguratorUIRenderContext<
   TUI,
   TValues extends ConfiguratorUIValues = ConfiguratorUIValues,
-> = {
+> = ConfiguratorUIHostContext & {
   values: TValues;
   setValues(values: Partial<TValues>): void;
   clearFields(...names: (keyof TValues & string)[]): void;
@@ -37,7 +47,7 @@ export type ConfiguratorUIRenderContext<
 export type ConfiguratorUIResourceContext<
   TUI,
   TValues extends ConfiguratorUIValues = ConfiguratorUIValues,
-> = {
+> = ConfiguratorUIHostContext & {
   values: TValues;
   ui: TUI;
 }
@@ -65,7 +75,7 @@ export type ConfiguratorUISpec<
    * here; implement this only when the mapping differs (e.g. GitHub's `:owner/:repo` ->
    * `repoFullName`).
    */
-  initialValuesFromResourceUrl?(context: {
+  initialValuesFromResourceUrl?(context: ConfiguratorUIHostContext & {
     resourceUrl: string;
     resourceUrlPattern: string;
     ui: TUI;
@@ -75,7 +85,7 @@ export type ConfiguratorUISpec<
    * Return whether the current iframe-owned state is ready to submit. If omitted, the generated
    * iframe reports ready after its initial render succeeds.
    */
-  isReady?(context: { values: TValues }): boolean;
+  isReady?(context: ConfiguratorUIHostContext & { values: TValues }): boolean;
 
   /** Return the resource URL chosen by current UI state. */
   resourceUrl(context: ConfiguratorUIResourceContext<TUI, TValues>): Promise<string> | string;
