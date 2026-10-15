@@ -18,6 +18,20 @@ It always produces a production bundle, whatever `NODE_ENV` the shell holds, and
 before building — a cache hit restores archived files without deleting any, so the previous build's
 sourcemaps would otherwise linger. `vite.config.ts` documents both.
 
+## Gatekeeper user selection
+
+Gatekeeper management apps can open the Workshop-owned person picker through `selectUsers(receiver)`.
+Selections are delivered through the receiver's `receive(selection)` method.
+With directory search enabled, every settled nonempty query offers a clickable exact-username/email
+option, including when the directory returns no matches or fails. With search disabled, users enter
+an exact identifier directly. Arrow keys navigate options while focus stays in the input; Tab
+moves to the next control without selecting a person.
+
+Closing normally waits for ticket minting and selection deliveries. **Stop waiting and close** or
+frame teardown cancels the picker and disposes its outstanding mint and delivery RPC promises as
+well as its receiver. Cancellation cannot undo a selection the app already accepted.
+
+
 ## Authentication modes
 
 The frontend supports two authentication modes, selected at build time.

@@ -1069,6 +1069,10 @@ describe('ShareModal', () => {
 
     expect(input.value).toBe('grace')
     expect(rendered.textContent).not.toContain('Ada Lovelace')
+    expect(input.getAttribute('aria-activedescendant')).toBeNull()
+    expect(rendered.querySelector('[role="option"]')).toBeNull()
+    expect(stagedNames(rendered)).toEqual([])
+    expect(button(rendered, 'Invite').disabled).toBe(true)
     expect(addCollaborator).not.toHaveBeenCalled()
   })
 

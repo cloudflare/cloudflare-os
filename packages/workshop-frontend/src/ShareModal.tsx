@@ -14,24 +14,18 @@ import {
   AiChatAuthorInfo,
   CollaboratorRole,
   ObserverBindingNeed,
-  UserDirectoryRecord,
 } from '@gadgets/workshop-shared/api'
 import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControls'
 import { PersonAvatar } from './components/PersonAvatar'
 import { copyToClipboard } from './clipboard'
 import { isImeComposing } from './keyboardEvent'
 import { useServerConfig } from './ServerConfigContext'
+import { useUserDirectorySearch } from './features/user-directory/useUserDirectorySearch'
 
 type CollaboratorRow =
   | { kind: 'owner'; profile: AiChatAuthorInfo }
   | { kind: 'collaborator'; info: CollaboratorInfo }
 
-type DirectorySearch = {
-  status: 'loading' | 'failed' | 'ready'
-  query: string
-  results: UserDirectoryRecord[]
-}
-const NO_DIRECTORY_SEARCH: DirectorySearch = { status: 'ready', query: '', results: [] }
 // A person queued in the composer but not yet invited. `error` is set when their invite failed so
 // the chip stays for correction while everyone else's goes through.
 type StagedRecipient = { id: string; name: string; error?: string }
@@ -324,7 +318,6 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const [membershipStatus, setMembershipStatus] = useState<'loading' | 'ready' | 'failed'>('loading')
   const [shareLinks, setShareLinks] = useState<ShareLinkInfo[]>([])
   const [addUsername, setAddUsername] = useState('')
-  const [directory, setDirectory] = useState<DirectorySearch>(NO_DIRECTORY_SEARCH)
   const [staged, setStaged] = useState<StagedRecipient[]>([])
   // Focus stays in the field when a chip is added or removed, so the change is announced here.
   const [composerNotice, setComposerNotice] = useState('')
@@ -357,12 +350,18 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const membershipSettled = open && wasOpenRef.current && membershipStatus !== 'loading'
   const membershipReady = membershipSettled && membershipStatus === 'ready'
   const directorySearching = userSearchEnabled && membershipReady && directoryQuery !== ''
-  const directoryCurrent = directory.query === directoryQuery
+  const searchDirectory = useCallback((query: string) =>
+    authenticatedApi.searchUsers(query, directoryExcludeIds), [authenticatedApi, directoryExcludeIds])
+  const directory = useUserDirectorySearch({
+    query: directoryQuery,
+    enabled: open && directorySearching,
+    search: searchDirectory,
+  })
   // Gated on canInvite too: a live metadata update can set ownerInvitesOnly while results are
   // open, unmounting the search field without blurring it, and the popover's scroll lock on the
   // dialog body must not outlive the field.
-  const directoryOpen = canInvite && directorySearching && directoryCurrent && !directoryDismissed
-  const directorySettled = directory.status !== 'loading' && directoryCurrent
+  const directoryOpen = canInvite && directorySearching && directory.current && !directoryDismissed
+  const directorySettled = directory.settled
   const showDirectDirectoryOption = directory.status === 'ready' && directory.results.length > 0
   const directoryOptionCount = directory.results.length + (showDirectDirectoryOption ? 1 : 0)
   const activeDirectoryOptionId = directoryOpen && activeDirectoryIndex < directoryOptionCount
@@ -448,30 +447,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   }, [])
 
   useEffect(() => {
-    if (!open || !directorySearching) {
-      setDirectory(NO_DIRECTORY_SEARCH)
-      return
-    }
-    let cancelled = false
-    setDirectory({ status: 'loading', query: directoryQuery, results: [] })
-    setActiveDirectoryIndex(0)
-    // Debounced: every keystroke from every user would otherwise hit the one directory DO.
-    const timer = window.setTimeout(() => {
-      authenticatedApi.searchUsers(directoryQuery, directoryExcludeIds).then(
-        results => {
-          if (!cancelled) setDirectory({ status: 'ready', query: directoryQuery, results })
-        },
-        error => {
-          if (cancelled) return
-          console.error('Failed to search user directory:', error)
-          setDirectory({ status: 'failed', query: directoryQuery, results: [] })
-        })
-    }, 200)
-    return () => {
-      cancelled = true
-      window.clearTimeout(timer)
-    }
-  }, [authenticatedApi, directoryExcludeIds, directorySearching, directoryQuery, open])
+    if (open && directorySearching) setActiveDirectoryIndex(0)
+  }, [directorySearching, directoryQuery, open, searchDirectory])
 
   // Keep the listbox inside the dialog's accessibility tree, but outside its scrolling body so
   // opening results cannot make the dialog itself scroll. The anchor grows and shrinks as chips
