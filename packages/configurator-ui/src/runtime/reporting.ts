@@ -1,4 +1,9 @@
-import { FRONTEND_ERROR_MESSAGE_TYPE, serializeException } from "@gadgets/error-reporting";
+import {
+  FRONTEND_ERROR_MESSAGE_TYPE,
+  serializeException,
+  type FrontendCaptureMechanism,
+  type FrontendFrameErrorReportV1,
+} from "@gadgets/error-reporting";
 
 /**
  * Whether the deployment collects frontend errors, fixed when the runtime is bundled
@@ -9,9 +14,9 @@ import { FRONTEND_ERROR_MESSAGE_TYPE, serializeException } from "@gadgets/error-
 declare const __FRONTEND_REPORTING__: boolean;
 
 type ReportOptions = {
-  severity?: "warning" | "error" | "fatal";
+  severity?: FrontendFrameErrorReportV1["severity"];
   handled?: boolean;
-  captureMechanism?: "explicit" | "window.error" | "unhandledrejection";
+  captureMechanism?: FrontendCaptureMechanism;
 };
 
 /**
@@ -25,16 +30,14 @@ export const reportFrontendIssue = (
 ): void => {
   if (__FRONTEND_REPORTING__) {
     try {
-      window.parent.postMessage({
-        type: FRONTEND_ERROR_MESSAGE_TYPE,
-        report: {
-          failureSite,
-          severity: options.severity ?? "error",
-          handled: options.handled ?? true,
-          captureMechanism: options.captureMechanism ?? "explicit",
-          exception: serializeException(caught),
-        },
-      }, "*");
+      const report: FrontendFrameErrorReportV1 = {
+        failureSite,
+        severity: options.severity ?? "error",
+        handled: options.handled ?? true,
+        captureMechanism: options.captureMechanism ?? "explicit",
+        exception: serializeException(caught),
+      };
+      window.parent.postMessage({ type: FRONTEND_ERROR_MESSAGE_TYPE, report }, "*");
     } catch {
       // The report is lost; there is nowhere left to send it.
     }

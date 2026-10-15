@@ -1,14 +1,13 @@
 import { RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import type { ResourceConfiguratorIframe } from "@gadgets/workshop-shared/gatekeeper";
+import type {
+  ResourceConfiguratorHost, ResourceConfiguratorIframe,
+} from "@gadgets/workshop-shared/gatekeeper";
 import { collectResourceUrl, type ConfiguratorSession } from "./session.ts";
 import type { ParentViewport } from "./store.ts";
 
 /** The part of `ResourceConfiguratorHost` the frame's own chrome talks to. */
-export type FrameHost = {
-  resize(height: number, layoutHeight: number): void;
-  forwardScroll(deltaX: number, deltaY: number): void;
-};
+export type FrameHost = Pick<ResourceConfiguratorHost, "resize" | "forwardScroll">;
 
 /** What the Workshop calls on the frame. Usable before the configurator has started. */
 @validateRpc<ResourceConfiguratorIframe>()

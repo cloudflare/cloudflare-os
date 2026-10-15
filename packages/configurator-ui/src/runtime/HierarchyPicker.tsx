@@ -5,7 +5,7 @@ import { CaretRightIcon, CheckIcon, FileIcon, FolderIcon } from "@phosphor-icons
 import {
   isValidElement,
   useEffect,
-  useLayoutEffect,
+  useEffectEvent,
   useRef,
   useState,
   type KeyboardEvent,
@@ -106,9 +106,11 @@ const appendUnique = (existing: readonly Item[], incoming: readonly Item[]): Ite
 
 const asContainer = ({ id, title }: Ancestor): Item => ({ id, title, kind: "container", selectable: true });
 
+const asAncestor = ({ id, title, selectable }: Item): Ancestor => ({ id, title, selectable });
+
 /** Where a node found without browsing to it (a search result, a pre-filled value) lives. */
 const locationOf = (item: Item): Location => item.kind === "container"
-  ? { trail: [...item.path ?? [], { id: item.id, title: item.title, selectable: item.selectable }], detached: !item.path }
+  ? { trail: [...item.path ?? [], asAncestor(item)], detached: !item.path }
   : { trail: item.path ?? [], detached: false };
 
 /**
@@ -119,12 +121,10 @@ const locationOf = (item: Item): Location => item.kind === "container"
 export const HierarchyPicker = (props: HierarchyPickerProps) => {
   const { name, value = null, root, icons, searchPlaceholder, metaLabel, disabled = false } = props;
 
-  // A module's render builds its callbacks afresh on every render; reading the latest through a ref
-  // keeps a new identity from restarting a load.
-  const latest = useRef(props);
-  useLayoutEffect(() => {
-    latest.current = props;
-  });
+  // A module's render builds its callbacks afresh on every render, and a new identity must not
+  // restart a load.
+  const loadItem = useEffectEvent((id: string) => props.loadItem?.(id) ?? null);
+  const loadItems = useEffectEvent(props.loadItems);
 
   const [pendingPrefill, setPendingPrefill] = useState(
     () => value && value !== root.id && props.loadItem ? value : null);
@@ -153,7 +153,7 @@ export const HierarchyPicker = (props: HierarchyPickerProps) => {
     if (pendingPrefill === null) return;
     let cancelled = false;
     Promise.resolve()
-      .then(() => latest.current.loadItem?.(pendingPrefill) ?? null)
+      .then(() => loadItem(pendingPrefill))
       .then(sanitizeItem)
       .then(item => {
         if (cancelled) return;
@@ -175,8 +175,8 @@ export const HierarchyPicker = (props: HierarchyPickerProps) => {
 
   useEffect(() => {
     if (prefilling) return;
-    const token = ++generation.current;
-    requestPage(latest.current.loadItems, { parentId: locationId, query, cursor: null }).then(page => {
+    const token = generation.current;
+    requestPage(loadItems, { parentId: locationId, query, cursor: null }).then(page => {
       if (generation.current !== token) return;
       setListing({ parentId: locationId, query, items: appendUnique([], page.items),
         nextCursor: page.nextCursor, status: "ready", loadingMore: false });
@@ -246,8 +246,7 @@ export const HierarchyPicker = (props: HierarchyPickerProps) => {
   const openContainer = (item: Item) => navigate(
     query
       ? locationOf(item)
-      : { trail: [...location.trail, { id: item.id, title: item.title, selectable: item.selectable }],
-        detached: location.detached },
+      : { trail: [...location.trail, asAncestor(item)], detached: location.detached },
     item.selectable ? item : null,
     true);
 

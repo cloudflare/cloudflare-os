@@ -40,18 +40,6 @@ const source = (results: Record<string, Item[]> = {}) => vi.fn<LoadItems>(async 
   items: query ? results[query] ?? [] : TREE[parentId] ?? [],
 }));
 
-type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void };
-
-const deferred = <T,>(): Deferred<T> => {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((onResolve, onReject) => {
-    resolve = onResolve;
-    reject = onReject;
-  });
-  return { promise, resolve, reject };
-};
-
 /** A click on an element Playwright would refuse to click because it is (aria-)disabled. */
 const forceClick = (locator: { element(): Element }) => act(() => (locator.element() as HTMLElement).click());
 
@@ -220,11 +208,11 @@ describe("pre-fill", () => {
 
 describe("loading", () => {
   it("ignores a listing that arrives after the user has moved on", async () => {
-    const pending: Record<string, Deferred<ConfiguratorUIHierarchyPage>> = {};
+    const pending: Record<string, PromiseWithResolvers<ConfiguratorUIHierarchyPage>> = {};
     let rootLoads = 0;
     const loadItems = vi.fn<LoadItems>(({ parentId }) => {
       if (parentId === "drive" && rootLoads++ === 0) return Promise.resolve({ items: TREE.drive });
-      pending[parentId] = deferred();
+      pending[parentId] = Promise.withResolvers();
       return pending[parentId].promise;
     });
     await render({ loadItems });
