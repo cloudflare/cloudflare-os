@@ -11053,7 +11053,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // (e.g. a retried auto-apply failure) can resume a turn that never suspended.
     let awaited = new Map<number, number>();  // action id -> chat id
     let profile: AiChatAuthorInfo | undefined;
-    for (let record of this.impl.storage.actions.pendingByGatekeeper.get(gatekeeperId)) {
+    // Legacy adoption scans chat history, so close the single KV cursor before adopting or awaiting.
+    let pending = [...this.impl.storage.actions.pendingByGatekeeper.get(gatekeeperId)];
+    for (let record of pending) {
       if (record.type === "action" && record.caller.from === "agent" &&
           record.description.awaitDecision) {
         awaited.set(record.id, record.caller.chatId);

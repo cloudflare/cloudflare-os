@@ -94,7 +94,7 @@ async function scenario(kind: Kind = "connection", active = false) {
   return {stub, user, visit};
 }
 
-function decisionClient(impl: Impl, profile = USER) {
+function decisionClient(impl: Impl, profile = USER, overrides: object = {}) {
   const userId = impl.storage.activeAgents.get(CHAT)?.initiatorUserId;
   return openFakeOverseer(impl.storage, {impl: {
     users: {idFromString: (id: string) => id,
@@ -107,6 +107,8 @@ function decisionClient(impl: Impl, profile = USER) {
     materializeChatChanges: impl.materializeChatChanges.bind(impl),
     addChatMessages: impl.addChatMessages.bind(impl),
     startAgent: impl.startAgent.bind(impl),
+    drainAutoApprovals: impl.drainAutoApprovals.bind(impl),
+    ...overrides,
   }});
 }
 
@@ -182,6 +184,46 @@ describe("decision handoff using the existing execution row", () => {
       expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
       expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
     });
+  });
+
+  it.each([1, 2])("always-approve drains and resumes a legacy pause with %i pending actions", async count => {
+    const s = await scenario("action"), requests = inference();
+    await s.visit(async impl => {
+      impl.storage.activeAgents.delete(CHAT);
+      modelLookup(impl, async () => ({profile: USER, aiModel: MODEL}));
+      // Only the rule-setting path reads this record; applying the external effect is stubbed below.
+      impl.storage.gatekeepers.put({id: 31, class: {} as any});
+      const action = impl.storage.actions.get(7)!;
+      if (action.type !== "action") throw new Error("Missing action");
+      const actionKind = {tag: "edit", label: "Edits"};
+      for (let i = 0; i < count; i++) {
+        impl.storage.actions.put({...action, id: 7 + i, description: {
+          ...action.description, autoApprovable: true, actionKind,
+        }});
+        if (i) impl.addChatMessages(CHAT, MODEL.profile, [{type: "action", actionId: 7 + i}]);
+      }
+      const apply = vi.spyOn(impl, "applyPendingAction").mockImplementation(async record => {
+        impl.storage.actions.put({...record, state: "approved"});
+      });
+      let background: Promise<unknown> | undefined;
+      using client = await decisionClient(impl, USER, {ctx: {
+        id: impl.ctx.id, exports: impl.ctx.exports,
+        waitUntil: (task: Promise<unknown>) => {
+          background = task;
+          void task.catch(() => {}); // Assert background failures through the captured promise.
+        },
+      }});
+      await client.setAutoApprovedActionKind(31, actionKind);
+      await background;
+      expect(impl.storage.autoApproveTags.get("31:edit")?.enabledBy).toEqual(USER);
+      expect(apply).toHaveBeenCalledTimes(count);
+      await impl.waitForAllAgentsToComplete();
+      expect([...impl.storage.actions.pendingByGatekeeper.get(31)]).toEqual([]);
+      expect([...impl.storage.chats.list()].filter(m => m.type === "agentNudge")).toHaveLength(1);
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+    });
+    expect(requests()).toBe(1);
   });
 
   it("records a connection decision with no agent author without attempting a model lookup", async () => {
