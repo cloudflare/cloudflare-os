@@ -288,6 +288,32 @@ describe("decision handoff using the existing execution row", () => {
     expect(requests()).toBe(0);
   });
 
+  it.each(["final response", "pending decision"] as const)(
+      "recovers /compact after eviction without inheriting the preceding %s", async previous => {
+    const s = await scenario("connection", true), requests = inference();
+    await s.visit(impl => {
+      if (previous === "final response") {
+        decide(impl, "connection");
+        impl.addChatMessages(CHAT, MODEL.profile, [{type: "message", message: "Already done."}]);
+      }
+      // Built-in commands commit a slashCommand event with no accompanying user message.
+      impl.addChatMessages(CHAT, USER, [{type: "slashCommand",
+        request: {id: {builtin: true, commandId: "compact"}, args: ""}}]);
+    });
+    await evictDurableObject(s.stub);
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
+      // An unresolved decision still protects its history from compaction, but must not make
+      // this new command recover as the old paused execution.
+      expect(impl.getActiveChatCompaction(CHAT)?.summary).toBe(
+          previous === "final response" ? "Done." : undefined);
+      expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      expect([...impl.storage.chats.list()].filter(m => m.type === "error")).toEqual([]);
+    });
+    expect(requests()).toBe(previous === "final response" ? 1 : 0); // Summary only, if compactable.
+  });
+
   it("waits for both kinds of decision and consumes the handoff only once", async () => {
     const requests = inference(), s = await scenario("action");
     await s.visit(async impl => {

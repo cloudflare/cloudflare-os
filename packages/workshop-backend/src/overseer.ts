@@ -8498,8 +8498,8 @@ class OverseerImpl implements AgentHooks {
   }
 
   // The log is the wait record. A nudge is the consumption boundary for a previous decision,
-  // just as a real prompt/callback is the boundary for a new turn. Check connections AND actions
-  // together: accepting one kind must not bypass an unanswered request of the other kind.
+  // just as a prompt/callback or built-in /compact is the boundary for a new turn. Check connections
+  // AND actions together: accepting one kind must not bypass an unanswered request of the other kind.
   #decisionWait(chatId: number) {
     let actionIds: number[] = [];
     let requestIds: string[] = [];
@@ -8509,6 +8509,8 @@ class OverseerImpl implements AgentHooks {
     let agent: AiChatAuthorInfo | undefined;
     for (let msg of this.storage.chats.list({prefix: chatKeyPrefix(chatId), reverse: true})) {
       if (msg.type === "agentCallback" || msg.type === "agentNudge" ||
+          (msg.type === "slashCommand" && msg.request.id.builtin === true &&
+           msg.request.id.commandId === "compact") ||
           (msg.type === "message" && (msg.author.type === "user" || msg.author.type === "gadget"))) {
         break;
       }
