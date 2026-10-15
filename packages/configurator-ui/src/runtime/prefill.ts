@@ -1,8 +1,11 @@
+import {
+  stripTrailingSlashes, type ResourceConfiguratorHost,
+} from "@gadgets/workshop-shared/gatekeeper";
 import type { ConfiguratorUISpec, ConfiguratorUIValues } from "../index.ts";
 import { reportFrontendIssue } from "./reporting.ts";
 
 /** The resource a configurator opens pre-filled to, as `ResourceConfiguratorHost` reports it. */
-export type InitialResource = { resourceUrl: string; resourceUrlPattern: string } | null;
+export type InitialResource = Awaited<ReturnType<ResourceConfiguratorHost["getInitialResource"]>>;
 
 /**
  * Fallback URL -> values mapping: extract URLPattern named groups from the resource's pattern and
@@ -21,7 +24,7 @@ export const defaultValuesFromResourceUrl = (
     // The host matches tolerantly and the server parses tolerantly, so a strict exec here would
     // seed nothing and leave the caller on the right configurator with an empty field.
     const alternate = resourceUrl.endsWith("/")
-      ? resourceUrl.replace(/\/+$/, "")
+      ? stripTrailingSlashes(resourceUrl)
       : resourceUrl + "/";
     const match = compiled.exec(resourceUrl) ?? compiled.exec(alternate);
     const groups = match?.pathname.groups ?? {};

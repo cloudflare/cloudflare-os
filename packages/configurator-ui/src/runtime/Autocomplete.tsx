@@ -37,7 +37,9 @@ export const Autocomplete = ({
   const store = useConfiguratorStore();
   const queryName = name || placeholder;
   const storedQuery = useConfiguratorState(state => state.queries[queryName] ?? "");
-  const viewport = useConfiguratorState(state => state.viewport);
+  const [open, setOpen] = useState(false);
+  // Only while open: the host reports the viewport on every frame its modal scrolls.
+  const viewport = useConfiguratorState(state => open ? state.viewport : null);
   const closeRequests = useConfiguratorState(state => state.popupCloseRequests);
   // A disabled field with no value forgets what was typed into it, so enabling it again (once the
   // field it depends on is chosen) starts blank, as configurators written for the old runtime expect.
@@ -47,7 +49,6 @@ export const Autocomplete = ({
   }, [forgetQuery, store, queryName]);
   const query = forgetQuery ? "" : storedQuery;
 
-  const [open, setOpen] = useState(false);
   const [suggestions, setSuggestions] = useState<Suggestions>({ status: "loading" });
   const anchorRef = useRef<HTMLDivElement>(null);
   const requestRef = useRef(0);
@@ -81,11 +82,9 @@ export const Autocomplete = ({
     requestRef.current++;
   }, []);
 
-  // The host resized its window, so the popup's position is stale, or focus left for the host.
-  const seenCloseRequests = useRef(closeRequests);
+  // The host resized its window, so the popup's position is stale, or focus left for the host. On
+  // mount this does nothing: the popup starts closed and focus cannot yet be inside.
   useEffect(() => {
-    if (closeRequests === seenCloseRequests.current) return;
-    seenCloseRequests.current = closeRequests;
     setOpen(false);
     if (anchorRef.current?.contains(document.activeElement)) {
       (document.activeElement as HTMLElement).blur();
@@ -95,14 +94,14 @@ export const Autocomplete = ({
   // The frame is only as tall as the form, so the popup is fitted to the host's viewport instead:
   // below the input, down to the bottom of what the host can show.
   useLayoutEffect(() => {
-    if (!open) return;
+    if (!viewport) return;
     const anchorBottom = anchorRef.current?.getBoundingClientRect().bottom ?? 0;
     const available = viewport.viewportHeight
       ? viewport.viewportHeight - (viewport.iframeTop + anchorBottom) - POPUP_MARGIN
       : POPUP_MAX_HEIGHT;
     const height = Math.max(POPUP_MIN_HEIGHT, Math.min(POPUP_MAX_HEIGHT, available));
     document.documentElement.style.setProperty(POPUP_HEIGHT_VARIABLE, `${height}px`);
-  }, [open, viewport]);
+  }, [viewport]);
 
   const options = suggestions.status === "ready" ? suggestions.options : [];
   const selected = value ? options.find(option => option.value === value)

@@ -9,7 +9,7 @@ import { chromium, type Browser, type Frame, type Page } from "playwright";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { configuratorHtml } from "./html.ts";
 import { transpileConfiguratorModule } from "./module.ts";
-import { buildConfiguratorRuntime } from "./runtime.ts";
+import { buildConfiguratorRuntime, type ConfiguratorRuntime } from "./runtime.ts";
 
 const sourceBase = "app:///gatekeeper/test/configurator";
 const LONG_FOLDER = "Foo Bar Baz Qux - The Very Long Quux Corge Grault Garply Waldo Fred Plugh Xyzzy Thud, " +
@@ -37,8 +37,15 @@ import { h } from "@gadgets/configurator-ui";
 export default { initial: {}, resourceUrl: () => "", render() { throw new Error("render failure"); } };
 `;
 
+/** Built once per variant, as the build script builds it once per run. */
+const runtimes = new Map<boolean, Promise<ConfiguratorRuntime>>();
+
 const frameHtml = async (source: string, frontendReporting: boolean) => {
-  const runtime = await buildConfiguratorRuntime({ frontendReporting, sourceUrl: `${sourceBase}/runtime.js` });
+  if (!runtimes.has(frontendReporting)) {
+    runtimes.set(frontendReporting,
+      buildConfiguratorRuntime({ frontendReporting, sourceUrl: `${sourceBase}/runtime.js` }));
+  }
+  const runtime = await runtimes.get(frontendReporting)!;
   const module = transpileConfiguratorModule(source, { fileName: "test-ui.tsx", sourceBase, frontendReporting });
   return configuratorHtml(runtime, module);
 };
