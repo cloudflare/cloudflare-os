@@ -164,7 +164,14 @@ async function convert({ setValues, clearFields, ensureResources, ui }: Context,
     }
   } catch (error) {
     if (run !== generation) return;
-    show(undefined, errorMessage(error));
+    const message = errorMessage(error);
+    show(undefined, message);
+    // A copy whose reply was lost may still have been made, and a copy offered for reuse may be
+    // gone, so look again before offering either.
+    const latest = await inspect(ui, fileId);
+    if (run !== generation || latest.step !== "office") return;
+    flow = { step: "office", fileId, file: latest.file, error: message };
+    setValues({});
   }
 }
 
@@ -193,26 +200,36 @@ function notices(context: Context) {
   if (flow.step === "converted") return <Notice>{convertedText(flow.copy)}</Notice>;
   if (flow.step !== "office") return null;
   const { file, busy, error } = flow;
-  if (!file.canCopy) {
+  const existing = file.existingCopy;
+  // Turning off copying stops new copies only: a copy made before stays the account's to use.
+  if (!file.canCopy && !existing) {
     return <Notice tone="error">
       {"The owner of this file has turned off copying, so it can't be converted into a " +
         `Google ${KIND_TITLE} file.`}
     </Notice>;
   }
-  const existing = file.existingCopy;
   return <Fragment>
-    <Notice>
-      {`Connecting makes a Google ${KIND_TITLE} copy next to the original. The original is ` +
-        "unchanged, and later edits to it won't sync."}
-    </Notice>
+    {file.canCopy
+      ? <Notice>
+        {`Connecting makes a Google ${KIND_TITLE} copy next to the original. The original is ` +
+          "unchanged, and later edits to it won't sync."}
+      </Notice>
+      : <Notice tone="error">
+        {"The owner of this file has turned off copying, so it can't be converted again, but " +
+          "the copy made before can still be used."}
+      </Notice>}
     {busy && <Notice>
       {busy === "waiting" ? "Waiting for access in the pop-up…" : "Making the copy…"}
     </Notice>}
     {error && <Notice tone="error">{error}</Notice>}
     <div style={{ display: "flex", flexWrap: "wrap", gap: "8px" }}>
-      <Button variant="primary" disabled={busy !== undefined} onClick={() => void convert(context)}>
+      {file.canCopy && <Button
+        variant="primary"
+        disabled={busy !== undefined}
+        onClick={() => void convert(context)}
+      >
         Convert
-      </Button>
+      </Button>}
       {existing && <Button
         variant="secondary"
         disabled={busy !== undefined}

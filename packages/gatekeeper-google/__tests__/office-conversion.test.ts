@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE } from "../src/drive-session";
 import { GoogleApiError } from "../src/google-response";
 import {
-  explainUnopenedFile, isDriveFileId, nativeCopyName, OFFICE_KINDS, officeFileError, officeLabel,
-  OfficeConversion, type OfficeKind,
+  explainUnopenedFile, isDriveFileId, nativeCopyName, nonNativeFileError, OFFICE_KINDS,
+  officeFileError, officeLabel, OfficeConversion, type OfficeKind,
 } from "../src/office-conversion";
 
 const XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
@@ -49,6 +49,21 @@ describe("explainUnopenedFile", () => {
   it.each(KINDS)("explains a %s refusal of a file Drive says is an Office file", async (kind, office) => {
     let explained = await explainUnopenedFile(kind, refused(), async () => office);
     expect(explained).toEqual(officeFileError(kind));
+  });
+
+  it.each(KINDS)("does not offer conversion for a %s refusal of a file of another type", async (
+    kind, _office, _native, title,
+  ) => {
+    let explained = await explainUnopenedFile(kind, refused(), async () => "text/csv");
+    expect(explained).toEqual(nonNativeFileError(kind));
+    expect((explained as Error).message).toContain(`choose File > Save as Google ${title}`);
+    expect((explained as Error).message).not.toContain("connect dialog");
+  });
+
+  it("says Docs cannot edit a file of another type, and Sheets and Slides cannot open it", () => {
+    expect(nonNativeFileError("doc").message).toMatch(/^Google Docs cannot edit this file/);
+    expect(nonNativeFileError("sheets").message).toMatch(/^Google Sheets cannot open this file/);
+    expect(nonNativeFileError("slides").message).toMatch(/^Google Slides cannot open this file/);
   });
 
   it.each(KINDS)("keeps the original %s error for a native file", async (kind, _office, native) => {

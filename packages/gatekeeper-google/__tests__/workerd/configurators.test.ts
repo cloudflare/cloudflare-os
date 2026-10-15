@@ -549,6 +549,19 @@ describe.each(OFFICE_KIND_CASES)("the $title configurator's Office files", testC
     expect(drive.copies).toEqual([]);
   });
 
+  it("still reuses a copy made before once the owner has turned off copying", async () => {
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    let drive = new FakeDrive(officeSource(testCase, { canCopy: false }), {
+      id: "copy-a", name: "Report", mimeType: testCase.native, parents: ["folder-1"],
+      appProperties: { gadgetsConvertedFrom: "source-1" },
+    }).install();
+    let ui = directOfficeConfigurator(testCase);
+
+    await expect(ui.convertFile("source-1", { reuse: "copy-a" })).resolves.toEqual(
+      expect.objectContaining({ type: "converted", fileId: "copy-a", reused: true }));
+    expect(drive.copies).toEqual([]);
+  });
+
   it.each([
     ["a type this kind does not convert", { mimeType: "text/csv" }, "not an Office file"],
     ["a file whose owner turned off copying", { canCopy: false }, "turned off copying"],

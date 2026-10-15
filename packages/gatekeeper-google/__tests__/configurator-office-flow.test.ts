@@ -272,9 +272,7 @@ describe.each(KIND_CASES)("the $kind configurator's Office flow", testCase => {
   });
 
   it("offers no Convert when the owner has turned off copying", async () => {
-    const frame = await selectOffice({ canCopy: false, existingCopy: {
-      fileId: "copy-a", title: "Report", convertedAt: new Date(XLSX_COPY),
-    } });
+    const frame = await selectOffice({ canCopy: false });
 
     expect(frame.notices()).toEqual([{
       tone: "error",
@@ -282,6 +280,22 @@ describe.each(KIND_CASES)("the $kind configurator's Office flow", testCase => {
         `Google ${title} file.`,
     }]);
     expect(frame.find("Button")).toEqual([]);
+    expect(frame.ready()).toBe(false);
+  });
+
+  it("still offers the copy made before once the owner has turned off copying", async () => {
+    const convertedAt = new Date(XLSX_COPY);
+    const frame = await selectOffice({
+      canCopy: false, existingCopy: { fileId: "copy-a", title: "Report", convertedAt },
+    });
+
+    expect(frame.notices()).toEqual([{
+      tone: "error",
+      text: "The owner of this file has turned off copying, so it can't be converted again, but " +
+        "the copy made before can still be used.",
+    }]);
+    expect(frame.button("Convert")).toBeUndefined();
+    expect(frame.button(`Use the copy made on ${convertedAt.toLocaleDateString()}`)).toBeDefined();
     expect(frame.ready()).toBe(false);
   });
 
@@ -417,6 +431,60 @@ describe.each(KIND_CASES)("the $kind configurator's Office flow", testCase => {
     expect(frame.notices()).toContainEqual({
       tone: "error", text: "Google Drive could not make the copy [http=500].",
     });
+    expect(frame.button("Convert")!.disabled).toBe(false);
+  });
+
+  it("looks again after a failed copy, and offers a copy Drive made despite the failure", async () => {
+    const frame = await selectOffice();
+    const convertedAt = new Date(XLSX_COPY);
+    frame.ui.convertFile.mockRejectedValue(new Error("Google Drive could not make the copy [http=500]."));
+    frame.ui.inspectFile.mockResolvedValue(officeFile(label, {
+      existingCopy: { fileId: "copy-lost", title: "Report", convertedAt },
+    }));
+
+    frame.button("Convert")!.onClick();
+    await settle();
+
+    expect(frame.ui.inspectFile).toHaveBeenCalledTimes(2);
+    expect(frame.notices()).toContainEqual({
+      tone: "error", text: "Google Drive could not make the copy [http=500].",
+    });
+    expect(frame.button(`Use the copy made on ${convertedAt.toLocaleDateString()}`)).toBeDefined();
+    expect(frame.ready()).toBe(false);
+  });
+
+  it("drops a copy that is gone when reusing it fails", async () => {
+    const convertedAt = new Date(XLSX_COPY);
+    const frame = await selectOffice({
+      canCopy: false, existingCopy: { fileId: "copy-a", title: "Report", convertedAt },
+    });
+    frame.ui.convertFile.mockRejectedValue(new Error("That copy is no longer available."));
+    frame.ui.inspectFile.mockResolvedValue(officeFile(label, { canCopy: false }));
+
+    frame.button(`Use the copy made on ${convertedAt.toLocaleDateString()}`)!.onClick();
+    await settle();
+
+    expect(frame.find("Button")).toEqual([]);
+    expect(frame.notices()).toEqual([{
+      tone: "error",
+      text: "The owner of this file has turned off copying, so it can't be converted into a " +
+        `Google ${title} file.`,
+    }]);
+    expect(frame.ready()).toBe(false);
+  });
+
+  it("shows a failed copy at once, before looking at the file again", async () => {
+    const frame = await selectOffice();
+    frame.ui.convertFile.mockRejectedValue(new Error("Google Drive could not make the copy [http=500]."));
+    frame.ui.inspectFile.mockReturnValue(new Promise(() => {}));
+
+    frame.button("Convert")!.onClick();
+    await settle();
+
+    expect(frame.notices()).toContainEqual({
+      tone: "error", text: "Google Drive could not make the copy [http=500].",
+    });
+    expect(frame.notices().map(notice => notice.text)).not.toContain("Making the copy…");
     expect(frame.button("Convert")!.disabled).toBe(false);
   });
 

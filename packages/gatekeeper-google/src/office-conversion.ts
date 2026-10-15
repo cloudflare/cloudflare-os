@@ -90,9 +90,23 @@ export function officeFileError(kind: OfficeKind): Error {
 }
 
 /**
- * Google's refusal of a native request explained as {@link officeFileError}, when the refusal is
- * `FAILED_PRECONDITION` and Drive confirms the file is not of `kind`'s native type; otherwise
- * `error` itself, also when Drive cannot say. The status alone does not say why.
+ * The refusal for a file of another type, such as a .csv, bound or opened as `kind`: the connect
+ * dialog cannot convert it, so it says how to make a copy in Google's own editor.
+ */
+export function nonNativeFileError(kind: OfficeKind): Error {
+  let { resourceTitle } = OFFICE_KINDS[kind];
+  let verb = kind === "doc" ? "edit" : "open";
+  return new Error(
+    `Google ${resourceTitle} cannot ${verb} this file because it is not a Google ${resourceTitle} ` +
+    `file. Open it in Google ${resourceTitle}, choose File > Save as Google ${resourceTitle}, and ` +
+    "connect the copy instead.");
+}
+
+/**
+ * Google's refusal of a native request explained, when the refusal is `FAILED_PRECONDITION` and
+ * Drive confirms the file is not of `kind`'s native type: as {@link officeFileError} for an Office
+ * type the connect dialog converts, otherwise as {@link nonNativeFileError}. Otherwise `error`
+ * itself, also when Drive cannot say. The status alone does not say why.
  */
 export async function explainUnopenedFile(
   kind: OfficeKind, error: unknown, mimeType: () => Promise<string | undefined>,
@@ -102,7 +116,7 @@ export async function explainUnopenedFile(
   }
   let type = await mimeType().catch(() => undefined);
   if (type === undefined || type === OFFICE_KINDS[kind].nativeMimeType) return error;
-  return officeFileError(kind);
+  return officeLabel(kind, type) === undefined ? nonNativeFileError(kind) : officeFileError(kind);
 }
 
 const DRIVE_FILE_ID_PATTERN = /^[A-Za-z0-9_-]{1,256}$/;
@@ -190,7 +204,7 @@ export class OfficeConversion {
     else if (!(await this.#hasAccess())) return { type: "needsAccess" };
     let method = reuse === undefined ? "copy" : "reuse";
     try {
-      let source = this.#checkSource(await this.#drive.getConversionSource(fileId));
+      let source = this.#checkSource(await this.#drive.getConversionSource(fileId), reuse === undefined);
       if (reuse !== undefined) return await this.#reuse(source, reuse);
       let { copy, location } = await this.#drive.makeNativeCopy(
         source, nativeCopyName(this.#kind, source.name), OFFICE_KINDS[this.#kind].nativeMimeType);
@@ -212,14 +226,17 @@ export class OfficeConversion {
     }
   }
 
-  /** Refuses a source this kind cannot convert, in our own words. */
-  #checkSource(source: DriveConversionSource): DriveConversionSource {
+  /**
+   * Refuses a source this kind cannot convert, in our own words. Only a new copy needs the owner
+   * to allow copying; a copy made before stays the account's to use.
+   */
+  #checkSource(source: DriveConversionSource, copying: boolean): DriveConversionSource {
     let { resourceTitle } = OFFICE_KINDS[this.#kind];
     if (officeLabel(this.#kind, source.mimeType) === undefined) {
       throw new Error(`This file is not an Office file Google ${resourceTitle} can convert.`);
     }
     if (source.trashed !== false) throw new Error(TRASHED);
-    if (source.canCopy !== true) {
+    if (copying && source.canCopy !== true) {
       throw new Error("The owner of this file has turned off copying, so it cannot be converted.");
     }
     return source;
@@ -231,7 +248,7 @@ export class OfficeConversion {
     if (copy.appProperties?.[CONVERTED_FROM_PROPERTY] !== source.id ||
         copy.mimeType !== OFFICE_KINDS[this.#kind].nativeMimeType || copy.trashed !== false ||
         copy.canEdit !== true) {
-      throw new Error("That copy is no longer available. Convert the file again.");
+      throw new Error("That copy is no longer available.");
     }
     let parent = source.parents?.[0];
     let location: DriveCopyLocation =
