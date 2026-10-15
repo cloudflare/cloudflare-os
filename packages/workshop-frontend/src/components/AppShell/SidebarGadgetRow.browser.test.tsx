@@ -1,10 +1,12 @@
 /* eslint-disable react/react-in-jsx-scope */
-import { act } from "react";
+import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { afterEach, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import { Chats } from "@phosphor-icons/react";
+import { Toasty } from "@cloudflare/kumo";
+import type { NotificationMute } from "@gadgets/workshop-shared/api";
 import SidebarGadgetRow from "./SidebarGadgetRow";
 import SidebarItem from "./SidebarItem";
 import { UnreadBadge } from "../../features/notifications/UnreadBadge";
@@ -14,6 +16,12 @@ import "../../styles.css";
 const mock = vi.hoisted(() => ({
   markManyRead: vi.fn<NonNullable<ReturnType<typeof useUnreadState>>["markManyRead"]>()
     .mockResolvedValue(undefined),
+  setMute: vi.fn<(workspaceId: string, mute: NotificationMute | null) => Promise<void>>()
+    .mockResolvedValue(undefined),
+  onMuteChange: vi.fn<ComponentProps<typeof SidebarGadgetRow>["onNotificationMuteChange"]>(),
+}));
+vi.mock("../../AuthContext", () => ({
+  useAuthenticatedApi: () => ({ authenticatedApi: { setWorkspaceNotificationMute: mock.setMute } }),
 }));
 const chat = { workspaceId: "workspace", chatId: 1, chatTitle: "Thread", latestSequence: 2,
   readThroughSequence: 0, readEpoch: 0 };
@@ -26,16 +34,19 @@ afterEach(async () => { await act(async () => root?.unmount()); host?.remove(); 
 it("gives workspace rows the nav width without reserving separate badge/action columns", async () => {
   const title = "A long workspace title that needs all the available row width";
   const base = createRootRoute({ component: () => (
-    <div className="w-[260px]">
-      <nav className="flex flex-col px-2">
-        <SidebarItem to="/" label="Unread threads" icon={<Chats size={14} />}
-          trailing={<UnreadBadge count={1} />} />
-      </nav>
-      <div className="flex flex-col px-2">
-        <SidebarGadgetRow gadget={{ id: "workspace", title, created: new Date(), lastActive: new Date() }} onTogglePin={() => {}}
-          onRename={() => {}} onShare={() => {}} onDelete={() => {}} />
+    <Toasty>
+      <div className="w-[260px]">
+        <nav className="flex flex-col px-2">
+          <SidebarItem to="/" label="Unread threads" icon={<Chats size={14} />}
+            trailing={<UnreadBadge count={1} />} />
+        </nav>
+        <div className="flex flex-col px-2">
+          <SidebarGadgetRow gadget={{ id: "workspace", title, created: new Date(), lastActive: new Date() }} onTogglePin={() => {}}
+            onRename={() => {}} onShare={() => {}} onDelete={() => {}}
+            onNotificationMuteChange={mock.onMuteChange} />
+        </div>
       </div>
-    </div>
+    </Toasty>
   ) });
   const router = createRouter({ routeTree: base, history: createMemoryHistory({ initialEntries: ["/"] }) });
   host = document.body.appendChild(document.createElement("div"));
@@ -54,4 +65,12 @@ it("gives workspace rows the nav width without reserving separate badge/action c
   expect(router.state.location.pathname).toBe("/");
   await act(async () => userEvent.click(page.getByRole("menuitem", { name: "Mark workspace read" })));
   expect(mock.markManyRead).toHaveBeenCalledExactlyOnceWith([chat]);
+
+  await act(async () => userEvent.click(page.getByRole("button", { name: "Workspace actions" })));
+  await act(async () => userEvent.click(page.getByRole("menuitem", { name: "Mute notifications" })));
+  await act(async () => userEvent.click(page.getByRole("menuitem", { name: "For 1 hour", exact: true })));
+  expect(mock.setMute).toHaveBeenCalledExactlyOnceWith("workspace", { until: expect.any(Date) });
+  expect(mock.onMuteChange).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({ id: "workspace" }), { until: expect.any(Date) });
+  expect(router.state.location.pathname).toBe("/");
 });
