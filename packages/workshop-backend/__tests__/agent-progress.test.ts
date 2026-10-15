@@ -1,67 +1,115 @@
-import {env} from "cloudflare:workers";
+import {env, tracing} from "cloudflare:workers";
 import {runInDurableObject} from "cloudflare:test";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall} from "@earendil-works/pi-ai";
 import type {OverseerDurableObject} from "../src/overseer";
 import {runAgent} from "../src/agent";
+import {obsContext} from "../src/observability";
+
+interface RecordedSpan {
+  name: string;
+  spanId: string;
+  parentSpanId: string | undefined;
+  attributes: Record<string, unknown>;
+  closed: boolean;
+}
 
 declare module "cloudflare:workers" {
-  interface ProvidedEnv { TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>; }
+  interface ProvidedEnv {
+    TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
+    SPAN_RECORDER: Service<{ spans(): RecordedSpan[] }>;
+  }
 }
 const USER = {type: "user" as const, id: "test-user", name: "Test"};
 const AUTHOR = {type: "agent" as const, id: "faux-model", name: "Faux"};
 const SECRET = "sentinel-file-content-must-not-be-logged";
 type Impl = OverseerDurableObject["impl"];
-async function inKernel(test: (impl: Impl) => Promise<void>) {
-  await runInDurableObject(env.TEST_OVERSEER.getByName(crypto.randomUUID()), async instance => {
+async function inKernel<T>(test: (impl: Impl) => Promise<T>): Promise<T> {
+  return await runInDurableObject(env.TEST_OVERSEER.getByName(crypto.randomUUID()), async instance => {
     const impl = instance.impl, timestamp = impl.getChatTimestamp();
     impl.storage.chatMeta.put({id: 1, title: "Validation", started: timestamp, lastActive: timestamp});
     impl.addChatMessages(1, USER, [{type: "message", message: "Create an app."}]);
     impl.getInstanceInstructions = async () => "";
     impl.describeStandardFormats = async () => [];
     impl.listConnectableVendors = async () => [];
-    await test(impl);
+    return await obsContext.with({
+      gadgetId: "test-workspace", modelId: AUTHOR.id, operation: "agent.run",
+    }, () => test(impl));
   });
 }
+
+async function persistenceSpans(executionId: string, count: number) {
+  let spans: RecordedSpan[] = [];
+  await vi.waitFor(async () => {
+    spans = (await env.SPAN_RECORDER.spans()).filter(span =>
+      span.name === "agent.step.persist" && span.attributes.executionId === executionId);
+    expect(spans).toHaveLength(count);
+    expect(spans.every(span => span.closed)).toBe(true);
+  }, {timeout: 5000});
+  return spans;
+}
+
 describe("agent progress diagnostics", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("distinguishes a blocked persistence barrier from the next model dispatch without logging contents", () => inKernel(async impl => {
-    const logs = vi.spyOn(console, "debug").mockImplementation(() => {});
-    const faux = createFauxCore({models: [{id: "faux-model"}]});
-    faux.setResponses([
-      fauxAssistantMessage(fauxToolCall("createGadget", {title: SECRET, bindingName: "BOARD"}), {stopReason: "toolUse"}),
-      fauxAssistantMessage(fauxText(SECRET)),
-    ]);
-    let release!: () => void;
-    const blocked = new Promise<void>(resolve => { release = resolve; });
-    const commit = impl.commitAgentStep.bind(impl);
-    let entered = false;
-    impl.commitAgentStep = async (...args) => {
-      if (!entered) { entered = true; await blocked; }
-      return await commit(...args);
-    };
-    const entries = () => logs.mock.calls.map(([entry]) => entry as Record<string, unknown>);
-    const running = runAgent(impl, {model: faux.getModel(), stream: faux.stream}, 1, AUTHOR,
-      new AbortController().signal, USER, {provider: "cloudflare", model: "faux-model", apiToken: SECRET});
-    try {
-      await vi.waitFor(() => expect(entered).toBe(true));
-      expect(entries().filter(entry => entry.event === "agent.model.dispatch")).toHaveLength(1);
-      expect(entries().some(entry => entry.event === "agent.step.persist.started")).toBe(true);
-      expect(entries().some(entry => entry.event === "agent.step.persist.completed")).toBe(false);
-    } finally { release(); }
-    await running;
-    const progress = entries().filter(entry => typeof entry.event === "string" &&
-      (entry.event.startsWith("agent.step.persist.") || entry.event.startsWith("agent.model.")));
-    const completed = progress.findIndex(entry => entry.event === "agent.step.persist.completed");
-    const dispatched = progress.findIndex(entry => entry.event === "agent.model.dispatch" && entry.sequence === 2);
-    expect(completed).toBeGreaterThanOrEqual(0);
-    expect(dispatched).toBeGreaterThan(completed);
-    expect(progress.filter(entry => entry.event === "agent.model.completed")).toHaveLength(2);
-    expect(new Set(progress.map(entry => entry.executionId)).size).toBe(1);
-    expect(progress.filter(entry => entry.durationMs !== undefined).every(entry => typeof entry.durationMs === "number")).toBe(true);
-    expect(JSON.stringify(progress)).not.toContain(SECRET);
-  }));
+  it("awaits and traces persistence with a frozen JS clock, without duplicate model logs", async () => {
+    const executionId = await inKernel(async impl => {
+      const logs = vi.spyOn(console, "debug").mockImplementation(() => {});
+      vi.spyOn(Date, "now").mockReturnValue(Date.now());
+      const entries = () => logs.mock.calls.map(([entry]) => entry as Record<string, unknown>);
+      const faux = createFauxCore({models: [{id: "faux-model"}]});
+      faux.setResponses([
+        fauxAssistantMessage(fauxToolCall("createGadget", {title: SECRET, bindingName: "BOARD"}), {stopReason: "toolUse"}),
+        () => {
+          expect(entries().some(entry => entry.event === "agent.step.persist.completed" && entry.sequence === 1)).toBe(true);
+          return fauxAssistantMessage(fauxText(SECRET));
+        },
+      ]);
+      let release!: () => void;
+      const blocked = new Promise<void>(resolve => { release = resolve; });
+      const commit = impl.commitAgentStep.bind(impl);
+      let entered = false;
+      impl.commitAgentStep = async (...args) => {
+        const span = tracing.getActiveSpan();
+        expect(span?.isTraced).toBe(true);
+        if (!entered) {
+          entered = true;
+          await blocked;
+          expect(span?.isTraced).toBe(true);
+        }
+        return await commit(...args);
+      };
+      const running = runAgent(impl, {model: faux.getModel(), stream: faux.stream}, 1, AUTHOR,
+        new AbortController().signal, USER, {provider: "cloudflare", model: "faux-model", apiToken: SECRET});
+      try {
+        await vi.waitFor(() => expect(entered).toBe(true));
+        expect(faux.state.callCount).toBe(1);
+        expect(entries().some(entry => entry.event === "agent.step.persist.started")).toBe(true);
+        expect(entries().some(entry => entry.event === "agent.step.persist.completed")).toBe(false);
+      } finally { release(); }
+      await running;
+      const progress = entries().filter(entry => typeof entry.event === "string" &&
+        (entry.event.startsWith("agent.step.persist.") || entry.event.startsWith("agent.model.")));
+      expect(faux.state.callCount).toBe(2);
+      expect(progress.map(entry => [entry.event, entry.sequence])).toEqual([
+        ["agent.step.persist.started", 1], ["agent.step.persist.completed", 1],
+        ["agent.step.persist.started", 2], ["agent.step.persist.completed", 2],
+      ]);
+      expect(new Set(progress.map(entry => entry.executionId)).size).toBe(1);
+      expect(progress.every(entry => entry.durationMs === undefined)).toBe(true);
+      expect(JSON.stringify(progress)).not.toContain(SECRET);
+      return String(progress[0].executionId);
+    });
+    const spans = await persistenceSpans(executionId, 2);
+    expect(spans.map(span => span.attributes.sequence)).toEqual([1, 2]);
+    for (const span of spans) {
+      expect(span.attributes).toMatchObject({
+        chatId: 1, executionId, gadgetId: "test-workspace", modelId: AUTHOR.id, operation: "agent.run",
+      });
+      expect(span.attributes.error).toBeUndefined();
+      expect(JSON.stringify(span.attributes)).not.toContain(SECRET);
+    }
+  });
 
   it.each(["provider retry", "compaction reload"] as const)(
       "preserves correlation and monotonic sequences across a %s", reason => inKernel(async impl => {
@@ -90,12 +138,8 @@ describe("agent progress diagnostics", () => {
     const progress = logs.mock.calls.map(([entry]) => entry as Record<string, unknown>)
       .filter(entry => entry.component === "workshop.agent" && entry.executionId !== undefined);
     const events = (event: string) => progress.filter(entry => entry.event === event);
-    const modelSequences = reason === "provider retry" ? [1, 2, 3, 4] : [1, 2, 3];
-    expect(events("agent.model.dispatch").map(entry => entry.sequence)).toEqual(modelSequences);
-    expect(events("agent.model.stream.created").map(entry => entry.sequence)).toEqual(modelSequences);
-    expect(events("agent.model.completed").map(entry => entry.sequence)).toEqual(modelSequences);
-    expect(events("agent.model.completed").map(entry => entry.outcome))
-      .toEqual(reason === "provider retry" ? ["ok", "error", "ok", "ok"] : ["ok", "ok", "ok"]);
+    expect(faux.state.callCount).toBe(reason === "provider retry" ? 4 : 5);
+    expect(progress.some(entry => String(entry.event).startsWith("agent.model."))).toBe(false);
     expect(events("agent.step.persist.started").map(entry => entry.sequence)).toEqual([1, 2, 3]);
     expect(events("agent.step.persist.completed").map(entry => entry.sequence)).toEqual([1, 2, 3]);
     expect(progress.every(entry => entry.chatId === 1)).toBe(true);
@@ -113,11 +157,35 @@ describe("agent progress diagnostics", () => {
         new AbortController().signal, USER, {provider: "cloudflare", model: "faux-model", apiToken: SECRET});
     }
     const entries = logs.mock.calls.map(([entry]) => entry as Record<string, unknown>);
-    const dispatches = entries.filter(entry => entry.event === "agent.model.dispatch");
-    expect(dispatches.map(entry => entry.sequence)).toEqual([1, 1]);
-    expect(new Set(dispatches.map(entry => entry.executionId)).size).toBe(2);
-    expect(entries.filter(entry => entry.event === "agent.step.persist.started").map(entry => entry.sequence))
-      .toEqual([1, 1]);
+    const starts = entries.filter(entry => entry.event === "agent.step.persist.started");
+    expect(starts.map(entry => entry.sequence)).toEqual([1, 1]);
+    expect(new Set(starts.map(entry => entry.executionId)).size).toBe(2);
   }));
+
+  it.each(["sync", "async"] as const)("marks a %s persistence failure without recording its contents", async mode => {
+    const executionId = await inKernel(async impl => {
+      const logs = vi.spyOn(console, "debug").mockImplementation(() => {});
+      const faux = createFauxCore({models: [{id: "faux-model"}]});
+      faux.setResponses([fauxAssistantMessage(fauxText(SECRET))]);
+      const failure = new Error(SECRET);
+      vi.spyOn(impl, "commitAgentStep").mockImplementation(() => {
+        if (mode === "sync") throw failure;
+        return Promise.reject(failure);
+      });
+      await expect(runAgent(impl, {model: faux.getModel(), stream: faux.stream}, 1, AUTHOR,
+        new AbortController().signal, USER, {provider: "cloudflare", model: "faux-model", apiToken: SECRET}))
+        .rejects.toBe(failure);
+      const progress = logs.mock.calls.map(([entry]) => entry as Record<string, unknown>)
+        .filter(entry => entry.executionId !== undefined);
+      expect(progress.map(entry => [entry.event, entry.sequence])).toEqual([
+        ["agent.step.persist.started", 1], ["agent.step.persist.failed", 1],
+      ]);
+      expect(JSON.stringify(progress)).not.toContain(SECRET);
+      return String(progress[0].executionId);
+    });
+    const spans = await persistenceSpans(executionId, 1);
+    expect(spans[0].attributes).toMatchObject({executionId, chatId: 1, sequence: 1, error: true});
+    expect(JSON.stringify(spans[0].attributes)).not.toContain(SECRET);
+  });
 
 });

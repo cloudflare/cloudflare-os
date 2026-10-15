@@ -3,7 +3,8 @@ import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replac
   type CodeContent, type CodeChange, type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
-import { createWorkshopLogger } from "./observability";
+import { createWorkshopLogger, obsContext } from "./observability";
+import { createTracer } from "@gadgets/observability/tracing";
 import {
   Type, getSystemMessageText, isRetryableAssistantError, toToolDeclaration,
 } from "@earendil-works/pi-ai";
@@ -41,6 +42,7 @@ import {
 import { formatGrep, type GrepScan } from "./grep";
 
 const logger = createWorkshopLogger("workshop.agent");
+const traced = createTracer(obsContext.get);
 
 /**
  * How much text one tool result may put in front of the model. About 8k tokens: a handful of
@@ -182,9 +184,8 @@ type AgentPassOutcome =
   | {type: "transientFailure"; error: AgentTurnError};
 
 type AgentProgress = {
-  logger: typeof logger;
+  executionId: string;
   barrierSequence: number;
-  modelRequestSequence: number;
 };
 
 /**
@@ -1467,9 +1468,8 @@ export async function runAgent(
     modelConfig: AiModelConfig): Promise<void> {
   // Provider retries and compaction reloads are passes of this execution, not new executions.
   const progress: AgentProgress = {
-    logger: logger.with({chatId, executionId: crypto.randomUUID()}),
+    executionId: crypto.randomUUID(),
     barrierSequence: 0,
-    modelRequestSequence: 0,
   };
   let retries = 0;
   while (true) {
@@ -1499,7 +1499,7 @@ async function runAgentPass(
     initiator: AiChatAuthorInfo,
     modelConfig: AiModelConfig,
     progress: AgentProgress): Promise<AgentPassOutcome> {
-  const progressLogger = progress.logger;
+  const progressLogger = logger.with({chatId, executionId: progress.executionId});
 
   // The workspace's gadget registry, snapshotted at the start of the turn (gadgets provisional
   // to other chats are excluded -- they belong to those chats' proposed changes). This is the
@@ -2813,20 +2813,23 @@ async function runAgentPass(
   // barrier persists the action before the loop ends and waits for approval to resume it.
   let awaitingActionDecision = false;
 
-  let persistStep = async <T>(operation: () => Promise<T>): Promise<T> => {
-    const sequence = ++progress.barrierSequence, startedAt = Date.now();
+  // JavaScript clocks can be frozen through synchronous SQL/apply work in production. Let the
+  // runtime span own timing; the logs identify phase/order, not a duration or a disk-flush ACK.
+  let persistStep = <T>(operation: () => Promise<T>): Promise<T> => traced("agent.step.persist", async span => {
+    const sequence = ++progress.barrierSequence;
+    span.setAttribute("chatId", chatId);
+    span.setAttribute("executionId", progress.executionId);
+    span.setAttribute("sequence", sequence);
     progressLogger.debug("agent persistence started", {event: "agent.step.persist.started", sequence});
     try {
       const result = await operation();
-      progressLogger.debug("agent persistence completed", {event: "agent.step.persist.completed", sequence,
-        durationMs: Date.now() - startedAt});
+      progressLogger.debug("agent persistence completed", {event: "agent.step.persist.completed", sequence});
       return result;
     } catch (error) {
-      progressLogger.debug("agent persistence failed", {event: "agent.step.persist.failed", sequence,
-        durationMs: Date.now() - startedAt});
+      progressLogger.debug("agent persistence failed", {event: "agent.step.persist.failed", sequence});
       throw error;
     }
-  };
+  });
 
   // Buffer one file edit into the step and apply it to the session content; it becomes durable
   // (row + broadcast) only at the step's persistence barrier. The first write to an unpinned
@@ -4184,30 +4187,6 @@ async function runAgentPass(
     tools: toolList,
   };
 
-  const progressStream: ModelHandle["stream"] = (...args) => {
-    const sequence = ++progress.modelRequestSequence, startedAt = Date.now();
-    progressLogger.debug("agent model request dispatched", {event: "agent.model.dispatch", sequence});
-    try {
-      const stream = handle.stream(...args);
-      // Creating a stream is not receipt of HTTP response headers. Its result settles only
-      // after inference; these breadcrumbs deliberately log no request/response/error text.
-      progressLogger.debug("agent model stream created", {event: "agent.model.stream.created", sequence});
-      void stream.result().then(message => {
-        progressLogger.debug("agent model request completed", {event: "agent.model.completed", sequence,
-          durationMs: Date.now() - startedAt,
-          outcome: message.stopReason === "error" || message.stopReason === "aborted" ? "error" : "ok"});
-      }, () => {
-        progressLogger.debug("agent model request failed", {event: "agent.model.failed", sequence,
-          durationMs: Date.now() - startedAt});
-      });
-      return stream;
-    } catch (error) {
-      progressLogger.debug("agent model dispatch failed", {event: "agent.model.failed", sequence,
-        durationMs: Date.now() - startedAt});
-      throw error;
-    }
-  };
-
   await runAgentLoopContinue(context, {
     model: handle.model,
     // Replay already produces LLM-shaped messages; no custom message types exist. The system
@@ -4252,7 +4231,7 @@ async function runAgentPass(
         return {action: "end"};
       }
     },
-  }, emit, abortSignal, progressStream);
+  }, emit, abortSignal, handle.stream);
 
   // (No end-of-turn flush: every completed step's effects were barrier-committed with its
   // message, and an abort simply drops the in-flight step's buffer -- nothing durable exists
