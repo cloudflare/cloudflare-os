@@ -49,9 +49,13 @@ type HarnessProps = Omit<HierarchyPickerProps, "value" | "onChange" | "name" | "
   root?: HierarchyPickerProps["root"];
 };
 
+/** Sets the value from outside the picker, as the module's own code would. */
+let setFromModule: (value: string | null) => void;
+
 /** The picker as a configurator holds it: its value follows `onChange`. */
 const Harness = ({ initial = null, onChange, root = ROOT, ...props }: HarnessProps) => {
   const [value, setValue] = useState<string | null>(initial);
+  setFromModule = setValue;
   return (
     <HierarchyPicker
       {...props}
@@ -203,6 +207,38 @@ describe("pre-fill", () => {
     await userEvent.click(option("Budget.xlsx"));
     expect(onChange).toHaveBeenLastCalledWith("drive",
       { id: "drive", title: "My Drive", kind: "container", selectable: true });
+  });
+});
+
+describe("a value the module sets", () => {
+  it("is pre-filled afresh, so unchoosing it never returns to a container opened before it", async () => {
+    const loadItem = vi.fn(async (id: string): Promise<Item | null> =>
+      ({ ...q1, id, path: [{ id: "reports", title: "Reports" }] }));
+    const onChange = await render({ loadItems: source(), loadItem });
+
+    await userEvent.click(option("Reports"));
+    await userEvent.click(option("Q1.pdf"));
+    await act(() => setFromModule(null));
+    await expect.element(list()).toHaveAccessibleName("My Drive");
+
+    await act(() => setFromModule("q1"));
+    await expect.element(option("Q1.pdf")).toHaveAttribute("aria-selected", "true");
+    expect(loadItem).toHaveBeenCalledExactlyOnceWith("q1");
+    await userEvent.click(option("Q1.pdf"));
+    expect(onChange).toHaveBeenLastCalledWith(null, null);
+    expect(onChange).toHaveBeenCalledTimes(3);
+  });
+
+  it("starts again at a new root", async () => {
+    const loadItems = source();
+    const onChange = await render({ loadItems });
+    await userEvent.click(option("Shared with me"));
+    await expect.element(list()).toHaveAccessibleName("Shared with me");
+
+    await act(() => root!.render(
+      <Harness onChange={onChange} loadItems={loadItems} root={{ id: "team", title: "Team Drive" }} />));
+    await expect.element(list()).toHaveAccessibleName("Team Drive");
+    expect(loadItems).toHaveBeenLastCalledWith({ parentId: "team", query: "", cursor: null });
   });
 });
 

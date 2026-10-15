@@ -178,7 +178,7 @@ const NamedCheckboxList = ({
               <div
                 key={option.value}
                 className={isSelected
-                  ? "rounded-md px-2.5 py-2 ring ring-kumo-ring bg-kumo-tint"
+                  ? "rounded-md px-2.5 py-2 ring ring-kumo-interact bg-kumo-tint"
                   : "rounded-md px-2.5 py-2 hover:bg-kumo-elevated"}
               >
                 <Checkbox

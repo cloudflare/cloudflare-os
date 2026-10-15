@@ -37,10 +37,12 @@ const toFunctionBody = (outputText: string): string => outputText
   .replace(/export[\t ]+default[\t ]+/, match => "return".padEnd(match.length));
 
 /**
- * Every non-ASCII UTF-16 unit as a `\u` escape, which reads the same in strings, templates, regular
- * expressions, comments and identifiers. One such character would make V8 store the whole frame at
- * two bytes per character (see `runtime.ts`). Each escape shifts the rest of its line by five
- * columns, so a mapped column after it is off by that much; positions are otherwise kept.
+ * Every non-ASCII UTF-16 unit as a `\u` escape, which reads the same in strings, cooked templates,
+ * regular expressions, comments and identifiers -- but not in a template's raw text (`String.raw`,
+ * a tag's `strings.raw`), and an identifier beyond the Basic Multilingual Plane no longer parses.
+ * One such character would make V8 store the whole frame at two bytes per character (see
+ * `runtime.ts`). Each escape shifts the rest of its line by five columns, so a mapped column after
+ * it is off by that much; positions are otherwise kept.
  */
 const asciiOnly = (code: string): string => code.replace(/[\u0080-\uffff]/g,
   char => `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`);
