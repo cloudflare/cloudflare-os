@@ -117,8 +117,22 @@ const locationOf = (item: Item): Location => item.kind === "container"
  * Drill-down navigator choosing one node of a hierarchy: the root, a container or a leaf. Renders
  * inline rather than in a popup, which the frame would clip. Only the user's own moves call
  * `onChange`; pre-fill, loading and search only change what is shown.
+ *
+ * Where it has navigated, and what opening there selected, describe one root and the selections the
+ * user made, so a new root or a value the module set starts it afresh, pre-filling that value.
  */
 export const HierarchyPicker = (props: HierarchyPickerProps) => {
+  const value = props.value ?? null;
+  const [own, setOwn] = useState({ value, generation: 0 });
+  if (value !== own.value) setOwn({ value, generation: own.generation + 1 });
+  const onChange: HierarchyPickerProps["onChange"] = (next, item) => {
+    setOwn(current => ({ ...current, value: next }));
+    props.onChange(next, item);
+  };
+  return <Navigator key={`${props.name}\n${props.root.id}\n${own.generation}`} {...props} onChange={onChange} />;
+};
+
+const Navigator = (props: HierarchyPickerProps) => {
   const { name, value = null, root, icons, searchPlaceholder, metaLabel, disabled = false } = props;
 
   // A module's render builds its callbacks afresh on every render, and a new identity must not
