@@ -1,12 +1,18 @@
 # Gatekeeper Canva
 
 This package provides Canva Connect API integration for Gadgets. Connect a Canva account and gadgets
-can list and search your designs, browse folders, read your profile, and create new designs — all
-behind the approval queue.
+can list and search your designs, browse folders, read your profile, create new designs, and ask
+Canva's AI to generate a doc or presentation from a brief — all behind the approval queue.
 
 It currently offers one resource granularity:
 
-- **Canva Account** (whole-instance): profile, design search, folder browsing, and design creation.
+- **Canva Account** (whole-instance): profile, design search, folder browsing, design creation, and
+  AI design generation.
+
+> **Design generation uses a Canva preview API.** Canva may change it without a version bump, and
+> public integrations that use preview APIs cannot pass Canva's review. A private integration (the
+> normal choice for a single company's deployment) is unaffected. Generation also spends the
+> connected user's Canva AI credits, so it always requires approval and is never auto-approvable.
 
 This gatekeeper is **not** an authentication provider (`providesAuth: false`) — Canva isn't offered
 as a "Continue with…" sign-in method.
@@ -67,6 +73,10 @@ You can see and manage connected accounts in settings (via the account menu in t
 
 - **Approvals.** Reads are logged and writes are queued for human approval; nothing is created on
   Canva until approved.
+- **Generation is asynchronous.** Approving a `generateDesign` action starts a job on Canva, which
+  takes seconds to a few minutes. The agent follows it with `listGeneratedDesigns()`, which polls
+  any job still in progress. Jobs expire on Canva after 24 hours. Generation is only available to
+  users whose plan and team settings allow it; `getProfile().canGenerateDesigns` reports this.
 - **Token rotation.** Canva access tokens are short-lived and refresh tokens are single-use. The
   account refreshes transparently; if a refresh is rejected the account is marked expired and the
   user is prompted to reconnect.

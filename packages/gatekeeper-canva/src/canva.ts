@@ -31,6 +31,7 @@ import {
   type CanvaDesignResponse,
   type CanvaFolderItemResponse,
   type CanvaFolderResponse,
+  type CanvaGenerationJobResponse,
   type CanvaImageAssetResponse,
   type CanvaThumbnailResponse,
 } from "./canva-api";
@@ -45,6 +46,9 @@ import type {
   CanvaDesignType,
   CanvaFolder,
   CanvaFolderItem,
+  CanvaGenerateDesignOptions,
+  CanvaGenerationDesignType,
+  CanvaGenerationJob,
   CanvaImageAsset,
   CanvaListDesignsOptions,
   CanvaListFolderItemsOptions,
@@ -168,7 +172,7 @@ function normalizeDesign(design: CanvaDesignResponse): CanvaDesign {
   return {
     id: design.id,
     title: design.title ?? null,
-    owner: { userId: design.owner.user_id, teamId: design.owner.team_id },
+    owner: design.owner ? { userId: design.owner.user_id, teamId: design.owner.team_id } : null,
     thumbnail: normalizeThumbnail(design.thumbnail),
     editUrl: design.urls.edit_url,
     viewUrl: design.urls.view_url,
@@ -612,9 +616,10 @@ export class CanvaVerifier extends WorkerEntrypoint<Env, CanvaVerifierProps> imp
 // Action model.
 //
 // Every write is submitted to the ApprovalQueue and stored as a pending action; it is only performed
-// against Canva when applyAction() is later called. The one action today, design creation, is not
-// simulated: Canva assigns the design ID at creation time and the Connect API offers no way to
-// delete a design, so there is nothing a provisional record could usefully stand in for.
+// against Canva when applyAction() is later called. Neither action is simulated: Canva assigns the
+// design ID when it does the work and the Connect API offers no way to delete a design, so there is
+// nothing a provisional record could usefully stand in for. Generation is additionally asynchronous
+// on Canva's side, so applying it starts a job whose outcome `listGeneratedDesigns` reads back.
 
 type ActionState = "staged" | "pending" | "approved" | "rejected" | "failed";
 
@@ -627,15 +632,33 @@ type CreateDesignAction = BaseAction & {
   assetId?: string;
 };
 
-type CanvaAction = CreateDesignAction;
+type GenerateDesignAction = BaseAction & {
+  type: "generateDesign";
+  brief: string;
+  designType: CanvaGenerationDesignType;
+  outline?: CanvaGenerateDesignOptions["outline"];
+};
+
+type CanvaAction = CreateDesignAction | GenerateDesignAction;
+
+/** The Canva job an applied generateDesign action started, updated as it is polled. */
+type GenerationState = {
+  jobId: string;
+  startedAt: number;
+  status: CanvaGenerationJob["status"];
+  design?: CanvaDesign;
+  error?: { code: string; message: string };
+};
 
 type StoredActionRecord = {
   action: CanvaAction;
   state: ActionState;
   appliedAt?: number;
   rejectedAt?: number;
-  /** Set once applied, so revert can at least point the user at the design. */
+  /** Set once a createDesign action is applied, so revert can at least point the user at the design. */
   createdDesign?: { id: string; editUrl: string };
+  /** Set once a generateDesign action is applied. */
+  generation?: GenerationState;
 };
 
 // How long applied/rejected action records are retained before being pruned from DO storage.
@@ -656,6 +679,27 @@ const PRESET_DESIGN_TYPES = new Set(["doc", "whiteboard", "presentation"]);
 // Canva's documented bounds for custom design dimensions, in pixels.
 const CUSTOM_DESIGN_MIN_PX = 40;
 const CUSTOM_DESIGN_MAX_PX = 8000;
+// Canva's documented bounds for design generation requests.
+const GENERATION_DESIGN_TYPES = new Set(["doc", "presentation"]);
+const GENERATION_BRIEF_MAX = 5000;
+const GENERATION_SECTIONS_MAX = 100;
+const GENERATION_SECTION_TITLE_MAX = 255;
+const GENERATION_SECTION_DESCRIPTION_MAX = 2000;
+const GENERATION_SECTION_POINTS_MAX = 50;
+// Generation jobs expire on Canva 24 hours after they start; a poll after that 404s.
+const GENERATION_JOB_LIFETIME_MS = 24 * 60 * 60 * 1000;
+// How many generation jobs listGeneratedDesigns reports (newest first).
+const GENERATION_LIST_MAX = 20;
+
+/** Converts a polled job into the state stored on its action record. */
+function generationStateFromJob(
+  job: CanvaGenerationJobResponse, startedAt: number,
+): GenerationState {
+  const state: GenerationState = { jobId: job.id, startedAt, status: job.status };
+  if (job.status === "success" && job.result) state.design = normalizeDesign(job.result.design);
+  if (job.status === "failed" && job.error) state.error = { code: job.error.code, message: job.error.message };
+  return state;
+}
 
 function describeDesignType(designType: CanvaDesignType): string {
   return designType.type === "preset"
@@ -729,11 +773,13 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
   // Reads
 
   async getProfile(): Promise<CanvaProfile> {
-    const [me, profile] = await this.#withApi(api => Promise.all([api.getCurrentUser(), api.getProfile()]));
+    const [me, profile, capabilities] = await this.#withApi(api =>
+      Promise.all([api.getCurrentUser(), api.getProfile(), api.getCapabilities()]));
     return {
       userId: me.team_user.user_id,
       teamId: me.team_user.team_id,
       displayName: profile.profile.display_name,
+      canGenerateDesigns: capabilities.capabilities.includes("design_generation"),
     };
   }
 
@@ -834,6 +880,73 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
     };
   }
 
+  prepareGenerateDesign(
+    brief: string, designType: CanvaGenerationDesignType, options: CanvaGenerateDesignOptions,
+  ): GenerateDesignAction {
+    return {
+      approvalId: this.#counter("approval"),
+      submittedAt: Date.now(),
+      type: "generateDesign",
+      brief,
+      designType,
+      ...(options.outline !== undefined ? { outline: options.outline } : {}),
+    };
+  }
+
+  /**
+   * The generation jobs this binding has started, newest first, with any still-running job polled
+   * first so the caller sees Canva's current answer. Each poll result is persisted, so a finished
+   * job is never asked about again and a job that has aged out of Canva is reported as expired.
+   */
+  async listGeneratedDesigns(): Promise<CanvaGenerationJob[]> {
+    const applied: Array<[string, StoredActionRecord]> = [];
+    for (const [key, record] of this.ctx.storage.kv.list<StoredActionRecord>({ prefix: "retiredAction:" })) {
+      if (record.action.type === "generateDesign" && record.state === "approved" && record.generation) {
+        applied.push([key, record]);
+      }
+    }
+    applied.sort((a, b) => b[1].action.submittedAt - a[1].action.submittedAt);
+
+    const jobs: CanvaGenerationJob[] = [];
+    for (const [key, record] of applied.slice(0, GENERATION_LIST_MAX)) {
+      const action = record.action as GenerateDesignAction;
+      let generation = record.generation!;
+      if (generation.status === "in_progress") {
+        generation = await this.#refreshGeneration(generation);
+        record.generation = generation;
+        this.ctx.storage.kv.put(key, record);
+      }
+      jobs.push({
+        id: generation.jobId,
+        brief: action.brief,
+        designType: action.designType,
+        startedAt: new Date(generation.startedAt).toISOString(),
+        status: generation.status,
+        design: generation.design ?? null,
+        error: generation.error ?? null,
+      });
+    }
+    return jobs;
+  }
+
+  async #refreshGeneration(current: GenerationState): Promise<GenerationState> {
+    try {
+      const job = await this.#withApi(api => api.getDesignGeneration(current.jobId));
+      return generationStateFromJob(job, current.startedAt);
+    } catch (error) {
+      // Canva forgets a job 24 hours after it starts, so a 404 past that point is the job aging out
+      // rather than vanishing; an earlier 404 is passed through since it means something is wrong.
+      const expired = error instanceof CanvaApiError && error.status === 404
+        && Date.now() - current.startedAt > GENERATION_JOB_LIFETIME_MS;
+      if (!expired) throw error;
+      return {
+        ...current,
+        status: "failed",
+        error: { code: "expired", message: "The generation job expired on Canva before it completed." },
+      };
+    }
+  }
+
   async submitActionForApproval(
     queue: RpcStub<ApprovalQueue>,
     action: CanvaAction,
@@ -884,6 +997,16 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
         record.createdDesign = { id: created.id, editUrl: created.urls.edit_url };
         break;
       }
+      case "generateDesign": {
+        const startedAt = Date.now();
+        const job = await this.#withApi(api => api.createDesignGeneration({
+          brief: action.brief,
+          design_type: action.designType,
+          ...(action.outline !== undefined ? { outline: action.outline } : {}),
+        }));
+        record.generation = generationStateFromJob(job, startedAt);
+        break;
+      }
     }
   }
 
@@ -906,11 +1029,13 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
       return { message: "This action has not been applied, so there is nothing to revert.", canRetry: false };
     }
     // The Connect API has no endpoint to delete a design, so the best we can do is point at it.
-    const where = record.createdDesign
-      ? ` It is at ${record.createdDesign.editUrl}; move it to the trash from the Canva editor.`
-      : "";
+    const editUrl = record.createdDesign?.editUrl ?? record.generation?.design?.editUrl;
+    const where = editUrl ? ` It is at ${editUrl}; move it to the trash from the Canva editor.` : "";
+    const what = record.action.type === "generateDesign" ? "generation" : "creation";
+    const credits = record.action.type === "generateDesign"
+      ? " The AI credits it consumed are not refunded." : "";
     return {
-      message: `Canva designs cannot be deleted through the API, so this creation must be undone by hand.${where}`,
+      message: `Canva designs cannot be deleted through the API, so this ${what} must be undone by hand.${where}${credits}`,
       canRetry: false,
     };
   }
@@ -1024,6 +1149,72 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
       // back a world where it is missing and conclude the call failed.
       awaitDecision: true,
     });
+  }
+
+  @skipRpcValidation()
+  async generateDesign(
+    brief: string, designType: CanvaGenerationDesignType, options?: CanvaGenerateDesignOptions,
+  ): Promise<void> {
+    if (typeof brief !== "string" || brief.trim() === "" || brief.length > GENERATION_BRIEF_MAX) {
+      throw new Error(`generateDesign(): brief must be a non-empty string of at most ${GENERATION_BRIEF_MAX} characters.`);
+    }
+    if (!designType || typeof designType !== "object" || designType.type !== "preset"
+        || !GENERATION_DESIGN_TYPES.has(designType.name)) {
+      throw new Error(`generateDesign(): designType must be { type: "preset", name: "doc" | "presentation" }.`);
+    }
+    const opts = options ?? {};
+    if (opts.outline !== undefined) {
+      if (designType.name !== "presentation") {
+        throw new Error("generateDesign(): an outline is only valid for presentations.");
+      }
+      const sections = opts.outline?.sections;
+      if (!Array.isArray(sections) || sections.length === 0 || sections.length > GENERATION_SECTIONS_MAX) {
+        throw new Error(`generateDesign(): outline.sections must have 1 to ${GENERATION_SECTIONS_MAX} entries.`);
+      }
+      sections.forEach((section, index) => {
+        const at = `outline.sections[${index}]`;
+        if (!section || typeof section !== "object") throw new Error(`generateDesign(): ${at} must be an object.`);
+        if (typeof section.title !== "string" || section.title.trim() === ""
+            || section.title.length > GENERATION_SECTION_TITLE_MAX) {
+          throw new Error(`generateDesign(): ${at}.title must be 1 to ${GENERATION_SECTION_TITLE_MAX} characters.`);
+        }
+        if (section.description !== undefined && (typeof section.description !== "string"
+            || section.description.trim() === "" || section.description.length > GENERATION_SECTION_DESCRIPTION_MAX)) {
+          throw new Error(`generateDesign(): ${at}.description must be 1 to ${GENERATION_SECTION_DESCRIPTION_MAX} characters.`);
+        }
+        if (section.points !== undefined && (!Array.isArray(section.points)
+            || section.points.length > GENERATION_SECTION_POINTS_MAX
+            || section.points.some(point => typeof point !== "string"))) {
+          throw new Error(`generateDesign(): ${at}.points must be an array of at most ${GENERATION_SECTION_POINTS_MAX} strings.`);
+        }
+      });
+    }
+
+    const action = this.#gk.prepareGenerateDesign(brief, designType, opts);
+    const slides = opts.outline ? ` with a ${opts.outline.sections.length}-slide outline` : "";
+    await this.#gk.submitActionForApproval(this.#queue, action, {
+      title: `Generate a Canva ${designType.name} with AI`,
+      description:
+        `Ask Canva's AI to generate ${describeDesignType(designType)}${slides} from this brief:\n\n` +
+        `> ${brief.replaceAll("\n", "\n> ")}\n\n` +
+        `**This spends your Canva AI credits.** The design is saved to your Canva account once ` +
+        `generation finishes; the agent can follow progress with listGeneratedDesigns().`,
+      // The Connect API cannot delete a design, and credits are not refundable.
+      implementsRevert: false,
+      // Not simulated and asynchronous: nothing exists until approved and generated.
+      awaitDecision: true,
+    });
+  }
+
+  async listGeneratedDesigns(): Promise<CanvaGenerationJob[]> {
+    const jobs = await this.#gk.listGeneratedDesigns();
+    const finished = jobs.filter(job => job.status === "success").length;
+    await this.#queue.authorizeObservation({
+      title: "Read Canva generation jobs",
+      description: `Read ${jobs.length} design generation job(s) started from this connection` +
+        ` (${finished} finished).`,
+    });
+    return jobs;
   }
 
   async getFolder(folderId: string): Promise<CanvaFolder> {

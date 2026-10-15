@@ -58,7 +58,8 @@ export type CanvaTeamUserResponse = { user_id: string; team_id: string };
 export type CanvaDesignResponse = {
   id: string;
   title?: string;
-  owner: CanvaTeamUserResponse;
+  /** Absent on the design summary a generation job returns. */
+  owner?: CanvaTeamUserResponse;
   thumbnail?: CanvaThumbnailResponse;
   urls: { edit_url: string; view_url: string };
   created_at: number;
@@ -99,6 +100,26 @@ export type CanvaCreateDesignRequest = {
   design_type: CanvaDesignTypeRequest;
   title?: string;
   asset_id?: string;
+};
+
+// Design generation (POST /generations, GET /generations/{jobId}). A preview API: Canva may change it
+// without a version bump, and public integrations that use it cannot pass Canva's review.
+
+export type CanvaGenerationDesignTypeRequest = { type: "preset"; name: "doc" | "presentation" };
+
+export type CanvaCreateGenerationRequest = {
+  brief: string;
+  design_type: CanvaGenerationDesignTypeRequest;
+  outline?: { sections: { title: string; description?: string; points?: string[] }[] };
+};
+
+export type CanvaGenerationJobResponse = {
+  id: string;
+  status: "in_progress" | "success" | "failed";
+  /** Present only when `status` is "success". */
+  result?: { design: CanvaDesignResponse };
+  /** Present only when `status` is "failed". */
+  error?: { code: string; message: string };
 };
 
 // ---------------------------------------------------------------------------
@@ -169,6 +190,14 @@ export class CanvaApi {
     return this.#request("GET", "users/me/profile");
   }
 
+  /**
+   * GET /users/me/capabilities: which plan-gated features this user has, e.g. "design_generation".
+   * Rate limited to 10 requests per minute per user, so callers should not poll it.
+   */
+  getCapabilities(): Promise<{ capabilities: string[] }> {
+    return this.#request("GET", "users/me/capabilities");
+  }
+
   // --- Designs ---
 
   /** GET /designs: list or search the user's designs, one page at a time. */
@@ -192,6 +221,25 @@ export class CanvaApi {
   async createDesign(body: CanvaCreateDesignRequest): Promise<CanvaDesignResponse> {
     const result = await this.#request<{ design: CanvaDesignResponse }>("POST", "designs", { body });
     return result.design;
+  }
+
+  // --- Design generation ---
+
+  /**
+   * POST /generations: start an AI design generation job. Spends the user's AI credits. Returns the
+   * job, usually still "in_progress"; a 429 with code "credit_quota_exceeded" means the allowance is
+   * used up, and a 403 means generation isn't available to this user.
+   */
+  async createDesignGeneration(body: CanvaCreateGenerationRequest): Promise<CanvaGenerationJobResponse> {
+    const result = await this.#request<{ job: CanvaGenerationJobResponse }>("POST", "generations", { body });
+    return result.job;
+  }
+
+  /** GET /generations/{jobId}: poll a generation job. Free to call; jobs expire after 24 hours (404). */
+  async getDesignGeneration(jobId: string): Promise<CanvaGenerationJobResponse> {
+    const result = await this.#request<{ job: CanvaGenerationJobResponse }>(
+      "GET", `generations/${encodeURIComponent(jobId)}`);
+    return result.job;
   }
 
   // --- Folders ---

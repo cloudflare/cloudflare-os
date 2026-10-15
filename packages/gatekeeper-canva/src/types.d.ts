@@ -8,10 +8,11 @@
 //
 // Reads are observations: they are logged and may be blocked by policy, but need no approval.
 // Writes are actions: they are queued for the user's approval and nothing reaches Canva until the
-// action is approved. The only action in this version is `createDesign()`, and it is NOT
-// simulated — it returns once queued, and the design does not appear in `listDesigns()` until the
-// user approves it and the design really exists. The harness pauses the agent until the user
-// decides, so after `createDesign()` resolves the agent should list designs to find the new one.
+// action is approved. There are two, `createDesign()` and `generateDesign()`, and neither is
+// simulated — each returns once queued, and nothing appears in `listDesigns()` until the user
+// approves it and Canva has done the work. The harness pauses the agent until the user decides, so
+// after an action resolves the agent should read back: `listDesigns()` for a created design, and
+// `listGeneratedDesigns()` for a generated one (generation is asynchronous on Canva's side).
 //
 // Pagination follows Canva's own model: a page returns an opaque `continuation` token when more
 // results exist, and the caller passes it back to fetch the next page. A page may contain fewer
@@ -50,6 +51,11 @@ export type CanvaProfile = {
   teamId: string;
   /** The user's display name, as shown in Canva. */
   displayName: string;
+  /**
+   * Whether this user's plan and team settings allow AI design generation. When false,
+   * `generateDesign()` will be refused by Canva at apply time, so check this before offering it.
+   */
+  canGenerateDesigns: boolean;
 };
 
 /** Metadata for a Canva design. */
@@ -58,8 +64,8 @@ export type CanvaDesign = {
   id: string;
   /** Design title. Untitled designs have no title. */
   title: string | null;
-  /** The design's owner. */
-  owner: CanvaUserRef;
+  /** The design's owner. Null when Canva omits it, as it does for a freshly generated design. */
+  owner: CanvaUserRef | null;
   /** Thumbnail of the first page, if Canva has rendered one. */
   thumbnail: CanvaThumbnail | null;
   /** URL that opens the design in the Canva editor (requires the viewer to have edit access). */
@@ -187,6 +193,54 @@ export type CanvaCreateDesignOptions = {
   assetId?: string;
 };
 
+/** The kinds of design Canva can generate from a brief. Only these two presets are supported. */
+export type CanvaGenerationDesignType = { type: "preset"; name: "doc" | "presentation" };
+
+/** One slide of a presentation outline. */
+export type CanvaGenerationSection = {
+  /** Slide title, 1 to 255 characters. */
+  title: string;
+  /** What the slide should cover, up to 2000 characters. */
+  description?: string;
+  /** Bullet points for the slide, up to 50. */
+  points?: string[];
+};
+
+/** Options for `generateDesign()`. */
+export type CanvaGenerateDesignOptions = {
+  /**
+   * A slide-by-slide outline, 1 to 100 sections. Only valid when the design type is
+   * "presentation"; Canva rejects it for docs.
+   */
+  outline?: { sections: CanvaGenerationSection[] };
+};
+
+/** One design generation job started from this connection, as returned by `listGeneratedDesigns()`. */
+export type CanvaGenerationJob = {
+  /** Canva's job ID. */
+  id: string;
+  /** The brief the design was generated from. */
+  brief: string;
+  /** The kind of design requested. */
+  designType: CanvaGenerationDesignType;
+  /** ISO 8601 timestamp of when the job was started on Canva. */
+  startedAt: string;
+  /**
+   * "in_progress" while Canva is still generating; "success" once the design exists; "failed" when
+   * Canva could not or would not generate it. Jobs expire on Canva 24 hours after they start, so a
+   * job still in progress after that is reported as failed with code "expired".
+   */
+  status: "in_progress" | "success" | "failed";
+  /** The generated design. Present only when `status` is "success". */
+  design: CanvaDesign | null;
+  /**
+   * Why generation failed. Present only when `status` is "failed". `code` is "content_not_allowed"
+   * when the brief or output failed Canva's content-safety checks, "generation_failed" when Canva
+   * could not complete the job, or "expired" when the job aged out before completing.
+   */
+  error: { code: string; message: string } | null;
+};
+
 // ---------------------------------------------------------------------------
 // Session
 
@@ -230,6 +284,38 @@ export interface CanvaAccountSession {
    * new design and its edit URL.
    */
   createDesign(designType: CanvaDesignType, options?: CanvaCreateDesignOptions): Promise<void>;
+
+  // --- AI generation ---
+
+  /**
+   * Queue the generation of a doc or presentation from a text brief, using Canva's AI. Action.
+   *
+   * This spends the user's Canva AI credit allowance, so it always requires approval and the
+   * approval shows the full brief. Resolves as soon as the request is queued, not when the design
+   * exists: once the user approves, the gatekeeper starts the job on Canva, and generation then
+   * takes anywhere from seconds to a few minutes. Call `listGeneratedDesigns()` to follow it and
+   * get the resulting design's edit URL. Check `getProfile().canGenerateDesigns` first; Canva
+   * refuses the job for users whose plan or team settings don't allow generation.
+   *
+   * @param brief What to make: subject, purpose, required wording, tone, and visual direction.
+   *   1 to 5000 characters. A specific brief produces a far better design than a vague one.
+   * @param designType "doc" or "presentation".
+   * @param options An optional slide outline, for presentations only.
+   */
+  generateDesign(
+    brief: string,
+    designType: CanvaGenerationDesignType,
+    options?: CanvaGenerateDesignOptions,
+  ): Promise<void>;
+
+  /**
+   * The design generation jobs started from this connection, newest first. Observation.
+   *
+   * Refreshes the status of any job still in progress before returning, so calling this a few
+   * times, a few seconds apart, is how to wait for a generation to finish. Jobs the user rejected
+   * before they started are not included.
+   */
+  listGeneratedDesigns(): Promise<CanvaGenerationJob[]>;
 
   // --- Folders ---
 
