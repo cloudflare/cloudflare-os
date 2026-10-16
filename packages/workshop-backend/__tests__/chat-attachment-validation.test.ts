@@ -72,6 +72,17 @@ describe("canInlineChatAttachmentImage", () => {
     expect(canInlineChatAttachmentImage("image/gif", new Uint8Array())).toBe(false);
     expect(canInlineChatAttachmentImage("image/jpeg", Uint8Array.of(0xff, 0xd8, 0xff, 0xe1, 0, 0))).toBe(false);
   });
+
+  it.each(["png", "jpeg", "VP8X", "VP8L", "VP8 "].flatMap(format => [
+    {width: 2000, height: 2000, allowed: true},
+    {width: 2001, height: 1, allowed: false},
+    {width: 1, height: 2001, allowed: false},
+  ].map(size => ({format, ...size}))))(
+    "many-image request: $format $width×$height: inline=$allowed", ({format, width, height, allowed}) => {
+      const {mimeType, bytes} = imageHeader(format, width, height);
+      expect(canInlineChatAttachmentImage(mimeType, bytes, 2000)).toBe(allowed);
+    },
+  );
 });
 
 describe("assertChatAttachmentSize", () => {

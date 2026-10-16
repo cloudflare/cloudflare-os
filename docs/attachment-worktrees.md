@@ -52,10 +52,15 @@ projection publish atomically; a reset resumes without duplicate files. Previous
 files are not overwritten, even if the agent has edited or renamed them. Original payload
 copies are dropped only after their immutable blob is durable. Compatibility readers remain
 for chats not yet visited and old staged-upload handles; this is not a bulk deletion policy.
+Migration retries a file up to three times per visit; persistent failures are logged and left
+retryable without blocking other files or future messages. Replay shows an explicit unavailable
+content marker if an original payload cannot be read, rather than failing the whole chat.
 Model requests inline only compatible image/document inputs and valid text; other files are
 identified by workspace path, never lossy UTF-8 replacement characters or an unsupported
 provider content part. Images with an edge above 8000 pixels or unrecognized dimension headers
 stay workspace-only on every model replay; no resize/transcode changes their original bytes.
+When the replay contains more than 20 candidate images/documents, image edges are conservatively
+limited to 2000 pixels, including images attached in earlier turns. Originals remain unchanged.
 New images are read from the same immutable blob for previews; there
 is no separate payload copy in attachment records. Existing limits remain: 4 MiB per file,
 5 MiB and five files per message.

@@ -77,12 +77,13 @@ export function isAllowedChatAttachmentImageMimeType(mimeType: string | undefine
 }
 
 /** Keep oversized or unrecognized image headers workspace-only, without changing stored bytes. */
-export function canInlineChatAttachmentImage(mimeType: string, bytes: Uint8Array): boolean {
+export function canInlineChatAttachmentImage(
+    mimeType: string, bytes: Uint8Array, maxEdge = 8000): boolean {
   const dimensions = imageDimensions(sanitizeChatAttachmentMimeType(mimeType), bytes);
-  // Anthropic rejects an edge above 8000 pixels. This is a model-input guard, not an upload
-  // restriction: original files remain available through the scratch worktree and downloads.
+  // Anthropic permits 8000 pixels normally, but only 2000 in many-image requests. This is a
+  // model-input guard, not an upload restriction: originals remain in the worktree/downloads.
   // https://platform.claude.com/docs/en/build-with-claude/vision#request-limits
-  return dimensions !== undefined && dimensions.every(edge => edge > 0 && edge <= 8000);
+  return dimensions !== undefined && dimensions.every(edge => edge > 0 && edge <= maxEdge);
 }
 
 // Read dimensions from supported format headers only; never decode/decompress pixel data.

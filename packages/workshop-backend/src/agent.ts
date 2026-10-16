@@ -3,7 +3,7 @@ import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replac
   type FileContent, type CodeContent, type CodeChange,
   type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
-import { canInlineChatAttachmentImage, decodeChatAttachmentText } from './chat-attachment-validation';
+import { canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType } from './chat-attachment-validation';
 import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger, obsContext } from "./observability";
 import { createTracer } from "@gadgets/observability/tracing";
@@ -2119,6 +2119,13 @@ async function runAgentPass(
     applyReplayedChange(checkpoint.proposedChange, false);
   }
 
+  // Count across the whole replay, not just the latest upload batch. PDFs also count on some
+  // providers; conservatively include candidate parts even if their headers later rule them out.
+  const attachmentImageCount = chatMessages.reduce((count, msg) => count + (msg.type === "message"
+    ? msg.attachments?.filter(attachment => isAllowedChatAttachmentImageMimeType(attachment.mimeType) ||
+        (attachment.mimeType === PDF_MIME_TYPE && modelApiSupportsPdfAttachments(handle.model.api))).length ?? 0
+    : 0), 0);
+  const attachmentImageMaxEdge = attachmentImageCount > 20 ? 2000 : 8000;
   for (let [msgIndex, msg] of chatMessages.entries()) {
     let modelMessageStart = modelMessages.length;
     let msgTimestamp = msg.timestamp.getTime();
@@ -2193,9 +2200,20 @@ async function runAgentPass(
                     ? `; workspace file env.${agentContext.attachments.bindingName}/` +
                       attachment.workspacePath
                     : "";
-                let data = await hooks.getChatAttachmentData(chatId, attachment.id);
+                let data: Uint8Array;
+                try {
+                  data = await hooks.getChatAttachmentData(chatId, attachment.id);
+                } catch (error) {
+                  // A missing legacy payload must not make the entire conversation unusable.
+                  // Keep the reference visible, retry on later replay, and never invent bytes.
+                  logger.warn("chat attachment unavailable during replay", {
+                    event: "chat.attachment.replay.unavailable", chatId, sequence: msg.sequence, error,
+                  });
+                  return [{type: "text", text: `\n\n[Attached file${filename}${workspaceLocation}; ` +
+                    "original contents are currently unavailable.]"}];
+                }
                 let text = decodeChatAttachmentText(attachment.mimeType, data);
-                if (canInlineChatAttachmentImage(attachment.mimeType, data)) {
+                if (canInlineChatAttachmentImage(attachment.mimeType, data, attachmentImageMaxEdge)) {
                   return [{type: "text", text: `\n\n[Attached image${filename}${workspaceLocation}]`}, {
                     type: "image",
                     data: data.toBase64(),

@@ -5292,48 +5292,70 @@ class OverseerImpl implements AgentHooks {
   // original-download reference publish together, so a reset retries without duplicating it.
   async #migrateChatAttachments(chatId: number): Promise<void> {
     if (this.getChatAgentContext(chatId).attachmentsMigrated) return;
+    let complete = true;
     const messages = [...this.storage.chats.list({prefix: chatKeyPrefix(chatId)})];
     for (const message of messages) {
       if (message.type !== "message") continue;
       for (const attachment of message.attachments ?? []) {
-        const source = this.storage.chatAttachmentContent.get(attachment.id);
-        if (source?.state.type !== "committed" || source.state.chatId !== chatId) continue;
-        if (source.state.oid !== undefined && attachment.workspacePath !== undefined) continue;
-        const oid = source.state.oid ??
-          (await this.gitStore.writeBlob(await this.getChatAttachmentData(chatId, attachment.id))).oid;
-        const projected = {...attachment, oid};
-        const files = attachment.workspacePath === undefined
-          ? await this.#prepareWorkspaceAttachmentFiles(chatId, [projected]) : new Map<string, FileContent>();
-        const worktree = this.#attachmentsWorktree(chatId);
-        const prepared = await this.#prepareAttachmentsWorktree(chatId, files, message.author);
-        const changes = worktree && files.size
-          ? this.#prepareWorkspaceAttachmentChanges(chatId, worktree, files) : [];
-        this.storage.transaction(() => {
-          if (!this.storage.chatMeta.get(chatId)) return;
-          const current = this.storage.chats.get(chatKey(chatId, message.sequence));
-          if (current?.type !== "message") return;
-          const ref = current.attachments?.find(ref => ref.id === attachment.id);
-          if (!ref) return;
-          const stored = this.storage.chatAttachmentContent.get(ref.id);
-          if (stored?.state.type !== "committed" || stored.state.chatId !== chatId) return;
-          if (stored.state.oid !== undefined && ref.workspacePath !== undefined) return;
-          if (this.#attachmentsWorktree(chatId)?.id !== worktree?.id) {
-            throw new Error("Scratch worktree changed during attachment migration; retry.");
+        // The publication checks can race collaborator edits. Recompute from durable state on
+        // retry; successful earlier files are idempotently skipped, including after a DO reset.
+        for (let attempt = 0; attempt < 3; ++attempt) {
+          try {
+            await this.#migrateChatAttachment(chatId, message.sequence, attachment.id);
+            break;
+          } catch (error) {
+            if (attempt < 2) continue;
+            complete = false;
+            this.logger.warn("legacy attachment migration deferred", {
+              event: "chat.attachment.migration.deferred", chatId, sequence: message.sequence, error,
+            });
           }
-          if (prepared) this.#installAttachmentsWorktree(chatId, prepared);
-          if (worktree) this.#appendWorkspaceAttachments(chatId, worktree, changes, message.author);
-          Object.assign(ref, projected);
-          this.storage.chats.put(current);
-          this.storage.chatAttachmentContent.put({fileId: ref.id, state: {
-            type: "committed", chatId, oid, workspacePath: ref.workspacePath,
-          }});
-        });
-        await this.ctx.storage.sync();
+        }
       }
     }
-    if (this.storage.chatMeta.get(chatId)) {
+    if (complete && this.storage.chatMeta.get(chatId)) {
       this.storage.chatContext.put({...this.getChatAgentContext(chatId), attachmentsMigrated: true});
     }
+  }
+
+  async #migrateChatAttachment(chatId: number, sequence: number, id: string): Promise<void> {
+    const message = this.storage.chats.get(chatKey(chatId, sequence));
+    if (message?.type !== "message") return;
+    const attachment = message.attachments?.find(ref => ref.id === id);
+    if (!attachment) return;
+    const source = this.storage.chatAttachmentContent.get(id);
+    if (source?.state.type !== "committed" || source.state.chatId !== chatId) return;
+    if (source.state.oid !== undefined && attachment.workspacePath !== undefined) return;
+    const oid = source.state.oid ??
+      (await this.gitStore.writeBlob(await this.getChatAttachmentData(chatId, id))).oid;
+    const projected = {...attachment, oid};
+    const files = attachment.workspacePath === undefined
+      ? await this.#prepareWorkspaceAttachmentFiles(chatId, [projected]) : new Map<string, FileContent>();
+    const worktree = this.#attachmentsWorktree(chatId);
+    const prepared = await this.#prepareAttachmentsWorktree(chatId, files, message.author);
+    const changes = worktree && files.size
+      ? this.#prepareWorkspaceAttachmentChanges(chatId, worktree, files) : [];
+    this.storage.transaction(() => {
+      if (!this.storage.chatMeta.get(chatId)) return;
+      const current = this.storage.chats.get(chatKey(chatId, sequence));
+      if (current?.type !== "message") return;
+      const ref = current.attachments?.find(ref => ref.id === id);
+      if (!ref) return;
+      const stored = this.storage.chatAttachmentContent.get(id);
+      if (stored?.state.type !== "committed" || stored.state.chatId !== chatId) return;
+      if (stored.state.oid !== undefined && ref.workspacePath !== undefined) return;
+      if (this.#attachmentsWorktree(chatId)?.id !== worktree?.id) {
+        throw new Error("Scratch worktree changed during attachment migration; retry.");
+      }
+      if (prepared) this.#installAttachmentsWorktree(chatId, prepared);
+      if (worktree) this.#appendWorkspaceAttachments(chatId, worktree, changes, message.author);
+      Object.assign(ref, projected);
+      this.storage.chats.put(current);
+      this.storage.chatAttachmentContent.put({fileId: id, state: {
+        type: "committed", chatId, oid, workspacePath: ref.workspacePath,
+      }});
+    });
+    await this.ctx.storage.sync();
   }
 
   #attachmentsWorktree(chatId: number): WorktreeRecord | undefined {

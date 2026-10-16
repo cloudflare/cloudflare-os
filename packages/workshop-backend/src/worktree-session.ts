@@ -167,6 +167,7 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
     if (value !== undefined) return value;
     if (this.turn.getRemovedPaths(this.worktreeId).has(path)) throw new Error(`${path}: no such file`);
     const base = await this.host.gitCache.fileBytesAtCommit(this.#pinBase(), path);
+    // The session may have closed while the base faulted in; do not serve it after revocation.
     this.#pinBase();
     if (!base) throw new Error(`${path}: no such file`);
     const current = this.turn.getOverlayFiles(this.worktreeId).get(path);

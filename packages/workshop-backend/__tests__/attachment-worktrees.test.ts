@@ -4,7 +4,7 @@ import {abortAllDurableObjects, runInDurableObject} from "cloudflare:test";
 import {buildPackStream, decodePackStream} from "../src/git-codec";
 import {validateChatAttachmentUpload} from "../src/chat-attachment-validation";
 import {runAgent} from "../src/agent";
-import {createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall, type Message} from "@earendil-works/pi-ai";
+import {createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall, type Api, type Message} from "@earendil-works/pi-ai";
 import type {OverseerDurableObject} from "../src/overseer";
 import type {UserDurableObject} from "../src/user";
 import type {CodeChange} from "@gadgets/workshop-shared/code-change";
@@ -23,14 +23,14 @@ async function step(impl: Impl, chatId: number, change: CodeChange) {
   await impl.commitAgentStep(chatId, AUTHOR, [], {changes: [{change}], createdGadgets: [],
     createdWorktrees: [], addedBindings: [], worktreeCommits: [], blueprintMerges: []});
 }
-async function scriptedTurn(impl: Impl, chatId: number, calls: ReturnType<typeof fauxToolCall>[]) {
+async function scriptedTurn(impl: Impl, chatId: number, calls: ReturnType<typeof fauxToolCall>[], api?: Api) {
   // Isolate file operations from compaction of the legacy model-inline attachment payload.
   const faux = createFauxCore({models: [{id: "faux-model", contextWindow: 8_000_000}]});
   const requests: Message[][] = [];
   faux.setResponses(calls.length
     ? [fauxAssistantMessage(calls, {stopReason: "toolUse"}), fauxAssistantMessage(fauxText("Done"))]
     : [fauxAssistantMessage(fauxText("Done"))]);
-  await runAgent(impl, {model: faux.getModel(), stream: (model, context, options) => {
+  await runAgent(impl, {model: {...faux.getModel(), ...(api ? {api} : {})}, stream: (model, context, options) => {
     requests.push(structuredClone(context.messages));
     return faux.stream(model, context, options);
   }}, chatId, AUTHOR, new AbortController().signal, USER,
@@ -83,11 +83,13 @@ describe("attachment worktree ingress", () => {
       delete context.attachmentsMigrated;
       impl.storage.chatContext.put(context);
       const writeBlob = impl.gitStore.writeBlob.bind(impl.gitStore);
-      const fault = vi.spyOn(impl.gitStore, "writeBlob")
-        .mockImplementationOnce(writeBlob).mockRejectedValueOnce(new Error("migration interrupted"));
+      const fault = vi.spyOn(impl.gitStore, "writeBlob").mockImplementation(bytes => {
+        if (bytes[0] === 0) return Promise.reject(new Error("migration interrupted"));
+        return writeBlob(bytes);
+      });
       try {
-        await expect(impl.sendChatMessage(user, {profile: USER}, chatId, "Continue"))
-          .rejects.toThrow("migration interrupted");
+        await impl.sendChatMessage(user, {profile: USER}, chatId, "Continue");
+        expect(impl.getChatAgentContext(chatId).attachmentsMigrated).not.toBe(true);
       } finally { fault.mockRestore(); }
       worktreeId = impl.getChatAgentContext(chatId).attachments!.worktreeId;
       expect(impl.storage.chatAttachmentContent.get(ids[0])?.data).toBeUndefined();
@@ -119,6 +121,84 @@ describe("attachment worktree ingress", () => {
       expect(JSON.stringify(requests)).toContain("workspace file env.SCRATCH/legacy-2.txt");
     });
   });
+
+  it("keeps a chat usable across eviction with a missing legacy payload and retries after repair", async () => {
+    const name = crypto.randomUUID(), ids = [crypto.randomUUID(), crypto.randomUUID()];
+    const original = new TextEncoder().encode("healthy legacy file\n");
+    let chatId: number, worktreeId: number;
+    await inKernel(name, async impl => {
+      const user = env.TEST_USER.getByName(crypto.randomUUID());
+      chatId = await impl.newChat(user, {profile: USER}, "Old chat");
+      const message = [...impl.storage.chats.list()].find(message => message.type === "message")!;
+      if (message.type !== "message") throw new Error("Expected message");
+      message.attachments = ids.map((id, i) => ({id, mimeType: "text/plain", name: `${i}.txt`, size: original.length}));
+      impl.storage.chats.put(message);
+      ids.forEach((id, i) => impl.storage.chatAttachmentContent.put({fileId: id,
+        ...(i ? {data: original} : {}), state: {type: "committed", chatId}}));
+      const context = impl.getChatAgentContext(chatId);
+      delete context.attachmentsMigrated;
+      impl.storage.chatContext.put(context);
+      await impl.sendChatMessage(user, {profile: USER}, chatId, "Continue despite the missing upload");
+      expect(impl.getChatAgentContext(chatId).attachmentsMigrated).not.toBe(true);
+      worktreeId = impl.getChatAgentContext(chatId).attachments!.worktreeId;
+      expect(await impl.getChatAttachmentData(chatId, ids[1])).toEqual(original);
+      const request = JSON.stringify(await scriptedTurn(impl, chatId, []));
+      expect(request).toContain("original contents are currently unavailable");
+      expect(request).toContain("healthy legacy file");
+      await impl.ctx.storage.sync();
+    });
+    await abortAllDurableObjects();
+    await inKernel(name, async impl => {
+      const user = env.TEST_USER.getByName(crypto.randomUUID());
+      await impl.sendChatMessage(user, {profile: USER}, chatId, "Another turn");
+      expect(JSON.stringify(await scriptedTurn(impl, chatId, [])))
+        .toContain("original contents are currently unavailable");
+      // Repairing the source is observed on the next visit; failures are not permanently skipped.
+      impl.storage.chatAttachmentContent.put({fileId: ids[0], data: original, state: {type: "committed", chatId}});
+      await impl.sendChatMessage(user, {profile: USER}, chatId, "Retry the repaired upload");
+      expect(impl.getChatAgentContext(chatId).attachmentsMigrated).toBe(true);
+      expect(impl.getChatAgentContext(chatId).attachments?.worktreeId).toBe(worktreeId);
+      expect(await impl.getChatAttachmentData(chatId, ids[0])).toEqual(original);
+      const request = JSON.stringify(await scriptedTurn(impl, chatId, []));
+      expect(request).not.toContain("original contents are currently unavailable");
+      expect(request).toContain("env.SCRATCH/0.txt");
+      expect(request).not.toContain("1-2.txt");
+    });
+  });
+
+  it.each(["before publication", "after durable publication"])(
+    "retries a transient migration failure %s without duplicate projection", boundary => inKernel(crypto.randomUUID(), async impl => {
+    const user = env.TEST_USER.getByName(crypto.randomUUID()), id = crypto.randomUUID();
+    const chatId = await impl.newChat(user, {profile: USER}, "Old chat");
+    const message = [...impl.storage.chats.list()].find(message => message.type === "message")!;
+    if (message.type !== "message") throw new Error("Expected message");
+    message.attachments = [{id, mimeType: "text/plain", name: "old.txt", size: 3}];
+    impl.storage.chats.put(message);
+    impl.storage.chatAttachmentContent.put({fileId: id, data: new TextEncoder().encode("old"),
+      state: {type: "committed", chatId}});
+    const context = impl.getChatAgentContext(chatId);
+    delete context.attachmentsMigrated;
+    impl.storage.chatContext.put(context);
+    const sync = impl.ctx.storage.sync.bind(impl.ctx.storage);
+    const fault = boundary === "before publication"
+      ? vi.spyOn(impl.gitStore, "writeBlob").mockRejectedValueOnce(new Error("transient failure"))
+      : vi.spyOn(impl.ctx.storage, "sync").mockImplementationOnce(async () => {
+        await sync();
+        throw new Error("migration acknowledgement lost");
+      });
+    try {
+      await impl.sendChatMessage(user, {profile: USER}, chatId, "Continue");
+      expect(impl.getChatAgentContext(chatId).attachmentsMigrated).toBe(true);
+      expect(fault).toHaveBeenCalledTimes(boundary === "before publication" ? 2 : 1);
+      expect(await impl.getChatAttachmentData(chatId, id)).toEqual(new TextEncoder().encode("old"));
+      const worktree = impl.getChatAgentContext(chatId).attachments!.worktreeId;
+      expect((await impl.gitCache.listCommitTreePaths(impl.getWorktreePinBase(worktree)!))
+        .map(entry => entry.path)).toEqual(["old.txt"]);
+      const stored = [...impl.storage.chats.list()].find(record =>
+        record.type === "message" && record.attachments?.length);
+      expect(stored?.type === "message" && stored.attachments?.[0].workspacePath).toBe("old.txt");
+    } finally { fault.mockRestore(); }
+  }));
 
   it("reads and greps a full-size text upload without changing its byte-backed OT state", () => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
@@ -498,6 +578,47 @@ describe("attachment worktree ingress", () => {
     const value = await impl.gitCache.fileBytesAtCommit(tree.baseCommit, file.name);
     expect(impl.gitStore.readBlob(value!.oid, value!.byteLength)).toEqual(bytes);
   }));
+
+  it.each(["image/png", "application/pdf"])(
+    "reprojects earlier large images when a later %s crosses the many-image limit", mimeType => inKernel(crypto.randomUUID(), async impl => {
+      // Header fixtures exercise projection without decoding pixels or altering original bytes.
+      const large = new Uint8Array(24), small = new Uint8Array(24);
+      for (const [bytes, width] of [[large, 4000], [small, 2000]] as const) {
+        bytes.set([137, 80, 78, 71, 13, 10, 26, 10]);
+        const view = new DataView(bytes.buffer);
+        view.setUint32(8, 13); view.setUint32(12, 0x49484452);
+        view.setUint32(16, width); view.setUint32(20, 1000);
+      }
+      const user = env.TEST_USER.getByName(crypto.randomUUID());
+      const blob = await impl.gitStore.writeBlob(large);
+      const batch = Array.from({length: 5}, (_, i) => ({oid: blob.oid, mimeType: "image/png", name: `${i}.png`}));
+      const chatId = await impl.newChat(user, {profile: USER}, "First five", undefined, batch);
+      for (let i = 1; i < 4; ++i) await impl.sendChatMessage(user, {profile: USER}, chatId, "Five more", undefined, batch);
+      const imageParts = (messages: Message[]) => messages.flatMap(message =>
+        Array.isArray(message.content) ? message.content.filter(part => part.type === "image") : []);
+      const before = await scriptedTurn(impl, chatId, [], "anthropic-messages");
+      expect(imageParts(before[0])).toHaveLength(20);
+      const lastBytes = mimeType === "image/png" ? small : new TextEncoder().encode("%PDF-1.7");
+      const last = await impl.gitStore.writeBlob(lastBytes);
+      await impl.sendChatMessage(user, {profile: USER}, chatId, "One more", undefined,
+        [{oid: last.oid, mimeType, name: "last"}]);
+      for (let turn = 0; turn < 2; ++turn) {
+        if (turn) await impl.sendChatMessage(user, {profile: USER}, chatId, "Replay again");
+        const request = (await scriptedTurn(impl, chatId, [], "anthropic-messages"))[0];
+        const parts = imageParts(request);
+        expect(parts).toHaveLength(1);
+        expect(parts[0]).toMatchObject({type: "image", mimeType, data: lastBytes.toBase64()});
+        expect(JSON.stringify(request)).toContain("workspace file env.SCRATCH/0.png");
+        expect(JSON.stringify(request)).toContain("binary contents are not inlined");
+      }
+      const originals = [...impl.storage.chats.list()].flatMap(message =>
+        message.type === "message" ? message.attachments ?? [] : []);
+      expect(originals).toHaveLength(21);
+      for (const attachment of originals.slice(0, 20)) {
+        expect(await impl.getChatAttachmentData(chatId, attachment.id)).toEqual(large);
+      }
+    }),
+  );
 
   it("never scans attachment payloads on text-only sends or namespace allocation", () => inKernel(crypto.randomUUID(), async impl => {
     const list = vi.spyOn(impl.storage.chatAttachmentContent, "list")
