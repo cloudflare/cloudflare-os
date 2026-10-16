@@ -181,6 +181,24 @@ describe("UnreadStateBridge", () => {
     root = createRoot(container);
   });
 
+  it("keeps healthy state live, withholds incomplete native totals, and retries missing workspaces", async () => {
+    vi.useFakeTimers();
+    await render();
+    await update(snapshot(1));
+    await update({...snapshot(2), unavailableWorkspaceIds: ["workspace-2"]});
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("unread counts are unavailable");
+    expect(container.querySelector("button")?.textContent).toBe("read");
+    expect(nativeUpdate).toHaveBeenCalledExactlyOnceWith(snapshot(1));
+    await update({...snapshot(3), unavailableWorkspaceIds: ["workspace-2"]});
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(subscribeToUnreadState).toHaveBeenCalledTimes(2);
+    await update(snapshot(1)); // New subscription revision stream.
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    expect(nativeUpdate).toHaveBeenCalledTimes(2);
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    expect(subscribeToUnreadState).toHaveBeenCalledTimes(2);
+  });
+
   it("does not retry a rejected subscription in a tight loop", async () => {
     vi.useFakeTimers();
     using _ = vi.spyOn(console, "error").mockImplementation(() => {});

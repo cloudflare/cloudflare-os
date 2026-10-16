@@ -113,8 +113,10 @@ export const ReadTimeline = ({
     if (!viewport || !content || !chat || !visit || jump) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const readViewport = () => {
-      clearTimeout(timer);
+      // Continuous streaming/resizing must not postpone a visible receipt indefinitely.
+      if (timer !== undefined) return;
       timer = setTimeout(() => {
+        timer = undefined;
         const current = latest.current;
         if (
           !current.chat ||
@@ -166,7 +168,7 @@ export const ReadTimeline = ({
       window.removeEventListener("resize", readViewport);
       document.removeEventListener("visibilitychange", readViewport);
     };
-  }, [container, chat, visit, jump, workspaceId, chatId, children]);
+  }, [container, chat, visit, jump, workspaceId, chatId]);
 
   return (
     <TimelineContext.Provider

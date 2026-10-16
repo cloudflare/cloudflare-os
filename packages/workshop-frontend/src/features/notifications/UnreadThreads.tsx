@@ -44,6 +44,10 @@ export const UnreadThreads = () => {
       )}
       {!unread?.state ? (
         <p role="status" className="px-3 py-8 text-sm text-kumo-subtle">Loading unread threads…</p>
+      ) : chats.length === 0 && unread.state.unavailableWorkspaceIds?.length ? (
+        <p role="status" className="px-3 py-8 text-sm text-kumo-subtle">
+          Unread threads will appear once workspace counts are available.
+        </p>
       ) : chats.length === 0 ? (
         <div role="status" className="flex flex-col items-center gap-3 px-3 py-16 text-center">
           <Chats size={32} className="text-kumo-inactive" />

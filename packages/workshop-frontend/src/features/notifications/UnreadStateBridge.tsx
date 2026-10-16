@@ -71,6 +71,8 @@ export const UnreadStateBridge = ({
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let retryDelay = 1_000;
     const subscribe = () => {
+      clearTimeout(retryTimer);
+      retryTimer = undefined;
       const currentGeneration = ++generation;
       // Revisions are in-memory in the User DO; a reset starts a fresh subscription stream.
       latest = undefined;
@@ -84,8 +86,19 @@ export const UnreadStateBridge = ({
           if (!active || currentGeneration !== generation) return;
           if (latest && next.revision <= latest.revision) return;
           latest = next;
-          retryDelay = 1_000;
           setSnapshot({ api: authenticatedApi, state: next });
+          if (next.unavailableWorkspaceIds?.length) {
+            // Keep healthy workspaces live, but retry the missing heads even if no new message
+            // arrives. Never overwrite the native badge with an incomplete lower bound.
+            if (!retryTimer) {
+              retryTimer = setTimeout(subscribe, retryDelay);
+              retryDelay = Math.min(retryDelay * 2, 30_000);
+            }
+            return;
+          }
+          clearTimeout(retryTimer);
+          retryTimer = undefined;
+          retryDelay = 1_000;
           try {
             nativeApp()?.unreadStateChanged?.(next);
           } catch (cause) {
@@ -154,6 +167,11 @@ export const UnreadStateBridge = ({
       }}
     >
       <div className="flex h-full min-h-0 flex-col">
+        {!!state?.unavailableWorkspaceIds?.length && (
+          <div role="status" className="shrink-0 bg-kumo-base p-2 text-center text-sm text-kumo-subtle">
+            Some workspace unread counts are unavailable. Retrying…
+          </div>
+        )}
         {failure?.api === authenticatedApi && (
           <div
             role="alert"

@@ -171,6 +171,33 @@ describe("timeline read/unread experience", () => {
     expect(dispose).not.toHaveBeenCalled();
   });
 
+  it("acknowledges visible messages during continuous streaming renders and resizes", async () => {
+    vi.useFakeTimers();
+    let resized = () => {};
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { resized = callback; }
+      observe() {}
+      disconnect() {}
+    });
+    try {
+      await render();
+      await update(snapshot());
+      await act(async () => vi.advanceTimersByTime(10));
+      for (let chunk = 0; chunk < 6; chunk++) {
+        await render();
+        await act(async () => {
+          resized();
+          vi.advanceTimersByTime(50);
+        });
+      }
+      expect(markChatRead).toHaveBeenCalledExactlyOnceWith({
+        workspaceId: "workspace", chatId: 1, throughSequence: 0, readEpoch: 0,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("pauses automatic reading when another device marks unread, and resumes after an explicit read", async () => {
     await render();
     await update(snapshot(1, 2));
