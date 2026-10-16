@@ -1,7 +1,7 @@
 // Client for the Cloudflare-operated notification service. Every request is signed with this
 // installation's key; the service accepts only fixed, typed templates. See docs/notifications.md.
 
-import type { UserNotification } from "@gadgets/workshop-shared/api";
+import type { UserNotification, WebPushSubscription } from "@gadgets/workshop-shared/api";
 
 const encoder = new TextEncoder();
 
@@ -64,13 +64,19 @@ const isServiceId = (value: unknown): value is string =>
   typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 
 /**
- * Exchange the native app's one-time device registration for an install-bound subscription, along
- * with the install-scoped key of the device it reaches.
+ * Exchange the native app's one-time device registration, or a browser's Web Push subscription,
+ * for an install-bound subscription, along with the install-scoped key of the device it reaches.
  */
 export async function registerDevice(
-    env: Cloudflare.Env, deviceRegistrationId: string,
+    env: Cloudflare.Env, registration: string | WebPushSubscription,
 ): Promise<{ deviceKey: string; subscriptionId: string }> {
-  let response = await signedPost(env, "/v1/subscriptions", { deviceRegistrationId });
+  // A Web Push subscription is rebuilt field by field: RPC validation forwards extra properties,
+  // and the service's schema is strict.
+  let body = typeof registration === "string"
+      ? { deviceRegistrationId: registration }
+      : { webPush: { endpoint: registration.endpoint,
+          keys: { p256dh: registration.keys.p256dh, auth: registration.keys.auth } } };
+  let response = await signedPost(env, "/v1/subscriptions", body);
   if (!response.ok) {
     throw new Error(`Notification registration failed with status ${response.status}.`);
   }
