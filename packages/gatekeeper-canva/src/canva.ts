@@ -731,15 +731,15 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
   }
 
   /**
-   * Observer tracking: Canva uses the "private-only" strategy for now. Designs have real per-user
-   * sharing, and a whole-account binding can read any of them, so a collaborator opening a shared
-   * gadget could see designs they were never granted. Until a per-design access check exists (the
-   * verifier already exposes the observer's identity for it), nobody but the owner may observe.
+   * Observer tracking: private-only (docs/observers.md §9, strategy A). Designs are shared inside
+   * Canva, and sharing a gadget in the Workshop changes nothing there, so a collaborator opening a
+   * shared gadget would read designs Canva never showed them. The Connect API offers no way to grant
+   * that access or to tell what another Canva user may see, so nobody but the owner may observe.
    */
   async addObserver(_id: string, _user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     throw new Error(
-      "A gadget that reads a Canva account cannot be shared yet: the Canva connector does not " +
-      "verify that collaborators can see the same designs.");
+      "A gadget that reads a Canva account cannot be shared: sharing it in the Workshop would not " +
+      "share the designs in Canva, and the Canva connector cannot check what a collaborator may see.");
   }
 
   async removeObserver(_id: string): Promise<void> {}

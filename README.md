@@ -217,6 +217,7 @@ Each gatekeeper package contains instructions for how to set it up:
 * [Spotify](packages/gatekeeper-spotify/README.md)
 * [Microsoft 365](packages/gatekeeper-microsoft/README.md)
 * [X API](packages/gatekeeper-x/README.md)
+* [Canva API](packages/gatekeeper-canva/README.md)
 * [ZoomInfo API](packages/gatekeeper-zoominfo/README.md)
 
 ## Developing
