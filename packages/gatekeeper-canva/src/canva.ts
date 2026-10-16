@@ -270,26 +270,16 @@ type CallbackResult =
   | { handoff: ConnectHandoff }
   | { refused: { title: string; detail: string } };
 
-/** The pre-kit credential layout, migrated on first read so a dev account connected before the port survives. */
-type LegacyStoredCredentials = {
-  refreshToken: string; accessToken: string; accessTokenExpiresAt: number; scopes: string[];
-};
-
 const IDENTITY_KEY = "identity";
 
 export class UserAccount extends DurableObject<Env> {
+  // No legacy migration: the pre-kit layout stored its grant under the same `credentials` key the
+  // coordinator owns, with the same fields but `accessTokenExpiresAt` for `expiresAt`. The
+  // coordinator reads such a record as a non-expiring grant, and the first 401 heals it through a
+  // refresh that rewrites it canonically, so a dev account connected before the port keeps working.
   readonly #creds = new CredentialCoordinator<CanvaGrant>(this.ctx.storage.kv, {
     expiresAt: grant => grant.expiresAt,
     refreshSkewMs: ACCESS_TOKEN_SAFETY_MS,
-    legacyKeys: ["credentials"],
-    upgrade: kv => {
-      const legacy = kv.get<LegacyStoredCredentials>("credentials");
-      if (!legacy) return undefined;
-      return {
-        accessToken: legacy.accessToken, refreshToken: legacy.refreshToken,
-        expiresAt: legacy.accessTokenExpiresAt, scopes: legacy.scopes,
-      };
-    },
     // No `discardMint`: Canva does not document whether revoking one refresh token revokes the
     // whole authorization, so a mint a reconnect overtook is dropped unrevoked rather than risking
     // the connection that won.
