@@ -82,7 +82,7 @@ describe("ShareCollectionDialog", () => {
       await Promise.resolve();
     });
 
-    await act(async () => button("Add people")?.click());
+    await act(async () => button("Select users")?.click());
     expect(receiver).toBeDefined();
 
     // Change the role control while the picker is still open.
@@ -100,9 +100,6 @@ describe("ShareCollectionDialog", () => {
       editorOption?.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
       editorOption?.click();
     });
-    expect(document.body.textContent).toContain(
-      "Can also edit content, share it, and manage Git mirroring.",
-    );
 
     await act(async () => receiver!.receive({ ticket: "accepted" }));
     expect(shareContextCollection).toHaveBeenLastCalledWith("collection", "accepted", "viewer");

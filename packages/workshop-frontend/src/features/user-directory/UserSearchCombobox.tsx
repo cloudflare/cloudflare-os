@@ -33,7 +33,7 @@ type Props = {
   search: (query: string) => Promise<UserDirectoryRecord[]>
   onValueChange: (value: string) => void
   onSelect: (user: UserDirectoryRecord) => void
-  /** Enter with a nonempty query and no highlighted result, once search has settled. */
+  /** Submit a typed exact identifier when directory search is disabled. */
   onSubmit: () => void
   onSearchStateChange?: (state: UserSearchState) => void
 }
@@ -63,8 +63,7 @@ export function UserSearchCombobox({
 
   const open = searching && directory.current && !dismissed
   const results = directory.results
-  const directOption = directory.settled
-  const optionCount = results.length + (directOption ? 1 : 0)
+  const optionCount = results.length
   const searchState = useMemo<UserSearchState>(() => ({
     status: directory.status,
     query: directory.query,
@@ -85,8 +84,8 @@ export function UserSearchCombobox({
   }
 
   const submitCurrentIdentifier = () => {
-    if (!disabled && !selected && query !== '' && inputRef.current?.value.trim() === query &&
-      (!searchEnabled || directory.settled)) onSubmit()
+    if (!searchEnabled && !disabled && !selected && query !== '' &&
+      inputRef.current?.value.trim() === query) onSubmit()
   }
 
   useLayoutEffect(() => {
@@ -206,22 +205,6 @@ export function UserSearchCombobox({
               </span>
             </button>
           ))}
-          {directOption && (
-            <button
-              ref={activeIndex === results.length ? activeOptionRef : undefined}
-              id={`${listboxId}-option-${results.length}`}
-              type="button"
-              role="option"
-              tabIndex={-1}
-              aria-selected={activeIndex === results.length}
-              onMouseEnter={() => setActiveIndex(results.length)}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={submitCurrentIdentifier}
-              className="w-full rounded-xl px-3 py-2 text-left text-[13px] hover:bg-kumo-tint/70"
-            >
-              Select exact username or email: {query}
-            </button>
-          )}
         </div>
       )}
     </div>

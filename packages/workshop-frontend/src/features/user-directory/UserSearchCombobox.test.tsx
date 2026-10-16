@@ -183,7 +183,7 @@ describe('UserSearchCombobox', () => {
       document.removeEventListener('keydown', bubbled)
     }
     await pressKey(input, 'Enter')
-    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(onSubmit).not.toHaveBeenCalled()
     expect(onSelect).not.toHaveBeenCalled()
 
     for (const key of ['ArrowDown', 'ArrowUp']) {
@@ -199,7 +199,7 @@ describe('UserSearchCombobox', () => {
     expect(search).toHaveBeenCalledTimes(1)
   })
 
-  it('does not submit empty text or a search that is debouncing or pending, but accepts a settled failure', async () => {
+  it('does not submit empty text or a directory search, including after a failure', async () => {
     const pending = deferred<UserDirectoryRecord[]>()
     const onSearchStateChange = vi.fn<NonNullable<Props['onSearchStateChange']>>()
     const search = vi.fn<Props['search']>(() => pending.promise)
@@ -221,34 +221,25 @@ describe('UserSearchCombobox', () => {
       status: 'failed', query: 'dormant@example.com', resultCount: 0,
     })
     await pressKey(input, 'Enter')
-    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(onSubmit).not.toHaveBeenCalled()
     consoleError.mockRestore()
   })
 
-  it('submits a nonempty exact identifier after a successful empty directory search', async () => {
-    const { input, onSubmit, onSelect } = await render({ search: async () => [] })
-    await typeInto(input, 'dormant@example.com')
-    expect(container.textContent).toContain('No users found.')
-    await pressKey(input, 'Enter')
-    expect(onSubmit).toHaveBeenCalledTimes(1)
-    expect(onSelect).not.toHaveBeenCalled()
-  })
 
-  it.each(['empty', 'failed'])('offers a clickable exact identifier after a %s search', async (outcome) => {
+  it.each(['empty', 'failed'])('does not offer or submit an exact identifier after a %s search', async (outcome) => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     const pending = deferred<UserDirectoryRecord[]>()
     const { input, onSubmit, onSelect } = await render({ search: () => pending.promise })
     await typeInto(input, 'dormant@example.com')
-    expect(container.querySelector('[role="option"]')).toBeNull()
     await act(async () => {
       if (outcome === 'empty') pending.resolve([])
       else pending.reject(new Error('offline'))
     })
-    const exact = container.querySelector<HTMLButtonElement>('[role="option"]')!
-    expect(exact).not.toBeNull()
-    expect(input.getAttribute('aria-activedescendant')).toBe(exact.id)
-    await act(async () => exact.click())
-    expect(onSubmit).toHaveBeenCalledOnce()
+    expect(container.querySelector('[role="option"]')).toBeNull()
+    expect(container.querySelector('button')).toBeNull()
+    expect(input.getAttribute('aria-activedescendant')).toBeNull()
+    await pressKey(input, 'Enter')
+    expect(onSubmit).not.toHaveBeenCalled()
     expect(onSelect).not.toHaveBeenCalled()
   })
 
@@ -293,16 +284,18 @@ describe('UserSearchCombobox', () => {
     await typeInto(input, 'grace')
     expect(search).toHaveBeenCalledTimes(1)
   })
-  it('accepts the exact identifier even when directory matches point to someone else', async () => {
-    const { input, onSelect, onSubmit } = await render();
-    await typeInto(input, 'another@example.com');
-    await pressKey(input, 'ArrowDown');
-    const exact = Array.from(container.querySelectorAll('[role="option"]'))
-      .find(option => option.textContent?.includes('Select exact username or email'))!;
-    expect(input.getAttribute('aria-activedescendant')).toBe(exact.id);
-    await pressKey(input, 'Enter');
-    expect(onSubmit).toHaveBeenCalledOnce();
-    expect(onSelect).not.toHaveBeenCalled();
+  it('only navigates directory matches, without an exact-identifier option', async () => {
+    const { input, onSelect, onSubmit } = await render({ search: async () => [ADA, GRACE] })
+    await typeInto(input, 'a')
+    const options = container.querySelectorAll('[role="option"]')
+    expect(options).toHaveLength(2)
+    await pressKey(input, 'ArrowDown')
+    expect(input.getAttribute('aria-activedescendant')).toBe(options[1].id)
+    await pressKey(input, 'ArrowDown')
+    expect(input.getAttribute('aria-activedescendant')).toBe(options[0].id)
+    await pressKey(input, 'Enter')
+    expect(onSelect).toHaveBeenCalledWith(ADA)
+    expect(onSubmit).not.toHaveBeenCalled()
   })
 
 })

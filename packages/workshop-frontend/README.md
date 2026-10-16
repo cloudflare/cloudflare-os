@@ -20,16 +20,17 @@ sourcemaps would otherwise linger. `vite.config.ts` documents both.
 
 ## Gatekeeper user selection
 
-Gatekeeper management apps can open the Workshop-owned person picker through `selectUsers(receiver)`.
-Selections are delivered through the receiver's `receive(selection)` method.
-With directory search enabled, every settled nonempty query offers a clickable exact-username/email
-option, including when the directory returns no matches or fails. With search disabled, users enter
-an exact identifier directly. Arrow keys navigate options while focus stays in the input; Tab
-moves to the next control without selecting a person.
+Gatekeeper management apps can open the Workshop-owned **Select users** picker through
+`selectUsers(receiver)`. Selections are delivered through the receiver's `receive(selection)` method.
+With directory search enabled, users select only directory results; empty or failed searches do not
+offer an exact-username/email fallback. With search disabled, users enter an exact identifier
+directly. Arrow keys navigate options while focus stays in the input; Tab moves to the next control
+without selecting a user.
 
-Closing normally waits for ticket minting and selection deliveries. **Stop waiting and close** or
-frame teardown cancels the picker and disposes its outstanding mint and delivery RPC promises as
-well as its receiver. Cancellation cannot undo a selection the app already accepted.
+**Done** and the close button both wait for ticket minting and selection deliveries before closing.
+**Stop waiting and close** or frame teardown cancels the picker and disposes its outstanding mint and
+delivery RPC promises as well as its receiver. Cancellation cannot undo a selection the app already
+accepted.
 
 
 ## Authentication modes

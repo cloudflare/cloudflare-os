@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { newMessagePortRpcSession, RpcPromise, RpcTarget, type RpcStub } from "capnweb";
 import type { AuthenticatedApi, UserDirectoryRecord } from "@gadgets/workshop-shared/api";
 import type { GatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
+import type * as Kumo from '@cloudflare/kumo';
 import GatekeeperUserPickerDialog from "./GatekeeperUserPickerDialog";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -21,10 +22,11 @@ vi.mock("../user-directory/UserSearchCombobox", () => ({
   },
 }));
 
-vi.mock("@cloudflare/kumo", () => {
+vi.mock("@cloudflare/kumo", async (importOriginal) => {
   const Part = ({ children }: { children?: ReactNode }) => <>{children}</>;
   const Dialog = Object.assign(Part, { Root: Part, Title: Part, Description: Part });
-  return { Dialog };
+  const { Button } = await importOriginal<typeof Kumo>();
+  return { Dialog, Button };
 });
 
 vi.mock("../../components/WorkshopControls", () => ({
@@ -103,6 +105,8 @@ describe("GatekeeperUserPickerDialog", () => {
   const added = () => container!.querySelector('[aria-label="Added people"]')?.textContent ?? "";
   const notice = () => container!.querySelector('p[role="status"]')?.textContent;
   const closeButton = () => container!.querySelector<HTMLButtonElement>('[aria-label="Close person picker"]')!;
+  const doneButton = () => Array.from(container!.querySelectorAll('button'))
+    .find(button => button.textContent === 'Done')!;
 
   it("mints a ticket for each pick and delivers it to the app before the picker closes", async () => {
     const { searchUsers, createSelection, onSelected, onClose, props } = await mount(
@@ -138,7 +142,7 @@ describe("GatekeeperUserPickerDialog", () => {
     expect(onSelected).toHaveBeenCalledTimes(2);
     expect(onClose).not.toHaveBeenCalled();
 
-    await act(async () => closeButton().click());
+    await act(async () => doneButton().click());
     expect(onClose).toHaveBeenCalledOnce();
   });
 
@@ -189,7 +193,7 @@ describe("GatekeeperUserPickerDialog", () => {
     expect(added()).toBe("Alice");
   });
 
-  it("waits for minting and delivery before closing, so the app has every selection", async () => {
+  it("waits for minting and delivery when Done is clicked, so the app has every selection", async () => {
     const minting = Promise.withResolvers<GatekeeperUserSelection | null>();
     const delivery = Promise.withResolvers<void>();
     const { createSelection, onSelected, onClose, props } = await mount(
@@ -197,7 +201,8 @@ describe("GatekeeperUserPickerDialog", () => {
 
     await act(async () => props().onSelect(ALICE));
     expect(container!.querySelector('li[role="status"]')?.textContent).toBe("Adding…");
-    await act(async () => closeButton().click());
+    await act(async () => doneButton().click());
+    expect(doneButton().disabled).toBe(true);
     expect(onClose).not.toHaveBeenCalled();
 
     await act(async () => { minting.resolve(selectionFor(ALICE)); await minting.promise; });

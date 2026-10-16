@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Dialog } from '@cloudflare/kumo'
+import { Button, Dialog } from '@cloudflare/kumo'
 import { Check, X } from '@phosphor-icons/react'
 import type { RpcPromise, RpcStub } from 'capnweb'
 import type { AuthenticatedApi, UserDirectoryRecord } from '@gadgets/workshop-shared/api'
@@ -155,17 +155,12 @@ export default function GatekeeperUserPickerDialog({
         container={overlayContainer}
         className="responsive-dialog !z-10 !max-h-[calc(100dvh-128px)] !w-[min(520px,calc(100vw-32px))] !overflow-y-auto bg-kumo-base p-0 !outline-none"
         size="base"
+        aria-describedby={undefined}
       >
         <div className="flex items-start justify-between gap-4 px-5 pb-4 pt-5">
-          <div>
-            <Dialog.Title className="text-[18px] leading-6 font-medium tracking-[-0.4px] text-kumo-default">
-              Select people
-            </Dialog.Title>
-            <Dialog.Description className="mt-1 text-[13px] leading-[18px] text-kumo-subtle">
-              Each person you pick is sent to this service right away. The service decides whether
-              they can be added.
-            </Dialog.Description>
-          </div>
+          <Dialog.Title className="text-[18px] leading-6 font-medium tracking-[-0.4px] text-kumo-default">
+            Select users
+          </Dialog.Title>
           <WorkshopIconButton aria-label="Close person picker" onClick={close} disabled={closing}>
             <X size={18} />
           </WorkshopIconButton>
@@ -233,6 +228,9 @@ export default function GatekeeperUserPickerDialog({
               ))}
             </ul>
           )}
+        </div>
+        <div className="flex justify-end px-5 pb-5">
+          <Button variant="primary" onClick={close} disabled={closing}>Done</Button>
         </div>
       </Dialog>
     </Dialog.Root>

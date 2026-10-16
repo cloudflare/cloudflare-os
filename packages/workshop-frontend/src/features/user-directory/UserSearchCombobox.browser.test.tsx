@@ -20,7 +20,7 @@ afterEach(() => {
 
 it.each([
   { name: 'directory results', results: [{ id: 'ada@example.com', name: 'Ada Lovelace' }] },
-  { name: 'exact identifier fallback', results: [] },
+  { name: 'an empty directory search', results: [] },
 ])('Tabs past $name without losing focus or selecting a person', async ({ results }) => {
   const onSelect = vi.fn<(user: UserDirectoryRecord) => void>()
   const onSubmit = vi.fn<() => void>()
@@ -39,7 +39,8 @@ it.each([
   await act(async () => root!.render(<Harness />))
   const combobox = page.getByRole('combobox', { name: 'Search people' })
   await input(() => userEvent.fill(combobox, 'ada'))
-  await expect.element(page.getByRole('option', { name: 'Select exact username or email: ada' })).toBeVisible()
+  const resultText = results.length > 0 ? 'Ada Lovelace' : 'No users found.'
+  await expect.element(page.getByText(resultText)).toBeVisible()
   await input(() => userEvent.keyboard('{ArrowDown}'))
   await expect.element(combobox).toHaveFocus()
   await input(() => userEvent.tab())

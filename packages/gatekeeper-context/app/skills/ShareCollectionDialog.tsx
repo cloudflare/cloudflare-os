@@ -1,15 +1,12 @@
 import {
-  Badge,
   Banner,
   Button,
   Dialog,
-  LayerCard,
   Loader,
   Select,
-  Switch,
   Text,
 } from "@cloudflare/kumo";
-import { UserPlus, Warning, WarningCircle, X } from "@phosphor-icons/react";
+import { Buildings, Warning, WarningCircle, X } from "@phosphor-icons/react";
 import { RpcTarget } from "capnweb";
 import { useEffect, useRef, useState } from "react";
 import type {
@@ -42,10 +39,10 @@ type ShareState = {
   permissions: ContextCollectionPermissions;
 };
 
-const ROLE_DESCRIPTIONS: Record<ContextCollectionRole, string> = {
-  viewer: "Can read everything in the collection.",
-  editor: "Can also edit content, share it, and manage Git mirroring.",
-  owner: "Can also manage owners and delete the collection.",
+const MEMBER_ROLE_LABELS: Record<ContextCollectionRole, string> = {
+  viewer: "Can view",
+  editor: "Can edit",
+  owner: "Owner",
 };
 
 const errorMessage = (error: unknown, fallback: string) =>
@@ -198,20 +195,71 @@ export const ShareCollectionDialog = ({
     : ["viewer", "editor"];
   const ownerCount = sharing?.members.filter((member) => member.role === "owner").length ?? 0;
 
+  const renderMember = (member: ContextCollectionMember) => {
+    const name = member.displayName ?? "Collection creator";
+    const isOwner = member.role === "owner";
+    const soleOwner = isOwner && ownerCount === 1;
+    const canChangeRole = permissions?.canShare
+      && (!isOwner || permissions.canManageOwners) && !soleOwner;
+    const canRemove = member.isViewer ? !soleOwner : canChangeRole;
+
+    return (
+      <li key={member.memberId} className="flex items-center gap-3 py-3">
+        <span
+          aria-hidden="true"
+          className="flex size-9 shrink-0 items-center justify-center rounded-full bg-kumo-tint text-sm font-medium text-kumo-default"
+        >
+          {name.trim().charAt(0).toUpperCase() || "?"}
+        </span>
+        <span className="min-w-0 flex-1 truncate text-sm text-kumo-default">
+          {name}{member.isViewer && <span className="text-kumo-subtle"> (You)</span>}
+        </span>
+        {canChangeRole || canRemove ? (
+          <Select<ContextCollectionRole | "remove">
+            aria-label={`Role for ${member.isViewer ? "you" : name}`}
+            size="sm"
+            className="w-32 shrink-0"
+            value={member.role}
+            disabled={pending !== null}
+            onValueChange={(role) => {
+              if (role === "remove") void removeMember(member);
+              else if (role && role !== member.role) void changeRole(member, role);
+            }}
+            renderValue={(role) => role === "remove" ? "Remove access" : MEMBER_ROLE_LABELS[role]}
+          >
+            {(canChangeRole ? roleOptions : [member.role]).map((role) => (
+              <Select.Option key={role} value={role}>{MEMBER_ROLE_LABELS[role]}</Select.Option>
+            ))}
+            {canRemove && (
+              <Select.Option value="remove">
+                {member.isViewer ? "Leave collection" : "Remove access"}
+              </Select.Option>
+            )}
+          </Select>
+        ) : (
+          <span className="shrink-0 px-3 text-sm font-medium text-kumo-default">
+            {MEMBER_ROLE_LABELS[member.role]}
+          </span>
+        )}
+      </li>
+    );
+  };
+
   return (
     <Dialog.Root
       open={dialog.open}
       onOpenChange={(open) => { if (!open) dialog.requestClose(); }}
       onOpenChangeComplete={dialog.onOpenChangeComplete}
     >
-      <Dialog className="w-[min(560px,calc(100vw-32px))]! bg-kumo-base p-0 top-[8%]! translate-y-0!" size="sm">
-        <div className="flex items-center justify-between gap-4 border-b border-kumo-line px-4 py-4 sm:px-6">
-          <div className="min-w-0">
-            <Dialog.Title className="text-[17px] leading-6 font-medium tracking-[-0.35px] text-kumo-default">
-              Share collection
-            </Dialog.Title>
-            <Text variant="secondary" DANGEROUS_className="truncate">{collection.title}</Text>
-          </div>
+      <Dialog
+        aria-describedby={undefined}
+        className="top-[8%]! flex max-h-[84dvh] w-[min(560px,calc(100vw-32px))]! translate-y-0! flex-col bg-kumo-base p-0"
+        size="sm"
+      >
+        <div className="flex shrink-0 items-start justify-between gap-4 px-4 pb-4 pt-5 sm:px-6">
+          <Dialog.Title className="min-w-0 text-[17px] leading-6 font-medium tracking-[-0.35px] text-kumo-default">
+            Share “{collection.title}”
+          </Dialog.Title>
           <Dialog.Close
             disabled={pending !== null}
             render={(props) => (
@@ -221,7 +269,7 @@ export const ShareCollectionDialog = ({
             )}
           />
         </div>
-        <div className="flex max-h-[min(72vh,680px)] flex-col gap-5 overflow-y-auto px-4 py-5 sm:px-6">
+        <div className="flex min-h-0 max-h-[min(72vh,680px)] flex-col gap-5 overflow-y-auto px-4 py-5 sm:px-6">
           {!state || !permissions || !sharing ? (
             loadError ? (
               <Banner
@@ -258,13 +306,15 @@ export const ShareCollectionDialog = ({
                 />
               )}
 
-              <div className="flex items-start gap-2">
+              <div className="flex flex-wrap items-center gap-2 rounded-xl bg-kumo-tint p-3">
+                <Text>Add users with role</Text>
                 <Select<ContextCollectionRole>
-                  label="Role for people you add"
-                  className="w-full"
+                  aria-label="Role for users you add"
+                  size="sm"
+                  className="w-28"
                   value={newRole}
-                  // Stays enabled while the picker is open: each session keeps the role it opened with.
-                  description={ROLE_DESCRIPTIONS[newRole]}
+                  // Each picker session keeps the role it opened with.
+                  disabled={!permissions.canShare || (pending !== null && pending !== "picker")}
                   onValueChange={(role) => { if (role) setNewRole(role); }}
                   renderValue={(role) => COLLECTION_ROLE_LABELS[role]}
                 >
@@ -274,85 +324,47 @@ export const ShareCollectionDialog = ({
                 </Select>
                 <Button
                   variant="primary"
-                  className="mt-6 shrink-0"
-                  icon={<UserPlus size={16} />}
+                  className="ml-auto shrink-0"
                   loading={pending === "picker"}
-                  disabled={pending !== null && pending !== "picker"}
+                  disabled={!permissions.canShare || pending !== null}
                   onClick={() => void addPeople()}
                 >
-                  Add people
+                  Select users
                 </Button>
               </div>
 
-              <section className="flex flex-col gap-2">
-                <Text as="h3" bold>People with access</Text>
-                <LayerCard className="divide-y divide-kumo-line bg-kumo-control p-0">
-                  {sharing.members.map((member) => {
-                    const name = member.displayName ?? "Collection creator";
-                    const isOwner = member.role === "owner";
-                    const soleOwner = isOwner && ownerCount === 1;
-                    const locked = (isOwner && !permissions.canManageOwners) || soleOwner;
-                    return (
-                      <div key={member.memberId} className="flex items-center gap-3 px-3 py-2">
-                        <div className="min-w-0 flex-1">
-                          <div className="flex min-w-0 items-center gap-2">
-                            <Text DANGEROUS_className="truncate">{name}</Text>
-                            {member.isViewer && <Badge variant="secondary">You</Badge>}
-                          </div>
-                          {member.isViewer && soleOwner && (
-                            <Text variant="secondary" size="sm">
-                              Make someone else an owner before leaving.
-                            </Text>
-                          )}
-                        </div>
-                        <Select<ContextCollectionRole>
-                          aria-label={`Role for ${member.isViewer ? "you" : name}`}
-                          size="sm"
-                          className="w-28"
-                          value={member.role}
-                          disabled={locked || pending !== null}
-                          onValueChange={(role) => {
-                            if (role && role !== member.role) void changeRole(member, role);
-                          }}
-                          renderValue={(role) => COLLECTION_ROLE_LABELS[role]}
-                        >
-                          {roleOptions.map((role) => (
-                            <Select.Option key={role} value={role}>{COLLECTION_ROLE_LABELS[role]}</Select.Option>
-                          ))}
-                        </Select>
-                        <Button
-                          variant={member.isViewer ? "secondary-destructive" : "ghost"}
-                          size="sm"
-                          aria-label={member.isViewer ? "Leave collection" : `Remove ${name}`}
-                          loading={pending === member.memberId}
-                          disabled={locked || (pending !== null && pending !== member.memberId)}
-                          onClick={() => void removeMember(member)}
-                        >
-                          {member.isViewer ? "Leave" : "Remove"}
-                        </Button>
-                      </div>
-                    );
-                  })}
-                </LayerCard>
-              </section>
-
-              <section className="flex flex-col gap-1 border-t border-kumo-line pt-4">
-                <Switch
-                  label="Anyone in your organization can view"
-                  checked={sharing.everyoneCanView}
-                  disabled={!permissions.canEdit || pending !== null}
-                  onCheckedChange={(checked) => void setEveryoneCanView(checked)}
-                />
-                <Text variant="secondary" size="sm">
-                  Lets anyone in your organization read this collection, so sharing a workspace that
-                  uses it is never blocked. It is not added to their library.
-                </Text>
-              </section>
+              <ul aria-label="People with access" className="flex flex-col">
+                {sharing.members.filter((member) => member.isViewer).map(renderMember)}
+                <li className="flex items-center gap-3 py-3">
+                  <span
+                    aria-hidden="true"
+                    className="flex size-9 shrink-0 items-center justify-center rounded-full bg-kumo-tint text-kumo-default"
+                  >
+                    <Buildings size={20} />
+                  </span>
+                  <span className="min-w-0 flex-1 text-sm text-kumo-default">Anyone in organization</span>
+                  <Select<"none" | "viewer">
+                    aria-label="Access for anyone in organization"
+                    size="sm"
+                    className="w-32 shrink-0"
+                    value={sharing.everyoneCanView ? "viewer" : "none"}
+                    disabled={!permissions.canShare || pending !== null}
+                    onValueChange={(access) => {
+                      if (access) void setEveryoneCanView(access === "viewer");
+                    }}
+                    renderValue={(access) => access === "viewer" ? "Can view" : "No access"}
+                  >
+                    <Select.Option value="none">No access</Select.Option>
+                    <Select.Option value="viewer">Can view</Select.Option>
+                  </Select>
+                </li>
+                {sharing.members.filter((member) => !member.isViewer).map(renderMember)}
+              </ul>
             </>
           )}
         </div>
-        <div className="flex items-center justify-end gap-2 border-t border-kumo-line px-4 py-3 sm:px-6">
-          <Button onClick={dialog.requestClose} disabled={pending !== null}>Done</Button>
+        <div className="flex shrink-0 items-center justify-end gap-2 border-t border-kumo-line px-4 py-3 sm:px-6">
+          <Button variant="primary" onClick={dialog.requestClose} disabled={pending !== null}>Done</Button>
         </div>
       </Dialog>
     </Dialog.Root>
