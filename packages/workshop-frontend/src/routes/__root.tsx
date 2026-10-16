@@ -15,6 +15,7 @@ import LoginPage from '../LoginPage'
 import OnboardingWizard from '../OnboardingWizard'
 import AccountSelectionModal from '../components/billing/AccountSelectionModal'
 import { NotificationBridge } from '../features/notifications/NotificationBridge'
+import { BrowserPushBridge } from '../features/notifications/BrowserPushBridge'
 import {
   DeviceSessionHandoff,
   hasDeviceSessionParameters,
@@ -126,6 +127,7 @@ function RootComponent() {
         <TooltipProvider>
           <Toasty>
             <NotificationBridge authenticatedApi={authenticatedApi} />
+            <BrowserPushBridge />
             <NativeAppBridge />
             <AuthenticatedShell
               authenticatedApi={authenticatedApi}

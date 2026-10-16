@@ -1,0 +1,104 @@
+// @vitest-environment jsdom
+
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import type { RpcStub } from "capnweb";
+import type { AuthenticatedApi, WebPushSubscription } from "@gadgets/workshop-shared/api";
+import { browserPushEnabled, enableBrowserPush, syncBrowserPush } from "./browserPush";
+
+const OWNER_KEY = "gadgets:notifications:browserPushOwner";
+const ENDPOINT = "https://fcm.googleapis.com/wp/new";
+
+type FakeSubscription = {
+  endpoint: string;
+  toJSON: () => PushSubscriptionJSON;
+  unsubscribe: Mock<() => Promise<boolean>>;
+};
+
+const fakeSubscription = (endpoint: string): FakeSubscription => ({
+  endpoint,
+  // As browsers serialize it, expirationTime included.
+  toJSON: () => ({ endpoint, expirationTime: null, keys: { p256dh: "BP", auth: "AA" } }),
+  unsubscribe: vi.fn<() => Promise<boolean>>(async () => true),
+});
+
+describe("browser push", () => {
+  let current: FakeSubscription | null;
+  let registerNotificationDevice: Mock<(registration: WebPushSubscription) => Promise<void>>;
+  let api: RpcStub<AuthenticatedApi>;
+
+  beforeEach(() => {
+    current = null;
+    let pushManager = {
+      getSubscription: async () => current,
+      subscribe: async () => (current ??= fakeSubscription(ENDPOINT)),
+    };
+    Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: {
+      register: async () => ({}),
+      ready: Promise.resolve({ pushManager }),
+      getRegistration: async () => ({ pushManager }),
+    } });
+    Object.defineProperty(navigator, "locks", { configurable: true, value: {
+      request: (_name: string, transition: () => Promise<unknown>) => transition(),
+    } });
+    vi.stubGlobal("Notification", { requestPermission: async () => "granted" });
+    registerNotificationDevice = vi.fn<(registration: WebPushSubscription) => Promise<void>>(
+      async () => {});
+    api = { registerNotificationDevice } as unknown as RpcStub<AuthenticatedApi>;
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    localStorage.clear();
+  });
+
+  it("registers only the fields the service accepts and records the owner", async () => {
+    await expect(enableBrowserPush(api, "alice", "BKey")).resolves.toBe("granted");
+
+    expect(registerNotificationDevice.mock.calls).toEqual(
+      [[{ endpoint: ENDPOINT, keys: { p256dh: "BP", auth: "AA" } }]]);
+    await expect(browserPushEnabled("alice")).resolves.toBe(true);
+    await expect(browserPushEnabled("bob")).resolves.toBe(false);
+  });
+
+  it("leaves no subscription behind when registration fails", async () => {
+    registerNotificationDevice.mockRejectedValue(new Error("offline"));
+
+    await expect(enableBrowserPush(api, "alice", "BKey")).rejects.toThrow("offline");
+
+    expect(current!.unsubscribe).toHaveBeenCalled();
+    expect(localStorage.getItem(OWNER_KEY)).toBeNull();
+  });
+
+  it("keeps a subscription another tab enabled when registering it again fails", async () => {
+    current = fakeSubscription(ENDPOINT);
+    localStorage.setItem(OWNER_KEY, "alice");
+    registerNotificationDevice.mockRejectedValue(new Error("offline"));
+
+    await expect(enableBrowserPush(api, "alice", "BKey")).rejects.toThrow("offline");
+
+    expect(current.unsubscribe).not.toHaveBeenCalled();
+    await expect(browserPushEnabled("alice")).resolves.toBe(true);
+  });
+
+  it("drops another account's subscription without registering it", async () => {
+    current = fakeSubscription("https://fcm.googleapis.com/wp/alice");
+    localStorage.setItem(OWNER_KEY, "alice");
+
+    await syncBrowserPush(api, "bob");
+
+    expect(current.unsubscribe).toHaveBeenCalled();
+    expect(registerNotificationDevice).not.toHaveBeenCalled();
+    expect(localStorage.getItem(OWNER_KEY)).toBeNull();
+  });
+
+  it("registers the signed-in user's own subscription again", async () => {
+    current = fakeSubscription(ENDPOINT);
+    localStorage.setItem(OWNER_KEY, "alice");
+
+    await syncBrowserPush(api, "alice");
+
+    expect(current.unsubscribe).not.toHaveBeenCalled();
+    expect(registerNotificationDevice.mock.calls).toEqual(
+      [[{ endpoint: ENDPOINT, keys: { p256dh: "BP", auth: "AA" } }]]);
+  });
+});
