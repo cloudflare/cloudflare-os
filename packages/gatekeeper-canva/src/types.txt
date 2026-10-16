@@ -4,21 +4,31 @@
 //
 //   1. Canva Account (whole-instance, `https://*`) -> `CanvaAccountSession`.
 //      Access to the connected account via the Canva Connect API: the user's profile, their
-//      designs (search, metadata), their folders, and creating new designs.
+//      designs (search, metadata), their folders and image assets, creating and AI-generating
+//      designs, and AI image transformation.
 //
 // Reads are observations: they are logged and may be blocked by policy, but need no approval.
-// Writes are actions: they are queued for the user's approval and nothing reaches Canva until the
-// action is approved. There are three, `createDesign()`, `generateDesign()` and `transformImage()`,
-// and none is simulated — each returns once queued, and nothing exists until the user approves it
-// and Canva has done the work. The harness pauses the agent until the user decides, so after an
-// action resolves the agent should read back: `listDesigns()` for a created design,
-// `listGeneratedDesigns()` for a generated one, and `listImageTransformations()` for a transformed
-// image (the last two are asynchronous jobs on Canva's side).
+// Listings return a `Cursor`: call `next()` until it returns null, and dispose it when done.
 //
-// Pagination follows Canva's own model: a page returns an opaque `continuation` token when more
-// results exist, and the caller passes it back to fetch the next page. A page may contain fewer
-// items than the requested maximum even when more exist, so paginate until `continuation` is
-// absent, never on page length.
+// Writes are actions: they are queued for the user's approval and nothing reaches Canva until the
+// action is approved. There are three, `createDesign()`, `generateDesign()` and
+// `removeBackground()`, and none is simulated — each returns once queued, and nothing exists until
+// the user approves it and Canva has done the work. The harness pauses the agent until the user
+// decides, so after an action resolves the agent should read back: `listDesigns()` for a created
+// design, `listGeneratedDesigns()` for a generated one, and `listBackgroundRemovals()` for a
+// transformed image (the last two are asynchronous jobs on Canva's side).
+
+// ---------------------------------------------------------------------------
+// Pagination
+
+/**
+ * A pagination cursor over a listing. Call `next()` repeatedly to fetch successive batches; it
+ * returns null once exhausted. An empty batch does NOT mean exhaustion — Canva can return an
+ * empty page mid-walk — so stop on null, never on length. Dispose the cursor when finished.
+ */
+export interface Cursor<T> {
+  next(): Promise<T[] | null>;
+}
 
 // ---------------------------------------------------------------------------
 // Shared value types
@@ -58,8 +68,8 @@ export type CanvaProfile = {
    */
   canGenerateDesigns: boolean;
   /**
-   * Whether this user's plan allows background removal (a premium feature). When false, a
-   * `transformImage()` with a "background_removal" step will be refused by Canva at apply time.
+   * Whether this user's plan allows background removal (a premium feature). When false,
+   * `removeBackground()` will be refused by Canva at apply time.
    */
   canRemoveBackgrounds: boolean;
 };
@@ -74,11 +84,19 @@ export type CanvaDesign = {
   owner: CanvaUserRef | null;
   /** Thumbnail of the first page, if Canva has rendered one. */
   thumbnail: CanvaThumbnail | null;
-  /** URL that opens the design in the Canva editor (requires the viewer to have edit access). */
+  /**
+   * URL that opens the design in the Canva editor. TEMPORARY and PERSONAL: Canva issues it for
+   * the connected user only, and it stops working after 30 days. Never store it in a gadget or
+   * share it with another user; call `getDesign()` again for a fresh one. For a link anyone with
+   * access can open any time, use `https://www.canva.com/design/<id>/edit`.
+   */
   editUrl: string;
-  /** URL that opens a read-only view of the design. */
+  /**
+   * URL that opens a read-only view of the design. Same caveats as `editUrl`: valid for 30 days
+   * and only for the connected user.
+   */
   viewUrl: string;
-  /** Number of pages, if known. */
+  /** Number of pages, if known. Docs have no pages. */
   pageCount: number | null;
   /** ISO 8601 timestamp of when the design was created. */
   createdAt: string;
@@ -129,17 +147,6 @@ export type CanvaFolderItem =
   | { type: "design"; design: CanvaDesign }
   | { type: "image"; image: CanvaImageAsset };
 
-/** A single page of results plus the token for the next page, if any. */
-export type CanvaPage<T> = {
-  /** The items on this page. May be shorter than the requested maximum even when more exist. */
-  items: T[];
-  /**
-   * Opaque token for the next page. Pass it back as `continuation` to fetch more. Absent when this
-   * is the last page.
-   */
-  continuation?: string;
-};
-
 /** Which designs to include when listing. */
 export type CanvaDesignOwnership = "owned" | "shared" | "any";
 
@@ -159,8 +166,6 @@ export type CanvaListDesignsOptions = {
   ownership?: CanvaDesignOwnership;
   /** Sort order (default "relevance" when `query` is set, otherwise "modified_descending"). */
   sortBy?: CanvaDesignSort;
-  /** Token from a previous page's `continuation` to fetch the next page. */
-  continuation?: string;
 };
 
 /** Which kinds of items to include when listing a folder. Defaults to all three. */
@@ -181,19 +186,24 @@ export type CanvaListFolderItemsOptions = {
   itemTypes?: CanvaFolderItemType[];
   /** Sort order (default "modified_descending"). */
   sortBy?: CanvaFolderItemSort;
-  /** Token from a previous page's `continuation` to fetch the next page. */
-  continuation?: string;
 };
 
+// ---------------------------------------------------------------------------
+// Actions
+
+/** Canva's preset design kinds. */
+export type CanvaPresetDesignType = "doc" | "whiteboard" | "presentation";
+
 /**
- * The kind of design to create. Either one of Canva's preset types, or custom pixel dimensions.
+ * The kind of design to create: a preset name, or custom pixel dimensions (each between 40 and
+ * 8000 pixels).
  */
-export type CanvaDesignType =
-  | { type: "preset"; name: "doc" | "whiteboard" | "presentation" }
-  | { type: "custom"; width: number; height: number };
+export type CanvaDesignType = CanvaPresetDesignType | { width: number; height: number };
 
 /** Options for `createDesign()`. */
 export type CanvaCreateDesignOptions = {
+  /** What kind of design to create. */
+  designType: CanvaDesignType;
   /** Title for the new design. Untitled if omitted. */
   title?: string;
   /**
@@ -203,8 +213,8 @@ export type CanvaCreateDesignOptions = {
   assetId?: string;
 };
 
-/** The kinds of design Canva can generate from a brief. Only these two presets are supported. */
-export type CanvaGenerationDesignType = { type: "preset"; name: "doc" | "presentation" };
+/** The kinds of design Canva can generate from a brief. */
+export type CanvaGenerationDesignType = "doc" | "presentation";
 
 /** One slide of a presentation outline. */
 export type CanvaGenerationSection = {
@@ -219,21 +229,21 @@ export type CanvaGenerationSection = {
 /** Options for `generateDesign()`. */
 export type CanvaGenerateDesignOptions = {
   /**
+   * What to make: subject, purpose, required wording, tone, and visual direction. 1 to 5000
+   * characters. A specific brief produces a far better design than a vague one.
+   */
+  brief: string;
+  /** "doc" or "presentation". */
+  designType: CanvaGenerationDesignType;
+  /**
    * A slide-by-slide outline, 1 to 100 sections. Only valid when the design type is
    * "presentation"; Canva rejects it for docs.
    */
   outline?: { sections: CanvaGenerationSection[] };
 };
 
-/**
- * One step of an image transformation. Only background removal exists today; it takes no
- * parameters, keeps the foreground subject, and makes the background transparent. Output is capped
- * at 10 megapixels (larger sources are scaled down).
- */
-export type CanvaImageTransformation = { type: "background_removal" };
-
-/** Options for `transformImage()`. */
-export type CanvaTransformImageOptions = {
+/** Options for `removeBackground()`. */
+export type CanvaRemoveBackgroundOptions = {
   /**
    * Name for the new asset, 1 to 255 characters. Defaults to the source asset's name. Not
    * localised, so write it in the user's language.
@@ -241,53 +251,59 @@ export type CanvaTransformImageOptions = {
   name?: string;
 };
 
-/** One image transformation job started from this connection, as returned by `listImageTransformations()`. */
-export type CanvaImageTransformationJob = {
-  /** Canva's job ID. Null when the job finished during creation and Canva issued no ID. */
+/**
+ * Why a design generation job failed. "content_not_allowed": the brief or output failed Canva's
+ * content-safety checks. "generation_failed": Canva could not complete the job. "expired": the job
+ * aged out on Canva before completing. "refused": Canva refused to start the job (the message says
+ * why, e.g. the user's plan lacks the feature). Other codes may appear as Canva adds them.
+ */
+export type CanvaGenerationErrorCode =
+  | "content_not_allowed" | "generation_failed" | "expired" | "refused" | (string & {});
+
+/**
+ * Why a background removal job failed. "no_foreground_found": the image has no subject to keep.
+ * "quota_exceeded": the user's AI credits ran out. "internal_error": Canva could not complete the
+ * job. "expired": the job aged out before completing. "refused": Canva refused to start the job.
+ * Other codes may appear as Canva adds them.
+ */
+export type CanvaBackgroundRemovalErrorCode =
+  | "no_foreground_found" | "quota_exceeded" | "internal_error" | "expired" | "refused" | (string & {});
+
+/** One design generation job started from this connection, as returned by `listGeneratedDesigns()`. */
+export type CanvaGenerationJob = {
+  /** Canva's job ID. Null when Canva refused to start the job. */
+  id: string | null;
+  /** The brief the design was generated from. */
+  brief: string;
+  /** The kind of design requested. */
+  designType: CanvaGenerationDesignType;
+  /** ISO 8601 timestamp of when the job was started on Canva (or refused). */
+  startedAt: string;
+  /**
+   * "in_progress" while Canva is still generating; "success" once the design exists; "failed" when
+   * Canva could not or would not generate it.
+   */
+  status: "in_progress" | "success" | "failed";
+  /** The generated design. Present only when `status` is "success". */
+  design: CanvaDesign | null;
+  /** Why generation failed. Present only when `status` is "failed". */
+  error: { code: CanvaGenerationErrorCode; message: string } | null;
+};
+
+/** One background removal job started from this connection, as returned by `listBackgroundRemovals()`. */
+export type CanvaBackgroundRemovalJob = {
+  /** Canva's job ID. Null when the job finished during creation, or Canva refused to start it. */
   id: string | null;
   /** The source asset. It is never modified; the result is a new asset. */
   sourceAssetId: string;
-  /** The transformations requested, in order. */
-  transformations: CanvaImageTransformation[];
-  /** ISO 8601 timestamp of when the job was started on Canva. */
+  /** ISO 8601 timestamp of when the job was started on Canva (or refused). */
   startedAt: string;
   /** "in_progress" while Canva is working; "success" once the new asset exists; "failed" otherwise. */
   status: "in_progress" | "success" | "failed";
   /** The new image asset. Present only when `status` is "success". */
   asset: CanvaImageAsset | null;
-  /**
-   * Why the transformation failed. Present only when `status` is "failed". `code` is
-   * "no_foreground_found" when the image has no subject to keep, "quota_exceeded" when the user's AI
-   * credits ran out, "internal_error" when Canva could not complete the job, or "expired" when the
-   * job aged out before completing.
-   */
-  error: { code: string; message: string } | null;
-};
-
-/** One design generation job started from this connection, as returned by `listGeneratedDesigns()`. */
-export type CanvaGenerationJob = {
-  /** Canva's job ID. */
-  id: string;
-  /** The brief the design was generated from. */
-  brief: string;
-  /** The kind of design requested. */
-  designType: CanvaGenerationDesignType;
-  /** ISO 8601 timestamp of when the job was started on Canva. */
-  startedAt: string;
-  /**
-   * "in_progress" while Canva is still generating; "success" once the design exists; "failed" when
-   * Canva could not or would not generate it. Jobs expire on Canva 24 hours after they start, so a
-   * job still in progress after that is reported as failed with code "expired".
-   */
-  status: "in_progress" | "success" | "failed";
-  /** The generated design. Present only when `status` is "success". */
-  design: CanvaDesign | null;
-  /**
-   * Why generation failed. Present only when `status` is "failed". `code` is "content_not_allowed"
-   * when the brief or output failed Canva's content-safety checks, "generation_failed" when Canva
-   * could not complete the job, or "expired" when the job aged out before completing.
-   */
-  error: { code: string; message: string } | null;
+  /** Why the removal failed. Present only when `status` is "failed". */
+  error: { code: CanvaBackgroundRemovalErrorCode; message: string } | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -296,12 +312,11 @@ export type CanvaGenerationJob = {
 /**
  * Access to the connected Canva account. All methods are RPC calls to the gatekeeper.
  *
- * The session is a *read mostly* view of the account: every read is an observation that is logged
- * and may be blocked by policy, and the single write (`createDesign`) is an action that waits for
- * the user's approval.
+ * Every read is an observation that is logged and may be blocked by policy, and every write is an
+ * action that waits for the user's approval.
  */
 export interface CanvaAccountSession {
-  /** Read the connected user's profile. Observation. */
+  /** Read the connected user's profile and which plan-gated features they have. Observation. */
   getProfile(): Promise<CanvaProfile>;
 
   // --- Designs ---
@@ -309,13 +324,13 @@ export interface CanvaAccountSession {
   /**
    * List or search the user's designs. Observation.
    *
-   * Returns one page at a time. Pass the returned `continuation` back in `options.continuation`
-   * to fetch the next page; stop when it is absent. Canva chooses the page size.
+   * Returns a cursor; call `next()` until it returns null and dispose it when done. Canva
+   * chooses the page size.
    */
-  listDesigns(options?: CanvaListDesignsOptions): Promise<CanvaPage<CanvaDesign>>;
+  listDesigns(options?: CanvaListDesignsOptions): Promise<Cursor<CanvaDesign>>;
 
   /**
-   * Get metadata for a single design by ID. Observation.
+   * Get metadata for a single design. Observation.
    *
    * Accepts a bare design ID ("DAFVztcvd9z") or a Canva design URL
    * ("https://www.canva.com/design/DAFVztcvd9z/..."). Throws if the design does not exist or the
@@ -332,7 +347,7 @@ export interface CanvaAccountSession {
    * user decides; once approved, call `listDesigns({ sortBy: "modified_descending" })` to find the
    * new design and its edit URL.
    */
-  createDesign(designType: CanvaDesignType, options?: CanvaCreateDesignOptions): Promise<void>;
+  createDesign(options: CanvaCreateDesignOptions): Promise<void>;
 
   // --- AI generation ---
 
@@ -345,24 +360,16 @@ export interface CanvaAccountSession {
    * takes anywhere from seconds to a few minutes. Call `listGeneratedDesigns()` to follow it and
    * get the resulting design's edit URL. Check `getProfile().canGenerateDesigns` first; Canva
    * refuses the job for users whose plan or team settings don't allow generation.
-   *
-   * @param brief What to make: subject, purpose, required wording, tone, and visual direction.
-   *   1 to 5000 characters. A specific brief produces a far better design than a vague one.
-   * @param designType "doc" or "presentation".
-   * @param options An optional slide outline, for presentations only.
    */
-  generateDesign(
-    brief: string,
-    designType: CanvaGenerationDesignType,
-    options?: CanvaGenerateDesignOptions,
-  ): Promise<void>;
+  generateDesign(options: CanvaGenerateDesignOptions): Promise<void>;
 
   /**
    * The design generation jobs started from this connection, newest first. Observation.
    *
    * Refreshes the status of any job still in progress before returning, so calling this a few
-   * times, a few seconds apart, is how to wait for a generation to finish. Jobs the user rejected
-   * before they started are not included.
+   * times, a few seconds apart, is how to wait for a generation to finish. Includes jobs Canva
+   * refused to start, as failed, so an approved request that went nowhere is visible. Jobs the
+   * user rejected before they started are not included.
    */
   listGeneratedDesigns(): Promise<CanvaGenerationJob[]>;
 
@@ -372,61 +379,51 @@ export interface CanvaAccountSession {
    * Get metadata for an image asset by ID. Observation.
    *
    * Asset IDs come from `listFolderItems()` entries of type "image", or from a finished
-   * `listImageTransformations()` job. Throws if the asset does not exist, is not an image (Canva
-   * also stores videos as assets), or the connected user cannot access it.
+   * `listBackgroundRemovals()` job. Only IDs are accepted, because Canva has no public URL for an
+   * asset. Throws if the asset does not exist, is not an image (Canva also stores videos as
+   * assets), or the connected user cannot access it.
    */
   getImageAsset(assetId: string): Promise<CanvaImageAsset>;
 
   /**
-   * Queue one or more transformations of an image asset, producing a new asset. Action.
+   * Queue the removal of an image's background with Canva's AI, producing a new asset. Action.
    *
    * This spends the user's Canva AI credit allowance, so it always requires approval. The source
-   * asset is left untouched. Resolves as soon as the request is queued, not when the new asset
-   * exists: once the user approves, the gatekeeper starts the job on Canva, which usually completes
-   * within seconds. Call `listImageTransformations()` to follow it and get the new asset's ID.
-   * Check `getProfile().canRemoveBackgrounds` first; Canva refuses background removal for users on
-   * plans without it.
+   * asset is left untouched; the result is a new asset with a transparent background, capped at 10
+   * megapixels. Resolves as soon as the request is queued, not when the new asset exists: once the
+   * user approves, the gatekeeper starts the job on Canva, which usually completes within seconds.
+   * Call `listBackgroundRemovals()` to follow it and get the new asset's ID. Check
+   * `getProfile().canRemoveBackgrounds` first; Canva refuses the job for users on plans without it.
    *
    * @param assetId The source image asset. It must have finished uploading.
-   * @param transformations 1 to 20 steps, applied in order.
-   * @param options An optional name for the new asset.
    */
-  transformImage(
-    assetId: string,
-    transformations: CanvaImageTransformation[],
-    options?: CanvaTransformImageOptions,
-  ): Promise<void>;
+  removeBackground(assetId: string, options?: CanvaRemoveBackgroundOptions): Promise<void>;
 
   /**
-   * The image transformation jobs started from this connection, newest first. Observation.
+   * The background removal jobs started from this connection, newest first. Observation.
    *
    * Refreshes the status of any job still in progress before returning, so calling this a few
-   * times, a few seconds apart, is how to wait for a transformation to finish.
+   * times, a few seconds apart, is how to wait for a removal to finish. Includes jobs Canva refused
+   * to start, as failed.
    */
-  listImageTransformations(): Promise<CanvaImageTransformationJob[]>;
+  listBackgroundRemovals(): Promise<CanvaBackgroundRemovalJob[]>;
 
   // --- Folders ---
 
   /**
-   * Get metadata for a folder by ID. Observation.
+   * Get metadata for a folder. Observation.
    *
-   * Use "root" for the user's top-level Projects folder and "uploads" for their Uploads folder.
+   * Accepts a folder ID or a Canva folder URL ("https://www.canva.com/folder/FAF..."). Use "root"
+   * for the user's top-level Projects folder and "uploads" for their Uploads folder.
    */
-  getFolder(folderId: string): Promise<CanvaFolder>;
-
-  /**
-   * List the sub-folders of a folder. Observation.
-   *
-   * A convenience over `listFolderItems(folderId, { itemTypes: ["folder"] })`. Defaults to the
-   * "root" folder when `folderId` is omitted.
-   */
-  listFolders(folderId?: string, continuation?: string): Promise<CanvaPage<CanvaFolder>>;
+  getFolder(folderIdOrUrl: string): Promise<CanvaFolder>;
 
   /**
    * List the contents of a folder: nested folders, designs, and image assets. Observation.
    *
-   * Returns one page at a time; see `listDesigns()` for the pagination contract. Each item is
-   * tagged with its `type` so a caller can switch on it.
+   * Accepts a folder ID or URL, as `getFolder()` does. Returns a cursor; see `listDesigns()`. Each
+   * item is tagged with its `type` so a caller can switch on it. To list only sub-folders, pass
+   * `{ itemTypes: ["folder"] }`.
    */
-  listFolderItems(folderId: string, options?: CanvaListFolderItemsOptions): Promise<CanvaPage<CanvaFolderItem>>;
+  listFolderItems(folderIdOrUrl: string, options?: CanvaListFolderItemsOptions): Promise<Cursor<CanvaFolderItem>>;
 }

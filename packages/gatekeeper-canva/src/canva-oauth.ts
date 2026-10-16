@@ -52,7 +52,8 @@ export function getOAuthConfig(
   return { clientId, clientSecret, redirectUri: `${baseUrl}/oauth` };
 }
 
-function oauthClient(config: CanvaOAuthConfig): OAuthClient {
+/** The kit client for Canva's token and revocation endpoints, authenticated as this integration. */
+export function oauthClient(config: CanvaOAuthConfig): OAuthClient {
   return new OAuthClient({
     label: "Canva",
     client: { method: "basic", id: config.clientId, secret: config.clientSecret },

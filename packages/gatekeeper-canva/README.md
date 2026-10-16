@@ -2,15 +2,15 @@
 
 This package provides Canva Connect API integration for Gadgets. Connect a Canva account and gadgets
 can list and search your designs, browse folders, read your profile, create new designs, ask Canva's
-AI to generate a doc or presentation from a brief, and transform image assets (background removal)
+AI to generate a doc or presentation from a brief, and remove image backgrounds
 — all behind the approval queue.
 
 It currently offers one resource granularity:
 
 - **Canva Account** (whole-instance): profile, design search, folder browsing, design creation,
-  AI design generation, and image transformation.
+  AI design generation, and AI background removal.
 
-> **Design generation and image transformation use Canva preview APIs.** Canva may change them
+> **Design generation and background removal use Canva preview APIs.** Canva may change them
 > without a version bump, and public integrations that use preview APIs cannot pass Canva's review.
 > A private integration (the normal choice for a single company's deployment) is unaffected. Both
 > spend the connected user's Canva AI credits, so they always require approval and are never
@@ -75,13 +75,13 @@ You can see and manage connected accounts in settings (via the account menu in t
 
 - **Approvals.** Reads are logged and writes are queued for human approval; nothing is created on
   Canva until approved.
-- **Generation and transformation are asynchronous.** Approving a `generateDesign` or
-  `transformImage` action starts a job on Canva. The agent follows it with `listGeneratedDesigns()`
-  or `listImageTransformations()`, which poll any job still in progress. Jobs expire on Canva after
+- **Generation and background removal are asynchronous.** Approving a `generateDesign` or
+  `removeBackground` action starts a job on Canva. The agent follows it with `listGeneratedDesigns()`
+  or `listBackgroundRemovals()`, which poll any job still in progress. Jobs expire on Canva after
   24 hours. Both features are plan-gated; `getProfile()` reports `canGenerateDesigns` and
   `canRemoveBackgrounds`.
-- **Reconnect after the `asset:write` scope was added.** Accounts connected before image
-  transformation existed hold a grant without `asset:write`, and Canva answers a transformation with
+- **Reconnect after the `asset:write` scope was added.** Accounts connected before background
+  removal existed hold a grant without `asset:write`, and Canva answers a background removal with
   403 until the user disconnects and reconnects Canva from the Connectors page.
 - **Token rotation.** Canva access tokens are short-lived and refresh tokens are single-use. The
   account refreshes transparently; if a refresh is rejected the account is marked expired and the

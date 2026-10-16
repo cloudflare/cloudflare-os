@@ -209,6 +209,9 @@ importers:
       '@gadgets/gatekeeper-kit':
         specifier: workspace:*
         version: link:../gatekeeper-kit
+      '@gadgets/observability':
+        specifier: workspace:*
+        version: link:../observability
       '@gadgets/workshop-shared':
         specifier: workspace:*
         version: link:../workshop-shared

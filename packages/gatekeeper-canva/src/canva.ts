@@ -1,16 +1,19 @@
 import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import { validateRpc, skipRpcValidation } from "capnweb-validate";
+import { createLogger } from "@gadgets/observability/logger";
 import {
   stripTrailingSlashes,
   type AccountDescription,
   type ApprovalQueue,
   type ConnectHandoff,
+  type Cursor,
   type Gatekeeper,
   type GatekeeperConnectCallback,
   type GatekeeperConnectOptions,
   type GatekeeperUser,
   type GatekeeperUserVerifier,
   type GatekeeperVendor as GatekeeperVendorIface,
+  type GitCache,
   type ResourceConfiguratorFrame,
   type ResourceDescription,
   type SupportedResource,
@@ -19,47 +22,64 @@ import {
 import {
   connectHandoffPageHtml, errorPageHtml, htmlResponse, INVALID_LINK_HTML,
 } from "@gadgets/gatekeeper-kit/connect-pages";
-import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
-import { buildDescription, type RenderedDescription } from "@gadgets/gatekeeper-kit/action-description";
-import { clearCredentialExpiryLatch, notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
+import { NONCE_KEY, advanceToOAuth, claimOAuth, putInitiation } from "@gadgets/gatekeeper-kit/connect-handshake";
+import { ACCESS_TOKEN_SAFETY_MS, CONNECT_TIMEOUT_MS, NONCE_BYTES, generateNonce } from "@gadgets/gatekeeper-kit/connect-nonce";
+import { ActionJournal, type ActionSubmitter } from "@gadgets/gatekeeper-kit/actions";
 import {
-  ACCESS_TOKEN_SAFETY_MS, CONNECT_TIMEOUT_MS, INITIATION_NONCE_LIFETIME_MS, NONCE_BYTES,
-  OAUTH_NONCE_LIFETIME_MS, constantTimeEqual, generateNonce,
-} from "@gadgets/gatekeeper-kit/connect-nonce";
+  CredentialCoordinator,
+  CredentialsExpiredError,
+  isConnectionSuperseded,
+  isCredentialsExpired,
+  type CredentialsWithIdentity,
+  type RejectionVerdict,
+} from "@gadgets/gatekeeper-kit/credentials";
+import { notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
 import {
-  CanvaApi,
-  CanvaApiError,
-  type CanvaDesignResponse,
-  type CanvaFolderItemResponse,
-  type CanvaFolderResponse,
-  type CanvaGenerationJobResponse,
-  type CanvaImageAssetResponse,
-  type CanvaImageTransformationJobResponse,
-  type CanvaThumbnailResponse,
-} from "./canva-api";
+  commitStagedCredentials, discardStagedCredentials, stageCredentials,
+} from "@gadgets/gatekeeper-kit/credential-stage";
+import { TokenCursor } from "@gadgets/gatekeeper-kit/cursors";
+import { createPkce, mergeOAuthTokens, oauthRefresh, type OAuthTokens } from "@gadgets/gatekeeper-kit/oauth-client";
+import { CanvaApi, CanvaApiError, type CanvaImageAssetResponse } from "./canva-api";
 import {
-  OAUTH_SCOPES, buildAuthorizeUrl, exchangeCode, generatePkce, getOAuthConfig, isGrantDeath,
-  refreshTokens, revokeToken, type CanvaOAuthConfig,
+  OAUTH_SCOPES, buildAuthorizeUrl, getOAuthConfig, isGrantDeath, oauthClient, type CanvaOAuthConfig,
 } from "./canva-oauth";
+import {
+  RECONNECT_MESSAGE,
+  VENDOR_ID,
+  accountSource,
+  fetchIdentity,
+  type CanvaGrant,
+  type CanvaVerifierApi,
+  type PublicGrant,
+  type StoredIdentity,
+} from "./canva-credentials";
+import {
+  canvaActions,
+  generationStateFromJob,
+  transformationStateFromJob,
+  type CanvaAction,
+  type CanvaActionHost,
+  type CanvaActions,
+  type CanvaJobRecord,
+} from "./canva-actions";
+import {
+  normalizeDesign, normalizeFolder, normalizeFolderItem, normalizeImageAsset, parseDesignId, parseFolderId,
+} from "./canva-normalize";
 import type {
   CanvaAccountSession,
+  CanvaBackgroundRemovalJob,
   CanvaCreateDesignOptions,
   CanvaDesign,
   CanvaDesignType,
   CanvaFolder,
   CanvaFolderItem,
   CanvaGenerateDesignOptions,
-  CanvaGenerationDesignType,
   CanvaGenerationJob,
   CanvaImageAsset,
-  CanvaImageTransformation,
-  CanvaImageTransformationJob,
   CanvaListDesignsOptions,
   CanvaListFolderItemsOptions,
-  CanvaPage,
   CanvaProfile,
-  CanvaThumbnail,
-  CanvaTransformImageOptions,
+  CanvaRemoveBackgroundOptions,
 } from "./types";
 import TYPES_CODE from "./types.txt";
 import CANVA_LOGO_SVG from "./canva-logo.svg";
@@ -72,33 +92,9 @@ type Env = Cloudflare.Env & {
   CLIENT_SECRET?: string;
 };
 
-// A nonce stored in UserAccount KV to protect the OAuth flow. Only one is active at a time; `stage`
-// tracks where we are. For the OAuth stage we also stash the PKCE verifier alongside the nonce,
-// since Canva requires PKCE and the verifier must survive the round trip through the browser.
-type StoredNonce = {
-  value: string;
-  expiresAt: number;
-  stage: "initiation" | "oauth";
-  /**
-   * Set when this flow reconnects an existing account, so its grant is staged rather than made
-   * live. The mode travels with the flow instead of living on the account: committing one
-   * reconnect while another is in flight must not change how that other flow lands.
-   */
-  reconnect?: true;
-  verifier?: string;
-};
-
-/**
- * The live credential record, held as one unit so a reconnect can stage a complete replacement
- * (see UserAccount.commitReconnect). Canva rotates refresh tokens on every refresh, so this record
- * is rewritten whole each time rather than field by field.
- */
-type StoredCredentials = {
-  refreshToken: string;
-  accessToken: string;
-  accessTokenExpiresAt: number;
-  scopes: string[];
-};
+const logger = createLogger<{ vendorId: string; action: number }>({
+  component: "gatekeeper.canva", vendorId: VENDOR_ID,
+});
 
 type CanvaGatekeeperImplProps = {
   userObjectId: string;
@@ -112,7 +108,7 @@ const ACCOUNT_RESOURCE: SupportedResource = {
   urlPattern: "https://*",
   title: "Canva Account",
   description:
-    "Whole-account access: your profile, your designs, your folders, and creating new designs.",
+    "Whole-account access: your profile, your designs, your folders and images, and creating new designs.",
   icon: { url: CANVA_LOGO_URL },
 };
 
@@ -140,83 +136,15 @@ function requireOAuthConfig(env: Env): CanvaOAuthConfig {
   return config;
 }
 
-/**
- * Extract a design ID from a canva.com design URL or accept a bare ID. Canva design IDs are short
- * URL-safe strings like "DAFVztcvd9z". Returns null if the input is neither.
- */
-function parseDesignId(input: string): string | null {
-  const trimmed = input.trim();
-  if (/^[A-Za-z0-9_-]{6,}$/.test(trimmed)) return trimmed;
-  try {
-    const url = new URL(trimmed);
-    if (!/(^|\.)canva\.com$/.test(url.hostname)) return null;
-    const segments = url.pathname.split("/").filter(Boolean);
-    const idx = segments.indexOf("design");
-    const candidate = idx >= 0 ? segments[idx + 1] : undefined;
-    if (candidate && /^[A-Za-z0-9_-]+$/.test(candidate)) return candidate;
-  } catch {
-    // not a URL
-  }
-  return null;
-}
-
-// ---------------------------------------------------------------------------
-// Normalizers: raw Canva responses -> the shapes declared in types.d.ts.
-//
-// Canva timestamps are Unix seconds; the agent-facing API uses ISO 8601 strings.
-
-function isoFromUnixSeconds(seconds: number): string {
-  return new Date(seconds * 1000).toISOString();
-}
-
-function normalizeThumbnail(thumbnail: CanvaThumbnailResponse | undefined): CanvaThumbnail | null {
-  return thumbnail ? { width: thumbnail.width, height: thumbnail.height, url: thumbnail.url } : null;
-}
-
-function normalizeDesign(design: CanvaDesignResponse): CanvaDesign {
+/** The grant a token response describes. Canva always issues a refresh token; a response without one is an error. */
+function toGrant(tokens: OAuthTokens): CanvaGrant {
+  if (!tokens.refreshToken) throw new Error("Canva did not return a refresh token.");
   return {
-    id: design.id,
-    title: design.title ?? null,
-    owner: design.owner ? { userId: design.owner.user_id, teamId: design.owner.team_id } : null,
-    thumbnail: normalizeThumbnail(design.thumbnail),
-    editUrl: design.urls.edit_url,
-    viewUrl: design.urls.view_url,
-    pageCount: design.page_count ?? null,
-    createdAt: isoFromUnixSeconds(design.created_at),
-    updatedAt: isoFromUnixSeconds(design.updated_at),
+    accessToken: tokens.accessToken,
+    refreshToken: tokens.refreshToken,
+    ...(tokens.expiresAt !== undefined ? { expiresAt: tokens.expiresAt } : {}),
+    scopes: tokens.scopes ?? OAUTH_SCOPES,
   };
-}
-
-function normalizeFolder(folder: CanvaFolderResponse): CanvaFolder {
-  return {
-    id: folder.id,
-    name: folder.name,
-    thumbnail: normalizeThumbnail(folder.thumbnail),
-    createdAt: isoFromUnixSeconds(folder.created_at),
-    updatedAt: isoFromUnixSeconds(folder.updated_at),
-  };
-}
-
-function normalizeImageAsset(image: CanvaImageAssetResponse): CanvaImageAsset {
-  const { width, height } = image.metadata ?? {};
-  return {
-    id: image.id,
-    name: image.name,
-    tags: image.tags ?? [],
-    owner: image.owner ? { userId: image.owner.user_id, teamId: image.owner.team_id } : null,
-    dimensions: width !== undefined && height !== undefined ? { width, height } : null,
-    thumbnail: normalizeThumbnail(image.thumbnail),
-    createdAt: isoFromUnixSeconds(image.created_at),
-    updatedAt: isoFromUnixSeconds(image.updated_at),
-  };
-}
-
-function normalizeFolderItem(item: CanvaFolderItemResponse): CanvaFolderItem {
-  switch (item.type) {
-    case "folder": return { type: "folder", folder: normalizeFolder(item.folder) };
-    case "design": return { type: "design", design: normalizeDesign(item.design) };
-    case "image": return { type: "image", image: normalizeImageAsset(item.image) };
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -250,30 +178,31 @@ export default {
 
     // OAuth redirect callback.
     if (relPath === "/oauth") {
-      const error = url.searchParams.get("error");
-      if (error) {
+      const state = url.searchParams.get("state");
+      if (!state) return htmlResponse(errorPageHtml("Invalid callback", "No 'state' was provided."), 400);
+      const colonIndex = state.indexOf(":");
+      if (colonIndex < 0) return htmlResponse(errorPageHtml("Invalid callback", "Malformed 'state'."), 400);
+      const doId = state.slice(0, colonIndex);
+      const oauthNonce = state.slice(colonIndex + 1);
+      const stub: DurableObjectStub<UserAccount> = ctx.exports.UserAccount.get(
+        ctx.exports.UserAccount.idFromString(doId),
+      );
+
+      if (url.searchParams.get("error")) {
+        // Canva declined or the user cancelled: the attempt is over, so spend its nonce.
+        await stub.consumeOAuthNonce(oauthNonce);
         return htmlResponse(errorPageHtml(
           "Canva authorization failed",
           "Authorization was denied or failed. Please restart the connection flow from the Workshop."), 400);
       }
 
-      const state = url.searchParams.get("state");
-      if (!state) return htmlResponse(errorPageHtml("Invalid callback", "No 'state' was provided."), 400);
-      const colonIndex = state.indexOf(":");
-      if (colonIndex < 0) return htmlResponse(errorPageHtml("Invalid callback", "Malformed 'state'."), 400);
-
-      const doId = state.slice(0, colonIndex);
-      const oauthNonce = state.slice(colonIndex + 1);
       const code = url.searchParams.get("code");
       if (!code) return htmlResponse(errorPageHtml("Invalid callback", "No 'code' was provided."), 400);
 
-      const stub: DurableObjectStub<UserAccount> = ctx.exports.UserAccount.get(
-        ctx.exports.UserAccount.idFromString(doId),
-      );
-      const handoff = await stub.acceptAuthCode(code, oauthNonce);
-      if (!handoff) return htmlResponse(INVALID_LINK_HTML, 400);
-
-      return htmlResponse(connectHandoffPageHtml(handoff));
+      const result = await stub.acceptAuthCode(code, oauthNonce);
+      if (result === null) return htmlResponse(INVALID_LINK_HTML, 400);
+      if ("refused" in result) return htmlResponse(errorPageHtml(result.refused.title, result.refused.detail), 400);
+      return htmlResponse(connectHandoffPageHtml(result.handoff));
     }
 
     return new Response("Not Found", { status: 404 });
@@ -320,29 +249,75 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
 }
 
 // ---------------------------------------------------------------------------
-// UserAccount DO — stores OAuth credentials and refreshes access tokens.
+// UserAccount DO — holds the grant in the kit's CredentialCoordinator, which redeems Canva's
+// single-use refresh token once per expiry and fences a refresh against a reconnect or revoke that
+// lands while it is in flight. The connection is pinned to the Canva user who made it.
+
+/** Metadata that rides a connect attempt from the link through the OAuth callback. */
+type ConnectAttempt = {
+  /** Set when this flow creates the account, as opposed to reconnecting it. */
+  firstConnect?: true;
+  /** The PKCE verifier the callback's code exchange must present. */
+  codeVerifier: string;
+  /** The connection generation when the attempt started: `connect()` is fenced on it. */
+  startedUnder: string;
+};
+
+/** A reconnect's grant, held until the Workshop confirms the finishing browser was the owner's. */
+type ReconnectStage = { grant: CanvaGrant; identity: StoredIdentity; startedUnder: string };
+
+type CallbackResult =
+  | { handoff: ConnectHandoff }
+  | { refused: { title: string; detail: string } };
+
+/** The pre-kit credential layout, migrated on first read so a dev account connected before the port survives. */
+type LegacyStoredCredentials = {
+  refreshToken: string; accessToken: string; accessTokenExpiresAt: number; scopes: string[];
+};
+
+const IDENTITY_KEY = "identity";
 
 export class UserAccount extends DurableObject<Env> {
+  readonly #creds = new CredentialCoordinator<CanvaGrant>(this.ctx.storage.kv, {
+    expiresAt: grant => grant.expiresAt,
+    refreshSkewMs: ACCESS_TOKEN_SAFETY_MS,
+    legacyKeys: ["credentials"],
+    upgrade: kv => {
+      const legacy = kv.get<LegacyStoredCredentials>("credentials");
+      if (!legacy) return undefined;
+      return {
+        accessToken: legacy.accessToken, refreshToken: legacy.refreshToken,
+        expiresAt: legacy.accessTokenExpiresAt, scopes: legacy.scopes,
+      };
+    },
+    // No `discardMint`: Canva does not document whether revoking one refresh token revokes the
+    // whole authorization, so a mint a reconnect overtook is dropped unrevoked rather than risking
+    // the connection that won.
+    vendorId: VENDOR_ID,
+  });
+
+  readonly #refresh = (grant: CanvaGrant): Promise<CanvaGrant> => {
+    logger.info("refreshing Canva access token", { event: "canva.token.refresh" });
+    return oauthRefresh<CanvaGrant>(oauthClient(requireOAuthConfig(this.env)), {
+      refreshToken: current => current.refreshToken,
+      merge: mergeOAuthTokens,
+      isGrantDeath,
+      expiredMessage: RECONNECT_MESSAGE,
+    })(grant);
+  };
+
+  readonly #notify = (): Promise<void> => notifyCredentialsExpiredOnce(this.ctx.storage.kv,
+    this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback"), VENDOR_ID);
+
   async setCallback(callback: Fetcher<GatekeeperConnectCallback>, initiationNonce: string): Promise<void> {
-    if (!this.ctx.storage.kv.get<StoredCredentials>("credentials")) {
-      await this.ctx.storage.setAlarm(Date.now() + CONNECT_TIMEOUT_MS);
-    }
+    if (!this.#creds.stored()) await this.ctx.storage.setAlarm(Date.now() + CONNECT_TIMEOUT_MS);
     this.ctx.storage.kv.put("callback", callback);
-    this.ctx.storage.kv.put<StoredNonce>("nonce", {
-      value: initiationNonce,
-      expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS,
-      stage: "initiation",
-    });
+    putInitiation<Pick<ConnectAttempt, "firstConnect">>(this.ctx.storage.kv, initiationNonce, Date.now(),
+      { firstConnect: true });
   }
 
   async prepareReconnect(initiationNonce: string): Promise<void> {
-    clearCredentialExpiryLatch(this.ctx.storage.kv);
-    this.ctx.storage.kv.put<StoredNonce>("nonce", {
-      value: initiationNonce,
-      expiresAt: Date.now() + INITIATION_NONCE_LIFETIME_MS,
-      stage: "initiation",
-      reconnect: true,
-    });
+    putInitiation(this.ctx.storage.kv, initiationNonce, Date.now());
   }
 
   /**
@@ -352,149 +327,193 @@ export class UserAccount extends DurableObject<Env> {
   async beginOAuthFlow(
     initiationNonce: string,
   ): Promise<{ oauthNonce: string; challenge: string; scopes: string[] } | null> {
-    const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
-    if (!stored || stored.stage !== "initiation" || Date.now() >= stored.expiresAt ||
-        !constantTimeEqual(stored.value, initiationNonce)) {
-      return null;
-    }
-    const oauthNonce = generateNonce();
-    const { verifier, challenge } = await generatePkce();
-    this.ctx.storage.kv.put<StoredNonce>("nonce", {
-      value: oauthNonce,
-      expiresAt: Date.now() + OAUTH_NONCE_LIFETIME_MS,
-      stage: "oauth",
-      reconnect: stored.reconnect,
-      verifier,
-    });
-    return { oauthNonce, challenge, scopes: OAUTH_SCOPES };
+    // Reading the generation below writes one, which an old link to a deleted account must not.
+    if (this.ctx.storage.kv.get(NONCE_KEY) === undefined) return null;
+    const pkce = await createPkce();
+    const oauthNonce = advanceToOAuth<Omit<ConnectAttempt, "firstConnect">>(
+      this.ctx.storage.kv, initiationNonce, Date.now(),
+      { codeVerifier: pkce.codeVerifier, startedUnder: this.#creds.connectionGeneration() });
+    if (oauthNonce === null) return null;
+    return { oauthNonce, challenge: pkce.codeChallenge, scopes: OAUTH_SCOPES };
+  }
+
+  /** Ends an attempt Canva refused; returns whether `oauthNonce` named the live one. */
+  async consumeOAuthNonce(oauthNonce: string): Promise<boolean> {
+    return claimOAuth(this.ctx.storage.kv, oauthNonce, Date.now()) !== null;
   }
 
   /**
-   * Finishes the OAuth code exchange and returns the handoff for the page the browser lands on, or
-   * null when the callback's nonce doesn't match.
+   * Finishes the code exchange. Returns the handoff for the page the browser lands on, a refusal to
+   * show, or null when the callback's nonce doesn't match.
    */
-  async acceptAuthCode(code: string, oauthNonce: string): Promise<ConnectHandoff | null> {
-    const stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
-    if (!stored || stored.stage !== "oauth" || !stored.verifier || Date.now() >= stored.expiresAt ||
-        !constantTimeEqual(stored.value, oauthNonce)) {
-      return null;
-    }
-    this.ctx.storage.kv.delete("nonce");
+  async acceptAuthCode(code: string, oauthNonce: string): Promise<CallbackResult | null> {
+    const kv = this.ctx.storage.kv;
+    const attempt = claimOAuth<ConnectAttempt>(kv, oauthNonce, Date.now());
+    if (attempt === null) return null;
 
-    const callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
-    if (!callback) {
-      throw new Error("Took too long to complete authorization. Please try again.");
-    }
-
-    const tokens = await exchangeCode(requireOAuthConfig(this.env), code, stored.verifier)
+    const config = requireOAuthConfig(this.env);
+    const tokens = await oauthClient(config)
+      .exchangeCode({ code, redirectUri: config.redirectUri, codeVerifier: attempt.codeVerifier })
       .catch((cause: unknown) => {
         throw new Error("Canva OAuth exchange failed.", { cause });
       });
-    if (!tokens.refreshToken) {
-      throw new Error("Canva did not return a refresh token.");
+    const grant = toGrant(tokens);
+
+    let identity: StoredIdentity;
+    try {
+      identity = await fetchIdentity(grant.accessToken);
+    } catch (error) {
+      await this.#revokeGrant(grant);
+      throw new Error("Could not read which Canva account authorized this connection. Please try again.",
+        { cause: error });
     }
 
-    const credentials: StoredCredentials = {
-      refreshToken: tokens.refreshToken,
-      accessToken: tokens.accessToken,
-      accessTokenExpiresAt: tokens.expiresAt ?? 0,
-      scopes: tokens.scopes ?? OAUTH_SCOPES,
-    };
+    const callback = kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
+    if (callback === undefined) {
+      await this.#revokeGrant(grant);
+      throw new Error("Took too long to complete authorization. Please try again.");
+    }
 
     let handoff: ConnectHandoff;
-    if (stored.reconnect) {
+    if (!attempt.firstConnect) {
+      // The connection stays pinned to the Canva user who made it: every queued action is fenced
+      // on that user, so a grant for anyone else must not become this connection's credentials.
+      const pinned = kv.get<StoredIdentity>(IDENTITY_KEY);
+      if (pinned !== undefined && pinned.userId !== identity.userId) {
+        await this.#revokeGrant(grant);
+        return {
+          refused: {
+            title: "That's a different Canva account",
+            detail: `This connection is for ${pinned.displayName}, but Canva authorized ` +
+              `${identity.displayName}. Sign in to Canva as ${pinned.displayName} and reconnect, or ` +
+              `connect ${identity.displayName} as a separate account.`,
+          },
+        };
+      }
       // The reconnect URL is a bearer capability, so the new grant is only staged until the Workshop
-      // has confirmed the browser that finished the flow is the owner's (see commitReconnect). Bound
-      // gadgets keep reading the current token meanwhile.
-      const stageId = stageCredentials(this.ctx.storage.kv, credentials, Date.now());
+      // has confirmed the browser that finished the flow is the owner's (see commitReconnect). A
+      // stage this one displaces is the same user's, so it is dropped unrevoked.
+      discardStagedCredentials<ReconnectStage>(kv);
+      const stageId = stageCredentials<ReconnectStage>(kv,
+        { grant, identity, startedUnder: attempt.startedUnder }, Date.now());
       handoff = await callback.reconnectComplete(stageId);
     } else {
-      this.#storeCredentials(credentials);
+      try {
+        this.#creds.connect(grant, { ifGeneration: attempt.startedUnder });
+      } catch (error) {
+        if (!isConnectionSuperseded(error)) throw error;
+        await this.#revokeGrant(grant);
+        throw new Error("The Canva account was disconnected while it was being authorized. Connect it again.",
+          { cause: error });
+      }
+      kv.put<StoredIdentity>(IDENTITY_KEY, identity);
       try {
         const props: GatekeeperUserImplProps = { userObjectId: this.ctx.id.toString() };
         handoff = await callback.complete(this.ctx.exports.GatekeeperUserImpl({ props }));
-      } catch (err) {
-        this.ctx.storage.kv.delete("credentials");
-        throw err;
+      } catch (error) {
+        // A connection the Workshop never took leaves its tokens with nobody: revoke them.
+        const abandoned = this.#creds.stored() ?? grant;
+        this.#creds.clear();
+        kv.delete(IDENTITY_KEY);
+        await this.#revokeGrant(abandoned);
+        throw error;
       }
     }
-
     await this.ctx.storage.deleteAlarm();
-    return handoff;
+    return { handoff };
   }
 
-  /** Makes the grant staged under `stageId` live; see GatekeeperUser.commitReconnect. */
+  /**
+   * Makes the grant staged under `stageId` live. One a newer reconnect overtook is discarded, and
+   * the connection stays pinned to the identity it was made with.
+   */
   async commitReconnect(stageId: string): Promise<void> {
-    const credentials = commitStagedCredentials<StoredCredentials>(this.ctx.storage.kv, Date.now(), stageId);
-    if (!credentials) throw new Error("No reconnect is awaiting confirmation. Please try again.");
-    this.#storeCredentials(credentials);
-  }
-
-  #storeCredentials(credentials: StoredCredentials): void {
-    this.ctx.storage.kv.put("credentials", credentials);
-    clearCredentialExpiryLatch(this.ctx.storage.kv);
-  }
-
-  // A refresh in flight for this DO activation. Canva's refresh tokens are single-use, so two
-  // concurrent refreshes would each redeem the same token and the loser would kill the grant.
-  // Coalescing them here means every concurrent caller waits on the one real refresh.
-  #refreshing?: Promise<string>;
-
-  async getAccessToken(): Promise<string> {
-    const credentials = this.ctx.storage.kv.get<StoredCredentials>("credentials");
-    if (!credentials) {
-      throw new Error("Canva credentials have not been configured for this account.");
-    }
-    if (Date.now() < credentials.accessTokenExpiresAt - ACCESS_TOKEN_SAFETY_MS) {
-      return credentials.accessToken;
-    }
-
-    if (!this.#refreshing) {
-      this.#refreshing = this.#refresh(credentials).finally(() => { this.#refreshing = undefined; });
-    }
-    return this.#refreshing;
-  }
-
-  async #refresh(credentials: StoredCredentials): Promise<string> {
-    let tokens;
+    const staged = commitStagedCredentials<ReconnectStage>(this.ctx.storage.kv, Date.now(), stageId);
+    if (!staged) throw new Error("No reconnect is awaiting confirmation. Please try again.");
     try {
-      tokens = await refreshTokens(requireOAuthConfig(this.env), credentials.refreshToken);
-    } catch (err) {
-      if (isGrantDeath(err)) await this.noteCredentialsExpired();
-      throw new Error("Canva credentials have expired or been revoked. Please reconnect the account.", { cause: err });
+      this.#creds.connect(staged.grant, { ifGeneration: staged.startedUnder });
+    } catch (error) {
+      if (!isConnectionSuperseded(error)) throw error;
+      throw new Error("This Canva account was reconnected again while this reconnect was finishing, " +
+        "so this one was discarded.", { cause: error });
     }
-    this.#storeCredentials({
-      // Canva rotates the refresh token; if a response ever omits it, keep the current one.
-      refreshToken: tokens.refreshToken ?? credentials.refreshToken,
-      accessToken: tokens.accessToken,
-      accessTokenExpiresAt: tokens.expiresAt ?? 0,
-      scopes: tokens.scopes ?? credentials.scopes,
-    });
-    return tokens.accessToken;
+    this.ctx.storage.kv.put<StoredIdentity>(IDENTITY_KEY, staged.identity);
   }
 
-  async noteCredentialsExpired(): Promise<void> {
-    await notifyCredentialsExpiredOnce(this.ctx.storage.kv,
-      this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback"), "canva");
+  /** The credential triple a facet's `CredentialSource` reads, refresh material projected out. */
+  async getCredentials(): Promise<CredentialsWithIdentity<PublicGrant>> {
+    let snapshot: CredentialsWithIdentity<CanvaGrant>;
+    try {
+      snapshot = await this.#creds.snapshot(this.#refresh, { notify: this.#notify });
+    } catch (error) {
+      // A dead grant, a disconnect, a revoke mid-refresh: to the gadget each means one thing.
+      if (isCredentialsExpired(error)) throw new CredentialsExpiredError(RECONNECT_MESSAGE, { cause: error });
+      throw error;
+    }
+    const { creds, identity, generation } = snapshot;
+    return {
+      creds: {
+        accessToken: creds.accessToken,
+        ...(creds.expiresAt !== undefined ? { expiresAt: creds.expiresAt } : {}),
+        scopes: creds.scopes,
+      },
+      identity,
+      generation,
+    };
+  }
+
+  /** Adjudicates Canva's refusal of the credential with `identity`. */
+  async reportCredentialsRejected(identity: string): Promise<RejectionVerdict> {
+    return await this.#creds.adjudicateRejection(identity, { refresh: this.#refresh, notify: this.#notify });
+  }
+
+  /**
+   * The Canva user this connection is pinned to. An account connected before the pin existed reads
+   * it from Canva once and keeps it; the pin never moves after that.
+   */
+  async getIdentity(): Promise<StoredIdentity> {
+    const stored = this.ctx.storage.kv.get<StoredIdentity>(IDENTITY_KEY);
+    if (stored !== undefined) return stored;
+    const { creds } = await this.#creds.snapshot(this.#refresh, { notify: this.#notify });
+    const identity = await fetchIdentity(creds.accessToken);
+    this.ctx.storage.kv.put<StoredIdentity>(IDENTITY_KEY, identity);
+    return identity;
   }
 
   /** An abandoned connect flow: no credentials ever arrived, so forget the DO entirely. */
   async alarm(): Promise<void> {
-    if (!this.ctx.storage.kv.get<StoredCredentials>("credentials")) {
-      await this.ctx.storage.deleteAll();
-    }
+    if (!this.#creds.stored()) await this.ctx.storage.deleteAll();
   }
 
+  /**
+   * Disconnects, local-first: the account is cleared before any call to Canva, so nothing can
+   * re-arm it meanwhile; revoking the tokens at Canva is best effort afterwards.
+   */
   async revoke(): Promise<void> {
-    // Best-effort: tell Canva the grant is gone so it stops listing this integration as connected.
-    // If that fails the local wipe below still makes the account unusable here.
-    const credentials = this.ctx.storage.kv.get<StoredCredentials>("credentials");
-    const config = getOAuthConfig(this.env.CLIENT_ID, this.env.CLIENT_SECRET, getBaseUrl(this.env));
-    if (credentials && config) {
-      await revokeToken(config, credentials.refreshToken).catch(() => undefined);
-    }
+    const live = this.#creds.stored();
+    const staged = discardStagedCredentials<ReconnectStage>(this.ctx.storage.kv);
+    this.#creds.clear();
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
+    if (staged) await this.#revokeGrant(staged.grant);
+    if (live) await this.#revokeGrant(live);
+  }
+
+  /** Revokes a grant's tokens at Canva, refresh token first; failures are logged, never fatal. */
+  async #revokeGrant(grant: CanvaGrant): Promise<void> {
+    const config = getOAuthConfig(this.env.CLIENT_ID, this.env.CLIENT_SECRET, getBaseUrl(this.env));
+    if (!config) return;
+    const client = oauthClient(config);
+    const tokens: [string, "refresh_token" | "access_token"][] = [
+      [grant.refreshToken, "refresh_token"], [grant.accessToken, "access_token"],
+    ];
+    for (const [token, tokenTypeHint] of tokens) {
+      try {
+        await client.revoke({ token, tokenTypeHint });
+      } catch (error) {
+        logger.warn("failed to revoke a Canva OAuth token", { event: "oauth.token.revoke.failed", error });
+      }
+    }
   }
 }
 
@@ -507,34 +526,18 @@ type GatekeeperUserImplProps = {
 
 @validateRpc()
 export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImplProps> implements GatekeeperUser {
-  #userAccount(): DurableObjectStub<UserAccount> {
+  #account(): DurableObjectStub<UserAccount> {
     return this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
   }
 
-  async #withApi<T>(fn: (api: CanvaApi) => Promise<T>): Promise<T> {
-    const account = this.#userAccount();
-    const api = new CanvaApi(() => account.getAccessToken());
-    try {
-      return await fn(api);
-    } catch (error) {
-      if (error instanceof CanvaApiError && error.isAuthError) {
-        await account.noteCredentialsExpired();
-        throw new Error("Canva credentials have expired or been revoked. Please reconnect the account.", { cause: error });
-      }
-      throw error;
-    }
-  }
-
   async describe(): Promise<AccountDescription> {
-    return await this.#withApi(async api => {
-      const [me, profile] = await Promise.all([api.getCurrentUser(), api.getProfile()]);
-      return {
-        displayName: profile.profile.display_name,
-        uniqueName: me.team_user.user_id,
-        // The Connect API exposes no avatar for the connected user, so the vendor logo stands in.
-        avatar: { url: CANVA_LOGO_URL },
-      };
-    });
+    const identity = await this.#account().getIdentity();
+    return {
+      displayName: identity.displayName,
+      uniqueName: identity.userId,
+      // The Connect API exposes no avatar for the connected user, so the vendor logo stands in.
+      avatar: { url: CANVA_LOGO_URL },
+    };
   }
 
   /** Canva is not offered as a sign-in identity provider (the Connect API exposes no verified email). */
@@ -570,24 +573,24 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async revoke(): Promise<void> {
-    await this.#userAccount().revoke();
+    await this.#account().revoke();
   }
 
   async reconnect(): Promise<{ url: string }> {
     const initiationNonce = generateNonce();
-    await this.#userAccount().prepareReconnect(initiationNonce);
+    await this.#account().prepareReconnect(initiationNonce);
     return { url: `${getBaseUrl(this.env)}/${this.ctx.props.userObjectId}/${initiationNonce}` };
   }
 
   async commitReconnect(stageId: string): Promise<void> {
-    await this.#userAccount().commitReconnect(stageId);
+    await this.#account().commitReconnect(stageId);
   }
 
   /**
-   * Mint a verifier representing this account. It carries the account so a future ACL check can
-   * learn the observer's Canva identity (see CanvaVerifier.getTeamUser); today's observer strategy
-   * never consults it (see CanvaGatekeeperImpl.addObserver), but the overseer mints one on every
-   * open, so it must exist and not throw.
+   * Mint a verifier representing this account. It exposes the pinned Canva identity for a future
+   * per-design access check (see CanvaVerifierApi); today's observer strategy never consults it
+   * (see CanvaGatekeeperImpl.addObserver), but the overseer mints one on every open, so it must
+   * exist and not throw.
    */
   @skipRpcValidation()
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
@@ -607,93 +610,278 @@ type CanvaVerifierProps = {
 };
 
 @validateRpc()
-export class CanvaVerifier extends WorkerEntrypoint<Env, CanvaVerifierProps> implements GatekeeperUserVerifier {
-  /** The observer's Canva identity, for a future per-design access check. */
-  async getTeamUser(): Promise<{ userId: string; teamId: string }> {
-    const account = this.ctx.exports.UserAccount.get(
-      this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
-    const api = new CanvaApi(() => account.getAccessToken());
-    const me = await api.getCurrentUser();
-    return { userId: me.team_user.user_id, teamId: me.team_user.team_id };
+export class CanvaVerifier extends WorkerEntrypoint<Env, CanvaVerifierProps> implements CanvaVerifierApi {
+  async getTeamUser(): Promise<{ userId: string; teamId: string } | null> {
+    try {
+      const identity = await this.ctx.exports.UserAccount
+        .get(this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId)).getIdentity();
+      return { userId: identity.userId, teamId: identity.teamId };
+    } catch {
+      return null;
+    }
   }
 }
 
 // ---------------------------------------------------------------------------
-// Action model.
-//
-// Every write is submitted to the ApprovalQueue and stored as a pending action; it is only performed
-// against Canva when applyAction() is later called. Neither action is simulated: Canva assigns the
-// design ID when it does the work and the Connect API offers no way to delete a design, so there is
-// nothing a provisional record could usefully stand in for. Generation is additionally asynchronous
-// on Canva's side, so applying it starts a job whose outcome `listGeneratedDesigns` reads back.
+// GatekeeperImpl DO — per-binding instance, runs as a facet of the Overseer.
 
-type ActionState = "staged" | "pending" | "approved" | "rejected" | "failed";
-
-type BaseAction = { approvalId: number; submittedAt: number };
-
-type CreateDesignAction = BaseAction & {
-  type: "createDesign";
-  designType: CanvaDesignType;
-  title?: string;
-  assetId?: string;
-};
-
-type GenerateDesignAction = BaseAction & {
-  type: "generateDesign";
-  brief: string;
-  designType: CanvaGenerationDesignType;
-  outline?: CanvaGenerateDesignOptions["outline"];
-};
-
-type TransformImageAction = BaseAction & {
-  type: "transformImage";
-  assetId: string;
-  /** The source asset's name as read at prepare time, so the approver sees which image it is. */
-  sourceName: string;
-  transformations: CanvaImageTransformation[];
-  name?: string;
-};
-
-type CanvaAction = CreateDesignAction | GenerateDesignAction | TransformImageAction;
-
-/** The Canva job an applied generateDesign action started, updated as it is polled. */
-type GenerationState = {
-  jobId: string;
-  startedAt: number;
-  status: CanvaGenerationJob["status"];
-  design?: CanvaDesign;
-  error?: { code: string; message: string };
-};
+const JOB_PREFIX = "job:";
+const HOUSEKEEPING_KEY = "meta:lastHousekeeping";
+// Job records older than this are dropped; Canva itself forgets a job after 24 hours.
+const JOB_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+const HOUSEKEEPING_INTERVAL_MS = 6 * 60 * 60 * 1000;
+// Generation jobs expire on Canva 24 hours after they start; a poll after that 404s. The
+// transformation docs don't state a lifetime, so the same window is applied there.
+const JOB_LIFETIME_MS = 24 * 60 * 60 * 1000;
+const EXPIRED_JOB_ERROR = { code: "expired", message: "The job expired on Canva before it completed." };
+// Rows per `next()` on a listing cursor. Canva chooses its own provider page size.
+const CURSOR_PAGE_SIZE = 50;
 
 /**
- * The Canva job an applied transformImage action started. `jobId` is absent when Canva finished
- * the job inside the creation call, which it may do for a quick transformation.
+ * What a session may ask of its gatekeeper. A plain object of closures rather than the Durable
+ * Object itself, so these generic helpers stay off the RPC surface the overseer sees.
  */
-type TransformationState = {
-  jobId?: string;
-  startedAt: number;
-  status: CanvaImageTransformationJob["status"];
-  asset?: CanvaImageAsset;
-  error?: { code: string; message: string };
+type CanvaSessionHost = {
+  /** Runs a provider read as the connection. Reads are safe to repeat after a stale credential. */
+  read<T>(op: (api: CanvaApi) => Promise<T>): Promise<T>;
+  /** Stages an action for approval, fenced on the pinned Canva user. */
+  submit<K extends keyof CanvaActions>(queue: ActionSubmitter, kind: K, payload: CanvaActions[K]): Promise<number>;
+  getProfile(): Promise<CanvaProfile>;
+  getDesign(designId: string): Promise<CanvaDesign>;
+  getFolder(folderId: string): Promise<CanvaFolder>;
+  getImageAsset(assetId: string): Promise<CanvaImageAsset>;
+  /** What applied actions of one kind recorded, newest first, with running jobs refreshed. */
+  listJobs<K extends CanvaJobRecord["kind"]>(kind: K): Promise<Extract<CanvaJobRecord, { kind: K }>[]>;
 };
 
-type StoredActionRecord = {
-  action: CanvaAction;
-  state: ActionState;
-  appliedAt?: number;
-  rejectedAt?: number;
-  /** Set once a createDesign action is applied, so revert can at least point the user at the design. */
-  createdDesign?: { id: string; editUrl: string };
-  /** Set once a generateDesign action is applied. */
-  generation?: GenerationState;
-  /** Set once a transformImage action is applied. */
-  transformation?: TransformationState;
-};
+@validateRpc()
+export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplProps>
+  implements Gatekeeper<CanvaAccountSession> {
 
-// How long applied/rejected action records are retained before being pruned from DO storage.
-const RETIRED_ACTION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-// Don't rescan the retired keyspace more often than this (pruning is best-effort cleanup).
-const RETIRED_ACTION_PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+  readonly #creds = accountSource(() => this.#account());
+  readonly #journal = new ActionJournal<CanvaAction>(this.ctx.storage.kv, { namespace: "canva" });
+  readonly #actionHost: CanvaActionHost = {
+    write: op => this.#creds.run((creds, read) => op(new CanvaApi(async () => creds.accessToken), read)),
+    recordJob: record => this.ctx.storage.kv.put(`${JOB_PREFIX}${record.actionId}`, record),
+  };
+  readonly #actions = canvaActions.bind(this.#journal, this.#actionHost);
+
+  #account(): DurableObjectStub<UserAccount> {
+    return this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
+  }
+
+  readonly #sessionHost: CanvaSessionHost = {
+    read: op => this.#read(op),
+    submit: (queue, kind, payload) => this.#submit(queue, kind, payload),
+    getProfile: () => this.#getProfile(),
+    getDesign: id => this.#getDesign(id),
+    getFolder: id => this.#getFolder(id),
+    getImageAsset: id => this.#getImageAsset(id),
+    listJobs: kind => this.#listJobs(kind),
+  };
+
+  #read<T>(op: (api: CanvaApi) => Promise<T>): Promise<T> {
+    return this.#creds.run(creds => op(new CanvaApi(async () => creds.accessToken)), { replayable: true });
+  }
+
+  async describe(): Promise<ResourceDescription> {
+    const identity = await this.#account().getIdentity();
+    return {
+      url: CANVA_PROJECTS_URL,
+      title: `${identity.displayName}'s Canva`,
+      snippet: "Whole-account access: profile, designs, folders and images, design creation and AI.",
+      suggestedBindingName: "CANVA_ACCOUNT",
+      tsType: "CanvaAccountSession",
+    };
+  }
+
+  async getTypeScriptTypes(): Promise<string> {
+    return TYPES_CODE;
+  }
+
+  async getAutoApprovableActions() {
+    return this.#actions.autoApprovableKinds();
+  }
+
+  async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<CanvaAccountSession> {
+    return new CanvaAccountSessionImpl(this.#sessionHost, approvalQueue.dup());
+  }
+
+  /**
+   * Observer tracking: Canva uses the "private-only" strategy for now. Designs have real per-user
+   * sharing, and a whole-account binding can read any of them, so a collaborator opening a shared
+   * gadget could see designs they were never granted. Until a per-design access check exists (the
+   * verifier already exposes the observer's identity for it), nobody but the owner may observe.
+   */
+  async addObserver(_id: string, _user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
+    throw new Error(
+      "A gadget that reads a Canva account cannot be shared yet: the Canva connector does not " +
+      "verify that collaborators can see the same designs.");
+  }
+
+  async removeObserver(_id: string): Promise<void> {}
+
+  // -------------------------------------------------------------------------
+  // Reads the session delegates to
+
+  async #getProfile(): Promise<CanvaProfile> {
+    const [identity, capabilities] = await Promise.all([
+      this.#account().getIdentity(),
+      this.#read(api => api.getCapabilities()),
+    ]);
+    return {
+      userId: identity.userId,
+      teamId: identity.teamId,
+      displayName: identity.displayName,
+      canGenerateDesigns: capabilities.capabilities.includes("design_generation"),
+      canRemoveBackgrounds: capabilities.capabilities.includes("background_removal"),
+    };
+  }
+
+  async #getDesign(designId: string): Promise<CanvaDesign> {
+    try {
+      return normalizeDesign(await this.#read(api => api.getDesign(designId)));
+    } catch (error) {
+      if (error instanceof CanvaApiError && error.status === 404) {
+        throw new Error(`No Canva design found with id "${designId}", or you do not have access to it.`, { cause: error });
+      }
+      throw error;
+    }
+  }
+
+  async #getFolder(folderId: string): Promise<CanvaFolder> {
+    try {
+      return normalizeFolder(await this.#read(api => api.getFolder(folderId)));
+    } catch (error) {
+      if (error instanceof CanvaApiError && error.status === 404) {
+        throw new Error(`No Canva folder found with id "${folderId}", or you do not have access to it.`, { cause: error });
+      }
+      throw error;
+    }
+  }
+
+  async #getImageAsset(assetId: string): Promise<CanvaImageAsset> {
+    let asset: CanvaImageAssetResponse;
+    try {
+      asset = await this.#read(api => api.getAsset(assetId));
+    } catch (error) {
+      if (error instanceof CanvaApiError && error.status === 404) {
+        throw new Error(`No Canva asset found with id "${assetId}", or you do not have access to it.`, { cause: error });
+      }
+      throw error;
+    }
+    if (asset.type === "video") throw new Error(`Canva asset "${assetId}" is a video, not an image.`);
+    return normalizeImageAsset(asset);
+  }
+
+  // -------------------------------------------------------------------------
+  // Jobs: what applied actions recorded, refreshed from Canva while still running
+
+  async #listJobs<K extends CanvaJobRecord["kind"]>(kind: K): Promise<Extract<CanvaJobRecord, { kind: K }>[]> {
+    const records: CanvaJobRecord[] = [];
+    for (const [key, record] of this.ctx.storage.kv.list<CanvaJobRecord>({ prefix: JOB_PREFIX })) {
+      if (record.kind !== kind) continue;
+      let current: CanvaJobRecord = record;
+      if (current.kind !== "createDesign" && current.status === "in_progress" && current.jobId !== null) {
+        current = await this.#refreshJob(current);
+        this.ctx.storage.kv.put(key, current);
+      }
+      records.push(current);
+    }
+    // Filtered on `kind` above, which is what the return type states.
+    return records.toSorted((a, b) => b.at - a.at) as Extract<CanvaJobRecord, { kind: K }>[];
+  }
+
+  async #refreshJob(record: Exclude<CanvaJobRecord, { kind: "createDesign" }>): Promise<CanvaJobRecord> {
+    const jobId = record.jobId!;
+    try {
+      if (record.kind === "generateDesign") {
+        return { ...record, ...generationStateFromJob(await this.#read(api => api.getDesignGeneration(jobId))) };
+      }
+      return { ...record, ...transformationStateFromJob(await this.#read(api => api.getImageTransformation(jobId))) };
+    } catch (error) {
+      // Canva forgets a job 24 hours after it starts, so a 404 past that point is the job aging out
+      // rather than vanishing; an earlier 404 is passed through since it means something is wrong.
+      const expired = error instanceof CanvaApiError && error.status === 404
+        && Date.now() - record.at > JOB_LIFETIME_MS;
+      if (!expired) throw error;
+      return { ...record, status: "failed", error: EXPIRED_JOB_ERROR };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Action lifecycle
+
+  /**
+   * Stages an action, fenced on the Canva user the connection is pinned to rather than the
+   * connection generation: a reconnect as the same user must not strand what is waiting, and the
+   * account refuses a reconnect as anyone else.
+   */
+  async #submit<K extends keyof CanvaActions>(queue: ActionSubmitter, kind: K, payload: CanvaActions[K]): Promise<number> {
+    const { userId } = await this.#account().getIdentity();
+    return await this.#actions.submit(queue, kind, payload, { fence: { generation: userId } });
+  }
+
+  async applyAction(actionId: number, _cache: RpcStub<GitCache>): Promise<void> {
+    this.#housekeep();
+    const { userId } = await this.#account().getIdentity();
+    await this.#actions.apply(actionId, { generation: userId });
+  }
+
+  async rejectAction(actionId: number): Promise<void | { restart?: boolean }> {
+    await this.#actions.reject(actionId);
+  }
+
+  async revertAction(actionId: number): Promise<void | { message?: string; canRetry?: boolean; restart?: boolean }> {
+    // The Connect API can delete neither a design nor an asset, so the best we can do is point at it.
+    const record = this.ctx.storage.kv.get<CanvaJobRecord>(`${JOB_PREFIX}${actionId}`);
+    if (!record) {
+      return { message: "This action has not been applied, so there is nothing to revert.", canRetry: false };
+    }
+    switch (record.kind) {
+      case "createDesign":
+        return {
+          message: "Canva designs cannot be deleted through the API, so this creation must be undone by hand. " +
+            `It is at ${record.design.editUrl}; move it to the trash from the Canva editor.`,
+          canRetry: false,
+        };
+      case "generateDesign": {
+        const where = record.design ? ` It is at ${record.design.editUrl}; move it to the trash from the Canva editor.` : "";
+        return {
+          message: `Canva designs cannot be deleted through the API, so this generation must be undone by hand.${where} ` +
+            "The AI credits it consumed are not refunded.",
+          canRetry: false,
+        };
+      }
+      case "removeBackground": {
+        const which = record.asset ? ` The new asset is "${record.asset.name}" (id ${record.asset.id}).` : "";
+        return {
+          message: "The Connect API cannot delete an asset, so remove the transformed image from your Canva " +
+            `Uploads by hand if you don't want it.${which} The AI credits it consumed are not refunded.`,
+          canRetry: false,
+        };
+      }
+    }
+  }
+
+  /** Drops job records older than the retention window. Runs at most every few hours, from apply. */
+  #housekeep(): void {
+    const kv = this.ctx.storage.kv;
+    const now = Date.now();
+    if (now - (kv.get<number>(HOUSEKEEPING_KEY) ?? 0) < HOUSEKEEPING_INTERVAL_MS) return;
+    kv.put(HOUSEKEEPING_KEY, now);
+    for (const [key, record] of kv.list<CanvaJobRecord>({ prefix: JOB_PREFIX })) {
+      if (record.at < now - JOB_RETENTION_MS) kv.delete(key);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Session implementation
+
+function disposeQueue(queue: RpcStub<ApprovalQueue>): void {
+  (queue as RpcStub<ApprovalQueue> & { [Symbol.dispose](): void })[Symbol.dispose]();
+}
 
 const DESIGN_OWNERSHIPS = new Set(["owned", "shared", "any"]);
 const DESIGN_SORTS = new Set([
@@ -715,556 +903,39 @@ const GENERATION_SECTIONS_MAX = 100;
 const GENERATION_SECTION_TITLE_MAX = 255;
 const GENERATION_SECTION_DESCRIPTION_MAX = 2000;
 const GENERATION_SECTION_POINTS_MAX = 50;
-// Generation jobs expire on Canva 24 hours after they start; a poll after that 404s.
-const GENERATION_JOB_LIFETIME_MS = 24 * 60 * 60 * 1000;
-// How many generation jobs listGeneratedDesigns reports (newest first).
-const GENERATION_LIST_MAX = 20;
+// Canva's documented bound for a transformed asset's name.
+const ASSET_NAME_MAX = 255;
 
-// Canva's documented bounds for image transformation requests.
-const TRANSFORMATION_TYPES = new Set(["background_removal"]);
-const TRANSFORMATIONS_MAX = 20;
-const TRANSFORMATION_NAME_MAX = 255;
-
-/** Converts a polled job into the state stored on its action record. */
-function generationStateFromJob(
-  job: CanvaGenerationJobResponse, startedAt: number,
-): GenerationState {
-  const state: GenerationState = { jobId: job.id, startedAt, status: job.status };
-  if (job.status === "success" && job.result) state.design = normalizeDesign(job.result.design);
-  if (job.status === "failed" && job.error) state.error = { code: job.error.code, message: job.error.message };
-  return state;
+function isNonEmptyString(value: unknown, max = Infinity): value is string {
+  return typeof value === "string" && value.trim() !== "" && value.length <= max;
 }
-
-/** Converts a polled transformation job into the state stored on its action record. */
-function transformationStateFromJob(
-  job: CanvaImageTransformationJobResponse, startedAt: number,
-): TransformationState {
-  const state: TransformationState = { startedAt, status: job.status };
-  if (job.id !== undefined) state.jobId = job.id;
-  if (job.status === "success" && job.result) state.asset = normalizeImageAsset(job.result.asset);
-  if (job.status === "failed" && job.error) state.error = { code: job.error.code, message: job.error.message };
-  return state;
-}
-
-const EXPIRED_JOB_ERROR = { code: "expired", message: "The job expired on Canva before it completed." };
 
 /**
- * Whether a failed poll means the job aged out rather than vanished. Canva forgets a generation job
- * 24 hours after it starts; the transformation docs don't state a lifetime, so the same window is
- * applied there. An earlier 404 is passed through, since it means something is wrong.
+ * The design type a caller asked for, rebuilt from its known members. An extra property on the
+ * caller's object would otherwise be stored, sent to Canva, and missing from the approval card.
  */
-function isExpiredJob(error: unknown, startedAt: number): boolean {
-  return error instanceof CanvaApiError && error.status === 404
-    && Date.now() - startedAt > GENERATION_JOB_LIFETIME_MS;
-}
-
-/** Lists a transformation's steps for an approval card, e.g. "background removal". */
-function describeTransformations(transformations: CanvaImageTransformation[]): string {
-  return transformations.map(step => step.type.replaceAll("_", " ")).join(", then ");
-}
-
-const CREDITS_WARNING = "**This spends your Canva AI credits.** They are not refunded if the result is unwanted.";
-
-/**
- * The approver-facing text for a prepared action, rendered from the payload that will be applied,
- * so every title, brief, asset id and option the agent chose is there to read in full. Agent-chosen
- * text goes in fields, never in the prose, which approval surfaces render as Markdown.
- */
-function describeCanvaAction(action: CanvaAction): RenderedDescription {
-  switch (action.type) {
-    case "createDesign": {
-      const builder = buildDescription(
-        `Create a new, empty ${describeDesignType(action.designType)} in the connected Canva account.`)
-        .inline("Design type", action.designType.type === "preset"
-          ? action.designType.name : `${action.designType.width}×${action.designType.height}px`);
-      if (action.title !== undefined) builder.inline("Title", action.title);
-      if (action.assetId !== undefined) {
-        builder.inline("Asset placed on the first page", action.assetId);
-      }
-      return builder.finish();
-    }
-    case "generateDesign": {
-      const builder = buildDescription(
-        `Ask Canva's AI to generate ${describeDesignType(action.designType)} from the brief below. ` +
-        `The design is saved to your Canva account once generation finishes; the agent follows ` +
-        `progress with listGeneratedDesigns().`)
-        .prose(CREDITS_WARNING)
-        .inline("Design type", action.designType.name)
-        .verbatim("Brief", action.brief);
-      if (action.outline !== undefined) {
-        builder.json(`Outline (${action.outline.sections.length} slides)`, action.outline);
-      }
-      return builder.finish();
-    }
-    case "transformImage": {
-      const builder = buildDescription(
-        `Apply ${describeTransformations(action.transformations)} to the Canva image asset below, ` +
-        `saving the result as a new asset in your Canva Uploads. The original is not changed; the ` +
-        `agent follows progress with listImageTransformations().`)
-        .prose(CREDITS_WARNING)
-        .inline("Source asset", action.sourceName)
-        .inline("Source asset ID", action.assetId)
-        .list("Steps", action.transformations.map(step => step.type));
-      if (action.name !== undefined) builder.inline("New asset name", action.name);
-      return builder.finish();
-    }
-  }
-}
-
-function describeDesignType(designType: CanvaDesignType): string {
-  return designType.type === "preset"
-    ? `a ${designType.name}`
-    : `a custom ${designType.width}×${designType.height}px design`;
-}
-
-// ---------------------------------------------------------------------------
-// GatekeeperImpl DO — per-binding instance, runs as a facet of the Overseer.
-
-@validateRpc()
-export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplProps>
-  implements Gatekeeper<CanvaAccountSession> {
-
-  #userAccount(): DurableObjectStub<UserAccount> {
-    return this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
-  }
-
-  async #withApi<T>(fn: (api: CanvaApi) => Promise<T>): Promise<T> {
-    const account = this.#userAccount();
-    const api = new CanvaApi(() => account.getAccessToken());
-    try {
-      return await fn(api);
-    } catch (error) {
-      if (error instanceof CanvaApiError && error.isAuthError) {
-        await account.noteCredentialsExpired();
-        throw new Error("Canva credentials have expired or been revoked. Please reconnect the account.", { cause: error });
-      }
-      throw error;
-    }
-  }
-
-  async describe(): Promise<ResourceDescription> {
-    const profile = await this.#withApi(api => api.getProfile());
-    return {
-      url: CANVA_PROJECTS_URL,
-      title: `${profile.profile.display_name}'s Canva`,
-      snippet: "Whole-account access: profile, designs, folders, and design creation.",
-      suggestedBindingName: "CANVA_ACCOUNT",
-      tsType: "CanvaAccountSession",
-    };
-  }
-
-  async getTypeScriptTypes(): Promise<string> {
-    return TYPES_CODE;
-  }
-
-  async getAutoApprovableActions() {
-    return [];
-  }
-
-  async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<CanvaAccountSession> {
-    return new CanvaAccountSessionImpl(this, approvalQueue.dup());
-  }
-
-  /**
-   * Observer tracking: Canva uses the "private-only" strategy for now. Designs have real per-user
-   * sharing, and a whole-account binding can read any of them, so a collaborator opening a shared
-   * gadget could see designs they were never granted. Until a per-design access check exists (the
-   * verifier already exposes the observer's identity for it), nobody but the owner may observe.
-   */
-  async addObserver(_id: string, _user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
-    throw new Error(
-      "A gadget that reads a Canva account cannot be shared yet: the Canva connector does not " +
-      "verify that collaborators can see the same designs.");
-  }
-
-  async removeObserver(_id: string): Promise<void> {}
-
-  // -------------------------------------------------------------------------
-  // Reads
-
-  async getProfile(): Promise<CanvaProfile> {
-    const [me, profile, capabilities] = await this.#withApi(api =>
-      Promise.all([api.getCurrentUser(), api.getProfile(), api.getCapabilities()]));
-    return {
-      userId: me.team_user.user_id,
-      teamId: me.team_user.team_id,
-      displayName: profile.profile.display_name,
-      canGenerateDesigns: capabilities.capabilities.includes("design_generation"),
-      canRemoveBackgrounds: capabilities.capabilities.includes("background_removal"),
-    };
-  }
-
-  async getImageAsset(assetId: string): Promise<CanvaImageAsset> {
-    let asset: CanvaImageAssetResponse;
-    try {
-      asset = await this.#withApi(api => api.getAsset(assetId));
-    } catch (error) {
-      if (error instanceof CanvaApiError && error.status === 404) {
-        throw new Error(`No Canva asset found with id "${assetId}", or you do not have access to it.`, { cause: error });
-      }
-      throw error;
-    }
-    if (asset.type === "video") {
-      throw new Error(`Canva asset "${assetId}" is a video, not an image.`);
-    }
-    return normalizeImageAsset(asset);
-  }
-
-  async listDesigns(options: CanvaListDesignsOptions): Promise<CanvaPage<CanvaDesign>> {
-    const page = await this.#withApi(api => api.listDesigns({
-      query: options.query,
-      ownership: options.ownership,
-      sort_by: options.sortBy,
-      continuation: options.continuation,
-    }));
-    return { items: page.items.map(normalizeDesign), ...(page.continuation ? { continuation: page.continuation } : {}) };
-  }
-
-  async getDesign(designId: string): Promise<CanvaDesign> {
-    try {
-      return normalizeDesign(await this.#withApi(api => api.getDesign(designId)));
-    } catch (error) {
-      if (error instanceof CanvaApiError && error.status === 404) {
-        throw new Error(`No Canva design found with id "${designId}", or you do not have access to it.`, { cause: error });
-      }
-      throw error;
-    }
-  }
-
-  async getFolder(folderId: string): Promise<CanvaFolder> {
-    try {
-      return normalizeFolder(await this.#withApi(api => api.getFolder(folderId)));
-    } catch (error) {
-      if (error instanceof CanvaApiError && error.status === 404) {
-        throw new Error(`No Canva folder found with id "${folderId}", or you do not have access to it.`, { cause: error });
-      }
-      throw error;
-    }
-  }
-
-  async listFolderItems(folderId: string, options: CanvaListFolderItemsOptions): Promise<CanvaPage<CanvaFolderItem>> {
-    const page = await this.#withApi(api => api.listFolderItems(folderId, {
-      item_types: options.itemTypes,
-      sort_by: options.sortBy,
-      continuation: options.continuation,
-    }));
-    return {
-      items: page.items.map(normalizeFolderItem),
-      ...(page.continuation ? { continuation: page.continuation } : {}),
-    };
-  }
-
-  // -------------------------------------------------------------------------
-  // Action storage & lookup
-
-  #counter(name: string): number {
-    const value = (this.ctx.storage.kv.get<number>(`counter:${name}`) ?? 0) + 1;
-    this.ctx.storage.kv.put(`counter:${name}`, value);
-    return value;
-  }
-
-  #actionKey(id: number): string { return `action:${id}`; }
-  #retiredKey(id: number): string { return `retiredAction:${id}`; }
-
-  #getRecord(id: number): StoredActionRecord | undefined {
-    return this.ctx.storage.kv.get<StoredActionRecord>(this.#actionKey(id))
-      ?? this.ctx.storage.kv.get<StoredActionRecord>(this.#retiredKey(id));
-  }
-
-  #requireRecord(id: number): StoredActionRecord {
-    const record = this.#getRecord(id);
-    if (!record) throw new Error(`No queued Canva action exists with id ${id}.`);
-    return record;
-  }
-
-  #retire(id: number, record: StoredActionRecord): void {
-    this.ctx.storage.kv.delete(this.#actionKey(id));
-    this.ctx.storage.kv.put(this.#retiredKey(id), record);
-    this.#maybePruneRetiredActions();
-  }
-
-  // Retired (applied/rejected) records are kept so the overseer can still ask about recently-applied
-  // actions, but they must not accumulate forever. Rate-limited so we don't rescan on every apply.
-  #maybePruneRetiredActions(): void {
-    const last = this.ctx.storage.kv.get<number>("meta:lastRetiredPrune") ?? 0;
-    if (Date.now() - last < RETIRED_ACTION_PRUNE_INTERVAL_MS) return;
-    this.ctx.storage.kv.put("meta:lastRetiredPrune", Date.now());
-    const cutoff = Date.now() - RETIRED_ACTION_RETENTION_MS;
-    for (const [key, record] of this.ctx.storage.kv.list<StoredActionRecord>({ prefix: "retiredAction:" })) {
-      const retiredAt = record.appliedAt ?? record.rejectedAt ?? 0;
-      if (retiredAt > 0 && retiredAt < cutoff) this.ctx.storage.kv.delete(key);
-    }
-  }
-
-  prepareCreateDesign(designType: CanvaDesignType, options: CanvaCreateDesignOptions): CreateDesignAction {
-    return {
-      approvalId: this.#counter("approval"),
-      submittedAt: Date.now(),
-      type: "createDesign",
-      designType,
-      ...(options.title !== undefined ? { title: options.title } : {}),
-      ...(options.assetId !== undefined ? { assetId: options.assetId } : {}),
-    };
-  }
-
-  prepareGenerateDesign(
-    brief: string, designType: CanvaGenerationDesignType, options: CanvaGenerateDesignOptions,
-  ): GenerateDesignAction {
-    return {
-      approvalId: this.#counter("approval"),
-      submittedAt: Date.now(),
-      type: "generateDesign",
-      brief,
-      designType,
-      ...(options.outline !== undefined ? { outline: options.outline } : {}),
-    };
-  }
-
-  /**
-   * The generation jobs this binding has started, newest first, with any still-running job polled
-   * first so the caller sees Canva's current answer. Each poll result is persisted, so a finished
-   * job is never asked about again and a job that has aged out of Canva is reported as expired.
-   */
-  async listGeneratedDesigns(): Promise<CanvaGenerationJob[]> {
-    const applied: Array<[string, StoredActionRecord]> = [];
-    for (const [key, record] of this.ctx.storage.kv.list<StoredActionRecord>({ prefix: "retiredAction:" })) {
-      if (record.action.type === "generateDesign" && record.state === "approved" && record.generation) {
-        applied.push([key, record]);
+function parseDesignType(value: unknown, method: string): CanvaDesignType {
+  if (typeof value === "string" && PRESET_DESIGN_TYPES.has(value)) return value as CanvaDesignType;
+  if (value && typeof value === "object" && "width" in value && "height" in value) {
+    const { width, height } = value as { width: unknown; height: unknown };
+    for (const [label, px] of [["width", width], ["height", height]] as const) {
+      if (!Number.isInteger(px) || (px as number) < CUSTOM_DESIGN_MIN_PX || (px as number) > CUSTOM_DESIGN_MAX_PX) {
+        throw new Error(`${method}: ${label} must be an integer between ${CUSTOM_DESIGN_MIN_PX} and ${CUSTOM_DESIGN_MAX_PX} pixels.`);
       }
     }
-    applied.sort((a, b) => b[1].action.submittedAt - a[1].action.submittedAt);
-
-    const jobs: CanvaGenerationJob[] = [];
-    for (const [key, record] of applied.slice(0, GENERATION_LIST_MAX)) {
-      const action = record.action as GenerateDesignAction;
-      let generation = record.generation!;
-      if (generation.status === "in_progress") {
-        generation = await this.#refreshGeneration(generation);
-        record.generation = generation;
-        this.ctx.storage.kv.put(key, record);
-      }
-      jobs.push({
-        id: generation.jobId,
-        brief: action.brief,
-        designType: action.designType,
-        startedAt: new Date(generation.startedAt).toISOString(),
-        status: generation.status,
-        design: generation.design ?? null,
-        error: generation.error ?? null,
-      });
-    }
-    return jobs;
+    return { width: width as number, height: height as number };
   }
-
-  async #refreshGeneration(current: GenerationState): Promise<GenerationState> {
-    try {
-      const job = await this.#withApi(api => api.getDesignGeneration(current.jobId));
-      return generationStateFromJob(job, current.startedAt);
-    } catch (error) {
-      if (!isExpiredJob(error, current.startedAt)) throw error;
-      return { ...current, status: "failed", error: EXPIRED_JOB_ERROR };
-    }
-  }
-
-  prepareTransformImage(
-    source: CanvaImageAsset, transformations: CanvaImageTransformation[], options: CanvaTransformImageOptions,
-  ): TransformImageAction {
-    return {
-      approvalId: this.#counter("approval"),
-      submittedAt: Date.now(),
-      type: "transformImage",
-      assetId: source.id,
-      sourceName: source.name,
-      transformations,
-      ...(options.name !== undefined ? { name: options.name } : {}),
-    };
-  }
-
-  /** The transformation jobs this binding has started, newest first; see listGeneratedDesigns. */
-  async listImageTransformations(): Promise<CanvaImageTransformationJob[]> {
-    const applied: Array<[string, StoredActionRecord]> = [];
-    for (const [key, record] of this.ctx.storage.kv.list<StoredActionRecord>({ prefix: "retiredAction:" })) {
-      if (record.action.type === "transformImage" && record.state === "approved" && record.transformation) {
-        applied.push([key, record]);
-      }
-    }
-    applied.sort((a, b) => b[1].action.submittedAt - a[1].action.submittedAt);
-
-    const jobs: CanvaImageTransformationJob[] = [];
-    for (const [key, record] of applied.slice(0, GENERATION_LIST_MAX)) {
-      const action = record.action as TransformImageAction;
-      let transformation = record.transformation!;
-      if (transformation.status === "in_progress" && transformation.jobId !== undefined) {
-        transformation = await this.#refreshTransformation(transformation, transformation.jobId);
-        record.transformation = transformation;
-        this.ctx.storage.kv.put(key, record);
-      }
-      jobs.push({
-        id: transformation.jobId ?? null,
-        sourceAssetId: action.assetId,
-        transformations: action.transformations,
-        startedAt: new Date(transformation.startedAt).toISOString(),
-        status: transformation.status,
-        asset: transformation.asset ?? null,
-        error: transformation.error ?? null,
-      });
-    }
-    return jobs;
-  }
-
-  async #refreshTransformation(current: TransformationState, jobId: string): Promise<TransformationState> {
-    try {
-      const job = await this.#withApi(api => api.getImageTransformation(jobId));
-      return transformationStateFromJob(job, current.startedAt);
-    } catch (error) {
-      if (!isExpiredJob(error, current.startedAt)) throw error;
-      return { ...current, status: "failed", error: EXPIRED_JOB_ERROR };
-    }
-  }
-
-  async submitActionForApproval(
-    queue: RpcStub<ApprovalQueue>,
-    action: CanvaAction,
-    presentation: { title: string; implementsRevert: boolean; awaitDecision?: boolean },
-  ): Promise<void> {
-    this.ctx.storage.kv.put<StoredActionRecord>(this.#actionKey(action.approvalId), { action, state: "staged" });
-    try {
-      // The text comes from the prepared payload, not the caller, so it always shows what applies.
-      await queue.submitAction(action.approvalId, { ...presentation, ...describeCanvaAction(action) });
-    } catch (error) {
-      this.ctx.storage.kv.delete(this.#actionKey(action.approvalId));
-      throw error;
-    }
-    const record = this.#requireRecord(action.approvalId);
-    record.state = "pending";
-    this.ctx.storage.kv.put(this.#actionKey(action.approvalId), record);
-  }
-
-  // -------------------------------------------------------------------------
-  // Action lifecycle (apply / reject / revert)
-
-  async applyAction(actionId: number): Promise<void> {
-    const record = this.#requireRecord(actionId);
-    // "failed" is retryable (a prior apply threw); the overseer may call applyAction again.
-    if (record.state !== "pending" && record.state !== "staged" && record.state !== "failed") {
-      throw new Error(`Canva action ${actionId} is no longer pending.`);
-    }
-    try {
-      await this.#performAction(record);
-    } catch (error) {
-      record.state = "failed";
-      this.ctx.storage.kv.put(this.#actionKey(actionId), record);
-      throw error;
-    }
-    record.state = "approved";
-    record.appliedAt = Date.now();
-    this.#retire(actionId, record);
-  }
-
-  async #performAction(record: StoredActionRecord): Promise<void> {
-    const action = record.action;
-    switch (action.type) {
-      case "createDesign": {
-        const created = await this.#withApi(api => api.createDesign({
-          design_type: action.designType,
-          ...(action.title !== undefined ? { title: action.title } : {}),
-          ...(action.assetId !== undefined ? { asset_id: action.assetId } : {}),
-        }));
-        record.createdDesign = { id: created.id, editUrl: created.urls.edit_url };
-        break;
-      }
-      case "generateDesign": {
-        const startedAt = Date.now();
-        const job = await this.#withApi(api => api.createDesignGeneration({
-          brief: action.brief,
-          design_type: action.designType,
-          ...(action.outline !== undefined ? { outline: action.outline } : {}),
-        }));
-        record.generation = generationStateFromJob(job, startedAt);
-        break;
-      }
-      case "transformImage": {
-        const startedAt = Date.now();
-        let job: CanvaImageTransformationJobResponse;
-        try {
-          job = await this.#withApi(api => api.createImageTransformation({
-            asset_id: action.assetId,
-            transformations: action.transformations,
-            ...(action.name !== undefined ? { name: action.name } : {}),
-          }));
-        } catch (error) {
-          // A 403 here is most often a connection made before this gatekeeper requested asset:write,
-          // which only a fresh consent can widen. Say so rather than leave the user guessing.
-          if (error instanceof CanvaApiError && error.status === 403) {
-            throw new Error(
-              "Canva refused the image transformation. If this Canva account was connected before " +
-              "image transformation was added, disconnect and reconnect it to grant the asset:write " +
-              "scope; otherwise the user's plan may not include this feature.", { cause: error });
-          }
-          throw error;
-        }
-        record.transformation = transformationStateFromJob(job, startedAt);
-        break;
-      }
-    }
-  }
-
-  async rejectAction(actionId: number): Promise<void | { restart?: boolean }> {
-    // Be lenient: a reject for an action we don't have pending (already applied/rejected, or a
-    // stale queue entry from a prior session) is treated as a no-op success so the overseer can
-    // always clear it from its queue. Throwing here would leave such entries stuck.
-    const record = this.#getRecord(actionId);
-    if (!record || (record.state !== "pending" && record.state !== "staged" && record.state !== "failed")) {
-      return;
-    }
-    record.state = "rejected";
-    record.rejectedAt = Date.now();
-    this.#retire(actionId, record);
-  }
-
-  async revertAction(actionId: number): Promise<void | { message?: string; canRetry?: boolean; restart?: boolean }> {
-    const record = this.#requireRecord(actionId);
-    if (record.state !== "approved") {
-      return { message: "This action has not been applied, so there is nothing to revert.", canRetry: false };
-    }
-    if (record.action.type === "transformImage") {
-      // The source asset was never touched; only the new asset would need removing.
-      const asset = record.transformation?.asset;
-      const which = asset ? ` The new asset is "${asset.name}" (id ${asset.id}).` : "";
-      return {
-        message: "The Connect API cannot delete an asset, so remove the transformed image from your " +
-          `Canva Uploads by hand if you don't want it.${which} The AI credits it consumed are not refunded.`,
-        canRetry: false,
-      };
-    }
-    // The Connect API has no endpoint to delete a design, so the best we can do is point at it.
-    const editUrl = record.createdDesign?.editUrl ?? record.generation?.design?.editUrl;
-    const where = editUrl ? ` It is at ${editUrl}; move it to the trash from the Canva editor.` : "";
-    const what = record.action.type === "generateDesign" ? "generation" : "creation";
-    const credits = record.action.type === "generateDesign"
-      ? " The AI credits it consumed are not refunded." : "";
-    return {
-      message: `Canva designs cannot be deleted through the API, so this ${what} must be undone by hand.${where}${credits}`,
-      canRetry: false,
-    };
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Session implementation
-
-function disposeQueue(queue: RpcStub<ApprovalQueue>): void {
-  (queue as RpcStub<ApprovalQueue> & { [Symbol.dispose](): void })[Symbol.dispose]();
+  throw new Error(`${method}: designType must be "doc", "whiteboard", "presentation", or { width, height } in pixels.`);
 }
 
 @validateRpc()
 class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
-  #gk: CanvaGatekeeperImpl;
+  #host: CanvaSessionHost;
   #queue: RpcStub<ApprovalQueue>;
 
-  constructor(gk: CanvaGatekeeperImpl, queue: RpcStub<ApprovalQueue>) {
+  constructor(host: CanvaSessionHost, queue: RpcStub<ApprovalQueue>) {
     super();
-    this.#gk = gk;
+    this.#host = host;
     this.#queue = queue;
   }
 
@@ -1272,17 +943,47 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
     disposeQueue(this.#queue);
   }
 
+  /**
+   * A listing cursor over a Canva continuation-token endpoint. The cursor is walked after this
+   * call returns, so it takes its own queue stub and releases it when the walk is dropped; every
+   * page is authorized as an observation before it leaves, an empty one included.
+   */
+  #cursor<T>(listing: {
+    title: string;
+    describe(count: number): string;
+    describeEmpty: string;
+    fetchPage(api: CanvaApi, token: string | undefined): Promise<{ items: T[]; continuation?: string }>;
+  }): Cursor<T> {
+    const queue = this.#queue.dup();
+    return new TokenCursor<T>({
+      pageSize: CURSOR_PAGE_SIZE,
+      dispose: () => disposeQueue(queue),
+      fetchPage: async token => {
+        const page = await this.#host.read(api => listing.fetchPage(api, token));
+        return { items: page.items, ...(page.continuation !== undefined ? { nextToken: page.continuation } : {}) };
+      },
+      authorizePage: async (items, { terminal }) => {
+        await queue.authorizeObservation({
+          title: listing.title,
+          description: items.length === 0
+            ? (terminal ? listing.describeEmpty : "Scanned a window of results; none were visible.")
+            : listing.describe(items.length),
+        });
+      },
+    });
+  }
+
   async getProfile(): Promise<CanvaProfile> {
-    const profile = await this.#gk.getProfile();
+    const profile = await this.#host.getProfile();
     await this.#queue.authorizeObservation({
       title: "Read Canva profile",
-      description: `Read the connected Canva account's profile (${profile.displayName}).`,
+      description: `Read the connected Canva account's profile (${profile.displayName}) and plan capabilities.`,
     });
     return profile;
   }
 
   @skipRpcValidation()
-  async listDesigns(options?: CanvaListDesignsOptions): Promise<CanvaPage<CanvaDesign>> {
+  async listDesigns(options?: CanvaListDesignsOptions): Promise<Cursor<CanvaDesign>> {
     const opts = options ?? {};
     if (opts.query !== undefined && typeof opts.query !== "string") {
       throw new Error("listDesigns(): query must be a string when provided.");
@@ -1293,17 +994,18 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
     if (opts.sortBy !== undefined && !DESIGN_SORTS.has(opts.sortBy)) {
       throw new Error(`listDesigns(): sortBy must be one of ${[...DESIGN_SORTS].map(s => `"${s}"`).join(", ")}.`);
     }
-    if (opts.continuation !== undefined && typeof opts.continuation !== "string") {
-      throw new Error("listDesigns(): continuation must be a string when provided.");
-    }
-    const page = await this.#gk.listDesigns(opts);
+    const query = { query: opts.query, ownership: opts.ownership, sort_by: opts.sortBy };
     const what = opts.query ? `designs matching "${opts.query}"` : "designs";
-    await this.#queue.authorizeObservation({
+    return this.#cursor<CanvaDesign>({
       title: opts.query ? `Search Canva designs for "${opts.query}"` : "List Canva designs",
-      description: `Read ${page.items.length} ${what} from the connected Canva account` +
+      describe: count => `Read ${count} ${what} from the connected Canva account` +
         `${opts.ownership && opts.ownership !== "any" ? ` (${opts.ownership})` : ""}.`,
+      describeEmpty: `Listed ${what}; there were none.`,
+      fetchPage: async (api, token) => {
+        const page = await api.listDesigns({ ...query, continuation: token });
+        return { items: page.items.map(normalizeDesign), continuation: page.continuation };
+      },
     });
-    return page;
   }
 
   async getDesign(designIdOrUrl: string): Promise<CanvaDesign> {
@@ -1311,7 +1013,7 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
     if (!designId) {
       throw new Error(`Invalid Canva design "${designIdOrUrl}". Pass a design id or a canva.com/design URL.`);
     }
-    const design = await this.#gk.getDesign(designId);
+    const design = await this.#host.getDesign(designId);
     await this.#queue.authorizeObservation({
       title: `Read design "${design.title ?? design.id}"`,
       description: `Read metadata for the Canva design "${design.title ?? design.id}".`,
@@ -1320,106 +1022,90 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
   }
 
   @skipRpcValidation()
-  async createDesign(designType: CanvaDesignType, options?: CanvaCreateDesignOptions): Promise<void> {
-    if (!designType || typeof designType !== "object") {
-      throw new Error("createDesign(): designType is required.");
-    }
-    if (designType.type === "preset") {
-      if (!PRESET_DESIGN_TYPES.has(designType.name)) {
-        throw new Error(`createDesign(): preset name must be one of "doc", "whiteboard", or "presentation".`);
-      }
-    } else if (designType.type === "custom") {
-      for (const [label, value] of [["width", designType.width], ["height", designType.height]] as const) {
-        if (!Number.isInteger(value) || value < CUSTOM_DESIGN_MIN_PX || value > CUSTOM_DESIGN_MAX_PX) {
-          throw new Error(
-            `createDesign(): ${label} must be an integer between ${CUSTOM_DESIGN_MIN_PX} and ${CUSTOM_DESIGN_MAX_PX} pixels.`);
-        }
-      }
-    } else {
-      throw new Error(`createDesign(): designType.type must be "preset" or "custom".`);
-    }
-    const opts = options ?? {};
-    if (opts.title !== undefined && (typeof opts.title !== "string" || opts.title.trim() === "")) {
+  async createDesign(options: CanvaCreateDesignOptions): Promise<void> {
+    if (!options || typeof options !== "object") throw new Error("createDesign(): options are required.");
+    const designType = parseDesignType(options.designType, "createDesign()");
+    if (options.title !== undefined && !isNonEmptyString(options.title)) {
       throw new Error("createDesign(): title must be a non-empty string when provided.");
     }
-    if (opts.assetId !== undefined && (typeof opts.assetId !== "string" || opts.assetId.trim() === "")) {
+    if (options.assetId !== undefined && !isNonEmptyString(options.assetId)) {
       throw new Error("createDesign(): assetId must be a non-empty string when provided.");
     }
-
-    const action = this.#gk.prepareCreateDesign(designType, opts);
-    await this.#gk.submitActionForApproval(this.#queue, action, {
-      title: `Create a Canva ${designType.type === "preset" ? designType.name : "design"}`,
-      // The Connect API cannot delete a design, so the user has to undo this one by hand.
-      implementsRevert: false,
-      // Not simulated: the design does not exist until approved, so the agent should not read
-      // back a world where it is missing and conclude the call failed.
-      awaitDecision: true,
+    // Rebuilt from known members: nothing else the caller's object carried is stored or sent.
+    await this.#host.submit(this.#queue, "createDesign", {
+      designType,
+      ...(options.title !== undefined ? { title: options.title } : {}),
+      ...(options.assetId !== undefined ? { assetId: options.assetId } : {}),
     });
   }
 
   @skipRpcValidation()
-  async generateDesign(
-    brief: string, designType: CanvaGenerationDesignType, options?: CanvaGenerateDesignOptions,
-  ): Promise<void> {
-    if (typeof brief !== "string" || brief.trim() === "" || brief.length > GENERATION_BRIEF_MAX) {
+  async generateDesign(options: CanvaGenerateDesignOptions): Promise<void> {
+    if (!options || typeof options !== "object") throw new Error("generateDesign(): options are required.");
+    const { brief, designType, outline } = options;
+    if (!isNonEmptyString(brief, GENERATION_BRIEF_MAX)) {
       throw new Error(`generateDesign(): brief must be a non-empty string of at most ${GENERATION_BRIEF_MAX} characters.`);
     }
-    if (!designType || typeof designType !== "object" || designType.type !== "preset"
-        || !GENERATION_DESIGN_TYPES.has(designType.name)) {
-      throw new Error(`generateDesign(): designType must be { type: "preset", name: "doc" | "presentation" }.`);
+    if (typeof designType !== "string" || !GENERATION_DESIGN_TYPES.has(designType)) {
+      throw new Error(`generateDesign(): designType must be "doc" or "presentation".`);
     }
-    const opts = options ?? {};
-    if (opts.outline !== undefined) {
-      if (designType.name !== "presentation") {
-        throw new Error("generateDesign(): an outline is only valid for presentations.");
-      }
-      const sections = opts.outline?.sections;
-      if (!Array.isArray(sections) || sections.length === 0 || sections.length > GENERATION_SECTIONS_MAX) {
+    let sections: CanvaGenerateDesignOptions["outline"] | undefined;
+    if (outline !== undefined) {
+      if (designType !== "presentation") throw new Error("generateDesign(): an outline is only valid for presentations.");
+      const given = outline?.sections;
+      if (!Array.isArray(given) || given.length === 0 || given.length > GENERATION_SECTIONS_MAX) {
         throw new Error(`generateDesign(): outline.sections must have 1 to ${GENERATION_SECTIONS_MAX} entries.`);
       }
-      sections.forEach((section, index) => {
-        const at = `outline.sections[${index}]`;
-        if (!section || typeof section !== "object") throw new Error(`generateDesign(): ${at} must be an object.`);
-        if (typeof section.title !== "string" || section.title.trim() === ""
-            || section.title.length > GENERATION_SECTION_TITLE_MAX) {
-          throw new Error(`generateDesign(): ${at}.title must be 1 to ${GENERATION_SECTION_TITLE_MAX} characters.`);
-        }
-        if (section.description !== undefined && (typeof section.description !== "string"
-            || section.description.trim() === "" || section.description.length > GENERATION_SECTION_DESCRIPTION_MAX)) {
-          throw new Error(`generateDesign(): ${at}.description must be 1 to ${GENERATION_SECTION_DESCRIPTION_MAX} characters.`);
-        }
-        if (section.points !== undefined && (!Array.isArray(section.points)
-            || section.points.length > GENERATION_SECTION_POINTS_MAX
-            || section.points.some(point => typeof point !== "string"))) {
-          throw new Error(`generateDesign(): ${at}.points must be an array of at most ${GENERATION_SECTION_POINTS_MAX} strings.`);
-        }
-      });
+      sections = {
+        sections: given.map((section, index) => {
+          const at = `outline.sections[${index}]`;
+          if (!section || typeof section !== "object") throw new Error(`generateDesign(): ${at} must be an object.`);
+          if (!isNonEmptyString(section.title, GENERATION_SECTION_TITLE_MAX)) {
+            throw new Error(`generateDesign(): ${at}.title must be 1 to ${GENERATION_SECTION_TITLE_MAX} characters.`);
+          }
+          if (section.description !== undefined && !isNonEmptyString(section.description, GENERATION_SECTION_DESCRIPTION_MAX)) {
+            throw new Error(`generateDesign(): ${at}.description must be 1 to ${GENERATION_SECTION_DESCRIPTION_MAX} characters.`);
+          }
+          if (section.points !== undefined && (!Array.isArray(section.points)
+              || section.points.length > GENERATION_SECTION_POINTS_MAX
+              || section.points.some(point => typeof point !== "string"))) {
+            throw new Error(`generateDesign(): ${at}.points must be an array of at most ${GENERATION_SECTION_POINTS_MAX} strings.`);
+          }
+          // Rebuilt from known members, as the design type is.
+          return {
+            title: section.title,
+            ...(section.description !== undefined ? { description: section.description } : {}),
+            ...(section.points !== undefined ? { points: [...section.points] } : {}),
+          };
+        }),
+      };
     }
-
-    const action = this.#gk.prepareGenerateDesign(brief, designType, opts);
-    await this.#gk.submitActionForApproval(this.#queue, action, {
-      title: `Generate a Canva ${designType.name} with AI`,
-      // The Connect API cannot delete a design, and credits are not refundable.
-      implementsRevert: false,
-      // Not simulated and asynchronous: nothing exists until approved and generated.
-      awaitDecision: true,
+    await this.#host.submit(this.#queue, "generateDesign", {
+      brief, designType, ...(sections !== undefined ? { outline: sections } : {}),
     });
   }
 
   async listGeneratedDesigns(): Promise<CanvaGenerationJob[]> {
-    const jobs = await this.#gk.listGeneratedDesigns();
+    const jobs = (await this.#host.listJobs("generateDesign")).map(record => ({
+      id: record.jobId,
+      brief: record.brief,
+      designType: record.designType,
+      startedAt: new Date(record.at).toISOString(),
+      status: record.status,
+      design: record.design ?? null,
+      error: record.error ?? null,
+    }));
     const finished = jobs.filter(job => job.status === "success").length;
     await this.#queue.authorizeObservation({
       title: "Read Canva generation jobs",
-      description: `Read ${jobs.length} design generation job(s) started from this connection` +
-        ` (${finished} finished).`,
+      description: `Read ${jobs.length} design generation job(s) started from this connection (${finished} finished).`,
     });
     return jobs;
   }
 
   async getImageAsset(assetId: string): Promise<CanvaImageAsset> {
-    if (assetId.trim() === "") throw new Error("getImageAsset(): assetId must be a non-empty string.");
-    const asset = await this.#gk.getImageAsset(assetId.trim());
+    if (!isNonEmptyString(assetId)) throw new Error("getImageAsset(): assetId must be a non-empty string.");
+    const asset = await this.#host.getImageAsset(assetId.trim());
     await this.#queue.authorizeObservation({
       title: `Read image asset "${asset.name}"`,
       description: `Read metadata for the Canva image asset "${asset.name}".`,
@@ -1428,55 +1114,43 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
   }
 
   @skipRpcValidation()
-  async transformImage(
-    assetId: string, transformations: CanvaImageTransformation[], options?: CanvaTransformImageOptions,
-  ): Promise<void> {
-    if (typeof assetId !== "string" || assetId.trim() === "") {
-      throw new Error("transformImage(): assetId must be a non-empty string.");
+  async removeBackground(assetId: string, options?: CanvaRemoveBackgroundOptions): Promise<void> {
+    if (!isNonEmptyString(assetId)) throw new Error("removeBackground(): assetId must be a non-empty string.");
+    const name = options?.name;
+    if (name !== undefined && !isNonEmptyString(name, ASSET_NAME_MAX)) {
+      throw new Error(`removeBackground(): name must be 1 to ${ASSET_NAME_MAX} characters when provided.`);
     }
-    if (!Array.isArray(transformations) || transformations.length === 0
-        || transformations.length > TRANSFORMATIONS_MAX) {
-      throw new Error(`transformImage(): transformations must have 1 to ${TRANSFORMATIONS_MAX} steps.`);
-    }
-    for (const step of transformations) {
-      if (!step || typeof step !== "object" || !TRANSFORMATION_TYPES.has(step.type)) {
-        throw new Error(`transformImage(): each step must be { type: "background_removal" }.`);
-      }
-    }
-    const opts = options ?? {};
-    if (opts.name !== undefined && (typeof opts.name !== "string" || opts.name.trim() === ""
-        || opts.name.length > TRANSFORMATION_NAME_MAX)) {
-      throw new Error(`transformImage(): name must be 1 to ${TRANSFORMATION_NAME_MAX} characters when provided.`);
-    }
-
     // Read the source first so the approval card can name it, and so a video or a missing asset is
     // refused before anything is queued. This read is itself an observation.
     const source = await this.getImageAsset(assetId);
-    const steps = transformations.map(step => ({ type: step.type }));
-    const action = this.#gk.prepareTransformImage(source, steps, opts);
-    await this.#gk.submitActionForApproval(this.#queue, action, {
-      title: `Transform a Canva image: ${describeTransformations(steps)}`,
-      // The Connect API cannot delete an asset, and credits are not refundable.
-      implementsRevert: false,
-      // Not simulated and asynchronous: nothing exists until approved and processed.
-      awaitDecision: true,
+    await this.#host.submit(this.#queue, "removeBackground", {
+      assetId: source.id, sourceName: source.name, ...(name !== undefined ? { name } : {}),
     });
   }
 
-  async listImageTransformations(): Promise<CanvaImageTransformationJob[]> {
-    const jobs = await this.#gk.listImageTransformations();
+  async listBackgroundRemovals(): Promise<CanvaBackgroundRemovalJob[]> {
+    const jobs = (await this.#host.listJobs("removeBackground")).map(record => ({
+      id: record.jobId,
+      sourceAssetId: record.sourceAssetId,
+      startedAt: new Date(record.at).toISOString(),
+      status: record.status,
+      asset: record.asset ?? null,
+      error: record.error ?? null,
+    }));
     const finished = jobs.filter(job => job.status === "success").length;
     await this.#queue.authorizeObservation({
-      title: "Read Canva image transformation jobs",
-      description: `Read ${jobs.length} image transformation job(s) started from this connection` +
-        ` (${finished} finished).`,
+      title: "Read Canva background removal jobs",
+      description: `Read ${jobs.length} background removal job(s) started from this connection (${finished} finished).`,
     });
     return jobs;
   }
 
-  async getFolder(folderId: string): Promise<CanvaFolder> {
-    if (folderId.trim() === "") throw new Error("getFolder(): folderId must be a non-empty string.");
-    const folder = await this.#gk.getFolder(folderId.trim());
+  async getFolder(folderIdOrUrl: string): Promise<CanvaFolder> {
+    const folderId = parseFolderId(folderIdOrUrl);
+    if (!folderId) {
+      throw new Error(`Invalid Canva folder "${folderIdOrUrl}". Pass a folder id (or "root") or a canva.com/folder URL.`);
+    }
+    const folder = await this.#host.getFolder(folderId);
     await this.#queue.authorizeObservation({
       title: `Read folder "${folder.name}"`,
       description: `Read metadata for the Canva folder "${folder.name}".`,
@@ -1484,26 +1158,14 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
     return folder;
   }
 
-  async listFolders(folderId?: string, continuation?: string): Promise<CanvaPage<CanvaFolder>> {
-    const parent = (folderId ?? "root").trim() || "root";
-    const page = await this.#gk.listFolderItems(parent, {
-      itemTypes: ["folder"],
-      ...(continuation !== undefined ? { continuation } : {}),
-    });
-    const folders = page.items.flatMap(item => item.type === "folder" ? [item.folder] : []);
-    await this.#queue.authorizeObservation({
-      title: "List Canva folders",
-      description: `Read ${folders.length} sub-folder(s) of Canva folder "${parent}".`,
-    });
-    return { items: folders, ...(page.continuation ? { continuation: page.continuation } : {}) };
-  }
-
   @skipRpcValidation()
-  async listFolderItems(folderId: string, options?: CanvaListFolderItemsOptions): Promise<CanvaPage<CanvaFolderItem>> {
-    if (typeof folderId !== "string" || folderId.trim() === "") {
-      throw new Error("listFolderItems(): folderId must be a non-empty string.");
+  async listFolderItems(folderIdOrUrl: string, options?: CanvaListFolderItemsOptions): Promise<Cursor<CanvaFolderItem>> {
+    const folderId = typeof folderIdOrUrl === "string" ? parseFolderId(folderIdOrUrl) : null;
+    if (!folderId) {
+      throw new Error(`Invalid Canva folder "${String(folderIdOrUrl)}". Pass a folder id (or "root") or a canva.com/folder URL.`);
     }
     const opts = options ?? {};
+    let itemTypes: string[] | undefined;
     if (opts.itemTypes !== undefined) {
       if (!Array.isArray(opts.itemTypes) || opts.itemTypes.length === 0) {
         throw new Error("listFolderItems(): itemTypes must be a non-empty array when provided.");
@@ -1513,20 +1175,22 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
           throw new Error(`listFolderItems(): unknown item type "${type}". Valid types: folder, design, image.`);
         }
       }
+      itemTypes = [...opts.itemTypes];
     }
     if (opts.sortBy !== undefined && !FOLDER_ITEM_SORTS.has(opts.sortBy)) {
       throw new Error(`listFolderItems(): sortBy must be one of ${[...FOLDER_ITEM_SORTS].map(s => `"${s}"`).join(", ")}.`);
     }
-    if (opts.continuation !== undefined && typeof opts.continuation !== "string") {
-      throw new Error("listFolderItems(): continuation must be a string when provided.");
-    }
-    const page = await this.#gk.listFolderItems(folderId.trim(), opts);
-    await this.#queue.authorizeObservation({
+    const sortBy = opts.sortBy;
+    const kinds = itemTypes ? ` (${itemTypes.join(", ")})` : "";
+    return this.#cursor<CanvaFolderItem>({
       title: "List Canva folder contents",
-      description: `Read ${page.items.length} item(s) from Canva folder "${folderId.trim()}"` +
-        `${opts.itemTypes ? ` (${opts.itemTypes.join(", ")})` : ""}.`,
+      describe: count => `Read ${count} item(s) from Canva folder "${folderId}"${kinds}.`,
+      describeEmpty: `Listed Canva folder "${folderId}"${kinds}; it was empty.`,
+      fetchPage: async (api, token) => {
+        const page = await api.listFolderItems(folderId, { item_types: itemTypes, sort_by: sortBy, continuation: token });
+        return { items: page.items.map(normalizeFolderItem), continuation: page.continuation };
+      },
     });
-    return page;
   }
 }
 
