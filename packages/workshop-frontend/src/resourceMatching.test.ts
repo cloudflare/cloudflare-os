@@ -39,6 +39,13 @@ describe('classifyMatch', () => {
   })
 
   it.each([
+    'https://acme.app.netsuite.com/app/common/entity/custjob.nl/extra',
+    'http://acme.app.netsuite.com/app/common/entity/custjob.nl',
+  ])("offers the pattern's query only to a URL the rest of the pattern matches, not %s", typed => {
+    expect(classifyMatch(typed, NETSUITE_CUSTOMER)).toEqual({ type: 'none' })
+  })
+
+  it.each([
     ['https://linear.app/acme/issue/', 'https://linear.app/:workspace/issue/:issueId{/:rest}*', ':issueId', 'ENG-1'],
     ['https://acme.atlassian.net/wiki/spaces/ENG/pages/', 'https://*.atlassian.net/wiki/spaces/:spaceKey/pages/:pageId/*?', ':pageId', '123'],
     ['https://x.com/jack/status/', 'https://x.com/*/status/:postId{/*}?', ':postId', '1'],

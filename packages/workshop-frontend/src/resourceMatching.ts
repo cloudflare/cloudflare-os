@@ -37,7 +37,7 @@ const splitAtQuery = (url: string): [path: string, tail: string] => {
 /** A parameter choosing between words, such as `:kind(room|dm)`, capturing the words. */
 const WORD_CHOICE = /^:\w+\(([\w-]+(?:\|[\w-]+)*)\)$/
 
-type Requirements = { parts: string[][]; query: string }
+type Requirements = { parts: string[][]; query: string; anyQuery: URLPattern }
 
 /**
  * What a URL needs to match a pattern, as URLPattern normalizes it: the host and path segments up to
@@ -45,7 +45,8 @@ type Requirements = { parts: string[][]; query: string }
  * {@link WORD_CHOICE} accepts each of its words; any other parameter drops its regex and `+`, so a
  * completion, which spells each segment's first word, holds plain placeholders. A query keeps its
  * names but not its values, which are left for the user to type, as a value starting with a colon is
- * not a placeholder. Null for a pattern this browser can't parse.
+ * not a placeholder. `anyQuery` is the pattern with any query, which a URL must already match to
+ * complete to the query alone. Null for a pattern this browser can't parse.
  */
 const requirements = (pattern: string): Requirements | null => {
   let parsed: URLPattern
@@ -54,15 +55,14 @@ const requirements = (pattern: string): Requirements | null => {
   } catch {
     return null
   }
-  const segments = [
-    parsed.port ? `${parsed.hostname}:${parsed.port}` : parsed.hostname,
-    ...parsed.pathname.split('/').slice(1),
-  ]
+  const { protocol, hostname, port, pathname, search } = parsed
+  const segments = [port ? `${hostname}:${port}` : hostname, ...pathname.split('/').slice(1)]
   const optional = segments.findIndex(segment => segment !== '*' && /[?*]$/.test(segment))
   return {
     parts: segments.slice(0, optional < 0 ? undefined : optional).map(segment =>
       WORD_CHOICE.exec(segment)?.[1].split('|') ?? [segment.replace(/\(.*\)|\+$/g, '')]),
-    query: parsed.search === '*' ? '' : `?${parsed.search.replace(/:\w+(\(.*?\))?/g, '')}`,
+    query: search === '*' ? '' : `?${search.replace(/:\w+(\(.*?\))?/g, '')}`,
+    anyQuery: new URLPattern({ protocol, hostname, port, pathname }),
   }
 }
 
@@ -77,7 +77,8 @@ const requirementsByPattern = new Map<string, Requirements | null>()
  */
 export function classifyMatch(search: string, pattern: string): MatchClassification {
   const typed = search.trim()
-  if (matchesResourceUrlPattern(pattern, normalizeResourceUrl(typed))) return { type: 'full' }
+  const url = normalizeResourceUrl(typed)
+  if (matchesResourceUrlPattern(pattern, url)) return { type: 'full' }
 
   let required = requirementsByPattern.get(pattern)
   if (required === undefined) requirementsByPattern.set(pattern, required = requirements(pattern))
@@ -110,8 +111,8 @@ export function classifyMatch(search: string, pattern: string): MatchClassificat
     if (word) return { type: 'prefix', suffix: [word.slice(segment.length), ...words.slice(i + 1)].join('/') + query }
     return { type: 'none' }
   }
-  // The path is all there, so all a full match can still lack is the pattern's query.
-  return query ? { type: 'prefix', suffix: query } : { type: 'none' }
+  // The path is all there, so if the rest of the URL matches, all it can still lack is the query.
+  return query && required.anyQuery.test(url) ? { type: 'prefix', suffix: query } : { type: 'none' }
 }
 
 /** Appends a `classifyMatch` suffix to a URL's path, keeping any query or fragment after it. */
