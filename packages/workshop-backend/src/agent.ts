@@ -588,6 +588,17 @@ export interface AgentHooks {
   }): Promise<{ requested: boolean; message: string }>;
 
   /**
+   * Record a pending request for an agent spawner, like requestConnection(). `env` maps each name
+   * to the workpiece the agent holds under it, which spawned agents get under the same name.
+   */
+  requestAgentSpawner(chatId: number, input: {
+    displayName: string;
+    env: Record<string, WorkpieceId>;
+    reason: string;
+    bindingName: string;
+  }): { requested: boolean; message: string };
+
+  /**
    * Drain connection requests captured during the current step so they can be appended to the chat
    * (analogous to consumeCapturedActions).
    */
@@ -1273,6 +1284,10 @@ List the resource types a gatekeeper vendor offers, so you can construct a resou
 
 let REQUEST_CONNECTION_TOOL_DESCRIPTION = `
 Ask the user to connect a gatekeeper resource (e.g. a ClickHouse cluster, a GitHub repo). Pre-configure as much as you can: always pass vendorId, and pass resourceUrl when you can infer it (use listConnectableResources to learn the URL patterns). The request must resolve to a specific resource: if you pass a resourceUrl it must match one of the vendor's patterns, and if the vendor offers multiple resource types with no whole-instance option you MUST pass a matching resourceUrl. Otherwise the call is rejected with guidance and no card is shown — fix the request and try again. You also choose \`bindingName\`: the name the resource will have in your env once connected (you know why you want the resource, so pick a name that reflects its role). On success this shows the user an accept/deny card in the chat. It does NOT block: your turn ends after a successful call, and you will be resumed once the user accepts (the resource becomes available as \`env.<bindingName>\`, which you can describeBinding and use from executeCode; wire it into a Gadget with setGadgetBinding only if the Gadget's code needs it) or denies (your turn simply ends; wait for the user's next message).
+`.trim();
+
+let REQUEST_AGENT_SPAWNER_TOOL_DESCRIPTION = `
+Ask the user to add an agent spawner, which starts new AI agents, each in its own chat, from code. Use it when a gadget should run AI agents of its own (for example, to handle each new item in the background), instead of calling back into this chat through \`self\`. \`env\` lists names of bindings in your own env that the spawned agents need; they get them under the same names. A gadget the user has not accepted yet can't be listed: leave it out, and have the gadget pass the spawned agent a stub as a call argument instead. On success this shows the user an accept/deny card in the chat, where they pick the model and may change the proposal. Your turn ends after a successful call; once the user accepts, you are resumed with the spawner as \`env.<bindingName>\`: use describeBinding to learn its API, and setGadgetBinding to wire it into the gadget.
 `.trim();
 
 let CREATE_EXTERNAL_RESOURCE_TOOL_DESCRIPTION = `
@@ -2471,6 +2486,7 @@ async function runAgentPass(
                 case "listBlueprints":
                 case "listConnectableResources":
                 case "requestConnection":
+                case "requestAgentSpawner":
                   toolOutput = {text: toolCall.output ?? ""};
                   break;
                 case "createExternalResource":
@@ -2722,6 +2738,9 @@ async function runAgentPass(
         // agent is resumed and reads this as a user message describing the result; on deny it
         // isn't resumed (and the name is released), but the note is still surfaced here so the
         // agent sees the outcome the next time the user messages it.
+        let request = "agentSpawner" in msg
+            ? `agent spawner request "${msg.agentSpawner.displayName}"`
+            : `connection request for "${msg.vendorName}"`;
         if (msg.state === "pending") {
           if (msg.bindingName !== undefined) {
             claimedNames.add(msg.bindingName);
@@ -2735,10 +2754,16 @@ async function runAgentPass(
             if (!chatBindings.has(name)) {
               chatBindings.set(name, { type: "workpiece", id: msg.gatekeeperId });
             }
+            // The user may have changed a spawner's env before accepting; acceptance records
+            // what they granted.
+            let grant = "agentSpawner" in msg
+                ? ` The bindings it gives the agents it spawns: ${msg.agentSpawner.env
+                    .map(e => `env.${e.name}`).join(", ") || "none"}.`
+                : ``;
             modelMessages.push({
               role: "user",
               content:
-                  `The user accepted your connection request for "${msg.vendorName}". ` +
+                  `The user accepted your ${request}.${grant} ` +
                   `The resource is available as \`env.${name}\` for use in executeCode ` +
                   `in this conversation. Use describeBinding("${name}") to learn its API, then ` +
                   `use it. If a Gadget's code needs it permanently, use setGadgetBinding to wire ` +
@@ -2751,7 +2776,7 @@ async function runAgentPass(
             modelMessages.push({
               role: "user",
               content:
-                  `The user accepted your connection request for "${msg.vendorName}", but the ` +
+                  `The user accepted your ${request}, but the ` +
                   `connected resource isn't available to you right now. Ask the user to try again ` +
                   `or proceed without it.`,
               timestamp: msgTimestamp,
@@ -2761,7 +2786,7 @@ async function runAgentPass(
           modelMessages.push({
             role: "user",
             content:
-                `The user denied your connection request for "${msg.vendorName}". ` +
+                `The user denied your ${request}. ` +
                 `Do not retry the same request; wait for the user to tell you how to proceed.`,
             timestamp: msgTimestamp,
           });
@@ -2822,10 +2847,39 @@ async function runAgentPass(
 
   // Set to true once the agent has successfully created a connection request this turn. Used by
   // finishTurn to end the turn (the agent must wait for the user to accept/deny). A
-  // *rejected* requestConnection call leaves this false so the agent can fix the request and retry
+  // *rejected* request leaves this false so the agent can fix the request and retry
   // without the turn ending (which would strand it, since there'd be no card to accept/deny and
   // thus no resume).
   let connectionRequested = false;
+
+  // Validates the name the agent chose for a requested resource, then makes the request, and
+  // returns the tool output. Like a server-side rejection, a bad name is returned as a fixable
+  // message (not an error) so the agent can retry within the same turn.
+  let requestNamedConnection = async (
+      bindingName: string, request: () => Promise<{ requested: boolean; message: string }>) => {
+    let nameProblem: string | undefined;
+    try {
+      validateBindingName(bindingName);
+    } catch (err) {
+      nameProblem = `${err instanceof Error ? err.message : err}`;
+    }
+    if (nameProblem === undefined && isNameInScope(bindingName)) {
+      nameProblem = `There is already a binding named "${bindingName}" in your env. Choose a ` +
+          `different name.`;
+    }
+    if (nameProblem !== undefined) {
+      return `Cannot request a connection: ${nameProblem}`;
+    }
+
+    let result = await request();
+    if (result.requested) {
+      connectionRequested = true;
+      // The name is claimed in the chat's scope from request time (released only by denial), so
+      // nothing else in this step can take it.
+      claimedNames.add(bindingName);
+    }
+    return result.message;
+  };
 
   // Latched by finishTurn when this step submitted an awaitDecision action. The awaited turn_end
   // barrier persists the action before the loop ends and waits for approval to resume it.
@@ -3886,34 +3940,52 @@ async function runAgentPass(
       }),
       execute: async (toolCallId, input) => {
         try {
-          // Validate the chosen name before creating anything. Like a server-side rejection,
-          // a bad name is returned as a fixable message (not an error) so the agent can retry
-          // within the same turn.
-          let nameProblem: string | undefined;
-          try {
-            validateBindingName(input.bindingName);
-          } catch (err) {
-            nameProblem = `${err instanceof Error ? err.message : err}`;
-          }
-          if (nameProblem === undefined && isNameInScope(input.bindingName)) {
-            nameProblem = `There is already a binding named "${input.bindingName}" in your ` +
-                `env. Choose a different name.`;
-          }
-          if (nameProblem !== undefined) {
-            let message = `Cannot request a connection: ${nameProblem}`;
-            return toolResult(message, { output: message });
-          }
+          let message = await requestNamedConnection(
+              input.bindingName, () => hooks.requestConnection(chatId, input));
+          return toolResult(message, { output: message });
+        } catch (error) {
+          toolCallNotes.set(toolCallId, { error: toolErrorText(error) });
+          throw error;
+        }
+      }
+    }),
 
-          let result = await hooks.requestConnection(chatId, input);
-          // Only end the turn if a request was actually created; a rejected request must let the
-          // agent retry within the same turn (see the connectionRequested flag / finishTurn).
-          if (result.requested) {
-            connectionRequested = true;
-            // The name is claimed in the chat's scope from request time (released only by
-            // denial), so nothing else in this step can take it.
-            claimedNames.add(input.bindingName);
+    requestAgentSpawner: defineTool({
+      name: "requestAgentSpawner",
+      label: "Request agent spawner",
+      description: REQUEST_AGENT_SPAWNER_TOOL_DESCRIPTION,
+      parameters: Type.Object({
+        displayName: Type.String({
+          description: "Short name for the spawner, shown to the user (e.g. 'Ticket triage').",
+        }),
+        env: Type.Array(Type.String(), {
+          description: "Names of bindings in your env that spawned agents need.",
+        }),
+        reason: Type.String({
+          description: "A short explanation of what the spawned agents will do, shown to the user.",
+        }),
+        bindingName: Type.String({
+          description:
+              "Name under which the spawner will appear in your env once the user accepts. " +
+              "Must be a JavaScript identifier not already in use. " +
+              "Style: ALL_CAPS_WITH_UNDERSCORES.",
+        }),
+      }),
+      execute: async (toolCallId, input) => {
+        try {
+          let env: Record<string, WorkpieceId> = {};
+          for (let name of input.env) {
+            let entry = chatBindings.get(name);
+            if (entry?.type !== "workpiece") {
+              let message = `Cannot request an agent spawner: \`env.${name}\` is not a ` +
+                  `connection or gadget in your env.`;
+              return toolResult(message, { output: message });
+            }
+            env[name] = entry.id;
           }
-          return toolResult(result.message, { output: result.message });
+          let message = await requestNamedConnection(input.bindingName, async () =>
+              hooks.requestAgentSpawner(chatId, { ...input, env }));
+          return toolResult(message, { output: message });
         } catch (error) {
           toolCallNotes.set(toolCallId, { error: toolErrorText(error) });
           throw error;

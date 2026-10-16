@@ -63,15 +63,16 @@ export interface GatekeeperModalProps {
    */
   spawnerEnvCandidates?: Omit<SpawnerEnvRow, 'enabled'>[]
   /**
-   * Optional pre-seed: when the modal opens, auto-select the resource connection for this vendor.
-   * Used by the agent's requestConnection accept flow so the user lands on the right connection with
-   * minimal clicks. `initialResourceUrlPattern` is the exact SupportedResource.urlPattern the
-   * backend resolved the request to (authoritative); `initialResourceUrl` is the raw URL the agent
-   * supplied (used only as a fallback if the resolved pattern isn't present in the current list).
+   * Optional pre-seed for the agent's connection request accept flow, so the user lands on the
+   * requested connection with minimal clicks. For a resource, `resourceUrlPattern` is the exact
+   * SupportedResource.urlPattern the backend resolved the request to (authoritative);
+   * `resourceUrl` is the raw URL the agent supplied (used only as a fallback if the resolved
+   * pattern isn't present in the current list). For an agent spawner, the proposed env comes in
+   * as `spawnerEnvCandidates`.
    */
-  initialVendorId?: string
-  initialResourceUrl?: string
-  initialResourceUrlPattern?: string
+  initialConnection?:
+    | { type: 'resource', vendorId: string, resourceUrl?: string, resourceUrlPattern?: string }
+    | { type: 'agentSpawner', displayName: string }
 }
 
 type ConnectionTypeId =
@@ -182,8 +183,7 @@ function accountSupportsConnection(account: AccountOption, connection: Connectio
 }
 
 export default function GatekeeperModal({
-  open, onClose, getOverseer, onCreated, spawnerEnvCandidates,
-  initialVendorId, initialResourceUrl, initialResourceUrlPattern,
+  open, onClose, getOverseer, onCreated, spawnerEnvCandidates, initialConnection,
 }: GatekeeperModalProps) {
   const { authenticatedApi } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
@@ -219,10 +219,19 @@ export default function GatekeeperModal({
   const [spawnerEnv, setSpawnerEnv] = useState<SpawnerEnvRow[]>([])
   const spawnerEnvError = validateSpawnerEnv(spawnerEnv)
 
-  // Read only when the modal opens, so a caller that rebuilds the candidate array on every render
-  // doesn't clobber the user's edits.
+  // Read only when the modal opens, so a caller that rebuilds these on every render doesn't
+  // clobber the user's edits.
   const spawnerEnvCandidatesRef = useRef(spawnerEnvCandidates)
   spawnerEnvCandidatesRef.current = spawnerEnvCandidates
+  const initialConnectionRef = useRef(initialConnection)
+  initialConnectionRef.current = initialConnection
+
+  const initialResource = initialConnection?.type === 'resource' ? initialConnection : undefined
+  const initialVendorId = initialResource?.vendorId
+  const initialResourceUrl = initialResource?.resourceUrl
+  const initialResourceUrlPattern = initialResource?.resourceUrlPattern
+  // Only an agent spawner can meet an agent spawner request, so its form offers no way back.
+  const lockedToSpawner = initialConnection?.type === 'agentSpawner'
 
   const configuratorFrameRef = useRef<ConfiguratorFrameState | null>(null)
   const configuratorCollectResourceUrlRef = useRef<(() => Promise<string>) | null>(null)
@@ -348,8 +357,10 @@ export default function GatekeeperModal({
     }
 
     let cancelled = false
+    const initialSpawner = initialConnectionRef.current?.type === 'agentSpawner'
+      ? initialConnectionRef.current : undefined
 
-    setSelectedConnectionId(null)
+    setSelectedConnectionId(initialSpawner ? 'agent-spawner' : null)
     setSearchText('')
     setExpandedGroups(new Set())
     setCreating(false)
@@ -362,7 +373,7 @@ export default function GatekeeperModal({
     setConfiguratorError(null)
     setConfiguratorSelectionReady(null)
     setSelectedModelId(undefined)
-    setSpawnerDisplayName('')
+    setSpawnerDisplayName(initialSpawner?.displayName ?? '')
     setSpawnerModelId(null)
     setSpawnerEnv(
       (spawnerEnvCandidatesRef.current ?? []).map(entry => ({ ...entry, enabled: true })))
@@ -701,7 +712,7 @@ export default function GatekeeperModal({
       }
     } catch (err) {
       console.error('Failed to create agent spawner gatekeeper:', err)
-      toasts.add({ title: 'Failed to create agent spawner connection', variant: 'error' })
+      toasts.add({ title: err instanceof Error ? err.message : 'Failed to create agent spawner connection', variant: 'error' })
     } finally {
       if (gatekeeper && !transferred) gatekeeper[Symbol.dispose]()
       setCreating(false)
@@ -807,14 +818,16 @@ export default function GatekeeperModal({
         {selectedConnection ? (
           <div ref={scrollRef} className="new-gatekeeper-scroll min-h-0 flex-1 overflow-y-auto px-5 py-4">
             <div ref={scrollContentRef}>
-              <button
-                type="button"
-                onClick={() => setSelectedConnectionId(null)}
-                className="mb-4 inline-flex cursor-pointer items-center gap-1.5 text-[12px] leading-4 font-medium tracking-[-0.2px] text-kumo-subtle transition-colors hover:text-kumo-default"
-              >
-                <CaretLeft size={13} />
-                All connection types
-              </button>
+              {!lockedToSpawner && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedConnectionId(null)}
+                  className="mb-4 inline-flex cursor-pointer items-center gap-1.5 text-[12px] leading-4 font-medium tracking-[-0.2px] text-kumo-subtle transition-colors hover:text-kumo-default"
+                >
+                  <CaretLeft size={13} />
+                  All connection types
+                </button>
+              )}
 
               <div className="space-y-4">
                 {needsAccount && (
@@ -937,9 +950,11 @@ export default function GatekeeperModal({
           <div ref={footerRef} className="shrink-0 flex items-center justify-between gap-3 border-t border-kumo-line px-5 py-3">
             <div />
             <div className="flex shrink-0 items-center gap-2">
-              <WorkshopButton onClick={() => setSelectedConnectionId(null)} disabled={creating} className="!h-9">
-                Back
-              </WorkshopButton>
+              {!lockedToSpawner && (
+                <WorkshopButton onClick={() => setSelectedConnectionId(null)} disabled={creating} className="!h-9">
+                  Back
+                </WorkshopButton>
+              )}
               <WorkshopButton
                 tone="primary"
                 onClick={handleCreate}

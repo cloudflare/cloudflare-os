@@ -53,6 +53,7 @@ import {
   ArrowUpRight,
   Blueprint,
   GitBranch,
+  Robot,
 } from "@phosphor-icons/react";
 import { RpcStub, RpcTarget } from "capnweb";
 import ReactMarkdown, { type Components } from "react-markdown";
@@ -91,7 +92,7 @@ import { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {
   useSlashCommandChoice, type OverseerSource,
 } from "./components/chat/slash-command-catalog";
-import GatekeeperModal from "./GatekeeperModal";
+import GatekeeperModal, { type GatekeeperModalProps } from "./GatekeeperModal";
 import { GatekeeperIcon } from "./components/GatekeeperIcon";
 import { formatOf, FORMAT_ICONS } from "./components/format/formats";
 import { FormatMiniature } from "./components/format/FormatVisuals";
@@ -656,6 +657,8 @@ function getToolCallSummary(
       return { verb: "Listed connectable resources", target: tc.input.vendorId };
     case "requestConnection":
       return { verb: "Requested connection", target: tc.input.vendorId };
+    case "requestAgentSpawner":
+      return { verb: "Requested agent spawner", target: tc.input.displayName };
     case "createExternalResource":
       return { verb: "Created", target: tc.input.title };
   }
@@ -757,6 +760,8 @@ function describeToolCallCount(toolName: AiToolCall["toolName"], count: number):
       return `Listed connectable resources`;
     case "requestConnection":
       return count === 1 ? "Requested a connection" : `Requested ${count} connections`;
+    case "requestAgentSpawner":
+      return count === 1 ? "Requested an agent spawner" : `Requested ${count} agent spawners`;
     case "createExternalResource":
       return `Created ${pluralize(count, "external resource")}`;
   }
@@ -861,6 +866,7 @@ function getProvisionalToolVerb(toolName: AiToolCall["toolName"]): string {
     case "listBlueprints": return "Listing blueprints";
     case "listConnectableResources": return "Listing connectable resources";
     case "requestConnection": return "Requesting a connection";
+    case "requestAgentSpawner": return "Requesting an agent spawner";
     case "createExternalResource": return "Creating external resource";
   }
   const _exhaustive: never = toolName;
@@ -888,6 +894,7 @@ function describeProvisionalToolCount(toolName: AiToolCall["toolName"], count: n
     case "listBlueprints": return "Listing blueprints";
     case "listConnectableResources": return "Listing connectable resources";
     case "requestConnection": return `Requesting ${pluralize(count, "connection")}`;
+    case "requestAgentSpawner": return `Requesting ${pluralize(count, "agent spawner")}`;
     case "createExternalResource": return `Creating ${pluralize(count, "external resource")}`;
   }
   const _exhaustive: never = toolName;
@@ -2767,13 +2774,13 @@ function ChatInterface({
   const [processingActions, setProcessingActions] = useState<Set<number>>(
     new Set(),
   );
-  // Connection-request (agent requestConnection) accept flow. When set, the GatekeeperModal opens
-  // pre-seeded with the agent's vendor/resource; on creation we finalize acceptConnectionRequest.
+  // Connection-request (agent requestConnection/requestAgentSpawner) accept flow. When set, the
+  // GatekeeperModal opens pre-seeded with the agent's request; on creation we finalize
+  // acceptConnectionRequest.
   const [connectionAccept, setConnectionAccept] = useState<{
     requestId: string;
-    vendorId: string;
-    resourceUrl?: string;
-    resourceUrlPattern?: string;
+    initialConnection: GatekeeperModalProps["initialConnection"];
+    spawnerEnvCandidates?: GatekeeperModalProps["spawnerEnvCandidates"];
   } | null>(null);
   // Read via this ref inside handleConnectionCreated to avoid a stale closure: that callback is
   // passed as the `onCreated` prop to GatekeeperModal, so it would otherwise capture an outdated
@@ -4475,13 +4482,20 @@ function ChatInterface({
     }
   };
 
-  // Open the gatekeeper modal pre-seeded with the agent's requested vendor/resource.
+  // Open the gatekeeper modal pre-seeded with the agent's request.
   const handleAcceptConnection = (msg: AiChatMessage & { type: "connectionRequest" }) => {
-    setConnectionAccept({
+    setConnectionAccept("agentSpawner" in msg ? {
       requestId: msg.requestId,
-      vendorId: msg.vendorId,
-      resourceUrl: msg.resourceUrl,
-      resourceUrlPattern: msg.resourceUrlPattern,
+      initialConnection: { type: "agentSpawner", displayName: msg.agentSpawner.displayName },
+      spawnerEnvCandidates: msg.agentSpawner.env,
+    } : {
+      requestId: msg.requestId,
+      initialConnection: {
+        type: "resource",
+        vendorId: msg.vendorId,
+        resourceUrl: msg.resourceUrl,
+        resourceUrlPattern: msg.resourceUrlPattern,
+      },
     });
   };
 
@@ -4858,27 +4872,43 @@ function ChatInterface({
     const isDenied = msg.state === "denied";
     const isProc = processingConnections.has(msg.requestId);
 
-    const stateLabel = isAccepted ? "Connected" : isDenied ? "Denied" : null;
+    const card = "agentSpawner" in msg ? {
+      icon: (
+        <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-kumo-tint">
+          <Robot size={18} className="text-kumo-strong" aria-hidden />
+        </div>
+      ),
+      title: "Add agent",
+      scope: msg.agentSpawner.displayName,
+      acceptedLabel: "Added",
+    } : {
+      icon: (
+        <GatekeeperIcon
+          vendorId={msg.vendorId}
+          logoUrl={msg.vendorLogoUrl}
+          className="h-9 w-9 flex-shrink-0 rounded-lg"
+        />
+      ),
+      title: `Connect ${msg.vendorName}`,
+      scope: msg.resourceTitle ?? msg.resourceUrl,
+      acceptedLabel: "Connected",
+    };
+    const stateLabel = isAccepted ? card.acceptedLabel : isDenied ? "Denied" : null;
     const stateLabelCls = isDenied ? "text-kumo-danger" : "text-kumo-success";
-    const scope = msg.resourceTitle ?? msg.resourceUrl;
 
     return (
       <div className="group/work max-w-[860px] text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
         <div className="rounded-2xl border border-kumo-line bg-kumo-base px-4 py-3">
           <div className="flex items-start gap-3">
-            <GatekeeperIcon
-              vendorId={msg.vendorId}
-              logoUrl={msg.vendorLogoUrl}
-              className="h-9 w-9 flex-shrink-0 rounded-lg"
-            />
+            {card.icon}
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                 <span className="font-medium text-kumo-default">
-                  Connect {msg.vendorName}
+                  {card.title}
                 </span>
-                {scope && (
+                {card.scope && (
                   <span className="rounded-full bg-kumo-tint px-2 py-0.5 text-[11px] leading-4 text-kumo-subtle">
-                    {scope}
+                    {card.scope}
                   </span>
                 )}
                 {stateLabel && (
@@ -6683,9 +6713,8 @@ function ChatInterface({
         onClose={() => setConnectionAccept(null)}
         getOverseer={getOverseer}
         onCreated={handleConnectionCreated}
-        initialVendorId={connectionAccept?.vendorId}
-        initialResourceUrl={connectionAccept?.resourceUrl}
-        initialResourceUrlPattern={connectionAccept?.resourceUrlPattern}
+        initialConnection={connectionAccept?.initialConnection}
+        spawnerEnvCandidates={connectionAccept?.spawnerEnvCandidates}
       />
       <OutOfCreditsModal
         open={usageModalOpen}
