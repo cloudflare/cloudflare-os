@@ -2,11 +2,12 @@ import {
   Banner,
   Button,
   Dialog,
+  DropdownMenu,
   Loader,
   Select,
   Text,
 } from "@cloudflare/kumo";
-import { Buildings, Warning, WarningCircle, X } from "@phosphor-icons/react";
+import { Buildings, CaretDown, Warning, WarningCircle, X } from "@phosphor-icons/react";
 import { RpcTarget } from "capnweb";
 import { useEffect, useRef, useState } from "react";
 import type {
@@ -194,6 +195,7 @@ export const ShareCollectionDialog = ({
     ? ["viewer", "editor", "owner"]
     : ["viewer", "editor"];
   const ownerCount = sharing?.members.filter((member) => member.role === "owner").length ?? 0;
+  const otherMembers = sharing?.members.filter((member) => !member.isViewer) ?? [];
 
   const renderMember = (member: ContextCollectionMember) => {
     const name = member.displayName ?? "Collection creator";
@@ -204,10 +206,10 @@ export const ShareCollectionDialog = ({
     const canRemove = member.isViewer ? !soleOwner : canChangeRole;
 
     return (
-      <li key={member.memberId} className="flex items-center gap-3 py-3">
+      <li key={member.memberId} className="flex items-center gap-2 rounded-xl py-2.5 pl-1.5">
         <span
           aria-hidden="true"
-          className="flex size-9 shrink-0 items-center justify-center rounded-full bg-kumo-tint text-sm font-medium text-kumo-default"
+          className="flex size-[26px] shrink-0 items-center justify-center rounded-full bg-kumo-tint text-xs font-medium text-kumo-default"
         >
           {name.trim().charAt(0).toUpperCase() || "?"}
         </span>
@@ -215,29 +217,48 @@ export const ShareCollectionDialog = ({
           {name}{member.isViewer && <span className="text-kumo-subtle"> (You)</span>}
         </span>
         {canChangeRole || canRemove ? (
-          <Select<ContextCollectionRole | "remove">
-            aria-label={`Role for ${member.isViewer ? "you" : name}`}
-            size="sm"
-            className="w-32 shrink-0"
-            value={member.role}
-            disabled={pending !== null}
-            onValueChange={(role) => {
-              if (role === "remove") void removeMember(member);
-              else if (role && role !== member.role) void changeRole(member, role);
-            }}
-            renderValue={(role) => role === "remove" ? "Remove access" : MEMBER_ROLE_LABELS[role]}
-          >
-            {(canChangeRole ? roleOptions : [member.role]).map((role) => (
-              <Select.Option key={role} value={role}>{MEMBER_ROLE_LABELS[role]}</Select.Option>
-            ))}
-            {canRemove && (
-              <Select.Option value="remove">
-                {member.isViewer ? "Leave collection" : "Remove access"}
-              </Select.Option>
-            )}
-          </Select>
+          <DropdownMenu>
+            <DropdownMenu.Trigger
+              disabled={pending !== null}
+              render={(
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="group shrink-0 gap-1.5 text-xs"
+                  aria-label={`Role for ${member.isViewer ? "you" : name}`}
+                >
+                  {MEMBER_ROLE_LABELS[member.role]}
+                  <CaretDown size={10} weight="bold" className="group-data-[popup-open]:rotate-180" />
+                </Button>
+              )}
+            />
+            <DropdownMenu.Content align="end" sideOffset={6}>
+              {(canChangeRole ? roleOptions : [member.role]).map((role) => (
+                <DropdownMenu.Item
+                  key={role}
+                  selected={role === member.role}
+                  className="text-xs"
+                  onClick={() => { if (role !== member.role) void changeRole(member, role); }}
+                >
+                  {MEMBER_ROLE_LABELS[role]}
+                </DropdownMenu.Item>
+              ))}
+              {canRemove && (
+                <>
+                  <DropdownMenu.Separator />
+                  <DropdownMenu.Item
+                    variant="danger"
+                    className="text-xs"
+                    onClick={() => void removeMember(member)}
+                  >
+                    {member.isViewer ? "Leave collection" : "Remove access"}
+                  </DropdownMenu.Item>
+                </>
+              )}
+            </DropdownMenu.Content>
+          </DropdownMenu>
         ) : (
-          <span className="shrink-0 px-3 text-sm font-medium text-kumo-default">
+          <span className="shrink-0 px-2 text-xs font-medium text-kumo-default">
             {MEMBER_ROLE_LABELS[member.role]}
           </span>
         )}
@@ -258,7 +279,7 @@ export const ShareCollectionDialog = ({
       >
         <div className="flex shrink-0 items-start justify-between gap-4 px-4 pb-4 pt-5 sm:px-6">
           <Dialog.Title className="min-w-0 text-[17px] leading-6 font-medium tracking-[-0.35px] text-kumo-default">
-            Share “{collection.title}”
+            Share <span className="text-kumo-subtle">“{collection.title}”</span>
           </Dialog.Title>
           <Dialog.Close
             disabled={pending !== null}
@@ -335,30 +356,51 @@ export const ShareCollectionDialog = ({
 
               <ul aria-label="People with access" className="flex flex-col">
                 {sharing.members.filter((member) => member.isViewer).map(renderMember)}
-                <li className="flex items-center gap-3 py-3">
+                <li className="flex items-center gap-2 py-3 pl-1.5">
                   <span
                     aria-hidden="true"
-                    className="flex size-9 shrink-0 items-center justify-center rounded-full bg-kumo-tint text-kumo-default"
+                    className="flex size-[26px] shrink-0 items-center justify-center rounded-full bg-kumo-tint text-kumo-default"
                   >
-                    <Buildings size={20} />
+                    <Buildings size={16} />
                   </span>
                   <span className="min-w-0 flex-1 text-sm text-kumo-default">Anyone in organization</span>
-                  <Select<"none" | "viewer">
-                    aria-label="Access for anyone in organization"
-                    size="sm"
-                    className="w-32 shrink-0"
-                    value={sharing.everyoneCanView ? "viewer" : "none"}
-                    disabled={!permissions.canShare || pending !== null}
-                    onValueChange={(access) => {
-                      if (access) void setEveryoneCanView(access === "viewer");
-                    }}
-                    renderValue={(access) => access === "viewer" ? "Can view" : "No access"}
-                  >
-                    <Select.Option value="none">No access</Select.Option>
-                    <Select.Option value="viewer">Can view</Select.Option>
-                  </Select>
+                  <DropdownMenu>
+                    <DropdownMenu.Trigger
+                      disabled={!permissions.canShare || pending !== null}
+                      render={(
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="group shrink-0 gap-1.5 text-xs"
+                          aria-label="Access for anyone in organization"
+                        >
+                          {sharing.everyoneCanView ? "Can view" : "No access"}
+                          <CaretDown size={10} weight="bold" className="group-data-[popup-open]:rotate-180" />
+                        </Button>
+                      )}
+                    />
+                    <DropdownMenu.Content align="end" sideOffset={6}>
+                      <DropdownMenu.Item
+                        selected={!sharing.everyoneCanView}
+                        className="text-xs"
+                        onClick={() => { if (sharing.everyoneCanView) void setEveryoneCanView(false); }}
+                      >
+                        No access
+                      </DropdownMenu.Item>
+                      <DropdownMenu.Item
+                        selected={sharing.everyoneCanView}
+                        className="text-xs"
+                        onClick={() => { if (!sharing.everyoneCanView) void setEveryoneCanView(true); }}
+                      >
+                        Can view
+                      </DropdownMenu.Item>
+                    </DropdownMenu.Content>
+                  </DropdownMenu>
                 </li>
-                {sharing.members.filter((member) => !member.isViewer).map(renderMember)}
+                {otherMembers.length > 0 && (
+                  <li aria-hidden="true" className="my-1 border-b border-dashed border-kumo-line" />
+                )}
+                {otherMembers.map(renderMember)}
               </ul>
             </>
           )}
