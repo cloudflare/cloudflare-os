@@ -371,11 +371,12 @@ export interface GmailScopedSession {
    * delivered. The hook starts disabled, and nothing is delivered until the user enables it.
    * Every call creates a distinct hook, so subscribe once per mailbox or thread to watch.
    *
-   * `hook` must be a persistent stub: from `executeCode`, create it with
-   * `env.MY_GADGET[restore](params)` on the Gadget's binding; inside the Gadget, with
-   * `this.ctx.restore(params)`. The Gadget's `[restore]()` receives those `params` for every
-   * delivery, so they can tell its subscriptions apart. The restored target is a separate
-   * object; pass it what it needs from `[restore]()`, such as `this`, the Gadget.
+   * `hook` must be a persistent stub that restores through a Gadget's `[restore]()` method: inside
+   * the Gadget, create it with `this.ctx.restore(params)`; from `executeCode`, through the Gadget's
+   * binding, as "Persistent Stubs and `ctx.restore()`" in your instructions describes. The
+   * Gadget's `[restore]()` receives those `params` for every delivery, so they can tell its
+   * subscriptions apart. The restored target is a separate object; pass it what it needs from
+   * `[restore]()`, such as `this`, the Gadget.
    *
    * Throws for a search binding, and if this deployment has not configured Gmail hooks.
    *
@@ -394,11 +395,8 @@ export interface GmailScopedSession {
    *   }
    * }
    *
-   * // executeCode
-   * import { restore } from "cloudflare:workers";
-   * export default async function(self, env) {
-   *   await env.GMAIL_INBOX.subscribeNewMessages(await env.MY_GADGET[restore]({ type: "gmail" }));
-   * }
+   * // executeCode, where `hook` is a persistent stub for the params `{ type: "gmail" }`
+   * await env.GMAIL_INBOX.subscribeNewMessages(hook);
    */
   subscribeNewMessages(hook: RpcStub<GmailMessageHook>): Promise<void>;
 }

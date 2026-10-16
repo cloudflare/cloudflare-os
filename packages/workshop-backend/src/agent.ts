@@ -848,6 +848,10 @@ You were started programmatically by the Gadget to perform a task, described bel
 Typically (but not always), you will need to use the \`executeCode\` tool to complete the task, invoking the available bindings (members of the env object) and other APIs available to you.
 
 Your \`env\` always contains \`env.GIT\`, which provides programmatic access to git commits known to the workspace (read a commit's metadata and files, edit them, and write new commits). Use \`describeBinding\` to learn its API if you need it.
+
+# Persistent Stubs and \`ctx.restore()\`
+
+Some APIs (especially hooks) take a "persistent" stub: one that can be stored and restored later through a Gadget's \`[restore](params)\` method. In \`executeCode\`, create one with \`env.MY_GADGET.rpc[restore](params)\` (after \`import { restore } from "cloudflare:workers"\`), which is equivalent to the Gadget calling \`this.ctx.restore(params)\`. The Gadget's server.js must define a \`[restore](params)\` method that returns the target for those params.
 `.trim();
 
 // The tools offered to a spawned agent (see runAgentPass). Anything that modifies a gadget or

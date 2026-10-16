@@ -461,12 +461,13 @@ export interface ChatSpace extends RpcTarget {
    * delivered. The hook starts disabled, and nothing is delivered until the user enables it.
    * Every call creates a distinct hook, so subscribe once per conversation or thread to watch.
    *
-   * `hook` must be a persistent stub: from `executeCode`, create it with
-   * `env.MY_GADGET[restore](params)` on the Gadget's binding; inside the Gadget, with
-   * `this.ctx.restore(params)`. The Gadget's `[restore]()` receives those `params` for every
-   * delivery, so they can tell its subscriptions apart, as can each message's `spaceId` and
-   * `threadId`. The restored target is a separate object; pass it what it needs from
-   * `[restore]()`, such as `this`, the Gadget, to use its storage and methods.
+   * `hook` must be a persistent stub that restores through a Gadget's `[restore]()` method: inside
+   * the Gadget, create it with `this.ctx.restore(params)`; from `executeCode`, through the Gadget's
+   * binding, as "Persistent Stubs and `ctx.restore()`" in your instructions describes. The
+   * Gadget's `[restore]()` receives those `params` for every delivery, so they can tell its
+   * subscriptions apart, as can each message's `spaceId` and `threadId`. The restored target is a
+   * separate object; pass it what it needs from `[restore]()`, such as `this`, the Gadget, to use
+   * its storage and methods.
    *
    * Throws if this deployment has not configured Google Chat hooks.
    *
@@ -503,14 +504,12 @@ export interface ChatSpace extends RpcTarget {
    * }
    *
    * // executeCode: one hook per conversation, told apart by its params, and one that reports
-   * // each ops message back to this chat through `self`
-   * import { restore } from "cloudflare:workers";
-   * export default async function(self, env) {
-   *   for (const [name, conversation] of [["standup", env.STANDUP_CHAT], ["ops", env.OPS_CHAT]]) {
-   *     await conversation.subscribeNewMessages(await env.MY_GADGET[restore]({ type: "chat", name }));
-   *   }
-   *   await env.OPS_CHAT.subscribeNewMessages(await env.MY_GADGET[restore]({ type: "report", callback: self }));
-   * }
+   * // each ops message back to this chat through `self`. `standupHook`, `opsHook` and
+   * // `reportHook` are persistent stubs for the params `{ type: "chat", name: "standup" }`,
+   * // `{ type: "chat", name: "ops" }` and `{ type: "report", callback: self }`.
+   * await env.STANDUP_CHAT.subscribeNewMessages(standupHook);
+   * await env.OPS_CHAT.subscribeNewMessages(opsHook);
+   * await env.OPS_CHAT.subscribeNewMessages(reportHook);
    */
   subscribeNewMessages(hook: RpcStub<ChatMessageHook>): Promise<void>;
 }

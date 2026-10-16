@@ -207,7 +207,7 @@ interface RestoreForgerEntrypoint extends WorkerEntrypoint {
 }
 
 // The capability handed to CODE_MODE_HARNESS's run() that lets executed code invoke
-// `env.<name>[restore](params)`. Only executeCode receives this capability -- gadget workers
+// `env.<name>.rpc[restore](params)`. Only executeCode receives this capability -- gadget workers
 // never do -- and it's passed as a transient stub argument to run(), so it lives exactly as
 // long as the execution. The binding name is resolved against the execution's own binding map
 // on the overseer side, so the capability conveys no authority beyond the env it accompanies.
@@ -5459,7 +5459,7 @@ class OverseerImpl implements AgentHooks {
 
     // Which gadget does this hook wake (for bookkeeping; the callback itself already
     // encapsulates the correct restore target)? A gadget caller names itself. An agent caller
-    // forged the callback via `env.<GADGET>[restore]` during the currently-running executeCode
+    // forged the callback via `env.<GADGET>.rpc[restore]` during the currently-running executeCode
     // invocation, so when exactly one gadget had a stub forged there, attribute the hook to it;
     // otherwise (or for other callers) fall back to the workspace's first gadget.
     // TODO: Replace this heuristic with introspection of the callback stub's actual restore
@@ -9316,7 +9316,7 @@ class OverseerImpl implements AgentHooks {
   #forgedRestoreTargets = new Map<number, Set<WorkpieceId>>();
 
   // Forge a persistent stub that restores through the gadget's [restore](params) method. The
-  // executeCode harness routes `env.<bindingName>[restore](params)` here (via RestoreForgerImpl);
+  // executeCode harness routes `env.<bindingName>.rpc[restore](params)` here (via RestoreForgerImpl);
   // `bindings` is that execution's own binding map, so the name conveys exactly the env the
   // executed code already holds.
   async forgeRestoreStubForBinding(
