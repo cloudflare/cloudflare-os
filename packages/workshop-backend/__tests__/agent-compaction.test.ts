@@ -251,6 +251,7 @@ describe("compaction boundary", () => {
     expect(findProtectedFromSequence(pending)).toBe(1);
   });
 
+  // Below a 66,667-token budget, 30 percent is smaller than the fixed limit and binds.
   it("keeps complete recent turns within the 30 percent target", () => {
     let messages = [
       message(0, user, "a".repeat(40_000)),
@@ -262,7 +263,19 @@ describe("compaction boundary", () => {
     ];
 
     // Exclusive: everything below 4 is summarized, so the last turn is retained whole.
-    expect(findCompactionBoundary(projection(messages), 100_000, 120_000)).toBe(4);
+    expect(findCompactionBoundary(projection(messages), 60_000, 60_000)).toBe(4);
+  });
+
+  // On a 1M-token window, 30 percent would retain 300k tokens. The fixed limit binds instead, so
+  // a compaction frees most of a large window just as it does a small one.
+  it("retains about 20k tokens however large the window", () => {
+    let messages = (length: number) => Array.from({ length: 12 }, (_, index) =>
+      message(index, index % 2 === 0 ? user : agent, "x".repeat(length)));
+
+    // About 67k tokens a message: the newest record alone passes the limit.
+    expect(findCompactionBoundary(projection(messages(40_000)), 1_000_000, 800_000)).toBe(11);
+    // About 7,500 tokens a message: the walk stops at the record that passes 20k.
+    expect(findCompactionBoundary(projection(messages(4_000)), 1_000_000, 90_000)).toBe(9);
   });
 
   it("stops the boundary short of a pending connection request", () => {

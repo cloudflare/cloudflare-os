@@ -6,9 +6,9 @@ import type { EvalVerifier } from "../src/verifier.js";
 // A long chat that must compact. The user states a project brief, then pastes batches of service
 // logs, each with one FATAL line to find, until the prompt passes the compaction trigger of an
 // admin-set budget. The last turn asks for the brief from memory. The checks look at the Workshop's
-// own record first -- the agent read batch 1 right, a checkpoint exists, it covers the brief, and
-// its summary keeps every fact -- and only then at the agent's answer, so a failure says whether
-// the model or compaction lost the facts.
+// own record first -- the agent read batch 1 right, a checkpoint exists, it covers the brief, its
+// summary keeps every fact, and it freed the window -- and only then at the agent's answer, so a
+// failure says whether the model or compaction lost the facts.
 
 // Far below either model's window, yet large enough that the retained tail is a small part of it.
 const BUDGET = 200_000;
@@ -111,7 +111,7 @@ const batchTurns = batches.map((batch, index): EvalTurn => ({
 }));
 
 async function verifyRecall(verifier: EvalVerifier): Promise<void> {
-  const { history, compactions } = verifier.chat;
+  const { history, compactions, usage } = verifier.chat;
   const latest = compactions.at(-1);
   // The brief and batch 1 are the first two user messages; both must lie before the boundary.
   const firstBatch = history.filter(message =>
@@ -128,6 +128,26 @@ async function verifyRecall(verifier: EvalVerifier): Promise<void> {
   await verifier.check("compaction.summary-keeps-the-facts", async () => {
     const missing = missingFacts(latest?.summary ?? "");
     return { pass: latest !== undefined && missing.length === 0, evidence: { missing } };
+  });
+
+  // The prompt of the first step stands for the system prompt and tools. The step after a drop in
+  // prompt size is the first after a compaction; what it adds to that base is the summary and the
+  // retained tail. With the 20k limit that is at most about 35k (limit, one batch over it, and the
+  // summary); a 30% share would retain more than 50k.
+  await verifier.check("compaction.frees-the-window", async () => {
+    const prompts = (usage.steps ?? []).map(step => step.modelSteps === undefined
+      ? step.uncachedTokens + step.cacheReadTokens + step.cacheWriteTokens
+      : undefined);
+    const base = prompts.at(0);
+    const retained = prompts.flatMap((prompt, index) => {
+      const before = prompts[index - 1];
+      return prompt !== undefined && before !== undefined && prompt < before && base !== undefined
+        ? [prompt - base] : [];
+    });
+    return {
+      pass: retained.length > 0 && retained.every(tokens => tokens <= BUDGET * 0.2),
+      evidence: { base: base ?? null, retained, prompts: prompts.map(prompt => prompt ?? null) },
+    };
   });
 
   const lastPrompt = history.findLast(message =>
