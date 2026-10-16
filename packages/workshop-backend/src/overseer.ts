@@ -715,7 +715,8 @@ class OverseerImpl implements AgentHooks {
   // Per-chat in-memory state for running agents.
   #liveChats = new Map<number, LiveChatContext>();
   #chatSubscribers: Set<RpcStub<AiChatSubscriber>> = new Set();
-  readonly cacheWarmer = new ChatCacheWarmer();
+  readonly cacheWarmer = new ChatCacheWarmer((chatId, resent) => this.#addRequestCost(
+      chatId, resent.usage, resent.aiGatewayLogId, resent.aiGatewayLogRoute, false));
 
   #autoApprovalDrainer: AutoApprovalDrainer;
 
@@ -4407,6 +4408,9 @@ class OverseerImpl implements AgentHooks {
     this.refoldChatCompactions(chatId, revertFrom, [...messages, revertMessage]);
     this.storage.chatMeta.put(meta);
     this.proposedChangesChanged(chatId);
+    // Replay hides the results of reads of reverted content (see agent.ts), so the next request
+    // no longer starts with the one being kept warm.
+    this.cacheWarmer.stop(chatId);
 
     // Only now delete the provisional gadgets whose creation the revert rejected -- the revert
     // message is also how the agent learns of the rejection on its next turn (revert messages
@@ -8823,14 +8827,23 @@ class OverseerImpl implements AgentHooks {
     meta.lastActive = this.getChatTimestamp();
     this.storage.chatMeta.put(meta);
 
+    this.#addRequestCost(chatId, usage, aiGatewayLogId, aiGatewayLogRoute, true);
+  }
+
+  // Adds a model request's cost to the chat's and workspace's totals: the cost AI Gateway logged
+  // for it where it went through one, else the catalog-priced estimate in `usage`. See
+  // #addChatCost for `isActivity`.
+  #addRequestCost(chatId: number, usage: Usage | undefined, aiGatewayLogId: string | undefined,
+                  aiGatewayLogRoute: AiGatewayLogRoute | undefined, isActivity: boolean) {
     if (aiGatewayLogId && aiGatewayLogRoute) {
       // Best-effort UI accounting only. The log ID is not persisted, so a DO restart can lose
       // this update. Do not use this total as a billing source of truth.
-      void this.#getCostFromAiGateway(chatId, aiGatewayLogRoute, aiGatewayLogId, usage?.cost.total);
+      void this.#getCostFromAiGateway(
+          chatId, aiGatewayLogRoute, aiGatewayLogId, usage?.cost.total, isActivity);
     } else if (usage?.cost.total) {
       // No AI Gateway log to consult (direct provider access, or a gateway response that didn't
       // surface a log id): fall back to the caller's catalog-priced estimate.
-      this.#addChatCost(chatId, usage.cost.total);
+      this.#addChatCost(chatId, usage.cost.total, isActivity);
     }
   }
 
@@ -8839,7 +8852,12 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Adds an inference cost (in dollars) to a chat's running total and the workspace-wide total.
-  #addChatCost(chatId: number, cost: number) {
+  // A turn's cost also moves lastActive, though it isn't really activity: subscribeToChat's
+  // catch-up lists only chats whose lastActive moved, and AI Gateway's cost lands after the turn.
+  // A cache warm ping's cost doesn't, or a chat left open would rise to the top of every list
+  // every few minutes. Catch-up-only subscribers see a ping's cost with the chat's next activity,
+  // and the owner's workspace list with the workspace's.
+  #addChatCost(chatId: number, cost: number, isActivity: boolean) {
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) {
       // Chat thread deleted?
@@ -8847,10 +8865,7 @@ class OverseerImpl implements AgentHooks {
     }
 
     meta.totalCost = (meta.totalCost ?? 0) + cost;
-
-    // Even though this is not really activity, we need to update lastActive for the subscription
-    // machinery to work correctly.
-    meta.lastActive = this.getChatTimestamp();
+    if (isActivity) meta.lastActive = this.getChatTimestamp();
 
     this.storage.chatMeta.put(meta);
     this.storage.totalCost.put(this.storage.totalCost.get() + cost);
@@ -8864,7 +8879,7 @@ class OverseerImpl implements AgentHooks {
   // TODO: Get AI gateway to add cost data to response headers -- it's dumb that we need a
   //   separate request!
   async #getCostFromAiGateway(chatId: number, route: AiGatewayLogRoute, aiGatewayLogId: string,
-                              estimatedCost?: number) {
+                              estimatedCost: number | undefined, isActivity: boolean) {
     let cost: number | undefined;
     try {
       for (let attempt = 0; attempt < 4; ++attempt) {
@@ -8888,7 +8903,7 @@ class OverseerImpl implements AgentHooks {
 
     cost ||= estimatedCost;
     if (cost) {
-      this.#addChatCost(chatId, cost);
+      this.#addChatCost(chatId, cost, isActivity);
     }
   }
 
