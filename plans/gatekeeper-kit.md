@@ -2277,8 +2277,9 @@ endpoint answers for a revoked grant. A 4xx without one, such as a WAF challenge
 
 ```ts
 export function buildGitFetchRequest(oids: GitOid[], hints: GitPullHints): Uint8Array;
-export function pullGitObjectsIntoCache(fetchUploadPack: (requestBody: Uint8Array) => Promise<Response>,
-  oids: GitOid[], hints: GitPullHints, cache: GitPackSink): Promise<void>;
+export function pullGitPack(fetchUploadPack: (requestBody: Uint8Array) => Promise<Response>,
+  oids: GitOid[], hints: GitPullHints,
+  onTerminal?: (status: GitPullStatus) => void): Promise<ReadableStream<Uint8Array>>;
 export function validateBranchName(branch: string): string;
 export function pushGitRefUpdate(
   fetchReceivePack: (requestBody: ReadableStream<Uint8Array>) => Promise<Response>,
@@ -2300,6 +2301,23 @@ partial-clone limits; other servers may accept more. `simulateBranchHead` overla
 queued ref updates on its real head by the same compare-and-swap rule, chain-following in any list
 order, so a simulated read and the next push's expected old sha agree; a push to `ZERO_OID`
 deletes, reading as `null`. Consumed by github and gitlab.
+
+The Workers-only `./git-pull-transfer` leaf wraps `pullGitPack` for the kernel-facing
+`Gatekeeper.gitPull(oids, options)` API:
+
+```ts
+export function startGitPull(fetchUploadPack: (requestBody: Uint8Array) => Promise<Response>,
+  oids: GitOid[], hints: GitPullHints): Promise<GitPullTransfer>;
+```
+
+`GitPullTransfer` exposes one-shot `stream()` and independent terminal `status()` so provider
+errors remain available if Workers RPC replaces a stream exception. Consumers must require
+`complete` after EOF, cancel unfinished streams, and dispose the capability. The provider does
+not parse packs, ingest cache objects, or impose the DO cache's size limit. The overseer routes
+pulls using recorded provenance, decodes the stream with its pack/object limits, and checks
+requested-object presence. The transport checks oid syntax, not advertisement history; the
+gatekeeper method is not gadget-facing. A separate kernel container-bootstrap consumer can use
+the stream directly with native Git and its own limits, but is not enabled by this helper alone.
 
 ### 4.21 `./git-diff`
 

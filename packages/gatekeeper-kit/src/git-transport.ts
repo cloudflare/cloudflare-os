@@ -4,7 +4,7 @@
 //
 // - The protocol v2 *fetch* client behind `Gatekeeper.gitPull()`: pkt-line framing, fetch-command
 //   composition from `GitPullHints`, and sideband demultiplexing of the packfile response. The
-//   raw pack body streams into the DO cache decoder or directly into native Git.
+//   raw pack body can feed the DO cache decoder or a separate native Git consumer.
 // - The *send-pack* client behind the `push` action: the ref-update command block, pack body
 //   composition (the pack bytes themselves come from `GitCache.buildPack()` -- no pack encoding
 //   here either), and report-status response parsing.
@@ -13,8 +13,8 @@
 //
 // Two locked transport decisions (plans/worktrees.md) shape every request this module composes:
 //
-// - **No `have`s, ever.** A `have` asserts full reachability, but every pull here is filtered or
-//   tree-limited, so possessing a commit never implies possessing its blobs and trees --
+// - **No `have`s, ever.** A `have` asserts full reachability, but the consumer may hold a commit
+//   from a filtered or shallow pull, so possession alone does not imply full reachability --
 //   advertising one would make upload-pack exclude exactly the omitted objects a later
 //   exact-object fault explicitly `want`s. Every fetch sends an empty have list and an immediate
 //   `done` (the same noop negotiation stance git itself takes for partial-clone lazy fetches).
@@ -190,10 +190,10 @@ const OID_PATTERN = /^[0-9a-f]{40}$/;
  *   strictly stronger than any `blob:limit`.
  * - A fetch whose wants are themselves blobs (`hints.type === "blob"`) sends **no filter**: a
  *   blob want has no traversal for a filter to prune, and the filter would not suppress the
- *   wanted blob anyway -- an oversized blob arrives huge, the transfer limiter bounds the
- *   download, and the overseer's `put()`-equivalent size rejection measures and records its
- *   exact size (so later reads fail fast). This is the second of spike 1's two possible worlds;
- *   nothing is ever inferred from an absence.
+ *   wanted blob anyway. Consumers enforce their own limits: the DO cache decoder bounds pack
+ *   bytes and object allocations before ingestion, while a native consumer need not inherit
+ *   the DO cache's limits. Only a fully decoded oversized object can have its measured size
+ *   recorded for later fail-fast reads; a decoder-limit failure or absence records no size.
  * - Otherwise `filterBlobSize` maps directly: 0 (fetch no blobs) → `blob:none`, N → `blob:limit=N`
  *   (git's semantics -- omit blobs of size at least N -- match the hint's).
  */

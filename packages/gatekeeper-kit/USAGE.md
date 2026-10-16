@@ -857,8 +857,8 @@ each row it returns: a filter that drops whole pages otherwise pays for up to te
 the URL, credentials, and timeouts; the kit owns the framing. Two rules of DO cache-pull framing are easy to
 break from the outside and fail late when broken:
 
-- **Never send a `have`.** A `have` asserts full reachability of that commit, but every pull here
-  is filtered or shallow, so the workspace cache holds commits whose blobs or ancestors it lacks.
+- **Never send a `have`.** A `have` asserts full reachability of that commit, but the workspace
+  cache can hold commits from filtered or shallow pulls whose blobs or ancestors it lacks.
   Sending one makes upload-pack withhold objects a later fault will `want`. `buildGitFetchRequest`
   sends an empty have list and `done`; do not build a fetch request another way to "save bytes".
 - **At most one `filter` line.** upload-pack accepts a single filter-spec — a second `filter` line
@@ -883,20 +883,28 @@ pushes)`, the gatekeeper filtering the pushes to that branch; the same call give
 `parseUnifiedPatch`, one file's patch at a time, which shares `diffTextLines`'s hunk shape, so a
 simulated diff and a provider diff read alike.
 
-Both lazy DO reads and native container hydration use `Gatekeeper.gitPull(oids, options)`.
+Lazy DO reads use `Gatekeeper.gitPull(oids, options)`. This is a kernel-facing method, not part
+of a gadget's session API. The kernel routes pulls through recorded object provenance
+(advertised commits, their referents, or objects previously populated by that gatekeeper).
+The shared composer checks oid syntax and composes typed options; it does not check
+advertisement history.
 The provider composes a typed fetch with `git-pull-transfer.startGitPull()` and returns a transfer
 capability. Claim its backpressured raw PACK stream once with `stream()`, without buffering or
-base64 encoding. The DO feeds it to its bounded cache decoder; containers feed it directly to
-native Git without the DO cache's transfer limit. Workers RPC can replace a stream exception
-with a generic disconnect, so query `status()` after consumption fails to recover a producer
+base64 encoding. The DO feeds it to its bounded cache decoder. Workers RPC can replace a stream
+exception with a generic disconnect, so query `status()` after consumption fails to recover a producer
 error; if it has not failed, preserve the consumer's own error. After draining the stream,
 require `complete` before accepting the transfer. Cancel an unfinished stream and dispose the
 capability when done.
-The kernel chooses the advertised immutable commit, requests depth one with no tree/blob filters,
-and closes the bootstrap capability after hydration. No caller-supplied Git commands, ref
-discovery, arbitrary URLs, or provider credentials cross the bootstrap interface. Packs are
-self-contained (no `have` negotiation or thin-pack dependencies). Native consumers must record
-their shallow boundary because the raw pack does not carry Git protocol shallow-info.
+
+The transfer also supports a native container consumer, but container hydration is not enabled
+by this capability alone; it requires the separate kernel worktree-replica bootstrap support.
+That consumer must bind its bootstrap capability to an authorized immutable commit, request depth
+one with no tree/blob filters, stream directly to native Git using its own limits rather than
+the DO cache's, and close the bootstrap capability after hydration. No guest-supplied Git
+commands, ref discovery, arbitrary URLs, or provider credentials belong in that bootstrap
+interface. Packs are self-contained (no `have` negotiation or thin-pack dependencies). Native
+consumers must record their shallow boundary because the raw pack does not carry Git protocol
+shallow-info.
 
 ## Other module boundaries
 
