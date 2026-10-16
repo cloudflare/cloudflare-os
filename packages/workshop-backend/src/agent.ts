@@ -604,10 +604,10 @@ export interface AgentHooks {
   consumeCapturedConnectionRequests(chatId: number): AiChatMessageBody[];
 
   /**
-   * Mint a gatekeeper simulating a new resource of a creatable type, and queue the creation for
-   * the user's approval. Unlike requestConnection, nothing waits on the user: the gatekeeper
-   * simulates the resource until the creation applies. Throws an agent-readable message when the
-   * request can't be met.
+   * Mint a pending gatekeeper for a new resource of a creatable type, and queue the creation for
+   * the user's approval. The gatekeeper may simulate the resource, or request an approval pause
+   * and refuse use until creation finishes. Throws an agent-readable message when the request
+   * can't be met.
    */
   createExternalResource(
       chatId: number, input: Extract<AiToolCall, {toolName: "createExternalResource"}>["input"])
@@ -1290,7 +1290,7 @@ Ask the user to connect a gatekeeper resource (e.g. a ClickHouse cluster, a GitH
 `.trim();
 
 let CREATE_EXTERNAL_RESOURCE_TOOL_DESCRIPTION = `
-Create a new external resource (e.g. a new document), for resource types listConnectableResources marks creatable; requestConnection is for resources that already exist. The resource is immediately available as \`env.<bindingName>\` and your turn continues. It is created at the provider, in an account the user chooses, only once they approve the creation; until then it is simulated, and changes you make to it apply after the creation.
+Create a new external resource (e.g. a new document or Linux container), for resource types listConnectableResources marks creatable; requestConnection is for resources that already exist. The binding is available as \`env.<bindingName>\`, but the resource is created at the provider only after approval in an account the user chooses. Some resources simulate changes until approval; real-only resources pause the turn and cannot be used until creation finishes. Follow the resource's guidance.
 `.trim();
 
 // =======================================================================================

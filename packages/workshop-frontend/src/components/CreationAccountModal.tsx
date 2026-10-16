@@ -207,9 +207,14 @@ export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCance
                 requiredResourceUrlPatterns={required}
                 grantingAccountId={starting?.kind === 'grant' ? starting.accountId : null}
                 onSelect={setChosen}
-                onConnect={() => void startFlow({ kind: 'connect' }, () =>
-                  authenticatedApi.connectAccount(
-                    target.vendor.id, required.length > 0 ? required : undefined))}
+                onConnect={() => void startFlow({ kind: 'connect' }, async () => {
+                  if (target.vendor.description.autoProvisionsAccount) {
+                    await authenticatedApi.provisionAmbientAccount(target.vendor.id)
+                    return null
+                  }
+                  return authenticatedApi.connectAccount(
+                    target.vendor.id, required.length > 0 ? required : undefined)
+                })}
                 onReconnect={accountId => void startFlow({ kind: 'reconnect', accountId }, () =>
                   authenticatedApi.reconnectAccount(accountId))}
                 onGrantAccess={accountId => void startFlow({ kind: 'grant', accountId }, () =>

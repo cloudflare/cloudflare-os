@@ -675,10 +675,11 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
   createAccount?(): Promise<Fetcher<GatekeeperUser>>;
 
   /**
-   * Get a gatekeeper class simulating a NEW resource of the creatable type `resourceUrlPattern`,
+   * Get a pending gatekeeper class for a NEW resource of the creatable type `resourceUrlPattern`,
    * titled `title`, and the `action` that creates it. Like createAccount(), this takes no user
-   * identity, so the class belongs to no account: it simulates the resource locally, with no
-   * account to reach the provider through, though it may still be asked to describe() itself.
+   * identity, so the class belongs to no account and cannot reach the provider. It may simulate
+   * the resource locally, or refuse use until approval and set action.awaitDecision to pause
+   * the agent. The latter must enforce the restriction itself, not rely on the pause alone.
    * Creates nothing. The Overseer queues `action` as the creation, which applies before anything
    * else queued on the gatekeeper, through Gatekeeper.applyCreation() once a user approves it.
    * Present only on vendors with a `creatable` resource type.
@@ -1140,8 +1141,14 @@ export interface Gatekeeper<Session> extends DurableObject {
    *
    * If the user rejects the creation instead, the Overseer removes this gatekeeper, rejecting
    * its queued actions without calling rejectAction(): its storage is deleted with it.
+   *
+   * For vendors granted contextualActions by the deployment, `context` carries the same scoped
+   * approval authority as applyActionInContext(), including the originating agent turn when it
+   * is still open. Other vendors receive only the original two arguments. A real-only resource
+   * can use this to participate in turn cleanup and finish initialization before returning.
    */
-  applyCreation?(creator: Fetcher<GatekeeperUserVerifier>, configuration: string | null)
+  applyCreation?(creator: Fetcher<GatekeeperUserVerifier>, configuration: string | null,
+                 context?: RpcStub<GatekeeperActionContext>)
       : Promise<{class: DurableObjectClass<Gatekeeper<any>>, resourceUrl: string}>;
 
   /**

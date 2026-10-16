@@ -130,7 +130,7 @@ afterEach(() => {
   openConnectWindow.mockReset()
 })
 
-async function renderModal() {
+async function renderModal(autoProvisionsAccount = false) {
   testState.collect = readFrame
   const startCreationConfigurator = vi.fn<(accountId: number) => Promise<object>>(accountId => {
     const frame = deferred<object>()
@@ -140,7 +140,7 @@ async function renderModal() {
   testState.authenticatedApi = {
     listGatekeeperVendors: async () => [{
       id: 'google',
-      description: { displayName: 'Google' },
+      description: { displayName: 'Google', autoProvisionsAccount },
       supportedResources: [{ urlPattern: PATTERN, creatable: true, creationConfigurator: true }],
     }],
     subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
@@ -194,6 +194,27 @@ const accountButton = (name: string) => button(b => b.textContent?.startsWith(na
 const reportReady = () => act(() => testState.reportReady!(true))
 
 describe('CreationAccountModal', () => {
+  it('provisions an optional account through the explicit account-picker click', async () => {
+    await renderModal(true)
+    const provision = vi.fn<(vendorId: string) => Promise<void>>().mockResolvedValue(undefined)
+    const connect = vi.fn<() => void>()
+    testState.authenticatedApi.provisionAmbientAccount = provision
+    testState.authenticatedApi.connectAccount = connect
+    await act(async () => button(b => b.textContent === 'Use another Google account').click())
+    expect(provision).toHaveBeenCalledExactlyOnceWith('google')
+    expect(connect).not.toHaveBeenCalled()
+  })
+
+  it('surfaces provisioning policy failures without falling back to OAuth', async () => {
+    await renderModal(true)
+    testState.authenticatedApi.provisionAmbientAccount = vi.fn<() => Promise<void>>().mockRejectedValue(new Error('Disabled'))
+    const connect = vi.fn<() => void>()
+    testState.authenticatedApi.connectAccount = connect
+    await act(async () => button(b => b.textContent === 'Use another Google account').click())
+    expect(testState.toasts).toHaveLength(1)
+    expect(connect).not.toHaveBeenCalled()
+  })
+
   it('approves with the configuration from the selected account\'s configurator', async () => {
     const { startCreationConfigurator, onChoose } = await renderModal()
     expect(startCreationConfigurator).toHaveBeenLastCalledWith(5, PATTERN)
