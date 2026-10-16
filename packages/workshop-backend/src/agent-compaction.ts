@@ -12,8 +12,10 @@ import {zeroUsage} from "./ai-invoke";
 // the UI can still page back through them, but agent replay starts at the boundary.
 
 // Target this share of the input budget for retained messages, leaving room for the summary and
-// the turns that follow.
+// the turns that follow, but never more than COMPACTION_TAIL_TOKEN_LIMIT: on a large window a
+// share would keep hundreds of thousands of tokens, and compaction would free little of the prompt.
 const COMPACTION_TARGET_RATIO = 0.3;
+const COMPACTION_TAIL_TOKEN_LIMIT = 20_000;
 
 // Assumed window for a model that SUGGESTED_MODELS doesn't list. A model whose real window is
 // smaller still fails at the provider before compaction triggers.
@@ -285,7 +287,7 @@ export function findCompactionBoundary(
   // messages; the weights affect only where the cut lands.
   let weights = projection.map(({message}) => projectionMessageWeight(message));
   let tokensPerWeight = contextTokens / weights.reduce((sum, weight) => sum + weight, 0);
-  let tailBudget = inputBudget * COMPACTION_TARGET_RATIO;
+  let tailBudget = Math.min(inputBudget * COMPACTION_TARGET_RATIO, COMPACTION_TAIL_TOKEN_LIMIT);
   let keptTokens = 0;
   let keepFrom = projection.length - 1;
   for (; keepFrom >= 0; --keepFrom) {
