@@ -17,6 +17,7 @@ on:
       - .github/workflows/workshop-evals-compaction.yml
       - packages/workshop-evals/targeted/compaction.eval.ts
       - packages/workshop-backend/src/agent-compaction.ts
+      - packages/workshop-backend/src/anthropic-compaction.ts
 
 permissions: {}
 
