@@ -142,7 +142,10 @@ export type CachedRequest = {
   /** How long the provider keeps the prompt cached after a request last read or wrote it. */
   cacheLifetime: number;
 
-  /** What one resend costs, in dollars: a read of the whole prompt from the cache. */
+  /**
+   * What one resend costs at most, in dollars: a read of the whole prompt from the cache, and the
+   * longest response its cap allows.
+   */
   resendCost: number;
 
   /**
@@ -153,10 +156,17 @@ export type CachedRequest = {
 
   /**
    * Sends the request again with the smallest response cap its API takes, through the handle's
-   * routing, marked as a cache warm-up in AI Gateway. Resolves with the request's usage; rejects
-   * if it fails.
+   * routing, marked as a cache warm-up in AI Gateway. Resolves with what the resend used, and the
+   * AI Gateway log that prices it where it went through a gateway; rejects if it fails.
    */
-  resend(): Promise<Usage>;
+  resend(): Promise<Resent>;
+};
+
+/** What a resend used, priced from the model catalog, and the AI Gateway log that prices it. */
+export type Resent = {
+  usage: Usage;
+  aiGatewayLogId?: string;
+  aiGatewayLogRoute?: AiGatewayLogRoute;
 };
 
 function buildMetadata(initiator: AiChatAuthorInfo, context?: GatewayMetadataContext): GatewayMetadata {
@@ -591,7 +601,8 @@ function makeHandle(args: HandleArgs): ModelHandle {
       // Kept once the response ends, which is before its caller can start another request.
       void stream.result().then(message => {
         if (sent === undefined) return;
-        handle.lastRequest = cachedRequest(streamFn, model, transcript, sent, message.usage, {
+        handle.lastRequest = cachedRequest(streamFn, model, transcript, sent, message.usage,
+            args.aiGatewayLogRoute, {
           fetch: merged.fetch,
           apiKey: merged.apiKey,
           sessionId: merged.sessionId,
@@ -634,26 +645,33 @@ function withoutPromptCacheKey(model: Model<Api>, payload: unknown): object | un
 function cachedRequest(
     streamFn: StreamFunction<Api, SimpleStreamOptions>, model: Model<Api>, context: Context,
     sent: { payload: unknown; at: number }, usage: Usage,
+    aiGatewayLogRoute: AiGatewayLogRoute | undefined,
     routing: SimpleStreamOptions): CachedRequest | undefined {
   const resent = cappedForResend(model, sent.payload);
   if (resent === undefined || usage.cacheRead + usage.cacheWrite === 0) return undefined;
-  const { cacheRead, cacheWrite } = model.cost;
+  const { cacheRead, cacheWrite, output } = model.cost;
   const prompt = usage.input + usage.cacheRead + usage.cacheWrite;
   const own = Math.max(prompt - estimateSharedHeadTokens(context), 0);
   return {
     sentAt: sent.at,
     cacheLifetime: resent.cacheLifetime,
     // Prices are per million tokens.
-    resendCost: prompt * cacheRead / 1e6,
+    resendCost: (prompt * cacheRead + resent.responseCap * output) / 1e6,
     expiryCost: own * (cacheWrite - cacheRead) / 1e6,
     resend: async () => {
+      let aiGatewayLogId: string | undefined;
       // pi builds a request from the context and then replaces it with the payload.
-      const message = await streamFn(model, normalizeContext({ messages: [] }),
-          { ...routing, onPayload: () => resent.payload }).result();
+      const message = await streamFn(model, normalizeContext({ messages: [] }), {
+        ...routing,
+        onPayload: () => resent.payload,
+        onResponse: response => {
+          aiGatewayLogId = getHeader(response.headers, "cf-aig-log-id");
+        },
+      }).result();
       if (message.stopReason === "error" || message.stopReason === "aborted") {
         throw new Error(message.errorMessage ?? "The model request failed.");
       }
-      return message.usage;
+      return { usage: message.usage, aiGatewayLogId, aiGatewayLogRoute };
     },
   };
 }
@@ -665,20 +683,21 @@ function cachedRequest(
 //   streaming, which pi always uses, so 1 it is. An enabled thinking budget must stay below
 //   max_tokens, so such requests can't be resent; adaptive thinking takes any cap.
 // - openai-responses, GPT-5.6 and later: at least 30 minutes after the last write or reuse. 16
-//   is the smallest max_output_tokens the API takes.
+//   is the smallest max_output_tokens the API takes, and it caps reasoning tokens too.
 // - Other APIs: undefined.
 function cappedForResend(model: Model<Api>, payload: unknown)
-    : { payload: object; cacheLifetime: number } | undefined {
+    : { payload: object; responseCap: number; cacheLifetime: number } | undefined {
   if (typeof payload !== "object" || payload === null) return undefined;
   switch (model.api) {
     case "anthropic-messages":
-      return hasEnabledThinking(payload)
-          ? undefined
-          : { payload: { ...payload, max_tokens: 1 }, cacheLifetime: 5 * 60_000 };
+      return hasEnabledThinking(payload) ? undefined : {
+        payload: { ...payload, max_tokens: 1 }, responseCap: 1, cacheLifetime: 5 * 60_000,
+      };
     case "openai-responses":
-      return hasGpt56PromptCaching(model)
-          ? { payload: { ...payload, max_output_tokens: 16 }, cacheLifetime: 30 * 60_000 }
-          : undefined;
+      return hasGpt56PromptCaching(model) ? {
+        payload: { ...payload, max_output_tokens: 16 }, responseCap: 16,
+        cacheLifetime: 30 * 60_000,
+      } : undefined;
     default:
       return undefined;
   }

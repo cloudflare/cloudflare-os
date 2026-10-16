@@ -1792,10 +1792,11 @@ describe("Resending a request to keep its cache", () => {
     capturedRequests.length = 0;
   });
 
-  // A stream of server-sent events, each named by its type as Anthropic and OpenAI name theirs.
+  // A stream of server-sent events, each named by its type as Anthropic and OpenAI name theirs,
+  // logged by AI Gateway as `log-1`.
   const events = (sent: Record<string, unknown>[]) => new Response(
       sent.map(event => `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`).join(""),
-      { headers: { "content-type": "text/event-stream" } });
+      { headers: { "content-type": "text/event-stream", "cf-aig-log-id": "log-1" } });
 
   // Answers every request to a 100k-token prompt with an empty reply in the API's own format, 90k
   // of the prompt read from the cache unless Anthropic caches none of it. Anthropic's reply counts
@@ -1862,7 +1863,7 @@ describe("Resending a request to keep its cache", () => {
       [...headers].filter(([name]) =>
           !["content-length", "cf-aig-metadata", "cf-aig-skip-cache"].includes(name)));
 
-  it("resends an Anthropic request as sent, with a one-token cap, marked in the gateway",
+  it("resends an Anthropic request as sent, with a one-token cap, marked and logged in the gateway",
       async () => {
     const handle = getModel(env(), { provider: "anthropic", model: "claude-opus-5-5", apiToken: "" },
         INITIATOR, {
@@ -1870,7 +1871,12 @@ describe("Resending a request to keep its cache", () => {
           metadata: { source: "chat", gadgetId: "gadget-123", chatId: 7 },
         });
     await send(handle);
-    await expect(handle.lastRequest?.resend()).resolves.toMatchObject({ cacheRead: 90_000 });
+    expect(handle.aiGatewayLogRoute).toBeDefined();
+    await expect(handle.lastRequest?.resend()).resolves.toMatchObject({
+      usage: { cacheRead: 90_000 },
+      aiGatewayLogId: "log-1",
+      aiGatewayLogRoute: handle.aiGatewayLogRoute,
+    });
 
     const [sent, resent] = capturedRequests;
     expect(resent.url).toBe(sent.url);
@@ -1889,7 +1895,8 @@ describe("Resending a request to keep its cache", () => {
         { provider: "openai", model: "gpt-6-luna", apiToken: "direct-api-token" }, INITIATOR,
         { sessionAffinity: "chat-7" });
     await send(handle);
-    await expect(handle.lastRequest?.resend()).resolves.toMatchObject({ cacheRead: 90_000 });
+    await expect(handle.lastRequest?.resend())
+        .resolves.toMatchObject({ usage: { cacheRead: 90_000 } });
 
     const [sent, resent] = capturedRequests;
     expect(JSON.parse(resent.body)).toEqual({ ...JSON.parse(sent.body), max_output_tokens: 16 });
@@ -1897,14 +1904,14 @@ describe("Resending a request to keep its cache", () => {
     expect(handle.lastRequest?.cacheLifetime).toBe(30 * 60_000);
   }, 15000);
 
-  it("prices a resend as a read of the whole prompt, and a miss as a write of the chat's own part",
-      async () => {
+  it("prices a resend as a read of the whole prompt and a one-token answer, and a miss as a " +
+      "write of the chat's own part", async () => {
     const handle = getModel(env(), { provider: "anthropic", model: "claude-opus-5-5", apiToken: "" },
         INITIATOR);
     await send(handle);
 
-    const { cacheRead, cacheWrite } = handle.model.cost;
-    expect(handle.lastRequest?.resendCost).toBeCloseTo(100_000 * cacheRead / 1e6, 6);
+    const { cacheRead, cacheWrite, output } = handle.model.cost;
+    expect(handle.lastRequest?.resendCost).toBeCloseTo((100_000 * cacheRead + output) / 1e6, 8);
     // The tools and static system text, about 10k tokens, are cached apart from the chat's part.
     const ownTokens = handle.lastRequest!.expiryCost / ((cacheWrite - cacheRead) / 1e6);
     expect(ownTokens).toBeGreaterThan(89_900);
