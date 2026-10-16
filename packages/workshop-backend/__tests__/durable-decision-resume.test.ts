@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OverseerDurableObject } from "../src/overseer";
 import { UserDurableObject } from "../src/user";
 import { openFakeOverseer } from "./fixtures";
-import type { FakeChatResponseTarget } from "./test-worker";
+import type { FakeChatResponseTarget } from "./response-target";
 
 const CHAT = 1;
 const USER = {type: "user" as const, id: "original-user", name: "Original user"};

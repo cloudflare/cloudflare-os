@@ -9889,19 +9889,12 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     // cause a needless workspace reset. The handoff between the two leases is microtask-only,
     // the same argument as open()'s.
     //
-    // KNOWN GAP, tolerable only while nothing calls this endpoint: the lease ends when this call
-    // returns, but the agent turn newChat/sendChatMessage start is fire-and-forget and outlives
-    // it -- and via its persisted ActiveAgentRecord even survives DO resets, resuming with the
-    // in-memory quarantine cleared and no re-verification. A scope widening mid-turn therefore
-    // finds no session to sever, and the reply -- which egresses to the persisted external
-    // response target with no further check -- is produced under stale verification (e.g. a new
-    // external chat freezes its binding seed lazily inside the turn, folding in a connection
-    // added after this authorization). Before wiring this endpoint to real callers: give the
-    // turn its own "build" session lease from #registerRunningAgent to #unregisterRunningAgent,
-    // persisted as a marker on ActiveAgentRecord so a resumed turn re-takes it, and have
-    // #resumeAgent re-run authorizeCollaborator(initiator, {requireRole: "build"}) for marked
-    // records before #runAgentTurn, cancelling the turn (error posted, record cleared, waiting
-    // response delivered as the terminal error) when the initiator no longer verifies.
+    // KNOWN GAP, tolerable only while nothing calls this endpoint: this call's lease does not
+    // cover the fire-and-forget turn's initial run. A scope widening after this call returns can
+    // find no session to sever, and the reply can egress under stale verification. #resumeAgent
+    // already re-authorizes the original non-owner person and holds a build lease through a
+    // resumed run; its existing ActiveAgentRecord carries that identity. Before wiring this
+    // endpoint to real callers, give the initial run its own per-turn build lease too.
     let leaveSession = () => {};
     using _sessionLease = {[Symbol.dispose]: () => leaveSession()};
 

@@ -1,11 +1,12 @@
 // The Worker the unit suites run inside: the production Worker's exports (so `ctx.exports` resolves
 // the real Durable Objects and callbacks) plus test-only entrypoints that stand in for other Workers.
 
-import { DurableObject, RpcTarget, WorkerEntrypoint, restore } from "cloudflare:workers";
+import { DurableObject, WorkerEntrypoint, restore } from "cloudflare:workers";
 import type { AccountDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { GatekeeperConnectCallbackImpl } from "../src/user.js";
 import { LoginConnectCallbackImpl } from "../src/auth/login-flow.js";
 import { OverseerDurableObject as RealOverseerDurableObject } from "../src/server.js";
+import { FakeChatResponseTarget } from "./response-target";
 
 export * from "../src/server.js";
 export { default } from "../src/server.js";
@@ -58,27 +59,6 @@ export { CodeModeTailLoopback } from "../src/server.js";
 export class TestConnectCallback extends GatekeeperConnectCallbackImpl {}
 /** The sign-in callback, reachable the same way. */
 export class TestLoginCallback extends LoginConnectCallbackImpl {}
-
-const responseTargets = new Map<string, {available: boolean; calls: number}>();
-
-/** A persistent external response target whose outage a test can end independently of the DO. */
-export class FakeChatResponseTarget extends RpcTarget {
-  constructor(private readonly name: string) { super(); }
-
-  setAvailable(available: boolean): void {
-    responseTargets.set(this.name, {available, calls: this.calls()});
-  }
-
-  calls(): number {
-    return responseTargets.get(this.name)?.calls ?? 0;
-  }
-
-  async onGadgetResponse(): Promise<void> {
-    const state = responseTargets.get(this.name)!;
-    state.calls++;
-    if (!state.available) throw new Error("Response target unavailable");
-  }
-}
 
 /** What each FakeGatekeeperAccount has been asked to do, by its `name` prop. */
 const accountCalls = new Map<string, string[]>();
