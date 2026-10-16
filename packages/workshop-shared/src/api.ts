@@ -2852,6 +2852,9 @@ export interface Overseer extends RpcTarget {
   /**
    * Send a message to the chat from this client. Sending a message causes the LLM to start
    * running if it isn't already.
+   * While it runs, plain text with no capsules, attachments or formats steers it: the agent reads
+   * it after its current step (see `AiChatMessageBody.steered`), on the running turn's model rather
+   * than `modelId`. Anything else throws until the agent finishes.
    * If a slash command produces no message, only its visible invocation event is committed and the
    * agent does not run.
    * Slash-command requests cannot include capsules or attachments.
@@ -3003,9 +3006,14 @@ export interface Overseer extends RpcTarget {
    * If an LLM is running, the session is canceled subscribers will receive a metadata update
    * reflecting this before `stop()` returns.
    *
-   * If no LLM is running, `stop()` does nothing and returns immediately.
+   * If no LLM is running, `stop()` does nothing and returns an empty list.
+   *
+   * Otherwise it returns the text of the caller's messages that the agent had not read yet (see
+   * `AiChatMessageBody.steered`), oldest first. They are discarded, so the client can put them back
+   * in its draft. Anyone else's unread messages prompt a new turn, on the stopped turn's model,
+   * once it ends.
    */
-  stopAgent(chatId: number): Promise<void>;
+  stopAgent(chatId: number): Promise<string[]>;
 
   /**
    * Retry the agent on the given chat. This starts the agent without adding a new user message.
@@ -3589,6 +3597,12 @@ export type AiChatMessageBody = {
    * Clients use this to group the two records for display.
    */
   generatedBySlashCommandSequence?: number;
+
+  /**
+   * Sent while the agent was working, so it steers that turn rather than prompting one. The agent
+   * reads it between two steps, or, if the turn stopped to wait on the user's decision, on resuming.
+   */
+  steered?: true;
 } | {
   /**
    * A slash command exactly as requested by the client, retained for display and never included in

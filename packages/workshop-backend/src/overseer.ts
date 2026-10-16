@@ -19,7 +19,8 @@ import {
   type ChatChangeBoundaryRecord, type ChatChangeRecord, type CompactionCheckpoint,
   type ExternalChatRecord, type ExternalMessageRecord, type GadgetRecord, type GatekeeperCaller,
   type GatekeeperClass, type GatekeeperRecord, type ObserverRecord, type OverseerStorage,
-  type StoredAssistantMessage, type StoredChatMessage, type StoredChatMetadata,
+  type PendingSteerRecord, type StoredAssistantMessage, type StoredChatMessage,
+  type StoredChatMetadata,
   type WorkpieceRecord, type WorktreeRecord,
 } from "./storage-schema/overseer-storage";
 import type { UserAiModelRecord, WorkspaceOutputEntry } from "./storage-schema/user-storage";
@@ -50,7 +51,7 @@ import { GitImpl } from "./git-binding";
 import { scanWorkpieceForGrep, type GrepScan } from "./grep";
 import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
-import { chatChangeStatuses, foldCompactedCode } from "./agent-compaction";
+import { chatChangeStatuses, foldCompactedCode, isTurnPrompt } from "./agent-compaction";
 import { ambientGatekeeperMode } from "./provisioning-policy";
 import {
   blueprintContentKey, deleteBlueprintContent, readBlueprintRelease, sanitizeBlueprintOutput,
@@ -1042,14 +1043,35 @@ class OverseerImpl implements AgentHooks {
   }
 
   // The hand-off once a chat's turn is over and its running-agent state has been torn down: drop
-  // the turn's live context, then deliver whatever was waiting for the chat to go idle -- calls
-  // to the agent recorded during the turn (which start another turn), or failing that the
-  // response an external message is waiting on. Every path that ends a turn goes through here,
-  // so a call recorded mid-turn is never stranded by the way the turn ended.
-  #finishAgentTurn(chatId: number): void {
+  // the turn's live context, then deliver whatever was waiting for the chat to go idle -- steers
+  // the turn never read, calls to the agent recorded during the turn (which start another turn),
+  // or failing that the response an external message is waiting on. Every path that ends a turn
+  // goes through here, so nothing sent mid-turn is stranded by the way the turn ended. `turn` is
+  // the turn that ended, absent if it never ran.
+  #finishAgentTurn(chatId: number, turn?: {
+    aiModel: UserAiModelRecord, initiator: AiChatAuthorInfo, initiatorUserId: string,
+  }): void {
     // A turn started by the drain gets a fresh context, and with it a fresh cancel controller --
     // this one may have been aborted.
     this.#liveChats.delete(chatId);
+
+    // Steers the turn never read go to the log as if sent the moment it ended; after a Stop, these
+    // are the ones the stopper didn't send (see cancelAgent). They prompt the next turn, on the
+    // same agent, unless it can't take one (it ended waiting on the user's decision, or never
+    // ran): they then stay steers, read when the agent next runs.
+    let unread = Array.from(this.storage.pendingSteers.list({prefix: chatKeyPrefix(chatId)}));
+    let meta = this.storage.chatMeta.get(chatId);
+    if (unread.length > 0 && meta) {
+      let next = turn && !this.#awaitsDecision(chatId) ? turn : undefined;
+      meta.lastActive = this.getChatTimestamp();
+      if (next) meta.activeAgent = next.aiModel.profile;
+      this.storage.chatMeta.put(meta);
+      for (let steer of unread) this.#recordSteer(steer, !next);
+      if (next) {
+        this.startAgent(chatId, next.aiModel, next.initiator, next.initiatorUserId);
+        return;
+      }
+    }
 
     if (this.hasPendingAgentCalls(chatId)) {
       this.drainPendingAgentCalls(chatId);
@@ -6206,6 +6228,18 @@ class OverseerImpl implements AgentHooks {
     }
     let canonicalAttachments = this.canonicalizeChatAttachmentRefs(
         attachments, userMeta.aiModel?.config.provider);
+    // A plain message sent while the agent works steers the running turn: the agent reads it
+    // after its current step (see takeSteers), or once the turn ends (see #finishAgentTurn).
+    if (this.#runningAgents.has(chatId) && typeof message === "string" && message.trim() !== "" &&
+        !capsules?.length && !canonicalAttachments?.length && !formats?.length &&
+        !responseTargetRegistration) {
+      // A deleted chat's aborted turn stays registered until it winds down.
+      this.getChatMetaOrThrow(chatId);
+      let steerId = this.storage.nextSteerId.get();
+      this.storage.nextSteerId.put(steerId + 1);
+      this.storage.pendingSteers.put({chatId, steerId, text: message, author: userMeta.profile});
+      return;
+    }
     this.assertChatNotActive(chatId);
     using _chatMessageReservation = this.reserveChatMessagePreparation(chatId);
     let prepared = await this.#prepareChatMessage(
@@ -6307,9 +6341,9 @@ class OverseerImpl implements AgentHooks {
       startAfter: chatKey(chatId, response.promptSequence),
     })];
     let nextUserMessageIndex = messagesAfterPrompt.findIndex(
-      message => message.type === "message" && message.author.type === "user",
+      message => message.type === "message" && message.author.type === "user" && !message.steered,
     );
-    // Stop at the next user message, which starts a later turn in the same chat.
+    // Stop at the next user message, which starts a later turn in the same chat. A steer doesn't.
     let messagesInSameTurn = nextUserMessageIndex === -1
       ? messagesAfterPrompt
       : messagesAfterPrompt.slice(0, nextUserMessageIndex);
@@ -6376,11 +6410,40 @@ class OverseerImpl implements AgentHooks {
     this.#updateAlarm();
   }
 
-  cancelAgent(chatId: number) {
+  // Stops the chat's running agent. The steers from `profileId` that it never read are discarded,
+  // and their text returned, oldest first, for that client's draft. Anyone else's are delivered
+  // when the turn ends (see #finishAgentTurn).
+  cancelAgent(chatId: number, profileId: string): string[] {
     let ctx = this.#liveChats.get(chatId);
-    if (ctx) {
-      ctx.cancelController.abort(new Error("User requested to stop agent."));
-    }
+    if (!ctx) return [];
+    let discarded = Array.from(this.storage.pendingSteers.list({prefix: chatKeyPrefix(chatId)}))
+        .filter(steer => steer.author.id === profileId);
+    for (let steer of discarded) this.storage.pendingSteers.deleteRecord(steer);
+    ctx.cancelController.abort(new Error("User requested to stop agent."));
+    return discarded.map(steer => steer.text);
+  }
+
+  // AgentHooks.takeSteers: records each waiting steer in the chat log at the step boundary where
+  // the agent reads it, so the log keeps the order the model saw.
+  takeSteers(chatId: number): {text: string, timestamp: number}[] {
+    return Array.from(this.storage.pendingSteers.list({prefix: chatKeyPrefix(chatId)})).map(
+        steer => ({text: steer.text, timestamp: this.#recordSteer(steer, true).getTime()}));
+  }
+
+  // Moves a pending steer into the chat log as a user message: `steered` unless it prompts a turn.
+  #recordSteer(steer: PendingSteerRecord, steered: boolean): Date {
+    let timestamp = this.getChatTimestamp();
+    this.storage.pendingSteers.deleteRecord(steer);
+    this.storage.chats.put({
+      chatId: steer.chatId,
+      sequence: this.nextChatSequence(steer.chatId),
+      timestamp,
+      author: steer.author,
+      type: "message",
+      message: steer.text,
+      ...(steered ? {steered: true} : {}),
+    });
+    return timestamp;
   }
 
   // Describe a workpiece -- a gadget or a gatekeeper -- reachable as `envName` in a chat's env,
@@ -6763,7 +6826,7 @@ class OverseerImpl implements AgentHooks {
         }
       }
 
-      this.#finishAgentTurn(chatId);
+      this.#finishAgentTurn(chatId, {aiModel, initiator, initiatorUserId});
     }
   }
 
@@ -8418,9 +8481,7 @@ class OverseerImpl implements AgentHooks {
   #awaitsDecision(chatId: number): boolean {
     for (let msg of this.storage.chats.list({prefix: chatKeyPrefix(chatId), reverse: true})) {
       if (msg.type === "agentCallback") return false;
-      if (msg.type === "message" && (msg.author.type === "user" || msg.author.type === "gadget")) {
-        return false;
-      }
+      if (isTurnPrompt(msg)) return false;
       if (msg.type === "connectionRequest" && msg.state === "pending") return true;
       if (msg.type === "action") {
         let record = this.storage.actions.get(msg.actionId);
@@ -11011,10 +11072,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       // Stop at whatever started the current turn: a user/gadget message or a gadget callback.
       // (agentNudge is mid-turn, so it isn't a boundary.)
       if (msg.type === "agentCallback") break;
-      if (msg.type === "message" &&
-          (msg.author.type === "user" || msg.author.type === "gadget")) {
-        break;
-      }
+      if (isTurnPrompt(msg)) break;
       if (msg.type === "action") {
         let record = this.impl.storage.actions.get(msg.actionId);
         if (record && record.type === "action" &&
@@ -11270,11 +11328,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     for (let sibling of this.impl.storage.chats.list(
         {prefix: chatKeyPrefix(msg.chatId), reverse: true})) {
       if (sibling.type === "connectionRequest" && sibling.state !== "accepted") return;
-      if (sibling.type === "agentCallback" ||
-          (sibling.type === "message" &&
-           (sibling.author.type === "user" || sibling.author.type === "gadget"))) {
-        break;
-      }
+      if (sibling.type === "agentCallback" || isTurnPrompt(sibling)) break;
     }
     await this.#resumeSuspendedAgent(msg.chatId);
   }
@@ -11669,7 +11723,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       }
     });
 
-    // Clean up agentCallbackArgs for this chat, and any calls to its agent not yet delivered.
+    // Clean up agentCallbackArgs for this chat, and any calls or steers to its agent not yet
+    // delivered.
     for (let entry of this.impl.storage.agentCallbackArgs.list(
         {prefix: chatKeyPrefix(chatId)})) {
       this.impl.storage.agentCallbackArgs.deleteRecord(entry);
@@ -11677,6 +11732,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     for (let entry of Array.from(this.impl.storage.pendingAgentCalls.list(
         {prefix: chatKeyPrefix(chatId)}))) {
       this.impl.storage.pendingAgentCalls.deleteRecord(entry);
+    }
+    for (let entry of Array.from(this.impl.storage.pendingSteers.list(
+        {prefix: chatKeyPrefix(chatId)}))) {
+      this.impl.storage.pendingSteers.deleteRecord(entry);
     }
 
     // Clean up the chat's model-facing snapshots.
@@ -11698,8 +11757,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     });
   }
 
-  async stopAgent(chatId: number): Promise<void> {
-    this.impl.cancelAgent(chatId);
+  async stopAgent(chatId: number): Promise<string[]> {
+    return this.impl.cancelAgent(chatId, this.clientProfileId);
   }
 
   async retryAgent(chatId: number, modelId: string): Promise<void> {
@@ -12250,7 +12309,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async finalizeChatDraft(_chatId: number): Promise<void> { this.#deny(); }
   async discardChatDraftChanges(_chatId: number): Promise<void> { this.#deny(); }
   async deleteChat(_chatId: number): Promise<void> { this.#deny(); }
-  async stopAgent(_chatId: number): Promise<void> { this.#deny(); }
+  async stopAgent(_chatId: number): Promise<string[]> { this.#deny(); }
   async retryAgent(_chatId: number, _modelId: string): Promise<void> { this.#deny(); }
   async subscribeToConsoleLogs(_subscriber: RpcStub<ConsoleLogSubscriber>): Promise<RpcStub<{}>> {
     // Inert: "use" sessions never receive console logs. The inbound subscriber stub is left
