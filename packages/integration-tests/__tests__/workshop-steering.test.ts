@@ -46,6 +46,12 @@ const prompted = (text: string) => ({ author: "user", text, steered: undefined }
 const steered = (text: string) => ({ author: "user", text, steered: true });
 const reply = (text: string) => ({ author: "agent", text, steered: undefined });
 
+/** The chat ends on `text`, logged as a steer, then the turn's error, so Retry shows. */
+const expectSteerBeforeError = (messages: AiChatMessage[], text: string) => {
+  expect(messages.at(-1)?.type).toBe("error");
+  expect(messages.at(-2)).toMatchObject({ type: "message", message: text, steered: true });
+};
+
 /** Signs up a fresh user and starts a chat whose agent runs `script`, steering it once. */
 async function steerChat(usernamePrefix: string, script: readonly ChatCompletionStep[],
     test: (ws: RpcStub<Overseer>, chatId: number, model: RoutedScriptedModel) => Promise<void>) {
@@ -104,7 +110,7 @@ it.concurrent("stopping the agent discards the steers it never read and hands th
   });
 });
 
-it.concurrent("stopping the agent sends a collaborator's unread steer as the next prompt",
+it.concurrent("stopping the agent keeps a collaborator's unread steer for its next run",
     async () => {
   const theirs = "Add a streak counter.";
   await steerChat("steerstopshared", [{ pending: true }, { text: "Added a streak counter." }],
@@ -118,39 +124,42 @@ it.concurrent("stopping the agent sends a collaborator's unread steer as the nex
     await shared.sendChatMessage(chatId, theirs, SCRIPTED_MODEL_ID);
 
     expect(await ws.stopAgent(chatId)).toEqual([STEER]);
-    await waitFor("the next turn's model request", async () => model.requests.length === 2 || null);
     await waitForIdleChat(ws, chatId);
+    expect(model.requests).toHaveLength(1);
+    expectSteerBeforeError(await history(ws, chatId), theirs);
 
+    await ws.retryAgent(chatId, SCRIPTED_MODEL_ID);
+    await waitFor("the retry's model request", async () => model.requests.length === 2 || null);
+    await waitForIdleChat(ws, chatId);
     expect(JSON.stringify(model.requests[1])).toContain(theirs);
     expect(JSON.stringify(model.requests[1])).not.toContain(STEER);
     expect(transcript(await history(ws, chatId))).toEqual([
       prompted(PROMPT),
-      prompted(theirs),
+      steered(theirs),
       reply("Added a streak counter."),
     ]);
   });
 });
 
-it.concurrent("a steer the turn never read prompts the next turn", async () => {
+it.concurrent("a steer the failed turn never read waits for the user to retry", async () => {
   // A request the turn does not retry, so it ends on the error without reading the steer.
   const failure = Promise.withResolvers<void>();
-  await steerChat("steerdrain", [
+  await steerChat("steerfailed", [
     { error: { status: 400, message: "scripted invalid request" }, after: failure.promise },
     { text: "Switched to a dark theme." },
   ], async (ws, chatId, model) => {
     failure.resolve();
-    await waitFor("the steer's own turn", async () => model.requests.length === 2 || null);
     await waitForIdleChat(ws, chatId);
+    expect(model.requests).toHaveLength(1);
+    expectSteerBeforeError(await history(ws, chatId), STEER);
 
+    await ws.retryAgent(chatId, SCRIPTED_MODEL_ID);
+    await waitFor("the retry's model request", async () => model.requests.length === 2 || null);
+    await waitForIdleChat(ws, chatId);
     expect(JSON.stringify(model.requests[1])).toContain(STEER);
-    const messages = await history(ws, chatId);
-    const error = messages.findIndex(message => message.type === "error");
-    const steer = messages.findIndex(message => message.type === "message" && message.message === STEER);
-    expect(error).toBeGreaterThan(-1);
-    expect(steer).toBeGreaterThan(error);
-    expect(transcript(messages)).toEqual([
+    expect(transcript(await history(ws, chatId))).toEqual([
       prompted(PROMPT),
-      prompted(STEER),
+      steered(STEER),
       reply("Switched to a dark theme."),
     ]);
   });

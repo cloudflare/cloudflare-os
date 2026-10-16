@@ -3010,8 +3010,8 @@ export interface Overseer extends RpcTarget {
    *
    * Otherwise it returns the text of the caller's messages that the agent had not read yet (see
    * `AiChatMessageBody.steered`), oldest first. They are discarded, so the client can put them back
-   * in its draft. Anyone else's unread messages prompt a new turn, on the stopped turn's model,
-   * once it ends.
+   * in its draft. Anyone else's unread messages stay in the chat, and the agent reads them when it
+   * next runs.
    */
   stopAgent(chatId: number): Promise<string[]>;
 
@@ -3600,7 +3600,8 @@ export type AiChatMessageBody = {
 
   /**
    * Sent while the agent was working, so it steers that turn rather than prompting one. The agent
-   * reads it between two steps, or, if the turn stopped to wait on the user's decision, on resuming.
+   * reads it between two steps, or, if the turn ended before it could (it failed, was stopped, or
+   * stopped to wait on the user's decision), when the agent next runs.
    */
   steered?: true;
 } | {

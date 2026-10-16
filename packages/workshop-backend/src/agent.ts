@@ -4225,8 +4225,8 @@ async function runAgentPass(
     // prompt and tool declarations now ride the leading system message in pi's transcript.
     convertToLlm: (messages) => messages as Message[],
     toolExecution: "sequential",
-    // pi polls without checking the signal. A stopped turn must leave its steers pending, for
-    // #finishAgentTurn to send on.
+    // pi polls without checking the signal. A stopped turn must leave its steers pending, to be
+    // logged before its stop error (see postAgentErrorMessage).
     getSteeringMessages: async () => abortSignal.aborted ? [] : hooks.takeSteers(chatId).map(
         ({text, timestamp}) => ({role: "user" as const, content: text, timestamp})),
     maxTokens: maxOutputTokens,

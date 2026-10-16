@@ -1047,7 +1047,7 @@ class OverseerImpl implements AgentHooks {
   // the turn never read, calls to the agent recorded during the turn (which start another turn),
   // or failing that the response an external message is waiting on. Every path that ends a turn
   // goes through here, so nothing sent mid-turn is stranded by the way the turn ended. `turn` is
-  // the turn that ended, absent if it never ran.
+  // the turn that ended, absent unless it finished.
   #finishAgentTurn(chatId: number, turn?: {
     aiModel: UserAiModelRecord, initiator: AiChatAuthorInfo, initiatorUserId: string,
   }): void {
@@ -1055,10 +1055,9 @@ class OverseerImpl implements AgentHooks {
     // this one may have been aborted.
     this.#liveChats.delete(chatId);
 
-    // Steers the turn never read go to the log as if sent the moment it ended; after a Stop, these
-    // are the ones the stopper didn't send (see cancelAgent). They prompt the next turn, on the
-    // same agent, unless it can't take one (it ended waiting on the user's decision, or never
-    // ran): they then stay steers, read when the agent next runs.
+    // Steers the turn never read go to the log as if sent the moment it ended. They prompt the
+    // next turn, on the same agent, unless it can't take one (it didn't finish, or it ended
+    // waiting on the user's decision): they then stay steers, read when the agent next runs.
     let unread = Array.from(this.storage.pendingSteers.list({prefix: chatKeyPrefix(chatId)}));
     let meta = this.storage.chatMeta.get(chatId);
     if (unread.length > 0 && meta) {
@@ -6229,7 +6228,8 @@ class OverseerImpl implements AgentHooks {
     let canonicalAttachments = this.canonicalizeChatAttachmentRefs(
         attachments, userMeta.aiModel?.config.provider);
     // A plain message sent while the agent works steers the running turn: the agent reads it
-    // after its current step (see takeSteers), or once the turn ends (see #finishAgentTurn).
+    // after its current step (see takeSteers), or the turn logs it as it ends (see
+    // #finishAgentTurn, postAgentErrorMessage).
     if (this.#runningAgents.has(chatId) && typeof message === "string" && message.trim() !== "" &&
         !capsules?.length && !canonicalAttachments?.length && !formats?.length &&
         !responseTargetRegistration) {
@@ -6411,8 +6411,8 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Stops the chat's running agent. The steers from `profileId` that it never read are discarded,
-  // and their text returned, oldest first, for that client's draft. Anyone else's are delivered
-  // when the turn ends (see #finishAgentTurn).
+  // and their text returned, oldest first, for that client's draft. Anyone else's are logged
+  // before the stop (see postAgentErrorMessage).
   cancelAgent(chatId: number, profileId: string): string[] {
     let ctx = this.#liveChats.get(chatId);
     if (!ctx) return [];
@@ -6662,6 +6662,8 @@ class OverseerImpl implements AgentHooks {
     // reflects the spend this turn just incurred, rather than waiting for the cache TTL to lapse.
     let byokOwnerStub: DurableObjectStub<UserDurableObject> | undefined;
     let finished = false;
+    // Why the turn ended early, posted in the `finally`.
+    let failure: {message: string, code?: string} | undefined;
     let startedAt = Date.now();
     const turnLogger = this.logger.with({
       operation: "agent.run",
@@ -6701,8 +6703,7 @@ class OverseerImpl implements AgentHooks {
           let usage = await checkUsageAndBalance(this.env, ownerStub);
           if (!usage.allowed) {
             turn.setErrorType("usage_limit");
-            this.postAgentErrorMessage(chatId, aiModel.profile,
-                usage.reason ?? "Usage limit reached.", "usage_limit");
+            failure = {message: usage.reason ?? "Usage limit reached.", code: "usage_limit"};
             turnLogger.debug("agent run finished", {
               event: "agent.run.finished", outcome: "usage_limit",
               durationMs: Date.now() - startedAt,
@@ -6772,7 +6773,7 @@ class OverseerImpl implements AgentHooks {
         durationMs: Date.now() - startedAt,
       });
 
-      this.postAgentErrorMessage(chatId, aiModel.profile, errorMessage);
+      failure = {message: errorMessage};
     } finally {
       // If this turn billed the user's own Cloudflare account, refresh their cached balance now (in
       // the background) so the next turn's billing decision reflects the spend just incurred. Runs
@@ -6787,6 +6788,12 @@ class OverseerImpl implements AgentHooks {
       // step's message is by construction lost, so nothing in the log backs it. Never throws,
       // so it can't mask an error propagating out of the turn.
       await this.reconcilePendingGadgets(chatId);
+
+      // Posted past the turn's last await, so a steer sent as the turn winds down still lands
+      // before the error, which must stay last for Retry to show.
+      if (failure) {
+        this.postAgentErrorMessage(chatId, aiModel.profile, failure.message, failure.code);
+      }
 
       // Note: We no longer emit a stream "clear" event here. The client performs a full clear of
       // provisional streaming state when it observes that the agent is no longer running (i.e. when
@@ -6826,7 +6833,11 @@ class OverseerImpl implements AgentHooks {
         }
       }
 
-      this.#finishAgentTurn(chatId, {aiModel, initiator, initiatorUserId});
+      // A turn that didn't finish logged its unread steers before its error (see
+      // postAgentErrorMessage), and starts no follow-up: a failed one would likely fail the same
+      // way, and a stopped one was stopped.
+      this.#finishAgentTurn(
+          chatId, finished ? {aiModel, initiator, initiatorUserId} : undefined);
     }
   }
 
@@ -8066,6 +8077,12 @@ class OverseerImpl implements AgentHooks {
     if (!meta) {
       // Chat thread deleted?
       return;
+    }
+
+    // An error ends the turn early. Log the steers it never read first, so the error stays the
+    // chat's last message, and a Retry reads them.
+    for (let steer of Array.from(this.storage.pendingSteers.list({prefix: chatKeyPrefix(chatId)}))) {
+      this.#recordSteer(steer, true);
     }
 
     let timestamp = this.getChatTimestamp();

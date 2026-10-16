@@ -1459,8 +1459,9 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       }),
 
       // Messages sent to a chat while its agent runs (see sendChatMessage), until the agent reads
-      // them between two steps (takeSteers) or the turn ends (#finishAgentTurn). Stored so a turn
-      // resumed after a restart still reads them. Keyed by chatId.steerId, in arrival order.
+      // them between two steps (takeSteers) or the turn logs them as it ends (#finishAgentTurn,
+      // postAgentErrorMessage). Stored so a turn resumed after a restart still reads them.
+      // Keyed by chatId.steerId, in arrival order.
       pendingSteers: collection<PendingSteerRecord>()({
         primaryKey: (entry) => chatKey(entry.chatId, entry.steerId),
       }),
