@@ -44,7 +44,7 @@
     "./oxlint-plugin": "./oxlint-plugin.ts"
   },
   "dependencies": {
-    "@cloudflare/config": "0.20.0",
+    "@cloudflare/config": "0.24.0",
     "aws4fetch": "^1.0.20",
     "jsonc-parser": "^3.3.1",
     "typescript6": "catalog:",
