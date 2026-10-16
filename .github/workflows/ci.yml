@@ -13,12 +13,15 @@ env:
   NODE_VERSION: "24.19.0"
 
 jobs:
-  # Parallel to `test` so lint and test failures surface on the same run. Package type checking
-  # lives in Build; `scripts/` is checked here instead, because it is deliberately kept off
-  # `pnpm build`'s hot path (see AGENTS.md) and this is the cheap job.
+  # Parallel to `test` so lint, type and test failures surface on the same run. The package type
+  # check (`pnpm build`) runs here rather than ahead of the tests, which do not need it: each test
+  # task declares the codegen it reads. `scripts/` has its own type check, kept off `pnpm build`'s
+  # hot path (see docs/build-system.md).
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    # A wedged build would otherwise burn the 6-hour default, as `test` notes below.
+    timeout-minutes: 10
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -34,7 +37,7 @@ jobs:
       # named in `packageManager` (integrity hash checked as Corepack does), so setup-node is not
       # needed.
       #
-      # No `cache` here, unlike `test`: this job is fast anyway, and both caching
+      # No `cache` here, unlike `test`: this job still finishes well before `test`, and both caching
       # means they race to reserve the same lockfile-keyed entry.
       # TODO(someday): It would be great if the setup-vp action could share a cache key with the test job but disable writes to cache
       - name: Set up Vite+, Node.js and dependencies
@@ -53,12 +56,19 @@ jobs:
       - name: Check generated worker configs
         run: pnpm configs:check
 
+      # Codegen, the frontend/SPA bundles, and the repo's single type check (`types:check` aliases
+      # this). It runs even when a step above failed, so a lint error does not hide a type error.
+      - name: Build
+        if: ${{ !cancelled() }}
+        run: pnpm build
+
   test:
+    # main's ruleset requires a check with exactly this name: renaming the job blocks every merge.
     name: Build and test
     runs-on: ubuntu-latest
-    # Install, build and test together take ~2.5 minutes. Without an explicit cap a wedged test
-    # process (a spawned child that outlives its reap keeps `node --test` alive forever) burns the
-    # 6-hour default instead of failing, on every run of the branch.
+    # Without an explicit cap a wedged test process (a spawned child that outlives its reap keeps
+    # `node --test` alive forever) burns the 6-hour default instead of failing, on every run of the
+    # branch.
     timeout-minutes: 20
     steps:
       - name: Check out repository
@@ -80,10 +90,6 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: true
           run-install: true
-
-      # Codegen, the frontend/SPA bundles, and the repo's single type check (`types:check` aliases this).
-      - name: Build
-        run: pnpm build
 
       # The frontend's browser suite (`vitest.browser.config.ts`) runs in Chromium, which
       # Playwright downloads outside node_modules; `--with-deps` adds the system libraries it needs.
