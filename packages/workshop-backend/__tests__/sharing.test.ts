@@ -479,10 +479,10 @@ describe("createShareLink", () => {
     expect(linkId).toBe(records[0].id);
   });
 
-  it("forbids creating a link with a higher role than the caller's own", () => {
+  it("forbids creating a link with a higher role than the caller's own", async () => {
     let { storage, mgr } = makeManager();
     seedCollaborator(storage, "a", [userEdge(OWNER, "use")]);
-    expect(() => mgr.createShareLink({ caller: collab("a"), role: "build" }))
+    await expect(mgr.createShareLink({ caller: collab("a"), role: "build" }))
         .rejects.toThrow(/higher than your own/);
   });
 });
@@ -529,20 +529,20 @@ describe("newShareLinkKey", () => {
     expect(storage.collaborators.get("a")).toBeUndefined();
   });
 
-  it("forbids a non-owner from copying a link they didn't create", () => {
+  it("forbids a non-owner from copying a link they didn't create", async () => {
     let { storage, mgr } = makeManager();
     seedLink(storage, "k1", OWNER);
     seedCollaborator(storage, "a", [userEdge(OWNER, "build")]);
-    expect(mgr.newShareLinkKey({ caller: collab("a"), linkId: "k1" }))
+    await expect(mgr.newShareLinkKey({ caller: collab("a"), linkId: "k1" }))
         .rejects.toThrow(/only copy/);
   });
 
-  it("forbids copying a link that now grants a higher role than the caller's own", () => {
+  it("forbids copying a link that now grants a higher role than the caller's own", async () => {
     let { storage, mgr } = makeManager();
     // "a" created a build link, then was downgraded to use.
     seedLink(storage, "k1", "a", "build");
     seedCollaborator(storage, "a", [userEdge(OWNER, "use")]);
-    expect(mgr.newShareLinkKey({ caller: collab("a"), linkId: "k1" }))
+    await expect(mgr.newShareLinkKey({ caller: collab("a"), linkId: "k1" }))
         .rejects.toThrow(/higher than your own/);
   });
 
@@ -556,7 +556,7 @@ describe("newShareLinkKey", () => {
     // silent no-op: redemption resolves the copy through to the link, which would go untouched.
     let aliasId = [...storage.shareKeys.list()].find(r => r.alias !== undefined)!.id;
     expect(mgr.listShareLinkRecords().map(r => r.id)).toEqual([linkId]);
-    expect(mgr.newShareLinkKey({ caller: owner, linkId: aliasId })).rejects.toThrow(/not found/);
+    await expect(mgr.newShareLinkKey({ caller: owner, linkId: aliasId })).rejects.toThrow(/not found/);
     expect(() => mgr.updateShareLink(owner, aliasId, "x")).toThrow(/not found/);
     expect(() => mgr.revokeShareLink(owner, aliasId, [])).toThrow(/not found/);
   });
