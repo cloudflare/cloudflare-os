@@ -5,7 +5,7 @@ import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { newMessagePortRpcSession, RpcStub, RpcTarget } from 'capnweb'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { GadgetClient, UiBundle } from '@gadgets/workshop-shared/api'
+import type { ConsoleLogEvent, GadgetClient, UiBundle } from '@gadgets/workshop-shared/api'
 
 const testGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 const previousActEnvironment = testGlobal.IS_REACT_ACT_ENVIRONMENT
@@ -19,7 +19,10 @@ afterAll(() => {
 })
 
 vi.mock('@cloudflare/kumo', () => ({
-  Banner: () => null,
+  Banner: Object.assign(
+    ({ description }: { description: ReactNode }) => description,
+    { Action: () => null },
+  ),
   Loader: () => null,
   Text: ({ children }: { children: ReactNode }) => children,
 }))
@@ -118,12 +121,14 @@ class TestCallbacks extends RpcTarget implements TestSubscriber {
 
 function fakeGadget(
   value: string,
-  bundleCode: string,
+  bundle: string | UiBundle,
   connectToGadget = vi.fn<() => Promise<RpcStub<TestGadget>>>(
     async () => new RpcStub(new TestGadgetTarget(value)) as unknown as RpcStub<TestGadget>,
   ),
 ) {
-  const getUiBundle = vi.fn<() => Promise<UiBundle | null>>(async () => ({ jsCode: bundleCode }))
+  const getUiBundle = vi.fn<() => Promise<UiBundle | null>>(
+    async () => typeof bundle === 'string' ? { jsCode: bundle } : bundle,
+  )
   return {
     connectToGadget,
     getUiBundle,
@@ -148,6 +153,22 @@ function dispatchIframeHandshake(iframe: HTMLIFrameElement, port: MessagePort) {
     source: iframe.contentWindow,
     ports: [port],
   }))
+}
+
+// The iframe page's import map, from module key to data: URL.
+function importMapOf(iframe: HTMLIFrameElement | null): Record<string, string> {
+  const json = iframe?.srcdoc.match(/<script type="importmap">(.*?)<\/script>/)?.[1]
+  if (!json) return {}
+  const { imports }: { imports: Record<string, string> } = JSON.parse(json)
+  return imports
+}
+
+// The source of every module the page of the iframe in `container` maps, decoded from its data: URLs.
+function loadedCode(container: HTMLElement): string {
+  return Object.values(importMapOf(container.querySelector('iframe'))).map(url => {
+    const binary = atob(url.slice(url.indexOf(',') + 1))
+    return new TextDecoder().decode(Uint8Array.from(binary, c => c.charCodeAt(0)))
+  }).join('\n')
 }
 
 describe('GadgetUI RPC recovery', () => {
@@ -386,7 +407,7 @@ describe('GadgetUI RPC recovery', () => {
       root.render(<GadgetUI gadget={replacement.stub} height="100px" />)
     })
     await vi.waitFor(() => {
-      expect(container.querySelector('iframe')?.srcdoc).toContain('replacement')
+      expect(loadedCode(container)).toContain('replacement')
     })
 
     await act(async () => {
@@ -394,8 +415,8 @@ describe('GadgetUI RPC recovery', () => {
       await oldBundle.promise
     })
 
-    expect(container.querySelector('iframe')?.srcdoc).toContain('replacement')
-    expect(container.querySelector('iframe')?.srcdoc).not.toContain('stale')
+    expect(loadedCode(container)).toContain('replacement')
+    expect(loadedCode(container)).not.toContain('stale')
   })
 
   it('ignores an old bundle while its replacement is hidden', async () => {
@@ -425,9 +446,9 @@ describe('GadgetUI RPC recovery', () => {
     })
     await vi.waitFor(() => {
       expect(replacement.getUiBundle).toHaveBeenCalledOnce()
-      expect(container.querySelector('iframe')?.srcdoc).toContain('replacement')
+      expect(loadedCode(container)).toContain('replacement')
     })
-    expect(container.querySelector('iframe')?.srcdoc).not.toContain('stale')
+    expect(loadedCode(container)).not.toContain('stale')
   })
 
   it('disposes a connection that resolves after the gadget client is replaced', async () => {
@@ -585,7 +606,90 @@ describe('GadgetUI no-UI placeholder reporting', () => {
       reload.resolve({ jsCode: 'document.body.textContent = "ui v2"' })
       await reload.promise
     })
-    await vi.waitFor(() => expect(container.querySelector('iframe')?.srcdoc).toContain('v2'))
+    await vi.waitFor(() => expect(loadedCode(container)).toContain('v2'))
     expect(onNoUiChange).not.toHaveBeenCalled()
+  })
+})
+
+describe('GadgetUI bundle errors and modules', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+  })
+
+  afterEach(async () => {
+    await act(async () => root.unmount())
+    container.remove()
+  })
+
+  // Renders a gadget serving `bundle`, returning the console the UI reports to.
+  const renderBundle = async (bundle: UiBundle) => {
+    const onConsoleLog = vi.fn<(log: ConsoleLogEvent) => void>()
+    const gadget = fakeGadget('unused', bundle)
+    await act(async () => {
+      root.render(<GadgetUI gadget={gadget.stub} height="100px" onConsoleLog={onConsoleLog} />)
+    })
+    return onConsoleLog
+  }
+
+  it('shows a failed load in place of the frame, reports it, and reloads on the next code change', async () => {
+    const missingImport = 'client.js:1: "./missing.js" resolves to missing.js, which does not exist'
+    const onConsoleLog = vi.fn<(log: ConsoleLogEvent) => void>()
+    const gadget = fakeGadget('unused', 'document.body.textContent = "v1"')
+    const render = (reloadTrigger: number) => root.render(
+      <GadgetUI gadget={gadget.stub} height="100px" reloadTrigger={reloadTrigger} onConsoleLog={onConsoleLog} />,
+    )
+    await act(async () => render(0))
+    await vi.waitFor(() => expect(loadedCode(container)).toContain('v1'))
+
+    gadget.getUiBundle.mockRejectedValueOnce(new Error(missingImport))
+    await act(async () => render(1))
+    await vi.waitFor(() => expect(container.textContent).toContain(missingImport))
+    expect(container.querySelector('iframe')).toBeNull()
+    expect(onConsoleLog).toHaveBeenCalledWith(
+      expect.objectContaining({ level: 'error', message: [missingImport] }),
+    )
+
+    gadget.getUiBundle.mockResolvedValueOnce({ jsCode: 'document.body.textContent = "v2"' })
+    await act(async () => render(2))
+    await vi.waitFor(() => expect(loadedCode(container)).toContain('v2'))
+  })
+
+  // Browsers other than Chrome may name a module by its data: URL rather than its sourceURL.
+  it('names the file of an error reported by data: URL', async () => {
+    const onConsoleLog = await renderBundle({ modules: [
+      { path: 'client.js', code: 'import "gadget:ui/list.js"' },
+      { path: 'ui/list.js', code: 'setTimeout(() => {\n  throw new Error("boom")\n})' },
+    ] })
+    await vi.waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
+    const iframe = container.querySelector('iframe')!
+
+    window.dispatchEvent(new MessageEvent('message', {
+      data: {
+        type: 'console',
+        level: 'error',
+        message: ['Uncaught', 'Error: boom'],
+        at: { url: importMapOf(iframe)['gadget:ui/list.js'], line: 2, column: 9 },
+      },
+      origin: 'null',
+      source: iframe.contentWindow,
+    }))
+
+    expect(onConsoleLog).toHaveBeenCalledWith(
+      expect.objectContaining({ level: 'error', message: ['Uncaught', 'Error: boom', 'at ui/list.js:2:9'] }),
+    )
+  })
+
+  it('loads a module whose path contains </script>', async () => {
+    await renderBundle({ modules: [
+      { path: 'client.js', code: 'import "gadget:</script>.js"' },
+      { path: '</script>.js', code: 'document.body.textContent = "escaped"' },
+    ] })
+
+    await vi.waitFor(() => expect(loadedCode(container)).toContain('"escaped"'))
   })
 })

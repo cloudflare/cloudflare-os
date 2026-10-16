@@ -1,4 +1,4 @@
-import { RpcSession, RpcStub, RpcTarget, type RpcTransport } from "capnweb";
+import { RpcSession, RpcStub as Stub, RpcTarget as Target, type RpcTransport } from "capnweb";
 
 // This code runs in the main world of the remote browser used for rendering the
 // Gadget UI for export. It runs before the Gadget client module is loaded and
@@ -13,11 +13,10 @@ declare global {
   var __workshopExportReceiveFromBrowser: () => Promise<string>;
   /** Settles when the Gadget client module has finished loading. */
   var __workshopExportModulePromise: Promise<Record<string, unknown>>;
-  var __workshopExportRuntime: {
-    gadget: unknown;
-    RpcStub: typeof RpcStub;
-    RpcTarget: typeof RpcTarget;
-  };
+  /** The Gadget's server, a global in every client module as in the live iframe. */
+  var gadget: unknown;
+  var RpcStub: typeof Stub;
+  var RpcTarget: typeof Target;
 }
 
 /**
@@ -64,11 +63,9 @@ class WorkerRpcTransport implements RpcTransport {
 }
 
 const workerSession = new RpcSession<any>(new WorkerRpcTransport());
-globalThis.__workshopExportRuntime = {
-  gadget: workerSession.getRemoteMain(),
-  RpcStub,
-  RpcTarget,
-};
+globalThis.gadget = workerSession.getRemoteMain();
+globalThis.RpcStub = Stub;
+globalThis.RpcTarget = Target;
 
 const clientUrl = globalThis.__workshopExportClientUrl;
 delete (globalThis as Partial<typeof globalThis>).__workshopExportClientUrl;

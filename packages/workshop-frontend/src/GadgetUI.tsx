@@ -3,6 +3,7 @@ import { Text, Loader, Banner } from '@cloudflare/kumo'
 import { Sparkle } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
 import { GadgetClient, ConsoleLogEvent } from '@gadgets/workshop-shared/api'
+import { prepareUiPage, type UiPage } from '@gadgets/workshop-shared/ui-page'
 
 // We want to inject Cap'n Web into the Gadget. Luckily it has no dependencies, so we can just take
 // the whole module and embed it. We can import the module using ?raw to get a string of the
@@ -16,20 +17,22 @@ let CAPNWEB_BUNDLE_ANNOTATED = `//# sourceURL=jsrpc.js\n${CAPNWEB_BUNDLE}`
 // Unfortunately, we will have to embed the code as a data: URL, because our iframe is totally
 // sandboxed. Even more unfortunately, since it's a module which we need to import from, we can't
 // use the data URL as a <script> tag's source. Instead, we have to use it in an import statement.
-// And, guess what? That import statement is going to appear in code which is *also* embedded in
-// a data: URL, so we have a doubly-nested data: URL. We'll use base64 encoding for the inner
+// And, guess what? That import statement is going to appear in the runtime, which is *also* a
+// data: URL, so we have a doubly-nested data: URL. We'll use base64 encoding for the inner
 // data: and URL encoding for the outer, as this largely avoids double-escaping.
 //
-// In any case, we'll prefix the gadget code with this prefix which imports the Cap'n Web library
-// (from a massive data URL) and sets up the RPC connection to the parent.
-let INJECTED_CODE_PREFIX = encodeURIComponent(String.raw`//# sourceURL=client.js
-import { RpcTarget, RpcStub, newMessagePortRpcSession } from "data:text/javascript;charset=utf-8;base64,${btoa(CAPNWEB_BUNDLE_ANNOTATED)}";
+// The runtime is a module script placed before the gadget's entry. Module scripts run in document
+// order, so the globals it sets exist before any gadget module evaluates, even one the entry
+// imports. It must stay synchronous: a top-level await would let the entry run first.
+const RUNTIME_URL = `data:text/javascript;charset=utf-8,${encodeURIComponent(String.raw`import { RpcTarget, RpcStub, newMessagePortRpcSession } from "data:text/javascript;charset=utf-8;base64,${btoa(CAPNWEB_BUNDLE_ANNOTATED)}";
 
-let gadget;  // RPC stub to the gadget's server-side Durable Object.
+globalThis.RpcTarget = RpcTarget;
+globalThis.RpcStub = RpcStub;
 {
   let {port1, port2} = new MessageChannel();
   window.parent.postMessage("handshake", "*", [port2]);
-  gadget = newMessagePortRpcSession(port1);
+  // RPC stub to the gadget's server-side Durable Object.
+  globalThis.gadget = newMessagePortRpcSession(port1);
 }
 
 // Monkey-patch console to forward logs to the parent frame.
@@ -83,34 +86,39 @@ window.addEventListener('click', (event) => {
   anchor.setAttribute('rel', Array.from(rel).join(' '));
 }, true);
 
-// Capture unhandled exceptions and promise rejections.
+// Capture unhandled exceptions and promise rejections. The error listener captures because a
+// module graph that fails to fetch fires a non-bubbling error only on its <script> element. An
+// ErrorEvent's location is sent on its own because a SyntaxError's stack carries none; the parent
+// names the file.
+let reportError = (message, at) => {
+  window.parent.postMessage({ type: 'console', level: 'error', message, at }, '*');
+};
 window.addEventListener('error', (event) => {
-  window.parent.postMessage({
-    type: 'console',
-    level: 'error',
-    message: ['Uncaught', event.error?.stack || event.message],
-  }, '*');
-});
+  if (event instanceof ErrorEvent) {
+    reportError(['Uncaught', event.error?.stack || event.message],
+        { url: event.filename, line: event.lineno, column: event.colno });
+  } else if (event.target instanceof HTMLScriptElement) {
+    reportError(['Failed to load script'], { url: event.target.src });
+  }
+}, true);
 window.addEventListener('unhandledrejection', (event) => {
   let reason = event.reason;
-  window.parent.postMessage({
-    type: 'console',
-    level: 'error',
-    message: ['Unhandled promise rejection:', reason?.stack || String(reason)],
-  }, '*');
+  reportError(['Unhandled promise rejection:', reason?.stack || String(reason)]);
 });
 
-`);
+//# sourceURL=gadget-runtime.js`)}`
 
-const createSandboxedHtml = (jsCode: string): string => {
+const createSandboxedHtml = (page: UiPage): string => {
   return `<!DOCTYPE html>
 <html>
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src 'none'; script-src data: 'unsafe-inline'; style-src data: 'unsafe-inline'; img-src data:; media-src data:; object-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'none';">
+  <script type="importmap">${page.importMap}</script>
 </head>
 <body>
-    <script type="module" src="data:text/javascript;charset=utf-8,${INJECTED_CODE_PREFIX}${encodeURIComponent(jsCode)}"></script>
+    <script type="module" src="${RUNTIME_URL}"></script>
+    <script type="module" src="${page.entryUrl}"></script>
 </body>
 </html>`.trim()
 }
@@ -164,6 +172,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     reject: (reason: unknown) => void
   } | null>(null)
   const rpcSessionRef = useRef<any>(null)
+  // Each module's path by its data: URL, for naming the file in errors the iframe forwards.
+  const pathsByUrlRef = useRef(new Map<string, string>())
   // Keep latest callbacks in refs so the message-handler effect never tears down the RPC session.
   const onIframeEscapeRef = useRef(onIframeEscape)
   const onConsoleLogRef = useRef(onConsoleLog)
@@ -308,21 +318,26 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         const bundle = await gadget.getUiBundle(chatId)
         if (!isCurrent()) return
         if (bundle) {
-          const html = createSandboxedHtml(bundle.jsCode)
-          setSandboxedHtml(html)
+          const page = prepareUiPage(bundle)
+          pathsByUrlRef.current = page.pathsByUrl
+          setSandboxedHtml(createSandboxedHtml(page))
         } else {
           setSandboxedHtml(null)
         }
-        setHasLoaded(true)
-        setIsInvalidated(false)
       } catch (err) {
         if (!isCurrent()) return
         console.error('Failed to load UI bundle:', err)
-        setError('Failed to load UI bundle')
+        // Includes imports that break the rules for UI code, so the agent needs to see it.
+        const message = err instanceof Error ? err.message : 'Failed to load UI bundle'
+        onConsoleLogRef.current?.({ timestamp: new Date(), level: 'error', message: [message] })
+        setError(message)
       } finally {
         if (isCurrent()) setLoading(false)
         clearTimeout(giveUp)
       }
+      // A failed load counts too, so the next code change reloads.
+      setHasLoaded(true)
+      setIsInvalidated(false)
     }
 
     loadUiBundle()
@@ -392,10 +407,19 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
           if (handshakePendingRef.current === generation) handshakePendingRef.current = null
         }
       } else if (event.data?.type === 'console' && onConsoleLogRef.current) {
+        const { level, message, at } = event.data
+        let location: string | undefined
+        if (at?.url) {
+          // Chrome names a module by its sourceURL; other browsers may give its data: URL. One not
+          // in the bundle, like the runtime's, can embed hundreds of KB, so it isn't echoed whole.
+          const path = pathsByUrlRef.current.get(at.url) ??
+            (at.url.startsWith('data:') ? `${at.url.slice(0, 40)}…` : at.url)
+          location = at.line ? `${path}:${at.line}:${at.column}` : path
+        }
         onConsoleLogRef.current({
           timestamp: new Date(),
-          level: event.data.level,
-          message: event.data.message,
+          level,
+          message: location ? [...message, `at ${location}`] : message,
         })
       } else if (event.data?.type === 'escape') {
         onIframeEscapeRef.current?.()
