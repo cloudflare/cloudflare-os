@@ -196,11 +196,24 @@ const pinsWorkerCount = (command: TestCommand): boolean =>
  * pick its `agent` reporter, which prints nothing until the run ends, and the idle watchdog would
  * kill any suite that outlasts `IDLE_TIMEOUT_SECONDS`.
  */
-const withProgressReporter = (command: TestCommand): TestCommand => {
+const withProgressReporter = (command: TestCommand): TestCommand =>
+  withVitestFlag(command, '--reporter=default', /(^|\s)--reporters?(=|\s)/)
+
+/**
+ * Turns off Vitest 5's `fsModuleCache` unless the command sets it. vp already caches the whole task,
+ * and every package's vitest shares the one cache under the workspace root's `node_modules`, so
+ * parallel tasks race on it: a run that invalidates the cache deletes the directory while another
+ * is writing into it, and that run fails to start with ENOTEMPTY.
+ */
+const withoutModuleCache = (command: TestCommand): TestCommand =>
+  withVitestFlag(command, '--no-fsModuleCache', /(^|\s)--(no-)?fs-?module-?cache(=|\s|$)/i)
+
+/** Appends `flag` to a vitest command whose arguments don't already match `alreadySet`. */
+const withVitestFlag = (command: TestCommand, flag: string, alreadySet: RegExp): TestCommand => {
   const argv = typeof command === 'string' ? command : command.command
-  if (!/^vitest(\s|$)/.test(argv) || /(^|\s)--reporters?(=|\s)/.test(argv)) return command
-  const pinned = `${argv} --reporter=default`
-  return typeof command === 'string' ? pinned : { ...command, command: pinned }
+  if (!/^vitest(\s|$)/.test(argv) || alreadySet.test(argv)) return command
+  const flagged = `${argv} ${flag}`
+  return typeof command === 'string' ? flagged : { ...command, command: flagged }
 }
 
 /**
@@ -237,7 +250,8 @@ export function vitestTaskWithExclusions(
   // One `cache` covers every command in the task, so a single pinned command forgoes the budget for
   // its siblings too.
   const pinned = [command].flat().some(pinsWorkerCount)
-  const wrap = (one: TestCommand): string => withTestTimeout(withProgressReporter(one))
+  const wrap = (one: TestCommand): string =>
+    withTestTimeout(withoutModuleCache(withProgressReporter(one)))
   return {
     command: Array.isArray(command) ? command.map(wrap) : wrap(command),
     cache: {
