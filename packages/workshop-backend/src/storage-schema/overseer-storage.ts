@@ -740,6 +740,8 @@ export type ActiveAgentRecord = {
   initiator: AiChatAuthorInfo;
   /** Whether this turn was initiated by a gadget callback (vs. a chat message). */
   callbackInitiated: boolean;
+  /** Model-lookup attempts since the last successful preparation, bounded across DO resets. */
+  resumeAttempts?: number;
 };
 
 /**

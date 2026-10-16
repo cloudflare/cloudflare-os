@@ -1,7 +1,7 @@
 // The Worker the unit suites run inside: the production Worker's exports (so `ctx.exports` resolves
 // the real Durable Objects and callbacks) plus test-only entrypoints that stand in for other Workers.
 
-import { DurableObject, WorkerEntrypoint, restore } from "cloudflare:workers";
+import { DurableObject, RpcTarget, WorkerEntrypoint, restore } from "cloudflare:workers";
 import type { AccountDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { GatekeeperConnectCallbackImpl } from "../src/user.js";
 import { LoginConnectCallbackImpl } from "../src/auth/login-flow.js";
@@ -34,6 +34,12 @@ export class OverseerDurableObject extends RealOverseerDurableObject {
     super(ctx, env);
     restoreTargets.set(ctx, this);
   }
+
+  [restore](params: Parameters<RealOverseerDurableObject[typeof restore]>[0] |
+      {type: "test-response-target"; name: string}) {
+    if (params.type === "test-response-target") return new FakeChatResponseTarget(params.name);
+    return super[restore](params);
+  }
 }
 /**
  * The `self` object / spawnCallable() stub entrypoint, named explicitly for the same reason as the
@@ -52,6 +58,27 @@ export { CodeModeTailLoopback } from "../src/server.js";
 export class TestConnectCallback extends GatekeeperConnectCallbackImpl {}
 /** The sign-in callback, reachable the same way. */
 export class TestLoginCallback extends LoginConnectCallbackImpl {}
+
+const responseTargets = new Map<string, {available: boolean; calls: number}>();
+
+/** A persistent external response target whose outage a test can end independently of the DO. */
+export class FakeChatResponseTarget extends RpcTarget {
+  constructor(private readonly name: string) { super(); }
+
+  setAvailable(available: boolean): void {
+    responseTargets.set(this.name, {available, calls: this.calls()});
+  }
+
+  calls(): number {
+    return responseTargets.get(this.name)?.calls ?? 0;
+  }
+
+  async onGadgetResponse(): Promise<void> {
+    const state = responseTargets.get(this.name)!;
+    state.calls++;
+    if (!state.available) throw new Error("Response target unavailable");
+  }
+}
 
 /** What each FakeGatekeeperAccount has been asked to do, by its `name` prop. */
 const accountCalls = new Map<string, string[]>();

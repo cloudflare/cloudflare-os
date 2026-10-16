@@ -441,6 +441,11 @@ const AGENT_RESPONSE_DELIVERED_RETENTION_MS = 24 * 60 * 60 * 1000;
 // recorded) the keep-alive alarm fires. See #agentKeepAliveTime.
 const AGENT_KEEPALIVE_ALARM_MS = 60_000;
 
+// The platform retries a failed alarm six times. Other durable work must remain scheduled after
+// that budget is exhausted; model-lookup retries have their own per-execution budget below.
+const ALARM_MAX_RETRIES = 6;
+const AGENT_RESUME_MAX_ATTEMPTS = 4;
+
 // How old a workspace instance must be before a loop-limit rejection restarts it. See
 // OverseerImpl.restartIfLoopLimited.
 const LOOP_LIMIT_RESTART_MIN_AGE_MS = 60_000;
@@ -694,8 +699,8 @@ class OverseerImpl implements AgentHooks {
   // #agentKeepAliveTime) and lets `alarm()` wait for all agents to finish.
   #runningAgents = new Set<number>();
 
-  // A failed replay-safe model lookup hands the existing row back to the alarm. The platform's
-  // retryCount bounds retries; no timer or new durable retry state is needed.
+  // A failed replay-safe model lookup hands the existing row back to the alarm. Its attempt
+  // budget lives on that row, since another concern can reschedule the shared alarm.
   #resumeErrors = new Map<number, unknown>();
 
   // Ambient connections whose getAgentCatalog() answered null, which the contract makes permanent
@@ -721,7 +726,6 @@ class OverseerImpl implements AgentHooks {
 
   // True while alarm() runs (see runAlarmTasks); #updateAlarm defers to its end.
   #inAlarmHandler = false;
-  #alarmRetryCount = 0;
   #scheduledAlarm: number | null | undefined;
 
   // Drains of pending agent calls currently in flight, by chat (see drainPendingAgentCalls).
@@ -925,8 +929,9 @@ class OverseerImpl implements AgentHooks {
   // is a harmless re-set, and none can clobber another.
   //
   // A no-op while the handler itself is running: the DO is alive for as long as that lasts, and
-  // runAlarmTasks recomputes once, from a settled state, when it ends.
-  #updateAlarm(): void {
+  // runAlarmTasks recomputes once, from a settled state, when it ends. `notBefore` backs off a
+  // fresh alarm after the platform's retries are exhausted.
+  #updateAlarm(notBefore = 0): void {
     if (this.#inAlarmHandler) return;
 
     let times: number[] = [];
@@ -955,7 +960,7 @@ class OverseerImpl implements AgentHooks {
       times.push(nextDeliveredRecord.deliveredAt + AGENT_RESPONSE_DELIVERED_RETENTION_MS);
     }
 
-    let next = times.length > 0 ? Math.min(...times) : null;
+    let next = times.length > 0 ? Math.max(notBefore, Math.min(...times)) : null;
     if (next === this.#scheduledAlarm) return;
     this.#scheduledAlarm = next;
     if (next === null) this.ctx.storage.deleteAlarm();
@@ -971,10 +976,10 @@ class OverseerImpl implements AgentHooks {
   // joins, being single-flight). A drain that fails leaves its calls recorded rather than looping
   // here; the recompute at the end re-arms the alarm for them, starting a fresh keep-alive period
   // from now rather than re-firing on the time that has just passed. A delivery failure is
-  // rethrown once everything else has settled, so the platform retries the alarm.
+  // rethrown once everything else has settled, so the platform retries the alarm. After its last
+  // retry, schedule a fresh wake-up: a long response-target outage must not strand durable work.
   async runAlarmTasks(retryCount = 0): Promise<void> {
     this.#inAlarmHandler = true;
-    this.#alarmRetryCount = retryCount;
     this.#scheduledAlarm = undefined; // A success recomputes the next alarm from settled state.
     let failed = false;
     try {
@@ -992,12 +997,13 @@ class OverseerImpl implements AgentHooks {
       } while (this.#runningAgents.size > 0 || this.#pendingCallDrains.size > 0);
     } catch (error) {
       failed = true;
-      throw error; // Leave the failed alarm to the platform's bounded retry/backoff.
+      throw error;
     } finally {
       this.#inAlarmHandler = false;
-      this.#alarmRetryCount = 0;
       this.#agentKeepAliveTime = undefined;
-      if (!failed) this.#updateAlarm();
+      if (!failed || retryCount >= ALARM_MAX_RETRIES) {
+        this.#updateAlarm(failed ? Date.now() + AGENT_KEEPALIVE_ALARM_MS : 0);
+      }
     }
   }
 
@@ -1053,6 +1059,17 @@ class OverseerImpl implements AgentHooks {
       this.#finishAgentTurn(record.chatId);
       return;
     }
+    if ((record.resumeAttempts ?? 0) >= AGENT_RESUME_MAX_ATTEMPTS) {
+      this.postAgentErrorMessage(record.chatId, this.storage.chatMeta.get(record.chatId)!.activeAgent!,
+          "The agent could not be resumed because its model lookup was interrupted too many times.");
+      finish();
+      return;
+    }
+    // Count before I/O, so an eviction during lookup cannot reset the budget. Successful
+    // preparation clears it: this budget never retries inference or external effects.
+    let resumeAttempts = (record.resumeAttempts ?? 0) + 1;
+    record = {...record, resumeAttempts};
+    this.storage.activeAgents.put(record);
     let aiModel: UserAiModelRecord | undefined;
     let failure: unknown;
     let leaveSession = () => {};
@@ -1085,9 +1102,7 @@ class OverseerImpl implements AgentHooks {
     }
     if (!owns()) return;
     if (liveChat.cancelController.signal.aborted) { finish(); return; }
-    // Read the current alarm's count after the await: constructor recovery can have started this
-    // lookup before the alarm invocation (and its retry count) was delivered.
-    if (failure && shouldRetryAfterReset(failure) && this.#alarmRetryCount < 3) {
+    if (failure && shouldRetryAfterReset(failure) && resumeAttempts < AGENT_RESUME_MAX_ATTEMPTS) {
       this.#resumeErrors.set(record.chatId, failure);
       this.#unregisterRunningAgent(record.chatId, true);
       return;
@@ -1105,6 +1120,8 @@ class OverseerImpl implements AgentHooks {
       return;
     }
 
+    delete record.resumeAttempts;
+    this.storage.activeAgents.put(record);
     await this.#runAgentTurn(
         record.chatId, aiModel, record.initiator, record.initiatorUserId, record.callbackInitiated,
         liveChat);
@@ -6425,7 +6442,8 @@ class OverseerImpl implements AgentHooks {
   }
 
   cancelAgent(chatId: number) {
-    // Stop is durable even if the DO disappears before the aborted task's finally runs.
+    // Stop prevents resumption even if the DO disappears before the aborted task's finally runs;
+    // restart recovery clears any busy marker left without an execution row.
     this.storage.activeAgents.delete(chatId);
     this.#resumeErrors.delete(chatId);
     let author = this.storage.chatMeta.get(chatId)?.activeAgent ?? this.#decisionWait(chatId)?.agent;

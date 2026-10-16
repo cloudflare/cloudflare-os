@@ -3854,9 +3854,10 @@ export type AiChatMessageBody = {
   bindingName?: string;
 } | {
   /**
-   * **Obsolete.** A system-generated nudge message that was sent to the agent when it tried to
-   * end its turn while agent callbacks were still unresolved. No longer emitted since callable
-   * agents stopped returning values; retained so older chat logs remain readable.
+   * A model-visible control note for an approved-decision handoff, explicit Retry, or Stop.
+   * It also ends the preceding decision segment for recovery. Not rendered in the chat UI:
+   * the decision cards and turn controls already show these transitions to the user.
+   * Older logs used this variant to nudge an agent whose callbacks were still unresolved.
    */
   type: "agentNudge";
   text: string;

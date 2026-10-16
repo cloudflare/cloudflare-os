@@ -1,5 +1,9 @@
 # Agent Spawner: Durable Calls and Persistent Stubs
 
+Historical implementation plan: the callback-return nudge loop below was removed. `agentNudge`
+has since been reused for decision handoffs, Retry, and Stop; it is no longer obsolete. See its
+current API documentation rather than the removal instructions below.
+
 ## Background
 
 The agent spawner binding predates two runtime features: persistent stubs (`[restore]()`, storing an

@@ -1,9 +1,10 @@
-import { env } from "cloudflare:workers";
+import { env, type RpcStub } from "cloudflare:workers";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OverseerDurableObject } from "../src/overseer";
 import { UserDurableObject } from "../src/user";
 import { openFakeOverseer } from "./fixtures";
+import type { FakeChatResponseTarget } from "./test-worker";
 
 const CHAT = 1;
 const USER = {type: "user" as const, id: "original-user", name: "Original user"};
@@ -419,7 +420,7 @@ describe("decision handoff using the existing execution row", () => {
     expect(requests()).toBe(0);
   });
 
-  it("caps retryable lookup failures using the alarm retry count", async () => {
+  it("caps lookup failures even when unrelated activity resets the alarm retry count", async () => {
     const s = await scenario();
     const error = Object.assign(new Error("reset"), {durableObjectReset: true});
     const lookup = vi.fn().mockRejectedValue(error);
@@ -427,12 +428,23 @@ describe("decision handoff using the existing execution row", () => {
       modelLookup(impl, lookup);
       decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT);
       await impl.waitForAllAgentsToComplete();
-      expect(impl.storage.activeAgents.get(CHAT)).toBeDefined();
-      await expect(impl.runAlarmTasks(0)).rejects.toThrow("reset");
-      await expect(impl.runAlarmTasks(3)).resolves.toBeUndefined();
+      expect(impl.storage.activeAgents.get(CHAT)?.resumeAttempts).toBe(1);
+      for (let attempt = 2; attempt <= 4; attempt++) {
+        await impl.ctx.storage.deleteAlarm(); // The platform consumed the scheduled alarm.
+        if (attempt < 4) {
+          await expect(impl.runAlarmTasks(0)).rejects.toThrow("reset");
+          expect(impl.storage.activeAgents.get(CHAT)?.resumeAttempts).toBe(attempt);
+          // An unrelated response-delivery pass recomputes the shared alarm, resetting its
+          // platform retry count. It must not reset this execution's budget.
+          await impl.deliverReadyExternalMessageResponses();
+          expect(await impl.ctx.storage.getAlarm()).not.toBeNull();
+        } else {
+          await expect(impl.runAlarmTasks(0)).resolves.toBeUndefined();
+        }
+      }
       expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
       expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
-      expect(lookup).toHaveBeenCalledTimes(6); // One fresh-stub read retry per attempt.
+      expect(lookup).toHaveBeenCalledTimes(8); // One fresh-stub read retry per attempt.
     });
   });
 
@@ -446,6 +458,23 @@ describe("decision handoff using the existing execution row", () => {
       await impl.waitForAllAgentsToComplete();
       expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
       expect(lookup).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("clears the lookup budget before running inference", async () => {
+    const s = await scenario(), gate = Promise.withResolvers<void>(), requests = inference(gate.promise);
+    await s.visit(async impl => {
+      const error = Object.assign(new Error("reset"), {durableObjectReset: true});
+      modelLookup(impl, vi.fn().mockRejectedValueOnce(error).mockRejectedValueOnce(error)
+        .mockResolvedValue({profile: USER, aiModel: MODEL}));
+      decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT);
+      await impl.waitForAllAgentsToComplete();
+      expect(impl.storage.activeAgents.get(CHAT)?.resumeAttempts).toBe(1);
+      const alarm = impl.runAlarmTasks();
+      await vi.waitFor(() => expect(requests()).toBe(1));
+      expect(impl.storage.activeAgents.get(CHAT)?.resumeAttempts).toBeUndefined();
+      gate.resolve();
+      await alarm;
     });
   });
 
@@ -465,7 +494,7 @@ describe("decision handoff using the existing execution row", () => {
     });
   });
 
-  it("uses the alarm retry count even when recovery's lookup started before that alarm", async () => {
+  it("honors the execution's budget when its lookup started before the alarm", async () => {
     const s = await scenario();
     await s.visit(async impl => {
       const gate = Promise.withResolvers<void>();
@@ -474,12 +503,80 @@ describe("decision handoff using the existing execution row", () => {
         throw Object.assign(new Error("reset"), {durableObjectReset: true});
       });
       modelLookup(impl, lookup);
+      impl.storage.activeAgents.put({...impl.storage.activeAgents.get(CHAT)!, resumeAttempts: 3});
       decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT);
-      const alarm = impl.runAlarmTasks(3);
+      const alarm = impl.runAlarmTasks(0);
       gate.resolve();
       await alarm;
       expect(lookup).toHaveBeenCalledTimes(2);
       expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+    });
+  });
+
+  it("persists the attempt before lookup and bounds retries across a real reset", async () => {
+    const s = await scenario(), requests = inference(), gate = Promise.withResolvers<void>();
+    await expect(s.visit(async impl => {
+      impl.storage.activeAgents.put({...impl.storage.activeAgents.get(CHAT)!, resumeAttempts: 3});
+      modelLookup(impl, async () => { await gate.promise; return {profile: USER, aiModel: MODEL}; });
+      decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT);
+      expect(impl.storage.activeAgents.get(CHAT)?.resumeAttempts).toBe(4);
+      await impl.ctx.storage.sync();
+      impl.ctx.abort("Injected reset during last model lookup");
+    })).rejects.toThrow(/Injected reset/);
+    gate.resolve();
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+      expect([...impl.storage.chats.list()]).toContainEqual(expect.objectContaining({
+        type: "error", message: expect.stringContaining("interrupted too many times"),
+      }));
+    });
+    expect(requests()).toBe(0);
+  });
+
+  it("clears a stopped lookup's orphaned busy marker after a real reset", async () => {
+    const s = await scenario(), requests = inference(), gate = Promise.withResolvers<void>();
+    await expect(s.visit(async impl => {
+      modelLookup(impl, async () => { await gate.promise; return {profile: USER, aiModel: MODEL}; });
+      decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT);
+      impl.cancelAgent(CHAT);
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      await impl.ctx.storage.sync();
+      impl.ctx.abort("Injected reset before stopped lookup cleanup");
+    })).rejects.toThrow(/Injected reset/);
+    gate.resolve();
+    await s.visit(impl => {
+      expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+      expect(() => impl.assertChatNotActive(CHAT)).not.toThrow();
+    });
+    expect(requests()).toBe(0);
+  });
+
+  it("re-arms failed response delivery after the platform's last retry, then recovers", async () => {
+    const s = await scenario(), name = crypto.randomUUID();
+    await s.visit(async impl => {
+      impl.storage.activeAgents.delete(CHAT);
+      // Mint in the storing DO's invocation, not through a test-pool wrapper or another DO.
+      using target: RpcStub<FakeChatResponseTarget> = await impl.ctx.restore({
+        type: "test-response-target", name,
+      });
+      await target.setAvailable(false);
+      impl.storage.gadgetResponseDeliveries.put({idempotencyKey: "external-response", chatId: CHAT,
+        promptSequence: 0, createdAt: Date.now(), status: "ready", responseText: "Done.",
+        chatGatewayRpcTarget: target});
+      for (let retry = 0; retry <= 6; retry++) {
+        await impl.ctx.storage.deleteAlarm();
+        await expect(impl.runAlarmTasks(retry)).rejects.toThrow("Response target unavailable");
+        expect(impl.storage.gadgetResponseDeliveries.get("external-response")?.status).toBe("ready");
+      }
+      const next = await impl.ctx.storage.getAlarm();
+      expect(next).toBeGreaterThan(Date.now()); // Avoid an immediate failure loop.
+      await target.setAvailable(true);
+      await impl.runAlarmTasks();
+      expect(await target.calls()).toBe(8);
+      expect(impl.storage.gadgetResponseDeliveries.get("external-response")?.status).toBe("delivered");
+      expect(await impl.ctx.storage.getAlarm()).toBeGreaterThan(next!); // Retention sweep only.
     });
   });
 
