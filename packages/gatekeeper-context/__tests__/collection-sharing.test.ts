@@ -1,4 +1,4 @@
-import { env, runInDurableObject } from "cloudflare:test";
+import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { GatekeeperUserSelectionExchange } from "@gadgets/workshop-shared/gatekeeper";
 import { ContextApiImpl } from "../src/context-api.js";
@@ -75,6 +75,61 @@ function api(accountId: string, accounts: { domain: string; accountId: string }[
   return new ContextApiImpl(
     testEnv, domain, accountId, false,
     testEnv.COLLECTIONS, testEnv.USER_LIBRARIES, testEnv.REGISTRIES, exchange);
+}
+
+/** An Artifacts binding whose token mints can be held, and whose revocations can be made to fail. */
+function fakeArtifacts() {
+  let minted = 0;
+  let mintGate = Promise.resolve();
+  let fake = {
+    revoked: [] as string[],
+    failRevocations: false,
+    /** Hold token mints until the returned function is called. */
+    holdMints() {
+      let { promise, resolve } = Promise.withResolvers<void>();
+      mintGate = promise;
+      return () => resolve();
+    },
+    binding: undefined as unknown as Artifacts,
+  };
+  let repo = {
+    async createToken() {
+      await mintGate;
+      return { id: `token-${minted++}`, plaintext: "secret" };
+    },
+    async revokeToken(tokenId: string) {
+      if (fake.failRevocations) throw new Error("Artifacts is unavailable.");
+      fake.revoked.push(tokenId);
+      return true;
+    },
+  };
+  fake.binding = {
+    async create(name: string) {
+      return { remote: `https://artifacts.example/${name}.git`, token: "initial" };
+    },
+    async get() { return repo; },
+    async delete() {},
+  } as unknown as Artifacts;
+  return fake;
+}
+
+/** A private git collection owned by alice and edited by bob, backed by `artifacts`. */
+async function createGitCollection(artifacts: Artifacts) {
+  let id = `collection-${nextId++}`;
+  let stub = collection(id);
+  await runInDurableObject(stub, (instance: ContextCollectionDurableObject) => {
+    let object = instance as unknown as { env: Cloudflare.Env };
+    object.env = { ...object.env, ARTIFACTS: artifacts };
+  });
+  let now = new Date();
+  await stub.initialize({
+    id, title: "Mirror", description: "", visibility: "private",
+    created: now, lastUpdated: now, documentCount: 0,
+    content: { source: "git", remote: "", branch: "main", lastRefreshedAt: now },
+  }, domain, "alice");
+  await library("alice").createOwnedCollection(id, "Mirror", "");
+  await stub.share("alice", "bob", "editor", "bob");
+  return stub;
 }
 
 describe("collection sharing", () => {
@@ -216,5 +271,71 @@ describe("collection sharing", () => {
     });
 
     expect(await collection(id).getAccess("alice")).toMatchObject({ role: "owner", hasOwner: true });
+  });
+
+  it("keeps a member's grant and library entry in step when re-sharing races removal", async () => {
+    let id = await createCollection("alice");
+    await collection(id).share("alice", "bob", "viewer", "bob");
+    await runInDurableObject(collection(id), (instance: ContextCollectionDurableObject) =>
+      Promise.all([
+        instance.share("alice", "bob", "editor", "bob"),
+        instance.removeMember("alice", "bob"),
+      ]));
+
+    expect((await collection(id).getAccess("bob")).role).toBeNull();
+    expect(await library("bob").listIndexedCollectionIds()).toEqual([]);
+  });
+});
+
+describe("git tokens of members who lose write access", () => {
+  it("revokes a token minted while its issuer was being removed", async () => {
+    let artifacts = fakeArtifacts();
+    let stub = await createGitCollection(artifacts.binding);
+    await runInDurableObject(stub, async (instance: ContextCollectionDurableObject) => {
+      let releaseMint = artifacts.holdMints();
+      let mint = instance.createGitToken("bob");
+      let removal = instance.removeMember("alice", "bob");
+      // Give the removal every chance to finish while the mint is held.
+      await Promise.race([removal, scheduler.wait(100)]);
+      releaseMint();
+      let token = await mint;
+      await removal;
+      expect(artifacts.revoked).toContain(token.id);
+    });
+
+    await expect(settled(stub.createGitToken("bob"))).rejects.toThrow("Only editors and owners");
+  });
+
+  it("reports a failed revocation on removal and retries it from an alarm", async () => {
+    let artifacts = fakeArtifacts();
+    let stub = await createGitCollection(artifacts.binding);
+    let token = await stub.createGitToken("bob");
+
+    artifacts.failRevocations = true;
+    await expect(settled(stub.removeMember("alice", "bob"))).rejects.toThrow("could not be revoked yet");
+    expect((await stub.getAccess("bob")).role).toBeNull();
+    // Repeating it retries, though the grant is already gone.
+    await expect(settled(stub.removeMember("alice", "bob"))).rejects.toThrow("could not be revoked yet");
+    expect(artifacts.revoked).not.toContain(token.id);
+
+    artifacts.failRevocations = false;
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    expect(artifacts.revoked).toContain(token.id);
+    await stub.removeMember("alice", "bob");
+  });
+
+  it("retries a failed revocation when a demotion is repeated", async () => {
+    let artifacts = fakeArtifacts();
+    let stub = await createGitCollection(artifacts.binding);
+    let token = await stub.createGitToken("bob");
+
+    artifacts.failRevocations = true;
+    await expect(settled(stub.setMemberRole("alice", "bob", "viewer")))
+      .rejects.toThrow("could not be revoked yet");
+    expect((await stub.getAccess("bob")).role).toBe("viewer");
+
+    artifacts.failRevocations = false;
+    await stub.setMemberRole("alice", "bob", "viewer");
+    expect(artifacts.revoked).toContain(token.id);
   });
 });

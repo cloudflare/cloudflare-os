@@ -37,6 +37,9 @@ const MAX_DOCUMENT_PATH_LENGTH = 1024;
 const GIT_TOKEN_TTL_SECONDS = 31_536_000;
 // Background git refresh happens minutely at most.
 const GIT_REFRESH_MIN_INTERVAL_MS = 60_000;
+// Retry a failed git token revocation after 5 minutes, doubling up to a day.
+const GIT_TOKEN_REVOKE_RETRY_MS = 5 * 60_000;
+const GIT_TOKEN_REVOKE_RETRY_MAX_MS = 24 * 60 * 60_000;
 // Allow simple branch names made of alphanumerics, '/', '.', '_', and '-', but not leading/trailing '/'.
 const GIT_BRANCH_RE = /^(?!\/)(?!.*\/$)[A-Za-z0-9/._-]{1,255}$/;
 // Older collections build this path list on first use. Increase the version when parsing rules
@@ -163,6 +166,8 @@ function makeContextCollectionStorage(storage: DurableObjectStorage) {
       ownerAccountId: "",
       everyoneCanView: false,
       aclVersion: 0,
+      // Consecutive failed attempts to revoke a token whose issuer lost write access.
+      gitTokenRevokeAttempts: 0,
       metadata: <StoredContextCollectionMetadata>{
         id: "",
         title: "",
@@ -185,6 +190,16 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
   // Set when an artifact refresh operation is in flight. Additional refresh requests should
   // await this promise when set instead of kicking off additional concurrent refreshes.
   #artifactRefresh?: Promise<void>;
+  // Grant changes and git token minting await other services. They run one at a time, so each sees
+  // the grants the previous one left: a share and a removal can't interleave their library and
+  // grant writes, and a token can't be minted on access removed while the mint was pending.
+  #accessChanges: Promise<unknown> = Promise.resolve();
+
+  #serializeAccessChange<T>(change: () => Promise<T>): Promise<T> {
+    let result = this.#accessChanges.then(change);
+    this.#accessChanges = result.catch(() => {});
+    return result;
+  }
 
   #assertRecordSize(record: ContextRecord): void {
     let byteLength = contextRecordSize(record);
@@ -365,20 +380,24 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
   async share(
       actorId: string, recipientId: string, role: ContextCollectionRole,
       displayName: string): Promise<void> {
-    this.#authorizeGrantChange(actorId, recipientId, role);
-    await this.#library(recipientId).addSharedCollection(this.getMetadata().id);
-    await this.#setGrant(actorId, recipientId, role, displayName);
+    await this.#serializeAccessChange(async () => {
+      this.#authorizeGrantChange(actorId, recipientId, role);
+      await this.#library(recipientId).addSharedCollection(this.getMetadata().id);
+      await this.#setGrant(actorId, recipientId, role, displayName);
+    });
   }
 
   async setMemberRole(actorId: string, memberId: string, role: ContextCollectionRole): Promise<void> {
-    if (!this.storage.grants.get(memberId)) throw new Error("That person no longer has access.");
-    await this.#setGrant(actorId, memberId, role);
+    await this.#serializeAccessChange(async () => {
+      if (!this.storage.grants.get(memberId)) throw new Error("That person no longer has access.");
+      await this.#setGrant(actorId, memberId, role);
+    });
   }
 
   async #setGrant(
       actorId: string, targetId: string, role: ContextCollectionRole,
       displayName?: string): Promise<void> {
-    // Authorized again: an earlier await may have let another change in.
+    // Authorized again: the collection may have been deleted during an earlier await.
     this.#authorizeGrantChange(actorId, targetId, role);
     let previous = this.storage.grants.get(targetId);
     this.storage.grants.put({
@@ -387,26 +406,31 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       displayName: displayName ?? previous?.displayName,
       grantedAt: previous?.grantedAt ?? new Date(),
     });
-    if (previous && previous.role !== "viewer" && role === "viewer") {
-      await this.#revokeIssuedGitTokens(targetId);
-    }
+    // On every change, so repeating a demotion retries a failed revocation.
+    this.#assertGitTokensRevoked(await this.#revokeUnauthorizedGitTokens(), targetId);
   }
 
   /** Remove a member; an account removing itself leaves the collection. */
   async removeMember(actorId: string, memberId: string): Promise<void> {
-    this.#authorizeGrantChange(actorId, memberId, null);
-    if (!this.storage.grants.get(memberId)) return;
-    this.storage.grants.delete(memberId);
-    try {
-      await this.#library(memberId).forgetCollection(this.getMetadata().id);
-    } catch (err) {
-      // Harmless: listings drop an entry whose account holds no role here.
-      logger.warn("failed to remove collection from a former member's library", {
-        event: "collection.member.library.remove.failed", collectionId: this.getMetadata().id,
-        error: err,
-      });
-    }
-    await this.#afterGrantRemoved(memberId);
+    await this.#serializeAccessChange(async () => {
+      this.#authorizeGrantChange(actorId, memberId, null);
+      if (this.storage.grants.get(memberId)) {
+        this.storage.grants.delete(memberId);
+        try {
+          await this.#library(memberId).forgetCollection(this.getMetadata().id);
+        } catch (err) {
+          // Harmless: listings drop an entry whose account holds no role here.
+          logger.warn("failed to remove collection from a former member's library", {
+            event: "collection.member.library.remove.failed", collectionId: this.getMetadata().id,
+            error: err,
+          });
+        }
+      }
+      // Also when the grant was already gone, so repeating a removal retries a failed revocation.
+      let unrevoked = await this.#revokeUnauthorizedGitTokens();
+      if (await this.#deleteIfUnreachable()) return;
+      this.#assertGitTokensRevoked(unrevoked, memberId);
+    });
   }
 
   /**
@@ -415,18 +439,24 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
    * survives, without an owner if this was the last.
    */
   async removeAccount(accountId: string): Promise<void> {
-    this.#ensureGrants();
-    if (!this.storage.grants.get(accountId)) return;
-    this.storage.grants.delete(accountId);
-    await this.#afterGrantRemoved(accountId);
+    await this.#serializeAccessChange(async () => {
+      this.#ensureGrants();
+      if (this.storage.grants.get(accountId)) this.storage.grants.delete(accountId);
+      // A failed revocation is not reported: the account is going away, and the alarm retries it.
+      await this.#revokeUnauthorizedGitTokens();
+      await this.#deleteIfUnreachable();
+    });
   }
 
-  async #afterGrantRemoved(accountId: string): Promise<void> {
-    await this.#revokeIssuedGitTokens(accountId);
-    // Nobody can reach it any more.
-    if ([...this.storage.grants.list()].length === 0 && !this.storage.everyoneCanView.get()) {
-      await this.deleteSelf();
+  // A collection with no grants that everyone can't view is unreachable, so delete it. Deleting
+  // its repo also ends every token for it.
+  async #deleteIfUnreachable(): Promise<boolean> {
+    if (!this.getMetadata().id || this.storage.everyoneCanView.get()
+        || [...this.storage.grants.list()].length > 0) {
+      return false;
     }
+    await this.deleteSelf();
+    return true;
   }
 
   async setEveryoneCanView(actorId: string, everyoneCanView: boolean): Promise<void> {
@@ -438,22 +468,53 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     this.storage.everyoneCanView.put(everyoneCanView);
   }
 
-  // A token's issuer lost write access: revoke what they minted, so the change is not merely hidden.
-  async #revokeIssuedGitTokens(accountId: string): Promise<void> {
-    let issued = [...this.storage.gitTokenIssuers.list()].filter(record => record.accountId === accountId);
-    if (issued.length === 0 || !this.env.ARTIFACTS) return;
+  /**
+   * Revoke every git token whose issuer no longer has write access, so losing it is not merely
+   * hidden. A failed revocation keeps the token's issuer record and schedules an alarm to retry,
+   * whatever becomes of the grant meanwhile. Returns the issuers with tokens still live.
+   */
+  async #revokeUnauthorizedGitTokens(): Promise<Set<string>> {
+    let unrevoked = new Set<string>();
+    // Public collections have no grants; admins' tokens are not tied to one.
+    if (this.getMetadata().visibility !== "private") return unrevoked;
     let id = this.getMetadata().id;
-    let repo = await this.env.ARTIFACTS.get(id);
-    for (let record of issued) {
+    let repo: ArtifactsRepo | undefined;
+    // Read the records before deleting from the same storage collection.
+    for (let record of Array.from(this.storage.gitTokenIssuers.list())) {
+      if (collectionPermissions(this.getAccess(record.accountId), false).canEdit) continue;
       try {
+        repo ??= await this.#artifacts().get(id);
         await repo.revokeToken(record.tokenId);
         this.storage.gitTokenIssuers.delete(record.tokenId);
       } catch (err) {
+        unrevoked.add(record.accountId);
         logger.error("failed to revoke a git token after its issuer lost write access", {
           event: "artifacts.issuer.token.revoke.failed", collectionId: id, error: err,
         });
       }
     }
+    let attempts = this.storage.gitTokenRevokeAttempts.get();
+    if (unrevoked.size === 0) {
+      if (attempts > 0) this.storage.gitTokenRevokeAttempts.put(0);
+    } else {
+      this.storage.gitTokenRevokeAttempts.put(attempts + 1);
+      await this.ctx.storage.setAlarm(Date.now() + Math.min(
+        GIT_TOKEN_REVOKE_RETRY_MS * 2 ** attempts, GIT_TOKEN_REVOKE_RETRY_MAX_MS));
+    }
+    return unrevoked;
+  }
+
+  #assertGitTokensRevoked(unrevoked: Set<string>, accountId: string): void {
+    if (unrevoked.has(accountId)) {
+      throw new Error("Access was changed, but Git tokens this person created could not be "
+        + "revoked yet. Revocation will be retried automatically.");
+    }
+  }
+
+  /** Retries failed git token revocations; see #revokeUnauthorizedGitTokens. */
+  async alarm(): Promise<void> {
+    // A failure schedules its own retry, with backoff, so it is not thrown to the runtime's.
+    await this.#serializeAccessChange(() => this.#revokeUnauthorizedGitTokens());
   }
 
   #parseAgentSkill(record: ContextRecord) {
@@ -933,18 +994,29 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     await this.#refreshArtifactSource();
   }
 
-  /** Mint a mirror write token, recording `issuerId` so losing write access revokes it. */
+  /**
+   * Mint a mirror write token, recording `issuerId` so losing write access revokes it. The issuer's
+   * access is checked among the grant changes, so a removal either precedes the mint and refuses it,
+   * or follows it and finds the token recorded.
+   */
   async createGitToken(issuerId: string): Promise<ContextGitTokenCreateResult> {
-    let meta = this.getMetadata();
-    if (meta.content.source !== "git") throw new Error("Collection is not git-based.");
-    let repo = await this.#artifacts().get(meta.id);
-    let token = await repo.createToken("write", GIT_TOKEN_TTL_SECONDS);
-    this.storage.gitTokenIssuers.put({ tokenId: token.id, accountId: issuerId });
-    return {
-      id: token.id,
-      plaintext: token.plaintext,
-      remote: meta.content.remote,
-    };
+    return this.#serializeAccessChange(async () => {
+      let meta = this.getMetadata();
+      if (meta.content.source !== "git") throw new Error("Collection is not git-based.");
+      // Public collections are checked by the caller, which knows whether the issuer is an admin.
+      if (meta.visibility === "private"
+          && !collectionPermissions(this.getAccess(issuerId), false).canEdit) {
+        throw new Error("Only editors and owners can create Git tokens.");
+      }
+      let repo = await this.#artifacts().get(meta.id);
+      let token = await repo.createToken("write", GIT_TOKEN_TTL_SECONDS);
+      this.storage.gitTokenIssuers.put({ tokenId: token.id, accountId: issuerId });
+      return {
+        id: token.id,
+        plaintext: token.plaintext,
+        remote: meta.content.remote,
+      };
+    });
   }
 
   async listGitTokens(): Promise<ContextGitTokenList> {
@@ -1143,6 +1215,7 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       });
     }
 
+    await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
   }
 

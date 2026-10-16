@@ -225,6 +225,14 @@ and, when an account is demoted to viewer or loses its grant, revoke every token
 access revocation does not merely hide token controls. Tokens minted before sharing existed have no
 recorded issuer and are left alone, so no owner's existing mirror is unexpectedly revoked.
 
+The collection runs grant changes and token minting one at a time, because each awaits another
+service: a mint checks its issuer's access among the grant changes, so a removal either refuses it
+or finds its token recorded, and a share cannot interleave its library and grant writes with a
+removal. Every grant change revokes the recorded tokens of any issuer without write access, even
+when the change itself was a no-op, so repeating it retries. A failed revocation keeps its record,
+schedules an alarm that retries with backoff, and is reported to whoever removed or demoted the
+issuer (not on disconnection, where the account itself is going away).
+
 ## UI integration
 
 Add a feature-owned collection Share dialog, using Kumo controls and existing dialog/presentation
