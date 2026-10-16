@@ -66,9 +66,16 @@ const requirements = (pattern: string): Requirements | null => {
   }
 }
 
-// The picker classifies every resource on each keystroke, so each pattern is parsed once. The
-// patterns are the deployment's resource types, a fixed set, so the cache needs no bound.
+// The picker classifies every resource on each keystroke, so each pattern's requirements are worked
+// out once. The patterns are the deployment's resource types, a fixed set, so the cache needs no bound.
 const requirementsByPattern = new Map<string, Requirements | null>()
+
+/** Whether a URL's segment, which is its host when `isHost`, is one a part's word accepts. */
+const acceptsSegment = (word: string, segment: string, isHost: boolean): boolean => {
+  if (word === '*' || word.startsWith(':')) return segment !== ''
+  if (isHost && word.startsWith('*.')) return segment.endsWith(word.slice(1))
+  return segment === word
+}
 
 /**
  * Classify a search URL, which may be half-typed and lack its scheme, against a resource pattern.
@@ -101,15 +108,11 @@ export function classifyMatch(search: string, pattern: string): MatchClassificat
   for (const [i, part] of parts.entries()) {
     const segment = segments[i]
     if (segment === undefined) return { type: 'prefix', suffix: `/${words.slice(i).join('/')}${query}` }
-    const matches = part.some(word => (word === '*' || word.startsWith(':')) ? segment !== ''
-      : (i === 0 && word.startsWith('*.')) ? segment.endsWith(word.slice(1))
-      : segment === word)
-    if (matches) continue
+    if (part.some(word => acceptsSegment(word, segment, i === 0))) continue
     // The segment still being typed completes to a word of this part, then the rest of the pattern.
-    const word = i === segments.length - 1
-      ? part.find(word => !word.startsWith('*') && word.startsWith(segment)) : undefined
-    if (word) return { type: 'prefix', suffix: [word.slice(segment.length), ...words.slice(i + 1)].join('/') + query }
-    return { type: 'none' }
+    const word = i === segments.length - 1 && part.find(w => !w.startsWith('*') && w.startsWith(segment))
+    if (!word) return { type: 'none' }
+    return { type: 'prefix', suffix: [word.slice(segment.length), ...words.slice(i + 1)].join('/') + query }
   }
   // The path is all there, so if the rest of the URL matches, all it can still lack is the query.
   return query && required.anyQuery.test(url) ? { type: 'prefix', suffix: query } : { type: 'none' }

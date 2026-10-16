@@ -5,8 +5,8 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
-import type { AuthenticatedApi, ConnectedAccountsSubscriber } from '@gadgets/workshop-shared/api'
-import type { SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
+import type { AuthenticatedApi, ConnectedAccountsSubscriber, GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
+import type { AccountDescription, SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
 import ResourcePicker from './ResourcePicker'
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -58,6 +58,31 @@ describe('ResourcePicker', () => {
     expect(pendingSubscription.dispose).toHaveBeenCalledOnce()
   })
 
+  // Renders the picker over one vendor, with each of `accounts` connected to it.
+  const renderPicker = async (
+    vendor: GatekeeperVendorInfo,
+    searchText: string,
+    { accounts = [], onSelectAccount = () => {} }: { accounts?: AccountDescription[]; onSelectAccount?: () => void } = {},
+  ) => {
+    const authenticatedApi = {
+      subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
+        for (const [i, account] of accounts.entries()) {
+          subscriber.add(i + 1, account, vendor.description, vendor.supportedResources, true, vendor.id)
+        }
+        subscriber.ready()
+        return Object.assign(Promise.resolve(), { [Symbol.dispose]: () => {} })
+      },
+      listGatekeeperVendors: async () => [vendor],
+    } as unknown as RpcStub<AuthenticatedApi>
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(
+      <ResourcePicker authenticatedApi={authenticatedApi} searchText={searchText} onSelectAccount={onSelectAccount} />,
+    ))
+    return container
+  }
+
   it('names the placeholder still blocking an account, rather than offering to grant access', async () => {
     const thread: SupportedResource = {
       urlPattern: 'https://chat.google.com/:kind(room|dm)/:spaceId/:threadId{/:messageId}?',
@@ -65,31 +90,16 @@ describe('ResourcePicker', () => {
       description: 'One thread',
       grantable: true,
     }
-    const vendor = { displayName: 'Google', url: 'https://google.com' }
-    const authenticatedApi = {
-      subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
-        // An account that hasn't granted this resource type, so it would otherwise need access.
-        const account = { displayName: 'dan@example.com', avatar: { url: '' }, grantedResourceUrlPatterns: [] }
-        subscriber.add(1, account, vendor, [thread], true, 'google')
-        subscriber.ready()
-        return Object.assign(Promise.resolve(), { [Symbol.dispose]: () => {} })
-      },
-      listGatekeeperVendors: async () => [{ id: 'google', description: vendor, supportedResources: [thread] }],
-    } as unknown as RpcStub<AuthenticatedApi>
+    const vendor = { id: 'google', description: { displayName: 'Google', url: 'https://google.com' }, supportedResources: [thread] }
+    // An account that hasn't granted this resource type, so it would otherwise need access.
+    const account = { displayName: 'dan@example.com', avatar: { url: '' }, grantedResourceUrlPatterns: [] }
     const onSelectAccount = vi.fn<() => void>()
 
-    container = document.createElement('div')
-    document.body.append(container)
-    root = createRoot(container)
-    await act(async () => root!.render(
-      <ResourcePicker
-        authenticatedApi={authenticatedApi}
-        searchText="https://chat.google.com/room/AAQANZZTsQ8/:threadId?cls=7"
-        onSelectAccount={onSelectAccount}
-      />,
-    ))
+    const picker = await renderPicker(vendor, 'https://chat.google.com/room/AAQANZZTsQ8/:threadId?cls=7', {
+      accounts: [account], onSelectAccount,
+    })
 
-    const row = [...container.querySelectorAll('div')].findLast(div => div.textContent?.includes('dan@example.com'))!
+    const row = [...picker.querySelectorAll('div')].findLast(div => div.textContent?.includes('dan@example.com'))!
     expect(row.textContent).toContain('Fill in :threadId first')
     expect(row.textContent).not.toContain('Grant access')
     act(() => row.click())
@@ -102,27 +112,10 @@ describe('ResourcePicker', () => {
       { urlPattern: 'https://gitlab.com/:project+/-/merge_requests/:iid{/*}?', title: 'GitLab Merge Request', description: '' },
       { urlPattern: 'https://gitlab.com/:project+', title: 'GitLab Project', description: '' },
     ]
-    const vendor = { displayName: 'GitLab', url: 'https://gitlab.com' }
-    const authenticatedApi = {
-      subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
-        subscriber.ready()
-        return Object.assign(Promise.resolve(), { [Symbol.dispose]: () => {} })
-      },
-      listGatekeeperVendors: async () => [{ id: 'gitlab', description: vendor, supportedResources: resources }],
-    } as unknown as RpcStub<AuthenticatedApi>
+    const vendor = { id: 'gitlab', description: { displayName: 'GitLab', url: 'https://gitlab.com' }, supportedResources: resources }
 
-    container = document.createElement('div')
-    document.body.append(container)
-    root = createRoot(container)
-    await act(async () => root!.render(
-      <ResourcePicker
-        authenticatedApi={authenticatedApi}
-        searchText="https://gitlab.com/group/repo/-/merge_requests/12"
-        onSelectAccount={() => {}}
-      />,
-    ))
+    const text = (await renderPicker(vendor, 'https://gitlab.com/group/repo/-/merge_requests/12')).textContent!
 
-    const text = container.textContent!
     expect(text.indexOf('GitLab Merge Request')).toBeGreaterThanOrEqual(0)
     expect(text.indexOf('GitLab Merge Request')).toBeLessThan(text.indexOf('GitLab Project'))
   })

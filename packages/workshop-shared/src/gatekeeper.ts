@@ -396,8 +396,8 @@ export function matchesResourceUrlPattern(pattern: string, url: string): boolean
   let compiled: { test(u: string): boolean };
   let toggled: URL;
   try {
-    compiled = new URLPatternCtor(pattern);
     toggled = new URL(url);
+    compiled = new URLPatternCtor(pattern);
   } catch {
     return false;
   }
