@@ -107,6 +107,11 @@ export default defineConfig({
   ],
   test: {
     include: ['__tests__/*.test.ts'],
+    // Vitest 5 enables this by default, and every run after the first breaks under the Workers
+    // pool: cached `.txt` modules come back with root-relative ids that `textModules` cannot
+    // read, and the pool's WebSocket rejects the larger cached modules (1009, "Message is too
+    // large"). Vite+ already caches the whole test task.
+    fsModuleCache: false,
     // Asserts the pool actually started, rather than trusting a green run to mean workerd.
     setupFiles: ['@gadgets/scripts/assert-workerd'],
   },
