@@ -7,6 +7,8 @@ export type WorkshopObservabilityFields = {
   agentName: string;
   autoProvisioned: boolean;
   blueprintId: string;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
   callbackInitiated: boolean;
   chatId: number;
   changeStage: "buffer" | "persist";
@@ -16,6 +18,7 @@ export type WorkshopObservabilityFields = {
   changeEmptyPathCount: number;
   claimedType: string;
   commitCount: number;
+  costUsd: number;
   credentialKind: "workshop" | "cloudflare-access";
   durableObjectId: string;
   durationMs: number;

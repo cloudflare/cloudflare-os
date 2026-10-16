@@ -27,7 +27,7 @@ import type { AiGatewayLogRoute } from "./ai-gateway";
 import type { SpawnCallableOptions } from "./agent-spawner-binding";
 import { traceRejectedToolCall, traceTool } from "./agent-tracing";
 import { AgentTurnError, completeText, httpStatusFromError, zeroUsage } from "./ai-invoke";
-import type { ModelHandle } from "./ai-models";
+import type { CachedRequest, ModelHandle } from "./ai-models";
 import { blobOid } from "./git-store";
 import type {
   AiChatAgentContext, ChatBindingEntry, CompactionCheckpoint, StoredAssistantMessage,
@@ -186,11 +186,12 @@ export type ChatHistory = {
   measuredTokens: number;
 };
 
-// Why one pass of the agent returned to runAgent's loop: the turn ran to a stop; a persisted tool
-// step left the next request over the compaction trigger, so the pass ended for a reload; or the
-// pass summarized instead of prompting the model and this is the checkpoint to publish.
+// Why one pass of the agent returned to runAgent's loop: the turn ran to a stop, leaving its last
+// model request if the chat's next request will start with it; a persisted tool step left the
+// next request over the compaction trigger, so the pass ended for a reload; or the pass
+// summarized instead of prompting the model and this is the checkpoint to publish.
 type AgentPassOutcome =
-  | {type: "finished"}
+  | {type: "finished"; lastRequest?: CachedRequest}
   | {type: "reloadForCompaction"}
   | {type: "compacted"; checkpoint: CompactionCheckpoint}
   | {type: "transientFailure"; error: AgentTurnError};
@@ -1468,7 +1469,8 @@ const TRANSIENT_FAILURE_RETRIES = 2;
  * which the next pass compacts first, and goes again. Each compaction moves the boundary strictly
  * forward and can never pass the newest turn start, so the loop is bounded. `/compact` is done once
  * it has compacted; the model is never prompted. A pass whose model request failed transiently is
- * also run again, a bounded number of times.
+ * also run again, a bounded number of times. Resolves with the turn's last model request if the
+ * chat's next request will start with it, so keeping that request cached pays off.
  */
 export async function runAgent(
     hooks: AgentHooks,
@@ -1477,7 +1479,7 @@ export async function runAgent(
     author: AiChatAuthorInfo,
     abortSignal: AbortSignal,
     initiator: AiChatAuthorInfo,
-    modelConfig: AiModelConfig): Promise<void> {
+    modelConfig: AiModelConfig): Promise<CachedRequest | undefined> {
   // Provider retries and compaction reloads are passes of this execution, not new executions.
   const progress: AgentProgress = {
     executionId: crypto.randomUUID(),
@@ -1496,7 +1498,8 @@ export async function runAgent(
       await scheduler.wait(1000 * retries);
     }
     if (outcome.type === "compacted") hooks.commitChatCompaction(chatId, outcome.checkpoint);
-    if (outcome.type === "finished" || isCompactionTurn(history.chatMessages)) return;
+    if (outcome.type === "finished") return outcome.lastRequest;
+    if (isCompactionTurn(history.chatMessages)) return undefined;
     abortSignal.throwIfAborted();
   }
 }
@@ -3982,6 +3985,10 @@ async function runAgentPass(
   // turn_end barrier persists this step before the caller reloads durable history.
   let reloadForCompaction = false;
 
+  // Whether the request after the latest step fits under the compaction trigger, so it will start
+  // with that step's request.
+  let nextRequestFits = false;
+
   // pi 0.87 calls finishTurn before turn_end. Capture actions there so the stop decision can
   // see them; the awaited turn_end barrier then persists this same snapshot before another
   // model request is allowed to start.
@@ -4224,6 +4231,12 @@ async function runAgentPass(
       if (message.stopReason === "error" || message.stopReason === "aborted") return;
       capturedActionsForStep = hooks.consumeCapturedActions(chatId);
       if (capturedActionsForStep?.awaitDecision) awaitingActionDecision = true;
+      // The next request is this step's measured prompt plus the tool results just produced,
+      // weighed as the model will see them (pi's `details` can carry a second copy of a large
+      // output). Without usage there is nothing to measure against.
+      let measured = message.usage.totalTokens;
+      nextRequestFits = measured > 0 && !shouldCompactChat(measured + estimateProjectionTokens(
+          toolResults.map(({details: _, ...message}) => ({message}))), inputBudget);
       // The stop reasons that end the turn come first: a compaction reload must not resume work
       // that one of them ended.
       if (
@@ -4242,14 +4255,9 @@ async function runAgentPass(
       }
       // The model stopped on its own; there is no next request to make room for.
       if (toolResults.length === 0) return;
-      // Otherwise the next request is this step's measured prompt plus the tool results just
-      // produced, weighed as the model will see them (pi's `details` can carry a second copy of a
-      // large output). Without usage there is nothing to measure against, so reload: the
-      // turn-start check estimates the whole prompt, as it does for that case there.
-      let measured = message.usage.totalTokens;
-      let next = measured + estimateProjectionTokens(
-          toolResults.map(({details: _, ...message}) => ({message})));
-      if (measured <= 0 || shouldCompactChat(next, inputBudget)) {
+      // Otherwise reload when that request won't fit, or can't be measured: the turn-start check
+      // then estimates the whole prompt, as it does for that case there.
+      if (!nextRequestFits) {
         reloadForCompaction = true;
         // The rerun's fresh preview manager knows of no active file; end this one's marker here,
         // as a non-edit tool start would, so it doesn't outlive the run on the client.
@@ -4278,7 +4286,8 @@ async function runAgentPass(
     throw error;
   }
 
-  return {type: reloadForCompaction ? "reloadForCompaction" : "finished"};
+  if (reloadForCompaction) return {type: "reloadForCompaction"};
+  return {type: "finished", lastRequest: nextRequestFits ? handle.lastRequest : undefined};
 }
 
 /**

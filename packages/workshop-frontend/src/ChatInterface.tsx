@@ -3956,6 +3956,14 @@ function ChatInterface({
     // The LSP error is due to bugs that need to be fixed in Cap'n Web.
   }, [selectedChatId, overseer]);
 
+  // While the chat is shown, the workspace keeps the model provider's cache of it warm. Disposing
+  // the call's promise disposes the lease it resolves to, even if it hasn't resolved yet.
+  useEffect(() => {
+    if (selectedChatId === null) return;
+    const lease = overseer.viewChat(selectedChatId);
+    return () => lease[Symbol.dispose]();
+  }, [overseer, selectedChatId]);
+
   // Sequence of the oldest message loaded, or undefined once the thread's start is loaded. Paging
   // asks for what precedes it, so the control disappears exactly when there is nothing earlier.
   const oldestLoadedSequence = currentMessages[0]?.sequence;

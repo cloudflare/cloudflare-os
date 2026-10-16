@@ -119,6 +119,7 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
     using sink = stubFor(new ChatSink());
     return await ws.subscribeToChat(sink);
   },
+  viewChat: ws => ws.viewChat(1),
   listSlashCommands: ws => ws.listSlashCommands(),
   newChat: ws => ws.newChat("Hello", null),
   sendChatMessage: ws => ws.sendChatMessage(1, "Hello", null),
