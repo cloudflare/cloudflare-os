@@ -27,23 +27,18 @@ import type {
   WorktreeFileEntry,
 } from "./worktree-binding";
 import type { AiChatAuthorInfo, WorkpieceId } from "@gadgets/workshop-shared/api";
-import { diffFiles, validateCodeChangeSchema, type FileChange, type FileContent, type BytesRef } from "@gadgets/workshop-shared/code-change";
+import { diffFiles, validateCodeChangeSchema, type FileChange, type FileContent } from "@gadgets/workshop-shared/code-change";
 
 import { UnreadableContentError, type WorkspaceGitCache } from "./git-cache";
 import { commitIdentityForAuthor, type GitStore } from "./git-store";
 import { formatUnifiedDiff, type WorktreeTurnAccess } from "./agent";
 import { formatGrep, matchLines, scanWorkpieceForGrep } from "./grep";
-import type { ByteStore } from "./byte-store";
-import type { ByteUploadDescription, ByteUploadStatus } from "./worktree-binding";
 
 /**
  * What the session needs from the overseer: the git plumbing and the worktree's registry record
  * (whose headCommit the step barrier owns). Structurally satisfied by OverseerImpl.
  */
 export interface WorktreeSessionHost {
-  /** Private staging namespace for an ephemeral worktree; persistent worktrees use their ID. */
-  byteScope?: string;
-  byteStore?: ByteStore;
   gitCache: WorkspaceGitCache;
   gitStore: GitStore;
   getWorktreeRecord(id: WorkpieceId): WorktreeRecordView;
@@ -166,31 +161,12 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
     return text;
   }
 
-  #byteScope(): string { this.#pinBase(); return this.host.byteScope ?? `worktree:${this.worktreeId}`; }
-  #bytes(): ByteStore {
-    this.#pinBase(); if (!this.host.byteStore) throw new Error("Byte storage is unavailable."); return this.host.byteStore;
-  }
-  async beginUpload(id: string, description: ByteUploadDescription): Promise<ByteUploadStatus> {
-    const row = await this.#bytes().begin(this.#byteScope(), id, description.byteLength, description.sha256);
-    this.#pinBase(); return {offset: row.offset, ...(row.finished ? {finished: row.finished} : {})};
-  }
-  async writeUpload(id: string, offset: number, stream: ReadableStream<Uint8Array>): Promise<number> {
-    return this.#bytes().write(this.#byteScope(), id, offset, stream, () => { this.#pinBase(); });
-  }
-  async getUploadStatus(id: string): Promise<ByteUploadStatus> {
-    const row = this.#bytes().status(this.#byteScope(), id);
-    return {offset: row.offset, ...(row.finished ? {finished: row.finished} : {})};
-  }
-  async finishUpload(id: string): Promise<BytesRef> {
-    return this.#bytes().finish(this.#byteScope(), id, () => { this.#pinBase(); });
-  }
   async #byteValue(path: string): Promise<FileContent> {
     const overlay = this.turn.getOverlayFiles(this.worktreeId);
     const value = overlay.get(path);
     if (value !== undefined) return value;
     if (this.turn.getRemovedPaths(this.worktreeId).has(path)) throw new Error(`${path}: no such file`);
     const base = await this.host.gitCache.fileBytesAtCommit(this.#pinBase(), path);
-    if (base) await this.#bytes().grant(this.#byteScope(), base);
     this.#pinBase();
     if (!base) throw new Error(`${path}: no such file`);
     const current = this.turn.getOverlayFiles(this.worktreeId).get(path);
@@ -200,19 +176,23 @@ export class WorktreeSessionImpl extends RpcTarget implements Worktree {
   async readBytes(path: string, range?: {offset: number; length: number}): Promise<ReadableStream<Uint8Array>> {
     this.#pinBase();
     const value = await this.#byteValue(path);
-    if (typeof value === "string") {
-      const bytes = new TextEncoder().encode(value), offset = range?.offset ?? 0, length = range?.length ?? bytes.length;
-      if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0 || offset + length > bytes.length) throw new Error("Invalid byte range.");
-      return new ReadableStream({start(c) { c.enqueue(bytes.slice(offset, offset + length)); c.close(); }});
-    }
-    return this.#bytes().read(value, range?.offset, range?.length, () => { this.#pinBase(); });
+    const bytes = typeof value === "string" ? new TextEncoder().encode(value)
+      : this.host.gitStore.readBlob(value.oid, value.byteLength);
+    const offset = range?.offset ?? 0, length = range?.length ?? bytes.length;
+    if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 0 ||
+        offset > bytes.length || length > bytes.length - offset) throw new Error("Invalid byte range.");
+    return new ReadableStream({pull: c => {
+      this.#pinBase();
+      c.enqueue(bytes.slice(offset, offset + length)); c.close();
+    }}, {highWaterMark: 0});
   }
-  async writeBytes(path: string, value: BytesRef): Promise<void> {
+  async writeBytes(path: string, content: Uint8Array): Promise<void> {
+    await this.host.gitCache.assertWorktreePathWritable(this.#pinBase(), path);
+    this.#pinBase();
+    const value = await this.host.gitStore.writeBlob(content);
     const change = {setBytes: value};
     validateCodeChangeSchema({[this.worktreeId]: [[path, change]]});
-    await this.host.gitCache.assertWorktreePathWritable(this.#pinBase(), path);
-    if (!this.#bytes().isFinishedFor(this.#byteScope(), value)) throw new Error("Byte source is outside this worktree scope.");
-    this.#bytes().require(value); this.#pinBase();
+    this.#pinBase();
     this.turn.appendChange(this.worktreeId, path, change);
   }
   async writeFile(path: string, text: string): Promise<void> {

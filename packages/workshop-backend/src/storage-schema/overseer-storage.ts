@@ -27,28 +27,7 @@ import {
   type BlueprintOutput, type ChatGadgetPinRecord, type CollaboratorRole, type GadgetUpstream,
   type GatekeeperCreationSpec, type PermissionEdge, type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
-import type { CodeChange, BytesRef } from "@gadgets/workshop-shared/code-change";
-
-/** Internal chunk root for a finished whole-file payload; never crosses an RPC boundary. */
-export interface ByteObjectRecord {
-  id: string;
-  byteLength: number;
-}
-/** Bounded raw bytes, mutable during staging and immutable after the upload finishes. */
-export interface ByteChunkRecord { id: string; data: Uint8Array; }
-/** Git-cache blob whose immutable contents live under an internal chunk root. */
-export interface GitByteBlobRecord { oid: string; bytes: ByteObjectRecord; }
-/** Explicit scoped authority for an immutable Git blob reference delivered through a worktree read. */
-export interface ByteGrantRecord { id: string; scope: string; bytes: BytesRef; }
-/** Durable staging/finish receipt, scoped to the original writer capability. */
-export interface ByteUploadRecord {
-  id: string;
-  byteLength: number;
-  sha256: string;
-  offset: number;
-  root: ByteObjectRecord;
-  finished?: BytesRef;
-}
+import type { CodeChange } from "@gadgets/workshop-shared/code-change";
 import type { ChatGatewayRpcTarget } from "@gadgets/workshop-shared/external-message-gateway";
 import type {
   ActionDescription, ActionKind, Gatekeeper, GitObjectType, GitOid, HookController,
@@ -1283,11 +1262,6 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       gitObjects: collection<GitObjectRecord>()({
         primaryKey: "oid",
       }),
-      byteObjects: collection<ByteObjectRecord>()({primaryKey: "id"}),
-      byteChunks: collection<ByteChunkRecord>()({primaryKey: "id"}),
-      byteUploads: collection<ByteUploadRecord>()({primaryKey: "id"}),
-      gitByteBlobs: collection<GitByteBlobRecord>()({primaryKey: "oid"}),
-      byteGrants: collection<ByteGrantRecord>()({primaryKey: "id"}),
 
       // Per-oid provenance and push-authorization metadata over `gitObjects`: which gatekeepers'
       // remotes provably hold each object, which claim to (pull routing), and which queued

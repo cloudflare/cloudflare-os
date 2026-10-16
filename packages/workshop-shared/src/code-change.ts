@@ -65,15 +65,15 @@ import type { GitOid } from "./gatekeeper";
  */
 export type TextChange = (number | [number, ...string[]])[];
 
-/** An immutable whole-file Git blob; its identity alone grants no read access. */
+/** An immutable whole-file Git blob, addressed by the same OID capability as other Git objects. */
 export interface BytesRef {
   /** Git blob object ID computed from the complete payload. */
   oid: GitOid;
-  /** Exact payload length in bytes, checked against stored metadata before use. */
+  /** Exact payload length in bytes, checked against the stored blob before use. */
   byteLength: number;
 }
 
-/** Validate whole-file blob metadata without granting access to the named payload. */
+/** Validate the shape of a whole-file blob reference; the receiver checks the stored blob. */
 export function validateBytesRef(ref: BytesRef): void {
   if (typeof ref !== "object" || ref === null || Object.keys(ref).length !== 2 ||
       !("oid" in ref) || !("byteLength" in ref) || !/^[0-9a-f]{40}$/.test(ref.oid) ||

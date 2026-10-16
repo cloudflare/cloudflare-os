@@ -49,8 +49,7 @@ import {
   type TreeNode,
   type WorkpieceId,
 } from "@gadgets/workshop-shared/api";
-import type { GitObjectMetadataRecord, GitObjectRecord, GitByteBlobRecord } from "./storage-schema/overseer-storage";
-import type { ByteStore } from "./byte-store";
+import type { GitObjectMetadataRecord, GitObjectRecord } from "./storage-schema/overseer-storage";
 import type { BytesRef } from "@gadgets/workshop-shared/code-change";
 import {
   buildPackStream,
@@ -66,7 +65,6 @@ import {
   validateGitOid,
   type GitTreeEntry,
   type PackableObject,
-  type StreamPackableObject,
 } from "./git-codec";
 import { createWorkshopLogger } from "./observability";
 
@@ -112,7 +110,6 @@ export const EAGER_BLOB_LIMIT = 64 * 1024;
 /** The slice of the Overseer's typed storage the git cache operates on. */
 export interface GitCacheStorage {
   gitObjects: Collection<GitObjectRecord, string>;
-  gitByteBlobs?: Collection<GitByteBlobRecord, string>;
   gitObjectMetadata: Collection<GitObjectMetadataRecord, string> & {
     byPendingPushAction: NonUniqueIndex<GitObjectMetadataRecord, number>;
   };
@@ -212,7 +209,7 @@ const TEXT_DECODER_STRICT = new TextDecoder("utf-8", { fatal: true, ignoreBOM: t
  * reads) all funnel through it.
  */
 export class WorkspaceGitCache {
-  constructor(private storage: GitCacheStorage, private puller: GitPullDelegate, private bytes?: ByteStore) {
+  constructor(private storage: GitCacheStorage, private puller: GitPullDelegate) {
     // Subscribing catches every object stored, whoever stores it: a gatekeeper's put, an import,
     // or GitStore writing through isomorphic-git, which knows nothing of this class.
     //
@@ -233,26 +230,13 @@ export class WorkspaceGitCache {
 
   /** Whether the store holds the object locally (no view scoping, no pulls). */
   hasLocalObject(oid: GitOid): boolean {
-    return this.storage.gitObjects.get(oid) !== undefined || this.storage.gitByteBlobs?.get(oid) !== undefined;
+    return this.storage.gitObjects.get(oid) !== undefined;
   }
 
   /** Reads and decodes a locally-stored object, or undefined (no view scoping, no pulls). */
   readLocalObject(oid: GitOid): PackableObject | undefined {
-    const blob = this.storage.gitByteBlobs?.get(oid);
-    if (blob && this.bytes) {
-      // The remote-fetch cap does not restrict reads of content already stored locally.
-      return {type: "blob", payload: this.bytes.readSmall(this.bytes.reference(oid), blob.bytes.byteLength)};
-    }
     let record = this.storage.gitObjects.get(oid);
     return record === undefined ? undefined : decodeLooseObject(record.data);
-  }
-  /** Stream locally authored chunk-backed blobs; ordinary small Git objects retain their codec. */
-  async packObject(oid: string, hint: {type: GitObjectType; referencedBy?: string}, requireLive = () => {}): Promise<StreamPackableObject | PackableObject> {
-    requireLive();
-    const blob = this.storage.gitByteBlobs?.get(oid);
-    if (blob && this.bytes) return {type: "blob", byteLength: blob.bytes.byteLength,
-      stream: this.bytes.read(this.bytes.reference(oid), 0, blob.bytes.byteLength, requireLive)};
-    return this.ensureObject(oid, hint);
   }
 
   /**
@@ -536,9 +520,8 @@ export class WorkspaceGitCache {
     return (await this.readFileAtCommitWithOid(commitOid, path))?.text;
   }
 
-  /** Resolve one regular file to immutable byte storage; the caller, not the cache, grants access. */
+  /** Resolve one regular file to its existing immutable Git blob reference. */
   async fileBytesAtCommit(commitOid: GitOid, path: string): Promise<BytesRef | undefined> {
-    if (!this.bytes) throw new Error("Byte storage is unavailable.");
     const {tree, entry} = await this.#resolveEntryAt(commitOid, path);
     if (!entry) return undefined;
     if (entry.mode === "40000") throw new Error(`${path} is a directory`);
@@ -546,10 +529,8 @@ export class WorkspaceGitCache {
     if (entry.mode === "120000") {
       throw new Error(symlinkMessage(path, await this.#readBlob(entry.oid, tree, path)));
     }
-    if (this.storage.gitByteBlobs?.get(entry.oid)) return this.bytes.reference(entry.oid);
-    const ref = await this.bytes.import(undefined, await this.#readBlob(entry.oid, tree, path));
-    if (ref.oid !== entry.oid) throw new Error("Git blob payload does not match its object ID.");
-    return ref;
+    const payload = await this.#readBlob(entry.oid, tree, path);
+    return {oid: entry.oid, byteLength: payload.byteLength};
   }
 
   /**
@@ -1134,7 +1115,6 @@ export class WorkspaceGitCache {
       }
       meta.pendingPush.push({ gatekeeperId, actionId });
       this.storage.gitObjectMetadata.put(meta);  // also lands in byPendingPushAction
-      if (this.storage.gitByteBlobs?.get(oid)) continue;
       let local = this.readLocalObject(oid);
       if (local !== undefined) stack.push(...this.#referentEntries(oid, local));
     }
@@ -1227,7 +1207,7 @@ export class WorkspaceGitCache {
     }
 
     const marks = this.#recordsMarkedFor(actionId), cache = this;
-    async function* objects() { for (const mark of marks) yield await cache.packObject(mark.oid, {type: mark.type}); }
+    async function* objects() { for (const mark of marks) yield await cache.ensureObject(mark.oid, {type: mark.type}); }
     return buildPackStream(marks.length, objects());
   }
 
@@ -1292,7 +1272,6 @@ export class WorkspaceGitCache {
         this.storage.gitObjectMetadata.put(meta);
       }
       if (wasSource) continue;
-      if (this.storage.gitByteBlobs?.get(oid)) continue;
       let local = this.readLocalObject(oid);
       if (local !== undefined) stack.push(...this.#referentEntries(oid, local));
     }
@@ -1441,7 +1420,7 @@ function tooLargeMessage(path: string): string {
   return `${path} is too large to read (over ${MAX_GIT_OBJECT_SIZE} bytes)`;
 }
 
-/** Decode a Git payload as strict text, independently of its loose/chunk-backed storage. */
+/** Decode a Git blob payload as strict text. */
 export function decodeBlobText(payload: Uint8Array, path: string): string {
   if (payload.includes(0)) throw new UnreadableContentError(`${path} is not a text file`);
   try {

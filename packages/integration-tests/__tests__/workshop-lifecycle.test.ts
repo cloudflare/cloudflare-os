@@ -123,7 +123,7 @@ it.concurrent("Git blob uploads are reusable, workspace-local, and downloadable 
   await ws.sendChatMessage(chatB, "Reuse uploaded bytes", null, undefined, [sent]);
   using otherWorkspace = await authenticated.newGadget();
   await expect(otherWorkspace.newChat("Unknown blob", null, undefined, [sent]))
-    .rejects.toThrow("Unknown immutable Git blob reference.");
+    .rejects.toThrow("Unknown Git blob.");
   await otherWorkspace.deleteSelf();
 
   await ws.deleteSelf();

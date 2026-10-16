@@ -2857,7 +2857,8 @@ export interface Overseer extends RpcTarget {
    * Store raw bytes as an immutable Git blob and return its OID after durable storage.
    * Retrying identical bytes returns the same OID. This does not change any worktree or message.
    * Use the OID in a chat attachment, or in a worktree's whole-file `setBytes` change together
-   * with the payload's byte length. An OID from another workspace grants no access here.
+   * with the payload's byte length. The blob must be present in this workspace's Git store.
+   * Limited to 8,000,000 bytes; larger-file support is deferred.
    */
   uploadBlob(content: Uint8Array): Promise<GitOid>;
 
@@ -3952,7 +3953,7 @@ export type AlwaysAvailableResource = {
 
 /**
  * A previously uploaded blob to attach to a chat message, with display/model-input metadata.
- * The blob must have been uploaded in this workspace. Attachment limits and MIME signatures
+ * The blob must be present in this workspace's Git store. Attachment limits and MIME signatures
  * are checked when sending. The ID-only variant accepts legacy staged uploads.
  */
 export type ChatAttachmentHandle = {

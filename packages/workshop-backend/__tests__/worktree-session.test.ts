@@ -9,7 +9,7 @@ import type { OverseerDurableObject } from "../src/overseer.js";
 import { WorktreeSessionImpl, type WorktreeSessionHost } from "../src/worktree-session";
 import type { WorktreeTurnAccess } from "../src/agent";
 import { formatUnifiedDiff } from "../src/agent";
-import { WorkspaceGitCache } from "../src/git-cache";
+import { MAX_GIT_OBJECT_SIZE, WorkspaceGitCache } from "../src/git-cache";
 import { GitStore } from "../src/git-store";
 import { makeOverseerStorage } from "../src/storage-schema/overseer-storage";
 import { concatBytes } from "../src/git-codec";
@@ -203,45 +203,55 @@ describe("listFiles", () => {
     expect(await impl.gitStore.readCommitFiles(commit)).toEqual(new Map([["a.txt", text + "edited\n"]]));
   }));
 
-  it("resolves immutable byte identities without granting authority; sessions grant their own scopes", () => withImpl(async impl => {
+  it("resolves byte identities without copying the Git object or adding permission records", () => withImpl(async impl => {
     const commit = await commitFiles(impl, {"a.txt": "same text\n"});
+    const before = [...impl.storage.gitObjects.list()];
     const [a, b] = await Promise.all([
       impl.gitCache.fileBytesAtCommit(commit, "a.txt"),
       impl.gitCache.fileBytesAtCommit(commit, "a.txt"),
     ]);
     expect(a).toEqual(b);
-    expect([...impl.storage.byteGrants.list()]).toEqual([]);
     addChat(impl, 1);
-    const {session, id} = await createWorktreeSession(impl, 1, commit);
-    await session.readBytes("a.txt");
-    expect(impl.byteStore.isFinishedFor(`worktree:${id}`, a)).toBe(true);
-    expect(impl.byteStore.isFinishedFor("unrelated", a)).toBe(false);
+    const {session} = await createWorktreeSession(impl, 1, commit);
+    expect(await new Response(await session.readBytes("a.txt")).text()).toBe("same text\n");
+    expect([...impl.storage.gitObjects.list()]).toEqual(before);
     expect(await impl.gitStore.readCommitFiles(commit)).toEqual(new Map([["a.txt", "same text\n"]]));
   }));
 
-  it("stages, replaces, commits and deletes bytes through the DO worktree API", () => withImpl(async impl => {
+  it("bounds byte writes and ranges without changing the file on failure", () => withImpl(async impl => {
+    addChat(impl, 1);
+    const base = await commitFiles(impl, {});
+    const {session} = await createWorktreeSession(impl, 1, base);
+    await session.writeBytes("data.bin", Uint8Array.of(0, 255, 7));
+    expect(await new Response(await session.readBytes("data.bin", {offset: 1, length: 2})).bytes())
+      .toEqual(Uint8Array.of(255, 7));
+    expect(await new Response(await session.readBytes("data.bin", {offset: 3, length: 0})).bytes())
+      .toEqual(new Uint8Array());
+    for (const range of [{offset: -1, length: 1}, {offset: 0, length: -1}, {offset: 1, length: 3},
+      {offset: 4, length: 0}, {offset: 0.5, length: 1}, {offset: Number.MAX_SAFE_INTEGER, length: 1}]) {
+      await expect(session.readBytes("data.bin", range)).rejects.toThrow("Invalid byte range");
+    }
+    await expect(session.writeBytes("data.bin", new Uint8Array(MAX_GIT_OBJECT_SIZE + 1)))
+      .rejects.toThrow("too large");
+    expect(await new Response(await session.readBytes("data.bin")).bytes()).toEqual(Uint8Array.of(0, 255, 7));
+    await session.writeBytes("empty.bin", new Uint8Array());
+    expect(await new Response(await session.readBytes("empty.bin")).bytes()).toEqual(new Uint8Array());
+    await expect(session.readBytes("missing.bin")).rejects.toThrow("no such file");
+  }));
+
+  it("writes, replaces, commits and deletes bytes through the DO worktree API", () => withImpl(async impl => {
     addChat(impl, 1);
     const base = await commitFiles(impl, {});
     const {session, turn, id} = await createWorktreeSession(impl, 1, base);
-    const stage = async (uploadId: string, data: Uint8Array) => {
-      const sha = new Uint8Array(await crypto.subtle.digest("SHA-256", data)).toHex();
-      await session.beginUpload(uploadId, {byteLength: data.length, sha256: sha});
-      await session.writeUpload(uploadId, 0, new Response(data).body!);
-      return session.finishUpload(uploadId);
-    };
-    const original = await stage("original", Uint8Array.of(0, 255, 3, 4));
-    await session.writeBytes("image.bin", original);
-    const replacement = await stage("replacement", Uint8Array.of(0, 5, 0, 3, 4));
-    await session.writeBytes("image.bin", replacement);
+    await session.writeBytes("image.bin", Uint8Array.of(0, 255, 3, 4));
+    await session.writeBytes("image.bin", Uint8Array.of(0, 5, 0, 3, 4));
     expect(new Uint8Array(await new Response(await session.readBytes("image.bin")).arrayBuffer())).toEqual(Uint8Array.of(0, 5, 0, 3, 4));
     const commit = await session.commit("binary replacement");
     await turn.barrier();
     expect(impl.getWorktreeRecord(id).headCommit).toBe(commit);
     const value = await impl.gitCache.fileBytesAtCommit(commit, "image.bin");
-    expect(new Uint8Array(await new Response(impl.byteStore.read(value)).arrayBuffer())).toEqual(Uint8Array.of(0, 5, 0, 3, 4));
+    expect(impl.gitStore.readBlob(value.oid, value.byteLength)).toEqual(Uint8Array.of(0, 5, 0, 3, 4));
     await expect(session.readFile("image.bin")).rejects.toThrow(/Binary/);
-    const outside = await impl.byteStore.import("unrelated", Uint8Array.of(8));
-    await expect(session.writeBytes("outside.bin", outside)).rejects.toThrow(/outside/);
     await session.deleteFile("image.bin");
     const deleted = await session.commit("delete binary");
     await turn.barrier();

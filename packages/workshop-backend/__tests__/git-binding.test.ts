@@ -68,12 +68,8 @@ describe("env.GIT worktrees", () => {
     using git = new RpcStub(await openGit(impl));
     using worktree = await git.newWorktree(base);
     for (const [i, data] of [new TextEncoder().encode("\ufeffhello😀\n"), Uint8Array.of(0, 255)].entries()) {
-      const uploadId = `bytes-${i}`, path = `file-${i}`;
-      await worktree.beginUpload(uploadId, {byteLength: data.length,
-        sha256: new Uint8Array(await crypto.subtle.digest("SHA-256", data)).toHex()});
-      await worktree.writeUpload(uploadId, 0, new Response(data).body!);
-      const ref = await worktree.finishUpload(uploadId);
-      await worktree.writeBytes(path, ref);
+      const path = `file-${i}`;
+      await worktree.writeBytes(path, data);
       if (i === 0) {
         expect(await worktree.readFile(path)).toBe("\ufeffhello😀\n");
         expect(await worktree.structuredGrep(/hello/, path)).toEqual({

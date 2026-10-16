@@ -13,6 +13,12 @@ the same OID can instead be used in a worktree `setBytes` operation with its byt
 Attachment limits and MIME signatures are checked when sending, independently of generic
 blob storage. Removing an unsent attachment only discards the client reference; immutable
 Git objects are not deleted while another attachment or worktree may still reference them.
+Uploaded bytes, Git-fetched files, and authored files share the existing `gitObjects` collection:
+one zlib-compressed loose Git object per OID. There is no chunk store or upload-grant system.
+As with other Git APIs, knowing an OID allows access to that object if it exists in the workspace.
+Raw-byte uploads and writes accept at most 8,000,000 bytes, conservatively below the existing
+8 MiB compressed storage-record limit. Larger-file storage is deferred to a separate change;
+existing text-write and local-read behavior is unchanged.
 
 Valid UTF-8 text without NUL bytes retains the existing text OTs, including a preserved BOM.
 Later text uploads that exceed the OT record budget use an immutable blob reference instead,
@@ -22,15 +28,17 @@ Text edits over an uncommitted blob replacement remain unsupported; this does no
 composition or introduce binary deltas. Whole-file replacements and edits after committing
 the blob as a Git base keep their existing semantics.
 Other content uses the shared whole-file representation: `setBytes: {oid, byteLength}`
-names an immutable whole-file Git blob. Payloads are stored in bounded raw-byte chunks, not
+names an immutable whole-file Git blob. Payloads are stored as ordinary Git objects, not
 embedded or base64-encoded in an OT. Binary changes are whole-file replacements or deletions;
 binary deltas are deliberately not supported. Text transforms remain unchanged.
 
-Ordinary worktree bindings expose `readBytes()` and resumable, digest-verified byte uploads.
-Git pack export streams chunk-backed blobs, so container materialization can transfer every
-file without decoding it as text. Containers consume the same canonical worktree rather than
-needing a separate attachment download path. The container-specific replica API remains in
-the replica/binary follow-up PRs; this attachment ingress does not require a container.
+Ordinary worktree bindings expose `readBytes()` and `writeBytes(path, rawBytes)`; writes store
+the blob before appending its whole-file OT. There is no staged/resumable upload protocol.
+Git pack export streams one object at a time, so container materialization can transfer files
+without decoding them as text or buffering the entire repository. Containers consume the same
+canonical worktree rather than needing a separate attachment download path. The container-specific
+replica API remains in the replica/binary follow-up PRs; this attachment ingress does not require
+a container.
 
 Download/replay reads the original upload's immutable Git blob, not a subsequently edited
 workspace file. On the next message or agent turn, legacy attachments are migrated lazily,

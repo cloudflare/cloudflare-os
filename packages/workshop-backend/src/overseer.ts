@@ -45,7 +45,6 @@ import {
   type AiGatewayLogRoute,
 } from "./ai-gateway";
 import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, agentCodeChangeShape, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
-import { ByteStore } from './byte-store';
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
 import { scanWorkpieceForGrep, type GrepScan } from "./grep";
@@ -697,7 +696,6 @@ class OverseerImpl implements AgentHooks {
   // The workspace's git object store, holding all gadgets' committed code (see git-store.ts).
   // One instance per DO so isomorphic-git's parse cache is shared.
   readonly gitStore: GitStore;
-  readonly byteStore: ByteStore;
 
   // The gatekeeper-facing git cache layer over the same store: provenance metadata, the pull
   // driver, and push authorization (see git-cache.ts). Per-gatekeeper GitCache stubs are minted
@@ -1083,13 +1081,10 @@ class OverseerImpl implements AgentHooks {
   constructor(public ctx: DurableObjectState, public env: Cloudflare.Env) {
     this.logger = logger.with({ gadgetId: ctx.id.toString() });
     this.storage = makeOverseerStorage(ctx.storage);
-    this.byteStore = new ByteStore(this.storage.byteObjects, this.storage.byteChunks, this.storage.byteUploads,
-      () => ctx.storage.sync(), this.storage.byteGrants, this.storage.gitByteBlobs,
-      callback => this.storage.transaction(callback));
-    this.gitStore = new GitStore(this.storage.gitObjects, this.byteStore, this.storage.gitByteBlobs);
+    this.gitStore = new GitStore(this.storage.gitObjects);
     this.gitCache = new WorkspaceGitCache(this.storage, {
       pull: (gatekeeperId, oids, hints) => this.#pullGitObjects(gatekeeperId, oids, hints),
-    }, this.byteStore);
+    });
     this.users = this.ctx.exports.UserDurableObject;
     this.ownerId = this.storage.ownerId.get();
 
@@ -2681,7 +2676,7 @@ class OverseerImpl implements AgentHooks {
     for (const [id, entries] of Object.entries(change)) for (const [, file] of entries) {
       if (!("setBytes" in file)) continue;
       if (!this.isWorktree(Number(id))) throw new Error("Binary mutations require a worktree.");
-      this.byteStore.require(file.setBytes);
+      this.gitStore.readBlob(file.setBytes.oid, file.setBytes.byteLength);
     }
   }
 
@@ -5179,8 +5174,7 @@ class OverseerImpl implements AgentHooks {
       throw new Error("Chat attachment not found.");
     }
     if (content.data !== undefined) return content.data;
-    if (content.state.oid !== undefined) return this.byteStore.readSmall(
-      this.byteStore.reference(content.state.oid), MAX_CHAT_ATTACHMENT_TOTAL_BYTES);
+    if (content.state.oid !== undefined) return this.gitStore.readBlob(content.state.oid);
     if (content.state.workspaceCommitId === undefined ||
         content.state.workspacePath === undefined) {
       throw new Error("Chat attachment has no stored content.");
@@ -5190,9 +5184,6 @@ class OverseerImpl implements AgentHooks {
     if (!entry || entry.kind === "dir" || entry.kind === "submodule") {
       throw new Error("Chat attachment content is missing from Git.");
     }
-    const blob = this.storage.gitByteBlobs.get(entry.oid);
-    if (blob) return this.byteStore.readSmall(
-      this.byteStore.reference(entry.oid), MAX_CHAT_ATTACHMENT_TOTAL_BYTES);
     return (await this.gitCache.ensureObject(entry.oid,
       {type: "blob", referencedBy: entry.referencedBy})).payload;
   }
@@ -5215,8 +5206,7 @@ class OverseerImpl implements AgentHooks {
       let content = this.storage.chatAttachmentContent.get(a.id);
       if (content?.state.type === "committed" && content.state.chatId === msg.chatId &&
           content.state.oid !== undefined) {
-        return {...a, content: this.byteStore.readSmall(
-          this.byteStore.reference(content.state.oid), MAX_CHAT_ATTACHMENT_TOTAL_BYTES)};
+        return {...a, content: this.gitStore.readBlob(content.state.oid)};
       }
       if (!content?.data) return a;
       return {...a, content: content.data};
@@ -5280,7 +5270,7 @@ class OverseerImpl implements AgentHooks {
     let files = new Map<string, FileContent>();
     for (let attachment of attachments) {
       const data = attachment.oid !== undefined
-        ? this.byteStore.readSmall(this.byteStore.reference(attachment.oid), MAX_CHAT_ATTACHMENT_TOTAL_BYTES)
+        ? this.gitStore.readBlob(attachment.oid)
         : this.storage.chatAttachmentContent.get(attachment.id)?.data;
       if (data === undefined) throw new Error("Chat attachment is no longer available.");
       let path = this.#attachmentWorkspaceFilename(attachment, used);
@@ -5290,8 +5280,8 @@ class OverseerImpl implements AgentHooks {
       const text = decodeChatAttachmentText(attachment.mimeType, data);
       const value: FileContent = text !== undefined && (worktree === undefined ||
           codeChangeSerializedSize({[worktree.id]: [[path, {set: text}]]}) <= MAX_CODE_CHANGE_SIZE) ? text
-          : attachment.oid !== undefined ? this.byteStore.reference(attachment.oid)
-          : await this.byteStore.import(`attachments:${chatId}`, data);
+          : attachment.oid !== undefined ? {oid: attachment.oid, byteLength: data.byteLength}
+          : await this.gitStore.writeBlob(data);
       attachment.workspacePath = path;
       files.set(path, value);
     }
@@ -5309,9 +5299,9 @@ class OverseerImpl implements AgentHooks {
         const source = this.storage.chatAttachmentContent.get(attachment.id);
         if (source?.state.type !== "committed" || source.state.chatId !== chatId) continue;
         if (source.state.oid !== undefined && attachment.workspacePath !== undefined) continue;
-        const bytes = source.state.oid !== undefined ? this.byteStore.reference(source.state.oid)
-          : await this.byteStore.import(undefined, await this.getChatAttachmentData(chatId, attachment.id));
-        const projected = {...attachment, oid: bytes.oid};
+        const oid = source.state.oid ??
+          (await this.gitStore.writeBlob(await this.getChatAttachmentData(chatId, attachment.id))).oid;
+        const projected = {...attachment, oid};
         const files = attachment.workspacePath === undefined
           ? await this.#prepareWorkspaceAttachmentFiles(chatId, [projected]) : new Map<string, FileContent>();
         const worktree = this.#attachmentsWorktree(chatId);
@@ -5335,7 +5325,7 @@ class OverseerImpl implements AgentHooks {
           Object.assign(ref, projected);
           this.storage.chats.put(current);
           this.storage.chatAttachmentContent.put({fileId: ref.id, state: {
-            type: "committed", chatId, oid: bytes.oid, workspacePath: ref.workspacePath,
+            type: "committed", chatId, oid, workspacePath: ref.workspacePath,
           }});
         });
         await this.ctx.storage.sync();
@@ -5461,18 +5451,15 @@ class OverseerImpl implements AgentHooks {
     let seenIds = new Set<string>();
     for (let attachment of attachments) {
       if ("oid" in attachment) {
-        const ref = this.byteStore.reference(attachment.oid);
-        if (!this.byteStore.isFinishedFor("client-upload", ref)) {
-          throw new Error("Chat attachment blob was not uploaded in this workspace.");
-        }
-        assertChatAttachmentSize(ref.byteLength);
+        const content = this.gitStore.readBlob(attachment.oid);
+        assertChatAttachmentSize(content.byteLength);
         const upload = validateChatAttachmentUpload({
           mimeType: attachment.mimeType, name: attachment.name,
-          content: this.byteStore.readSmall(ref, MAX_CHAT_ATTACHMENT_TOTAL_BYTES),
+          content,
         });
-        total += ref.byteLength;
-        result.push({id: crypto.randomUUID(), oid: ref.oid,
-          mimeType: upload.mimeType, name: upload.name, size: ref.byteLength});
+        total += content.byteLength;
+        result.push({id: crypto.randomUUID(), oid: attachment.oid,
+          mimeType: upload.mimeType, name: upload.name, size: content.byteLength});
         continue;
       }
       let id = validateChatAttachmentId(attachment.id);
@@ -11731,7 +11718,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async uploadBlob(content: Uint8Array): Promise<string> {
-    return (await this.impl.byteStore.import("client-upload", content)).oid;
+    const {oid} = await this.impl.gitStore.writeBlob(content);
+    await this.impl.ctx.storage.sync();
+    return oid;
   }
 
   // Fetch the bytes of a committed chat attachment over the authenticated RPC connection. The

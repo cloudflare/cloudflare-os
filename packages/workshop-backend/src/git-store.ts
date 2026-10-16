@@ -25,24 +25,25 @@
 // - Loose objects only, one collection record per object, keyed by oid. isomorphic-git never
 //   writes deltified data (it only reads deltas in packfiles fetched from remotes), so each
 //   record is a zlib'd whole object. Dedup comes from content addressing, not deltas.
-// - Object size is bounded only by the storage record cap, which applies to the deflated
-//   object, and is enforced by storage itself: nothing here caps a file's length in advance, so
-//   writing a file whose blob doesn't fit throws an error naming it (see `#writeFileBlob`).
-//   Every caller writes objects before moving any record to name them, so such a failure
-//   changes nothing but leave earlier objects dangling. If larger blobs are ever needed, chunking records or
-//   spilling to R2 is a change local to the fs shim below.
-// - No GC. Dangling objects are only created by accepted merges, imports, migration, loading
-//   a blueprint's release (whose objects are stored whether or not anything comes to refer to
+// - Remote and raw-byte ingress are bounded to MAX_GIT_OBJECT_SIZE. Existing text writes keep
+//   their storage-record cap on the deflated object: a file whose blob doesn't fit throws an
+//   error naming it (see `#writeFileBlob`). Every caller writes objects before moving any
+//   record to name them, so a failure only leaves earlier objects dangling. Larger-file
+//   storage is deferred; every object here uses the same ordinary loose-object format.
+// - No GC. Uploads and discarded raw-byte writes can leave blobs dangling, as can accepted
+//   merges, imports, migration, loading a blueprint's release (whose objects are stored whether
+//   or not anything comes to refer to
 //   them), and the merge commits of a chat that is then discarded (an update from mainline
 //   commits the chat's files and the merge result, see updateChatFromMainline, and applying a
-//   blueprint commits its merge, see applyBlueprint) -- never by a chat's edits -- and are
-//   cheap. If GC is ever needed, the roots are
+//   blueprint commits its merge, see applyBlueprint). A future GC needs a retention policy for
+//   uploaded-but-unreferenced blobs. Its roots are
 //   enumerable: gadget records (their heads and the blueprint releases they follow), blueprint
 //   gadget records (the commits they exported and the releases minted from those), live chats'
 //   pinned commits, the pin declarations in chat logs and compaction checkpoints (closed epochs
 //   are reconstructed from them), and the `observedOid` blob stamps (and legacy `observedCommit`
-//   stamps) on chats' readFile tool calls (which nothing else roots -- a future GC must either
-//   root them or the agent's replay must tolerate a missing object by eliding the read).
+//   stamps) on chats' readFile tool calls, attachment originals, and whole-file `setBytes`
+//   references in live chat changes. A future GC must root read stamps or let agent replay
+//   tolerate a missing object by eliding the read.
 
 import {
   Errors,
@@ -59,11 +60,11 @@ import {
 import diff3Merge from "diff3";
 import type { Collection } from "@gadgets/typed-storage";
 import type { AiChatAuthorInfo, CommitIdentity, CommitInfo } from "@gadgets/workshop-shared/api";
-import type { GitObjectRecord, GitByteBlobRecord } from "./storage-schema/overseer-storage";
-import type { ByteStore } from "./byte-store";
-import { decodeBlobText } from "./git-cache";
-import type { FileContent } from "@gadgets/workshop-shared/code-change";
+import type { GitObjectRecord } from "./storage-schema/overseer-storage";
+import { decodeBlobText, MAX_GIT_OBJECT_SIZE } from "./git-cache";
+import type { BytesRef, FileContent } from "@gadgets/workshop-shared/code-change";
 import {
+  decodeLooseObject,
   encodeGitCommit,
   encodeLooseObject,
   gitObjectOid,
@@ -223,10 +224,37 @@ export class GitStore {
   #fs: PromiseFsClient;
   #cache: object = {};
 
-  constructor(objects: Collection<GitObjectRecord, string>,
-    private byteStore?: ByteStore, private byteBlobs?: Collection<GitByteBlobRecord, string>) {
+  constructor(objects: Collection<GitObjectRecord, string>) {
     this.#objects = objects;
     this.#fs = makeGitObjectsFs(objects);
+  }
+
+  /** Store a bounded raw payload as an ordinary Git blob, returning its immutable reference. */
+  async writeBlob(content: Uint8Array): Promise<BytesRef> {
+    if (content.byteLength > MAX_GIT_OBJECT_SIZE) {
+      throw new Error(`Git blob is too large to store (over ${MAX_GIT_OBJECT_SIZE} bytes).`);
+    }
+    try {
+      const oid = await writeBlob({fs: this.#fs, gitdir: GITDIR, blob: content});
+      return {oid, byteLength: content.byteLength};
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("SQLITE_TOOBIG")) {
+        throw new Error("Git blob is too large to store.", {cause: err});
+      }
+      throw err;
+    }
+  }
+
+  /** Read a local Git blob by its OID capability, optionally checking a whole-file OT's length. */
+  readBlob(oid: string, byteLength?: number): Uint8Array {
+    const record = this.#objects.get(oid);
+    if (!record) throw new Error("Unknown Git blob.");
+    const object = decodeLooseObject(record.data);
+    if (object.type !== "blob") throw new Error("Git object is not a blob.");
+    if (byteLength !== undefined && object.payload.byteLength !== byteLength) {
+      throw new Error("Git blob length does not match its reference.");
+    }
+    return object.payload;
   }
 
   /**
@@ -462,8 +490,7 @@ export class GitStore {
   // only names the file in the error, and says what to do about it.
   async #writeFileBlob(path: string, text: FileContent): Promise<string> {
     if (typeof text !== "string") {
-      if (!this.byteStore || !this.byteBlobs) throw new Error("Byte storage is unavailable.");
-      this.byteStore.require(text);
+      this.readBlob(text.oid, text.byteLength);
       return text.oid;
     }
     try {
@@ -486,10 +513,7 @@ export class GitStore {
       if (entry.type === "tree") {
         await this.#collectTreeFiles(entry.oid, `${path}/`, out);
       } else if (entry.type === "blob" && (entry.mode === "100644" || entry.mode === "100755")) {
-        const stored = this.byteBlobs?.get(entry.oid);
-        const blob = stored
-          ? this.byteStore!.readSmall(this.byteStore!.reference(entry.oid), stored.bytes.byteLength)
-          : (await readBlob({ fs: this.#fs, gitdir: GITDIR, oid: entry.oid, cache: this.#cache })).blob;
+        const {blob} = await readBlob({ fs: this.#fs, gitdir: GITDIR, oid: entry.oid, cache: this.#cache });
         out.set(path, decodeBlobText(blob, path));
       } else {
         throw new Error(`unsupported tree entry at ${path}: mode ${entry.mode}`);
