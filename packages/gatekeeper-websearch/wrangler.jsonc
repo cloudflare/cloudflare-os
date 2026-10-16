@@ -17,9 +17,6 @@
   "ai": {
     "binding": "AI"
   },
-  "vars": {
-    "CF_AI_GATEWAY": "default"
-  },
   "build": {
     "command": "pnpm exec capnweb-validate build --out .wrangler/validate",
     "watch_dir": "src"

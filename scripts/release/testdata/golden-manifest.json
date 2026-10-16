@@ -1061,8 +1061,7 @@
       "shortName": "websearch",
       "singleton": true,
       "vars": {
-        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/websearch",
-        "CF_AI_GATEWAY": "default"
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/websearch"
       }
     },
     "gatekeeper-x": {

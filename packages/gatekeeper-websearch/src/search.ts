@@ -9,6 +9,9 @@ import type { WebSearchResult } from "./types.js";
 // retention; with an operator's own Ceramic key stored on the gateway, their Ceramic terms apply.
 const PROVIDER = "ceramic";
 
+// Every account has an AI Gateway named "default", so a deploy that sets no CF_AI_GATEWAY works.
+const DEFAULT_GATEWAY = "default";
+
 // The API's limit on a query's length.
 const MAX_QUERY_CHARS = 1024;
 
@@ -24,12 +27,12 @@ const RESULT_SCHEMA = z.object({
 const RESPONSE_SCHEMA = z.object({ items: z.array(RESULT_SCHEMA) });
 
 /**
- * Searches the web for `query` through the Workers AI binding and the `CF_AI_GATEWAY` gateway.
- * Calls `audit` once, before the query is sent, and throws without sending anything if the query
- * is empty or too long, or `audit` throws.
+ * Searches the web for `query` through the Workers AI binding and the `CF_AI_GATEWAY` gateway, or
+ * `default` when that is unset. Calls `audit` once, before the query is sent, and throws without
+ * sending anything if the query is empty or too long, or `audit` throws.
  */
 export async function search(
-  env: { AI: Pick<Ai, "websearch">; CF_AI_GATEWAY: string },
+  env: { AI: Pick<Ai, "websearch">; CF_AI_GATEWAY?: string },
   query: string,
   audit: (description: ObservationDescription) => Promise<void>,
 ): Promise<WebSearchResult[]> {
@@ -39,8 +42,10 @@ export async function search(
 
   // Recorded first: the query is what leaves, and a refused or failed record must stop it.
   await audit(describeSearch(query));
-  const response = await env.AI.websearch(
-      { gatewayId: env.CF_AI_GATEWAY, query, provider: PROVIDER, limit: MAX_RESULTS });
+  const response = await env.AI.websearch({
+    gatewayId: env.CF_AI_GATEWAY ?? DEFAULT_GATEWAY, query, provider: PROVIDER,
+    limit: MAX_RESULTS,
+  });
   if (!response.ok) {
     // Not the body, which may quote the query back.
     throw new Error(`Web search failed with HTTP ${response.status}.`);

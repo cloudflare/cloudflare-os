@@ -12,10 +12,6 @@ export default defineGadgetsWorker({
     // Workers AI's `websearch()`. It always runs remotely, so `pnpm dev-server` keeps it only with
     // --use-workers-ai-binding.
     AI: bindings.ai(),
-    // The AI Gateway searches go through. The deploy service sets it to the instance's gateway,
-    // the one the backend's CF_AI_GATEWAY names; "default" exists in every account, so local dev
-    // needs no gateway of its own.
-    CF_AI_GATEWAY: bindings.text("default"),
   },
 });
 

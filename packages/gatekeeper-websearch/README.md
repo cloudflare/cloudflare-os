@@ -48,7 +48,7 @@ count, and gets up to 10 results.
 2. It records the query through the session's `ApprovalQueue`. The query goes in a literal field,
    built with gatekeeper-kit's `buildDescription`, so the record shows exactly what was sent. If
    the record is refused or fails, nothing is sent.
-3. It calls `env.AI.websearch({ gatewayId: env.CF_AI_GATEWAY, query, provider: "ceramic", limit: 10 })`.
+3. It calls `env.AI.websearch({ gatewayId: env.CF_AI_GATEWAY ?? "default", query, provider: "ceramic", limit: 10 })`.
 4. It parses the response with zod, which drops the image and favicon fields. A failed search
    throws `Web search failed with HTTP <status>.` without the provider's body, which can quote the
    query back. The record stays.

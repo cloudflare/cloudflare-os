@@ -51,6 +51,14 @@ describe("search", () => {
     }]);
   });
 
+  it("searches the default gateway when none is configured", async () => {
+    const websearch = vi.fn(respond([]));
+
+    await search({ AI: { websearch } }, "q", recorder().audit);
+
+    expect(websearch).toHaveBeenCalledWith(expect.objectContaining({ gatewayId: "default" }));
+  });
+
   it("sends and records nothing for a query outside the API's 1 to 1,024 characters", async () => {
     const websearch = vi.fn(respond([]));
     const { audit, descriptions } = recorder();
