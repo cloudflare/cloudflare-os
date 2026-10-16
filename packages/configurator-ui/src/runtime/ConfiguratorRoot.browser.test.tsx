@@ -73,7 +73,8 @@ describe("readiness", () => {
       render: () => { throw new Error("first render failure"); },
     });
     expect(failing.readiness()).toEqual([false]);
-    await expect.element(page.getByText("first render failure")).toBeVisible();
+    // The notice shows the error's whole stack.
+    await expect.element(page.getByText("first render failure", { exact: false })).toBeVisible();
   });
 
   it("keeps the last good form on screen when a later render fails, and recovers with it", async () => {
@@ -103,7 +104,7 @@ describe("readiness", () => {
       render: ({ values }) => <Broken broken={Boolean(values.broken)} />,
     });
     await act(() => session.store.setValues({ broken: "yes" }));
-    await expect.element(page.getByText("component failure")).toBeVisible();
+    await expect.element(page.getByText("component failure", { exact: false })).toBeVisible();
     expect(readiness().at(-1)).toBe(false);
     await expect(collectResourceUrl(session)).rejects.toThrow(/failed to render its current state/i);
 
@@ -117,7 +118,7 @@ describe("readiness", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const render = vi.fn<Spec["render"]>(({ values }) => <Broken broken={Boolean(values.broken)} />);
     const { readiness, session } = await mount({ initial: { broken: "yes" }, resourceUrl: () => "https://example.com/", render });
-    await expect.element(page.getByText("component failure")).toBeVisible();
+    await expect.element(page.getByText("component failure", { exact: false })).toBeVisible();
     const posted = readiness();
 
     for (const iframeTop of [10, 20, 30]) {
