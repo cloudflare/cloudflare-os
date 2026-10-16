@@ -1250,14 +1250,16 @@ export default function WorkpieceCodeInterface({
     // Only a plain file can be renamed: the browser withholds the action from other kinds (see
     // FileBrowser for why an executable is among them), and this is the backstop.
     if (leafKindOf(oldName) !== 'file') return
+    if (!fileExists(oldName)) {
+      toasts.add({ title: 'File not found', variant: 'error' })
+      return
+    }
     if (fileExists(newName)) {
       toasts.add({ title: `File already exists: ${newName}`, variant: 'error' })
       return
     }
     const target = { client, gadgetId: workpieceId, contentBase }
-    const baseText = fileExists(oldName)
-      ? await readDisplayedText(oldName).catch(() => null)
-      : null
+    const baseText = await readDisplayedText(oldName).catch(() => null)
     // The read may have outlasted the selection: applyLocalFileChanges targets the *current*
     // gadget, and this rename belongs to the one it started on.
     if (target.client === null || clientRef.current !== target.client ||
@@ -1269,8 +1271,11 @@ export default function WorkpieceCodeInterface({
     // source text as the chat holds it *now* -- the read is only right while the path is still
     // untouched -- and refuse a destination that has since come to exist.
     const chatFilesNow = target.client.getFiles(target.gadgetId)
-    const text = chatFilesNow?.get(oldName) ??
-      (target.client.getRemovedPaths(target.gadgetId).has(oldName) ? null : baseText)
+    if (!chatFilesNow?.has(oldName) && target.client.getRemovedPaths(target.gadgetId).has(oldName)) {
+      toasts.add({ title: 'File not found', variant: 'error' })
+      return
+    }
+    const text = chatFilesNow?.get(oldName) ?? baseText
     if (typeof text !== 'string') {
       toasts.add({ title: 'Only text files can be renamed in this editor', variant: 'error' })
       return

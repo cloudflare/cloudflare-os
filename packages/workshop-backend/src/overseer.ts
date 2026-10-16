@@ -2654,6 +2654,16 @@ class OverseerImpl implements AgentHooks {
     return {sequence, meta: this.getChatMetaOrThrow(chatId)};
   }
 
+  // All publication paths validate durable sources before ACK; text-only gadgets cannot
+  // acquire byte state that their runtime cannot compile or display.
+  #validateByteChanges(change: CodeChange): void {
+    for (const [id, entries] of Object.entries(change)) for (const [, file] of entries) {
+      if (!("setBytes" in file)) continue;
+      if (!this.isWorktree(Number(id))) throw new Error("Binary mutations require a worktree.");
+      this.gitStore.readBlob(file.setBytes.oid, file.setBytes.byteLength);
+    }
+  }
+
   // AgentHooks implementation: the agent step's persistence barrier (see the interface doc for
   // the contract). One storage transaction persists the step's messages (tool-call record
   // first), appends each buffered change as a row -- broadcast immediately, superseding the
@@ -2670,16 +2680,6 @@ class OverseerImpl implements AgentHooks {
   // so a mid-barrier exception, itself a bug, can leak broadcasts for rolled-back rows. The
   // in-memory content/byte caches *are* restored on rollback (dropped, to rebuild from
   // storage), or they would serve content the rows no longer back.
-  // All publication paths validate durable sources before ACK; text-only gadgets cannot
-  // acquire byte state that their runtime cannot compile or display.
-  #validateByteChanges(change: CodeChange): void {
-    for (const [id, entries] of Object.entries(change)) for (const [, file] of entries) {
-      if (!("setBytes" in file)) continue;
-      if (!this.isWorktree(Number(id))) throw new Error("Binary mutations require a worktree.");
-      this.gitStore.readBlob(file.setBytes.oid, file.setBytes.byteLength);
-    }
-  }
-
   async commitAgentStep(chatId: number, author: AiChatAuthorInfo,
       msgs: AiChatMessageBodyWithModelData[],
       step: {

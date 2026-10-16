@@ -4,6 +4,8 @@ Every new upload becomes a file in a chat-private `SCRATCH` worktree, independen
 MIME type or the selected model's input support. Images, PDFs, archives, spreadsheets,
 unknown formats, empty binary files, and invalid UTF-8 are supported. Upload preparation
 preserves the original bytes, including images; it does not resize or transcode them.
+This intentionally removes the old image-only path that accepted source images up to 25 MiB
+and resized them to fit: source images, like every other upload, must now fit the 4 MiB limit.
 The scratch worktree is created on the first upload and reused for later uploads, plans,
 and other agent working files. Existing attachment worktrees keep their binding names.
 
@@ -19,6 +21,9 @@ As with other Git APIs, knowing an OID allows access to that object if it exists
 Raw-byte uploads and writes accept at most 8,000,000 bytes, conservatively below the existing
 8 MiB compressed storage-record limit. Larger-file storage is deferred to a separate change;
 existing text-write and local-read behavior is unchanged.
+The shared Git store has no GC. Removing an attachment from an unsent draft does not reclaim
+its uploaded blob; retention/quota needs a generic policy that also protects objects referenced
+by messages and worktree changes, not attachment-specific deletion by OID.
 
 Valid UTF-8 text without NUL bytes retains the existing text OTs, including a preserved BOM.
 Later text uploads that exceed the OT record budget use an immutable blob reference instead,

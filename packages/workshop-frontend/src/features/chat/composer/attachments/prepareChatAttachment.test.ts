@@ -21,4 +21,11 @@ describe("prepareChatAttachment", () => {
     const file = new File([new Uint8Array(MAX_CHAT_ATTACHMENT_BYTES + 1)], "large", {type});
     await expect(prepareChatAttachment(file)).rejects.toThrow("Attachments must be 4.0 MB or smaller.");
   });
+
+  it("accepts an original image exactly at the limit without resizing it", async () => {
+    const file = new File([new Uint8Array(MAX_CHAT_ATTACHMENT_BYTES)], "at-limit.png", {type: "image/png"});
+    const prepared = await prepareChatAttachment(file);
+    expect(prepared.blob).toBe(file);
+    expect(prepared.blob.size).toBe(MAX_CHAT_ATTACHMENT_BYTES);
+  });
 });

@@ -1,5 +1,14 @@
 # Plan: Git object storage for gadget code
 
+This records the original storage migration, including its historical Yjs and size-limit
+decisions. The current [attachment/worktree design](../docs/attachment-worktrees.md) uses the
+same workspace `gitObjects` collection for uploads, remote Git objects, and authored files:
+one zlib-compressed loose object per OID, with no attachment-specific chunk store or grants.
+Raw-byte ingress is bounded to 8,000,000 bytes; existing text writes retain the compressed
+storage-record limit. Chunking is deferred. The store still has no GC: discarded uploads can
+leave unreferenced blobs, so any future GC must account for attachment originals and
+whole-file `setBytes` references as well as commits and other existing roots.
+
 ## Goal
 
 Move committed gadget code out of the workspace-wide Yjs doc and into a git object

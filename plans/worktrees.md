@@ -1,5 +1,13 @@
 # Plan: Worktrees — git-backed file workpieces pulled through gatekeepers
 
+This is the original worktree implementation plan. The text-only content restriction below is
+superseded by [attachments in worktrees](../docs/attachment-worktrees.md): each chat can have a
+shared `SCRATCH` worktree containing uploads of any MIME type. Binary mutations use whole-file
+`setBytes: {oid, byteLength}` references to ordinary Git blobs; text reads/grep remain text-only,
+and validated text transforms are unchanged. `readBytes`/`writeBytes` provide raw-byte access.
+Raw-byte ingress is bounded to 8,000,000 bytes; attachments retain their 4 MiB/file limit.
+Chunked/large-file storage and binary diffs are not implemented.
+
 ## Goal
 
 Let agents naturally operate on files pulled from remote git repositories, through
