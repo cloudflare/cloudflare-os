@@ -10,7 +10,7 @@
 // `durableObjectReset` or the `durableObjectId` we log:
 // https://developers.cloudflare.com/durable-objects/best-practices/error-handling/
 //
-// Local vitest-pool-workers aborts reject FLAGLESS (pinned by the "user-DO reset flags"
+// Local `@cloudflare/vitest-plugin` aborts reject FLAGLESS (pinned by the "user-DO reset flags"
 // integration test), so the predicates and the retry path are unit-tested with synthetic
 // production shapes.
 

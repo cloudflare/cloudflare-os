@@ -26,7 +26,7 @@
   },
   "devDependencies": {
     "@cloudflare/kumo": "^2.14.0",
-    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@cloudflare/vitest-plugin": "catalog:",
     "@codemirror/commands": "^6.11.1",
     "@codemirror/lang-javascript": "^6.2.5",
     "@codemirror/lang-json": "^6.0.2",

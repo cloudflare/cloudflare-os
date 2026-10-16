@@ -1,4 +1,4 @@
-/// <reference types="@cloudflare/vitest-pool-workers/types" />
+/// <reference types="@cloudflare/vitest-plugin/types" />
 
 // Types for the workerd suite's environment. The pool types `env` as `Cloudflare.Env`, so the
 // test-only bindings are declared by augmenting that.

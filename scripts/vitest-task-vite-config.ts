@@ -94,7 +94,7 @@ export const WRANGLER_RUNTIME_SCRATCH_EXCLUSIONS: GlobWithBase[] = [
  * The default set: the vitest scratch paths plus the whole of `.wrangler`.
  *
  * `.wrangler/validate/**` is the capnweb-validate build tree, regenerated and then loaded by any
- * suite that starts a worker under `@cloudflare/vitest-pool-workers`. For these packages it is
+ * suite that starts a worker under `@cloudflare/vitest-plugin`. For these packages it is
  * derived from sources the same task already tracks, so dropping it from the fingerprint loses no
  * invalidation -- and it must be dropped, because a task that reads a path it also wrote never
  * caches. `build:app` excludes the same tree, for the same reason.

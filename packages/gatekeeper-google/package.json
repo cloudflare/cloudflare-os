@@ -22,7 +22,7 @@
     "postal-mime": "^2.7.6"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@cloudflare/vitest-plugin": "catalog:",
     "@gadgets/scripts": "workspace:*",
     "miniflare": "catalog:",
     "typescript": "catalog:",

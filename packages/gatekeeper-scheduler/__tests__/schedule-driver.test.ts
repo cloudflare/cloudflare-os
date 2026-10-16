@@ -669,7 +669,7 @@ describe("ScheduleDriver", () => {
     expect((await testEnv.TEST_HOOKS.read()).events).toEqual([]);
   });
 
-  // These input-gate interruption tests can deadlock vitest-pool-workers during teardown.
+  // These input-gate interruption tests can deadlock `@cloudflare/vitest-plugin` during teardown.
   // See https://github.com/cloudflare/workers-sdk/issues/14180.
   it.skip("stops before authorization when revoked during startHook", async () => {
     const events = await revokeWhileDeliveryIsBlocked("revoke-start", "start");

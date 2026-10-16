@@ -38,7 +38,7 @@ in another process.** Most of what follows falls out of that.
 of process, so a faked clock is invisible to it. `isTokenExpired()`'s 30-second skew is inside
 `gatekeeper-shared` and evaluated inside the Worker.
 
-(Fake timers *do* work for in-isolate unit tests under `vitest-pool-workers`, where the test runs
+(Fake timers *do* work for in-isolate unit tests under `@cloudflare/vitest-plugin`, where the test runs
 inside the same isolate)
 
 ### A fixture gatekeeper, not a real one, for the overseer's own logic
@@ -139,7 +139,7 @@ every Worker's config a mark unique to the update, and waits until each reports 
 
 Nothing pins `workerd` directly: `wrangler` and `miniflare` each depend on an exact `workerd`. The
 catalog in `pnpm-workspace.yaml` pins `miniflare` exactly, to the prerelease the catalog `wrangler`
-depends on, and its `overrides` point `@cloudflare/vitest-pool-workers` at those same catalog
+depends on, and its `overrides` point `@cloudflare/vitest-plugin` at those same catalog
 versions, so the lockfile resolves one Wrangler/Miniflare/workerd stack. Bump `wrangler` and
 `miniflare` together; letting them drift installs a second stack.
 

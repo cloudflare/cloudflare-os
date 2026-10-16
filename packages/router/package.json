@@ -12,7 +12,7 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@cloudflare/vitest-plugin": "catalog:",
     "@gadgets/scripts": "workspace:*",
     "jsonc-parser": "^3.3.1",
     "typescript": "catalog:",
