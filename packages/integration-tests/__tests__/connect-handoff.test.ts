@@ -72,7 +72,7 @@ const revocations = async (label: string) =>
 
 const watchCode = (key: string) => `import { restore } from "cloudflare:workers";
 export default async function(self, env) {
-  await env.TEST_THING.watch(${JSON.stringify(key)}, await env.HOOKED[restore]({ type: "value-hook" }));
+  await env.TEST_THING.watch(${JSON.stringify(key)}, await env.HOOKED.rpc[restore]({ type: "value-hook" }));
 }`;
 
 it.concurrent("a connect flow adds the account only when its own session redeems the ticket, once",

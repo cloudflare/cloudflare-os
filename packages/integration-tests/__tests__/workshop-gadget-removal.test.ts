@@ -33,7 +33,7 @@ afterAll(async () => {
 
 const watchCode = (key: string) => `import { restore } from "cloudflare:workers";
 export default async function(self, env) {
-  await env.TEST_AMBIENT.watch(${JSON.stringify(key)}, await env.HOOKED[restore]({ type: "value-hook" }));
+  await env.TEST_AMBIENT.watch(${JSON.stringify(key)}, await env.HOOKED.rpc[restore]({ type: "value-hook" }));
 }`;
 
 const CLIENT_V1 = `document.body.textContent = "blueprint v1";\n`;

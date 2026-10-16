@@ -54,8 +54,8 @@ class Inbox extends RpcTarget {
 
 const SUBSCRIBE = `import { restore } from "cloudflare:workers";
 export default async function(self, env) {
-  await env.GMAIL.subscribeNewMessages(await env.HOOKED[restore]({ type: "gmail" }));
-  await env.CHAT.subscribeNewMessages(await env.HOOKED[restore]({ type: "chat" }));
+  await env.GMAIL.subscribeNewMessages(await env.HOOKED.rpc[restore]({ type: "gmail" }));
+  await env.CHAT.subscribeNewMessages(await env.HOOKED.rpc[restore]({ type: "chat" }));
 }`;
 
 /**

@@ -20,7 +20,7 @@ import { COMMIT_1, FIXTURE_OBJECTS, PACKED_OIDS, b64Bytes } from "./git-cache-fi
 // @ts-expect-error -- ?raw imports have no type declaration
 import WORKTREE_DTS_SOURCE from "../src/worktree-binding.d.ts?raw";
 // The text module workshop-backend ships -- a symlink to the .d.ts above (see
-// worktreeAgentApiText in overseer.ts).
+// agentApiText in overseer.ts).
 import WORKTREE_BINDING_TYPES from "../src/worktree-binding.txt";
 
 declare module "cloudflare:workers" {

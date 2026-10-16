@@ -210,7 +210,7 @@ it("enabling a hook on an unbound connection re-verifies a live use viewer and d
   const SOURCE_URL = "https://gadgets-test.example/things/hook-source";
   const watchCode = `import { restore } from "cloudflare:workers";
 export default async function(self, env) {
-  await env.SOURCE.watch(${JSON.stringify(hookKey)}, await env.HOOKED[restore]({ type: "state-hook" }));
+  await env.SOURCE.watch(${JSON.stringify(hookKey)}, await env.HOOKED.rpc[restore]({ type: "state-hook" }));
 }`;
   const model = models.script([
     {

@@ -44,10 +44,10 @@ import {
   getAiGatewayLogCost,
   type AiGatewayLogRoute,
 } from "./ai-gateway";
-import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME, EXPORTS_BINDING_NAME, AUTOMATIC_CHAT_BINDING_NAMES } from "./agent";
+import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
-import { ExportsImpl } from "./exports-session";
+import { GadgetExportsImpl } from "./exports-session";
 import { scanWorkpieceForGrep, type GrepScan } from "./grep";
 import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
@@ -108,17 +108,19 @@ export default class extends WorkerEntrypoint {
   async run(self, restoreForger) {
     let env = this.env;
     if (restoreForger) {
-      // Graft the well-known \`restore\` symbol onto each service-binding stub in env, so the
-      // executed code can call \`env.SOME_GADGET[restore](params)\` to forge a persistent stub
-      // targeting that gadget's [restore]() method. The symbol property is defined per-instance
-      // (not on the shared prototype) so only this execution's own bindings offer it, and it is
-      // invisible to RPC serialization, so passing a binding over RPC is unaffected. The
-      // capability itself is \`restoreForger\`, a transient stub scoped to this run() call; the
-      // overseer resolves the binding name back to the target gadget (and rejects non-gadget
-      // bindings with an instructive error).
+      // Graft the well-known \`restore\` symbol onto each service-binding stub in env -- for a
+      // gadget binding, its \`rpc\` stub -- so the executed code can call
+      // \`env.SOME_GADGET.rpc[restore](params)\` to forge a persistent stub targeting that
+      // gadget's [restore]() method. The symbol property is defined per-instance (not on the
+      // shared prototype) so only this execution's own bindings offer it, and it is invisible to
+      // RPC serialization, so passing a binding over RPC is unaffected. The capability itself is
+      // \`restoreForger\`, a transient stub scoped to this run() call; the overseer resolves the
+      // binding name back to the target gadget (and rejects non-gadget bindings with an
+      // instructive error).
       for (let [name, value] of Object.entries(env)) {
-        if (value?.constructor?.name === "Fetcher") {
-          Object.defineProperty(value, restore, {
+        let stub = value?.rpc?.constructor?.name === "Fetcher" ? value.rpc : value;
+        if (stub?.constructor?.name === "Fetcher") {
+          Object.defineProperty(stub, restore, {
             value: params => restoreForger.forge(name, params),
           });
         }
@@ -2431,11 +2433,11 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Build the agent's executeCode env from the chat's binding map: each name resolves to a
-  // gadget's RPC stub, a gatekeeper session stub, or an agent callback's stored arguments.
+  // gadget's `{rpc, exports}` pair, a gatekeeper session stub, or an agent callback's stored
+  // arguments.
   // Entries whose targets no longer exist are silently skipped, mirroring the deleted-gadget
   // behavior elsewhere. `executionId` is the calling executeCodeMode run, minted into worktree
-  // loopbacks so they are usable only from within that execution. The automatic env.GIT and
-  // env.EXPORTS sit beneath the chat's bindings: one of the same name shadows them.
+  // loopbacks so they are usable only from within that execution.
   getEnvForAgent(chatId: number, bindings: Record<string, ChatBindingEntry>,
                  executionId: string): object {
     let caller: GatekeeperCaller = {from: "agent", chatId};
@@ -2445,8 +2447,6 @@ class OverseerImpl implements AgentHooks {
     // validation existed (or hostile stored data) that would collide with -- or, like
     // "__proto__", mutate -- Object.prototype members fail the shared validator and are skipped.
     let env: Record<string, any> = {};
-    // The gadget bindings below, by name: what env.EXPORTS can name.
-    let gadgets: Record<string, WorkpieceId> = {};
 
     // Before the chat's bindings, so a chat binding named GIT shadows it -- matching
     // describeBinding (see describeBinding in agent.ts).
@@ -2465,8 +2465,10 @@ class OverseerImpl implements AgentHooks {
         case "workpiece": {
           let record = this.storage.gadgets.get(entry.id);
           if (record?.type === "gadget") {
-            env[name] = this.makeBindingLoopback({type: "gadget", id: entry.id}, caller);
-            gadgets[name] = entry.id;
+            env[name] = {
+              rpc: this.makeBindingLoopback({type: "gadget", id: entry.id}, caller),
+              exports: this.makeBindingLoopback({type: "exports", id: entry.id}, caller),
+            };
           } else if (record?.type === "worktree") {
             // The programmatic Worktree binding (see worktree-session.ts). Served through the
             // loopback like every binding, resolving against this execution's registered
@@ -2494,9 +2496,6 @@ class OverseerImpl implements AgentHooks {
         default:
           entry satisfies never;
       }
-    }
-    if (!Object.hasOwn(env, EXPORTS_BINDING_NAME)) {
-      env[EXPORTS_BINDING_NAME] = this.makeBindingLoopback({type: "exports", gadgets}, caller);
     }
     return env;
   }
@@ -4994,14 +4993,13 @@ class OverseerImpl implements AgentHooks {
       }
 
       case "exports":
-        // The env.EXPORTS binding (exports-session.ts), minted only into the agent's executeCode
-        // env. An export runs the gadget's code against its server, so it counts as the agent
-        // using the gadget, as a call through its stub does.
         if (caller.from !== "agent") {
-          throw new Error("The exports binding is only available to the agent's executeCode.");
+          // Currently unreachable, since the gadget export API is only exposed
+          // to the workshop agent.
+          throw new Error("Gadget exports are only available to the agent's executeCode.");
         }
         this.#getOrCreateCapturedActions(caller.chatId).accessedGadget = true;
-        return Promise.resolve(new ExportsImpl(this, target.gadgets, caller.chatId));
+        return Promise.resolve(new GadgetExportsImpl(this, target.id, caller.chatId));
 
       case "git":
         return Promise.resolve(new GitImpl(this, () => this.#gitAuthorFor(caller)));
@@ -6393,10 +6391,18 @@ class OverseerImpl implements AgentHooks {
     if (gadget) {
       return `Binding: ${envName}\n` +
           `\n` +
-          `This binding is an RPC stub that points at the main Durable Object instance of the ` +
-          `Gadget ${JSON.stringify(gadget.title)}. Calling a method on the stub invokes the ` +
-          `same-named method on the class exported by the Gadget's server.js (read that file to ` +
-          `learn the API it offers).`;
+          `This binding gives access to the Gadget ${JSON.stringify(gadget.title)}. It has two ` +
+          `properties:\n` +
+          `\n` +
+          `* \`${envName}.rpc\` is an RPC stub that points at the main Durable Object instance ` +
+          `of the Gadget. Calling a method on the stub invokes the same-named method on the ` +
+          `class exported by the Gadget's server.js (read that file to learn the API it offers).\n` +
+          `* \`${envName}.exports\` exports the Gadget as a file. It implements the ` +
+          `\`GadgetExports\` interface as defined below:\n` +
+          `\n` +
+          `\`\`\`\n` +
+          `${agentApiText(EXPORTS_BINDING_TYPES)}` +
+          `\`\`\`\n`;
     }
     let gatekeeper = this.storage.gatekeepers.get(id);
     if (!gatekeeper) {
@@ -6415,18 +6421,6 @@ class OverseerImpl implements AgentHooks {
         `\n` +
         `\`\`\`\n` +
         `${agentApiText(WORKTREE_BINDING_TYPES)}` +
-        `\`\`\`\n`;
-  }
-
-  // Describe the env.EXPORTS binding, for the agent's describeBinding tool.
-  describeExportsBinding(envName: string): string {
-    return `Binding: ${envName}\n` +
-        `\n` +
-        `This binding exports Gadgets as files. It is present only in your executeCode env, not ` +
-        `in any Gadget's. It implements the \`Exports\` interface as defined below:\n` +
-        `\n` +
-        `\`\`\`\n` +
-        `${agentApiText(EXPORTS_BINDING_TYPES)}` +
         `\`\`\`\n`;
   }
 
@@ -7098,54 +7092,31 @@ class OverseerImpl implements AgentHooks {
     return result;
   }
 
-  // Build a new seed, including legacy spawner allowlists, without changing a frozen chat seed.
-  // Reserved entries keep their targets under unused names; existing log/checkpoint names win.
-  createChatBindingSeed(spawnerConfig: AiChatAgentContext["spawnerConfig"],
-                        claimedNames?: ReadonlySet<string>): Record<string, WorkpieceId> {
-    let seed: Record<string, WorkpieceId> = Object.create(null);
-    if (spawnerConfig) {
-      let env = spawnerConfig.env;
-      if (env === undefined || Array.isArray(env)) {
-        for (let [name, target] of Object.entries(this.defaultBindingList())) {
-          if (env === undefined || env.includes(name)) seed[name] = target;
-        }
-      } else {
-        for (let [name, target] of Object.entries(env)) {
-          if (this.storage.gadgets.get(target)?.type === "gadget" ||
-              this.storage.gatekeepers.get(target)) {
-            seed[name] = target;
-          }
-        }
-      }
-    } else {
-      Object.assign(seed, this.defaultBindingList());
-    }
-    for (let reserved of AUTOMATIC_CHAT_BINDING_NAMES) {
-      if (reserved in seed) {
-        let target = seed[reserved];
-        delete seed[reserved];
-        seed[fallbackBindingName(reserved, name => name in seed ||
-            AUTOMATIC_CHAT_BINDING_NAMES.includes(name) || claimedNames?.has(name) === true)] =
-            target;
-      }
-    }
-    return seed;
-  }
-
-  // Every name claimed by a frozen or prospective seed, the log/checkpoint, and automatic
-  // bindings. Prospective seeds use the same reserved-name allocation as prepareChatBindings.
+  // Every binding name currently claimed in the given chat's scope: the frozen seed layer (or,
+  // for a chat that hasn't been seeded yet, the prospective seed it would freeze -- see
+  // prepareChatBindings) and the names recorded on log messages (pasted resources, live
+  // connection requests, created gadgets, the arguments of delivered agent calls). Every name is
+  // stamped on its message when it is claimed, so this is a plain scan. Callers that already
+  // hold the chat's messages may pass them to skip the listing. Always includes the automatic
+  // env.GIT's name, so no new chat binding takes (and shadows) it.
   chatScopeNames(chatId: number, chatMessages?: Iterable<AiChatMessage>): Set<string> {
     let context = this.getChatAgentContext(chatId);
-    let taken = this.#chatLogBindingNames(chatId, chatMessages);
-    let seed = context.bindings ?? this.createChatBindingSeed(context.spawnerConfig, taken);
-    for (let name of Object.keys(seed)) taken.add(name);
-    for (let name of AUTOMATIC_CHAT_BINDING_NAMES) taken.add(name);
-    return taken;
-  }
-
-  #chatLogBindingNames(chatId: number, chatMessages?: Iterable<AiChatMessage>): Set<string> {
-    let taken = new Set<string>();
-    for (let [name] of this.getActiveChatCompaction(chatId)?.chatBindings ?? []) taken.add(name);
+    let taken: Set<string>;
+    if (context.bindings) {
+      taken = new Set(Object.keys(context.bindings));
+    } else if (context.spawnerConfig?.env) {
+      // Unseeded spawned chat: the configured names (an old-style allowlist is already a list of
+      // names). This may overclaim relative to eventual seeding -- which drops dangling targets
+      // and allowlisted names missing from the default list -- but overclaiming is harmless for
+      // the dedupe/validation this set serves.
+      let env = context.spawnerConfig.env;
+      taken = new Set(Array.isArray(env) ? env : Object.keys(env));
+    } else {
+      // Unseeded normal chat (or an old-style spawned chat with no allowlist, historically
+      // meaning "unrestricted"): the workspace default binding list.
+      taken = new Set(Object.keys(this.defaultBindingList()));
+    }
+    taken.add(GIT_BINDING_NAME);
     for (let msg of chatMessages ?? this.storage.chats.list({prefix: chatKeyPrefix(chatId)})) {
       if (msg.type === "message") {
         for (let capsule of msg.capsules ?? []) {
@@ -7267,10 +7238,43 @@ class OverseerImpl implements AgentHooks {
     let ambientIds = context.alwaysAvailableCapsuleIds;
 
     if (context.bindings === undefined) {
-      let claimedNames = this.#chatLogBindingNames(chatId, chatMessages);
-      let seed = this.createChatBindingSeed(context.spawnerConfig, claimedNames);
-      let isSeedNameTaken = (name: string) => name in seed || claimedNames.has(name) ||
-          AUTOMATIC_CHAT_BINDING_NAMES.includes(name);
+      let seed: Record<string, WorkpieceId> = Object.create(null);
+      if (context.spawnerConfig) {
+        // Spawned chats see only the spawner's configured bindings. The frozen config may
+        // predate the structured env -- `env?: string[]` was a binding-name allowlist, with
+        // absence meaning "unrestricted" -- in which case it is resolved against the current
+        // default binding list, mirroring how the storage migration rewrites stored spawner
+        // records.
+        let env = context.spawnerConfig.env;
+        if (env === undefined || Array.isArray(env)) {
+          for (let [name, target] of Object.entries(this.defaultBindingList())) {
+            if (env === undefined || env.includes(name)) seed[name] = target;
+          }
+        } else {
+          // Drop entries whose targets no longer exist. (A worktree can't be configured --
+          // newAgentSpawnerGatekeeper rejects one -- so none can appear here either.)
+          for (let [name, target] of Object.entries(env)) {
+            if (this.storage.gadgets.get(target)?.type === "gadget" ||
+                this.storage.gatekeepers.get(target)) {
+              seed[name] = target;
+            }
+          }
+        }
+      } else {
+        Object.assign(seed, this.defaultBindingList());
+      }
+
+      // A new seed never takes the automatic env.GIT's name, which a chat binding would shadow
+      // (see getEnvForAgent). The name can still arrive from before it was reserved -- a legacy
+      // gadget binding in the default list, or an old spawner's frozen env -- so such an entry is
+      // renamed rather than dropped, keeping its target reachable. (A chat seeded before the
+      // reservation keeps its GIT binding: seeds are frozen.)
+      let isSeedNameTaken = (name: string) => name in seed || name === GIT_BINDING_NAME;
+      if (GIT_BINDING_NAME in seed) {
+        let target = seed[GIT_BINDING_NAME];
+        delete seed[GIT_BINDING_NAME];
+        seed[fallbackBindingName(GIT_BINDING_NAME, isSeedNameTaken)] = target;
+      }
 
       // Fold the ambient resources into the seed, each named by its gatekeeper's suggested
       // binding name (deduped); skip any whose target already has a name in the seed.
@@ -7308,8 +7312,7 @@ class OverseerImpl implements AgentHooks {
     //   logic into one place. Ideally, there shouldn't be logic outside of agent.ts that is
     //   interpreting tool semantics at all (though making that true will require more refactoring
     //   than just this).
-    // (See chatScopeNames.)
-    let taken = new Set([...Object.keys(seedMap), ...AUTOMATIC_CHAT_BINDING_NAMES]);
+    let taken = new Set([...Object.keys(seedMap), GIT_BINDING_NAME]);  // (see chatScopeNames)
     let nameByTarget = new Map<WorkpieceId, string>();
     for (let [name, target] of Object.entries(seedMap)) {
       if (!nameByTarget.has(target)) nameByTarget.set(target, name);
@@ -10014,8 +10017,16 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     };
     this.impl.storage.chatMeta.put(meta);
 
-    // Snapshot only the configured targets, remapping legacy reserved names before freezing.
-    let bindings = this.impl.createChatBindingSeed(config);
+    // Snapshot the spawner's configured bindings as the chat's seed binding layer -- the spawned
+    // agent sees only these, never the workspace default list. Entries whose targets no longer
+    // exist are dropped.
+    let bindings: Record<string, WorkpieceId> = Object.create(null);
+    for (let [name, target] of Object.entries(config.env)) {
+      if (this.impl.storage.gadgets.get(target)?.type === "gadget" ||
+          this.impl.storage.gatekeepers.get(target)) {
+        bindings[name] = target;
+      }
+    }
 
     let context: AiChatAgentContext = {chatId, spawnerConfig: config, bindings};
     if (spawnerTypes) context.spawnerTypes = spawnerTypes;
@@ -10054,10 +10065,9 @@ type BindingLoopbackTarget = {
   // The `env.GIT` binding (see git-binding.ts).
   type: "git";
 } | {
-  // The `env.EXPORTS` binding (see exports-session.ts), with the gadget bindings of the env it
-  // accompanies, by name: the gadgets it can export.
+  // A gadget binding's `exports` in the agent's executeCode env (see exports-session.ts).
   type: "exports";
-  gadgets: Record<string, WorkpieceId>;
+  id: WorkpieceId;
 };
 
 /**
@@ -10751,9 +10761,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // deleted later; this just catches bad input.)
     for (let [name, target] of Object.entries(config.env)) {
       validateBindingName(name);
-      if (AUTOMATIC_CHAT_BINDING_NAMES.includes(name)) {
-        // The spawned chat's env already has the automatic binding of that name, which this would
-        // shadow.
+      if (name === GIT_BINDING_NAME) {
+        // The spawned chat's env already has the automatic env.GIT, which this would shadow.
         throw new Error(`Agent spawner env entry "${name}": the binding name \`${name}\` is ` +
             `reserved.`);
       }

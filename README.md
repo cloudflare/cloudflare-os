@@ -141,10 +141,6 @@ This works because the client and server portions of a Gadget are required to co
 1. Cap'n Web is extremely low-boilerplate, which makes it easy for agents to work with. You basically just define a method on your server, then call it from your client, as if it were a local call.
 2. Meanwhile, it means that the server necessarily exposes an easy-to-understand API which could be called directly by an agent. The AI Agent harness uses [Code Mode](https://blog.cloudflare.com/code-mode/) for tool calling, making it trivial to expose the Gadget's API directly for the agent to invoke.
 
-Interactive and spawned agents can also export a Gadget's content through `env.EXPORTS` in `executeCode`. `getFormats("APP")` lists the formats offered by the Gadget bound as `env.APP`; `export("APP", formatId)` returns the file as a readable stream, using the same export pipeline as the Workshop's Export menu and including changes proposed in that conversation. This binding is not available inside Gadget code.
-
-New chat seeds reserve `GIT` and `EXPORTS` for the automatic bindings. Existing resources with those names remain reachable under unused suffixed names such as `EXPORTS_2`, including when an older spawner creates a new chat. Names already claimed in the conversation are preserved; previously frozen chat seeds keep their original names and shadows.
-
 ### Real-time Multiplayer
 
 You can share your Gadget just like you'd share a document in a typical online office suite. You can give specific users access, or create a share link that provides access to anyone who opens it. And just like those online office suites, you'll be able to see your collaborators' actions in real time.

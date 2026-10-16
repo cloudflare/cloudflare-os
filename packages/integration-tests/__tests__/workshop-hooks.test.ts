@@ -35,7 +35,7 @@ afterAll(async () => {
 const watchCode = (keys: string[]) => `import { restore } from "cloudflare:workers";
 export default async function(self, env) {
   for (const key of ${JSON.stringify(keys)}) {
-    await env.TEST_AMBIENT.watch(key, await env.HOOKED[restore]({ type: "value-hook" }));
+    await env.TEST_AMBIENT.watch(key, await env.HOOKED.rpc[restore]({ type: "value-hook" }));
   }
 }`;
 

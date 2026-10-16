@@ -15,7 +15,7 @@ import {
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import {
   connect, listConnectedAccounts, logIn, nextUsernames, restartWorkspace, RpcTarget, signUp,
-  streamGeneration, stubFor, waitFor, waitForIdleChat, WorkpieceRecorder,
+  streamGeneration, stubFor, waitFor, WorkpieceRecorder,
 } from "../src/rpc-client.js";
 
 type AppliedChange = {
@@ -745,7 +745,7 @@ it.concurrent("agent code runs the gadget edits made in earlier steps of its tur
   } });
   const run = (id: string): ChatCompletionStep => ({ toolCall: {
     id, name: "executeCode",
-    arguments: { code: "export default async function(self, env) { return await env.APP.version(); }" },
+    arguments: { code: "export default async function(self, env) { return await env.APP.rpc.version(); }" },
   } });
   const model = models.script([
     toolCall("createGadget", { title: "App", bindingName: "APP" }),
@@ -762,7 +762,7 @@ it.concurrent("agent code runs the gadget edits made in earlier steps of its tur
       .toEqual([expect.stringContaining("v1"), expect.stringContaining("v2")]);
 });
 
-it.concurrent("agent code exports a gadget it is building through env.EXPORTS", async () => {
+it.concurrent("agent code exports a gadget it is building through its binding's exports", async () => {
   // The export reads the gadget's server, so its content proves which code ran: the draft this
   // turn wrote, not mainline (where the gadget doesn't exist yet).
   const exportingServer = `import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";\n` +
@@ -777,9 +777,9 @@ it.concurrent("agent code exports a gadget it is building through env.EXPORTS", 
     toolCall("createGadget", { title: "App", bindingName: "APP" }),
     toolCall("writeFile", { workpiece: "APP", filename: "server.js", content: exportingServer }),
     toolCall("executeCode", { code: `export default async function(self, env) {
-  let formats = await env.EXPORTS.getFormats("APP");
+  let formats = await env.APP.exports.getFormats();
   console.log("formats:", formats.map(format => format.id).join(","));
-  console.log("csv:", JSON.stringify(await new Response(await env.EXPORTS.export("APP", "csv")).text()));
+  console.log("csv:", JSON.stringify(await new Response(await env.APP.exports.export("csv")).text()));
 }` }),
     { text: "Done." },
   ]);
@@ -792,30 +792,4 @@ it.concurrent("agent code exports a gadget it is building through env.EXPORTS", 
       .flatMap(call => call.toolName === "executeCode" ? [call.output] : []);
   expect(output).toContain("formats: csv");
   expect(output).toContain(`csv: "a,b\\n1,2\\n"`);
-});
-
-it.concurrent("an unseeded chat reserves renamed automatic bindings before creating a gadget",
-    async () => {
-  const model = models.script([
-    toolCall("writeFile", {
-      workpiece: "EXPORTS_3", filename: "server.js", content: server("new gadget"),
-    }),
-    toolCall("executeCode", {
-      code: "export default async function(self, env) { return await env.EXPORTS_3.version(); }",
-    }),
-    { text: "Done." },
-  ]);
-  await withOwner(async ({ ws }) => {
-    using _legacy = await ws.createGadget("Legacy", undefined, "EXPORTS");
-    const chatId = await ws.newChat("Create an app", null);
-    await expect(ws.createGadget("Collision", chatId, "EXPORTS_2"))
-        .rejects.toThrow('The name "EXPORTS_2" is already in use in this chat');
-    using _created = await ws.createGadget("New", chatId, "EXPORTS_3");
-    await ws.sendChatMessage(chatId, "Run the new gadget.", SCRIPTED_MODEL_ID);
-    await waitForIdleChat(ws, chatId);
-    const history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
-    expect(history.flatMap(message => message.type === "message" ? message.toolCalls ?? [] : [])
-        .flatMap(call => call.toolName === "executeCode" ? [call.output] : []))
-        .toEqual([expect.stringContaining("new gadget")]);
-  }, model);
 });

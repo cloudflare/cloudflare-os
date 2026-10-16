@@ -195,34 +195,18 @@ export type AgentGadgetInfo = {
  */
 export const GIT_BINDING_NAME = "GIT";
 
-/**
- * The name of the `Exports` binding (see exports-session.ts) present in the agent's executeCode
- * env -- never a gadget's -- beneath any chat binding of the same name, which shadows it.
- */
-export const EXPORTS_BINDING_NAME = "EXPORTS";
-
-/**
- * The names every chat's executeCode env holds automatically, so no new chat binding may take
- * them. (A chat binding that took one before it was reserved keeps it, shadowing the automatic
- * binding.)
- */
-export const AUTOMATIC_CHAT_BINDING_NAMES: readonly string[] =
-    [GIT_BINDING_NAME, EXPORTS_BINDING_NAME];
-
 // Describes the binding named by a `describeBinding` tool call: a name in the chat's env or,
 // given `gadget`, in that gadget's own env.
 async function describeBinding(
     {name, gadget}: {name: string, gadget?: string},
     chatBindings: Map<string, ChatBindingEntry>,
     chatId: number,
-    hooks: Pick<AgentHooks,
-        "describeBinding" | "describeGitBinding" | "describeExportsBinding" | "listGadgetInfo">)
+    hooks: Pick<AgentHooks, "describeBinding" | "describeGitBinding" | "listGadgetInfo">)
     : Promise<string> {
   if (gadget === undefined) {
     let envName = `env.${name}`;
     let entry = chatBindings.get(name);
     if (!entry && name === GIT_BINDING_NAME) return hooks.describeGitBinding(envName);
-    if (!entry && name === EXPORTS_BINDING_NAME) return hooks.describeExportsBinding(envName);
     if (!entry) throw new Error(`There is no binding named "${name}" in your env.`);
     switch (entry.type) {
       case "workpiece":
@@ -245,7 +229,15 @@ async function describeBinding(
   let edge = info.bindings.find(binding => binding.name === name);
   if (edge) return hooks.describeBinding(envName, edge.target);
   if (name === GIT_BINDING_NAME) return hooks.describeGitBinding(envName);
-  if (name === "GADGET") return hooks.describeBinding(envName, info.id);
+  if (name === "GADGET") {
+    // Unlike the gadget bindings in the agent's env, a gadget's env.GADGET is
+    // the bare RPC stub.
+    return `Binding: ${envName}\n` +
+        `\n` +
+        `This binding is an RPC stub that points at the main Durable Object instance of the ` +
+        `Gadget ${JSON.stringify(info.title)} itself. Calling a method on the stub invokes the ` +
+        `same-named method on the class exported by the Gadget's server.js.`;
+  }
   throw new Error(`Gadget ${gadget} has no binding named "${name}".`);
 }
 
@@ -467,9 +459,6 @@ export interface AgentHooks {
   /** Describe the env.GIT binding (see GIT_BINDING_NAME), for the describeBinding tool. */
   describeGitBinding(envName: string): string;
 
-  /** Describe the env.EXPORTS binding (see EXPORTS_BINDING_NAME), for the describeBinding tool. */
-  describeExportsBinding(envName: string): string;
-
   /**
    * Add a binding to the given gadget, pointing at the given workpiece. The binding is provisional
    * to the chat. The caller is responsible for getting the addition recorded in the chat log (see
@@ -680,8 +669,6 @@ Both the client and server run inside a strictly isolated sandbox. They cannot m
 
 Every Gadget's \`env\`, as well as your own \`executeCode\` env, always contains \`env.GIT\`, which provides programmatic access to git commits known to the workspace: read a commit's metadata and files, edit them in memory, and write new commits. Use \`describeBinding\` to learn its API if you need it.
 
-Your own \`executeCode\` env also always contains \`env.EXPORTS\`, which exports a Gadget as a file in any format it offers -- the same files a user gets from the Workshop's Export menu. Use \`describeBinding\` to learn its API if you need it.
-
 Note that the iframe sandbox on the client side prohibits modal popup boxes like alert() and confirm(), so do not use those.
 
 ## Server -> Client callbacks and subscriptions
@@ -835,18 +822,18 @@ let greeter = await this.ctx.restore({type: "greeter", greeting: "Howdy"});
 await this.env.SOME_BINDING.registerGreeter(greeter);
 \`\`\`
 
-Typically, though, a Gadget doesn't register hooks from within its own code. Instead, you will probably want to register a hook once as part of an \`executeCode\` tool call. To facilitate this, within an \`executeCode\` invocation you have the ability to directly invoke each Gadget's restore method via its RPC stub. This is not normally possible over RPC, but the \`executeCode\` environment has been set up to make it possible. You can thus call a gadget's restorer in an \`executeCode\` invocation by providing code like:
+Typically, though, a Gadget doesn't register hooks from within its own code. Instead, you will probably want to register a hook once as part of an \`executeCode\` tool call. To facilitate this, within an \`executeCode\` invocation you have the ability to directly invoke each Gadget's restore method via its \`rpc\` stub. This is not normally possible over RPC, but the \`executeCode\` environment has been set up to make it possible. You can thus call a gadget's restorer in an \`executeCode\` invocation by providing code like:
 
 \`\`\`
 import { restore } from "cloudflare:workers";
 
 export default async function(self, env, ctx) {
-  let greeter = await env.MY_GADGET[restore]({type: "greeter", greeting: "Howdy"});
+  let greeter = await env.MY_GADGET.rpc[restore]({type: "greeter", greeting: "Howdy"});
   await env.SOME_BINDING.registerGreeter(greeter);
 }
 \`\`\`
 
-The call to \`env.MY_GADGET[restore](params)\` is equivalent to calling \`this.ctx.restore(params)\` from within the Gadget itself. This returns a persistent stub which you can then use as a hook callback.
+The call to \`env.MY_GADGET.rpc[restore](params)\` is equivalent to calling \`this.ctx.restore(params)\` from within the Gadget itself. This returns a persistent stub which you can then use as a hook callback.
 
 A Gadget can hold many persistent stubs at once, such as one hook per conversation it watches. Each is restored from its own \`params\`, so put whatever tells them apart there.
 `.trim();
@@ -861,8 +848,6 @@ You were started programmatically by the Gadget to perform a task, described bel
 Typically (but not always), you will need to use the \`executeCode\` tool to complete the task, invoking the available bindings (members of the env object) and other APIs available to you.
 
 Your \`env\` always contains \`env.GIT\`, which provides programmatic access to git commits known to the workspace (read a commit's metadata and files, edit them, and write new commits). Use \`describeBinding\` to learn its API if you need it.
-
-Your \`env\` also contains \`env.EXPORTS\`, which exports a Gadget as a file in any format it offers, using its binding name in your env. Use \`describeBinding\` to learn its API if you need it.
 `.trim();
 
 // The tools offered to a spawned agent (see runAgentPass). Anything that modifies a gadget or
@@ -1231,7 +1216,7 @@ let EXECUTE_CODE_TOOL_DESCRIPTION = `
 ${EXECUTE_CODE_INTRO}
 
 The 'env' object contains this chat's named bindings:
-* An entry for each Gadget in the workspace, under the name given in the system prompt's gadget list (or the name you passed to \`createGadget\`): an RPC stub pointing at the Gadget's server-side Durable Object. If the user asks you to interact with a Gadget directly, or asks if you can "see" it, use this stub (read the Gadget's server code to learn what RPC methods it exposes).
+* An entry for each Gadget in the workspace, under the name given in the system prompt's gadget list (or the name you passed to \`createGadget\`). Its \`rpc\` property is an RPC stub pointing at the Gadget's server-side Durable Object: if the user asks you to interact with a Gadget directly, or asks if you can "see" it, use this stub (read the Gadget's server code to learn what RPC methods it exposes). Its \`exports\` property exports the Gadget as a file in any format it offers, the same files a user gets from the Workshop's Export menu; use \`describeBinding\` to learn its API if you need it.
 * An entry for each external resource available to this chat: those listed in the system prompt, those the user grants in messages (shown as \`[Resource Title](env.SOME_NAME)\`), and those you obtain with \`requestConnection\`.
 
 Note that this differs from the \`env\` a Gadget's own code sees: a Gadget's server.js sees only that Gadget's own bindings (listed in the system prompt's gadget list), which are wired up separately with \`setGadgetBinding\`. Your bindings and a Gadget's bindings may point at the same resource under the same or different names.
@@ -1247,7 +1232,7 @@ let SPAWNED_EXECUTE_CODE_TOOL_DESCRIPTION = `
 ${EXECUTE_CODE_INTRO}
 
 The 'env' object contains this chat's named bindings:
-* Each binding listed in the system prompt. A Gadget's binding is an RPC stub pointing at the Gadget's server-side Durable Object; read the Gadget's server code to learn what RPC methods it exposes.
+* Each binding listed in the system prompt. A Gadget's binding has an \`rpc\` property, an RPC stub pointing at the Gadget's server-side Durable Object (read the Gadget's server code to learn what RPC methods it exposes), and an \`exports\` property that exports the Gadget as a file (use \`describeBinding\` to learn its API).
 * Each resource a user grants in a message, shown as \`[Resource Title](env.SOME_NAME)\`.
 * Each worktree you create with \`createWorktree\`, under the name you chose.
 
@@ -1660,12 +1645,11 @@ async function runAgentPass(
   // to anything yet. A denied request releases its name (log-derived, so replay agrees).
   let claimedNames = new Set<string>();
 
-  // Whether a name is unavailable for a new chat binding. AUTOMATIC_CHAT_BINDING_NAMES count as
-  // in scope because the automatic env.GIT and env.EXPORTS occupy them; only new bindings are
-  // refused -- a chat binding that already took such a name (from before it was reserved) keeps
-  // resolving as it did.
-  let isNameInScope = (name: string) => AUTOMATIC_CHAT_BINDING_NAMES.includes(name) ||
-      chatBindings.has(name) || claimedNames.has(name);
+  // Whether a name is unavailable for a new chat binding. GIT_BINDING_NAME counts as in scope
+  // because the automatic env.GIT occupies it; only new bindings are refused -- a chat binding
+  // that already took the name (from before env.GIT existed) keeps resolving as it did.
+  let isNameInScope = (name: string) =>
+      name === GIT_BINDING_NAME || chatBindings.has(name) || claimedNames.has(name);
 
   // Reverse lookup: the chat env name for a workpiece, if the agent holds one.
   let chatNameFor = (id: WorkpieceId): string | undefined => {
@@ -2904,14 +2888,13 @@ async function runAgentPass(
     let systemPromptBindings: string;
     if (namedSeeds.length == 0) {
       systemPromptBindings =
-          "Aside from `env.GIT`, `env.EXPORTS`, and any resources described below, the `env` " +
-          "object is empty.";
+          "Aside from `env.GIT` and any resources described below, the `env` object is empty.";
     } else {
       let lines = namedSeeds.map(seed =>
           `* env.${seed.name} — ` +
           (seed.isGadget
-              ? `RPC stub to the server-side Durable Object of the Gadget ` +
-                `${JSON.stringify(seed.title)}.`
+              ? `the Gadget ${JSON.stringify(seed.title)}: \`.rpc\` is an RPC stub to its ` +
+                `server-side Durable Object, \`.exports\` exports it as a file.`
               : seed.title));
       systemPromptBindings =
           `You have access to the following bindings via the \`env\` object:\n${lines.join("\n")}`;
@@ -3513,10 +3496,6 @@ async function runAgentPass(
           if (!sourceEntry && source === GIT_BINDING_NAME) {
             throw new Error(`env.${source} is already present in every gadget's env; there is ` +
                 `no need to bind it.`);
-          }
-          if (!sourceEntry && source === EXPORTS_BINDING_NAME) {
-            throw new Error(`env.${source} exists only in your executeCode env; it cannot be ` +
-                `bound into a gadget.`);
           }
           if (!sourceEntry) {
             throw new Error(`There is no binding named "${source}" in your env.`);

@@ -1,15 +1,10 @@
-// The `env.EXPORTS` binding: the RpcTarget behind the `Exports` interface (exports-binding.d.ts
-// defines the agent-facing contract), present in the agent's executeCode env.
-//
-// Minted per loopback session by the overseer's binding-loopback dispatch (startGatekeeperSession,
-// target type "exports"). It names gadgets by their binding names in the env it accompanies, from
-// the map it is minted with, so it reaches only gadgets that env already reaches. Each is exported
-// as the calling chat sees it -- the same view the env's own gadget stubs have.
+// A gadget binding's `exports`: the RpcTarget behind the `GadgetExports` interface
+// (exports-binding.d.ts defines the agent-facing contract), present in the agent's executeCode env.
 
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import type { GadgetExportFormat, WorkpieceId } from "@gadgets/workshop-shared/api";
-import type { Exports } from "./exports-binding";
+import type { GadgetExports } from "./exports-binding";
 
 /** What the binding needs from the overseer: the export pipeline behind GadgetClient's. */
 export interface ExportsHost {
@@ -18,36 +13,25 @@ export interface ExportsHost {
       : Promise<ReadableStream<Uint8Array>>;
 }
 
-/** The `env.EXPORTS` binding. */
+/** A gadget binding's `exports`. */
 @validateRpc()
-export class ExportsImpl extends RpcTarget implements Exports {
-  // Real private fields: RPC exposes an RpcTarget's properties as well as its methods, so
-  // TypeScript-only privacy would leak the overseer to the executed code.
+export class GadgetExportsImpl extends RpcTarget implements GadgetExports {
   #host: ExportsHost;
-  #gadgets: Record<string, WorkpieceId>;
+  #gadgetId: WorkpieceId;
   #chatId: number;
 
-  /** `gadgets` maps each gadget binding name in the caller's env to its gadget. */
-  constructor(host: ExportsHost, gadgets: Record<string, WorkpieceId>, chatId: number) {
+  constructor(host: ExportsHost, gadgetId: WorkpieceId, chatId: number) {
     super();
     this.#host = host;
-    this.#gadgets = gadgets;
+    this.#gadgetId = gadgetId;
     this.#chatId = chatId;
   }
 
-  async getFormats(gadget: string): Promise<GadgetExportFormat[]> {
-    return this.#host.getGadgetExportFormats(this.#gadgetId(gadget), this.#chatId);
+  async getFormats(): Promise<GadgetExportFormat[]> {
+    return this.#host.getGadgetExportFormats(this.#gadgetId, this.#chatId);
   }
 
-  async export(gadget: string, formatId: string): Promise<ReadableStream<Uint8Array>> {
-    return this.#host.exportGadget(this.#gadgetId(gadget), formatId, this.#chatId);
-  }
-
-  #gadgetId(name: string): WorkpieceId {
-    // Own properties only: the map arrives as a plain object, so "constructor" must not resolve.
-    if (!Object.hasOwn(this.#gadgets, name)) {
-      throw new Error(`There is no gadget named "${name}" in your env.`);
-    }
-    return this.#gadgets[name]!;
+  async export(formatId: string): Promise<ReadableStream<Uint8Array>> {
+    return this.#host.exportGadget(this.#gadgetId, formatId, this.#chatId);
   }
 }

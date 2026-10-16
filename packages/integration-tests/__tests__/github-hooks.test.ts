@@ -47,7 +47,7 @@ class Triage extends RpcTarget {
 
 const SUBSCRIBE = `import { restore } from "cloudflare:workers";
 export default async function(self, env) {
-  await env.GITHUB.subscribe(await env.HOOKED[restore]({ type: "triage" }), { events: ["issue"] });
+  await env.GITHUB.subscribe(await env.HOOKED.rpc[restore]({ type: "triage" }), { events: ["issue"] });
 }`;
 
 /**
