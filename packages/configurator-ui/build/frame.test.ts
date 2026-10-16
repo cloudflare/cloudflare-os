@@ -37,6 +37,27 @@ import { h } from "@gadgets/configurator-ui";
 export default { initial: {}, resourceUrl: () => "", render() { throw new Error("render failure"); } };
 `;
 
+const ACCESS_REQUEST = `
+import { Button, Notice, Section, h } from "@gadgets/configurator-ui";
+export default {
+  initial: { answer: null, failure: null },
+  resourceUrl: () => "https://example.com/",
+  render: ({ values, setValues, ensureResources }) => {
+    const request = pattern => ensureResources([pattern]).then(
+      answer => setValues({ answer: String(answer) }),
+      error => setValues({ failure: error.message }));
+    return (
+      <Section>
+        <Button onClick={() => request("https://example.com/grant")}>Convert</Button>
+        <Button variant="secondary" onClick={() => request("https://example.com/refused")}>Refused</Button>
+        <Notice>{values.answer === null ? "Waiting" : "Granted: " + values.answer}</Notice>
+        {values.failure ? <Notice tone="error">{values.failure}</Notice> : null}
+      </Section>
+    );
+  },
+};
+`;
+
 /** Built once per variant, as the build script builds it once per run. */
 const runtimes = new Map<boolean, Promise<ConfiguratorRuntime>>();
 
@@ -77,6 +98,11 @@ class Host extends RpcTarget {
   }
   setSelectionReady(ready) { events.push(["ready", ready]); }
   forwardScroll() {}
+  async ensureResources(patterns) {
+    events.push(["ensureResources", patterns]);
+    if (patterns[0].endsWith("/refused")) throw new Error("The user closed the pop-up.");
+    return false;
+  }
 }
 window.addEventListener("message", event => {
   if (event.data?.type === "handshake") globalThis.frameStub = newMessagePortRpcSession(event.ports[0], new Host());
@@ -213,6 +239,23 @@ describe("generated configurator frame", () => {
         expect(await page.locator("#host-control").evaluate(node => node.matches(":focus"))).toBe(true);
         await option.waitFor({ state: "hidden" });
       }
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
+  it("asks the host for access from a Button, and shows its answer or refusal", async () => {
+    const { page, frame, events, consoleErrors } = await host(await frameHtml(ACCESS_REQUEST, false));
+    try {
+      await frame().getByRole("button", { name: "Convert" }).click();
+      await expect.poll(() => frame().getByRole("status").textContent()).toBe("Granted: false");
+      await frame().getByRole("button", { name: "Refused" }).click();
+      await expect.poll(() => frame().getByRole("alert").textContent()).toBe("The user closed the pop-up.");
+      expect((await events()).filter(([kind]) => kind === "ensureResources")).toEqual([
+        ["ensureResources", ["https://example.com/grant"]],
+        ["ensureResources", ["https://example.com/refused"]],
+      ]);
+      expect(consoleErrors).toEqual([]);
     } finally {
       await page.close();
     }

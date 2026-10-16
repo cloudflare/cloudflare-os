@@ -7,9 +7,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import type { ConfiguratorUIOption, ConfiguratorUISpec } from "../index.ts";
 import { Autocomplete } from "./Autocomplete.tsx";
+import { Button } from "./Button.tsx";
 import { CheckboxList } from "./CheckboxList.tsx";
 import { ConfiguratorRoot } from "./ConfiguratorRoot.tsx";
 import { Field } from "./Field.tsx";
+import { Notice } from "./Notice.tsx";
 import { RadioCards } from "./RadioCards.tsx";
 import { collectResourceUrl, createSession, type ConfiguratorSession } from "./session.ts";
 import { createConfiguratorStore } from "./store.ts";
@@ -24,7 +26,8 @@ let container: HTMLElement | undefined;
 const mount = async (spec: Spec, queries: Record<string, string> = {}) => {
   const setSelectionReady = vi.fn<(ready: boolean) => void>();
   const session: ConfiguratorSession = createSession(
-    { spec, ui: null, store: createConfiguratorStore(spec.initial, queries) }, setSelectionReady);
+    { spec, ui: null, store: createConfiguratorStore(spec.initial, queries), ensureResources: vi.fn() },
+    setSelectionReady);
   container = document.body.appendChild(document.createElement("div"));
   root = createRoot(container);
   await act(() => root!.render(<ConfiguratorRoot session={session} />));
@@ -280,6 +283,27 @@ const autocompleteSpec = (loadOptions: (query: string) => Promise<ConfiguratorUI
     </Field>
   ),
 });
+/**
+ * Picks as the Google configurators do: withdraws the old value, then sets the new one once the
+ * pick's (here simulated) inspection settles, so one pick renders the field twice.
+ */
+const inspectingSpec = (loadOptions: (query: string) => Promise<ConfiguratorUIOption[]>): Spec => ({
+  initial: { folderId: null, inspected: null },
+  resourceUrl: () => "https://example.com/",
+  render: ({ values, setValues }) => (
+    <div>
+      <Field label="Folder">
+        <Autocomplete name="folderId" value={values.folderId} placeholder="Search folders..."
+          loadOptions={loadOptions}
+          onChange={folderId => {
+            setValues({ folderId: null, inspected: null });
+            if (folderId) void Promise.resolve().then(() => setValues({ folderId, inspected: folderId }));
+          }} />
+      </Field>
+      {values.inspected ? <p>{`Inspected ${values.inspected}`}</p> : null}
+    </div>
+  ),
+});
 const folders = async (query: string) => ["Projects", "Proposals", "Personal"]
   .filter(title => title.toLowerCase().includes(query.toLowerCase()))
   .map(title => ({ value: title.toLowerCase(), title, subtitle: "My Drive" }));
@@ -305,7 +329,8 @@ describe("Autocomplete", () => {
     await mount(autocompleteSpec(loadOptions));
     await userEvent.tab();
     await userEvent.keyboard("x");
-    await expect.element(page.getByRole("status")).toHaveTextContent("No matches.");
+    // Filtered by text, since the form's notice announcer is a status too.
+    await expect.element(page.getByRole("status").filter({ hasText: "No matches." })).toBeVisible();
     expect(loadOptions).toHaveBeenLastCalledWith("x");
   });
 
@@ -326,7 +351,7 @@ describe("Autocomplete", () => {
     await act(async () => requests.get("")!.resolve(await folders("")));
     expect(requests.has("pro")).toBe(false);
     expect(page.getByRole("option").elements()).toEqual([]);
-    await expect.element(page.getByRole("status")).toHaveTextContent("Loading...");
+    await expect.element(page.getByRole("status").filter({ hasText: "Loading..." })).toBeVisible();
 
     await expect.poll(() => requests.has("pro")).toBe(true);
     await act(async () => requests.get("pro")!.resolve(await folders("pro")));
@@ -372,10 +397,35 @@ describe("Autocomplete", () => {
     await expect.element(input()).toHaveValue("F1");
   });
 
+  it("keeps focus and stays closed when a pick renders the field twice", async () => {
+    const loadOptions = vi.fn(folders);
+    await mount(inspectingSpec(loadOptions));
+    await userEvent.click(input());
+    await userEvent.click(page.getByRole("option", { name: /Projects/ }));
+    await expect.element(page.getByText("Inspected projects")).toBeVisible();
+    await expect.element(input()).toHaveFocus();
+    await expect.element(page.getByRole("listbox")).not.toBeInTheDocument();
+    expect(loadOptions).toHaveBeenCalledOnce();
+  });
+
+  it("lists suggestions for what is typed over a pick that renders the field twice", async () => {
+    const loadOptions = vi.fn(folders);
+    await mount(inspectingSpec(loadOptions));
+    await userEvent.click(input());
+    await userEvent.click(page.getByRole("option", { name: /Projects/ }));
+    await expect.element(page.getByText("Inspected projects")).toBeVisible();
+
+    await userEvent.fill(input(), "Pro");
+    await expect.element(page.getByText("Inspected projects")).not.toBeInTheDocument();
+    await expect.element(page.getByRole("option", { name: /Proposals/ })).toBeVisible();
+    expect(loadOptions).toHaveBeenLastCalledWith("Pro");
+  });
+
   // Preact runs effects a frame after it renders, and a click can land in between.
   it("keeps the focus it was given before its first effects ran", async () => {
     const spec = autocompleteSpec(folders);
-    const session = createSession({ spec, ui: null, store: createConfiguratorStore(spec.initial) }, () => {});
+    const session = createSession(
+      { spec, ui: null, store: createConfiguratorStore(spec.initial), ensureResources: vi.fn() }, () => {});
     container = document.body.appendChild(document.createElement("div"));
     root = createRoot(container);
     // Outside act, which would run the effects at once.
@@ -385,5 +435,83 @@ describe("Autocomplete", () => {
     // Preact flushes effects in a task its next animation frame queues; this one is queued after it.
     await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve)));
     expect(document.activeElement).toBe(field);
+  });
+});
+
+describe("Button", () => {
+  const buttonSpec: Spec = {
+    initial: { clicks: "0", started: null, finished: null },
+    resourceUrl: () => "https://example.com/",
+    render: ({ values, setValues }) => (
+      <div>
+        <Button onClick={() => setValues({ clicks: String(Number(values.clicks) + 1) })}>Count</Button>
+        <Button variant="secondary" disabled onClick={() => setValues({ clicks: "disabled" })}>Use the copy</Button>
+        <Button disabled={Boolean(values.started)} onClick={() => setValues({ started: "yes" })}>Start</Button>
+        {values.finished ? null : <Button variant="secondary" onClick={() => setValues({ finished: "yes" })}>Finish</Button>}
+        <p>{`Clicks: ${values.clicks}`}</p>
+      </div>
+    ),
+  };
+  const button = (name: string) => page.getByRole("button", { name, exact: true });
+
+  it("ignores activation while disabled, and stays focusable", async () => {
+    await mount(buttonSpec);
+    await userEvent.click(button("Count"));
+    await userEvent.tab();
+    await expect.element(button("Use the copy")).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+    await expect.element(page.getByText("Clicks: 1")).toBeVisible();
+  });
+
+  it("keeps focus on a Button that disables itself", async () => {
+    await mount(buttonSpec);
+    await userEvent.click(button("Start"));
+    await expect.element(button("Start")).toHaveAttribute("aria-disabled", "true");
+    await expect.element(button("Start")).toHaveFocus();
+  });
+
+  it("hands focus to the first control left when the focused Button leaves the form", async () => {
+    await mount(buttonSpec);
+    await userEvent.click(button("Finish"));
+    await expect.element(button("Finish")).not.toBeInTheDocument();
+    await expect.element(button("Count")).toHaveFocus();
+  });
+});
+
+describe("Notice", () => {
+  it("announces the last info notice through one live region, once per change", async () => {
+    const { session } = await mount({
+      initial: { step: null, unrelated: null, failure: null },
+      resourceUrl: () => "https://example.com/",
+      render: ({ values }) => (
+        <div>
+          <Notice>Connecting makes a copy.</Notice>
+          {values.step === "converting" ? <Notice>Making the copy…</Notice> : null}
+          {values.failure ? <Notice tone="error">{values.failure}</Notice> : null}
+        </div>
+      ),
+    });
+    const status = page.getByRole("status");
+    await expect.element(status).toHaveAttribute("aria-live", "polite");
+    await expect.element(status).toHaveTextContent("Connecting makes a copy.");
+    const region = status.element();
+    const mutations: MutationRecord[] = [];
+    const observer = new MutationObserver(records => mutations.push(...records));
+    observer.observe(region, { childList: true, characterData: true, subtree: true });
+    try {
+      await act(() => session.store.setValues({ unrelated: "changed" }));
+      expect(mutations).toEqual([]);
+
+      await act(() => session.store.setValues({ step: "converting" }));
+      await expect.element(status).toHaveTextContent("Making the copy…");
+      expect(status.element()).toBe(region);
+      expect(mutations).not.toEqual([]);
+
+      await act(() => session.store.setValues({ step: null, failure: "The user closed the pop-up." }));
+      await expect.element(status).toHaveTextContent("Connecting makes a copy.");
+      await expect.element(page.getByRole("alert")).toHaveTextContent("The user closed the pop-up.");
+    } finally {
+      observer.disconnect();
+    }
   });
 });

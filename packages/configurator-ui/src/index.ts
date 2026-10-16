@@ -252,6 +252,19 @@ export type HierarchyPickerProps = {
   disabled?: boolean;
 };
 
+/** Props of {@link Button}. */
+export type ButtonProps = {
+  children?: unknown;
+  onClick(): void;
+  /** Ignores clicks but stays focusable, so a Button that disables itself on click keeps focus. */
+  disabled?: boolean;
+  /** Defaults to `primary`. */
+  variant?: "primary" | "secondary";
+};
+
+/** Props of {@link Notice}. */
+export type NoticeProps = { children?: unknown; tone?: "info" | "error" };
+
 /** Groups related configurator fields. Provided by the sandbox runtime. */
 export function Section(_props: SectionProps): unknown {
   throw new Error("Section is provided by the configurator UI sandbox runtime.");
@@ -300,25 +313,22 @@ export function HierarchyPicker(_props: HierarchyPickerProps): unknown {
 }
 
 /**
- * Button component provided by the sandbox runtime. A disabled Button stays focusable but ignores
- * clicks.
+ * Button component provided by the sandbox runtime. When a render removes the focused Button, focus
+ * moves to the first control left rather than to nowhere.
  */
-export function Button(_props: {
-  children?: unknown;
-  onClick(): void;
-  disabled?: boolean;
-  variant?: "primary" | "secondary";
-}): unknown {
+export function Button(_props: ButtonProps): unknown {
   throw new Error("Button is provided by the configurator UI sandbox runtime.");
 }
 
 /**
- * Inline message provided by the sandbox runtime. An `info` notice is announced politely, an
- * `error` notice assertively.
+ * Inline message provided by the sandbox runtime. An `error` notice is announced assertively. An
+ * `info` notice is announced politely, through one live region that announces the last info notice
+ * on screen whenever its text changes.
  */
-export function Notice(_props: { children?: unknown; tone?: "info" | "error" }): unknown {
+export function Notice(_props: NoticeProps): unknown {
   throw new Error("Notice is provided by the configurator UI sandbox runtime.");
 }
+
 /** JSX factory provided by the sandbox runtime. */
 export function h(_component: unknown, _props: unknown, ..._children: unknown[]): unknown {
   throw new Error("h is provided by the configurator UI sandbox runtime.");
