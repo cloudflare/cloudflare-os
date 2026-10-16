@@ -1,9 +1,11 @@
 import { Banner } from "@cloudflare/kumo/components/banner";
 import { Component, useLayoutEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
 import type { ConfiguratorUIValues } from "../index.ts";
+import { NoticeAnnouncer } from "./Notice.tsx";
 import { reportFrontendIssue } from "./reporting.ts";
 import type { ConfiguratorSession } from "./session.ts";
 import { StoreContext } from "./storeContext.ts";
+import { useKeepFocusInForm } from "./useKeepFocusInForm.ts";
 
 type Rendered =
   | { ok: true; tree: ReactNode; ready: boolean }
@@ -15,6 +17,7 @@ const renderModule = (session: ConfiguratorSession, values: ConfiguratorUIValues
       values,
       setValues: session.store.setValues,
       clearFields: session.store.clearFields,
+      ensureResources: session.ensureResources,
       ui: session.ui,
     }) as ReactNode;
     const ready = session.spec.isReady ? Boolean(session.spec.isReady({ values })) : true;
@@ -50,6 +53,8 @@ export const ConfiguratorRoot = ({ session }: { session: ConfiguratorSession }) 
   // Read during render on purpose: it is the fallback for this very render, and is only written
   // after a successful one commits.
   const lastGoodTree = useRef<{ tree: ReactNode } | null>(null);
+  const form = useRef<HTMLDivElement>(null);
+  useKeepFocusInForm(form);
 
   useLayoutEffect(() => {
     session.renderFailed = !rendered.ok;
@@ -67,9 +72,10 @@ export const ConfiguratorRoot = ({ session }: { session: ConfiguratorSession }) 
     : lastGoodTree.current?.tree ?? <ErrorNotice error={rendered.error} />;
   return (
     <StoreContext.Provider value={store}>
-      <div id="layout-root" className="grid gap-4 p-0.5 pb-1">
+      <div ref={form} id="layout-root" className="grid gap-4 p-0.5 pb-1">
         <TreeBoundary session={session}>{tree}</TreeBoundary>
       </div>
+      <NoticeAnnouncer form={form} />
     </StoreContext.Provider>
   );
 };

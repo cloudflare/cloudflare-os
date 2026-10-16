@@ -4,12 +4,14 @@ import { createRoot } from "react-dom/client";
 import type { ResourceConfiguratorHost } from "@gadgets/workshop-shared/gatekeeper";
 import type { ConfiguratorUISpec } from "../index.ts";
 import { Autocomplete } from "./Autocomplete.tsx";
+import { Button } from "./Button.tsx";
 import { CheckboxList } from "./CheckboxList.tsx";
 import { ConfiguratorRoot, ErrorNotice } from "./ConfiguratorRoot.tsx";
 import { Field } from "./Field.tsx";
 import { ConfiguratorFrame, forwardScrolls, reportSize } from "./frame.ts";
 import { HierarchyPicker } from "./HierarchyPicker.tsx";
 import { CONFIGURATOR_MODULE_GLOBAL } from "./moduleGlobal.ts";
+import { Notice } from "./Notice.tsx";
 import { prefill } from "./prefill.ts";
 import { RadioCards } from "./RadioCards.tsx";
 import { installGlobalErrorReporting, reportFrontendIssue } from "./reporting.ts";
@@ -33,6 +35,8 @@ const MODULE_GLOBALS = {
   CheckboxList,
   Autocomplete,
   HierarchyPicker,
+  Button,
+  Notice,
 };
 
 const loadModule = (): ConfiguratorUISpec<unknown> => {
@@ -60,8 +64,13 @@ const start = async () => {
   const ui = host.gatekeeper;
   const spec = loadModule();
   const { values, queries } = await prefill(spec, ui, () => host.getInitialResource());
-  const session = createSession({ spec, ui, store: createConfiguratorStore(values, queries) },
-    ready => host.setSelectionReady(ready));
+  const session = createSession({
+    spec,
+    ui,
+    store: createConfiguratorStore(values, queries),
+    // A plain promise for the module, rather than the RPC promise a stub method returns.
+    ensureResources: async patterns => await host.ensureResources(patterns),
+  }, ready => host.setSelectionReady(ready));
   ConfiguratorFrame.attach(frame, session);
   // Base UI dismisses a popup when focus moves elsewhere in this document; moving to the host is
   // not seen as such, so the popup would otherwise stay open over the host's controls.

@@ -106,7 +106,7 @@ Keep the iframe-facing capability narrow, only what's necessary to provide desir
 
 For configuration UIs, use `@gadgets/configurator-ui`. It provides form components built on Kumo (rendered with Preact standing in for React inside the frame) that look and behave like the rest of the Workshop, and a build that turns `src/configurator/*-ui.tsx` into `iframeHtml`. Gatekeepers with needs the components cannot meet can produce their own `iframeHtml`.
 
-Components: `Section`, `Field`, `TextInput`, `RadioCards`, `CheckboxList` (multi-select; refuses more than 200 options rather than truncating), `Autocomplete` (search-as-you-type, one result), and `HierarchyPicker` (browse a hierarchy — the root, a container, or a leaf — with breadcrumbs, optional search, paging and `loadItem` for pre-filled values; nodes name icons the configurator supplies in `icons`). The runtime strips control and bidi-formatting characters from titles, subtitles and meta it shows, since those come from third parties.
+Components: `Section`, `Field`, `TextInput`, `RadioCards`, `CheckboxList` (multi-select; refuses more than 200 options rather than truncating), `Autocomplete` (search-as-you-type, one result), `HierarchyPicker` (browse a hierarchy — the root, a container, or a leaf — with breadcrumbs, optional search, paging and `loadItem` for pre-filled values; nodes name icons the configurator supplies in `icons`), `Button` (an action in the form; call the render context's `ensureResources` from its click to ask for access the next step needs) and `Notice` (an inline info or error message, announced to screen readers). The runtime strips control and bidi-formatting characters from titles, subtitles and meta it shows, since those come from third parties.
 
 If you use this:
 

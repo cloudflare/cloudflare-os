@@ -9,6 +9,7 @@ const session = (resourceUrl: ConfiguratorUISpec<null>["resourceUrl"]) => create
   spec: { initial: {}, resourceUrl, render: () => null },
   ui: null,
   store: createConfiguratorStore({ folderId: "F1" }, { folderId: "Reports" }),
+  ensureResources: vi.fn(),
 }, vi.fn());
 
 describe("collectResourceUrl", () => {
@@ -76,6 +77,7 @@ describe("readiness", () => {
       spec: { initial: {}, resourceUrl: () => "", render: () => null },
       ui: null,
       store: createConfiguratorStore({}),
+      ensureResources: vi.fn(),
     }, setSelectionReady);
     running.moduleReady = true;
     running.postReadiness();

@@ -9,6 +9,8 @@ export type ConfiguratorSession<TUI = unknown> = {
   spec: ConfiguratorUISpec<TUI>;
   ui: TUI;
   store: ConfiguratorStore;
+  /** The render context's `ensureResources`: the host's, for the account the frame was opened on. */
+  ensureResources(resourceUrlPatterns: string[]): Promise<boolean>;
   /** The module's `render` or `isReady` threw for the current state. */
   renderFailed: boolean;
   /** A runtime component threw while rendering the module's tree. */
@@ -24,7 +26,7 @@ export type ConfiguratorSession<TUI = unknown> = {
 
 /** Creates a session whose readiness reports reach the host once per change. */
 export const createSession = <TUI,>(
-  init: Pick<ConfiguratorSession<TUI>, "spec" | "ui" | "store">,
+  init: Pick<ConfiguratorSession<TUI>, "spec" | "ui" | "store" | "ensureResources">,
   setSelectionReady: (ready: boolean) => void,
 ): ConfiguratorSession<TUI> => {
   let lastPosted: boolean | undefined;
