@@ -8,8 +8,8 @@ import {
   type ReactNode,
   type SetStateAction,
 } from "react";
-import { DropdownMenu, useKumoToastManager } from "@cloudflare/kumo";
-import { Brain, DotsThree, File as FileIcon } from "@phosphor-icons/react";
+import { DropdownMenu, Tooltip, useKumoToastManager } from "@cloudflare/kumo";
+import { ArrowBendUpRight, Brain, DotsThree, File as FileIcon } from "@phosphor-icons/react";
 import { RpcStub } from "capnweb";
 import type {
   AiChatAuthorInfo,
@@ -153,7 +153,8 @@ export const ChatComposer = ({
   blockedReason?: string;
   /** Identity of the chat the composer is bound to; a change clears chat-scoped hints. */
   chatKey?: number | null;
-  onStop?: () => void;
+  /** Stops the agent. Resolves to the text of this user's steers it never read, for the draft. */
+  onStop?: () => Promise<readonly string[]>;
   showThinkingTraces?: boolean;
   onToggleThinkingTraces?: () => void;
   /** Show the "Pre-approve actions" menu item (only when there are uncovered candidates). */
@@ -173,6 +174,7 @@ export const ChatComposer = ({
     onError: (message) => toasts.add({ title: message, variant: "error" }),
   });
   const {
+    appendParagraphs: appendDraftParagraphs,
     beginSend: beginDraftSend,
     commitDocumentEdit,
     completeSend: completeDraftSend,
@@ -199,6 +201,7 @@ export const ChatComposer = ({
     }));
   };
   const [isSending, setIsSending] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
   const [catalogVersion, setCatalogVersion] = useState(0);
   // The chat the "may not have been sent" hint belongs to; the render condition scopes it, and
   // leaving the chat dismisses it.
@@ -514,6 +517,17 @@ export const ChatComposer = ({
     });
   };
 
+  const handleStop = async () => {
+    if (!onStop) return;
+    setIsStopping(true);
+    try {
+      const unread = await onStop();
+      if (unread.length > 0) appendDraftParagraphs(unread);
+    } finally {
+      if (mountedRef.current) setIsStopping(false);
+    }
+  };
+
   const handleAttachLogs = () => {
     const formatted = onConsumeConsoleLogs();
     recordDraftEdit();
@@ -650,6 +664,11 @@ export const ChatComposer = ({
   const canSend = !isSending && !isAgentActive && !isBlocked &&
     (inputValue.trim().length > 0 || selectedSlashCommand !== null || hasReadyAttachment) &&
     !hasUnreadyAttachment && !isCreatingResource;
+  // While the agent works, a plain message steers it (see ChatInterface's handleSend). Not while a
+  // Stop is pending: the steers it hands back would keep the send from clearing the draft.
+  const canSteer = isAgentActive && !isSending && !isStopping && !isBlocked &&
+    inputValue.trim().length > 0 && selectedSlashCommand === null && capsules.length === 0 &&
+    formatTokens.length === 0 && pendingAttachments.length === 0 && !isCreatingResource;
   return (
     // isolation: isolate contains z-indexes used inside the composer (the
     // captured-log floating chip with z-10, the textarea/mirror with z-[1])
@@ -788,7 +807,7 @@ export const ChatComposer = ({
                 isBlocked
                   ? blockedReason
                   : isAgentActive
-                    ? "Waiting for agent…"
+                    ? "Message the agent while it works…"
                     : newChat
                       ? "Start a new conversation…"
                       : "Ask a follow-up…"
@@ -868,7 +887,7 @@ export const ChatComposer = ({
                 // Enter sends message (unless Shift is held)
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
-                  if (!isAgentActive && !isBlocked) submitMessage();
+                  if (isAgentActive ? canSteer : !isBlocked) submitMessage();
                   return;
                 }
                 if (activeUrl) {
@@ -957,21 +976,37 @@ export const ChatComposer = ({
                 onModelChange={onModelChange}
               />
               {isAgentActive && onStop ? (
-                <WorkshopIconButton
-                  onClick={onStop}
-                  tone="primary"
-                  className="!h-10 !w-10 sm:!h-8 sm:!w-8"
-                  aria-label="Stop agent"
-                >
-                  <svg
-                    width="14"
-                    height="14"
-                    viewBox="0 0 24 24"
-                    fill="currentColor"
+                <>
+                  {/* A steer still being sent can't be handed back to the draft yet. */}
+                  <WorkshopIconButton
+                    onClick={() => void handleStop()}
+                    disabled={isSending || isStopping}
+                    tone={canSteer ? "ghost" : "primary"}
+                    className="!h-10 !w-10 sm:!h-8 sm:!w-8"
+                    aria-label="Stop agent"
                   >
-                    <rect x="5" y="5" width="14" height="14" rx="2" />
-                  </svg>
-                </WorkshopIconButton>
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 24 24"
+                      fill="currentColor"
+                    >
+                      <rect x="5" y="5" width="14" height="14" rx="2" />
+                    </svg>
+                  </WorkshopIconButton>
+                  {canSteer && (
+                    <Tooltip content="Steer: the agent reads this after its current step" asChild>
+                      <WorkshopIconButton
+                        onClick={submitMessage}
+                        tone="primary"
+                        className="!h-10 !w-10 sm:!h-8 sm:!w-8"
+                        aria-label="Steer agent"
+                      >
+                        <ArrowBendUpRight size={16} weight="bold" />
+                      </WorkshopIconButton>
+                    </Tooltip>
+                  )}
+                </>
               ) : (
                 <WorkshopIconButton
                   onClick={submitMessage}

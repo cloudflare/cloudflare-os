@@ -236,6 +236,19 @@ export const useComposerDraft = ({
     setCurrentDocument(nextDocument);
   };
 
+  /**
+   * Appends paragraphs after the draft's text. Writes storage too: the composer may have
+   * unmounted while the caller waited for them.
+   */
+  const appendParagraphs = (paragraphs: readonly string[]) => {
+    recordEdit();
+    const current = documentRef.current;
+    const text = [current.text.trimEnd(), ...paragraphs].filter(Boolean).join("\n\n");
+    const next = { ...current, text };
+    setCurrentDocument(next);
+    writeComposerDraft(loadedKeyRef.current, storedDraftFromDocument(next));
+  };
+
   const getDocumentSnapshot = (): ComposerDocumentSnapshot => ({
     document: documentRef.current,
     documentRevision: documentRevisionRef.current,
@@ -268,6 +281,7 @@ export const useComposerDraft = ({
   };
 
   return {
+    appendParagraphs,
     beginSend,
     commitDocumentEdit,
     completeSend,

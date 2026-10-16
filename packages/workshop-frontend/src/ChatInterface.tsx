@@ -53,6 +53,7 @@ import {
   ArrowUpRight,
   Blueprint,
   GitBranch,
+  ArrowBendUpRight,
 } from "@phosphor-icons/react";
 import { RpcStub, RpcTarget } from "capnweb";
 import ReactMarkdown, { type Components } from "react-markdown";
@@ -801,6 +802,18 @@ function getToolIcon(
       return Question;
   }
 }
+
+// A message this tab sent while the agent was working, kept until its chat log message arrives.
+type SentSteer = { id: string; chatId: number; text: string; afterSequence: number };
+
+const userBubbleClassName = `themed-user-bubble-shadow w-fit max-w-[min(680px,78%)] rounded-[24px] rounded-br-lg border border-transparent bg-kumo-bubble-user px-4 py-2.5 text-[14px] leading-[22px] tracking-[-0.25px] text-kumo-default ${styles.markdownContent}`;
+
+const SteerMark = ({ label }: { label: string }) => (
+  <span className="mt-1 inline-flex items-center gap-1 pr-1 text-[11px] leading-4 text-kumo-inactive">
+    <ArrowBendUpRight size={11} weight="bold" />
+    {label}
+  </span>
+);
 
 function getProvisionalToolLabel(toolName: AiToolCall["toolName"] | null | undefined) {
   switch (toolName) {
@@ -2412,6 +2425,7 @@ export function computeChatEpochChanges(
 }
 
 // The agent that last spoke in the chat: the author of the most recent agent message or agent error.
+// A steer was addressed to a running agent, so it never means the chat went on without one.
 function inferChatAgentFromMessages(messages: AiChatMessage[]): AiChatAuthorInfo | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
@@ -2423,7 +2437,7 @@ function inferChatAgentFromMessages(messages: AiChatMessage[]): AiChatAuthorInfo
       continue;
     }
 
-    if (msg.type === "message") {
+    if (msg.type === "message" && !msg.steered) {
       return msg.author.type === "agent" ? msg.author : null;
     }
   }
@@ -3118,6 +3132,21 @@ function ChatInterface({
 
   const lastMessageSequence = currentMessages[currentMessages.length - 1]?.sequence;
 
+  // Steers the agent has not read yet. One counts as read once a user message with its text lands
+  // after it. The rest are dropped when the agent stops (see metadata below): a turn that ends on
+  // its own commits them as messages, and a stopped one discards them.
+  const [sentSteers, setSentSteers] = useState<SentSteer[]>([]);
+  const landedSteerSequences = new Set<number>();
+  const queuedSteers = sentSteers.filter((steer) => {
+    if (steer.chatId !== selectedChatId) return false;
+    const landed = currentMessages.find((msg) =>
+      msg.sequence > steer.afterSequence && !landedSteerSequences.has(msg.sequence) &&
+      msg.type === "message" && msg.author.type === "user" && msg.author.id === currentUser?.id &&
+      msg.message === steer.text);
+    if (landed) landedSteerSequences.add(landed.sequence);
+    return !landed;
+  });
+
   // Auto-open the out-of-credits modal once when the latest message is a usage-limit error.
   const lastMessage = currentMessages[currentMessages.length - 1];
   useEffect(() => {
@@ -3331,6 +3360,7 @@ function ChatInterface({
     currentMessages,
     hasVisibleProvisionalContent,
     isAgentActive,
+    queuedSteers.length,
     scrollMessagesToBottom,
   ]);
 
@@ -3468,6 +3498,7 @@ function ChatInterface({
       if (prevChat?.activeAgent && !chat.activeAgent) {
         provisionalRef.current.delete(chat.id);
         resetEditPreviews(chat.id);
+        setSentSteers((prev) => prev.filter((steer) => steer.chatId !== chat.id));
       }
 
       // A compaction that lands while the chat is open publishes a boundary the client only gets
@@ -3998,6 +4029,11 @@ function ChatInterface({
 
     // Use provided modelId or fall back to selectedModel
     const model = modelId !== undefined ? modelId : selectedModel;
+    // While the agent works, a plain message steers it, and shows as queued until the agent reads it.
+    const steer: SentSteer | null =
+      selectedChatId !== null && isAgentActive && typeof message === "string"
+        ? { id: crypto.randomUUID(), chatId: selectedChatId, text: message, afterSequence: lastMessageSequence ?? -1 }
+        : null;
 
     try {
       if (selectedChatId === null) {
@@ -4006,6 +4042,7 @@ function ChatInterface({
             message, model, capsules, attachments, formats);
         onNavigateToChatRef.current(newChatId);
       } else {
+        if (steer) setSentSteers((prev) => [...prev, steer]);
         // Send message to existing chat.
         await overseer.sendChatMessage(
           selectedChatId,
@@ -4017,6 +4054,7 @@ function ChatInterface({
         );
       }
     } catch (err) {
+      if (steer) setSentSteers((prev) => prev.filter((sent) => sent !== steer));
       if (!logRpcFailure("Failed to send message:", err, { reportSite: "chat.send" })) {
         toasts.add({
           title: "Failed to send message",
@@ -4061,15 +4099,18 @@ function ChatInterface({
     persistSelectedModel(modelId);
   };
 
-  // Handle stopping the agent
-  const handleStop = async () => {
-    if (selectedChatId === null) return;
-
+  // Stops the agent and returns the text of this user's steers it never read, for the draft.
+  const handleStop = async (): Promise<readonly string[]> => {
+    if (selectedChatId === null) return [];
+    const chatId = selectedChatId;
     try {
-      await overseer.stopAgent(selectedChatId);
+      const unread = await overseer.stopAgent(chatId);
+      setSentSteers((prev) => prev.filter((steer) => steer.chatId !== chatId));
+      return unread;
     } catch (err) {
       console.error("Failed to stop agent:", err);
       toasts.add({ title: "Failed to stop agent", variant: "error" });
+      return [];
     }
   };
 
@@ -5940,7 +5981,7 @@ function ChatInterface({
                         {msg.type === "message" && (
                           msg.author.type === "user" ? (
                             <div className="group/message relative flex flex-col items-end">
-                              <div className={`themed-user-bubble-shadow w-fit max-w-[min(680px,78%)] rounded-[24px] rounded-br-lg border border-transparent bg-kumo-bubble-user px-4 py-2.5 text-[14px] leading-[22px] tracking-[-0.25px] text-kumo-default ${styles.markdownContent}`}>
+                              <div className={userBubbleClassName}>
                                 {msg.attachments && msg.attachments.length > 0 && (
                                   <ChatAttachmentGrid
                                     attachments={msg.attachments}
@@ -5971,6 +6012,7 @@ function ChatInterface({
                                   </div>
                                 )}
                               </div>
+                              {msg.steered && <SteerMark label="Steered mid-turn" />}
                               <div className="mt-0.5 flex items-center justify-end gap-2 pr-1 text-[11px] leading-4 text-kumo-inactive opacity-100 transition-opacity duration-150 ease-out sm:opacity-0 sm:group-hover/message:opacity-100 sm:group-focus-within/message:opacity-100">
                                 {/* hideOwnUserName implies currentUser is non-null (see memo). */}
                                 {!(hideOwnUserName && msg.author.id === currentUser?.id) && (
@@ -6458,6 +6500,16 @@ function ChatInterface({
                         </div>
                       );
                     })()}
+                    {queuedSteers.map((steer) => (
+                      <div key={steer.id} className="flex flex-col items-end">
+                        <div className={`${userBubbleClassName} opacity-60`}>
+                          <div className="whitespace-pre-wrap">
+                            <MarkdownMessage message={steer.text} />
+                          </div>
+                        </div>
+                        <SteerMark label="Queued for the agent's next step" />
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>

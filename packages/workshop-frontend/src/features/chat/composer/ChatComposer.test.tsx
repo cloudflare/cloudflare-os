@@ -36,6 +36,7 @@ vi.mock("../../../GatekeeperModal", () => ({
 }));
 
 import { ChatComposer } from "./ChatComposer";
+import { readComposerDraft } from "./draft/composerDraft";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 Element.prototype.scrollIntoView ??= () => {};
@@ -159,6 +160,97 @@ describe("ChatComposer", () => {
     expect(consoleError).toHaveBeenCalledTimes(transient ? 0 : 1);
     consoleError.mockRestore();
   });
+
+  it("steers on Enter while the agent works, and Stop puts unread steers back", async () => {
+    let finishSend: (() => void) | undefined;
+    const onSend = vi.fn<Parameters<typeof ChatComposer>[0]["onSend"]>(
+      () => new Promise<void>((resolve) => { finishSend = resolve; }),
+    );
+    let finishStop: ((unread: readonly string[]) => void) | undefined;
+    const stopped = new Promise<readonly string[]>((resolve) => { finishStop = resolve; });
+    const onStop = vi.fn<() => Promise<readonly string[]>>(() => stopped);
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root!.render(
+      <ChatComposer
+        createCapsuleGatekeeper={async () => null}
+        getOverseer={() => ({} as RpcStub<Overseer>)}
+        onSend={onSend}
+        onStop={onStop}
+        isAgentActive
+        models={[]}
+        selectedModel={{ id: "model-a" }}
+        onModelChange={() => {}}
+        chatKey={7}
+      />,
+    ));
+    const textarea = container.querySelector<HTMLTextAreaElement>('[role="combobox"]')!;
+    const stop = container.querySelector<HTMLButtonElement>('[aria-label="Stop agent"]')!;
+    const type = (text: string) => act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(
+        textarea,
+        text,
+      );
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    await type("Make it dark.");
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(onSend).toHaveBeenCalledWith("Make it dark.", "model-a", undefined, undefined, undefined);
+    expect(stop.disabled).toBe(true);
+    await act(async () => finishSend!());
+    expect(textarea.value).toBe("");
+    expect(stop.disabled).toBe(false);
+
+    await type("Half a thought  ");
+    expect(container.querySelector('[aria-label="Steer agent"]')).not.toBeNull();
+    await act(async () => stop.click());
+    expect(onStop).toHaveBeenCalledOnce();
+    expect(stop.disabled).toBe(true);
+    expect(container.querySelector('[aria-label="Steer agent"]')).toBeNull();
+    await act(async () => {
+      finishStop!(["Make it dark."]);
+      await stopped;
+    });
+    expect(textarea.value).toBe("Half a thought\n\nMake it dark.");
+    expect(stop.disabled).toBe(false);
+  });
+
+  it("keeps the steers Stop hands back when the chat is left before it returns", async () => {
+    let finishStop: ((unread: readonly string[]) => void) | undefined;
+    const stopped = new Promise<readonly string[]>((resolve) => { finishStop = resolve; });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root!.render(
+      <ChatComposer
+        createCapsuleGatekeeper={async () => null}
+        getOverseer={() => ({} as RpcStub<Overseer>)}
+        onSend={() => {}}
+        onStop={() => stopped}
+        isAgentActive
+        models={[]}
+        selectedModel={{ id: "model-a" }}
+        onModelChange={() => {}}
+        chatKey={7}
+        draftStorageKey="draft:chat-7"
+      />,
+    ));
+    await act(async () => {
+      container!.querySelector<HTMLButtonElement>('[aria-label="Stop agent"]')!.click();
+    });
+    await act(async () => root!.unmount());
+    root = undefined;
+
+    finishStop!(["Make it dark."]);
+    await stopped;
+    expect(readComposerDraft("draft:chat-7")?.text).toBe("Make it dark.");
+  });
+
   it("keeps add-menu actions enabled after inserting a skill and removes the legacy button", async () => {
     const skill = {
       selection: { gatekeeperId: 42, commandId: "review" },
