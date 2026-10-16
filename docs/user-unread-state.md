@@ -51,6 +51,7 @@ type UserUnreadState = {
   unreadChatCount: number;
   unreadMessageCount: number;
   chats: ChatReadState[]; // all tracked threads, including read ones
+  unavailableWorkspaceIds?: string[]; // missing heads; totals are lower bounds until rebuilt
 };
 
 interface UnreadStateSubscriber {
@@ -112,15 +113,19 @@ latest heads, counts through each horizon, previews, source-version fences and s
 revisions. Message arrivals do not write user SQLite. Reading through the latest cached message
 requires only a horizon write; a partial read/rewind resolves its sparse sequence through the
 authorized workspace before writing. Badge calculation and snapshot construction are in-memory.
-The unpublished prototype's durable head rows are migrated to horizon-only rows on wake.
+The prototype's durable head rows on existing test installs are migrated to horizon-only rows on wake.
 
 A cold User DO fetches current heads and counts through its saved horizons from listed workspaces,
-using their build-role/observer authorization gate. An initial subscription sends no false zero
-while this is pending. Incoming updates join reconstruction, then apply only if their source
+using their build-role/observer authorization gate. An initial subscription waits for those loads.
+One failing workspace does not block healthy ones: `unavailableWorkspaceIds` explicitly reports
+missing heads, and aggregate counts are lower bounds, not a claim that missing threads are read.
+The web client shows a status and retries with backoff; incomplete totals do not replace native
+badges. Incoming updates join reconstruction, then apply only if their source
 version is newer. A cold rebuild reads the authoritative log, so lost deliveries, coalesced
 messages and stale retries cannot lose counts or resurrect an old head. Failures remain failures,
-not read receipts. There is deliberately no durable latest-message/thread-list replica in the
-User DO yet: cold startup depends on workspace availability.
+not read receipts. Bulk read applies healthy workspaces' horizons but reports a failed lookup to
+the caller; a monotonic retry is safe. There is deliberately no durable latest-message/thread-list
+replica in the User DO yet: complete counts depend on workspace availability.
 
 Normal fanout carries only each **changed thread's latest message**: its thread/title, latest
 sequence, cumulative countable-message count, author, timestamp and at most 240 characters of the
@@ -147,7 +152,10 @@ subscriptions are disposable. Callback failure never rolls back a cursor.
 Workspace deletion persists its intent before removing any user's listing and read state. It
 uses the same recipient journal, without requiring observer access for removal. The listing
 removal fences delayed snapshots; only after every tracked recipient acknowledges cleanup does
-the Overseer delete its own storage. Alarms resume interrupted deletion without another user action,
+the Overseer delete its own storage. The input gate protects only deletion intent and fanout
+journalling: it never joins cross-DO delivery, which may call back into the workspace. The request
+waits for the owner's listing cleanup, not unhealthy collaborators; the durable alarm finishes
+their cleanup. Alarms resume interrupted deletion without another user action,
 and a deleting workspace refuses new opens, agent callbacks and turn starts. Queued callbacks
 remain untouched until cleanup removes the source storage; recovery alarms and continuations
 returning from model lookup or message preparation cannot resume work during deletion.
@@ -163,7 +171,7 @@ The first-party native bridge can optionally implement:
 cloudflareOSNative.unreadStateChanged(state: UserUnreadState): void;
 ```
 
-`UnreadStateBridge` forwards every newer snapshot, including while hidden. The native host must
+`UnreadStateBridge` forwards every newer complete snapshot, including while hidden. The native host must
 associate it with its verified first-party main frame and saved instance/user, never a claimed
 instance or gadget frame. Use `unreadMessageCount` for that instance, and sum authenticated instance
 counts for an OS badge. A disconnect is stale/unknown, not zero; logout/removal clears that
@@ -188,9 +196,11 @@ a build collaborator and a use-only collaborator, including appends, rename and 
 asserts per-message fanout through live subscriptions without polling/reopening the workspace:
 the same message updates both users' counts/previews, an observed partial read leaves later
 activity unread, and reading on the owner's second device never clears the collaborator's badge.
-Fault tests also keep the initial subscription pending during cold reconstruction, retry a failed
-rebuild without emitting a false-zero snapshot, and leave the horizon unchanged if a partial
-read's source count lookup fails.
+Fault tests also keep the initial subscription pending during cold reconstruction, isolate failed
+workspaces with explicit incomplete state, retry missing heads, and leave a thread's horizon
+unchanged if its partial read's source count lookup fails. Deletion tests exercise `deleteSelf()`
+with a simulated cold-recipient callback delivered as a real RPC event through the DO input gate,
+and an unhealthy collaborator.
 Chromium tests verify actual viewport geometry, focus, and pointer input for marking unread.
 
 Useful commands (workerd tests require local loopback sockets):

@@ -212,7 +212,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     super(ctx, env);
 
     this.storage = makeUserStorage(ctx.storage);
-    // Retire the unpublished prototype's denormalized heads, preserving its private horizons.
+    // Preserve private horizons from the prototype already running on internal test installs.
     let legacyStates = [...this.storage.chatReadStates.list()];
     for (let legacy of legacyStates) {
       let {workspaceId, chatId, readThroughSequence, readEpoch} = legacy;
@@ -536,6 +536,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   #ensureWorkspaceChats(workspaceId: string): Promise<void> {
+    let listing = this.storage.gadgets.get(workspaceId);
+    if (!listing || listing.role === "use") return Promise.resolve();
     if (this.#chatTimelines.has(workspaceId)) return Promise.resolve();
     let pending = this.#timelineLoads.get(workspaceId);
     if (pending) return pending;
@@ -567,11 +569,22 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   /** Fetch unread state without causing an alert or read receipt. Rebuild after eviction. */
   async getUnreadState(): Promise<UserUnreadState> {
     let workspaces = [...this.storage.gadgets.list()].filter(workspace => workspace.role !== "use");
-    await Promise.all(workspaces.map(workspace => this.#ensureWorkspaceChats(workspace.id)));
+    await Promise.all(workspaces.map(async workspace => {
+      try {
+        await this.#ensureWorkspaceChats(workspace.id);
+      } catch (error) {
+        logger.warn("unread workspace reconstruction deferred", {
+          event: "chat.unread.reconstruction.deferred", gadgetId: workspace.id, error,
+        });
+      }
+    }));
     return this.#unreadSnapshot();
   }
 
   #unreadSnapshot(): UserUnreadState {
+    let unavailableWorkspaceIds = [...this.storage.gadgets.list()]
+        .filter(workspace => workspace.role !== "use" && !this.#chatTimelines.has(workspace.id))
+        .map(workspace => workspace.id);
     let chats: ChatReadState[] = [];
     for (let [workspaceId, timeline] of this.#chatTimelines) {
       for (let head of timeline.heads.values()) {
@@ -585,11 +598,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       }
     }
     return {revision: this.#unreadRevision, chats,
+      ...(unavailableWorkspaceIds.length ? {unavailableWorkspaceIds} : {}),
       unreadChatCount: chats.filter(chat => chat.unreadMessageCount > 0).length,
       unreadMessageCount: chats.reduce((count, chat) => count + chat.unreadMessageCount, 0)};
   }
 
-  /** Install only after reconstruction; there is no fetch/watch gap or false zero snapshot. */
+  /** Install after reconstruction, explicitly reporting unavailable workspaces rather than false zero. */
   async subscribeToUnreadState(subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>> {
     await this.getUnreadState();
     subscriber = subscriber.dup();
@@ -608,6 +622,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   #unreadChanged(): void {
     this.#unreadRevision++;
+    if (!this.#unreadSubscribers.size) return;
     let snapshot = this.#unreadSnapshot();
     for (let [token, subscriber] of this.#unreadSubscribers) {
       this.ctx.waitUntil(subscriber.updated(snapshot).catch(() => {
@@ -649,11 +664,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     await this.markChatsRead([receipt]);
   }
 
-  /** Resolve sparse timeline positions before atomically applying this user's observed horizons. */
+  /** Resolve sparse timeline positions before applying this user's observed horizons. */
   async markChatsRead(receipts: ChatReadReceipt[]): Promise<void> {
     if (receipts.some(receipt => !Number.isSafeInteger(receipt.throughSequence) ||
         receipt.throughSequence < -1)) throw new Error("Invalid timeline sequence.");
-    let resolved = await Promise.all([...Map.groupBy(receipts, receipt => receipt.workspaceId)]
+    let resolved = await Promise.allSettled([...Map.groupBy(receipts, receipt => receipt.workspaceId)]
         .map(async ([workspaceId, group]) => {
           if (!this.storage.gadgets.get(workspaceId) || this.storage.gadgets.get(workspaceId)?.role === "use") return [];
           await this.#ensureWorkspaceChats(workspaceId);
@@ -685,7 +700,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           })];
         }));
     let changed = false;
-    for (let {receipt, readMessageCount} of resolved.flat()) {
+    for (let {receipt, readMessageCount} of resolved.flatMap(result => result.status === "fulfilled" ? result.value : [])) {
       let {workspaceId, chatId, throughSequence, readEpoch} = receipt;
       let listing = this.storage.gadgets.get(workspaceId);
       if (!listing || listing.role === "use" || !this.#chatTimelines.get(workspaceId)?.heads.has(chatId)) continue;
@@ -700,6 +715,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       changed = true;
     }
     if (changed) this.#unreadChanged();
+    // Healthy workspaces can advance, but the caller must not mistake partial success for a
+    // successful mark-all-read. Retrying these monotonic receipts is safe.
+    for (let result of resolved) {
+      if (result.status === "rejected") throw result.reason;
+    }
   }
 
   /** Rewind once per observed epoch; stale devices and lost-ACK retries cannot undo later reads. */

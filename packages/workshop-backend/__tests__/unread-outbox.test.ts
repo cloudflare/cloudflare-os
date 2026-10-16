@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import type { OverseerDurableObject } from "../src/overseer.js";
@@ -299,6 +299,82 @@ describe("durable unread projection outbox", () => {
     });
   });
 
+  it("deleteSelf releases the input gate before an in-flight recipient calls back", async () => {
+    const {stub, recipientId} = await setup();
+    await runInDurableObject(stub, async instance => {
+      const impl = instance.impl;
+      using _capsules = vi.spyOn(impl, "ensureAmbientCapsules").mockResolvedValue(undefined);
+      using _restart = vi.spyOn(impl, "scheduleAccessRestart").mockResolvedValue(undefined);
+      using notify = new NativeRpcStub(() => {});
+      const client = await instance.open(recipientId, "owner@example.com", notify);
+      try {
+        await impl.deliverChatTimelines(true);
+        const user = impl.users.get(impl.users.idFromString(recipientId));
+        const fetched = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+        // Model the cold recipient's callback as a real RPC event addressed to this DO. The
+        // dispatch boundary is held until deleteSelf enters its actual blockConcurrencyWhile.
+        const callback = impl.ctx.exports.OverseerDurableObject.get(impl.ctx.id);
+        const dispatch = interceptDispatch(impl, async (recipient, args) => {
+          fetched.resolve();
+          await release.promise;
+          await callback.getChatTimelineForUser(recipientId, "owner@example.com", []);
+          await recipient.syncWorkspaceChats(...args);
+        });
+        impl.queueUnreadSnapshot(1);
+        const delivery = impl.deliverChatTimelines(true);
+        await fetched.promise;
+        const deletion = client.deleteSelf();
+        try {
+          await vi.waitFor(() => expect(impl.storage.deletingWorkspace.get()).toBe(true));
+          release.resolve();
+          await deletion;
+          await delivery;
+          expect(await user.getGadget(impl.ctx.id.toString())).toBeNull();
+          expect(_restart).toHaveBeenCalledOnce();
+        } finally {
+          release.resolve();
+          await Promise.allSettled([delivery, deletion]);
+          dispatch.restore();
+        }
+      } finally {
+        client[Symbol.dispose]();
+      }
+    });
+  });
+
+  it("deleteSelf succeeds after owner cleanup even if another recipient is unhealthy", async () => {
+    const {stub, recipientId} = await setup();
+    await runInDurableObject(stub, async instance => {
+      const impl = instance.impl;
+      using _capsules = vi.spyOn(impl, "ensureAmbientCapsules").mockResolvedValue(undefined);
+      using _restart = vi.spyOn(impl, "scheduleAccessRestart").mockResolvedValue(undefined);
+      using notify = new NativeRpcStub(() => {});
+      const client = await instance.open(recipientId, "owner@example.com", notify);
+      await impl.deliverChatTimelines(true);
+      const readerId = impl.users.idFromName(crypto.randomUUID()).toString();
+      impl.storage.unreadReaders.put({userId: readerId, profileId: "reader@example.com"});
+      const restore = interceptRemoval(impl, async (user, id) => {
+        if (user.id.toString() === readerId) throw new Error("Collaborator unavailable");
+        await user.deleteGadget(id);
+      });
+      try {
+        await expect(client.deleteSelf()).resolves.toBeUndefined();
+        await expect(impl.deliverChatTimelines(true)).rejects.toThrow("Collaborator unavailable");
+        expect(await impl.users.get(impl.users.idFromString(recipientId)).getGadget(impl.ctx.id.toString())).toBeNull();
+        expect(impl.storage.deletingWorkspace.get()).toBe(true);
+        expect(impl.storage.chatTimelineOutbox.get(readerId)).toBeDefined();
+        expect(impl.storage.chatTimelineRetryAt.get()).toBeGreaterThan(Date.now());
+      } finally {
+        restore();
+        client[Symbol.dispose]();
+      }
+    });
+    await evictDurableObject(stub);
+    await withImpl(stub, async impl => { impl.storage.chatTimelineRetryAt.put(0); });
+    await runDurableObjectAlarm(stub);
+    await withImpl(stub, async impl => { expect(impl.ownerId).toBeUndefined(); });
+  });
+
   it.each(["before dispatch", "lost ACK", "outbox cleanup", "storage deletion"])(
     "resumes workspace deletion after eviction at %s without resurrecting collaborator badges",
     async (boundary) => {
@@ -323,7 +399,8 @@ describe("durable unread projection outbox", () => {
         using _deleteAll = vi.spyOn(impl.ctx.storage, "deleteAll");
         if (boundary === "storage deletion") _deleteAll.mockRejectedValueOnce(new Error(boundary));
         try {
-          await expect(impl.deleteWorkspace()).rejects.toThrow(boundary);
+          impl.deleteWorkspace();
+          await expect(impl.deliverChatTimelines(true)).rejects.toThrow(boundary);
           expect(impl.storage.deletingWorkspace.get()).toBe(true);
           expect(impl.storage.chatMeta.get(1)).toBeDefined();
           expect((await reader.getUnreadState()).unreadChatCount).toBe(boundary === "before dispatch" ? 1 : 0);
@@ -359,7 +436,8 @@ describe("durable unread projection outbox", () => {
       });
       const restore = interceptRemoval(impl, async () => { throw new Error("cleanup unavailable"); });
       try {
-        await expect(impl.deleteWorkspace()).rejects.toThrow("cleanup unavailable");
+        impl.deleteWorkspace();
+        await expect(impl.deliverChatTimelines(true)).rejects.toThrow("cleanup unavailable");
       } finally {
         restore();
       }
@@ -416,7 +494,8 @@ describe("durable unread projection outbox", () => {
         cleared();
         await gate;
       });
-      const deletion = impl.deleteWorkspace();
+      impl.deleteWorkspace();
+      const deletion = impl.deliverChatTimelines(true);
       try {
         await storageCleared;
         expect(impl.storage.deletingWorkspace.get()).toBe(false);

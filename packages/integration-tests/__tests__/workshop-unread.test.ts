@@ -171,9 +171,14 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
     (await owner.getUnreadState()).chats.some((chat) => chat.chatId === other) &&
     (await builder.getUnreadState()).chats.some((chat) => chat.chatId === other) ? true : null,
   );
+  // Deletion returns after owner cleanup; collaborator cleanup is durable background work.
+  // A session holding an open workspace is intentionally disconnected by its restart. Observe
+  // eventual cleanup from a separate session, like a hidden native badge listener.
+  using backgroundPublic = connect(harness.url);
+  using backgroundBuilder = await logIn(backgroundPublic, builderName);
   await workspace.deleteSelf();
   await waitFor("workspace removal", async () =>
     first.state?.chats.length === 0 && second.state?.chats.length === 0 &&
-    (await builder.getUnreadState()).chats.length === 0 ? true : null,
+    (await backgroundBuilder.getUnreadState()).chats.length === 0 ? true : null,
   );
 });

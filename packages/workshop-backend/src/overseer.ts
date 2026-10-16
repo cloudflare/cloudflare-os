@@ -1116,10 +1116,10 @@ class OverseerImpl implements AgentHooks {
     this.#scheduleTimelineDelivery();
   }
 
-  #scheduleTimelineDelivery(): void {
+  #scheduleTimelineDelivery(immediate = false): void {
     this.ctx.waitUntil(Promise.resolve().then(() => {
       this.#updateAlarm();
-      return this.deliverChatTimelines();
+      return this.deliverChatTimelines(immediate);
     }).catch(error => {
       this.logger.warn("timeline index delivery deferred", {
         event: "chat.unread.delivery.deferred", error,
@@ -1197,12 +1197,14 @@ class OverseerImpl implements AgentHooks {
     this.queueUnreadSnapshot();
   }
 
-  /** Persist deletion and finish recipient cleanup before discarding this workspace's storage. */
-  async deleteWorkspace(): Promise<void> {
+  /** Fence new work and journal cleanup without joining cross-DO delivery under an input gate. */
+  deleteWorkspace(): void {
     this.storage.deletingWorkspace.put(true);
     this.destroyAllLiveChats();
     this.queueUnreadSnapshot();
-    await this.deliverChatTimelines(true);
+    this.#flushTimelineRecipients();
+    // Start cleanup after the gate returns, without inheriting an older metadata retry delay.
+    this.#scheduleTimelineDelivery(true);
   }
 
   #deleteExternalMessageResponseDeliveryRecord(record: ExternalMessageRecord): void {
@@ -11160,16 +11162,18 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     }
 
     await this.impl.ctx.blockConcurrencyWhile(async () => {
-      await this.impl.deleteWorkspace();
-      this.impl.recordGadgetAnalytics({
-        event_name: "gadget_deleted",
-        user_id: this.#clientUser.id.toString(),
-      });
-      // The restart severs every session still holding this workspace so its client reopens. The
-      // deleter has nothing to reopen, so close it first. Best-effort: throwing here resets the DO.
-      await this.notifyClosed().catch(() => {});
-      this.impl.scheduleAccessRestart("Gadget restarted because the workspace was deleted.");
+      this.impl.deleteWorkspace();
     });
+    // A cold recipient may call back into this workspace during an older delivery. Do not join
+    // that drain while holding the input gate, or make deletion depend on collaborator health.
+    await this.#clientUser.deleteGadget(this.impl.ctx.id.toString());
+    this.impl.recordGadgetAnalytics({
+      event_name: "gadget_deleted",
+      user_id: this.#clientUser.id.toString(),
+    });
+    // Cleanup of other recipients continues through the durable outbox after this restart.
+    await this.notifyClosed().catch(() => {});
+    this.impl.scheduleAccessRestart("Gadget restarted because the workspace was deleted.");
 
     this.impl.logger.info("deleted workspace", {
       event: "workspace.delete.completed", durationMs: Date.now() - startedAt,

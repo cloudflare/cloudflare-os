@@ -170,10 +170,7 @@ export type CloudflareBilling = {
 export function makeUserStorage(storage: DurableObjectStorage) {
   return createTypedStorage(storage, {
     collections: {
-      // Read-only legacy schema, retained so the unpublished prototype's data can be retired.
-      unreadWorkspaceVersions: collection<{workspaceId: string; version: number}>()({
-        primaryKey: "workspaceId",
-      }),
+      // Read-only legacy schema, retained to preserve read markers on existing test installs.
       chatReadStates: collection<ChatReadState>()({
         primaryKey: record => `${record.workspaceId}:${record.chatId}`,
         nonUniqueIndexes: {
@@ -248,7 +245,6 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       // device that registers again replaces its own subscription. Only this installation's signing
       // key can deliver to them.
       notificationSubscriptions: <Record<string, string>>{},
-      unreadRevision: 0,
 
       // Set once the user's pre-existing workspaces have been asked to populate the outputs index
       // (see #backfillOutputs()). Workspaces created since push on their own.

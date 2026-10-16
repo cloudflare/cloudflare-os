@@ -242,12 +242,14 @@ export type ChatReadReceipt = Pick<ChatReadState,
 export type UserUnreadState = {
   /** Increasing within a subscription session; a new subscription starts a fresh revision stream. */
   revision: number;
-  /** Number of threads with at least one unread visible message. */
+  /** Number of loaded threads with at least one unread visible message. */
   unreadChatCount: number;
-  /** Total unread visible messages across all tracked threads. */
+  /** Total unread visible messages across loaded threads; a lower bound while workspaces are unavailable. */
   unreadMessageCount: number;
-  /** All tracked threads, including read threads; replaces the previous snapshot. */
+  /** All loaded threads, including read threads; replaces the previous snapshot. */
   chats: ChatReadState[];
+  /** Workspaces whose heads could not be loaded. Omitted when complete; missing is not read/zero. */
+  unavailableWorkspaceIds?: string[];
 };
 
 /** Callback used by `AuthenticatedApi.subscribeToUnreadState()`. */
@@ -584,7 +586,10 @@ export interface AuthenticatedApi extends RpcTarget {
   /** Advance an observed timeline cursor. Stale epochs cannot undo an explicit mark-unread. */
   markChatRead(receipt: ChatReadReceipt): Promise<void>;
 
-  /** Mark the observed thread boundaries read, for workspace/all-read commands. */
+  /**
+   * Mark observed thread boundaries read. A workspace failure does not block healthy workspaces,
+   * but rejects the command to report partial success; retrying the same receipts is safe.
+   */
   markChatsRead(receipts: ChatReadReceipt[]): Promise<void>;
 
   /**

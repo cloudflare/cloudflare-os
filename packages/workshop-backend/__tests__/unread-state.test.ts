@@ -210,33 +210,68 @@ describe("user-owned horizons and disposable message counts", () => {
     expect(await chat(fixture.user)).toMatchObject({readThroughSequence: 3, unreadMessageCount: 1});
   });
 
-  it("waits for cold reconstruction before subscribing, and retries a failed reconstruction", async () => {
+  it("waits for cold reconstruction, labels a failed workspace unknown, and retries without losing healthy updates", async () => {
     const fixture = await setup();
     await append(fixture, 0);
     await fixture.user.markChatRead(receipt(fixture.workspaceId, 0));
     await append(fixture, 3);
+    const healthy = await setup(fixture.user);
+    await append(healthy, 0);
     await evictDurableObject(fixture.user);
     const received: UserUnreadState[] = [];
     using subscriber = new RpcStub(new Subscriber(state => received.push(state)));
     await runInDurableObject(fixture.user, async instance => {
       const fetched = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
-      using _load = vi.spyOn(instance, "loadWorkspaceChats").mockImplementationOnce(async () => {
+      const load = instance.loadWorkspaceChats.bind(instance);
+      using _load = vi.spyOn(instance, "loadWorkspaceChats").mockImplementation(async (id, ...args) => {
+        if (id !== fixture.workspaceId) return load(id, ...args);
         fetched.resolve();
         await release.promise;
         throw new Error("Workspace temporarily unavailable");
       });
-      const failed = expect(instance.subscribeToUnreadState(subscriber))
-        .rejects.toThrow("Workspace temporarily unavailable");
+      const subscribing = instance.subscribeToUnreadState(subscriber);
       await fetched.promise;
       expect(received).toEqual([]);
       release.resolve();
-      await failed;
+      using _subscription = await subscribing;
+      await vi.waitFor(() => expect(received.length).toBeGreaterThan(0));
+      expect(received.at(-1)).toMatchObject({unreadMessageCount: 1,
+        unavailableWorkspaceIds: [fixture.workspaceId], chats: [{workspaceId: healthy.workspaceId}]});
+      expect(received.at(-1)?.chats.some(chat => chat.workspaceId === fixture.workspaceId)).toBe(false);
+      const state = (await instance.loadWorkspaceChats(healthy.workspaceId))!;
+      await instance.syncWorkspaceChats(healthy.workspaceId, state.version + 1,
+        [{...state.heads[0], latestSequence: 1, messageCount: 2}], []);
+      await vi.waitFor(() => expect(received.at(-1)?.unreadMessageCount).toBe(2));
     });
-    expect(received).toEqual([]);
+    received.length = 0;
     using _subscription = await fixture.user.subscribeToUnreadState(subscriber);
     await vi.waitFor(() => expect(received).toHaveLength(1));
-    expect(received[0]).toMatchObject({unreadMessageCount: 1,
-      chats: [{readThroughSequence: 0, latestSequence: 3, unreadMessageCount: 1}]});
+    expect(received[0]).toMatchObject({unreadMessageCount: 3});
+    expect(received[0].unavailableWorkspaceIds).toBeUndefined();
+    expect(received[0].chats.find(chat => chat.workspaceId === fixture.workspaceId))
+      .toMatchObject({readThroughSequence: 0, latestSequence: 3, unreadMessageCount: 1});
+  });
+
+  it("bulk read advances healthy workspaces while reporting another workspace's failed lookup", async () => {
+    const first = await setup(), second = await setup(first.user);
+    for (const fixture of [first, second]) {
+      await append(fixture, 0);
+      await append(fixture, 3);
+    }
+    await runInDurableObject(first.user, async instance => {
+      const load = instance.loadWorkspaceChats.bind(instance);
+      using _load = vi.spyOn(instance, "loadWorkspaceChats").mockImplementation((id, ...args) => {
+        if (id === first.workspaceId) return Promise.reject(new Error("Needs repair"));
+        return load(id, ...args);
+      });
+      await expect(instance.markChatsRead([receipt(first.workspaceId, 0), receipt(second.workspaceId, 0)]))
+        .rejects.toThrow("Needs repair");
+    });
+    const state = await first.user.getUnreadState();
+    expect(state.chats.find(chat => chat.workspaceId === first.workspaceId)?.readThroughSequence).toBe(-1);
+    expect(state.chats.find(chat => chat.workspaceId === second.workspaceId)?.readThroughSequence).toBe(0);
+    await first.user.markChatsRead([receipt(first.workspaceId, 0), receipt(second.workspaceId, 0)]);
+    expect((await first.user.getUnreadState()).unreadMessageCount).toBe(2);
   });
 
   it("bulk-reads observed horizons across workspaces without swallowing later messages or epochs", async () => {
