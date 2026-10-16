@@ -37,7 +37,8 @@ import { notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential
 import {
   commitStagedCredentials, discardStagedCredentials, stageCredentials,
 } from "@gadgets/gatekeeper-kit/credential-stage";
-import { TokenCursor } from "@gadgets/gatekeeper-kit/cursors";
+import { TokenCursor, type CursorInjection } from "@gadgets/gatekeeper-kit/cursors";
+import { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
 import { createPkce, mergeOAuthTokens, oauthRefresh, type OAuthTokens } from "@gadgets/gatekeeper-kit/oauth-client";
 import { CanvaApi, CanvaApiError, type CanvaImageAssetResponse } from "./canva-api";
 import {
@@ -65,14 +66,21 @@ import {
 import {
   normalizeDesign, normalizeFolder, normalizeFolderItem, normalizeImageAsset, parseDesignId, parseFolderId,
 } from "./canva-normalize";
+import {
+  designOrder, folderItemIdentity, folderItemOrder, isProvisional, pendingActionFor, pendingAssets,
+  pendingCreatedDesign, pendingDesigns, pendingGeneratedDesign, pendingRow, pendingTransformedAsset,
+  runningRow, type Pending, type Unmade,
+} from "./canva-simulation";
 import type {
   CanvaAccountSession,
   CanvaBackgroundRemovalJob,
   CanvaCreateDesignOptions,
   CanvaDesign,
+  CanvaDesignSort,
   CanvaDesignType,
   CanvaFolder,
   CanvaFolderItem,
+  CanvaFolderItemSort,
   CanvaGenerateDesignOptions,
   CanvaGenerationJob,
   CanvaImageAsset,
@@ -634,8 +642,22 @@ const CURSOR_PAGE_SIZE = 50;
 type CanvaSessionHost = {
   /** Runs a provider read as the connection. Reads are safe to repeat after a stale credential. */
   read<T>(op: (api: CanvaApi) => Promise<T>): Promise<T>;
+  /** The Canva user the connection is pinned to: the owner every pending row shows. */
+  identity(): Promise<StoredIdentity>;
   /** Stages an action for approval, fenced on the pinned Canva user. */
   submit<K extends keyof CanvaActions>(queue: ActionSubmitter, kind: K, payload: CanvaActions[K]): Promise<number>;
+  /** Allocates a temporary id for a design or asset this session is about to make. */
+  allocate(kind: "design" | "asset"): string;
+  /** What a temporary id was allocated for, or `undefined` for an id Canva issued. */
+  kindOf(id: string): "design" | "asset" | undefined;
+  /** The id Canva assigned a temporary id, or the id itself. */
+  resolve(id: string): string;
+  /** Actions waiting for a decision, for simulation. */
+  pending(): Pending;
+  /** The record of an applied action that makes `ref`, if any. Not refreshed. */
+  jobForRef(ref: string): CanvaJobRecord | undefined;
+  /** The records of applied actions whose jobs were still running when last seen. Not refreshed. */
+  runningJobs(): CanvaJobRecord[];
   getProfile(): Promise<CanvaProfile>;
   getDesign(designId: string): Promise<CanvaDesign>;
   getFolder(folderId: string): Promise<CanvaFolder>;
@@ -650,8 +672,12 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
 
   readonly #creds = accountSource(() => this.#account());
   readonly #journal = new ActionJournal<CanvaAction>(this.ctx.storage.kv, { namespace: "canva" });
+  // Namespaced apart from the journal ("canva:") and the job records ("job:").
+  readonly #refs = new ProvisionalIds<string>(this.ctx.storage.kv, { namespace: "refs:", isProvisional });
   readonly #actionHost: CanvaActionHost = {
+    refs: this.#refs,
     write: op => this.#creds.run((creds, read) => op(new CanvaApi(async () => creds.accessToken), read)),
+    read: op => this.#read(op),
     recordJob: record => this.ctx.storage.kv.put(`${JOB_PREFIX}${record.actionId}`, record),
   };
   readonly #actions = canvaActions.bind(this.#journal, this.#actionHost);
@@ -662,7 +688,14 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
 
   readonly #sessionHost: CanvaSessionHost = {
     read: op => this.#read(op),
+    identity: () => this.#account().getIdentity(),
     submit: (queue, kind, payload) => this.#submit(queue, kind, payload),
+    allocate: kind => this.#refs.allocate(sequence => `~${sequence}`, { kind }),
+    kindOf: id => this.#refs.kindOf(id) as "design" | "asset" | undefined,
+    resolve: id => this.#refs.resolve(id),
+    pending: () => this.#journal.listPending(),
+    jobForRef: ref => this.#jobForRef(ref),
+    runningJobs: () => this.#runningJobs(),
     getProfile: () => this.#getProfile(),
     getDesign: id => this.#getDesign(id),
     getFolder: id => this.#getFolder(id),
@@ -729,8 +762,10 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
   }
 
   async #getDesign(designId: string): Promise<CanvaDesign> {
+    const id = this.#refs.resolve(designId);
+    if (isProvisional(id)) return await this.#pendingDesign(id);
     try {
-      return normalizeDesign(await this.#read(api => api.getDesign(designId)));
+      return normalizeDesign(await this.#read(api => api.getDesign(id)));
     } catch (error) {
       if (error instanceof CanvaApiError && error.status === 404) {
         throw new Error(`No Canva design found with id "${designId}", or you do not have access to it.`, { cause: error });
@@ -751,9 +786,11 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
   }
 
   async #getImageAsset(assetId: string): Promise<CanvaImageAsset> {
+    const id = this.#refs.resolve(assetId);
+    if (isProvisional(id)) return await this.#pendingAsset(id);
     let asset: CanvaImageAssetResponse;
     try {
-      asset = await this.#read(api => api.getAsset(assetId));
+      asset = await this.#read(api => api.getAsset(id));
     } catch (error) {
       if (error instanceof CanvaApiError && error.status === 404) {
         throw new Error(`No Canva asset found with id "${assetId}", or you do not have access to it.`, { cause: error });
@@ -765,21 +802,90 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
   }
 
   // -------------------------------------------------------------------------
+  // Temporary ids Canva has not yet assigned: a row from the pending action, or from the job the
+  // applied action started, which a read of its id brings up to date.
+
+  async #pendingDesign(ref: string): Promise<CanvaDesign> {
+    if (this.#refs.kindOf(ref) === "asset") throw new Error(`${ref} is the temporary id of an image asset, not a design.`);
+    const me = await this.#account().getIdentity();
+    const action = pendingActionFor(ref, this.#journal.listPending());
+    if (action !== undefined) {
+      const row = pendingRow(action, me);
+      if (row.type === "design") return row.design;
+    }
+    const job = this.#jobForRef(ref);
+    if (job?.kind === "generateDesign") {
+      const current = await this.#settleJob(job);
+      if (current.status === "success" && current.design) return current.design;
+      if (current.status === "failed") {
+        throw new Error(`Canva did not generate design ${ref}: ${current.error?.message ?? "the job failed"}` +
+          `${current.error ? ` (${current.error.code})` : ""}.`);
+      }
+      const row = runningRow(current, me);
+      if (row?.type === "design") return row.design;
+    }
+    throw new Error(`No pending Canva design has the temporary id ${ref}; its creation may have been rejected.`);
+  }
+
+  async #pendingAsset(ref: string): Promise<CanvaImageAsset> {
+    if (this.#refs.kindOf(ref) === "design") throw new Error(`${ref} is the temporary id of a design, not an image asset.`);
+    const me = await this.#account().getIdentity();
+    const action = pendingActionFor(ref, this.#journal.listPending());
+    if (action?.kind === "removeBackground") return pendingTransformedAsset(action.payload, me);
+    const job = this.#jobForRef(ref);
+    if (job?.kind === "removeBackground") {
+      const current = await this.#settleJob(job);
+      if (current.status === "success" && current.asset) return current.asset;
+      if (current.status === "failed") {
+        throw new Error(`Canva did not produce asset ${ref}: ${current.error?.message ?? "the job failed"}` +
+          `${current.error ? ` (${current.error.code})` : ""}.`);
+      }
+      const row = runningRow(current, me);
+      if (row?.type === "image") return row.image;
+    }
+    throw new Error(`No pending Canva image asset has the temporary id ${ref}; its removal may have been rejected.`);
+  }
+
+  #jobForRef(ref: string): CanvaJobRecord | undefined {
+    for (const [, record] of this.ctx.storage.kv.list<CanvaJobRecord>({ prefix: JOB_PREFIX })) {
+      if (record.ref === ref) return record;
+    }
+    return undefined;
+  }
+
+  #runningJobs(): CanvaJobRecord[] {
+    const running: CanvaJobRecord[] = [];
+    for (const [, record] of this.ctx.storage.kv.list<CanvaJobRecord>({ prefix: JOB_PREFIX })) {
+      if (record.kind !== "createDesign" && record.status === "in_progress") running.push(record);
+    }
+    return running;
+  }
+
+  // -------------------------------------------------------------------------
   // Jobs: what applied actions recorded, refreshed from Canva while still running
 
   async #listJobs<K extends CanvaJobRecord["kind"]>(kind: K): Promise<Extract<CanvaJobRecord, { kind: K }>[]> {
     const records: CanvaJobRecord[] = [];
-    for (const [key, record] of this.ctx.storage.kv.list<CanvaJobRecord>({ prefix: JOB_PREFIX })) {
-      if (record.kind !== kind) continue;
-      let current: CanvaJobRecord = record;
-      if (current.kind !== "createDesign" && current.status === "in_progress" && current.jobId !== null) {
-        current = await this.#refreshJob(current);
-        this.ctx.storage.kv.put(key, current);
-      }
-      records.push(current);
+    for (const [, record] of this.ctx.storage.kv.list<CanvaJobRecord>({ prefix: JOB_PREFIX })) {
+      if (record.kind === kind) records.push(await this.#settleJob(record));
     }
     // Filtered on `kind` above, which is what the return type states.
     return records.toSorted((a, b) => b.at - a.at) as Extract<CanvaJobRecord, { kind: K }>[];
+  }
+
+  /**
+   * A job record brought up to date: one still running is polled, the result stored over it, and
+   * a finished job's temporary id bound to the id Canva assigned.
+   */
+  async #settleJob<R extends CanvaJobRecord>(record: R): Promise<R> {
+    if (record.kind === "createDesign" || record.status !== "in_progress" || record.jobId === null) return record;
+    const current = await this.#refreshJob(record);
+    this.ctx.storage.kv.put(`${JOB_PREFIX}${current.actionId}`, current);
+    const made = current.kind === "generateDesign" ? current.design?.id
+      : current.kind === "removeBackground" ? current.asset?.id : undefined;
+    if (made !== undefined) this.#refs.bind(current.ref, made);
+    // `#refreshJob` keeps the record's kind, which is what `R` states.
+    return current as R;
   }
 
   async #refreshJob(record: Exclude<CanvaJobRecord, { kind: "createDesign" }>): Promise<CanvaJobRecord> {
@@ -832,7 +938,8 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
       case "createDesign":
         return {
           message: "Canva designs cannot be deleted through the API, so this creation must be undone by hand. " +
-            `It is at ${record.design.editUrl}; move it to the trash from the Canva editor.`,
+            `It is at ${record.design.editUrl ?? `https://www.canva.com/design/${record.design.id}/edit`}; ` +
+            "move it to the trash from the Canva editor.",
           canRetry: false,
         };
       case "generateDesign": {
@@ -943,11 +1050,14 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
     describe(count: number): string;
     describeEmpty: string;
     fetchPage(api: CanvaApi, token: string | undefined): Promise<{ items: T[]; continuation?: string }>;
+    /** Rows pending actions add, merged into Canva's pages at their sort positions. */
+    inject?: CursorInjection<T>;
   }): Cursor<T> {
     const queue = this.#queue.dup();
     return new TokenCursor<T>({
       pageSize: CURSOR_PAGE_SIZE,
       dispose: () => disposeQueue(queue),
+      ...(listing.inject ? { inject: listing.inject } : {}),
       fetchPage: async token => {
         const page = await this.#host.read(api => listing.fetchPage(api, token));
         return { items: page.items, ...(page.continuation !== undefined ? { nextToken: page.continuation } : {}) };
@@ -961,6 +1071,97 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
         });
       },
     });
+  }
+
+  /**
+   * A pending design as a page serves it, which may be long after the cursor was built: the row
+   * Canva now has once the action applied, the pending row while it waits, and nothing once it was
+   * rejected or failed. The pending row's times are kept so the row holds its sort position.
+   */
+  #revalidateDesign(design: CanvaDesign, me: StoredIdentity): CanvaDesign | null {
+    const host = this.#host;
+    const resolved = host.resolve(design.id);
+    if (!isProvisional(resolved)) {
+      const made = host.jobForRef(design.id);
+      const real = made?.kind === "createDesign" ? made.design : made?.kind === "generateDesign" ? made.design : undefined;
+      return { ...(real ?? design), id: resolved, createdAt: design.createdAt, updatedAt: design.updatedAt };
+    }
+    const action = pendingActionFor(resolved, host.pending());
+    if (action !== undefined) {
+      const row = pendingRow(action, me);
+      return row.type === "design" ? row.design : null;
+    }
+    const job = host.jobForRef(resolved);
+    const row = job && runningRow(job, me);
+    return row?.type === "design" ? { ...row.design, createdAt: design.createdAt, updatedAt: design.updatedAt } : null;
+  }
+
+  /** As `#revalidateDesign`, for the asset a pending background removal makes. */
+  #revalidateAsset(asset: CanvaImageAsset, me: StoredIdentity): CanvaImageAsset | null {
+    const host = this.#host;
+    const resolved = host.resolve(asset.id);
+    if (!isProvisional(resolved)) {
+      const made = host.jobForRef(asset.id);
+      const real = made?.kind === "removeBackground" ? made.asset : undefined;
+      return { ...(real ?? asset), id: resolved, createdAt: asset.createdAt, updatedAt: asset.updatedAt };
+    }
+    const action = pendingActionFor(resolved, host.pending());
+    if (action?.kind === "removeBackground") return pendingTransformedAsset(action.payload, me);
+    const job = host.jobForRef(resolved);
+    const row = job && runningRow(job, me);
+    return row?.type === "image" ? { ...row.image, createdAt: asset.createdAt, updatedAt: asset.updatedAt } : null;
+  }
+
+  /** What has no Canva id yet: actions awaiting a decision, and jobs still running after approval. */
+  #unmade(): Unmade {
+    return { pending: this.#host.pending(), running: this.#host.runningJobs() };
+  }
+
+  /** A design listing's pending rows, or none for an order a pending row cannot be placed in. */
+  #injectDesigns(me: StoredIdentity, sortBy: CanvaDesignSort): CursorInjection<CanvaDesign> | undefined {
+    const compare = designOrder(sortBy);
+    if (compare === undefined) return undefined;
+    const host = this.#host;
+    return {
+      items: pendingDesigns(this.#unmade(), me, id => host.resolve(id)).toSorted(compare),
+      compare,
+      revalidate: design => this.#revalidateDesign(design, me),
+      identity: design => design.id,
+    };
+  }
+
+  /**
+   * A folder listing's pending rows: new designs land in the Projects root and transformed images
+   * in Uploads, so only those two folders have any. Honors the listing's item types.
+   */
+  #injectFolderItems(me: StoredIdentity, folderId: string, itemTypes: readonly string[] | undefined,
+                     sortBy: CanvaFolderItemSort): CursorInjection<CanvaFolderItem> | undefined {
+    const host = this.#host;
+    const wants = (type: string) => itemTypes === undefined || itemTypes.includes(type);
+    const resolve = (id: string) => host.resolve(id);
+    const items: CanvaFolderItem[] = folderId === "root" || folderId === "projects"
+      ? wants("design") ? pendingDesigns(this.#unmade(), me, resolve).map(design => ({ type: "design", design })) : []
+      : folderId === "uploads" && wants("image")
+        ? pendingAssets(this.#unmade(), me, resolve).map(image => ({ type: "image", image }))
+        : [];
+    if (items.length === 0) return undefined;
+    const compare = folderItemOrder(sortBy);
+    return {
+      items: items.toSorted(compare),
+      compare,
+      revalidate: item => {
+        if (item.type === "design") {
+          const design = this.#revalidateDesign(item.design, me);
+          return design && { type: "design", design };
+        }
+        if (item.type === "image") {
+          const image = this.#revalidateAsset(item.image, me);
+          return image && { type: "image", image };
+        }
+        return item;
+      },
+      identity: folderItemIdentity,
+    };
   }
 
   async getProfile(): Promise<CanvaProfile> {
@@ -986,7 +1187,13 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
     }
     const query = { query: opts.query, ownership: opts.ownership, sort_by: opts.sortBy };
     const what = opts.query ? `designs matching "${opts.query}"` : "designs";
+    // A search cannot say whether a pending design would match, and a design the agent makes is
+    // its own, so only an unqueried listing that admits owned designs shows pending ones.
+    const inject = opts.query === undefined && opts.ownership !== "shared"
+      ? this.#injectDesigns(await this.#host.identity(), opts.sortBy ?? "modified_descending")
+      : undefined;
     return this.#cursor<CanvaDesign>({
+      ...(inject ? { inject } : {}),
       title: opts.query ? `Search Canva designs for "${opts.query}"` : "List Canva designs",
       describe: count => `Read ${count} ${what} from the connected Canva account` +
         `${opts.ownership && opts.ownership !== "any" ? ` (${opts.ownership})` : ""}.`,
@@ -1004,15 +1211,18 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
       throw new Error(`Invalid Canva design "${designIdOrUrl}". Pass a design id or a canva.com/design URL.`);
     }
     const design = await this.#host.getDesign(designId);
+    const pending = design.editUrl === null;
     await this.#queue.authorizeObservation({
       title: `Read design "${design.title ?? design.id}"`,
-      description: `Read metadata for the Canva design "${design.title ?? design.id}".`,
+      description: pending
+        ? `Read the pending Canva design ${design.id}, which Canva has not made yet.`
+        : `Read metadata for the Canva design "${design.title ?? design.id}".`,
     });
     return design;
   }
 
   @skipRpcValidation()
-  async createDesign(options: CanvaCreateDesignOptions): Promise<void> {
+  async createDesign(options: CanvaCreateDesignOptions): Promise<CanvaDesign> {
     if (!options || typeof options !== "object") throw new Error("createDesign(): options are required.");
     const designType = parseDesignType(options.designType, "createDesign()");
     if (options.title !== undefined && !isNonEmptyString(options.title)) {
@@ -1021,16 +1231,35 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
     if (options.assetId !== undefined && !isNonEmptyString(options.assetId)) {
       throw new Error("createDesign(): assetId must be a non-empty string when provided.");
     }
+    const assetId = options.assetId === undefined ? undefined : this.#assetRef(options.assetId.trim(), "createDesign()");
+    const me = await this.#host.identity();
     // Rebuilt from known members: nothing else the caller's object carried is stored or sent.
-    await this.#host.submit(this.#queue, "createDesign", {
+    const payload: CanvaActions["createDesign"] = {
+      ref: this.#host.allocate("design"),
+      submittedAt: Date.now(),
       designType,
       ...(options.title !== undefined ? { title: options.title } : {}),
-      ...(options.assetId !== undefined ? { assetId: options.assetId } : {}),
-    });
+      ...(assetId !== undefined ? { assetId } : {}),
+    };
+    await this.#host.submit(this.#queue, "createDesign", payload);
+    return pendingCreatedDesign(payload, me);
+  }
+
+  /**
+   * An asset id an action will send to Canva: one Canva issued, or the temporary id of a pending
+   * background removal, which the action then waits for. A design's temporary id is refused here,
+   * with a message that says so, rather than at apply.
+   */
+  #assetRef(assetId: string, method: string): string {
+    const resolved = this.#host.resolve(assetId);
+    if (isProvisional(resolved) && this.#host.kindOf(resolved) === "design") {
+      throw new Error(`${method}: ${assetId} is the temporary id of a design, not of an image asset.`);
+    }
+    return resolved;
   }
 
   @skipRpcValidation()
-  async generateDesign(options: CanvaGenerateDesignOptions): Promise<void> {
+  async generateDesign(options: CanvaGenerateDesignOptions): Promise<CanvaDesign> {
     if (!options || typeof options !== "object") throw new Error("generateDesign(): options are required.");
     const { brief, designType, outline } = options;
     if (!isNonEmptyString(brief, GENERATION_BRIEF_MAX)) {
@@ -1070,14 +1299,20 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
         }),
       };
     }
-    await this.#host.submit(this.#queue, "generateDesign", {
+    const me = await this.#host.identity();
+    const payload: CanvaActions["generateDesign"] = {
+      ref: this.#host.allocate("design"),
+      submittedAt: Date.now(),
       brief, designType, ...(sections !== undefined ? { outline: sections } : {}),
-    });
+    };
+    await this.#host.submit(this.#queue, "generateDesign", payload);
+    return pendingGeneratedDesign(payload, me);
   }
 
   async listGeneratedDesigns(): Promise<CanvaGenerationJob[]> {
     const jobs = (await this.#host.listJobs("generateDesign")).map(record => ({
       id: record.jobId,
+      designId: record.ref,
       brief: record.brief,
       designType: record.designType,
       startedAt: new Date(record.at).toISOString(),
@@ -1098,29 +1333,41 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
     const asset = await this.#host.getImageAsset(assetId.trim());
     await this.#queue.authorizeObservation({
       title: `Read image asset "${asset.name}"`,
-      description: `Read metadata for the Canva image asset "${asset.name}".`,
+      description: isProvisional(asset.id)
+        ? `Read the pending Canva image asset ${asset.id}, which Canva has not made yet.`
+        : `Read metadata for the Canva image asset "${asset.name}".`,
     });
     return asset;
   }
 
   @skipRpcValidation()
-  async removeBackground(assetId: string, options?: CanvaRemoveBackgroundOptions): Promise<void> {
+  async removeBackground(assetId: string, options?: CanvaRemoveBackgroundOptions): Promise<CanvaImageAsset> {
     if (!isNonEmptyString(assetId)) throw new Error("removeBackground(): assetId must be a non-empty string.");
     const name = options?.name;
     if (name !== undefined && !isNonEmptyString(name, ASSET_NAME_MAX)) {
       throw new Error(`removeBackground(): name must be 1 to ${ASSET_NAME_MAX} characters when provided.`);
     }
     // Read the source first so the approval card can name it, and so a video or a missing asset is
-    // refused before anything is queued. This read is itself an observation.
-    const source = await this.getImageAsset(assetId);
-    await this.#host.submit(this.#queue, "removeBackground", {
-      assetId: source.id, sourceName: source.name, ...(name !== undefined ? { name } : {}),
-    });
+    // refused before anything is queued. This read is itself an observation. The source may be the
+    // pending result of an earlier removal, which this one then waits for.
+    const source = await this.getImageAsset(this.#assetRef(assetId.trim(), "removeBackground()"));
+    const me = await this.#host.identity();
+    const payload: CanvaActions["removeBackground"] = {
+      ref: this.#host.allocate("asset"),
+      submittedAt: Date.now(),
+      assetId: source.id,
+      sourceName: source.name,
+      sourceDimensions: source.dimensions,
+      ...(name !== undefined ? { name } : {}),
+    };
+    await this.#host.submit(this.#queue, "removeBackground", payload);
+    return pendingTransformedAsset(payload, me);
   }
 
   async listBackgroundRemovals(): Promise<CanvaBackgroundRemovalJob[]> {
     const jobs = (await this.#host.listJobs("removeBackground")).map(record => ({
       id: record.jobId,
+      assetId: record.ref,
       sourceAssetId: record.sourceAssetId,
       startedAt: new Date(record.at).toISOString(),
       status: record.status,
@@ -1172,7 +1419,10 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
     }
     const sortBy = opts.sortBy;
     const kinds = itemTypes ? ` (${itemTypes.join(", ")})` : "";
+    const inject = this.#injectFolderItems(await this.#host.identity(), folderId, itemTypes,
+      sortBy ?? "modified_descending");
     return this.#cursor<CanvaFolderItem>({
+      ...(inject ? { inject } : {}),
       title: "List Canva folder contents",
       describe: count => `Read ${count} item(s) from Canva folder "${folderId}"${kinds}.`,
       describeEmpty: `Listed Canva folder "${folderId}"${kinds}; it was empty.`,

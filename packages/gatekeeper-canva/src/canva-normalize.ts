@@ -91,10 +91,13 @@ function idFromCanvaUrl(input: string, kind: "design" | "folder"): string | null
   return candidate && ID_PATTERN.test(candidate) ? candidate : null;
 }
 
-/** A design id from a bare id or a canva.com/design URL, or null. */
+// The temporary id of a design or asset a pending action makes (see canva-simulation.ts).
+const PROVISIONAL_ID_PATTERN = /^~[0-9]+$/;
+
+/** A design id from a bare id, the temporary id of a pending design, or a canva.com/design URL, or null. */
 export function parseDesignId(input: string): string | null {
   const trimmed = input.trim();
-  if (ID_PATTERN.test(trimmed)) return trimmed;
+  if (ID_PATTERN.test(trimmed) || PROVISIONAL_ID_PATTERN.test(trimmed)) return trimmed;
   return idFromCanvaUrl(trimmed, "design");
 }
 

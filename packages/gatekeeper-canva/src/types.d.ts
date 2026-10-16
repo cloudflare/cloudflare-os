@@ -12,11 +12,13 @@
 //
 // Writes are actions: they are queued for the user's approval and nothing reaches Canva until the
 // action is approved. There are three, `createDesign()`, `generateDesign()` and
-// `removeBackground()`, and none is simulated — each returns once queued, and nothing exists until
-// the user approves it and Canva has done the work. The harness pauses the agent until the user
-// decides, so after an action resolves the agent should read back: `listDesigns()` for a created
-// design, `listGeneratedDesigns()` for a generated one, and `listBackgroundRemovals()` for a
-// transformed image (the last two are asynchronous jobs on Canva's side).
+// `removeBackground()`, and each is simulated: it returns the design or asset it will make under a
+// temporary id ("~1", "~2", ...), which `getDesign()`, `getImageAsset()`, `listDesigns()` and
+// `listFolderItems()` honour straight away, and which keeps working once Canva has assigned the
+// real id. A temporary id can also be passed on to another action (`createDesign({ assetId })`
+// with the asset a pending `removeBackground()` makes), and the actions then apply in order. The
+// agent is not paused for approval; it should carry on and treat the returned object as real,
+// knowing that `editUrl`/`viewUrl` (and a thumbnail) exist only once Canva has made the design.
 
 // ---------------------------------------------------------------------------
 // Pagination
@@ -76,7 +78,11 @@ export type CanvaProfile = {
 
 /** Metadata for a Canva design. */
 export type CanvaDesign = {
-  /** Canva design ID, e.g. "DAFVztcvd9z". */
+  /**
+   * Canva design ID, e.g. "DAFVztcvd9z", or the temporary id ("~1") of a design a pending action
+   * makes. Every method that takes a design id accepts the temporary one, before and after Canva
+   * assigns the real id.
+   */
   id: string;
   /** Design title. Untitled designs have no title. */
   title: string | null;
@@ -85,17 +91,19 @@ export type CanvaDesign = {
   /** Thumbnail of the first page, if Canva has rendered one. */
   thumbnail: CanvaThumbnail | null;
   /**
-   * URL that opens the design in the Canva editor. TEMPORARY and PERSONAL: Canva issues it for
-   * the connected user only, and it stops working after 30 days. Never store it in a gadget or
-   * share it with another user; call `getDesign()` again for a fresh one. For a link anyone with
-   * access can open any time, use `https://www.canva.com/design/<id>/edit`.
+   * URL that opens the design in the Canva editor. Null while the design is pending: Canva has
+   * not made it yet, because the action that makes it awaits approval or its generation is still
+   * running; read the design again later for the URL. TEMPORARY and PERSONAL once present: Canva
+   * issues it for the connected user only, and it stops working after 30 days. Never store it in a
+   * gadget or share it with another user; call `getDesign()` again for a fresh one. For a link
+   * anyone with access can open any time, use `https://www.canva.com/design/<id>/edit`.
    */
-  editUrl: string;
+  editUrl: string | null;
   /**
-   * URL that opens a read-only view of the design. Same caveats as `editUrl`: valid for 30 days
-   * and only for the connected user.
+   * URL that opens a read-only view of the design. Same caveats as `editUrl`: null while pending,
+   * and otherwise valid for 30 days and only for the connected user.
    */
-  viewUrl: string;
+  viewUrl: string | null;
   /** Number of pages, if known. Docs have no pages. */
   pageCount: number | null;
   /** ISO 8601 timestamp of when the design was created. */
@@ -123,7 +131,10 @@ export type CanvaFolder = {
 
 /** Metadata for an image asset in the user's Canva account. */
 export type CanvaImageAsset = {
-  /** Asset ID, e.g. "Msd59349ff". */
+  /**
+   * Asset ID, e.g. "Msd59349ff", or the temporary id ("~2") of the asset a pending
+   * `removeBackground()` makes, which `getImageAsset()` and `createDesign()` accept.
+   */
   id: string;
   /** Asset name. */
   name: string;
@@ -133,7 +144,7 @@ export type CanvaImageAsset = {
   owner: CanvaUserRef | null;
   /** Pixel dimensions, when Canva reports them (folder listings omit them). */
   dimensions: { width: number; height: number } | null;
-  /** Thumbnail, if Canva has rendered one. */
+  /** Thumbnail, if Canva has rendered one. Null while the asset is pending. */
   thumbnail: CanvaThumbnail | null;
   /** ISO 8601 timestamp of when the asset was created. */
   createdAt: string;
@@ -207,8 +218,9 @@ export type CanvaCreateDesignOptions = {
   /** Title for the new design. Untitled if omitted. */
   title?: string;
   /**
-   * ID of an existing image asset to place on the first page. The asset must already be in the
-   * user's Canva account (see `listFolderItems()` with `itemTypes: ["image"]`).
+   * ID of an image asset to place on the first page: one in the user's Canva account (see
+   * `listFolderItems()` with `itemTypes: ["image"]`), or the temporary id of the asset a pending
+   * `removeBackground()` makes, in which case this design is created once that asset exists.
    */
   assetId?: string;
 };
@@ -273,6 +285,8 @@ export type CanvaBackgroundRemovalErrorCode =
 export type CanvaGenerationJob = {
   /** Canva's job ID. Null when Canva refused to start the job. */
   id: string | null;
+  /** The id `generateDesign()` returned for the design, which `getDesign()` accepts throughout. */
+  designId: string;
   /** The brief the design was generated from. */
   brief: string;
   /** The kind of design requested. */
@@ -294,6 +308,8 @@ export type CanvaGenerationJob = {
 export type CanvaBackgroundRemovalJob = {
   /** Canva's job ID. Null when the job finished during creation, or Canva refused to start it. */
   id: string | null;
+  /** The id `removeBackground()` returned for the new asset, which `getImageAsset()` accepts throughout. */
+  assetId: string;
   /** The source asset. It is never modified; the result is a new asset. */
   sourceAssetId: string;
   /** ISO 8601 timestamp of when the job was started on Canva (or refused). */
@@ -325,51 +341,57 @@ export interface CanvaAccountSession {
    * List or search the user's designs. Observation.
    *
    * Returns a cursor; call `next()` until it returns null and dispose it when done. Canva
-   * chooses the page size.
+   * chooses the page size. Designs pending actions make are included, under their temporary ids,
+   * when no `query` is given (a search cannot tell whether they would match).
    */
   listDesigns(options?: CanvaListDesignsOptions): Promise<Cursor<CanvaDesign>>;
 
   /**
    * Get metadata for a single design. Observation.
    *
-   * Accepts a bare design ID ("DAFVztcvd9z") or a Canva design URL
-   * ("https://www.canva.com/design/DAFVztcvd9z/..."). Throws if the design does not exist or the
-   * connected user cannot access it.
+   * Accepts a bare design ID ("DAFVztcvd9z"), a Canva design URL
+   * ("https://www.canva.com/design/DAFVztcvd9z/..."), or the temporary id of a design a pending
+   * `createDesign()` or `generateDesign()` makes ("~1"). For a temporary id it returns the pending
+   * design, with null URLs, until Canva has made it, then the real one; for a design Canva could
+   * not generate it throws with Canva's reason. Throws if the design does not exist, the connected
+   * user cannot access it, or its creation was rejected.
    */
   getDesign(designIdOrUrl: string): Promise<CanvaDesign>;
 
   /**
-   * Queue the creation of a new, empty design. Action.
+   * Create a new, empty design. Action.
    *
-   * Resolves as soon as the request is queued for the user's approval, not when the design exists.
-   * This action is not simulated: until the user approves it and Canva creates the design, it does
-   * not appear in `listDesigns()` or `listFolderItems()`. The harness pauses the agent until the
-   * user decides; once approved, call `listDesigns({ sortBy: "modified_descending" })` to find the
-   * new design and its edit URL.
+   * Returns the design at once, under a temporary id and with null URLs, and queues its creation
+   * for the user's approval. The pending design appears in `listDesigns()` and in
+   * `listFolderItems("root")`, and `getDesign()` accepts its id throughout; once approved and
+   * created, the same id resolves to the real design with its edit URL. Nothing exists on Canva
+   * until the user approves.
    */
-  createDesign(options: CanvaCreateDesignOptions): Promise<void>;
+  createDesign(options: CanvaCreateDesignOptions): Promise<CanvaDesign>;
 
   // --- AI generation ---
 
   /**
-   * Queue the generation of a doc or presentation from a text brief, using Canva's AI. Action.
+   * Generate a doc or presentation from a text brief, using Canva's AI. Action.
    *
    * This spends the user's Canva AI credit allowance, so it always requires approval and the
-   * approval shows the full brief. Resolves as soon as the request is queued, not when the design
-   * exists: once the user approves, the gatekeeper starts the job on Canva, and generation then
-   * takes anywhere from seconds to a few minutes. Call `listGeneratedDesigns()` to follow it and
-   * get the resulting design's edit URL. Check `getProfile().canGenerateDesigns` first; Canva
-   * refuses the job for users whose plan or team settings don't allow generation.
+   * approval shows the full brief. Returns the design at once, under a temporary id: Canva writes
+   * its title and contents, so until generation finishes the design has a null title, page count
+   * and URLs. Once the user approves, the gatekeeper starts the job on Canva, and generation takes
+   * anywhere from seconds to a few minutes; `getDesign()` with the temporary id returns the real
+   * design as soon as it is done, and throws with Canva's reason if generation failed. Check
+   * `getProfile().canGenerateDesigns` first; Canva refuses the job for users whose plan or team
+   * settings don't allow generation.
    */
-  generateDesign(options: CanvaGenerateDesignOptions): Promise<void>;
+  generateDesign(options: CanvaGenerateDesignOptions): Promise<CanvaDesign>;
 
   /**
    * The design generation jobs started from this connection, newest first. Observation.
    *
-   * Refreshes the status of any job still in progress before returning, so calling this a few
-   * times, a few seconds apart, is how to wait for a generation to finish. Includes jobs Canva
+   * Refreshes the status of any job still in progress before returning. Includes jobs Canva
    * refused to start, as failed, so an approved request that went nowhere is visible. Jobs the
-   * user rejected before they started are not included.
+   * user rejected before they started are not included. To wait for one design, poll
+   * `getDesign()` with the id `generateDesign()` returned instead.
    */
   listGeneratedDesigns(): Promise<CanvaGenerationJob[]>;
 
@@ -378,33 +400,38 @@ export interface CanvaAccountSession {
   /**
    * Get metadata for an image asset by ID. Observation.
    *
-   * Asset IDs come from `listFolderItems()` entries of type "image", or from a finished
-   * `listBackgroundRemovals()` job. Only IDs are accepted, because Canva has no public URL for an
-   * asset. Throws if the asset does not exist, is not an image (Canva also stores videos as
-   * assets), or the connected user cannot access it.
+   * Asset IDs come from `listFolderItems()` entries of type "image" or from `removeBackground()`,
+   * whose temporary id ("~2") is accepted throughout: it returns the pending asset, without a
+   * thumbnail, until Canva has made it, then the real one, and throws with Canva's reason if the
+   * removal failed. Only IDs are accepted, because Canva has no public URL for an asset. Throws if
+   * the asset does not exist, is not an image (Canva also stores videos as assets), or the
+   * connected user cannot access it.
    */
   getImageAsset(assetId: string): Promise<CanvaImageAsset>;
 
   /**
-   * Queue the removal of an image's background with Canva's AI, producing a new asset. Action.
+   * Remove an image's background with Canva's AI, producing a new asset. Action.
    *
    * This spends the user's Canva AI credit allowance, so it always requires approval. The source
    * asset is left untouched; the result is a new asset with a transparent background, capped at 10
-   * megapixels. Resolves as soon as the request is queued, not when the new asset exists: once the
-   * user approves, the gatekeeper starts the job on Canva, which usually completes within seconds.
-   * Call `listBackgroundRemovals()` to follow it and get the new asset's ID. Check
-   * `getProfile().canRemoveBackgrounds` first; Canva refuses the job for users on plans without it.
+   * megapixels. Returns the new asset at once, under a temporary id and with its name and size
+   * predicted from the source; it appears in `listFolderItems("uploads")`, `getImageAsset()`
+   * accepts its id, and `createDesign({ assetId })` can place it before it exists. Once the user
+   * approves, the gatekeeper starts the job on Canva, which usually completes within seconds.
+   * Check `getProfile().canRemoveBackgrounds` first; Canva refuses the job for users on plans
+   * without it.
    *
-   * @param assetId The source image asset. It must have finished uploading.
+   * @param assetId The source image asset, which must have finished uploading, or the temporary id
+   * of the asset an earlier `removeBackground()` makes.
    */
-  removeBackground(assetId: string, options?: CanvaRemoveBackgroundOptions): Promise<void>;
+  removeBackground(assetId: string, options?: CanvaRemoveBackgroundOptions): Promise<CanvaImageAsset>;
 
   /**
    * The background removal jobs started from this connection, newest first. Observation.
    *
-   * Refreshes the status of any job still in progress before returning, so calling this a few
-   * times, a few seconds apart, is how to wait for a removal to finish. Includes jobs Canva refused
-   * to start, as failed.
+   * Refreshes the status of any job still in progress before returning. Includes jobs Canva refused
+   * to start, as failed. To wait for one asset, poll `getImageAsset()` with the id
+   * `removeBackground()` returned instead.
    */
   listBackgroundRemovals(): Promise<CanvaBackgroundRemovalJob[]>;
 
@@ -423,7 +450,8 @@ export interface CanvaAccountSession {
    *
    * Accepts a folder ID or URL, as `getFolder()` does. Returns a cursor; see `listDesigns()`. Each
    * item is tagged with its `type` so a caller can switch on it. To list only sub-folders, pass
-   * `{ itemTypes: ["folder"] }`.
+   * `{ itemTypes: ["folder"] }`. Designs pending actions make are listed in "root", and assets a
+   * pending `removeBackground()` makes in "uploads", under their temporary ids.
    */
   listFolderItems(folderIdOrUrl: string, options?: CanvaListFolderItemsOptions): Promise<Cursor<CanvaFolderItem>>;
 }

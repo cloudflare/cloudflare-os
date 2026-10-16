@@ -73,13 +73,20 @@ You can see and manage connected accounts in settings (via the account menu in t
 
 ## Notes & limitations
 
-- **Approvals.** Reads are logged and writes are queued for human approval; nothing is created on
-  Canva until approved.
+- **Approvals and simulation.** Reads are logged and writes are queued for human approval; nothing
+  is created on Canva until approved. Each write returns the design or asset it will make under a
+  temporary id (`~1`, `~2`, ...), which reads and listings honour at once and which keeps working
+  after Canva assigns the real id, so the agent carries on without waiting for the decision. A
+  pending design has null `editUrl`/`viewUrl`; a pending asset has no thumbnail. The temporary id
+  of a pending background removal can be passed to `createDesign({ assetId })` or another
+  `removeBackground()`, and the actions then apply in order.
 - **Generation and background removal are asynchronous.** Approving a `generateDesign` or
-  `removeBackground` action starts a job on Canva. The agent follows it with `listGeneratedDesigns()`
-  or `listBackgroundRemovals()`, which poll any job still in progress. Jobs expire on Canva after
-  24 hours. Both features are plan-gated; `getProfile()` reports `canGenerateDesigns` and
-  `canRemoveBackgrounds`.
+  `removeBackground` action starts a job on Canva. Applying a removal waits up to 20 seconds for
+  the job, which usually suffices; a generation can take minutes, so its design stays pending
+  until a read of its id finds the job done. `getDesign()` / `getImageAsset()` with the temporary
+  id poll the job, and `listGeneratedDesigns()` / `listBackgroundRemovals()` list every job with
+  its status. Jobs expire on Canva after 24 hours. Both features are plan-gated; `getProfile()`
+  reports `canGenerateDesigns` and `canRemoveBackgrounds`.
 - **Reconnect after the `asset:write` scope was added.** Accounts connected before background
   removal existed hold a grant without `asset:write`, and Canva answers a background removal with
   403 until the user disconnects and reconnects Canva from the Connectors page.
