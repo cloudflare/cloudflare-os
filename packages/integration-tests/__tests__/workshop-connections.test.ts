@@ -153,6 +153,65 @@ it.concurrent("denying a connection request leaves the agent stopped", async () 
   expect(model.remainingSteps()).toBe(0);
 });
 
+it.concurrent("an agent spawner request is granted as the spawner the user created", async () => {
+  const requestSpawner = (id: string): ChatCompletionStep => ({
+    toolCall: { id, name: "requestAgentSpawner", arguments: {
+      displayName: "Desk triage", env: ["DESK"], reason: "Triage each new ticket.",
+      bindingName: "TRIAGE",
+    } },
+  });
+  const model = models.script([
+    { toolCall: { id: "create-desk", name: "createGadget",
+                  arguments: { title: "Desk", bindingName: "DESK" } } },
+    requestSpawner("request-pending"),
+    { text: "Accept my changes first." },
+    requestSpawner("request"),
+    { text: "Wired up." },
+  ]);
+  await using session = await openSession(model, "spawnerrequest");
+
+  const first = await session.runTurn("Give a new desk gadget its own agent.");
+  expect(first.outcome).toEqual({ status: "completed" });
+  expect(first.history.some(message => message.type === "connectionRequest")).toBe(false);
+  expect(JSON.stringify(model.requests[2])).toContain("which is still pending in a chat");
+  await session.acceptChanges();
+
+  const second = await session.runTurn("I accepted them.");
+  expect(second.outcome).toEqual({ status: "completed" });
+  const pending = connectionCard(second.history);
+  expect(pending).toMatchObject({
+    state: "pending",
+    bindingName: "TRIAGE",
+    agentSpawner: {
+      displayName: "Desk triage",
+      env: [{ name: "DESK", target: expect.any(Number), targetTitle: "Desk" }],
+    },
+  });
+
+  await withOwnerWorkspace(harness.url, session.username, async ws => {
+    // The user renames the spawner and takes the desk out of its env before creating it.
+    using spawner = await ws.newAgentSpawnerGatekeeper(
+        { displayName: "Triage", modelId: null, env: {} });
+    const spawnerId = await spawner.getId();
+    await ws.acceptConnectionRequest(pending.requestId, { gatekeeperId: spawnerId });
+    await waitForIdleChat(ws, pending.chatId);
+
+    const history = await loadAllChatHistory(
+        before => ws.getChatHistory(pending.chatId, before));
+    expect(connectionCard(history)).toMatchObject({
+      state: "accepted",
+      gatekeeperId: spawnerId,
+      agentSpawner: { displayName: "Triage", env: [] },
+    });
+  });
+
+  const resumed = JSON.stringify(model.requests[4]);
+  expect(resumed).toContain(`accepted your agent spawner request \\"Triage\\". ` +
+      `The bindings it gives the agents it spawns: none.`);
+  expect(resumed).toContain("env.TRIAGE");
+  expect(model.remainingSteps()).toBe(0);
+});
+
 it.concurrent("removing a connection cuts off its pending action, its bindings and its sessions",
     async () => {
   const model = models.script([

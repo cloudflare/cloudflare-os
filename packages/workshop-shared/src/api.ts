@@ -2454,6 +2454,23 @@ export type AgentSpawnerConfig = {
 };
 
 /**
+ * An agent spawner the agent asked the user to add (see the requestAgentSpawner tool), recorded on
+ * its "connectionRequest" message. The user creates the spawner with newAgentSpawnerGatekeeper()
+ * from a form prefilled with this, and may change any of it, so acceptConnectionRequest()
+ * restamps it from the spawner the user actually created.
+ */
+export type AgentSpawnerRequest = {
+  /** Display name for the spawner (see AgentSpawnerConfig.displayName). */
+  displayName: string;
+
+  /**
+   * The spawner's env (see AgentSpawnerConfig.env), one entry per binding, with each target's
+   * title denormalized for display.
+   */
+  env: {name: string, target: WorkpieceId, targetTitle: string}[];
+};
+
+/**
  * Interface to a workspace's Overseer, used to display the Gadget Workshop shell UI around that
  * workspace. Workspace-level concerns live here: the gadget registry, committed code (git
  * commits in the workspace's shared object store, each gadget's head recorded in
@@ -2751,7 +2768,8 @@ export interface Overseer extends RpcTarget {
 
   /**
    * Accept an agent's pending connection request (a "connectionRequest" chat message). The caller
-   * is responsible for having actually created the gatekeeper (via newGatekeeper()) and passes the
+   * is responsible for having actually created the gatekeeper (via newGatekeeper(), or
+   * newAgentSpawnerGatekeeper() for a request with `agentSpawner`) and passes the
    * resulting gatekeeper id. The gatekeeper is surfaced to the agent as a named binding in the
    * chat's env, under the name the agent chose when it made the request (see
    * `connectionRequest.bindingName`). This marks the request accepted, updates the inline card,
@@ -3884,19 +3902,44 @@ export type AiChatMessageBody = {
    */
   type: "agentNudge";
   text: string;
-} | {
+} | ({
   /**
    * The agent requested that the user connect a gatekeeper (e.g. "I need ClickHouse cluster X").
    * Rendered inline in the chat as an accept/deny card. State is mutated in-place when the user
    * accepts or denies; the message is re-delivered to subscribers so the card updates. On accept the
    * agent is resumed with the outcome (see the history builder in agent.ts); on deny the agent is
-   * not resumed (the user drives what happens next).
+   * not resumed (the user drives what happens next). A request for an agent spawner carries
+   * `agentSpawner` in place of the vendor fields.
    */
   type: "connectionRequest";
 
   /** Unique id used by acceptConnectionRequest()/denyConnectionRequest(). */
   requestId: string;
 
+  /** Why the agent wants this connection. Shown to the user to inform their decision. */
+  reason: string;
+
+  /** Lifecycle state. Starts "pending"; set by the user's accept/deny. */
+  state: "pending" | "accepted" | "denied";
+
+  /**
+   * Once accepted, the id of the created gatekeeper. The resource is surfaced to the agent as a
+   * named binding in the chat's env; the agent can additionally bind it into a gadget via
+   * setGadgetBinding if its gadget code needs it.
+   */
+  gatekeeperId?: WorkpieceId;
+
+  /**
+   * The name under which the resource will appear in the chat's env (`env.NAME` in executeCode)
+   * once the request is accepted. Supplied by the agent as a required parameter of the
+   * requestConnection and requestAgentSpawner tools -- the agent knows why it is requesting the
+   * resource, so it picks the name itself -- and recorded here at request time. The name is
+   * claimed in the chat's scope from that moment until the request is denied. Optional only
+   * because messages persisted before named chat bindings existed lack it; those are named and
+   * stamped lazily at the turn-start naming chokepoint.
+   */
+  bindingName?: string;
+} & ({
   /** The gatekeeper vendor the agent is requesting (id + denormalized display name). */
   vendorId: string;
   vendorName: string;
@@ -3924,31 +3967,10 @@ export type AiChatMessageBody = {
    * resource — so accepting never opens a blank "create new connection" picker.
    */
   resourceUrlPattern?: string;
-
-  /** Why the agent wants this connection. Shown to the user to inform their decision. */
-  reason: string;
-
-  /** Lifecycle state. Starts "pending"; set by the user's accept/deny. */
-  state: "pending" | "accepted" | "denied";
-
-  /**
-   * Once accepted, the id of the created gatekeeper. The resource is surfaced to the agent as a
-   * named binding in the chat's env; the agent can additionally bind it into a gadget via
-   * setGadgetBinding if its gadget code needs it.
-   */
-  gatekeeperId?: WorkpieceId;
-
-  /**
-   * The name under which the resource will appear in the chat's env (`env.NAME` in executeCode)
-   * once the request is accepted. Supplied by the agent as a required parameter of the
-   * requestConnection tool -- the agent knows why it is requesting the resource, so it picks the
-   * name itself -- and recorded here at request time. The name is claimed in the chat's scope
-   * from that moment until the request is denied. Optional only because messages persisted
-   * before named chat bindings existed lack it; those are named and stamped lazily at the
-   * turn-start naming chokepoint.
-   */
-  bindingName?: string;
-};
+} | {
+  /** The agent spawner the agent asked for. */
+  agentSpawner: AgentSpawnerRequest;
+}));
 
 /**
  * A resource the agent can always use without requesting it (e.g. the Context Library's read
@@ -4308,6 +4330,22 @@ export type AiToolCall = {
      * bindings lack it.
      */
     bindingName?: string;
+  };
+  output?: string;
+} | {
+  /**
+   * Ask the user to add an agent spawner, so a gadget can start AI agents of its own. Renders the
+   * same accept/deny card as requestConnection, and resumes the agent the same way.
+   */
+  toolName: "requestAgentSpawner";
+  input: {
+    displayName: string;
+
+    /** Names of bindings in the agent's own env to give the spawned agents, under those names. */
+    env: string[];
+
+    reason: string;
+    bindingName: string;
   };
   output?: string;
 } | {

@@ -1,6 +1,6 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
+import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AgentSpawnerRequest, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
@@ -7464,8 +7464,9 @@ class OverseerImpl implements AgentHooks {
                 await nameFor(capsule.gatekeeperId, capsule.description.title);
             stamped = true;
           }
-        } else if (msg.type === "connectionRequest" &&
+        } else if (msg.type === "connectionRequest" && "vendorId" in msg &&
                    msg.bindingName === undefined && msg.state !== "denied") {
+          // Agent spawner requests always carry a name; only vendor requests predate naming.
           msg.bindingName = await nameFor(
               msg.gatekeeperId, `${msg.resourceTitle} (${msg.vendorName})`);
           stamped = true;
@@ -8568,17 +8569,82 @@ class OverseerImpl implements AgentHooks {
       bindingName: input.bindingName,
     };
 
+    this.#captureConnectionRequest(chatId, body);
+
+    return { requested: true, message:
+        `Connection request sent to the user for "${vendor.description.displayName}". ` +
+        `Awaiting their decision; your turn will end now. If they accept, you'll be resumed with ` +
+        `access to the resource; if they deny, your turn stays ended until the user messages you.` };
+  }
+
+  // Records a pending request for an agent spawner, the same way as requestConnection().
+  requestAgentSpawner(chatId: number, input: {
+    displayName: string;
+    env: Record<string, WorkpieceId>;
+    reason: string;
+    bindingName: string;
+  }): { requested: boolean; message: string } {
+    let env: AgentSpawnerRequest["env"];
+    try {
+      env = this.resolveAgentSpawnerEnv(input.env);
+    } catch (err) {
+      return { requested: false,
+               message: `Cannot request an agent spawner: ${stringifyError(err)}` };
+    }
+    this.#captureConnectionRequest(chatId, {
+      type: "connectionRequest",
+      requestId: `${chatId}:${crypto.randomUUID()}`,
+      agentSpawner: {displayName: input.displayName, env},
+      reason: input.reason,
+      state: "pending",
+      bindingName: input.bindingName,
+    });
+    return { requested: true, message:
+        `Agent spawner request sent to the user. Awaiting their decision; your turn will end ` +
+        `now. If they accept, you'll be resumed with access to the spawner; if they deny, your ` +
+        `turn stays ended until the user messages you.` };
+  }
+
+  #captureConnectionRequest(chatId: number, body: AiChatMessageBody) {
     let list = this.#capturedConnectionRequests.get(chatId);
     if (!list) {
       list = [];
       this.#capturedConnectionRequests.set(chatId, list);
     }
     list.push(body);
+  }
 
-    return { requested: true, message:
-        `Connection request sent to the user for "${vendor.description.displayName}". ` +
-        `Awaiting their decision; your turn will end now. If they accept, you'll be resumed with ` +
-        `access to the resource; if they deny, your turn stays ended until the user messages you.` };
+  // Validates an agent spawner's env (see AgentSpawnerConfig.env) and returns it with each
+  // target's title. Targets must exist, and must not be gadgets still provisional to some chat,
+  // which belong to that chat's unaccepted proposal, not (yet) to the workspace. (Spawn-time
+  // snapshotting tolerates targets deleted later; this just catches bad input.)
+  resolveAgentSpawnerEnv(env: Record<string, WorkpieceId>): AgentSpawnerRequest["env"] {
+    return Object.entries(env).map(([name, target]) => {
+      validateBindingName(name);
+      if (name === GIT_BINDING_NAME) {
+        // The spawned chat's env already has the automatic env.GIT, which this would shadow.
+        throw new Error(`Agent spawner env entry "${name}": the binding name \`${name}\` is ` +
+            `reserved.`);
+      }
+      let gadget = this.storage.gadgets.get(target);
+      if (gadget) {
+        if (gadget.type === "worktree") {
+          throw new Error(`Agent spawner env entry "${name}" references workpiece ${target}, ` +
+              `which is a worktree; worktrees are chat-private and cannot be configured.`);
+        }
+        if (gadget.pending) {
+          throw new Error(`Agent spawner env entry "${name}" references gadget ${target}, ` +
+              `which is still pending in a chat.`);
+        }
+        return {name, target, targetTitle: gadget.title};
+      }
+      let gatekeeper = this.storage.gatekeepers.get(target);
+      if (!gatekeeper) {
+        throw new Error(`Agent spawner env entry "${name}" references workpiece ${target}, ` +
+            `which does not exist.`);
+      }
+      return {name, target, targetTitle: gatekeeper.resourceTitle || "(title unavailable)"};
+    });
   }
 
   consumeCapturedConnectionRequests(chatId: number): AiChatMessageBody[] {
@@ -8875,11 +8941,11 @@ class OverseerImpl implements AgentHooks {
     // Spawner-to-spawner env edges are legal, hence the worklist; an env target that is a gadget
     // is skipped -- env gadgets are non-pending, so their bindings are covered by the first loop.
     //
-    // The env is also the ceiling, not just the seed: a spawned chat's agent has no
-    // requestConnection tool (agent.ts restricts spawned agents to describeBinding/executeCode),
-    // and connection requests are created only by that tool, so no accepted request can ever add
-    // a connection to a spawned chat beyond `config.env`. If spawned agents ever gain that tool,
-    // this closure must learn about accepted requests too.
+    // The env is also the ceiling, not just the seed: a spawned chat's agent has neither the
+    // requestConnection nor the requestAgentSpawner tool (agent.ts restricts spawned agents to
+    // describeBinding/executeCode), and connection requests are created only by those tools, so
+    // no accepted request can ever add a connection to a spawned chat beyond `config.env`. If
+    // spawned agents ever gain either tool, this closure must learn about accepted requests too.
     let pending = [...ids];
     while (pending.length > 0) {
       let spec = this.storage.gatekeepers.get(pending.pop()!)?.creationSpec;
@@ -10792,32 +10858,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async newAgentSpawnerGatekeeper(config: AgentSpawnerConfig): Promise<GatekeeperClient<any>> {
-    // Validate the configured env: names must be valid binding names and targets must exist --
-    // and must not be gadgets still provisional to some chat, which belong to that chat's
-    // unaccepted proposal, not (yet) to the workspace. (Spawn-time snapshotting tolerates targets
-    // deleted later; this just catches bad input.)
-    for (let [name, target] of Object.entries(config.env)) {
-      validateBindingName(name);
-      if (name === GIT_BINDING_NAME) {
-        // The spawned chat's env already has the automatic env.GIT, which this would shadow.
-        throw new Error(`Agent spawner env entry "${name}": the binding name \`${name}\` is ` +
-            `reserved.`);
-      }
-      let gadget = this.impl.storage.gadgets.get(target);
-      if (gadget) {
-        if (gadget.type === "worktree") {
-          throw new Error(`Agent spawner env entry "${name}" references workpiece ${target}, ` +
-              `which is a worktree; worktrees are chat-private and cannot be configured.`);
-        }
-        if (gadget.pending) {
-          throw new Error(`Agent spawner env entry "${name}" references gadget ${target}, ` +
-              `which is still pending in a chat.`);
-        }
-      } else if (!this.impl.storage.gatekeepers.get(target)) {
-        throw new Error(`Agent spawner env entry "${name}" references workpiece ${target}, ` +
-            `which does not exist.`);
-      }
-    }
+    this.impl.resolveAgentSpawnerEnv(config.env);
 
     let props: AgentSpawnerBindingProps = {
       overseerId: this.impl.ctx.id.toString(),
@@ -11254,6 +11295,18 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let msg = this.#findConnectionRequest(requestId);
     if (msg.state !== "pending") {
       throw new Error(`Connection request is not pending: ${requestId}`);
+    }
+    if ("agentSpawner" in msg) {
+      // The user may have changed the proposal before creating the spawner. Record what they
+      // granted, which the card and the agent's resume note then show.
+      let spec = this.impl.storage.gatekeepers.get(result.gatekeeperId)?.creationSpec;
+      if (spec?.type !== "agentSpawner") {
+        throw new Error(`Connection request ${requestId} is for an agent spawner.`);
+      }
+      msg.agentSpawner = {
+        displayName: spec.config.displayName,
+        env: this.impl.resolveAgentSpawnerEnv(spec.config.env),
+      };
     }
 
     msg.state = "accepted";

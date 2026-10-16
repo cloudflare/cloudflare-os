@@ -51,7 +51,7 @@ vi.mock('./ResourceConfiguratorHost', async () => {
   return { default: ResourceConfiguratorHost }
 })
 
-import GatekeeperModal from './GatekeeperModal'
+import GatekeeperModal, { type GatekeeperModalProps } from './GatekeeperModal'
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -105,7 +105,9 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-async function renderModal(props: { initialVendorId?: string, initialResourceUrlPattern?: string } = {}) {
+async function renderModal(
+  props: Pick<GatekeeperModalProps, 'initialConnection' | 'spawnerEnvCandidates'> = {},
+) {
   testState.authenticatedApi = authenticatedApi()
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -126,7 +128,9 @@ describe('GatekeeperModal configurator readiness', () => {
       observe() {}
       disconnect() {}
     })
-    await renderModal({ initialVendorId: 'catalog', initialResourceUrlPattern: RESOURCE.urlPattern })
+    await renderModal({
+      initialConnection: { type: 'resource', vendorId: 'catalog', resourceUrlPattern: RESOURCE.urlPattern },
+    })
 
     await vi.waitFor(() => {
       expect(document.body.querySelector('[data-testid="resource-configurator"]')).not.toBeNull()
@@ -136,6 +140,22 @@ describe('GatekeeperModal configurator readiness', () => {
     const addConnection = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
       .find(button => button.textContent === 'Add connection')!
     expect(addConnection.disabled).toBe(true)
+  })
+})
+
+describe('GatekeeperModal agent spawner request', () => {
+  it('opens on the Agent form with the proposed name and env', async () => {
+    await renderModal({
+      initialConnection: { type: 'agentSpawner', displayName: 'Ticket triage' },
+      spawnerEnvCandidates: [{ name: 'TICKETS', target: 7, targetTitle: 'Ticket Desk' }],
+    })
+
+    expect(document.body.querySelector<HTMLInputElement>('[aria-label="Agent display name"]')!.value)
+      .toBe('Ticket triage')
+    expect(document.body.querySelector<HTMLInputElement>('[aria-label="Binding name for Ticket Desk"]')!.value)
+      .toBe('TICKETS')
+    expect(document.body.querySelector('[aria-label="Give spawned agents access to Ticket Desk"]')!
+      .getAttribute('aria-checked')).toBe('true')
   })
 })
 
