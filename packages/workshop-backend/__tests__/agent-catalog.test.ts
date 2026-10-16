@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import type { AiChatMessage, AlwaysAvailableResource } from "@gadgets/workshop-shared/api";
 import {
   AGENT_CATALOG_MAX_DESCRIPTION_LENGTH, AGENT_CATALOG_MAX_ENTRIES, AGENT_CATALOG_MAX_ID_LENGTH,
   AGENT_CATALOG_MAX_TITLE_LENGTH, boundAgentCatalog,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  formatAgentCatalogPrompt, formatAlwaysAvailableResourcesPrompt, normalizeAgentCatalog,
+  findCatalogChanges, formatAgentCatalogPrompt, formatAlwaysAvailableResourcesPrompt,
+  formatCatalogChange, normalizeAgentCatalog, seenAlwaysAvailableResources,
 } from "../src/agent-catalog";
 
 describe("normalizeAgentCatalog", () => {
@@ -125,5 +127,48 @@ describe("boundAgentCatalog", () => {
       entries: [{id: "a", title: "A", description: "d"}],
       truncated: false,
     });
+  });
+});
+
+let skill = (title: string) => ({id: title, title, description: `The ${title} skill.`});
+let skills = (...titles: string[]): AlwaysAvailableResource =>
+  ({name: "CONTEXT", title: "Skills", catalog: {entries: titles.map(skill)}});
+let unloaded: AlwaysAvailableResource = {name: "CONTEXT", title: "Skills", catalog: null};
+let seen = (resource: AlwaysAvailableResource) => new Map([[resource.name, resource]]);
+let note = (sequence: number, resource: AlwaysAvailableResource): AiChatMessage => ({
+  chatId: 1, sequence, timestamp: new Date(0), author: {type: "agent", id: "m", name: "M"},
+  type: "catalogChange", resources: [resource],
+});
+
+describe("catalog changes", () => {
+  it("reports a changed catalog and a resource the agent hasn't seen, not an unchanged one", () => {
+    let tasks: AlwaysAvailableResource = {name: "TASKS", title: "Tasks", catalog: null};
+    expect(findCatalogChanges(seen(skills("Tax")), [skills("Tax", "Travel"), tasks]))
+      .toEqual([skills("Tax", "Travel"), tasks]);
+    expect(findCatalogChanges(seen(skills("Tax")), [skills("Tax")])).toEqual([]);
+  });
+
+  it("does not take a catalog that failed to load for a change", () => {
+    expect(findCatalogChanges(seen(skills("Tax")), [unloaded])).toEqual([]);
+  });
+
+  it("compares a catalog the agent saw missing as an empty one", () => {
+    expect(findCatalogChanges(seen(unloaded), [skills()])).toEqual([]);
+    expect(findCatalogChanges(seen(unloaded), [skills("Tax")])).toEqual([skills("Tax")]);
+  });
+
+  it("tells the agent the entries added and those no longer listed, not those kept", () => {
+    let text = formatCatalogChange(skills("Travel", "Visa"), skills("Tax", "Travel"));
+
+    expect(text).toContain(`Added: [${JSON.stringify(skill("Visa"))}]`);
+    expect(text).toContain(`No longer listed: [${JSON.stringify(skill("Tax"))}]`);
+    expect(text).not.toContain(JSON.stringify(skill("Travel")));
+  });
+
+  it("applies only the changes recorded before a sequence", () => {
+    let messages = [note(3, skills("Tax", "Travel")), note(7, skills("Travel"))];
+
+    expect(seenAlwaysAvailableResources([skills("Tax")], messages, 7).get("CONTEXT"))
+      .toEqual(skills("Tax", "Travel"));
   });
 });

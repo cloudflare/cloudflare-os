@@ -119,6 +119,11 @@ export interface WranglerConfig {
   services?: ServiceBinding[];
   /** Browser Rendering binding (Gadget PDF exports). */
   browser?: BindingDecl;
+  /**
+   * Workers AI binding of a worker that declares its own (gatekeeper-websearch). The backend's
+   * `WORKERS_AI` is hardcoded in buildWorkerEntry instead, which refuses one in its config.
+   */
+  ai?: BindingDecl;
   /** Artifacts binding — closed beta, cut from customer manifests. */
   artifacts?: BindingDecl;
   /** Static-asset serving config (the router). */
@@ -251,6 +256,9 @@ const HANDLED_CONFIG_KEYS = new Set([
   // Browser Rendering (Gadget PDF exports). Unlike artifacts it is generally available, so it
   // passes through to customer instances as a placeholder-free binding, like the AI binding.
   "browser",
+  // Workers AI, for a gatekeeper that calls it itself (gatekeeper-websearch). Placeholder-free,
+  // like browser.
+  "ai",
   // gatekeeper-context's Artifacts binding is closed-beta and cannot be provisioned in arbitrary
   // user accounts; it is dropped from customer manifests (the gatekeeper degrades gracefully).
   "artifacts",
@@ -264,6 +272,7 @@ const NO_DEFAULT_CRED_INPUTS = new Set([
   "gatekeeper-context",       // no third-party service; uses its own storage
   "gatekeeper-homeassistant", // users connect their own Home Assistant URL + token in-app
   "gatekeeper-scheduler",     // auto-provisioned; no third-party OAuth app
+  "gatekeeper-websearch",     // auto-provisioned; searches through the account's own AI Gateway
   "gatekeeper-mcp",           // MCP OAuth uses dynamic client registration, not a static app
   "gatekeeper-mcp-portal",    // same MCP OAuth chain as gatekeeper-mcp
 ]);
@@ -275,15 +284,15 @@ const NOT_INSTALLABLE = new Set(["gatekeeper-email"]);
 // Ambient gatekeepers the deploy service installs on every fresh core deploy, server-side with
 // no user interaction. Members must take no inputs of any kind (enforced below): a preinstall
 // has nobody to ask.
-const PREINSTALL = new Set(["gatekeeper-context", "gatekeeper-scheduler"]);
+const PREINSTALL = new Set(["gatekeeper-context", "gatekeeper-scheduler", "gatekeeper-websearch"]);
 
 // Gatekeepers that may be installed at most once per instance; the deploy service enforces this
 // at install time. Two independent reasons to be here:
 //
 //  1. The account declares an agent singleton (`AccountDescription.singleton` — context's
-//     `ContextLibrary`, scheduler's `ScheduleSession`). The Workshop auto-provisions those
-//     accounts and folds the singleton into every workspace as an ambient gatekeeper, so a second
-//     install would hand every user a duplicate ambient capsule.
+//     `ContextLibrary`, scheduler's `ScheduleSession`, websearch's `WebSearchSession`). The
+//     Workshop auto-provisions those accounts and folds the singleton into every workspace as an
+//     ambient gatekeeper, so a second install would hand every user a duplicate ambient capsule.
 //  2. Nothing could distinguish two installs. A gatekeeper taking no inputs (see
 //     NO_DEFAULT_CRED_INPUTS and the absence of a deploy-inputs.json) is configured identically on
 //     every install, so a second one is a byte-identical worker — it adds no capability, and it
@@ -293,11 +302,12 @@ const PREINSTALL = new Set(["gatekeeper-context", "gatekeeper-scheduler"]);
 //
 // Reason 2 turns on inputs, not on the vendor: google/github/slack take per-install
 // CLIENT_ID/CLIENT_SECRET, so two installs can front two different OAuth apps and must stay
-// multi-install. Independent of PREINSTALL in principle; the ambient two coincide with it today
+// multi-install. Independent of PREINSTALL in principle; the ambient three coincide with it today
 // only because every ambient gatekeeper we ship is also preinstalled.
 const SINGLETON = new Set([
   "gatekeeper-context",       // (1) ambient ContextLibrary
   "gatekeeper-scheduler",     // (1) ambient ScheduleSession
+  "gatekeeper-websearch",     // (1) ambient WebSearchSession
   "gatekeeper-homeassistant", // (2) no inputs; users connect their own URL + token in-app
   "gatekeeper-mcp",           // (2) no inputs; users paste their own endpoints in-app
   "gatekeeper-mcp-portal",    // (2) no inputs; the one portal comes from the deployment's vars
@@ -435,6 +445,10 @@ export function buildWorkerEntry(
     // `remote` is dev-only wrangler behavior; the deployed binding is just { type, name }.
     bindings.push({ type: "browser", name: config.browser.binding });
   }
+  if (config.ai) {
+    // Like browser: `remote` is dev-only.
+    bindings.push({ type: "ai", name: config.ai.binding });
+  }
   for (const loader of config.worker_loaders ?? []) {
     bindings.push({ type: "worker_loader", name: loader.binding });
   }
@@ -471,6 +485,10 @@ export function buildWorkerEntry(
     // instance-state vars (ADMINS, DEPLOY_URL, CF_ACCESS_*, CF_AI_GATEWAY*) are injected by
     // the deploy service's backendExtraVars at PUT time, never manifest-templated.
     vars.PUBLIC_BASE_URL = "$PUBLIC_BASE_URL";
+    if (config.ai) {
+      throw new Error(`${pkgName} declares an ai binding, but the backend's WORKERS_AI is ` +
+          `added below; declaring it too would emit it twice.`);
+    }
     // Every deployed backend gets the Workers AI binding (hardcoded like PUBLIC_BASE_URL, not
     // read from wrangler.jsonc): webFetch's toMarkdown conversion depends on it, and it is also
     // the backend's default AI Gateway transport (the deploy service creates the gateway in the

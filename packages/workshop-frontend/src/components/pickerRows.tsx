@@ -14,14 +14,12 @@ export const PICKER_ROW_ACTIVE = 'bg-kumo-fill hover:bg-kumo-fill'
 export const PICKER_EMPTY =
   'm-0 px-3.5 py-3 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle'
 
-/** Names the key that acts on the selected row. Visual only: the row itself carries the semantics. */
-export function TabHint() {
-  return (
-    <kbd
-      aria-hidden="true"
-      className="flex-shrink-0 rounded border border-kumo-line bg-kumo-base px-1 py-px font-sans text-[10px] font-medium leading-4 tracking-[0.02em] text-kumo-subtle"
-    >
-      Tab
-    </kbd>
-  )
-}
+/** Names a key that acts on the picker. Visual only: the row or panel carries the semantics. */
+export const KeyHint = ({ keyName }: { keyName: string }) => (
+  <kbd
+    aria-hidden="true"
+    className="flex-shrink-0 rounded border border-kumo-line bg-kumo-base px-1 py-px font-sans text-[10px] font-medium leading-4 tracking-[0.02em] text-kumo-subtle"
+  >
+    {keyName}
+  </kbd>
+)

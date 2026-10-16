@@ -103,10 +103,39 @@ of archives and label changes, each needing a round trip to the user.
    body and attachments the user is being asked to approve. There are two small exceptions:
    - the `Date` header is stamped when the email is actually sent, so the read-back shows the
      submission time instead;
-   - a draft's attachments are read from the Gmail draft, not stored with the action. If someone
-     edits the draft in Gmail while its send is pending, the read-back shows the edit. The send
-     then fails when approved, because `applyAction()` still checks the draft against what was
-     approved.
+   - existing provider attachment bytes are read from the Gmail draft. Uploaded files instead
+     have integrity-checked chunk-store references shared by actions and the active draft, so
+     they remain readable before approval and across restarts. If someone edits the draft in
+     Gmail while its send is pending, provider-backed reads can show that edit; approval still
+     checks the complete draft fingerprint and refuses a changed snapshot.
+     New persisted fingerprints are prefixed `v2:` and preserve exact attachment bytes. Existing
+     unprefixed preconditions and uncertain-send fingerprints retain historical verification;
+     an old draft write rebases its successor to the provider's byte-exact revision. An old
+     update or create whose write is being reconciled also accepts the old builder's output by
+     its historical fingerprint; creates are marked `exactOutput` when staged, so only one
+     staged before the upgrade is. An old send fingerprint is replaced only on a retry no attempt is
+     pending for. A fresh action on an inline forward Gmail holds as the old builder wrote it,
+     verified by its historical fingerprint, expects that exact revision rather than the rebuilt
+     output; the write or send itself still uses the rebuilt, byte-exact output. A forward's
+     historical fingerprint is taken from a rebuild that reproduces the old builder: its source
+     parts as the old parser decoded them, its placeholder filename (which made MIMEText emit an
+     inline part as a regular attachment too), and the extra CRLF it left inside non-final
+     unencoded nested messages. That rebuild is verification only: it is exempt from the MIME
+     ceiling and made only for a historical write or a pre-upgrade successor. Only attachment
+     state an old action captured (marked `historicalAttachments` once it is rebased) is
+     correlated to provider parts through the legacy parse, and it is re-keyed to their exact
+     bytes, not emitted as normalized calendar content (the re-keyed state is recorded as
+     `exactAfter` before an update writes it, since the written revision re-encodes those parts,
+     and carried into every later pending update or send as `exactAfter` or `exactApproved`);
+     byte-exact state never is, so recovery
+     cannot adopt an edit the legacy parse hides. A forward's source parts come from its
+     snapshot and are never re-keyed; an inline forward's attachments are listed and read as
+     its rebuilt output emits them, matched by exact bytes and else by name, disposition,
+     Content-ID and media type, so a part the
+     old builder duplicated is dropped. Bare-index keys are trusted only for a revision this
+     binding has not rewritten. Listing a draft under a pending old update reports each
+     provider part's own size and type. A `v2:`
+     precondition never falls back to the historical parser.
 
 4. **Where exact simulation isn't possible, show the agent's change and document the gap.** In some
    places Gmail's data can't be reconciled with a pending action, mostly free-text search. There the

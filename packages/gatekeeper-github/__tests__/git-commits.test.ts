@@ -28,6 +28,7 @@ function commitResponse(overrides: Partial<GitHubCommitResponse> = {}): GitHubCo
       committer: { name: "Bob", email: "bob@example.com", date: "2026-08-02T12:00:00Z" },
     },
     author: {
+      id: 1,
       login: "alice",
       name: "Alice",
       html_url: "https://github.com/alice",

@@ -1653,9 +1653,9 @@ describe("applying a blueprint to a gadget", () => {
     });
   });
 
-  it("refuses a merge that needs a file too large to hold, and creates no chat", async () => {
+  it("merges a large file both sides changed, however large the conflict", async () => {
     // A file of 200K characters, whose every line both sides change: the conflict holds all
-    // three versions, 600K characters in all, which is more than a file may.
+    // three versions, 600K characters in all. No size is refused but storage's own.
     let [base, theirs, ours] =
         ["aaaaa", "bbbbb", "ccccc"].map(word => `${word.repeat(200)}\n`.repeat(200));
     let alice = await publishVersions("Alice's",
@@ -1663,20 +1663,15 @@ describe("applying a blueprint to a gadget", () => {
     republish(alice, 0);
 
     await withWorkspace(async workspace => {
-      let { instance, impl, client } = workspace;
+      let { instance, impl } = workspace;
       await instantiate(instance, alice.blueprintId);
-      let before = theGadget(impl);
       await commitToGadget(impl, { ...V1, "big.js": ours });
       republish(alice, 1);
-      await expect(apply(client, before.id, alice.blueprintId))
-          .rejects.toThrow(/Cannot merge "big\.js": both sides changed it, and it is too large/);
-      expect([...impl.storage.chatMeta.list()]).toEqual([]);
-
-      // The same file changed by the release alone merges: it is taken whole.
-      await commitToGadget(impl, { ...V1, ...MINE, "big.js": base });
       let chatId = await propose(workspace, alice.blueprintId);
-      expect(await proposedFiles(impl, chatId))
-          .toEqual({ ...V1, ...MINE, "big.js": theirs });
+      let merged = (await proposedFiles(impl, chatId))["big.js"];
+      expect(merged.length).toBeGreaterThan(3 * base.length);
+      expect(merged).toContain(ours);
+      expect(merged).toContain(theirs);
     });
   });
 
@@ -1811,8 +1806,8 @@ describe("applying a blueprint to a gadget", () => {
 
   it("records no release for a gadget whose copy of the blueprint's files failed", async () => {
     // More than one agent step may change, so the copy that createGadget makes cannot land.
-    let large = Object.fromEntries(["a", "b"].map(
-        name => [`${name}.js`, `// ${name}\n`.repeat(100_000)]));
+    let large = Object.fromEntries(["a", "b", "c"].map(
+        name => [`${name}.js`, `// ${name}\n`.repeat(300_000)]));
     let alice = await publishVersions("Alice's", [large]);
 
     await withWorkspace(async workspace => {
@@ -1827,7 +1822,8 @@ describe("applying a blueprint to a gadget", () => {
       let [call] = [...impl.storage.chats.list({ prefix: `${keyString(1)}.` })]
           .flatMap(message => message.type === "message" ? message.toolCalls ?? [] : []);
       expect(call).toMatchObject({ toolName: "createGadget" });
-      expect(call.error).toMatch(/Too many code changes in one step/);
+      // Schema validation now enforces the same raised cap before the step-buffer check.
+      expect(call.error).toMatch(/code change is too large/);
 
       // The call still leaves the gadget it created, with no files. Nothing says it was made
       // from the release, so accepting it does not put the release in its history...

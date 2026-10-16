@@ -1,5 +1,16 @@
-import { File as FileIcon, X } from "@phosphor-icons/react";
+import { AnimatePresence, MotionConfig, motion } from "motion/react";
+import { ComposerAttachmentCard } from "./ComposerAttachmentCard";
 import type { ComposerAttachment } from "./useComposerAttachments";
+
+// Everything animates with one transition: a card scaling in or out about its own center, the
+// neighbours then sliding into the space it leaves, and the whole tray opening or closing.
+const TRANSITION = { duration: 0.18, ease: [0.25, 0.1, 0.25, 1] } as const;
+const CARD_HIDDEN = { opacity: 0, scale: 0.9 };
+const CARD_SHOWN = { opacity: 1, scale: 1 };
+const TRAY_HIDDEN = { opacity: 0, height: 0 };
+const TRAY_SHOWN = { opacity: 1, height: "auto" };
+// When the last card is removed, the tray only starts to close once that card has fully left.
+const TRAY_CLOSE_TRANSITION = { ...TRANSITION, delay: TRANSITION.duration };
 
 export const ComposerAttachmentTray = ({
   attachments,
@@ -10,45 +21,45 @@ export const ComposerAttachmentTray = ({
   disabled?: boolean;
   onRemove: (attachmentId: string) => void;
 }) => {
-  if (attachments.length === 0) return null;
+  const open = attachments.length > 0;
 
   return (
-    <div className="flex flex-wrap items-center gap-2 px-3 pb-2 pt-1">
-      {attachments.map((attachment) => (
-        <div
-          key={attachment.id}
-          className="relative flex h-14 w-14 items-center justify-center overflow-hidden rounded-lg border border-kumo-line/70 bg-kumo-elevated"
+    <MotionConfig reducedMotion="user" transition={TRANSITION}>
+      {/* The tray stays mounted and is opened and closed by animating, rather than unmounted.
+          Unmounting it would freeze its contents, so the last card could not animate out. */}
+      <motion.div
+        initial={false}
+        animate={open ? TRAY_SHOWN : TRAY_HIDDEN}
+        transition={open ? TRANSITION : TRAY_CLOSE_TRANSITION}
+        className="overflow-hidden"
+      >
+        <ul
+          aria-label="Attachments"
+          aria-hidden={!open}
+          className="m-0 flex list-none gap-2 overflow-x-auto px-3 pb-2 pt-3"
         >
-          {attachment.previewUrl ? (
-            <img
-              src={attachment.previewUrl}
-              alt={attachment.name ?? "Attached file"}
-              className="h-full w-full object-cover"
-            />
-          ) : (
-            <FileIcon size={22} className="text-kumo-inactive" />
-          )}
-          {attachment.uploadState === "uploading" && (
-            <div className="absolute inset-0 grid place-items-center rounded-lg bg-black/35 text-[10px] text-white">
-              Uploading
-            </div>
-          )}
-          {attachment.uploadState === "error" && (
-            <div className="absolute inset-0 grid place-items-center rounded-lg bg-kumo-danger/80 px-1 text-center text-[9px] leading-3 text-white">
-              Failed
-            </div>
-          )}
-          <button
-            type="button"
-            aria-label="Remove attachment"
-            disabled={disabled}
-            onClick={() => onRemove(attachment.id)}
-            className="absolute right-0.5 top-0.5 flex h-4 w-4 cursor-pointer items-center justify-center rounded-full bg-black/55 text-white hover:bg-black/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <X size={10} weight="bold" />
-          </button>
-        </div>
-      ))}
-    </div>
+          {/* A leaving card keeps its place until it has fully gone; only then do its
+              neighbours slide over (their `layout` animation). */}
+          <AnimatePresence initial={false}>
+            {attachments.map((attachment) => (
+              <motion.li
+                key={attachment.id}
+                layout="position"
+                initial={CARD_HIDDEN}
+                animate={CARD_SHOWN}
+                exit={CARD_HIDDEN}
+                className="shrink-0"
+              >
+                <ComposerAttachmentCard
+                  attachment={attachment}
+                  disabled={disabled}
+                  onRemove={() => onRemove(attachment.id)}
+                />
+              </motion.li>
+            ))}
+          </AnimatePresence>
+        </ul>
+      </motion.div>
+    </MotionConfig>
   );
 };

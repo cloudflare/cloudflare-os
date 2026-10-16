@@ -1104,7 +1104,7 @@ describe("consumePack", () => {
         .toStrictEqual([G1, G2]);
   });
 
-  it("consumes a pack another Worker streams in, as a gatekeeper's arrives", async () => {
+  it("consumes a raw pack returned by another Worker, preserving its provenance", async () => {
     // The other tests build a byte stream. A gatekeeper sends a default stream, which the
     // decoder's BYOB reader refuses when handed one directly ("This ReadableStream does not
     // support BYOB reads"); it works only because Workers RPC delivers it as a byte stream.
@@ -1116,19 +1116,20 @@ describe("consumePack", () => {
         "sender.js": `
           import { WorkerEntrypoint } from "cloudflare:workers";
           export default class extends WorkerEntrypoint {
-            send(cache, pack) {
+            gitPull(pack) {
               let pos = 0;
-              return cache.consumePack(new ReadableStream({
+              return new ReadableStream({
                 pull(controller) {
                   if (pos < pack.byteLength) controller.enqueue(pack.slice(pos, pos += 100));
                   else controller.close();
                 },
-              }));
+              });
             }
           }`,
       },
     })).getEntrypoint();
-    let stored = await sender.send(new GitCacheImpl(t.cache, G1), b64Bytes(PACK_OFS_DELTA));
+    let stored = await t.cache.consumePackFromGatekeeper(G1,
+      await sender.gitPull(b64Bytes(PACK_OFS_DELTA)));
     expect(new Set(stored)).toStrictEqual(new Set(PACKED_OIDS));
     for (let oid of PACKED_OIDS) {
       expect(t.cache.readLocalObject(oid)).toStrictEqual(fixture(oid));
@@ -1203,8 +1204,9 @@ describe("consumePack", () => {
     // A one-blob pack minus its trailer, recounted to two entries.
     let prefix = concatBytes(await buildPackBytes([{ type: "blob", payload: big }])).slice(0, -20);
     new DataView(prefix.buffer).setUint32(8, 2);
-    // Delta: base size 0x100005 and target size 16 (varints), then a 16-byte copy from offset 0.
-    let delta = new Uint8Array([0x85, 0x80, 0x40, 16, 0x90, 16]);
+    // Delta: base size and target size 16 (varints), then a 16-byte copy from offset 0.
+    let varint = (n: number): number[] => n < 0x80 ? [n] : [(n & 0x7f) | 0x80, ...varint(n >>> 7)];
+    let delta = new Uint8Array([...varint(big.byteLength), 16, 0x90, 16]);
     let body = concatBytes([prefix, new Uint8Array([(7 << 4) | delta.length]),
       Uint8Array.from(bigOid.match(/../g)!, h => parseInt(h, 16)), deflate(delta)]);
     let pack = concatBytes([body, new Uint8Array(await crypto.subtle.digest("SHA-1", body))]);
@@ -1441,6 +1443,24 @@ describe("lazy walker reads", () => {
     expect(t.pulls).toHaveLength(0);
   });
 
+  it("reads a blob over the gatekeeper cap that the store holds: limits apply only to writes",
+      async () => {
+    let t = makeCache();
+    let text = "a".repeat(MAX_GIT_OBJECT_SIZE + 1);
+    let big = await storeLocal(t.storage, { type: "blob", payload: new TextEncoder().encode(text) });
+    let tree = await storeLocal(t.storage, {
+      type: "tree",
+      payload: treePayload([{ mode: "100644", name: "huge.txt", oid: big }]),
+    });
+    let commit = await storeLocal(t.storage,
+        { type: "commit", payload: commitPayload(tree, [], "huge") });
+    expect(await t.cache.readFileAtCommit(commit, "huge.txt")).toBe(text);
+    expect(await t.cache.readTextBlob(big, undefined, "huge.txt")).toBe(text);
+    expect(await t.cache.readFilesAtCommit(commit, ["huge.txt"]))
+        .toEqual([["huge.txt", { kind: "text", text }]]);
+    expect(t.pulls).toHaveLength(0);
+  });
+
   it("fails parsing a tree with a non-UTF-8 entry name, naming the tree", async () => {
     let t = makeCache();
     await storeLocal(t.storage, fixture(BAD_NAME_TREE));
@@ -1587,8 +1607,9 @@ describe("client-facing reads (readCommitTree / readFilesAtCommit)", () => {
   it("stops after the response budget, omitting the rest for the client to re-request",
       async () => {
     let t = makeCache();
+    const FILE_SIZE = READ_FILES_RESPONSE_BUDGET / 8;
     let blob = await storeLocal(t.storage,
-        { type: "blob", payload: new Uint8Array(MAX_GIT_OBJECT_SIZE).fill(0x61) });
+        { type: "blob", payload: new Uint8Array(FILE_SIZE).fill(0x61) });
     let names = Array.from({ length: 10 }, (_, i) => `f${i}.txt`);
     let tree = await storeLocal(t.storage, {
       type: "tree",
@@ -1597,13 +1618,12 @@ describe("client-facing reads (readCommitTree / readFilesAtCommit)", () => {
     let commit = await storeLocal(t.storage,
         { type: "commit", payload: commitPayload(tree, [], "big") });
 
-    // 8 MiB of text is within budget; the ninth file pushes past it and is still delivered;
+    // Eight files fill the budget exactly; the ninth pushes past it and is still delivered;
     // the tenth is omitted (not reported absent).
     let result = await t.cache.readFilesAtCommit(commit, names);
-    expect(READ_FILES_RESPONSE_BUDGET).toBe(8 * MAX_GIT_OBJECT_SIZE);
     expect(result.map(([path]) => path)).toStrictEqual(names.slice(0, 9));
     expect(result.every(([, file]) =>
-        file.kind === "text" && file.text.length === MAX_GIT_OBJECT_SIZE)).toBe(true);
+        file.kind === "text" && file.text.length === FILE_SIZE)).toBe(true);
     expect(t.pulls).toHaveLength(0);
   });
 

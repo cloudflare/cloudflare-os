@@ -22,7 +22,7 @@ else.
 | `iconBtn(paths, title, onClick, label?)`, `segBtn(paths, title, onClick)` | `button.icon-btn` / `button.seg-btn`, `type=button`, titled and `aria-label`led, mousedown prevented so the editor's selection survives; `label` shows text instead of an icon. |
 | `group(prio, items, first?)` | `div.tgroup[.p1/.p2/.p3]` led by a `div.tdiv` divider unless `first`. |
 | `colorBtn(paths, title, defaultColor, onChange)` | `div.color-btn`: icon, `span.bar` swatch, native colour input; a pick recolours the bar and calls `onChange(hex)`. |
-| `customSelect({className?, title?, options, value, onChange})` | The toolbar dropdown: `button.cselect` plus a `div.cmenu` appended to the body while open; options may carry `style` (docs' font preview), `ex` (sheets' format example) or be `{sep: true}`. A value may be a string or a number, matched and reported as a string. Returns `{el, setValue, getValue}`. |
+| `customSelect({className?, title?, options, value, showUnlistedValue?, onChange})` | The toolbar dropdown: `button.cselect` plus a `div.cmenu` appended to the body while open; options may carry `style` (docs' font preview), `ex` (sheets' format example) or be `{sep: true}`. A value may be a string or a number, matched and reported as a string. Returns `{el, setValue, getValue}`. |
 | `promptInline(message, initial?, placeholder \| options?)` | The dialog: resolves the text on OK/Enter, `null` on Cancel/Escape/backdrop. Options: `placeholder`, `okLabel`. |
 | `PROMPT_STYLES` | CSS for the dialog's classes, scoped under `.prompt-overlay`/`.prompt-card`, for a gadget whose stylesheet has none. |
 | `statusIndicator({kind?, text?, title?})` | `div.status` > `span.dot.<kind>` + text; `set(kind, text)` is a no-op when nothing changed. |
@@ -41,7 +41,8 @@ ships no CSS but `PROMPT_STYLES`.
 - **`iconBtn`/`segBtn`** prevent mousedown so the editor's selection survives the click;
   **`customSelect`**'s button does not, and a gadget whose selection has to survive it adds that
   listener to the returned element, as Docs does on its colour button. The dropdown's label for a
-  value no option carries is the first choice's.
+  value no option carries is the first choice's, or the value itself with `showUnlistedValue`
+  (Docs' font size, where a heading's size is off the list).
 - **`promptInline`**'s message is text, not markup.
 - **`prepareImage`** tries four encoding qualities before it shrinks the image, and keeps a GIF
   animated only while its data URL fits `maxGifDataUrlLength`. A gadget with its own conversion

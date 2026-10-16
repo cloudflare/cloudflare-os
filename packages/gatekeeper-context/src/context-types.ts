@@ -15,6 +15,18 @@ export const DUPLICATE_COLLECTION_TITLE_ERROR = "A collection with this name alr
 // Keep these in sync with CONTEXT_LIBRARY_TYPES in library-gatekeeper.ts.
 // ---------------------------------------------------------------------------
 
+/** Agent-facing read capability over the account's enabled Context collections. */
+export interface ContextLibrary extends RpcTarget {
+  /** Search enabled collections, optionally narrowed to one collection. */
+  search(query: string, opts?: {
+    collectionId?: string; limit?: number;
+  }): Promise<ContextSearchResult[]>;
+  /** List collection discovery metadata, or the contents of a selected collection subtree. */
+  list(opts?: { collectionId?: string; path?: string }): Promise<ContextListing>;
+  /** Read a document by its catalog/list/search ID, or return null when it is unavailable. */
+  read(docId: string): Promise<ContextReadResult | null>;
+}
+
 /** Search result. */
 export type ContextSearchResult = {
   /** Opaque document identifier ("collectionId/path") to pass to read(). */

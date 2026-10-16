@@ -9,7 +9,7 @@ import { resolveEvalModel, type EvalIdentity } from "./config.js";
 import type { EvalCheck, EvalRunInput, EvalRunOutput, EvalTask, EvalTurnResult } from "./task.js";
 import { measureHistory, toTranscriptEvents } from "./transcript.js";
 import {
-  openLocalEvalTarget, type LocalEvalTarget, type LocalModelAccess,
+  addSkills, openLocalEvalTarget, type LocalEvalTarget, type LocalModelAccess,
 } from "./target.js";
 import { agentReplies, EvalVerifier } from "./verifier.js";
 
@@ -67,6 +67,7 @@ export function createWorkshopHarness(
         opened = await openLocalEvalTarget(access, model, agentTurnBudget);
 
         for (const turn of task.turns) {
+          if (turn.skills !== undefined) await addSkills(opened.session, turn.skills);
           const turnStartedAt = Date.now();
           const previousSequence = history.at(-1)?.sequence ?? -1;
           unrecordedPrompt = turn.prompt;

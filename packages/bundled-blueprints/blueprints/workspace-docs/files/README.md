@@ -22,8 +22,8 @@ Everything on top of them is this gadget's own: the editing commands, the paste 
 model and its ordering rule, where a remote caret is drawn, and the export formats.
 
 In the repository the source is TypeScript under `blueprints/workspace-docs/files/` (`client.ts`,
-`server.ts` and the shared `lib/protocol.ts` contract), which the build bundles into the `client.js` and
-`server.js` this gadget runs.
+`server.ts`, the shared `lib/protocol.ts` contract and the `lib/markdown.ts` export), which the build
+bundles into the `client.js` and `server.js` this gadget runs.
 
 ## Architecture
 
@@ -79,13 +79,9 @@ If only the former `content`, `title`, and `lastModified` KV keys exist, the fir
 
 ## Formatting and media
 
-The toolbar supports paragraph styles, font family/size, bold, italic, underline, strikethrough, text/highlight color, alignment, lists, indentation, links, images, horizontal rules, clear formatting, and undo/redo.
+The toolbar supports paragraph styles, font family/size, bold, italic, underline, strikethrough, text/highlight color, alignment, lists, indentation, links, images, horizontal rules, clear formatting, and undo/redo. Font sizes are in points, as in Google Docs and Word: body text is 12 pt, in the editor and in the HTML and PDF exports alike, so a sized run keeps its proportion to the text around it.
 
 Pasted Google Docs/Word HTML is rebuilt into clean semantic markup. Images from file selection, drag/drop, and clipboard are downscaled and embedded as data URLs. Because collaboration transmits changed blocks, an embedded image is no longer resent when unrelated paragraphs change. A future asset store could replace data URLs with image IDs if very large media-heavy documents are needed.
-
-## Google Doc sync
-
-`syncToGoogleDoc()` remains an explicit full-document integration because the current binding API exposes content replacement rather than range operations. It is separate from the efficient local real-time collaboration path.
 
 ## Implementation notes
 
@@ -96,6 +92,12 @@ Pasted Google Docs/Word HTML is rebuilt into clean semantic markup. Images from 
 
 ## Export formats
 
-- **Markdown** exports the persisted rich-text blocks as Markdown, preserving headings, emphasis,
-  links, images, lists, block quotes, code, and horizontal rules.
+- **Markdown** exports the persisted rich-text blocks as Markdown, preserving headings, bold,
+  italic, strikethrough (whether written as tags or as the inline styles the toolbar applies, with
+  an inline style overriding its tag and its ancestors, as on the page), links, images, lists,
+  block quotes, code, horizontal rules and line breaks. A paragraph whose emphasis changes inside
+  a word, where Markdown's asterisks could pair differently than written, writes its emphasis as
+  inline `<strong>`, `<em>` and `<del>` tags instead. Markdown has no syntax for underline,
+  colour, size, font or alignment, so those runs export as plain text. An image exports with its
+  `src`, which for an embedded image is its whole data URL.
 - **HTML** and **PDF** use the editor's print layout and omit editing chrome and presence UI.

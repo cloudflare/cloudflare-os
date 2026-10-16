@@ -5,9 +5,13 @@
 import { z } from "zod";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { openAgentSession } from "../src/agent-session.js";
-import { startTestGatekeeperHarness, TEST_VENDOR_ID, type Harness } from "../src/harness.js";
+import {
+  startTestGatekeeperHarness, TEST_VENDOR_ID, testControl, type Harness,
+} from "../src/harness.js";
 import { SCRIPTED_MODEL_ID, scriptedModelRouter, systemPromptOf } from "../src/mock-model.js";
-import { connect, nextUsernames, signUp, waitFor, waitForIdleChat } from "../src/rpc-client.js";
+import {
+  accountLabel, connect, listConnectedAccounts, nextUsernames, signUp, waitFor, waitForIdleChat,
+} from "../src/rpc-client.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 
 let harness: Harness;
@@ -123,4 +127,102 @@ it.concurrent("a compaction lists the workspace's gadgets afresh, and later turn
   await waitFor("the third turn's request", async () => model.requests.length === 4 || null);
   await waitForIdleChat(ws, chatId);
   expect(systemPromptOf(model.requests[3])).toEqual(systemPromptOf(resumed));
+});
+
+// Give the account's always-available resource a catalog with these skills. Set it before the
+// chat's first turn: a resource whose catalog is null once is not asked again.
+function setSkills(label: string, skills: string[]): Promise<void> {
+  return testControl(harness, "agent-catalog", { label, skills });
+}
+
+// The system prompt lists the catalogs as the chat first saw them. A later change reaches the
+// agent as a synthetic tool call at the end of the history.
+it.concurrent("a catalog change keeps each request a prefix of the next, and the agent is told",
+    async () => {
+  const model = models.script([{ text: "First reply." }, { text: "Second reply." }]);
+  await using session = await openAgentSession(harness.url, {
+    modelId: SCRIPTED_MODEL_ID,
+    userModel: model.userModel,
+    ambientVendorIds: [TEST_VENDOR_ID],
+  });
+  const label = accountLabel(session.connectedAccount(TEST_VENDOR_ID));
+
+  await setSkills(label, ["Tax rules"]);
+  expect((await session.runTurn("First question")).outcome).toEqual({ status: "completed" });
+  await setSkills(label, ["Tax rules", "Travel policy"]);
+  expect((await session.runTurn("Second question")).outcome).toEqual({ status: "completed" });
+
+  const [first, second] = model.requests;
+  expect(systemPromptOf(first)).toContain("Tax rules");
+  expectEachRequestExtendsThePrevious(model.requests);
+  const messages = REQUEST.parse(second).messages;
+  expect(JSON.stringify(messages.at(-3))).toContain("Second question");
+  expect(JSON.stringify(messages.at(-1))).toContain("Travel policy");
+  expect(JSON.stringify(messages.at(-1))).not.toContain("Tax rules");
+});
+
+// An always-available resource the workspace gains after the chat started joins the chat's env on
+// its next turn. The system prompt keeps the list the chat started with, so the agent is told.
+it.concurrent("a resource gained mid-chat keeps each request a prefix, and the agent can use it",
+    async () => {
+  const model = models.script([
+    { text: "First reply." },
+    { toolCall: { id: "read-value", name: "executeCode", arguments: { code: READ_TEST_VALUE } } },
+    { text: "The test value is 42." },
+  ]);
+  await using session = await openAgentSession(harness.url, {
+    modelId: SCRIPTED_MODEL_ID,
+    userModel: model.userModel,
+  });
+
+  expect((await session.runTurn("First question")).outcome).toEqual({ status: "completed" });
+  await session.enableAmbientGatekeeper(TEST_VENDOR_ID);
+  expect((await session.runTurn("Read the test value.")).outcome).toEqual({ status: "completed" });
+
+  expect(model.requests).toHaveLength(3);
+  expectEachRequestExtendsThePrevious(model.requests);
+  const [, second, third] = model.requests.map(request => REQUEST.parse(request).messages);
+  expect(JSON.stringify(second?.at(-1))).toContain("`env.TEST_AMBIENT` (");
+  expect(JSON.stringify(second?.at(-1))).toContain("is now always available");
+  expect(JSON.stringify(third?.at(-1))).toContain("42");
+});
+
+// `/compact` never prompts the model, so the change is reported on the turn after it, and the
+// checkpoint lists the catalogs the summarized turns saw.
+it.concurrent("compacting after a catalog change keeps the catalogs the chat saw", async () => {
+  const model = models.script([
+    { text: "First reply." },
+    { text: "Summary of the first turn." },
+    { text: "Second reply." },
+  ]);
+  const [owner] = nextUsernames("catalogcompact");
+  using publicApi = connect(harness.url);
+  using api = await signUp(publicApi, owner!);
+  await api.addModel(model.userModel.profile, model.userModel.config);
+  await api.provisionAmbientAccount(TEST_VENDOR_ID);
+  const account = await waitFor("the ambient account", async () =>
+      (await listConnectedAccounts(api)).find(entry => entry.vendorId === TEST_VENDOR_ID) ?? null);
+  const label = accountLabel(account);
+  await setSkills(label, ["Tax rules"]);
+  using ws = await api.newGadget();
+
+  const chatId = await ws.newChat("First question", SCRIPTED_MODEL_ID);
+  await waitFor("the first model request", async () => model.requests.length === 1 || null);
+  await waitForIdleChat(ws, chatId);
+  await setSkills(label, ["Tax rules", "Travel policy"]);
+  await ws.sendChatMessage(
+      chatId, { id: { builtin: true, commandId: "compact" }, args: "" }, SCRIPTED_MODEL_ID);
+  await waitFor("the summary request", async () => model.requests.length === 2 || null);
+  await waitForIdleChat(ws, chatId);
+  await ws.sendChatMessage(chatId, "Second question", SCRIPTED_MODEL_ID);
+  await waitFor("the second turn's request", async () => model.requests.length === 3 || null);
+  await waitForIdleChat(ws, chatId);
+
+  const [first, summary, second] = model.requests;
+  expect(JSON.stringify(summary)).not.toContain("Travel policy");
+  expect(JSON.stringify(second)).toContain("<prior_conversation");
+  expect(systemPromptOf(second)).toEqual(systemPromptOf(first));
+  const messages = REQUEST.parse(second).messages;
+  expect(JSON.stringify(messages.at(-3))).toContain("Second question");
+  expect(JSON.stringify(messages.at(-1))).toContain("Travel policy");
 });

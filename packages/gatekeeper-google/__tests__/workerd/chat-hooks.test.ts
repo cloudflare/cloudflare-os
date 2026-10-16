@@ -58,6 +58,8 @@ function mockGoogle() {
      * because a promise settled across Durable Objects moves its waiter's I/O to the settler.
      */
     stallGet: undefined as {started: boolean; released: boolean} | undefined,
+    /** When set, subscriptions.create flags that it started and answers once released, polled as `stallGet` is. */
+    stallCreate: undefined as {started: boolean; released: boolean} | undefined,
     /**
      * The account's subscription to the space that Google holds but the driver never learned of,
      * as when a create's response is lost; Google refuses to create another while it exists.
@@ -79,9 +81,14 @@ function mockGoogle() {
     const method = (init.method ?? "GET").toUpperCase();
     const subject = new Headers(init.headers).get("Authorization")?.replace("Bearer token-", "");
     if (url.href === "https://www.googleapis.com/oauth2/v3/certs") return json(jwks);
+    if (url.href === "https://oauth2.googleapis.com/revoke" && method === "POST") return new Response(null);
     if (url.href === "https://www.googleapis.com/oauth2/v3/userinfo") return json({sub: subject});
     if (url.href === "https://workspaceevents.googleapis.com/v1/subscriptions" && method === "POST") {
       if (google.unrecorded) return json({error: {code: 409, status: "ALREADY_EXISTS"}}, 409);
+      if (google.stallCreate) {
+        google.stallCreate.started = true;
+        await vi.waitFor(() => expect(google.stallCreate!.released).toBe(true), {timeout: 10_000, interval: 5});
+      }
       google.creates++;
       return json({name: "operations/create", done: true, response: {
         name: `subscriptions/${google.subscriptionId ?? subject}`, state: "ACTIVE",
@@ -339,6 +346,163 @@ it("ends a failing delivery's retries when its hook is disabled, even if it is r
   expect((await ada.hooks.readHook()).received).toEqual([]);
 });
 
+it("drops a disconnected account's hooks in the space, while another account's go on", async () => {
+  mockGoogle();
+  const ada = await connect("ada");
+  const bob = await connect("bob");
+  await ada.hooks.chatEnableHook();
+  await bob.hooks.chatEnableHook();
+
+  await (testEnv.UserAccount.get(testEnv.UserAccount.idFromString(ada.props.userObjectId)) as unknown as
+    {revoke(): Promise<void>}).revoke();
+  // Each subscription reports the message, which ada's no longer delivers.
+  expect(await push("ada", [chatMessage("carol")])).toBe(204);
+  expect(await push("bob", [chatMessage("carol")])).toBe(204);
+  await deliver();
+
+  expect((await ada.hooks.readHook()).received).toEqual([]);
+  expect((await bob.hooks.readHook()).received).toHaveLength(1);
+  // Nothing is left to try for the disconnected account, whose credentials are gone.
+  expect(await runInDurableObject(driver(), (_instance: unknown, state: DurableObjectState) => ({
+    registered: [...state.storage.kv.list({prefix: "reg:"})].length,
+    pending: [...state.storage.kv.list<{at?: number}>({prefix: "msg:"})].filter(([, row]) => row.at !== undefined).length,
+  }))).toEqual({registered: 1, pending: 0});
+});
+
+it("drops on disconnect a hook registered before accounts kept track, once its driver's alarm has run", async () => {
+  mockGoogle();
+  const ada = await connect("ada");
+  await ada.hooks.chatEnableHook();
+  const account = testEnv.UserAccount.get(testEnv.UserAccount.idFromString(ada.props.userObjectId));
+  // As a hook registered before this release left things: the account has no record of the driver.
+  await runInDurableObject(account, (_instance: unknown, state: DurableObjectState) =>
+    state.storage.kv.delete(`hookDriver:chat:${SPACE}`));
+  await runInDurableObject(driver(), (_instance: unknown, state: DurableObjectState) =>
+    state.storage.kv.delete(`tracked:${ada.props.userObjectId}`));
+  expect(await push("ada", [chatMessage("carol")])).toBe(204);
+  await deliver();
+  expect((await ada.hooks.readHook()).received).toHaveLength(1);
+
+  await (account as unknown as {revoke(): Promise<void>}).revoke();
+  expect(await runInDurableObject(driver(), (_instance: unknown, state: DurableObjectState) =>
+    [...state.storage.kv.list({prefix: "reg:"})].length)).toBe(0);
+});
+
+/** Disconnect a connection's Google account while the driver can't be reached (see the test worker's). */
+async function disconnectUnreached(connection: {props: {userObjectId: string}}): Promise<void> {
+  await runInDurableObject(driver(), (_instance: unknown, state: DurableObjectState) => state.storage.kv.put("test:unreachable", true));
+  try {
+    await (testEnv.UserAccount.get(testEnv.UserAccount.idFromString(connection.props.userObjectId)) as unknown as
+      {revoke(): Promise<void>}).revoke();
+  } finally {
+    await runInDurableObject(driver(), (_instance: unknown, state: DurableObjectState) => state.storage.kv.delete("test:unreachable"));
+  }
+}
+
+/** Whose hooks the space's driver holds, by account. */
+const registeredAccounts = () => runInDurableObject(driver(), (_instance: unknown, state: DurableObjectState) =>
+  [...state.storage.kv.list<{userObjectId: string}>({prefix: "reg:"})].map(([, registration]) => registration.userObjectId));
+
+it("drops at its daily check the hooks of an account whose disconnect couldn't reach it, while another account's go on", async () => {
+  mockGoogle();
+  const ada = await connect("ada");
+  const bob = await connect("bob");
+  await ada.hooks.chatEnableHook();
+  await bob.hooks.chatEnableHook();
+  await disconnectUnreached(ada);
+  expect((await registeredAccounts()).toSorted()).toEqual([ada.props.userObjectId, bob.props.userObjectId].toSorted());
+
+  // The runtime won't wake the driver for the faked clock.
+  vi.setSystemTime(Date.now() + 24 * 3_600_000);
+  try {
+    await runDurableObjectAlarm(driver());
+  } finally {
+    vi.useRealTimers();
+  }
+  expect(await registeredAccounts()).toEqual([bob.props.userObjectId]);
+  expect(await push("bob", [chatMessage("carol")])).toBe(204);
+  await deliver();
+  expect((await bob.hooks.readHook()).received).toHaveLength(1);
+});
+
+/** Hold the account's trackHookDriver() (see the test worker's UserAccount) while `run` acts. */
+async function whileTracking(connection: {props: {userObjectId: string}}, run: () => Promise<unknown>) {
+  const account = testEnv.UserAccount.get(testEnv.UserAccount.idFromString(connection.props.userObjectId));
+  await runInDurableObject(account, (_instance: unknown, state: DurableObjectState) => {
+    state.storage.kv.put("test:holdTracking", true);
+  });
+  return {
+    account,
+    waitedFor: async () => {
+      await vi.waitFor(() => runInDurableObject(account, (_instance: unknown, state: DurableObjectState) => {
+        if (!state.storage.kv.get("test:trackingHeld")) throw new Error("No enable is waiting on the account yet.");
+      }), {timeout: 5_000});
+      await run();
+      await runInDurableObject(account, (_instance: unknown, state: DurableObjectState) => {
+        state.storage.kv.delete("test:holdTracking");
+      });
+    },
+  };
+}
+
+it.each([
+  ["its account is disconnected during", (account: DurableObjectStub, _userObjectId: string) =>
+    (account as unknown as {revoke(): Promise<void>}).revoke()],
+  // As when the account is disconnected just after noting this driver, before the enable goes on.
+  ["its account's hooks are dropped while it waits on the account", (_account: DurableObjectStub, userObjectId: string) =>
+    (driver() as unknown as {forgetAccount(userObjectId: string): Promise<void>}).forgetAccount(userObjectId)],
+])("refuses an enable that %s, registering nothing", async (_case, interrupt) => {
+  mockGoogle();
+  const ada = await connect("ada");
+  let account: DurableObjectStub | undefined;
+  const tracking = await whileTracking(ada, () => interrupt(account!, ada.props.userObjectId));
+  account = tracking.account;
+  // Expected at once, as the enable is refused while the test is still acting.
+  const refused = expect(Promise.resolve(ada.hooks.chatEnableHook())).rejects.toThrow("This Google account has been disconnected.");
+  await tracking.waitedFor();
+  await refused;
+  expect(await runInDurableObject(driver(), (_instance: unknown, state: DurableObjectState) =>
+    [...state.storage.kv.list({prefix: "reg:"})].length)).toBe(0);
+});
+
+it("refuses an enable whose account is disconnected while it subscribes, registering nothing", async () => {
+  const google = mockGoogle();
+  const ada = await connect("ada");
+  google.stallCreate = {started: false, released: false};
+  // Expected at once, as the enable is refused while the test is still acting.
+  const refused = expect(Promise.resolve(ada.hooks.chatEnableHook())).rejects.toThrow("This Google account has been disconnected.");
+  await vi.waitFor(() => expect(google.stallCreate!.started).toBe(true), {timeout: 5_000});
+  await (testEnv.UserAccount.get(testEnv.UserAccount.idFromString(ada.props.userObjectId)) as unknown as
+    {revoke(): Promise<void>}).revoke();
+  google.stallCreate.released = true;
+  await refused;
+  expect(await registeredAccounts()).toEqual([]);
+});
+
+it("subscribes afresh for an enable while the alarm drops the expired subscription no hook used", async () => {
+  mockGoogle();
+  const ada = await connect("ada");
+  await ada.hooks.chatEnableHook();
+  await ada.hooks.chatDisableHook();
+  // Unused, the subscription is dropped by the alarm at its expiry, here while an enable of the
+  // account's waits on the account. The runtime won't wake the driver for the faked clock.
+  const tracking = await whileTracking(ada, async () => {
+    vi.setSystemTime(Date.now() + 4 * 3_600_000);
+    try {
+      await runDurableObjectAlarm(driver());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  const enabling = ada.hooks.chatEnableHook();
+  await tracking.waitedFor();
+  await enabling;
+
+  expect(await push("ada", [chatMessage("bob")])).toBe(204);
+  await deliver();
+  expect((await ada.hooks.readHook()).received).toHaveLength(1);
+});
+
 it("retries a failed subscription renewal before the subscription lapses", async () => {
   const google = mockGoogle();
   const ada = await connect("ada");
@@ -403,6 +567,33 @@ it("keeps the subscription an enable creates while a renewal of the expired one 
   await push("replacement", [chatMessage("bob")]);
   await deliver();
   expect((await ada.hooks.readHook()).received).toHaveLength(1);
+});
+
+it("keeps the subscription an enable makes while the alarm renewing another was to drop the one it replaced", async () => {
+  const google = mockGoogle();
+  const ada = await connect("ada");
+  const bob = await connect("bob");
+  await ada.hooks.chatEnableHook();
+  await bob.hooks.chatEnableHook();
+  await bob.hooks.chatDisableHook();
+  google.stallGet = {started: false, released: false};
+
+  // Ada's subscription is due for renewal, and Bob's, which no hook uses, has expired. Bob enables
+  // again while the alarm's renewal of Ada's waits on Google, before it comes to Bob's.
+  vi.setSystemTime(Date.now() + 4 * 3_600_000);
+  try {
+    const alarm = runDurableObjectAlarm(driver());
+    await vi.waitFor(() => expect(google.stallGet!.started).toBe(true));
+    await bob.hooks.chatEnableHook();
+    google.stallGet.released = true;
+    await alarm;
+  } finally {
+    vi.useRealTimers();
+  }
+
+  expect(await push("bob", [chatMessage("carol")])).toBe(204);
+  await deliver();
+  expect((await bob.hooks.readHook()).received).toHaveLength(1);
 });
 
 it("renews at once a subscription that a re-enabled hook finds past its renewal time", async () => {

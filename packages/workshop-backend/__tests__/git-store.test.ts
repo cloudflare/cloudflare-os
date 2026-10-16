@@ -440,19 +440,39 @@ describe("writeChangedFilesAsCommit", () => {
 describe("threeWayMerge", () => {
   const files = (entries: Record<string, string>) => new Map(Object.entries(entries));
 
-  it("reports a file both sides changed that is too large to merge, in place of merging it", () => {
-    // Each version fits in a file, but the conflict holds all three.
+  it("merges a large file both sides changed, conflicts and all", () => {
+    // No size is refused here: whether the result fits is for storage to say when it is
+    // committed. The conflict holds all three versions, about 600K characters.
     let lines = (word: string) => `${word.repeat(250)}\n`.repeat(200);
-    // Fits as text, but not as a blob: each "€" takes three bytes.
-    let wide = `${"€".repeat(399)}\n`.repeat(1000);
     let result = threeWayMerge(
-        files({ "big.js": lines("base"), "wide.js": "w\n", "taken.js": "t\n", "a.js": "a\n" }),
-        files({ "big.js": lines("ours"), "wide.js": wide, "taken.js": wide, "a.js": "A\n" }),
-        files({ "big.js": lines("thrs"), "wide.js": "W\n", "taken.js": "t\n", "a.js": "a\n" }));
-    expect(result.tooLargePaths).toEqual(["big.js", "wide.js"]);
-    expect(result.conflictPaths).toEqual([]);
-    // A file that only one side changed is taken whole, however large.
-    expect(result.files).toEqual(files({ "taken.js": wide, "a.js": "A\n" }));
+        files({ "big.js": lines("base") }),
+        files({ "big.js": lines("ours") }),
+        files({ "big.js": lines("thrs") }));
+    expect(result.conflictPaths).toEqual(["big.js"]);
+    expect(result.files.get("big.js")!.length).toBeGreaterThan(3 * lines("base").length);
+  });
+
+  it("writes a file storage cannot hold as an error naming it, and stores no tree", async () => {
+    // The limit is storage's own (here the mock's, mimicking SQLite's error), on the deflated
+    // object: nothing checks a file's length before the write.
+    let objects = makeObjects();
+    let put = objects.put.bind(objects);
+    objects.put = record => {
+      if (record.data.byteLength > 64 * 1024) throw new Error("string or blob too big: SQLITE_TOOBIG");
+      put(record);
+    };
+    let store = new GitStore(objects);
+    let random = Array.from({ length: 128 * 1024 }, () => Math.random().toString(36)[2]).join("");
+    let options = { parents: [], author: ALICE, message: "m", timestamp: new Date(0) };
+    await expect(store.writeFilesAsCommit(new Map([["lib/big.js", random]]), options))
+        .rejects.toThrow(/^lib\/big\.js is too large to store\. Split it into smaller files/);
+    expect([...objects.list()]).toEqual([]);
+    // Compressible text of the same length fits.
+    let fits = await store.writeFilesAsCommit(
+        new Map([["lib/big.js", "x".repeat(128 * 1024)]]), options);
+    await expect(store.writeChangedFilesAsCommit(new Map([["lib/big.js", random]]),
+                                                 { ...options, treeBase: fits }))
+        .rejects.toThrow("lib/big.js is too large to store");
   });
 
   it("merges disjoint changes cleanly", () => {

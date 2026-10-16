@@ -1,18 +1,17 @@
 // git-transport.ts coverage: pkt-line round-trips, fetch-command composition (the
 // hints-to-filter-spec matrix, and that no fetch command ever emits a `have` line -- the
 // transport locked decision of plans/worktrees.md), response demultiplexing feeding
-// `consumePack()` (against a mock cache; real pack decoding is workshop-backend's test surface),
-// the pull driver's requested-oid verification with its filtered-blob carve-out, and the
+// raw binary pack streams (real decoding and requested-object checks live in the kernel), and the
 // send-pack side: ref-update command encoding (branch-name/oid validation included), the
-// canonical empty pack, report-status parsing, and the push driver's body composition.
+// canonical empty pack, report-status parsing, the push driver's body composition, and the
+// branch-head simulation over queued ref updates.
 
-import type { GitOid, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
+import type { GitPullHints, GitPullStatus } from "@gadgets/workshop-shared/gatekeeper";
 import { describe, expect, it } from "vitest";
 import {
   DELIM_PKT,
   FLUSH_PKT,
   GitRefUpdateRejectedError,
-  MAX_GIT_FETCH_BYTES,
   PktLineParser,
   ZERO_OID,
   buildGitFetchRequest,
@@ -24,8 +23,9 @@ import {
   parsePktItems,
   parseReceivePackResponse,
   pktText,
-  pullGitObjectsIntoCache,
+  pullGitPack,
   pushGitRefUpdate,
+  simulateBranchHead,
   validateBranchName,
 } from "../src/git-transport";
 
@@ -258,27 +258,26 @@ function packfileResponse(options: { withSections?: boolean; progress?: boolean 
 
 describe("demuxGitFetchResponse", () => {
   it("yields exactly the band-1 payload bytes", async () => {
-    const pack = await collect(
-        demuxGitFetchResponse(streamOf(packfileResponse()), MAX_GIT_FETCH_BYTES));
+    const pack = await collect(demuxGitFetchResponse(streamOf(packfileResponse())));
     expect(pack).toEqual(PACK_BYTES);
   });
 
   it("skips leading sections and progress frames", async () => {
     const pack = await collect(demuxGitFetchResponse(
-        streamOf(packfileResponse({ withSections: true, progress: true })), MAX_GIT_FETCH_BYTES));
+        streamOf(packfileResponse({ withSections: true, progress: true }))));
     expect(pack).toEqual(PACK_BYTES);
   });
 
   it("parses across arbitrary chunk boundaries", async () => {
     const whole = concatBytes(packfileResponse({ withSections: true, progress: true }));
     const rechunked = [whole.subarray(0, 3), whole.subarray(3, 27), whole.subarray(27)];
-    const pack = await collect(demuxGitFetchResponse(streamOf(rechunked), MAX_GIT_FETCH_BYTES));
+    const pack = await collect(demuxGitFetchResponse(streamOf(rechunked)));
     expect(pack).toEqual(PACK_BYTES);
   });
 
   it("fails the stream on an ERR pkt with the server's message", async () => {
     const response = [encodePktLine(`ERR upload-pack: not our ref ${oid(3)}`), FLUSH_PKT];
-    await expect(collect(demuxGitFetchResponse(streamOf(response), MAX_GIT_FETCH_BYTES)))
+    await expect(collect(demuxGitFetchResponse(streamOf(response))))
       .rejects.toThrow(`git fetch failed: upload-pack: not our ref ${oid(3)}`);
   });
 
@@ -288,19 +287,19 @@ describe("demuxGitFetchResponse", () => {
       sidebandPkt(1, PACK_BYTES.subarray(0, 4)),
       sidebandPkt(3, new TextEncoder().encode("fatal: the remote end hung up")),
     ];
-    await expect(collect(demuxGitFetchResponse(streamOf(response), MAX_GIT_FETCH_BYTES)))
+    await expect(collect(demuxGitFetchResponse(streamOf(response))))
       .rejects.toThrow("git fetch failed: fatal: the remote end hung up");
   });
 
   it("rejects a response that ends without a flush", async () => {
     const truncated = packfileResponse().slice(0, -1);
-    await expect(collect(demuxGitFetchResponse(streamOf(truncated), MAX_GIT_FETCH_BYTES)))
+    await expect(collect(demuxGitFetchResponse(streamOf(truncated))))
       .rejects.toThrow(/missing final flush/);
   });
 
   it("rejects a response with no packfile section", async () => {
     const response = [encodePktLine("acknowledgments"), encodePktLine("NAK"), FLUSH_PKT];
-    await expect(collect(demuxGitFetchResponse(streamOf(response), MAX_GIT_FETCH_BYTES)))
+    await expect(collect(demuxGitFetchResponse(streamOf(response))))
       .rejects.toThrow(/no packfile section/);
   });
 
@@ -312,97 +311,70 @@ describe("demuxGitFetchResponse", () => {
   });
 });
 
-describe("pullGitObjectsIntoCache", () => {
-  /** A GitCache stand-in that records what it was fed and answers with fixed stored oids. */
-  function fakeCache(stored: GitOid[]) {
-    const consumed: Uint8Array[] = [];
-    return {
-      consumed,
-      async consumePack(pack: ReadableStream<Uint8Array>): Promise<GitOid[]> {
-        consumed.push(await collect(pack));
-        return stored;
-      },
-    };
-  }
-
-  function fakeFetch(requests: Uint8Array[], pieces: Uint8Array[]): (body: Uint8Array) => Promise<Response> {
-    return async body => {
-      requests.push(body);
-      return new Response(streamOf(pieces) as unknown as BodyInit);
-    };
-  }
-
-  const HINTS: GitPullHints = { type: "commit", commitHistory: DEPTH_1, filterBlobSize: 65536 };
-
-  it("streams the demuxed pack into consumePack and verifies the requested oids", async () => {
+describe("pullGitPack", () => {
+  const options: GitPullHints = { type: "commit", commitHistory: DEPTH_1 };
+  it("composes typed options and returns raw binary pack bytes", async () => {
     const requests: Uint8Array[] = [];
-    const cache = fakeCache([oid(1), oid(2), oid(9)]);
-    await pullGitObjectsIntoCache(
-        fakeFetch(requests, packfileResponse()), [oid(1), oid(2)], HINTS, cache);
-    expect(cache.consumed).toEqual([PACK_BYTES]);
-    expect(requests).toHaveLength(1);
+    let terminal: GitPullStatus | undefined;
+    const pack = await pullGitPack(async body => {
+      requests.push(body);
+      return new Response(streamOf(packfileResponse()) as unknown as BodyInit);
+    }, [oid(1), oid(2)], options, status => { terminal = status; });
+    expect(await collect(pack)).toEqual(PACK_BYTES);
+    expect(terminal).toEqual({state: "complete"});
     expect(requestLines(requests[0])).toContain(`want ${oid(1)}`);
+    expect(requestLines(requests[0])).toContain(`want ${oid(2)}`);
+    expect(requestLines(requests[0]).some(line => line.startsWith("filter "))).toBe(false);
   });
-
-  it("throws when a requested non-blob object is missing from the stored list", async () => {
-    const cache = fakeCache([oid(1)]);
-    await expect(pullGitObjectsIntoCache(
-        fakeFetch([], packfileResponse()), [oid(1), oid(2)], HINTS, cache))
-      .rejects.toThrow(`git fetch did not provide the requested object ${oid(2)}`);
-  });
-
-  it("tolerates a missing blob when the request was bounded by filterBlobSize", async () => {
-    // The gitPull contract's carve-out: consumePack() measures, records, and skips an oversized
-    // blob (absent from the stored list); the pull reports success without it and the overseer
-    // surfaces the too-large read error.
-    const cache = fakeCache([]);
-    await expect(pullGitObjectsIntoCache(
-        fakeFetch([], packfileResponse()), [oid(1)],
-        { type: "blob", commitHistory: DEPTH_1, filterBlobSize: 1048577 }, cache))
-      .resolves.toBeUndefined();
-  });
-
-  it("reports why the fetch failed, not how consumePack saw it end", async () => {
-    // Across RPC, consumePack() sees a failed stream only as one that ended early.
-    const cache = {
-      async consumePack(pack: ReadableStream<Uint8Array>): Promise<GitOid[]> {
-        await collect(pack).catch(() => {
-          throw new Error("ReadableStream disconnected prematurely");
-        });
-        return [];
+  it("does not impose the DO cache's 64 MiB limit on native hydration", async () => {
+    const payload = new Uint8Array(60_000);
+    const frame = sidebandPkt(1, payload);
+    let frames = 1200;
+    const pack = await pullGitPack(async () => new Response(new ReadableStream({
+      start(c) { c.enqueue(encodePktLine("packfile")); },
+      pull(c) {
+        if (frames-- > 0) c.enqueue(frame);
+        else { c.enqueue(FLUSH_PKT); c.close(); }
       },
-    };
-    const response = [encodePktLine(`ERR upload-pack: not our ref ${oid(3)}`), FLUSH_PKT];
-    await expect(pullGitObjectsIntoCache(fakeFetch([], response), [oid(1)], HINTS, cache))
-      .rejects.toThrow(`git fetch failed: upload-pack: not our ref ${oid(3)}`);
+    }) as unknown as BodyInit), [oid(1)], options);
+    let bytes = 0;
+    for await (const chunk of pack) bytes += chunk.length;
+    expect(bytes).toBe(72_000_000);
   });
-
-  it("reports consumePack's own failure when the fetch itself succeeded", async () => {
-    const cache = {
-      async consumePack(pack: ReadableStream<Uint8Array>): Promise<GitOid[]> {
-        await collect(pack);
-        throw new Error("invalid packfile: bad signature");
+  it("cancels an unfinished upstream when its consumer stops", async () => {
+    let canceled = false;
+    let terminal: GitPullStatus | undefined;
+    const pack = await pullGitPack(async () => new Response(new ReadableStream({
+      start(c) {
+        c.enqueue(encodePktLine("packfile"));
+        c.enqueue(sidebandPkt(1, PACK_BYTES));
       },
-    };
-    await expect(pullGitObjectsIntoCache(
-        fakeFetch([], packfileResponse()), [oid(1)], HINTS, cache))
-      .rejects.toThrow("invalid packfile: bad signature");
+      cancel() { canceled = true; },
+    }) as unknown as BodyInit), [oid(1)], options, status => { terminal = status; });
+    const reader = pack.getReader();
+    expect((await reader.read()).value).toEqual(PACK_BYTES);
+    await reader.cancel();
+    expect(canceled).toBe(true);
+    expect(terminal).toEqual({state: "canceled"});
   });
-
-  it("still throws for a missing blob when no blob filter bounded the request", async () => {
-    const cache = fakeCache([]);
-    await expect(pullGitObjectsIntoCache(
-        fakeFetch([], packfileResponse()), [oid(1)],
-        { type: "blob", commitHistory: DEPTH_1 }, cache))
-      .rejects.toThrow(/did not provide/);
+  it("propagates upstream protocol failures while streaming", async () => {
+    let terminal: GitPullStatus | undefined;
+    const pack = await pullGitPack(async () => new Response(streamOf([
+      encodePktLine("ERR not our ref"), FLUSH_PKT,
+    ]) as unknown as BodyInit), [oid(1)], options, status => { terminal = status; });
+    await expect(collect(pack)).rejects.toThrow("git fetch failed: not our ref");
+    expect(terminal).toEqual({state: "failed", message: "git fetch failed: not our ref"});
   });
-
-  it("fails on a non-OK response", async () => {
-    const cache = fakeCache([]);
-    await expect(pullGitObjectsIntoCache(
-        async () => new Response("nope", { status: 502 }), [oid(1)], HINTS, cache))
-      .rejects.toThrow(/HTTP 502/);
-    expect(cache.consumed).toEqual([]);
+  it("rejects non-OK responses and cancels their bodies", async () => {
+    let canceled = false;
+    await expect(pullGitPack(async () => new Response(new ReadableStream({
+      cancel() { canceled = true; },
+    }) as unknown as BodyInit, {status: 502}), [oid(1)], options)).rejects.toThrow(/HTTP 502/);
+    expect(canceled).toBe(true);
+  });
+  it("rejects a missing response body", async () => {
+    await expect(pullGitPack(async () => new Response(null), [oid(1)], options))
+      .rejects.toThrow(/no body/);
   });
 });
 
@@ -556,5 +528,37 @@ describe("pushGitRefUpdate", () => {
         async body => { await collect(body); return new Response("nope", { status: 502 }); },
         { branch: "main", oldSha: oid(1), newSha: oid(2) }, streamOf([new Uint8Array(1)])))
       .rejects.toThrow(/HTTP 502/);
+  });
+});
+
+describe("simulateBranchHead", () => {
+  it("follows a stacked chain to its end in any list order, without touching the input", () => {
+    // Frozen, so consuming the caller's list instead of a copy would throw.
+    const pushes = Object.freeze([
+      { expectedOldSha: oid(3), newSha: oid(4) },
+      { expectedOldSha: oid(1), newSha: oid(2) },
+      { expectedOldSha: oid(2), newSha: oid(3) },
+    ]);
+    expect(simulateBranchHead(oid(1), pushes)).toBe(oid(4));
+  });
+
+  it("creates an absent branch only from a ZERO_OID expectation", () => {
+    const pushes = [{ expectedOldSha: oid(1), newSha: oid(2) }, { expectedOldSha: ZERO_OID, newSha: oid(1) }];
+    expect(simulateBranchHead(null, pushes)).toBe(oid(2));
+    expect(simulateBranchHead(oid(5), pushes)).toBe(oid(5));
+    expect(simulateBranchHead(null, pushes.slice(0, 1))).toBeNull();
+  });
+
+  it("reads a deleted branch as absent, so a later creation still stacks on it", () => {
+    const deletion = { expectedOldSha: oid(1), newSha: ZERO_OID };
+    expect(simulateBranchHead(oid(1), [deletion])).toBeNull();
+    expect(simulateBranchHead(oid(1), [{ expectedOldSha: ZERO_OID, newSha: oid(3) }, deletion])).toBe(oid(3));
+  });
+
+  it("stops overlaying at the first push whose expectation no longer matches", () => {
+    const pushes = [{ expectedOldSha: oid(1), newSha: oid(2) }, { expectedOldSha: oid(7), newSha: oid(8) }];
+    expect(simulateBranchHead(oid(1), pushes)).toBe(oid(2));
+    // The branch moved on the remote: no queued push applies any more.
+    expect(simulateBranchHead(oid(9), pushes)).toBe(oid(9));
   });
 });

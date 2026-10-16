@@ -51,7 +51,7 @@ export default {
        *
        * Caching means this now runs with a stripped environment. `scripts/env-passthrough.test.ts`
        * is the guard: if capnweb-validate ever starts reading an ambient var, it fails there rather
-       * than replaying a stale tree. The watchdog's own off switch is the one variable declared.
+       * than replaying a stale tree. The watchdog's policy variables are declared explicitly.
        */
       'build:integration-worker': {
         command: withTestTimeout('capnweb-validate build --out .wrangler/validate'),
@@ -78,12 +78,7 @@ export default {
         cache: false,
       },
       /**
-       * The unit suite needs a longer idle threshold than the watchdog's default. Import dominates
-       * its runtime (`import 261s, tests 19s` on a 4-vCPU runner, alongside three other workerd
-       * fleets), and vitest prints only as files complete, so a healthy run's silences stretch past
-       * the default once the machine is contended. The wall-clock backstop still bounds a real hang.
-       *
-       * The integration config is one file and keeps the default.
+       * Import-heavy unit tests need a longer idle allowance; integration uses the shared defaults.
        */
       test: {
         ...vitestTask([

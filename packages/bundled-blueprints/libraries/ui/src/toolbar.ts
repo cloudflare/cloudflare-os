@@ -99,6 +99,11 @@ export interface CustomSelectOptions {
   options: SelectOption[];
   /** The initial value. */
   value: SelectValue;
+  /**
+   * Label a value none of the options carries with the value itself (a font size of `22.5`,
+   * say) rather than with the first choice's label.
+   */
+  showUnlistedValue?: boolean;
   /** Called with the chosen value, as a string, after a click on a menu item; not on `setValue`. */
   onChange: (value: string) => void;
 }
@@ -120,9 +125,9 @@ const CHEVRON = icon('<polyline points="6 9 12 15 18 9"/>');
  * showing the current label and a chevron, and a `div.cmenu` of `div.cmenu-item`s (plus
  * `div.cmenu-sep` separators) appended to the body under the button while open. It closes on a
  * choice, a mousedown outside, a scroll anywhere or a resize. A value none of the options carries
- * shows the first choice's label and selects nothing.
+ * selects nothing and shows the first choice's label, or the value itself with `showUnlistedValue`.
  */
-export function customSelect({ className, title, options, value, onChange }: CustomSelectOptions): CustomSelect {
+export function customSelect({ className, title, options, value, showUnlistedValue, onChange }: CustomSelectOptions): CustomSelect {
   let current: string | undefined;
   const labelSpan = el("span", { class: "cs-label" });
   const button = el("button", { type: "button", class: "cselect " + (className ?? ""), title }, [
@@ -157,8 +162,8 @@ export function customSelect({ className, title, options, value, onChange }: Cus
     const key = String(next);
     if (key === current) return;
     current = key;
-    const chosen = choices.find((option) => String(option.value) === key) ?? choices[0];
-    labelSpan.textContent = chosen ? chosen.label : "";
+    const chosen = choices.find((option) => String(option.value) === key);
+    labelSpan.textContent = chosen ? chosen.label : showUnlistedValue ? key : (choices[0]?.label ?? "");
     for (const item of items) item.classList.toggle("sel", item.dataset.value === key);
   }
   function openMenu(): void {

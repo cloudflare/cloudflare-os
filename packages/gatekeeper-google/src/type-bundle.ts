@@ -6,7 +6,7 @@ export const DOCS_TYPES_MODULE_PREFIX =
 /** Module-only prefix of the Google Drive declaration. */
 export const DRIVE_TYPES_MODULE_PREFIX =
   'import type { GoogleDocReadSession } from "./docs-read-types";\n' +
-  'import type { GoogleSpreadsheetReadSession } from "./sheets-types";\n' +
+  'import type { GoogleSpreadsheetReadSession } from "./sheets-read-types";\n' +
   'import type { GooglePresentationReadSession } from "./slides-read-types";\n\n';
 
 /** Module-only prefix of the Gmail declaration; the flat vendor bundle gets RpcStub from chat-types instead. */
@@ -15,9 +15,16 @@ export const GMAIL_TYPES_MODULE_PREFIX = 'import type { RpcStub } from "cloudfla
 /** Module-only prefix of the Google Slides declaration. */
 export const SLIDES_TYPES_MODULE_PREFIX =
   "import type {\n" +
-  "  GooglePresentationReadSession, ParagraphFormat, SlideBounds, SlideColor,\n" +
+  "  GooglePresentationReadSession, ParagraphFormat, SlideBounds, SlideColor, ThemeColorName,\n" +
   '} from "./slides-read-types";\n' +
   'export type * from "./slides-read-types";\n\n';
+
+/** Module-only prefix of the Google Sheets declaration. */
+export const SHEETS_TYPES_MODULE_PREFIX =
+  "import type {\n" +
+  "  GoogleSpreadsheetReadSession, SheetBorder, SheetColor, SheetNumberFormat,\n" +
+  '} from "./sheets-read-types";\n' +
+  'export type * from "./sheets-read-types";\n\n';
 
 /** Remove a declaration's expected module prefix before adding it to the flat agent type bundle. */
 export function stripTypeModulePrefix(source: string, prefix: string): string {

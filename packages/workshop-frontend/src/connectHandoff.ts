@@ -3,9 +3,12 @@
 // popup carrying the flow's nonce in the popup's own sessionStorage. When the flow finishes, the
 // gatekeeper's final page navigates that popup to HANDOFF_PATH on this origin with the single-use
 // ticket in the URL fragment, and ConnectHandoffPage redeems ticket and nonce together over the
-// popup's own session. Redeeming is what activates the grant.
+// popup's own session. Native apps instead keep the nonce in-app and redeem on their current
+// authenticated connection when the system browser returns. Redeeming activates the grant.
 
-import type { ConnectFlowStart } from '@gadgets/workshop-shared/api'
+import type { AuthenticatedApi, ConnectFlowStart } from '@gadgets/workshop-shared/api'
+import { AuthPopupCancelledError, NATIVE_AUTH_KEY, openNativeAuthPopup, type AuthPopup } from './features/native-app/authPopup'
+import { nativeConnectCompletion } from './features/native-app/connectSession'
 
 /** Host the backend (and, through the router, every gatekeeper) is served from. */
 export function getBackendHost(): string {
@@ -23,6 +26,8 @@ export function getBackendHost(): string {
  * each package pins it with a test.
  */
 export const HANDOFF_PATH = '/connect/handoff'
+/** Billing panels refresh after native redemption, not the earlier browser-to-app focus event. */
+export const NATIVE_CONNECT_COMPLETE_EVENT = 'cloudflare-os:account-connected'
 
 const HEX_256_PATTERN = /^[0-9a-f]{64}$/
 
@@ -71,12 +76,20 @@ export type PopupHandoff = { kind: 'connect' | 'login'; nonce: string }
  *
  * Throws when the browser blocked the popup, or refused the storage write: without the nonce the
  * flow could never complete, so it is not started, and the popup is closed again.
+ * A capable native shell instead uses the system browser and `completeNative`; its nonce stays
+ * in the caller's closure, and `completion` settles after the ticket is redeemed back in-app.
  */
-export function openDisownedPopup(url: string, name: string, handoff: PopupHandoff): Window {
+export function openDisownedPopup(url: string, name: string, handoff: PopupHandoff,
+  completeNative: (ticket: string, signal: AbortSignal) => Promise<void>): AuthPopup {
+  const native = openNativeAuthPopup(url, completeNative)
+  if (native) return native
   const popup = window.open('', name, 'popup,width=520,height=680')
   if (!popup) throw new Error('Pop-up blocked. Please allow pop-ups and try again.')
   popup.opener = null
   try {
+    // about:blank inherits a copy of the opener's storage before we disown it. A stale native
+    // relay record must never divert this desktop popup away from its own nonce redemption.
+    popup.sessionStorage.removeItem(NATIVE_AUTH_KEY)
     popup.sessionStorage.setItem(HANDOFF_KEY, JSON.stringify(handoff))
   } catch {
     popup.close()
@@ -97,22 +110,39 @@ export function uniquePopupName(prefix: string): string {
 
 // The connect popup this document opened last, closed before the next one opens: a stale popup
 // still parked on a provider page is otherwise left behind the new one.
-let lastConnectPopup: Window | null = null
+let lastConnectPopup: AuthPopup | null = null
 
 /**
  * Opens a connect / reconnect / ensure-resources flow as a disowned popup carrying the flow's
  * nonce (see `openDisownedPopup`). The popup redeems the ticket itself on ConnectHandoffPage; the
- * account arrives in this tab through `subscribeConnectedAccounts()`. Throws when the browser
- * blocked the popup.
+ * account arrives in this tab through `subscribeConnectedAccounts()`. In native apps the caller
+ * awaits ticket redemption on its own API instead; the nonce never enters the system browser.
+ * Resolves to `opened` on desktop, or `connected` after native redemption. Rejects when opening,
+ * authentication or redemption fails, or the native user cancels. A caller's optional signal
+ * closes its pending native popup and cancels redemption/reconnect recovery.
  */
-export function openConnectWindow(flow: ConnectFlowStart): Window {
+export async function openConnectWindow(flow: ConnectFlowStart,
+  api: Pick<AuthenticatedApi, 'completeConnectHandoff'>,
+  signal?: AbortSignal): Promise<'opened' | 'connected'> {
+  if (signal?.aborted) throw new AuthPopupCancelledError()
   if (lastConnectPopup) {
     try { lastConnectPopup.close() } catch { /* cross-origin or already gone */ }
   }
   const popup = openDisownedPopup(
-    flow.url, uniquePopupName('gadgets-connect'), { kind: 'connect', nonce: flow.nonce })
+    flow.url, uniquePopupName('gadgets-connect'), { kind: 'connect', nonce: flow.nonce },
+    nativeConnectCompletion(api, flow.nonce))
   lastConnectPopup = popup
-  return popup
+  if (!popup.completion) return 'opened'
+  const cancel = () => popup.close()
+  signal?.addEventListener('abort', cancel, { once: true })
+  if (signal?.aborted) cancel()
+  try {
+    await popup.completion
+    window.dispatchEvent(new Event(NATIVE_CONNECT_COMPLETE_EVENT))
+    return 'connected'
+  } finally {
+    signal?.removeEventListener('abort', cancel)
+  }
 }
 
 /**

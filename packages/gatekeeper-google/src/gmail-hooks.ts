@@ -11,12 +11,12 @@
 
 import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
+import { HookDeliveryQueue, disposeStubs } from "@gadgets/gatekeeper-kit/hook-delivery-queue";
 import { SingleFlight } from "@gadgets/gatekeeper-kit/single-flight";
 import type {
   ApprovalQueue, HookController, HookInitiator, HookTargetMetadata,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { GmailApi, GmailApiError } from "./google-api";
-import { HOUR_MS, HookDeliveryQueue, MINUTE_MS, disposeStubs } from "./hook-delivery-queue";
 import { obsContext } from "./observability";
 import type { PushHooksEnv } from "./pubsub-push";
 import type { GmailMessageHook } from "./types";
@@ -24,6 +24,9 @@ import type { GmailMessageHook } from "./types";
 const logger = obsContext.createLogger({ component: "gatekeeper.google.gmail-hooks", vendorId: "google" });
 
 type Env = Cloudflare.Env & PushHooksEnv;
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
 
 export type GmailMessageHookTarget = RpcTarget & GmailMessageHook;
 
@@ -87,6 +90,11 @@ const SYNC_RETRY_MS = 5 * MINUTE_MS;
 /** Bounds one alarm's history read; the next alarm, set for at once, continues it. */
 const MAX_HISTORY_PAGES_PER_SYNC = 10;
 /**
+ * How often each account with hooks here is asked again whether it knows of this driver: hooks its
+ * disconnect failed to drop stay until then, when it answers no.
+ */
+const TRACKING_RECHECK_MS = 24 * HOUR_MS;
+/**
  * Labels whose mail no hook is delivered: the account's own mail, spam and trash, even on a label
  * binding to SPAM or TRASH, which lists them.
  */
@@ -106,6 +114,12 @@ type AddedMessage = { id: string; threadId: string; labelIds?: string[] };
 
 const registrationKey = (key: string) => `reg:${key}`;
 const capabilitiesKey = (key: string) => `caps:${key}`;
+/** When the account last confirmed it knows this driver holds hooks of its (see UserAccount.trackHookDriver()). */
+const trackedKey = (userObjectId: string) => `tracked:${userObjectId}`;
+/** Set when a disconnected account's hooks are dropped, so that an enable it was making is refused. */
+const forgottenKey = (userObjectId: string) => `forgotten:${userObjectId}`;
+
+const DISCONNECTED = "This Google account has been disconnected.";
 
 /** The connection now reads another mailbox, so pushes for its new address never reach this driver. */
 class MailboxChangedError extends Error {
@@ -115,16 +129,17 @@ class MailboxChangedError extends Error {
 }
 
 /**
- * One per mailbox, named by its lowercased address. Storage: `reg:`/`caps:` per hook, `watch`,
- * `cursor` (the history ID read through), `syncAt` (when to read next), and the delivery queue's
- * `msg:` rows, whose message is a Gmail message ID. History IDs are compared only as `BigInt`s.
+ * One per mailbox, named by its lowercased address. Storage: `reg:`/`caps:` per hook, `tracked:`
+ * and `forgotten:` per account, `watch`, `cursor` (the history ID read through), `syncAt` (when to
+ * read next), and the delivery queue's rows, whose message is a Gmail message ID. History IDs are
+ * compared only as `BigInt`s.
  *
  * Every `await` here opens the input gate, so each storage write after one re-reads what it
  * depends on.
  */
 export class GmailHookDriver extends DurableObject<Env> {
   #watching = new SingleFlight();
-  #queue = new HookDeliveryQueue<string>(this.ctx.storage, () => {
+  #queue = new HookDeliveryQueue<string>(this.ctx.storage.kv, () => {
     logger.warn("dropped a Gmail message after repeated delivery failures", { event: "gmail.hooks.delivery.dropped" });
   });
 
@@ -134,7 +149,10 @@ export class GmailHookDriver extends DurableObject<Env> {
     const profile = await this.#profile(api, registration.mailbox);
     const watch = kv.get<Watch>("watch");
     if (!watch || watch.renewAt <= Date.now() || watch.expiration <= Date.now()) await this.#watch(api);
+    await this.#track(registration.userObjectId, registration.mailbox);
 
+    // Nothing from here to the registration awaits, so neither a sync nor a disconnect can come
+    // between them.
     const cursor = kv.get<string>("cursor");
     if (cursor === undefined || BigInt(cursor) > BigInt(profile.historyId)) {
       // A sync that finished during this enable's awaits read past `since` without this hook; the
@@ -165,6 +183,15 @@ export class GmailHookDriver extends DurableObject<Env> {
     }
   }
 
+  /** Drop the hooks of an account being disconnected (see UserAccount.revoke()). */
+  async forgetAccount(userObjectId: string): Promise<void> {
+    this.ctx.storage.kv.put(forgottenKey(userObjectId), Date.now());
+    for (const [regKey, registration] of this.#registrations()) {
+      if (registration.userObjectId === userObjectId) await this.unregister(regKey.slice("reg:".length));
+    }
+    this.ctx.storage.kv.delete(trackedKey(userObjectId));
+  }
+
   /** Read the history now, if a push reports history this driver hasn't read. */
   async notify(historyId: string): Promise<void> {
     if (this.#registrations().length === 0) return;
@@ -185,6 +212,7 @@ export class GmailHookDriver extends DurableObject<Env> {
    */
   async alarm(): Promise<void> {
     const kv = this.ctx.storage.kv;
+    await this.#trackAccounts();
     if (this.#registrations().length > 0 && (kv.get<number>("syncAt") ?? 0) <= Date.now()) await this.#sync();
 
     const watch = kv.get<Watch>("watch");
@@ -316,6 +344,41 @@ export class GmailHookDriver extends DurableObject<Env> {
     }
   }
 
+  /**
+   * Tell the account that this driver holds hooks of its, so that disconnecting it reaches them.
+   * Refuses an account disconnected already, or meanwhile: its hooks were dropped then.
+   */
+  async #track(userObjectId: string, mailbox: string): Promise<void> {
+    const tracked = await this.#account(userObjectId).trackHookDriver({ kind: "gmail", name: mailbox });
+    if (!tracked || this.ctx.storage.kv.get(forgottenKey(userObjectId)) !== undefined) throw new Error(DISCONNECTED);
+    this.ctx.storage.kv.put(trackedKey(userObjectId), Date.now());
+  }
+
+  /**
+   * Tell each account with hooks here that this driver holds them, as register() does, and again
+   * each TRACKING_RECHECK_MS. A hook registered before accounts kept track has no record of it,
+   * which disconnecting its account needs to reach it; failing, it is told at the next alarm. An
+   * account disconnected without dropping its hooks here, before it could be told or by a
+   * disconnect that couldn't reach this driver, has them dropped now.
+   */
+  async #trackAccounts(): Promise<void> {
+    const kv = this.ctx.storage.kv;
+    const due = new Map(this.#registrations()
+      .filter(([, { userObjectId }]) => (kv.get<number>(trackedKey(userObjectId)) ?? 0) <= Date.now() - TRACKING_RECHECK_MS)
+      .map(([, { userObjectId, mailbox }]) => [userObjectId, mailbox]));
+    for (const [userObjectId, mailbox] of due) {
+      try {
+        if (await this.#account(userObjectId).trackHookDriver({ kind: "gmail", name: mailbox })) {
+          kv.put(trackedKey(userObjectId), Date.now());
+        } else {
+          await this.forgetAccount(userObjectId);
+        }
+      } catch (error) {
+        logger.warn("failed to note a Gmail hook driver with its account", { event: "gmail.hooks.track.failed", error });
+      }
+    }
+  }
+
   /** An API client for the mailbox, from the first connection still reading it. */
   async #mailboxApi(): Promise<{ api: GmailApi; profile: Profile }> {
     const tried = new Set<string>();
@@ -348,8 +411,12 @@ export class GmailHookDriver extends DurableObject<Env> {
   }
 
   #api({ mailbox, userObjectId }: Pick<Registration, "mailbox" | "userObjectId">): GmailApi {
-    const account = this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(userObjectId));
+    const account = this.#account(userObjectId);
     return new GmailApi(mailbox, async opts => (await account.getAccessToken(opts)).token);
+  }
+
+  #account(userObjectId: string) {
+    return this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(userObjectId));
   }
 
   /** Watch the mailbox, joining any watch already in flight. */
@@ -357,10 +424,10 @@ export class GmailHookDriver extends DurableObject<Env> {
     return this.#watching.run("watch", async () => {
       let watch: { expiration: number };
       try {
-        watch = await api.watch(this.env.PUBSUB_TOPIC!);
+        watch = await api.watch(this.env.PUBSUB_GMAIL_TOPIC!);
       } catch (cause) {
         if (!(cause instanceof GmailApiError && (cause.status === 400 || cause.status === 403))) throw cause;
-        throw new Error(`Gmail refused to watch this mailbox [http=${cause.status}]. Check that PUBSUB_TOPIC is in the OAuth client's Cloud project and grants gmail-api-push@system.gserviceaccount.com the Pub/Sub Publisher role; a 403 can also mean Gmail is rate-limiting this account.`, { cause });
+        throw new Error(`Gmail refused to watch this mailbox [http=${cause.status}]. Check that PUBSUB_GMAIL_TOPIC is in the OAuth client's Cloud project and grants gmail-api-push@system.gserviceaccount.com the Pub/Sub Publisher role; a 403 can also mean Gmail is rate-limiting this account.`, { cause });
       }
       this.ctx.storage.kv.put<Watch>("watch", {
         expiration: watch.expiration, renewAt: Date.now() + WATCH_RENEW_INTERVAL_MS,

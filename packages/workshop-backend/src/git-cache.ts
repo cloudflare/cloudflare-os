@@ -73,18 +73,22 @@ const logger = createWorkshopLogger("workshop.git-cache");
 // Constants
 
 /**
- * Maximum payload size of a single git object the cache will store, aligned with the store's
- * record constraints (a deflated object must fit a ~2MB storage record) and the intended
- * ~1MB per-file support cap for worktrees. A put() beyond this is rejected -- but measured
+ * Maximum payload size of a single git object the cache will accept from a gatekeeper (a put(),
+ * or a pack entry). The git store (git-store.ts) writes each object, deflated, as one row of
+ * Durable Object SQLite storage, and the platform caps a row at 8 MiB (8,388,608 bytes). Even
+ * incompressible content deflates to barely more than its own size, so an object of up to
+ * 8,000,000 bytes always fits, with room to spare. A put() beyond this is rejected -- but measured
  * first, so the size lands in metadata and later reads of the object fail fast instead of
  * re-downloading it.
+ *
+ * This bounds only what is brought in from remotes. It is never applied to an object the store
+ * already holds: whatever storage accepted is readable.
  */
-export const MAX_GIT_OBJECT_SIZE = 1 << 20;
+export const MAX_GIT_OBJECT_SIZE = 8_000_000;
 
 /**
- * Maximum byte size of a packfile accepted by `consumePack()` (matching the transfer-size
- * limiter gatekeepers are expected to apply to fetch bodies), and the hard per-object
- * inflation bound while decoding one.
+ * Maximum packfile size and per-object inflation bound when the DO cache decodes a pack.
+ * Native consumers bypass the cache and set their own limits.
  */
 export const MAX_GIT_PACK_BYTES = 64 << 20;
 
@@ -117,8 +121,8 @@ export interface GitCacheStorage {
  */
 export interface GitPullDelegate {
   /**
-   * Invoke `Gatekeeper.gitPull(oids, cache, hints)` on the given gatekeeper, passing it a cache
-   * stub scoped to itself. Must throw if the gatekeeper record no longer exists (provenance
+   * Invoke `Gatekeeper.gitPull(oids, hints)` and consume its pack with that source's provenance
+   * and the cache's size limits. Must throw if the gatekeeper record no longer exists (provenance
    * loss: the error should tell the user to reconnect) or if the pull fails.
    */
   pull(gatekeeperId: WorkpieceId, oids: GitOid[], hints: GitPullHints): Promise<void>;
@@ -141,8 +145,9 @@ export class GitObjectTooLargeError extends Error {
 }
 
 /**
- * A worktree file's *content* cannot be presented as text: the blob is over the support cap
- * (oversized) or is not valid UTF-8 text (binary). The message is the agent-visible, path-
+ * A worktree file's *content* cannot be presented as text: the blob is unavailable at the
+ * supported size (a remote's blob the cache declined or a filtered pull omitted; see
+ * MAX_GIT_OBJECT_SIZE) or is not valid UTF-8 text (binary). The message is the agent-visible, path-
  * flavored description. Distinct from path-shape errors (symlink/gitlink/directory) and from
  * transient pull failures so callers can tell "fine to overwrite whole, but unreadable and
  * undiffable" apart from errors that must propagate: the Worktree binding's writeFile falls
@@ -908,6 +913,8 @@ export class WorkspaceGitCache {
   }
 
   // Reads a blob for a file path, translating unavailable-at-size into the path-specific error.
+  // A blob the store holds is returned whatever its size: size limits apply only to what is
+  // brought in (see MAX_GIT_OBJECT_SIZE), never to reading what was stored.
   async #readBlob(oid: GitOid, referencedBy: GitOid | undefined, path: string)
       : Promise<Uint8Array> {
     let blob: PackableObject;
@@ -918,10 +925,6 @@ export class WorkspaceGitCache {
         throw new UnreadableContentError(tooLargeMessage(path), { cause: err });
       }
       throw err;
-    }
-    if (blob.payload.byteLength > MAX_GIT_OBJECT_SIZE) {
-      // Locally-present but over the cap (e.g. written before the cap existed).
-      throw new UnreadableContentError(tooLargeMessage(path));
     }
     return blob.payload;
   }

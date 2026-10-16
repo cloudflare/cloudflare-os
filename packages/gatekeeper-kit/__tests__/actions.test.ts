@@ -1905,6 +1905,41 @@ describe("dependent actions", () => {
     expect(journal.listPending().map(({ id }) => id)).toEqual([edit]);
   });
 
+  it("refuses to submit a dependent once nothing pending provides its reference", async () => {
+    const { actions, journal } = bind();
+    const submitAction = submitSpy();
+    const queue = fakeQueue(submitAction);
+    const create = await actions.submit(queue, "create", { ref: "~1" });
+    // Accepted while its provider may still apply.
+    const edit = await actions.submit(queue, "edit", { target: "~1" });
+
+    await actions.reject(create);
+    // Accepted, every apply would refuse it as retryable forever -- and wedge an auto-approval drain.
+    await expect(actions.submit(queue, "edit", { target: "~1" }))
+      .rejects.toThrow(/depends on ~1, which no pending action will create/);
+    expect(submitAction).toHaveBeenCalledTimes(2);
+    expect(journal.get(edit + 1)).toBeUndefined();
+  });
+
+  it("fails a dependent whose provider was rejected while it was still staged", async () => {
+    const { actions, journal, host } = bind();
+    let rejectCreate: (() => Promise<void>) | undefined;
+    const queue = fakeQueue(vi.fn<ApprovalQueue["submitAction"]>(async () => rejectCreate?.()));
+    const create = await actions.submit(queue, "create", { ref: "~1" });
+    // The overseer rejects the creation while the dependent's submission is in flight, so the strand
+    // cascade runs while the dependent is staged and cannot see it.
+    rejectCreate = () => actions.reject(create);
+    const edit = await actions.submit(queue, "edit", { target: "~1" });
+
+    expect(journal.get(edit)).toMatchObject({
+      state: "failed", undispatched: true, error: expect.stringMatching(/needed ~1/),
+    });
+    // The overseer holds it, so the user can still clear it, releasing what staging set up.
+    await actions.reject(edit);
+    expect(host.ran).toEqual(["released ~1", "released edit ~1"]);
+    expect(journal.get(edit)).toBeUndefined();
+  });
+
   it("refuses a bare reference string at the type level", () => {
     // The spelling every cascading gatekeeper's scalar reference invites. Under `Iterable<string>`
     // it compiled and cascaded over characters, stranding actions that shared one.

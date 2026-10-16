@@ -1,5 +1,5 @@
 import type { GoogleDocReadSession } from "./docs-read-types";
-import type { GoogleSpreadsheetReadSession } from "./sheets-types";
+import type { GoogleSpreadsheetReadSession } from "./sheets-read-types";
 import type { GooglePresentationReadSession } from "./slides-read-types";
 
 /**

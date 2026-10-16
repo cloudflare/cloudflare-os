@@ -49,11 +49,30 @@ export function stageAction<A>(
   description: ActionDescription,
   fence?: ActionFence,
 ): Promise<number> {
+  return stage(journal, queue, action, description, fence);
+}
+
+// `unmet` names a provisional reference nothing can still resolve. Asked inside the lane, so it
+// cannot race the provider's own staging, it refuses the action before allocating; asked again once
+// submitted, it fails one whose provider was decided while it was staged, out of the cascade's sight.
+function stage<A>(
+  journal: ActionJournal<A>,
+  queue: ActionSubmitter,
+  action: A,
+  description: ActionDescription,
+  fence?: ActionFence,
+  unmet?: () => string | undefined,
+): Promise<number> {
   // Snapshotted before the lane yields, as `submit` does before `describe`.
   const staged = fence && { generation: fence.generation };
   let lane = submissions.get(journal);
   if (!lane) submissions.set(journal, lane = new SerialTaskQueue());
   return lane.run(async () => {
+    const refused = unmet?.();
+    if (refused !== undefined) {
+      throw new Error(`This action depends on ${refused}, which no pending action will create: the `
+        + "action that was to create it was rejected or failed. Target an existing ID instead.");
+    }
     const id = journal.allocate(action, staged);
     try {
       await queue.submitAction(id, description);
@@ -66,6 +85,11 @@ export function stageAction<A>(
       }
     }
     journal.markSubmitted(id);
+    const stranded = unmet?.();
+    if (stranded !== undefined) {
+      journal.markFailed(id, `This action needed ${stranded}, whose providing action did not `
+        + "complete.", { undispatched: true });
+    }
     return id;
   });
 }
@@ -161,7 +185,8 @@ export type ActionDefinition<Payload, Host> = {
    */
   provides?(payload: Payload): readonly string[];
   /**
-   * Lists provisional references consumed by a payload.
+   * Lists provisional references consumed by a payload. `submit` refuses a payload naming one that
+   * is neither resolved nor provided by a pending action.
    * @param payload Stored action payload.
    * @returns Consumed provisional references.
    */
@@ -493,7 +518,7 @@ export function defineActions<Host, M extends Record<string, unknown>>(
           if (dead.length === 0) return;
 
           // The walk itself prunes through `unbound`, so a stranded action's bound references stop
-          // the cascade. A staged dependent can race this scan; apply rejects it later.
+          // the cascade. A staged dependent can race this scan; `stage` fails it once submitted.
           const stranded = strandedBy(dead, journal.listUndecided().map(record => {
             const definition = definitionFor(record.action);
             return {
@@ -713,7 +738,7 @@ export function defineActions<Host, M extends Record<string, unknown>>(
             title, description, fields, descriptionIsComplete, pushedCommits, implementsRevert,
           } = structuredClone(await definition.describe(payload, host));
           const action = { kind, payload } as TaggedAction<M>;
-          return stageAction(journal, queue, action, {
+          return stage(journal, queue, action, {
             // Destructured, not spread: a port returning a full `ActionDescription` here would
             // otherwise carry its own `awaitDecision` past the delivery the definition declares.
             title,
@@ -730,7 +755,14 @@ export function defineActions<Host, M extends Record<string, unknown>>(
             autoApprovable: definition.autoApprovable === true,
             ...(definition.kind ? { actionKind: definition.kind } : {}),
             ...(definition.delivery === "await-decision" ? { awaitDecision: true } : {}),
-          }, staged);
+          }, staged, () => {
+            const unbound = (definition.dependsOn?.(payload) ?? [])
+              .filter(ref => options.isResolvedReference?.(host, ref) !== true);
+            if (unbound.length === 0) return undefined;
+            const live = new Set(journal.listPending().flatMap(({ action: pending }) =>
+              definitionFor(pending)?.provides?.(pending.payload) ?? []));
+            return unbound.find(ref => !live.has(ref));
+          });
         },
 
         apply: (id, context) => resolutionQueue.run(() => applyRecord(id, context)),

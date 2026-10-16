@@ -206,6 +206,14 @@ describe("GitHubApi git reads", () => {
     const api = new GitHubApi(async () => "test-token");
     expect(await api.getBranchHead("cloudflare", "workerd", "main")).toBeNull();
   });
+
+  it("refuses a branch name that would climb out of the repository, before any request", async () => {
+    vi.stubGlobal("fetch", vi.fn());
+    const api = new GitHubApi(async () => "test-token");
+    await expect(api.getBranchHead("cloudflare", "workerd", "../../../../../../repos/victim/secret/git/ref/heads/main"))
+      .rejects.toThrow("invalid branch name");
+    expect(fetch).not.toHaveBeenCalled();
+  });
 });
 
 describe("GitHubApi redirects", () => {
@@ -333,6 +341,23 @@ describe("GitHubApi redirects", () => {
     const api = new GitHubApi(async () => "test-token", { repo: pin });
     expect(await api.getIssueConditional("octo", "repo", 5, { ifNoneMatch: "\"etag\"" }))
       .toMatchObject({ status: 304 });
+  });
+});
+
+describe("GitHubApi.listRepoWebhooks", () => {
+  it("lists every page of a repository's webhooks", async () => {
+    const pages: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      pages.push(url.searchParams.get("page") ?? "");
+      const count = url.searchParams.get("page") === "1" ? 100 : 1;
+      const offset = url.searchParams.get("page") === "1" ? 0 : 100;
+      return Response.json(Array.from({ length: count }, (_, i) => ({ id: offset + i, config: { url: "https://x.test/" } })));
+    }));
+
+    const webhooks = await new GitHubApi(async () => "test-token").listRepoWebhooks(7);
+    expect(webhooks).toHaveLength(101);
+    expect(pages).toEqual(["1", "2"]);
   });
 });
 

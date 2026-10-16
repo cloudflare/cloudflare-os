@@ -3,9 +3,9 @@ import type {
   ChatSpaceConfiguratorRpc, ChatSpaceConfiguratorValues,
 } from "./chat-space-configurator-types";
 
-/** The configurator only receives URLs matching the resource pattern, `/room/{id}`. */
+/** The configurator only receives URLs matching the resource pattern, `/room/{id}` or `/dm/{id}`. */
 const spaceIdFrom = (resourceUrl: string): string | undefined =>
-  /^https:\/\/chat\.google\.com\/room\/([A-Za-z0-9_-]{1,128})\/?$/.exec(resourceUrl)?.[1];
+  /^https:\/\/chat\.google\.com\/(?:room|dm)\/([A-Za-z0-9_-]{1,128})\/?(?:\?[^#]*)?$/.exec(resourceUrl)?.[1];
 
 export default {
   initial: {},

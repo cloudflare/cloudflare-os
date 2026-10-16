@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { deflate } from "pako";
-import { MAX_FILE_PATH_LENGTH, MAX_FILE_TEXT_LENGTH } from "@gadgets/workshop-shared/code-change";
+import { MAX_FILE_PATH_LENGTH } from "@gadgets/workshop-shared/code-change";
 import {
   MAX_RELEASE_COMMITS,
-  MAX_RELEASE_OBJECT_BYTES,
   MAX_RELEASE_PACK_BYTES,
   buildReleasePack,
   buildSnapshotRelease,
@@ -372,13 +371,11 @@ describe("release packs", () => {
         .rejects.toThrow(/invalid blueprint release: .*unsupported mode 100755/);
   });
 
-  it("admits a file of the greatest length in its longest encoding", async () => {
+  it("admits a large file: a release holds what storage held", async () => {
     let repo = new Repo();
-    let files = new Map([["big.txt", "\u20ac".repeat(MAX_FILE_TEXT_LENGTH)]]);
+    let files = new Map([["big.txt", "\u20ac".repeat(2 * 1024 * 1024)]]);
     let release = await repo.release(await repo.tree(files));
     let objects = await readReleasePack(await buildReleasePack(repo.lookup, release), release);
-    expect(Math.max(...[...objects.values()].map(o => o.payload.byteLength)))
-        .toBe(MAX_RELEASE_OBJECT_BYTES);
     expect(listReleaseFiles(objects, release)).toStrictEqual(files);
   });
 });
@@ -391,7 +388,7 @@ describe("release pack validation", () => {
 
   it("refuses an object over the size cap", async () => {
     let { objects, release } = await validRelease();
-    let payload = new Uint8Array(MAX_RELEASE_OBJECT_BYTES + 1);
+    let payload = new Uint8Array(MAX_RELEASE_PACK_BYTES + 1);
     await expect(read([...objects.values(), { type: "blob", payload }], release))
         .rejects.toThrow(/exceeds the .*limit/);
   });
@@ -486,12 +483,9 @@ describe("release pack validation", () => {
     ]), blob)).rejects.toThrow(`object ${oid} is a blob, not a tree`);
   });
 
-  it("refuses a file that is not UTF-8, or is too long", async () => {
+  it("refuses a file that is not UTF-8", async () => {
     await expect(readFile(new Uint8Array([0x66, 0xff, 0xfe])))
         .rejects.toThrow(/blob .* is not valid UTF-8/);
-    await expect(readFile(bytes("x".repeat(MAX_FILE_TEXT_LENGTH + 1))))
-        .rejects.toThrow(/blob .* is longer than/);
-    await readFile(bytes("x".repeat(MAX_FILE_TEXT_LENGTH)));
   });
 
   it("refuses a path that is too long, wherever its tree appears", async () => {

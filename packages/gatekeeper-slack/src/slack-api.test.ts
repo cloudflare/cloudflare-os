@@ -61,6 +61,32 @@ function mockSlack(org = true) {
 
 const api = (teamId = "TONE") => new SlackApi(async () => "test-token").forWorkspace(teamId);
 
+function mockEnterpriseDm(kind: "im" | "mpim", listed = true) {
+  mockSlack();
+  // Captured Enterprise DM shape: org viewing context, no team_id, and sharing metadata
+  // naming a different workspace even though selected-workspace discovery includes the DM.
+  channel = { id: "DONE", is_im: kind === "im", is_mpim: kind === "mpim",
+    context_team_id: "EORG", shared_team_ids: ["TTWO"] };
+  let fetchSlack = fetch;
+  vi.stubGlobal("fetch", async (input: string) => {
+    let url = new URL(input);
+    let method = url.pathname.split("/").pop();
+    if (method === "users.conversations") {
+      requests.push(url);
+      return url.searchParams.has("cursor")
+          ? Response.json({ ok: true, channels: listed && url.searchParams.get("team_id") === "TONE"
+              ? [channel] : [] })
+          : Response.json({ ok: true, channels: [], response_metadata: { next_cursor: "dm-page" } });
+    }
+    if (method === "search.messages") {
+      requests.push(url);
+      return Response.json({ ok: true, messages: { matches: [{ ts: "123.000001", text: "test",
+        channel: { id: "DONE" } }], paging: { page: 1, pages: 1 } } });
+    }
+    return fetchSlack(input);
+  });
+}
+
 function mockCredentialChange() {
   mockSlack();
   let token = "org-token";
@@ -351,6 +377,72 @@ describe("Slack org installations", () => {
     expect(history.items[0].permalink).toContain("https://tone.slack.com/");
   });
 
+  it.each([false, true])("reads a Slack Connect channel with internal membership (private %s)", async isPrivate => {
+    mockSlack();
+    // Captured Slack Connect shape: shared_team_ids names only the external workspace;
+    // internal_team_ids identifies the selected workspace within our Enterprise org.
+    channel = { id: "CONE", name: "external", is_private: isPrivate, is_ext_shared: true,
+      context_team_id: "TONE", shared_team_ids: ["TEXTERNAL"], internal_team_ids: ["TONE"],
+      connected_team_ids: ["EEXTERNAL", "EORG"] };
+    let client = api();
+    await expect(client.getConversationInfo("CONE")).resolves.toMatchObject({ id: "CONE",
+      kind: isPrivate ? "private_channel" : "public_channel" });
+    await expect(client.listHistory("CONE", undefined, 1))
+        .resolves.toMatchObject({ items: [{ text: "test" }] });
+    await expect(client.listReplies("CONE", "123.000001", undefined, 1))
+        .resolves.toMatchObject({ items: [{ text: "test" }] });
+    await expect(client.listConversationMembers("CONE", undefined, 10))
+        .resolves.toMatchObject({ items: ["WSELF"] });
+    await expect(client.searchMessages("test", undefined, 10))
+        .resolves.toMatchObject({ items: [{ channelId: "CONE", message: { text: "test" } }] });
+    for (let method of ["conversations.info", "conversations.history", "conversations.replies", "conversations.members"]) {
+      expect(requests.find(url => url.pathname.endsWith(method))?.searchParams.get("client_context_team_id")).toBe("TONE");
+    }
+    expect(requests.find(url => url.pathname.endsWith("search.messages"))?.searchParams.get("team_id")).toBe("TONE");
+    expect(requests.some(url => url.pathname.endsWith("conversations.list"))).toBe(false);
+  });
+
+  it("recognizes internal channel membership without a shared-team array", async () => {
+    mockSlack(); channel = { id: "CONE", internal_team_ids: ["TONE"] };
+    await expect(api().getConversationInfo("CONE")).resolves.toMatchObject({ id: "CONE" });
+    expect(requests.some(url => url.pathname.endsWith("conversations.list"))).toBe(false);
+  });
+
+  it("denies a Slack Connect channel attached only to another internal workspace", async () => {
+    mockSlack();
+    channel = { id: "CONE", team_id: "TONE", context_team_id: "TONE", is_ext_shared: true,
+      shared_team_ids: ["TEXTERNAL"], internal_team_ids: ["TTWO"], connected_team_ids: ["EORG"] };
+    let client = api();
+    await expect(client.getConversationInfo("CONE")).rejects.toMatchObject({ code: "access_denied" });
+    await expect(client.listHistory("CONE", undefined, 1)).rejects.toMatchObject({ code: "access_denied" });
+    await expect(client.listReplies("CONE", "123.000001", undefined, 1)).rejects.toMatchObject({ code: "access_denied" });
+    await expect(client.listConversationMembers("CONE", undefined, 10)).rejects.toMatchObject({ code: "access_denied" });
+    await expect(client.searchMessages("test", undefined, 10)).rejects.toMatchObject({ code: "access_denied" });
+    for (let method of ["conversations.history", "conversations.replies", "conversations.members"]) {
+      expect(requests.some(url => url.pathname.endsWith(method))).toBe(false);
+    }
+  });
+
+  it("still requires app and user workspace access before accepting internal channel membership", async () => {
+    mockSlack(); memberTeams = ["TTWO"];
+    channel = { id: "CONE", internal_team_ids: ["TONE"], shared_team_ids: ["TEXTERNAL"] };
+    await expect(api().getConversationInfo("CONE")).rejects.toMatchObject({ code: "team_access_not_granted" });
+    expect(requests.some(url => url.pathname.endsWith("conversations.info"))).toBe(false);
+  });
+
+  it("preserves provider denial even when channel metadata names the selected workspace", async () => {
+    mockSlack(); channel.internal_team_ids = ["TONE"];
+    let fetchSlack = fetch;
+    vi.stubGlobal("fetch", async (input: string) => {
+      if (input.includes("conversations.info")) {
+        return Response.json({ ok: false, error: "not_in_channel", channel });
+      }
+      return fetchSlack(input);
+    });
+    await expect(api().listHistory("CONE", undefined, 1)).rejects.toMatchObject({ code: "not_in_channel" });
+    expect(requests.some(url => url.pathname.endsWith("conversations.history"))).toBe(false);
+  });
+
   it("proves a metadata-less DM through workspace-scoped discovery", async () => {
     mockSlack(); channel = { id: "DONE", is_im: true };
     await expect(api().listHistory("DONE", undefined, 1)).resolves.toMatchObject({ items: [{ text: "test" }] });
@@ -361,6 +453,34 @@ describe("Slack org installations", () => {
   it("also verifies DMs with empty sharing metadata rather than rejecting every DM", async () => {
     mockSlack(); channel = { id: "DONE", is_im: true, shared_team_ids: [] };
     await expect(api().getConversationInfo("DONE")).resolves.toMatchObject({ id: "DONE", kind: "im" });
+  });
+
+  it.each(["im", "mpim"] as const)("proves an Enterprise %s despite mismatched shared-team metadata", async kind => {
+    mockEnterpriseDm(kind);
+    let client = api();
+    await expect(client.getConversationInfo("DONE")).resolves.toMatchObject({ id: "DONE", kind });
+    await expect(client.listHistory("DONE", undefined, 1)).resolves.toMatchObject({ items: [{ text: "test" }] });
+    await expect(client.listReplies("DONE", "123.000001", undefined, 1))
+        .resolves.toMatchObject({ items: [{ text: "test" }] });
+    await expect(client.listConversationMembers("DONE", undefined, 10)).resolves.toMatchObject({ items: ["WSELF"] });
+    await expect(client.searchMessages("test", undefined, 10))
+        .resolves.toMatchObject({ items: [{ channelId: "DONE", message: { text: "test" } }] });
+    let proofs = requests.filter(url => url.pathname.endsWith("users.conversations"));
+    expect(proofs.some(url => url.searchParams.get("cursor") === "dm-page")).toBe(true);
+    for (let proof of proofs) {
+      expect(proof.searchParams.get("team_id")).toBe("TONE");
+      expect(proof.searchParams.get("types")).toBe(kind);
+    }
+  });
+
+  it.each(["im", "mpim"] as const)("denies an Enterprise %s absent from the selected workspace", async kind => {
+    mockEnterpriseDm(kind, false);
+    // Nonmatching sharing metadata must still require the listing proof, not another metadata hint.
+    channel.team_id = channel.context_team_id = "TONE";
+    let client = api();
+    await expect(client.listHistory("DONE", undefined, 1)).rejects.toMatchObject({ code: "access_denied" });
+    await expect(client.searchMessages("test", undefined, 10)).rejects.toMatchObject({ code: "access_denied" });
+    expect(requests.some(url => url.pathname.endsWith("conversations.history"))).toBe(false);
   });
 
   it("does not mistake a requested viewing context for membership in a foreign channel", async () => {

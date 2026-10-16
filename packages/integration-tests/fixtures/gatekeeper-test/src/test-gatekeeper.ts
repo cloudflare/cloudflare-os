@@ -137,6 +137,14 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     return this.ctx.storage.kv.get<number>(`ambient-verifications:${label}`) ?? 0;
   }
 
+  setAgentCatalog(label: string, catalog: AgentCatalog): void {
+    this.ctx.storage.kv.put(`agent-catalog:${label}`, catalog);
+  }
+
+  getAgentCatalog(label: string): AgentCatalog | null {
+    return this.ctx.storage.kv.get<AgentCatalog>(`agent-catalog:${label}`) ?? null;
+  }
+
   recordRevocation(label: string): void {
     const key = `revocations:${label}`;
     this.ctx.storage.kv.put(key, (this.ctx.storage.kv.get<number>(key) ?? 0) + 1);
@@ -186,6 +194,15 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     state.nextId = Math.max(state.nextId, source.nextId);
     this.ctx.storage.kv.put(`actions:${to}`, state);
     this.ctx.storage.kv.delete(`actions:${from}`);
+  }
+
+  /** Each applyCreation() into account `label`, by the configuration it was given. */
+  recordCreation(label: string, configuration: string | null): void {
+    this.ctx.storage.kv.put(`creations:${label}`, [...this.getCreations(label), configuration]);
+  }
+
+  getCreations(label: string): (string | null)[] {
+    return this.ctx.storage.kv.get<(string | null)[]>(`creations:${label}`) ?? [];
   }
 
   failNextApply(label: string, reason: string): void {
@@ -723,9 +740,9 @@ export class TestGatekeeper
     return new ConnectionProbeTarget(this.ctx.props.label);
   }
 
-  /** No discovery index: the ambient fixture is reached through its session alone. */
+  /** The discovery index a test set for this account: none unless it set one. */
   async getAgentCatalog(): Promise<AgentCatalog | null> {
-    return null;
+    return control(this.ctx.exports).getAgentCatalog(this.ctx.props.label);
   }
 
   /**
@@ -770,13 +787,14 @@ export class TestGatekeeper
     await control(this.ctx.exports).discardAction(this.ctx.props.label, action);
   }
 
-  async applyCreation(creator: Fetcher<TestVerifierApi>): Promise<{
+  async applyCreation(creator: Fetcher<TestVerifierApi>, configuration: string | null): Promise<{
     class: DurableObjectClass<Gatekeeper<TestSession>>;
     resourceUrl: string;
   }> {
     const label = await creator.identify();
     const { resourceUrl } = this.ctx.props;
     await control(this.ctx.exports).adoptActions(this.ctx.props.label, label);
+    await control(this.ctx.exports).recordCreation(label, configuration);
     return { class: this.ctx.exports.TestGatekeeper({ props: { label, resourceUrl } }), resourceUrl };
   }
 
@@ -889,6 +907,20 @@ export default {
       return Response.json({ count: await control(ctx.exports).getAmbientVerificationCount(label) });
     }
 
+    // Set the account's discovery catalog: one entry per skill title.
+    // Body: {"label": "...", "skills": ["...", ...]}
+    if (url.pathname === "/control/agent-catalog" && req.method === "POST") {
+      const { label, skills } = body as Record<string, unknown>;
+      if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
+      if (!Array.isArray(skills) || !skills.every(isNonEmptyString)) {
+        return badRequest("`skills` must be an array of non-empty strings");
+      }
+      await control(ctx.exports).setAgentCatalog(label, {
+        entries: skills.map(title => ({ id: title, title, description: `The ${title} skill.` })),
+      });
+      return new Response(null, { status: 204 });
+    }
+
     if (url.pathname === "/control/revocation-count" && req.method === "POST") {
       const { label } = body as Record<string, unknown>;
       if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
@@ -921,6 +953,13 @@ export default {
         value: state.value,
         applyCount: state.applyCount,
       });
+    }
+
+    // Body: {"label": "..."} -> {"configurations": (string | null)[]}, one per applyCreation().
+    if (url.pathname === "/control/creations" && req.method === "POST") {
+      const { label } = body as Record<string, unknown>;
+      if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
+      return Response.json({ configurations: await control(ctx.exports).getCreations(label) });
     }
 
     // Body: {"label": "..."} -> {"attempts": number}

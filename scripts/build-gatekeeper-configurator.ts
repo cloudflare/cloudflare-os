@@ -746,11 +746,13 @@ function defaultValuesFromResourceUrl(resourceUrl, resourceUrlPattern) {
   try {
     const compiled = new URLPattern(resourceUrlPattern);
     // The host matches tolerantly and the server parses tolerantly, so a strict exec here would
-    // seed nothing and leave the caller on the right configurator with an empty field.
-    const alternate = resourceUrl.endsWith("/")
-      ? resourceUrl.replace(/\\/+$/, "")
-      : resourceUrl + "/";
-    const match = compiled.exec(resourceUrl) ?? compiled.exec(alternate);
+    // seed nothing and leave the caller on the right configurator with an empty field. Toggle the
+    // slash on the path, not the whole URL, which may end in a query or fragment.
+    const alternate = new URL(resourceUrl);
+    alternate.pathname = alternate.pathname.endsWith("/")
+      ? alternate.pathname.replace(/\\/+$/, "")
+      : alternate.pathname + "/";
+    const match = compiled.exec(resourceUrl) ?? compiled.exec(alternate.href);
     const groups = match?.pathname?.groups ?? {};
     const out = {};
     for (const [key, value] of Object.entries(groups)) {

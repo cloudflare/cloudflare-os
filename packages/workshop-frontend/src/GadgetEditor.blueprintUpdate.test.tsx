@@ -55,7 +55,10 @@ const mocks = vi.hoisted(() => {
       cancelObserverConfig: () => {},
       updateTitle: () => {},
     },
-    authenticatedApi: { whoami: async () => ({ type: 'user', id: 'dev', name: 'Dev' }) },
+    authenticatedApi: {
+      whoami: async () => ({ type: 'user', id: 'dev', name: 'Dev' }),
+      listGadgets: async () => [],
+    },
   }
 })
 
@@ -146,8 +149,10 @@ vi.mock('./components/ReconnectingChip', () => ({ default: () => null }))
 vi.mock('./components/SiteLogo', () => ({ default: () => null }))
 vi.mock('./components/UserMenu', () => ({ default: () => null }))
 vi.mock('./components/WorkspaceOpenErrorPage', () => ({ default: () => null }))
+vi.mock('./features/notifications/WorkspaceNotificationsMenu', () => ({ WorkspaceNotificationsMenu: () => null }))
 
 import GadgetEditor from './GadgetEditor'
+import { isChatVisible } from './features/notifications/visibleChat'
 
 let container: HTMLDivElement
 let root: Root
@@ -295,5 +300,27 @@ describe('GadgetEditor, opening a chat from a notification', () => {
     await openEditor('desktop')
 
     expect(fullScreen()).toBeNull()
+  })
+
+  // Notifications skip only the chat the user can see.
+  it('reports its chat visible only when nothing covers it', async () => {
+    mocks.search = { chat: 3 }
+    await openEditor('phone')
+    expect(isChatVisible('workspace', 3)).toBe(false)
+    await click('Chat')
+    expect(isChatVisible('workspace', 3)).toBe(true)
+
+    act(() => root.unmount())
+    root = createRoot(container)
+    await openEditor('desktop')
+    expect(isChatVisible('workspace', 3)).toBe(true)
+
+    act(() => root.unmount())
+    expect(isChatVisible('workspace', 3)).toBe(false)
+    root = createRoot(container)
+    window.history.replaceState(null, '', '#fullscreen')
+    await openEditor('desktop')
+    expect(isChatVisible('workspace', 3)).toBe(false)
+    window.history.replaceState(null, '', window.location.pathname)
   })
 })

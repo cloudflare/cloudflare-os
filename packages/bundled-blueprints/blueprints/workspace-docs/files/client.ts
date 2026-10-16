@@ -271,7 +271,7 @@ html, body {
   padding: clamp(28px, 4vw, 56px) clamp(20px, 6vw, 80px) 200px;
   min-height: 100%;
   outline: none;
-  font-size: 16px; line-height: 1.6;
+  font-size: 12pt; line-height: 1.6;
 }
 
 /* Document typography */
@@ -374,7 +374,7 @@ html.document-export .doc-page {
   max-width: none;
   min-height: 0;
   padding: 0;
-  font-size: 11pt;
+  font-size: 12pt;
   line-height: 1.5;
 }
 html.document-export .doc-page h1,
@@ -401,7 +401,7 @@ html.document-export .doc-page img.doc-image.image-selected { outline: none; }
     max-width: none;
     min-height: 0;
     padding: 0;
-    font-size: 11pt;
+    font-size: 12pt;
     line-height: 1.5;
   }
   .doc-page h1, .doc-page h2, .doc-page h3 { break-after: avoid-page; }
@@ -495,11 +495,13 @@ const fontSel = toolbarSelect({
   },
 });
 
-// Font size
+// Font size, in points like the body text (12pt) so a size keeps its relation to the body on
+// screen and in HTML/PDF exports.
 const sizeSel = toolbarSelect({
   className: "size-sel", title: "Font size",
-  options: [11, 12, 13, 14, 16, 18, 20, 24, 28, 32, 40, 48].map((s) => ({ value: s, label: String(s) })),
-  value: 16,
+  options: [8, 9, 10, 11, 12, 14, 18, 24, 30, 36, 48, 60, 72].map((s) => ({ value: s, label: String(s) })),
+  value: 12,
+  showUnlistedValue: true,
   onChange: (value) => {
     restoreRange();
     applyFontSize(parseInt(value, 10));
@@ -508,12 +510,65 @@ const sizeSel = toolbarSelect({
   },
 });
 
-function applyFontSize(px: number) {
-  document.execCommand("fontSize", false, "7");
-  editor.querySelectorAll<HTMLFontElement>('font[size="7"]').forEach((f) => {
+// The browser carries only a legacy size (1-7) as typing style, so a size picked at a bare caret
+// is held here until the browser opens a run for the next character typed at that caret.
+let caretSize: { pt: number; node: Node; offset: number } | null = null;
+
+function atSizedCaret(): boolean {
+  const selection = window.getSelection();
+  return !!caretSize && !!selection?.isCollapsed &&
+    selection.focusNode === caretSize.node && selection.focusOffset === caretSize.offset;
+}
+
+/**
+ * Give the run the browser just opened for typed text at a sized caret its picked size. A line or
+ * paragraph break carries the browser's typing size to the new line, so the picked size goes with
+ * it. A typed space can land as U+00A0, which the browser uses to keep it from collapsing.
+ */
+function sizeTypedInput({ data, inputType }: InputEvent) {
+  const { pt } = caretSize!;
+  const { focusNode, focusOffset } = window.getSelection()!;
+  caretSize = null;
+  if (focusNode && (inputType === "insertParagraph" || inputType === "insertLineBreak")) {
+    caretSize = { pt, node: focusNode, offset: focusOffset };
+    return;
+  }
+  const run = focusNode?.parentElement;
+  if (!run || run === editor || !editor.contains(run)) return;
+  if (run.textContent?.replaceAll("\u00a0", " ") !== data) return;
+  if (run.style.fontSize !== "xxx-large" && run.getAttribute("size") !== "7") return;
+  run.removeAttribute("size");
+  run.style.fontSize = pt + "pt";
+}
+
+// Chrome marks what the command sizes with `<font size="7">` only while styleWithCSS is off, so it
+// is switched off for the command alone. A legacy `<font size>` already in the document (agents
+// write HTML) must not pass for that marker, and text sized `xxx-large` (as the editor wrote it
+// before #692) swallows the command at a caret, the next character joining its run: inside the
+// selection both are restated as the CSS size they render at, and anywhere else are left alone.
+function applyFontSize(pt: number) {
+  const selection = window.getSelection();
+  const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+  editor.querySelectorAll<HTMLElement>('font[size], [style*="xxx-large"]').forEach((f) => {
+    if (!range?.intersectsNode(f)) return;
+    f.style.fontSize = getComputedStyle(f).fontSize;
     f.removeAttribute("size");
-    f.style.fontSize = px + "px";
   });
+  const untouched = new Set(editor.querySelectorAll('font[size="7"]'));
+  document.execCommand("styleWithCSS", false, false);
+  try {
+    document.execCommand("fontSize", false, "7");
+  } finally {
+    document.execCommand("styleWithCSS", false, true);
+  }
+  editor.querySelectorAll<HTMLFontElement>('font[size="7"]').forEach((f) => {
+    if (untouched.has(f)) return;
+    f.removeAttribute("size");
+    f.style.fontSize = pt + "pt";
+  });
+  if (range?.collapsed && selection?.focusNode) {
+    caretSize = { pt, node: selection.focusNode, offset: selection.focusOffset };
+  }
 }
 
 // Simple command buttons
@@ -1186,6 +1241,18 @@ function refreshToolbarState() {
     if (tag === "H1" && block.classList.contains("doc-title")) tag = "TITLE";
     styleSel.setValue(["P", "TITLE", "H1", "H2", "H3", "BLOCKQUOTE", "PRE"].includes(tag) ? tag : "P");
   }
+  // Size selector: a size picked at this caret, or else the computed size at the caret,
+  // px -> pt, to the nearest half point.
+  const focus = window.getSelection()?.focusNode;
+  if (atSizedCaret()) {
+    sizeSel.setValue(caretSize!.pt);
+  } else if (focus && editor.contains(focus)) {
+    const target = focus.nodeType === Node.TEXT_NODE ? focus.parentElement : (focus as Element);
+    if (target) {
+      const pt = parseFloat(getComputedStyle(target).fontSize) * 0.75;
+      sizeSel.setValue(Math.round(pt * 2) / 2);
+    }
+  }
 }
 
 // selectionchange fires on every keystroke and cursor move. Coalesce the work
@@ -1202,6 +1269,7 @@ function scheduleSelectionUpdate() {
   });
 }
 document.addEventListener("selectionchange", () => {
+  if (caretSize && !atSizedCaret()) caretSize = null;
   if (editor.contains(window.getSelection()!.anchorNode)) scheduleSelectionUpdate();
 });
 
@@ -1360,7 +1428,8 @@ async function sendChanges(): Promise<SaveOutcome> {
   return "conflict";
 }
 
-editor.addEventListener("input", () => {
+editor.addEventListener("input", (e) => {
+  if (caretSize) sizeTypedInput(e as InputEvent);
   if (selectedImage && !editor.contains(selectedImage)) hideImageControls();
   else if (selectedImage) positionImageControls();
   scheduleSave();

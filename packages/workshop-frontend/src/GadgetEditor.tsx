@@ -32,6 +32,7 @@ import {
   WorktreeSummary,
   BlueprintOutput,
   WorkpiecesSubscriber,
+  NotificationMute,
 } from '@gadgets/workshop-shared/api'
 import ObserverConfigModal from './ObserverConfigModal'
 import WorkpieceCodeInterface from './features/code/WorkpieceCodeInterface'
@@ -59,6 +60,9 @@ import { GadgetPresence } from './components/GadgetPresence'
 import BlueprintModal from './BlueprintModal'
 import { UpdateFromBlueprintDialog } from './features/blueprint-updates/UpdateFromBlueprintDialog'
 import { useBlueprintUpdateAvailable } from './features/blueprint-updates/useBlueprintUpdateAvailable'
+import { reportVisibleChat } from './features/notifications/visibleChat'
+import { WorkspaceNotificationsMenu } from './features/notifications/WorkspaceNotificationsMenu'
+import { logRpcFailure } from './rpcErrors'
 import TopBarNotice from './TopBarNotice'
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from './components/WorkshopControls'
 import { useActionEntries, useActions } from './useActions'
@@ -874,6 +878,13 @@ export default function GadgetEditor() {
     || (streamingActiveFile != null && !isWorktreeId(streamingActiveFile.workpieceId))
   const layoutModeReady = chatListReady && (codeStateReady || hasCodeRelatedState)
 
+  // Wait for the workpiece list (and the first selected-gadget stub, which follows it by one
+  // effect pass) before rendering; a workspace with no gadgets renders with `gadget` null.
+  const workspaceLoading = !metadata || !overseer || !workpiecesReady ||
+    (selectedGadgetId !== null && gadget === null)
+  // layoutModeReady survives a failed reopen and its retry, which show error and loading pages.
+  const chatRendered = layoutModeReady && !error && !workspaceLoading
+
   // Wait for all initial subscriptions before choosing the new-workspace chat-only layout.
   // `hasCommittedCode` matters here too: on the first accept the proposed changes clear before the
   // new head's tree arrives, and simple mode must not flash on during that window -- the
@@ -1160,6 +1171,14 @@ export default function GadgetEditor() {
     })
   }, [showChatParam, id, navigate, setWorkspaceVisibility, exitGadgetFullscreen])
 
+  // Notifications skip the chat on screen: rendered, and not covered by full-screen preview or, on a
+  // phone, by the workspace pane.
+  useEffect(() => {
+    if (!chatRendered || isGadgetFullscreen || effectiveSelectedChatId === null) return
+    const chat = { workspaceId: id!, chatId: effectiveSelectedChatId }
+    return reportVisibleChat(() => showFullEditor && isSinglePaneLayout() ? null : chat)
+  }, [chatRendered, isGadgetFullscreen, effectiveSelectedChatId, id, showFullEditor])
+
   // ── navigation helper ────────────────────────────────────────────────────────
   const navigateToChat = useCallback(
     (chatId: number | null, options?: { replace?: boolean }) => {
@@ -1389,6 +1408,25 @@ export default function GadgetEditor() {
     authenticatedApi.whoami().then(setUserInfo).catch(() => {})
   }, [authenticatedApi])
 
+  // ── notification mute ─────────────────────────────────────────────────────────
+  // The user's mute of this workspace lives on the workspace's record in their own list, which the
+  // Overseer's metadata doesn't carry. Tagged with its workspace because a toast's "Open task" or
+  // the browser's Back navigates between workspaces without remounting the editor.
+  const [workspaceMute, setWorkspaceMute] =
+    useState<{ workspaceId: string, mute?: NotificationMute }>()
+  useEffect(() => {
+    if (!id) return
+    let cancelled = false
+    authenticatedApi.listGadgets().then(gadgets => {
+      if (cancelled) return
+      setWorkspaceMute({
+        workspaceId: id,
+        mute: gadgets.find(workspace => workspace.id === id)?.notificationMute,
+      })
+    }, err => logRpcFailure('Failed to load workspace notification mute:', err))
+    return () => { cancelled = true }
+  }, [authenticatedApi, id])
+
   // ── title save/cancel ─────────────────────────────────────────────────────────
   const titleSaveInFlight = useRef(false)
   const handleSaveTitle = async () => {
@@ -1463,10 +1501,7 @@ export default function GadgetEditor() {
     )
   }
 
-  // Wait for the workpiece list (and the first selected-gadget stub, which follows it by one
-  // effect pass) before rendering; a workspace with no gadgets renders with `gadget` null.
-  if (!metadata || !overseer || !workpiecesReady ||
-      (selectedGadgetId !== null && gadget === null)) {
+  if (workspaceLoading) {
     return (
       <div className="flex min-h-full items-center justify-center bg-kumo-base">
         <div className="flex flex-col items-center gap-3">
@@ -1778,6 +1813,14 @@ export default function GadgetEditor() {
             <DropdownMenu.Item onClick={() => setShareModalOpen(true)} className={MENU_ITEM}>
               Share workspace
             </DropdownMenu.Item>
+            {workspaceMute && workspaceMute.workspaceId === id && (
+              <WorkspaceNotificationsMenu
+                workspaceId={workspaceMute.workspaceId}
+                mute={workspaceMute.mute}
+                onMuteChange={mute => setWorkspaceMute(prev =>
+                  prev?.workspaceId === workspaceMute.workspaceId ? { ...prev, mute } : prev)}
+              />
+            )}
             {/* App-only actions are left out for a worktree rather than shown disabled, as the
                 desktop header leaves out its full-screen button. */}
             {selectedWorkpieceSummary?.type !== 'worktree' && (

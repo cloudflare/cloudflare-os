@@ -1,8 +1,8 @@
 /**
- * `updateSlides()` changes: their replay over slides as Google returns them, and the requests that
- * make each.
+ * `updateSlides()` changes: their replay over slides, layouts and masters as Google returns them,
+ * and the requests that make each.
  *
- * Each change rewrites the slide's JSON as Google documents the request doing, and returns that
+ * Each change rewrites the page's JSON as Google documents the request doing, and returns that
  * request, so the read a queued change previews and the batch its approval writes come from the
  * same code. A change that would need what only Google can work out to be shown, such as how a
  * merged table cell grows, is refused instead. What Google renders is never simulated: a new
@@ -10,10 +10,11 @@
  * Google fits it to, and text does not reflow.
  */
 
-import type { RestPageElement, RestSlide } from "./slides-api";
+import type { RestPageBackgroundFill, RestPageElement, RestSlide, RestThemePage } from "./slides-api";
 import {
-  paragraphStyleChange, pointsDimension, reshaped, restFillOf, shapePropertiesChange,
-  textStyleChange, restyled,
+  paragraphStyleChange, pointsDimension, reshaped, restBackgroundOf, restFillOf,
+  restThemeColorsOf, shapePropertiesChange, textStyleChange, restyled, THEME_COLOR_TYPES,
+  themeColorsOf,
 } from "./slides-format";
 import {
   EMU_PER_POINT, localBox, matrixFor, matrixOf, placementOf, tableLinesOf, transformOf, type Placement,
@@ -48,6 +49,31 @@ export type DesignStep = {
   deleted?: string;
 };
 
+/** The page a change is on: a slide, or a layout or master as `RestThemePage.pageType` names it. */
+export type DesignPage = { pageType: "SLIDE" | RestThemePage["pageType"]; id: string };
+
+/** The page `change` names, which `prepareChanges()` has checked it names exactly one of. */
+export function pageOf(change: SlideChange | DesignChange): DesignPage {
+  switch (change.op) {
+    case "setThemeColors":
+      return { pageType: "MASTER", id: change.masterId };
+    case "setBackground": {
+      let { slideId, layoutId, masterId } = change;
+      if (layoutId !== undefined) return { pageType: "LAYOUT", id: layoutId };
+      if (masterId !== undefined) return { pageType: "MASTER", id: masterId };
+      return { pageType: "SLIDE", id: slideId! };
+    }
+    default:
+      return { pageType: "SLIDE", id: change.slideId };
+  }
+}
+
+/** The slide `change` is on, or undefined for one on a layout or master. */
+export function slideIdOf(change: SlideChange | DesignChange): string | undefined {
+  let { pageType, id } = pageOf(change);
+  return pageType === "SLIDE" ? id : undefined;
+}
+
 /** `createParagraphBullets` presets, by the name agents give them. */
 const BULLET_PRESETS = {
   bullet: "BULLET_DISC_CIRCLE_SQUARE",
@@ -73,19 +99,29 @@ export function designDeck(
   deck: Deck, changes: readonly DesignChange[],
 ): { deck: Deck; steps: (DesignStep | null)[] } {
   let edited = new Map<string, RestSlide>();
+  let editedThemes = new Map<string, RestThemePage>();
   let created = new Set<string>();
   let steps = changes.map((change, i) => {
     try {
-      if (!deck.order.includes(change.slideId)) {
-        throw new ChangeConflict(`slide "${change.slideId}" no longer exists`);
+      let { pageType, id } = pageOf(change);
+      let page: RestSlide | RestThemePage | undefined;
+      if (pageType === "SLIDE") {
+        if (!deck.order.includes(id)) throw new ChangeConflict(`slide "${id}" no longer exists`);
+        page = edited.get(id);
+        if (!page) {
+          let held = deck.slides.get(id);
+          if (!held) return null;
+          edited.set(id, page = structuredClone(held));
+        }
+      } else {
+        let held = editedThemes.get(id) ?? deck.themePages.get(id);
+        if (held?.pageType !== pageType) {
+          throw new ChangeConflict(`the presentation has no ${pageType.toLowerCase()} "${id}"`);
+        }
+        page = editedThemes.get(id);
+        if (!page) editedThemes.set(id, page = structuredClone(held));
       }
-      let slide = edited.get(change.slideId);
-      if (!slide) {
-        let held = deck.slides.get(change.slideId);
-        if (!held) return null;
-        edited.set(change.slideId, slide = structuredClone(held));
-      }
-      let step = applyDesign(slide, change, created);
+      let step = applyDesign(page, change, created);
       if (step.created) created.add(step.created);
       return step;
     } catch (error) {
@@ -93,15 +129,25 @@ export function designDeck(
       throw new ChangeConflict(`change ${i + 1} (${change.op}): ${error.message}`);
     }
   });
+  if (edited.size === 0 && editedThemes.size === 0) return { deck, steps };
   return {
-    deck: edited.size === 0 ? deck : { ...deck, slides: new Map([...deck.slides, ...edited]) },
+    deck: {
+      ...deck,
+      slides: new Map([...deck.slides, ...edited]),
+      themePages: new Map([...deck.themePages, ...editedThemes]),
+    },
     steps,
   };
 }
 
+// `page` is a layout or master only for the changes `pageOf()` puts on one, which set its page
+// properties alone.
 function applyDesign(
-  slide: RestSlide, change: DesignChange, created: ReadonlySet<string>,
+  page: RestSlide | RestThemePage, change: DesignChange, created: ReadonlySet<string>,
 ): DesignStep {
+  if (change.op === "setBackground") return setBackground(page, change);
+  if (change.op === "setThemeColors") return setThemeColors(page, change);
+  let slide: RestSlide = page;
   switch (change.op) {
     case "editText": {
       let { requests, previous, text } = editSlide(slide, change);
@@ -138,6 +184,56 @@ function applyDesign(
     case "formatTableCells":
       return formatTableCells(slide, change);
   }
+}
+
+function setBackground(
+  page: RestSlide | RestThemePage, change: Extract<DesignChange, { op: "setBackground" }>,
+): DesignStep {
+  let { background } = change;
+  // A picture reads with neither its URL, which no read requests, nor its size, which Google
+  // works out.
+  let read: RestPageBackgroundFill = background === null ? { propertyState: "INHERIT" }
+    : typeof background === "string" ? restFillOf(background)
+    : { propertyState: "RENDERED", stretchedPictureFill: {} };
+  page.pageProperties = { ...page.pageProperties, pageBackgroundFill: read };
+  let fill = restBackgroundOf(background);
+  return {
+    requests: [{
+      updatePageProperties: {
+        objectId: page.objectId,
+        // The field mask with no value resets the background to the one the page inherits.
+        pageProperties: fill ? { pageBackgroundFill: fill } : {},
+        fields: "pageBackgroundFill",
+      },
+    }],
+  };
+}
+
+// Google takes a theme's 12 colours only all at once, so those the change leaves are sent as the
+// master has them.
+function setThemeColors(
+  page: RestSlide | RestThemePage, change: Extract<DesignChange, { op: "setThemeColors" }>,
+): DesignStep {
+  let merged = themeColorsOf(page.pageProperties?.colorScheme);
+  for (let type of THEME_COLOR_TYPES) {
+    let color = change.colors[type];
+    if (color !== undefined) merged[type] = color;
+  }
+  let colors = restThemeColorsOf(merged);
+  if (!colors) {
+    let missing = THEME_COLOR_TYPES.filter(type => merged[type] === undefined);
+    throw new ChangeConflict(
+      `the master's theme has no ${missing.join(", ")}, which Google needs; give ` +
+      `${missing.length === 1 ? "it" : "them"} too`);
+  }
+  page.pageProperties = { ...page.pageProperties, colorScheme: { colors } };
+  return {
+    requests: [{
+      updatePageProperties: {
+        objectId: page.objectId, pageProperties: { colorScheme: { colors } }, fields: "colorScheme",
+      },
+    }],
+  };
 }
 
 function elementOn(slide: RestSlide, id: string): Located {

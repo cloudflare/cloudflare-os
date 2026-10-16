@@ -1,16 +1,19 @@
 import { z } from "zod";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   SUGGESTED_MODELS, type AiChatAuthorInfo, type AiModelConfig, type BuiltInReasoning,
 } from "@gadgets/workshop-shared/api";
-import { Type } from "@earendil-works/pi-ai";
+import {
+  Type, type AssistantMessage, type ClassifierContext, type ToolResultMessage,
+} from "@earendil-works/pi-ai";
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models";
 import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";
 import { serializeAdminConfig } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig } from "../src/storage-schema/admin-settings-storage.js";
+import { zeroUsage } from "../src/ai-invoke.js";
 import {
-  gatewayBuiltInReasoning, gatewayReasoningLevels, getModel, isRuntimeModel,
-  LanguageModelGatekeeper, type ModelHandle,
+  DecisionModelGatekeeper, gatewayBuiltInReasoning, gatewayReasoningLevels, getDecisionModel,
+  getModel, isRuntimeModel, LanguageModelGatekeeper, type ModelHandle,
 } from "../src/ai-models.js";
 
 // These tests exercise the real pi-ai stack: no module mocks. Routing decisions are asserted on
@@ -1006,6 +1009,8 @@ describe("gateway model reasoning levels", () => {
     ["cloudflare", "@cf/zai-org/glm-5.2", null],
     ["cloudflare", "@cf/zai-org/glm-5.3-flash", null],
     ["cloudflare", "@cf/deepseek-ai/deepseek-v4-pro-0813", null],
+    ["cloudflare", "@cf/cloudflare/clef", null],
+    ["cloudflare", "@cf/cloudflare/clef-flash", null],
   ];
   it.each(BUILT_IN)("says what %s model %s is asked for while no level is set",
       (provider, model, builtIn) => {
@@ -1511,6 +1516,28 @@ describe("LanguageModelGatekeeper.startSession", () => {
   });
 });
 
+// A decision model binding is revoked as a language model binding is (see refuseRevokedModel()).
+describe("DecisionModelGatekeeper.startSession", () => {
+  it("refuses a decision model the admin disabled", async () => {
+    const admin = { ...DEFAULT_ADMIN_CONFIG, modelModes: { "@cf/cloudflare/clef": "disabled" } };
+    const gatekeeper =
+        Object.create(DecisionModelGatekeeper.prototype) as DecisionModelGatekeeper;
+    Object.assign(gatekeeper, {
+      env: env({
+        CF_AI_GATEWAY_PROVIDERS: "cloudflare",
+        BLUEPRINTS: { get: async () => serializeAdminConfig(admin) } as unknown as KVNamespace,
+      }),
+      ctx: { props: {
+        displayName: "Clef",
+        config: { provider: "cloudflare", model: "@cf/cloudflare/clef", apiToken: "" },
+        initiator: GADGET_INITIATOR,
+      } },
+    });
+    await expect(gatekeeper.startSession(undefined as never)).rejects.toThrow(new Error(
+        'The "Clef (Workers AI)" model is disabled on this deployment by an administrator.'));
+  });
+});
+
 describe("PDF attachment bridging", () => {
   beforeEach(() => {
     capturedRequests.length = 0;
@@ -1574,6 +1601,67 @@ describe("PDF attachment bridging", () => {
       type: "input_image",
       image_url: "data:image/png;base64,iVBOR",
     }));
+  }, 15000);
+});
+
+describe("Gemini function call signatures", () => {
+  beforeEach(() => {
+    capturedRequests.length = 0;
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // Gemini 3 rejects a request whose current turn holds a function call without a thought
+  // signature, which history replay's synthetic calls lack. pi's Google adapter refuses an injected
+  // fetch, so the request is read from the global one.
+  it("gives a call the model didn't make Google's stand-in, and keeps the model's own", async () => {
+    vi.stubGlobal("fetch", fetchStub);
+    const handle = getModel(env(), {
+      provider: "google",
+      model: "gemini-3.6-flash",
+      apiToken: "ignored-in-gateway-mode",
+    }, INITIATOR);
+    // One step of a tool loop: the call, then its result.
+    const step = (id: string, thoughtSignature?: string): [AssistantMessage, ToolResultMessage] => [{
+      role: "assistant",
+      content: [{
+        type: "toolCall", id, name: "observeUserChanges", arguments: {},
+        ...(thoughtSignature !== undefined && { thoughtSignature }),
+      }],
+      api: handle.model.api,
+      provider: handle.model.provider,
+      model: handle.model.id,
+      usage: zeroUsage(),
+      stopReason: "toolUse",
+      timestamp: 0,
+    }, {
+      role: "toolResult",
+      toolCallId: id,
+      toolName: "observeUserChanges",
+      content: [{ type: "text", text: "ok" }],
+      isError: false,
+      timestamp: 0,
+    }];
+    const stream = handle.stream(handle.model, {
+      messages: [
+        { role: "user", content: "hello", timestamp: 0 },
+        ...step("model-call", "c2lnbmF0dXJl"),
+        ...step("synthetic_3"),
+      ],
+    }, { maxRetries: 0 });
+    expect((await stream.result()).stopReason).toBe("error");
+
+    const part = z.object({
+      functionCall: z.object({}).optional(),
+      thoughtSignature: z.string().optional(),
+    });
+    const body = z.object({ contents: z.array(z.object({ parts: z.array(part) })) })
+        .parse(JSON.parse(capturedRequests[0].body));
+    expect(body.contents.flatMap(content => content.parts)
+        .filter(entry => entry.functionCall !== undefined)
+        .map(entry => entry.thoughtSignature))
+        .toEqual(["c2lnbmF0dXJl", "skip_thought_signature_validator"]);
   }, 15000);
 });
 
@@ -1848,4 +1936,118 @@ describe("Resending a request to keep its cache", () => {
     await send(handle, { fetch: answering({ cached: false }) });
     expect(handle.lastRequest).toBeUndefined();
   }, 15000);
+});
+
+// An env whose platform gateway rides a Workers AI binding answering with `run`.
+function bindingRunEnv(run: (...args: unknown[]) => Promise<unknown>): Cloudflare.Env {
+  return env({
+    CF_AI_GATEWAY_API_TOKEN: undefined,
+    CF_AI_GATEWAY_PROVIDERS: "cloudflare",
+    WORKERS_AI: { run } as unknown as Ai,
+  });
+}
+
+describe("getDecisionModel routing", () => {
+  const CLEF_CONFIG: AiModelConfig = {
+    provider: "cloudflare",
+    model: "@cf/cloudflare/clef",
+    apiToken: "user-token",
+    accountId: "user-account-id",
+  };
+  const CONTEXT: ClassifierContext = {
+    state: { message: "My order never arrived." },
+    questions: {
+      refund: {
+        type: "bool",
+        instructions: "Does the customer want their money back?",
+        criteria: { true: "Asks for a refund", false: "Asks for something else" },
+      },
+    },
+  };
+  // Workers AI's wire format calls `bool` questions and answers `noul`.
+  const WIRE_INPUT = {
+    state: CONTEXT.state,
+    questions: { refund: { ...CONTEXT.questions.refund, type: "noul" } },
+  };
+  // Clef's result carries no Jev-style run record.
+  const CLEF_RESULT = {
+    model: "clef",
+    answers: { refund: { type: "noul", noul: 0.9 } },
+    usage: { input_tokens: 152, output_tokens: 0 },
+  };
+  const ANSWERS = { refund: { type: "bool", probability: 0.9 } };
+  const METADATA_CONTEXT = { source: "model-binding" as const, gadgetId: "gadget-789" };
+  const GATEWAY_METADATA = {
+    user: "owner-456", source: "model-binding", gadgetId: "gadget-789", automated: true,
+  };
+
+  // pi's classify() takes no fetch from getDecisionModel on HTTP routes, so it uses the global one.
+  beforeEach(() => {
+    capturedRequests.length = 0;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      capturedRequests.push({ url: request.url, headers: request.headers, body: await request.text() });
+      return Response.json({ success: true, result: CLEF_RESULT });
+    });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  // Every decision model in the catalog must be one pi can run.
+  const decisionModelIds = Object.entries(SUGGESTED_MODELS.cloudflare)
+      .filter(([, model]) => model.kind === "decision").map(([id]) => id);
+
+  it.each(decisionModelIds)("decides with %s directly, with the config's own credentials",
+      async (model) => {
+    const decide = getDecisionModel(env({ CF_AI_GATEWAY: undefined }), { ...CLEF_CONFIG, model },
+        INITIATOR);
+
+    expect((await decide(CONTEXT)).answers).toEqual(ANSWERS);
+    expect(capturedRequests).toHaveLength(1);
+    const [request] = capturedRequests;
+    expect(request.url).toBe("https://api.cloudflare.com/client/v4/accounts/user-account-id/ai/run");
+    expect(request.headers.get("authorization")).toBe("Bearer user-token");
+    expect([...request.headers.keys()].filter(name => name.startsWith("cf-aig-"))).toEqual([]);
+    expect(JSON.parse(request.body)).toEqual({ model, input: WIRE_INPUT });
+  });
+
+  it("decides through the platform gateway over HTTPS with the gateway token", async () => {
+    const decide = getDecisionModel(env(), CLEF_CONFIG, GADGET_INITIATOR, METADATA_CONTEXT);
+
+    expect((await decide(CONTEXT)).answers).toEqual(ANSWERS);
+    const [request] = capturedRequests;
+    expect(request.url).toBe(
+        "https://gateway.ai.cloudflare.com/v1/gateway-account-id/platform-gateway/workers-ai/run");
+    // Workers AI's /run checks `authorization` itself; the gateway checks its own header.
+    expect(request.headers.get("authorization")).toBe("Bearer gateway-token");
+    expect(request.headers.get("cf-aig-authorization")).toBe("Bearer gateway-token");
+    expect(JSON.parse(request.headers.get("cf-aig-metadata")!)).toEqual(GATEWAY_METADATA);
+  });
+
+  describe("over the Workers AI binding", () => {
+    it("decides through the platform gateway with the binding's run()", async () => {
+      const runs: unknown[][] = [];
+      const decide = getDecisionModel(bindingRunEnv(async (...args) => {
+        runs.push(args);
+        return CLEF_RESULT;
+      }), CLEF_CONFIG, GADGET_INITIATOR, METADATA_CONTEXT);
+
+      expect((await decide(CONTEXT)).answers).toEqual(ANSWERS);
+      expect(runs).toEqual([[
+        "@cf/cloudflare/clef", WIRE_INPUT,
+        { gateway: { id: "platform-gateway", metadata: GATEWAY_METADATA } },
+      ]]);
+      expect(capturedRequests).toEqual([]);
+    });
+
+    it("reports a failed run() as an error result", async () => {
+      const decide = getDecisionModel(bindingRunEnv(async () => {
+        throw new Error("3040: Capacity temporarily exceeded");
+      }), CLEF_CONFIG, GADGET_INITIATOR, METADATA_CONTEXT);
+
+      expect(await decide(CONTEXT)).toMatchObject({
+        stopReason: "error",
+        errorMessage: expect.stringContaining("Capacity temporarily exceeded"),
+      });
+    });
+  });
 });

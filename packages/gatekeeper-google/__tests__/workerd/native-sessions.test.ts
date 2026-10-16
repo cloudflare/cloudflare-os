@@ -9,10 +9,12 @@ import { DriveApi } from "../../src/drive-api";
 import { GoogleDriveSessionImpl } from "../../src/google";
 import type { DriveSessionSearchQuery } from "../../src/drive-types";
 import { GoogleSheetsApi } from "../../src/sheets-api";
+import type { GoogleSpreadsheetSession } from "../../src/sheets-types";
 import { GoogleSlidesApi } from "../../src/slides-api";
 import type { GooglePresentationSession } from "../../src/slides-types";
 import { buildTab } from "../doc-fixture";
-import { presentation, shape, slide, text } from "../slides-fixture";
+import { formatSheet } from "../sheets-fixture";
+import { presentation, shape, SIMPLE_LIGHT, slide, text } from "../slides-fixture";
 
 const DOC_MIME = "application/vnd.google-apps.document";
 const SHEET_MIME = "application/vnd.google-apps.spreadsheet";
@@ -221,6 +223,10 @@ describe("Drive nested native sessions", () => {
 
     await expect(Promise.resolve(sheet.readRange("A:A")))
       .rejects.toThrow(/Invalid or unbounded A1 range/);
+    await expect(Promise.resolve(sheet.readFormats("A:A")))
+      .rejects.toThrow(/Invalid or unbounded A1 range/);
+    await expect(Promise.resolve(sheet.readFormats("A1:CV101")))
+      .rejects.toThrow("readFormats may request at most 10,000 cells.");
     expect(providerUrls.some(url => new URL(url).hostname === "sheets.googleapis.com"))
       .toBe(false);
   });
@@ -230,7 +236,15 @@ describe("Drive nested native sessions", () => {
     using owned = session;
     using deck = await owned.openGoogleSlides("deck-1");
 
-    expect((await deck.getPresentation()).slides.map(s => s.id)).toEqual(["s1", "s2"]);
+    const info = await deck.getPresentation();
+    expect(info.slides.map(s => s.id)).toEqual(["s1", "s2"]);
+    expect(info.masters).toEqual([
+      { id: "master-1", name: "Simple Light", background: "LIGHT1", themeColors: SIMPLE_LIGHT },
+    ]);
+    expect(info.layouts.map(({ id, name, master }) => ({ id, name, master }))).toEqual([
+      { id: "layout-title", name: "Title slide", master: "master-1" },
+      { id: "layout-title-body", name: "Title and body", master: "master-1" },
+    ]);
     expect((await deck.getSlides(["s2"]))[0].speakerNotes).toBe("Say hello");
     expect(queue.observations.map(o => o.title)).toEqual([
       "Open Google Slides presentation from Google Drive",
@@ -497,6 +511,14 @@ describe("folder-scoped native sessions", () => {
           valueRanges: url.searchParams.getAll("ranges").map(range => ({ range, values: [["x"]] })),
         });
       }
+      // A format read: the one bold cell A1.
+      if (url.hostname === "sheets.googleapis.com" && url.searchParams.has("ranges")) {
+        return Response.json({
+          sheets: [formatSheet({ sheetId: 0, title: "Sheet1" }, [
+            { startRow: 0, startColumn: 0, formats: [[{ textFormat: { bold: true } }]] },
+          ])],
+        });
+      }
       if (url.hostname === "slides.googleapis.com") return slidesResponse(url);
       return Response.json({
         spreadsheetId: "sheet-1",
@@ -540,6 +562,29 @@ describe("folder-scoped native sessions", () => {
     expect((await sheet.readRange("A1:A1")).values).toEqual([["x"]]);
     expect((await sheet.readRanges(["A1:A1", "B1:B1"])).map(r => r.range))
       .toEqual(["A1:A1", "B1:B1"]);
+
+    // Formats are read with `spreadsheets.get` and an A1 range, which the read-only grant allows,
+    // and a mask that asks for no cell's value.
+    const fetched = vi.mocked(fetch);
+    const before = fetched.mock.calls.length;
+    expect(await sheet.readFormats("A1:B1"))
+      .toEqual({ range: "Sheet1!A1:B1", formats: [[{ bold: true }, null]] });
+    const formatUrls = fetched.mock.calls.slice(before)
+      .map(([input]) => new URL(input instanceof Request ? input.url : input.toString()))
+      .filter(url => url.hostname === "sheets.googleapis.com");
+    expect(formatUrls.map(url => [url.pathname, url.searchParams.getAll("ranges")]))
+      .toEqual([["/v4/spreadsheets/sheet-1", ["A1:B1"]]]);
+    let mask = formatUrls[0].searchParams.get("fields") ?? "";
+    expect(mask).toContain("userEnteredFormat(");
+    for (let field of ["formattedValue", "effectiveValue", "userEnteredValue", "hyperlink", "note"]) {
+      expect(mask).not.toContain(field);
+    }
+
+    // The capability itself has no write method, whatever a caller sends it.
+    const writable = sheet as unknown as GoogleSpreadsheetSession;
+    await expect(Promise.resolve(writable.updateSpreadsheet([
+      { op: "writeCells", range: "Sheet1!A1", values: [["changed"]] },
+    ]))).rejects.toThrow('The RPC receiver does not implement the method "updateSpreadsheet".');
   });
 
   // The capability was minted while the file was inside; the move is what revokes it, and it has to
@@ -573,6 +618,7 @@ describe("folder-scoped native sessions", () => {
     await expect(Promise.resolve(sheet.getSpreadsheet())).rejects.toThrow(OUTSIDE);
     await expect(Promise.resolve(sheet.readRange("A1:A1"))).rejects.toThrow(OUTSIDE);
     await expect(Promise.resolve(sheet.readRanges(["A1:A1", "B1:B1"]))).rejects.toThrow(OUTSIDE);
+    await expect(Promise.resolve(sheet.readFormats("A1:B1"))).rejects.toThrow(OUTSIDE);
     expect(nativeCalls).toEqual([]);
   });
 

@@ -1,28 +1,58 @@
 import { describe, expect, it } from "vitest";
-import type { RestPageElement, RestSlide } from "../src/slides-api";
+import type { RestPageElement, RestPresentation, RestSlide } from "../src/slides-api";
 import { designDeck } from "../src/slides-design";
 import { prepareChanges } from "../src/slides-design-input";
-import { slideOf } from "../src/slides-model";
+import { presentationInfo, slideOf, themePagesOf } from "../src/slides-model";
 import type { ShapeElement, TableElement } from "../src/slides-read-types";
+import type { Deck } from "../src/slides-simulation";
 import type { SlideChange } from "../src/slides-types";
-import { shape, slide, text } from "./slides-fixture";
+import {
+  colorScheme, layout, master, presentation, shape, SIMPLE_LIGHT, slide, text,
+} from "./slides-fixture";
 
 const EMU = 12_700;
 const pt = (magnitude: number) => ({ magnitude, unit: "PT" as const });
 
-/** Runs `changes` over the slides as `updateSlides()` would queue them. */
-function run(pages: RestSlide[], changes: SlideChange[]) {
-  let { changes: prepared, refs } = prepareChanges(changes);
-  let deck = {
+/** A deck of `pages`, with the masters and layouts of `theme`. */
+function deckOf(pages: RestSlide[], theme: RestPresentation = presentation([])): Deck {
+  return {
     order: pages.map(page => page.objectId!),
     slides: new Map(pages.map(page => [page.objectId!, page])),
     masters: new Map(),
+    themePages: themePagesOf(theme),
   };
-  let { deck: next, steps } = designDeck(deck, prepared);
+}
+
+/** Runs `changes` over the slides as `updateSlides()` would queue them. */
+function run(pages: RestSlide[], changes: SlideChange[], theme?: RestPresentation) {
+  let { changes: prepared, refs } = prepareChanges(changes);
+  let { deck: next, steps } = designDeck(deckOf(pages, theme), prepared);
   return {
     refs,
+    deck: next,
     requests: steps.flatMap(step => step!.requests) as Record<string, any>[],
     read: (id = "s1") => slideOf(next.slides.get(id)!, next.order.indexOf(id), new Map()),
+    // The presentation as `getPresentation()` would project it.
+    info: () => presentationInfo(
+      { ...(theme ?? presentation([])), slides: next.order.map(id => next.slides.get(id)!) },
+      next.themePages),
+  };
+}
+
+/** What `prepareChanges()` refuses `change` with, or undefined if it takes it. */
+function refusal(change: SlideChange): string | undefined {
+  try {
+    prepareChanges([change]);
+  } catch (error) {
+    return (error as Error).message;
+  }
+  return undefined;
+}
+
+/** The request setting a page's background. */
+function backgroundRequest(objectId: string, pageBackgroundFill: unknown) {
+  return {
+    updatePageProperties: { objectId, pageProperties: { pageBackgroundFill }, fields: "pageBackgroundFill" },
   };
 }
 
@@ -100,8 +130,7 @@ describe("Slides design changes", () => {
     let { changes } = prepareChanges([
       { op: "formatText", slideId: "s1", elementId: "box", range: { start: 0, end: 4 }, format: { italic: true } },
     ]);
-    let deck = { order: ["s1"], slides: new Map([["s1", page]]), masters: new Map() };
-    expect(() => designDeck(deck, [{ ...changes[0], before: "Bolder" }]))
+    expect(() => designDeck(deckOf([page]), [{ ...changes[0], before: "Bolder" }]))
       .toThrow("change 1 (formatText): the text has changed since this change was made");
   });
 
@@ -394,7 +423,7 @@ describe("Slides design changes", () => {
       runs: [{ content, style: { bold: false } }],
       marker: { bullet: { listId: "l", bulletStyle: { bold: false } } },
     }))))]);
-    let deck = { order: ["s1"], slides: new Map([["s1", page]]), masters: new Map() };
+    let deck = deckOf([page]);
     let { changes } = prepareChanges([
       { op: "formatText", slideId: "s1", elementId: "box", find: "A\n", format: { bold: true } },
       { op: "editText", slideId: "s1", elementId: "box", find: "A", replace: "X\nY" },
@@ -433,15 +462,102 @@ describe("Slides design changes", () => {
     expect(transform({ bounds: { width: 200 } })).toMatchObject({ scaleX: 2, scaleY: 1, shearX: 0, shearY: 0 });
   });
 
+  it("sets a slide's, a layout's and a master's background, each as Google takes it", () => {
+    let url = "https://img.example/bg.png";
+    let { requests, deck, info } = run([slide("s1", [])], [
+      { op: "setBackground", slideId: "s1", background: "#ff8800" },
+      { op: "setBackground", layoutId: "layout-title", background: "none" },
+      { op: "setBackground", layoutId: "layout-title-body", background: "ACCENT1" },
+      { op: "setBackground", masterId: "master-1", background: { imageUrl: url } },
+    ]);
+    expect(requests).toEqual([
+      backgroundRequest("s1", { propertyState: "RENDERED", solidFill: { color: { rgbColor: { red: 1, green: 136 / 255 } }, alpha: 1 } }),
+      backgroundRequest("layout-title", { propertyState: "NOT_RENDERED" }),
+      backgroundRequest("layout-title-body", { propertyState: "RENDERED", solidFill: { color: { themeColor: "ACCENT1" }, alpha: 1 } }),
+      backgroundRequest("master-1", { propertyState: "RENDERED", stretchedPictureFill: { contentUrl: url } }),
+    ]);
+    let read = info();
+    expect(read.slides[0].background).toBe("#ff8800");
+    expect(read.layouts).toEqual([
+      expect.objectContaining({ id: "layout-title", master: "master-1", background: "none" }),
+      expect.objectContaining({ id: "layout-title-body", master: "master-1", background: "ACCENT1" }),
+    ]);
+    expect(read.masters[0].background).toBe("picture");
+    // Only the request carries the picture's URL: no read can return it.
+    expect(JSON.stringify([...deck.slides, ...deck.themePages])).not.toContain("img.example");
+  });
+
+  it("resets a slide's or layout's background to the one it inherits", () => {
+    let blue = { solidFill: { color: { rgbColor: { blue: 1 } }, alpha: 1 } };
+    let theme = { ...presentation([]), layouts: [layout("layout-title", "Title slide", { background: blue })] };
+    let { requests, info } = run([slide("s1", [], { background: blue })], [
+      { op: "setBackground", slideId: "s1", background: null },
+      { op: "setBackground", layoutId: "layout-title", background: null },
+    ], theme);
+    expect(requests).toEqual(["s1", "layout-title"].map(objectId => ({
+      updatePageProperties: { objectId, pageProperties: {}, fields: "pageBackgroundFill" },
+    })));
+    expect(info().slides[0]).not.toHaveProperty("background");
+    expect(info().layouts[0]).not.toHaveProperty("background");
+  });
+
+  it("sends all 12 theme colours in Google's order, those not given as the master has them", () => {
+    let { requests, info } = run([], [
+      { op: "setThemeColors", masterId: "master-1", colors: { ACCENT1: "#FF0000", DARK1: "#112233" } },
+      { op: "setThemeColors", masterId: "master-1", colors: { ACCENT2: "#00ff00" } },
+    ]);
+    let expected = { ...SIMPLE_LIGHT, DARK1: "#112233", ACCENT1: "#ff0000", ACCENT2: "#00ff00" };
+    // The second change keeps the colours the first set, and no colour that only follows another.
+    expect(requests[1]).toEqual({
+      updatePageProperties: {
+        objectId: "master-1",
+        pageProperties: { colorScheme: { colors: colorScheme(expected).colors!.slice(0, 12) } },
+        fields: "colorScheme",
+      },
+    });
+    expect(requests[1].updatePageProperties.pageProperties.colorScheme.colors.map((pair: any) => pair.type))
+      .toEqual([
+        "DARK1", "LIGHT1", "DARK2", "LIGHT2", "ACCENT1", "ACCENT2", "ACCENT3", "ACCENT4", "ACCENT5",
+        "ACCENT6", "HYPERLINK", "FOLLOWED_HYPERLINK",
+      ]);
+    expect(info().masters[0].themeColors).toEqual(expected);
+  });
+
+  it("refuses theme colours a master's theme cannot complete, unless the change gives the rest", () => {
+    let partial = master("master-1");
+    let scheme = partial.pageProperties!.colorScheme!;
+    scheme.colors = scheme.colors!.filter(pair => pair.type !== "ACCENT6");
+    let theme = { ...presentation([]), masters: [partial] };
+    expect(() => run([], [{ op: "setThemeColors", masterId: "master-1", colors: { DARK1: "#000000" } }], theme))
+      .toThrow("change 1 (setThemeColors): the master's theme has no ACCENT6, which Google needs; give it too");
+    expect(run([], [{ op: "setThemeColors", masterId: "master-1", colors: { ACCENT6: "#123456" } }], theme)
+      .info().masters[0].themeColors).toEqual({ ...SIMPLE_LIGHT, ACCENT6: "#123456" });
+  });
+
+  it("refuses a layout or master that is not there, or is the other kind of page", () => {
+    expect(() => run([], [{ op: "setBackground", layoutId: "master-1", background: "none" }]))
+      .toThrow('change 1 (setBackground): the presentation has no layout "master-1"');
+    expect(() => run([], [{ op: "setBackground", masterId: "gone", background: "#000000" }]))
+      .toThrow('change 1 (setBackground): the presentation has no master "gone"');
+    expect(() => run([], [{ op: "setThemeColors", masterId: "layout-title", colors: { DARK1: "#000000" } }]))
+      .toThrow('change 1 (setThemeColors): the presentation has no master "layout-title"');
+    expect(() => run([], [{ op: "setBackground", slideId: "s9", background: "none" }]))
+      .toThrow('change 1 (setBackground): slide "s9" no longer exists');
+    // A page an earlier change in the batch edited is checked again.
+    expect(() => run([], [
+      { op: "setBackground", masterId: "master-1", background: "#000000" },
+      { op: "setBackground", layoutId: "master-1", background: null },
+    ])).toThrow('change 2 (setBackground): the presentation has no layout "master-1"');
+  });
+
+  it("returns the deck it was given when no change is on a page it holds", () => {
+    let deck = { ...deckOf([]), order: ["s1"] };
+    let { changes } = prepareChanges([{ op: "setBackground", slideId: "s1", background: "none" }]);
+    expect(designDeck(deck, changes)).toEqual({ deck, steps: [null] });
+    expect(designDeck(deck, changes).deck).toBe(deck);
+  });
+
   it("refuses what Google would not take before reading anything", () => {
-    let refusal = (change: SlideChange) => {
-      try {
-        prepareChanges([change]);
-      } catch (error) {
-        return (error as Error).message;
-      }
-      return undefined;
-    };
     let bounds = { x: 0, y: 0, width: 10, height: 10 };
     expect(refusal({ op: "createShape", slideId: "s1", shapeType: "BLOB", bounds }))
       .toContain('shapeType "BLOB" is not a Google Slides shape type');
@@ -464,15 +580,49 @@ describe("Slides design changes", () => {
     ])).toThrow('Change 2 (createShape): ref "x" names an element an earlier change creates.');
   });
 
+  it("refuses a background or theme colours Google would not take, before reading anything", () => {
+    let target = "name exactly one of slideId, layoutId and masterId";
+    expect(refusal({ op: "setBackground", background: "none" })).toContain(target);
+    expect(refusal({ op: "setBackground", slideId: "s1", masterId: "m", background: "none" })).toContain(target);
+    // Google turns a master's background reset into none.
+    expect(refusal({ op: "setBackground", masterId: "m", background: null }))
+      .toContain('a master has no background to inherit; give it "none" instead');
+    expect(refusal({ op: "setBackground", masterId: "m", background: "none" })).toBeUndefined();
+    expect(refusal({ op: "setBackground", layoutId: "l", background: null })).toBeUndefined();
+    expect(refusal({ op: "setBackground", slideId: "s1", background: "red" }))
+      .toContain('background "red" is not a #rrggbb colour');
+    expect(refusal({ op: "setBackground", slideId: "s1", background: "picture" }))
+      .toContain('background "picture" is not a #rrggbb colour');
+    expect(refusal({ op: "setBackground", slideId: "s1", background: { imageUrl: "http://img.example/a.png" } }))
+      .toContain("background.imageUrl must be an https: URL");
+    expect(refusal({ op: "setThemeColors", masterId: "m", colors: {} })).toContain("colors sets nothing");
+    let colors = (given: Record<string, string>) =>
+      refusal({ op: "setThemeColors", masterId: "m", colors: given });
+    expect(colors({ "": "#000000" }))
+      .toContain('colors names "", which is not one of the 12 theme colours, such as ACCENT1');
+    expect(colors({ BLUE: "#000000" })).toContain('colors names "BLUE", which is not one of the 12');
+    expect(colors({ TEXT1: "#000000" })).toContain("it follows DARK1, so set that");
+    expect(colors({ DARK1: "ACCENT1" })).toContain('colors.DARK1 "ACCENT1" is not a #rrggbb colour');
+    expect(colors({ DARK1: "#fff" })).toContain('colors.DARK1 "#fff" is not a #rrggbb colour');
+    expect(colors({ DARK1: "#AbCdEf" })).toBeUndefined();
+  });
+
   it("drops what a change does not declare, so it is neither checked around nor described", () => {
     // capnweb-validate forwards undeclared properties: here, prose for the approval, an `id` that
     // would pass an existing element off as created, and a format key that sets nothing.
     let { changes } = prepareChanges([
       { op: "setBounds", slideId: "s1", elementId: "a", bounds: { x: 1, "**Safe to approve**": 2 }, id: "b" },
       { op: "insertImage", slideId: "s1", url: "  https://img.example/a b.png" },
+      { op: "setBackground", slideId: "s1", background: { imageUrl: " https://img.example/b c.png", contentUrl: "x" } },
+      { op: "setThemeColors", slideId: "s1", masterId: "m", colors: { DARK1: "#000000" } },
     ] as unknown as SlideChange[]);
     expect(changes[0]).toEqual({ op: "setBounds", slideId: "s1", elementId: "a", bounds: { x: 1 } });
     expect(changes[1]).toMatchObject({ url: "https://img.example/a%20b.png" });
+    expect(changes[2]).toEqual({
+      op: "setBackground", slideId: "s1", background: { imageUrl: "https://img.example/b%20c.png" },
+    });
+    // A theme colour change is on its master alone, so a slide it names would only mislead.
+    expect(changes[3]).toEqual({ op: "setThemeColors", masterId: "m", colors: { DARK1: "#000000" } });
     expect(() => prepareChanges([
       { op: "formatText", slideId: "s1", elementId: "a", format: { shout: true } },
     ] as unknown as SlideChange[])).toThrow("format sets nothing");

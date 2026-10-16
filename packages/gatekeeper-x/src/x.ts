@@ -110,8 +110,12 @@ type ConnectAttempt = {
   redirectUri: string;
   /** The connection generation the attempt began under; a disconnect or reconnect since wins. */
   startedUnder: string;
-  /** Whether the grant is staged rather than made live, fixed when the attempt starts. */
-  reconnect: boolean;
+  /**
+   * Set when the link was minted to connect a new account, whose grant goes live. Absent -- a
+   * reconnect's link, or one minted before this was recorded -- stages the grant: the safe way for a
+   * bearer link to land on an account that may already be connected.
+   */
+  firstConnect?: true;
   /** The scopes this attempt asked for, recorded on the grant if X's response omits them. */
   scopes: string[];
 };
@@ -327,7 +331,8 @@ export class UserAccount extends DurableObject<Env> {
     if (!this.#creds.stored()) await this.ctx.storage.setAlarm(Date.now() + CONNECT_TIMEOUT_MS);
     this.ctx.storage.kv.put("callback", callback);
     this.ctx.storage.kv.put<string[]>("requestedScopes", requestedScopes);
-    putInitiation(this.ctx.storage.kv, initiationNonce, Date.now());
+    putInitiation<Pick<ConnectAttempt, "firstConnect">>(this.ctx.storage.kv, initiationNonce, Date.now(),
+      { firstConnect: true });
   }
 
   /** Arms a reconnect or `ensureResources` flow asking for `requestedScopes`. */
@@ -347,7 +352,6 @@ export class UserAccount extends DurableObject<Env> {
       codeVerifier: pkce.codeVerifier,
       redirectUri,
       startedUnder: this.#creds.connectionGeneration(),
-      reconnect: this.#creds.stored() !== undefined,
       scopes,
     });
     if (oauthNonce === null) return null;
@@ -381,7 +385,7 @@ export class UserAccount extends DurableObject<Env> {
     try {
       identity = await fetchIdentity(grant.accessToken);
     } catch (error) {
-      if (!attempt.reconnect) await this.#revokeGrant(grant);
+      if (attempt.firstConnect) await this.#revokeGrant(grant);
       throw new Error("Could not read which X account authorized this connection. Please try again.",
         { cause: error });
     }
@@ -393,7 +397,7 @@ export class UserAccount extends DurableObject<Env> {
     }
 
     let handoff: ConnectHandoff;
-    if (attempt.reconnect) {
+    if (!attempt.firstConnect) {
       const pinned = kv.get<StoredIdentity>("identity");
       if (pinned !== undefined && pinned.id !== identity.id) {
         await this.#revokeGrant(grant);

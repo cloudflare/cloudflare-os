@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import ts from "typescript6";
 import {
-  DOCS_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX, SLIDES_TYPES_MODULE_PREFIX,
-  stripTypeModulePrefix,
+  DOCS_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX, GMAIL_TYPES_MODULE_PREFIX,
+  SHEETS_TYPES_MODULE_PREFIX, SLIDES_TYPES_MODULE_PREFIX, stripTypeModulePrefix,
 } from "../src/type-bundle";
 
 const SOURCE_DIR = join(dirname(fileURLToPath(import.meta.url)), "../src");
@@ -68,6 +68,24 @@ const tabShapeIsExact: Mutual<GoogleDocTab, ExpectedGoogleDocTab> = true;
 const tabKeysAreExact: Mutual<keyof GoogleDocTab, keyof ExpectedGoogleDocTab> = true;
 `;
 
+/** The names a declaration declares at top level, which share one scope in a flat bundle. */
+function topLevelNames(sourceText: string): string[] {
+  const file = ts.createSourceFile("/names.ts", sourceText, ts.ScriptTarget.ESNext);
+  return file.statements.flatMap(statement =>
+    (ts.isTypeAliasDeclaration(statement) || ts.isInterfaceDeclaration(statement) ||
+      ts.isClassDeclaration(statement) || ts.isFunctionDeclaration(statement) ||
+      ts.isEnumDeclaration(statement)) && statement.name
+      ? [statement.name.text]
+      : ts.isVariableStatement(statement)
+        ? statement.declarationList.declarations.flatMap(declaration =>
+          ts.isIdentifier(declaration.name) ? [declaration.name.text] : [])
+        : []);
+}
+
+function duplicates(names: string[]): string[] {
+  return names.filter((name, i) => names.indexOf(name) !== i);
+}
+
 function docBundle(): string {
   return [
     source("docs-read-types.txt"),
@@ -78,13 +96,64 @@ function docBundle(): string {
 function driveBundle(): string {
   return [
     source("docs-read-types.txt"),
-    source("sheets-types.txt"),
+    source("sheets-read-types.txt"),
     source("slides-read-types.txt"),
     stripTypeModulePrefix(source("drive-types.txt"), DRIVE_TYPES_MODULE_PREFIX),
   ].join("\n");
 }
 
+function sheetsBundle(): string {
+  return [
+    source("sheets-read-types.txt"),
+    stripTypeModulePrefix(source("sheets-types.txt"), SHEETS_TYPES_MODULE_PREFIX),
+  ].join("\n");
+}
+
+function slidesBundle(): string {
+  return [
+    source("slides-read-types.txt"),
+    stripTypeModulePrefix(source("slides-types.txt"), SLIDES_TYPES_MODULE_PREFIX),
+  ].join("\n");
+}
+
+/** The vendor's flat declaration bundle, composed as `GatekeeperVendor.getTypeScriptTypes()` does. */
+function vendorBundle(): string {
+  return [
+    stripTypeModulePrefix(source("types.txt"), GMAIL_TYPES_MODULE_PREFIX), docBundle(),
+    sheetsBundle(), slidesBundle(), source("calendar-types.txt"), source("bigquery-types.txt"),
+    stripTypeModulePrefix(source("drive-types.txt"), DRIVE_TYPES_MODULE_PREFIX),
+    source("chat-types.txt"),
+  ].join("\n");
+}
+
 describe("embedded agent declarations", () => {
+  it("exposes binary uploads and removable draft attachments without message write authority", () => {
+    const types = source("types.txt");
+    expect(compileAgentTypes(types + `
+declare const draft: GmailDraft;
+declare const message: GmailMessage;
+const file: GmailAttachmentInput = {
+  filename: "report.pdf", mimeType: "application/pdf", content: new ArrayBuffer(1),
+};
+const compose: GmailComposeOptions = {attachments: [file]};
+const reply: GmailReplyOptions = {attachments: [file]};
+const initial: GmailDraftInput = {attachments: [file]};
+const added: Promise<GmailDraftAttachment> = draft.addAttachment(file);
+const entries: Promise<GmailDraftAttachmentEntry[]> = draft.attachments();
+declare const draftAttachment: GmailDraftAttachment;
+const readable: GmailAttachment = draftAttachment;
+const removed: Promise<void> = draftAttachment.remove();
+// @ts-expect-error Patches cannot replace all attachments.
+const patch: GmailDraftPatch = {attachments: [file]};
+// @ts-expect-error Message attachment capabilities remain read-only.
+readable.remove();
+// @ts-expect-error Uploads take exact binary buffers, not base64 strings.
+const encoded: GmailAttachmentInput = {filename: "file", mimeType: "text/plain", content: "YQ=="};
+// @ts-expect-error Messages cannot add attachments.
+message.addAttachment(file);
+`).filter(message => !message.includes("'cloudflare:workers'"))).toEqual([]);
+  });
+
   it("compiles the exact Google Doc agent declaration bundle without module dependencies", () => {
     expect(compileAgentTypes(docBundle())).toEqual([]);
   });
@@ -94,11 +163,25 @@ describe("embedded agent declarations", () => {
   });
 
   it("compiles the exact Google Slides agent declaration bundle without module dependencies", () => {
-    expect(compileAgentTypes([
-      source("slides-read-types.txt"),
-      stripTypeModulePrefix(source("slides-types.txt"), SLIDES_TYPES_MODULE_PREFIX),
-    ].join("\n"))).toEqual([]);
+    expect(compileAgentTypes(slidesBundle())).toEqual([]);
   });
+
+  it("compiles the exact Google Sheets agent declaration bundle without module dependencies", () => {
+    expect(compileAgentTypes(sheetsBundle())).toEqual([]);
+  });
+
+  it.each([
+    ["vendor", vendorBundle, sheetsBundle],
+    ["Drive", driveBundle, () => source("sheets-read-types.txt")],
+  ] as const)(
+    "declares each Google Sheets name once in the flat %s bundle",
+    (_name, bundle, sheets) => {
+      const sheetsNames = topLevelNames(sheets());
+      expect(sheetsNames).toContain("GoogleSpreadsheetReadSession");
+      expect(duplicates(topLevelNames(bundle())).filter(name => sheetsNames.includes(name)))
+        .toEqual([]);
+    },
+  );
 
   it("declares the flattened tab contract on the canonical read session", () => {
     const readTypes = source("docs-read-types.d.ts");
@@ -129,6 +212,76 @@ describe("embedded agent declarations", () => {
       "replaceText(oldMarkdown: string, newMarkdown: string, tabId?: string): Promise<void>;",
     );
     expect(writeTypes).toContain("appendText(markdown: string, tabId?: string): Promise<void>;");
+  });
+
+  it("gives a directly bound spreadsheet its own session and Drive only the read session", () => {
+    expect(topLevelNames(vendorBundle())).toContain("GoogleSpreadsheetSession");
+    expect(compileAgentTypes(vendorBundle() + `
+declare const sheet: GoogleSpreadsheetSession;
+const queued: Promise<void> = sheet.updateSpreadsheet([
+  { op: "writeCells", range: "'Sales 2026'!A1:B1", values: [["=SUM(C1:C9)", null]] },
+  { op: "clearRange", range: "Sales!A2:B3" },
+]);
+// @ts-expect-error A change names its range.
+sheet.updateSpreadsheet([{ op: "clearRange" }]);
+sheet.updateSpreadsheet([
+  { op: "addSheet", title: "Q4", index: 1, rowCount: 100, columnCount: 5 },
+  { op: "writeCells", range: "'Q4'!A1", values: [["Forecast"]] },
+  { op: "renameSheet", sheet: "Q4", title: "Q4 2026" },
+  { op: "duplicateSheet", sheet: "Sales", title: "Copy", index: 2 },
+  { op: "insertRows", sheet: "Copy", at: 3, count: 2 },
+  { op: "deleteRows", sheet: "Sales", at: 5 },
+  { op: "insertColumns", sheet: "Sales", at: "C" },
+  { op: "deleteColumns", sheet: "Sales", at: "C", count: 2 },
+  { op: "deleteSheet", sheet: "Copy" },
+]);
+// @ts-expect-error Columns are named by their letters.
+sheet.updateSpreadsheet([{ op: "insertColumns", sheet: "Sales", at: 3 }]);
+// @ts-expect-error A sheet is named by its title, not its ID.
+sheet.updateSpreadsheet([{ op: "deleteSheet", sheet: 0 }]);
+// @ts-expect-error A sheet added needs a title.
+sheet.updateSpreadsheet([{ op: "addSheet" }]);
+`)
+      // The agent's runtime provides the module Chat's declarations import.
+      .filter(message => !message.includes("'cloudflare:workers'"))).toEqual([]);
+    expect(compileAgentTypes(sheetsBundle() +
+      "\nconst readable: GoogleSpreadsheetReadSession = null! as GoogleSpreadsheetSession;\n"))
+      .toEqual([]);
+    const driveNames = topLevelNames(driveBundle());
+    expect(driveNames).toContain("GoogleSpreadsheetReadSession");
+    expect(driveNames).not.toContain("GoogleSpreadsheetSession");
+    expect(driveNames).not.toContain("SheetChange");
+    expect(source("sheets-types.d.ts")).toContain(
+      "export interface GoogleSpreadsheetSession extends GoogleSpreadsheetReadSession",
+    );
+  });
+
+  it.each([
+    ["vendor", vendorBundle],
+    ["Drive", driveBundle],
+  ] as const)("declares the format read types once in the flat %s bundle", (_name, bundle) => {
+    const names = topLevelNames(bundle());
+    const formatNames = [
+      "SheetColor", "SheetBorderStyle", "SheetBorder", "SheetNumberFormat", "SheetCellFormat",
+      "SpreadsheetFormats",
+    ];
+    // Slides declares colours, borders and text formats of its own in the same flat scope.
+    expect(names).toContain("SlideColor");
+    for (const name of formatNames) expect(names.filter(candidate => candidate === name)).toEqual([name]);
+    expect(compileAgentTypes(bundle() + `
+declare const sheet: GoogleSpreadsheetReadSession;
+const read: Promise<SpreadsheetFormats> = sheet.readFormats("'Sales 2026'!A1:C3");
+const format: SheetCellFormat | null = null! as SpreadsheetFormats["formats"][number][number];
+const border: SheetBorder = { style: "SOLID_MEDIUM", color: "#ff0000" };
+const set: SheetCellFormat = {
+  bold: true, fontSize: 14, textColor: "ACCENT1", fillColor: "#ffffff", wrap: "CLIP",
+  numberFormat: { type: "CURRENCY", pattern: '"$"#,##0.00' }, borders: { top: border },
+};
+// @ts-expect-error A border has a style.
+const unstyled: SheetBorder = { color: "#000000" };
+// @ts-expect-error Wrapping is named as the agent names it.
+const legacy: SheetCellFormat = { wrap: "OVERFLOW_CELL" };
+`).filter(message => !message.includes("'cloudflare:workers'"))).toEqual([]);
   });
 
   it("hands out only read-only native sessions from Drive", () => {

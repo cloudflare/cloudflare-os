@@ -16,6 +16,17 @@ merge request), the same worktree integration (commit ids advertised, `gitPull()
 smart-HTTP, `push()` as a queued action), and the same review and merge flows expressed in GitLab's
 own terms. See `plans/gitlab-gatekeeper.md` for the design record.
 
+`gitPull(oids, options)` returns a `GitPullTransfer`: a one-shot raw PACK stream and a separate
+terminal status. Lazy DO reads consume it through the bounded object cache. The same capability
+supports native Git hydration, but does not enable it here: the container consumer ships in a
+separate kernel worktree-replica bootstrap change. That consumer must bind the bootstrap to an
+authorized immutable commit, request its complete tree at depth one, and import the pack without
+populating the DO cache. `gitPull` is kernel-facing, not a gadget-facing arbitrary Git proxy;
+the kernel selects objects from recorded provenance, not a provider-side advertisement validator.
+No encoded Git commands, ref discovery, or arbitrary clone URLs cross this interface. OAuth and
+optional Cloudflare Access credentials remain in the gatekeeper's transport, including on
+self-hosted instances.
+
 ## Setting up GitLab OAuth credentials
 
 If you're running this project locally and want to use GitLab integrations, you'll need to create

@@ -370,20 +370,6 @@ html {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-kumo-fill) 65%, transparent);
 }
 
-.themed-prompt-card-shadow {
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--color-kumo-fill) 75%, transparent),
-    0 1px 2px rgba(20, 17, 16, 0.03),
-    0 10px 28px -16px rgba(20, 17, 16, 0.12);
-}
-
-.themed-prompt-card-shadow:focus-within {
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--color-kumo-fill) 85%, transparent),
-    0 1px 2px rgba(20, 17, 16, 0.04),
-    0 14px 34px -14px rgba(20, 17, 16, 0.16);
-}
-
 .themed-user-bubble-shadow {
   box-shadow:
     0 1px 1px rgba(82, 16, 0, 0.03),
@@ -429,20 +415,6 @@ html {
     color-mix(in srgb, var(--color-kumo-tint) 38%, transparent) 38%,
     transparent 70%
   );
-}
-
-[data-mode="dark"] .themed-prompt-card-shadow {
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--color-kumo-fill-hover) 42%, transparent),
-    0 1px 2px rgba(0, 0, 0, 0.24),
-    0 10px 28px -16px rgba(0, 0, 0, 0.45);
-}
-
-[data-mode="dark"] .themed-prompt-card-shadow:focus-within {
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, var(--color-kumo-fill-hover) 52%, transparent),
-    0 1px 2px rgba(0, 0, 0, 0.28),
-    0 14px 34px -14px rgba(0, 0, 0, 0.55);
 }
 
 [data-mode="dark"] .themed-surface-inset {

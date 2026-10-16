@@ -174,6 +174,36 @@ describe("Google Slides presentation session", () => {
       .rejects.toThrow('Slide "new" is a new slide awaiting approval');
   });
 
+  // A picture's `contentUrl` acts as the account that read it for 30 minutes, so no read asks
+  // for it, and one Google sent anyway would not be returned.
+  it("reads a picture background by its size alone, never asking for its URL", async () => {
+    let picture = { stretchedPictureFill: { contentUrl: IMAGE_URL, size: {} } };
+    deck = presentation([
+      slide("s1", [shape("t1", text(["Intro"]), { placeholder: "TITLE" })], { background: picture }),
+      slide("s2", []),
+    ]);
+    deck.masters![0].pageProperties!.pageBackgroundFill = picture;
+    let { session } = newSession();
+    using _session = session;
+
+    let info = await session.getPresentation();
+    let [read] = await session.getSlides(["s1"]);
+
+    let masks = providerFetches.map(url => url.searchParams.get("fields") ?? "");
+    expect(masks).toHaveLength(3);
+    for (let mask of masks) {
+      expect(mask).toContain("stretchedPictureFill(size)");
+      expect(mask).not.toContain("contentUrl");
+      // A parent field with no sub-mask returns everything under it, the picture's URL included.
+      expect(mask).not.toMatch(/(pageProperties|pageBackgroundFill|stretchedPictureFill)(?!\()/);
+      expect(mask.replaceAll("stretchedPictureFill(size)", "")).not.toContain("stretchedPictureFill");
+    }
+    expect(info.masters.map(m => m.background)).toEqual(["picture"]);
+    expect(info.slides.map(s => s.background)).toEqual(["picture", undefined]);
+    expect(read.background).toBe("picture");
+    expect(JSON.stringify([info, read])).not.toContain("googleusercontent");
+  });
+
   describe("getSlideThumbnail", () => {
     it("returns the rendered PNG, sized by its own header, without sending the token", async () => {
       let { queue, session } = newSession();

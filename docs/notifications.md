@@ -108,6 +108,12 @@ belongs to whoever decided: it runs on their model and account, so its notificat
 The deep link opens the chat with `showChat`, which leaves full-screen preview and switches a phone
 showing the workspace's app to the chat.
 
+A user can mute a workspace, for a while or until they unmute it, from its menu in the sidebar, the
+workspace list, or the editor's menu on a phone. The mute lives on that workspace's record in the
+user's own User DO (`notificationMute`), so it applies only to them and is deleted with the record.
+While it lasts, the User DO sends the workspace's finished tasks to no tab and no device. Permission
+requests still come through, since a task waiting on the user stays stuck until they answer.
+
 ## Deployment contract
 
 The trusted deploy service injects these into the backend; the private key is a secret:

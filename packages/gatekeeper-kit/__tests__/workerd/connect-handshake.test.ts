@@ -4,6 +4,7 @@ import {
   claimOAuth,
   isConnectAttempted,
   markConnectAttempted,
+  NONCE_KEY,
   putInitiation,
   type ConnectNonceKv,
   type StoredNonce,
@@ -29,6 +30,16 @@ describe("two-stage connect handshake", () => {
     expect(claimOAuth(kv, oauthNonce!, 102)).toBeNull();
   });
 
+  it("carries initiation metadata to the claim, with OAuth-stage metadata taking precedence", () => {
+    const kv = makeKv();
+    putInitiation(kv, "init", 100, { firstConnect: true, scopes: ["read"] });
+
+    const oauthNonce = advanceToOAuth(kv, "init", 101, { scopes: ["read", "write"], verifier: "pkce" });
+
+    expect(claimOAuth<{ firstConnect: true; scopes: string[]; verifier: string }>(kv, oauthNonce!, 102))
+      .toMatchObject({ firstConnect: true, scopes: ["read", "write"], verifier: "pkce", stage: "oauth" });
+  });
+
   it("refuses metadata that would silently lose a reserved field", () => {
     const kv = makeKv();
     putInitiation(kv, "init", 100);
@@ -37,6 +48,13 @@ describe("two-stage connect handshake", () => {
       .toThrow(/reserved key "stage"/);
     // Rejected before the attempt was consumed, so the user's link still works.
     expect(advanceToOAuth(kv, "init", 101)).not.toBeNull();
+  });
+
+  it("refuses initiation metadata that would lose a reserved field", () => {
+    const kv = makeKv();
+
+    expect(() => putInitiation(kv, "init", 100, { expiresAt: 0 } as never)).toThrow(/reserved key "expiresAt"/);
+    expect(kv.get(NONCE_KEY)).toBeUndefined();
   });
 
   it("rejects an absent initiation nonce", () => {

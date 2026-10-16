@@ -1,15 +1,13 @@
-// Agent read path over enabled collections. Every returned result is authorized as an observation
-// and attributed to the collections whose metadata or content it reveals.
+// Agent read path over enabled collections. Every returned result is authorized as an observation;
+// results revealing collection contents are attributed to those collections for observer checks.
 
-import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import type {
-  ObservationAuthorizer, ObservationDescription,
-} from "@gadgets/workshop-shared/gatekeeper";
+import type { ObservationGate, ObservationInput } from "@gadgets/gatekeeper-kit/observers";
 import {
   ContextSearchResult, ContextListing, ContextListingEntry, ContextReadResult,
   ContextCollectionVisibility, decodeDocId, encodeDocId, isTextContentType, VENDOR_ID,
+  type ContextLibrary,
 } from "./context-types.js";
 import type { ContextCollectionDurableObject } from "./context-collection.js";
 import type { UserLibraryDurableObject } from "./user-library.js";
@@ -23,14 +21,8 @@ const logger = obsContext.createLogger({
 // Fanout cap for whole-library search/list.
 const MAX_COLLECTION_FANOUT = 8;
 
-type ObserveCollections = (collectionIds: string[]) => Promise<{
-  excludeObservers?: string[];
-  pendingCollections: string[];
-  commit(): void;
-}>;
-
 @validateRpc()
-export class LibraryReadSession extends RpcTarget {
+export class LibraryReadSession extends RpcTarget implements ContextLibrary {
   // Per-session enabled set. Visibility is retained by the source API, though observer enforcement
   // uses collection-level access checks rather than the old sticky sharing prohibition.
   #enabledPromise?: Promise<Map<string, ContextCollectionVisibility>>;
@@ -40,15 +32,14 @@ export class LibraryReadSession extends RpcTarget {
     private userLibraries: DurableObjectNamespace<UserLibraryDurableObject>,
     private domain: string,
     private accountId: string,
-    private authorizer: NativeRpcStub<ObservationAuthorizer>,
-    private observeCollections: ObserveCollections,
+    private gate: ObservationGate,
   ) {
     super();
   }
 
-  /** Release the authorizer owned by this read session. */
+  /** Release the authorizer owned by this read session's gate. */
   [Symbol.dispose](): void {
-    this.authorizer[Symbol.dispose]?.();
+    this.gate[Symbol.dispose]();
   }
 
   #collection(id: string): DurableObjectStub<ContextCollectionDurableObject> {
@@ -64,15 +55,12 @@ export class LibraryReadSession extends RpcTarget {
     return (this.#enabledPromise ??= this.#userLib().getEnabledCollections(this.domain));
   }
 
-  async #authorize(
-      collectionIds: string[], description: ObservationDescription): Promise<void> {
-    let check = collectionIds.length > 0
-      ? await this.observeCollections(collectionIds)
-      : { pendingCollections: [], commit() {} };
-    await this.authorizer.authorizeObservation({
-      ...description, excludeObservers: check.excludeObservers,
-    });
-    check.commit();
+  // A read revealing no collection contents is authorized against the admission baseline, so it
+  // does not constrain who may observe the workspace.
+  #authorize(collectionIds: string[], description: ObservationInput): Promise<void> {
+    return this.gate.authorize(description, collectionIds.length > 0
+      ? { kind: "collections", ids: collectionIds }
+      : { kind: "baseline" });
   }
 
   async search(query: string, opts?: {
@@ -134,13 +122,9 @@ export class LibraryReadSession extends RpcTarget {
     let listing = await this.#fetchListing(opts);
     // Nothing listed → nothing was observed, so don't record an observation (mirrors read()).
     if (listing.entries.length === 0) return listing;
-    // Both collection contents and top-level collection titles/descriptions reveal collection data.
-    let collectionIds = opts?.collectionId
-      ? [opts.collectionId]
-      : listing.entries
-          .filter((entry): entry is Extract<ContextListingEntry, { type: "collection" }> =>
-            entry.type === "collection")
-          .map(entry => entry.id);
+    // Collection titles, descriptions, and counts are discovery metadata the agent catalog already
+    // advertises unobserved, so only drilling into a collection attributes the read to it.
+    let collectionIds = opts?.collectionId ? [opts.collectionId] : [];
     await this.#authorize(collectionIds, {
       title: opts?.collectionId
         ? `Context listing: ${opts.collectionId}${opts.path ? "/" + opts.path : ""}`

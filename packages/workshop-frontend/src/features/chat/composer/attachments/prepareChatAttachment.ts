@@ -1,6 +1,7 @@
 import { formatAttachmentSize } from "../../attachmentFormatting";
 
-export const MAX_CHAT_ATTACHMENT_BYTES = 1024 * 1024;
+/** Per-file attachment size limit; mirrors the backend's (chat-attachment-validation.ts). */
+export const MAX_CHAT_ATTACHMENT_BYTES = 4 * 1024 * 1024;
 export const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 5 * 1024 * 1024;
 const MAX_CHAT_ATTACHMENT_SOURCE_IMAGE_BYTES = 25 * 1024 * 1024;
 const CHAT_ATTACHMENT_IMAGE_MAX_EDGE = 1568;

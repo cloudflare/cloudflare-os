@@ -1,6 +1,6 @@
 import { logRpcFailure } from '../rpcErrors'
 import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useKumoToastManager } from '@cloudflare/kumo'
 import {
   MagnifyingGlass,
@@ -26,6 +26,8 @@ import { useDocumentTitle } from '../useDocumentTitle'
 import { useSiteName } from '../ServerConfigContext'
 import { AccountsSubscriberAdapter } from '../accountsSubscriber'
 import { openConnectWindow } from '../connectHandoff'
+import { AuthPopupCancelledError } from '../features/native-app/authPopup'
+import { nativeApp } from '../features/native-app/nativeApp'
 
 export const Route = createFileRoute('/gatekeepers')({
   component: ConnectorsPage,
@@ -466,10 +468,14 @@ function ConnectorsPage() {
 
   const [modalTarget, setModalTarget] = useState<ModalTarget>(null)
   const [connecting, setConnecting] = useState(false)
+  const [canCancelConnect, setCanCancelConnect] = useState(false)
+  const connectCancellation = useRef<AbortController | null>(null)
   const [disconnecting, setDisconnecting] = useState(false)
 
   const [reconnectingAccountId, setReconnectingAccountId] = useState<number | null>(null)
   const [ensuringResourceUrlPatterns, setEnsuringResourceUrlPatterns] = useState<string[]>([])
+
+  useEffect(() => () => connectCancellation.current?.abort(), [])
 
   useEffect(() => {
     localStorage.setItem('gatekeepers-view', view)
@@ -567,6 +573,8 @@ function ConnectorsPage() {
   const handleConfirmConnect = async (resourceUrlPatterns?: string[]) => {
     if (!modalTarget || modalTarget.kind !== 'connect') return
     const vendorId = modalTarget.vendorId
+    const cancellation = new AbortController()
+    connectCancellation.current = cancellation
     setConnecting(true)
     try {
       if (isTargetAmbient) {
@@ -577,13 +585,18 @@ function ConnectorsPage() {
         // If the gatekeeper provides a management UI, its nav entry should appear without a reload.
         refreshGatekeeperApps(authenticatedApi)
       } else {
-        openConnectWindow(await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns))
+        const flow = await authenticatedApi.connectAccount(vendorId, resourceUrlPatterns)
+        setCanCancelConnect(!!nativeApp()?.authentication)
+        await openConnectWindow(flow, authenticatedApi, cancellation.signal)
       }
       handleCloseModal()
     } catch (err) {
+      if (err instanceof AuthPopupCancelledError) return
       console.error('Failed to connect account:', err)
-      toasts.add({ title: 'Failed to start connection', variant: 'error' })
+      toasts.add({ title: err instanceof Error ? err.message : 'Could not complete connection', variant: 'error' })
     } finally {
+      connectCancellation.current = null
+      setCanCancelConnect(false)
       setConnecting(false)
     }
   }
@@ -596,12 +609,13 @@ function ConnectorsPage() {
         modalTarget.accountId,
         resourceUrlPatterns,
       )
-      if (flow) openConnectWindow(flow)
-      // The popup redeems the ticket itself; the new grant arrives via subscribeConnectedAccounts(),
+      if (flow) await openConnectWindow(flow, authenticatedApi)
+      // After ticket redemption the new grant arrives via subscribeConnectedAccounts(),
       // and the toggle reflects it once `grantedResourceUrlPatterns` updates.
     } catch (err) {
+      if (err instanceof AuthPopupCancelledError) return
       console.error('Failed to expand account access:', err)
-      toasts.add({ title: 'Failed to request additional access', variant: 'error' })
+      toasts.add({ title: err instanceof Error ? err.message : 'Failed to request additional access', variant: 'error' })
     } finally {
       setEnsuringResourceUrlPatterns((prev) =>
         prev.filter((p) => !resourceUrlPatterns.includes(p)),
@@ -631,10 +645,11 @@ function ConnectorsPage() {
   const handleReconnect = async (accountId: number) => {
     setReconnectingAccountId(accountId)
     try {
-      openConnectWindow(await authenticatedApi.reconnectAccount(accountId))
+      await openConnectWindow(await authenticatedApi.reconnectAccount(accountId), authenticatedApi)
     } catch (err) {
+      if (err instanceof AuthPopupCancelledError) return
       console.error('Failed to reconnect account:', err)
-      toasts.add({ title: 'Failed to reconnect account', variant: 'error' })
+      toasts.add({ title: err instanceof Error ? err.message : 'Failed to reconnect account', variant: 'error' })
     } finally {
       setReconnectingAccountId(null)
     }
@@ -858,6 +873,7 @@ function ConnectorsPage() {
           color={activeVendor.description.color}
           autoProvisions={isTargetAmbient}
           connecting={connecting}
+          onCancelConnect={canCancelConnect ? () => connectCancellation.current?.abort() : undefined}
           onConfirm={handleConfirmConnect}
           accountDescription={activeAccount?.accountDescription}
           credentialsValid={activeAccount?.credentialsValid}

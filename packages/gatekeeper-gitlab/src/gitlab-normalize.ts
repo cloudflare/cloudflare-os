@@ -1,8 +1,9 @@
 // Pure helpers behind the GitLab gatekeeper: URL builders for the configured instance,
-// normalization of REST responses into the agent-facing types, the filters and comparators the
-// listing cursors apply, and the unified-patch reader. No runtime imports, so everything here
-// runs under the package's Node vitest project.
+// normalization of REST responses into the agent-facing types, and the filters and comparators
+// the listing cursors apply. No platform imports, so everything here runs under the package's
+// Node vitest project.
 
+import { parseUnifiedPatch } from "@gadgets/gatekeeper-kit/git-diff";
 import { stripTrailingSlashes, type GitOid } from "@gadgets/workshop-shared/gatekeeper";
 import type {
   GitLabActor,
@@ -495,56 +496,6 @@ function lineRangeEndpoint(
 // ---------------------------------------------------------------------------
 // Diffs
 
-/**
- * Read a unified patch into hunks, numbering each line on its old/new side. GitLab's `diff`
- * strings (and compare `diffs`) are unified patches without the `diff --git` header, so the
- * first line is already the `@@` hunk header. Every line of a patch ends in a newline, so the
- * empty string after the last one is not a line: read as one, it would be a blank context line
- * past the end of the hunk -- one an agent could anchor a comment to.
- */
-export function parsePatch(patch: string): GitLabDiffHunk[] {
-  const lines = patch.split("\n");
-  if (lines.at(-1) === "") lines.pop();
-  const hunks: GitLabDiffHunk[] = [];
-  let currentHunk: GitLabDiffHunk | undefined;
-  let oldLine = 0;
-  let newLine = 0;
-
-  for (const line of lines) {
-    const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
-    if (match) {
-      oldLine = Number(match[1]);
-      newLine = Number(match[3]);
-      currentHunk = { header: line, lines: [] };
-      hunks.push(currentHunk);
-      continue;
-    }
-
-    if (!currentHunk) continue;
-
-    if (line.startsWith("+")) {
-      currentHunk.lines.push({ kind: "added", text: line.slice(1), newLineNumber: newLine });
-      newLine += 1;
-    } else if (line.startsWith("-")) {
-      currentHunk.lines.push({ kind: "removed", text: line.slice(1), oldLineNumber: oldLine });
-      oldLine += 1;
-    } else if (line.startsWith("\\")) {
-      currentHunk.lines.push({ kind: "context", text: line });
-    } else {
-      currentHunk.lines.push({
-        kind: "context",
-        text: line.startsWith(" ") ? line.slice(1) : line,
-        oldLineNumber: oldLine,
-        newLineNumber: newLine,
-      });
-      oldLine += 1;
-      newLine += 1;
-    }
-  }
-
-  return hunks;
-}
-
 /** Count added and removed lines across hunks (GitLab's diff objects carry no counts). */
 export function countPatchLines(hunks: GitLabDiffHunk[]): { additions: number; deletions: number } {
   let additions = 0;
@@ -566,7 +517,7 @@ export function normalizeDiffFile(file: GitLabDiffResponse): GitLabDiffFile {
   // GitLab excludes the patch for binary files (an empty `diff`) and for files over its diff
   // limits (`too_large`, or `collapsed` when it is fetchable separately).
   const omitted = !file.diff || file.too_large === true || file.collapsed === true;
-  const hunks = omitted ? [] : parsePatch(file.diff);
+  const hunks = omitted ? [] : parseUnifiedPatch(file.diff);
   return {
     path: file.new_path ?? file.old_path,
     previousPath: file.renamed_file ? file.old_path : undefined,

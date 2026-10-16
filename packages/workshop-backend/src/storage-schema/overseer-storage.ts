@@ -22,6 +22,7 @@ import { createTypedStorage, collection, singleton, keyString } from "@gadgets/t
 import {
   actionChangeTime,
   type ActionState, type AgentSpawnerConfig, type AiChatAuthorInfo, type AiChatMessage,
+  type AlwaysAvailableResource,
   type AiChatMetadata, type BlueprintBindingAnnotation, type BlueprintMetadata,
   type BlueprintOutput, type ChatGadgetPinRecord, type CollaboratorRole, type GadgetUpstream,
   type GatekeeperCreationSpec, type PermissionEdge, type WorkpieceId,
@@ -560,9 +561,10 @@ export type AiChatAgentContext = {
    * and all gatekeepers which those gadgets bind to, but the contents may be different depending
    * on how the chat thread was started (e.g. agent spawners initialize env in a specific way).
    *
-   * This map is frozen after the chat starts. "changes" messages in the chat log may introduce
-   * new bindings, but they aren't added here; instead, the chat log must be replayed to find out
-   * the current binding set.
+   * This map is fixed after the chat starts, except that a chat not spawned takes in each ambient
+   * gatekeeper the workspace gains later (see `alwaysAvailableCapsuleIds`). "changes" messages in
+   * the chat log may introduce new bindings, but they aren't added here; instead, the chat log must
+   * be replayed to find out the current binding set.
    *
    * This is absent for chats created before named chat bindings existed; such chats are seeded
    * lazily at their next turn start.
@@ -573,7 +575,8 @@ export type AiChatAgentContext = {
   bindings?: Record<string, WorkpieceId>;
 
   /**
-   * Gatekeeper IDs for ambient capsules which were instantiated into this chat when it started.
+   * Gatekeeper IDs for ambient capsules instantiated into this chat: those the workspace had when
+   * the chat started, then, for a chat not spawned, each one it gained later, in that order.
    * This array predates the creation of per-chat named bindings; back then, ambient gatekeepers
    * were delivered as numbered "capsules", occupying the lowest numbers in the capsules array, and
    * this array specified their order. But with the advent of per-chat named bindings, these are now
@@ -595,10 +598,9 @@ export type AiChatAgentContext = {
    * updated for changes made in this chat: it knows what it changed from its own tool calls, and
    * the user's code edits reach it as observeUserChanges results. Changes made elsewhere (a gadget
    * created, renamed or deleted outside this chat, or a binding merged from another chat) show only
-   * after the next compaction or in a new chat; tool calls still see the current state. The rest
-   * of the system prompt (output formats, vendors to connect, always-available resources) is still
-   * rebuilt each turn: nothing the chat does changes it, so it costs a cache miss only when
-   * someone outside the chat changes it.
+   * after the next compaction or in a new chat; tool calls still see the current state. Output
+   * formats and vendors to connect are still listed afresh each turn: nothing the chat does
+   * changes them, so they cost a cache miss only when someone outside the chat changes them.
    *
    * Compaction replaces the older history anyway, so each compaction lists the gadgets afresh and
    * saves that list in its CompactionCheckpoint, for the turns after it. The list saved here is
@@ -606,6 +608,21 @@ export type AiChatAgentContext = {
    * it was sent with.
    */
   workspacePrompt?: string;
+
+  /**
+   * The always-available resources (see `alwaysAvailableCapsuleIds`) as the system prompt lists
+   * them, with their catalogs, saved by the first turn that finds this unset. Turns use the active
+   * CompactionCheckpoint's list instead when it has one.
+   *
+   * Like `workspacePrompt`, this keeps the system prompt the same when a catalog changes, e.g. when
+   * someone adds a skill to the Context Library, or when the chat gains a resource, e.g. when the
+   * owner turns on Web Search. Neither happens from inside the chat, so the agent is told instead:
+   * before each model request it compares the current resources with the ones it last saw, and
+   * records a "catalogChange" message for those that are new or whose catalog differs. A catalog
+   * that failed to load is not a change. A resource the chat can no longer reach drops out of the
+   * list.
+   */
+  alwaysAvailableResources?: AlwaysAvailableResource[];
 };
 
 /**
@@ -640,6 +657,14 @@ export type CompactionCheckpoint = {
    * existed; turns after those list the gadgets afresh.
    */
   workspacePrompt?: string;
+
+  /**
+   * The always-available resources the system prompt lists after this checkpoint (see
+   * AiChatAgentContext.alwaysAvailableResources): the list before it, updated by the
+   * "catalogChange" messages it summarizes. Absent on checkpoints written before this field
+   * existed; turns after those use the chat's own list.
+   */
+  alwaysAvailableResources?: AlwaysAvailableResource[];
 
   /**
    * The chat's named bindings. Retained messages and the summary refer to these names as

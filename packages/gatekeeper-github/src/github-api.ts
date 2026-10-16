@@ -1,7 +1,9 @@
-import type { RefreshCredentials } from "@gadgets/gatekeeper-kit/credentials";
+import { CredentialsExpiredError, isCredentialsExpired, type RefreshCredentials } from "@gadgets/gatekeeper-kit/credentials";
+import { validateBranchName } from "@gadgets/gatekeeper-kit/git-transport";
 import {
   isInvalidGrant, mergeOAuthTokens, OAuthClient, oauthRefresh,
 } from "@gadgets/gatekeeper-kit/oauth-client";
+import type { UserAccount } from "./github";
 
 /**
  * A GitHub OAuth grant. An expiring grant -- the default for OAuth apps registered since August
@@ -17,6 +19,7 @@ export type GitHubOAuthGrant = {
 };
 
 export type GitHubSimpleUser = {
+  id: number;
   login: string;
   name?: string | null;
   avatar_url: string;
@@ -39,6 +42,8 @@ export type GitHubRepoResponse = {
   private?: boolean;
   default_branch: string;
   owner: GitHubSimpleUser;
+  /** The authenticated account's permissions on the repository. */
+  permissions?: { admin: boolean };
 };
 
 export type GitHubIssueResponse = {
@@ -157,6 +162,51 @@ export type GitHubTagResponse = {
   };
 };
 
+/** A repository webhook as this gatekeeper configures one: JSON payloads, signed with `secret`. */
+export type GitHubRepoWebhookConfig = {
+  url: string;
+  secret: string;
+  events: readonly string[];
+};
+
+/** A repository webhook, as GitHub reports one (never with its secret). */
+export type GitHubRepoWebhookResponse = {
+  id: number;
+  active?: boolean;
+  events?: string[];
+  /** Where and how it delivers: `content_type` `"json"` or `"form"`; `insecure_ssl` `"0"` verifies TLS. */
+  config: { url?: string; content_type?: string; insecure_ssl?: string | number };
+};
+
+/** One attempt at a webhook delivery, as the webhook's delivery log lists it. */
+export type GitHubWebhookDeliveryResponse = {
+  id: number;
+  /** The delivery's `X-GitHub-Delivery` id, which every redelivery of it keeps. */
+  guid: string;
+  delivered_at: string;
+  /** The HTTP status the attempt was answered with. */
+  status_code: number;
+};
+
+function webhookBody({ url, secret, events }: GitHubRepoWebhookConfig) {
+  return { active: true, events, config: { url, secret, content_type: "json", insecure_ssl: "0" } };
+}
+
+/** Bounds one read of a webhook's delivery log, at 100 attempts a page. */
+const MAX_DELIVERY_PAGES = 10;
+/**
+ * Bounds one listing of a repository's webhooks, at 100 a page: far beyond the 20 per event that
+ * GitHub allows a repository, for any likely number of events.
+ */
+const MAX_WEBHOOK_PAGES = 20;
+
+/** The `cursor` of the page a `Link` header names as the next, if any. */
+function nextCursor(headers: Headers): string | undefined {
+  const next = headers.get("Link")?.split(",").find(link => /;\s*rel="next"/.test(link));
+  const url = next?.match(/<([^>]+)>/)?.[1];
+  return (url && URL.parse(url)?.searchParams.get("cursor")) || undefined;
+}
+
 /** A commit author/committer identity as recorded in the git commit object itself. */
 export type GitHubGitIdentityResponse = {
   name?: string | null;
@@ -230,13 +280,21 @@ export class GitHubApiError extends Error {
   status: number;
   details?: unknown;
   isAuthError: boolean;
+  /**
+   * Whether GitHub refused the request for a rate limit, primary or secondary, rather than for want
+   * of permission: with a 429, or a 403 that its rate-limit headers mark as one, or whose message
+   * does, as GitHub's docs say a secondary limit's may be told by alone.
+   */
+  rateLimited: boolean;
 
-  constructor(status: number, message: string, details?: unknown) {
+  constructor(status: number, message: string, details?: unknown, headers?: Headers) {
     super(message);
     this.name = "GitHubApiError";
     this.status = status;
     this.details = details;
     this.isAuthError = status === 401;
+    this.rateLimited = status === 429 || (status === 403 && (headers?.get("x-ratelimit-remaining") === "0" ||
+      headers?.has("retry-after") === true || /\bsecondary rate limit\b/i.test(message)));
   }
 }
 
@@ -401,7 +459,7 @@ async function request<T>(
         message = errorMessage;
       }
     }
-    throw new GitHubApiError(response.status, message, parsed);
+    throw new GitHubApiError(response.status, message, parsed, response.headers);
   }
 
   const parsed = await parseBody(response);
@@ -594,6 +652,17 @@ export class GitHubApi {
     );
   }
 
+  /**
+   * The repository with GitHub id `id`, whatever it is named now. `/repositories/<id>` is where
+   * GitHub redirects a renamed repository's old path.
+   */
+  async getRepoByIdConditional(
+    id: number,
+    options: ConditionalRequestOptions = {},
+  ): Promise<ConditionalRequestResult<GitHubRepoResponse>> {
+    return await this.#conditionalGet<GitHubRepoResponse>(`/repositories/${id}`, undefined, options);
+  }
+
   async listRepos(options: {
     affiliation?: string;
     sort?: string;
@@ -619,6 +688,75 @@ export class GitHubApi {
   }): Promise<GitHubRepoResponse[]> {
     const result = await this.#request<{ items: GitHubRepoResponse[] }>("GET", "/search/repositories", { query: options });
     return result.data.items;
+  }
+
+  // A repository's webhooks are addressed by its id, as `/repositories/<id>` is where GitHub
+  // redirects a renamed repository's old path: a name a rename freed can name another repository.
+
+  /** The repository's webhooks, every page of them. GitHub answers only a repository admin. */
+  async listRepoWebhooks(repoId: number): Promise<GitHubRepoWebhookResponse[]> {
+    const webhooks: GitHubRepoWebhookResponse[] = [];
+    // A short page is the last.
+    for (let page = 1; page <= MAX_WEBHOOK_PAGES; page++) {
+      const { data } = await this.#request<GitHubRepoWebhookResponse[]>(
+        "GET", `/repositories/${repoId}/hooks`, { query: { per_page: 100, page } });
+      webhooks.push(...data);
+      if (data.length < 100) return webhooks;
+    }
+    throw new Error(`Repository ${repoId} has more webhooks than can be listed.`);
+  }
+
+  /** Adds an active webhook to the repository. GitHub allows only a repository admin to. */
+  async createRepoWebhook(repoId: number, webhook: GitHubRepoWebhookConfig): Promise<GitHubRepoWebhookResponse> {
+    return (await this.#request<GitHubRepoWebhookResponse>(
+      "POST", `/repositories/${repoId}/hooks`, { body: { name: "web", ...webhookBody(webhook) } },
+    )).data;
+  }
+
+  /** Makes an existing webhook active, with exactly `webhook`'s URL, secret and events. */
+  async updateRepoWebhook(
+    repoId: number, hookId: number, webhook: GitHubRepoWebhookConfig,
+  ): Promise<GitHubRepoWebhookResponse> {
+    return (await this.#request<GitHubRepoWebhookResponse>(
+      "PATCH", `/repositories/${repoId}/hooks/${hookId}`, { body: webhookBody(webhook) },
+    )).data;
+  }
+
+  /** A repository webhook, which GitHub shows only to a repository admin. */
+  async getRepoWebhook(repoId: number, hookId: number): Promise<GitHubRepoWebhookResponse> {
+    return (await this.#request<GitHubRepoWebhookResponse>("GET", `/repositories/${repoId}/hooks/${hookId}`)).data;
+  }
+
+  /**
+   * A webhook's delivery attempts since `since` (in ms since the epoch), newest first, as GitHub
+   * lists them. GitHub keeps three days of them.
+   */
+  async listRepoWebhookDeliveries(repoId: number, hookId: number, since: number): Promise<GitHubWebhookDeliveryResponse[]> {
+    const path = `/repositories/${repoId}/hooks/${hookId}/deliveries`;
+    const deliveries: GitHubWebhookDeliveryResponse[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < MAX_DELIVERY_PAGES; page++) {
+      const { data, headers } = await this.#request<GitHubWebhookDeliveryResponse[]>(
+        "GET", path, { query: { per_page: 100, cursor } });
+      const recent = data.filter(delivery => Date.parse(delivery.delivered_at) >= since);
+      deliveries.push(...recent);
+      cursor = nextCursor(headers);
+      if (cursor === undefined || recent.length < data.length) break;
+    }
+    return deliveries;
+  }
+
+  /** Asks GitHub to make a webhook delivery again, which it does in its own time. */
+  async redeliverRepoWebhookDelivery(repoId: number, hookId: number, deliveryId: number): Promise<void> {
+    await this.#request<void>("POST", `/repositories/${repoId}/hooks/${hookId}/deliveries/${deliveryId}/attempts`);
+  }
+
+  /**
+   * Deletes a webhook. A 404 is not an error, though it means either that the webhook is gone or
+   * that the account may no longer manage it: GitHub answers a non-admin the same.
+   */
+  async deleteRepoWebhook(repoId: number, hookId: number): Promise<void> {
+    await this.#request<void>("DELETE", `/repositories/${repoId}/hooks/${hookId}`, { okStatuses: [404] });
   }
 
   async getIssue(owner: string, repo: string, issueNumber: number): Promise<GitHubIssueResponse> {
@@ -1213,14 +1351,15 @@ export class GitHubApi {
    * Always an unconditional, uncached read: callers use this to bind a push's expected old head,
    * which must reflect the remote's live state. Read as the exact git ref, because
    * `/branches/<name>` redirects a renamed branch's old name to the new one (as `master` does in
-   * many repositories), and git has no such alias.
+   * many repositories), and git has no such alias. The name is validated first: it is encoded
+   * segment by segment, so a `..` segment would otherwise climb out of the repository.
    */
   async getBranchHead(owner: string, repo: string, branch: string): Promise<string | null> {
     try {
       const result = await this.#request<{ object: { sha: string } }>(
         "GET",
         `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/ref/heads/${
-          branch.split("/").map(encodeURIComponent).join("/")}`,
+          validateBranchName(branch).split("/").map(encodeURIComponent).join("/")}`,
       );
       return result.data.object.sha;
     } catch (error) {
@@ -1443,5 +1582,48 @@ export class GitHubApi {
       );
     }
     return response;
+  }
+}
+
+export const CREDENTIALS_EXPIRED_MESSAGE =
+  "GitHub credentials have expired or been revoked. Please reconnect the account.";
+
+/**
+ * Runs `fn` against GitHub as `account`, following redirects only within `repo` (see GitHubApi).
+ * GitHub's rejection of the token a request presented is the account's to adjudicate, so a token
+ * replaced while the request was in flight fails as retryable rather than marking the account
+ * expired. With `replayable`, which only calls safe to run twice may pass, such a failure instead
+ * reruns `fn` once with the replacement token.
+ */
+export async function withAccountApi<T>(
+  account: DurableObjectStub<UserAccount>, fn: (api: GitHubApi) => Promise<T>,
+  options: { replayable?: true; repo?: PinnedRepo } = {},
+): Promise<T> {
+  for (let replays = options.replayable ? 1 : 0; ; replays--) {
+    let presented: string | undefined;
+    const api = new GitHubApi(async () => (presented = await account.getAccessToken()),
+      { repo: options.repo });
+    try {
+      return await fn(api);
+    } catch (error) {
+      if (isCredentialsExpired(error)) {
+        throw new Error(CREDENTIALS_EXPIRED_MESSAGE, { cause: error });
+      }
+      if (!(error instanceof GitHubApiError && error.isAuthError) || presented === undefined) {
+        throw error;
+      }
+      const verdict = await account.reportTokenRejected(presented);
+      if (verdict === "expired") {
+        // Shaped like the known expiry above: the marked error as its cause is how callers tell an
+        // expiry from a token renewed mid-request.
+        // oxlint-disable-next-line eslint/preserve-caught-error -- kept as the marked error's cause.
+        throw new Error(CREDENTIALS_EXPIRED_MESSAGE,
+          { cause: new CredentialsExpiredError(CREDENTIALS_EXPIRED_MESSAGE, { cause: error }) });
+      }
+      if (verdict !== "superseded") throw error;
+      if (replays > 0) continue;
+      throw new Error("GitHub credentials were renewed during this request. Please retry it.",
+        { cause: error });
+    }
   }
 }

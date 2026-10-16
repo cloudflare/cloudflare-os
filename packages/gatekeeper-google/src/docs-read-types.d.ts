@@ -44,8 +44,9 @@ export interface GoogleDocReadSession {
   listTabs(): Promise<GoogleDocTab[]>;
 
   /**
-   * Return one tab's content as Markdown. Native tables are raw HTML; tables of contents and
-   * interior section breaks are bracketed placeholders. These structures are read-only.
+   * Return one tab's content as Markdown. A line break within a paragraph is `\u000b`, while
+   * `\n` ends the paragraph. Native tables are raw HTML; tables of contents and interior section
+   * breaks are bracketed placeholders. These structures are read-only.
    *
    * This reads exactly one tab and never combines tabs, so pass an ID returned by `listTabs()`.
    * Omitting `tabId` is valid only when `listTabs()` returns exactly one tab.

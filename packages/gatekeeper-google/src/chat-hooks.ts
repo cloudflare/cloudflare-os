@@ -13,6 +13,7 @@
 
 import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
+import { HookDeliveryQueue, disposeStubs } from "@gadgets/gatekeeper-kit/hook-delivery-queue";
 import { SingleFlight } from "@gadgets/gatekeeper-kit/single-flight";
 import type {
   ApprovalQueue, HookController, HookInitiator, HookTargetMetadata,
@@ -20,13 +21,15 @@ import type {
 import { fetchWithAuthRetry, type AccessTokenProvider } from "./auth-retry";
 import { ChatApiError, chatApiFailure, type ChatMessageRaw } from "./chat-api";
 import type { ChatMessageHook } from "./chat-types";
-import { HOUR_MS, HookDeliveryQueue, MINUTE_MS, disposeStubs } from "./hook-delivery-queue";
 import { obsContext } from "./observability";
 import type { PushHooksEnv } from "./pubsub-push";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.google.chat-hooks", vendorId: "google" });
 
 type Env = Cloudflare.Env & PushHooksEnv;
+
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
 
 export type ChatMessageHookTarget = RpcTarget & ChatMessageHook;
 
@@ -77,6 +80,11 @@ export class ChatHookController extends WorkerEntrypoint<Env, ChatHookProps>
 const RENEW_INTERVAL_MS = 3 * HOUR_MS;
 /** Leaves several retries of a failed renewal within the hour before the subscription lapses. */
 const RENEW_RETRY_MS = 15 * MINUTE_MS;
+/**
+ * How often each account with hooks here is asked again whether it knows of this driver: hooks its
+ * disconnect failed to drop stay until then, when it answers no.
+ */
+const TRACKING_RECHECK_MS = 24 * HOUR_MS;
 
 type Registration = Omit<ChatHookProps, "key" | "delivery">;
 type Capabilities = {
@@ -88,17 +96,30 @@ type Subscription = { name: string; expireTime: number; renewAt: number };
 const registrationKey = (key: string) => `reg:${key}`;
 const capabilitiesKey = (key: string) => `caps:${key}`;
 const subscriptionKey = (authority: string) => `sub:${authority}`;
+/** When the account last confirmed it knows this driver holds hooks of its (see UserAccount.trackHookDriver()). */
+const trackedKey = (userObjectId: string) => `tracked:${userObjectId}`;
+/** Set when a disconnected account's hooks are dropped, so that an enable it was making is refused. */
+const forgottenKey = (userObjectId: string) => `forgotten:${userObjectId}`;
+
+const DISCONNECTED = "This Google account has been disconnected.";
 
 export class ChatHookDriver extends DurableObject<Env> {
   /** Subscription creations in flight, by account, which concurrent enables and renewals join. */
   #subscribing = new SingleFlight();
-  #queue = new HookDeliveryQueue<ChatMessageRaw>(this.ctx.storage, () => {
+  #queue = new HookDeliveryQueue<ChatMessageRaw>(this.ctx.storage.kv, () => {
     logger.warn("dropped a Chat message after repeated delivery failures", { event: "chat.hooks.delivery.dropped" });
   });
 
   async register(key: string, registration: Registration, capabilities: Capabilities): Promise<void> {
+    await this.#track(registration.userObjectId, registration.spaceName);
     const subscription = this.ctx.storage.kv.get<Subscription>(subscriptionKey(registration.authority));
-    if (!subscription || subscription.expireTime <= Date.now()) await this.#subscribe(registration);
+    if (!subscription || subscription.expireTime <= Date.now()) {
+      await this.#subscribe(registration);
+      // Disconnected meanwhile, when its hooks were dropped.
+      if (this.ctx.storage.kv.get(forgottenKey(registration.userObjectId)) !== undefined) throw new Error(DISCONNECTED);
+    }
+    // Nothing from here to the registration awaits, so neither a disconnect nor the alarm, which
+    // drops an expired subscription no hook uses, can come between the subscription and it.
     const replaced = this.ctx.storage.kv.get<Capabilities>(capabilitiesKey(key));
     this.ctx.storage.kv.put(registrationKey(key), registration);
     this.ctx.storage.kv.put(capabilitiesKey(key), capabilities);
@@ -112,6 +133,20 @@ export class ChatHookDriver extends DurableObject<Env> {
     this.ctx.storage.kv.delete(registrationKey(key));
     this.ctx.storage.kv.delete(capabilitiesKey(key));
     this.#queue.cancel(key);
+  }
+
+  /**
+   * Drop the hooks of an account being disconnected (see UserAccount.revoke()). A subscription no
+   * hook uses then lapses, as on disabling.
+   */
+  async forgetAccount(userObjectId: string): Promise<void> {
+    this.ctx.storage.kv.put(forgottenKey(userObjectId), Date.now());
+    // Listed up front, as unregistering deletes from the listing.
+    const registrations = [...this.#registrations()];
+    for (const [regKey, registration] of registrations) {
+      if (registration.userObjectId === userObjectId) await this.unregister(regKey.slice("reg:".length));
+    }
+    this.ctx.storage.kv.delete(trackedKey(userObjectId));
   }
 
   /** Queue the new messages a subscription reported for each hook of its account they match. */
@@ -142,15 +177,18 @@ export class ChatHookDriver extends DurableObject<Env> {
    * - dropping expired subscriptions no hook uses any more.
    */
   async alarm(): Promise<void> {
+    await this.#trackAccounts();
     const now = Date.now();
     await this.#queue.run(now, (hookKey, message) => this.#deliver(hookKey, message));
-    const registrations = [...this.#registrations()].map(([, registration]) => registration);
     // Listed up front: a request handled while a renewal awaits may list too, which would
-    // invalidate a live iterator.
-    const subscriptions = [...this.ctx.storage.kv.list<Subscription>({ prefix: "sub:" })];
-    for (const [key, subscription] of subscriptions) {
+    // invalidate a live iterator. Each is read again in its turn, as an enable handled meanwhile
+    // may have subscribed again, or come to use it.
+    const keys = [...this.ctx.storage.kv.list<Subscription>({ prefix: "sub:" })].map(([key]) => key);
+    for (const key of keys) {
+      const subscription = this.ctx.storage.kv.get<Subscription>(key);
+      if (!subscription) continue;
       const authority = key.slice("sub:".length);
-      const registration = registrations.find(candidate => candidate.authority === authority);
+      const registration = [...this.#registrations()].find(([, candidate]) => candidate.authority === authority)?.[1];
       if (!registration) {
         // Unused subscriptions simply lapse.
         if (subscription.expireTime <= now) this.ctx.storage.kv.delete(key);
@@ -164,6 +202,41 @@ export class ChatHookDriver extends DurableObject<Env> {
       }
     }
     await this.#reschedule();
+  }
+
+  /**
+   * Tell the account that this driver holds hooks of its, so that disconnecting it reaches them.
+   * Refuses an account disconnected already, or meanwhile: its hooks were dropped then.
+   */
+  async #track(userObjectId: string, spaceName: string): Promise<void> {
+    const tracked = await this.#account(userObjectId).trackHookDriver({ kind: "chat", name: spaceName });
+    if (!tracked || this.ctx.storage.kv.get(forgottenKey(userObjectId)) !== undefined) throw new Error(DISCONNECTED);
+    this.ctx.storage.kv.put(trackedKey(userObjectId), Date.now());
+  }
+
+  /**
+   * Tell each account with hooks here that this driver holds them, as register() does, and again
+   * each TRACKING_RECHECK_MS. A hook registered before accounts kept track has no record of it,
+   * which disconnecting its account needs to reach it; failing, it is told at the next alarm. An
+   * account disconnected without dropping its hooks here, before it could be told or by a
+   * disconnect that couldn't reach this driver, has them dropped now.
+   */
+  async #trackAccounts(): Promise<void> {
+    const kv = this.ctx.storage.kv;
+    const due = new Map([...this.#registrations()]
+      .filter(([, { userObjectId }]) => (kv.get<number>(trackedKey(userObjectId)) ?? 0) <= Date.now() - TRACKING_RECHECK_MS)
+      .map(([, { userObjectId, spaceName }]) => [userObjectId, spaceName]));
+    for (const [userObjectId, spaceName] of due) {
+      try {
+        if (await this.#account(userObjectId).trackHookDriver({ kind: "chat", name: spaceName })) {
+          kv.put(trackedKey(userObjectId), Date.now());
+        } else {
+          await this.forgetAccount(userObjectId);
+        }
+      } catch (error) {
+        logger.warn("failed to note a Chat hook driver with its account", { event: "chat.hooks.track.failed", error });
+      }
+    }
   }
 
   async #deliver(hookKey: string, message: ChatMessageRaw): Promise<void> {
@@ -188,7 +261,7 @@ export class ChatHookDriver extends DurableObject<Env> {
   #subscribe({ spaceName, authority, userObjectId }: Registration): Promise<void> {
     return this.#subscribing.run(authority, async () => {
       const api = new WorkspaceEventsApi(this.#tokens(userObjectId));
-      const created = await api.create(spaceName, this.env.PUBSUB_TOPIC!);
+      const created = await api.create(spaceName, this.env.PUBSUB_CHAT_TOPIC!);
       if (created.authority !== authority) {
         await api.delete(created.name);
         throw new Error("This Google Chat connection now belongs to a different Google account. Reconnect the original account.");
@@ -219,8 +292,12 @@ export class ChatHookDriver extends DurableObject<Env> {
   }
 
   #tokens(userObjectId: string): AccessTokenProvider {
-    const account = this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(userObjectId));
+    const account = this.#account(userObjectId);
     return async opts => (await account.getAccessToken(opts)).token;
+  }
+
+  #account(userObjectId: string) {
+    return this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(userObjectId));
   }
 
   async #wakeBy(time: number): Promise<void> {

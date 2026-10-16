@@ -3,9 +3,9 @@ import { deserialize, serialize } from "capnweb";
 import {
   MAX_CODE_CHANGE_SIZE,
   MAX_FILE_PATH_LENGTH,
-  MAX_FILE_TEXT_LENGTH,
   applyCodeChange,
   changedGadgets,
+  codeChangeSerializedSize,
   composeCodeChange,
   composeEpochChanges,
   diffFiles,
@@ -18,6 +18,9 @@ import {
   type FileChange,
   type TextChange,
 } from "@gadgets/workshop-shared/code-change";
+
+// A payload length for building changes that overrun the per-change cap in a few parts.
+const CHUNK_LENGTH = 512 * 1024;
 
 // The module under test lives in workshop-shared (both sides of the wire share the change
 // invariants), but like the yjs-seed tests before them these run here so they execute under
@@ -584,24 +587,32 @@ describe("validateCodeChangeSchema", () => {
     validateCodeChangeSchema({ 1: [["f", { edit: [[0, "", ""], 3] }]] });  // pure "\n" insert
   });
 
-  it("enforces the per-file, per-path, and per-change size caps", () => {
-    let big = "x".repeat(MAX_FILE_TEXT_LENGTH + 1);
-    expect(() => validateCodeChangeSchema({ 1: [["f", { set: big }]] })).toThrow(/too large/);
-    expect(() => validateCodeChangeSchema({ 1: [["f", { edit: [[0, big]] }]] }))
-        .toThrow(/too large/);
-    // Growing an existing file past the cap trips on newLength even with a small insertion.
-    expect(() => validateCodeChangeSchema(
-        { 1: [["f", { edit: [MAX_FILE_TEXT_LENGTH, [0, "!"]] }]] })).toThrow(/too large/);
+  it("enforces the per-path and per-change size caps, but none on a file's length", () => {
+    // A file's length is bounded only by the storage its commit is written to.
+    validateCodeChangeSchema({ 1: [["f", { edit: [10 * 1024 * 1024, [0, "!"]] }]] });
 
     expect(() => validateCodeChangeSchema(
         { 1: [["p".repeat(MAX_FILE_PATH_LENGTH + 1), { remove: true }]] }))
         .toThrow(/path is too long/);
 
-    let chunk = "x".repeat(MAX_FILE_TEXT_LENGTH);
+    let chunk = "x".repeat(CHUNK_LENGTH);
     let files: [string, FileChange][] = [];
-    let count = Math.ceil(MAX_CODE_CHANGE_SIZE / MAX_FILE_TEXT_LENGTH) + 1;
+    let count = Math.ceil(MAX_CODE_CHANGE_SIZE / CHUNK_LENGTH) + 1;
     for (let i = 0; i < count; i++) files.push([`f${i}`, { set: chunk }]);
     expect(() => validateCodeChangeSchema({ 1: files })).toThrow(/change is too large/);
+  });
+
+  it("measures the change cap by codeChangeSerializedSize", () => {
+    // The cap is the same measure the server's composition budgets use, so a change that
+    // validates always fits wherever a change of its size is stored.
+    let atCap = (extra: number): CodeChange => {
+      let probe: CodeChange = { 1: [["f", { set: "" }], ["g", { edit: [3, [0, "a", ""]] }]] };
+      let fill = (MAX_CODE_CHANGE_SIZE - codeChangeSerializedSize(probe)) / 2 + extra;
+      return { 1: [["f", { set: "\u20ac".repeat(fill) }], ["g", { edit: [3, [0, "a", ""]] }]] };
+    };
+    expect(codeChangeSerializedSize(atCap(0))).toBe(MAX_CODE_CHANGE_SIZE);
+    validateCodeChangeSchema(atCap(0));
+    expect(() => validateCodeChangeSchema(atCap(1))).toThrow(/change is too large/);
   });
 
   it("caps changes made of many payload-free entries", () => {
@@ -615,7 +626,7 @@ describe("validateCodeChangeSchema", () => {
 
     // Likewise an edit's sections: maximal fragmentation (one section per retained unit)
     // counts toward the change size even though it inserts nothing.
-    let sections: TextChange = Array.from({ length: MAX_FILE_TEXT_LENGTH }, () => 1);
+    let sections: TextChange = Array.from({ length: CHUNK_LENGTH }, () => 1);
     let edits: [string, FileChange][] = [];
     for (let i = 0; i < 5; i++) edits.push([`e${i}`, { edit: sections }]);
     expect(() => validateCodeChangeSchema({ 1: edits })).toThrow(/change is too large/);
@@ -631,10 +642,9 @@ describe("validateCodeChangeSchema", () => {
         .toThrow(/code change is too large/);
 
     // Inserted text is budget-checked as it accrues: this edit's total insertion exceeds the
-    // *change* budget mid-walk, which fires before the per-file newLength check ("file is too
-    // large") that runs after fromJSON.
-    let chunk = "x".repeat(MAX_FILE_TEXT_LENGTH);
-    let inserts: TextChange = Array.from({ length: 5 }, () => [0, chunk] as [number, string]);
+    // *change* budget mid-walk, before fromJSON parses it.
+    let chunk = "x".repeat(CHUNK_LENGTH);
+    let inserts: TextChange = Array.from({ length: 9 }, () => [0, chunk] as [number, string]);
     expect(() => validateCodeChangeSchema({ 1: [["f", { edit: inserts }]] }))
         .toThrow(/code change is too large/);
 

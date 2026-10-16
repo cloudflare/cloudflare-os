@@ -211,4 +211,15 @@ describe("customSelect", () => {
     select.el.click();
     expect(document.body.querySelectorAll(".cmenu-item.sel").length).toBe(0);
   });
+
+  it("labels a value no option carries with the value itself under showUnlistedValue", () => {
+    const sizes = [11, 12, 18].map((size) => ({ value: size, label: String(size) }));
+    const select = customSelect({ options: sizes, value: 22.5, showUnlistedValue: true, onChange: () => {} });
+    expect(select.el.querySelector(".cs-label")!.textContent).toBe("22.5");
+    select.setValue(12);
+    expect(select.el.querySelector(".cs-label")!.textContent).toBe("12");
+    document.body.appendChild(select.el);
+    select.el.click();
+    expect(Array.from(document.body.querySelectorAll(".cmenu-item.sel")).map((item) => (item as HTMLElement).dataset.value)).toEqual(["12"]);
+  });
 });

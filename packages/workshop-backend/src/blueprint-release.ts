@@ -25,7 +25,7 @@
 // and the import script.
 
 import type { CommitIdentity } from "@gadgets/workshop-shared/api";
-import { MAX_FILE_PATH_LENGTH, MAX_FILE_TEXT_LENGTH } from "@gadgets/workshop-shared/code-change";
+import { MAX_FILE_PATH_LENGTH } from "@gadgets/workshop-shared/code-change";
 import type { GitObjectType, GitOid } from "@gadgets/workshop-shared/gatekeeper";
 import {
   buildPackBytes,
@@ -53,15 +53,11 @@ const DECODER = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 /**
  * Largest pack a release may ship in. Equal to the `.gadget` archive's content cap
- * (blueprint-archive.ts), so that every stored pack can be downloaded and uploaded again.
+ * (blueprint-archive.ts), so that every stored pack can be downloaded and uploaded again. Also
+ * the bound on any one object inflated from a pack. There is no tighter cap on a file: a release
+ * holds what a gadget's commits held, which storage has already admitted.
  */
 export const MAX_RELEASE_PACK_BYTES = 32 * 1024 * 1024;
-
-/**
- * Largest object a release pack may hold: the longest UTF-8 encoding of a file of
- * `MAX_FILE_TEXT_LENGTH`, at three bytes per UTF-16 code unit.
- */
-export const MAX_RELEASE_OBJECT_BYTES = 3 * MAX_FILE_TEXT_LENGTH;
 
 /**
  * Most commits a release's history may hold, the release included. Each publish adds one commit
@@ -248,9 +244,9 @@ const COMMIT_SHAPE = new RegExp(
  * - The release's tree is complete. Any other commit's tree is complete or absent, where absent
  *   means its root tree object is.
  * - Every tree is in the form `encodeGitTree()` writes, and holds only subtrees and mode-100644
- *   blobs under names `GitStore` can read back. Every blob is UTF-8 text of at most
- *   `MAX_FILE_TEXT_LENGTH`, at a path of at most `MAX_FILE_PATH_LENGTH`.
- * - No object exceeds `MAX_RELEASE_OBJECT_BYTES`, and there is no object besides these.
+ *   blobs under names `GitStore` can read back. Every blob is UTF-8 text, at a path of at most
+ *   `MAX_FILE_PATH_LENGTH`.
+ * - There is no object besides these.
  *
  * Together these make every file the objects describe readable by `GitStore.readCommitFiles()`
  * and editable by a code change, and every commit readable by `GitStore.readCommitLog()`. The
@@ -263,9 +259,6 @@ export function validateReleaseObjects(
     let object = objects.get(oid);
     if (object === undefined) throw invalid(`${type} ${oid} is missing`);
     if (object.type !== type) throw invalid(`object ${oid} is a ${object.type}, not a ${type}`);
-    if (object.payload.byteLength > MAX_RELEASE_OBJECT_BYTES) {
-      throw invalid(`${type} ${oid} is larger than ${MAX_RELEASE_OBJECT_BYTES} bytes`);
-    }
     reached.add(oid);
     return object.payload;
   };
@@ -290,9 +283,7 @@ export function validateReleaseObjects(
   let blobs = new Set<GitOid>();
   let checkBlob = (oid: GitOid): void => {
     if (blobs.has(oid)) return;
-    if (decodeText(take(oid, "blob"), `blob ${oid}`).length > MAX_FILE_TEXT_LENGTH) {
-      throw invalid(`blob ${oid} is longer than ${MAX_FILE_TEXT_LENGTH} characters`);
-    }
+    decodeText(take(oid, "blob"), `blob ${oid}`);
     blobs.add(oid);
   };
 
@@ -463,7 +454,7 @@ export async function readReleasePack(pack: Uint8Array, commitId: GitOid):
   let objects: GitObjectMap = new Map();
   let decoded = decodePackStream(new Blob([pack]).stream(), {
     maxPackSize: MAX_RELEASE_PACK_BYTES,
-    maxObjectSize: MAX_RELEASE_OBJECT_BYTES,
+    maxObjectSize: MAX_RELEASE_PACK_BYTES,
     resolveBase: oid => objects.get(oid),
   });
   for await (let { oid, ...object } of decoded) objects.set(oid, object);

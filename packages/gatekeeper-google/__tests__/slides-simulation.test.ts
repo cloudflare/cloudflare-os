@@ -1,13 +1,20 @@
 import { describe, expect, it } from "vitest";
 import type { RestText } from "../src/slides-api";
-import { slideOf } from "../src/slides-model";
+import { presentationInfo, slideOf, themePagesOf } from "../src/slides-model";
 import {
   applyChange, slidesToFetch, type CreatedPlaceholder, type Deck, type SlidesAction,
 } from "../src/slides-simulation";
 import type { ShapeElement } from "../src/slides-read-types";
 import { editSlide } from "../src/slides-target";
 import { ChangeConflict } from "../src/slides-text";
-import { shape, slide, text } from "./slides-fixture";
+import { layout, master, presentation, shape, slide, text } from "./slides-fixture";
+
+/** A deck as `getPresentation()` would project it. */
+function read(deck: Deck) {
+  return presentationInfo(
+    { ...presentation([]), slides: deck.order.flatMap(id => deck.slides.get(id) ?? []) },
+    deck.themePages);
+}
 
 function edit(body: RestText, find: string | undefined, replace: string) {
   let page = slide("s1", [shape("box", body)]);
@@ -94,6 +101,8 @@ describe("Slides text edits", () => {
 });
 
 describe("Slides change replay", () => {
+  const THEME = themePagesOf(presentation([]));
+
   const copyOf = (slideId: string, newSlideId: string, objectIds: Record<string, string>): SlidesAction =>
     ({ kind: "duplicateSlide", payload: { slideId, newSlideId, objectIds, slide: { number: 1 } } });
 
@@ -115,10 +124,61 @@ describe("Slides change replay", () => {
     expect(slidesToFetch(["s2"], changes)).toEqual(new Set(["s2", "c1", "s1"]));
   });
 
+  it("links batches through the layouts and masters they change, fetching only their slides", () => {
+    let action: SlidesAction = {
+      kind: "updateSlides",
+      payload: {
+        changes: [
+          { op: "setBackground", layoutId: "layout-title", background: "none" },
+          { op: "setBackground", slideId: "s2", background: "#000000" },
+          { op: "setThemeColors", masterId: "master-1", colors: { DARK1: "#000000" } },
+        ],
+        slides: {},
+      },
+    };
+
+    expect(slidesToFetch(["s2"], [{ id: 1, action }])).toEqual(new Set(["s2", "layout-title", "master-1"]));
+    // A change to the same master links a batch as a change to the same slide does.
+    expect(slidesToFetch(["master-1"], [{ id: 1, action }]))
+      .toEqual(new Set(["master-1", "layout-title", "s2"]));
+    expect(slidesToFetch(["master-2"], [{ id: 1, action }])).toEqual(new Set(["master-2"]));
+  });
+
+  it("keeps queued theme changes through a later copy, move and delete, and copies a background", () => {
+    let blue = { solidFill: { color: { rgbColor: { blue: 1 } }, alpha: 1 } };
+    let deck: Deck = {
+      order: ["s1", "s2"],
+      slides: new Map([["s1", slide("s1", [], { background: blue })], ["s2", slide("s2", [])]]),
+      masters: new Map(),
+      themePages: THEME,
+    };
+    let themed = applyChange(deck, {
+      kind: "updateSlides",
+      payload: {
+        changes: [
+          { op: "setBackground", layoutId: "layout-title", background: "#112233" },
+          { op: "setThemeColors", masterId: "master-1", colors: { ACCENT1: "#ff0000" } },
+        ],
+        slides: {},
+      },
+    });
+    let { masters, layouts } = read(themed);
+    expect(layouts[0].background).toBe("#112233");
+    expect(masters[0].themeColors.ACCENT1).toBe("#ff0000");
+
+    let copied = applyChange(themed, copyOf("s1", "c1", {}));
+    let moved = applyChange(copied, { kind: "moveSlides", payload: { slideIds: ["c1"], after: null, slides: [] } });
+    let deleted = applyChange(moved, { kind: "deleteSlide", payload: { slideId: "s2", slide: { number: 3 } } });
+    for (let state of [copied, moved, deleted]) expect(read(state)).toMatchObject({ masters, layouts });
+    expect(read(deleted).slides.map(({ id, background }) => [id, background])).toEqual([
+      ["c1", "#0000ff"], ["s1", "#0000ff"],
+    ]);
+  });
+
   it("leaves out of a queued copy an element added to its source since, which it cannot name", () => {
     let source = slide("s1", [shape("title", text(["Q3"])), shape("added", text(["New"]))]);
     let unchanged = structuredClone(source);
-    let deck: Deck = { order: ["s1"], slides: new Map([["s1", source]]), masters: new Map() };
+    let deck: Deck = { order: ["s1"], slides: new Map([["s1", source]]), masters: new Map(), themePages: THEME };
 
     let copied = applyChange(deck, copyOf("s1", "c1", { title: "c1title" }));
 
@@ -134,6 +194,7 @@ describe("Slides change replay", () => {
     } } };
     let deck: Deck = {
       order: ["s1"], slides: new Map([["s1", slide("s1", [shape("a"), shape("b"), connector])]]), masters: new Map(),
+      themePages: THEME,
     };
 
     let copied = applyChange(deck, copyOf("s1", "c1", { a: "ca", b: "cb", arrow: "carrow" }));
@@ -144,7 +205,7 @@ describe("Slides change replay", () => {
   });
 
   it("reports a queued copy whose slide already exists, rather than showing it twice", () => {
-    let deck: Deck = { order: ["s1", "c1"], slides: new Map(), masters: new Map() };
+    let deck: Deck = { order: ["s1", "c1"], slides: new Map(), masters: new Map(), themePages: THEME };
 
     expect(() => applyChange(deck, copyOf("s1", "c1", {}))).toThrow('the new slide\'s ID "c1" already exists');
   });
@@ -153,6 +214,7 @@ describe("Slides change replay", () => {
     let numbered = (n: number) => slide(`s${n}`, [shape(`n${n}`, text(["Page ", { slideNumber: `${n}` }]))]);
     let deck: Deck = {
       order: ["s1", "s2", "s3"], slides: new Map([1, 2, 3].map(n => [`s${n}`, numbered(n)])), masters: new Map(),
+      themePages: THEME,
     };
     let pages = ({ order, slides }: Deck) => order.map(id => [id, slides.get(id)!.pageElements![0].shape!
       .text!.textElements!.find(e => e.autoText)!.autoText!.content]);
@@ -170,6 +232,7 @@ describe("Slides change replay", () => {
       order: ["s1", "s2"],
       slides: new Map([["s1", slide("s1", [])], ["s2", slide("s2", [], { isSkipped: true })]]),
       masters: new Map(),
+      themePages: THEME,
     };
     let skip = (slideIds: string[], skipped: boolean): SlidesAction =>
       ({ kind: "skipSlides", payload: { slideIds, skipped, slides: [] } });
@@ -180,7 +243,7 @@ describe("Slides change replay", () => {
     expect(shown.slides.get("s1")).toEqual(slide("s1", []));
     expect(shown.slides.get("s2")!.slideProperties).not.toHaveProperty("isSkipped");
     // A slide the read did not fetch need only exist.
-    expect(applyChange({ order: ["s1"], slides: new Map(), masters: new Map() }, skip(["s1"], true)).slides.size).toBe(0);
+    expect(applyChange({ order: ["s1"], slides: new Map(), masters: new Map(), themePages: THEME }, skip(["s1"], true)).slides.size).toBe(0);
     expect(() => applyChange(deck, skip(["gone"], true))).toThrow('slide "gone" no longer exists');
   });
 
@@ -205,6 +268,7 @@ describe("Slides change replay", () => {
       order: ["s1", "s2"],
       slides: new Map([1, 2].map(n => [`s${n}`, numbered(n)])),
       masters: new Map([["s1", "m1"], ["s2", "m1"], ["layout-title-body", "m1"]]),
+      themePages: THEME,
     };
     const numbers = ({ order, slides }: Deck) => order.map(id => [id, slides.get(id)!.pageElements![0]?.shape!
       .text?.textElements!.find(e => e.autoText)!.autoText!.content]);
@@ -268,6 +332,12 @@ describe("Slides change replay", () => {
 
       let noM2 = drop(themed, "s2");
       expect([...noM2.masters]).toEqual([["s1", "m1"], ["layout-title-body", "m1"]]);
+      // The master and its layouts leave the pages a read lists too.
+      let theme = presentation([]);
+      theme.masters!.push(master("m2", { name: "Dark" }));
+      theme.layouts!.push(layout("layout-m2", "Dark title", { masterObjectId: "m2" }));
+      expect([...drop({ ...themed, themePages: themePagesOf(theme) }, "s2").themePages.keys()])
+        .toEqual([...THEME.keys()]);
       expect(() => applyChange(noM2, createFrom("layout-m2"))).toThrow('layout "layout-m2" no longer exists');
       // The first master stays with no slide on it, and a master stays while any slide is on it.
       let noM1 = drop(themed, "s1");

@@ -1,10 +1,12 @@
 import { Link } from '@tanstack/react-router'
-import { Clock, MagnifyingGlass, Hexagon, DotsThreeVertical, ShareNetwork, Trash, Info, Star, Pencil, ArrowRight } from '@phosphor-icons/react'
+import { BellSlash, Clock, MagnifyingGlass, Hexagon, DotsThreeVertical, ShareNetwork, Trash, Info, Star, Pencil, ArrowRight } from '@phosphor-icons/react'
 import { useState, useEffect, useRef } from 'react'
 import { DropdownMenu, Dialog, Button, useKumoToastManager } from '@cloudflare/kumo'
 import { RpcStub } from 'capnweb'
 import { useAuthenticatedApi } from '../AuthContext'
-import { GadgetMetadataWithTimestamps, BlueprintPublicInfo, Overseer, AiChatAuthorInfo } from '@gadgets/workshop-shared/api'
+import { GadgetMetadataWithTimestamps, BlueprintPublicInfo, Overseer, AiChatAuthorInfo, NotificationMute } from '@gadgets/workshop-shared/api'
+import { WorkspaceNotificationsMenu } from '../features/notifications/WorkspaceNotificationsMenu'
+import { describeMute } from '../features/notifications/notificationMute'
 import ShareModal from '../ShareModal'
 import { BindingBadge, getGradient as getBlueprintGradient, uniqueBindingBadges } from './BlueprintCard'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from './menuStyles'
@@ -42,6 +44,7 @@ function AppRow({
   onInfo,
   onTogglePin,
   onRename,
+  onNotificationMuteChange,
 }: {
   gadget: GadgetMetadataWithTimestamps
   onDelete: (gadget: GadgetMetadataWithTimestamps) => void
@@ -49,6 +52,7 @@ function AppRow({
   onInfo: (gadget: GadgetMetadataWithTimestamps) => void
   onTogglePin: (gadget: GadgetMetadataWithTimestamps) => void
   onRename: (gadget: GadgetMetadataWithTimestamps, newTitle: string) => void
+  onNotificationMuteChange: (gadget: GadgetMetadataWithTimestamps, mute: NotificationMute | undefined) => void
 }) {
   const [isRenaming, setIsRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(gadget.title || '')
@@ -70,6 +74,8 @@ function AppRow({
     setRenameValue(gadget.title || '')
     setIsRenaming(true)
   }
+
+  const muteDescription = describeMute(gadget.notificationMute)
 
   return (
     <Link
@@ -108,6 +114,9 @@ function AppRow({
             <h3 className="text-sm font-medium text-kumo-default truncate">
               {gadget.title || 'Untitled Workspace'}
             </h3>
+          )}
+          {muteDescription && (
+            <BellSlash size={12} alt={muteDescription} className="text-kumo-inactive flex-shrink-0" />
           )}
         </div>
         {gadget.owner && (
@@ -152,6 +161,11 @@ function AppRow({
             <ShareNetwork size={13} className="mr-2" />
             Share
           </DropdownMenu.Item>
+          <WorkspaceNotificationsMenu
+            workspaceId={gadget.id}
+            mute={gadget.notificationMute}
+            onMuteChange={mute => onNotificationMuteChange(gadget, mute)}
+          />
           <DropdownMenu.Separator />
           <DropdownMenu.Item
             variant="danger"
@@ -285,10 +299,8 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
         return b.lastActive.getTime() - a.lastActive.getTime()
       })
     })
-    // Use promise pipelining — call setPinned without awaiting openGadget first
-    const overseer = authenticatedApi.openGadget(gadget.id)
     try {
-      await overseer.setPinned(newPinned)
+      await authenticatedApi.setWorkspacePinned(gadget.id, newPinned)
     } catch (err) {
       console.error('Failed to pin workspace:', err)
       setGadgets(prev => {
@@ -300,8 +312,6 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
         })
       })
       toasts.add({ title: 'Failed to update favorite status', variant: 'error' })
-    } finally {
-      (await overseer)[Symbol.dispose]()
     }
   }
 
@@ -320,6 +330,9 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
       (await overseer)[Symbol.dispose]()
     }
   }
+
+  const handleNotificationMuteChange = (gadget: GadgetMetadataWithTimestamps, mute: NotificationMute | undefined) =>
+    setGadgets(prev => prev.map(g => g.id === gadget.id ? { ...g, notificationMute: mute } : g))
 
   const handleShareClose = () => {
     setShareTarget(null)
@@ -398,6 +411,7 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
               onInfo={setInfoTarget}
               onTogglePin={handleTogglePin}
               onRename={handleRename}
+              onNotificationMuteChange={handleNotificationMuteChange}
             />
           ))
         )}

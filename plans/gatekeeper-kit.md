@@ -199,7 +199,8 @@ export const NONCE_KEY = "nonce";               // unchanged from every current 
 export type ConnectStage = "initiation" | "oauth";
 export type StoredNonce<Extra extends object = Record<never, never>> =
   TimedNonce & { stage: ConnectStage } & Extra;
-export function putInitiation(kv, initiationNonce: string, now: number): void;
+export function putInitiation<Meta extends object>(
+  kv, initiationNonce: string, now: number, meta?: Meta & NonceExtra): void;
 export function advanceToOAuth<Extra extends object>(
   kv, initiationNonce: string, now: number, extra?: Extra & NonceExtra): string | null;
 export function claimOAuth<Extra extends object>(
@@ -212,10 +213,16 @@ nonce in one synchronous step, so exactly one concurrent caller can advance a gi
 `Extra` fields (PKCE verifier, requested scopes). The stored shape matches the `StoredNonce` every
 existing OAuth gatekeeper writes (`mcp-shared` is the exception: `account.ts:118` also carries a
 `"connecting"` stage, which step 12 leaves in place). `Extra` stays flat rather than nested under a
-property; the reserved keys (`value`, `expiresAt`, `stage`) are intersected onto
-`advanceToOAuth`'s `extra` parameter, which both excludes them statically and rejects them at
-runtime. The exclusion lives on the parameter rather than the `Extra` constraint: as a constraint
+property; the reserved keys (`value`, `expiresAt`, `stage`) are intersected onto `putInitiation`'s
+`meta` and `advanceToOAuth`'s `extra` parameters, which both exclude them statically and reject them
+at runtime. The exclusion lives on the parameter rather than the `Extra` constraint: as a constraint
 it is a weak type, which defeats inference and collapses `StoredNonce<Extra>` to `never`.
+
+Initiation metadata records what a link was minted for, so a callback need not infer it: deriving
+"reconnect" from `stored() !== undefined` at callback time (GitLab's and X's original check)
+misroutes a reconnect whose account was disconnected meanwhile. `advanceToOAuth` carries it into
+the OAuth record, `extra` winning a name clash. Recording `firstConnect: true` at the connect entry
+point makes the absent value, a pre-deploy link included, take the safe staged path.
 
 ```ts
 export function isConnectAttempted(kv): boolean;
@@ -1073,6 +1080,18 @@ keeps `claimed` out of `listUndecided` below, which converting the claim makes n
 They stay pending, fail at the provider if the effect never landed, and clear by rejection —
 exactly a corpus dependent whose creator never resolved.
 
+**A dependent is refused at submit once nothing can provide its reference.** The cascade scans
+submitted records, so a dependent submitted *after* its provider was rejected escaped it, and every
+apply then failed retryably on the unresolved reference — an auto-approvable one stopping the
+Workshop's in-order drain for every later action on the binding. By hand, Jira and cf-wiki only
+withhold auto-approval from a dependent whose reference will not resolve, and X's sessions refuse a
+temporary id whose pending action is gone. `submit` now asks, inside the submission lane so it
+cannot race the provider's own staging, whether each `dependsOn` reference is resolved
+(`isResolvedReference`) or provided by a pending or claimed record, and refuses the action before
+allocating otherwise. A provider decided in the one round trip while the dependent is being
+delivered escapes the cascade, which cannot see a staged record, so `submit` asks again once the
+dependent is submitted and fails it the way the cascade would have.
+
 `provides` and `dependsOn` return arrays, not `Iterable<string>`. Every one of those six cascades
 keys on a scalar string — confluence's `parentId`, notion's `pageId`, github's `targetId`, linear's
 `issueRef`, spotify's `playlistId`, cf-wiki's `provisionalId` — and `string` satisfies
@@ -1662,9 +1681,23 @@ silently, and `page * perPage` arithmetic then skips the rows between with no er
 reflect the rows it consumed — a server-side-filtered search with its own next signal, confluence's
 v1 CQL — is a `TokenCursor` carrying that signal as its token.
 
-There is no `overlay`, `map` or injected-item merging. Each came from one gatekeeper's shape, with
-ordering and authorization needs the others do not share. `retain` is the one post-fetch step left,
-and the ordering rule below is what keeps it from costing a page.
+`overlay` and `map` stay in each gatekeeper's `fetchPage`: each came from one gatekeeper's shape.
+Injected-item merging did not stay out. GitHub and GitLab each grew a near-identical
+`StreamingCursor` for it (overlay, injected rows merged by comparator, re-validation at serve time),
+and the copies drifted into opposite bugs — GitHub's served duplicate rows under concurrent
+`next()` and lost a page whose fetch threw, GitLab's walked a fully filtered listing to the end in
+one call. So `inject: { items, compare, revalidate?, identity? }` lives on the buffered base, where
+it inherits serialization, the fetch bound and the refusal hold. Injected rows are the agent's own
+simulation, not provider rows: they never reach `authorizePage`, and a page made only of them is
+not authorized. Only their position carries provider information — an injected row served first
+means no fetched provider row sorts ahead of it — which a listing whose order is itself sensitive
+covers by authorizing up front. `revalidate` and `identity` run when a row is served, not when it
+is fetched, and identities count as served only once their page is authorized. A refused page's
+retry rebuilds from the entries that page consumed, re-reading the injected ones, and stops before
+a provider row the refusal did not cover, such as one a dropped injected row had hidden: that row
+leads the next page, so it is neither lost nor slipped past the refusal.
+`retain` is the one post-fetch step for provider rows, and the ordering rule below is what keeps it
+from costing a page.
 
 Filtering is the exception, because a numeric walk has no end-of-list signal but the row count.
 The numeric cursors' `fetchPage` therefore returns the provider's page **unfiltered** and an optional
@@ -1681,15 +1714,16 @@ Three rules the prior art does not have. Only an **empty** provider page ends a 
 (providers cap page size below what was asked for — Cloudflare's own `/accounts` answers 20 to a
 request for 100 — so treating a short page as the end silently omits every later record). A page the
 caller sees nothing in is not the end either, so one `next()` fetches at most
-`MAX_PROVIDER_PAGES_PER_CALL` (10) pages — **every** page, not just consecutive empty ones, since a
-provider yielding one surviving row every few pages would otherwise cost hundreds of fetches in one
-call — and then yields what it has, `[]` included, which invites another call where `null` would
-claim the list had ended. The bound is latency, not quota: the fetches are sequential and the caller
-is blocked on them, while 10 still fills a 100-row page from a provider dropping 90% of what it
-returns. A short page is legal, so a port needing more per call raises `remotePageSize` rather than
-expecting one call to fill.
-And `next()` is serialized on a `SerialTaskQueue` (§4.12), since two un-awaited callers racing on the
-page counter would return one page twice and skip the next.
+`maxProviderPagesPerCall` (default 10) pages — **every** page, not just consecutive empty ones,
+since a provider yielding one surviving row every few pages would otherwise cost hundreds of fetches
+in one call — and then yields what it has, `[]` included, which invites another call where `null`
+would claim the list had ended. The default bound is latency, not quota: the fetches are sequential
+and the caller is blocked on them, while 10 still fills a 100-row page from a provider dropping 90%
+of what it returns. A short page is legal, so a port needing more per call raises `remotePageSize`
+rather than expecting one call to fill. A provider that bills each row it returns lowers it: `1`
+with a `pageSize` no provider page exceeds makes each `next()` one request. And `next()` is
+serialized on a `SerialTaskQueue` (§4.12), since two un-awaited callers racing on the page counter
+would return one page twice and skip the next.
 
 **Nothing latches a failure, because no paging state moves until every step that can throw has
 run.** `PageNumberCursor` and `OffsetCursor` decide exhaustion from the raw page and apply `retain`
@@ -1729,16 +1763,17 @@ Two rules follow from the token being opaque, and both belong to this class alon
 token, and the walk would otherwise re-fetch that page until a cap. Only the immediately-prior token
 is compared — an unbounded seen-set would grow with the walk it is meant to protect — and the first
 page, asked `undefined`, is exempt by construction. The refusal is stable and non-advancing, so a
-retry re-asks the same token and is refused again rather than losing the position. And a fixed
-shared `MAX_PROVIDER_PAGES_PER_CALL` bound of **10 provider pages** per `next()` call keeps a quiet
-stream from looping forever and also bounds sparse streams: every provider page counts, not just
-consecutive empty ones. At the bound `next()` returns the buffer *even when empty*, because `[]` is
-a legal non-terminal page (only `null` ends a `Cursor`) and the next call resumes the walk with a
-window. It is not an option: google's `CursorPager` hard-codes its own bound, internal cf-wiki loops
-unbounded (a hang on a broken provider), and nobody tunes it per resource. The numeric cursor needs
-no such bound, since an empty page ends its walk. Neither detects a provider that ignores the page
-argument and keeps answering with rows, which yields duplicates instead of ending; that needs an item
-identity the cursor does not have, and no page ceiling substitutes for one.
+retry re-asks the same token and is refused again rather than losing the position. And the
+`maxProviderPagesPerCall` bound keeps a quiet stream from looping forever and also bounds sparse
+streams: every provider page counts, not just consecutive empty ones. At the bound `next()` returns
+the buffer *even when empty*, because `[]` is a legal non-terminal page (only `null` ends a
+`Cursor`) and the next call resumes the walk with a window. It is an option rather than a constant
+because a provider that bills or rate-limits per request wants a lower one — google's own
+`CursorPager` exposes the same bound and Chat sets it to 3, and X's own cursor fetches one page per
+call because X bills every row a read returns — though no kit consumer lowers it yet. Neither
+cursor detects a provider that ignores the page argument and keeps answering with rows, which
+yields duplicates instead of ending; `inject.identity` dedups only what it is told is the same row,
+and no page ceiling substitutes for an identity.
 
 `PageHookCursor<T>` wraps a cursor the gatekeeper already built and runs `beforePage(items)` on each
 page before `next()` returns it — for listings that authorize their observation once, up front, so
@@ -1919,6 +1954,8 @@ export function normalizeVendorEndpoint(raw: string, options: {
   label: string;                    // names the endpoint in the thrown message
   requireHttps?: boolean;           // default true
 }): string;                         // origin + normalized path; no query, userinfo or fragment
+export function pathSegment(value: string): string;
+export function pathSegments(value: string): string;
 ```
 
 For the operator-pasted endpoint an instance-hosted vendor needs (marketo's `<munchkin>.mktorest.com`,
@@ -1957,12 +1994,23 @@ query. mcp-shared's endpoint **blocklist** (`endpoint.ts:17-45`) is deliberately
 it is MCP-scoped SSRF defence with its own trust boundary, and moving it would churn shipped code
 for no new consumer.
 
+`pathSegment` and `pathSegments` are the other half of a provider URL: the agent-supplied ids
+interpolated into its path. `encodeURIComponent` leaves `.` and `..` literal, and WHATWG URL
+parsing resolves them (percent-encoded `%2e%2e` too), so an id of `..` climbs out of the route
+prefix it was placed in. They refuse `""`, `.` and `..` and encode everything else; `pathSegments`
+splits a `/`-separated name (a GitLab project path, a Chat media resource) and applies the same per
+segment, so a leading, trailing or doubled slash is refused as an empty segment. The id grammar
+(charset, length) stays the gatekeeper's, and the error echoes only the refused segment, at most
+two characters. Three internal copies disagreed (sentry refused any `..` substring, firstbase only
+exact dots, zip encoded `%2e`).
+
 ### 4.15 `./response-body`
 
 ```ts
 export const MAX_RESPONSE_BYTES = 1024 * 1024;
 export class ResponseTooLargeError extends Error {}
 export function readTextCapped(response: Request | Response, maxBytes?: number): Promise<string>;
+export function readTextPrefix(body: Request | Response, maxBytes: number): Promise<string>;
 ```
 
 The one thing the competing `gatekeeper-factory-research` branch surfaced that belongs here — and it
@@ -1993,6 +2041,13 @@ origin-scoped headers when one crosses origins (`fetch.ts:142-209`), the factory
 refuses any redirect leaving its declared origin, and `normalizeVendorEndpoint` (§4.14) admits an
 operator-pasted vendor host. Those are three different trust boundaries, and a helper spanning them
 would have to expose knobs for exactly the policy it claims to centralize.
+
+`readTextPrefix` is the one exception to "refused rather than truncated", and is a separate export
+so the strict reader keeps its all-or-nothing contract. It decorates an error already being raised
+with the first `maxBytes` of the body — an HTML error page past the strict cap otherwise yields no
+excerpt at all — so it truncates, ignores `Content-Length`, cancels the rest, and never throws on
+the body: a used, locked or failing body returns what decoded, possibly `""`, because a read failure
+must not replace the provider error it was decorating.
 
 ### 4.16 `./preview-oauth`
 
@@ -2222,8 +2277,9 @@ endpoint answers for a revoked grant. A 4xx without one, such as a WAF challenge
 
 ```ts
 export function buildGitFetchRequest(oids: GitOid[], hints: GitPullHints): Uint8Array;
-export function pullGitObjectsIntoCache(fetchUploadPack: (requestBody: Uint8Array) => Promise<Response>,
-  oids: GitOid[], hints: GitPullHints, cache: GitPackSink): Promise<void>;
+export function pullGitPack(fetchUploadPack: (requestBody: Uint8Array) => Promise<Response>,
+  oids: GitOid[], hints: GitPullHints,
+  onTerminal?: (status: GitPullStatus) => void): Promise<ReadableStream<Uint8Array>>;
 export function validateBranchName(branch: string): string;
 export function pushGitRefUpdate(
   fetchReceivePack: (requestBody: ReadableStream<Uint8Array>) => Promise<Response>,
@@ -2231,6 +2287,8 @@ export function pushGitRefUpdate(
 export class GitRefUpdateRejectedError extends Error { readonly reason: string }
 export function emptyPackBytes(): Promise<Uint8Array>;
 export const ZERO_OID: string;
+export function simulateBranchHead(realHead: GitOid | null,
+  pushes: readonly { expectedOldSha: GitOid; newSha: GitOid }[]): GitOid | null;
 ```
 
 Git smart-HTTP protocol v2 framing, moved verbatim from gatekeeper-github: pkt-line encoding and
@@ -2239,7 +2297,27 @@ compare-and-swap with its report-status parsing. The gatekeeper's callback suppl
 credentials, the timeouts and the protocol headers (`Git-Protocol: version=2` among them); the kit
 owns the bodies. A pre-receive refusal surfaces as `GitRefUpdateRejectedError.reason`, the server's
 own line, which the gatekeeper passes through. `filterSpecForHints` encodes GitHub's verified
-partial-clone limits; other servers may accept more. Consumed by github and gitlab.
+partial-clone limits; other servers may accept more. `simulateBranchHead` overlays a branch's
+queued ref updates on its real head by the same compare-and-swap rule, chain-following in any list
+order, so a simulated read and the next push's expected old sha agree; a push to `ZERO_OID`
+deletes, reading as `null`. Consumed by github and gitlab.
+
+The Workers-only `./git-pull-transfer` leaf wraps `pullGitPack` for the kernel-facing
+`Gatekeeper.gitPull(oids, options)` API:
+
+```ts
+export function startGitPull(fetchUploadPack: (requestBody: Uint8Array) => Promise<Response>,
+  oids: GitOid[], hints: GitPullHints): Promise<GitPullTransfer>;
+```
+
+`GitPullTransfer` exposes one-shot `stream()` and independent terminal `status()` so provider
+errors remain available if Workers RPC replaces a stream exception. Consumers must require
+`complete` after EOF, cancel unfinished streams, and dispose the capability. The provider does
+not parse packs, ingest cache objects, or impose the DO cache's size limit. The overseer routes
+pulls using recorded provenance, decodes the stream with its pack/object limits, and checks
+requested-object presence. The transport checks oid syntax, not advertisement history; the
+gatekeeper method is not gadget-facing. A separate kernel container-bootstrap consumer can use
+the stream directly with native Git and its own limits, but is not enabled by this helper alone.
 
 ### 4.21 `./git-diff`
 
@@ -2257,6 +2335,7 @@ export function changedPathsBetweenTrees(source: TreeDiffSource, oldTree: GitOid
 export function diffTextLines(oldText: string, newText: string):
   { hunks: GitDiffHunk[]; additions: number; deletions: number };
 export function parseGitTreePayload(payload: Uint8Array, oid: GitOid): GitTreeEntry[];
+export function parseUnifiedPatch(patch: string): GitDiffHunk[];
 ```
 
 A tree-to-tree diff over an injected `TreeDiffSource`, so a gatekeeper can simulate the diff of
@@ -2265,8 +2344,10 @@ vendor-neutral; each gatekeeper's agent-facing `types.d.ts` keeps structurally i
 (that text must stay self-contained). `MAX_DIFF_*` cap blob size, total bytes, and lines diffed per
 file, and `MAX_DIFF_OUTPUT_PER_FILE`/`MAX_DIFF_OUTPUT_TOTAL` cap the hunk text emitted, so a
 result stays under Durable Object storage's 2 MB value limit; a file past any cap reports
-`diffOmitted` and no hunks, and one past an output cap keeps its line counts. The reader of
-unified patches (`parsePatch`) is still per gatekeeper; see §11.
+`diffOmitted` and no hunks, and one past an output cap keeps its line counts. `parseUnifiedPatch`
+reads a provider's per-file patches into the same hunk shape, so simulated and provider diffs share
+one grammar; a patch's final newline ends its last line rather than starting a blank one. It does
+not enforce hunk line counts, so a multi-file diff must be split by file first.
 
 ### 4.22 `./git-objects`
 
@@ -3299,7 +3380,12 @@ evidence, and the trigger.
   idempotency key and lookup by it — 0 of 15 live writers probe today, and three independently chose
   the manual-check message instead (`mcp-shared/src/action-store.ts:43-46`,
   `ironclad.ts:916-931`, and the kit). Half the work is already done: `ActionContext.id` is the
-  stable key such a probe would look up.
+  stable key such a probe would look up. Reviewed again and still deferred: X, the one candidate,
+  has neither (its probe matches recent posts by text inside a time window), Google Chat sets
+  `requestId` and needs no claim at all, and internal Jira and Salesforce refuse the retry, which
+  `claimBeforeApply` already does. A probe keyed on a gatekeeper's own attempt marker also misreads
+  the gap between the provider's success and the journal's applied record: the marker is cleared
+  first, so a crash there reads as absent and dispatches again.
 - **A `reverting` marker** for the retained tier, so an interrupted compensating call is
   distinguishable from a completed one. No gatekeeper in either corpus persists one, which is why
   all 11 functional reverts are silently replayable; the kit already owns the right primitive in
@@ -3345,20 +3431,18 @@ recorded here because the pass found it. Each entry names why it waits and what 
   hand-written retry loop.
 - **Hook delivery** (`startHook`, observe, deliver, dispose). Only email and scheduler produce hooks,
   with different policies. *Trigger:* a third producer.
-- **Simulated-item cursor overlay.** cf-wiki and GitHub's provisional items order differently.
-  GitHub and GitLab now carry near-identical `StreamingCursor`s (overlay, injected rows merged by
-  comparator, re-validation at serve time); GitLab's buffers before serving and serializes `next()`,
-  GitHub's still loses the rows of a page whose fetch throws. *Trigger:* the git extraction below.
 - **Resource-pattern scope helpers.** Cloudflare, Google, Slack and internal Ironclad each model the
   granted scope differently, so there is no shared contract yet. *Trigger:* a second gatekeeper
   that records requested and granted scopes the way Google does.
-- **Git push simulation.** The pending-chain walk, simulated branch heads, the served-id set,
-  `SessionGitCache`, push apply and rollback, and `parsePatch` are duplicated across github and
-  gitlab, and where the copies differ GitHub's side is the bug, not a provider difference: GitLab's
-  plan records its first-parent walk and missing cascade through stacked pushes as GitHub bugs, and
-  GitHub also drops the rejection reason and lacks the trailing-newline guard. *Trigger:* the next
-  change to either copy — land it as the extraction, into `./git-diff` and a git-simulation leaf,
-  with GitLab's behaviour.
+- **Git push simulation, remainder.** `parseUnifiedPatch` (`./git-diff`) and `simulateBranchHead`
+  (`./git-transport`) were extracted, and `SessionGitCache` already lived in `./cursors`. What stays
+  per gatekeeper is entangled with provider APIs and durable action records: the pending-chain walk
+  (GitHub probes each commit, GitLab splits side ancestry and asks `/merge_base`; both list first
+  parents only), tree comparison, push refusal wording, rollback, and the rejected-push cascade.
+  Two GitHub gaps remain local fixes, not kit work: rollback drops the receive-pack reason, and
+  rejection does not cascade through stacked pushes as GitLab's `#rejectActionsStrandedByPush`
+  does. *Trigger:* a third git gatekeeper, or a pure chain walker returning `{ firstParent, pending,
+  frontier }` that both can call.
 
 Rejected: a `clientCredentials()` grant (`OAuthClient.request("token", …)` covers both instances, and
 Zylo returns `expires_on`), streaming `ActionFileStore` capture (no Drive upload exists), and a

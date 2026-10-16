@@ -83,8 +83,11 @@ function paragraphsIn(text: string, range: { startIndex: number; endIndex: numbe
 /** The tab a single-tab document has, and the one the tab-agnostic tests exercise. */
 const MAIN_TAB = "tab-1";
 
-/** A batch either carries the edit and its marker, or deletes a marker on its own; or a create. */
-type BatchKind = "content" | "cleanup" | "create";
+/**
+ * A batch either carries the edit and its marker, or deletes a marker on its own; or a create; or
+ * a read, whose answer is fixed when it arrives, so holding it delivers what was then current.
+ */
+type RequestKind = "content" | "cleanup" | "create" | "read";
 
 class DocsModel {
   cleanupFailures = 0;
@@ -123,7 +126,7 @@ class DocsModel {
   #revision = 1;
   #nextMarkerId = 1;
   #nextListId = 1;
-  readonly #held = new Map<BatchKind, { reach: () => void; released: Promise<void> }>();
+  readonly #held = new Map<RequestKind, { reach: () => void; released: Promise<void> }>();
 
   install(): void {
     vi.stubGlobal("fetch", vi.fn((input: string | URL | Request, init?: RequestInit) =>
@@ -213,11 +216,11 @@ class DocsModel {
   }
 
   /**
-   * Holds the next write of `kind` open, so another request can interleave with it mid-flight.
+   * Holds the next request of `kind` open, so another request can interleave with it mid-flight.
    *
    * `reached` resolves once the provider has the request in hand, before anything is applied.
    */
-  hold(kind: BatchKind): { reached: Promise<void>; release: () => void } {
+  hold(kind: RequestKind): { reached: Promise<void>; release: () => void } {
     let reach!: () => void;
     let release!: () => void;
     let reached = new Promise<void>(resolve => { reach = resolve; });
@@ -274,7 +277,9 @@ class DocsModel {
           return Response.json({ error: { code: 404, message: "not found" } }, { status: 404 });
         }
       } else if (fields === "revisionId") this.revisionProbes++;
-      return Response.json(this.#document());
+      let document = this.#document();
+      await this.#hold("read");
+      return Response.json(document);
     }
 
     let body = JSON.parse(String(init?.body)) as {
@@ -593,8 +598,8 @@ class DocsModel {
     ]).body;
   }
 
-  /** Blocks a held write until the test releases it. One hold, so a retry is never held twice. */
-  async #hold(kind: BatchKind): Promise<void> {
+  /** Blocks a held request until the test releases it. One hold, so a retry is never held twice. */
+  async #hold(kind: RequestKind): Promise<void> {
     let held = this.#held.get(kind);
     if (!held) return;
     this.#held.delete(kind);
@@ -1628,6 +1633,25 @@ describe("Google Doc write receipts", () => {
 
     expect(content).toContain("first");
     expect(await apply).toBeNull();
+  });
+
+  // A read that asked Google before the write landed gets the old document back after the handoff
+  // removed the edit from the queue: replayed over, it would show the approved edit missing.
+  it("refetches a read that Google answered before a write landed", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    let actionId = await hooks().submitAppend("stale-read", "first");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 60_000);
+    let staleAnswer = docs.hold("read");
+
+    let read = hooks().readContent("stale-read");
+    await staleAnswer.reached;
+    expect(await hooks().applyAction("stale-read", actionId)).toBeNull();
+    staleAnswer.release();
+
+    expect(await read).toContain("first");
+    expect(await hooks().readContent("stale-read")).toContain("first");
   });
 
   it("reads a lost-response append once, not once per replay", async () => {

@@ -1,17 +1,17 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
 
-import { act, type ReactNode } from 'react'
+import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
-import type { AuthenticatedApi } from '@gadgets/workshop-shared/api'
+import type { AuthenticatedApi, ConnectedAccountsSubscriber, GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
+import type { AccountDescription, SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
 import ResourcePicker from './ResourcePicker'
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 vi.mock('@cloudflare/kumo', () => ({
-  Tooltip: ({ children }: { children: ReactNode }) => children,
   useKumoToastManager: () => ({ add: vi.fn<(toast: unknown) => void>() }),
 }))
 
@@ -56,5 +56,67 @@ describe('ResourcePicker', () => {
     root = undefined
 
     expect(pendingSubscription.dispose).toHaveBeenCalledOnce()
+  })
+
+  // Renders the picker over one vendor, with each of `accounts` connected to it.
+  const renderPicker = async (
+    vendor: GatekeeperVendorInfo,
+    searchText: string,
+    { accounts = [], onSelectAccount = () => {} }: { accounts?: AccountDescription[]; onSelectAccount?: () => void } = {},
+  ) => {
+    const authenticatedApi = {
+      subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
+        for (const [i, account] of accounts.entries()) {
+          subscriber.add(i + 1, account, vendor.description, vendor.supportedResources, true, vendor.id)
+        }
+        subscriber.ready()
+        return Object.assign(Promise.resolve(), { [Symbol.dispose]: () => {} })
+      },
+      listGatekeeperVendors: async () => [vendor],
+    } as unknown as RpcStub<AuthenticatedApi>
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(
+      <ResourcePicker authenticatedApi={authenticatedApi} searchText={searchText} onSelectAccount={onSelectAccount} />,
+    ))
+    return container
+  }
+
+  it('names the placeholder still blocking an account, rather than offering to grant access', async () => {
+    const thread: SupportedResource = {
+      urlPattern: 'https://chat.google.com/:kind(room|dm)/:spaceId/:threadId{/:messageId}?',
+      title: 'Google Chat Thread',
+      description: 'One thread',
+      grantable: true,
+    }
+    const vendor = { id: 'google', description: { displayName: 'Google', url: 'https://google.com' }, supportedResources: [thread] }
+    // An account that hasn't granted this resource type, so it would otherwise need access.
+    const account = { displayName: 'dan@example.com', avatar: { url: '' }, grantedResourceUrlPatterns: [] }
+    const onSelectAccount = vi.fn<() => void>()
+
+    const picker = await renderPicker(vendor, 'https://chat.google.com/room/AAQANZZTsQ8/:threadId?cls=7', {
+      accounts: [account], onSelectAccount,
+    })
+
+    const row = [...picker.querySelectorAll('div')].findLast(div => div.textContent?.includes('dan@example.com'))!
+    expect(row.textContent).toContain('Fill in :threadId first')
+    expect(row.textContent).not.toContain('Grant access')
+    act(() => row.click())
+    expect(onSelectAccount).not.toHaveBeenCalled()
+  })
+
+  it('lists full matches in the order the gatekeeper declared them', async () => {
+    // GitLab declares its merge-request pattern before the project pattern that also matches it.
+    const resources: SupportedResource[] = [
+      { urlPattern: 'https://gitlab.com/:project+/-/merge_requests/:iid{/*}?', title: 'GitLab Merge Request', description: '' },
+      { urlPattern: 'https://gitlab.com/:project+', title: 'GitLab Project', description: '' },
+    ]
+    const vendor = { id: 'gitlab', description: { displayName: 'GitLab', url: 'https://gitlab.com' }, supportedResources: resources }
+
+    const text = (await renderPicker(vendor, 'https://gitlab.com/group/repo/-/merge_requests/12')).textContent!
+
+    expect(text.indexOf('GitLab Merge Request')).toBeGreaterThanOrEqual(0)
+    expect(text.indexOf('GitLab Merge Request')).toBeLessThan(text.indexOf('GitLab Project'))
   })
 })

@@ -5,9 +5,10 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
-import type { PublicApi, AiChatAuthorInfo } from '@gadgets/workshop-shared/api'
+import type { PublicApi, AuthenticatedApi, AiChatAuthorInfo } from '@gadgets/workshop-shared/api'
 import { setReportedUserId } from './errorReporting'
 import { useAuth } from './useAuth'
+import { nativeConnectCompletion } from './features/native-app/connectSession'
 
 vi.mock('./errorReporting', () => ({
   setReportedUserId: vi.fn<(reportedUserId: string | undefined) => void>(),
@@ -20,6 +21,7 @@ const person: AiChatAuthorInfo = { type: 'user', id: 'person@example.com', name:
 /** A public API whose authenticated stub resolves `whoami` to `author`, or rejects without one. */
 function stubPublicApi(author?: AiChatAuthorInfo): RpcStub<PublicApi> {
   const authenticated = {
+    onRpcBroken: () => {},
     whoami: async () => {
       if (!author) throw new Error('session gone')
       return author
@@ -49,7 +51,7 @@ function deferredPublicApi(): {
     let release: (author: AiChatAuthorInfo) => void = () => {}
     const pending = new Promise<AiChatAuthorInfo>((resolve) => { release = resolve })
     releases.push(release)
-    return { whoami: () => pending, [Symbol.dispose]: () => {} }
+    return { whoami: () => pending, onRpcBroken: () => {}, [Symbol.dispose]: () => {} }
   }
   return {
     api: { authenticate, authenticateFromCfAccess: authenticate } as unknown as RpcStub<PublicApi>,
@@ -191,5 +193,33 @@ describe('useAuth error reporting identity', () => {
     await mount(stubPublicApi())
 
     expect(setReportedUserId).not.toHaveBeenCalled()
+  })
+
+  it('keeps a native connect attached to this hook when its public RPC is replaced', async () => {
+    const connection = () => {
+      const completeConnectHandoff = vi.fn<(ticket: string, nonce: string) => Promise<void>>().mockResolvedValue(undefined)
+      const authenticated = { whoami: async () => person, completeConnectHandoff,
+        onRpcBroken: () => {}, [Symbol.dispose]: () => {} }
+      const api = { authenticate: () => authenticated } as unknown as RpcStub<PublicApi>
+      return { api, completeConnectHandoff }
+    }
+    const first = connection(), next = connection()
+    localStorage.setItem('authToken', 'stored-token')
+    let current: RpcStub<AuthenticatedApi> | null = null
+    const Consumer = ({ api }: { api: RpcStub<PublicApi> }) => {
+      current = useAuth(api).authenticatedApi
+      return null
+    }
+    const container = document.createElement('div')
+    document.body.append(container)
+    containers.push(container)
+    const root = createRoot(container)
+    roots.push(root)
+    await act(async () => root.render(<Consumer api={first.api} />))
+    const complete = nativeConnectCompletion(current!, 'b'.repeat(64))
+    await act(async () => root.render(<Consumer api={next.api} />))
+    await complete('a'.repeat(64), new AbortController().signal)
+    expect(first.completeConnectHandoff).not.toHaveBeenCalled()
+    expect(next.completeConnectHandoff).toHaveBeenCalledExactlyOnceWith('a'.repeat(64), 'b'.repeat(64))
   })
 })

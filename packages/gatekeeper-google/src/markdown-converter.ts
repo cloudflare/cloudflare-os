@@ -50,7 +50,7 @@ export type MarkdownRange = { mdStart: number; mdEnd: number };
  * produces changes, so callers caching a {@link DocTabSnapshot} discard entries built by older
  * code. It lives here because edits to this file are what invalidate them.
  */
-export const MARKDOWN_RENDERING_VERSION = 5;
+export const MARKDOWN_RENDERING_VERSION = 6;
 
 type ListType = "bullet" | "numbered";
 
@@ -573,13 +573,15 @@ function paragraphListItem(
   if (!bullet) return undefined;
   let nestingLevel = bullet.nestingLevel ?? 0;
   let level = lists[bullet.listId]?.listProperties.nestingLevels[nestingLevel];
+  // A checklist level reports this placeholder in place of an absent glyph type; it is unordered.
+  let glyphType = level?.glyphType === "GLYPH_TYPE_UNSPECIFIED" ? undefined : level?.glyphType;
   let listType: ListType | null = "bullet";
-  if (level?.glyphType === "NONE") listType = null;
-  else if (level?.glyphType !== undefined) listType = "numbered";
+  if (glyphType === "NONE") listType = null;
+  else if (glyphType !== undefined) listType = "numbered";
   return {
     listId: bullet.listId,
     listType,
-    glyphType: level?.glyphType,
+    glyphType,
     glyphSymbol: level?.glyphSymbol,
     nestingLevel,
     startNumber: level?.startNumber ?? 1,
@@ -988,7 +990,10 @@ function markdownTokenSplits(markdown: string): Uint8Array {
   return splits;
 }
 
-/** Shared replacement bounds that never split Markdown syntax tokens. */
+/**
+ * Shared replacement bounds that never split Markdown syntax tokens, or a surrogate pair: two
+ * emoji can share their high surrogate, and Google refuses to delete half of a pair.
+ */
 function markdownReplacementBounds(oldMarkdown: string, newMarkdown: string): {
   prefixLen: number;
   suffixLen: number;
@@ -998,8 +1003,8 @@ function markdownReplacementBounds(oldMarkdown: string, newMarkdown: string): {
   let prefixLen = 0;
   while (prefixLen < oldMarkdown.length && prefixLen < newMarkdown.length &&
       oldMarkdown[prefixLen] === newMarkdown[prefixLen]) prefixLen++;
-  while (prefixLen > 0 &&
-      (oldTokenSplits[prefixLen] || newTokenSplits[prefixLen])) prefixLen--;
+  while (prefixLen > 0 && (oldTokenSplits[prefixLen] || newTokenSplits[prefixLen] ||
+      isHighSurrogate(oldMarkdown.charCodeAt(prefixLen - 1)))) prefixLen--;
 
   let suffixLen = 0;
   while (suffixLen < oldMarkdown.length - prefixLen &&
@@ -1008,9 +1013,18 @@ function markdownReplacementBounds(oldMarkdown: string, newMarkdown: string): {
         newMarkdown[newMarkdown.length - suffixLen - 1]) suffixLen++;
   while (suffixLen > 0 &&
       (oldTokenSplits[oldMarkdown.length - suffixLen] ||
-        newTokenSplits[newMarkdown.length - suffixLen])) suffixLen--;
+        newTokenSplits[newMarkdown.length - suffixLen] ||
+        isLowSurrogate(oldMarkdown.charCodeAt(oldMarkdown.length - suffixLen)))) suffixLen--;
 
   return { prefixLen, suffixLen };
+}
+
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+function isLowSurrogate(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff;
 }
 
 function canonicalizeMarkdownFragment(markdown: string): string {

@@ -1,0 +1,431 @@
+/**
+ * Approval-backed Google Sheets changes: how each is described, and how an approved one is written.
+ *
+ * Sheets has no revision to pin a write to, so a write is guarded instead. Apply reads the
+ * spreadsheet afresh, plans the batch against it, and checks a digest of what the batch overwrites
+ * or removes (the cells it writes, the rows, columns and sheets it deletes, as entered, and the
+ * title and size of each sheet it changes) against the one taken when it was queued, of those
+ * cells as they were to be by then: with the rows, columns, sheets and values the changes queued
+ * before it leave, which must therefore have been applied. A change that no longer applies, or
+ * whose cells a collaborator has edited, fails without writing. The guard leaves a window: a
+ * collaborator's edit landing between that read and the write is overwritten. Formatting is not
+ * guarded, so a collaborator's formatting of cells a batch formats is overwritten whenever it lands.
+ *
+ * Every write is one atomic `batchUpdate`, which also creates a marker, a developer metadata
+ * entry with an ID and token minted when the change was queued. Google refuses a second entry with
+ * the same ID, so a batch carrying it commits at most once, and finding the marker proves the
+ * batch landed. A batch whose response was lost is looked for by its marker, guarded again, and
+ * resent only exactly as first sent. Once a send's outcome is unknown, the change either is found
+ * to have landed or is recorded as unknown, and is never planned again.
+ *
+ * Markers cost no write of their own: a batch deletes those of earlier batches once no send of
+ * theirs can still commit, `MARKER_RETENTION_MS` after it was last sent; a marker deleted sooner
+ * would let a send given up on commit its batch a second time, after its resend did. Until then
+ * markers linger, visible only to this app's Google Cloud project. A batch's marker is recorded,
+ * its outcome unknown, before each send, so one whose activation dies mid-apply is kept and
+ * deleted like any other. While a batch whose outcome is unknown could still land, later batches
+ * stay pending: landing after a later batch's guard was checked, it would overwrite its cells
+ * unseen.
+ */
+
+import {
+  ActionApplyError, ActionOutcomeUnknownError, APPLY_OUTCOME_UNKNOWN_MESSAGE, defineActions,
+  type ActionDefinition,
+} from "@gadgets/gatekeeper-kit/actions";
+import {
+  buildDescription, plainInline, sanitizeTitle,
+} from "@gadgets/gatekeeper-kit/action-description";
+import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
+import { obsContext } from "./observability";
+import { SheetsWriteRefused, type GoogleSheetsApi } from "./sheets-api";
+import { cellName, columnLetters, isFormula, rectName } from "./sheets-model";
+import { guardDigest, guardFits, guardOf, planSheet } from "./sheets-plan";
+import { gridOf, type PlannedChange, type SheetBatch, type SheetsActions } from "./sheets-simulation";
+import type { SheetBorder, SheetNumberFormat } from "./sheets-read-types";
+import type { SheetCellInput, SheetFormatChange } from "./sheets-types";
+import { ChangeConflict } from "./slides-text";
+
+const logger = obsContext.createLogger({ component: "gatekeeper.google.sheets", vendorId: "google" });
+
+/**
+ * A marker a batch created or may yet create: when that batch was last sent, and whether its
+ * outcome is unknown, as it is from just before each send until the batch is found to have landed
+ * or been refused.
+ */
+export type MarkerEntry = { id: number; sentAt: number; unknown?: true };
+
+/**
+ * How long after a batch's last send its marker is kept. Google lets a request run for up to 180
+ * seconds (https://developers.google.com/workspace/sheets/api/limits), well past the client's
+ * 30-second timeout, so a send given up on may still commit until then; the window leaves a margin.
+ */
+export const MARKER_RETENTION_MS = 10 * 60 * 1000;
+
+/** What an approved change is written with, and where the markers it leaves are kept. */
+export type SheetsHost = {
+  api: GoogleSheetsApi;
+  spreadsheetId: string;
+  /** Whether the change with this action ID was applied. */
+  applied(id: number): boolean;
+  /** The markers batches left, each deleted by a later batch once no send of it can still commit. */
+  markers: { read(): MarkerEntry[]; write(entries: MarkerEntry[]): void };
+  /** The current time, in milliseconds since the epoch. */
+  now(): number;
+};
+
+// What a user may let apply without asking: a batch that only enters literal values and clears
+// cells. A formula can compute anything from the spreadsheet, so any batch with one needs approval.
+const EDIT_SHEET_VALUES: ActionKind = { tag: "editSheetValues", label: "Sheet value edits" };
+// What a user may let apply without asking: a batch that only formats cells, leaving their
+// contents, rows, columns and sheets as they are.
+const FORMAT_SHEETS: ActionKind = { tag: "formatSheets", label: "Sheet formatting" };
+
+/**
+ * The kind a batch is queued as, so approving a kind approves no more than it says: a batch mixing
+ * kinds of change is `updateSpreadsheet`, which a user cannot let apply without asking.
+ */
+export function batchKind(
+  changes: readonly { op: string; values?: SheetCellInput[][] }[],
+): keyof SheetsActions {
+  if (changes.every(change => change.op === "formatCells")) return "formatSheets";
+  let literal = changes.every(change => change.op === "clearRange" ||
+    (change.op === "writeCells" && change.values!.every(row => !row.some(isFormula))));
+  return literal ? "editSheetValues" : "updateSpreadsheet";
+}
+
+// Sending a batch: the first send, and resends once an answer was lost.
+const MAX_ATTEMPTS = 3;
+const MARKER_KEY = "gadgets.write";
+
+function sheetName(title: string | undefined, sheetId: number): string {
+  return title === undefined ? `sheet ${sheetId}` : `"${plainInline(title, 60)}"`;
+}
+
+// Characters a title can hold that do not show, or show as something else, in prose: everything
+// but letters, marks, digits, punctuation, symbols and the plain space, and the quotes around it.
+const UNCLEAR_IN_PROSE = /[^\p{L}\p{M}\p{N}\p{P}\p{S} ]|"/u;
+
+// Whether `sheetName` cannot show `title` exactly. Titles are how an approver tells sheets apart,
+// and "Sheet_1" would otherwise read as Google's default "Sheet1", or "Sales" followed by a
+// zero-width space as "Sales".
+function inexact(title: string): boolean {
+  return plainInline(title, 60) !== title || UNCLEAR_IN_PROSE.test(title);
+}
+
+function plural(count: number, noun: string): string {
+  return `${count.toLocaleString("en-US")} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+// A line separator other than \n, which a viewer may break a line at though the kit keeps it.
+const SEPARATOR = /[\u2028\u2029]/g;
+
+// JSON, with the line separators JSON leaves as they are escaped, so the text stays on one line.
+function oneLine(value: unknown): string {
+  return JSON.stringify(value).replace(SEPARATOR, c => `\\u${c.charCodeAt(0).toString(16)}`);
+}
+
+/**
+ * The batch's requests, planned against a fresh read, if what it overwrites is as it was when it
+ * was queued. Throws `ChangeConflict` for a change that no longer applies.
+ */
+async function guarded(host: SheetsHost, batch: SheetBatch): Promise<unknown[] | undefined> {
+  let unapplied = batch.guard.after.find(id => !host.applied(id));
+  if (unapplied !== undefined) {
+    throw new ChangeConflict(`it builds on change ${unapplied}, which was not applied`);
+  }
+  let metadata = await host.api.getMetadata(host.spreadsheetId);
+  let { requests } = planSheet(gridOf(metadata), batch.changes);
+  let guard = guardOf(batch);
+  // Cells the sheets no longer hold cannot be read, and have changed.
+  if (!guardFits(metadata.sheets, guard.cells)) return undefined;
+  let entered = await host.api.readEntered(host.spreadsheetId, guard.cells);
+  let digest = await guardDigest(metadata.sheets, guard, entered);
+  return digest === batch.guard.sha256 ? requests : undefined;
+}
+
+// Whether the spreadsheet holds this batch's marker. A failed lookup counts as not yet.
+async function markerFound(host: SheetsHost, { id, token }: SheetBatch["marker"]): Promise<boolean> {
+  try {
+    return (await host.api.getDeveloperMetadata(host.spreadsheetId, id))?.metadataValue === token;
+  } catch (error) {
+    logger.warn("could not look up a Sheets write marker", { event: "sheets.apply.marker.failed", error });
+    return false;
+  }
+}
+
+/** Writes `batch`, as the module comment describes. */
+async function write(host: SheetsHost, batch: SheetBatch): Promise<void> {
+  let { marker } = batch;
+  let unsettled = host.markers.read().find(entry =>
+    entry.id !== marker.id && entry.unknown && host.now() < entry.sentAt + MARKER_RETENTION_MS);
+  if (unsettled) {
+    throw new Error(
+      "An earlier change's outcome is still unknown, and it could still land until " +
+      `${new Date(unsettled.sentAt + MARKER_RETENTION_MS).toISOString()}. Apply this one after that.`);
+  }
+
+  let requests: unknown[] | undefined;
+  try {
+    requests = await guarded(host, batch);
+  } catch (error) {
+    if (error instanceof ChangeConflict) {
+      throw new ActionApplyError(`This change no longer applies: ${error.message}.`);
+    }
+    throw error;
+  }
+  if (!requests) {
+    throw new ActionApplyError(
+      "This change no longer applies: cells it overwrites or deletes, or a sheet it changes, " +
+      "changed since it was queued.");
+  }
+
+  let now = host.now();
+  let stale = host.markers.read()
+    .filter(entry => entry.id !== marker.id && entry.sentAt + MARKER_RETENTION_MS <= now)
+    .map(entry => entry.id);
+  let sent = [
+    {
+      createDeveloperMetadata: {
+        developerMetadata: {
+          metadataId: marker.id, metadataKey: MARKER_KEY, metadataValue: marker.token,
+          location: { spreadsheet: true }, visibility: "PROJECT",
+        },
+      },
+    },
+    // Deleting a marker that is already gone succeeds, and changes nothing.
+    ...stale.map(metadataId => ({
+      deleteDeveloperMetadata: { dataFilter: { developerMetadataLookup: { metadataId } } },
+    })),
+    ...requests,
+  ];
+  // This batch's entry, replacing any earlier one, without those of the markers `deleted`.
+  let sentAt = now;
+  let record = (unknown: boolean, deleted: readonly number[] = []) => host.markers.write([
+    ...host.markers.read().filter(({ id }) => id !== marker.id && !deleted.includes(id)),
+    { id: marker.id, sentAt, ...(unknown ? { unknown } : {}) },
+  ]);
+  // Recorded before each send, so the marker is deleted by a later batch whatever becomes of this
+  // one, and no later batch is written while this one could still land; deleting a marker never
+  // created changes nothing.
+  let send = () => {
+    sentAt = host.now();
+    record(true);
+    return host.api.batchUpdate(host.spreadsheetId, sent);
+  };
+  let landed = () => record(false, stale);
+
+  try {
+    await send();
+    return landed();
+  } catch (error) {
+    if (error instanceof SheetsWriteRefused) {
+      if (error.status === 400 && await markerFound(host, marker)) return landed();
+      // Nothing was applied, so the marker was never created and needs no entry. A 401, 403 or 429
+      // may pass, so the action stays pending, and its next send records the marker again.
+      host.markers.write(host.markers.read().filter(({ id }) => id !== marker.id));
+      if (error.status !== 400) throw error;
+      throw new ActionApplyError(
+        "Google Sheets refused this change as invalid [http=400]. It may write to a protected range " +
+        "or outside a sheet's grid, or leave a sheet with fewer rows or columns than Google allows.");
+    }
+    logger.warn("Sheets write outcome unknown", { event: "sheets.apply.lost", error });
+  }
+
+  // The batch may have been committed, or may still be. Only it is ever sent again: Google commits
+  // its marker, and so the batch, at most once.
+  for (let attempt = 1; attempt < MAX_ATTEMPTS; attempt++) {
+    if (await markerFound(host, marker)) return landed();
+    // A collaborator's edit since the first read means the batch can no longer be resent, though
+    // it may still land.
+    let unchanged = await guarded(host, batch).then(Boolean, () => false);
+    if (!unchanged) break;
+    try {
+      await send();
+      return landed();
+    } catch (error) {
+      // Refused, perhaps because the first send has committed its marker since.
+      if (error instanceof SheetsWriteRefused) break;
+      logger.warn("Sheets write resend outcome unknown", { event: "sheets.apply.lost", error });
+    }
+  }
+  if (await markerFound(host, marker)) return landed();
+  throw new ActionOutcomeUnknownError(APPLY_OUTCOME_UNKNOWN_MESSAGE);
+}
+
+type Field = (label: string, text: string, kind: "inline" | "verbatim") => void;
+
+type FormatField = keyof Omit<SheetFormatChange, "borders">;
+
+// How each field reads set, and reset: "bold", "default bold". Booleans read set to false too.
+const FORMAT_WORDS: Record<FormatField, { set: (value: never) => string; reset: string }> = {
+  bold: { set: (on: boolean) => on ? "bold" : "not bold", reset: "default bold" },
+  italic: { set: (on: boolean) => on ? "italic" : "not italic", reset: "default italic" },
+  underline: { set: (on: boolean) => on ? "underlined" : "not underlined", reset: "default underline" },
+  strikethrough: {
+    set: (on: boolean) => on ? "struck through" : "not struck through", reset: "default strikethrough",
+  },
+  fontSize: { set: (size: number) => `${size.toLocaleString("en-US")} pt`, reset: "default font size" },
+  textColor: { set: (color: string) => `text colour ${color}`, reset: "default text colour" },
+  fillColor: { set: (color: string) => `fill ${color}`, reset: "default fill" },
+  numberFormat: {
+    set: (format: SheetNumberFormat) =>
+      `number format ${format.type}${format.pattern === undefined ? "" : " (pattern below)"}`,
+    reset: "default number format",
+  },
+  horizontalAlignment: {
+    set: (align: string) => align === "CENTER" ? "centred" : `aligned ${align.toLowerCase()}`,
+    reset: "default horizontal alignment",
+  },
+  verticalAlignment: {
+    set: (align: string) => align === "MIDDLE" ? "vertically centred" : `aligned to the ${align.toLowerCase()}`,
+    reset: "default vertical alignment",
+  },
+  wrap: {
+    set: (wrap: string) => wrap === "WRAP" ? "wrapped" : wrap === "CLIP" ? "clipped" : "overflowing",
+    reset: "default wrapping",
+  },
+};
+
+const BORDER_SIDES = {
+  top: "top", bottom: "bottom", left: "left", right: "right",
+  innerHorizontal: "inner horizontal", innerVertical: "inner vertical",
+} as const;
+
+const BORDER_STYLES: Record<SheetBorder["style"], string> = {
+  SOLID: "solid", SOLID_MEDIUM: "medium solid", SOLID_THICK: "thick solid", DOTTED: "dotted",
+  DASHED: "dashed", DOUBLE: "double",
+};
+
+/**
+ * What `format` sets, in prose: "bold, 14 pt, a solid top border". The input checks allow every
+ * value but a number pattern only from a fixed set or shape, which prose shows exactly, so `field`
+ * adds only the pattern.
+ */
+function formatWords(format: SheetFormatChange, field: Field): string {
+  let words = (Object.keys(FORMAT_WORDS) as FormatField[]).flatMap(name => {
+    let value = format[name];
+    if (value === undefined) return [];
+    if (value === null) return [FORMAT_WORDS[name].reset];
+    if (name === "numberFormat" && typeof value === "object" && value.pattern !== undefined) {
+      field("Number format", value.pattern, "verbatim");
+    }
+    return [FORMAT_WORDS[name].set(value as never)];
+  });
+  for (let [side, name] of Object.entries(BORDER_SIDES) as [keyof typeof BORDER_SIDES, string][]) {
+    let border = format.borders?.[side];
+    if (border === undefined) continue;
+    words.push(border === null
+      ? `no ${name} border`
+      : `a ${BORDER_STYLES[border.style]} ${name} border${border.color === undefined ? "" : ` in ${border.color}`}`);
+  }
+  return words.join(", ");
+}
+
+// Lines by their names: "row 5", "rows 5 to 6", "column C", "columns C to D".
+function band(axis: "rows" | "columns", start: number, count: number): string {
+  let name = (position: number) => axis === "rows" ? String(position + 1) : columnLetters(position);
+  let noun = axis === "rows" ? "row" : "column";
+  return count === 1 ? `${noun} ${name(start)}` : `${noun}s ${name(start)} to ${name(start + count - 1)}`;
+}
+
+/**
+ * One line naming what a change does; `field` adds what the approver must see exactly. `titles`
+ * holds each sheet's title as the changes before this one leave it, and this one updates it.
+ */
+function describeChange(change: PlannedChange, titles: Map<number, string>, field: Field): string {
+  let named = (sheetId: number, label = "Sheet") => {
+    let title = titles.get(sheetId);
+    if (title !== undefined && inexact(title)) field(label, title, "inline");
+    return sheetName(title, sheetId);
+  };
+  switch (change.op) {
+    case "writeCells":
+    case "clearRange": {
+      let where = `In ${named(change.sheetId)}`;
+      let cells = rectName(change.rect);
+      if (change.op === "clearRange") return `${where}, clear the contents of ${cells}, keeping their formatting`;
+      field("Values", change.values.map(oneLine).join("\n"), "verbatim");
+      // One formula per line: one with a line break of its own is quoted, so it cannot pass for others.
+      let formulas = change.values.flatMap((row, r) => row.flatMap((value, c) => isFormula(value)
+        ? [`${cellName(change.rect.startRow + r, change.rect.startColumn + c)}: ` +
+          (/[\r\n\u2028\u2029]/.test(value) ? oneLine(value) : value)]
+        : []));
+      if (formulas.length > 0) field("Formulas", formulas.join("\n"), "verbatim");
+      return `${where}, set ${cells} to the values below`;
+    }
+    case "formatCells":
+      return `In ${named(change.sheetId)}, format ${rectName(change.rect)}: ${formatWords(change.format, field)}`;
+    case "addSheet":
+      titles.set(change.sheetId, change.title);
+      return `Add a sheet ${named(change.sheetId, "Title")} of ${plural(change.rowCount, "row")} and ` +
+        `${plural(change.columnCount, "column")} at position ${change.index + 1}`;
+    case "renameSheet": {
+      let from = named(change.sheetId);
+      titles.set(change.sheetId, change.title);
+      return `Rename ${from} to ${named(change.sheetId, "New title")}`;
+    }
+    case "duplicateSheet": {
+      let source = named(change.sheetId);
+      titles.set(change.newSheetId, change.title);
+      return `Copy ${source} as ${named(change.newSheetId, "Copy title")} at position ${change.index + 1}`;
+    }
+    case "deleteSheet":
+      return `Delete the sheet ${named(change.sheetId)} (${plural(change.rowCount, "row")}, ` +
+        `${plural(change.columnCount, "column")}) and everything on it`;
+    case "insertRows":
+    case "insertColumns": {
+      let axis: "rows" | "columns" = change.op === "insertRows" ? "rows" : "columns";
+      let lines = plural(change.count, axis === "rows" ? "row" : "column");
+      // Lines added after the last have no line to go before.
+      let where = change.appends
+        ? `add ${lines} after ${band(axis, change.start - 1, 1)}`
+        : `insert ${lines} before ${band(axis, change.start, 1)}`;
+      return `In ${named(change.sheetId)}, ${where}`;
+    }
+    case "deleteRows":
+    case "deleteColumns":
+      return `In ${named(change.sheetId)}, delete ` +
+        band(change.op === "deleteRows" ? "rows" : "columns", change.start, change.count);
+  }
+}
+
+/** A batch's definition, the same for each kind but in the `kind` a user may auto-approve. */
+function sheetBatch(kind?: ActionKind): ActionDefinition<SheetBatch, SheetsHost> {
+  return {
+    ...(kind ? { kind, autoApprovable: true } : {}),
+    delivery: "continue-with-simulation",
+    claimBeforeApply: true,
+    describe: ({ changes, sheets }) => {
+      // The sheets the batch acts on or makes, copies included.
+      let ids = [...new Set(changes.flatMap(change =>
+        change.op === "duplicateSheet" ? [change.sheetId, change.newSheetId] : [change.sheetId]))];
+      let titles = new Map(Object.entries(sheets).map(([id, title]) => [Number(id), title]));
+      let fields: [string, string, "inline" | "verbatim"][] = [];
+      let lines = changes.map((change, i) => {
+        let label = changes.length === 1 ? "" : `Change ${i + 1}: `;
+        return describeChange(change, titles, (name, text, shape) => fields.push([`${label}${name}`, text, shape]));
+      });
+      let builder = buildDescription(lines.length === 1
+        ? `${lines[0]}.`
+        : `Makes ${lines.length} changes, all or none of which are applied:\n\n` +
+          lines.map((line, i) => `${i + 1}. ${line}`).join("\n"));
+      for (let [label, text, shape] of fields) builder[shape](label, text);
+      let verb = changes.every(change => change.op === "formatCells") ? "Format" : "Edit";
+      return {
+        title: sanitizeTitle(changes.every(change => change.op === "addSheet")
+          ? ids.length === 1 ? `Add the sheet ${sheetName(sheets[ids[0]], ids[0])}` : `Add ${ids.length} sheets`
+          : ids.length === 1 ? `${verb} ${sheetName(sheets[ids[0]], ids[0])}` : `${verb} ${ids.length} sheets`),
+        ...builder.finish(),
+        implementsRevert: false,
+      };
+    },
+    apply: (batch, host) => write(host, batch),
+  };
+}
+
+/** The Sheets change set, bound once per spreadsheet's journal. */
+export const SHEETS_ACTIONS = defineActions<SheetsHost, SheetsActions>({
+  editSheetValues: sheetBatch(EDIT_SHEET_VALUES),
+  formatSheets: sheetBatch(FORMAT_SHEETS),
+  updateSpreadsheet: sheetBatch(),
+}, { fence: "none", vendorId: "google" });

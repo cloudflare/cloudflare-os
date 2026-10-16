@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { CloudflareUsageInfo, CloudflareAccountOption } from '@gadgets/workshop-shared/api'
 import { Dialog, Button, Loader, Radio, useKumoToastManager } from '@cloudflare/kumo'
 import { Warning } from '@phosphor-icons/react'
 import { useOptionalAuthenticatedApi } from '../../AuthContext'
 import { useCloudflareLimitsEnabled } from '../../ServerConfigContext'
+import { NATIVE_CONNECT_COMPLETE_EVENT } from '../../connectHandoff'
 
 /**
  * Global, mandatory modal that forces the user to pick which Cloudflare account to bill whenever
@@ -18,35 +19,42 @@ export default function AccountSelectionModal() {
   const [accounts, setAccounts] = useState<CloudflareAccountOption[] | null>(null)
   const [chosen, setChosen] = useState<string | undefined>(undefined)
   const [saving, setSaving] = useState(false)
+  const refreshVersion = useRef(0)
 
-  const check = useCallback(() => {
+  const check = useCallback(async (preserveChoice = false) => {
     if (!auth) return
-    auth.authenticatedApi.getCloudflareUsage()
-      .then((u: CloudflareUsageInfo) => {
-        setNeedsSelection(!!(u.connected && u.needsAccountSelection))
-      })
-      .catch(() => {})
+    const version = ++refreshVersion.current
+    setAccounts(null)
+    if (!preserveChoice) setChosen(undefined)
+    try {
+      const u: CloudflareUsageInfo = await auth.authenticatedApi.getCloudflareUsage()
+      if (version !== refreshVersion.current) return
+      const needed = !!(u.connected && u.needsAccountSelection)
+      setNeedsSelection(needed)
+      if (!needed) return
+      const list: CloudflareAccountOption[] = await auth.authenticatedApi.listCloudflareAccounts()
+      if (version !== refreshVersion.current) return
+      setAccounts(list)
+      setChosen(previous => list.some(account => account.accountId === previous) ? previous : list[0]?.accountId)
+    } catch {
+      if (version === refreshVersion.current) setAccounts([])
+    }
   }, [auth])
 
   useEffect(() => {
     if (!limitsEnabled || !auth) return
     check()
-    const onFocus = () => check()
+    // Focus is not a new connection: retain the user's choice if it is still available.
+    const onFocus = () => { void check(true) }
+    const onNativeComplete = () => { void check() }
     window.addEventListener('focus', onFocus)
-    return () => window.removeEventListener('focus', onFocus)
-  }, [limitsEnabled, auth, check])
-
-  // Load the account list once we know a selection is needed; default the choice to the first one.
-  useEffect(() => {
-    if (needsSelection && accounts === null && auth) {
-      auth.authenticatedApi.listCloudflareAccounts()
-        .then((list: CloudflareAccountOption[]) => {
-          setAccounts(list)
-          setChosen(list[0]?.accountId)
-        })
-        .catch(() => setAccounts([]))
+    window.addEventListener(NATIVE_CONNECT_COMPLETE_EVENT, onNativeComplete)
+    return () => {
+      ++refreshVersion.current
+      window.removeEventListener('focus', onFocus)
+      window.removeEventListener(NATIVE_CONNECT_COMPLETE_EVENT, onNativeComplete)
     }
-  }, [needsSelection, accounts, auth])
+  }, [limitsEnabled, auth, check])
 
   if (!limitsEnabled || !auth || !needsSelection) return null
 
@@ -111,7 +119,7 @@ export default function AccountSelectionModal() {
               <Button variant="ghost" onClick={() => setNeedsSelection(false)}>
                 Dismiss
               </Button>
-              <Button variant="secondary" onClick={() => setAccounts(null)}>
+              <Button variant="secondary" onClick={() => { void check(true) }}>
                 Try again
               </Button>
             </>
@@ -120,7 +128,7 @@ export default function AccountSelectionModal() {
               variant="primary"
               onClick={save}
               loading={saving}
-              disabled={!chosen || saving}
+              disabled={accounts === null || !chosen || saving}
             >
               Save
             </Button>

@@ -11,6 +11,11 @@ export type WorkshopObservabilityFields = {
   cacheWriteTokens: number;
   callbackInitiated: boolean;
   chatId: number;
+  changeStage: "buffer" | "persist";
+  changeIndex: number;
+  changeWorkpieceCount: number;
+  changeFileCount: number;
+  changeEmptyPathCount: number;
   claimedType: string;
   commitCount: number;
   costUsd: number;

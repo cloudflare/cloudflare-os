@@ -24,11 +24,15 @@ export default defineConfig({
         modulesRules: [
           { type: "Text", include: ["**/*.txt", "**/*.svg"] },
         ],
-        // Fake OAuth client credentials, so the account's code exchange and refresh can run.
-        bindings: { CLIENT_ID: "test-client", CLIENT_SECRET: "test-secret" },
+        // Fake OAuth client credentials, so the account's code exchange and refresh can run, and
+        // the origin GitHub delivers webhooks to, without which hooks are refused.
+        bindings: {
+          CLIENT_ID: "test-client", CLIENT_SECRET: "test-secret", WEBHOOK_ORIGIN: "https://gadgets.test",
+        },
         durableObjects: {
           USER_ACCOUNT: { className: "UserAccount", useSQLite: true },
           GITHUB_GATEKEEPER: { className: "GitHubGatekeeperImpl", useSQLite: true },
+          GITHUB_HOOK_DRIVER: { className: "GitHubHookDriver", useSQLite: true },
           // The gatekeeper with a storage-seeding hook (see worker.ts), registered so `ctx.exports`
           // carries it.
           SEEDED_GITHUB_GATEKEEPER: { className: "SeededGitHubGatekeeper", useSQLite: true },

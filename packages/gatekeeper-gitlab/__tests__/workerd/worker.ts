@@ -11,6 +11,7 @@ import { DurableObject, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type { RpcStub } from "cloudflare:workers";
 import type {
   ActionDescription, ConnectHandoff, GatekeeperConnectCallback, GatekeeperUser, GitCache, GitPullHints,
+  GitPullTransfer,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { GitLabAction } from "../../src/gitlab-action-types.js";
 import type { GitLabGatekeeperImpl } from "../../src/gitlab-gatekeeper.js";
@@ -76,7 +77,7 @@ type TestExports = {
 // return-type inference collapses several of these returns to `never`, while the runtime objects
 // are exactly the production ones.
 type Pages<T> = { next(): Promise<T[] | null> };
-type GatekeeperFacet = {
+type GatekeeperFacet = Pick<GitLabGatekeeperImpl, "gitPull"> & {
   describe(): Promise<{ url: string; title: string; snippet: string; suggestedBindingName: string; tsType: string }>;
   projectMetadata(): Promise<GitLabProjectMetadata>;
   openIssue(id: string): Promise<GitLabIssueDetails>;
@@ -94,7 +95,6 @@ type GatekeeperFacet = {
   listCommits(filter: GitLabCommitFilter | undefined, pageSize: number, cache?: RpcStub<GitCache>): Promise<Pages<GitLabCommitSummary>>;
   mergeRequestCommits(id: string, pageSize: number, cache?: RpcStub<GitCache>): Promise<Pages<GitLabCommitSummary>>;
   isSimulatedCommitId(commitId: string): boolean;
-  gitPull(oids: string[], cache: RpcStub<GitCache>, hints: GitPullHints): Promise<void>;
   addObserver(id: string, verifier: unknown): Promise<void>;
   // write side
   prepareCreateIssue(options: GitLabCreateIssueOptions): Promise<GitLabAction>;
@@ -307,9 +307,9 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     return await outcome(async () => this.#gatekeeper(facetName, props).isSimulatedCommitId(commitId));
   }
 
-  async gitPull(facetName: string, props: GatekeeperProps, oids: string[], cache: RpcStub<GitCache>, hints: GitPullHints):
-      Promise<Outcome<void>> {
-    return await outcome(() => this.#gatekeeper(facetName, props).gitPull(oids, cache, hints));
+  async gitPull(facetName: string, props: GatekeeperProps, oids: string[], options: GitPullHints):
+      Promise<Outcome<GitPullTransfer>> {
+    return await outcome(() => this.#gatekeeper(facetName, props).gitPull(oids, options));
   }
 
   /** `addObserver` with a verifier minted for `observerUserObjectId`'s account. */

@@ -62,7 +62,11 @@ execute models and report their costs (over HTTPS the Gateway may live in the Wo
 account or a different one). The token stays required for the `google` provider regardless of the
 binding (the model SDK adapter refuses the binding's fetch — note the platform config above enables
 it, so the platform server itself still needs the token). Every provider, Workers AI included,
-routes through the same Gateway.
+routes through the same Gateway. Decision models (Clef) need the binding transport: over HTTPS
+the Gateway supplies Workers AI's credential only for chat, and a decision model request that sends
+the Gateway token in its place is refused with "Authentication error". Without the binding
+transport, set Clef and Clef Flash to **Disabled** on the Models tab (below), so gadgets that call
+them get a clear refusal.
 
 Which models the Gateway offers is managed on the **Models** tab of `/admin`, not in the
 environment. `CF_AI_GATEWAY_PROVIDERS` names the providers that are always on, and an admin can
@@ -70,12 +74,21 @@ turn on the others there. Each model is **Enabled**, **Hidden** (out of the mode
 works where it is already in use) or **Disabled** (stops working everywhere, including existing
 chats, gadget model bindings and scheduled tasks). The tab also sets reasoning levels and
 compaction budgets, adds models the catalog doesn't list, and tests a provider or a model with
-one real request.
+one real request. A decision model (Clef) has only a mode there: the settings and the test
+apply to language models.
 
 Disabling a model or turning a provider off is not a spend control while **Users may add their
 own models** is on: a user can still add a model under any provider that is on, and it runs
 through the deployment's Gateway. Turn that switch off to make the listed models the only ones.
 An admin session can turn on any provider the Gateway serves.
+
+The **Web Search** gatekeeper (`packages/gatekeeper-websearch`) spends money outside these
+controls. Each search spends the deployment account's AI Gateway credits, through its `default`
+gateway, and the free daily allowance and top-up flow do not apply to it. Every new deploy
+installs it, and under the default mode, **Optional**, onboarding offers it switched on to every
+new user. On a public server, set it to **Disabled** in the admin Gatekeepers panel unless you
+accept that spend. A change applies to each workspace when it next opens; uninstalling the Worker
+stops searches at once.
 
 When using `CF_AI_GATEWAY*` in local development, start the server with
 `pnpm run dev-server -- --use-workers-ai-binding` so the server has a `WORKERS_AI` binding for
@@ -83,6 +96,7 @@ the webFetch tool's document-to-Markdown conversion and for the gateway transpor
 it, gateway traffic falls back to HTTPS with `CF_AI_GATEWAY_API_TOKEN`). If your dev Gateway
 lives in a different account than the binding, also set `CF_AI_GATEWAY_USE_BINDING=false` — keep
 `--use-workers-ai-binding` on, since the Markdown conversion still needs the binding.
+The same flag gives the Web Search gatekeeper its own `AI` binding, which it needs for every search.
 
 Each gatekeeper's OAuth app must be registered with that gatekeeper's redirect URI (replace the host
 with `PUBLIC_BASE_URL`):

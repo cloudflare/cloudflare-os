@@ -9,6 +9,7 @@ import type {
   AuthenticatedApi, NotificationSubscriber, UserNotification,
 } from "@gadgets/workshop-shared/api";
 import { NotificationBridge } from "./NotificationBridge";
+import { reportVisibleChat } from "./visibleChat";
 
 const addToast = vi.fn<(options: { actions: { onClick: () => void }[] }) => void>();
 const router = { navigate: vi.fn<(options: object) => void>() };
@@ -123,6 +124,17 @@ describe("NotificationBridge", () => {
     expect(router.navigate).toHaveBeenCalledWith({
       to: "/workspace/$id", params: { id: "workspace-1" }, search: { chat: 1, showChat: true },
     });
+  });
+
+  it("does not announce a task whose chat is on screen", async () => {
+    await render();
+    const withdraw = reportVisibleChat(() => ({ workspaceId: "workspace-1", chatId: 1 }));
+    await act(() => subscribers[0].notify(notification));
+    expect(addToast).not.toHaveBeenCalled();
+
+    await act(() => subscribers[0].notify({ ...notification, chatId: 2 }));
+    expect(addToast).toHaveBeenCalledOnce();
+    withdraw();
   });
 
   it("registers the native app's device and reports the outcome", async () => {

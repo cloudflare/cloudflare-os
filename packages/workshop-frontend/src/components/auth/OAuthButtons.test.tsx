@@ -7,13 +7,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import type { AuthVendorInfo, LoginAttempt, PublicApi } from '@gadgets/workshop-shared/api'
 import { HANDOFF_KEY } from '../../connectHandoff'
+import { NATIVE_AUTH_EVENT } from '../../features/native-app/authPopup'
 import OAuthButtons from './OAuthButtons'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const VENDORS: AuthVendorInfo[] = [{ vendorId: 'github', displayName: 'GitHub' }]
 const NONCE = 'b'.repeat(64)
-const URL = 'https://gk.example/login'
+const URL = 'https://workshop.example/gatekeeper/example/login'
 const FEATURES = 'popup,width=520,height=680'
 const TOKEN = 'alice@example.com:secret'
 
@@ -38,6 +39,7 @@ function fakePopup() {
     openerAtReplace: undefined as Window | null | undefined,
     sessionStorage: {
       store,
+      removeItem: (key: string) => { store.delete(key) },
       setItem: vi.fn<(key: string, value: string) => void>((key, value) => { store.set(key, value) }),
     },
     location: {
@@ -67,12 +69,16 @@ describe('OAuthButtons', () => {
   const button = () => container!.querySelector('button')!
   const clickSignIn = () => act(async () => { button().click() })
 
-  beforeEach(() => { vi.useFakeTimers() })
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.stubGlobal('location', { origin: 'https://workshop.example' })
+  })
 
   afterEach(() => {
     act(() => root?.unmount())
     container?.remove()
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
     vi.useRealTimers()
     receive.mockReset()
     localStorage.clear()
@@ -97,6 +103,70 @@ describe('OAuthButtons', () => {
     expect(popup.sessionStorage.setItem.mock.invocationCallOrder[0])
       .toBeLessThan(popup.location.replace.mock.invocationCallOrder[0])
     expect(button().disabled).toBe(true)
+  })
+
+  it('confirms a native sign-in using the original nonce and receives the token only in-app', async () => {
+    const authentication = { open: vi.fn<(id: string, url: string) => void>(), close: vi.fn<(id: string) => void>() }
+    vi.stubGlobal('cloudflareOSNative', {
+      version: 1, isAvailable: () => true, loginReady: vi.fn<() => void>(), returnToInstalls: vi.fn<() => void>(), authentication,
+    })
+    const open = vi.spyOn(window, 'open')
+    const confirmLogin = vi.fn<(ticket: string, nonce: string) => Promise<void>>().mockResolvedValue(undefined)
+    const stub = { ...rpcStub, confirmLogin } as unknown as RpcStub<PublicApi>
+    receive.mockResolvedValue(null)
+    const onSuccess = mount(stub)
+    await clickSignIn()
+    await settle()
+    const id = authentication.open.mock.calls[0][0]
+    const ticket = 'c'.repeat(64)
+    expect(open).not.toHaveBeenCalled()
+    expect(decodeURIComponent(authentication.open.mock.calls[0][1])).not.toContain(NONCE)
+    await act(async () => window.dispatchEvent(new CustomEvent(NATIVE_AUTH_EVENT, { detail: { id, ticket } })))
+    expect(confirmLogin).toHaveBeenCalledExactlyOnceWith(ticket, NONCE)
+    expect(localStorage.getItem('authToken')).toBeNull()
+    receive.mockResolvedValue(TOKEN)
+    await tick()
+    expect(localStorage.getItem('authToken')).toBe(TOKEN)
+    expect(onSuccess).toHaveBeenCalledOnce()
+  })
+
+  it('stops polling and restores the sign-in buttons when the native browser is cancelled', async () => {
+    const authentication = { open: vi.fn<(id: string, url: string) => void>(), close: vi.fn<(id: string) => void>() }
+    vi.stubGlobal('cloudflareOSNative', {
+      version: 1, isAvailable: () => true, loginReady: vi.fn<() => void>(), returnToInstalls: vi.fn<() => void>(), authentication,
+    })
+    receive.mockResolvedValue(null)
+    mount()
+    await clickSignIn()
+    const id = authentication.open.mock.calls[0][0]
+    await act(async () => window.dispatchEvent(new CustomEvent(NATIVE_AUTH_EVENT, { detail: { id } })))
+    await tick()
+    expect(receive).not.toHaveBeenCalled()
+    expect(button().disabled).toBe(false)
+    expect(container!.textContent).toContain('Authentication was cancelled')
+  })
+
+  it('lets the user cancel a native tab that never reports its dismissal', async () => {
+    const authentication = { open: vi.fn<(id: string, url: string) => void>(), close: vi.fn<(id: string) => void>() }
+    vi.stubGlobal('cloudflareOSNative', {
+      version: 1, isAvailable: () => true, loginReady: vi.fn<() => void>(), returnToInstalls: vi.fn<() => void>(), authentication,
+    })
+    const dispose = vi.fn<() => void>()
+    receive.mockResolvedValue(null)
+    const stub = { startGatekeeperLogin: async () => ({ url: URL, nonce: NONCE,
+      attempt: { receive, [Symbol.dispose]: dispose } }) } as unknown as RpcStub<PublicApi>
+    mount(stub)
+    await clickSignIn()
+    await settle()
+    const cancel = Array.from(container!.querySelectorAll('button')).find(b => b.textContent === 'Cancel sign-in')!
+    expect(cancel).toBeDefined()
+    await act(async () => cancel.click())
+    await tick()
+    expect(dispose).toHaveBeenCalledOnce()
+    expect(authentication.close).toHaveBeenCalledOnce()
+    expect(receive).not.toHaveBeenCalled()
+    expect(button().disabled).toBe(false)
+    expect(container!.textContent).not.toContain('Authentication was cancelled')
   })
 
   it('keeps the button pending while receive() answers null', async () => {

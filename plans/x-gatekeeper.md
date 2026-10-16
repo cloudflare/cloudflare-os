@@ -318,11 +318,12 @@ OpenAPI `2.170`'s `post.fields` enum lists `note_post` and omits `author_id` and
 
 - **Connect.** `connectAccount(callback, options)` creates a `UserAccount`, `generateNonce()`, and
   `setCallback(callback, nonce, scopesFor(options?.resourceUrlPatterns))` — storing the callback,
-  arming the one-hour self-destruct alarm, `putInitiation`. It returns
+  arming the one-hour self-destruct alarm, `putInitiation(kv, nonce, now, {firstConnect: true})`;
+  a reconnect's `prepareReconnect` stores no metadata, so its attempt stages. It returns
   `${BASE_URL}/${doId}/${nonce}`. `options.scopes === "auth"` is ignored: X is not a sign-in
   provider in v1.
 - **Link hit.** `createPkce()`; `advanceToOAuth(kv, nonce, now, {codeVerifier, redirectUri,
-  startedUnder: creds.connectionGeneration(), reconnect, scopes})`; redirect to
+  startedUnder: creds.connectionGeneration(), scopes})`, which keeps `firstConnect`; redirect to
   `client.authorizationUrl({redirectUri, state, scopes, codeChallenge})`, with `PreviewOAuth`
   wrapping the state for preview deployments as GitLab does.
 - **Callback** (`/oauth`): `handleCallback` (relaying if needed) → `claimOAuth`, consuming the

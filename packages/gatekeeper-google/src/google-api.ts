@@ -4,10 +4,11 @@
 
 import { AccountDescription } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  EmailAddress, GmailAttachmentInfo, GmailComposeOptions, GmailHeader, GmailReplyOptions,
+  EmailAddress, GmailAttachmentInfo, GmailAttachmentInput, GmailComposeOptions, GmailHeader, GmailReplyOptions,
 } from "./types";
 import { createMimeMessage } from "mimetext/browser";
 import PostalMime, { addressParser } from "postal-mime";
+import type {Attachment as PostalAttachment} from "postal-mime";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 
 /**
@@ -58,6 +59,8 @@ export type GmailOutboundAttachment = {
   disposition?: "attachment" | "inline";
   contentId?: string;
   description: string;
+  /** `"agent"` on a file the agent uploaded; omitted on bytes copied from this mailbox. */
+  origin?: "agent";
 };
 
 export type GmailOutboundSpec = GmailNormalizedRecipients & {
@@ -795,6 +798,52 @@ function validateAttachmentContentType(value: string): string {
   return serializeParameterizedMimeHeader(parseParameterizedMimeHeader(value, true));
 }
 
+function normalizeAttachmentContentType(value: string): string {
+  const contentType = parseParameterizedMimeHeader(value, true);
+  // Filename is modeled separately. Normalize uploads and provider parts the same way so
+  // MIMEText's filename-derived name parameter cannot change their identity or fingerprint.
+  contentType.parameters = contentType.parameters.filter(parameter =>
+    parameter.name !== "name" && !parameter.name.startsWith("name*"));
+  return serializeParameterizedMimeHeader(contentType);
+}
+
+/**
+ * Validate a regular file upload of at most 10 MiB, returning its normalized filename and media
+ * type. Inline parts, path-like filenames, and multipart container types are not supported.
+ */
+export function normalizeGmailAttachmentInput(input: GmailAttachmentInput): GmailAttachmentInput {
+  const filename = validateAttachmentHeaderValue(input.filename, "filename");
+  if (!filename.trim() || filename === "." || filename === ".." || /[/\\]/.test(filename)) {
+    throw new Error("Invalid attachment filename.");
+  }
+  // A MIME parser decodes an RFC 2047 encoded word even inside an RFC 2231 parameter, so such a
+  // name would not read back as written, and the part could no longer be identified.
+  if (/=\?[^?]*\?[bq]\?[^?]*\?=/i.test(filename)) {
+    throw new Error("Attachment filename must not contain an RFC 2047 encoded word (=?charset?B?...?=).");
+  }
+  const mimeType = normalizeAttachmentContentType(input.mimeType);
+  if (baseMimeType(mimeType).startsWith("multipart/")) {
+    throw new Error("Multipart attachment uploads are not supported.");
+  }
+  if (input.content.byteLength > MAX_GMAIL_ATTACHMENT_BYTES) {
+    throw new Error(`Attachment exceeds the ${MAX_GMAIL_ATTACHMENT_BYTES}-byte limit.`);
+  }
+  return {filename, mimeType, content: input.content};
+}
+
+/** Validate a regular file upload and encode its exact bytes as an agent-supplied MIME part. */
+export function gmailAttachmentInputToOutbound(input: GmailAttachmentInput): GmailOutboundAttachment {
+  const {filename, mimeType, content} = normalizeGmailAttachmentInput(input);
+  return {
+    filename,
+    contentType: mimeType,
+    data: foldBase64(bytesToBase64(new Uint8Array(content))),
+    disposition: "attachment",
+    description: filename,
+    origin: "agent",
+  };
+}
+
 function baseMimeType(value: string): string {
   return value.split(";", 1)[0].trim().toLowerCase();
 }
@@ -1113,7 +1162,8 @@ type MimeAttachmentMetadata = {
   contentType: string;
   disposition: string | null;
   contentId: string | null;
-  exactBytes?: Uint8Array;
+  exactBytes: Uint8Array;
+  transferEncoded: boolean;
 };
 
 type MimeMetadataBudget = {remainingWork: number; entities: number};
@@ -1238,16 +1288,16 @@ function decodeMimeBase64Bytes(bytes: Uint8Array, budget: MimeMetadataBudget): U
   let sawPadding = false;
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   for (const byte of bytes) {
-    if (byte === 9 || byte === 10 || byte === 13 || byte === 32) continue;
+    // RFC 2045 §6.8: base64 decoders ignore characters outside the alphabet, as PostalMime does.
     if (byte === 61) {
       sawPadding = true;
       padding++;
       if (padding > 2) throw new Error("Invalid attachment base64 data.");
       continue;
     }
-    if (sawPadding) throw new Error("Invalid attachment base64 data.");
     const value = alphabet.indexOf(String.fromCharCode(byte));
-    if (value < 0) throw new Error("Invalid attachment base64 data.");
+    if (value < 0) continue;
+    if (sawPadding) throw new Error("Invalid attachment base64 data.");
     buffer = buffer << 6 | value;
     bits += 6;
     sextets++;
@@ -1374,8 +1424,12 @@ function extractMimeAttachmentMetadata(bytes: Uint8Array): MimeAttachmentMetadat
     contentType,
     disposition,
     contentId,
-    ...(!transferEncoding || transferEncoding === "7bit" || transferEncoding === "8bit" ||
-        transferEncoding === "binary" ? {exactBytes: body} : {}),
+    transferEncoded: transferEncoding === "base64" || transferEncoding === "quoted-printable",
+    exactBytes: transferEncoding === "base64"
+      ? decodeMimeBase64Bytes(body, budget)
+      : transferEncoding === "quoted-printable"
+        ? decodeQuotedPrintableBytes(body, budget)
+        : body,
   }));
 }
 
@@ -1389,91 +1443,14 @@ function requireAttachmentMetadata(
   return metadata;
 }
 
-/** One exact, unencoded top-level message/rfc822 MIME attachment. */
-export type ExtractedRfc822Attachment = {
-  bytes: Uint8Array;
-  filename?: string;
-  disposition?: string;
-  contentId?: string;
-};
-
-/** Extract unencoded top-level message/rfc822 attachment bodies without normalizing their bytes. */
-export function extractRfc822Attachments(raw: string): ExtractedRfc822Attachment[] {
-  const bytes = decodeBase64UrlToBytes(raw);
-  const encoder = new TextEncoder();
-  const headerSeparator = encoder.encode("\r\n\r\n");
-  const topHeaderEnd = byteSequenceIndex(bytes, headerSeparator);
-  if (topHeaderEnd < 0) throw new Error("Unable to parse Gmail draft MIME headers.");
-  const contentType = mimeHeaderValue(bytes.subarray(0, topHeaderEnd), "Content-Type");
-  if (!contentType) return [];
-  const parsedContentType = parseParameterizedMimeHeader(contentType, true);
-  if (!parsedContentType.value.startsWith("multipart/")) return [];
-  const boundary = validateMimeBoundary(parameterValue(parsedContentType, "boundary"));
-
-  const delimiter = encoder.encode(`--${boundary}`);
-  const nextDelimiter = encoder.encode(`\r\n--${boundary}`);
-  let cursor = byteSequenceIndex(bytes, delimiter, topHeaderEnd + headerSeparator.length);
-  if (cursor < 0) throw new Error("Unable to find Gmail draft MIME boundary.");
-  const attachments: ExtractedRfc822Attachment[] = [];
-  for (;;) {
-    cursor += delimiter.length;
-    const closing = bytes[cursor] === 45 && bytes[cursor + 1] === 45;
-    if (closing) cursor += 2;
-    while (bytes[cursor] === 32 || bytes[cursor] === 9) cursor++;
-    if (closing) {
-      if (cursor !== bytes.length && (bytes[cursor] !== 13 || bytes[cursor + 1] !== 10)) {
-        throw new Error("Invalid Gmail draft MIME boundary line.");
-      }
-      break;
-    }
-    if (bytes[cursor] !== 13 || bytes[cursor + 1] !== 10) {
-      throw new Error("Invalid Gmail draft MIME boundary line.");
-    }
-    const partStart = cursor + 2;
-    const partEnd = byteSequenceIndex(bytes, nextDelimiter, partStart);
-    if (partEnd < 0) throw new Error("Unterminated Gmail draft MIME part.");
-    const partHeaderEnd = byteSequenceIndex(bytes, headerSeparator, partStart);
-    if (partHeaderEnd < 0 || partHeaderEnd > partEnd) {
-      throw new Error("Invalid Gmail draft MIME part headers.");
-    }
-    const partHeaders = bytes.subarray(partStart, partHeaderEnd);
-    const rawContentType = mimeHeaderValue(partHeaders, "Content-Type");
-    const partContentType = rawContentType?.toLowerCase();
-    if (partContentType?.startsWith("message/rfc822")) {
-      const transferEncoding = mimeTransferEncoding(
-        mimeHeaderValue(partHeaders, "Content-Transfer-Encoding")) ?? "7bit";
-      if (transferEncoding === "base64" || transferEncoding === "quoted-printable") {
-        cursor = partEnd + 2;
-        continue;
-      }
-      if (transferEncoding !== "7bit" && transferEncoding !== "8bit" &&
-          transferEncoding !== "binary") {
-        throw new Error("A message/rfc822 draft attachment uses an unsupported transfer encoding.");
-      }
-      const rawDisposition = mimeHeaderValue(partHeaders, "Content-Disposition");
-      const contentId = mimeHeaderValue(partHeaders, "Content-ID")?.replace(/^<|>$/g, "");
-      const filename = mimeParameter(rawDisposition, "filename", "content-disposition") ??
-        mimeParameter(rawContentType, "name", "content-type");
-      const disposition = rawDisposition
-        ? parseParameterizedMimeHeader(rawDisposition).value
-        : undefined;
-      attachments.push({
-        bytes: bytes.slice(partHeaderEnd + headerSeparator.length, partEnd),
-        ...(filename ? {filename} : {}),
-        ...(disposition ? {disposition} : {}),
-        ...(contentId ? {contentId} : {}),
-      });
-    }
-    cursor = partEnd + 2;
-  }
-  return attachments;
-}
-
 /**
  * Build a Gmail API base64url RFC 5322 payload. The subject is replaced after MIMEText
  * serialization because its single encoded-word form can exceed the header-line limit.
+ * `historical` reproduces the pre-upgrade builder, for historical verification only: its
+ * placeholder filename made MIMEText treat every part as a regular attachment, and it left
+ * MIMEText's extra CRLF inside each non-final unencoded nested message.
  */
-export function buildEncodedEmail(options: GmailOutboundSpec): string {
+export function buildEncodedEmail(options: GmailOutboundSpec, historical = false): string {
   const msg = createMimeMessage();
 
   // oxlint-disable-next-line no-control-regex -- intentionally rejecting control chars (header-injection guard)
@@ -1539,7 +1516,8 @@ export function buildEncodedEmail(options: GmailOutboundSpec): string {
     const attachment = options.attachments[index];
     validateAttachmentHeaderValue(attachment.filename, "filename");
     const contentType = validateAttachmentContentType(attachment.contentType);
-    const token = `gadgets-attachment-${index}`;
+    // MIMEText classifies dispositions by substring, including the placeholder filename.
+    const token = historical ? `gadgets-attachment-${index}` : `gadgets-file-${index}`;
     attachmentFilenames.push({token, encoded: encodeMimeParameter(attachment.filename)});
     const nestedMessage = nestedMessageBytes.get(index);
     const placeholder = nestedMessage
@@ -1621,7 +1599,12 @@ export function buildEncodedEmail(options: GmailOutboundSpec): string {
             end - index !== encoder.encode(replacement.placeholder).length) {
           throw new Error("Unable to assemble nested message attachment.");
         }
-        replacements.push({index, length: end - index, replacement: replacement.bytes});
+        // MIMEText adds an extra CRLF after non-final parts. Base64 ignores it, but it
+        // would become part of an unencoded nested message; consume it with the placeholder.
+        const extraLineBreak = !historical &&
+          rawBytes[end] === 13 && rawBytes[end + 1] === 10 &&
+          rawBytes[end + 2] === 13 && rawBytes[end + 3] === 10 ? 2 : 0;
+        replacements.push({index, length: end - index + extraLineBreak, replacement: replacement.bytes});
       }
       searchFrom = Math.max(end, index + prefix.length);
     }
@@ -1892,7 +1875,8 @@ function classifyGmailPart(part: GmailPayloadPart, isRelatedRepresentation = fal
       ? "inline" as const
       : null;
   const contentId = cleanContentId(headerValue(part.headers, "Content-ID"));
-  const filename = part.filename?.trim() || null;
+  // A blank filename is none, but a named part keeps its exact name, as the raw MIME parser does.
+  const filename = part.filename?.trim() ? part.filename : null;
   const mimeType = part.mimeType?.toLowerCase();
   const isText = mimeType === "text/plain" || mimeType === "text/html";
   const isBody = isText && !filename && disposition !== "attachment" &&
@@ -1986,42 +1970,6 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function postalAttachmentBytes(
-    content: ArrayBuffer | Uint8Array | string, contentType: string,
-    exactBytes?: Uint8Array): Uint8Array {
-  const bytes = exactBytes ?? (typeof content === "string"
-    ? new TextEncoder().encode(content)
-    : content instanceof Uint8Array ? content : new Uint8Array(content));
-  const mediaType = baseMimeType(contentType);
-  if (mediaType !== "text/calendar" && mediaType !== "application/ics") return bytes;
-  if (exactBytes) return normalizeMimeLineEndings(bytes);
-  const text = new TextDecoder().decode(bytes).replace(/\r\n|\r|\n/g, "\r\n");
-  return new TextEncoder().encode(text);
-}
-
-function normalizeMimeLineEndings(bytes: Uint8Array): Uint8Array {
-  let size = bytes.length;
-  for (let i = 0; i < bytes.length; i++) {
-    if (bytes[i] === 13 && bytes[i + 1] === 10) i++;
-    else if (bytes[i] === 13 || bytes[i] === 10) size++;
-  }
-  const result = new Uint8Array(size);
-  let offset = 0;
-  for (let i = 0; i < bytes.length; i++) {
-    if (bytes[i] === 13 && bytes[i + 1] === 10) {
-      result[offset++] = 13;
-      result[offset++] = 10;
-      i++;
-    } else if (bytes[i] === 13 || bytes[i] === 10) {
-      result[offset++] = 13;
-      result[offset++] = 10;
-    } else {
-      result[offset++] = bytes[i];
-    }
-  }
-  return result;
-}
-
 function htmlEscape(value: string): string {
   return value.replace(/[&<>"']/g, char => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -2064,12 +2012,70 @@ function htmlForwardedHeaderBlock(original: import("postal-mime").Email): string
   return lines.join("<br>");
 }
 
+function normalizeLegacyCalendarLineEndings(bytes: Uint8Array): Uint8Array {
+  let size = bytes.length;
+  for (let i = 0; i < bytes.length; i++) {
+    if (bytes[i] === 13 && bytes[i + 1] === 10) i++;
+    else if (bytes[i] === 13 || bytes[i] === 10) size++;
+  }
+  if (size === bytes.length) return bytes;
+  const result = new Uint8Array(size);
+  let offset = 0;
+  for (let i = 0; i < bytes.length; i++) {
+    if (bytes[i] !== 13 && bytes[i] !== 10) {
+      result[offset++] = bytes[i];
+      continue;
+    }
+    result[offset++] = 13;
+    result[offset++] = 10;
+    if (bytes[i] === 13 && bytes[i + 1] === 10) i++;
+  }
+  return result;
+}
+
+// The pre-byte-exact parser's view of a part, used only to verify unprefixed fingerprints.
+function legacyPostalAttachment(
+    attachment: PostalAttachment, metadata: MimeAttachmentMetadata,
+    contentType: string): {contentType: string; bytes: Uint8Array} {
+  const content = attachment.content;
+  // Before byte-exact attachments, only unencoded parts used the raw MIME body.
+  const bytes = !metadata.transferEncoded ? metadata.exactBytes
+    : typeof content === "string" ? new TextEncoder().encode(content)
+    : content instanceof Uint8Array ? content : new Uint8Array(content);
+  const mediaType = baseMimeType(contentType);
+  if (mediaType !== "text/calendar" && mediaType !== "application/ics") return {contentType, bytes};
+  return {
+    contentType: legacyCalendarContentType(attachment, contentType, metadata.transferEncoded),
+    bytes: metadata.transferEncoded
+      // PostalMime already decodes calendar charsets and normalizes their final newline.
+      ? new TextEncoder().encode(new TextDecoder().decode(bytes).replace(/\r\n|\r|\n/g, "\r\n"))
+      : normalizeLegacyCalendarLineEndings(bytes),
+  };
+}
+
+// The legacy parser kept unencoded calendars' charset but modeled encoded ones as UTF-8.
+function legacyCalendarContentType(
+    attachment: PostalAttachment, contentType: string, transferEncoded: boolean): string {
+  const parsedContentType = parseParameterizedMimeHeader(contentType, true);
+  if (transferEncoded) {
+    parsedContentType.parameters = parsedContentType.parameters.filter(parameter =>
+      parameter.name !== "charset" && !parameter.name.startsWith("charset*"));
+    parsedContentType.parameters.push({name: "charset", value: "utf-8"});
+  }
+  if (attachment.method !== undefined &&
+      !parsedContentType.parameters.some(parameter => parameter.name === "method")) {
+    parsedContentType.parameters.push({name: "method", value: attachment.method});
+  }
+  return validateAttachmentContentType(serializeParameterizedMimeHeader(parsedContentType));
+}
+
 function attachmentFromPostal(
-    attachment: import("postal-mime").Attachment,
-    metadata: MimeAttachmentMetadata): GmailOutboundAttachment {
-  const contentType = postalAttachmentContentType(
-    attachment, metadata.contentType, metadata.exactBytes !== undefined);
-  const bytes = postalAttachmentBytes(attachment.content, contentType, metadata.exactBytes);
+    attachment: PostalAttachment,
+    metadata: MimeAttachmentMetadata, legacy = false): GmailOutboundAttachment {
+  let contentType = postalAttachmentContentType(attachment, metadata.contentType);
+  let bytes = metadata.exactBytes;
+  if (legacy) ({contentType, bytes} = legacyPostalAttachment(attachment, metadata, contentType));
+  // MIMEText requires a string; an empty filename round-trips as unnamed.
   const filename = attachment.filename ?? "";
   const disposition = postalAttachmentDisposition(attachment);
   return {
@@ -2083,34 +2089,17 @@ function attachmentFromPostal(
 }
 
 function postalAttachmentDisposition(
-    attachment: import("postal-mime").Attachment): "inline" | "attachment" | undefined {
+    attachment: PostalAttachment): "inline" | "attachment" | undefined {
   if (attachment.related === true || attachment.disposition === "inline") return "inline";
   return attachment.disposition ? "attachment" : undefined;
 }
 
-function postalAttachmentContentType(
-    attachment: import("postal-mime").Attachment, original: string,
-    preserveCharset = false): string {
-  const contentType = parseParameterizedMimeHeader(original, true);
-  if (contentType.value !== baseMimeType(attachment.mimeType || "application/octet-stream")) {
+function postalAttachmentContentType(attachment: PostalAttachment, original: string): string {
+  const contentType = normalizeAttachmentContentType(original);
+  if (baseMimeType(contentType) !== baseMimeType(attachment.mimeType || "application/octet-stream")) {
     throw new Error("Unable to correlate Gmail attachment Content-Type metadata.");
   }
-  // Filename is modeled separately and MIMEText emits an RFC 2231 name matching it. Excluding the
-  // redundant source parameter keeps provider-normalized fingerprints stable across reconstruction.
-  contentType.parameters = contentType.parameters.filter(parameter =>
-    parameter.name !== "name" && !parameter.name.startsWith("name*"));
-  if (contentType.value === "text/calendar" || contentType.value === "application/ics") {
-    if (!preserveCharset) {
-      contentType.parameters = contentType.parameters.filter(parameter =>
-        parameter.name !== "charset" && !parameter.name.startsWith("charset*"));
-      contentType.parameters.push({name: "charset", value: "utf-8"});
-    }
-    if (attachment.method !== undefined &&
-        !contentType.parameters.some(parameter => parameter.name === "method")) {
-      contentType.parameters.push({name: "method", value: attachment.method});
-    }
-  }
-  return validateAttachmentContentType(serializeParameterizedMimeHeader(contentType));
+  return contentType;
 }
 
 export type GmailParsedDraft = GmailNormalizedRecipients & {
@@ -2245,7 +2234,20 @@ export function parseGmailDraftSnapshot(message: GmailMessageFull): GmailParsedD
 }
 
 /** Parse a draft's editable content and attachment bytes for drift checks and lossless updates. */
-export async function parseGmailDraft(message: GmailMessageRaw): Promise<GmailParsedDraft> {
+export function parseGmailDraft(message: GmailMessageRaw): Promise<GmailParsedDraft> {
+  return parseGmailDraftContent(message, false);
+}
+
+/**
+ * Parse a draft using pre-attachment-upgrade canonicalization for historical fingerprint checks.
+ * Calendar and encoded attachment bytes may be normalized; never use this representation to write.
+ */
+export function parseLegacyGmailDraft(message: GmailMessageRaw): Promise<GmailParsedDraft> {
+  return parseGmailDraftContent(message, true);
+}
+
+async function parseGmailDraftContent(
+    message: GmailMessageRaw, legacyAttachments: boolean): Promise<GmailParsedDraft> {
   const parsed = await parseMimeMessage(message.raw);
   assertDraftHeadersAreModeled(parsed.headers.map(header => header.originalKey));
   const reconstructionError = parsedMimeReconstructionErrors.get(parsed);
@@ -2265,22 +2267,8 @@ export async function parseGmailDraft(message: GmailMessageRaw): Promise<GmailPa
     ...(parsed.messageId ? {messageId: parsed.messageId} : {}),
     ...(parsed.inReplyTo ? {inReplyTo: parsed.inReplyTo} : {}),
     ...(parsed.references ? {references: parsed.references} : {}),
-    attachments: parsed.attachments.map((attachment, index) => {
-      const contentType = postalAttachmentContentType(
-        attachment, metadata[index].contentType, metadata[index].exactBytes !== undefined);
-      const bytes = postalAttachmentBytes(
-        attachment.content, contentType, metadata[index].exactBytes);
-      const disposition = postalAttachmentDisposition(attachment);
-      return {
-        // MIMEText requires a string; an empty filename round-trips as unnamed.
-        filename: attachment.filename ?? "",
-        contentType,
-        data: foldBase64(bytesToBase64(bytes)),
-        ...(disposition ? {disposition} : {}),
-        ...(attachment.contentId ? {contentId: attachment.contentId} : {}),
-        description: `${attachment.filename ?? "(unnamed)"} (${contentType}, ${bytes.byteLength} bytes)`,
-      };
-    }),
+    attachments: parsed.attachments.map((attachment, index) =>
+      attachmentFromPostal(attachment, metadata[index], legacyAttachments)),
   };
 }
 
@@ -2800,13 +2788,16 @@ export class GmailApi {
       text: body,
       ...(options.html !== undefined ? {html: options.html} : {}),
       messageId,
-      attachments: [],
+      attachments: (options.attachments ?? []).map(gmailAttachmentInputToOutbound),
     });
     return message;
   }
 
-  /** Build exactly the structured message persisted in an approval action. */
-  buildOutbound(spec: GmailOutboundSpec): GmailOutboundMessage {
+  /**
+   * Build exactly the structured message persisted in an approval action. Every outbound message
+   * passes through here, so this is where the MIME size ceiling is enforced.
+   */
+  buildOutbound(spec: GmailOutboundSpec, historical = false): GmailOutboundMessage {
     const recipients = {
       to: normalizeEmailRecipients(spec.to),
       cc: normalizeEmailRecipients(spec.cc),
@@ -2814,8 +2805,14 @@ export class GmailApi {
     };
     const replyTo = normalizeEmailRecipients(spec.replyTo ?? []);
     const normalized: GmailOutboundSpec = {...spec, ...recipients, replyTo};
+    const raw = buildEncodedEmail(normalized, historical);
+    // A historical build only verifies what the old builder wrote, and is never sent.
+    if (!historical && base64UrlDecodedByteLength(raw) > MAX_GMAIL_FORWARD_SOURCE_BYTES) {
+      throw new Error(
+        `The Gmail message exceeds the ${MAX_GMAIL_FORWARD_SOURCE_BYTES}-byte MIME limit.`);
+    }
     return {
-      raw: buildEncodedEmail(normalized),
+      raw,
       from: normalized.from,
       replyTo,
       ...recipients,
@@ -2858,6 +2855,7 @@ export class GmailApi {
       options: GmailReplyOptions = {},
       messageId = newGmailMessageId(),
   ): Promise<GmailOutboundMessage> {
+    const attachments = (options.attachments ?? []).map(gmailAttachmentInputToOutbound);
     const original = await parseMimeMessage(originalMessage.raw);
 
     const originalFrom = original.from ? postalAddressToEmailAddress(original.from) : undefined;
@@ -2934,7 +2932,7 @@ export class GmailApi {
       messageId,
       inReplyTo: parentId,
       references,
-      attachments: [],
+      attachments,
     });
 
     return message;
@@ -2944,6 +2942,7 @@ export class GmailApi {
    * Build a Gmail-style inline forward. The source body is quoted below the
    * standard forwarded-message header block, and source attachments are copied
    * as ordinary attachments so inline Content-IDs continue to work.
+   * `historical` reproduces the pre-upgrade forward, including its normalized source parts.
    */
   async buildForwardRaw(
     originalMessage: GmailMessageRaw,
@@ -2953,7 +2952,9 @@ export class GmailApi {
     messageId = newGmailMessageId(),
     subjectOverride?: string,
     date?: string,
+    historical = false,
   ): Promise<GmailOutboundMessage> {
+    const uploadedAttachments = (options.attachments ?? []).map(gmailAttachmentInputToOutbound);
     const sourceBytes = base64UrlDecodedByteLength(originalMessage.raw);
     if (sourceBytes > MAX_GMAIL_FORWARD_SOURCE_BYTES) {
       throw new Error(
@@ -2987,9 +2988,10 @@ export class GmailApi {
       : original.html !== undefined ? htmlQuote : undefined;
     const metadata = requireAttachmentMetadata(original);
     const attachments = original.attachments.map((attachment, index) =>
-      attachmentFromPostal(attachment, metadata[index]));
+      attachmentFromPostal(attachment, metadata[index], historical));
+    attachments.push(...uploadedAttachments);
 
-    const message = this.buildOutbound({
+    return this.buildOutbound({
       from: this.selfEmail,
       ...recipients,
       subject: subjectOverride ?? subject,
@@ -2998,25 +3000,22 @@ export class GmailApi {
       messageId,
       ...(date !== undefined ? {date} : {}),
       attachments,
-    });
-    if (base64UrlDecodedByteLength(message.raw) > MAX_GMAIL_FORWARD_SOURCE_BYTES) {
-      throw new Error(
-        `Cannot forward this message: the generated message exceeds the ` +
-        `${MAX_GMAIL_FORWARD_SOURCE_BYTES}-byte safe forwarding limit.`);
-    }
-    return message;
+    }, historical);
   }
 
-  /** Build an inline forward from an exact source snapshot held by the gatekeeper. */
+  /**
+   * Build an inline forward from an exact source snapshot held by the gatekeeper.
+   * `historical` is as on `buildForwardRaw`.
+   */
   async buildForwardFromBytes(
       sourceBytes: Uint8Array, to: string[], body?: string,
       options: GmailComposeOptions = {}, messageId = newGmailMessageId(), subjectOverride?: string,
-      date?: string):
+      date?: string, historical = false):
       Promise<GmailOutboundMessage> {
     return this.buildForwardRaw({
       id: "forward-snapshot", threadId: "forward-snapshot", internalDate: "0",
       raw: base64UrlEncodeBytes(sourceBytes),
-    }, to, body, options, messageId, subjectOverride, date);
+    }, to, body, options, messageId, subjectOverride, date, historical);
   }
 
   /**

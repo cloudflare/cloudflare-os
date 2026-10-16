@@ -1,12 +1,14 @@
 import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import type {
-  AnthropicMessagesCompat, Api, AssistantMessageEventStream, Context, FetchFunction, Model,
-  ModelCost, OpenAICompletionsCompat, ProviderHeaders, SimpleStreamOptions, StreamFunction, Usage,
+  AnthropicMessagesCompat, Api, AssistantMessageEventStream, ClassifierApi, ClassifierContext,
+  ClassifierModel, ClassifierOptions, ClassifierResult, Context, FetchFunction, Model, ModelCost,
+  OpenAICompletionsCompat, ProviderHeaders, SimpleStreamOptions, StreamFunction, Usage,
 } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, getSupportedThinkingLevels, normalizeContext }
   from "@earendil-works/pi-ai";
 import { stream as anthropicMessagesStream } from "@earendil-works/pi-ai/api/anthropic-messages";
+import { classify as workersAiClassify } from "@earendil-works/pi-ai/api/cloudflare-workers-ai-system-one";
 import { stream as googleGenerativeAiStream } from "@earendil-works/pi-ai/api/google-generative-ai";
 import { resolveGoogleThinkingLevel, toGoogleThinkingLevel, usesGoogleThinkingLevel }
   from "@earendil-works/pi-ai/api/google-shared";
@@ -15,12 +17,16 @@ import { stream as openaiResponsesStream } from "@earendil-works/pi-ai/api/opena
 import { clampThinkingBudgetToAnswerRoom, thinkingBudgetForLevel }
   from "@earendil-works/pi-ai/api/simple-options";
 import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models";
-import { CLOUDFLARE_WORKERS_AI_MODELS } from "@earendil-works/pi-ai/providers/cloudflare-workers-ai.models";
+import {
+  CLOUDFLARE_WORKERS_AI_CLASSIFIER_MODELS, CLOUDFLARE_WORKERS_AI_MODELS,
+} from "@earendil-works/pi-ai/providers/cloudflare-workers-ai.models";
 import { GOOGLE_MODELS } from "@earendil-works/pi-ai/providers/google.models";
 import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";
 import { ApprovalQueue, Gatekeeper, ResourceDescription, stripTrailingSlashes } from '@gadgets/workshop-shared/gatekeeper';
 import { LanguageModelBinding } from "./ai-model-binding";
 import AI_MODEL_BINDING_TYPES from "./ai-model-binding.txt";
+import { DecisionAnswer, DecisionModelBinding, DecisionRequest } from "./decision-model-binding";
+import DECISION_MODEL_BINDING_TYPES from "./decision-model-binding.txt";
 import {
   AiChatAuthorInfo, AiModelConfig, AiModelProvider, BuiltInReasoning, GatewayModelCapabilities,
   REASONING_LEVELS, ReasoningLevel, SUGGESTED_MODELS, WORKERS_AI_OUTPUT_LIMIT,
@@ -563,16 +569,18 @@ function makeHandle(args: HandleArgs): ModelHandle {
         },
         // Rewrites of the request pi built from `transcript`, each a no-op for payloads it doesn't
         // apply to: PDF attachments ride pi image parts and become the provider's native document
-        // blocks (see chat-attachment-pdf.ts), and with caching on, the leading system prompt is
-        // split after its static text (see system-prompt-blocks.ts), and a split request drops
-        // pi's per-chat prompt cache key (see withoutPromptCacheKey).
+        // blocks (see chat-attachment-pdf.ts), Gemini function calls without a thought signature
+        // get Google's stand-in (see signGeminiFunctionCalls), and with caching on, the leading
+        // system prompt is split after its static text (see system-prompt-blocks.ts), and a split
+        // request drops pi's per-chat prompt cache key (see withoutPromptCacheKey).
         onPayload: async (payload, payloadModel) => {
           const replaced = await options.onPayload?.(payload, payloadModel);
           const bridged = bridgePdfAttachments(args.model.api, replaced ?? payload) ?? replaced;
-          if (options.cacheRetention === "none") return bridged;
-          const split = splitSystemPrompt(args.model, transcript, bridged ?? payload);
+          const signed = signGeminiFunctionCalls(args.model, bridged ?? payload) ?? bridged;
+          if (options.cacheRetention === "none") return signed;
+          const split = splitSystemPrompt(args.model, transcript, signed ?? payload);
           const final = split === undefined
-              ? bridged
+              ? signed
               : withoutPromptCacheKey(args.model, split) ?? split;
           sent = { payload: final ?? payload, at: Date.now() };
           return final;
@@ -680,6 +688,32 @@ const hasEnabledThinking = (payload: object): boolean =>
     "thinking" in payload && typeof payload.thinking === "object" && payload.thinking !== null &&
     "type" in payload.thinking && payload.thinking.type === "enabled";
 
+// Gemini 3 rejects a request whose current turn holds a function call without a thought signature.
+// The synthetic calls history replay adds (see makeReplayObservation in agent.ts) have none, nor do
+// calls another model made, so they get the value Google documents for a call the model didn't
+// make. pi can't send it: it passes on only base64 signatures.
+function signGeminiFunctionCalls(model: Model<Api>, payload: unknown): object | undefined {
+  if (model.api !== "google-generative-ai" || typeof payload !== "object" || payload === null ||
+      !("contents" in payload) || !Array.isArray(payload.contents)) {
+    return undefined;
+  }
+  let signed = false;
+  const contents = payload.contents.map((content: unknown) => {
+    if (typeof content !== "object" || content === null || !("parts" in content) ||
+        !Array.isArray(content.parts)) {
+      return content;
+    }
+    return {...content, parts: content.parts.map((part: unknown) => {
+      if (typeof part !== "object" || part === null || !("functionCall" in part) ||
+          "thoughtSignature" in part) {
+        return part;
+      }
+      signed = true;
+      return {...part, thoughtSignature: "skip_thought_signature_validator"};
+    })};
+  });
+  return signed ? {...payload, contents} : undefined;
+}
 /**
  * Resolve an AiModelConfig to a ModelHandle, choosing among three routing modes: the user's own
  * AI Gateway (BYOK unified billing), the platform's AI Gateway (free tier), or direct provider
@@ -877,18 +911,13 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
       // Workers AI is fetch-only (no Workers-binding transport), so outside AI Gateway mode it's
       // BYOK like every other provider: the user's own account ID and API token come from the
       // model config. (The REST endpoint is account-scoped, hence the extra accountId field.)
-      if (!config.accountId || !config.apiToken) {
-        throw new Error(
-            "This Workers AI model has no Cloudflare credentials. Re-add it with your " +
-            "Cloudflare account ID and an API token that permits Workers AI.");
-      }
       return makeHandle({
         model: {
           id: config.model,
           name: catalog?.name ?? config.model,
           api: "openai-completions",
           provider: "cloudflare-workers-ai",
-          baseUrl: `https://api.cloudflare.com/client/v4/accounts/${config.accountId}/ai/v1`,
+          baseUrl: `${workersAiAccountUrl(config)}/v1`,
           reasoning: catalog?.reasoning ?? false,
           input: catalog?.input ?? ["text"],
           cost: catalog?.cost ?? ZERO_COST,
@@ -990,17 +1019,94 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
   }
 }
 
+// Workers AI's account-scoped REST root for a direct connection, which needs the config's own
+// Cloudflare credentials.
+function workersAiAccountUrl(config: AiModelConfig): string {
+  if (!config.accountId || !config.apiToken) {
+    throw new Error(
+        "This Workers AI model has no Cloudflare credentials. Re-add it with your " +
+        "Cloudflare account ID and an API token that permits Workers AI.");
+  }
+  return `https://api.cloudflare.com/client/v4/accounts/${config.accountId}/ai`;
+}
+
+/** Runs one resolved decision model; see getDecisionModel(). */
+type DecisionModel = (context: ClassifierContext) => Promise<ClassifierResult>;
+
+/**
+ * Resolve a decision model config (see modelKind()) to a DecisionModel. It routes through the
+ * platform's AI Gateway when one is configured, as getModel() routes language models, and
+ * otherwise goes directly to Workers AI with the config's own Cloudflare credentials.
+ */
+export function getDecisionModel(env: Cloudflare.Env, config: AiModelConfig,
+                                 initiator: AiChatAuthorInfo,
+                                 metadataContext?: GatewayMetadataContext): DecisionModel {
+  // pi's catalog entry supplies the API, cost and window; only the address varies by route.
+  const catalog = (CLOUDFLARE_WORKERS_AI_CLASSIFIER_MODELS as
+      Record<string, ClassifierModel<ClassifierApi>>)[config.model];
+  const modelAt = (baseUrl: string, options: ClassifierOptions): DecisionModel =>
+      context => workersAiClassify({ ...catalog, baseUrl }, context, options);
+  const gwConfig = getAiGatewayConfig(env);
+  if (!gwConfig) {
+    return modelAt(workersAiAccountUrl(config),
+        { apiKey: config.apiToken, headers: config.extraHeaders });
+  }
+  const metadata = buildMetadata(initiator, metadataContext);
+  const binding = gwConfig.bindingFor(config.provider);
+  if (binding) {
+    // The gateway's passthrough refuses /run even with the binding's identity, so binding
+    // requests take the binding's own run(), which reaches the same gateway. pi's System One
+    // transport POSTs {model, input} as Workers AI's REST API takes them and reads back the REST
+    // envelope; run() takes and returns the bare values. pi requires a key, which goes unsent.
+    return modelAt(catalog.baseUrl, {
+      apiKey: CLOUDFLARE_GATEWAY_BINDING_AUTH_SENTINEL,
+      fetch: async (_url, init) => {
+        const { model, input } = JSON.parse(init!.body as string);
+        const result = await binding.run(model, input, { gateway: { id: gwConfig.gateway, metadata } });
+        return Response.json({ success: true, result });
+      },
+    });
+  }
+  // Unlike the chat route, /run wants a Workers AI credential as `Authorization`, and a request
+  // sending this token there is refused even when the token grants Workers AI. Until AI Gateway
+  // authenticates /run as it does chat, this route fails, so the docs have such deployments
+  // disable decision models.
+  return modelAt(
+      `https://gateway.ai.cloudflare.com/v1/${gwConfig.accountId}/${gwConfig.gateway}/workers-ai`, {
+        apiKey: gwConfig.apiToken,
+        headers: {
+          "cf-aig-authorization": `Bearer ${gwConfig.apiToken}`,
+          "cf-aig-metadata": JSON.stringify(metadata),
+        },
+      });
+}
+
 // =======================================================================================
 
-export type LanguageModelGatekeeperProps = {
+export type AiModelGatekeeperProps = {
   displayName: string,
   config: AiModelConfig,
   initiator: AiChatAuthorInfo,
   metadata?: GatewayMetadataContext,
 };
 
+/**
+ * Throws if the deployment no longer lets a model binding run its model. A session starts on each
+ * call of the binding, so a binding minted before an admin disabled its gateway model stops working
+ * at its next call. While users may not add their own models, so does a binding for any other
+ * model: one a user added, or one the admin added and removed.
+ */
+async function refuseRevokedModel(env: Cloudflare.Env, props: AiModelGatekeeperProps) {
+  let models = await getGatewayModels(env);
+  if (models?.get(props.config.model)?.provider === props.config.provider) {
+    models.refuseDisabled(props.config.model);
+  } else {
+    models?.refuseUserModel(props.displayName);
+  }
+}
+
 export class LanguageModelGatekeeper
-    extends DurableObject<Cloudflare.Env, LanguageModelGatekeeperProps>
+    extends DurableObject<Cloudflare.Env, AiModelGatekeeperProps>
     implements Gatekeeper<LanguageModelBinding> {
   async describe(): Promise<ResourceDescription> {
     let modelConfig = this.ctx.props.config;
@@ -1032,15 +1138,7 @@ export class LanguageModelGatekeeper
     // A binding makes one-shot calls, which ask for no reasoning level. Without the level it was
     // minted with, its model is described as one with none set, whatever the admin has set since.
     let { reasoning, ...config } = this.ctx.props.config;
-    // A session starts on each call of the binding, so a binding minted before an admin disabled
-    // its gateway model stops working at its next call. While users may not add their own models,
-    // so does a binding for any other model: one a user added, or one the admin added and removed.
-    let models = await getGatewayModels(this.env);
-    if (models?.get(config.model)?.provider === config.provider) {
-      models.refuseDisabled(config.model);
-    } else {
-      models?.refuseUserModel(this.ctx.props.displayName);
-    }
+    await refuseRevokedModel(this.env, this.ctx.props);
     let model = getModel(this.env, config, this.ctx.props.initiator, {
       metadata: this.ctx.props.metadata,
     });
@@ -1084,5 +1182,70 @@ class LanguageModelBindingImpl extends RpcTarget implements LanguageModelBinding
       systemPrompt: options.systemPrompt,
       cache: true,
     });
+  }
+}
+
+export class DecisionModelGatekeeper
+    extends DurableObject<Cloudflare.Env, AiModelGatekeeperProps>
+    implements Gatekeeper<DecisionModelBinding> {
+  async describe(): Promise<ResourceDescription> {
+    let modelConfig = this.ctx.props.config;
+    return {
+      url: `http://models.local/${modelConfig.provider}/${modelConfig.model}`,
+      title: this.ctx.props.displayName,
+      snippet: "An AI decision model.",
+      suggestedBindingName: "DECISION_MODEL",
+      tsType: "DecisionModelBinding",
+    };
+  }
+
+  async getTypeScriptTypes(): Promise<string> {
+    return DECISION_MODEL_BINDING_TYPES;
+  }
+
+  async getAutoApprovableActions() {
+    return [];
+  }
+
+  async startSession(approvalQueue: RpcStub<ApprovalQueue>)
+      : Promise<DecisionModelBinding> {
+    let { config, initiator, metadata } = this.ctx.props;
+    await refuseRevokedModel(this.env, this.ctx.props);
+    return new DecisionModelBindingImpl(getDecisionModel(this.env, config, initiator, metadata));
+  }
+
+  applyAction(action: number): Promise<void> {
+    throw new Error("This gatekeeper implements no actions.");
+  }
+  rejectAction(action: number): Promise<void | {restart?: boolean}> {
+    throw new Error("This gatekeeper implements no actions.");
+  }
+  revertAction(action: number):
+      Promise<void | {message?: string, canRetry?: boolean, restart?: boolean}> {
+    throw new Error("This gatekeeper implements no actions.");
+  }
+
+  async addObserver(_id: string, _user: Fetcher): Promise<void> {
+    // Like an LLM, a decision model is not a restricted-access resource (see
+    // LanguageModelGatekeeper).
+  }
+
+  async removeObserver(_id: string): Promise<void> {
+    // No observer state is tracked (see addObserver). Idempotent no-op.
+  }
+}
+
+@validateRpc()
+class DecisionModelBindingImpl extends RpcTarget implements DecisionModelBinding {
+  constructor(private model: DecisionModel) {
+    super();
+  }
+
+  async decide(request: DecisionRequest): Promise<Record<string, DecisionAnswer>> {
+    let result = await this.model(request);
+    // pi reports a failure in the result; gadget code expects a rejection, as completeText()
+    // gives the LLM binding.
+    if (result.stopReason !== "stop") throw new Error(result.errorMessage);
+    return result.answers;
   }
 }

@@ -4,9 +4,7 @@ import { DownloadSimple, GitBranch, List } from '@phosphor-icons/react'
 import type {
   FileAtCommit, Overseer, WorkpieceId, WorkpieceSummary,
 } from '@gadgets/workshop-shared/api'
-import {
-  MAX_FILE_TEXT_LENGTH, type CodeChange, type FileChange, type TextChange,
-} from '@gadgets/workshop-shared/code-change'
+import type { CodeChange, FileChange, TextChange } from '@gadgets/workshop-shared/code-change'
 import { RpcStub } from 'capnweb'
 import FileBrowser, { isOpenableKind, type ExpandedDirs, type FileBrowserHandle } from './FileBrowser'
 import { WorkshopButton, WorkshopIconButton } from '../../components/WorkshopControls'
@@ -1376,11 +1374,9 @@ export default function WorkpieceCodeInterface({
   }
   const activeFileText = activeResolved?.kind === 'text' ? activeResolved.text : null
   // A base entry with no readable text (symlink, binary, oversized) shows its reason in place
-  // of content, read-only; a readable file beyond the change size cap is viewable but not
-  // editable, since no change could carry its new text.
+  // of content, read-only.
   const activeFileUnreadable = activeResolved?.kind === 'unreadable'
     ? activeResolved.message : null
-  const activeFileOversized = activeFileText !== null && activeFileText.length > MAX_FILE_TEXT_LENGTH
   // The diff's original side: the review base's text (null = absent there: an added file). The
   // diff waits for that read too, so a file never opens as "added" for the round trip before
   // its original arrives. An original with no readable text (a binary the chat replaced or
@@ -1583,7 +1579,7 @@ export default function WorkpieceCodeInterface({
                 original={activeFileOriginal}
                 text={activeFileText}
                 session={activeSession}
-                readOnly={isEditingLocked || activeFileOversized}
+                readOnly={isEditingLocked}
                 height="100%"
               />
             ) : (

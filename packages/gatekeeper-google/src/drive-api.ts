@@ -500,6 +500,17 @@ export class DriveApi {
     return parseDriveFile(await this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params));
   }
 
+  /** Whether the connected account may edit a file's content, as Drive reports it. */
+  async canEdit(fileId: string): Promise<boolean> {
+    let params = new URLSearchParams({ fields: "capabilities(canEdit)", supportsAllDrives: "true" });
+    let body = await this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params);
+    let capabilities = isRecord(body) ? body.capabilities : undefined;
+    if (capabilities !== undefined && !isRecord(capabilities)) {
+      throw new Error("Invalid Google Drive file capabilities");
+    }
+    return optionalBoolean(capabilities?.canEdit, "file capabilities") === true;
+  }
+
   /** Fresh access checks for typed file and folder disclosure units. */
   async checkObservations(observations: readonly DriveObservation[]): Promise<boolean[]> {
     return this.#batchGetFiles(

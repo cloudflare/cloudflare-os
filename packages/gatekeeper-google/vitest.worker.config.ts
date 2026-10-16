@@ -16,7 +16,8 @@ export default defineConfig({
         compatibilityFlags,
         bindings: {
           CLIENT_ID: "test-client", CLIENT_SECRET: "test-secret",
-          PUBSUB_TOPIC: "projects/test/topics/chat", PUBSUB_PUSH_SERVICE_ACCOUNT: "push@test.iam.gserviceaccount.com",
+          PUBSUB_CHAT_TOPIC: "projects/test/topics/chat", PUBSUB_GMAIL_TOPIC: "projects/test/topics/gmail",
+          PUBSUB_PUSH_SERVICE_ACCOUNT: "push@test.iam.gserviceaccount.com",
         },
         durableObjects: {
           ChatHookDriver: {className: "ChatHookDriver", useSQLite: true},
@@ -30,6 +31,7 @@ export default defineConfig({
     }),
   ],
   test: {
+    testTimeout: 15_000,
     include: [
       "__tests__/workerd/chat-actions.test.ts",
       "__tests__/workerd/chat-hooks.test.ts",

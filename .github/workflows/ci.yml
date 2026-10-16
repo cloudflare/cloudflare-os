@@ -85,5 +85,10 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # The frontend's browser suite (`vitest.browser.config.ts`) runs in Chromium, which
+      # Playwright downloads outside node_modules; `--with-deps` adds the system libraries it needs.
+      - name: Install Chromium for the browser suite
+        run: pnpm --filter @gadgets/workshop-frontend exec playwright install --with-deps chromium
+
       - name: Test
         run: pnpm test

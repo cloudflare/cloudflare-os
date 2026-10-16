@@ -47,7 +47,7 @@ Blueprints support three types of bindings, matching the three types of gatekeep
 
 1. **Gatekeeper** (`type: "gatekeeper"`) -- an external resource connection (e.g. Google Drive, a REST API). The blueprint records the gatekeeper adapter name and a URL pattern describing what kind of resource is expected. When instantiating, the user picks a connected account and configures a matching resource.
 
-2. **AI Model** (`type: "aiModel"`) -- a language model binding. The blueprint may suggest a specific provider/model. When instantiating, the user picks from their own configured models.
+2. **AI Model** (`type: "aiModel"`) -- a language model binding, or a decision model binding when `modelKind: "decision"` (see `ModelKind`). The blueprint may suggest a specific provider/model. When instantiating, the user picks from their own configured models of the same kind.
 
 3. **Agent Spawner** (`type: "agentSpawner"`) -- an agent spawner binding. The blueprint carries over the spawner configuration (prompt types, env restrictions) from the source gadget. The user only needs to choose which model the spawner should use (or no model).
 
@@ -130,10 +130,10 @@ The same release always packs to the same bytes.
 
 A pack arrives from an upload, or from storage that any uploader can write, so it is checked at the one place its objects enter a workspace: `readBlueprintRelease` in `blueprint-archive.ts`, which `OverseerImpl.loadBlueprint` calls before importing anything. `validateReleaseObjects` admits only what `blueprint-release.ts` could itself have written:
 
-- The pack is at most 32 MiB, no object is larger than a file of the longest allowed text could encode to, and no delta refers to an object outside the pack. Object IDs are computed from content, never taken from the pack.
+- The pack is at most 32 MiB, no object inflates to more than that, and no delta refers to an object outside the pack. Object IDs are computed from content, never taken from the pack.
 - The commit that `metadata.commitId` names is present, and so is every ancestor of it, up to 10,000 commits. Each is in the canonical form the encoder writes.
 - The release's tree is complete. Any other commit's tree is either complete or absent.
-- Trees hold only subtrees and mode `100644` blobs, under names `GitStore` can read back. Every blob is UTF-8 text within `MAX_FILE_TEXT_LENGTH`, at a path within `MAX_FILE_PATH_LENGTH`. This keeps every imported file readable and editable as a code change.
+- Trees hold only subtrees and mode `100644` blobs, under names `GitStore` can read back. Every blob is UTF-8 text, at a path within `MAX_FILE_PATH_LENGTH`. There is no cap on a file's length: a release holds files a gadget's commits held, and storage is what bounds those. This keeps every imported file readable and editable as a code change.
 - Nothing else is in the pack.
 
 Publishing runs the same check on what it is about to pack, so a blueprint that publishes always instantiates. Imported objects are stored with no record of any gatekeeper remote possessing them (`WorkspaceGitCache.importObjects`), so they grant no gatekeeper a read.
@@ -323,8 +323,6 @@ There are no automatic updates.
 
 If the gadget's head moves while this is being computed, the call throws an error asking for a retry rather than record a merge into a head the gadget no longer has. The chat and its proposal are written in one transaction, so a chat never exists without its proposal. A refused call can leave `M` behind, unreferenced, as can a chat that is discarded.
 
-The call is also refused, with no chat created, if both sides changed a file and any of the three versions of it, or the merged text, is too large for a file to hold: longer than `MAX_FILE_TEXT_LENGTH`, or a blob larger than the git cache reads back. The error names the file. Making it smaller, or undoing the gadget's own changes to it, lets the update through, since a file only one side changed is taken whole and never checked.
-
 ### Kinds of proposal
 
 Every proposal is one of three kinds, recorded on it:
@@ -469,7 +467,6 @@ Lineage is information, not authority. A crafted pack can claim any ancestry, wh
 ### Limitations
 
 - **A guessed base can undo local edits silently.** See [The merge base](#the-merge-base). The mitigation is review. A merge over a guessed base gets the agent's review as well as the user's, but a `fastForward` over one runs no agent, so there the only reviewer is the user, prompted by the notice.
-- **A merge that needs a very large file is refused.** A conflicted file holds both sides and the base, so its merged text can exceed `MAX_FILE_TEXT_LENGTH` where neither side does: a file of more than about a third of the limit in conflict throughout, or a larger one with less in conflict. Hand-written source is rarely that long, but a built bundle can be, and the bundled blueprints ship those. A gadget that customized one cannot take a release that rebuilt it until its own edits to the file are undone, and a chat in that position cannot be brought up to date from mainline either.
 - **Broken and unfinished files enter history.** An accepted `M` is on the gadget's first-parent chain, and where conflicts were resolved afterwards its files hold the markers. An update from mainline's `S` is whatever the chat held at the time. Neither is ever a merge base for a blueprint, since no release has a gadget's commit among its parents.
 - **A preview shares the gadget's storage.** If the new release migrates stored data when it runs, discarding the proposal does not undo the migration.
 - **The UI's checks see only loaded history.** A chat reopened after a compaction loads what follows the checkpoint. A conflicted merge, or a `follow` that pins nothing, recorded before the checkpoint is not noticed until the user scrolls back that far.

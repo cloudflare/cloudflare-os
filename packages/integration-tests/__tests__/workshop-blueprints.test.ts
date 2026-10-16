@@ -18,7 +18,7 @@ import {
 import {
   scriptedModelRouter, SCRIPTED_MODEL_ID, type ChatCompletionStep,
 } from "../src/mock-model.js";
-import { NetworkInterceptor } from "../src/network-interceptor.js";
+import { NetworkInterceptor, type Handler } from "../src/network-interceptor.js";
 import {
   accountLabel, connect, listConnectedAccounts, logIn, nextUsernames, RpcTarget, signUp, stubFor,
   waitFor, waitForIdleChat, WorkpieceRecorder,
@@ -26,7 +26,13 @@ import {
 
 let harness: Harness | undefined;
 const models = scriptedModelRouter();
-const network = new NetworkInterceptor({ handlers: [models.handler] });
+// Workers AI /run responses for the decision model test's account, served in order.
+const DECISION_ACCOUNT = "decision-account";
+const decisionResponses: Response[] = [];
+const decisionHandler: Handler = (url, method) =>
+  method === "POST" && url.pathname === `/client/v4/accounts/${DECISION_ACCOUNT}/ai/run`
+    ? decisionResponses.shift() ?? null : null;
+const network = new NetworkInterceptor({ handlers: [models.handler, decisionHandler] });
 
 beforeAll(async () => {
   network.install();
@@ -103,6 +109,12 @@ async function ask(gadget: RpcStub<GadgetClient>, prompt: string): Promise<strin
   using facet = await gadget.connectToGadget() as RpcStub<{ ask(prompt: string): string }>;
   return await facet.ask(prompt);
 }
+
+const DECISION_SERVER =
+    `import { DurableObject } from "cloudflare:workers";\n` +
+    `export class Gadget extends DurableObject {\n` +
+    `  async decide(request) { return await this.env.DECISION_MODEL.decide(request); }\n` +
+    `}\n`;
 
 const userPrompt = (content: string) =>
   expect.objectContaining({ messages: [{ role: "user", content }] });
@@ -1047,4 +1059,47 @@ it.concurrent("a gadget's LLM binding runs on its bound model, and an install us
 
   await installed.deleteSelf();
   await source.deleteSelf();
+});
+
+it.concurrent("a gadget's decision model binding answers its questions", async () => {
+  using publicApi = connect(requireHarness().url);
+  using api = await signUp(publicApi, username("decision"));
+  const profile = { type: "agent" as const, id: "my-clef", name: "Clef" };
+  await api.addModel(profile, {
+    provider: "cloudflare", model: "@cf/cloudflare/clef",
+    accountId: DECISION_ACCOUNT, apiToken: "test-token",
+  });
+  using ws = await api.newGadget();
+  const workpieces = new WorkpieceRecorder();
+  using workpiecesStub = stubFor(workpieces);
+  using _subscription = await ws.subscribeToWorkpieces(workpiecesStub);
+  await workpieces.loaded;
+  using app = ws.createGadget("Triage", undefined, "APP");
+  const gadgetId = await app.getId();
+  await commitText(ws, workpieces, gadgetId, await headOf(workpieces, gadgetId),
+      "server.js", undefined, DECISION_SERVER);
+  using decisionModel = await ws.newAiModelGatekeeper(profile.id);
+  await app.bind("DECISION_MODEL", await decisionModel.getId());
+  using facet = await app.connectToGadget() as RpcStub<{ decide(request: unknown): unknown }>;
+  const request = {
+    state: { message: "My order never arrived." },
+    questions: {
+      refund: { type: "bool", instructions: "Do they want a refund?", criteria: { true: "Yes", false: "No" } },
+    },
+  };
+
+  decisionResponses.push(Response.json({
+    success: true, result: { model: "clef", answers: { refund: { type: "noul", noul: 0.9 } } },
+  }));
+  expect(await facet.decide(request)).toEqual({ refund: { type: "bool", probability: 0.9 } });
+  decisionResponses.push(Response.json({
+    success: false, errors: [{ code: 5006, message: "Invalid input" }],
+  }, { status: 400 }));
+  await expect(facet.decide(request)).rejects.toThrow("Invalid input");
+
+  const blueprint = await app.createBlueprint("Triage", "Triages with a decision model");
+  const published = await waitFor("the published blueprint", () => publicApi.getBlueprint(blueprint.id));
+  expect(published.metadata.bindings.DECISION_MODEL)
+      .toMatchObject({ type: "aiModel", modelKind: "decision" });
+  await ws.deleteSelf();
 });

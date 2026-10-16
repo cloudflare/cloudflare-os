@@ -20,18 +20,44 @@ export type GoogleCalendarListOptions = {
   maxResults?: number;
 };
 
+// Google's calendar roles split "can edit the calendar" from "can see private event details":
+// `writerWithoutPrivateAccess` edits events but sees private ones only as busy blocks. The two
+// predicates below are the only places that distinction is encoded, so keep them together.
+
+/**
+ * Whether the connected account can create and edit events on the calendar. This is the bar for
+ * choosing a calendar to operate on, in the picker and when checking a suggested calendar.
+ */
+export function hasCalendarWriteRole(calendar: GoogleCalendarInfo): boolean {
+  return calendar.accessRole === "owner" || calendar.accessRole === "writer" ||
+    calendar.accessRole === "writerWithoutPrivateAccess";
+}
+
+/**
+ * Whether the account also sees private event details. A collaborator observing a bound calendar
+ * must hold one of these roles, because the workspace may already hold private details read
+ * through the owner's account; a limited writer could not see them on their own.
+ */
+export function hasCalendarPrivateAccessRole(calendar: GoogleCalendarInfo): boolean {
+  return calendar.accessRole === "owner" || calendar.accessRole === "writer";
+}
+
+// The weakest role the picker offers. Must agree with `hasCalendarWriteRole`.
+const CALENDAR_PICKER_MIN_ACCESS_ROLE = "writerWithoutPrivateAccess";
+
 // Rank calendars so the ones the user is most likely to pick appear first
 const CALENDAR_ACCESS_ROLE_RANK: Record<string, number> = {
   owner: 0,
   writer: 1,
-  reader: 2,
-  freeBusyReader: 3,
-  none: 4,
+  writerWithoutPrivateAccess: 2,
+  reader: 3,
+  freeBusyReader: 4,
+  none: 5,
 };
 
 export function calendarPickerRank(calendar: GoogleCalendarInfo): number {
   if (calendar.primary) return -1;
-  return CALENDAR_ACCESS_ROLE_RANK[calendar.accessRole ?? ""] ?? 5;
+  return CALENDAR_ACCESS_ROLE_RANK[calendar.accessRole ?? ""] ?? 6;
 }
 
 type GoogleCalendarTime = {
@@ -167,6 +193,12 @@ export function validateCalendarTimeWindow(timeMin: Date, timeMax: Date, maxDays
   }
 }
 
+class GoogleCalendarApiError extends Error {
+  constructor(readonly status: number, body: string) {
+    super(`Google Calendar API request failed: ${status} ${body}`);
+  }
+}
+
 export class GoogleCalendarApi {
   constructor(private getAccessToken: AccessTokenProvider) {}
 
@@ -186,7 +218,7 @@ export class GoogleCalendarApi {
 
     if (!response.ok) {
       let text = await response.text();
-      throw new Error(`Google Calendar API request failed: ${response.status} ${text}`);
+      throw new GoogleCalendarApiError(response.status, text);
     }
 
     if (response.status === 204) return undefined as T;
@@ -201,8 +233,9 @@ export class GoogleCalendarApi {
     do {
       let params = new URLSearchParams({
         maxResults: "250",
-        // Only surface calendars the user can edit.
-        minAccessRole: "writer",
+        // Only surface calendars the user can edit. Google filters on its role ordering, so a
+        // limited writer's calendars are included but a reader's are not.
+        minAccessRole: CALENDAR_PICKER_MIN_ACCESS_ROLE,
         fields: "items(id,summary,description,timeZone,accessRole,primary),nextPageToken",
       });
       if (pageToken) params.set("pageToken", pageToken);
@@ -232,6 +265,20 @@ export class GoogleCalendarApi {
       ...(cal.accessRole ? { accessRole: cal.accessRole } : {}),
       ...(cal.primary ? { primary: cal.primary } : {}),
     };
+  }
+
+  /**
+   * Returns whether the connected account can write the exact calendar. A calendar that is not on
+   * the account's list (404) is reported as unwritable; any other failure is rethrown so a
+   * transient error is not mistaken for missing access.
+   */
+  async canWriteCalendar(calendarId: string): Promise<boolean> {
+    try {
+      return hasCalendarWriteRole(await this.getCalendar(calendarId));
+    } catch (error) {
+      if (error instanceof GoogleCalendarApiError && error.status === 404) return false;
+      throw error;
+    }
   }
 
   /** Lists all events in the window, paginating fully. */

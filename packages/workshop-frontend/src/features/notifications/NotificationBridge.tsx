@@ -9,6 +9,7 @@ import type {
 } from "@gadgets/workshop-shared/api";
 import { logRpcFailure } from "../../rpcErrors";
 import { nativeApp } from "../native-app/nativeApp";
+import { isChatVisible } from "./visibleChat";
 
 const DEVICE_REGISTRATION_EVENT = "cloudflare-os:notification-device-registration";
 
@@ -121,6 +122,7 @@ export const NotificationBridge = ({
       let live = false;
       let subscriber = new NotificationSubscriberImpl(notification => {
         let { id, kind, workspaceId, chatId, chatTitle } = notification;
+        if (isChatVisible(workspaceId, chatId)) return;
         let completed = kind === "taskCompleted";
         addToast.current({
           id,

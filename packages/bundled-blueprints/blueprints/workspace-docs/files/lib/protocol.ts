@@ -135,23 +135,6 @@ export interface SubscriberCallbacks {
   presence(event: DocPresenceEvent): void | Promise<void>;
 }
 
-/** The linked Google Doc's metadata, as the `GOOGLE_DOC` binding reports it. */
-export interface GoogleDocMetadata {
-  title: string;
-  lastModified: Date;
-}
-
-/** What `getGoogleDocInfo` returns when a Google Doc is linked. */
-export interface GoogleDocInfo {
-  title: string;
-  lastModified: Date;
-}
-
-/** What `syncToGoogleDoc` returns: whether the Doc was rewritten, and its metadata when it was. */
-export type GoogleDocSyncResult =
-  | { status: "unchanged" }
-  | { status: "synced"; metadata: GoogleDocMetadata };
-
 /**
  * The client's view of the server's `Gadget` class over RPC: every public method, returning a
  * promise. The first group is the API a client or an agent calls; the second is the internals the
@@ -165,8 +148,6 @@ export interface GadgetStub {
   subscribe(callback: SubscriberCallbacks, client?: Partial<Collaborator>): Promise<DocumentSnapshot>;
   updatePresence(presence: PresenceUpdate): Promise<void>;
   leavePresence(clientId: string): Promise<void>;
-  getGoogleDocInfo(): Promise<GoogleDocInfo | null>;
-  syncToGoogleDoc(args: { markdown: string }): Promise<GoogleDocSyncResult>;
 
   loadDocument(): Promise<DocumentSnapshot>;
   initializeBlocksLocked(args: DocumentInit): Promise<StoredDocument>;

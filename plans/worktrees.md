@@ -27,6 +27,13 @@ The starting point is the sketch in commit 34ebecd, encompassing changes in
 and `workshop-shared/src/worktree.d.ts` (the
 agent-facing `Worktree` binding API).
 
+The current pull contract is `Gatekeeper.gitPull(oids, options): Promise<GitPullTransfer>`
+in `packages/workshop-shared/src/gatekeeper.ts`. Providers return a one-shot raw PACK stream
+plus terminal status; the overseer owns bounded cache ingestion and requested-object checks.
+This kernel-facing method is not exposed to gadgets: the kernel routes pulls using recorded
+provenance, while the transport checks oid syntax, not advertisement history. A native
+container consumer requires separate kernel bootstrap support and enforces its own limits.
+
 ## Locked decisions
 
 - **Chat-scoped.** A worktree belongs to the chat that created it and is deleted with
@@ -115,19 +122,19 @@ agent-facing `Worktree` binding API).
   Protocol v2, pkt-line composed by hand, `want`s by SHA, **no `have`s ever** —
   an empty have list and an immediate `done` on every fetch (no negotiation; the
   same noop stance git itself takes for partial-clone lazy fetches).
-  The gatekeeper handles only protocol framing (pkt-line, sideband demux) and streams
-  the raw pack body into `GitCache.consumePack()` — the pull-side symmetric of
-  `buildPack()` — which unpacks it overseer-side (reusing isomorphic-git's packfile
-  parsing / delta resolution where its internals allow), so no gatekeeper ever
+  The gatekeeper handles only protocol framing (pkt-line, sideband demux) and returns
+  a `GitPullTransfer`; the overseer claims its raw pack stream and feeds it to
+  `GitCache.consumePack()` — the pull-side symmetric of `buildPack()` — to unpack it
+  overseer-side (including delta resolution), so no gatekeeper ever
   re-implements pack decoding. Packfiles are unpacked wholesale into the `GitCache`
   and never stored or indexed
   long-term: eviction + re-fetch replaces pack-based history storage. The
   no-`have`s rule is correctness, not laziness: a `have` asserts full
-  reachability, but every pull here is filtered or tree-limited, so possessing a
-  commit never implies possessing its blobs and trees — advertising one as a
+  reachability, but the cache may hold filtered or shallow pulls, so possessing a
+  commit alone does not imply full reachability — advertising one as a
   `have` would make upload-pack exclude exactly the omitted objects a later
-  exact-object fault explicitly `want`s. Since all pulls are shallow and
-  filtered, the cost is only a modest over-fetch (a repeat creation from the
+  exact-object fault explicitly `want`s. For shallow, filtered cache pulls,
+  the cost is only a modest over-fetch (a repeat creation from the
   same repo re-downloads its shallow filtered pack); completeness-graded
   `have`s are listed future work. Git sync is generally simplified by the
   assumption that intermediate changes were not synced through some path the
@@ -322,12 +329,13 @@ agent-facing `Worktree` binding API).
     source gatekeeper's pack straight through without staging every object.
   - `consumePack(pack)` — the pull-side symmetric of `buildPack()`: decodes a
     standard packfile stream (including ofs/ref delta resolution), stores every
-    contained object, and returns the inserted oids (which a `gitPull`
-    implementation should check its requested oids against). Behaves exactly
+    contained object, and returns the inserted oids (which the overseer's pull
+    driver checks its requested oids against). Behaves exactly
     like the equivalent sequence of `put()`s — same hash verification (so still
     poison-proof by construction), same `onRemote`/referent metadata recording,
     same size-cap handling. This is what keeps pack decoding out of individual
-    gatekeepers: `gitPull` strips protocol framing and pipes the pack body here.
+    gatekeepers: `gitPull` strips protocol framing and returns a `GitPullTransfer`;
+    the overseer claims its stream, consumes the pack here, and requires terminal `complete`.
     The pack decoder is hostile-input parsing (see watch-fors).
   - `isAncestor(ancestor, descendant)` (added with commit 7) — whether `ancestor`
     is reachable from `descendant` (inclusive) over *locally cached* commits:
@@ -364,7 +372,7 @@ agent-facing `Worktree` binding API).
   omission must produce a retryable error, never a permanently wrong
   fail-fast row. This costs nothing, because a fetch whose filter suppressed
   a blob is inherently cheap to repeat — the expensive bytes were never
-  sent. Blobs too large for the transfer limiter itself never complete a
+  sent. Blobs rejected by the DO decoder's pack or object limits never complete a
   `put()`, so they also record nothing and error (agent-visibly) on each
   attempt — accepted for such an extreme case.
   `type` is **required** — every write knows one: *measured* from bytes in
@@ -417,7 +425,8 @@ agent-facing `Worktree` binding API).
   gatekeeper on failure), reach the gatekeeper through `getGatekeeperFacet(id)` —
   the same instantiated-facet path every other invocation of an existing
   gatekeeper uses (observations, actions, hooks; overseer.ts:4261) — call
-  `gitPull(oids, cache, hints)`, verify the requested oids are now present —
+  `gitPull(oids, hints)`, consume the returned transfer through the bounded DO
+  decoder, require terminal `complete`, and verify the requested oids are now present —
   where "present" admits one deliberate exception: a requested *blob* still
   absent after a success return, when the hints carried a blob filter, is
   read as "unavailable at the supported size" and surfaces the ordinary
@@ -594,7 +603,7 @@ agent-facing `Worktree` binding API).
   works (a gadget's history, another worktree's commit). Then: create the record (pending, like
   `createGadget` — stamped at the step barrier); add the chat binding; record
   `{worktreeId, changeId}` as the tool output so replay never re-creates. For gatekeeper-known commits, creation performs the **initial
-  pull**: `gitPull([commit], cache, {type: "commit", commitHistory: {kind: "depth",
+  pull**: `gitPull([commit], {type: "commit", commitHistory: {kind: "depth",
   depth: 1}, filterBlobSize: EAGER_BLOB_LIMIT})` — one fetch for commit + all trees
   + small blobs. The pull covers only what's missing: a commit already present locally
   pulls nothing at creation, and any trees it lacks fault in later with the same eager
@@ -770,17 +779,17 @@ agent-facing `Worktree` binding API).
     hint to `onRemote` proof (§1) — not needed for
     the v1 flows, where worktree creation pulls the base.
   - Observer verification: unchanged — strategy B's repo ACL covers git data.
-- **`gitPull(oids, cache, hints)`** on the gatekeeper DO (`GitHubGatekeeperImpl`):
+- **`gitPull(oids, options): Promise<GitPullTransfer>`** on the gatekeeper DO (`GitHubGatekeeperImpl`):
   - Smart-HTTP protocol v2 `fetch` against `https://github.com/{o}/{r}.git`
     (token auth): hand-composed pkt-line; `want` per requested oid; `shallow`/
-    `deepen`/`deepen-since` from `hints.commitHistory`; **at most one `filter`
+    `deepen`/`deepen-since` from `options.commitHistory`; **at most one `filter`
     line per fetch** — upload-pack accepts a single filter-spec, so combining
     is spelled in the filter-spec grammar, not by repeating the line:
     `blob:limit=N` from `filterBlobSize` alone, `tree:<depth>` from
     `filterTreeDepth` alone, and `combine:tree:<depth>+blob:limit=N` when both
     hints are set (spike 1 verifies GitHub accepts the `combine:` grammar; if
     it doesn't, the client sends `tree:<depth>` alone — hints are advisory by
-    contract, and the transfer limiter bounds the resulting blob over-fetch).
+    contract, and the DO decoder bounds the resulting blob over-fetch for cache pulls).
     In practice no v1 call site sets both: creation pulls use `blob:limit`
     only, and the exact-object pull-through defaults are pure tree filters —
     `tree:0` with a commit want, and `tree:1` with a tree want already
@@ -788,20 +797,21 @@ agent-facing `Worktree` binding API).
     no `have`s (the transport locked decision — a `have` from a filtered pull
     would exclude exactly the omitted objects a blob/tree fault wants);
     immediate `done`, single round.
-  - Strip the response's protocol framing (pkt-line, sideband demux) and stream
-    the raw pack body into `GitCache.consumePack()`, which unpacks and stores
-    every object overseer-side (delta resolution included — §1), then verify the
-    requested oids appear among the returned list. No pack parsing in the
-    gatekeeper; nothing is retained locally.
+  - Strip the response's protocol framing (pkt-line, sideband demux) and return
+    `GitPullTransfer` via the kit's `startGitPull()`: one-shot `stream()` plus
+    independent `status()` so producer diagnostics survive Workers RPC stream errors.
+    The overseer consumes the raw pack with its bounded cache decoder (delta resolution
+    included — §1), requires terminal `complete`, and checks requested-object presence.
+    No pack parsing or cache ingestion in the gatekeeper; nothing is retained locally.
   - Blob faults: individual/batched blob `want`s over the same fetch command
     (partial-clone lazy fetch — this is exactly what git itself does against
     GitHub). Oversize protection per spike 1's outcome: either a
     `blob:limit=MAX_WORKTREE_FILE_SIZE` guard filter (an oversized blob then
     never downloads — the read errors, cheaply, on each attempt) or, if
-    explicit wants override filters, no filter plus the transfer limiter and
-    `put()`'s size rejection, whose measured size is the one thing metadata
-    records (§1: sizes from measured bytes only; omissions and limiter
-    aborts record nothing).
+    explicit wants override filters (the verified outcome), no filter plus the DO
+    decoder's pack/object limits and `put()`'s storage-size rejection. Only fully
+    decoded oversized objects record a measured size; omissions and decoder-limit
+    aborts record nothing (§1). Native consumers do not inherit the DO cache limits.
 - **Push** — queued action `push(branch, commitId, {force?})`:
   - Queue: the `ActionDescription` declares `pushedCommits: [commitId]`, and the
     overseer's `submitAction` verification + marking (§1) *is* the validation —
@@ -895,7 +905,8 @@ agent-facing `Worktree` binding API).
     check has to run before `submitAction()` puts the commits in view); the
     sketch's `pull()` TODO resolves by
     *deletion* — gatekeepers never trigger pulls. The interface extends
-    `RpcTarget`, and `gitPull`/`applyAction` receive it as `RpcStub<GitCache>`.
+    `RpcTarget`, and `applyAction` receives it as `RpcStub<GitCache>`.
+    `gitPull` instead returns `GitPullTransfer` for consumer-owned ingestion.
     Doc-comment the scoped view
     (`onRemote ∪ pendingPush`, null otherwise, uniformly across
     `get`/`has`/`stat`), the simulation contract (a pending commit reads as
@@ -934,10 +945,10 @@ agent-facing `Worktree` binding API).
     transport can't combine them (upload-pack takes one filter-spec; combining
     needs the `combine:` grammar, §3) may honor only the tree filter — sound
     because hints are advisory by contract.
-  - `Gatekeeper.gitPull`'s "put each requested object or throw" contract gains
+  - `Gatekeeper.gitPull`'s "include each requested object or fail the stream" contract has
     the filtered-omission carve-out (§1): a requested blob the hints' own
-    `filterBlobSize` suppressed is reported by returning successfully without
-    it, rather than by throwing — the overseer surfaces that absence as the
+    `filterBlobSize` suppressed may be absent from a completed stream
+    rather than failing it — the overseer surfaces that absence as the
     too-large read error (and deliberately records nothing from it; absence
     is a gatekeeper behavior, not a measurement).
   - Doc comments to the kernel review bar on every export; `@validateRpc()` on the
@@ -997,9 +1008,9 @@ agent-facing `Worktree` binding API).
    downloaded, each read of it errors cheaply, and nothing is recorded —
    §1's rule that absence proves nothing) or it
    arrives huge (→ blob-fault fetches send no filter, since one wouldn't be
-   honored; the transfer limiter bounds the download, and `put()`'s size
-   rejection measures the exact size, which metadata records and later reads
-   fail fast on). Both are
+   honored; the DO decoder bounds pack bytes and object allocations, and a
+   fully decoded object rejected by the storage-size cap records its exact
+   measured size for later fail-fast reads). Both are
    handled with no absence-based bookkeeping; the fetch client just needs to
    know which world it is in.
 2. **isomorphic-git pack parsing reusability**: can its pack/delta machinery be
@@ -1120,8 +1131,9 @@ agent-facing `Worktree` binding API).
   sizes) — hash verification of each decoded object is the backstop for object
   *content*, exactly as with `put()`.
 - **Rate/size limits**: one fetch per worktree creation and per batch fault keeps
-  request counts trivial; the transfer-size limiter pattern from artifact-sync
-  (64MB) should wrap the fetch body.
+  request counts trivial. The DO decoder enforces the cache's 64 MiB pack/object
+  limits; the provider transport does not cap fetches. A native Git consumer owns
+  its own limits rather than inheriting the DO cache's.
 
 ## Commit sequence
 
@@ -1260,11 +1272,11 @@ to keep dependents compiling. PR boundaries to be decided later.
    never fetched are never advertised; commit-free pages advertise nothing).
 6. **github: fetch transport + gitPull** — pkt-line composer/parser, protocol-v2
    fetch client (wants/shallow/filter/done — no `have`s, per the transport
-   locked decision), sideband demux streaming the pack body into
-   `GitCache.consumePack()` (no pack parsing in the gatekeeper — §1),
-   transfer-size limiting, oversized-blob handling per spike 1.
-   Tests: pkt-line round-trips, framing demux feeding `consumePack` (against a
-   mock cache; real pack decoding is commit 2's test surface), hint mapping —
+   locked decision), sideband demux returning the raw PACK via `GitPullTransfer`
+   (no pack parsing or cache ingestion in the gatekeeper — §1),
+   consumer-owned size limits, oversized-blob handling per spike 1.
+   Tests: pkt-line round-trips, framing demux and transfer terminal status
+   (real pack decoding is commit 2's test surface), hint mapping —
    including the hints-to-filter-spec matrix (blob
    only, tree only, both → `combine:` or the tree-only fallback per spike 1's
    outcome; never two `filter` lines) — and that no fetch command ever emits a
@@ -1338,9 +1350,9 @@ to keep dependents compiling. PR boundaries to be decided later.
   usage ships shallow-only defaults) — also the missing piece for cross-remote
   pushes of *pre-existing* diverged branches (§1's ancestry-verification bound:
   the head-to-ancestor commit chain must be cached).
-- Fetch negotiation (`have`s): v1 sends none, because every pull is filtered or
-  tree-limited and a `have` asserts full reachability — no fetched object here is
-  provably complete, and a wrong `have` makes upload-pack withhold omitted
+- Fetch negotiation (`have`s): v1 sends none, because the cache can hold filtered or
+  shallow pulls and a `have` asserts full reachability — possession alone is not
+  proof of completeness, and a wrong `have` makes upload-pack withhold omitted
   objects a fault explicitly wants. If repeat-creation bandwidth ever matters,
   `have`s need a completeness grade: remember tips only from creation-style
   pulls (depth-1 + `blob:limit` at the standard limit), advertise them only on

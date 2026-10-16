@@ -6,8 +6,9 @@ import { Seeded } from "./seeded.js";
 
 // A week of maintenance for a small platform team, worked the way a person would: build the
 // calendar, write the week up as a document from it, change the rules, then add a search for the
-// earliest free slot and ask it a question. The seeded windows stay in the calendar from turn 1
-// on; every later turn is checked against them.
+// earliest free slot and ask it a question. The new rules arrive as a skill the user adds after the
+// chat started, so the agent must find a resource it gained mid-chat. The seeded windows stay in
+// the calendar from turn 1 on; every later turn is checked against them.
 
 const OkSchema = z.discriminatedUnion("ok", [
   z.object({ ok: z.literal(true) }),
@@ -438,10 +439,16 @@ nothing scheduled that week.`,
       });
     },
   }, {
-    prompt: `Two rule changes for the calendar. Windows for the same service must now be at least
-24 hours apart, measured from the end of one to the start of the next; reject with "TOO_CLOSE"
-("OVERLAP" stays for windows that actually overlap). And billing windows are now capped at 4 hours
-instead of 8, still "INVALID_RANGE". Everything already scheduled stays exactly as it is.`,
+    skills: [{
+      name: "calendar-rules",
+      description: "The maintenance calendar's booking rules, as changed this week.",
+      instructions: `Two rule changes for the calendar. Windows for the same service must now be at
+least 24 hours apart, measured from the end of one to the start of the next; reject with
+"TOO_CLOSE" ("OVERLAP" stays for windows that actually overlap). And billing windows are now capped
+at 4 hours instead of 8, still "INVALID_RANGE".`,
+    }],
+    prompt: `I turned on Skills and added our new booking rules to it as calendar-rules. Change the
+calendar to follow them. Everything already scheduled stays exactly as it is.`,
     verify: async verifier => {
       await checkSeededWindowsIntact(verifier, "existing-windows-survive-the-rule-change");
 

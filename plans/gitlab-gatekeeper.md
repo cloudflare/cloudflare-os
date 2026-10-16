@@ -372,15 +372,19 @@ bump, stub removal, config, secrets). See [Commit sequence](#commit-sequence).
   `pendingAction:` where the code uses `action:`; the GitLab one will be written from the code).
 - **Git contract** (`workshop-shared/src/gatekeeper.ts`): `GitOid`, `GitObjectType`,
   `GitCache` (`get`/`has`/`stat`/`put`/`advertiseCommit`/`buildPack`/`consumePack`/`isAncestor`),
-  `GitPullHints`, `Gatekeeper.gitPull?(oids, cache, hints)`, `Gatekeeper.applyAction(action,
+  `GitPullHints`, `GitPullTransfer`, `Gatekeeper.gitPull?(oids, options)`, `Gatekeeper.applyAction(action,
   cache)`, `ActionDescription.pushedCommits`, `ObservationAuthorizer.getGitCache()`. The
-  overseer pulls from `meta.onRemote[0] ?? meta.pullableFrom[0]` (`overseer.ts` ~2370), i.e.
-  from whichever gatekeeper advertised or proved the object — which is why every commit-id-bearing
-  read must advertise. The agent-facing worktree API is `workshop-backend/src/worktree-binding.d.ts`.
-- **Git layer** (`gatekeeper-github/src/git-{transport,commits,diff}.ts`): pkt-line codec,
+  overseer tries sources recorded in `meta.onRemote` and `meta.pullableFrom`, i.e.
+  gatekeepers that advertised or proved the object, or populated an object that references it —
+  which is why every
+  commit-id-bearing read must advertise. This is a kernel-facing contract, not an agent API;
+  the provider does not independently validate advertisement history. The agent-facing worktree
+  API is `workshop-backend/src/worktree-binding.d.ts`.
+- **Git layer** (`gatekeeper-kit/src/git-{transport,pull-transfer,objects,diff}.ts`): pkt-line codec,
   protocol-v2 fetch composer (`buildGitFetchRequest`, `filterSpecForHints`, no `have`s),
-  sideband demux → `GitPackSink.consumePack`, `pullGitObjectsIntoCache(fetchUploadPack, oids,
-  hints, cache)`, classic receive-pack composer (`buildRefUpdateRequest`, `report-status` only, no
+  sideband demux → raw PACK stream, `startGitPull(fetchUploadPack, oids, options)` returning
+  `GitPullTransfer` (`stream()` once plus independent terminal `status()`), classic receive-pack
+  composer (`buildRefUpdateRequest`, `report-status` only, no
   side-band), `pushGitRefUpdate(fetchReceivePack, update, pack)`, `GitRefUpdateRejectedError`,
   `emptyPackBytes`; git commit/tree object parsers; `diffGitTrees`/`diffTextLines` over a
   `TreeDiffSource`. Only their doc comments mention GitHub.
@@ -812,7 +816,7 @@ in `github.ts` is the checklist. Divergences:
   `added`, `deleted_file` → `removed`, `renamed_file` → `renamed` with `previousPath: old_path`,
   else `modified`; an empty `diff` — a binary file — or a `too_large` or `collapsed` one →
   `diffOmitted: true`, with `additions`/`deletions` then counting nothing, as the type says);
-  additions/deletions per file are counted from the hunks `parsePatch` reads, where a patch's
+  additions/deletions per file are counted from the hunks the kit's `parseUnifiedPatch` reads, where a patch's
   final newline ends its last line rather than starting a blank context line an agent could
   comment on. `revision` from `revisionFromDiffRefs(mr.diff_refs)`, and the pages are cached
   under that whole revision (Caches). `#getMergeBaseCached` calls `/repository/merge_base`
@@ -836,14 +840,19 @@ substitutes transport endpoints and REST lookups:
   `getCommit`, `listCommits`, MR `getDetails` (`sha`, `diff_refs.*`), `readDiff` (revision shas),
   `getMergeBase`, MR `listCommits`, `listMergeRequests`/`searchMergeRequests` (source/target
   shas) all advertise, with the cache-served / simulated carve-out via `isSimulatedCommitId`.
-- **`gitPull(oids, cache, hints)`**: `pullGitObjectsIntoCache(body => api.fetchGitUploadPack(
-  projectPath, body), oids, hints, cache)`; `fetchGitUploadPack` POSTs to
+- **`gitPull(oids, options): Promise<GitPullTransfer>`**: `startGitPull(body => api.fetchGitUploadPack(
+  projectPath, body), oids, options)`; the provider only strips protocol framing. The overseer
+  claims the stream, ingests it with the DO cache's pack/object limits, checks terminal status
+  (recovering producer errors across Workers RPC), and verifies requested-object presence.
+  Native hydration requires a separate kernel consumer, bound to an authorized immutable commit
+  and using its own limits; this provider capability alone does not enable containers.
+  `fetchGitUploadPack` POSTs to
   `{apiOrigin}/{path}.git/git-upload-pack` with `Git-Protocol: version=2`, Basic `oauth2:<token>`,
   the upstream Access headers, and the 120s budget. The token is fetched immediately before the
   request (it may be minutes from expiry; the pack streams well within the 2-hour window).
 - **`push(branch, commitId, {force?})`**: `preparePush` reads the live branch head (`GET
   …/repository/branches/:name`, 404 → `ZERO_OID`), overlays queued pushes via
-  `#simulateBranchHead`, no-ops when already at `commitId`, checks `isAncestor` unless `force` or
+  `#simulateBranchHead` (the kit's `simulateBranchHead` over the queued pushes), no-ops when already at `commitId`, checks `isAncestor` unless `force` or
   creating, queues `{branch, expectedOldSha, newSha, force}` with `pushedCommits: [commitId]`.
   Apply: `cache.buildPack()` → `pushGitRefUpdate(body => api.fetchGitReceivePack(projectPath,
   body), …)`; `GitRefUpdateRejectedError` → re-read head; equal to `newSha` → desired-state
@@ -1229,7 +1238,7 @@ kernel bar doesn't apply — no `workshop-backend`/`workshop-shared` lines chang
    from github's single `github.ts` for reviewability: `gitlab.ts` (entrypoint, vendor,
    `UserAccount` with PKCE and refresh under a mutex, `GatekeeperUserImpl`, `GitLabVerifier`),
    `gitlab-env.ts` (instance configuration and resource patterns), `gitlab-normalize.ts` (pure
-   REST→API mapping, `revisionFromDiffRefs`, `parsePatch`), `gitlab-cursors.ts`,
+   REST→API mapping, `revisionFromDiffRefs`), `gitlab-cursors.ts`,
    `gitlab-action-types.ts`, `gitlab-gatekeeper.ts` (the DO), `gitlab-sessions.ts`, and the
    three configurators. Every observation method with caches and overlays; the action methods
    throw "not available". Node: `gitlab-normalize.test.ts`, `gitlab-env.test.ts`,

@@ -93,6 +93,7 @@ type RawConversation = {
   team_id?: string;
   context_team_id?: string;
   shared_team_ids?: string[];
+  internal_team_ids?: string[];
   name?: string;
   is_channel?: boolean;
   is_group?: boolean;
@@ -647,12 +648,16 @@ export class SlackApi {
   }
 
   async #assertConversationWorkspace(channel: RawConversation, teamId: string): Promise<void> {
+    // Slack Connect can name only external workspaces in shared_team_ids. Its internal
+    // workspace membership is reported separately; the requested viewing context is not proof.
+    if (channel.internal_team_ids?.includes(teamId)) return;
     // Shared channels belong to several workspaces. Their host is not their access boundary.
     if (channel.shared_team_ids?.length) {
       if (channel.shared_team_ids.includes(teamId)) return;
-      throw new SlackApiError("access_denied", 200);
-    }
-    if (channel.team_id === teamId) return;
+      // Enterprise DMs can be listed in this workspace while sharing metadata names another.
+      // Unlike shared channels, a mismatch must fall through to workspace-scoped DM discovery.
+      if (!channel.is_im && !channel.is_mpim) throw new SlackApiError("access_denied", 200);
+    } else if (channel.team_id === teamId) return;
     // DMs and older channel responses can omit workspace metadata. Prove membership through a
     // workspace-scoped listing rather than treating an org token's visibility (or its requested
     // context_team_id) as sufficient. This also handles shared channels hosted elsewhere.

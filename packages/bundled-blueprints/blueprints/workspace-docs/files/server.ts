@@ -21,9 +21,6 @@ import type {
   DocumentInit,
   DocumentSnapshot,
   GadgetStub,
-  GoogleDocInfo,
-  GoogleDocMetadata,
-  GoogleDocSyncResult,
   Operation,
   OperationEvent,
   PresenceUpdate,
@@ -31,22 +28,9 @@ import type {
   StoredDocument,
   SubscriberCallbacks,
 } from "./lib/protocol.ts";
+import { htmlToMarkdown } from "./lib/markdown.ts";
 
 const DEFAULT_TITLE = "Untitled document";
-
-// The optional Google Doc binding a deployment may configure, as this gadget uses it: a Doc's
-// metadata and its Markdown content, and the two writes that replace or extend that content.
-interface GoogleDocBinding {
-  getMetadata(): Promise<GoogleDocMetadata>;
-  getContent(): Promise<string>;
-  appendText(markdown: string): Promise<unknown>;
-  replaceText(oldMarkdown: string, newMarkdown: string): Promise<unknown>;
-}
-
-/** The bindings this Durable Object may be given; there are none it requires. */
-interface GadgetEnv {
-  GOOGLE_DOC?: GoogleDocBinding;
-}
 
 /** An object as it arrives over RPC, before its fields are checked. */
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -54,11 +38,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 // Props is `unknown` so that `ctx` is the plain `DurableObjectState` the constructor receives.
-export class Gadget extends DurableObject<GadgetEnv, unknown> implements GadgetStub {
+export class Gadget extends DurableObject<unknown, unknown> implements GadgetStub {
   mutations: MutationQueue;
   subscribers: SubscriberRegistry<SubscriberCallbacks, Collaborator>;
 
-  constructor(ctx: DurableObjectState, env: GadgetEnv) {
+  constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env);
     this.ctx = ctx;
     // RPC calls may overlap at await points. Chain mutations so each operation
@@ -285,22 +269,6 @@ export class Gadget extends DurableObject<GadgetEnv, unknown> implements GadgetS
   broadcastPresence(event: DocPresenceEvent): void {
     this.subscribers.broadcast((subscriber) => subscriber.presence(event));
   }
-
-  async getGoogleDocInfo(): Promise<GoogleDocInfo | null> {
-    if (!this.env.GOOGLE_DOC) return null;
-    const metadata = await this.env.GOOGLE_DOC.getMetadata();
-    return { title: metadata.title, lastModified: metadata.lastModified };
-  }
-
-  async syncToGoogleDoc({ markdown }: { markdown: string }): Promise<GoogleDocSyncResult> {
-    if (!this.env.GOOGLE_DOC) throw new Error("GOOGLE_DOC binding is not configured.");
-    const next = String(markdown || "").trim() || " ";
-    const current = await this.env.GOOGLE_DOC.getContent();
-    if ((current || "").trim() === next.trim()) return { status: "unchanged" };
-    if (!(current || "").trim()) await this.env.GOOGLE_DOC.appendText(next);
-    else await this.env.GOOGLE_DOC.replaceText(current, next);
-    return { status: "synced", metadata: await this.env.GOOGLE_DOC.getMetadata() };
-  }
 }
 
 function sanitizeBlocks(blocks: unknown): BlockUpsert[] {
@@ -317,7 +285,6 @@ function sanitizeBlocks(blocks: unknown): BlockUpsert[] {
   }
   return result;
 }
-
 
 // An export format as the Workshop lists it: a `server` format is produced by ExportHandler.export,
 // a `browser` one by the client, opened with `gadgetExportFormatId` set.
@@ -348,113 +315,4 @@ export class ExportHandler extends WorkerEntrypoint {
       : document.legacyContent || "";
     return new Response(htmlToMarkdown(html)).body!;
   }
-}
-
-function htmlToMarkdown(html: string): string {
-  const tokens = String(html).match(/<!--[\s\S]*?-->|<![^>]*>|<[^>]+>|[^<]+/g) || [];
-  const lists: { type: "ul" | "ol"; count: number }[] = [];
-  const links: string[] = [];
-  const blockquotes: number[] = [];
-  let markdown = "";
-  let inPre = false;
-
-  for (const token of tokens) {
-    if (!token.startsWith("<")) {
-      let text = decodeHtml(token);
-      if (!inPre) {
-        text = text.replace(/\s+/g, " ").replace(/([\\*_[\]])/g, "\\$1");
-      }
-      markdown += text;
-      continue;
-    }
-    if (token.startsWith("<!--") || token.startsWith("<!")) continue;
-
-    const match = /^<\s*(\/?)\s*([a-z0-9]+)([^>]*)>/i.exec(token);
-    if (!match) continue;
-    const closing = match[1] === "/";
-    const tag = match[2].toLowerCase();
-    const attributes = match[3];
-
-    if (closing) {
-      switch (tag) {
-        case "h1": case "h2": case "h3": case "h4": case "h5": case "h6":
-        case "p": case "div":
-          markdown += "\n\n";
-          break;
-        case "blockquote": {
-          const start = blockquotes.pop();
-          const content = markdown.slice(start).trim().replace(/\n{3,}/g, "\n\n");
-          const quoted = content
-            ? content.split("\n").map((line) => line ? "> " + line : ">").join("\n")
-            : ">";
-          markdown = markdown.slice(0, start) + quoted + "\n\n";
-          break;
-        }
-        case "strong": case "b": markdown += "**"; break;
-        case "em": case "i": markdown += "*"; break;
-        case "s": case "strike": case "del": markdown += "~~"; break;
-        case "code": if (!inPre) markdown += "\x60"; break;
-        case "pre": markdown += "\n\x60\x60\x60\n\n"; inPre = false; break;
-        case "a": markdown += "](" + (links.pop() || "") + ")"; break;
-        case "li": if (!markdown.endsWith("\n")) markdown += "\n"; break;
-        case "ul": case "ol": lists.pop(); break;
-        case "td": case "th": markdown += "\t"; break;
-        case "tr": markdown += "\n"; break;
-      }
-      continue;
-    }
-
-    switch (tag) {
-      case "h1": case "h2": case "h3": case "h4": case "h5": case "h6":
-        markdown += "\n\n" + "#".repeat(Number(tag[1])) + " ";
-        break;
-      case "p": case "div": markdown += "\n\n"; break;
-      case "br": markdown += "  \n"; break;
-      case "strong": case "b": markdown += "**"; break;
-      case "em": case "i": markdown += "*"; break;
-      case "s": case "strike": case "del": markdown += "~~"; break;
-      case "code": if (!inPre) markdown += "\x60"; break;
-      case "pre": markdown += "\n\n\x60\x60\x60\n"; inPre = true; break;
-      case "blockquote": markdown += "\n\n"; blockquotes.push(markdown.length); break;
-      case "hr": markdown += "\n\n---\n\n"; break;
-      case "ul": lists.push({ type: "ul", count: 0 }); break;
-      case "ol": lists.push({ type: "ol", count: 0 }); break;
-      case "li": {
-        const list = lists.at(-1) || { type: "ul", count: 0 };
-        list.count += 1;
-        markdown += (markdown.endsWith("\n") ? "" : "\n") +
-          "  ".repeat(Math.max(0, lists.length - 1)) +
-          (list.type === "ol" ? list.count + ". " : "- ");
-        break;
-      }
-      case "a": links.push(readHtmlAttribute(attributes, "href")); markdown += "["; break;
-      case "img": {
-        const alt = readHtmlAttribute(attributes, "alt").replace(/[\\[\]]/g, "\\$&");
-        markdown += "![" + alt + "](" + readHtmlAttribute(attributes, "src") + ")";
-        break;
-      }
-    }
-  }
-
-  const clean = markdown
-    .replace(/[ \t]+\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-  return clean ? clean + "\n" : "";
-}
-
-function readHtmlAttribute(source: string, name: string): string {
-  const pattern = new RegExp(name + "\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))", "i");
-  const match = pattern.exec(source);
-  return decodeHtml(match ? match[1] ?? match[2] ?? match[3] ?? "" : "");
-}
-
-function decodeHtml(value: string): string {
-  return String(value).replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (_: string, entity: string) => {
-    const lower = entity.toLowerCase();
-    if (lower.startsWith("#x")) return String.fromCodePoint(Number.parseInt(lower.slice(2), 16));
-    if (lower.startsWith("#")) return String.fromCodePoint(Number.parseInt(lower.slice(1), 10));
-    const named: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: " " };
-    return named[lower];
-  });
 }

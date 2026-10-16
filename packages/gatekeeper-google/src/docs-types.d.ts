@@ -35,6 +35,7 @@ export interface GoogleDocSession extends GoogleDocReadSession {
    * - Bullet lists (`- item`)
    * - Numbered lists (`1. item`)
    * - Plain paragraphs (separated by blank lines)
+   * - Line breaks within a paragraph (`\u000b`, as `getContent()` returns them)
    *
    * Unsupported Markdown features (tables, images, code blocks, etc.) are inserted as plain text.
    * Existing structural content and paragraphs containing elements such as smart chips are

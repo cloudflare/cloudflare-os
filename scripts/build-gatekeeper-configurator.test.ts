@@ -328,7 +328,7 @@ describe("generated configurator error reporting", () => {
 describe("generated configurator prefill", () => {
   const pattern = "https://drive.google.com/drive/folders/:folderId";
 
-  it("extracts named groups with or without a trailing slash", async () => {
+  it("extracts named groups with or without a trailing slash, before any query", async () => {
     const { defaultValuesFromResourceUrl } = readRuntimeFunctions(
       await readRuntime(fixtureDir), "defaultValuesFromResourceUrl");
 
@@ -338,6 +338,7 @@ describe("generated configurator prefill", () => {
       "https://drive.google.com/drive/folders/FOLDER123",
       "https://drive.google.com/drive/folders/FOLDER123/",
       "https://drive.google.com/drive/folders/FOLDER123//",
+      "https://drive.google.com/drive/folders/FOLDER123/?usp=sharing",
     ]) {
       assert.deepEqual(defaultValuesFromResourceUrl(url, pattern), { folderId: "FOLDER123" });
     }

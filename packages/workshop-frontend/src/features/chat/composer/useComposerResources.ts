@@ -3,6 +3,7 @@ import type { RpcStub } from "capnweb";
 import type { GatekeeperClient } from "@gadgets/workshop-shared/api";
 import type { ResourceDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { normalizeResourceUrl } from "../../../resourceMatching";
+import { rpcFailureDescription } from "../../../rpcErrors";
 import {
   insertComposerCapsule,
   refineComposerResourceUrl,
@@ -39,7 +40,7 @@ type UseComposerResourcesOptions = {
   capsuleTokenText: (description: ResourceDescription, vendorId?: string) => string;
   onConnectionCreated: () => void;
   onSelectionRequest: (selection: ComposerSelection, documentRevision: number) => void;
-  onError: (message: string) => void;
+  onError: (title: string, description?: string) => void;
 };
 
 const currentResourceUrl = (
@@ -205,7 +206,7 @@ export const useComposerResources = ({
     } catch (error) {
       if (operationRef.current !== operation) return;
       console.error("Failed to create capsule:", error);
-      onError("Failed to add resource");
+      onError("Failed to add resource", rpcFailureDescription(error));
     } finally {
       if (operationRef.current === operation) setIsCreatingResource(false);
     }

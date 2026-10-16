@@ -676,11 +676,13 @@ describe("rejecting a push", () => {
 });
 
 describe("gitPull", () => {
-  it("POSTs a protocol-v2 fetch for the requested oids and streams the pack into the cache", async () => {
+  it("POSTs a protocol-v2 fetch for the requested oids and returns a raw pack", async () => {
     const { gitlab, props, name } = await setup();
     const cache = new TestGitCache();
-    cache.packOids = [BASE];
-    await unwrap(await hooks().gitPull(name, props, [BASE], stubOf(cache), { type: "commit", commitHistory: { kind: "depth", depth: 1 } }));
+    using transfer = await unwrap(await hooks().gitPull(name, props, [BASE], {
+      type: "commit", commitHistory: { kind: "depth", depth: 1 },
+    }));
+    await cache.consumePack(await transfer.stream());
     expect(gitlab.uploadPackBodies).toHaveLength(1);
     const text = new TextDecoder().decode(gitlab.uploadPackBodies[0]);
     expect(text).toContain("command=fetch");

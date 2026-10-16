@@ -19,7 +19,9 @@
   "devDependencies": {
     "@cloudflare/workers-types": "catalog:",
     "@gadgets/scripts": "workspace:*",
+    "@types/commonmark": "^0.27.10",
     "@types/node": "^26.1.0",
+    "commonmark": "^0.31.2",
     "esbuild": "^0.28.2",
     "jsdom": "^26.1.0",
     "typescript": "catalog:",

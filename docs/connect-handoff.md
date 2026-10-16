@@ -5,7 +5,8 @@ browser that started it. The pieces: the **ticket** (`ConnectHandoff` in
 `packages/workshop-shared/src/gatekeeper.ts`), the **nonce** (`ConnectFlowStart` in
 `packages/workshop-shared/src/api.ts`), the gatekeeper's completion page (`connectHandoffPageHtml` in
 `packages/gatekeeper-kit/src/connect-pages.ts`), the Workshop's `/connect/handoff` page
-(`packages/workshop-frontend/src/ConnectHandoffPage.tsx`) and the server side
+(`packages/workshop-frontend/src/ConnectHandoffPage.tsx`, plus `BrowserConnectHandoffPage.tsx` for
+desktop redemption) and the server side
 (`packages/workshop-backend/src/connect-handoff.ts`, `user.ts`, `auth/login-flow.ts`).
 
 ## The threat, and the ticket
@@ -87,7 +88,9 @@ tab holds only the `attempt` capability and no id at all.
 1. The tab calls `AuthenticatedApi.connectAccount(vendorId)` (or `reconnectAccount` /
    `ensureAccountResources`). The user DO asks the vendor for the flow `url`, mints the nonce with
    `openConnectFlow`, and returns `{ url, nonce }`.
-2. `openConnectWindow(flow)` opens the disowned popup carrying the nonce and navigates it to `url`.
+2. `await openConnectWindow(flow, authenticatedApi)` opens the disowned popup carrying the nonce
+   and navigates it to `url`. Awaiting it also handles native completion (below); desktop still
+   returns as soon as the popup opens.
 3. The popup traverses the gatekeeper and the provider. On success the gatekeeper calls
    `callback.complete(user)`; `GatekeeperConnectCallbackImpl` (in `user.ts`) forwards to
    `stagePendingConnect`, which stores the ticket's hash and returns `{ targetOrigin, ticket }`.
@@ -107,7 +110,7 @@ tab holds only the `attempt` capability and no id at all.
 6. The user DO activates the grant (`putConnectedAccount` for a connect; `commitReconnect(stageId)`
    plus `markCredentialsRestored` for a restore) and notifies subscribers. The tab that started the
    flow learns of the account through `subscribeConnectedAccounts()`, which every screen already
-   uses; nothing in the tab awaits the redemption.
+   uses. On desktop nothing in the tab awaits redemption; native callers await in-app completion.
 
 ```mermaid
 sequenceDiagram
@@ -138,6 +141,55 @@ sequenceDiagram
     WS-->>Tab: subscribeConnectedAccounts: add(account)
 ```
 
+## Native system-browser transport
+
+The native shells cannot use a blank `window.open()` popup, and provider authentication must not
+run inside an embedded WebView. `openDisownedPopup` therefore checks the versioned
+`cloudflareOSNative.authentication` capability before using the desktop path. This one hook covers
+connect, reconnect, resource grants and gatekeeper sign-in; vendors need no mobile-specific logic.
+
+The transport is in `src/features/native-app/authPopup.ts` (under `packages/workshop-frontend`):
+
+1. The initiating WebView keeps the original flow nonce and auth-session owner (or login attempt)
+   in memory. It generates a random correlation ID and calls `authentication.open(id, url)` with
+   its own origin's `/connect/handoff#native-auth=<encoded {id,url}>` bootstrap URL. No install
+   hostname is hardcoded. Neither the nonce nor the app's session token enters the browser.
+2. The system browser's handoff page stores only `{id, expiresAt}` in its own sessionStorage and
+   navigates to the flow URL. Both entry points require HTTPS, the current install's origin and a
+   `/gatekeeper/` path: the bootstrap cannot redirect to an arbitrary external HTTPS site. The
+   gatekeeper/provider flow and backend staging are unchanged.
+3. On return to `/connect/handoff#<ticket>`, the browser consumes its correlation record, strips
+   the fragment, and navigates to the app-owned HTTPS callback
+   `https://os.cloudflare.app/authpopup#id=<id>&ticket=<ticket>`. Both values stay in the fragment;
+   the landing server never needs to receive them. This is a transport return, not redemption.
+4. iOS uses `ASWebAuthenticationSession`; Android uses an Auth Tab, with a verified App Link
+   fallback for older Custom Tabs. Native code validates the exact callback host/path, correlation
+   ID and ticket shape, then sends a `cloudflare-os:auth-popup` event only to the originating
+   install's main-frame WebView. Wrong, stale or unsolicited callbacks cannot complete a flow.
+5. The WebView redeems the ticket with its retained nonce over `completeConnectHandoff`, or calls
+   `confirmLogin` and continues polling its original login attempt. All server-side user, account,
+   nonce, expiry and single-use checks still apply. Native cancellation/failure rejects the
+   awaiting caller, and listeners expire after 30 minutes or are removed when closed/replaced.
+   Connect completion uses the initiating `useAuth` owner's current connection, confirms the same
+   user, and retains the ticket across broken-transport replacement. Live-session server failures
+   are surfaced without retries. Logout or a different user cannot receive the pending grant.
+   `openConnectWindow` always returns a promise: `opened` on desktop, `connected` after native
+   redemption. Billing refreshes only after that redemption (in addition to ordinary focus refresh).
+   Since older Custom Tabs may not report dismissal, native sign-in offers Cancel sign-in and the
+   Gatekeepers connect modal offers Cancel connection. The latter aborts its caller-owned signal
+   passed to `openConnectWindow(flow, api, signal)`, closes the native browser best-effort and
+   settles the pending flow without reporting an error. Closing the route also aborts that flow;
+   late native results cannot redeem it, and the modal can retry immediately after cancellation.
+
+Deploy the frontend and update **both native apps** to use this transport. Older native binaries
+without the optional capability keep the desktop behavior; a frontend-only rollout cannot teach
+them to open a system authentication browser. The canonical callback domain must already associate
+the installed app/signing identity (iOS associated domains; Android Digital Asset Links). The
+Android app claims `/authpopup` separately from its install-session `/oauthredirect` callback.
+The fixed app-owned callback is deliberately independent of the selected install. An alternate
+native client must coordinate its own callback constant, shell validation and domain associations;
+changing an install setting alone cannot register a different application's return endpoint.
+
 ## Sign-in
 
 The popup has no session, so the shape differs in who redeems what.
@@ -146,7 +198,7 @@ The popup has no session, so the shape differs in who redeems what.
    `PendingLogin` DO by its hash, calls `begin()` on it, hands the gatekeeper a
    `LoginConnectCallbackImpl`, and returns `{ url, nonce, attempt }`.
 2. `OAuthButtons` opens the same disowned popup (`openDisownedPopup(url,
-   uniquePopupName('gatekeeper-login'), { kind: 'login', nonce })`) and polls `attempt.receive()`
+   uniquePopupName('gatekeeper-login'), { kind: 'login', nonce }, completeNative)`) and polls `attempt.receive()`
    every second (`RECEIVE_POLL_MS`).
 3. The gatekeeper calls `complete(user)`. `LoginConnectCallbackImpl` reads the verified email, mints
    a session, and parks the `"<email>:<secret>"` token in the `PendingLogin` DO under the hash of a
@@ -234,8 +286,10 @@ to secure and test. The redirect is the single transport, and it works for a gat
   valid" (whose copy says to reload). An old kit's completion page reaches nobody. Every RPC shape
   change in this repo has the same stale-tab window, and there is no reload mechanism for it.
 - Each connect costs one SPA load in the popup (the handoff page), with its own WebSocket session.
-- A connect completes even if the Workshop tab was closed: the popup redeems the ticket itself, and
-  the account is in the user's list the next time any tab subscribes.
+- A desktop connect completes even if the Workshop tab was closed: the popup redeems the ticket
+  itself, and the account is in the user's list the next time any tab subscribes. Native completion
+  requires the initiating WebView to remain alive: its nonce is deliberately never persisted or
+  sent to the system browser.
 
 ## Shared gatekeeper
 
