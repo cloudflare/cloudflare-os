@@ -23,7 +23,7 @@
     "@types/node": "^26.1.0",
     "commonmark": "^0.31.2",
     "esbuild": "^0.28.2",
-    "jsdom": "^26.1.0",
+    "jsdom": "^30.1.1",
     "typescript": "catalog:",
     "typescript6": "catalog:",
     "vitest": "catalog:"
