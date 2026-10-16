@@ -83,8 +83,11 @@ through the deployment's Gateway. Turn that switch off to make the listed models
 An admin session can turn on any provider the Gateway serves.
 
 The **Web Search** gatekeeper (`packages/gatekeeper-websearch`) spends money outside these
-controls. Each search spends the deployment account's AI Gateway credits, through its `default`
-gateway, and the free daily allowance and top-up flow do not apply to it. Every new deploy
+controls. Each search spends the deployment account's AI Gateway credits, or bills the operator's
+Ceramic account when the gateway holds a Ceramic key. That gateway is the one its Worker's
+`CF_AI_GATEWAY` names: the instance's gateway when the deploy service installs it, `default`
+otherwise, unless you set it on that Worker. The free daily allowance and top-up flow do not apply
+to it. Every new deploy
 installs it, and under the default mode, **Optional**, onboarding offers it switched on to every
 new user. On a public server, set it to **Disabled** in the admin Gatekeepers panel unless you
 accept that spend. A change applies to each workspace when it next opens; uninstalling the Worker

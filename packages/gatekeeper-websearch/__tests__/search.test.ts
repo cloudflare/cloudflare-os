@@ -23,8 +23,13 @@ function recorder() {
 
 const refuse = async () => { throw new Error("refused"); };
 
+// A gateway other than "default", so a test can tell the configured one was used.
+function env(websearch: WebSearch) {
+  return { AI: { websearch }, CF_AI_GATEWAY: "instance-ai" };
+}
+
 describe("search", () => {
-  it("searches the default gateway with the pinned provider and keeps only the result fields",
+  it("searches the configured gateway with the pinned provider and keeps only the result fields",
       async () => {
     const websearch = vi.fn(respond([{
       url: "https://developers.cloudflare.com/workers/",
@@ -34,10 +39,10 @@ describe("search", () => {
       faviconUrl: "https://developers.cloudflare.com/favicon.png",
     }]));
 
-    const results = await search({ websearch }, "workers docs", recorder().audit);
+    const results = await search(env(websearch), "workers docs", recorder().audit);
 
     expect(websearch).toHaveBeenCalledWith(
-        { gatewayId: "default", query: "workers docs", provider: "ceramic", limit: 10 });
+        { gatewayId: "instance-ai", query: "workers docs", provider: "ceramic", limit: 10 });
     expect(results).toEqual([{
       url: "https://developers.cloudflare.com/workers/",
       title: "Cloudflare Workers",
@@ -51,9 +56,9 @@ describe("search", () => {
     const { audit, descriptions } = recorder();
 
     for (const query of ["", "q".repeat(1025)]) {
-      await expect(search({ websearch }, query, audit)).rejects.toThrow("1 to 1024 characters");
+      await expect(search(env(websearch), query, audit)).rejects.toThrow("1 to 1024 characters");
     }
-    await search({ websearch }, "q".repeat(1024), audit);
+    await search(env(websearch), "q".repeat(1024), audit);
     expect(websearch).toHaveBeenCalledTimes(1);
     expect(descriptions).toHaveLength(1);
   });
@@ -61,7 +66,7 @@ describe("search", () => {
   it("records the exact query", async () => {
     const { audit, descriptions } = recorder();
 
-    await search({ websearch: respond([]) }, "`code` and **markdown**", audit);
+    await search(env(respond([])), "`code` and **markdown**", audit);
 
     expect(descriptions).toHaveLength(1);
     expect(descriptions[0]).toMatchObject({
@@ -72,7 +77,7 @@ describe("search", () => {
   it("sends nothing when the record is refused", async () => {
     const websearch = vi.fn(respond([]));
 
-    await expect(search({ websearch }, "q", refuse)).rejects.toThrow("refused");
+    await expect(search(env(websearch), "q", refuse)).rejects.toThrow("refused");
     expect(websearch).not.toHaveBeenCalled();
   });
 
@@ -84,13 +89,13 @@ describe("search", () => {
     ];
     for (const websearch of failures) {
       const { audit, descriptions } = recorder();
-      await expect(search({ websearch }, "q", audit)).rejects.toThrow();
+      await expect(search(env(websearch), "q", audit)).rejects.toThrow();
       expect(descriptions).toHaveLength(1);
     }
   });
 
   it("reports a failed search's status without the provider's body", async () => {
-    await expect(search({ websearch: insufficientCredits }, "q", recorder().audit))
+    await expect(search(env(insufficientCredits), "q", recorder().audit))
       .rejects.toThrow(/^Web search failed with HTTP 402\.$/);
   });
 });

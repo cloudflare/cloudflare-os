@@ -49,20 +49,20 @@
 
   <!-- Workers AI binding call -->
   <rect x="80" y="368" width="440" height="64" rx="10" fill="#FFF7ED" stroke="#F6821F" stroke-width="1.5"/>
-  <text x="300" y="395" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#334155" text-anchor="middle">env.AI.websearch({ gatewayId: "default",</text>
+  <text x="300" y="395" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#334155" text-anchor="middle">env.AI.websearch({ gatewayId: env.CF_AI_GATEWAY,</text>
   <text x="300" y="415" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" fill="#334155" text-anchor="middle">query, provider: "ceramic", limit: 10 })</text>
   <line x1="300" y1="432" x2="300" y2="454" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)"/>
 
   <!-- AI Gateway -->
   <rect x="80" y="456" width="440" height="56" rx="10" fill="#FFF7ED" stroke="#F6821F" stroke-width="1.5"/>
-  <text x="300" y="479" font-size="14" font-weight="600" fill="#C2410C" text-anchor="middle">AI Gateway "default"</text>
-  <text x="300" y="499" font-size="13" fill="#334155" text-anchor="middle">The deployment's account: logs the query, bills credits</text>
+  <text x="300" y="479" font-size="14" font-weight="600" fill="#C2410C" text-anchor="middle">The deployment's AI Gateway</text>
+  <text x="300" y="499" font-size="13" fill="#334155" text-anchor="middle">Logs the query; bills credits, or uses a stored Ceramic key</text>
   <line x1="300" y1="512" x2="300" y2="534" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)"/>
 
   <!-- Ceramic -->
   <rect x="80" y="536" width="440" height="56" rx="10" fill="#F5F3FF" stroke="#7C3AED" stroke-width="1.5"/>
   <text x="300" y="559" font-size="14" font-weight="600" fill="#6D28D9" text-anchor="middle">Ceramic.ai</text>
-  <text x="300" y="579" font-size="13" fill="#334155" text-anchor="middle">Search index, zero data retention</text>
+  <text x="300" y="579" font-size="13" fill="#334155" text-anchor="middle">Search index; zero data retention when billed to credits</text>
   <line x1="300" y1="592" x2="300" y2="622" stroke="#64748B" stroke-width="1.5" marker-end="url(#arrow)"/>
   <text x="310" y="612" font-size="12" fill="#64748B">Response</text>
 
