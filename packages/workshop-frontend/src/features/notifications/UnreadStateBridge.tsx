@@ -151,18 +151,20 @@ export const UnreadStateBridge = ({
           ),
       }}
     >
-      {failure?.api === authenticatedApi && (
-        <div
-          role="alert"
-          className="flex items-center justify-center gap-2 bg-kumo-danger-tint p-2 text-sm text-kumo-danger"
-        >
-          Couldn’t update read state. Please try again.
-          <Button size="xs" variant="ghost" onClick={() => setFailure(undefined)}>
-            Dismiss
-          </Button>
-        </div>
-      )}
-      {children}
+      <div className="flex h-full min-h-0 flex-col">
+        {failure?.api === authenticatedApi && (
+          <div
+            role="alert"
+            className="flex shrink-0 items-center justify-center gap-2 bg-kumo-danger-tint p-2 text-sm text-kumo-danger"
+          >
+            Couldn’t update read state. Please try again.
+            <Button size="xs" variant="ghost" onClick={() => setFailure(undefined)}>
+              Dismiss
+            </Button>
+          </div>
+        )}
+        <div className="min-h-0 flex-1">{children}</div>
+      </div>
     </UnreadContext.Provider>
   );
 };
