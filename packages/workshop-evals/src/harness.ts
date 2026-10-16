@@ -11,7 +11,7 @@ import { measureHistory, toTranscriptEvents } from "./transcript.js";
 import {
   addSkills, openLocalEvalTarget, type LocalEvalTarget, type LocalModelAccess,
 } from "./target.js";
-import { agentReplies, EvalVerifier } from "./verifier.js";
+import { EvalVerifier } from "./verifier.js";
 
 class EvalDeadlineError extends Error {}
 
@@ -104,8 +104,8 @@ export function createWorkshopHarness(
             });
             break;
           }
-          const replies = agentReplies(result.history, previousSequence);
-          const verifier = new EvalVerifier(opened.session, result.workpieces, replies);
+          const messages = result.history.filter(message => message.sequence > previousSequence);
+          const verifier = new EvalVerifier(opened.session, result.workpieces, messages);
           let checks: EvalCheck[];
           try {
             checks = await beforeDeadline(
@@ -174,7 +174,7 @@ export function createWorkshopHarness(
               throw error;
             }
 
-            const afterAccept = new EvalVerifier(session, result.workpieces, replies);
+            const afterAccept = new EvalVerifier(session, result.workpieces, messages);
             try {
               checks.push(...await beforeDeadline(
                   () => afterAccept.collect(verifyAfterAccept), verificationDeadline,
