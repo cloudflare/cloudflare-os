@@ -201,6 +201,8 @@ export const ChatComposer = ({
     }));
   };
   const [isSending, setIsSending] = useState(false);
+  // A pending Stop may hand steers back to the draft. That counts as an edit, so a send made
+  // meanwhile would not clear its own text: this composer sends nothing until the Stop returns.
   const [isStopping, setIsStopping] = useState(false);
   const [catalogVersion, setCatalogVersion] = useState(0);
   // The chat the "may not have been sent" hint belongs to; the render condition scopes it, and
@@ -453,7 +455,7 @@ export const ChatComposer = ({
   };
 
   const handleSend = async () => {
-    if (sendInFlightRef.current || isSending || isBlocked) return;
+    if (sendInFlightRef.current || isSending || isStopping || isBlocked) return;
     setSendHiccup(null);
     const attachmentsSnapshot = pendingAttachments;
     const readyAttachments = attachmentsSnapshot
@@ -661,11 +663,10 @@ export const ChatComposer = ({
   const hasUnreadyAttachment = pendingAttachments.some(
     (attachment) => attachment.uploadState !== "ready",
   );
-  const canSend = !isSending && !isAgentActive && !isBlocked &&
+  const canSend = !isSending && !isStopping && !isAgentActive && !isBlocked &&
     (inputValue.trim().length > 0 || selectedSlashCommand !== null || hasReadyAttachment) &&
     !hasUnreadyAttachment && !isCreatingResource;
-  // While the agent works, a plain message steers it (see ChatInterface's handleSend). Not while a
-  // Stop is pending: the steers it hands back would keep the send from clearing the draft.
+  // While the agent works, a plain message steers it (see ChatInterface's handleSend).
   const canSteer = isAgentActive && !isSending && !isStopping && !isBlocked &&
     inputValue.trim().length > 0 && selectedSlashCommand === null && capsules.length === 0 &&
     formatTokens.length === 0 && pendingAttachments.length === 0 && !isCreatingResource;
