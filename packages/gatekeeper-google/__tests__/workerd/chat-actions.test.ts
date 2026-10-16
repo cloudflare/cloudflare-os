@@ -105,6 +105,8 @@ function chatBackend() {
     namedMessages: new Map<string, string>(),
     /** Apply edits but lose their responses with this status until cleared. */
     editFailure: 0,
+    /** Answer edits with the plain `text` only, leaving `formattedText` to a later read. */
+    editsOmitFormattedText: false,
     /** Apply reaction writes but lose their responses with this status until cleared. */
     reactionFailure: 0,
     /** Post replies as new top-level threads, as Google would by ignoring the reply option. */
@@ -323,7 +325,8 @@ function chatBackend() {
         Object.assign(state.messages[index], storedText(state.storeText(text)));
         state.messages[index].lastUpdateTime = new Date().toISOString();
         if (state.editFailure) return json({}, state.editFailure);
-        return json(state.messages[index]);
+        const {formattedText: _omitted, ...plain} = state.messages[index];
+        return json(state.editsOmitFormattedText ? plain : state.messages[index]);
       }
       if (method === "DELETE") {
         if (state.repliesOn.has(name)) {
@@ -1078,6 +1081,23 @@ describe("Google Chat gatekeeper behaviors", () => {
     await chat.revertAction(1);
     expect(backend.state.edits.at(-1)?.text).toBe("Review <https://gitlab.example/mr/1|logfwdr> please");
     expect(backend.state.messages[0].text).toBe("Review logfwdr please");
+  });
+
+  it("follows Chat's stored markup when an edit's response carries only plain text", async () => {
+    const backend = chatBackend();
+    // Chat ends the markup with a newline the plain text lacks, as it does for some messages.
+    backend.state.storeText = text => text.endsWith("\n") ? text : `${text}\n`;
+    backend.state.editsOmitFormattedText = true;
+    backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using message = (await space.getMessage(messageName("root"))).message;
+    await message.edit("Merged <https://gitlab.example/mr/1|logfwdr>");
+    await message.edit("Shipped <https://gitlab.example/mr/1|logfwdr>");
+    await chat.applyAction(1);
+    await chat.applyAction(2);
+    await expect(chat.revertAction(2)).resolves.toBeUndefined();
+    expect(backend.state.messages[0].formattedText).toBe("Merged <https://gitlab.example/mr/1|logfwdr>\n");
   });
 
   it("lets an uncertain edit be rejected once its message is deleted", async () => {

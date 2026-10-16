@@ -194,15 +194,17 @@ and edit actions require their target post first and apply in submission order, 
 approval can otherwise run them out of order and an older edit would overwrite a newer one.
 Rejection rewinds the corresponding overlay; an edit targeting a rejected post cannot be
 applied. An edit refuses to overwrite text changed in Google Chat since it was queued, and later
-queued edits follow the form Chat stored earlier ones in, such as a mention rendered as `@Name`.
-Undoing an applied edit restores the previous provider text.
+queued edits follow the form Chat stored earlier ones in, such as a mention posted by email and
+stored as `<users/{id}>`. These checks compare a message's `formattedText`, the markup form that
+keeps link URLs and mentions, never its plain `text`. Undoing an applied edit restores the
+previous `formattedText`, links and mentions included.
 
 Sends are idempotent through Google's `requestId`, so a transient failure is retried and a
 retried apply returns the message the first attempt created rather than posting again. Google
 may then echo only the request, so every send re-reads the created message for its stored text
 and thread. A retried edit rewrites its
-text rather than checking for conflicts, since it cannot tell Chat's rendering of its own lost
-write from an outside edit. Reactions re-find their own state on retry, and a retried one keeps
+text rather than checking for conflicts, since it cannot tell its own lost write, in the form
+Chat stored it, from an outside edit. Reactions re-find their own state on retry, and a retried one keeps
 its undo, since the state it finds may be its own lost write. Undoing an edit is likewise safe to
 retry. An action whose write may have landed cannot be rejected, except once its target message
 is deleted, which leaves nothing it could have changed. A reply Google posts outside its thread,

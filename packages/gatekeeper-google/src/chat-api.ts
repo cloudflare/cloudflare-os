@@ -931,14 +931,15 @@ export class ChatApi {
       { method: "POST", body: JSON.stringify(body), idempotent: options.requestId !== undefined }));
   }
 
-  /** Returns the text as Chat stored it, in its markup. */
+  /** Returns the text as Chat stored it, in the `formattedText` form a later read compares against. */
   async updateMessageText(messageName: string, text: string): Promise<string> {
     const { spaceId, messageId } = chatMessageParts(messageName);
     const updated = await this.#request<ChatMessageRaw>(
       "messages.patch",
       `/spaces/${spaceId}/messages/${messageId}?updateMask=text`,
       { method: "PATCH", body: JSON.stringify({ text }), idempotent: true });
-    return updated.formattedText ?? updated.text ?? text;
+    // The plain `text` is no substitute: undo and queued edits compare this with `formattedText`.
+    return updated.formattedText ?? (await this.getMessage(messageName)).formattedText;
   }
 
   async deleteMessage(messageName: string): Promise<void> {
