@@ -1,0 +1,124 @@
+packages/workshop-frontend/src/features/chat/composer/ChatComposer.test.tsx
+  s_26cbe985980ef3::t_60f39726aeca18 74-85
+  s_26cbe985980ef3::t_0b3448eafa39fe 497-502,504-507,523
+  s_26cbe985980ef3::t_2a69650c38f43a 503
+  s_26cbe985980ef3::t_deb308126be1d2 13,413-417,446,458-464,496,508-522
+packages/gatekeeper-google/__tests__/drive-api.test.ts
+  s_26cbe985980ef3::t_9ebe63127b715f 1011,1022,1029,1060-1061,1067-1068,1071-1072,1078,1102,1104-1117,1151-1152,1156,1158,1160,1162-1166,1174,1182,1194
+  s_26cbe985980ef3::t_75fad27fab0cc8 63-66,1103
+packages/gatekeeper-google/src/drive-api.ts
+  s_26cbe985980ef3::t_9443272261b7c1 5-7,119-120,125-126,136-138,413-417,427,682-684,704,768-769,771-774,780-788,796,800,806
+  s_26cbe985980ef3::t_7fdb4f77293c47 685
+  s_26cbe985980ef3::t_06836d2c8d6d41 730-731,739,751
+packages/gatekeeper-google/src/configurator/google-sheets-configurator-ui.tsx
+  s_26cbe985980ef3::t_580f4b22ba3d8d 96,98-100,160-161
+  s_26cbe985980ef3::t_9b15fa4d8ee686 115-117,159,162
+  s_26cbe985980ef3::t_4710436e6503e7 37,42-43,59-62,79,86-91,93,108-111,158,192,245-248,260,269
+packages/workshop-frontend/src/BlueprintLandingPage.tsx
+  s_26cbe985980ef3::t_d0984d2f498f46 27,1519,1563,1566,1569,1608,1614,1620,1686-1688
+  s_26cbe985980ef3::t_2a1df1141859b8 1484-1486
+packages/workshop-frontend/src/components/CreationAccountModal.tsx
+  s_26cbe985980ef3::t_10139e1cc62c02 11,227-230
+  s_26cbe985980ef3::t_bd71d34b3eea6f 81-87
+packages/workshop-frontend/src/requestAccountResources.ts
+  s_26cbe985980ef3::t_4ac5e25f9521aa 1-6,11-21,23
+  s_26cbe985980ef3::t_9387eaa2fd3d8d 7-10,22
+scripts/build-gatekeeper-configurator.ts
+  s_26cbe985980ef3::t_e65bf15ce176be 111-117,137-139,143-144,199,203-211,654,676,682,690-695,718,732-733,735,748-762,767-772,1062,1064,1066
+  s_26cbe985980ef3::t_b54b5328e46f53 763-766
+  s_26cbe985980ef3::t_5c018bd456e3d5 140-142,645,651
+packages/configurator-ui/src/index.ts
+  s_26cbe985980ef3::t_3b1a83d977844d 169-172
+  s_26cbe985980ef3::t_d18a90e090c2b9 26,29-30
+  s_26cbe985980ef3::t_9387eaa2fd3d8d 27-28
+packages/gatekeeper-google/__tests__/configurator-office-flow.test.ts
+  s_26cbe985980ef3::t_7cf356bd037080 338,340,350-351
+  s_26cbe985980ef3::t_539371d4af7a34 241-273,359-379,437-439,479-529
+  s_26cbe985980ef3::t_4bbe483daa0774 530
+packages/workshop-frontend/src/components/CreationAccountModal.test.tsx
+  s_26cbe985980ef3::t_86f2a879f8d91f 111-113,129
+  s_26cbe985980ef3::t_786af69a52b8cf 317
+  s_26cbe985980ef3::t_7631b862db8e79 9,23-26,29-34,50,55,57-61,126-128,130,147,156,315-316,318-358
+  s_26cbe985980ef3::t_afd851f82e986e 359
+packages/gatekeeper-google/__tests__/office-conversion.test.ts
+  s_26cbe985980ef3::t_d4aa15785d9743 274-275
+  s_26cbe985980ef3::t_419b22ec9ada38 5-6,137-138,193,223,238-246,276-277,306,310,313-329,370-380,438-439,450,456-484
+  s_26cbe985980ef3::t_e75956ad5c0df3 485
+packages/workshop-shared/src/gatekeeper.ts
+  s_26cbe985980ef3::t_d18a90e090c2b9 426
+  s_26cbe985980ef3::t_9387eaa2fd3d8d 427-430
+packages/gatekeeper-google/__tests__/resources.test.ts
+  s_26cbe985980ef3::t_e4dfc4a883b797 9
+packages/gatekeeper-google/src/configurator/google-doc-configurator-ui.tsx
+  s_26cbe985980ef3::t_580f4b22ba3d8d 96,98-100,160-161
+  s_26cbe985980ef3::t_9b15fa4d8ee686 115-117,159,162
+  s_26cbe985980ef3::t_4710436e6503e7 37,42-43,59-62,79,86-91,93,108-111,158,192,245-248,260,269
+packages/workshop-frontend/src/features/chat/composer/useComposerResources.test.tsx
+  s_26cbe985980ef3::t_781d2487cc6a96 472-492
+packages/gatekeeper-google/__tests__/workerd/configurators.test.ts
+  s_26cbe985980ef3::t_aef42ccf62f94d 1-2,16,213-214,262,280-281,387-396,398-401,448-473,508-509,518,545,549-586,591
+  s_26cbe985980ef3::t_b79f36dbeeac8f 7,546,587-590
+  s_26cbe985980ef3::t_bd02c8f4c48a52 547-548
+  s_26cbe985980ef3::t_dd281f46d99e18 592
+scripts/build-gatekeeper-configurator.test.ts
+  s_26cbe985980ef3::t_cbb600bc5000d0 671
+  s_26cbe985980ef3::t_d567a1530d3265 575,577-579,581,584,586,606-617,634-670,672-697,699-702,704-711
+  s_26cbe985980ef3::t_e9a6af282439d3 698,703,712,723,725,730,739
+  s_26cbe985980ef3::t_fd5de86c57c2cd 713-722,724,726-729,731-738,740-745
+  s_26cbe985980ef3::t_66c91e2ed5104b 39,46,52-54,618-633
+  s_26cbe985980ef3::t_3c4fe163a02ddd 55,61-81,88,128,274-275,285
+packages/gatekeeper-cloudflare/__tests__/configurator-fields.test.ts
+  s_26cbe985980ef3::t_3f9d7b7afe9236 54
+packages/gatekeeper-google/src/office-conversion.ts
+  s_26cbe985980ef3::t_fabce90c6e8fc4 108-114,127-129,141-142,155-158,160,165,176,183-184,188-191,194,202,221,228,232-233,259-260,262-263
+packages/gatekeeper-google/src/configurator/google-slides-configurator-ui.tsx
+  s_26cbe985980ef3::t_580f4b22ba3d8d 96,98-100,160-161
+  s_26cbe985980ef3::t_4710436e6503e7 37,42-43,59-62,79,86-91,93,108-111,158,192,245-248,260,269
+  s_26cbe985980ef3::t_9b15fa4d8ee686 115-117,159,162
+packages/gatekeeper-slack/src/configurator/conversation-configurator-ui.test.ts
+  s_26cbe985980ef3::t_ddefcc5d4a8655 40
+packages/gatekeeper-google/src/resources.ts
+  s_26cbe985980ef3::t_807ae41fdbc0c6 624
+packages/gatekeeper-google/src/google-configurators.ts
+  s_26cbe985980ef3::t_7fdb4f77293c47 289,318,347
+packages/workshop-frontend/src/GatekeeperModal.tsx
+  s_26cbe985980ef3::t_bcdfcb2bbe2337 27,606,638,876-877
+  s_26cbe985980ef3::t_1b41cf8b8497f7 234-235
+packages/workshop-frontend/src/GatekeeperModal.test.tsx
+  s_26cbe985980ef3::t_afff5b93287476 260-262,267
+  s_26cbe985980ef3::t_d4aa15785d9743 117,119,123,133,138,324-340
+  s_26cbe985980ef3::t_ef012d60c810b5 341-342
+  s_26cbe985980ef3::t_7a0a90a0ffc42f 343
+packages/workshop-frontend/src/features/chat/composer/ChatComposer.tsx
+  s_26cbe985980ef3::t_e8445f8dfe08c1 281-282,379,381,384
+  s_26cbe985980ef3::t_0b3448eafa39fe 219-221,286,292,380,382-383,385
+  s_26cbe985980ef3::t_b1818f94f2ff2b 386
+packages/workshop-frontend/src/features/chat/composer/useComposerResources.ts
+  s_26cbe985980ef3::t_4824fb90ecce36 212,216,231
+  s_26cbe985980ef3::t_b39e7e92b64ae5 89-100
+packages/gatekeeper-google/README.md
+  s_26cbe985980ef3::t_7fdb4f77293c47 329
+  s_26cbe985980ef3::t_40c03cff08aec6 84,318,326-328
+packages/workshop-frontend/src/BlueprintLandingPage.test.tsx
+  s_26cbe985980ef3::t_456f65ce005378 197-205
+  s_26cbe985980ef3::t_a661070b59660a 12-13,18-19,22-30,45-62,196,206-257,259-296
+  s_26cbe985980ef3::t_10ab0396a21709 258
+packages/gatekeeper-google/__tests__/configurator-url.test.ts
+  s_26cbe985980ef3::t_f305a44ab26371 320,323-328
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e80298509df71c301e74be8cd159228dbf406de1",
+  "prompts": {},
+  "sessions": {
+    "s_26cbe985980ef3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3b4bf2e-39a8-4dfe-ac8e-27372e182258",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

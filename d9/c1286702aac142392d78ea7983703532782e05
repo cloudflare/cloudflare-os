@@ -1,0 +1,39 @@
+packages/workshop-frontend/src/BlueprintLandingPage.test.tsx
+  s_26cbe985980ef3::t_dca0563cb62994 12-13,23,34-35,37-40,57-61,79-80,82-84,97-101,273,602-648,650-664,666-702
+  s_26cbe985980ef3::t_e0a7212e55dcb7 36,70,601,649,665
+packages/workshop-frontend/src/BlueprintLandingPage.tsx
+  s_26cbe985980ef3::t_991ae0db7fbc1b 27,1569-1571,1608,1669,1672,1675,1714,1720,1726
+  s_26cbe985980ef3::t_83cae9db5649f7 1803-1806
+packages/workshop-frontend/src/GatekeeperModal.test.tsx
+  s_26cbe985980ef3::t_4c0f4e371ba1cc 8-12,17-23,28-30,33-34,44,49,52,57,60-66,96-97,101-127,132-133,136-139,143-144,156-162,166-171,227-397
+packages/workshop-frontend/src/GatekeeperModal.tsx
+  s_26cbe985980ef3::t_df1a1f01e760db 27,76-80,192,233-237,363,537-545,551,600-604,606,638,854,875-878
+packages/workshop-frontend/src/ResourceConfiguratorHost.tsx
+  s_26cbe985980ef3::t_ec5305e5762dca 13,25-26,42
+packages/workshop-frontend/src/SandboxedResourceConfigurator.test.tsx
+  s_26cbe985980ef3::t_341829536b87a6 1-108
+packages/workshop-frontend/src/SandboxedResourceConfigurator.tsx
+  s_26cbe985980ef3::t_3e247355bf18aa 24,32,65-77,85,93-97,130-131,252
+packages/workshop-frontend/src/components/CreationAccountModal.test.tsx
+  s_26cbe985980ef3::t_303e01310eefbd 9,23-26,29-34,50,55,57-61,111-113,126-130,147,156,315-359
+packages/workshop-frontend/src/components/CreationAccountModal.tsx
+  s_26cbe985980ef3::t_dc9ba83cbef327 11,81-87,227-230
+packages/workshop-frontend/src/requestAccountResources.ts
+  s_26cbe985980ef3::t_2d5d908a7bb7e6 1-23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d9c1286702aac142392d78ea7983703532782e05",
+  "prompts": {},
+  "sessions": {
+    "s_26cbe985980ef3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3b4bf2e-39a8-4dfe-ac8e-27372e182258",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

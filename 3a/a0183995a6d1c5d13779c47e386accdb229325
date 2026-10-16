@@ -1,0 +1,21 @@
+scripts/build-gatekeeper-configurator.test.ts
+  s_26cbe985980ef3::t_3c586c347adced 36-81,87-88,124-130,133,152,173-178,185,190,272-275,284-285,524-747
+scripts/build-gatekeeper-configurator.ts
+  s_26cbe985980ef3::t_a9c5d61a56afd9 111-117,137-144,153-154,198-199,201-217,252-255,645,651,654,675-696,705-706,718,722,732-733,735,748-772,883,1059-1067
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3aa0183995a6d1c5d13779c47e386accdb229325",
+  "prompts": {},
+  "sessions": {
+    "s_26cbe985980ef3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3b4bf2e-39a8-4dfe-ac8e-27372e182258",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,25 @@
+packages/configurator-ui/src/index.ts
+  s_26cbe985980ef3::t_e592e9c8cf23b0 25-32,167-187
+packages/gatekeeper-cloudflare/__tests__/configurator-fields.test.ts
+  s_26cbe985980ef3::t_b786bd65a0e79c 54
+packages/gatekeeper-slack/src/configurator/conversation-configurator-ui.test.ts
+  s_26cbe985980ef3::t_de16a8fb8da283 40
+packages/workshop-shared/src/gatekeeper.ts
+  s_26cbe985980ef3::t_a351142f02b2f9 423-432
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d38301dfd97bb72741bc724a537c889e576e3384",
+  "prompts": {},
+  "sessions": {
+    "s_26cbe985980ef3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3b4bf2e-39a8-4dfe-ac8e-27372e182258",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
