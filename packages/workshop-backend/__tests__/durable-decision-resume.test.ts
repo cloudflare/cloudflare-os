@@ -1,6 +1,7 @@
 import { env, type RpcStub } from "cloudflare:workers";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AiChatAuthorInfo, UserNotification } from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer";
 import { UserDurableObject } from "../src/user";
 import { openFakeOverseer } from "./fixtures";
@@ -73,7 +74,7 @@ function decide(impl: Impl, kind: Kind) {
   }
 }
 
-async function scenario(kind: Kind = "connection", active = false) {
+async function scenario(kind: Kind = "connection", active = false, initiator: AiChatAuthorInfo = USER) {
   const stub = env.TEST_OVERSEER.getByName(crypto.randomUUID());
   const user = env.TEST_USER.getByName(crypto.randomUUID());
   await runInDurableObject(user, instance => {
@@ -90,7 +91,7 @@ async function scenario(kind: Kind = "connection", active = false) {
     impl.addChatMessages(CHAT, USER, [{type: "message", message: "Do the work"}]);
     request(impl, kind);
     impl.storage.activeAgents.put({chatId: CHAT, modelId: MODEL.profile.id,
-      initiatorUserId: user.id.toString(), initiator: USER, callbackInitiated: false});
+      initiatorUserId: user.id.toString(), initiator, callbackInitiated: initiator.type === "gadget"});
   });
   return {stub, user, visit};
 }
@@ -118,6 +119,14 @@ function modelLookup(impl: Impl, lookup: () => Promise<{profile: typeof USER, ai
   impl.users = {idFromString: (id: string) => id,
     get: () => ({getChatContext: lookup, publishNotification: async () => {}})} as
       unknown as typeof impl.users;
+}
+
+function recordNotifications() {
+  const notifications: [string, UserNotification][] = [];
+  vi.spyOn(UserDurableObject.prototype, "publishNotification").mockImplementation(async function(notification) {
+    notifications.push([this.ctx.id.toString(), notification]);
+  });
+  return notifications;
 }
 
 describe("decision handoff using the existing execution row", () => {
@@ -301,20 +310,34 @@ describe("decision handoff using the existing execution row", () => {
     expect(requests()).toBe(1);
   });
 
-  it("keeps a pending pause idle across eviction, retaining its original authority", async () => {
-    const requests = inference(), s = await scenario("action", true);
-    await evictDurableObject(s.stub);
-    await s.visit(async impl => {
-      await impl.waitForAllAgentsToComplete();
-      expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
-      expect(impl.storage.activeAgents.get(CHAT)?.initiatorUserId).toBe(s.user.id.toString());
-      expect(await impl.ctx.storage.getAlarm()).toBeNull();
-    });
+  it.each([
+    {kind: "connection", initiator: USER},
+    {kind: "action", initiator: USER},
+    {kind: "connection", initiator: {type: "gadget", id: "source", name: "Source"}},
+  ] as const)("recovers a $kind pause from a $initiator.type turn and notifies its original caller",
+      async ({kind, initiator}) => {
+    const notifications = recordNotifications(), requests = inference();
+    const s = await scenario(kind, true, initiator);
+    // A second eviction of an already-idle pause must not announce it again.
+    for (let i = 0; i < 2; i++) {
+      await evictDurableObject(s.stub);
+      await s.visit(async impl => {
+        await impl.waitForAllAgentsToComplete();
+        expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+        expect(impl.storage.activeAgents.get(CHAT)?.initiatorUserId).toBe(s.user.id.toString());
+        expect(await impl.ctx.storage.getAlarm()).toBeNull();
+      });
+    }
+    await vi.waitFor(() => expect(notifications).toEqual([[s.user.id.toString(), expect.objectContaining({
+      kind: "permissionRequested", workspaceId: s.stub.id.toString(), chatId: CHAT, chatTitle: "Resume",
+    })]]));
     expect(requests()).toBe(0);
   });
 
-  it("finishes a committed final response after eviction without another model request", async () => {
-    const s = await scenario("connection", true), requests = inference();
+  it.each([USER, {type: "gadget" as const, id: "source", name: "Source"}])(
+      "recovers a $type turn's final response, notifying only a person, without inference", async initiator => {
+    const notifications = recordNotifications(), requests = inference();
+    const s = await scenario("connection", true, initiator);
     await s.visit(impl => {
       decide(impl, "connection");
       impl.addChatMessages(CHAT, MODEL.profile, [{type: "message", message: "Already done."}]);
@@ -328,6 +351,13 @@ describe("decision handoff using the existing execution row", () => {
         type: "message", message: "Already done.",
       }));
     });
+    if (initiator.type === "user") {
+      await vi.waitFor(() => expect(notifications).toEqual([[s.user.id.toString(), expect.objectContaining({
+        kind: "taskCompleted", workspaceId: s.stub.id.toString(), chatId: CHAT, chatTitle: "Resume",
+      })]]));
+    } else {
+      expect(notifications).toEqual([]);
+    }
     expect(requests()).toBe(0);
   });
 

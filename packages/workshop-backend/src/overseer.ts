@@ -1056,6 +1056,7 @@ class OverseerImpl implements AgentHooks {
         this.storage.chatMeta.put(meta);
       }
       this.#unregisterRunningAgent(record.chatId, !!wait);
+      this.#publishAgentTurnNotification(record.chatId, record.initiator, record.initiatorUserId);
       this.#finishAgentTurn(record.chatId);
       return;
     }
@@ -6839,23 +6840,7 @@ class OverseerImpl implements AgentHooks {
 
           if (finished && meta) {
             // Classified here, past the turn's last await, so a decision made as it ended counts.
-            let awaitingDecision = this.#awaitsDecision(chatId);
-            // Only a person waits on their own turn, including one their approval resumed: callbacks
-            // and spawned agents finish unattended.
-            if (awaitingDecision || initiator.type === "user") {
-              this.ctx.waitUntil(this.users.get(this.users.idFromString(initiatorUserId))
-                  .publishNotification({
-                    id: crypto.randomUUID(),
-                    kind: awaitingDecision ? "permissionRequested" : "taskCompleted",
-                    workspaceId: this.ctx.id.toString(),
-                    chatId,
-                    chatTitle: meta.title,
-                  }).catch(error => {
-                    turnLogger.warn("notification publish failed", {
-                      event: "notification.publish.failed", error,
-                    });
-                  }));
-            }
+            this.#publishAgentTurnNotification(chatId, initiator, initiatorUserId);
           }
 
           this.#finishAgentTurn(chatId);
@@ -8510,9 +8495,25 @@ class OverseerImpl implements AgentHooks {
     return result;
   }
 
-  // Whether the current turn is waiting for a decision (used by notifications).
-  #awaitsDecision(chatId: number): boolean {
-    return this.#decisionWait(chatId)?.pending ?? false;
+  // Normal teardown and recovery of a logged outcome notify the same original caller. Only a
+  // person waits on completion; callbacks and spawned agents notify only when permission is needed.
+  #publishAgentTurnNotification(chatId: number, initiator: AiChatAuthorInfo, initiatorUserId: string): void {
+    let meta = this.storage.chatMeta.get(chatId);
+    if (!meta) return;
+    let awaitingDecision = this.#decisionWait(chatId)?.pending ?? false;
+    if (!awaitingDecision && initiator.type !== "user") return;
+    this.ctx.waitUntil(this.users.get(this.users.idFromString(initiatorUserId))
+        .publishNotification({
+          id: crypto.randomUUID(),
+          kind: awaitingDecision ? "permissionRequested" : "taskCompleted",
+          workspaceId: this.ctx.id.toString(),
+          chatId,
+          chatTitle: meta.title,
+        }).catch(error => {
+          this.logger.warn("notification publish failed", {
+            event: "notification.publish.failed", chatId, error,
+          });
+        }));
   }
 
   // The log is the wait record. A nudge is the consumption boundary for a previous decision,
