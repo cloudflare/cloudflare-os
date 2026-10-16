@@ -68,7 +68,7 @@ The agent receives the `.d.ts` text **verbatim** (via the `types.txt` symlink), 
 
 Present the proposed `types.d.ts` and explain the design: what resource granularities are supported, what Session methods do, and what trade-offs were made. The API is the most important and delicate part of a gatekeeper — getting it wrong means rebuilding. Wait for the operator to review and approve (or request changes) before continuing.
 
-Also confirm the JSDoc follows [Documenting the API](#documenting-the-api-typesdts) — no approval-queue or implementation details leaked in.
+Also confirm the JSDoc follows [Documenting the API](#documenting-the-api-typesdts) — no approval-queue or implementation details leaked in, and run the [API review](#reviewing-a-gatekeeper) on your own design first.
 
 ### Step 4: Implement
 
@@ -329,6 +329,18 @@ Because the callback is a persistent stub tied to a session, the gatekeeper neve
 ### Documentation
 
 When defining a session interface with hooks, it's important to include comments that clearly state when a method expects to be passed a *persistent* stub created with `ctx.restore()`, as opposed to a regular RpcStub. The caller needs to do extra work to make sure the stub they provide you is persistent.
+
+## Reviewing a gatekeeper
+
+Reviews tend to stop at general correctness. The most important review is of the agent-facing API, so pressure-test it:
+
+- **Shape.** Read `types.d.ts` as the agent does, as its only documentation. Does the shape make sense? What would you do differently?
+- **User stories.** List the most common things a user would ask an agent to do with this service and walk each through the API. Flag any that are impossible, need sequential round trips that promise pipelining can't remove, or need knowledge the JSDoc doesn't give. Flag dead ends too: anything the grant includes that the agent can't navigate to, such as child pages it can list but not open.
+- **Seams.** Check that resource types, bindings and sessions partition authority along the lines users actually grant:
+  - Each `getSupportedResources()` granularity is a grant a user would make, and together they cover the common ones (broad and narrow).
+  - A narrow binding's session reaches nothing outside its resource: sub-resources come from stubs on their parent, and no method or option field (`parentId`, `projectId`) takes an ID that escapes the binding.
+  - Each method sits on the object whose authority it needs. A cross-resource operation (move, copy, link) must not quietly require, or grant, a broader binding than the user picked.
+  - Each binding's types expose only what that binding can do and stay small, and its observer strategy fits how the binding is partitioned (see [Choosing a strategy](#choosing-a-strategy-per-resource-type--binding)).
 
 ## Tips
 
