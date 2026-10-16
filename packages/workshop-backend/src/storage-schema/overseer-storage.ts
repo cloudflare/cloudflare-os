@@ -657,6 +657,13 @@ export type CompactionCheckpoint = {
   summary: string;
 
   /**
+   * The `compaction` block Anthropic returned when it wrote `summary`, as JSON (see
+   * anthropic-compaction.ts). Turns on a model that can read it send it unchanged in place of the
+   * summary message; other models get the summary text.
+   */
+  anthropicCompactionBlock?: string;
+
+  /**
    * The list of the workspace's gadgets that the system prompt shows after this checkpoint, built
    * when the chat compacted (see AiChatAgentContext.workspacePrompt). Absent on checkpoints of
    * spawned agents, whose prompt has no such list, and on checkpoints written before this field
