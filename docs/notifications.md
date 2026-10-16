@@ -62,11 +62,16 @@ time the signed-in app mounts (a WebSocket reconnect does not remount it) to req
 The SPA reports the outcome to `webkit.messageHandlers.cloudflareOSNotificationReady` as
 `{type: "ready"}` or `{type: "failed"}`.
 
-A browser registers as a device too, with its Web Push subscription as the registration; the
-backend advertises the service's VAPID public key to subscribe with as
-`ServerConfig.webPushPublicKey`. The service delivers to an endpoint only for its most recent
-registration, so when another account in the same browser profile registers it, the previous
-account's subscription stops working.
+A desktop browser registers as a device too, with its Web Push subscription as the registration.
+When the deployment advertises the service's VAPID public key (`ServerConfig.webPushPublicKey`), the
+profile page offers a "Browser notifications" switch. Turning it on asks for permission, registers
+`/sw.js`, subscribes with that key, and passes the endpoint and keys to `registerNotificationDevice`.
+The service delivers to an endpoint only for its most recent registration, so when another account
+in the same browser profile registers it, the previous account's subscription stops working. The
+browser remembers which user it subscribed for: each sign-in registers that user's subscription
+again, which renews it with the service, and unsubscribes one held for anyone else; signing out
+unsubscribes it. Phones and tablets never offer the switch, and neither does either native app, since
+the Cloudflare OS app pushes there.
 
 ## Delivery
 
@@ -89,6 +94,7 @@ flowchart LR
     APNS[APNs]
     App[Cloudflare OS app]
     WebPush[Browser push service]
+    Worker[Workshop service worker]
   end
 
   Agent -->|completed or needs permission| User
@@ -101,6 +107,7 @@ flowchart LR
   Delivery -->|fixed APNs template| APNS
   APNS --> App
   Delivery -->|encrypted Web Push| WebPush
+  WebPush --> Worker
 ```
 
 Only the event id, event type, task id (`<workspaceId>:<chatId>`), bounded chat title, opaque
@@ -116,7 +123,9 @@ started announce completion; callback turns, such as a schedule, and spawned age
 when they need the user's permission. A turn that an approval or accepted connection resumes
 belongs to whoever decided: it runs on their model and account, so its notifications go to them.
 The deep link opens the chat with `showChat`, which leaves full-screen preview and switches a phone
-showing the workspace's app to the chat.
+showing the workspace's app to the chat. The service worker shows a browser's push even with every
+Workshop tab closed; clicking it focuses the most recently used Workshop window and opens the chat
+there, or opens a new window.
 
 A user can mute a workspace, for a while or until they unmute it, from its menu in the sidebar, the
 workspace list, or the editor's menu on a phone. The mute lives on that workspace's record in the
@@ -135,4 +144,5 @@ The trusted deploy service injects these into the backend; the private key is a 
 - `NOTIFICATION_WEB_PUSH_PUBLIC_KEY` (the service's VAPID public key, base64url)
 
 Self-hosted deployments may omit them. In-tab notifications continue to work; native device
-registration fails and the SPA reports `{type: "failed"}` to the app.
+registration fails and the SPA reports `{type: "failed"}` to the app. Without
+`NOTIFICATION_WEB_PUSH_PUBLIC_KEY` the browser notification switch is hidden.
