@@ -24,7 +24,7 @@ vi.mock("../../AuthContext", () => ({
   useAuthenticatedApi: () => ({ authenticatedApi: { setWorkspaceNotificationMute: mock.setMute } }),
 }));
 const chat = { workspaceId: "workspace", chatId: 1, chatTitle: "Thread", latestSequence: 2,
-  readThroughSequence: 0, readEpoch: 0 };
+  readThroughSequence: 0, unreadMessageCount: 1, readEpoch: 0 };
 vi.mock("../../features/notifications/UnreadStateBridge", () => ({
   useUnreadState: () => ({ state: { chats: [chat] }, markManyRead: mock.markManyRead }),
 }));
@@ -55,8 +55,8 @@ it("gives workspace rows the nav width without reserving separate badge/action c
   const [nav, workspace] = host.querySelectorAll<HTMLAnchorElement>("a");
   const rect = (element: Element) => element.getBoundingClientRect();
   expect(rect(workspace).width).toBe(rect(nav).width);
-  const navBadge = nav.querySelector('[aria-label="1 unread thread"]')!;
-  const workspaceBadge = workspace.querySelector('[aria-label="1 unread thread"]')!;
+  const navBadge = nav.querySelector('[aria-label="1 unread message"]')!;
+  const workspaceBadge = workspace.querySelector('[aria-label="1 unread message"]')!;
   expect(Math.abs(rect(navBadge).right - rect(workspaceBadge).right)).toBeLessThanOrEqual(2);
   expect(rect(workspace.querySelector(".truncate")!).width).toBeGreaterThanOrEqual(160);
 

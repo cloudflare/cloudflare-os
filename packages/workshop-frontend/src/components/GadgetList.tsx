@@ -61,7 +61,7 @@ function AppRow({
   const renameInputRef = useRef<HTMLInputElement>(null)
   const unread = useUnreadState()
   const unreadChats = unread?.state?.chats.filter(chat =>
-    chat.workspaceId === gadget.id && chat.latestSequence > chat.readThroughSequence) ?? []
+    chat.workspaceId === gadget.id && chat.unreadMessageCount > 0) ?? []
 
   useEffect(() => {
     if (isRenaming) renameInputRef.current?.focus()
@@ -136,7 +136,7 @@ function AppRow({
         <Clock size={10} />
         {formatRelativeTime(gadget.lastActive)}
       </span>
-      <UnreadBadge count={unreadChats.length} />
+      <UnreadBadge count={unreadChats.reduce((count, chat) => count + chat.unreadMessageCount, 0)} />
 
       {/* Overflow menu — wrapper stops clicks from reaching the parent Link */}
       <div onClick={(e) => { e.stopPropagation(); e.preventDefault() }}>

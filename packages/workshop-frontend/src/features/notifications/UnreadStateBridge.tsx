@@ -72,6 +72,8 @@ export const UnreadStateBridge = ({
     let retryDelay = 1_000;
     const subscribe = () => {
       const currentGeneration = ++generation;
+      // Revisions are in-memory in the User DO; a reset starts a fresh subscription stream.
+      latest = undefined;
       const previous = subscription;
       subscription = undefined;
       previous?.[Symbol.dispose]();

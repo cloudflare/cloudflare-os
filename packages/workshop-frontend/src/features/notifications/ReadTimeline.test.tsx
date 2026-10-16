@@ -18,7 +18,7 @@ import { TimelineContext } from "./readTimelineContext";
 
 const snapshot = (revision = 1, readThroughSequence = -1, readEpoch = 0): UserUnreadState => ({
   revision,
-  unreadChatCount: readThroughSequence < 2 ? 1 : 0,
+  unreadChatCount: readThroughSequence < 2 ? 1 : 0, unreadMessageCount: readThroughSequence < 2 ? 1 : 0,
   chats: [
     {
       workspaceId: "workspace",
@@ -27,6 +27,7 @@ const snapshot = (revision = 1, readThroughSequence = -1, readEpoch = 0): UserUn
       latestSequence: 2,
       readThroughSequence,
       readEpoch,
+      unreadMessageCount: Math.max(0, 2 - readThroughSequence),
     },
   ],
 });
@@ -264,9 +265,9 @@ describe("timeline read/unread experience", () => {
       );
     };
     await render(<Badges />);
-    expect(container.querySelector('[aria-label="2 unread threads"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="2 unread messages"]')).not.toBeNull();
     await act(async () => container.querySelector("button")!.click());
-    expect(container.querySelector('[aria-label="2 unread threads"]')).toBeNull();
+    expect(container.querySelector('[aria-label="2 unread messages"]')).toBeNull();
   });
 
   it("places the divider after catalog gaps and marks unread from the selected visible item", async () => {

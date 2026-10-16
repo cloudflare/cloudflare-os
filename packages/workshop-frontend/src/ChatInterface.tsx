@@ -5431,7 +5431,7 @@ function ChatInterface({
                     {!isRenaming && (
                       <UnreadBadge count={(() => {
                         const state = readStateFor(chat.id);
-                        return state && state.latestSequence > state.readThroughSequence ? 1 : 0;
+                        return state?.unreadMessageCount ?? 0;
                       })()} />
                     )}
                     {!isRenaming && (

@@ -10,7 +10,7 @@ import { useUnreadPreviews } from "./useUnreadPreviews";
 export const UnreadThreads = () => {
   const unread = useUnreadState();
   const chats = (unread?.state?.chats ?? [])
-    .filter(chat => chat.latestSequence > chat.readThroughSequence)
+    .filter(chat => chat.unreadMessageCount > 0)
     .toSorted((a, b) => (b.latestActivityAt?.getTime() ?? 0) - (a.latestActivityAt?.getTime() ?? 0)
       || a.chatTitle.localeCompare(b.chatTitle) || a.workspaceId.localeCompare(b.workspaceId)
       || a.chatId - b.chatId);
@@ -71,7 +71,7 @@ export const UnreadThreads = () => {
                       {chat.latestActivityAt.toLocaleDateString(undefined, { month: "short", day: "numeric" })}
                     </time>
                   )}
-                  <UnreadBadge count={1} />
+                  <UnreadBadge count={chat.unreadMessageCount} />
                 </div>
               </Link>
             </li>

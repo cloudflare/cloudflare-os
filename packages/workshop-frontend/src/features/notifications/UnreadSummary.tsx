@@ -11,7 +11,7 @@ export const UnreadSummary = ({ collapsed }: { collapsed: boolean }) => {
       to="/unread"
       label="Unread threads"
       icon={<Chats size={14} weight="regular" />}
-      trailing={<UnreadBadge count={unread?.state?.unreadChatCount ?? 0} />}
+      trailing={<UnreadBadge count={unread?.state?.unreadMessageCount ?? 0} />}
       collapsed={collapsed}
     />
   );

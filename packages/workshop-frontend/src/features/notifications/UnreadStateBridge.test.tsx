@@ -14,12 +14,13 @@ import { reportVisibleChat } from "./visibleChat";
 
 const snapshot = (revision: number): UserUnreadState => ({
   revision,
-  unreadChatCount: 1,
+  unreadChatCount: 1, unreadMessageCount: 1,
   chats: [
     {
       workspaceId: "workspace-1",
       chatId: 1,
       chatTitle: "Demo",
+      unreadMessageCount: 1,
       latestSequence: revision,
       readThroughSequence: -1,
       readEpoch: 0,
@@ -159,15 +160,15 @@ describe("UnreadStateBridge", () => {
     await update(snapshot(3));
     await update(snapshot(2));
     await update(snapshot(3));
-    await update({ revision: 4, unreadChatCount: 0, chats: [] });
+    await update({ revision: 4, unreadChatCount: 0, unreadMessageCount: 0, chats: [] });
     expect(nativeUpdate).toHaveBeenCalledTimes(2);
-    expect(nativeUpdate).toHaveBeenLastCalledWith({ revision: 4, unreadChatCount: 0, chats: [] });
+    expect(nativeUpdate).toHaveBeenLastCalledWith({ revision: 4, unreadChatCount: 0, unreadMessageCount: 0, chats: [] });
   });
 
   it("re-subscribes after a User DO reset while hidden, but not after unmount", async () => {
     visibility("hidden");
     await render();
-    await update(snapshot(1));
+    await update(snapshot(9));
     await act(async () => subscribers[0][Symbol.dispose]());
     expect(subscribeToUnreadState).toHaveBeenCalledTimes(2);
     await update(snapshot(2));

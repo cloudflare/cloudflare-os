@@ -7,9 +7,9 @@ import { UnreadThreads } from "./UnreadThreads";
 import "../../styles.css";
 
 vi.mock("./UnreadStateBridge", () => ({
-  useUnreadState: () => ({ state: { revision: 1, unreadChatCount: 1, chats: [{
+  useUnreadState: () => ({ state: { revision: 1, unreadChatCount: 1, unreadMessageCount: 1, chats: [{
     workspaceId: "workspace", chatId: 1, chatTitle: "A long thread title that should truncate before the date",
-    latestSequence: 2, readThroughSequence: 0, readEpoch: 0,
+    latestSequence: 2, readThroughSequence: 0, unreadMessageCount: 1, readEpoch: 0,
     latestMessagePreview: "The latest message should stay underneath the thread title.",
     latestActivityAt: new Date("2026-10-13T12:00:00Z"),
   }] } }),
@@ -30,7 +30,7 @@ it("right-aligns the date above the unread badge at desktop and narrow widths", 
     host.style.width = `${width}px`;
     const row = host.querySelector("ul a")!;
     const date = rect(row.querySelector("time")!);
-    const badge = rect(row.querySelector('[aria-label="1 unread thread"]')!);
+    const badge = rect(row.querySelector('[aria-label="1 unread message"]')!);
     const title = rect(row.querySelector("h2")!);
     const preview = rect(row.querySelector("p")!);
     expect(Math.abs(date.right - badge.right)).toBeLessThanOrEqual(1);

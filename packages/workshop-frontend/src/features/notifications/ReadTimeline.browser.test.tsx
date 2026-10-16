@@ -53,7 +53,7 @@ it("keeps manual unread for the visit, then resumes viewport reading after leavi
   let subscriber: RpcStub<UnreadStateSubscriber> | undefined;
   let state: UserUnreadState = {
     revision: 1,
-    unreadChatCount: 1,
+    unreadChatCount: 1, unreadMessageCount: 1,
     chats: [
       {
         workspaceId: "workspace",
@@ -61,7 +61,7 @@ it("keeps manual unread for the visit, then resumes viewport reading after leavi
         chatTitle: "Browser timeline",
         latestSequence: 2,
         readThroughSequence: -1,
-        readEpoch: 0,
+        unreadMessageCount: 1, readEpoch: 0,
       },
     ],
   };
@@ -69,7 +69,7 @@ it("keeps manual unread for the visit, then resumes viewport reading after leavi
     state = {
       ...state,
       revision: state.revision + 1,
-      unreadChatCount: receipt.throughSequence === 2 ? 0 : 1,
+      unreadChatCount: receipt.throughSequence === 2 ? 0 : 1, unreadMessageCount: receipt.throughSequence === 2 ? 0 : 1,
       chats: [{ ...state.chats[0], readThroughSequence: receipt.throughSequence }],
     };
     await subscriber!.updated(state);
@@ -79,8 +79,8 @@ it("keeps manual unread for the visit, then resumes viewport reading after leavi
       state = {
         ...state,
         revision: state.revision + 1,
-        unreadChatCount: 1,
-        chats: [{ ...state.chats[0], readThroughSequence: from - 1, readEpoch: 1 }],
+        unreadChatCount: 1, unreadMessageCount: 1,
+        chats: [{ ...state.chats[0], readThroughSequence: from - 1, unreadMessageCount: 1, readEpoch: 1 }],
       };
       await subscriber!.updated(state);
     },

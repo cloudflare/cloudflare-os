@@ -44,7 +44,8 @@ export default function SidebarGadgetRow({
   const inputRef = useRef<HTMLInputElement>(null)
   const unread = useUnreadState()
   const unreadChats = unread?.state?.chats.filter(chat =>
-    chat.workspaceId === gadget.id && chat.latestSequence > chat.readThroughSequence) ?? []
+    chat.workspaceId === gadget.id && chat.unreadMessageCount > 0) ?? []
+  const unreadMessages = unreadChats.reduce((count, chat) => count + chat.unreadMessageCount, 0)
 
   useEffect(() => {
     if (renaming) inputRef.current?.focus()
@@ -77,7 +78,7 @@ export default function SidebarGadgetRow({
       <div className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-kumo-fill text-[10px] font-medium text-kumo-subtle">
         <span aria-hidden="true">{initials(gadget.title)}</span>
         {collapsed && unreadChats.length > 0 && <span
-          aria-label={`${unreadChats.length} unread threads`}
+          aria-label={`${unreadMessages} unread ${unreadMessages === 1 ? "message" : "messages"}`}
           className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-kumo-badge-blue" />}
       </div>
       {!collapsed && (
@@ -109,7 +110,7 @@ export default function SidebarGadgetRow({
             onClick={(e) => { e.stopPropagation(); e.preventDefault() }}>
             {/* Reuse the trailing slot: a hidden actions button must not squeeze the title/badge. */}
             <span className="pointer-events-none group-hover:invisible group-focus-within:invisible">
-              <UnreadBadge count={unreadChats.length} />
+              <UnreadBadge count={unreadMessages} />
             </span>
             <DropdownMenu>
               <DropdownMenu.Trigger
