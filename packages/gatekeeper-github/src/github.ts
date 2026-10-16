@@ -15,6 +15,7 @@ import {
   type GitCache,
   type GitOid,
   type GitPullHints,
+  type GitPullTransfer,
   type ObservationDescription,
   type ResourceConfiguratorFrame,
   type ResourceDescription,
@@ -71,11 +72,11 @@ import {
   isCommitOid,
   parseGitCommitPayload,
 } from "@gadgets/gatekeeper-kit/git-objects";
+import { startGitPull } from "@gadgets/gatekeeper-kit/git-pull-transfer";
 import {
   GitRefUpdateRejectedError,
   ZERO_OID,
   emptyPackBytes,
-  pullGitPack,
   pushGitRefUpdate,
   simulateBranchHead,
   validateBranchName,
@@ -3932,8 +3933,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
    * No new observation: the kernel only requests objects from previously observed commits.
    * Cache ingestion and native checkout share this path; credentials never enter the guest.
    */
-  async gitPull(oids: GitOid[], options: GitPullHints): Promise<ReadableStream<Uint8Array>> {
-    return this.#withApi(api => pullGitPack(
+  async gitPull(oids: GitOid[], options: GitPullHints): Promise<GitPullTransfer> {
+    return this.#withApi(api => startGitPull(
       body => api.fetchGitUploadPack(this.ctx.props.owner, this.ctx.props.repo, body), oids, options));
   }
 

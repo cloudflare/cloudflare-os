@@ -18,10 +18,12 @@ import {
   type GitCache,
   type GitOid,
   type GitPullHints,
+  type GitPullTransfer,
   type ResourceDescription,
   stripTrailingSlashes,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { ArrayCursor } from "@gadgets/gatekeeper-kit/cursors";
+import { startGitPull } from "@gadgets/gatekeeper-kit/git-pull-transfer";
 import {
   MAX_DIFF_BLOB_BYTES,
   changedPathsBetweenTrees,
@@ -36,7 +38,6 @@ import {
   GitRefUpdateRejectedError,
   ZERO_OID,
   emptyPackBytes,
-  pullGitPack,
   pushGitRefUpdate,
   simulateBranchHead,
 } from "@gadgets/gatekeeper-kit/git-transport";
@@ -2655,8 +2656,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * No new observation: the kernel only requests objects from previously observed commits.
    * Cache ingestion and native checkout share this path; credentials never enter the guest.
    */
-  async gitPull(oids: GitOid[], options: GitPullHints): Promise<ReadableStream<Uint8Array>> {
-    return this.#withApi(api => pullGitPack(
+  async gitPull(oids: GitOid[], options: GitPullHints): Promise<GitPullTransfer> {
+    return this.#withApi(api => startGitPull(
       body => api.fetchGitUploadPack(this.#projectPath(), body), oids, options));
   }
 

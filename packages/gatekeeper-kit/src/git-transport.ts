@@ -30,7 +30,7 @@
 // This module deliberately has no runtime imports beyond other Node-safe kit leaves (in particular
 // no `cloudflare:workers`), so its logic runs under the kit's Node vitest project.
 
-import type { GitOid, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
+import type { GitOid, GitPullHints, GitPullStatus } from "@gadgets/workshop-shared/gatekeeper";
 import { readBytesCapped, ResponseTooLargeError } from "./response-body";
 
 /** The `agent` capability sent with every request, mirroring the REST layer's User-Agent. */
@@ -266,20 +266,33 @@ const BAND_ERROR = 3;
  * the server's message; optional `maxBytes` bounds the raw body; a response
  * that ends without a flush-pkt, or without ever reaching a packfile section, is an error --
  * a truncated pack must never look like a short success.
+ * `onTerminal` records completion, cancellation, or failure in the producer before signaling
+ * it through the stream, whose exceptions Workers RPC may replace with a generic disconnect.
  */
 export function demuxGitFetchResponse(
   body: ReadableStream<Uint8Array>,
   maxBytes = Infinity,
+  onTerminal?: (status: GitPullStatus) => void,
 ): ReadableStream<Uint8Array> {
   let reader = body.getReader();
   let iterator = demuxPackData(reader, maxBytes);
   return new ReadableStream({
     async pull(controller) {
-      let next = await iterator.next();
-      if (next.done) controller.close();
-      else controller.enqueue(next.value);
+      try {
+        let next = await iterator.next();
+        if (next.done) {
+          onTerminal?.({state: "complete"});
+          controller.close();
+        } else {
+          controller.enqueue(next.value);
+        }
+      } catch (error) {
+        onTerminal?.({state: "failed", message: error instanceof Error ? error.message : String(error)});
+        throw error;
+      }
     },
     async cancel() {
+      onTerminal?.({state: "canceled"});
       // Interrupt an in-flight read before asking the generator to return.
       await reader.cancel().catch(() => {});
       await iterator.return(undefined);
@@ -347,7 +360,7 @@ async function* demuxPackData(
 // Pull driver
 
 /**
- * The whole of a `gitPull()`: compose the fetch command, POST it via the caller-supplied
+ * Compose the fetch command, POST it via the caller-supplied
  * transport (which owns the URL, auth, and HTTP-level error handling), strip the response's
  * protocol framing and return a backpressured raw pack stream. Consumers enforce their own
  * storage limits and verify the requested objects; full native checkouts bypass the DO cache.
@@ -356,6 +369,7 @@ export async function pullGitPack(
   fetchUploadPack: (requestBody: Uint8Array) => Promise<Response>,
   oids: GitOid[],
   hints: GitPullHints,
+  onTerminal?: (status: GitPullStatus) => void,
 ): Promise<ReadableStream<Uint8Array>> {
   let response = await fetchUploadPack(buildGitFetchRequest(oids, hints));
   if (!response.ok) {
@@ -367,7 +381,7 @@ export async function pullGitPack(
   if (response.body === null) {
     throw new Error("git fetch failed: response had no body");
   }
-  return demuxGitFetchResponse(response.body);
+  return demuxGitFetchResponse(response.body, Infinity, onTerminal);
 }
 
 // =======================================================================================

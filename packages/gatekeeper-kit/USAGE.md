@@ -884,9 +884,14 @@ pushes)`, the gatekeeper filtering the pushes to that branch; the same call give
 simulated diff and a provider diff read alike.
 
 Both lazy DO reads and native container hydration use `Gatekeeper.gitPull(oids, options)`.
-The provider composes a typed fetch with `git-transport.pullGitPack()` and returns a backpressured
-raw PACK stream, without buffering or base64 encoding. The DO feeds it to its bounded cache
-decoder; containers feed it directly to native Git without the DO cache's transfer limit.
+The provider composes a typed fetch with `git-pull-transfer.startGitPull()` and returns a transfer
+capability. Claim its backpressured raw PACK stream once with `stream()`, without buffering or
+base64 encoding. The DO feeds it to its bounded cache decoder; containers feed it directly to
+native Git without the DO cache's transfer limit. Workers RPC can replace a stream exception
+with a generic disconnect, so query `status()` after consumption fails to recover a producer
+error; if it has not failed, preserve the consumer's own error. After draining the stream,
+require `complete` before accepting the transfer. Cancel an unfinished stream and dispose the
+capability when done.
 The kernel chooses the advertised immutable commit, requests depth one with no tree/blob filters,
 and closes the bootstrap capability after hydration. No caller-supplied Git commands, ref
 discovery, arbitrary URLs, or provider credentials cross the bootstrap interface. Packs are

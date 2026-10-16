@@ -11,6 +11,7 @@ import { DurableObject, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type { RpcStub } from "cloudflare:workers";
 import type {
   ActionDescription, ConnectHandoff, GatekeeperConnectCallback, GatekeeperUser, GitCache, GitPullHints,
+  GitPullTransfer,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { GitLabAction } from "../../src/gitlab-action-types.js";
 import type { GitLabGatekeeperImpl } from "../../src/gitlab-gatekeeper.js";
@@ -307,7 +308,7 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   }
 
   async gitPull(facetName: string, props: GatekeeperProps, oids: string[], options: GitPullHints):
-      Promise<Outcome<ReadableStream<Uint8Array>>> {
+      Promise<Outcome<GitPullTransfer>> {
     return await outcome(() => this.#gatekeeper(facetName, props).gitPull(oids, options));
   }
 

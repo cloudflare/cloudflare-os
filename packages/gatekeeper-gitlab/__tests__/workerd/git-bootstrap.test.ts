@@ -1,4 +1,6 @@
 import { buildGitFetchRequest, FLUSH_PKT, encodePktLine } from "@gadgets/gatekeeper-kit/git-transport";
+import type { RpcStub } from "cloudflare:workers";
+import type { GitPullTransfer } from "@gadgets/workshop-shared/gatekeeper";
 import { env, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ACCESS, API, FakeGitLab, hooks, json, projectProps, seedAccount, tokenResponse, unwrap } from "./fake-gitlab";
@@ -15,8 +17,11 @@ const PACK = new Uint8Array([0, 255, 128, 80, 65, 67, 75, 13, 10]);
 
 const OPTIONS = {type: "commit", commitHistory: {kind: "depth", depth: 1}} as const;
 const request = () => buildGitFetchRequest([COMMIT], OPTIONS);
+const sideband = (band: number, payload: Uint8Array) => new Uint8Array([
+  ...new TextEncoder().encode((payload.length + 5).toString(16).padStart(4, "0")), band, ...payload,
+]);
 const packResponse = () => new Blob([
-  encodePktLine("packfile"), new Uint8Array([...new TextEncoder().encode((PACK.length + 5).toString(16).padStart(4, "0")), 1, ...PACK]), FLUSH_PKT,
+  encodePktLine("packfile"), sideband(1, PACK), FLUSH_PKT,
 ]);
 
 async function setup(name: string, resourceKind: GatekeeperProps["resourceKind"] = "project") {
@@ -30,8 +35,10 @@ describe("unified GitLab pack stream", () => {
   it.each(["project", "issue", "mergeRequest"] as const)("streams through the %s binding's own project", async kind => {
     const { gitlab, props, name } = await setup(`bootstrap-${kind}`, kind);
     const body = request();
-    const stream = await unwrap(await hooks().gitPull(name, props, [COMMIT], OPTIONS));
-    expect(new Uint8Array(await new Response(stream).arrayBuffer())).toEqual(PACK);
+    using transfer = await unwrap(await hooks().gitPull(
+      name, props, [COMMIT], OPTIONS)) as RpcStub<GitPullTransfer>;
+    expect(new Uint8Array(await new Response(await transfer.stream()).arrayBuffer())).toEqual(PACK);
+    expect(await transfer.status()).toEqual({state: "complete"});
     expect(gitlab.requests).toHaveLength(1);
     const upstream = gitlab.requests[0];
     expect(upstream.url.href).toBe(`${API}/${PROJECT}.git/git-upload-pack`);
@@ -50,21 +57,52 @@ describe("unified GitLab pack stream", () => {
       expect(gitlab.requests).toHaveLength(0);
     });
 
+  it.each([
+    {
+      name: "ERR",
+      body: () => new Blob([encodePktLine("ERR not our ref")]),
+      message: "git fetch failed: not our ref",
+    },
+    {
+      name: "sideband fatal",
+      body: () => new Blob([
+        encodePktLine("packfile"), sideband(1, PACK),
+        sideband(3, new TextEncoder().encode("fatal: the remote end hung up")),
+      ]),
+      message: "git fetch failed: fatal: the remote end hung up",
+    },
+    {
+      name: "truncated response",
+      body: () => new Blob([encodePktLine("packfile"), sideband(1, PACK)]),
+      message: "truncated git fetch response: missing final flush",
+    },
+  ])("retains a $name error across Workers RPC", async ({name: label, body, message}) => {
+    const {gitlab, props, name} = await setup(`bootstrap-error-${label}`);
+    gitlab.on("POST", ENDPOINT, () => new Response(body(), {headers: HEADERS}));
+    using transfer = await unwrap(await hooks().gitPull(
+      name, props, [COMMIT], OPTIONS)) as RpcStub<GitPullTransfer>;
+    await expect(new Response(await transfer.stream()).arrayBuffer()).rejects.toThrow();
+    expect(await transfer.status()).toEqual({state: "failed", message});
+  });
+
   it("returns an unfinished binary stream without collecting the entire pack", async () => {
     const { gitlab, props, name } = await setup("bootstrap-streaming");
     gitlab.on("POST", ENDPOINT, () => new Response(new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(encodePktLine("packfile"));
-        controller.enqueue(new Uint8Array([...new TextEncoder().encode((PACK.length + 5).toString(16).padStart(4, "0")), 1, ...PACK]));
+        controller.enqueue(sideband(1, PACK));
       },
       // Never finish the upstream response. A buffering implementation cannot return its first
       // chunk; cancellation must close it without touching a controller from another DO.
       pull() { return new Promise<void>(() => {}); },
     }), { headers: HEADERS }));
-    const stream = await unwrap(await hooks().gitPull(name, props, [COMMIT], OPTIONS));
-    const reader = stream.getReader();
+    using transfer = await unwrap(await hooks().gitPull(
+      name, props, [COMMIT], OPTIONS)) as RpcStub<GitPullTransfer>;
+    const reader = (await transfer.stream()).getReader();
     try {
+      await expect((async () => { await transfer.stream(); })()).rejects.toThrow("already claimed");
       expect(await reader.read()).toEqual({ done: false, value: PACK });
+      expect(await transfer.status()).toEqual({state: "streaming"});
     } finally {
       await reader.cancel();
       reader.releaseLock();
@@ -77,8 +115,9 @@ describe("unified GitLab pack stream", () => {
       .on("POST", ENDPOINT, () => new Response(packResponse(), { headers: HEADERS }));
     gitlab.install();
     const props = projectProps(await seedAccount({ expiresInMs: -1 }), PROJECT);
-    const stream = await unwrap(await hooks().gitPull("bootstrap-refresh", props, [COMMIT], OPTIONS));
-    expect(new Uint8Array(await new Response(stream).arrayBuffer())).toEqual(PACK);
+    using transfer = await unwrap(await hooks().gitPull(
+      "bootstrap-refresh", props, [COMMIT], OPTIONS)) as RpcStub<GitPullTransfer>;
+    expect(new Uint8Array(await new Response(await transfer.stream()).arrayBuffer())).toEqual(PACK);
     expect(gitlab.count("POST", /^\/oauth\/token$/)).toBe(1);
     const upstream = gitlab.requests.find(call => ENDPOINT.test(call.url.pathname))!;
     expect(upstream.headers.get("authorization")).toBe(`Basic ${btoa("oauth2:access-1")}`);
@@ -86,8 +125,9 @@ describe("unified GitLab pack stream", () => {
 
   it("rechecks account credentials after a prior successful bootstrap", async () => {
     const { gitlab, props, name } = await setup("bootstrap-revoked");
-    const stream = await unwrap(await hooks().gitPull(name, props, [COMMIT], OPTIONS));
-    await new Response(stream).arrayBuffer();
+    using transfer = await unwrap(await hooks().gitPull(
+      name, props, [COMMIT], OPTIONS)) as RpcStub<GitPullTransfer>;
+    await new Response(await transfer.stream()).arrayBuffer();
     await runInDurableObject(env.USER_ACCOUNT.get(env.USER_ACCOUNT.idFromString(props.userObjectId)),
       async (_instance, state) => { await state.storage.deleteAll(); });
     expect(await hooks().gitPull(name, props, [COMMIT], OPTIONS)).toHaveProperty("error");

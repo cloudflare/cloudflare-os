@@ -6,7 +6,7 @@
 // canonical empty pack, report-status parsing, the push driver's body composition, and the
 // branch-head simulation over queued ref updates.
 
-import type { GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
+import type { GitPullHints, GitPullStatus } from "@gadgets/workshop-shared/gatekeeper";
 import { describe, expect, it } from "vitest";
 import {
   DELIM_PKT,
@@ -258,27 +258,26 @@ function packfileResponse(options: { withSections?: boolean; progress?: boolean 
 
 describe("demuxGitFetchResponse", () => {
   it("yields exactly the band-1 payload bytes", async () => {
-    const pack = await collect(
-        demuxGitFetchResponse(streamOf(packfileResponse()), 64 << 20));
+    const pack = await collect(demuxGitFetchResponse(streamOf(packfileResponse())));
     expect(pack).toEqual(PACK_BYTES);
   });
 
   it("skips leading sections and progress frames", async () => {
     const pack = await collect(demuxGitFetchResponse(
-        streamOf(packfileResponse({ withSections: true, progress: true })), 64 << 20));
+        streamOf(packfileResponse({ withSections: true, progress: true }))));
     expect(pack).toEqual(PACK_BYTES);
   });
 
   it("parses across arbitrary chunk boundaries", async () => {
     const whole = concatBytes(packfileResponse({ withSections: true, progress: true }));
     const rechunked = [whole.subarray(0, 3), whole.subarray(3, 27), whole.subarray(27)];
-    const pack = await collect(demuxGitFetchResponse(streamOf(rechunked), 64 << 20));
+    const pack = await collect(demuxGitFetchResponse(streamOf(rechunked)));
     expect(pack).toEqual(PACK_BYTES);
   });
 
   it("fails the stream on an ERR pkt with the server's message", async () => {
     const response = [encodePktLine(`ERR upload-pack: not our ref ${oid(3)}`), FLUSH_PKT];
-    await expect(collect(demuxGitFetchResponse(streamOf(response), 64 << 20)))
+    await expect(collect(demuxGitFetchResponse(streamOf(response))))
       .rejects.toThrow(`git fetch failed: upload-pack: not our ref ${oid(3)}`);
   });
 
@@ -288,19 +287,19 @@ describe("demuxGitFetchResponse", () => {
       sidebandPkt(1, PACK_BYTES.subarray(0, 4)),
       sidebandPkt(3, new TextEncoder().encode("fatal: the remote end hung up")),
     ];
-    await expect(collect(demuxGitFetchResponse(streamOf(response), 64 << 20)))
+    await expect(collect(demuxGitFetchResponse(streamOf(response))))
       .rejects.toThrow("git fetch failed: fatal: the remote end hung up");
   });
 
   it("rejects a response that ends without a flush", async () => {
     const truncated = packfileResponse().slice(0, -1);
-    await expect(collect(demuxGitFetchResponse(streamOf(truncated), 64 << 20)))
+    await expect(collect(demuxGitFetchResponse(streamOf(truncated))))
       .rejects.toThrow(/missing final flush/);
   });
 
   it("rejects a response with no packfile section", async () => {
     const response = [encodePktLine("acknowledgments"), encodePktLine("NAK"), FLUSH_PKT];
-    await expect(collect(demuxGitFetchResponse(streamOf(response), 64 << 20)))
+    await expect(collect(demuxGitFetchResponse(streamOf(response))))
       .rejects.toThrow(/no packfile section/);
   });
 
@@ -316,11 +315,13 @@ describe("pullGitPack", () => {
   const options: GitPullHints = { type: "commit", commitHistory: DEPTH_1 };
   it("composes typed options and returns raw binary pack bytes", async () => {
     const requests: Uint8Array[] = [];
+    let terminal: GitPullStatus | undefined;
     const pack = await pullGitPack(async body => {
       requests.push(body);
       return new Response(streamOf(packfileResponse()) as unknown as BodyInit);
-    }, [oid(1), oid(2)], options);
+    }, [oid(1), oid(2)], options, status => { terminal = status; });
     expect(await collect(pack)).toEqual(PACK_BYTES);
+    expect(terminal).toEqual({state: "complete"});
     expect(requestLines(requests[0])).toContain(`want ${oid(1)}`);
     expect(requestLines(requests[0])).toContain(`want ${oid(2)}`);
     expect(requestLines(requests[0]).some(line => line.startsWith("filter "))).toBe(false);
@@ -342,23 +343,27 @@ describe("pullGitPack", () => {
   });
   it("cancels an unfinished upstream when its consumer stops", async () => {
     let canceled = false;
+    let terminal: GitPullStatus | undefined;
     const pack = await pullGitPack(async () => new Response(new ReadableStream({
       start(c) {
         c.enqueue(encodePktLine("packfile"));
         c.enqueue(sidebandPkt(1, PACK_BYTES));
       },
       cancel() { canceled = true; },
-    }) as unknown as BodyInit), [oid(1)], options);
+    }) as unknown as BodyInit), [oid(1)], options, status => { terminal = status; });
     const reader = pack.getReader();
     expect((await reader.read()).value).toEqual(PACK_BYTES);
     await reader.cancel();
     expect(canceled).toBe(true);
+    expect(terminal).toEqual({state: "canceled"});
   });
   it("propagates upstream protocol failures while streaming", async () => {
+    let terminal: GitPullStatus | undefined;
     const pack = await pullGitPack(async () => new Response(streamOf([
       encodePktLine("ERR not our ref"), FLUSH_PKT,
-    ]) as unknown as BodyInit), [oid(1)], options);
+    ]) as unknown as BodyInit), [oid(1)], options, status => { terminal = status; });
     await expect(collect(pack)).rejects.toThrow("git fetch failed: not our ref");
+    expect(terminal).toEqual({state: "failed", message: "git fetch failed: not our ref"});
   });
   it("rejects non-OK responses and cancels their bodies", async () => {
     let canceled = false;

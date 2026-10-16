@@ -803,6 +803,19 @@ export interface GatekeeperUser extends WorkerEntrypoint {
  */
 export interface GatekeeperUserVerifier extends WorkerEntrypoint {}
 
+/** Status of a Git pack stream in its producing gatekeeper. */
+export type GitPullStatus =
+  | { state: "streaming" | "complete" | "canceled" }
+  | { state: "failed"; message: string };
+
+/** One-shot pack stream with an RPC-visible status independent of stream exceptions. */
+export interface GitPullTransfer extends RpcTarget {
+  /** Claim the raw PACK stream exactly once; consume it to EOF or cancel it. */
+  stream(): Promise<ReadableStream<Uint8Array>>;
+  /** Snapshot; a consumer that fails before end-of-stream may still see `streaming`. */
+  status(): Promise<GitPullStatus>;
+}
+
 /**
  * Interface exposed by a Gatekeeper instance implementing a specific resource binding on a
  * specific Gadget.
@@ -934,8 +947,12 @@ export interface Gatekeeper<Session> extends DurableObject {
    * * The object had been populated by this gatekeeper in the past, but was subsequently evicted
    *   from the cache.
    *
-   * Each requested object must be included or the stream must fail. A requested blob suppressed
-   * by `filterBlobSize` may be omitted; cache ingestion surfaces that as an oversized-file error.
+   * Each requested object must be included or the stream must fail. The returned RPC capability
+   * also reports the terminal status: Workers RPC can replace a stream's original exception with
+   * a generic disconnect, so consumers must check `status()` after ingestion fails to recover
+   * the producer's error. After draining the stream, require `complete` before accepting the
+   * transfer. Dispose the capability when finished. A requested blob suppressed by
+   * `filterBlobSize` may be omitted; cache ingestion surfaces that as an oversized-file error.
    *
    * With no filters, the pack must contain the complete trees and blobs for the requested
    * commits. This supports native Git hydration as well as lazy cache population. Consumers own
@@ -944,7 +961,7 @@ export interface Gatekeeper<Session> extends DurableObject {
    * If the gatekeeper ever uses `GitCache`, it MUST implement `gitPull()`. Otherwise, it can leave
    * the method unimplemented.
    */
-  gitPull?(oids: GitOid[], options: GitPullHints): Promise<ReadableStream<Uint8Array>>;
+  gitPull?(oids: GitOid[], options: GitPullHints): Promise<GitPullTransfer>;
 
   // ---------------------------------------------------------------------------
   // Callbacks invoked by the overseer to apply (or reject) actions that were previously queued
