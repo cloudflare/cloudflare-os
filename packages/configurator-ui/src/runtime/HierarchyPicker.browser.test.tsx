@@ -82,8 +82,9 @@ const render = async (props: Partial<HarnessProps> & { loadItems: LoadItems }) =
 };
 
 const list = () => page.getByRole("listbox");
-const option = (name: string) => page.getByRole("option", { name });
-const crumb = (name: string) => page.getByRole("navigation", { name: "Location" }).getByRole("button", { name });
+// Found by title alone: their accessible names add ", selected", and a row's its subtitle, meta or path.
+const option = (name: string) => page.getByRole("option", { name, exact: false });
+const crumb = (name: string) => page.getByRole("navigation", { name: "Location" }).getByRole("button", { name, exact: false });
 const crumbs = () => page.getByRole("navigation", { name: "Location" });
 
 afterEach(() => {
@@ -367,7 +368,7 @@ describe("search", () => {
     const search = page.getByRole("searchbox", { name: "Search Drive" });
 
     await userEvent.fill(search, "20");
-    await expect.element(option("2024")).toHaveTextContent("Reports / Archive");
+    await expect.element(option("2024")).toMatchTextContent("Reports / Archive");
     expect(loadItems).toHaveBeenLastCalledWith({ parentId: "drive", query: "20", cursor: null });
     // The query searched the open location; a listing or a search never selects.
     expect(onChange).not.toHaveBeenCalled();
@@ -375,7 +376,7 @@ describe("search", () => {
     await userEvent.click(option("2024"));
     expect(onChange).toHaveBeenLastCalledWith("2024", expect.objectContaining({ id: "2024" }));
     await expect.element(search).toHaveValue("");
-    await expect.element(crumbs()).toHaveTextContent(/^My DriveReportsArchive2024/);
+    await expect.element(crumbs()).toMatchTextContent(/^My DriveReportsArchive2024/);
     await expect.element(crumb("2024")).toHaveAttribute("aria-current", "location");
     // The breadcrumb renders before the effect that lists the new location runs.
     await expect.poll(() => loadItems.mock.lastCall?.[0])
@@ -392,10 +393,10 @@ describe("search", () => {
     const search = page.getByRole("searchbox", { name: "Search Drive" });
 
     await userEvent.fill(search, "loose");
-    await expect.element(option("Loose")).toHaveTextContent("Owned by Kim");
+    await expect.element(option("Loose")).toMatchTextContent("Owned by Kim");
     await userEvent.click(option("Loose"));
     expect(onChange).toHaveBeenLastCalledWith("loose", expect.objectContaining({ id: "loose" }));
-    await expect.element(crumbs()).toHaveTextContent("My Drive…Loose");
+    await expect.element(crumbs()).toMatchTextContent("My Drive…Loose");
     await expect.element(list()).toHaveAccessibleName("Loose");
   });
 
