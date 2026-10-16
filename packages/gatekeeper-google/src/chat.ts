@@ -594,9 +594,9 @@ async function undo(api: ChatApi, self: ChatUser, info: ChatRevertInfo): Promise
       }
       return;
     case "updatedMessage": {
-      const { text } = await api.getMessage(info.messageName);
-      if (text === info.text) await api.updateMessageText(info.messageName, info.previousText);
-      else if (text !== info.previousText) {
+      const { formattedText } = await api.getMessage(info.messageName);
+      if (formattedText === info.text) await api.updateMessageText(info.messageName, info.previousText);
+      else if (formattedText !== info.previousText) {
         return {
           message: "This message was edited again after this change, so it can't be undone " +
             "automatically. Edit it in Google Chat.",
@@ -1197,12 +1197,12 @@ class ChatMessageImpl extends ChatRpcTarget implements ChatMessage {
     }
     await submitChatAction(this.ctx, {
       type: "updateMessage", messageName: current.id, spaceName: current.spaceId,
-      previousText: current.text, text: body, submittedAt: Date.now(),
+      previousText: current.formattedText, text: body, submittedAt: Date.now(),
     }, {
       title: `Edit a Google Chat message in ${current.spaceId}`,
       ...buildDescription(
         `Replace the text of message ${current.id}, sent by ${userLabel(current.sender)}.`)
-        .verbatim("Current", current.text)
+        .verbatim("Current", current.formattedText)
         .verbatim("New", body)
         .finish(),
       implementsRevert: true,
@@ -1689,7 +1689,7 @@ export class GoogleChatGatekeeperImpl
           throw error;
         }
         store.setSentMessage(actionId, created);
-        store.rebaseEdits(spaceName, created.id, action.text, created.text);
+        store.rebaseEdits(spaceName, created.id, action.text, created.formattedText);
         return { type: "sentMessage", messageName: created.id };
       }
       case "updateMessage": {
@@ -1699,7 +1699,7 @@ export class GoogleChatGatekeeperImpl
           other.type === "updateMessage" && other.messageName === target.committed);
         const current = await readTarget(target.committed);
         requireMessageInScope(scope, current);
-        let text = current.text;
+        let text = current.formattedText;
         if (text === action.text && !retried) return { type: "none" };
         if (text !== action.text) {
           // A retry can't tell Chat's rendering of its own lost write from an outside edit.

@@ -131,6 +131,7 @@ export function pendingMessageInfo(
     ...(threadName !== undefined ? { threadId: threadName } : {}),
     sender: self,
     text: action.text,
+    formattedText: action.text,
     mentions: [],
     createdAt: new Date(action.submittedAt),
     isReply: action.threadName !== undefined,
@@ -148,7 +149,9 @@ export function overlayMessage(
   let result = info;
   for (const { action } of pending) {
     if (action.type === "updateMessage" && action.messageName === info.id) {
-      result = { ...result, text: action.text, editedAt: new Date(action.submittedAt) };
+      result = {
+        ...result, text: action.text, formattedText: action.text, editedAt: new Date(action.submittedAt),
+      };
     }
   }
   return result;

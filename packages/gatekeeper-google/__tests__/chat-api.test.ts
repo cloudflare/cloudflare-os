@@ -212,6 +212,20 @@ describe("Chat response mapping", () => {
     }]);
   });
 
+  it("keeps a message's link URLs in formattedText, falling back to its plain text", () => {
+    const message = { name: "spaces/AAAA/messages/BBB", createTime: "2024-01-02T03:04:05Z" };
+    expect(chatMessageInfoFromRaw({
+      ...message,
+      text: "Review logfwdr (AIG-1646)",
+      formattedText: "Review <https://gitlab.example/mr/1|logfwdr> (<https://jira.example/AIG-1646|AIG-1646>)",
+    })).toMatchObject({
+      text: "Review logfwdr (AIG-1646)",
+      formattedText: "Review <https://gitlab.example/mr/1|logfwdr> (<https://jira.example/AIG-1646|AIG-1646>)",
+    });
+    expect(chatMessageInfoFromRaw({ ...message, text: "hello" }).formattedText).toBe("hello");
+    expect(chatMessageInfoFromRaw(message).formattedText).toBe("");
+  });
+
   it.each([
     ["SPACE", "THREADED_MESSAGES", true],
     ["SPACE", "GROUPED_MESSAGES", true],
