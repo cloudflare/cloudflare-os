@@ -87,9 +87,8 @@ const logger = createWorkshopLogger("workshop.git-cache");
 export const MAX_GIT_OBJECT_SIZE = 8_000_000;
 
 /**
- * Maximum byte size of a packfile accepted by `consumePack()` (matching the transfer-size
- * limiter gatekeepers are expected to apply to fetch bodies), and the hard per-object
- * inflation bound while decoding one.
+ * Maximum packfile size and per-object inflation bound when the DO cache decodes a pack.
+ * Native consumers bypass the cache and set their own limits.
  */
 export const MAX_GIT_PACK_BYTES = 64 << 20;
 

@@ -25,6 +25,13 @@ class GitPullTransferImpl extends RpcTarget implements GitPullTransfer {
   async status(): Promise<GitPullStatus> {
     return this.#status();
   }
+
+  [Symbol.dispose](): void {
+    // Once claimed, the consumer owns cancellation independently of this status capability.
+    const pack = this.#pack;
+    this.#pack = undefined;
+    pack?.cancel().catch(() => {});
+  }
 }
 
 /** Start a provider-neutral fetch without buffering the pack or exposing transport credentials. */
