@@ -1230,10 +1230,21 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
 
     collections: {
       // Only established build-role readers receive chat metadata. Reverified before delivery.
-      unreadReaders: collection<{userId: string; profileId: string}>()({primaryKey: "userId"}),
+      unreadReaders: collection<{
+        userId: string; profileId: string; timelineVersion?: number;
+      }>()({primaryKey: "userId"}),
+      // One latest-change watermark per thread, including tombstones. No message text is copied.
+      chatTimelineChanges: collection<{chatId: number; version: number}>()({
+        primaryKey: "chatId",
+        // Versions are globally unique. A unique index also avoids opening a child KV iterator
+        // when a subscriber updates this record inside another collection's scan.
+        uniqueIndexes: {byVersion: (record: {version: number}) => record.version},
+      }),
       chatTimelineOutbox: collection<{
         sequence: number;
         userId: string;
+        /** Last acknowledged source version; absent means an initial full catch-up. */
+        afterVersion?: number;
       }>()({ primaryKey: "userId" }),
       // READ-ONLY LEGACY: the pre-git-storage incremental code log, tightly-packed from version 1
       // (there's no entry for version 0, the starting empty state). Nothing writes it anymore --

@@ -209,7 +209,7 @@ export interface NotificationSubscriber extends RpcTarget {
   notify(notification: UserNotification): Promise<void>;
 }
 
-/** One user's durable position in a thread's ordered timeline, including read threads. */
+/** One user's durable horizon joined with a rebuildable thread head and message count. */
 export type ChatReadState = {
   /** Workspace containing the thread. */
   workspaceId: string;
@@ -217,11 +217,13 @@ export type ChatReadState = {
   chatId: number;
   /** Current thread title. */
   chatTitle: string;
-  /** Last persisted timeline sequence; -1 for an empty thread. */
+  /** Sequence of the latest visible text/attachment message; -1 if none. */
   latestSequence: number;
+  /** Number of unread visible text/attachment messages, excluding internal agent activity. */
+  unreadMessageCount: number;
   /** First nonempty line of the latest visible message, capped at 240 characters; empty for none. Absent on older servers. */
   latestMessagePreview?: string;
-  /** Time of the latest persisted timeline item; absent for empty threads or older servers. */
+  /** Time of the latest visible message; absent for empty threads or older servers. */
   latestActivityAt?: Date;
   /** Last read sequence, inclusive; -1 means nothing has been read. */
   readThroughSequence: number;
@@ -238,17 +240,19 @@ export type ChatReadReceipt = Pick<ChatReadState,
 
 /** Authoritative unread state for one user on one CFOS instance, shared across their devices. */
 export type UserUnreadState = {
-  /** Monotonically increasing revision, including reads and workspace removals. */
+  /** Increasing within a subscription session; a new subscription starts a fresh revision stream. */
   revision: number;
-  /** Number of threads whose latest sequence is beyond their read cursor. */
+  /** Number of threads with at least one unread visible message. */
   unreadChatCount: number;
+  /** Total unread visible messages across all tracked threads. */
+  unreadMessageCount: number;
   /** All tracked threads, including read threads; replaces the previous snapshot. */
   chats: ChatReadState[];
 };
 
 /** Callback used by `AuthenticatedApi.subscribeToUnreadState()`. */
 export interface UnreadStateSubscriber extends RpcTarget {
-  /** Receive the initial snapshot and subsequent changes; ignore older/equal revisions. */
+  /** Receive snapshots; ignore older/equal revisions within this subscription, not across reconnects. */
   updated(state: UserUnreadState): Promise<void>;
 }
 

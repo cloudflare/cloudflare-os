@@ -1,5 +1,5 @@
 import { RpcStub } from "capnweb";
-import type { ChatReadReceipt, UnreadStateSubscriber, UserUnreadState } from "@gadgets/workshop-shared/api";
+import type { ChatReadReceipt, ChatReadState, UnreadStateSubscriber, UserUnreadState } from "@gadgets/workshop-shared/api";
 import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
@@ -212,6 +212,18 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     super(ctx, env);
 
     this.storage = makeUserStorage(ctx.storage);
+    // Retire the unpublished prototype's denormalized heads, preserving its private horizons.
+    let legacyStates = [...this.storage.chatReadStates.list()];
+    for (let legacy of legacyStates) {
+      let {workspaceId, chatId, readThroughSequence, readEpoch} = legacy;
+      if (!this.storage.chatReadCursors.get(`${workspaceId}:${chatId}`)) {
+        this.storage.chatReadCursors.put({workspaceId, chatId, readThroughSequence, readEpoch});
+      }
+      this.storage.chatReadStates.deleteRecord(legacy);
+    }
+    for (let cursor of this.storage.chatReadCursors.list()) {
+      this.#readCursors.set(`${cursor.workspaceId}:${cursor.chatId}`, cursor);
+    }
     this.adminSettings = this.ctx.exports.AdminSettings;
 
     this.vendors = buildGatekeeperVendorMap(env);
@@ -505,22 +517,81 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.gadgets.put(record);
   }
 
-  /** Fetch unread state without causing an alert or read receipt. */
+  // Heads, previews, source fences and badge calculations are disposable. Only private horizons
+  // are written here; the workspace's log reconstructs everything else after normal DO eviction.
+  #chatTimelines = new Map<string, {version: number; heads: Map<number, ChatTimelineHead>}>();
+  #readMessageCounts = new Map<string, number>();
+  #readCursors = new Map<string, NonNullable<ReturnType<UserStorage["chatReadCursors"]["get"]>>>();
+  #timelineLoads = new Map<string, Promise<void>>();
+  #unreadRevision = 0;
+
+  /** Read a workspace through its existing build-role/observer authorization gate. */
+  async loadWorkspaceChats(workspaceId: string,
+      positions?: {chatId: number; sequence: number}[], chatIds?: number[]) {
+    let cursors = positions ?? [...this.#readCursors.values()].filter(cursor => cursor.workspaceId === workspaceId)
+        .map(cursor => ({chatId: cursor.chatId, sequence: cursor.readThroughSequence}));
+    return this.ctx.exports.OverseerDurableObject
+        .get(this.ctx.exports.OverseerDurableObject.idFromString(workspaceId))
+        .getChatTimelineForUser(this.ctx.id.toString(), this.storage.profile.get().id, cursors, chatIds);
+  }
+
+  #ensureWorkspaceChats(workspaceId: string): Promise<void> {
+    if (this.#chatTimelines.has(workspaceId)) return Promise.resolve();
+    let pending = this.#timelineLoads.get(workspaceId);
+    if (pending) return pending;
+    pending = (async () => {
+      let state = await this.loadWorkspaceChats(workspaceId);
+      let listing = this.storage.gadgets.get(workspaceId);
+      if (!listing || listing.role === "use") return;
+      if (!state) {
+        this.#forgetUnreadWorkspace(workspaceId);
+        this.#chatTimelines.set(workspaceId, {version: -1, heads: new Map()});
+        return;
+      }
+      this.#chatTimelines.set(workspaceId, {version: state.version,
+        heads: new Map(state.heads.map(head => [head.chatId, head]))});
+      for (let cursor of this.#readCursors.values()) {
+        if (cursor.workspaceId === workspaceId && !this.#chatTimelines.get(workspaceId)!.heads.has(cursor.chatId)) {
+          this.#forgetUnreadChat(workspaceId, cursor.chatId);
+        }
+      }
+      for (let head of state.heads) {
+        this.#readMessageCounts.set(`${workspaceId}:${head.chatId}`, head.readMessageCount ?? 0);
+      }
+      this.#unreadChanged();
+    })().finally(() => this.#timelineLoads.delete(workspaceId));
+    this.#timelineLoads.set(workspaceId, pending);
+    return pending;
+  }
+
+  /** Fetch unread state without causing an alert or read receipt. Rebuild after eviction. */
   async getUnreadState(): Promise<UserUnreadState> {
+    let workspaces = [...this.storage.gadgets.list()].filter(workspace => workspace.role !== "use");
+    await Promise.all(workspaces.map(workspace => this.#ensureWorkspaceChats(workspace.id)));
     return this.#unreadSnapshot();
   }
 
   #unreadSnapshot(): UserUnreadState {
-    let chats = [...this.storage.chatReadStates.list()].filter(chat => {
-      let workspace = this.storage.gadgets.get(chat.workspaceId);
-      return workspace && workspace.role !== "use";
-    });
-    let unreadChatCount = chats.filter(chat => chat.latestSequence > chat.readThroughSequence).length;
-    return { revision: this.storage.unreadRevision.get(), unreadChatCount, chats };
+    let chats: ChatReadState[] = [];
+    for (let [workspaceId, timeline] of this.#chatTimelines) {
+      for (let head of timeline.heads.values()) {
+        let key = `${workspaceId}:${head.chatId}`;
+        let cursor = this.#readCursors.get(key);
+        let readThroughSequence = cursor?.readThroughSequence ?? head.initialReadThroughSequence ?? -1;
+        chats.push({workspaceId, chatId: head.chatId, chatTitle: head.chatTitle,
+          latestSequence: head.latestSequence, latestMessagePreview: head.latestMessagePreview,
+          latestActivityAt: head.latestActivityAt, readThroughSequence, readEpoch: cursor?.readEpoch ?? 0,
+          unreadMessageCount: Math.max(0, head.messageCount - (this.#readMessageCounts.get(key) ?? 0))});
+      }
+    }
+    return {revision: this.#unreadRevision, chats,
+      unreadChatCount: chats.filter(chat => chat.unreadMessageCount > 0).length,
+      unreadMessageCount: chats.reduce((count, chat) => count + chat.unreadMessageCount, 0)};
   }
 
-  /** Install the listener before sending its initial snapshot, avoiding a fetch/watch gap. */
+  /** Install only after reconstruction; there is no fetch/watch gap or false zero snapshot. */
   async subscribeToUnreadState(subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>> {
+    await this.getUnreadState();
     subscriber = subscriber.dup();
     let token = {};
     this.#unreadSubscribers.set(token, subscriber);
@@ -536,7 +607,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   #unreadChanged(): void {
-    this.storage.unreadRevision.put(this.storage.unreadRevision.get() + 1);
+    this.#unreadRevision++;
     let snapshot = this.#unreadSnapshot();
     for (let [token, subscriber] of this.#unreadSubscribers) {
       this.ctx.waitUntil(subscriber.updated(snapshot).catch(() => {
@@ -546,81 +617,133 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Replace a workspace's timeline index without replacing the user's read cursors. The durable
-   * workspace version fences delayed snapshots, including snapshots preceding a thread deletion.
+   * Apply latest-message updates for changed threads, not a workspace-wide snapshot per append.
+   * An omitted deletion list denotes an initial full catch-up. No arrival writes user storage.
    */
-  async syncWorkspaceChats(workspaceId: string, version: number, heads: ChatTimelineHead[]): Promise<void> {
-    let workspace = this.storage.gadgets.get(workspaceId);
-    if (!workspace || workspace.role === "use") return;
-    if ((this.storage.unreadWorkspaceVersions.get(workspaceId)?.version ?? -1) >= version) return;
-    let ids = new Set(heads.map(head => head.chatId));
-    let previous = [...this.storage.chatReadStates.byWorkspace.get(workspaceId)];
-    let changed = false;
-    for (let record of previous) {
-      if (!ids.has(record.chatId)) {
-        this.storage.chatReadStates.deleteRecord(record);
-        changed = true;
-      }
+  async syncWorkspaceChats(workspaceId: string, version: number, heads: ChatTimelineHead[],
+      deletedChatIds?: number[]): Promise<void> {
+    let listing = this.storage.gadgets.get(workspaceId);
+    if (!listing || listing.role === "use") return;
+    await this.#ensureWorkspaceChats(workspaceId);
+    // Access/listing may have changed while reconstruction awaited another DO.
+    listing = this.storage.gadgets.get(workspaceId);
+    if (!listing || listing.role === "use") return;
+    let timeline = this.#chatTimelines.get(workspaceId)!;
+    if (timeline.version >= version) return;
+    let removed = deletedChatIds ?? [...timeline.heads.keys()].filter(id => !heads.some(head => head.chatId === id));
+    for (let id of removed) {
+      timeline.heads.delete(id);
+      this.#forgetUnreadChat(workspaceId, id);
     }
     for (let head of heads) {
-      let old = this.storage.chatReadStates.get(`${workspaceId}:${head.chatId}`);
-      if (old?.chatTitle === head.chatTitle && old.latestSequence === head.latestSequence &&
-          old.latestMessagePreview === head.latestMessagePreview &&
-          old.latestActivityAt?.getTime() === head.latestActivityAt?.getTime()) continue;
-      let {initialReadThroughSequence, ...timeline} = head;
-      this.storage.chatReadStates.put({ ...timeline, workspaceId,
-        readThroughSequence: old?.readThroughSequence ?? initialReadThroughSequence ?? -1,
-        readEpoch: old?.readEpoch ?? 0 });
-      changed = true;
+      let key = `${workspaceId}:${head.chatId}`;
+      if (!timeline.heads.has(head.chatId)) this.#readMessageCounts.set(key, head.readMessageCount ?? 0);
+      timeline.heads.set(head.chatId, head);
     }
-    this.storage.unreadWorkspaceVersions.put({ workspaceId, version });
-    if (changed) this.#unreadChanged();
+    timeline.version = version;
+    if (heads.length || removed.length) this.#unreadChanged();
   }
 
-  /** Advance a cursor, never clearing activity beyond what the client observed. */
+  /** Advance one private horizon, never activity beyond the client's observed boundary. */
   async markChatRead(receipt: ChatReadReceipt): Promise<void> {
     await this.markChatsRead([receipt]);
   }
 
-  /** Apply a snapshot-fenced workspace/all-read command atomically. */
+  /** Resolve sparse timeline positions before atomically applying this user's observed horizons. */
   async markChatsRead(receipts: ChatReadReceipt[]): Promise<void> {
-    for (let {throughSequence} of receipts) {
-      if (!Number.isSafeInteger(throughSequence) || throughSequence < -1) {
-        throw new Error("Invalid timeline sequence.");
-      }
-    }
+    if (receipts.some(receipt => !Number.isSafeInteger(receipt.throughSequence) ||
+        receipt.throughSequence < -1)) throw new Error("Invalid timeline sequence.");
+    let resolved = await Promise.all([...Map.groupBy(receipts, receipt => receipt.workspaceId)]
+        .map(async ([workspaceId, group]) => {
+          if (!this.storage.gadgets.get(workspaceId) || this.storage.gadgets.get(workspaceId)?.role === "use") return [];
+          await this.#ensureWorkspaceChats(workspaceId);
+          let heads = this.#chatTimelines.get(workspaceId)?.heads;
+          let perChat = new Map<number, ChatReadReceipt>();
+          for (let receipt of group) {
+            let head = heads?.get(receipt.chatId);
+            let epoch = this.#readCursors.get(`${workspaceId}:${receipt.chatId}`)?.readEpoch ?? 0;
+            if (!head || receipt.readEpoch !== epoch) continue;
+            let throughSequence = Math.min(receipt.throughSequence, head.latestSequence);
+            if (throughSequence > (perChat.get(receipt.chatId)?.throughSequence ?? -2)) {
+              perChat.set(receipt.chatId, {...receipt, throughSequence});
+            }
+          }
+          let observed = [...perChat.values()];
+          if (!observed.length) return [];
+          // The usual viewport/all-read receipt is exactly the cached latest message: no RPC
+          // or extra storage writes are needed. Resolve only partial sparse-timeline horizons.
+          let local = observed.filter(receipt => receipt.throughSequence === heads!.get(receipt.chatId)!.latestSequence)
+              .map(receipt => ({receipt, readMessageCount: heads!.get(receipt.chatId)!.messageCount}));
+          let partial = observed.filter(receipt => receipt.throughSequence !== heads!.get(receipt.chatId)!.latestSequence);
+          if (!partial.length) return local;
+          let state = await this.loadWorkspaceChats(workspaceId,
+              partial.map(receipt => ({chatId: receipt.chatId, sequence: receipt.throughSequence})),
+              partial.map(receipt => receipt.chatId));
+          return [...local, ...partial.flatMap(receipt => {
+            let head = state?.heads.find(candidate => candidate.chatId === receipt.chatId);
+            return head ? [{receipt, readMessageCount: head.readMessageCount ?? 0}] : [];
+          })];
+        }));
     let changed = false;
-    for (let {workspaceId, chatId, throughSequence, readEpoch} of receipts) {
-      let record = this.storage.chatReadStates.get(`${workspaceId}:${chatId}`);
-      if (!record || record.readEpoch !== readEpoch) continue;
-      let through = Math.min(throughSequence, record.latestSequence);
-      if (through <= record.readThroughSequence) continue;
-      this.storage.chatReadStates.put({...record, readThroughSequence: through});
+    for (let {receipt, readMessageCount} of resolved.flat()) {
+      let {workspaceId, chatId, throughSequence, readEpoch} = receipt;
+      let listing = this.storage.gadgets.get(workspaceId);
+      if (!listing || listing.role === "use" || !this.#chatTimelines.get(workspaceId)?.heads.has(chatId)) continue;
+      let key = `${workspaceId}:${chatId}`;
+      let old = this.#readCursors.get(key);
+      let baseline = this.#chatTimelines.get(workspaceId)!.heads.get(chatId)!.initialReadThroughSequence ?? -1;
+      if ((old?.readEpoch ?? 0) !== readEpoch || throughSequence <= (old?.readThroughSequence ?? baseline)) continue;
+      let cursor = {workspaceId, chatId, readThroughSequence: throughSequence, readEpoch};
+      this.storage.chatReadCursors.put(cursor);
+      this.#readCursors.set(key, cursor);
+      this.#readMessageCounts.set(key, readMessageCount);
       changed = true;
     }
     if (changed) this.#unreadChanged();
   }
 
-  /** Rewind once per observed epoch; a lost ACK or old device cannot undo a later read. */
+  /** Rewind once per observed epoch; stale devices and lost-ACK retries cannot undo later reads. */
   async markChatUnread(workspaceId: string, chatId: number, fromSequence: number,
                        readEpoch: number): Promise<void> {
-    let record = this.storage.chatReadStates.get(`${workspaceId}:${chatId}`);
-    if (!record || record.readEpoch !== readEpoch) return;
+    await this.#ensureWorkspaceChats(workspaceId);
+    let head = this.#chatTimelines.get(workspaceId)?.heads.get(chatId);
+    if (!head) return;
     if (!Number.isSafeInteger(fromSequence) || fromSequence < 0 ||
-        fromSequence > record.latestSequence) throw new Error("Invalid timeline sequence.");
-    this.storage.chatReadStates.put({...record, readThroughSequence: fromSequence - 1,
-      readEpoch: record.readEpoch + 1});
+        fromSequence > head.latestSequence) throw new Error("Invalid timeline sequence.");
+    let state = await this.loadWorkspaceChats(workspaceId, [{chatId, sequence: fromSequence - 1}], [chatId]);
+    let current = this.#readCursors.get(`${workspaceId}:${chatId}`);
+    let listing = this.storage.gadgets.get(workspaceId);
+    if (!state?.heads.length || !listing || listing.role === "use" ||
+        (current?.readEpoch ?? 0) !== readEpoch || !this.#chatTimelines.get(workspaceId)?.heads.has(chatId)) return;
+    let cursor = {workspaceId, chatId, readThroughSequence: fromSequence - 1, readEpoch: readEpoch + 1};
+    this.storage.chatReadCursors.put(cursor);
+    this.#readCursors.set(`${workspaceId}:${chatId}`, cursor);
+    this.#readMessageCounts.set(`${workspaceId}:${chatId}`, state.heads[0].readMessageCount ?? 0);
     this.#unreadChanged();
   }
 
-  /** Remove inaccessible timeline metadata while retaining the stale-delivery fence. */
+  /** Remove inaccessible cached heads and horizons. There is no persistent thread-view replica. */
   async forgetWorkspaceChats(workspaceId: string): Promise<void> {
     this.#forgetUnreadWorkspace(workspaceId);
   }
 
+  #forgetUnreadChat(workspaceId: string, chatId: number): void {
+    let key = `${workspaceId}:${chatId}`;
+    this.#readMessageCounts.delete(key);
+    this.storage.chatReadCursors.delete(key);
+    this.#readCursors.delete(key);
+  }
+
   #forgetUnreadWorkspace(workspaceId: string): void {
-    let hadChats = [...this.storage.chatReadStates.byWorkspace.get(workspaceId)].length > 0;
-    this.storage.chatReadStates.byWorkspace.delete(workspaceId);
+    let hadChats = !!this.#chatTimelines.get(workspaceId)?.heads.size;
+    this.#chatTimelines.delete(workspaceId);
+    this.storage.chatReadCursors.byWorkspace.delete(workspaceId);
+    for (let [key, cursor] of this.#readCursors) {
+      if (cursor.workspaceId === workspaceId) this.#readCursors.delete(key);
+    }
+    for (let key of this.#readMessageCounts.keys()) {
+      if (key.startsWith(workspaceId + ":")) this.#readMessageCounts.delete(key);
+    }
     if (hadChats) this.#unreadChanged();
   }
 

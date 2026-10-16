@@ -112,6 +112,57 @@ const setup = async () => {
 };
 
 describe("durable unread projection outbox", () => {
+  it("journals message deletions without invalidating the caller's open timeline iterator", async () => {
+    const {stub, recipientId} = await setup();
+    await withImpl(stub, async impl => {
+      await impl.deliverChatTimelines(true);
+      impl.storage.chats.put({chatId: 1, sequence: 2, timestamp: new Date(1),
+        author: {type: "agent", id: "test", name: "Test"}, type: "message", message: "Second"});
+      for (const message of impl.storage.chats.list()) impl.storage.chats.deleteRecord(message);
+      await impl.deliverChatTimelines(true);
+      expect((await impl.users.get(impl.users.idFromString(recipientId)).getUnreadState())
+        .unreadMessageCount).toBe(0);
+    });
+  });
+
+  it("fans out each append with only the changed thread's latest message and cumulative count", async () => {
+    const {stub, recipientId} = await setup();
+    await withImpl(stub, async impl => {
+      const ids = [recipientId, ...Array.from({length: 2}, () => impl.users.idFromName(crypto.randomUUID()).toString())];
+      for (const id of ids.slice(1)) {
+        await impl.users.get(impl.users.idFromString(id)).newGadget(impl.ctx.id.toString(), "Workspace");
+        impl.storage.unreadReaders.put({userId: id, profileId: id});
+      }
+      using _verify = vi.spyOn(impl, "authorizeCollaborator").mockResolvedValue("build");
+      impl.storage.chatMeta.put({id: 2, title: "Unchanged", started: new Date(), lastActive: new Date()});
+      impl.storage.chats.put({chatId: 2, sequence: 0, timestamp: new Date(1),
+        author: {type: "agent", id: "test", name: "Test"}, type: "message", message: "Other thread"});
+      await impl.deliverChatTimelines(true);
+      let sends = 0;
+      const dispatch = interceptDispatch(impl, async (user, args) => {
+        sends++;
+        expect(args[2]).toHaveLength(1);
+        expect(args[2][0]).toMatchObject({chatId: 1, latestMessagePreview: "x".repeat(240),
+          latestAuthor: {type: "agent", id: "test", name: "Test"}});
+        expect(args[3]).toEqual([]);
+        expect(JSON.stringify(args[2])).not.toContain("Other thread");
+        await user.syncWorkspaceChats(...args);
+      });
+      try {
+        for (let sequence = 2; sequence <= 4; sequence++) {
+          impl.storage.chats.put({chatId: 1, sequence, timestamp: new Date(100 + sequence),
+            author: {type: "agent", id: "test", name: "Test"}, type: "message", message: "x".repeat(500)});
+          await impl.deliverChatTimelines(true);
+          expect(sends).toBe((sequence - 1) * ids.length);
+          for (const id of ids) {
+            const state = await impl.users.get(impl.users.idFromString(id)).getUnreadState();
+            expect(state.chats.find(chat => chat.chatId === 1)?.unreadMessageCount).toBe(sequence);
+          }
+        }
+      } finally { dispatch.restore(); }
+    });
+  });
+
   it("projects only a bounded first line of visible text, skipping reasoning and command expansions", async () => {
     const { stub, recipientId } = await setup();
     await withImpl(stub, async (impl) => {
@@ -126,7 +177,8 @@ describe("durable unread projection outbox", () => {
       await impl.deliverChatTimelines(true);
       const user = impl.users.get(impl.users.idFromString(recipientId));
       expect((await user.getUnreadState()).chats[0]).toMatchObject({
-        latestMessagePreview: "x".repeat(240), latestActivityAt: new Date(+timestamp + 2), latestSequence: 4,
+        latestMessagePreview: "x".repeat(240), latestActivityAt: timestamp, latestSequence: 2,
+        unreadMessageCount: 2,
       });
       impl.storage.chats.put({ chatId: 1, sequence: 5, author, timestamp: new Date(+timestamp + 3),
         type: "message", message: "\n  Newest first line\r\nSecond line" });

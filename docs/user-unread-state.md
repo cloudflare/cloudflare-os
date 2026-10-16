@@ -5,10 +5,13 @@ updater and experimental Computer Operator.
 
 ## Semantics
 
-Each user has an inclusive read pointer into each thread's persisted, ordered timeline. A thread
-is unread when its latest sequence exceeds that pointer. Workspace and instance badges count
-unread **threads**, not messages or outstanding approvals. Reading a permission request does not
-approve it. Toast/push delivery neither creates nor clears read state.
+Each user has an inclusive read pointer into each thread's persisted, ordered timeline, and
+owns that pointer in their User DO. Thread, workspace and instance badges count unread **messages**,
+not outstanding approvals. A countable message is persisted visible text or an attachment; empty
+reasoning/tool-only entries, catalog changes and generated slash-command expansions do not count.
+Streaming tokens do not count separately. A turn can contain several countable messages; push
+policy is independent and may still notify once at turn completion. Reading a permission request
+does not approve it. Toast/push delivery neither creates nor clears read state.
 
 The pointer can advance partially, or rewind immediately before an individual rendered work
 item. Grouped work/tool runs are one rendered item; their hidden bookkeeping belongs to the same
@@ -31,7 +34,8 @@ type ChatReadState = {
   workspaceId: string;
   chatId: number;
   chatTitle: string;
-  latestSequence: number;      // -1 for an empty thread
+  latestSequence: number;      // latest countable message's timeline sequence, or -1
+  unreadMessageCount: number;  // actual visible messages after the horizon, not sequence subtraction
   latestMessagePreview?: string; // bounded first line of visible chat text
   latestActivityAt?: Date;
   readThroughSequence: number; // inclusive; -1 means nothing read
@@ -45,6 +49,7 @@ type ChatReadReceipt = Pick<ChatReadState, "workspaceId" | "chatId" | "readEpoch
 type UserUnreadState = {
   revision: number;
   unreadChatCount: number;
+  unreadMessageCount: number;
   chats: ChatReadState[]; // all tracked threads, including read ones
 };
 
@@ -61,10 +66,11 @@ markChatUnread(workspaceId: string, chatId: number, fromSequence: number,
 ```
 
 Subscribe directly: registration installs the listener before sending the initial full snapshot,
-avoiding a fetch/watch gap. Snapshots replace previous state; ignore older/equal revisions. Retain
+avoiding a fetch/watch gap. Snapshots replace previous state; ignore older/equal revisions within
+one subscription. Revisions are in-memory: start a fresh revision stream on resubscription. Retain
 the handle while hidden, until logout/shutdown. Resubscribe after transport/DO reset; the initial
 snapshot reconstructs missed changes. These callbacks are live hints backed by durable state, not
-a replayable alert log. Store watermarks per instance and authenticated user.
+a replayable alert log. Keep state scoped to the instance and authenticated user.
 
 Reads use the sequence actually observed, never a server-side "latest now". Workspace/all-read
 commands submit the boundaries from their observed snapshot, preserving activity that arrives
@@ -100,13 +106,29 @@ not acknowledge an alert. The underlying WebSocket reconnects independently of p
 
 ## Persistence and reset recovery
 
-The User DO owns cursors, manual-unread epochs, a global snapshot revision and per-workspace
-source-version fences. New source versions replace timeline heads without resetting read
-pointers. Equal/older versions are ignored, including delayed snapshots preceding a deletion.
-Unchanged public heads advance their source fence without generating redundant callbacks.
-The same journal carries a 240-character first-line preview and latest activity time. Reasoning,
-tool-only entries and internal slash-command expansions aren't preview text; previews are plain
-text, not rendered HTML. Preview edits update the projection without moving read cursors.
+The User DO persists only private consumption horizons (`workspaceId`, `chatId`,
+`readThroughSequence`, `readEpoch`) for this feature. It caches those horizons in memory, alongside
+latest heads, counts through each horizon, previews, source-version fences and subscription
+revisions. Message arrivals do not write user SQLite. Reading through the latest cached message
+requires only a horizon write; a partial read/rewind resolves its sparse sequence through the
+authorized workspace before writing. Badge calculation and snapshot construction are in-memory.
+The unpublished prototype's durable head rows are migrated to horizon-only rows on wake.
+
+A cold User DO fetches current heads and counts through its saved horizons from listed workspaces,
+using their build-role/observer authorization gate. An initial subscription sends no false zero
+while this is pending. Incoming updates join reconstruction, then apply only if their source
+version is newer. A cold rebuild reads the authoritative log, so lost deliveries, coalesced
+messages and stale retries cannot lose counts or resurrect an old head. Failures remain failures,
+not read receipts. There is deliberately no durable latest-message/thread-list replica in the
+User DO yet: cold startup depends on workspace availability.
+
+Normal fanout carries only each **changed thread's latest message**: its thread/title, latest
+sequence, cumulative countable-message count, author, timestamp and at most 240 characters of the
+first visible line. No earlier messages or unchanged thread heads are included. Source checkpoints
+and retry watermarks are durable in the workspace. Initial catch-up and cold reconstruction may
+read all heads; ordinary appends use an incremental in-memory source index. Sparse timeline
+sequences are never treated as message counts. Currently the audience is the workspace owner and
+established build collaborators; a future multiplayer thread-membership model can narrow it.
 
 The Overseer journals a dirty version in the same transaction as timeline writes. Typed-storage
 subscribers run **before** their write and may run inside an existing KV iterator: they must not
@@ -114,8 +136,8 @@ enumerate recipients or construct snapshots. A deferred drain reads committed st
 durable pending versions, and arms a fallback alarm before its first RPC. A constructor recovers
 persisted dirtiness if the source invocation was interrupted before fanout.
 
-Each recipient has one coalesced pending version. Delivery rechecks current authority, captures
-the committed head set and source version together, and awaits the User DO's durable receipt
+Each recipient has one coalesced pending version and last-acknowledged source checkpoint. Delivery
+rechecks current authority, captures changed heads and the source version together, and awaits ACK
 before deleting that version. Writes during an in-flight RPC remain dirty/pending and are drained
 again. A failed recipient stays queued without blocking other recipients or spinning in the same
 drain. Failures persist a 30-second retry deadline in the shared alarm. A lost response,
@@ -143,7 +165,7 @@ cloudflareOSNative.unreadStateChanged(state: UserUnreadState): void;
 
 `UnreadStateBridge` forwards every newer snapshot, including while hidden. The native host must
 associate it with its verified first-party main frame and saved instance/user, never a claimed
-instance or gadget frame. Use `unreadChatCount` for that instance, and sum authenticated instance
+instance or gadget frame. Use `unreadMessageCount` for that instance, and sum authenticated instance
 counts for an OS badge. A disconnect is stale/unknown, not zero; logout/removal clears that
 instance's native badge. Do not log chat titles.
 
@@ -158,8 +180,17 @@ cross-device updates, initial history baselines, user/role isolation, deletion, 
 history loading, reset resubscription and cleanup. Recovery tests exercise real DO eviction before
 dispatch, a lost ACK, and interruption after ACK before outbox cleanup, without repeating alerts.
 Deletion recovery covers those boundaries and interruption before workspace storage deletion.
+Tests also compare user storage before/after arrivals (no writes), check horizon-only writes for
+read-through-latest, sparse message counts, per-message multi-user fanout with unchanged threads
+excluded, cold reconstruction races, and real User/Overseer eviction without a persistent head cache.
 The integration test drives the real validated Cap'n Web API through two owner WebSocket sessions,
-a build collaborator and a use-only collaborator, including appends, rename and deletion.
+a build collaborator and a use-only collaborator, including appends, rename and deletion. It
+asserts per-message fanout through live subscriptions without polling/reopening the workspace:
+the same message updates both users' counts/previews, an observed partial read leaves later
+activity unread, and reading on the owner's second device never clears the collaborator's badge.
+Fault tests also keep the initial subscription pending during cold reconstruction, retry a failed
+rebuild without emitting a false-zero snapshot, and leave the horizon unchanged if a partial
+read's source count lookup fails.
 Chromium tests verify actual viewport geometry, focus, and pointer input for marking unread.
 
 Useful commands (workerd tests require local loopback sockets):

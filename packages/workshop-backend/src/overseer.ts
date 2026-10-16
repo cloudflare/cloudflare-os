@@ -1064,9 +1064,16 @@ class OverseerImpl implements AgentHooks {
             // the dirty version; read the committed timeline after the synchronous write finishes.
             // Capture version + heads together after authorization's awaits, never mix versions.
             let version = this.storage.chatTimelineVersion.get();
-            let heads = this.chatTimelineHeads();
-            await user.syncWorkspaceChats(this.ctx.id.toString(), version, heads);
-            // A lost ACK leaves the same sequence queued; the receiver durably deduplicates it.
+            let changed = record.afterVersion === undefined ? undefined :
+                [...this.storage.chatTimelineChanges.byVersion.list({startAfter: record.afterVersion})];
+            let ids = changed?.map(change => change.chatId);
+            let heads = this.chatTimelineHeads(ids);
+            let deleted = ids?.filter(id => !this.storage.chatMeta.get(id));
+            await user.syncWorkspaceChats(this.ctx.id.toString(), version, heads, deleted);
+            let reader = this.storage.unreadReaders.get(record.userId);
+            if (reader) this.storage.unreadReaders.put({...reader, timelineVersion: version});
+            // A lost ACK leaves this queued. The receiver fences duplicates against its source
+            // version, rebuilding that fence from this workspace's log after eviction.
             if ((this.storage.chatTimelineOutbox.get(record.userId)?.sequence ?? Infinity) <= version) {
               this.storage.chatTimelineOutbox.delete(record.userId);
             }
@@ -1099,9 +1106,12 @@ class OverseerImpl implements AgentHooks {
 
   // Storage subscribers must not list: their caller may already hold the DO's only KV iterator.
   // Journal dirtiness in the source transaction, then fan out and arm recovery before any RPC.
-  queueUnreadSnapshot(): void {
+  queueUnreadSnapshot(chatId?: number): void {
     if (!this.ownerId) return;
     this.storage.chatTimelineVersion.put(this.storage.chatTimelineVersion.get() + 1);
+    if (chatId !== undefined) this.storage.chatTimelineChanges.put({
+      chatId, version: this.storage.chatTimelineVersion.get(),
+    });
     this.storage.chatTimelineDirty.put(true);
     this.#scheduleTimelineDelivery();
   }
@@ -1126,40 +1136,64 @@ class OverseerImpl implements AgentHooks {
     let sequence = this.storage.chatTimelineVersion.get();
     for (let userId of new Set([this.ownerId,
         ...[...this.storage.unreadReaders.list()].map(reader => reader.userId)])) {
-      this.storage.chatTimelineOutbox.put({sequence, userId});
+      let pending = this.storage.chatTimelineOutbox.get(userId);
+      let reader = this.storage.unreadReaders.get(userId);
+      // Even the owner needs a delivery checkpoint, not a private read cursor in the workspace.
+      if (!reader) this.storage.unreadReaders.put({userId, profileId: this.ownerProfileId ?? ""});
+      this.storage.chatTimelineOutbox.put({sequence, userId,
+        afterVersion: pending ? pending.afterVersion : reader?.timelineVersion});
     }
     this.storage.chatTimelineDirty.put(false);
     this.#updateAlarm();
     return firstPending;
   }
 
-  chatTimelineHeads(): ChatTimelineHead[] {
+  #timelineCache = new Map<number, {
+    head: ChatTimelineHead; sequences: number[]; scannedThrough: number;
+  }>();
+
+  chatTimelineHeads(chatIds?: number[], positions: {chatId: number; sequence: number}[] = []): ChatTimelineHead[] {
     let baseline = this.storage.unreadBaseline.get();
-    return [...this.storage.chatMeta.list()].map(meta => {
-      let latestSequence = -1;
-      let latestActivityAt: Date | undefined;
-      let latestMessagePreview = "";
-      for (let msg of this.storage.chats.list({prefix: chatKeyPrefix(meta.id), reverse: true})) {
-        if (msg.type === "catalogChange") continue;
-        if (latestSequence < 0) {
-          latestSequence = msg.sequence;
-          latestActivityAt = msg.timestamp;
-        }
-        // Internal command expansions and reasoning/tool-only messages aren't visible chat text.
-        if (msg.type !== "message" || msg.generatedBySlashCommandSequence !== undefined) continue;
-        latestMessagePreview = msg.message.trim().split(/[\r\n]/, 1)[0].slice(0, 240);
-        if (!latestMessagePreview && msg.attachments?.length) latestMessagePreview = "Attachment";
-        if (latestMessagePreview) break;
+    let metas = chatIds ? chatIds.flatMap(id => this.storage.chatMeta.get(id) ?? []) :
+        [...this.storage.chatMeta.list()];
+    return metas.map(meta => {
+      let cached = this.#timelineCache.get(meta.id) ?? {
+        head: {chatId: meta.id, chatTitle: meta.title, latestSequence: -1,
+          latestMessagePreview: "", messageCount: 0}, sequences: [], scannedThrough: -1,
+      };
+      for (let msg of this.storage.chats.list({prefix: chatKeyPrefix(meta.id),
+          startAfter: cached.scannedThrough < 0 ? undefined : chatKey(meta.id, cached.scannedThrough)})) {
+        cached.scannedThrough = msg.sequence;
+        if (!this.#countableMessage(msg)) continue;
+        cached.sequences.push(msg.sequence);
+        cached.head = {chatId: meta.id, chatTitle: meta.title, latestSequence: msg.sequence,
+          messageCount: cached.sequences.length, latestActivityAt: msg.timestamp,
+          latestAuthor: msg.author,
+          latestMessagePreview: msg.type === "message"
+            ? msg.message.trim().split(/[\r\n]/, 1)[0].slice(0, 240) || "Attachment" : ""};
       }
-      return {chatId: meta.id, chatTitle: meta.title, latestSequence,
-        latestMessagePreview, latestActivityAt,
-        initialReadThroughSequence: baseline?.[meta.id] ?? -1};
+      this.#timelineCache.set(meta.id, cached);
+      let through = positions.find(position => position.chatId === meta.id)?.sequence ?? baseline?.[meta.id] ?? -1;
+      // A binary search works for sparse timeline sequences (tools/reasoning aren't messages).
+      let low = 0, high = cached.sequences.length;
+      while (low < high) {
+        let mid = (low + high) >>> 1;
+        if (cached.sequences[mid] <= through) low = mid + 1;
+        else high = mid;
+      }
+      return {...cached.head, chatTitle: meta.title,
+        initialReadThroughSequence: baseline?.[meta.id] ?? -1, readMessageCount: low};
     });
+  }
+
+  #countableMessage(msg: StoredChatMessage): boolean {
+    return msg.type === "message" && msg.generatedBySlashCommandSequence === undefined &&
+        (!!msg.message.trim() || !!msg.attachments?.length);
   }
 
   trackUnreadReader(userId: string, profileId: string): void {
     if (this.storage.deletingWorkspace.get()) return;
-    this.storage.unreadReaders.put({userId, profileId});
+    this.storage.unreadReaders.put({...this.storage.unreadReaders.get(userId), userId, profileId});
     this.queueUnreadSnapshot();
   }
 
@@ -1380,17 +1414,38 @@ class OverseerImpl implements AgentHooks {
     // (slash commands, reverts, errors), renames and deletion. Never derive unread from toasts.
     const invalidate = () => this.queueUnreadSnapshot();
     const subscriber = {add: invalidate, update: invalidate, remove: invalidate};
-    this.storage.chats.subscribe(subscriber);
+    this.storage.chats.subscribe({
+      add: msg => {
+        if (!this.#countableMessage(msg)) return;
+        if ((this.#timelineCache.get(msg.chatId)?.scannedThrough ?? -1) >= msg.sequence) {
+          this.#timelineCache.delete(msg.chatId);
+        }
+        this.queueUnreadSnapshot(msg.chatId);
+      },
+      update: (old, msg) => {
+        if (!this.#countableMessage(old) && !this.#countableMessage(msg)) return;
+        this.#timelineCache.delete(msg.chatId);
+        this.queueUnreadSnapshot(msg.chatId);
+      },
+      remove: msg => {
+        if (!this.#countableMessage(msg)) return;
+        this.#timelineCache.delete(msg.chatId);
+        this.queueUnreadSnapshot(msg.chatId);
+      },
+    });
     // Revocation cleanup must survive a reset before the best-effort listing refresh. Reuse the
     // projection journal; delivery reauthorizes readers even if no further chat activity occurs.
     this.storage.collaborators.subscribe(subscriber);
     this.storage.shareKeys.subscribe(subscriber);
     this.storage.chatMeta.subscribe({
-      add: () => this.queueUnreadSnapshot(),
+      add: meta => this.queueUnreadSnapshot(meta.id),
       update: (old, next) => {
-        if (old.title !== next.title) this.queueUnreadSnapshot();
+        if (old.title !== next.title) this.queueUnreadSnapshot(next.id);
       },
-      remove: () => this.queueUnreadSnapshot(),
+      remove: meta => {
+        this.#timelineCache.delete(meta.id);
+        this.queueUnreadSnapshot(meta.id);
+      },
     });
     // An interrupted source invocation may have persisted dirtiness but not fanned it out yet.
     if (this.storage.chatTimelineDirty.get() || this.storage.deletingWorkspace.get()) {
@@ -9952,6 +10007,20 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   async getOutputsForOwnerBackfill(ownerId: string): Promise<WorkspaceOutputEntry[] | null> {
     if (this.impl.ownerId !== ownerId) return null;
     return this.impl.outputsSnapshot();
+  }
+
+  /** Rebuild one user's disposable unread cache, or resolve a sparse timeline read boundary. */
+  async getChatTimelineForUser(userId: string, profileId: string,
+      positions: {chatId: number; sequence: number}[], chatIds?: number[])
+      : Promise<{version: number; heads: ChatTimelineHead[]} | null> {
+    if (!this.impl.ownerId || this.impl.storage.deletingWorkspace.get()) return null;
+    if (userId !== this.impl.ownerId && [...this.impl.storage.chatMeta.list({limit: 1})].length) {
+      let user = this.impl.users.get(this.impl.users.idFromString(userId));
+      if (await this.impl.authorizeCollaborator(profileId, user, {requireRole: "build"}) !== "build") return null;
+    }
+    if (!this.impl.ownerId || this.impl.storage.deletingWorkspace.get()) return null;
+    return {version: this.impl.storage.chatTimelineVersion.get(),
+      heads: this.impl.chatTimelineHeads(chatIds, positions)};
   }
 
   /**

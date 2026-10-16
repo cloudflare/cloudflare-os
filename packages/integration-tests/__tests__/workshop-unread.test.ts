@@ -78,6 +78,7 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
     return chat && chat.latestSequence >= 0 ? chat : null;
   });
   expect(initial.readThroughSequence).toBe(-1);
+  expect(initial.unreadMessageCount).toBe(1);
   expect(initial.latestMessagePreview).toBe("First persisted item");
   expect(initial.latestActivityAt).toBeInstanceOf(Date);
   await secondDevice.markChatRead(receipt(initial));
@@ -95,8 +96,9 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
     return chat && chat.latestSequence > initial.latestSequence ? chat : null;
   });
   expect(next.latestMessagePreview).toBe("Second persisted item");
+  expect(next.unreadMessageCount).toBe(1);
   await owner.markChatsRead([receipt(initial)]);
-  expect((await owner.getUnreadState()).unreadChatCount).toBe(1);
+  expect(await owner.getUnreadState()).toMatchObject({ unreadChatCount: 1, unreadMessageCount: 1 });
   await owner.markChatRead(receipt(next));
   await secondDevice.markChatUnread(workspaceId, chatId, initial.latestSequence, next.readEpoch);
   await owner.markChatRead(receipt(next)); // stale automatic read from the other device
@@ -104,6 +106,7 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
     first.state?.chats[0]?.readEpoch === 1 && second.state?.chats[0]?.readEpoch === 1 ? true : null,
   );
   expect(first.state?.chats[0]?.readThroughSequence).toBe(initial.latestSequence - 1);
+  expect(first.state?.unreadMessageCount).toBe(2);
 
   await workspace.addCollaborator(builderName, "build");
   await workspace.addCollaborator(viewerName, "use");
@@ -116,6 +119,40 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
   await builder.markChatsRead((await builder.getUnreadState()).chats.map(receipt));
   expect((await builder.getUnreadState()).unreadChatCount).toBe(0);
   expect((await owner.getUnreadState()).unreadChatCount).toBe(1);
+
+  const builderUpdates = new UnreadRecorder(), viewerUpdates = new UnreadRecorder();
+  using builderStub = stubFor(builderUpdates);
+  using viewerStub = stubFor(viewerUpdates);
+  using _builderUpdates = await builder.subscribeToUnreadState(builderStub);
+  using _viewerUpdates = await viewer.subscribeToUnreadState(viewerStub);
+  await waitFor("collaborators' initial snapshots", async () =>
+    builderUpdates.state?.unreadMessageCount === 0 && viewerUpdates.state?.chats.length === 0
+      ? true : null,
+  );
+
+  // No polling/reopening the workspace: ordinary message fanout must drive every user's badges.
+  await workspace.sendChatMessage(chatId, "Third persisted item\nNot part of the preview", null);
+  await waitFor("the same message reaching both users' live subscriptions", async () =>
+    first.state?.unreadMessageCount === 3 && second.state?.unreadMessageCount === 3 &&
+    builderUpdates.state?.unreadMessageCount === 1 ? true : null,
+  );
+  const third = first.state!.chats[0];
+  expect(third.latestMessagePreview).toBe("Third persisted item");
+  expect(builderUpdates.state!.chats[0]).toMatchObject({
+    latestSequence: third.latestSequence, latestMessagePreview: "Third persisted item",
+    readThroughSequence: next.latestSequence, unreadMessageCount: 1,
+  });
+  expect(viewerUpdates.state!.chats).toEqual([]);
+
+  await secondDevice.markChatRead({ ...receipt(next), readEpoch: third.readEpoch });
+  await waitFor("an observed partial read leaving the later message unread", async () =>
+    first.state?.unreadMessageCount === 1 && second.state?.unreadMessageCount === 1 ? true : null,
+  );
+  await owner.markChatRead(receipt(third));
+  await waitFor("the owner's read clearing both devices but not the collaborator", async () =>
+    first.state?.unreadMessageCount === 0 && second.state?.unreadMessageCount === 0 ? true : null,
+  );
+  expect(builderUpdates.state!.unreadMessageCount).toBe(1);
 
   await workspace.setChatTitle(chatId, "Renamed thread");
   await waitFor("the renamed unread thread", async () =>

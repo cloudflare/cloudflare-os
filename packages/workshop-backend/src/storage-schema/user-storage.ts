@@ -120,9 +120,15 @@ export type GadgetRecord = GadgetMetadata & {
   // GadgetMetadata).
 };
 
-/** Workspace-authoritative thread head, without any user read state. */
+/** Workspace-authoritative thread head, optionally joined with an ephemeral horizon-count lookup. */
 export type ChatTimelineHead = Pick<ChatReadState,
     "chatId" | "chatTitle" | "latestSequence" | "latestMessagePreview" | "latestActivityAt"> & {
+  /** Cumulative number of visible text/attachment messages, not internal timeline entries. */
+  messageCount: number;
+  /** Count through a requested or initial horizon; no user read state is stored in the workspace. */
+  readMessageCount?: number;
+  /** Author of the latest countable message, for user-owned notification policy. */
+  latestAuthor?: AiChatAuthorInfo;
   /** Existing history starts read on upgrade; new items start beyond this boundary. */
   initialReadThroughSequence?: number;
 };
@@ -164,6 +170,7 @@ export type CloudflareBilling = {
 export function makeUserStorage(storage: DurableObjectStorage) {
   return createTypedStorage(storage, {
     collections: {
+      // Read-only legacy schema, retained so the unpublished prototype's data can be retired.
       unreadWorkspaceVersions: collection<{workspaceId: string; version: number}>()({
         primaryKey: "workspaceId",
       }),
@@ -171,6 +178,14 @@ export function makeUserStorage(storage: DurableObjectStorage) {
         primaryKey: record => `${record.workspaceId}:${record.chatId}`,
         nonUniqueIndexes: {
           byWorkspace(record: ChatReadState) { return record.workspaceId; },
+        },
+      }),
+      // The only ongoing unread-state writes in this DO: one private consumption horizon per thread.
+      chatReadCursors: collection<Pick<ChatReadState,
+          "workspaceId" | "chatId" | "readThroughSequence" | "readEpoch">>()({
+        primaryKey: record => `${record.workspaceId}:${record.chatId}`,
+        nonUniqueIndexes: {
+          byWorkspace(record: {workspaceId: string}) { return record.workspaceId; },
         },
       }),
       aiModels: collection<UserAiModelRecord>()({

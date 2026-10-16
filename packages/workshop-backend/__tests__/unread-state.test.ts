@@ -2,243 +2,294 @@ import { env } from "cloudflare:workers";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "capnweb";
 import { describe, expect, it, vi } from "vitest";
-import type {
-  ChatReadState,
-  UnreadStateSubscriber,
-  UserUnreadState,
-} from "@gadgets/workshop-shared/api";
+import type { ChatReadState, UnreadStateSubscriber, UserUnreadState } from "@gadgets/workshop-shared/api";
 import type { UserDurableObject } from "../src/user.js";
+import type { OverseerDurableObject } from "../src/overseer.js";
+import { makeUserStorage } from "../src/storage-schema/user-storage.js";
+import { OVERSEER_STORAGE_VERSION } from "../src/storage-schema/overseer-migrations.js";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
     TEST_USER: DurableObjectNamespace<UserDurableObject>;
+    TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
   }
 }
-
-const head = { chatId: 1, chatTitle: "Demo", latestSequence: 9 };
-const receipt = (throughSequence = 9, readEpoch = 0) => ({
-  workspaceId: "workspace-1",
-  chatId: 1,
-  throughSequence,
-  readEpoch,
-});
-const user = async () => {
-  const stub = env.TEST_USER.getByName(`read-cursors-${crypto.randomUUID()}`);
-  await stub.newGadget("workspace-1", "Demo workspace");
-  return stub;
+type Impl = OverseerDurableObject["impl"];
+const withImpl = <T>(stub: DurableObjectStub<OverseerDurableObject>, fn: (impl: Impl) => Promise<T>) =>
+  runInDurableObject(stub, instance => fn(instance.impl));
+const author = {type: "agent" as const, id: "test", name: "Test"};
+const setup = async (existingUser?: DurableObjectStub<UserDurableObject>) => {
+  const user = existingUser ?? env.TEST_USER.getByName(crypto.randomUUID());
+  const workspace = env.TEST_OVERSEER.getByName(crypto.randomUUID());
+  const workspaceId = workspace.id.toString();
+  await user.newGadget(workspaceId, "Workspace");
+  await withImpl(workspace, async impl => {
+    impl.storage.version.put(OVERSEER_STORAGE_VERSION);
+    impl.storage.ownerId.put(user.id.toString());
+    impl.ownerId = user.id.toString();
+    impl.storage.chatMeta.put({id: 1, title: "Demo", started: new Date(), lastActive: new Date()});
+  });
+  return {user, workspace, workspaceId};
 };
-const cursor = async (stub: DurableObjectStub<UserDurableObject>): Promise<ChatReadState> =>
-  (await stub.getUnreadState()).chats[0];
-
+type Fixture = Awaited<ReturnType<typeof setup>>;
+const append = async ({workspace}: Fixture, sequence: number, text = "Hello", chatId = 1) =>
+  withImpl(workspace, async impl => {
+    impl.storage.chats.put({chatId, sequence, timestamp: new Date(10_000 + sequence),
+      author, type: "message", message: text});
+    await impl.deliverChatTimelines(true);
+  });
+const chat = async (user: DurableObjectStub<UserDurableObject>): Promise<ChatReadState> =>
+  (await user.getUnreadState()).chats[0];
+const receipt = (workspaceId: string, throughSequence: number, readEpoch = 0) =>
+  ({workspaceId, chatId: 1, throughSequence, readEpoch});
+const persisted = (user: DurableObjectStub<UserDurableObject>) =>
+  runInDurableObject(user, (_instance, ctx) => [...ctx.storage.kv.list()]);
 class Subscriber extends RpcTarget implements UnreadStateSubscriber {
-  constructor(private readonly receive: (state: UserUnreadState) => void) {
-    super();
-  }
-  async updated(state: UserUnreadState): Promise<void> {
-    this.receive(state);
-  }
+  constructor(private receive: (state: UserUnreadState) => void) { super(); }
+  async updated(state: UserUnreadState): Promise<void> { this.receive(state); }
 }
 
-describe("user timeline read cursors", () => {
-  it("refreshes preview-only changes without changing read positions and retains them after eviction", async () => {
-    const stub = await user();
-    await stub.syncWorkspaceChats("workspace-1", 1, [head]);
-    await stub.markChatRead(receipt(4));
-    const latestActivityAt = new Date("2026-10-15T00:00:00Z");
-    await stub.syncWorkspaceChats("workspace-1", 2, [{ ...head,
-      latestMessagePreview: "First line", latestActivityAt }]);
-    await evictDurableObject(stub);
-    expect(await cursor(stub)).toMatchObject({
-      latestMessagePreview: "First line", latestActivityAt,
-      readThroughSequence: 4, readEpoch: 0,
+describe("user-owned horizons and disposable message counts", () => {
+  it("counts visible messages rather than sparse timeline entries or distinct threads", async () => {
+    const fixture = await setup();
+    await append(fixture, 0);
+    await withImpl(fixture.workspace, async impl => {
+      impl.storage.chats.put({chatId: 1, sequence: 1, timestamp: new Date(10_001), author,
+        type: "message", message: "", reasoning: "Not a message"});
+      impl.storage.chats.put({chatId: 1, sequence: 2, timestamp: new Date(10_002), author,
+        type: "message", message: "Hidden expansion", generatedBySlashCommandSequence: 0});
     });
-    await stub.syncWorkspaceChats("workspace-1", 3, [{ ...head,
-      latestMessagePreview: "Edited line", latestActivityAt }]);
-    expect((await cursor(stub)).latestMessagePreview).toBe("Edited line");
-    await stub.syncWorkspaceChats("workspace-1", 2, [{ ...head,
-      latestMessagePreview: "Stale line", latestActivityAt }]);
-    expect((await cursor(stub)).latestMessagePreview).toBe("Edited line");
+    await append(fixture, 3, "Second visible message");
+    expect(await chat(fixture.user)).toMatchObject({latestSequence: 3, unreadMessageCount: 2});
+    expect(await fixture.user.getUnreadState()).toMatchObject({unreadChatCount: 1, unreadMessageCount: 2});
+    await fixture.user.markChatRead(receipt(fixture.workspaceId, 1));
+    expect((await chat(fixture.user)).unreadMessageCount).toBe(1);
+    await append(fixture, 8, "Third visible message");
+    await fixture.user.markChatRead(receipt(fixture.workspaceId, 3));
+    expect(await chat(fixture.user)).toMatchObject({readThroughSequence: 3, unreadMessageCount: 1});
   });
 
-  it("counts distinct threads and keeps read cursors in the snapshot", async () => {
-    const stub = await user();
-    expect(await stub.getUnreadState()).toEqual({ revision: 0, unreadChatCount: 0, chats: [] });
-    await stub.syncWorkspaceChats("workspace-1", 1, [head, { ...head, chatId: 2 }]);
-    await stub.newGadget("workspace-2", "Another workspace");
-    await stub.syncWorkspaceChats("workspace-2", 1, [head]);
-    expect((await stub.getUnreadState()).unreadChatCount).toBe(3);
-    await stub.markChatRead(receipt());
-    expect((await stub.getUnreadState()).unreadChatCount).toBe(2);
-    expect(await cursor(stub)).toMatchObject({
-      latestSequence: 9,
-      readThroughSequence: 9,
-      readEpoch: 0,
+  it("does not write user storage on arrivals; reading latest writes only its horizon", async () => {
+    const fixture = await setup();
+    await append(fixture, 0);
+    const before = await persisted(fixture.user);
+    await append(fixture, 1, "Latest preview\nSecret extra text");
+    expect(await persisted(fixture.user)).toEqual(before);
+    expect(await chat(fixture.user)).toMatchObject({unreadMessageCount: 2, latestMessagePreview: "Latest preview"});
+    await runInDurableObject(fixture.user, async instance => {
+      using load = vi.spyOn(instance, "loadWorkspaceChats");
+      await instance.markChatRead(receipt(fixture.workspaceId, 1));
+      expect(load).not.toHaveBeenCalled();
     });
+    const after = await persisted(fixture.user);
+    const previous = new Map(before);
+    const changedKeys = after.filter(([key, value]) => JSON.stringify(previous.get(key)) !== JSON.stringify(value))
+      .map(([key]) => key);
+    expect(changedKeys.length).toBeGreaterThan(0);
+    expect(changedKeys.every(key => key.startsWith("chatReadCursors"))).toBe(true);
+    await append(fixture, 2);
+    expect(await persisted(fixture.user)).toEqual(after);
+    expect((await chat(fixture.user)).unreadMessageCount).toBe(1);
   });
 
-  it("advances partially and never clears messages arriving after the observed boundary", async () => {
-    const stub = await user();
-    await stub.syncWorkspaceChats("workspace-1", 1, [head]);
-    await stub.syncWorkspaceChats("workspace-1", 2, [{ ...head, latestSequence: 12 }]);
-    await stub.markChatRead(receipt(4));
-    expect(await cursor(stub)).toMatchObject({ readThroughSequence: 4, latestSequence: 12 });
-    await stub.markChatRead(receipt(9));
-    await stub.markChatRead(receipt(3)); // delayed lower receipt cannot rewind
-    expect(await cursor(stub)).toMatchObject({ readThroughSequence: 9, latestSequence: 12 });
-    expect((await stub.getUnreadState()).unreadChatCount).toBe(1);
+  it("fences stale reads and repeated manual-unread commands across devices", async () => {
+    const fixture = await setup();
+    for (let sequence = 0; sequence <= 4; sequence++) await append(fixture, sequence);
+    await fixture.user.markChatRead(receipt(fixture.workspaceId, 4));
+    await fixture.user.markChatUnread(fixture.workspaceId, 1, 2, 0);
+    await fixture.user.markChatRead(receipt(fixture.workspaceId, 4));
+    expect(await chat(fixture.user)).toMatchObject({readThroughSequence: 1, readEpoch: 1, unreadMessageCount: 3});
+    await fixture.user.markChatRead(receipt(fixture.workspaceId, 3, 1));
+    await fixture.user.markChatUnread(fixture.workspaceId, 1, 2, 0);
+    expect(await chat(fixture.user)).toMatchObject({readThroughSequence: 3, readEpoch: 1, unreadMessageCount: 1});
   });
 
-  it("marks unread from an individual item and fences in-flight reads from every device", async () => {
-    const stub = await user();
-    await stub.syncWorkspaceChats("workspace-1", 1, [head]);
-    await stub.markChatRead(receipt());
-    await stub.markChatUnread("workspace-1", 1, 4, 0);
-    expect(await cursor(stub)).toMatchObject({ readThroughSequence: 3, readEpoch: 1 });
-    await stub.markChatRead(receipt()); // another window still at epoch zero
-    expect((await cursor(stub)).readThroughSequence).toBe(3);
-    await stub.markChatRead(receipt(6, 1));
-    expect((await cursor(stub)).readThroughSequence).toBe(6);
-    await stub.markChatUnread("workspace-1", 1, 4, 0); // lost ACK retry
-    expect((await cursor(stub)).readThroughSequence).toBe(6);
+  it("reconstructs heads, previews, sparse counts and epochs after real user and workspace eviction", async () => {
+    const fixture = await setup();
+    await append(fixture, 0);
+    await append(fixture, 4);
+    await fixture.user.markChatRead(receipt(fixture.workspaceId, 4));
+    await fixture.user.markChatUnread(fixture.workspaceId, 1, 4, 0);
+    const before = await persisted(fixture.user);
+    await evictDurableObject(fixture.user);
+    await evictDurableObject(fixture.workspace);
+    expect(await chat(fixture.user)).toMatchObject({readThroughSequence: 3, readEpoch: 1, unreadMessageCount: 1,
+      latestSequence: 4, latestMessagePreview: "Hello"});
+    expect(await persisted(fixture.user)).toEqual(before);
+    await fixture.user.markChatRead(receipt(fixture.workspaceId, 4)); // stale device
+    expect((await chat(fixture.user)).unreadMessageCount).toBe(1);
+    await fixture.user.markChatRead(receipt(fixture.workspaceId, 4, 1));
+    expect((await chat(fixture.user)).unreadMessageCount).toBe(0);
   });
 
-  it("bulk marks workspace/all read from the observed snapshot without swallowing new activity", async () => {
-    const stub = await user();
-    await stub.syncWorkspaceChats("workspace-1", 1, [head, { ...head, chatId: 2 }]);
-    await stub.newGadget("workspace-2", "Another");
-    await stub.syncWorkspaceChats("workspace-2", 1, [head]);
-    const observed = (await stub.getUnreadState()).chats.map((chat) => ({
-      ...chat,
-      throughSequence: chat.latestSequence,
+  it("rebuilds missed arrivals from the log and rejects old deliveries after a user reset", async () => {
+    const fixture = await setup();
+    await append(fixture, 0);
+    await fixture.user.markChatRead(receipt(fixture.workspaceId, 0));
+    const stale = await withImpl(fixture.workspace, async impl => ({
+      version: impl.storage.chatTimelineVersion.get(), heads: impl.chatTimelineHeads(),
     }));
-    await stub.syncWorkspaceChats("workspace-1", 2, [
-      { ...head, latestSequence: 10 },
-      { ...head, chatId: 2 },
-    ]);
-    await stub.markChatUnread("workspace-1", 2, 2, 0);
-    await stub.markChatsRead(observed);
-    expect((await stub.getUnreadState()).unreadChatCount).toBe(2);
-    expect(
-      (await stub.getUnreadState()).chats.find((chat) => chat.chatId === 2)?.readThroughSequence,
-    ).toBe(1);
-    const before = await stub.getUnreadState();
-    await stub.markChatsRead(observed);
-    expect(await stub.getUnreadState()).toEqual(before);
+    await evictDurableObject(fixture.user);
+    await withImpl(fixture.workspace, async impl => {
+      impl.storage.chatTimelineRetryAt.put(Date.now() + 60_000);
+      impl.storage.chats.put({chatId: 1, sequence: 3, timestamp: new Date(), author,
+        type: "message", message: "Persisted before dispatch"});
+    });
+    expect(await chat(fixture.user)).toMatchObject({latestSequence: 3, unreadMessageCount: 1});
+    await fixture.user.syncWorkspaceChats(fixture.workspaceId, stale.version, stale.heads);
+    expect(await chat(fixture.user)).toMatchObject({latestSequence: 3, unreadMessageCount: 1});
   });
 
-  it("deduplicates source snapshots after reading and rejects out-of-order resurrection after deletion", async () => {
-    const stub = await user();
-    await stub.syncWorkspaceChats("workspace-1", 2, [head]);
-    await stub.markChatRead(receipt());
-    const read = await stub.getUnreadState();
-    await stub.syncWorkspaceChats("workspace-1", 2, [head]);
-    await stub.syncWorkspaceChats("workspace-1", 1, [{ ...head, latestSequence: 8 }]);
-    expect(await stub.getUnreadState()).toEqual(read);
-    await stub.syncWorkspaceChats("workspace-1", 3, []);
-    await stub.syncWorkspaceChats("workspace-1", 2, [head]);
-    expect((await stub.getUnreadState()).chats).toEqual([]);
+  it("cleans up a saved horizon when reconstruction discovers a missed thread deletion", async () => {
+    const fixture = await setup();
+    await append(fixture, 0);
+    await fixture.user.markChatRead(receipt(fixture.workspaceId, 0));
+    await evictDurableObject(fixture.user);
+    await withImpl(fixture.workspace, async impl => {
+      impl.storage.chatTimelineRetryAt.put(Date.now() + 60_000);
+      impl.storage.chatMeta.delete(1);
+    });
+    expect((await fixture.user.getUnreadState()).chats).toEqual([]);
+    expect(await runInDurableObject(fixture.user, (instance) =>
+      instance.storage.chatReadCursors.get(`${fixture.workspaceId}:1`))).toBeUndefined();
   });
 
-  it("baselines historical content on upgrade, while subsequent activity is unread", async () => {
-    const stub = await user();
-    await stub.syncWorkspaceChats("workspace-1", 1, [{ ...head, initialReadThroughSequence: 9 }]);
-    expect((await stub.getUnreadState()).unreadChatCount).toBe(0);
-    await stub.syncWorkspaceChats("workspace-1", 2, [
-      { ...head, latestSequence: 10, initialReadThroughSequence: 9 },
-    ]);
-    expect(await cursor(stub)).toMatchObject({ readThroughSequence: 9, latestSequence: 10 });
-    expect((await stub.getUnreadState()).unreadChatCount).toBe(1);
-  });
-
-  it("does not make empty threads unread", async () => {
-    const stub = await user();
-    await stub.syncWorkspaceChats("workspace-1", 1, [{ ...head, latestSequence: -1 }]);
-    expect((await stub.getUnreadState()).unreadChatCount).toBe(0);
-  });
-
-  it("persists newer source fences without broadcasting unchanged public state", async () => {
-    const stub = await user();
-    await stub.syncWorkspaceChats("workspace-1", 1, [head]);
-    const before = await stub.getUnreadState();
-    await stub.syncWorkspaceChats("workspace-1", 3, [head]);
-    await stub.syncWorkspaceChats("workspace-1", 2, [{ ...head, latestSequence: 10 }]);
-    expect(await stub.getUnreadState()).toEqual(before);
-  });
-
-  it("publishes cleanup when a shared workspace is downgraded to use-only", async () => {
-    const stub = env.TEST_USER.getByName(`read-downgrade-${crypto.randomUUID()}`);
-    await stub.recordSharedGadgetOpen(
-      "workspace-1",
-      "Shared",
-      { id: "owner", name: "Owner", type: "user" },
-      "build",
-    );
-    await stub.syncWorkspaceChats("workspace-1", 1, [head]);
-    const before = await stub.getUnreadState();
-    await stub.updateSharedGadgetRole("workspace-1", "use");
-    await stub.syncWorkspaceChats("workspace-1", 2, [{ ...head, latestSequence: 10 }]);
-    expect(await stub.getUnreadState()).toEqual({
-      revision: before.revision + 1,
-      unreadChatCount: 0,
-      chats: [],
+  it("merges an arrival racing cold reconstruction before delivering the resulting count", async () => {
+    const fixture = await setup();
+    await append(fixture, 0);
+    const snapshot = await withImpl(fixture.workspace, async impl => ({
+      version: impl.storage.chatTimelineVersion.get(), heads: impl.chatTimelineHeads(),
+    }));
+    await evictDurableObject(fixture.user);
+    await runInDurableObject(fixture.user, async instance => {
+      const fetched = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+      using _load = vi.spyOn(instance, "loadWorkspaceChats").mockImplementationOnce(async () => {
+        fetched.resolve();
+        await release.promise;
+        return snapshot;
+      });
+      const initial = instance.getUnreadState();
+      await fetched.promise;
+      const delivery = instance.syncWorkspaceChats(fixture.workspaceId, snapshot.version + 1,
+        [{...snapshot.heads[0], latestSequence: 4, messageCount: 2}], []);
+      release.resolve();
+      await Promise.all([initial, delivery]);
+      expect(await instance.getUnreadState()).toMatchObject({unreadMessageCount: 2});
     });
   });
 
-  it("sends initial snapshots and synchronizes explicit unread and reads across devices", async () => {
-    const stub = await user();
-    const first: UserUnreadState[] = [],
-      second: UserUnreadState[] = [];
-    using a = new RpcStub(new Subscriber((state) => first.push(state)));
-    using b = new RpcStub(new Subscriber((state) => second.push(state)));
-    using _one = await stub.subscribeToUnreadState(a);
-    using _two = await stub.subscribeToUnreadState(b);
-    await vi.waitFor(() => expect([first.length, second.length]).toEqual([1, 1]));
-    await stub.syncWorkspaceChats("workspace-1", 1, [head]);
-    await stub.markChatRead(receipt());
-    await stub.markChatUnread("workspace-1", 1, 0, 0);
-    await vi.waitFor(() => expect([first.length, second.length]).toEqual([4, 4]));
-    expect(second[3].chats[0]).toMatchObject({ readThroughSequence: -1, readEpoch: 1 });
-    expect(second[3]).toEqual(first[3]);
+  it("streams counts to both devices without persisting broadcast revisions", async () => {
+    const fixture = await setup();
+    await append(fixture, 0);
+    const first: UserUnreadState[] = [], second: UserUnreadState[] = [];
+    using a = new RpcStub(new Subscriber(state => first.push(state)));
+    using b = new RpcStub(new Subscriber(state => second.push(state)));
+    using _one = await fixture.user.subscribeToUnreadState(a);
+    using _two = await fixture.user.subscribeToUnreadState(b);
+    await append(fixture, 2);
+    await vi.waitFor(() => expect(first.at(-1)?.unreadMessageCount).toBe(2));
+    await fixture.user.markChatRead(receipt(fixture.workspaceId, 2));
+    await vi.waitFor(() => expect(second.at(-1)?.unreadMessageCount).toBe(0));
+    expect(second.at(-1)).toEqual(first.at(-1));
+    expect(await runInDurableObject(fixture.user, (_instance, ctx) => ctx.storage.kv.get("unreadRevision"))).toBeUndefined();
   });
 
-  it("retains cursors, manual epochs and dedupe fences through real DO eviction", async () => {
-    const stub = await user();
-    await stub.syncWorkspaceChats("workspace-1", 1, [head]);
-    await stub.markChatRead(receipt());
-    await stub.markChatUnread("workspace-1", 1, 5, 0);
-    await evictDurableObject(stub);
-    await stub.syncWorkspaceChats("workspace-1", 1, [head]);
-    await stub.markChatRead(receipt());
-    expect(await cursor(stub)).toMatchObject({ readThroughSequence: 4, readEpoch: 1 });
-    await stub.markChatRead(receipt(9, 1));
-    await evictDurableObject(stub);
-    expect((await stub.getUnreadState()).unreadChatCount).toBe(0);
-  });
-
-  it("cleans up removal and keeps users isolated", async () => {
-    const first = await user(),
-      second = await user();
-    await first.syncWorkspaceChats("workspace-1", 1, [head]);
-    expect((await second.getUnreadState()).unreadChatCount).toBe(0);
-    await first.deleteGadget("workspace-1");
-    await first.syncWorkspaceChats("workspace-1", 2, [head]);
-    expect((await first.getUnreadState()).chats).toEqual([]);
-  });
-
-  it("rejects invalid timeline positions without partially applying a bulk command", async () => {
-    const stub = await user();
-    await stub.syncWorkspaceChats("workspace-1", 1, [head]);
-    await runInDurableObject(stub, async (instance) => {
-      await expect(instance.markChatsRead([receipt(9), receipt(-2)])).rejects.toThrow(
-        "Invalid timeline",
-      );
-      await expect(instance.markChatUnread("workspace-1", 1, 10, 0)).rejects.toThrow(
-        "Invalid timeline",
-      );
-      await expect(instance.markChatUnread("workspace-1", 1, -1, 0)).rejects.toThrow(
-        "Invalid timeline",
-      );
+  it("does not acknowledge a partial read when the source count lookup fails", async () => {
+    const fixture = await setup();
+    for (const sequence of [0, 3, 8]) await append(fixture, sequence);
+    const before = await persisted(fixture.user);
+    await runInDurableObject(fixture.user, async instance => {
+      using _load = vi.spyOn(instance, "loadWorkspaceChats")
+        .mockRejectedValueOnce(new Error("Workspace temporarily unavailable"));
+      await expect(instance.markChatRead(receipt(fixture.workspaceId, 3)))
+        .rejects.toThrow("Workspace temporarily unavailable");
     });
-    expect((await cursor(stub)).readThroughSequence).toBe(-1);
+    expect(await persisted(fixture.user)).toEqual(before);
+    expect(await chat(fixture.user)).toMatchObject({readThroughSequence: -1, unreadMessageCount: 3});
+    await fixture.user.markChatRead(receipt(fixture.workspaceId, 3));
+    expect(await chat(fixture.user)).toMatchObject({readThroughSequence: 3, unreadMessageCount: 1});
+  });
+
+  it("waits for cold reconstruction before subscribing, and retries a failed reconstruction", async () => {
+    const fixture = await setup();
+    await append(fixture, 0);
+    await fixture.user.markChatRead(receipt(fixture.workspaceId, 0));
+    await append(fixture, 3);
+    await evictDurableObject(fixture.user);
+    const received: UserUnreadState[] = [];
+    using subscriber = new RpcStub(new Subscriber(state => received.push(state)));
+    await runInDurableObject(fixture.user, async instance => {
+      const fetched = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+      using _load = vi.spyOn(instance, "loadWorkspaceChats").mockImplementationOnce(async () => {
+        fetched.resolve();
+        await release.promise;
+        throw new Error("Workspace temporarily unavailable");
+      });
+      const failed = expect(instance.subscribeToUnreadState(subscriber))
+        .rejects.toThrow("Workspace temporarily unavailable");
+      await fetched.promise;
+      expect(received).toEqual([]);
+      release.resolve();
+      await failed;
+    });
+    expect(received).toEqual([]);
+    using _subscription = await fixture.user.subscribeToUnreadState(subscriber);
+    await vi.waitFor(() => expect(received).toHaveLength(1));
+    expect(received[0]).toMatchObject({unreadMessageCount: 1,
+      chats: [{readThroughSequence: 0, latestSequence: 3, unreadMessageCount: 1}]});
+  });
+
+  it("bulk-reads observed horizons across workspaces without swallowing later messages or epochs", async () => {
+    const first = await setup(), second = await setup(first.user);
+    await append(first, 0);
+    await append(second, 0);
+    const observed = (await first.user.getUnreadState()).chats.map(chat =>
+      receipt(chat.workspaceId, chat.latestSequence, chat.readEpoch));
+    await append(first, 3);
+    await first.user.markChatUnread(second.workspaceId, 1, 0, 0);
+    await first.user.markChatsRead(observed);
+    expect(await first.user.getUnreadState()).toMatchObject({unreadChatCount: 2, unreadMessageCount: 2});
+    const before = await first.user.getUnreadState();
+    await first.user.markChatsRead(observed);
+    expect(await first.user.getUnreadState()).toEqual(before);
+  });
+
+  it("merges repeated receipts for a thread before resolving its sparse message count", async () => {
+    const fixture = await setup();
+    for (const sequence of [0, 3, 8, 12]) await append(fixture, sequence);
+    await fixture.user.markChatsRead([receipt(fixture.workspaceId, 0), receipt(fixture.workspaceId, 8)]);
+    expect(await chat(fixture.user)).toMatchObject({readThroughSequence: 8, unreadMessageCount: 1});
+  });
+
+  it("rejects invalid bulk commands before writing any horizon, and keeps users isolated", async () => {
+    const fixture = await setup(), other = await setup();
+    await append(fixture, 0);
+    await runInDurableObject(fixture.user, async instance => {
+      await expect(instance.markChatsRead([receipt(fixture.workspaceId, 0), receipt(fixture.workspaceId, -2)]))
+        .rejects.toThrow("Invalid timeline");
+      await expect(instance.markChatUnread(fixture.workspaceId, 1, 1, 0)).rejects.toThrow("Invalid timeline");
+    });
+    expect((await chat(fixture.user)).readThroughSequence).toBe(-1);
+    expect((await other.user.getUnreadState()).unreadMessageCount).toBe(0);
+    await fixture.user.deleteGadget(fixture.workspaceId);
+    expect((await fixture.user.getUnreadState()).chats).toEqual([]);
+  });
+
+  it("keeps the historical upgrade baseline read and migrates old rows to horizon-only storage", async () => {
+    const fixture = await setup();
+    await append(fixture, 0);
+    await withImpl(fixture.workspace, async impl => impl.storage.unreadBaseline.put({1: 0}));
+    await runInDurableObject(fixture.user, (_instance, ctx) => {
+      makeUserStorage(ctx.storage).chatReadStates.put({workspaceId: fixture.workspaceId, chatId: 1,
+        chatTitle: "Obsolete", latestSequence: 999, latestMessagePreview: "Must not persist",
+        readThroughSequence: 0, readEpoch: 2, unreadMessageCount: 1});
+    });
+    await evictDurableObject(fixture.user);
+    expect(await chat(fixture.user)).toMatchObject({readThroughSequence: 0, readEpoch: 2,
+      unreadMessageCount: 0, latestSequence: 0, latestMessagePreview: "Hello"});
+    await append(fixture, 5);
+    expect((await chat(fixture.user)).unreadMessageCount).toBe(1);
+    const rows = await persisted(fixture.user);
+    expect(rows.some(([key]) => key.startsWith("chatReadStates:"))).toBe(false);
   });
 });
