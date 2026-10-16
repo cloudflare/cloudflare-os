@@ -12,7 +12,7 @@ const VERIFIER_THREW = "verifier.threw";
 export type VerifierSession = Pick<WorkshopAgentSession, "openGadget" | "connectionDrops">;
 
 /** The chat as the Workshop recorded it when the turn ended. */
-export type VerifierChat = Pick<AgentTurnResult, "history" | "compactions">;
+export type VerifierChat = Pick<AgentTurnResult, "history" | "compactions" | "usage">;
 
 function truncate(value: string): string {
   return value.length > EVIDENCE_LIMIT ? `${value.slice(0, EVIDENCE_LIMIT)}...` : value;
@@ -59,7 +59,7 @@ export class EvalVerifier {
   constructor(
       session: VerifierSession, workpieces: readonly WorkpieceSummary[],
       messages: readonly AiChatMessage[] = [],
-      chat: VerifierChat = { history: [], compactions: [] }) {
+      chat: VerifierChat = { history: [], compactions: [], usage: {} }) {
     this.#session = session;
     this.workpieces = workpieces;
     this.messages = messages;

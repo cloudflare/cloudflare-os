@@ -1,6 +1,6 @@
 import { defineTaskEval } from "../src/eval.js";
 import { defineEvalTask, type EvalSkill, type EvalTurn } from "../src/task.js";
-import type { EvalVerifier } from "../src/verifier.js";
+import type { EvalVerifier, VerifierChat } from "../src/verifier.js";
 import { Seeded } from "./seeded.js";
 
 // A long chat that must compact. The user states a project brief, then has the agent read batches
@@ -10,8 +10,9 @@ import { Seeded } from "./seeded.js";
 // compacts after a tool step, mid-turn, but compacts as the next turn starts when a turn's final
 // reply is what crosses the trigger; the checks accept both. The last turn asks for the brief from
 // memory. The checks look at the Workshop's own record first -- the agent read the batches whole and
-// batch 1 right, a checkpoint exists, it covers the brief, and its summary keeps every fact -- and
-// only then at the agent's answer, so a failure says whether the model or compaction lost the facts.
+// batch 1 right, a checkpoint exists, it covers the brief, its summary keeps every fact, and it
+// freed the window -- and only then at the agent's answer, so a failure says whether the model or
+// compaction lost the facts.
 
 // Far below the models' windows, yet large enough that the retained tail is a small part of it.
 const BUDGET = 200_000;
@@ -114,6 +115,21 @@ function missingFacts(text: string): string[] {
   return keepsTheConstraint(text) ? missing : [...missing, "hard-constraint"];
 }
 
+type StepPrompt = { sequence: number; tokens: number };
+
+/**
+ * Each model request's prompt size and the agent message it produced, in order. A reconnect's
+ * catch-up reports several requests as one, so it leaves a gap rather than a false size.
+ */
+function stepPrompts(usage: VerifierChat["usage"]): (StepPrompt | undefined)[] {
+  return (usage.steps ?? []).map(step => step.modelSteps === undefined
+    ? {
+      sequence: step.sequence,
+      tokens: step.uncachedTokens + step.cacheReadTokens + step.cacheWriteTokens,
+    }
+    : undefined);
+}
+
 const ignore = async () => {};
 
 const brief = `I'm reviewing logs from our billing migration rehearsal. I added them to my Skills library as ${skillName(0)} to ${skillName(BATCHES - 1)}, one batch of service logs each, and I'll ask for them one at a time. For each, print the whole batch and read it yourself rather than searching it with code, find its single FATAL line, and reply with exactly one line: \`Batch <n> FATAL: <request id>\`. Don't read a batch before I ask for it, and don't create gadgets or change files.
@@ -141,7 +157,7 @@ const batchTurns = batches.map((_batch, index): EvalTurn => ({
 }));
 
 async function verifyRecall(verifier: EvalVerifier): Promise<void> {
-  const { history, compactions } = verifier.chat;
+  const { history, compactions, usage } = verifier.chat;
   const latest = compactions.at(-1);
   const userSequences = history.flatMap(message =>
     message.type === "message" && message.author.type === "user" ? [message.sequence] : []);
@@ -169,6 +185,25 @@ async function verifyRecall(verifier: EvalVerifier): Promise<void> {
   await verifier.check("compaction.summary-keeps-the-facts", async () => {
     const missing = missingFacts(latest?.summary ?? "");
     return { pass: latest !== undefined && missing.length === 0, evidence: { missing } };
+  });
+  // The first request's prompt stands for the system prompt and tools. What the first request after
+  // a compaction adds to it is the summary and the retained tail. With the 20k limit that is at most
+  // about 40k (the limit, one batch over it, and the summary); a 30% share would retain more than
+  // 50k.
+  await verifier.check("compaction.frees-the-window", async () => {
+    const prompts = stepPrompts(usage);
+    const base = prompts.at(0)?.tokens;
+    const retained = prompts.flatMap((prompt, index) => {
+      const before = prompts[index - 1];
+      return prompt !== undefined && before !== undefined && prompt.tokens < before.tokens &&
+        base !== undefined ? [prompt.tokens - base] : [];
+    });
+    return {
+      pass: retained.length > 0 && retained.every(tokens => tokens <= 45_000),
+      evidence: {
+        base: base ?? null, retained, prompts: prompts.map(prompt => prompt?.tokens ?? null),
+      },
+    };
   });
 
   await verifier.check("final-turn.uses-no-tools", async () => {
