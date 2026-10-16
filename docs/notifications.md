@@ -4,9 +4,9 @@ Notifications are a platform feature, not a gatekeeper. The Workshop backend sig
 the Cloudflare-operated notification service with the installation's signing key. Each User
 Durable Object stores one opaque subscription id per registered device, keyed by the
 install-scoped device key the service returns with it, so a device that registers again replaces
-its own subscription. The central service owns APNs delivery and the device/subscription
-directory, and accepts only fixed, typed notification templates. It does not accept arbitrary
-notification text or any provider OAuth credential.
+its own subscription. The central service owns APNs and Web Push delivery and the
+device/subscription directory, and accepts only fixed, typed notification templates. It does not
+accept arbitrary notification text or any provider OAuth credential.
 
 ## Registration
 
@@ -50,6 +50,8 @@ Data boundaries:
 - Workshop core stores only opaque central subscription ids, which are bound to the installation
   and useless without the install signing key, and the install-scoped device key each one reaches.
 - A one-time device registration id is short-lived and cannot send a notification.
+- A browser's Web Push endpoint and keys pass through the User DO to the service; the installation
+  stores only the subscription id the service returns for them.
 
 The native app hands the SPA a one-time registration id by setting
 `window.__CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__` before load or dispatching a
@@ -59,6 +61,12 @@ The native app hands the SPA a one-time registration id by setting
 time the signed-in app mounts (a WebSocket reconnect does not remount it) to request one.
 The SPA reports the outcome to `webkit.messageHandlers.cloudflareOSNotificationReady` as
 `{type: "ready"}` or `{type: "failed"}`.
+
+A browser registers as a device too, with its Web Push subscription as the registration; the
+backend advertises the service's VAPID public key to subscribe with as
+`ServerConfig.webPushPublicKey`. The service delivers to an endpoint only for its most recent
+registration, so when another account in the same browser profile registers it, the previous
+account's subscription stops working.
 
 ## Delivery
 
@@ -77,9 +85,10 @@ flowchart LR
     Audit[(Dedupe, rate limit, audit state)]
   end
 
-  subgraph Apple[Apple and phone boundary]
+  subgraph Devices[Device boundary]
     APNS[APNs]
     App[Cloudflare OS app]
+    WebPush[Browser push service]
   end
 
   Agent -->|completed or needs permission| User
@@ -91,6 +100,7 @@ flowchart LR
   Delivery --> Audit
   Delivery -->|fixed APNs template| APNS
   APNS --> App
+  Delivery -->|encrypted Web Push| WebPush
 ```
 
 Only the event id, event type, task id (`<workspaceId>:<chatId>`), bounded chat title, opaque
@@ -125,6 +135,7 @@ The trusted deploy service injects these into the backend; the private key is a 
 - `CFOS_INSTALL_ID`
 - `CFOS_INSTALL_KEY_ID`
 - `CFOS_INSTALL_PRIVATE_KEY` (base64 PKCS#8 P-256)
+- `NOTIFICATION_WEB_PUSH_PUBLIC_KEY` (the service's VAPID public key, base64url)
 
-Self-hosted deployments may omit them. Browser notifications continue to work; native device
+Self-hosted deployments may omit them. In-tab notifications continue to work; native device
 registration fails and the SPA reports `{type: "failed"}` to the app.

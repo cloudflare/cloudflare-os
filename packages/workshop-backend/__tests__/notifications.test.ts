@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "capnweb";
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
-import type { NotificationSubscriber, UserNotification } from "@gadgets/workshop-shared/api";
+import type { NotificationSubscriber, UserNotification, WebPushSubscription } from "@gadgets/workshop-shared/api";
 import { deliver, registerDevice } from "../src/notification-service.js";
 import type { UserDurableObject } from "../src/user.js";
 
@@ -41,15 +41,16 @@ const base64urlBytes = (value: string) => Uint8Array.from(
 type Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 // Stands in for the central service. Each registration mints the next subscription id for the
-// device whose key repeats the registration's first character; deliveries are accepted, except
-// that `refuse` answers those to one subscription with the service's error.
+// device whose key repeats the registration id's first character, or a browser endpoint's last;
+// deliveries are accepted, except that `refuse` answers those to one subscription with the
+// service's error.
 function stubService(refuse?: { subscriptionId: string; status: string; code: number }) {
   let minted = 0;
   let fetcher = vi.fn<Fetch>(async (input, init) => {
     let body = JSON.parse(String(init?.body));
     if (new URL(String(input)).pathname === "/v1/subscriptions") {
       return Response.json({
-        deviceKey: body.deviceRegistrationId[0].repeat(64),
+        deviceKey: (body.deviceRegistrationId ?? body.webPush.endpoint.at(-1))[0].repeat(64),
         subscriptionId: String(++minted).repeat(64),
       }, { status: 201 });
     }
@@ -122,6 +123,17 @@ describe("notification service", () => {
     await expect(registerDevice(installEnv, "d".repeat(64)))
         .resolves.toEqual({ deviceKey: "d".repeat(64), subscriptionId: ONE });
     expect(bodies(fetcher, "/v1/subscriptions")).toEqual([{ deviceRegistrationId: "d".repeat(64) }]);
+  });
+
+  it("registers a browser's Web Push subscription with only the fields the service accepts", async () => {
+    let fetcher = stubService();
+    let endpoint = "https://fcm.googleapis.com/wp/abc/f";
+    // PushSubscription.toJSON() also carries expirationTime, which RPC validation lets through.
+    let subscription = { endpoint, keys: { p256dh: "BP", auth: "AA" }, expirationTime: null };
+    await expect(registerDevice(installEnv, subscription as WebPushSubscription))
+        .resolves.toEqual({ deviceKey: "f".repeat(64), subscriptionId: ONE });
+    expect(bodies(fetcher, "/v1/subscriptions"))
+        .toEqual([{ webPush: { endpoint, keys: { p256dh: "BP", auth: "AA" } } }]);
   });
 
   it("sends nothing to a plaintext service URL", async () => {

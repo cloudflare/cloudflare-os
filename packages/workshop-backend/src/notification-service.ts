@@ -1,7 +1,7 @@
 // Client for the Cloudflare-operated notification service. Every request is signed with this
 // installation's key; the service accepts only fixed, typed templates. See docs/notifications.md.
 
-import type { UserNotification } from "@gadgets/workshop-shared/api";
+import type { UserNotification, WebPushSubscription } from "@gadgets/workshop-shared/api";
 
 const encoder = new TextEncoder();
 
@@ -19,7 +19,8 @@ function threadTitle(title: string): string | undefined {
 }
 
 async function signedPost(
-    env: Cloudflare.Env, pathname: string, payload: object): Promise<Response> {
+    env: Cloudflare.Env, pathname: string, payload: object, signal?: AbortSignal,
+): Promise<Response> {
   let {
     NOTIFICATION_SERVICE_URL: serviceUrl, CFOS_INSTALL_ID: installId,
     CFOS_INSTALL_KEY_ID: keyId, CFOS_INSTALL_PRIVATE_KEY: privateKey,
@@ -55,6 +56,7 @@ async function signedPost(
     // A followed redirect would resend the signed request, possibly over plaintext; a 3xx is not
     // ok, so callers fail as for any other bad status. (Workers has no `redirect: "error"`.)
     redirect: "manual",
+    signal,
   });
 }
 
@@ -64,13 +66,22 @@ const isServiceId = (value: unknown): value is string =>
   typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
 
 /**
- * Exchange the native app's one-time device registration for an install-bound subscription, along
- * with the install-scoped key of the device it reaches.
+ * Exchange the native app's one-time device registration, or a browser's Web Push subscription,
+ * for an install-bound subscription, along with the install-scoped key of the device it reaches.
  */
 export async function registerDevice(
-    env: Cloudflare.Env, deviceRegistrationId: string,
+    env: Cloudflare.Env, registration: string | WebPushSubscription,
 ): Promise<{ deviceKey: string; subscriptionId: string }> {
-  let response = await signedPost(env, "/v1/subscriptions", { deviceRegistrationId });
+  // A Web Push subscription is rebuilt field by field: RPC validation forwards extra properties,
+  // and the service's schema is strict.
+  let body = typeof registration === "string"
+      ? { deviceRegistrationId: registration }
+      : { webPush: { endpoint: registration.endpoint,
+          keys: { p256dh: registration.keys.p256dh, auth: registration.keys.auth } } };
+  // Someone waits on a registration (a browser's sign-out queues behind it), so a stuck service
+  // fails it rather than holding them. Deliveries run in the background, and wait on the service's
+  // own 10s push sends, so they are left unbounded.
+  let response = await signedPost(env, "/v1/subscriptions", body, AbortSignal.timeout(15_000));
   if (!response.ok) {
     throw new Error(`Notification registration failed with status ${response.status}.`);
   }
