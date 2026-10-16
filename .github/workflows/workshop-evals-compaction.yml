@@ -1,0 +1,109 @@
+name: Workshop compaction eval
+
+# Runs packages/workshop-evals/targeted/compaction.eval.ts when a pull request changes compaction:
+# one trial on each of GPT-6 Luna and Claude Sonnet 5.5, against a real model through the AI
+# Gateway. The paths are the files that own compaction. Files it merely depends on, such as agent.ts
+# and the eval harness, change mostly for other reasons, so they don't start it. Nothing is stored
+# or compared: the check reports this run's result alone.
+#
+# Same trust boundary as workshop-evals-pr.yml: GitHub withholds repository secrets from fork PRs,
+# and the first job re-verifies that a non-bot same-repository author still has write access.
+on:
+  pull_request:
+    # `closed` starts a run that does nothing but, through the concurrency group, cancels one still
+    # spending inference on a pull request nobody will look at.
+    types: [opened, synchronize, reopened, closed]
+    paths:
+      - .github/workflows/workshop-evals-compaction.yml
+      - packages/workshop-evals/targeted/compaction.eval.ts
+      - packages/workshop-backend/src/agent-compaction.ts
+
+permissions: {}
+
+# A newer push supersedes the run in progress: its result is not kept.
+concurrency:
+  group: workshop-evals-compaction-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  trust:
+    name: Verify pull request
+    if: >-
+      github.event.action != 'closed' &&
+      github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id &&
+      github.event.pull_request.user.type != 'Bot' &&
+      github.repository_owner == 'cloudflare'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Verify the pull request is from a maintainer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          permission=$(gh api "repos/$GH_REPO/collaborators/$PR_AUTHOR/permission" --jq '.permission')
+          if [[ ! "$permission" =~ ^(admin|maintain|write)$ ]]; then
+            echo "$PR_AUTHOR has '$permission' on $GH_REPO; Workshop evals require write access."
+            exit 1
+          fi
+
+  eval:
+    name: Compaction eval
+    needs: trust
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      checks: write
+    steps:
+      - name: Check out the pull request's merge commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Set up Vite+, Node.js and dependencies
+        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1
+        with:
+          node-version: "24.19.0"
+          cache: true
+          run-install: true
+
+      - name: Run the compaction eval
+        continue-on-error: true
+        # The same AI Gateway and token the other eval workflows use.
+        env:
+          CF_AI_GATEWAY: ${{ secrets.CF_AI_GATEWAY_NAME }}
+          CF_AI_GATEWAY_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
+          CF_AI_GATEWAY_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
+          WORKSHOP_EVAL_MODELS: gpt-6-luna,claude-sonnet-5-5
+          WORKSHOP_EVAL_TRIALS: "1"
+          WORKSHOP_EVAL_COMMIT: ${{ github.sha }}
+        run: pnpm evals targeted/compaction.eval.ts
+
+      - name: Require eval results
+        run: test -f packages/workshop-evals/.wrangler/evals/results.json
+
+      - name: Upload eval results
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: workshop-evals-compaction
+          path: packages/workshop-evals/.wrangler/evals/results.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish eval report
+        uses: getsentry/vitest-evals@d37153f06d7d086393927c57a2faaeff464a55e2 # v0
+        with:
+          results: packages/workshop-evals/.wrangler/evals/results.json
+          publish-check: true
+          check-name: Workshop compaction eval
+          fail-on-failures: true
+          min-pass-rate: 0
+          soft-fail: false

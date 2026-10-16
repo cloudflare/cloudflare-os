@@ -16,6 +16,8 @@ on:
       - .github/workflows/workshop-evals-pr.yml
       - scripts/evals/**
       - packages/workshop-evals/**
+      # Targeted evals run in their own workflows
+      - "!packages/workshop-evals/targeted/**"
       - packages/integration-tests/src/**
       # Agent loop, prompts, tool descriptions, compaction, model routing; admin-config feeds the
       # instance instructions and the format list into the system prompt
@@ -37,6 +39,7 @@ on:
       - .github/workflows/workshop-evals-pr.yml
       - scripts/evals/**
       - packages/workshop-evals/**
+      - "!packages/workshop-evals/targeted/**"
       - packages/integration-tests/src/**
       - packages/workshop-backend/src/agent*
       - packages/workshop-backend/src/ai-*

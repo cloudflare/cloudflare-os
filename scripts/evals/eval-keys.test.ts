@@ -75,6 +75,7 @@ test("a commit that touches nothing a run executes, tests included, keeps every 
     "packages/workshop-backend/__tests__/agent.test.ts": "t",
     "scripts/evals/eval-keys.test.ts": "t",
     "packages/workshop-evals/evals/seeded.test.ts": "t",
+    "packages/workshop-evals/targeted/compaction.eval.ts": "compaction",
   });
   assert.deepEqual(keys(next), keys(base));
   base = next;

@@ -41,6 +41,9 @@ export function defineTaskEval(task: EvalTask): void {
   const models = matrix.models.map(resolveEvalModel);
   // Fail at collection, before any inference, if the access cannot serve a model in the matrix.
   models.forEach(model => assertModelAccess(modelAccess, model));
+  if (task.modelSettings !== undefined && modelAccess.kind !== "gateway") {
+    throw new Error(`Eval task ${task.id} sets model settings, which only an AI Gateway has`);
+  }
   const identity = { gitCommit, taskVersion: taskVersion(task) };
   const harness = createWorkshopHarness(task, modelAccess, identity);
   const network = evalNetworkInterceptor(modelAccess, models);
