@@ -891,10 +891,10 @@ advertisement history.
 The provider composes a typed fetch with `git-pull-transfer.startGitPull()` and returns a transfer
 capability. Claim its backpressured raw PACK stream once with `stream()`, without buffering or
 base64 encoding. The DO feeds it to its bounded cache decoder. Workers RPC can replace a stream
-exception with a generic disconnect, so query `status()` after consumption fails to recover a producer
-error; if it has not failed, preserve the consumer's own error. After draining the stream,
-require `complete` before accepting the transfer. Cancel an unfinished stream and dispose the
-capability when done.
+exception with a generic disconnect. If consuming the stream fails, query `status()` to recover
+the producer's error; if the status has not failed, preserve the consumer's own error. After
+draining the stream, require `complete` before accepting the transfer. Cancel an unfinished stream
+and dispose the capability when done.
 
 The transfer also supports a native container consumer, but container hydration is not enabled
 by this capability alone; it requires the separate kernel worktree-replica bootstrap support.
