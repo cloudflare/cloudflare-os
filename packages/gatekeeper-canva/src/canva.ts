@@ -1299,6 +1299,13 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
         }),
       };
     }
+    const duplicate = this.#host.pending().find(({ action }) => action.kind === "generateDesign"
+      && action.payload.brief === brief && action.payload.designType === designType);
+    if (duplicate !== undefined) {
+      throw new Error(`generateDesign(): a ${designType} from this brief is already waiting for approval as design ` +
+        `${duplicate.action.payload.ref}. Read it with getDesign("${duplicate.action.payload.ref}") rather than ` +
+        "asking again, which would spend credits twice.");
+    }
     const me = await this.#host.identity();
     const payload: CanvaActions["generateDesign"] = {
       ref: this.#host.allocate("design"),
@@ -1351,6 +1358,13 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
     // refused before anything is queued. This read is itself an observation. The source may be the
     // pending result of an earlier removal, which this one then waits for.
     const source = await this.getImageAsset(this.#assetRef(assetId.trim(), "removeBackground()"));
+    const duplicate = this.#host.pending().find(({ action }) => action.kind === "removeBackground"
+      && this.#host.resolve(action.payload.assetId) === source.id);
+    if (duplicate !== undefined) {
+      throw new Error(`removeBackground(): this image's background is already being removed, as asset ` +
+        `${duplicate.action.payload.ref}, waiting for approval. Read it with getImageAsset("${duplicate.action.payload.ref}") ` +
+        "rather than asking again, which would spend credits twice.");
+    }
     const me = await this.#host.identity();
     const payload: CanvaActions["removeBackground"] = {
       ref: this.#host.allocate("asset"),

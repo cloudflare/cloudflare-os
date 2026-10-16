@@ -327,6 +327,8 @@ export const canvaActions = defineActions<CanvaActionHost, CanvaActions>({
         }
         applyFailure(error, "start the background removal");
       }
+      // Recorded before the wait, so a read during it sees the job running rather than nothing.
+      host.recordJob({ ...base, ...transformationStateFromJob(job) });
       const state = transformationStateFromJob(await awaitTransformation(host, job));
       if (state.asset) host.refs.bind(payload.ref, state.asset.id);
       host.recordJob({ ...base, ...state });
