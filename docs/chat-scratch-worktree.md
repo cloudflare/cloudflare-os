@@ -1,4 +1,4 @@
-# Attachments in worktrees
+# Chat scratch worktree
 
 Every new upload becomes a file in a chat-private `SCRATCH` worktree, independent of
 MIME type or the selected model's input support. Images, PDFs, archives, spreadsheets,
@@ -7,7 +7,7 @@ preserves the original bytes, including images; it does not resize or transcode 
 This intentionally removes the old image-only path that accepted source images up to 25 MiB
 and resized them to fit: source images, like every other upload, must now fit the 4 MiB limit.
 The scratch worktree is created on the first upload and reused for later uploads, plans,
-and other agent working files. Existing attachment worktrees keep their binding names.
+and other agent working files.
 
 `Overseer.uploadBlob(bytes)` durably stores a raw Git blob and returns its OID. Uploading
 does not change a message or worktree. A message attaches the OID with filename/MIME metadata;

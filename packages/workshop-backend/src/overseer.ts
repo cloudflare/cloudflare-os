@@ -243,7 +243,7 @@ type PreparedChatMessage = {
   skillName?: string;
 };
 
-type PreparedAttachmentsWorktree = {
+type PreparedScratchWorktree = {
   commitId: string;
   bindingName: string;
 };
@@ -5258,7 +5258,7 @@ class OverseerImpl implements AgentHooks {
       }
     }
 
-    const worktree = this.#attachmentsWorktree(chatId);
+    const worktree = this.#scratchWorktree(chatId);
     if (worktree) {
       // Uploads use root filenames. Reserve base and overlay root names (including directories)
       // without loading file contents, so an upload cannot overwrite agent-created work.
@@ -5331,8 +5331,8 @@ class OverseerImpl implements AgentHooks {
     const projected = {...attachment, oid};
     const files = attachment.workspacePath === undefined
       ? await this.#prepareWorkspaceAttachmentFiles(chatId, [projected]) : new Map<string, FileContent>();
-    const worktree = this.#attachmentsWorktree(chatId);
-    const prepared = await this.#prepareAttachmentsWorktree(chatId, files, message.author);
+    const worktree = this.#scratchWorktree(chatId);
+    const prepared = await this.#prepareScratchWorktree(chatId, files, message.author);
     const changes = worktree && files.size
       ? this.#prepareWorkspaceAttachmentChanges(chatId, worktree, files) : [];
     this.storage.transaction(() => {
@@ -5344,10 +5344,10 @@ class OverseerImpl implements AgentHooks {
       const stored = this.storage.chatAttachmentContent.get(id);
       if (stored?.state.type !== "committed" || stored.state.chatId !== chatId) return;
       if (stored.state.oid !== undefined && ref.workspacePath !== undefined) return;
-      if (this.#attachmentsWorktree(chatId)?.id !== worktree?.id) {
+      if (this.#scratchWorktree(chatId)?.id !== worktree?.id) {
         throw new Error("Scratch worktree changed during attachment migration; retry.");
       }
-      if (prepared) this.#installAttachmentsWorktree(chatId, prepared);
+      if (prepared) this.#installScratchWorktree(chatId, prepared);
       if (worktree) this.#appendWorkspaceAttachments(chatId, worktree, changes, message.author);
       Object.assign(ref, projected);
       this.storage.chats.put(current);
@@ -5358,8 +5358,8 @@ class OverseerImpl implements AgentHooks {
     await this.ctx.storage.sync();
   }
 
-  #attachmentsWorktree(chatId: number): WorktreeRecord | undefined {
-    let id = this.getChatAgentContext(chatId).attachments?.worktreeId;
+  #scratchWorktree(chatId: number): WorktreeRecord | undefined {
+    let id = this.getChatAgentContext(chatId).scratch?.worktreeId;
     let record = id === undefined ? undefined : this.storage.gadgets.get(id);
     return record?.type === "worktree" && record.chatId === chatId ? record : undefined;
   }
@@ -5375,19 +5375,19 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
-  async #prepareAttachmentsWorktree(
+  async #prepareScratchWorktree(
       chatId: number, files: ReadonlyMap<string, FileContent>, author: AiChatAuthorInfo)
-      : Promise<PreparedAttachmentsWorktree | undefined> {
-    if (files.size === 0 || this.#attachmentsWorktree(chatId) !== undefined) return undefined;
+      : Promise<PreparedScratchWorktree | undefined> {
+    if (files.size === 0 || this.#scratchWorktree(chatId) !== undefined) return undefined;
     let bindingName = fallbackBindingName(
         "SCRATCH", name => this.chatScopeNames(chatId).has(name));
     let commitId = (await this.#writeWorkspaceAttachmentCommit(files, author))!;
     return {commitId, bindingName};
   }
 
-  #installAttachmentsWorktree(
-      chatId: number, prepared: PreparedAttachmentsWorktree): WorktreeRecord {
-    let existing = this.#attachmentsWorktree(chatId);
+  #installScratchWorktree(
+      chatId: number, prepared: PreparedScratchWorktree): WorktreeRecord {
+    let existing = this.#scratchWorktree(chatId);
     if (existing !== undefined) return existing;
 
     let context = this.getChatAgentContext(chatId);
@@ -5406,7 +5406,7 @@ class OverseerImpl implements AgentHooks {
     };
 
     this.storage.gadgets.put(record);
-    context.attachments = {worktreeId: record.id, bindingName};
+    context.scratch = {worktreeId: record.id, bindingName};
     if (context.bindings !== undefined) context.bindings[bindingName] = record.id;
     this.storage.chatContext.put(context);
     return record;
@@ -5418,12 +5418,12 @@ class OverseerImpl implements AgentHooks {
       : {change: CodeChange, content: CodeContent}[] {
     const current = this.storage.gadgets.get(worktree.id);
     if (current?.type !== "worktree" || current.chatId !== chatId || current.pinBase !== worktree.pinBase) {
-      throw new Error("Attachment worktree changed while preparing the message; retry.");
+      throw new Error("Scratch worktree changed while preparing the message; retry.");
     }
     const meta = this.getChatMetaOrThrow(chatId), base = this.chatCodeBase(meta);
     const cached = this.#chatContentCache.get(chatId);
     if (!cached || cached.generation !== base.generation || cached.revision !== base.revision) {
-      throw new Error("Attachment workspace changed while preparing the message; retry.");
+      throw new Error("Scratch worktree changed while preparing the message; retry.");
     }
     let content = cached.content;
     const prepared: {change: CodeChange, content: CodeContent}[] = [];
@@ -5432,7 +5432,7 @@ class OverseerImpl implements AgentHooks {
       // current cache includes those touched paths; its freshness alone doesn't reserve names.
       for (const existing of content.get(worktree.id)?.keys() ?? []) {
         if (existing === path || existing.startsWith(path + "/")) {
-          throw new Error("Attachment workspace changed while preparing the message; retry.");
+          throw new Error("Scratch worktree changed while preparing the message; retry.");
         }
       }
       const change: CodeChange = {[worktree.id]: [[path, typeof text === "string" ? {set: text} : {setBytes: text}]]};
@@ -6355,7 +6355,7 @@ class OverseerImpl implements AgentHooks {
       prepared: PreparedChatMessage, capsules: CapsuleSpecifier[] | undefined,
       attachments: ChatAttachmentRef[] | undefined,
       formats: MessageFormatRef[] | undefined,
-      attachmentsWorktree?: PreparedAttachmentsWorktree,
+      scratchWorktree?: PreparedScratchWorktree,
       attachmentSourceCommit?: string): number | undefined {
     this.#validateCapsules(chatId, capsules);
     // Format references describe the text the user wrote, which for a slash command is its
@@ -6374,8 +6374,8 @@ class OverseerImpl implements AgentHooks {
         ...(prepared.skillName ? {skillName: prepared.skillName} : {}),
       });
       if (prepared.message === undefined) return;
-      if (attachmentsWorktree !== undefined) {
-        this.#installAttachmentsWorktree(chatId, attachmentsWorktree);
+      if (scratchWorktree !== undefined) {
+        this.#installScratchWorktree(chatId, scratchWorktree);
       }
       this.commitChatAttachments(chatId, attachments, attachmentSourceCommit);
       let messageSequence = this.nextChatSequence(chatId);
@@ -6396,8 +6396,8 @@ class OverseerImpl implements AgentHooks {
 
     if (prepared.message === undefined) return;
 
-    if (attachmentsWorktree !== undefined) {
-      this.#installAttachmentsWorktree(chatId, attachmentsWorktree);
+    if (scratchWorktree !== undefined) {
+      this.#installScratchWorktree(chatId, scratchWorktree);
     }
     this.commitChatAttachments(chatId, attachments, attachmentSourceCommit);
     let messageSequence = this.nextChatSequence(chatId);
@@ -6441,7 +6441,7 @@ class OverseerImpl implements AgentHooks {
     // each gadget's current head.
     let chatId = this.nextChatId();
     let attachmentFiles = await this.#prepareWorkspaceAttachmentFiles(chatId, canonicalAttachments);
-    let attachmentsWorktree = await this.#prepareAttachmentsWorktree(
+    let scratchWorktree = await this.#prepareScratchWorktree(
         chatId, attachmentFiles, userMeta.profile);
     let timestamp = this.getChatTimestamp();
     this.ctx.storage.transactionSync(() => {
@@ -6459,7 +6459,7 @@ class OverseerImpl implements AgentHooks {
 
       let promptSequence = this.#commitPreparedChatMessage(
           chatId, timestamp, userMeta.profile, prepared, capsules, canonicalAttachments, formats,
-          attachmentsWorktree, attachmentsWorktree?.commitId);
+          scratchWorktree, scratchWorktree?.commitId);
       if (responseTargetRegistration) {
         if (promptSequence === undefined) {
           throw new Error("External messages require a prompt.");
@@ -6524,30 +6524,30 @@ class OverseerImpl implements AgentHooks {
         message, (canonicalAttachments?.length ?? 0) > 0);
 
     let attachmentFiles = await this.#prepareWorkspaceAttachmentFiles(chatId, canonicalAttachments);
-    let attachmentsWorktree = this.#attachmentsWorktree(chatId);
-    let preparedAttachmentsWorktree: PreparedAttachmentsWorktree | undefined;
+    let scratchWorktree = this.#scratchWorktree(chatId);
+    let preparedScratchWorktree: PreparedScratchWorktree | undefined;
     let attachmentSourceCommit: string | undefined;
-    if (attachmentsWorktree !== undefined) {
+    if (scratchWorktree !== undefined) {
       attachmentSourceCommit = await this.#writeWorkspaceAttachmentCommit(
           attachmentFiles, userMeta.profile);
       // Prefetch only. Workspace rows and attachment references land with the validated message.
       if (attachmentFiles.size) {
         await this.getCurrentChatContent(chatId, this.getChatMetaOrThrow(chatId));
         for (const path of attachmentFiles.keys()) {
-          await this.gitCache.assertWorktreePathWritable(attachmentsWorktree.pinBase, path);
+          await this.gitCache.assertWorktreePathWritable(scratchWorktree.pinBase, path);
         }
       }
     } else {
-      preparedAttachmentsWorktree = await this.#prepareAttachmentsWorktree(
+      preparedScratchWorktree = await this.#prepareScratchWorktree(
           chatId, attachmentFiles, userMeta.profile);
-      attachmentSourceCommit = preparedAttachmentsWorktree?.commitId;
+      attachmentSourceCommit = preparedScratchWorktree?.commitId;
     }
 
     let meta = this.assertChatNotActive(chatId, true);
     let result = this.materializeChatChanges(chatId, meta);
     if (result) meta = result.meta;
-    const attachmentChanges = attachmentsWorktree && attachmentFiles.size
-      ? this.#prepareWorkspaceAttachmentChanges(chatId, attachmentsWorktree, attachmentFiles) : [];
+    const attachmentChanges = scratchWorktree && attachmentFiles.size
+      ? this.#prepareWorkspaceAttachmentChanges(chatId, scratchWorktree, attachmentFiles) : [];
     meta.lastActive = this.getChatTimestamp();
     // A built-in command runs a turn without a prompt: `/compact` compacts and ends.
     let runsAgentTurn = prepared.message !== undefined ||
@@ -6560,9 +6560,9 @@ class OverseerImpl implements AgentHooks {
         this.storage.chatMeta.put(meta);
         let promptSequence = this.#commitPreparedChatMessage(
             chatId, meta.lastActive, userMeta.profile, prepared, capsules, canonicalAttachments,
-            formats, preparedAttachmentsWorktree, attachmentSourceCommit);
-        if (attachmentsWorktree && attachmentFiles.size) {
-          this.#appendWorkspaceAttachments(chatId, attachmentsWorktree, attachmentChanges, userMeta.profile);
+            formats, preparedScratchWorktree, attachmentSourceCommit);
+        if (scratchWorktree && attachmentFiles.size) {
+          this.#appendWorkspaceAttachments(chatId, scratchWorktree, attachmentChanges, userMeta.profile);
         }
         if (responseTargetRegistration) {
           if (promptSequence === undefined) {
@@ -7466,7 +7466,7 @@ class OverseerImpl implements AgentHooks {
       // meaning "unrestricted"): the workspace default binding list.
       taken = new Set(Object.keys(this.defaultBindingList()));
     }
-    if (context.attachments !== undefined) taken.add(context.attachments.bindingName);
+    if (context.scratch !== undefined) taken.add(context.scratch.bindingName);
     taken.add(GIT_BINDING_NAME);
     for (let msg of chatMessages ?? this.storage.chats.list({prefix: chatKeyPrefix(chatId)})) {
       if (msg.type === "message") {
@@ -7632,10 +7632,10 @@ class OverseerImpl implements AgentHooks {
         Object.assign(seed, this.defaultBindingList());
       }
 
-      let attachments = context.attachments;
-      if (attachments !== undefined &&
-          this.storage.gadgets.get(attachments.worktreeId)?.type === "worktree") {
-        seed[attachments.bindingName] = attachments.worktreeId;
+      let scratch = context.scratch;
+      if (scratch !== undefined &&
+          this.storage.gadgets.get(scratch.worktreeId)?.type === "worktree") {
+        seed[scratch.bindingName] = scratch.worktreeId;
       }
 
       // A new seed never takes the automatic env.GIT's name, which a chat binding would shadow
@@ -7888,7 +7888,7 @@ class OverseerImpl implements AgentHooks {
         continue;
       }
       if (gadget?.type === "worktree" &&
-          context.attachments?.worktreeId === gadget.id && gadget.chatId === chatId) {
+          context.scratch?.worktreeId === gadget.id && gadget.chatId === chatId) {
         result.push({name, target, title: gadget.title, isGadget: false});
         continue;
       }

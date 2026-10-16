@@ -2196,8 +2196,8 @@ async function runAgentPass(
               let attachmentParts = await Promise.all(msg.attachments.map(
                   async (attachment): Promise<(TextContent | ImageContent)[]> => {
                 let filename = attachment.name ? ` (${attachment.name})` : "";
-                let workspaceLocation = attachment.workspacePath && agentContext.attachments
-                    ? `; workspace file env.${agentContext.attachments.bindingName}/` +
+                let workspaceLocation = attachment.workspacePath && agentContext.scratch
+                    ? `; workspace file env.${agentContext.scratch.bindingName}/` +
                       attachment.workspacePath
                     : "";
                 let data: Uint8Array;

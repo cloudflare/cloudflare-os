@@ -587,8 +587,8 @@ export type AiChatAgentContext = {
    */
   alwaysAvailableCapsuleIds?: WorkpieceId[];
 
-  /** Chat-private Git worktree receiving all uploaded attachments, including after seeding. */
-  attachments?: {worktreeId: WorkpieceId, bindingName: string};
+  /** Chat-private Git worktree for uploads, plans, and other agent working files. */
+  scratch?: {worktreeId: WorkpieceId, bindingName: string};
 
   /** Legacy originals have been published as blobs and projected into this chat's scratch worktree. */
   attachmentsMigrated?: true;
@@ -847,7 +847,7 @@ type ChatAttachmentContentRecord = {
     chatId: number;
     /** Original upload blob; new uploads keep no separate attachment byte copy. */
     oid?: string;
-    /** Path in the chat's attachments worktree, independent of the uploaded file's format. */
+    /** Path in the chat's scratch worktree, independent of the uploaded file's format. */
     workspacePath?: string;
     /** Legacy immutable Git source commit for replay and download. */
     workspaceCommitId?: string;

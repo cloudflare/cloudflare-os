@@ -1,7 +1,7 @@
 # Migrating from the Vercel AI SDK to pi-ai + pi-agent-core: implementation playbook
 
 Attachment follow-up: the original provider-input restrictions below no longer govern upload
-acceptance. [All uploaded files enter the chat's scratch worktree](../docs/attachment-worktrees.md)
+acceptance. [All uploaded files enter the chat's scratch worktree](../docs/chat-scratch-worktree.md)
 byte-for-byte, subject to the 4 MiB/file limit; source images are no longer resized to fit.
 Model requests inline only inputs supported by their adapter (including supported images with
 recognized dimensions no larger than 8000 pixels per edge) and valid text. Other uploads are

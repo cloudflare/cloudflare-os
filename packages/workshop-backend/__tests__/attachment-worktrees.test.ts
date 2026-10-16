@@ -40,7 +40,7 @@ async function scriptedTurn(impl: Impl, chatId: number, calls: ReturnType<typeof
 const fileToolResults = (messages: Message[]) => messages.flatMap(message =>
   message.role === "toolResult" && message.toolName !== "observeUserChanges"
     ? [{toolName: message.toolName, content: message.content, isError: message.isError}] : []);
-describe("attachment worktree ingress", () => {
+describe("scratch worktree attachment ingress", () => {
   it("normalizes legacy source metadata without overwriting an already edited scratch file", () => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID()), id = crypto.randomUUID();
     const original = new TextEncoder().encode("original\n");
@@ -49,7 +49,7 @@ describe("attachment worktree ingress", () => {
     }});
     const chatId = await impl.newChat(user, {profile: USER}, "Inspect", undefined, [{id}]);
     const context = impl.getChatAgentContext(chatId);
-    const worktreeId = context.attachments!.worktreeId;
+    const worktreeId = context.scratch!.worktreeId;
     delete context.attachmentsMigrated;
     impl.storage.chatContext.put(context);
     await step(impl, chatId, {[worktreeId]: [["notes.txt", {remove: true}], ["renamed.txt", {set: "edited\n"}]]});
@@ -91,7 +91,7 @@ describe("attachment worktree ingress", () => {
         await impl.sendChatMessage(user, {profile: USER}, chatId, "Continue");
         expect(impl.getChatAgentContext(chatId).attachmentsMigrated).not.toBe(true);
       } finally { fault.mockRestore(); }
-      worktreeId = impl.getChatAgentContext(chatId).attachments!.worktreeId;
+      worktreeId = impl.getChatAgentContext(chatId).scratch!.worktreeId;
       expect(impl.storage.chatAttachmentContent.get(ids[0])?.data).toBeUndefined();
       expect(impl.storage.chatAttachmentContent.get(ids[1])?.data).toEqual(originals[1]);
       await impl.ctx.storage.sync();
@@ -102,7 +102,7 @@ describe("attachment worktree ingress", () => {
       await impl.sendChatMessage(user, {profile: USER}, chatId, "Retry");
       const context = impl.getChatAgentContext(chatId);
       expect(context.attachmentsMigrated).toBe(true);
-      expect(context.attachments?.worktreeId).toBe(worktreeId);
+      expect(context.scratch?.worktreeId).toBe(worktreeId);
       const content = await impl.getCurrentChatContent(chatId, impl.storage.chatMeta.get(chatId)!);
       const base = impl.getWorktreePinBase(worktreeId)!;
       const paths = new Set([...(await impl.gitCache.listCommitTreePaths(base)).map(entry => entry.path),
@@ -140,7 +140,7 @@ describe("attachment worktree ingress", () => {
       impl.storage.chatContext.put(context);
       await impl.sendChatMessage(user, {profile: USER}, chatId, "Continue despite the missing upload");
       expect(impl.getChatAgentContext(chatId).attachmentsMigrated).not.toBe(true);
-      worktreeId = impl.getChatAgentContext(chatId).attachments!.worktreeId;
+      worktreeId = impl.getChatAgentContext(chatId).scratch!.worktreeId;
       expect(await impl.getChatAttachmentData(chatId, ids[1])).toEqual(original);
       const request = JSON.stringify(await scriptedTurn(impl, chatId, []));
       expect(request).toContain("original contents are currently unavailable");
@@ -157,7 +157,7 @@ describe("attachment worktree ingress", () => {
       impl.storage.chatAttachmentContent.put({fileId: ids[0], data: original, state: {type: "committed", chatId}});
       await impl.sendChatMessage(user, {profile: USER}, chatId, "Retry the repaired upload");
       expect(impl.getChatAgentContext(chatId).attachmentsMigrated).toBe(true);
-      expect(impl.getChatAgentContext(chatId).attachments?.worktreeId).toBe(worktreeId);
+      expect(impl.getChatAgentContext(chatId).scratch?.worktreeId).toBe(worktreeId);
       expect(await impl.getChatAttachmentData(chatId, ids[0])).toEqual(original);
       const request = JSON.stringify(await scriptedTurn(impl, chatId, []));
       expect(request).not.toContain("original contents are currently unavailable");
@@ -191,7 +191,7 @@ describe("attachment worktree ingress", () => {
       expect(impl.getChatAgentContext(chatId).attachmentsMigrated).toBe(true);
       expect(fault).toHaveBeenCalledTimes(boundary === "before publication" ? 2 : 1);
       expect(await impl.getChatAttachmentData(chatId, id)).toEqual(new TextEncoder().encode("old"));
-      const worktree = impl.getChatAgentContext(chatId).attachments!.worktreeId;
+      const worktree = impl.getChatAgentContext(chatId).scratch!.worktreeId;
       expect((await impl.gitCache.listCommitTreePaths(impl.getWorktreePinBase(worktree)!))
         .map(entry => entry.path)).toEqual(["old.txt"]);
       const stored = [...impl.storage.chats.list()].find(record =>
@@ -211,7 +211,7 @@ describe("attachment worktree ingress", () => {
     const ref = await impl.gitStore.writeBlob(bytes);
     await impl.sendChatMessage(user, {profile: USER}, chatId, "Inspect", undefined,
       [{oid: ref.oid, mimeType: "text/plain", name: "large.txt"}]);
-    const worktree = impl.getChatAgentContext(chatId).attachments!.worktreeId;
+    const worktree = impl.getChatAgentContext(chatId).scratch!.worktreeId;
     const requests = await scriptedTurn(impl, chatId, [
       fauxToolCall("readFile", {workpiece: "SCRATCH", filename: "large.txt", lineCount: 2}),
       fauxToolCall("grep", {workpiece: "SCRATCH", path: "large.txt", pattern: "needle"}),
@@ -295,10 +295,10 @@ describe("attachment worktree ingress", () => {
       expect(await impl.getChatAttachmentData(chatId, id)).toEqual(bytes);
       const attachment = impl.storage.chatAttachmentContent.get(id)!;
       const context = impl.getChatAgentContext(chatId);
-      expect(context.attachments).toBeDefined();
+      expect(context.scratch).toBeDefined();
       expect(attachment.data).toBeUndefined();
-      const tree = impl.storage.gadgets.get(context.attachments!.worktreeId)!;
-      if (tree.type !== "worktree") throw new Error("Expected attachments worktree");
+      const tree = impl.storage.gadgets.get(context.scratch!.worktreeId)!;
+      if (tree.type !== "worktree") throw new Error("Expected scratch worktree");
       if (bytes[0] === 255) {
         const value = await impl.gitCache.fileBytesAtCommit(tree.baseCommit, "input.csv");
         expect(impl.gitStore.readBlob(value!.oid, value!.byteLength)).toEqual(bytes);
@@ -339,8 +339,8 @@ describe("attachment worktree ingress", () => {
     expect(await crypto.subtle.digest("SHA-256", returned)).toEqual(await crypto.subtle.digest("SHA-256", bytes));
     expect(impl.storage.chatAttachmentContent.get(id)?.state).toMatchObject({type: "committed", chatId});
     expect(impl.storage.chatAttachmentContent.get(id)?.state).toHaveProperty("workspacePath", "large.txt");
-    expect(impl.getChatAgentContext(chatId).attachments).toBeDefined();
-    const worktreeId = impl.getChatAgentContext(chatId).attachments!.worktreeId;
+    expect(impl.getChatAgentContext(chatId).scratch).toBeDefined();
+    const worktreeId = impl.getChatAgentContext(chatId).scratch!.worktreeId;
     const value = (await impl.getCurrentChatContent(chatId, impl.storage.chatMeta.get(chatId)!))
       .get(worktreeId)?.get("large.txt")
       ?? await impl.readFileAtCommit(impl.getWorktreePinBase(worktreeId)!, "large.txt");
@@ -391,7 +391,7 @@ describe("attachment worktree ingress", () => {
       return {id};
     };
     const chatId = await impl.newChat(user, {profile: USER}, "Initial", undefined, [stage("input", "input.csv")]);
-    const worktreeId = impl.getChatAgentContext(chatId).attachments!.worktreeId;
+    const worktreeId = impl.getChatAgentContext(chatId).scratch!.worktreeId;
     const generatedPath = mode === "directory" ? "report.csv/part.txt" : "report.csv";
     await step(impl, chatId, {[worktreeId]: [[generatedPath, {set: "agent-created"}]]});
     if (mode === "accepted") expect(await impl.mergeChanges(chatId, {profile: USER}, USER.id)).toEqual({outcome: "merged"});
@@ -408,7 +408,7 @@ describe("attachment worktree ingress", () => {
     const original = await impl.gitStore.writeBlob(new TextEncoder().encode("original"));
     const chatId = await impl.newChat(user, {profile: USER}, "Seed", undefined,
       [{oid: original.oid, mimeType: "text/plain", name: "upload.txt"}]);
-    const id = impl.getChatAgentContext(chatId).attachments!.worktreeId;
+    const id = impl.getChatAgentContext(chatId).scratch!.worktreeId;
     await step(impl, chatId, {[id]: [["generated.txt", {set: "temporary"}]]});
     await step(impl, chatId, {[id]: [["generated.txt", {remove: true}], ["upload.txt", {remove: true}]]});
     await impl.sendChatMessage(user, {profile: USER}, chatId, "Upload", undefined, [
@@ -451,7 +451,7 @@ describe("attachment worktree ingress", () => {
         ? await impl.newChat(user, {profile: USER}, "Initial", undefined, [await stage(new TextEncoder().encode("seed"), "text/plain", "seed.txt")])
         : await impl.newChat(user, {profile: USER}, "Read file", undefined, [upload]);
       if (existing) await impl.sendChatMessage(user, {profile: USER}, chatId, "Another file", undefined, [upload]);
-      const worktreeId = impl.getChatAgentContext(chatId).attachments!.worktreeId;
+      const worktreeId = impl.getChatAgentContext(chatId).scratch!.worktreeId;
       const overlay = (await impl.getCurrentChatContent(chatId, impl.storage.chatMeta.get(chatId)!)).get(worktreeId)?.get(name);
       const value = overlay ?? await impl.gitCache.fileBytesAtCommit(impl.getWorktreePinBase(worktreeId)!, name);
       if (typeof value !== "object") throw new Error("Expected opaque byte content");
@@ -499,7 +499,7 @@ describe("attachment worktree ingress", () => {
       const message = [...impl.storage.chats.list()].find(message => message.type === "message" && message.chatId === chatId);
       if (!message || message.type !== "message") throw new Error("Missing attachment message");
       id = message.attachments![0].id;
-      worktreeId = impl.getChatAgentContext(chatId).attachments!.worktreeId;
+      worktreeId = impl.getChatAgentContext(chatId).scratch!.worktreeId;
       const replacement = await impl.gitStore.writeBlob(updated);
       await step(impl, chatId, {[worktreeId]: [["data.bin", {setBytes: replacement}]]});
       expect(await impl.mergeChanges(chatId, {profile: USER}, USER.id)).toEqual({outcome: "merged"});
@@ -573,7 +573,7 @@ describe("attachment worktree ingress", () => {
     const message = [...impl.storage.chats.list()].find(message => message.type === "message" && message.attachments?.length);
     if (!message || message.type !== "message") throw new Error("Missing attachment");
     expect(await impl.getChatAttachmentData(chatId, message.attachments![0].id)).toEqual(bytes);
-    const tree = impl.storage.gadgets.get(impl.getChatAgentContext(chatId).attachments!.worktreeId)!;
+    const tree = impl.storage.gadgets.get(impl.getChatAgentContext(chatId).scratch!.worktreeId)!;
     if (tree.type !== "worktree") throw new Error("Expected scratch worktree");
     const value = await impl.gitCache.fileBytesAtCommit(tree.baseCommit, file.name);
     expect(impl.gitStore.readBlob(value!.oid, value!.byteLength)).toEqual(bytes);
@@ -630,16 +630,16 @@ describe("attachment worktree ingress", () => {
       const blob = await impl.gitStore.writeBlob(new TextEncoder().encode("input"));
       const upload = {oid: blob.oid, mimeType: "text/plain", name: "notes.txt"};
       await impl.sendChatMessage(user, {profile: USER}, first, "First upload", undefined, [upload]);
-      const scratch = impl.getChatAgentContext(first).attachments!;
+      const scratch = impl.getChatAgentContext(first).scratch!;
       expect(scratch.bindingName).toBe("SCRATCH");
       await step(impl, first, {[scratch.worktreeId]: [["plan.md", {set: "working plan"}]]});
       await impl.sendChatMessage(user, {profile: USER}, first, "Repeat upload", undefined, [upload]);
-      expect(impl.getChatAgentContext(first).attachments).toEqual(scratch);
+      expect(impl.getChatAgentContext(first).scratch).toEqual(scratch);
       const content = await impl.getCurrentChatContent(first, impl.storage.chatMeta.get(first)!);
       expect(content.get(scratch.worktreeId)?.get("plan.md")).toBe("working plan");
       expect(content.get(scratch.worktreeId)?.get("notes-2.txt")).toBe("input");
       const other = await impl.newChat(user, {profile: USER}, "Other chat", undefined, [upload]);
-      const otherScratch = impl.getChatAgentContext(other).attachments!;
+      const otherScratch = impl.getChatAgentContext(other).scratch!;
       expect(otherScratch.worktreeId).not.toBe(scratch.worktreeId);
       const messages = [...impl.storage.chats.list()].filter(m => m.chatId === other && m.type === "message");
       expect(messages[0]).toMatchObject({attachments: [{workspacePath: "notes.txt"}]});
@@ -658,7 +658,7 @@ describe("attachment worktree ingress", () => {
     const local = await impl.gitStore.writeBlob(Uint8Array.of(2));
     const chatId = await impl.newChat(user, {profile: USER}, "Local blob", undefined,
       [{oid: local.oid, mimeType: "application/octet-stream"}]);
-    expect(impl.getChatAgentContext(chatId).attachments).toBeDefined();
+    expect(impl.getChatAgentContext(chatId).scratch).toBeDefined();
     await expect(impl.newChat(user, {profile: USER}, "Missing blob", undefined,
       [{oid: "a".repeat(40), mimeType: "application/octet-stream"}]))
       .rejects.toThrow("Unknown Git blob");

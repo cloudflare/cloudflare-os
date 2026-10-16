@@ -1,7 +1,7 @@
 # Plan: Worktrees — git-backed file workpieces pulled through gatekeepers
 
 This is the original worktree implementation plan. The text-only content restriction below is
-superseded by [attachments in worktrees](../docs/attachment-worktrees.md): each chat can have a
+superseded by [the chat scratch worktree](../docs/chat-scratch-worktree.md): each chat can have a
 shared `SCRATCH` worktree containing uploads of any MIME type. Binary mutations use whole-file
 `setBytes: {oid, byteLength}` references to ordinary Git blobs; text reads/grep remain text-only,
 and validated text transforms are unchanged. `readBytes`/`writeBytes` provide raw-byte access.

@@ -1,7 +1,7 @@
 # Plan: Git object storage for gadget code
 
 This records the original storage migration, including its historical Yjs and size-limit
-decisions. The current [attachment/worktree design](../docs/attachment-worktrees.md) uses the
+decisions. The current [scratch worktree design](../docs/chat-scratch-worktree.md) uses the
 same workspace `gitObjects` collection for uploads, remote Git objects, and authored files:
 one zlib-compressed loose object per OID, with no attachment-specific chunk store or grants.
 Raw-byte ingress is bounded to 8,000,000 bytes; existing text writes retain the compressed
