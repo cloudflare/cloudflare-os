@@ -75,6 +75,12 @@ export function isCompactionTurn(messages: AiChatMessage[]): boolean {
       last.request.id.commandId === "compact";
 }
 
+/** A user or gadget message that prompted a turn, rather than one that steered a running turn. */
+export function isTurnPrompt(message: AiChatMessage): boolean {
+  return message.type === "message" && !message.steered &&
+      (message.author.type === "user" || message.author.type === "gadget");
+}
+
 /**
  * A message that begins an agent turn: the user or a gadget prompted, a callback or nudge arrived,
  * or an accepted connection resumed the agent. Each produces a `user` model message, so cutting
@@ -82,7 +88,7 @@ export function isCompactionTurn(messages: AiChatMessage[]): boolean {
  */
 export function startsAgentTurn(message: AiChatMessage): boolean {
   switch (message.type) {
-    case "message": return message.author.type === "user" || message.author.type === "gadget";
+    case "message": return isTurnPrompt(message);
     case "agentCallback": case "agentNudge": return true;
     case "connectionRequest": return message.state === "accepted";
     default: return false;

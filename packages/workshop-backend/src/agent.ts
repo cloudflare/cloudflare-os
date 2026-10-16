@@ -309,6 +309,12 @@ export interface AgentHooks {
       msgs: AiChatMessageBodyWithModelData[]): void;
 
   /**
+   * Takes the messages sent to the chat since the agent last asked, recording each in the chat
+   * log as a steered message. The agent reads them before its next step.
+   */
+  takeSteers(chatId: number): {text: string, timestamp: number}[];
+
+  /**
    * The step's persistence barrier: in one storage transaction, persist the step's chat
    * messages (`msgs`, the tool-call record among them), validate and append each buffered
    * change as a chat change row -- one row per tool call, in call order, with the same
@@ -4219,6 +4225,10 @@ async function runAgentPass(
     // prompt and tool declarations now ride the leading system message in pi's transcript.
     convertToLlm: (messages) => messages as Message[],
     toolExecution: "sequential",
+    // pi polls without checking the signal. A stopped turn must leave its steers pending, to be
+    // logged before its stop error (see postAgentErrorMessage).
+    getSteeringMessages: async () => abortSignal.aborted ? [] : hooks.takeSteers(chatId).map(
+        ({text, timestamp}) => ({role: "user" as const, content: text, timestamp})),
     maxTokens: maxOutputTokens,
     finishTurn: ({message, toolResults}) => {
       if (message.stopReason === "error" || message.stopReason === "aborted") return;

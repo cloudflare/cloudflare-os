@@ -87,6 +87,13 @@ const storedDraftsMatch = (
 const composerDocumentsMatch = (first: ComposerDocument, second: ComposerDocument) =>
   JSON.stringify(first) === JSON.stringify(second);
 
+const withParagraphs = (text: string, paragraphs: readonly string[]) =>
+  [text.trimEnd(), ...paragraphs].filter(Boolean).join("\n\n");
+
+// The mounted draft for each storage key, so text that arrives after its composer unmounted reaches
+// the composer now showing that draft.
+const mountedDrafts = new Map<string, (paragraphs: readonly string[]) => void>();
+
 export const useComposerDraft = ({
   storageKey,
   logoSlot,
@@ -236,6 +243,39 @@ export const useComposerDraft = ({
     setCurrentDocument(nextDocument);
   };
 
+  const appendToDocument = (paragraphs: readonly string[]) => {
+    recordEdit();
+    const current = documentRef.current;
+    setCurrentDocument({ ...current, text: withParagraphs(current.text, paragraphs) });
+  };
+
+  useEffect(() => {
+    if (storageKey === undefined) return;
+    mountedDrafts.set(storageKey, appendToDocument);
+    return () => {
+      if (mountedDrafts.get(storageKey) === appendToDocument) mountedDrafts.delete(storageKey);
+    };
+    // appendToDocument reads only refs and state setters, so any render's copy will do.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storageKey]);
+
+  /**
+   * Appends paragraphs after the draft's text, in whichever composer shows this draft now, or in
+   * storage if none does: the caller may have waited past this composer's unmount.
+   */
+  const appendParagraphs = (paragraphs: readonly string[]) => {
+    const key = loadedKeyRef.current;
+    const shown = key === undefined ? appendToDocument : mountedDrafts.get(key);
+    if (shown) {
+      shown(paragraphs);
+      return;
+    }
+    const stored = readComposerDraft(key);
+    writeComposerDraft(key, {
+      version: 1, formats: [], ...stored, text: withParagraphs(stored?.text ?? "", paragraphs),
+    });
+  };
+
   const getDocumentSnapshot = (): ComposerDocumentSnapshot => ({
     document: documentRef.current,
     documentRevision: documentRevisionRef.current,
@@ -268,6 +308,7 @@ export const useComposerDraft = ({
   };
 
   return {
+    appendParagraphs,
     beginSend,
     commitDocumentEdit,
     completeSend,

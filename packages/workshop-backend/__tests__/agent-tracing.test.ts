@@ -41,7 +41,7 @@ interface OverseerInternals {
   deliverAgentCallback(chatId: number, methodName: string, args: unknown[],
                        initiatorUserId: string, initiatorModelId: string): Promise<void>;
   waitForAllAgentsToComplete(): Promise<void>;
-  cancelAgent(chatId: number): void;
+  cancelAgent(chatId: number, profileId: string): string[];
   submitAction(gatekeeperId: number, action: number, description: ActionDescription,
                caller: { from: "agent", chatId: number } | { from: "user" }): Promise<unknown>;
   drainAutoApprovals(gatekeeperId: number): Promise<void>;
@@ -372,7 +372,7 @@ describe("agent tracing", () => {
         [{ type: "text", text: "Never sent." }], "end_turn",
         { input: 1, cacheRead: 0, cacheWrite: 0, output: 1 })]);
     await turn.requested;
-    await inOverseer(turn.workspace, impl => impl.cancelAgent(CHAT_ID));
+    await inOverseer(turn.workspace, impl => impl.cancelAgent(CHAT_ID, OWNER.id));
 
     let spans = await turnSpans(turn);
     for (let span of [only(spans, `chat ${MODEL_ID}`), only(spans, "invoke_agent workshop-agent")]) {

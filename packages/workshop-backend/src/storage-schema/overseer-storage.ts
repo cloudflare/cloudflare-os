@@ -787,6 +787,17 @@ type PendingAgentCallRecord = {
 };
 
 /**
+ * A message sent to a chat while its agent runs, which the agent has not read yet. See the
+ * `pendingSteers` collection.
+ */
+export type PendingSteerRecord = {
+  chatId: number;
+  steerId: number;            // from the nextSteerId singleton; the key is chatId.steerId
+  text: string;
+  author: AiChatAuthorInfo;
+};
+
+/**
  * External message gateways pass a response target when submitting a prompt. While the agent turn is
  * in progress, `waiting` records persist that target across DO eviction/restart; once response
  * text is known, `ready` records retry delivery until acknowledged; `delivered` records are
@@ -1196,6 +1207,7 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       nextChatId: 0,
       nextHookId: 0,
       nextAgentCallId: 0,
+      nextSteerId: 0,
 
       // OBSOLETE: deadWorktreeIds existed to facilitate hiding worktrees from clients, but we
       // no longer do that. Noted here since old workspaces may still have a singleton by this
@@ -1444,6 +1456,14 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // list in arrival order.
       pendingAgentCalls: collection<PendingAgentCallRecord>()({
         primaryKey: (entry) => chatKey(entry.chatId, entry.callId),
+      }),
+
+      // Messages sent to a chat while its agent runs (see sendChatMessage), until the agent reads
+      // them between two steps (takeSteers) or the turn logs them as it ends (#finishAgentTurn,
+      // postAgentErrorMessage). Stored so a turn resumed after a restart still reads them.
+      // Keyed by chatId.steerId, in arrival order.
+      pendingSteers: collection<PendingSteerRecord>()({
+        primaryKey: (entry) => chatKey(entry.chatId, entry.steerId),
       }),
 
       // Model-facing snapshots of agent steps, replayed verbatim on later turns so reasoning

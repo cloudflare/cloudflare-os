@@ -91,7 +91,7 @@ it.concurrent("a transient provider failure is retried, and the turn answers wit
 });
 
 it.concurrent(
-    "a provider failure leaves the chat idle, retry answers once, and a busy chat refuses messages",
+    "a provider failure leaves the chat idle, retry answers once, and a busy chat refuses commands",
     async () => {
   const outage = { error: { status: 500, message: "scripted provider outage" } };
   // The turn retries the failed request twice before it reports the error.
@@ -136,13 +136,13 @@ it.concurrent(
   try {
     await ws.sendChatMessage(chatId, "Hold open", SCRIPTED_MODEL_ID);
     await waitFor("the pending model request", async () => model.requests.length === 5 || null);
-    await expect(ws.sendChatMessage(chatId, "Rejected", SCRIPTED_MODEL_ID))
-      .rejects.toThrow("Agent is running, wait for it to finish.");
+    // Plain text steers a running agent (see workshop-steering.test.ts); a command can't.
     history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
-    expect(history).not.toContainEqual(expect.objectContaining({
-      type: "message",
-      message: "Rejected",
-    }));
+    await expect(ws.sendChatMessage(
+        chatId, { id: { builtin: true, commandId: "compact" }, args: "" }, SCRIPTED_MODEL_ID))
+      .rejects.toThrow("Agent is running, wait for it to finish.");
+    expect(await loadAllChatHistory(before => ws.getChatHistory(chatId, before)))
+      .toEqual(history);
   } finally {
     await ws.stopAgent(chatId);
   }
