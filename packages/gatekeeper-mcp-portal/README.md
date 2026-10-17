@@ -141,7 +141,25 @@ recovered from two facts in the portal's documented contract:
    alias replaces the tool name but never the server-id prefix. Membership is therefore a pure
    string test needing no network call, so a server scope cannot fail open on a transient error.
 2. `portal_list_servers` is available in every portal session and returns each upstream server's id,
-   name, and enabled state.
+   name, and enabled state, in one of the two shapes `parsePortalServers()`
+   (`packages/mcp-shared/src/portal.ts`) accepts:
+
+   - **Structured:** `structuredContent` is a bare JSON array of `{ id, name, enabled }` records,
+     e.g. `[{ "id": "linear", "name": "Linear", "enabled": true }]`. `id` is required and must be
+     the prefix that server's tools carry; `name` falls back to `id`; `enabled` is `true` unless
+     literally `false`. An object such as `{ "servers": [...] }` is not recognised. An entry
+     without an `id` is skipped and the listing is marked incomplete, which falls through to the
+     text form.
+   - **Text:** otherwise the `text` blocks are scanned for bullet lines of the form
+     `- {display name} ({server id}): {status}`, as a Cloudflare portal returns them:
+     `- Linear (linear): ✓ enabled`. The id is the parenthesised token right before the colon;
+     the server is disabled when the status contains `disabled`, `✗` or `✘` (case-insensitive),
+     and enabled on any other wording. Surrounding prose is ignored. A line that does not match is
+     skipped silently and the listing is marked incomplete, so a truncated tool index cannot
+     mistake a partial result for the whole set.
+
+   Either way the listing is display metadata only; membership is always decided by the
+   `{server_id}_` prefix on tool names.
 
 Detection is a capability probe — does the endpoint offer `portal_list_servers`? — not a hostname
 match, so it works for a custom portal hostname and for any other aggregator adopting the
