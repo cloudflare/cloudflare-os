@@ -4,7 +4,6 @@ import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { UnreadBadge } from "./UnreadBadge";
 import { useUnreadState } from "./UnreadStateBridge";
-import { useUnreadPreviews } from "./useUnreadPreviews";
 
 /** A live inbox of unread conversations. Previewing a thread never marks it read. */
 export const UnreadThreads = () => {
@@ -14,7 +13,6 @@ export const UnreadThreads = () => {
     .toSorted((a, b) => (b.latestActivityAt?.getTime() ?? 0) - (a.latestActivityAt?.getTime() ?? 0)
       || a.chatTitle.localeCompare(b.chatTitle) || a.workspaceId.localeCompare(b.workspaceId)
       || a.chatId - b.chatId);
-  const previews = useUnreadPreviews(chats);
   const [markingRead, setMarkingRead] = useState(false);
 
   return (
@@ -36,12 +34,6 @@ export const UnreadThreads = () => {
           Mark all read
         </Button>
       </header>
-      {previews.failed && (
-        <div role="status" className="mb-3 flex items-center justify-between gap-3 px-3 text-sm text-kumo-subtle">
-          Some message previews couldn’t be loaded.
-          <Button size="xs" variant="ghost" onClick={previews.retry}>Retry previews</Button>
-        </div>
-      )}
       {!unread?.state ? (
         <p role="status" className="px-3 py-8 text-sm text-kumo-subtle">Loading unread threads…</p>
       ) : chats.length === 0 && unread.state.unavailableWorkspaceIds?.length ? (
@@ -64,9 +56,7 @@ export const UnreadThreads = () => {
                 <div className="min-w-0 flex-1">
                   <h2 className="truncate text-sm font-semibold text-kumo-default">{chat.chatTitle || "Untitled thread"}</h2>
                   <p className="mt-1 truncate text-sm text-kumo-subtle">
-                    {chat.latestMessagePreview === undefined
-                      ? previews.failed ? "Preview unavailable" : "Loading message preview…"
-                      : chat.latestMessagePreview || "New activity"}
+                    {chat.latestMessagePreview || "New activity"}
                   </p>
                 </div>
                 <div className="flex shrink-0 flex-col items-end gap-1">

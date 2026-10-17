@@ -6,32 +6,17 @@ import { afterEach, expect, it, vi } from "vitest";
 import { UnreadThreads } from "./UnreadThreads";
 import "../../styles.css";
 
-const unavailable = vi.hoisted(() => ({value: false}));
 vi.mock("./UnreadStateBridge", () => ({
   useUnreadState: () => ({ state: { revision: 1, unreadChatCount: 1, unreadMessageCount: 1,
-    unavailableWorkspaceIds: unavailable.value ? ["workspace"] : undefined,
-    chats: unavailable.value ? [] : [{
+    chats: [{
     workspaceId: "workspace", chatId: 1, chatTitle: "A long thread title that should truncate before the date",
     latestSequence: 2, readThroughSequence: 0, unreadMessageCount: 1, readEpoch: 0,
     latestMessagePreview: "The latest message should stay underneath the thread title.",
     latestActivityAt: new Date("2026-10-13T12:00:00Z"),
   }] } }),
 }));
-vi.mock("../../AuthContext", () => ({ useAuthenticatedApi: () => ({ authenticatedApi: api }) }));
-const api = { openGadget: vi.fn<(workspaceId: string) => unknown>() };
 let host: HTMLDivElement | undefined, root: Root | undefined;
-afterEach(async () => { await act(async () => root?.unmount()); host?.remove(); unavailable.value = false; });
-
-it("does not claim all caught up when workspace counts are unavailable", async () => {
-  unavailable.value = true;
-  const base = createRootRoute({ component: UnreadThreads });
-  const router = createRouter({ routeTree: base, history: createMemoryHistory({ initialEntries: ["/"] }) });
-  host = document.body.appendChild(document.createElement("div"));
-  root = createRoot(host);
-  await act(async () => { await router.load(); root!.render(<RouterProvider router={router} />); });
-  expect(host.textContent).toContain("once workspace counts are available");
-  expect(host.textContent).not.toContain("all caught up");
-});
+afterEach(async () => { await act(async () => root?.unmount()); host?.remove(); });
 
 it("right-aligns the date above the unread badge at desktop and narrow widths", async () => {
   const base = createRootRoute({ component: UnreadThreads });
@@ -55,5 +40,4 @@ it("right-aligns the date above the unread badge at desktop and narrow widths", 
     expect(title.right).toBeLessThan(date.left);
     expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth);
   }
-  expect(api.openGadget).not.toHaveBeenCalled();
 });

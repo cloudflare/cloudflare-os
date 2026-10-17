@@ -1,8 +1,5 @@
 # Timeline read state
 
-Branch: `ddr/user-unread-state`. Core/API and first-party web UI, independent of the desktop
-updater and experimental Computer Operator.
-
 ## Semantics
 
 Each user has an inclusive read pointer into each thread's persisted, ordered timeline, and
@@ -29,42 +26,10 @@ expand discovery or sharing authority.
 
 ## Authenticated API
 
-```ts
-type ChatReadState = {
-  workspaceId: string;
-  chatId: number;
-  chatTitle: string;
-  latestSequence: number;      // latest countable message's timeline sequence, or -1
-  unreadMessageCount: number;  // actual visible messages after the horizon, not sequence subtraction
-  latestMessagePreview?: string; // bounded first line of visible chat text
-  latestActivityAt?: Date;
-  readThroughSequence: number; // inclusive; -1 means nothing read
-  readEpoch: number;
-};
-
-type ChatReadReceipt = Pick<ChatReadState, "workspaceId" | "chatId" | "readEpoch"> & {
-  throughSequence: number;
-};
-
-type UserUnreadState = {
-  revision: number;
-  unreadChatCount: number;
-  unreadMessageCount: number;
-  chats: ChatReadState[]; // all tracked threads, including read ones
-  unavailableWorkspaceIds?: string[]; // missing heads; totals are lower bounds until rebuilt
-};
-
-interface UnreadStateSubscriber {
-  updated(state: UserUnreadState): Promise<void>;
-}
-
-getUnreadState(): Promise<UserUnreadState>;
-subscribeToUnreadState(subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>>;
-markChatRead(receipt: ChatReadReceipt): Promise<void>;
-markChatsRead(receipts: ChatReadReceipt[]): Promise<void>;
-markChatUnread(workspaceId: string, chatId: number, fromSequence: number,
-               readEpoch: number): Promise<void>;
-```
+[`AuthenticatedApi`](../packages/workshop-shared/src/api.ts) exposes `getUnreadState`,
+`subscribeToUnreadState`, `markChatRead`, `markChatsRead` and `markChatUnread`, with the
+`ChatReadState`, `ChatReadReceipt`, `UserUnreadState` and `UnreadStateSubscriber` contracts.
+Snapshots include read and unread threads; unavailable workspaces are explicit, not false zeroes.
 
 Subscribe directly: registration installs the listener before sending the initial full snapshot,
 avoiding a fetch/watch gap. Snapshots replace previous state; ignore older/equal revisions within
@@ -84,9 +49,7 @@ an old window cannot immediately clear a deliberate unread marker, and lost-ACK 
 - Thread list, workspace list and sidebar indicators use the same authoritative snapshot.
 - The aligned Unread threads navigation opens a live, newest-first inbox, with a one-line latest
   message preview, direct thread links, an empty state and Mark all read. Browsing it doesn't read
-  threads. Pre-upgrade entries refresh through the authorized workspace-open path, four at a time,
-  with retry on failure or after 15 seconds without a delivered preview; workspace capabilities
-  are released after the open RPC completes. The workspace-open ACK alone is not a delivery receipt.
+  threads. Previews arrive with the reconstructed counts, not through a separate hydration flow.
 - Thread menus offer Mark thread read/unread; workspace menus offer Mark workspace read.
 - Each rendered timeline item offers Mark unread from here. The new-items divider moves there.
 - Opening an unread thread loads checkpoint history back to its first unread item and positions
@@ -139,25 +102,26 @@ read all heads; ordinary appends use an incremental in-memory source index. Spar
 sequences are never treated as message counts. Currently the audience is the workspace owner and
 established build collaborators; a future multiplayer thread-membership model can narrow it.
 
-The Overseer journals a dirty version in the same transaction as timeline writes. Typed-storage
-subscribers run **before** their write and may run inside an existing KV iterator: they must not
-enumerate recipients or construct snapshots. A deferred drain reads committed state, fans out
-durable pending versions, and arms a fallback alarm before its first RPC. A constructor recovers
-persisted dirtiness if the source invocation was interrupted before fanout.
+The Overseer increments its source version in the same transaction as timeline writes. Each
+`unreadReaders` row stores the recipient's last acknowledged version: an absent/older checkpoint
+**is** pending work. There is no separate outbox, copied pending watermark or fanout transaction.
+The per-thread `chatTimelineChanges` index selects only heads changed since that checkpoint.
+Reopening a dismissed listing clears its delivery checkpoint to request a full catch-up.
 
-Each recipient has one coalesced pending version and last-acknowledged source checkpoint. Delivery
-rechecks current authority, captures changed heads and the source version together, and awaits ACK
-before deleting that version. Writes during an in-flight RPC remain dirty/pending and are drained
-again. A failed recipient stays queued without blocking other recipients or spinning in the same
-drain. Failures persist a 30-second retry deadline in the shared alarm. A lost response,
-or interruption after ACK before cleanup, retries the same version safely. In-memory drains and
-subscriptions are disposable. Callback failure never rolls back a cursor.
+Typed-storage subscribers run **before** their write and may run inside an existing KV iterator:
+they must not enumerate recipients or construct snapshots. A deferred drain reads committed state,
+arms the shared fallback alarm before RPC, rechecks authority, captures heads and their version
+together, and advances each checkpoint only after ACK. Concurrent writes leave it behind the
+source version for another pass. Failed recipients do not block healthy readers or spin within
+the same drain; the persisted 30-second deadline survives resets. Lost ACKs/checkpoint-write
+failures safely retry because the receiver fences source versions. Callback failures do not
+roll back read cursors.
 
 Workspace deletion persists its intent before removing any user's listing and read state. It
-uses the same recipient journal, without requiring observer access for removal. The listing
-removal fences delayed snapshots; only after every tracked recipient acknowledges cleanup does
-the Overseer delete its own storage. The input gate protects only deletion intent and fanout
-journalling: it never joins cross-DO delivery, which may call back into the workspace. The request
+uses the same reader rows, without requiring observer access for removal: a row is deleted only
+after that User DO acknowledges cleanup. The listing removal fences delayed snapshots; only after
+every row is removed does the Overseer delete its own storage. The input gate protects only
+deletion intent: it never joins cross-DO delivery, which may call back into the workspace. The request
 waits for the owner's listing cleanup, not unhealthy collaborators; the durable alarm finishes
 their cleanup. Alarms resume interrupted deletion without another user action,
 and a deleting workspace refuses new opens, agent callbacks and turn starts. Queued callbacks
@@ -187,26 +151,14 @@ branch does not prevent OS suspension/termination, deliver after full Quit, or a
 
 ## Verification
 
-Unit/component tests cover partial and bulk reads, source ordering, manual-unread epochs,
-cross-device updates, initial history baselines, user/role isolation, deletion, viewport visibility,
-history loading, reset resubscription and cleanup. Recovery tests exercise real DO eviction before
-dispatch, a lost ACK, and interruption after ACK before outbox cleanup, without repeating alerts.
-Deletion recovery covers those boundaries and interruption before workspace storage deletion.
-Tests also compare user storage before/after arrivals (no writes), check horizon-only writes for
-read-through-latest, sparse message counts, per-message multi-user fanout with unchanged threads
-excluded, cold reconstruction races, and real User/Overseer eviction without a persistent head cache.
-The integration test drives the real validated Cap'n Web API through two owner WebSocket sessions,
-a build collaborator and a use-only collaborator, including appends, rename and deletion. It
-asserts per-message fanout through live subscriptions without polling/reopening the workspace:
-the same message updates both users' counts/previews, an observed partial read leaves later
-activity unread, and reading on the owner's second device never clears the collaborator's badge.
-Fault tests also keep the initial subscription pending during cold reconstruction, isolate failed
-workspaces with explicit incomplete state, retry missing heads, and leave a thread's horizon
-unchanged if its partial read's source count lookup fails. Deletion tests exercise `deleteSelf()`
-with a simulated cold-recipient callback delivered as a real RPC event through the DO input gate,
-and an unhealthy collaborator. Reopening a dismissed shared workspace restores counts and previews
-through its existing live subscription, including after real source eviction before catch-up delivery.
-Chromium tests verify actual viewport geometry, focus, and pointer input for marking unread.
+- `unread-state.test.ts`: private horizons, sparse counts, epochs, no arrival writes, reconstruction,
+  unavailable workspaces, authorization and dismissed-listing catch-up.
+- `unread-outbox.test.ts`: checkpoint fanout, lost ACKs, failed checkpoint writes, real DO eviction,
+  retry isolation and durable deletion, including in-flight agent/gate races. No alert replay.
+- `workshop-unread.test.ts`: validated WebSocket API with two owner devices and build/use readers;
+  live fanout, private reads, rename and deletion without polling/reopening.
+- Frontend tests cover subscription/retry lifecycle, history navigation, unread actions and inbox
+  state. Chromium covers actual viewport geometry, focus, pointer input and badge layout.
 
 Useful commands (workerd tests require local loopback sockets):
 

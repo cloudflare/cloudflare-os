@@ -11,7 +11,6 @@ import { UnreadThreads } from "./UnreadThreads";
 type Unread = NonNullable<ReturnType<typeof useUnreadState>>;
 const mock = vi.hoisted(() => ({
   unread: null as ReturnType<typeof useUnreadState>,
-  openGadget: vi.fn<(workspaceId: string) => unknown>(),
   listeners: new Set<() => void>(),
 }));
 vi.mock("./UnreadStateBridge", async () => {
@@ -21,8 +20,6 @@ vi.mock("./UnreadStateBridge", async () => {
     return () => { mock.listeners.delete(listener); };
   }, () => mock.unread) };
 });
-vi.mock("../../AuthContext", () => ({ useAuthenticatedApi: () => ({ authenticatedApi: api }) }));
-const api = { openGadget: mock.openGadget };
 let container: HTMLDivElement, root: Root;
 const markManyRead = vi.fn<Unread["markManyRead"]>().mockResolvedValue(undefined);
 const chats = [
@@ -40,7 +37,6 @@ beforeEach(() => {
   mock.unread = { state: { revision: 3, unreadChatCount: 1, unreadMessageCount: 1, chats }, markManyRead,
     markRead: vi.fn<Unread["markRead"]>().mockResolvedValue(undefined),
     markUnread: vi.fn<Unread["markUnread"]>().mockResolvedValue(undefined) };
-  mock.openGadget.mockImplementation(() => ({ getMetadata: async () => ({}), [Symbol.dispose]: vi.fn<() => void>() }));
   container = document.body.appendChild(document.createElement("div"));
   root = createRoot(container);
 });
@@ -64,7 +60,6 @@ it("uses a standard navigation link with a trailing unread count", async () => {
   expect(nav.querySelector('[aria-label="1 unread message"]')).not.toBeNull();
   expect(container.querySelector('[role="menu"]')).toBeNull();
 });
-
 it("shows message counts in the summary and each thread, not just unread-thread counts", async () => {
   mock.unread = { ...mock.unread!, state: { revision: 4, unreadChatCount: 2, unreadMessageCount: 7,
     chats: [{ ...chats[0], unreadMessageCount: 4 },
@@ -103,52 +98,13 @@ it("marks only the currently observed unread boundaries read", async () => {
   expect(markManyRead).toHaveBeenCalledExactlyOnceWith([chats[0]]);
 });
 
-it("distinguishes loading from an empty inbox and keeps collapsed navigation accessible", async () => {
-  mock.unread!.state = undefined;
+it.each([false, true])("does not show all caught up while state is %s unavailable", async unavailable => {
+  mock.unread!.state = unavailable
+    ? {revision: 4, unreadChatCount: 0, unreadMessageCount: 0, chats: [], unavailableWorkspaceIds: ["workspace-1"]}
+    : undefined;
   await render(true);
-  expect(container.textContent).toContain("Loading unread threads…");
+  expect(container.textContent).toContain(unavailable
+    ? "once workspace counts are available" : "Loading unread threads…");
   expect(container.textContent).not.toContain("You’re all caught up");
   expect(container.querySelector('a[title="Unread threads"]')).not.toBeNull();
-});
-
-it("refreshes missing legacy previews once per workspace without reading chats", async () => {
-  mock.unread!.state!.chats = [{ ...chats[0], latestMessagePreview: undefined },
-    { ...chats[0], chatId: 5, latestMessagePreview: undefined }];
-  const dispose = vi.fn<() => void>();
-  mock.openGadget.mockReturnValue({ getMetadata: async () => ({}), [Symbol.dispose]: dispose });
-  await render();
-  expect(mock.openGadget).toHaveBeenCalledExactlyOnceWith("workspace-1");
-  expect(dispose).toHaveBeenCalledOnce();
-  expect(mock.unread!.markRead).not.toHaveBeenCalled();
-});
-
-it("offers retry after preview hydration fails and releases the workspace capability", async () => {
-  mock.unread!.state!.chats = [{ ...chats[0], latestMessagePreview: undefined }];
-  const dispose = vi.fn<() => void>();
-  mock.openGadget.mockReturnValue({ getMetadata: vi.fn<() => Promise<object>>().mockRejectedValue(new Error("offline")), [Symbol.dispose]: dispose });
-  await render();
-  expect(container.textContent).toContain("Preview unavailable");
-  expect(dispose).toHaveBeenCalledOnce();
-  mock.openGadget.mockReturnValue({ getMetadata: async () => ({}), [Symbol.dispose]: dispose });
-  await act(async () => action("Retry previews").click());
-  expect(mock.openGadget).toHaveBeenCalledTimes(2);
-  expect(dispose).toHaveBeenCalledTimes(2);
-});
-
-it("offers retry when workspace-open succeeds but the preview projection never arrives", async () => {
-  mock.unread!.state!.chats = [{ ...chats[0], latestMessagePreview: undefined }];
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  await render();
-  expect(container.textContent).toContain("Loading message preview…");
-  await act(async () => vi.advanceTimersByTimeAsync(15_000));
-  expect(container.textContent).toContain("Preview unavailable");
-  await act(async () => action("Retry previews").click());
-  expect(mock.openGadget).toHaveBeenCalledTimes(2);
-  expect(container.textContent).toContain("Loading message preview…");
-  mock.unread = { ...mock.unread!, state: { revision: 4, unreadChatCount: 1, unreadMessageCount: 1, chats: [chats[0]] } };
-  await act(async () => mock.listeners.forEach(listener => listener()));
-  await act(async () => vi.advanceTimersByTimeAsync(15_000));
-  expect(container.textContent).toContain("The deployment is ready.");
-  expect(container.textContent).not.toContain("Preview unavailable");
-  expect(mock.unread!.markRead).not.toHaveBeenCalled();
 });

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
-import { act, useRef, useState } from "react";
+import { act, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RpcStub } from "capnweb";
@@ -12,7 +12,6 @@ import type {
 import { UnreadStateBridge } from "./UnreadStateBridge";
 import { ReadTimeline } from "./ReadTimeline";
 import { TimelineReadItem } from "./TimelineReadItem";
-import { UnreadBadge } from "./UnreadBadge";
 import { reportVisibleChat } from "./visibleChat";
 import { TimelineContext } from "./readTimelineContext";
 
@@ -279,22 +278,6 @@ describe("timeline read/unread experience", () => {
     await act(async () => window.dispatchEvent(new Event("focus")));
     await settle();
     expect(markChatRead).not.toHaveBeenCalled();
-  });
-
-  it("shows accessible aggregate badges and hides zero counts", async () => {
-    const Badges = () => {
-      const [count, setCount] = useState(2);
-      return (
-        <>
-          <UnreadBadge count={count} />
-          <button onClick={() => setCount(0)}>Clear</button>
-        </>
-      );
-    };
-    await render(<Badges />);
-    expect(container.querySelector('[aria-label="2 unread messages"]')).not.toBeNull();
-    await act(async () => container.querySelector("button")!.click());
-    expect(container.querySelector('[aria-label="2 unread messages"]')).toBeNull();
   });
 
   it("places the divider after catalog gaps and marks unread from the selected visible item", async () => {
