@@ -1,0 +1,16 @@
+{
+  "id": "/",
+  "name": "Cloudflare OS",
+  "short_name": "Cloudflare OS",
+  "description": "Your workspaces, AI agents, and personal apps.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#fcfcfb",
+  "theme_color": "#fcfcfb",
+  "icons": [
+    { "src": "/icons/app-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/app-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/app-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

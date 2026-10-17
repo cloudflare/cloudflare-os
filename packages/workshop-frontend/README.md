@@ -2,6 +2,26 @@
 
 Single-page app for the Gadgets Workshop UI. Built with React, Kumo, and Vite.
 
+## Desktop installation
+
+Use the install icon in Chrome or Edge’s address bar, or the install app option in
+the browser menu. In Safari on macOS Sonoma or later, choose **File → Add to Dock**.
+
+The installed app opens in its own window. Use Command+Tab on Mac or Alt+Tab on
+Windows to switch to it. You still need an internet connection. Safari may ask you
+to sign in again in the installed app.
+
+The manifest and app icons live in `public/`. The PNG icons use the existing
+`favicon.svg` artwork on the app's light base color. The maskable and Apple touch
+icons scale the mark to 70% around its center to leave room for platform masks.
+The browser owns the installation flow. The app does not add a menu item, intercept
+install prompts, register a service worker, or cache authenticated content.
+
+For production-style local validation, run `pnpm run-local` from the workspace root
+and install http://localhost:8787. Keep that server running while you use the app.
+Before shipping, verify OAuth and Cloudflare Access login in installed browser
+windows on a protected deployment; local password-mode tests do not cover them.
+
 ## Development
 
 ```sh
