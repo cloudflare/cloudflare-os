@@ -336,7 +336,7 @@ export const ShareCollectionDialog = ({
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="group shrink-0 gap-1.5 text-xs"
+                        className="group shrink-0 gap-1.5 text-base"
                         aria-label="Role for users you add"
                       >
                         {COLLECTION_ROLE_LABELS[newRole]}
@@ -349,7 +349,7 @@ export const ShareCollectionDialog = ({
                       <DropdownMenu.Item
                         key={role}
                         selected={role === newRole}
-                        className="text-xs"
+                        className="text-base"
                         onClick={() => setNewRole(role)}
                       >
                         <span className="min-w-0 flex-1 pr-4">{COLLECTION_ROLE_LABELS[role]}</span>
