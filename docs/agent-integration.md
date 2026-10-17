@@ -25,14 +25,16 @@ grant fields fail closed. Ambient provisioning grants neither permission.
 
 An execution gets an optional opaque turn/segment identity when an eligible binding
 is minted. The turn identity survives #797's decision pauses and resets. The segment
-rotates when inference re-enters, expiring old session capabilities. Binding props
+expires as soon as a resume is claimed, before asynchronous model lookup or cleanup;
+inference entry then rotates it for the new segment. Binding props
 capture their origin before async session lookup; opening a retained binding cannot
 borrow a later prompt's authority.
 
 `AgentContext.participate()` durably registers one persistent participant per turn
 and connection. Registration is idempotent, never replaces the original target, and
 acknowledges registration rather than waiting for a callback. This avoids callback
-re-registration cycles. Integrations initialize lazily on first use; they must not
+re-registration cycles, including a phase change to cleanup while a callback awaits.
+Integrations initialize lazily on first use; they must not
 depend on a started callback arriving before the registering method returns.
 
 One indexed outbox stores participants, pending events and retry deadlines. It holds
@@ -49,9 +51,13 @@ and single-flight guards are conveniences, never recovery authority.
 
 Predecessor cleanup and entry deliveries drain before inference. Failure leaves the
 same runnable execution row for the existing alarm, not a new continuation state.
+Stop interrupts that entry wait without waiting for an unresponsive callback; its
+durable finished receipt still drains through the outbox before a later entry.
 Cleanup contexts remain available after revocation or chat deletion, but authorize no
 new commands. Delayed entry callbacks must inspect the context's current phase: they
-may already be cleanup-only. Delivery contexts expire when that attempt ends.
+may already be cleanup-only. Every delivery-context read rechecks the connection and
+lifecycle grant, downgrading to cleanup-only after revocation. Delivery contexts expire
+when that attempt ends.
 
 Workspace deletion records a durable fence, cancels queued/existing turns, then drains
 cleanup before deleting storage. Failed cleanup leaves both the fence and receipts;
@@ -71,9 +77,13 @@ Non-awaited actions do not extend the model turn's lifetime.
 
 There is no fallback to legacy application after contextual dispatch, and revocation
 fails closed. Existing/ungranted actions keep legacy behavior even if a grant is later
-added. This layer does not automatically reapply effects after a lost response: the
-existing explicit retry and receiver idempotency requirements still apply. It does
-not claim exactly-once execution across an unjournalled remote-effect boundary.
+added. Before contextual dispatch, the action row records that an attempt has begun.
+An attempted action left pending blocks automatic drains, including coalesced drains
+and drains after reset. This conservative fence also covers a reset just before the
+remote effect; it cannot distinguish that from a lost reply after success. Explicit
+retry remains possible after checking the outcome; receiver idempotency is still
+required. This layer does not claim exactly-once execution across an unjournalled
+remote-effect boundary.
 
 The workerd regressions cover real eviction/lost replies, #797's pause/resume/inference
 path, registration cycles, revocation, stale capabilities, deletion cleanup, and

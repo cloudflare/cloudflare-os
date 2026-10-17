@@ -1122,6 +1122,11 @@ class OverseerImpl implements AgentHooks {
     // preparation clears it: this budget never retries inference or external effects.
     let resumeAttempts = (record.resumeAttempts ?? 0) + 1;
     record = {...record, resumeAttempts};
+    // Claiming a resume makes the chat busy again. Expire the paused segment before lookup
+    // opens the input gate; enter() will publish the resumed lifecycle event after cleanup.
+    if (record.integration) {
+      record.integration = {...record.integration, segmentId: crypto.randomUUID()};
+    }
     this.storage.activeAgents.put(record);
     let aiModel: UserAiModelRecord | undefined;
     let failure: unknown;
@@ -4926,9 +4931,20 @@ class OverseerImpl implements AgentHooks {
         if (!this.integrationGrant(record.gatekeeperId).contextualActions) {
           throw new Error("Contextual action access revoked; legacy dispatch is not a fallback.");
         }
+        // Facet lookup opened the input gate. Re-read before claiming dispatch, and persist the
+        // claim before the effect: a lost reply (or reset) must not make it auto-eligible again.
+        let pending = this.storage.actions.get(record.id);
+        if (!pending || pending.type !== "action" || pending.state !== "pending" || pending.action === "create") {
+          throw new Error("This action is no longer pending.");
+        }
+        if (autoApproved && pending.contextualAttempted) {
+          throw new Error("This action was already attempted; retry it explicitly after checking the outcome.");
+        }
+        record = {...pending, contextualAttempted: true};
+        this.storage.actions.put(record);
         using context = new GatekeeperActionContextImpl(this, record);
         await (gatekeeper as Fetcher<Gatekeeper<any> &
-          Required<Pick<Gatekeeper<any>, "applyActionInContext">>>).applyActionInContext(record.action, context);
+          Required<Pick<Gatekeeper<any>, "applyActionInContext">>>).applyActionInContext(pending.action, context);
       } else {
         await gatekeeper.applyAction(record.action,
             new GitCacheImpl(this.gitCache, record.gatekeeperId, record.id));
@@ -7181,11 +7197,11 @@ class OverseerImpl implements AgentHooks {
     });
 
     try {
-      await this.integrations.drain(chatId);
+      await this.integrations.drain(chatId, liveChat.cancelController.signal);
       if (!owns()) return;
       liveChat.cancelController.signal.throwIfAborted();
       this.integrations.enter(chatId);
-      await this.integrations.drain(chatId);
+      await this.integrations.drain(chatId, liveChat.cancelController.signal);
       if (!owns()) return;
       liveChat.cancelController.signal.throwIfAborted();
       lifecycleReady = true;

@@ -85,7 +85,13 @@ export class FakeGatekeeperVerifier
   }
 }
 
-const lifecycleCalls = new Map<string, {fail: boolean; reregister: boolean;
+type LifecycleBarrier = {
+  kind: AgentTurnEvent["kind"];
+  entered: ReturnType<typeof Promise.withResolvers<void>>;
+  release: ReturnType<typeof Promise.withResolvers<void>>;
+  observed: ReturnType<typeof Promise.withResolvers<AgentTurnInfo>>;
+};
+const lifecycleCalls = new Map<string, {fail: boolean; reregister: boolean; barrier?: LifecycleBarrier;
   calls: {event: AgentTurnEvent; turn: AgentTurnInfo}[]}>();
 
 /** Native persistent entrypoint, minted by the same DO invocation which stores it. */
@@ -99,6 +105,16 @@ export class TestLifecycleParticipant extends WorkerEntrypoint<unknown, {name: s
   async onAgentTurnEvent(event: AgentTurnEvent, context: RpcStub<AgentContext>): Promise<void> {
     using borrowed = context;
     this.#state().calls.push({event, turn: await borrowed.getTurn()});
+    const barrier = this.#state().barrier;
+    if (barrier?.kind === event.kind) {
+      barrier.entered.resolve();
+      try {
+        await barrier.release.promise;
+        // Use the capability only in the callback invocation which received it.
+        barrier.observed.resolve(await borrowed.getTurn());
+      } catch (error) { barrier.observed.reject(error); throw error; }
+      finally { delete this.#state().barrier; }
+    }
     if (this.#state().reregister && event.kind !== "finished" && event.kind !== "suspended") {
       const exports = this.ctx.exports as typeof this.ctx.exports & {
         TestLifecycleParticipant(options: {props: {name: string}}): Fetcher<TestLifecycleParticipant>;
@@ -109,6 +125,17 @@ export class TestLifecycleParticipant extends WorkerEntrypoint<unknown, {name: s
   }
   setFailure(fail: boolean): void { this.#state().fail = fail; }
   setReregister(): void { this.#state().reregister = true; }
+  hold(kind: AgentTurnEvent["kind"]): void {
+    this.#state().barrier = {kind, entered: Promise.withResolvers<void>(),
+      release: Promise.withResolvers<void>(), observed: Promise.withResolvers<AgentTurnInfo>()};
+  }
+  async waitUntilHeld(): Promise<void> { await this.#state().barrier!.entered.promise; }
+  async release(): Promise<AgentTurnInfo | undefined> {
+    const barrier = this.#state().barrier;
+    if (!barrier) return;
+    barrier.release.resolve();
+    return barrier.observed.promise;
+  }
   calls(): {event: AgentTurnEvent; turn: AgentTurnInfo}[] { return this.#state().calls; }
   async actionTurn(context: RpcStub<GatekeeperActionContext>): Promise<AgentTurnInfo | null> {
     using borrowed = context;

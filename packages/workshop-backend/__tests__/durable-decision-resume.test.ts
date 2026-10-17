@@ -131,6 +131,91 @@ function recordNotifications() {
 }
 
 describe("decision handoff using the existing execution row", () => {
+  it.each(["started", "resumed"] as const)("Stop releases a hung %s callback without losing its cleanup receipt", async kind => {
+    const requests = inference(), s = await scenario();
+    await s.visit(async impl => {
+      impl.env.AGENT_INTEGRATION_GRANTS = '{"test":{"lifecycle":true}}';
+      impl.storage.gatekeepers.put({id: 31, class: {} as any,
+        creationSpec: {type: "ambient", vendorId: "test", accountId: 1}});
+      const meta = impl.storage.chatMeta.get(CHAT)!;
+      impl.storage.chatMeta.put({...meta, activeAgent: MODEL.profile});
+      const origin = impl.integrations.capture(CHAT)!;
+      const exports = impl.ctx.exports as typeof impl.ctx.exports & {
+        TestLifecycleParticipant(options: {props: {name: string}}): Fetcher<TestLifecycleParticipant>;
+      };
+      const receiver = exports.TestLifecycleParticipant({props: {name: crypto.randomUUID()}});
+      await receiver.hold(kind);
+      await impl.integrations.context(31, origin)!.participate(receiver);
+      if (kind === "resumed") await impl.integrations.drain(CHAT);
+      const entered = Promise.withResolvers<void>();
+      const drain = impl.integrations.drain.bind(impl.integrations);
+      vi.spyOn(impl.integrations, "drain").mockImplementation((...args) => {
+        entered.resolve();
+        return drain(...args);
+      });
+      impl.storage.chatMeta.put(meta);
+      decide(impl, "connection");
+      impl.resumeAgentAfterDecision(CHAT);
+      await entered.promise;
+      await receiver.waitUntilHeld();
+      impl.cancelAgent(CHAT);
+      let watchdog: ReturnType<typeof setTimeout> | undefined;
+      try {
+        // This bound only fails a hung test; correctness is asserted before releasing the barrier.
+        await Promise.race([impl.waitForAllAgentsToComplete(), new Promise<never>((_, reject) => {
+          watchdog = setTimeout(() => reject(new Error("Stop is still waiting for the lifecycle callback")), 2_000);
+        })]);
+        expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+        expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+        expect([...impl.storage.agentParticipants.list()][0].pending.at(-1)?.kind).toBe("finished");
+        expect(() => impl.assertChatNotActive(CHAT)).not.toThrow();
+        expect((await receiver.release())?.phase).toBe("finishing");
+      } finally {
+        clearTimeout(watchdog);
+        await receiver.release();
+        await impl.waitForAllAgentsToComplete();
+        await impl.integrations.drain(CHAT);
+      }
+      expect([...impl.storage.agentParticipants.list()]).toHaveLength(0);
+    });
+    expect(requests()).toBe(0);
+  });
+
+  it("keeps paused segment capabilities expired while resumed model lookup is blocked", async () => {
+    const requests = inference(), s = await scenario("connection", true);
+    await s.visit(async impl => {
+      impl.env.AGENT_INTEGRATION_GRANTS = '{"test":{"lifecycle":true,"contextualActions":true}}';
+      impl.storage.gatekeepers.put({id: 7, class: {} as any,
+        creationSpec: {type: "ambient", vendorId: "test", accountId: 1}});
+      const origin = impl.integrations.capture(CHAT)!;
+      const retained = impl.integrations.context(7, origin)!;
+      const meta = impl.storage.chatMeta.get(CHAT)!;
+      delete meta.activeAgent;
+      impl.storage.chatMeta.put(meta);
+      await expect(retained.getTurn()).rejects.toThrow("expired");
+
+      const gate = Promise.withResolvers<void>();
+      const lookup = vi.fn(async () => {
+        await gate.promise;
+        return {profile: USER, aiModel: MODEL};
+      });
+      modelLookup(impl, lookup);
+      try {
+        decide(impl, "connection");
+        impl.resumeAgentAfterDecision(CHAT);
+        expect(lookup).toHaveBeenCalledTimes(1);
+        expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toEqual(MODEL.profile);
+        await expect(retained.getTurn()).rejects.toThrow("expired");
+        expect(impl.storage.activeAgents.get(CHAT)?.integration).toMatchObject({turnId: origin.turnId});
+        expect(impl.storage.activeAgents.get(CHAT)?.integration?.segmentId).not.toBe(origin.segmentId);
+      } finally {
+        gate.resolve();
+        await impl.waitForAllAgentsToComplete();
+      }
+    });
+    expect(requests()).toBe(1);
+  });
+
   it.each(["connection", "action"] as const)("recovers a committed %s decision, before or after teardown", async kind => {
     const requests = inference();
     for (const active of [false, true]) {

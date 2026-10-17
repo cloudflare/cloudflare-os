@@ -117,7 +117,9 @@ export class AgentIntegrations {
     const row = this.impl.storage.activeAgents.get(receipt.chatId);
     // Old deliveries retain only cleanup authority, even after revocation or chat deletion.
     const closing = receipt.pending.findLast(e => e.kind === "suspended" || e.kind === "finished");
-    const phase = closing?.kind === "finished" || row?.integration?.turnId !== event.turnId ? "finishing"
+    const allowed = this.impl.gatekeeperUsable(receipt.gatekeeperId) &&
+      this.impl.integrationGrant(receipt.gatekeeperId).lifecycle;
+    const phase = !allowed || closing?.kind === "finished" || row?.integration?.turnId !== event.turnId ? "finishing"
       : closing || row.integration.segmentId !== event.segmentId ||
           !this.impl.storage.chatMeta.get(receipt.chatId)?.activeAgent ? "suspending" : "running";
     return {turnId: event.turnId, segmentId: event.segmentId, chatId: String(receipt.chatId), phase};
@@ -160,11 +162,18 @@ export class AgentIntegrations {
     finally { this.#deliveries.delete(id); this.changed(); }
   }
 
-  /** Await cleanup/entry before the next model invocation or destructive workspace deletion. */
-  async drain(chatId?: number): Promise<void> {
+  /** Cancel only the entry wait, not durable delivery or destructive deletion's cleanup. */
+  async drain(chatId?: number, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     const records = chatId === undefined ? [...this.impl.storage.agentParticipants.list()]
       : [...this.impl.storage.agentParticipants.byChat.get(chatId)];
-    await Promise.all(records.map(r => this.#deliver(r.id)));
+    const delivery = Promise.all(records.map(r => this.#deliver(r.id)));
+    if (!signal) { await delivery; return; }
+    const cancelled = Promise.withResolvers<never>();
+    const abort = () => cancelled.reject(signal.reason);
+    signal.addEventListener("abort", abort, {once: true});
+    try { await Promise.race([delivery, cancelled.promise]); }
+    finally { signal.removeEventListener("abort", abort); }
   }
 
   /** Alarm and immediate best-effort delivery; failed receipts keep a durable retry deadline. */
@@ -192,9 +201,8 @@ class AgentContextImpl extends RpcTarget implements AgentContext {
     return this.#turn();
   }
   async participate(participant: Fetcher<AgentTurnParticipant>): Promise<void> {
-    const turn = this.#turn();
+    this.#turn();
     if (this.delivery) {
-      if (turn.phase !== "running") throw new Error("Cannot participate during cleanup.");
       return; // Already registered; never await our own callback or replace its durable target.
     }
     this.integrations.register(this.gatekeeperId, this.origin, this.phase, participant);

@@ -59,9 +59,62 @@ describe("trusted integration grants", () => {
 });
 
 describe("lifecycle outbox", () => {
+  it.each(["segment", "stop"] as const)("keeps callback re-registration a no-op across %s cleanup", async change => {
+    const {visit} = await fixture();
+    await visit(async impl => {
+      // Drive delivery explicitly; an alarm would also try to recover this synthetic model.
+      vi.spyOn(impl.ctx.storage, "setAlarm").mockResolvedValue();
+      const origin = seed(impl), receiver = participant(impl, crypto.randomUUID());
+      await receiver.setReregister();
+      await receiver.hold("started");
+      await impl.integrations.context(7, origin)!.participate(receiver);
+      const draining = impl.integrations.drain(1);
+      // Observe rejection immediately so the deliberately failing pre-fix run cannot leak it.
+      const outcome = draining.then(() => null, (error: unknown) => error);
+      await receiver.waitUntilHeld();
+      try {
+        if (change === "segment") impl.integrations.enter(1);
+        else impl.storage.activeAgents.delete(1);
+        expect((await receiver.release())?.phase).toBe(change === "segment" ? "suspending" : "finishing");
+      } finally { await receiver.release(); }
+      expect(await outcome).toBeNull();
+      expect((await receiver.calls()).map(c => c.event.kind)).toEqual(
+        ["started", change === "segment" ? "resumed" : "finished"]);
+      impl.storage.activeAgents.delete(1);
+      await impl.integrations.drain(1);
+      expect([...impl.storage.agentParticipants.list()]).toHaveLength(0);
+    });
+  });
+
+  it.each(["grant", "connection", "restart"] as const)("downgrades an in-flight delivery after %s revocation", async change => {
+    const {visit} = await fixture();
+    await visit(async impl => {
+      vi.spyOn(impl.ctx.storage, "setAlarm").mockResolvedValue();
+      const origin = seed(impl), receiver = participant(impl, crypto.randomUUID());
+      await receiver.hold("started");
+      await impl.integrations.context(7, origin)!.participate(receiver);
+      const draining = impl.integrations.drain(1);
+      await receiver.waitUntilHeld();
+      try {
+        expect((await receiver.calls())[0].turn.phase).toBe("running");
+        if (change === "grant") impl.env.AGENT_INTEGRATION_GRANTS = '{"test":{"contextualActions":true}}';
+        else if (change === "connection") impl.storage.gatekeepers.delete(7);
+        else vi.spyOn(impl, "gatekeeperUsable").mockReturnValue(false);
+        expect((await receiver.release())?.phase).toBe("finishing");
+      } finally {
+        impl.storage.activeAgents.delete(1);
+        await receiver.release();
+        await draining;
+      }
+      expect((await receiver.calls()).at(-1)?.turn.phase).toBe("finishing");
+      expect([...impl.storage.agentParticipants.list()]).toHaveLength(0);
+    });
+  });
+
   it("registers once without waiting for its callback, including callback re-registration", async () => {
     const {visit} = await fixture();
     await visit(async impl => {
+      vi.spyOn(impl.ctx.storage, "setAlarm").mockResolvedValue();
       const origin = seed(impl), receiver = participant(impl, crypto.randomUUID());
       await receiver.setReregister();
       const context = impl.integrations.context(7, origin)!;
@@ -181,6 +234,78 @@ describe("lifecycle outbox", () => {
 });
 
 describe("contextual application", () => {
+  it("fences a lost ACK against coalesced and later automatic drains, but permits explicit retry", async () => {
+    const {visit} = await fixture();
+    await visit(async impl => {
+      seed(impl);
+      const entered = Promise.withResolvers<void>(), reply = Promise.withResolvers<void>();
+      const contextual = vi.fn(async (_action: number) => {
+        entered.resolve();
+        await reply.promise;
+      });
+      const legacy = vi.fn();
+      vi.spyOn(impl, "getGatekeeperFacet").mockResolvedValue({applyActionInContext: contextual, applyAction: legacy} as any);
+      impl.storage.autoApproveTags.put({gatekeeperId: 7,
+        actionKind: {tag: "edit", label: "Edits"}, enabledBy: USER});
+      const automatic = {...description, autoApprovable: true, actionKind: {tag: "edit", label: "Edits"}};
+      const q = await queue(impl);
+      await q.submitAction(42, automatic);
+      await entered.promise;
+      await q.submitAction(43, automatic);
+      const drain = impl.drainAutoApprovals(7);
+      reply.reject(new Error("ACK lost after effect"));
+      await drain;
+      await impl.drainAutoApprovals(7);
+      expect(contextual.mock.calls.map(([action]) => action)).toEqual([42]);
+      expect(legacy).not.toHaveBeenCalled();
+
+      const action = [...impl.storage.actions.list()][0];
+      if (action.type !== "action") throw new Error("Missing action");
+      expect(action).toMatchObject({state: "pending", contextualAttempted: true});
+      await expect(impl.applyPendingAction(action, USER, true)).rejects.toThrow("retry it explicitly");
+      expect(contextual.mock.calls.map(([action]) => action)).toEqual([42]);
+      contextual.mockResolvedValue(undefined);
+      await impl.applyPendingAction(action, USER, false);
+      await impl.drainAutoApprovals(7);
+      expect(contextual.mock.calls.map(([action]) => action)).toEqual([42, 42, 43]);
+      expect([...impl.storage.actions.list()].every(record => record.state === "approved")).toBe(true);
+      impl.storage.activeAgents.delete(1);
+    });
+  });
+
+  it("retains the no-automatic-retry fence across real eviction", async () => {
+    const {stub, visit} = await fixture();
+    const id = await visit(async impl => {
+      seed(impl);
+      const q = await queue(impl);
+      await q.submitAction(42, {...description, autoApprovable: true,
+        actionKind: {tag: "edit", label: "Edits"}});
+      const action = [...impl.storage.actions.list()][0];
+      if (action.type !== "action") throw new Error("Missing action");
+      vi.spyOn(impl, "getGatekeeperFacet").mockResolvedValue({
+        applyActionInContext: async () => { throw new Error("ACK lost after effect"); },
+      } as any);
+      await expect(impl.applyPendingAction(action, USER, false)).rejects.toThrow("ACK lost");
+      impl.storage.activeAgents.delete(1);
+      const meta = impl.storage.chatMeta.get(1)!;
+      delete meta.activeAgent;
+      impl.storage.chatMeta.put(meta);
+      await impl.ctx.storage.sync();
+      return action.id;
+    });
+    await evictDurableObject(stub);
+    await visit(async impl => {
+      impl.env.AGENT_INTEGRATION_GRANTS = grants;
+      impl.storage.autoApproveTags.put({gatekeeperId: 7,
+        actionKind: {tag: "edit", label: "Edits"}, enabledBy: USER});
+      const contextual = vi.fn();
+      vi.spyOn(impl, "getGatekeeperFacet").mockResolvedValue({applyActionInContext: contextual} as any);
+      await impl.drainAutoApprovals(7);
+      expect(contextual).not.toHaveBeenCalled();
+      expect(impl.storage.actions.get(id)).toMatchObject({state: "pending", contextualAttempted: true});
+    });
+  });
+
   it("pins dispatch at submission and does not adopt the approver's later turn", async () => {
     const {visit} = await fixture();
     await visit(async impl => {

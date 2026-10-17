@@ -432,6 +432,8 @@ export type ActionRecord = {
   integrationOrigin?: AgentIntegrationOrigin;
   /** Dispatch choice fixed at queue time; revocation fails closed without legacy fallback. */
   contextualApply?: true;
+  /** Persisted before contextual dispatch; an uncertain pending attempt requires explicit retry. */
+  contextualAttempted?: true;
 } | {
   type: "observation";
   description: ObservationDescription;
