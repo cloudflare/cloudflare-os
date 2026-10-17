@@ -1,15 +1,19 @@
-// One collection's metadata and documents. Metadata changes update the private owner library or the
-// public domain registry.
+// One collection's metadata, documents, and access grants. Metadata changes update the creator's
+// library or the public domain registry; grant changes update the grantee's library.
 
 import { DurableObject } from "cloudflare:workers";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import {
-  ContextCollectionContent, ContextCollectionMetadata, ContextCollectionVisibility,
+  ContextCollectionContent, ContextCollectionMember, ContextCollectionMetadata,
+  ContextCollectionRole, ContextCollectionSharing, ContextCollectionVisibility,
   ContextDocument, ContextDocumentSummary,
   ContextGitTokenCreateResult, ContextGitTokenList,
   DEFAULT_DOCUMENT_CONTENT_TYPE, DEFAULT_GIT_BRANCH, MAX_DOCUMENT_BODY_BYTES,
   contentTypeFromPath, isTextContentType, VENDOR_ID,
 } from "./context-types.js";
+import {
+  type CollectionAccess, collectionPermissions,
+} from "./collection-access.js";
 import { metadataToSummary } from "./collection-kv.js";
 import { domainName } from "./domain.js";
 import {
@@ -33,6 +37,9 @@ const MAX_DOCUMENT_PATH_LENGTH = 1024;
 const GIT_TOKEN_TTL_SECONDS = 31_536_000;
 // Background git refresh happens minutely at most.
 const GIT_REFRESH_MIN_INTERVAL_MS = 60_000;
+// Retry a failed git token revocation after 5 minutes, doubling up to a day.
+const GIT_TOKEN_REVOKE_RETRY_MS = 5 * 60_000;
+const GIT_TOKEN_REVOKE_RETRY_MAX_MS = 24 * 60 * 60_000;
 // Allow simple branch names made of alphanumerics, '/', '.', '_', and '-', but not leading/trailing '/'.
 const GIT_BRANCH_RE = /^(?!\/)(?!.*\/$)[A-Za-z0-9/._-]{1,255}$/;
 // Older collections build this path list on first use. Increase the version when parsing rules
@@ -118,18 +125,51 @@ type StoredContextCollectionMetadata = Omit<ContextCollectionMetadata, "content"
   content?: ContextCollectionContent;
 };
 
+type GrantRecord = {
+  accountId: string;
+  role: ContextCollectionRole;
+  /** Workshop display name when granted; absent for a creator migrated from `ownerAccountId`. */
+  displayName?: string;
+  grantedAt: Date;
+};
+
+// Which account minted a git write token, so losing write access can revoke it. Tokens minted
+// before sharing existed have no record and are left alone.
+type GitTokenIssuerRecord = {
+  tokenId: string;
+  accountId: string;
+};
+
+// Bump when grants need rebuilding from older storage.
+const ACL_VERSION = 1;
+
+const NOT_FOUND = "Collection not found or you don't have access.";
+
+// Members list owners first, then editors, then viewers.
+const ROLE_ORDER: Record<ContextCollectionRole, number> = { owner: 0, editor: 1, viewer: 2 };
+
 function makeContextCollectionStorage(storage: DurableObjectStorage) {
   return createTypedStorage(storage, {
     collections: {
       documents: collection<ContextRecord>()({ primaryKey: "path" }),
       // Data needed to list skills without loading document bodies.
       skillIndex: collection<SkillIndexEntry>()({ primaryKey: "path" }),
+      // Private collections only: every account's role. Authoritative for access.
+      grants: collection<GrantRecord>()({ primaryKey: "accountId" }),
+      gitTokenIssuers: collection<GitTokenIssuerRecord>()({ primaryKey: "tokenId" }),
     },
     singletons: {
       // Sharing domain for cross-DO references.
       sharingDomain: "",
-      // Private owner account id; empty for public collections.
+      // The creating account (its owned index lists this collection); empty for public
+      // collections. Authority comes from `grants`, which started with this account as owner.
       ownerAccountId: "",
+      everyoneCanView: false,
+      aclVersion: 0,
+      // Consecutive failed attempts to revoke a token whose issuer lost write access.
+      gitTokenRevokeAttempts: 0,
+      // Keep deletion durable until external cleanup succeeds; pending collections are unreadable.
+      deletionPending: false,
       metadata: <StoredContextCollectionMetadata>{
         id: "",
         title: "",
@@ -152,6 +192,16 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
   // Set when an artifact refresh operation is in flight. Additional refresh requests should
   // await this promise when set instead of kicking off additional concurrent refreshes.
   #artifactRefresh?: Promise<void>;
+  // Grant changes and git token minting await other services. They run one at a time, so each sees
+  // the grants the previous one left: a share and a removal can't interleave their library and
+  // grant writes, and a token can't be minted on access removed while the mint was pending.
+  #accessChanges: Promise<unknown> = Promise.resolve();
+
+  #serializeAccessChange<T>(change: () => Promise<T>): Promise<T> {
+    let result = this.#accessChanges.then(change);
+    this.#accessChanges = result.catch(() => {});
+    return result;
+  }
 
   #assertRecordSize(record: ContextRecord): void {
     let byteLength = contextRecordSize(record);
@@ -170,10 +220,10 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     return this.storage.sharingDomain.get();
   }
 
-  // The owner's UserLibraryDurableObject (private collections only), within this collection's domain.
-  #ownerLibrary() {
+  // An account's UserLibraryDurableObject, within this collection's domain.
+  #library(accountId: string) {
     let ns = this.ctx.exports.UserLibraryDurableObject;
-    return ns.get(ns.idFromName(domainName(this.#domain(), this.storage.ownerAccountId.get())));
+    return ns.get(ns.idFromName(domainName(this.#domain(), accountId)));
   }
 
   #registry() {
@@ -217,6 +267,10 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     }
     this.storage.sharingDomain.put(sharingDomain);
     this.storage.ownerAccountId.put(ownerAccountId);
+    if (metadata.visibility === "private" && ownerAccountId) {
+      this.storage.grants.put({ accountId: ownerAccountId, role: "owner", grantedAt: metadata.created });
+    }
+    this.storage.aclVersion.put(ACL_VERSION);
     if (metadata.content.source === "git") {
       metadata.content = {
         source: "git",
@@ -236,6 +290,235 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     // Old storage records won't have `content` set, so we need to default these values in
     // at the API layer.
     return { ...meta, content: meta.content ?? { source: "web" } };
+  }
+
+  // --- Access ---
+
+  // Collections created before sharing existed get their creator as sole owner.
+  #ensureGrants(): void {
+    if (this.storage.aclVersion.get() === ACL_VERSION) return;
+    let meta = this.storage.metadata.get();
+    // Not a collection (yet): write nothing, so probing an unknown ID creates no storage.
+    if (!meta.id) return;
+    let creator = this.storage.ownerAccountId.get();
+    this.storage.transaction(() => {
+      if (meta.visibility === "private" && creator && !this.storage.grants.get(creator)) {
+        this.storage.grants.put({ accountId: creator, role: "owner", grantedAt: meta.created });
+      }
+      this.storage.aclVersion.put(ACL_VERSION);
+    });
+  }
+
+  /** The account's standing here; `collection-access.ts` interprets it. */
+  getAccess(accountId: string): CollectionAccess {
+    this.#ensureGrants();
+    let meta = this.storage.metadata.get();
+    let grants = [...this.storage.grants.list()];
+    let everyoneCanView = this.storage.everyoneCanView.get();
+    let role = meta.visibility === "private"
+      ? grants.find(grant => grant.accountId === accountId)?.role ?? null
+      : null;
+    return {
+      exists: !!meta.id && !this.storage.deletionPending.get(),
+      visibility: meta.visibility,
+      role,
+      everyoneCanView,
+      hasOwner: grants.some(grant => grant.role === "owner"),
+      shared: everyoneCanView || grants.some(grant => grant.accountId !== accountId),
+    };
+  }
+
+  /** What a library lists for this collection, or null unless the account holds a role on it. */
+  getLibraryEntry(accountId: string):
+      { metadata: ContextCollectionMetadata; access: CollectionAccess } | null {
+    let access = this.getAccess(accountId);
+    if (!access.exists || access.role === null) return null;
+    return { metadata: this.getMetadata(), access };
+  }
+
+  /** Members and everyone-viewability, for an account holding a role on this collection. */
+  getSharing(accountId: string): ContextCollectionSharing {
+    let access = this.getAccess(accountId);
+    if (!access.exists || access.role === null) throw new Error(NOT_FOUND);
+    let members: ContextCollectionMember[] = [...this.storage.grants.list()]
+      .toSorted((left, right) =>
+        ROLE_ORDER[left.role] - ROLE_ORDER[right.role]
+        || left.grantedAt.valueOf() - right.grantedAt.valueOf())
+      .map(grant => ({
+        memberId: grant.accountId,
+        role: grant.role,
+        displayName: grant.displayName,
+        isViewer: grant.accountId === accountId,
+      }));
+    return { members, everyoneCanView: access.everyoneCanView, hasOwner: access.hasOwner };
+  }
+
+  // Throws unless `actorId` may give `targetId` the role `role`, or remove them (null).
+  #authorizeGrantChange(actorId: string, targetId: string, role: ContextCollectionRole | null): void {
+    let access = this.getAccess(actorId);
+    if (!access.exists || access.role === null) throw new Error(NOT_FOUND);
+    let current = this.storage.grants.get(targetId)?.role;
+    // Anyone may leave; every other change needs sharing rights.
+    if (actorId !== targetId || role !== null) {
+      let permissions = collectionPermissions(access, false);
+      if (!permissions.canShare) {
+        throw new Error("Only editors and owners can change who has access to this collection.");
+      }
+      if ((role === "owner" || current === "owner") && !permissions.canManageOwners) {
+        throw new Error("Only owners can change who owns this collection.");
+      }
+    }
+    if (current === "owner" && role !== "owner"
+        && [...this.storage.grants.list()].filter(grant => grant.role === "owner").length === 1) {
+      throw new Error("A collection needs an owner. Make someone else an owner first.");
+    }
+  }
+
+  /**
+   * Give an account a role, recording it in the account's library first. Only the grant confers
+   * access and every listing re-checks it here, so an index entry left by a failed grant is never
+   * shown, and repeating the share completes it.
+   */
+  async share(
+      actorId: string, recipientId: string, role: ContextCollectionRole,
+      displayName: string): Promise<void> {
+    await this.#serializeAccessChange(async () => {
+      this.#authorizeGrantChange(actorId, recipientId, role);
+      await this.#library(recipientId).addSharedCollection(this.getMetadata().id);
+      await this.#setGrant(actorId, recipientId, role, displayName);
+    });
+  }
+
+  async setMemberRole(actorId: string, memberId: string, role: ContextCollectionRole): Promise<void> {
+    await this.#serializeAccessChange(async () => {
+      if (!this.storage.grants.get(memberId)) throw new Error("That person no longer has access.");
+      await this.#setGrant(actorId, memberId, role);
+    });
+  }
+
+  async #setGrant(
+      actorId: string, targetId: string, role: ContextCollectionRole,
+      displayName?: string): Promise<void> {
+    // Authorized again: the collection may have been deleted during an earlier await.
+    this.#authorizeGrantChange(actorId, targetId, role);
+    let previous = this.storage.grants.get(targetId);
+    this.storage.grants.put({
+      accountId: targetId,
+      role,
+      displayName: displayName ?? previous?.displayName,
+      grantedAt: previous?.grantedAt ?? new Date(),
+    });
+    // On every change, so repeating a demotion retries a failed revocation.
+    this.#assertGitTokensRevoked(await this.#revokeUnauthorizedGitTokens(), targetId);
+  }
+
+  /** Remove a member; an account removing itself leaves the collection. */
+  async removeMember(actorId: string, memberId: string): Promise<void> {
+    await this.#serializeAccessChange(async () => {
+      this.#authorizeGrantChange(actorId, memberId, null);
+      if (this.storage.grants.get(memberId)) {
+        this.storage.grants.delete(memberId);
+        try {
+          await this.#library(memberId).forgetCollection(this.getMetadata().id);
+        } catch (err) {
+          // Harmless: listings drop an entry whose account holds no role here.
+          logger.warn("failed to remove collection from a former member's library", {
+            event: "collection.member.library.remove.failed", collectionId: this.getMetadata().id,
+            error: err,
+          });
+        }
+      }
+      // Also when the grant was already gone, so repeating a removal retries a failed revocation.
+      let unrevoked = await this.#revokeUnauthorizedGitTokens();
+      if (await this.#deleteIfUnreachable()) return;
+      this.#assertGitTokensRevoked(unrevoked, memberId);
+    });
+  }
+
+  /**
+   * The account was disconnected: drop its grant. Its library is wiped separately. A collection
+   * left with no grants is deleted unless everyone can view it; one still shared with others
+   * survives, without an owner if this was the last.
+   */
+  async removeAccount(accountId: string): Promise<void> {
+    await this.#serializeAccessChange(async () => {
+      this.#ensureGrants();
+      if (this.storage.grants.get(accountId)) this.storage.grants.delete(accountId);
+      // A failed revocation is not reported: the account is going away, and the alarm retries it.
+      await this.#revokeUnauthorizedGitTokens();
+      await this.#deleteIfUnreachable();
+    });
+  }
+
+  // A collection with no grants that everyone can't view is unreachable, so delete it. Deleting
+  // its repo also ends every token for it.
+  async #deleteIfUnreachable(): Promise<boolean> {
+    if (!this.getMetadata().id || this.storage.everyoneCanView.get()
+        || [...this.storage.grants.list()].length > 0) {
+      return false;
+    }
+    await this.deleteSelf();
+    return true;
+  }
+
+  async setEveryoneCanView(actorId: string, everyoneCanView: boolean): Promise<void> {
+    let access = this.getAccess(actorId);
+    if (!access.exists || access.role === null) throw new Error(NOT_FOUND);
+    if (!collectionPermissions(access, false).canShare) {
+      throw new Error("Only editors and owners can change who has access to this collection.");
+    }
+    this.storage.everyoneCanView.put(everyoneCanView);
+  }
+
+  /**
+   * Revoke every git token whose issuer no longer has write access, so losing it is not merely
+   * hidden. A failed revocation keeps the token's issuer record and schedules an alarm to retry,
+   * whatever becomes of the grant meanwhile. Returns the issuers with tokens still live.
+   */
+  async #revokeUnauthorizedGitTokens(): Promise<Set<string>> {
+    let unrevoked = new Set<string>();
+    // Public collections have no grants; admins' tokens are not tied to one.
+    if (this.getMetadata().visibility !== "private") return unrevoked;
+    let id = this.getMetadata().id;
+    let repo: ArtifactsRepo | undefined;
+    // Read the records before deleting from the same storage collection.
+    for (let record of Array.from(this.storage.gitTokenIssuers.list())) {
+      if (collectionPermissions(this.getAccess(record.accountId), false).canEdit) continue;
+      try {
+        repo ??= await this.#artifacts().get(id);
+        await repo.revokeToken(record.tokenId);
+        this.storage.gitTokenIssuers.delete(record.tokenId);
+      } catch (err) {
+        unrevoked.add(record.accountId);
+        logger.error("failed to revoke a git token after its issuer lost write access", {
+          event: "artifacts.issuer.token.revoke.failed", collectionId: id, error: err,
+        });
+      }
+    }
+    let attempts = this.storage.gitTokenRevokeAttempts.get();
+    if (unrevoked.size === 0) {
+      if (attempts > 0) this.storage.gitTokenRevokeAttempts.put(0);
+    } else {
+      this.storage.gitTokenRevokeAttempts.put(attempts + 1);
+      await this.ctx.storage.setAlarm(Date.now() + Math.min(
+        GIT_TOKEN_REVOKE_RETRY_MS * 2 ** attempts, GIT_TOKEN_REVOKE_RETRY_MAX_MS));
+    }
+    return unrevoked;
+  }
+
+  #assertGitTokensRevoked(unrevoked: Set<string>, accountId: string): void {
+    if (unrevoked.has(accountId)) {
+      throw new Error("Access was changed, but Git tokens this person created could not be "
+        + "revoked yet. Revocation will be retried automatically.");
+    }
+  }
+
+  /** Retries pending collection deletion or failed git token revocations. */
+  async alarm(): Promise<void> {
+    await this.#serializeAccessChange(async () => {
+      if (this.storage.deletionPending.get()) await this.deleteSelf();
+      else await this.#revokeUnauthorizedGitTokens();
+    });
   }
 
   #parseAgentSkill(record: ContextRecord) {
@@ -715,16 +998,29 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     await this.#refreshArtifactSource();
   }
 
-  async createGitToken(): Promise<ContextGitTokenCreateResult> {
-    let meta = this.getMetadata();
-    if (meta.content.source !== "git") throw new Error("Collection is not git-based.");
-    let repo = await this.#artifacts().get(meta.id);
-    let token = await repo.createToken("write", GIT_TOKEN_TTL_SECONDS);
-    return {
-      id: token.id,
-      plaintext: token.plaintext,
-      remote: meta.content.remote,
-    };
+  /**
+   * Mint a mirror write token, recording `issuerId` so losing write access revokes it. The issuer's
+   * access is checked among the grant changes, so a removal either precedes the mint and refuses it,
+   * or follows it and finds the token recorded.
+   */
+  async createGitToken(issuerId: string): Promise<ContextGitTokenCreateResult> {
+    return this.#serializeAccessChange(async () => {
+      let meta = this.getMetadata();
+      if (meta.content.source !== "git") throw new Error("Collection is not git-based.");
+      // Public collections are checked by the caller, which knows whether the issuer is an admin.
+      if (meta.visibility === "private"
+          && !collectionPermissions(this.getAccess(issuerId), false).canEdit) {
+        throw new Error("Only editors and owners can create Git tokens.");
+      }
+      let repo = await this.#artifacts().get(meta.id);
+      let token = await repo.createToken("write", GIT_TOKEN_TTL_SECONDS);
+      this.storage.gitTokenIssuers.put({ tokenId: token.id, accountId: issuerId });
+      return {
+        id: token.id,
+        plaintext: token.plaintext,
+        remote: meta.content.remote,
+      };
+    });
   }
 
   async listGitTokens(): Promise<ContextGitTokenList> {
@@ -749,7 +1045,9 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     if (!this.#isGitBased()) throw new Error("Collection is not git-based.");
     let meta = this.getMetadata();
     let repo = await this.#artifacts().get(meta.id);
-    return repo.revokeToken(tokenId);
+    let revoked = await repo.revokeToken(tokenId);
+    this.storage.gitTokenIssuers.delete(tokenId);
+    return revoked;
   }
 
   #isGitBased(): boolean {
@@ -895,12 +1193,23 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
   async deleteSelf(): Promise<void> {
     let meta = this.getMetadata();
     let id = meta.id;
+    // Persist the intent and its retry before any external operation can fail. Never erase the
+    // repo identity or issuer records while an external write credential could still be live.
+    this.storage.deletionPending.put(true);
+    await this.ctx.storage.setAlarm(Date.now() + GIT_TOKEN_REVOKE_RETRY_MS);
 
     if (id) {
       if (meta.visibility === "public") {
         await this.#registry().removePublic(this.#domain(), id);
       } else {
-        await this.#ownerLibrary().removeOwnedCollection(id);
+        await this.#library(this.storage.ownerAccountId.get()).removeOwnedCollection(id);
+        // Best-effort: listings already drop entries for a deleted collection.
+        await Promise.all([...this.storage.grants.list()].map(grant =>
+          this.#library(grant.accountId).forgetCollection(id).catch((err) => {
+            logger.warn("failed to remove deleted collection from a member's library", {
+              event: "collection.delete.library.remove.failed", collectionId: id, error: err,
+            });
+          })));
       }
     }
 
@@ -911,24 +1220,11 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
           collectionId: id,
           error: err,
         });
+        throw err;
       });
     }
 
-    await this.ctx.storage.deleteAll();
-  }
-
-  /** Account revocation clears the whole user-library index separately; don't update it per item. */
-  async deleteForRevokedOwner(): Promise<void> {
-    let meta = this.getMetadata();
-    if (meta.content.source === "git" && meta.id && this.env.ARTIFACTS) {
-      await this.env.ARTIFACTS.delete(meta.id).catch((err) => {
-        logger.warn("failed to delete Artifacts repo while revoking context collection owner", {
-          event: "artifacts.repo.delete.for.revoked.owner.failed",
-          collectionId: meta.id,
-          error: err,
-        });
-      });
-    }
+    await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
   }
 
@@ -942,7 +1238,7 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     if (meta.visibility === "public") {
       await this.#registry().syncPublic(this.#domain(), summary);
     } else {
-      await this.#ownerLibrary().updateOwnedCollection(meta.id, summary);
+      await this.#library(this.storage.ownerAccountId.get()).updateOwnedCollection(meta.id, summary);
     }
   }
 }

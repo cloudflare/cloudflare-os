@@ -62,8 +62,11 @@ function makeSession() {
   let userLibraries = {
     idFromName: (name: string) => name,
     get: () => ({
-      async getEnabledCollections() {
-        return new Map([["public", "public"], ["private", "private"]]);
+      async listLibrary() {
+        return [{ id: "public" }, { id: "private" }];
+      },
+      async hasLibraryCollection(_domain: string, _accountId: string, id: string) {
+        return id === "public" || id === "private";
       },
     }),
   } as unknown as DurableObjectNamespace<UserLibraryDurableObject>;

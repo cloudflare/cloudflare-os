@@ -12,12 +12,34 @@ import {
 } from "@tanstack/react-router";
 import { newMessagePortRpcSession, RpcStub, RpcTarget } from "capnweb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import type {
   GatekeeperAppTheme,
   GatekeeperAppThemeReceiver,
 } from "@gadgets/workshop-shared/theme";
+import type {
+  GatekeeperUiFrame,
+  GatekeeperUserSelection,
+  GatekeeperUserSelectionReceiver,
+} from "@gadgets/workshop-shared/gatekeeper";
 import SandboxedGatekeeperApp from "./SandboxedGatekeeperApp";
+
+// The trusted picker is exercised by its own suite; here it is a stand-in exposing the callbacks
+// the host wires it to, plus the close button the host's tests click.
+type PickerProps = {
+  onSelected(selection: GatekeeperUserSelection): Promise<void>;
+  onClose(): void;
+  onCancel(): void;
+};
+const picker = vi.hoisted(() => ({ props: null as PickerProps | null }));
+vi.mock("./features/gatekeeper-sharing/GatekeeperUserPickerDialog", () => ({
+  default: (props: PickerProps) => {
+    picker.props = props;
+    return <>
+      <button type="button" aria-label="Close person picker" onClick={props.onClose} />
+      <button type="button" aria-label="Cancel person picker" onClick={props.onCancel} />
+    </>;
+  },
+}));
 
 vi.mock("./ThemeContext", () => ({
   useTheme: () => ({ resolvedThemeMode: "light" }),
@@ -53,6 +75,7 @@ interface TestHost extends RpcTarget {
   openWorkspace(workspaceId: string, gadgetId?: number): Promise<void>;
   resolveWorkspaceTitles(ids: string[]): Promise<(string | null)[]>;
   openPrompt(prompt: string): Promise<void>;
+  selectUsers(receiver: GatekeeperUserSelectionReceiver | string): Promise<void>;
 }
 
 class EmptyUi extends RpcTarget {}
@@ -60,6 +83,33 @@ class EmptyUi extends RpcTarget {}
 class TestThemeReceiver extends RpcTarget implements GatekeeperAppThemeReceiver {
   setTheme(_theme: GatekeeperAppTheme): void {}
 }
+
+/**
+ * An app's receiver that behaves like an "immediate" one: each selection is sent to a simulated
+ * backend (`backend`, released by the test) before it counts as accepted, and a ticket of "reject"
+ * is refused with a user-facing message.
+ */
+class TestReceiver extends RpcTarget implements GatekeeperUserSelectionReceiver {
+  received: GatekeeperUserSelection[] = [];
+  backend: Promise<void> = Promise.resolve();
+  disposed = false;
+  disposeCount = 0;
+
+  async receive(selection: GatekeeperUserSelection): Promise<void> {
+    this.received.push(selection);
+    if (selection.ticket === "reject") throw new Error("Collection not found.");
+    await this.backend;
+  }
+
+  [Symbol.dispose](): void {
+    this.disposed = true;
+    this.disposeCount++;
+  }
+}
+
+const ALICE: GatekeeperUserSelection = { ticket: "a".repeat(64), profile: { displayName: "Alice" } };
+
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("SandboxedGatekeeperApp navigation", () => {
   let container: HTMLDivElement | undefined;
@@ -75,9 +125,11 @@ describe("SandboxedGatekeeperApp navigation", () => {
     await act(async () => root?.unmount());
     container?.remove();
     vi.restoreAllMocks();
+    picker.props = null;
   });
 
-  it("provides the deployment theme and routes bounded iframe requests", async () => {
+  // Mount the host under a router and complete the iframe's handshake, leaving `host` connected.
+  async function mountApp() {
     const frame = {
       iframeHtml: "<!doctype html><title>Scheduler</title>",
       ui: new RpcStub(new EmptyUi()),
@@ -113,9 +165,160 @@ describe("SandboxedGatekeeperApp navigation", () => {
         ports: [port2],
       }),
     );
+    return { iframe, router };
+  }
+
+  // Whether `promise` has settled by the next macrotask, without waiting for it.
+  async function settled(promise: Promise<unknown>): Promise<boolean> {
+    let done = false;
+    promise.then(() => { done = true; }, () => { done = true; });
+    await tick();
+    return done;
+  }
+
+  it("delivers each pick to the app's receiver while the picker is open, one picker at a time", async () => {
+    await mountApp();
+    const receiver = new TestReceiver();
+
+    let pendingPick!: Promise<void>;
+    await act(async () => {
+      pendingPick = host!.selectUsers(receiver);
+      await tick();
+    });
+    expect(picker.props).not.toBeNull();
+    const refusedReceiver = new TestReceiver();
+    await expect(host!.selectUsers(refusedReceiver)).rejects.toThrow("A person picker is already open.");
+    await vi.waitFor(() => expect(refusedReceiver.disposeCount).toBe(1));
+    await expect(host!.selectUsers("collection-1")).rejects.toThrow(TypeError);
+
+    // The receiver decides when a selection counts as taken: it awaits its own backend call, and
+    // the picker's delivery stays pending until then, while selectUsers() itself stays pending.
+    let releaseBackend!: () => void;
+    receiver.backend = new Promise<void>((resolve) => { releaseBackend = resolve; });
+    const delivery = picker.props!.onSelected(ALICE);
+    await vi.waitFor(() => expect(receiver.received).toEqual([ALICE]));
+    expect(await settled(delivery)).toBe(false);
+    releaseBackend();
+    await expect(delivery).resolves.toBeUndefined();
+    expect(await settled(pendingPick)).toBe(false);
+
+    // A refused selection fails only that delivery; the picker and its session stay up.
+    const refused: GatekeeperUserSelection = { ticket: "reject", profile: { displayName: "Bob" } };
+    await expect(picker.props!.onSelected(refused)).rejects.toThrow("Collection not found.");
+    expect(receiver.received).toEqual([ALICE, refused]);
+    expect(await settled(pendingPick)).toBe(false);
+    await expect(picker.props!.onSelected(ALICE)).resolves.toBeUndefined();
+
+    // Closing resolves selectUsers() and releases the host's hold on the receiver.
+    const closePicker = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Close person picker"]',
+    );
+    if (!closePicker) throw new Error("Missing person picker close button");
+    await act(async () => closePicker.click());
+    await expect(pendingPick).resolves.toBeUndefined();
+    await vi.waitFor(() => expect(receiver.disposed).toBe(true));
+
+    // A new picker can open now, with a fresh receiver.
+    const again = new TestReceiver();
+    let secondPick!: Promise<void>;
+    await act(async () => {
+      secondPick = host!.selectUsers(again);
+      await tick();
+    });
+    await expect(picker.props!.onSelected(ALICE)).resolves.toBeUndefined();
+    expect(again.received).toEqual([ALICE]);
+    await act(async () => picker.props!.onClose());
+    await expect(secondPick).resolves.toBeUndefined();
+  });
+
+  it("cancels a stalled delivery and ignores its late callbacks after reopening", async () => {
+    await mountApp();
+    const receiver = new TestReceiver();
+    let releaseBackend!: () => void;
+    receiver.backend = new Promise<void>((resolve) => { releaseBackend = resolve; });
+    let pendingPick!: Promise<void>;
+    await act(async () => {
+      pendingPick = host!.selectUsers(receiver);
+      await tick();
+    });
+    const oldPicker = picker.props!;
+    const outcome = pendingPick.then(() => undefined, (error: unknown) => error);
+    const delivery = oldPicker.onSelected(ALICE);
+    // Disposal need not retract a call already accepted by the app.
+    const deliveryOutcome = delivery.catch(() => {});
+    await vi.waitFor(() => expect(receiver.received).toEqual([ALICE]));
+    expect(await settled(delivery)).toBe(false);
+
+    const cancelPicker = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Cancel person picker"]',
+    );
+    if (!cancelPicker) throw new Error("Missing person picker cancel button");
+    await act(async () => cancelPicker.click());
+    const error = await outcome;
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toMatch(/cancelled.*delivery may already have been accepted/i);
+    expect(document.querySelector('button[aria-label="Cancel person picker"]')).toBeNull();
+    // Closing must release the call itself, without waiting for the app's backend.
+    await vi.waitFor(async () => expect(await settled(delivery)).toBe(true));
+    await expect(delivery).rejects.toThrow(/RpcPromise was disposed/);
+    await vi.waitFor(() => expect(receiver.disposeCount).toBe(1));
+
+    const again = new TestReceiver();
+    let secondPick!: Promise<void>;
+    await act(async () => {
+      secondPick = host!.selectUsers(again);
+      await tick();
+    });
+    const newPicker = picker.props!;
+    await act(async () => {
+      oldPicker.onClose();
+      oldPicker.onCancel();
+    });
+    await expect(oldPicker.onSelected(ALICE)).rejects.toThrow("Person selection cancelled.");
+    releaseBackend();
+    await deliveryOutcome;
+    expect(await settled(secondPick)).toBe(false);
+    expect(again.disposeCount).toBe(0);
+    expect(receiver.disposeCount).toBe(1);
+    await expect(newPicker.onSelected(ALICE)).resolves.toBeUndefined();
+    expect(again.received).toEqual([ALICE]);
+    await act(async () => newPicker.onClose());
+    await expect(secondPick).resolves.toBeUndefined();
+    await vi.waitFor(() => expect(again.disposeCount).toBe(1));
+  });
+
+  it("releases a stalled receiver and picker when the host unmounts", async () => {
+    await mountApp();
+    const receiver = new TestReceiver();
+    let releaseBackend!: () => void;
+    receiver.backend = new Promise<void>((resolve) => { releaseBackend = resolve; });
+    let pendingPick!: Promise<void>;
+    await act(async () => {
+      pendingPick = host!.selectUsers(receiver);
+      await tick();
+    });
+    const oldPicker = picker.props!;
+    const delivery = oldPicker.onSelected(ALICE).catch(() => {});
+    await vi.waitFor(() => expect(receiver.received).toEqual([ALICE]));
+    // The client keeps its side of the session, so it observes the host releasing the receiver.
+    const outcome = pendingPick.then(() => undefined, (error: unknown) => error);
+    await act(async () => root!.unmount());
+    root = undefined;
+    expect(await outcome).toBeInstanceOf(Error);
+    await vi.waitFor(() => expect(receiver.disposeCount).toBe(1));
+    oldPicker.onClose();
+    oldPicker.onCancel();
+    releaseBackend();
+    await delivery;
+    expect(receiver.disposeCount).toBe(1);
+    expect(document.querySelector('button[aria-label="Close person picker"]')).toBeNull();
+  });
+
+  it("provides the deployment theme and routes bounded iframe requests", async () => {
+    const { iframe, router } = await mountApp();
 
     const themeReceiver = new TestThemeReceiver();
-    await expect(host.subscribeTheme(themeReceiver)).resolves.toEqual({
+    await expect(host!.subscribeTheme(themeReceiver)).resolves.toEqual({
       mode: "light",
       accentColor: "#7c3aed",
     });
@@ -156,18 +359,18 @@ describe("SandboxedGatekeeperApp navigation", () => {
       .mockResolvedValueOnce([{ id: WORKSPACE_ID, title: "Renamed Brief" }]);
     await expect(
       Promise.all([
-        host.resolveWorkspaceTitles([WORKSPACE_ID, "b".repeat(64)]),
-        host.resolveWorkspaceTitles([WORKSPACE_ID]),
+        host!.resolveWorkspaceTitles([WORKSPACE_ID, "b".repeat(64)]),
+        host!.resolveWorkspaceTitles([WORKSPACE_ID]),
       ]),
     ).resolves.toEqual([["Daily Brief", null], ["Daily Brief"]]);
-    await expect(host.resolveWorkspaceTitles([WORKSPACE_ID])).resolves.toEqual(["Daily Brief"]);
+    await expect(host!.resolveWorkspaceTitles([WORKSPACE_ID])).resolves.toEqual(["Daily Brief"]);
     expect(listGadgets).toHaveBeenCalledTimes(1);
 
     now.mockReturnValue(30_000);
-    await expect(host.resolveWorkspaceTitles([WORKSPACE_ID])).resolves.toEqual(["Renamed Brief"]);
+    await expect(host!.resolveWorkspaceTitles([WORKSPACE_ID])).resolves.toEqual(["Renamed Brief"]);
     expect(listGadgets).toHaveBeenCalledTimes(2);
 
-    await expect(host.openWorkspace("../evil")).rejects.toThrow(
+    await expect(host!.openWorkspace("../evil")).rejects.toThrow(
       "Invalid gatekeeper app workspace target",
     );
     expect(router.state.location.pathname).toBe(`/workspace/${WORKSPACE_ID}`);

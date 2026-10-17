@@ -1,4 +1,4 @@
-// Agent read path over enabled collections. Every returned result is authorized as an observation;
+// Agent read path over the account's library. Every returned result is authorized as an observation;
 // results revealing collection contents are attributed to those collections for observer checks.
 
 import { RpcTarget } from "capnweb";
@@ -6,7 +6,7 @@ import { validateRpc } from "capnweb-validate";
 import type { ObservationGate, ObservationInput } from "@gadgets/gatekeeper-kit/observers";
 import {
   ContextSearchResult, ContextListing, ContextListingEntry, ContextReadResult,
-  ContextCollectionVisibility, decodeDocId, encodeDocId, isTextContentType, VENDOR_ID,
+  decodeDocId, encodeDocId, isTextContentType, VENDOR_ID,
   type ContextLibrary,
 } from "./context-types.js";
 import type { ContextCollectionDurableObject } from "./context-collection.js";
@@ -23,9 +23,8 @@ const MAX_COLLECTION_FANOUT = 8;
 
 @validateRpc()
 export class LibraryReadSession extends RpcTarget implements ContextLibrary {
-  // Per-session enabled set. Visibility is retained by the source API, though observer enforcement
-  // uses collection-level access checks rather than the old sticky sharing prohibition.
-  #enabledPromise?: Promise<Map<string, ContextCollectionVisibility>>;
+  // No membership is cached: every call asks the library, which checks each collection live, so a
+  // session honors revocations and new shares made after it started.
 
   constructor(
     private collections: DurableObjectNamespace<ContextCollectionDurableObject>,
@@ -50,9 +49,8 @@ export class LibraryReadSession extends RpcTarget implements ContextLibrary {
     return this.userLibraries.get(this.userLibraries.idFromName(domainName(this.domain, this.accountId)));
   }
 
-  // Computed once per session; search/list/read share it.
-  #enabled(): Promise<Map<string, ContextCollectionVisibility>> {
-    return (this.#enabledPromise ??= this.#userLib().getEnabledCollections(this.domain));
+  #inLibrary(collectionId: string): Promise<boolean> {
+    return this.#userLib().hasLibraryCollection(this.domain, this.accountId, collectionId);
   }
 
   // A read revealing no collection contents is authorized against the admission baseline, so it
@@ -67,15 +65,15 @@ export class LibraryReadSession extends RpcTarget implements ContextLibrary {
     collectionId?: string;
     limit?: number;
   }): Promise<ContextSearchResult[]> {
-    let enabled = await this.#enabled();
     let limit = opts?.limit ?? 20;
 
     let targetIds: string[];
     if (opts?.collectionId) {
-      if (!enabled.has(opts.collectionId)) return [];
+      if (!await this.#inLibrary(opts.collectionId)) return [];
       targetIds = [opts.collectionId];
     } else {
-      targetIds = [...enabled.keys()];
+      targetIds = (await this.#userLib().listLibrary(this.domain, this.accountId))
+        .map(collection => collection.id);
     }
 
     let perCollection = await mapWithConcurrency(targetIds, MAX_COLLECTION_FANOUT, async (collectionId) => {
@@ -142,8 +140,7 @@ export class LibraryReadSession extends RpcTarget implements ContextLibrary {
     if (!decoded) return null;
     let { collectionId, path } = decoded;
 
-    let enabled = await this.#enabled();
-    if (!enabled.has(collectionId)) return null;
+    if (!await this.#inLibrary(collectionId)) return null;
 
     let doc = await this.#collection(collectionId).getContextDocument(path);
     // No document found (missing or inaccessible) → nothing was observed, so don't record one.
@@ -168,10 +165,10 @@ export class LibraryReadSession extends RpcTarget implements ContextLibrary {
 
   // Fetch without recording; list() authorizes.
   async #fetchListing(opts?: { collectionId?: string; path?: string }): Promise<ContextListing> {
-    let enabled = await this.#enabled();
-
     if (!opts?.collectionId) {
-      let collectionEntries = await mapWithConcurrency([...enabled.keys()], MAX_COLLECTION_FANOUT,
+      let libraryIds = (await this.#userLib().listLibrary(this.domain, this.accountId))
+        .map(collection => collection.id);
+      let collectionEntries = await mapWithConcurrency(libraryIds, MAX_COLLECTION_FANOUT,
         async (collectionId): Promise<ContextListingEntry | null> => {
           try {
             let meta = await this.#collection(collectionId).getMetadata();
@@ -192,7 +189,7 @@ export class LibraryReadSession extends RpcTarget implements ContextLibrary {
       return { entries: collectionEntries.filter((e): e is ContextListingEntry => e !== null) };
     }
 
-    if (!enabled.has(opts.collectionId)) {
+    if (!await this.#inLibrary(opts.collectionId)) {
       return { collectionId: opts.collectionId, entries: [] };
     }
 

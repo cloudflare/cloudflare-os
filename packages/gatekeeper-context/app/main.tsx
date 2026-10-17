@@ -11,7 +11,14 @@ import type {
   GatekeeperAppThemeReceiver,
 } from '@gadgets/workshop-shared/theme'
 import ContextLibraryPage from './ContextLibraryPage'
-import { ContextApiProvider, PresentationProvider, type PresentAck } from './bridge'
+import {
+  ContextApiProvider,
+  PresentationProvider,
+  SelectUsersProvider,
+  type PresentAck,
+  type SelectUsers,
+  type UserSelectionReceiver,
+} from './bridge'
 import { applyAppTheme } from './theme'
 import './styles.css'
 import ErrorBoundary from './ErrorBoundary'
@@ -32,6 +39,8 @@ interface HostCapability extends RpcTarget {
   setPresenting(active: boolean): Promise<PresentAck>
   // Returns the current theme and calls back on `receiver` whenever it changes.
   subscribeTheme(receiver: GatekeeperAppThemeReceiver): Promise<GatekeeperAppTheme>
+  // Opens the Workshop's person picker, delivering each pick to `receiver`; see SelectUsers.
+  selectUsers(receiver: UserSelectionReceiver): Promise<void>
 }
 
 function main() {
@@ -47,19 +56,23 @@ function main() {
   // The initial theme comes back from the call; later changes arrive via iframe.setTheme().
   host.subscribeTheme(iframe).then(applyAppTheme).catch(() => {})
 
+  const selectUsers: SelectUsers = (receiver) => host.selectUsers(receiver)
+
   createRoot(root, {
     onUncaughtError: (error) => reportIssue('context.react-root', error, {
       handled: false, severity: 'fatal', captureMechanism: 'react',
     }),
   }).render(
     <ErrorBoundary><ContextApiProvider value={host.ui}>
-      <PresentationProvider setPresenting={(active) => host.setPresenting(active)}>
-        <TooltipProvider>
-          <Toasty>
-            <ContextLibraryPage />
-          </Toasty>
-        </TooltipProvider>
-      </PresentationProvider>
+      <SelectUsersProvider value={selectUsers}>
+        <PresentationProvider setPresenting={(active) => host.setPresenting(active)}>
+          <TooltipProvider>
+            <Toasty>
+              <ContextLibraryPage />
+            </Toasty>
+          </TooltipProvider>
+        </PresentationProvider>
+      </SelectUsersProvider>
     </ContextApiProvider></ErrorBoundary>,
   )
 }
