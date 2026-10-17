@@ -29,7 +29,12 @@ import type { UserDurableObject } from "../user";
  * new workspace is born at (so it has nothing to migrate). The migrations themselves name
  * their versions literally, since each one's source and target are fixed for good.
  */
-export const OVERSEER_STORAGE_VERSION = 5;
+export const OVERSEER_STORAGE_VERSION = 6;
+
+/** Version 5 -> 6: optional identities are minted lazily; no historical callbacks are invented. */
+export function migrateToAgentIntegrations(host: OverseerMigrationHost): void {
+  if (host.storage.version.get() === 5) host.storage.version.put(6);
+}
 
 /**
  * The most chat messages that migrateToBlueprintUpstreams() reads, over all of a workspace's

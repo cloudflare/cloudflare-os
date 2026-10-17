@@ -105,6 +105,9 @@ export class AutoApprovalDrainer {
       if (!fresh || fresh.type !== "action" || fresh.state !== "pending") {
         continue;
       }
+      // A lost reply does not prove the effect failed. Preserve ordering and leave this action
+      // for explicit reconciliation, including after eviction or a coalesced drain request.
+      if (fresh.contextualAttempted) return;
 
       try {
         // Attribute the auto-approval to the user who enabled the rule -- it runs under their

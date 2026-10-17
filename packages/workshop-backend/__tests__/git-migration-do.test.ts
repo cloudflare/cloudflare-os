@@ -393,7 +393,7 @@ describe("the blueprint-upstream backfill via the Overseer constructor", () => {
       let storage = Object.create(impl.storage, { chatMeta: unread, chats: unread });
       migrateToBlueprintUpstreams(Object.create(impl, { storage: { value: storage } }));
 
-      expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
+      expect(impl.storage.version.get()).toBe(5); // This individual migration is version 4 -> 5.
     });
   });
 });
