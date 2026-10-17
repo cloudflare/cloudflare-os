@@ -64,7 +64,7 @@ export function createWorkshopHarness(
       try {
         const agentTurnBudget = Math.floor(EVAL_AGENT_BUDGET_MS / task.turns.length);
         const verificationBudget = Math.floor(EVAL_VERIFICATION_BUDGET_MS / task.turns.length);
-        opened = await openLocalEvalTarget(access, model, agentTurnBudget);
+        opened = await openLocalEvalTarget(access, model, agentTurnBudget, task.modelSettings);
 
         for (const turn of task.turns) {
           if (turn.skills !== undefined) await addSkills(opened.session, turn.skills);
@@ -105,7 +105,7 @@ export function createWorkshopHarness(
             break;
           }
           const replies = agentReplies(result.history, previousSequence);
-          const verifier = new EvalVerifier(opened.session, result.workpieces, replies);
+          const verifier = new EvalVerifier(opened.session, result.workpieces, replies, result);
           let checks: EvalCheck[];
           try {
             checks = await beforeDeadline(
@@ -174,7 +174,7 @@ export function createWorkshopHarness(
               throw error;
             }
 
-            const afterAccept = new EvalVerifier(session, result.workpieces, replies);
+            const afterAccept = new EvalVerifier(session, result.workpieces, replies, result);
             try {
               checks.push(...await beforeDeadline(
                   () => afterAccept.collect(verifyAfterAccept), verificationDeadline,

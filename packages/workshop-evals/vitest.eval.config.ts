@@ -3,7 +3,9 @@ import { EVAL_TEST_TIMEOUT_MS } from "./src/budgets.js";
 
 export default defineConfig({
   test: {
-    include: ["evals/**/*.eval.ts"],
+    // The pull request comparison never runs a targeted eval (see scripts/evals/eval-keys.ts); its
+    // own workflow does. A targeted eval may set model settings, so it needs an AI Gateway.
+    include: ["evals/**/*.eval.ts", "targeted/**/*.eval.ts"],
     globalSetup: ["../integration-tests/src/global-setup.ts", "./src/global-setup.ts"],
     environment: "node",
     testTimeout: EVAL_TEST_TIMEOUT_MS,

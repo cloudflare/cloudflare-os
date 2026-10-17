@@ -15,6 +15,6 @@
       "@gadgets/workshop-shared/*": ["../workshop-shared/src/*"]
     }
   },
-  "include": ["src", "evals", "*.ts"],
+  "include": ["src", "evals", "targeted", "*.ts"],
   "exclude": ["node_modules"]
 }

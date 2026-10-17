@@ -21,6 +21,9 @@ import { isWorkerInputPath } from "../../packages/integration-tests/src/worker-i
 
 const EVALS = "packages/workshop-evals/";
 const TASKS = `${EVALS}evals/`;
+// Evals that run in their own workflows, such as workshop-evals-compaction.yml: no comparison task
+// executes them, so they key nothing here.
+const TARGETED = `${EVALS}targeted/`;
 const TASK_SUFFIX = ".eval.ts";
 const REPORT_MODULES = new Set(
   ["comparison.ts", "trajectory-markdown.ts"].map(file => `${EVALS}src/${file}`));
@@ -42,7 +45,8 @@ function isHarnessPath(path: string): boolean {
   if (isTestPath(path)) return false;
   return isWorkerInputPath(path) || path === "package.json" || path === "pnpm-workspace.yaml" ||
     path === "scripts/evals/validate-results.ts" || path.startsWith("packages/integration-tests/") ||
-    (path.startsWith(EVALS) && !path.startsWith(TASKS) && !REPORT_MODULES.has(path));
+    (path.startsWith(EVALS) && !path.startsWith(TASKS) && !path.startsWith(TARGETED) &&
+      !REPORT_MODULES.has(path));
 }
 
 /**
