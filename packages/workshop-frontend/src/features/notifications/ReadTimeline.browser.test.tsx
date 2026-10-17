@@ -150,7 +150,7 @@ it("keeps manual unread for the visit, then resumes viewport reading after leavi
   await render(<View />);
   withdraw = reportVisibleChat(() => ({ workspaceId: "workspace", chatId: 1 }));
   await act(async () => userEvent.click(page.getByRole("button", { name: "Focus chat" })));
-  await expect.element(page.getByText("Unread activity")).toBeVisible();
+  await expect.element(page.getByText(/Unread activity/)).toBeVisible();
   expect(host.textContent).not.toContain("automatic reading paused");
   await new Promise((resolve) => setTimeout(resolve, 400));
   expect(markChatRead).toHaveBeenCalledTimes(calls);

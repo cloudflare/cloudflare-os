@@ -69,7 +69,8 @@ it.each([1000, 360])("keeps the composer inside a %ipx viewport after a read fai
   expectComposerVisible();
 
   await act(async () => userEvent.click(page.getByRole("button", { name: "Mark read" })));
-  await expect.element(page.getByRole("alert")).toHaveTextContent("Couldn’t update read state");
+  await expect.element(page.getByRole("alert")).toBeVisible();
+  expect(host.querySelector('[role="alert"]')!.textContent).toContain("Couldn’t update read state");
   expectComposerVisible();
   expect(host.querySelector("main")!.getBoundingClientRect().height).toBeLessThan(initialHeight);
 
