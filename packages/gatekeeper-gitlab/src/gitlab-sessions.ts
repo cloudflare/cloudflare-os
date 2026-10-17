@@ -455,4 +455,17 @@ export class GitLabMergeRequestImpl extends GitLabIssuableImpl implements GitLab
       implementsRevert: false,
     });
   }
+
+  async push(commitId: string): Promise<void> {
+    if (!isCommitOid(commitId)) {
+      throw new Error(`push() requires a full 40-character commit id; got ${JSON.stringify(commitId)}.`);
+    }
+    const action = await this.gatekeeper.prepareMergeRequestPush(this.logicalId, commitId, await this.#gitCache.stub());
+    if (action === null) return; // the source branch is already at commitId: nothing to do
+    await this.gatekeeper.submitActionForApproval(this.approvalQueue, action, {
+      title: `Push ${commitId.slice(0, 12)} to !${this.logicalId} (${action.branch})`,
+      pushedCommits: [commitId],
+      implementsRevert: true,
+    });
+  }
 }

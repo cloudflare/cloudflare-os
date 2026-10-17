@@ -139,7 +139,8 @@ Implemented TTL cache families:
 - `cache:repo-v2:<owner>:<repo>` -> `GitHubRepoMetadata` (v2: the shape gained `defaultBranch`,
   and etag revalidation can keep an old-shaped entry alive past the TTL)
 - `cache:issue:<realId>` -> `GitHubIssueDetails`
-- `cache:pull:<realId>` -> `GitHubPullRequestDetails`
+- `cache:pull-v2:<realId>` -> `GitHubPullRequestDetails` (v2: v1 normalized a deleted fork's head
+  as this repository's)
 - `cache:list-issues-v2:<encodedQuery>:p<page>` -> `(GitHubIssueSummary | null)[]`, one entry per
   upstream row (`null` for pull requests), so a page keeps the length that ends the walk (v2: v1
   stored filtered, short pages)

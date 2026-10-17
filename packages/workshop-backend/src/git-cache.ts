@@ -979,10 +979,12 @@ export class WorkspaceGitCache {
             `Cannot push: commit ${oid} in the pushed history is not available in the ` +
             `workspace's git cache, so the history cannot be verified against the destination. ` +
             `A push requires the commit chain from each pushed head down to a commit pulled ` +
-            `from (or already pushed to) the destination to be locally available -- in ` +
-            `practice, commits authored here on top of a base pulled from that destination. ` +
-            `Pushing a pre-existing branch whose intermediate history was never pulled is not ` +
-            `supported yet.`);
+            `through (or already pushed through) the pushing connection to be locally ` +
+            `available -- in practice, commits authored here on top of a base looked up through ` +
+            `that connection. A base looked up through another connection does not count, even ` +
+            `one to the same repository: if that is where this work's base came from, push ` +
+            `through that connection instead. Pushing a pre-existing branch whose intermediate ` +
+            `history was never pulled is not supported yet.`);
       }
       if (local.type !== "commit") {
         throw new Error(`Cannot push ${oid}: it is a ${local.type}, not a commit.`);

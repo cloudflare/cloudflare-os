@@ -64,9 +64,11 @@ export interface GitLabProject {
    * in a worktree get to GitLab. The branch is created if it does not exist.
    *
    * `commitId` must be a full 40-character commit id (e.g. the result of a worktree `commit()`),
-   * and the commit's history must be locally available down to a commit that came from this
-   * project -- which is automatic for commits authored in a worktree mounted from a commit of
-   * this project.
+   * and its history must be locally available down to a commit this connection provided --
+   * which is automatic for commits authored in a worktree mounted from a commit you looked up
+   * through it. Another connection's commits do not count, even one to this same project: look
+   * up the base and push through the same connection. To fix a merge request that has a
+   * connection of its own, do both through that one, pushing with `GitLabMergeRequest.push()`.
    *
    * Without `force`, the push must be a fast-forward: the branch's current head must be an
    * ancestor of `commitId`. If the branch has moved past the head your work was based on, the
@@ -270,6 +272,26 @@ export interface GitLabMergeRequest extends GitLabIssuable {
    * mount the merge request's head commit and diff it against this commit.
    */
   getMergeBase(): Promise<string>;
+
+  /**
+   * Pushes a commit to this merge request's source branch, adding it to the merge request -- the
+   * way a fix made in a worktree gets to a merge request under review: mount the head commit that
+   * `getDetails()` returns, commit your changes on top of it, and push the result.
+   *
+   * `commitId` must be a full 40-character commit id (e.g. the result of a worktree `commit()`),
+   * and its history must be locally available down to a commit this connection provided. So do
+   * the whole fix through this merge request: read the head with `getDetails()` rather than
+   * through a project connection, and mount that. If a project connection reported the head
+   * first (in a branch or merge request listing, say), the workspace fetched it through that
+   * connection, and the push must go through it instead.
+   *
+   * The push must be a fast-forward: if the merge request has moved past the head your work was
+   * based on, the push fails with an error saying so; read its new head and rebase onto it, or
+   * merge it in. A merge request from a fork cannot be pushed to, since its source branch is in
+   * another project. GitLab's protected-branch and push rules are checked by GitLab when the push
+   * is made: a push they reject is not made, and GitLab's reason is reported.
+   */
+  push(commitId: string): Promise<void>;
 
   /**
    * Merges the merge request.
