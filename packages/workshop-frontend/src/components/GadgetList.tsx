@@ -2,6 +2,8 @@ import { Link } from '@tanstack/react-router'
 import { BellSlash, Clock, MagnifyingGlass, Hexagon, DotsThreeVertical, ShareNetwork, Trash, Info, Star, Pencil, ArrowRight } from '@phosphor-icons/react'
 import { useState, useEffect, useRef } from 'react'
 import { DropdownMenu, Dialog, Button, useKumoToastManager } from '@cloudflare/kumo'
+import { useUnreadState } from '../features/notifications/UnreadStateBridge'
+import { UnreadBadge } from '../features/notifications/UnreadBadge'
 import { RpcStub } from 'capnweb'
 import { useAuthenticatedApi } from '../AuthContext'
 import { GadgetMetadataWithTimestamps, BlueprintPublicInfo, Overseer, AiChatAuthorInfo, NotificationMute } from '@gadgets/workshop-shared/api'
@@ -57,6 +59,9 @@ function AppRow({
   const [isRenaming, setIsRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(gadget.title || '')
   const renameInputRef = useRef<HTMLInputElement>(null)
+  const unread = useUnreadState()
+  const unreadChats = unread?.state?.chats.filter(chat =>
+    chat.workspaceId === gadget.id && chat.unreadMessageCount > 0) ?? []
 
   useEffect(() => {
     if (isRenaming) renameInputRef.current?.focus()
@@ -131,6 +136,7 @@ function AppRow({
         <Clock size={10} />
         {formatRelativeTime(gadget.lastActive)}
       </span>
+      <UnreadBadge count={unreadChats.reduce((count, chat) => count + chat.unreadMessageCount, 0)} />
 
       {/* Overflow menu — wrapper stops clicks from reaching the parent Link */}
       <div onClick={(e) => { e.stopPropagation(); e.preventDefault() }}>
@@ -145,6 +151,9 @@ function AppRow({
           }
         />
         <DropdownMenu.Content className={MENU_CONTENT}>
+          <DropdownMenu.Item disabled={unreadChats.length === 0} onClick={() => {
+            void unread?.markManyRead(unreadChats).catch(() => {})
+          }} className={MENU_ITEM}>Mark workspace read</DropdownMenu.Item>
           <DropdownMenu.Item onClick={startRenaming} className={MENU_ITEM}>
             <Pencil size={13} className="mr-2" />
             Rename

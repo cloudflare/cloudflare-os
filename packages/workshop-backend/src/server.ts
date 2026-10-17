@@ -3,6 +3,7 @@ import { validateRpc } from "capnweb-validate";
 import type { JWTPayload } from "jose";
 import { PublicApi, AuthenticatedApi, Overseer, GadgetMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, AiModelProvider, ModelKind, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenGadgetError, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, NotificationSubscriber, NotificationMute } from '@gadgets/workshop-shared/api';
 import type { UiFeatureFlags } from "@gadgets/workshop-shared/feature-flags";
+import type { ChatReadReceipt, UnreadStateSubscriber, UserUnreadState } from "@gadgets/workshop-shared/api";
 import { getServerConfig } from "./deployment-config.js";
 import { isPasswordAuthEnabled, getAuthGatekeeperAllowlist } from "./auth/config.js";
 import { getAuthVendorBinding } from "./auth/auth-vendors.js";
@@ -204,6 +205,27 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
   setWorkspaceNotificationMute(workspaceId: string, mute: NotificationMute | null): Promise<void> {
     return this.#user.setWorkspaceNotificationMute(workspaceId, mute);
+  }
+
+  getUnreadState(): Promise<UserUnreadState> {
+    return retryOnDoReset(() => this.#user.getUnreadState());
+  }
+
+  subscribeToUnreadState(subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>> {
+    return this.#user.subscribeToUnreadState(subscriber);
+  }
+
+  markChatRead(receipt: ChatReadReceipt): Promise<void> {
+    return retryOnDoReset(() => this.#user.markChatRead(receipt));
+  }
+
+  markChatsRead(receipts: ChatReadReceipt[]): Promise<void> {
+    return retryOnDoReset(() => this.#user.markChatsRead(receipts));
+  }
+
+  markChatUnread(workspaceId: string, chatId: number, fromSequence: number,
+                 readEpoch: number): Promise<void> {
+    return retryOnDoReset(() => this.#user.markChatUnread(workspaceId, chatId, fromSequence, readEpoch));
   }
 
   getPreferredModel(): Promise<string | null> {

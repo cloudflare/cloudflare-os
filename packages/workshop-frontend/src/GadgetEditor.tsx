@@ -1171,8 +1171,8 @@ export default function GadgetEditor() {
     })
   }, [showChatParam, id, navigate, setWorkspaceVisibility, exitGadgetFullscreen])
 
-  // Notifications skip the chat on screen: rendered, and not covered by full-screen preview or, on a
-  // phone, by the workspace pane.
+  // Notifications and read receipts apply only to the chat on screen, not one covered by a
+  // full-screen preview or, on a phone, by the workspace pane.
   useEffect(() => {
     if (!chatRendered || isGadgetFullscreen || effectiveSelectedChatId === null) return
     const chat = { workspaceId: id!, chatId: effectiveSelectedChatId }
