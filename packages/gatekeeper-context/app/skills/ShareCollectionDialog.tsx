@@ -312,9 +312,7 @@ export const ShareCollectionDialog = ({
                   size="sm"
                   icon={<Warning weight="fill" />}
                   title="This collection no longer has an owner"
-                  description={permissions.canManageOwners
-                    ? "The owner's account was disconnected. Make someone an owner so the collection can be fully managed."
-                    : "The owner's account was disconnected. Everyone keeps their current access."}
+                  description="The owner's account was disconnected. Everyone keeps their current access."
                 />
               )}
               {error && (

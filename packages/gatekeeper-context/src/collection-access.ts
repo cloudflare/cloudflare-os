@@ -29,8 +29,7 @@ export function canReadCollection(access: CollectionAccess): boolean {
 
 /**
  * What the account may do. Public collections keep their rule: editable and deletable by admins.
- * A private collection left without an owner lets its editors do what an owner could, so someone
- * can still delete it or make a new owner.
+ * Private collection roles retain their permissions even after the last owner disconnects.
  */
 export function collectionPermissions(
     access: CollectionAccess, isAdmin: boolean): ContextCollectionPermissions {
@@ -42,7 +41,6 @@ export function collectionPermissions(
   }
   let isOwner = access.role === "owner";
   let canEdit = isOwner || access.role === "editor";
-  let actsAsOwner = isOwner || (canEdit && !access.hasOwner);
-  return { canEdit, canShare: canEdit, canManageOwners: actsAsOwner, canDelete: actsAsOwner };
+  return { canEdit, canShare: canEdit, canManageOwners: isOwner, canDelete: isOwner };
 }
 

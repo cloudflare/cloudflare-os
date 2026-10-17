@@ -247,7 +247,12 @@ describe("collection sharing", () => {
 
     let access = await collection(id).getAccess("bob");
     expect(access).toMatchObject({ exists: true, hasOwner: false, role: "editor" });
-    expect(await permissions(id, "bob")).toMatchObject({ canManageOwners: true, canDelete: true });
+    expect(await permissions(id, "bob")).toEqual({
+      canEdit: true, canShare: true, canManageOwners: false, canDelete: false,
+    });
+    await expect(settled(collection(id).share("bob", "bob", "owner", "bob")))
+      .rejects.toThrow("Only owners can change who owns this collection.");
+    await expect(api("bob", []).deleteContextCollection(id)).rejects.toThrow();
     expect(await libraryIds("bob")).toEqual([id]);
 
     // Once its last member leaves, nobody can reach it, so it is gone.

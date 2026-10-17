@@ -56,8 +56,8 @@ from every collection it holds one on (owned and shared indexes alike), then:
   collection, including its Artifacts repo as `deleteForRevokedOwner` does today.
 - If no owner remains but the collection is still shared (any grant or `everyoneCanView`), keep
   it and record that it has no active owner. Disconnecting cannot be refused, so this is the one
-  way the no-owner invariant breaks. Grantees keep their roles, and editors may then delete the
-  collection or grant `owner` so that someone owns it again.
+  way the no-owner invariant breaks. Grantees keep their roles and permissions; editors cannot
+  delete the collection or grant ownership, even when no owner remains.
 - When the last grant on an ownerless collection is removed and `everyoneCanView` is off, delete
   the collection, since no one can reach it any more.
 - A disconnected account cannot reclaim anything: re-adding Context mints a new random account
@@ -290,7 +290,7 @@ Protect consumer-visible behavior with focused tests and real-browser smoke chec
 - Collections with the same title can coexist, whether owned or shared.
 - Disconnecting an account removes its grants. A collection left with another owner is unchanged;
   one left with no owner is deleted if unshared, and otherwise keeps working for grantees, shows
-  that it has no active owner, and lets editors delete it or grant `owner`.
+  that it has no active owner, and gives editors no additional permissions.
 - Mirror-token revocation follows the agreed policy.
 - Existing owned and deployment-public collections behave as before.
 
@@ -308,5 +308,5 @@ Settled while implementing; revisit if product direction differs.
 2. A ticket naming several eligible accounts shares with all of them; one naming none fails with
    "This person hasn't turned on Skills yet, so you can't share with them."
 3. Losing write access revokes the git tokens that account minted; legacy untagged tokens stay.
-4. Editors of a collection left without an owner may delete it or grant `owner`, and removing its
-   last grant deletes it.
+4. Collections left without an owner retain their existing grants without giving editors ownership
+   powers. Removing the last grant deletes the collection unless `everyoneCanView` is on.
