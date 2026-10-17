@@ -768,8 +768,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Offer a notification to visible clients; push it to every registered device unless one
-   * acknowledges within 3s. A finished task in a workspace the user muted goes nowhere.
+   * Offer a notification to subscribed clients (hidden ones reject). Push to every registered
+   * device unless one acknowledges within 3s. A finished task in a muted workspace goes nowhere.
    */
   async publishNotification(notification: UserNotification): Promise<void> {
     let mute = this.storage.gadgets.get(notification.workspaceId)?.notificationMute;

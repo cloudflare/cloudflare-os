@@ -50,6 +50,63 @@ class Subscriber extends RpcTarget implements UnreadStateSubscriber {
 }
 
 describe("user-owned horizons and disposable message counts", () => {
+  it.each([0, 1])("enrolls an existing build listing during reconstruction with %i initial messages", async (initialMessages) => {
+    const fixture = await setup();
+    const ownerProfile = {type: "user" as const, id: "owner@example.com", name: "Owner"};
+    const profile = {type: "user" as const, id: "reader@example.com", name: "Reader"};
+    const reader = env.TEST_USER.getByName(crypto.randomUUID());
+    await runInDurableObject(fixture.user, instance => { instance.storage.profile.put(ownerProfile); });
+    await runInDurableObject(reader, instance => { instance.storage.profile.put(profile); });
+    await reader.recordSharedGadgetOpen(fixture.workspaceId, "Workspace", ownerProfile, "build");
+    await withImpl(fixture.workspace, async impl => {
+      impl.storage.collaborators.put({profile,
+        addedBy: [{type: "user", sharer: ownerProfile.id, role: "build", created: new Date()}]});
+      expect(impl.storage.unreadReaders.get(reader.id.toString())).toBeUndefined();
+    });
+    if (initialMessages) await append(fixture, 0);
+
+    // A listing saved before rollout must join fanout without opening a workspace session.
+    expect((await reader.getUnreadState()).unreadMessageCount).toBe(initialMessages);
+    const version = await withImpl(fixture.workspace, async impl => {
+      expect(impl.storage.unreadReaders.get(reader.id.toString())?.profileId).toBe(profile.id);
+      await impl.deliverChatTimelines(true);
+      return impl.storage.chatTimelineVersion.get();
+    });
+    await evictDurableObject(reader);
+    expect((await reader.getUnreadState()).unreadMessageCount).toBe(initialMessages);
+    await withImpl(fixture.workspace, async impl => {
+      expect(impl.storage.chatTimelineVersion.get()).toBe(version);
+    });
+
+    await append(fixture, initialMessages, "New message after reconstruction");
+    expect(await chat(reader)).toMatchObject({unreadMessageCount: initialMessages + 1,
+      latestMessagePreview: "New message after reconstruction"});
+    await withImpl(fixture.workspace, async impl => {
+      impl.storage.chatMeta.delete(1);
+      await impl.deliverChatTimelines(true);
+    });
+    expect((await reader.getUnreadState()).chats).toEqual([]);
+  });
+
+  it("does not enroll a stale build listing when its collaborator has only use access", async () => {
+    const fixture = await setup();
+    const ownerProfile = {type: "user" as const, id: "owner@example.com", name: "Owner"};
+    const profile = {type: "user" as const, id: "reader@example.com", name: "Reader"};
+    const reader = env.TEST_USER.getByName(crypto.randomUUID());
+    await runInDurableObject(fixture.user, instance => { instance.storage.profile.put(ownerProfile); });
+    await runInDurableObject(reader, instance => { instance.storage.profile.put(profile); });
+    await reader.recordSharedGadgetOpen(fixture.workspaceId, "Workspace", ownerProfile, "build");
+    await withImpl(fixture.workspace, async impl => {
+      impl.storage.collaborators.put({profile,
+        addedBy: [{type: "user", sharer: ownerProfile.id, role: "use", created: new Date()}]});
+    });
+    await append(fixture, 0);
+    expect((await reader.getUnreadState()).chats).toEqual([]);
+    await withImpl(fixture.workspace, async impl => {
+      expect(impl.storage.unreadReaders.get(reader.id.toString())).toBeUndefined();
+    });
+  });
+
   it("counts visible messages rather than sparse timeline entries or distinct threads", async () => {
     const fixture = await setup();
     await append(fixture, 0);

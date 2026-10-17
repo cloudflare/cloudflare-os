@@ -1193,7 +1193,9 @@ class OverseerImpl implements AgentHooks {
 
   trackUnreadReader(userId: string, profileId: string): void {
     if (this.storage.deletingWorkspace.get()) return;
-    this.storage.unreadReaders.put({...this.storage.unreadReaders.get(userId), userId, profileId});
+    let reader = this.storage.unreadReaders.get(userId);
+    if (reader?.profileId === profileId) return;
+    this.storage.unreadReaders.put({...reader, userId, profileId});
     this.queueUnreadSnapshot();
   }
 
@@ -10021,6 +10023,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       if (await this.impl.authorizeCollaborator(profileId, user, {requireRole: "build"}) !== "build") return null;
     }
     if (!this.impl.ownerId || this.impl.storage.deletingWorkspace.get()) return null;
+    // Listings from before unread fanout existed must join it even without opening a session.
+    this.impl.trackUnreadReader(userId, profileId);
     return {version: this.impl.storage.chatTimelineVersion.get(),
       heads: this.impl.chatTimelineHeads(chatIds, positions)};
   }

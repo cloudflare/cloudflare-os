@@ -288,7 +288,9 @@ describe("durable unread projection outbox", () => {
         for (const id of ids.slice(1)) {
           expect((await impl.users.get(impl.users.idFromString(id)).getUnreadState()).unreadChatCount).toBe(1);
         }
-        expect([...impl.storage.chatTimelineOutbox.list()]).toEqual([{sequence: 1, userId: ids[0]}]);
+        expect([...impl.storage.chatTimelineOutbox.list()]).toEqual([
+          {sequence: impl.storage.chatTimelineVersion.get(), userId: ids[0], afterVersion: undefined},
+        ]);
         expect(impl.storage.chatTimelineRetryAt.get()).toBeGreaterThan(Date.now());
         const attempts = verify.mock.calls.length;
         await impl.deliverChatTimelines();

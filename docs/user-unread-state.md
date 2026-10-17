@@ -117,6 +117,8 @@ The prototype's durable head rows on existing test installs are migrated to hori
 
 A cold User DO fetches current heads and counts through its saved horizons from listed workspaces,
 using their build-role/observer authorization gate. An initial subscription waits for those loads.
+Reconstruction also idempotently enrolls the user for future workspace deliveries, so shared
+listings saved before this feature receive updates without reopening the workspace.
 One failing workspace does not block healthy ones: `unavailableWorkspaceIds` explicitly reports
 missing heads, and aggregate counts are lower bounds, not a claim that missing threads are read.
 The web client shows a status and retries with backoff; incomplete totals do not replace native
