@@ -4915,9 +4915,17 @@ class OverseerImpl implements AgentHooks {
       if (!creation) throw new Error("Choose one of your accounts to create this resource in.");
       // applyCreation is optional on Gatekeeper; GatekeeperVendor.createResource()'s gatekeepers
       // implement it.
-      created = await (gatekeeper as unknown as Fetcher<Gatekeeper<any> &
-          Required<Pick<Gatekeeper<any>, "applyCreation">>>)
-          .applyCreation(creation.creator, creation.configuration);
+      let pending = gatekeeper as Fetcher<Gatekeeper<any> &
+          Required<Pick<Gatekeeper<any>, "applyCreation">>>;
+      if (record.contextualApply) {
+        if (!this.integrationGrant(id).contextualActions) {
+          throw new Error("Contextual creation access revoked; legacy dispatch is not a fallback.");
+        }
+        using context = new GatekeeperActionContextImpl(this, record);
+        created = await pending.applyCreation(creation.creator, creation.configuration, context);
+      } else {
+        created = await pending.applyCreation(creation.creator, creation.configuration);
+      }
     } else {
       // The apply-time cache stub is scoped to the gatekeeper AND to this action (approval can
       // happen long after the session that queued it, so the queue-time stub is gone) -- the
@@ -5899,7 +5907,7 @@ class OverseerImpl implements AgentHooks {
       type: "action",
       description
     };
-    if (action !== "create" && this.integrationGrant(gatekeeperId).contextualActions) {
+    if (this.integrationGrant(gatekeeperId).contextualActions) {
       record.contextualApply = true;
       record.integrationOrigin = integrationOrigin;
     }
@@ -9275,6 +9283,9 @@ class OverseerImpl implements AgentHooks {
   async createExternalResource(
       chatId: number, input: Extract<AiToolCall, {toolName: "createExternalResource"}>["input"])
       : Promise<{gatekeeperId: WorkpieceId}> {
+    // Capture before the vendor RPC: a slow mint must not adopt a later turn in this chat.
+    let grant = agentIntegrationGrant(this.env.AGENT_INTEGRATION_GRANTS, input.vendorId);
+    let origin = grant.lifecycle || grant.contextualActions ? this.integrations.capture(chatId) : undefined;
     let minted = await this.#ownerUserStub().createResourceGatekeeper(
         input.vendorId, input.resourceUrlPattern, input.title);
     let id = this.allocateWorkpieceId();
@@ -9285,7 +9296,8 @@ class OverseerImpl implements AgentHooks {
       creationSpec: {type: "gatekeeper", vendorId: input.vendorId,
                      typeUrlPattern: minted.typeUrlPattern},
     });
-    await this.submitAction(id, "create", minted.action, {from: "agent", chatId})
+    let caller: GatekeeperCaller = {from: "agent", chatId};
+    await this.submitAction(id, "create", minted.action, caller, origin)
         .catch(error => { this.removeGatekeeper(id); throw error; });
     return {gatekeeperId: id};
   }

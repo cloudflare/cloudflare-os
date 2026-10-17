@@ -181,6 +181,82 @@ describe("lifecycle outbox", () => {
 });
 
 describe("contextual application", () => {
+  it("gives real creation its original turn and waits for readiness before approval", async () => {
+    const {visit} = await fixture();
+    await visit(async impl => {
+      const origin = seed(impl);
+      impl.storage.gatekeepers.put({id: 7, class: {} as any,
+        creationSpec: {type: "gatekeeper", vendorId: "test", typeUrlPattern: "container://instance/*"}});
+      await impl.submitAction(7, "create", {...description, awaitDecision: true},
+        {from: "agent", chatId: 1}, origin);
+      const action = [...impl.storage.actions.list()][0];
+      if (action.type !== "action") throw new Error("Missing creation");
+      expect(action.contextualApply).toBe(true);
+      expect(action.integrationOrigin).toEqual(origin);
+      const receiver = participant(impl, crypto.randomUUID());
+      const resume = vi.spyOn(impl, "resumeAgentAfterDecision").mockImplementation(() => {});
+      const creation = vi.fn<NonNullable<Gatekeeper<any>["applyCreation"]>>(async (_creator, configuration, context) => {
+        expect(configuration).toBeNull();
+        expect(context).toBeDefined();
+        const agent = (await context!.getAgentContext())!;
+        expect(await agent.getTurn()).toMatchObject({turnId: origin.turnId, phase: "applyingAction"});
+        await agent.participate(receiver);
+        expect([...impl.storage.agentParticipants.list()]).toHaveLength(1);
+        expect(impl.storage.actions.get(action.id)?.state).toBe("pending");
+        expect(resume).not.toHaveBeenCalled();
+        // Removing the pending facet models a disconnected card; its approval receipt still
+        // records the created URL, without asking workerd to instantiate this test's fake class.
+        impl.storage.gatekeepers.delete(7);
+        return {class: {} as any, resourceUrl: "container://instance/test"};
+      });
+      vi.spyOn(impl, "getGatekeeperFacet").mockResolvedValue({applyCreation: creation} as any);
+      await impl.applyPendingAction(action, USER, false, {creator: {} as any, configuration: null});
+      expect(creation).toHaveBeenCalledTimes(1);
+      expect(impl.storage.actions.get(action.id)).toMatchObject({state: "approved", resourceUrl: "container://instance/test"});
+      expect(resume).toHaveBeenCalledExactlyOnceWith(1, action.id);
+      impl.storage.activeAgents.delete(1);
+      await impl.integrations.drain();
+    });
+  });
+
+  it("fails closed when contextual creation is revoked", async () => {
+    const {visit} = await fixture();
+    await visit(async impl => {
+      const origin = seed(impl);
+      await impl.submitAction(7, "create", description, {from: "agent", chatId: 1}, origin);
+      const action = [...impl.storage.actions.list()][0];
+      if (action.type !== "action") throw new Error("Missing creation");
+      const creation = vi.fn();
+      vi.spyOn(impl, "getGatekeeperFacet").mockResolvedValue({applyCreation: creation} as any);
+      impl.env.AGENT_INTEGRATION_GRANTS = undefined;
+      await expect(impl.applyPendingAction(action, USER, false, {creator: {} as any, configuration: null}))
+        .rejects.toThrow("revoked");
+      expect(creation).not.toHaveBeenCalled();
+      impl.storage.activeAgents.delete(1);
+    });
+  });
+
+  it("keeps legacy creation on its two-argument protocol even when a grant is added later", async () => {
+    const {visit} = await fixture();
+    await visit(async impl => {
+      seed(impl);
+      impl.env.AGENT_INTEGRATION_GRANTS = undefined;
+      await impl.submitAction(7, "create", description, {from: "agent", chatId: 1});
+      const action = [...impl.storage.actions.list()][0];
+      if (action.type !== "action") throw new Error("Missing creation");
+      impl.env.AGENT_INTEGRATION_GRANTS = grants;
+      const creator = {} as any;
+      const creation = vi.fn(async () => {
+        impl.storage.gatekeepers.delete(7);
+        return {class: {} as any, resourceUrl: "https://example.com/created"};
+      });
+      vi.spyOn(impl, "getGatekeeperFacet").mockResolvedValue({applyCreation: creation} as any);
+      await impl.applyPendingAction(action, USER, false, {creator, configuration: "choice"});
+      expect(creation).toHaveBeenCalledExactlyOnceWith(creator, "choice");
+      impl.storage.activeAgents.delete(1);
+    });
+  });
+
   it("pins dispatch at submission and does not adopt the approver's later turn", async () => {
     const {visit} = await fixture();
     await visit(async impl => {
