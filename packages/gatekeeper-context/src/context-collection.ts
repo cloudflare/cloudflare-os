@@ -168,6 +168,8 @@ function makeContextCollectionStorage(storage: DurableObjectStorage) {
       aclVersion: 0,
       // Consecutive failed attempts to revoke a token whose issuer lost write access.
       gitTokenRevokeAttempts: 0,
+      // Keep deletion durable until external cleanup succeeds; pending collections are unreadable.
+      deletionPending: false,
       metadata: <StoredContextCollectionMetadata>{
         id: "",
         title: "",
@@ -317,7 +319,7 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       ? grants.find(grant => grant.accountId === accountId)?.role ?? null
       : null;
     return {
-      exists: !!meta.id,
+      exists: !!meta.id && !this.storage.deletionPending.get(),
       visibility: meta.visibility,
       role,
       everyoneCanView,
@@ -511,10 +513,12 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     }
   }
 
-  /** Retries failed git token revocations; see #revokeUnauthorizedGitTokens. */
+  /** Retries pending collection deletion or failed git token revocations. */
   async alarm(): Promise<void> {
-    // A failure schedules its own retry, with backoff, so it is not thrown to the runtime's.
-    await this.#serializeAccessChange(() => this.#revokeUnauthorizedGitTokens());
+    await this.#serializeAccessChange(async () => {
+      if (this.storage.deletionPending.get()) await this.deleteSelf();
+      else await this.#revokeUnauthorizedGitTokens();
+    });
   }
 
   #parseAgentSkill(record: ContextRecord) {
@@ -1189,6 +1193,10 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
   async deleteSelf(): Promise<void> {
     let meta = this.getMetadata();
     let id = meta.id;
+    // Persist the intent and its retry before any external operation can fail. Never erase the
+    // repo identity or issuer records while an external write credential could still be live.
+    this.storage.deletionPending.put(true);
+    await this.ctx.storage.setAlarm(Date.now() + GIT_TOKEN_REVOKE_RETRY_MS);
 
     if (id) {
       if (meta.visibility === "public") {
@@ -1212,6 +1220,7 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
           collectionId: id,
           error: err,
         });
+        throw err;
       });
     }
 

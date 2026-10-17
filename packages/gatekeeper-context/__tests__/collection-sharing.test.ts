@@ -83,6 +83,8 @@ function fakeArtifacts() {
   let mintGate = Promise.resolve();
   let fake = {
     revoked: [] as string[],
+    activeTokens: new Set<string>(),
+    failDeletion: false,
     failRevocations: false,
     /** Hold token mints until the returned function is called. */
     holdMints() {
@@ -95,11 +97,14 @@ function fakeArtifacts() {
   let repo = {
     async createToken() {
       await mintGate;
-      return { id: `token-${minted++}`, plaintext: "secret" };
+      let token = { id: `token-${minted++}`, plaintext: "secret" };
+      fake.activeTokens.add(token.id);
+      return token;
     },
     async revokeToken(tokenId: string) {
       if (fake.failRevocations) throw new Error("Artifacts is unavailable.");
       fake.revoked.push(tokenId);
+      fake.activeTokens.delete(tokenId);
       return true;
     },
   };
@@ -108,7 +113,10 @@ function fakeArtifacts() {
       return { remote: `https://artifacts.example/${name}.git`, token: "initial" };
     },
     async get() { return repo; },
-    async delete() {},
+    async delete() {
+      if (fake.failDeletion) throw new Error("Artifacts is unavailable.");
+      fake.activeTokens.clear();
+    },
   } as unknown as Artifacts;
   return fake;
 }
@@ -293,6 +301,35 @@ describe("collection sharing", () => {
 });
 
 describe("git tokens of members who lose write access", () => {
+  it.each(["leave", "disconnect", "delete"] as const)(
+    "retains cleanup state through an Artifacts outage during %s", async (operation) => {
+      let artifacts = fakeArtifacts();
+      let stub = await createGitCollection(artifacts.binding);
+      let token = await stub.createGitToken("bob");
+      if (operation !== "delete") await stub.removeAccount("alice");
+
+      artifacts.failRevocations = true;
+      artifacts.failDeletion = true;
+      let deletion = operation === "leave" ? stub.removeMember("bob", "bob")
+        : operation === "disconnect" ? stub.removeAccount("bob") : stub.deleteSelf();
+      await expect(settled(deletion)).rejects.toThrow("Artifacts is unavailable.");
+      expect(artifacts.activeTokens.has(token.id)).toBe(true);
+      expect(canReadCollection(await stub.getAccess("bob"))).toBe(false);
+      await runInDurableObject(stub, async (_instance, state) => {
+        expect(await state.storage.getAlarm()).not.toBeNull();
+      });
+
+      await expect(runDurableObjectAlarm(stub)).rejects.toThrow("Artifacts is unavailable.");
+      artifacts.failRevocations = false;
+      artifacts.failDeletion = false;
+      expect(await runDurableObjectAlarm(stub)).toBe(true);
+      expect(artifacts.activeTokens.has(token.id)).toBe(false);
+      await runInDurableObject(stub, async (_instance, state) => {
+        expect((await state.storage.list()).size).toBe(0);
+        expect(await state.storage.getAlarm()).toBeNull();
+      });
+    });
+
   it("revokes a token minted while its issuer was being removed", async () => {
     let artifacts = fakeArtifacts();
     let stub = await createGitCollection(artifacts.binding);

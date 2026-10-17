@@ -233,6 +233,11 @@ when the change itself was a no-op, so repeating it retries. A failed revocation
 schedules an alarm that retries with backoff, and is reported to whoever removed or demoted the
 issuer (not on disconnection, where the account itself is going away).
 
+Deletion persists a pending-cleanup marker and alarm before external work and immediately denies
+collection access. If Artifacts repository deletion fails, report the failure and retain the repo
+identity and token issuer records; the alarm retries deletion until it succeeds. Only then clear
+the collection's storage and alarm, including when its last member leaves or disconnects.
+
 ## UI integration
 
 Add a feature-owned collection Share dialog, using Kumo controls and existing dialog/presentation
