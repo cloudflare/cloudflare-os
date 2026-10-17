@@ -1,19 +1,11 @@
 import { Button } from "@cloudflare/kumo/components/button";
 import { Loader } from "@cloudflare/kumo/components/loader";
 import { cn } from "@cloudflare/kumo/utils";
-import { CaretRightIcon, CheckIcon, FileIcon, FolderIcon } from "@phosphor-icons/react";
-import {
-  isValidElement,
-  useEffect,
-  useEffectEvent,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type KeyboardEvent,
-  type ReactNode,
-} from "react";
+import { CaretRightIcon, FileIcon, FolderIcon } from "@phosphor-icons/react";
+import { isValidElement, useEffect, useEffectEvent, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type {
   ConfiguratorUIHierarchyAncestor,
+  ConfiguratorUIHierarchyChoice,
   ConfiguratorUIHierarchyItem,
   ConfiguratorUIHierarchyRequest,
   HierarchyPickerProps,
@@ -47,17 +39,29 @@ type Listing = Page & {
 const SEARCH_DEBOUNCE_MS = 180;
 const AT_ROOT: Location = { trail: [], detached: false };
 
+const sanitizeChoice = (value: unknown): ConfiguratorUIHierarchyChoice | undefined => {
+  if (!value || typeof value !== "object") return undefined;
+  const { title, subtitle } = value as Record<string, unknown>;
+  return { title: displayText(title), subtitle: displayText(subtitle) };
+};
+
 /** A path whose every ancestor is valid, or none: a partial path would misstate where a node is. */
 const sanitizePath = (value: unknown): Ancestor[] | undefined => {
   if (!Array.isArray(value)) return undefined;
   const path: Ancestor[] = [];
   for (const entry of value) {
     if (!entry || typeof entry !== "object") return undefined;
-    const { id: rawId, title: rawTitle, selectable } = entry as Record<string, unknown>;
-    const id = identifier(rawId);
-    const title = displayText(rawTitle);
+    const raw = entry as Record<string, unknown>;
+    const id = identifier(raw.id);
+    const title = displayText(raw.title);
     if (!id || !title) return undefined;
-    path.push(typeof selectable === "boolean" ? { id, title, selectable } : { id, title });
+    path.push({
+      id,
+      title,
+      selectable: typeof raw.selectable === "boolean" ? raw.selectable : undefined,
+      icon: typeof raw.icon === "string" ? raw.icon : undefined,
+      choice: sanitizeChoice(raw.choice),
+    });
   }
   return path;
 };
@@ -74,8 +78,8 @@ const sanitizeItem = (value: unknown): Item | undefined => {
     kind: raw.kind,
     icon: typeof raw.icon === "string" ? raw.icon : undefined,
     subtitle: displayText(raw.subtitle),
-    meta: displayText(raw.meta),
     selectable: raw.selectable !== false,
+    choice: sanitizeChoice(raw.choice),
     path: sanitizePath(raw.path),
   };
 };
@@ -105,59 +109,140 @@ const appendUnique = (existing: readonly Item[], incoming: readonly Item[]): Ite
   })];
 };
 
-const asContainer = ({ id, title }: Ancestor): Item => ({ id, title, kind: "container", selectable: true });
+const asContainer = ({ id, title, icon, choice }: Ancestor): Item =>
+  ({ id, title, icon, choice, kind: "container", selectable: true });
 
-const asAncestor = ({ id, title, selectable }: Item): Ancestor => ({ id, title, selectable });
+const asAncestor = ({ id, title, selectable, icon, choice }: Item): Ancestor => ({ id, title, selectable, icon, choice });
+
+/** A search result's line: where it lives, then its own, so results of one name can be told apart. */
+const searchSubtitle = ({ path, subtitle }: Item): string | undefined =>
+  [path?.map(ancestor => ancestor.title).join(" / "), subtitle].filter(Boolean).join(" · ") || undefined;
 
 /** Where a node found without browsing to it (a search result, a pre-filled value) lives. */
 const locationOf = (item: Item): Location => item.kind === "container"
   ? { trail: [...item.path ?? [], asAncestor(item)], detached: !item.path }
   : { trail: item.path ?? [], detached: false };
 
+type ChoiceBodyProps = { mark: "checked" | "unchecked" | "none"; icon: ReactNode; title: string; subtitle?: string };
+
+/**
+ * What the root's card and every row show: a radio's look (or room for one, so icons line up), an
+ * icon and two lines. The look is only a cue; `aria-selected` or `aria-pressed` says it.
+ */
+const ChoiceBody = ({ mark, icon, title, subtitle }: ChoiceBodyProps) => (
+  <>
+    <span
+      className={cn("flex size-4 shrink-0 items-center justify-center rounded-full",
+        mark === "checked" && "bg-kumo-brand ring ring-kumo-brand",
+        mark === "unchecked" && "bg-kumo-base ring ring-kumo-line")}
+    >
+      {mark === "checked" && <span className="size-2 rounded-full bg-kumo-base" />}
+    </span>
+    <span aria-hidden="true" className="flex size-5 shrink-0 items-center justify-center overflow-hidden text-kumo-subtle [&>svg]:size-5">
+      {icon}
+    </span>
+    <span className="flex min-w-0 flex-1 flex-col">
+      <span className="truncate">{title}</span>
+      {subtitle && <span className="truncate text-xs text-kumo-subtle">{subtitle}</span>}
+    </span>
+  </>
+);
+
+type RowProps = Omit<ChoiceBodyProps, "mark"> & {
+  /** What activating the row does; `none` for a node that can be neither chosen nor opened. */
+  action: "choose" | "open" | "none";
+  selected: boolean;
+  disabled: boolean;
+  /** Whether the list's single tab stop is on this row. */
+  tabbable: boolean;
+  onFocus(): void;
+  onActivate(): void;
+};
+
+/** One option of the list. Moving between rows is the list's job; activating one is the row's. */
+const Row = ({ action, selected, disabled, tabbable, onFocus, onActivate, ...body }: RowProps) => {
+  const inert = disabled || action === "none";
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    const activates = event.key === "Enter" || event.key === " " || (event.key === "ArrowRight" && action === "open");
+    if (inert || !activates) return;
+    event.preventDefault();
+    onActivate();
+  };
+  return (
+    <div
+      role="option"
+      aria-selected={selected}
+      aria-disabled={inert || undefined}
+      tabIndex={!disabled && tabbable ? 0 : -1}
+      onFocus={onFocus}
+      onClick={inert ? undefined : onActivate}
+      onKeyDown={onKeyDown}
+      className={cn(
+        "flex min-h-10 items-center gap-3 rounded-md px-2 py-1.5 text-sm outline-none",
+        "focus-visible:ring-2 focus-visible:ring-kumo-focus",
+        inert ? "cursor-default" : "cursor-pointer hover:bg-kumo-tint",
+        action === "none" && "text-kumo-inactive",
+        selected && "bg-kumo-tint text-kumo-strong",
+      )}
+    >
+      <ChoiceBody {...body} mark={selected ? "checked" : action === "choose" ? "unchecked" : "none"} />
+      {action === "open" && <CaretRightIcon aria-hidden="true" size={16} className="shrink-0 text-kumo-subtle" />}
+    </div>
+  );
+};
+
 /**
  * Drill-down navigator choosing one node of a hierarchy: the root, a container or a leaf. Renders
- * inline rather than in a popup, which the frame would clip. Only the user's own moves call
- * `onChange`; pre-fill, loading and search only change what is shown.
+ * inline rather than in a popup, which the frame would clip. The root is chosen from its card, an
+ * open container from the row its listing starts with and a leaf from its own row. As in a file
+ * dialog, a choice lasts while it is in view: moving elsewhere or searching lets go of it, except
+ * the root's, whose card is always in view.
  *
- * Where it has navigated, and what opening there selected, describe one root and the selections the
- * user made, so a new root or a value the module set starts it afresh, pre-filling that value.
+ * Where it has navigated describes one root, so a new root or a value the module set starts it
+ * afresh, pre-filling that value where it lives. A change the module declined leaves it in place.
  */
 export const HierarchyPicker = (props: HierarchyPickerProps) => {
   const value = props.value ?? null;
-  const [own, setOwn] = useState({ value, generation: 0 });
-  if (value !== own.value) setOwn({ value, generation: own.generation + 1 });
+  // `sent` is what the picker last reported. A value that is new and not `sent` is the module's own.
+  const [own, setOwn] = useState({ seen: value, sent: value, generation: 0 });
+  if (value !== own.seen) {
+    setOwn({ ...own, seen: value, generation: value === own.sent ? own.generation : own.generation + 1 });
+  }
   const onChange: HierarchyPickerProps["onChange"] = (next, item) => {
-    setOwn(current => ({ ...current, value: next }));
+    setOwn(current => ({ ...current, sent: next }));
     props.onChange(next, item);
   };
   return <Navigator key={`${props.name}\n${props.root.id}\n${own.generation}`} {...props} onChange={onChange} />;
 };
 
 const Navigator = (props: HierarchyPickerProps) => {
-  const { name, value = null, root, icons, searchPlaceholder, metaLabel, disabled = false } = props;
+  const { name, value = null, root, icons, searchPlaceholder, disabled = false } = props;
 
   // A module's render builds its callbacks afresh on every render, and a new identity must not
   // restart a load.
   const loadItem = useEffectEvent((id: string) => props.loadItem?.(id) ?? null);
   const loadItems = useEffectEvent(props.loadItems);
+  const dropPrefill = useEffectEvent(() => props.onChange(null, null));
 
-  const [pendingPrefill, setPendingPrefill] = useState(
-    () => value && value !== root.id && props.loadItem ? value : null);
+  const [pendingPrefill, setPendingPrefill] = useState(() =>
+    value !== null && !(value === root.id && root.selectable === true) ? value : null);
   const [location, setLocation] = useState<Location>(AT_ROOT);
   const [text, setText] = useState("");
   const [query, setQuery] = useState("");
   const [listing, setListing] = useState<Listing | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [chosen, setChosen] = useState<Item | null>(null);
-  // What opening the location selected: itself, or nothing. Choosing the selected leaf again returns
-  // to it, so unchoosing never selects more than the user had.
-  const [openedWith, setOpenedWith] = useState<Item | null>(
-    () => value === root.id && root.selectable === true ? asContainer(root) : null);
+  // A pre-filled leaf, which its parent's listing may not show: on a later page, or with no path.
+  const [prefilledLeaf, setPrefilledLeaf] = useState<Item | null>(null);
+  const [searchFocused, setSearchFocused] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
-  const viewportRef = useRef<HTMLDivElement>(null);
-  const shownHeight = useRef(0);
-  const focusFirstRow = useRef(false);
+  const footerRef = useRef<HTMLDivElement>(null);
+  const crumbsRef = useRef<HTMLElement>(null);
+  // Where focus goes once that location's listing is shown (the row named, or else the first),
+  // after the control that had it went away with what it did.
+  const focusTarget = useRef<{ location: string; row: string | null } | null>(null);
+  // Set when Shift+Tab leaves the search box, whose focus hid the breadcrumb it should reach.
+  const focusCrumb = useRef(false);
   // Bumped whenever the listing a response would update is replaced, so a late page is dropped.
   const generation = useRef(0);
 
@@ -168,21 +253,28 @@ const Navigator = (props: HierarchyPickerProps) => {
 
   useEffect(() => {
     if (pendingPrefill === null) return;
+    // An unselectable root is no choice the picker can show, and no node `loadItem` knows.
+    if (pendingPrefill === root.id) {
+      dropPrefill();
+      setPendingPrefill(null);
+      return;
+    }
     let cancelled = false;
     Promise.resolve()
       .then(() => loadItem(pendingPrefill))
       .then(sanitizeItem)
       .then(item => {
         if (cancelled) return;
-        if (item) {
-          setChosen(item);
+        // Shown where it lives, or, when it cannot be shown as that choice, not chosen at all.
+        if (item?.selectable && item.id === pendingPrefill) {
           setLocation(locationOf(item));
-          setOpenedWith(item.kind === "container" && item.selectable ? item : null);
-        }
+          if (item.kind === "leaf") setPrefilledLeaf(item);
+        } else dropPrefill();
         setPendingPrefill(null);
       }, error => {
         if (cancelled) return;
         reportFrontendIssue("configurator.hierarchy-item-load", error);
+        dropPrefill();
         setPendingPrefill(null);
       });
     return () => {
@@ -218,77 +310,92 @@ const Navigator = (props: HierarchyPickerProps) => {
   const fresh = !prefilling && listing?.parentId === locationId && listing.query === query
     ? listing : null;
   const status = fresh?.status ?? "loading";
-  const items = fresh?.items ?? [];
-  const activeIndex = Math.max(0, items.findIndex(item => item.id === activeId));
+  // A listing naming the open container or the root among its own nodes would show one choice twice.
+  const items = (fresh?.items ?? []).filter(item => item.id !== locationId && item.id !== root.id);
+  // The open container, offered as a choice of its own. Not under a search, whose results are not
+  // its contents.
+  const scope = current && current.selectable !== false && !query ? asContainer(current) : null;
+  // A pre-filled leaf its folder's listing does not show (on a later page, or found without a path)
+  // comes first until the listing does, so the choice is in view, and stays while the user is here.
+  const pinned = status === "ready" && !query && prefilledLeaf
+    && !items.some(item => item.id === prefilledLeaf.id) ? prefilledLeaf : null;
+  const rows = pinned ? [pinned, ...items] : items;
+  const rowIds = [...scope ? [scope.id] : [], ...rows.map(row => row.id)];
+  // Compact beside the breadcrumb until used; then it takes the breadcrumb's place, since what it
+  // finds is not in the open location.
+  const searchOpen = searchFocused || text !== "";
+  const focusId = activeId !== null && rowIds.includes(activeId) ? activeId : rowIds[0];
 
-  // While the next listing loads, the list keeps the height it last showed one at, rather than
-  // collapsing to the loading line and springing back when the listing arrives. Set before paint,
-  // so the collapsed list is never drawn.
-  useLayoutEffect(() => {
-    const viewport = viewportRef.current;
-    if (!viewport) return;
-    if (status === "loading") {
-      viewport.style.minHeight = `${shownHeight.current}px`;
-    } else {
-      viewport.style.minHeight = "";
-      shownHeight.current = viewport.offsetHeight;
-    }
-  });
-
-  // Once a navigation started from the list has a listing, focus lands on its first row; until
-  // then it waits on the list itself, since the row that started it is gone.
+  // Moves focus to `focusTarget` once its listing is shown, holding it on the list while it loads.
+  // Only focus the picker lost, to the page or within its list and footer, is moved: a user who went
+  // elsewhere meanwhile stays there.
   useEffect(() => {
+    const target = focusTarget.current;
     const list = listRef.current;
-    if (!focusFirstRow.current || !list) return;
-    if (status === "loading") {
-      if (!list.contains(document.activeElement)) list.focus();
+    if (!list || !target || target.location !== locationId) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && !list.contains(active) && !footerRef.current?.contains(active)) {
+      focusTarget.current = null;
       return;
     }
-    focusFirstRow.current = false;
-    (list.querySelector<HTMLElement>('[role="option"]') ?? list).focus();
+    if (status === "loading") {
+      if (!list.contains(active)) list.focus();
+      return;
+    }
+    // A page that has landed but is not rendered yet names a row this render lacks.
+    if (target.row !== null && !rowIds.includes(target.row)) return;
+    focusTarget.current = null;
+    const index = target.row === null ? 0 : rowIds.indexOf(target.row);
+    (list.querySelectorAll<HTMLElement>('[role="option"]')[index] ?? list).focus();
   });
 
-  const select = (item: Item | null) => {
-    if (disabled) return;
-    setChosen(item);
-    props.onChange(item?.id ?? null, item);
+  useEffect(() => {
+    const crumb = crumbsRef.current?.querySelector<HTMLElement>('[aria-current="location"]');
+    if (!focusCrumb.current || !crumb) return;
+    focusCrumb.current = false;
+    crumb.focus();
+  });
+
+  const rootChosen = root.selectable === true && value === root.id;
+
+  /** As in a file dialog, a choice lasts while it is in view, and only the root's card always is. */
+  const leaveView = () => {
+    if (value !== null && !rootChosen) props.onChange(null, null);
   };
 
-  const navigate = (next: Location, selection: Item | null, fromList: boolean) => {
-    if (disabled) return;
+  const select = (item: Item) => {
+    // Rows about to give way to the search being typed are no longer in view; the root's card is.
+    if (disabled || item.id === value || (item.id !== root.id && text.trim() !== query)) return;
     setPendingPrefill(null);
+    props.onChange(item.id, item);
+  };
+
+  const navigate = (next: Location, fromList: boolean) => {
+    if (disabled) return;
+    leaveView();
+    setPendingPrefill(null);
+    setPrefilledLeaf(null);
     setLocation(next);
     setText("");
     setQuery("");
-    focusFirstRow.current = fromList;
-    setOpenedWith(selection);
-    select(selection);
+    // The row that started it goes with the listing it was in.
+    focusTarget.current = fromList ? { location: next.trail.at(-1)?.id ?? root.id, row: null } : null;
   };
 
-  /** Opens the root (depth 0) or the trail's container at that depth, selecting it if it can be. */
+  /** Opens the root (depth 0) or the trail's container at that depth; the open one stays as it is. */
   const goTo = (depth: number, fromList: boolean) => {
-    const trail = location.trail.slice(0, depth);
-    const target = trail.at(-1);
-    const selectable = target ? target.selectable !== false : root.selectable === true;
-    navigate({ trail, detached: depth > 0 && location.detached },
-      selectable ? asContainer(target ?? root) : null, fromList);
+    if (depth === location.trail.length) return;
+    navigate({ trail: location.trail.slice(0, depth), detached: depth > 0 && location.detached }, fromList);
   };
 
   const openContainer = (item: Item) => navigate(
     query
       ? locationOf(item)
       : { trail: [...location.trail, asAncestor(item)], detached: location.detached },
-    item.selectable ? item : null,
     true);
 
-  const activate = (item: Item) => {
-    if (item.kind === "container") openContainer(item);
-    else if (!item.selectable) return;
-    else if (item.id !== value) select(item);
-    else select(openedWith);
-  };
-
   const retry = () => {
+    focusTarget.current = { location: locationId, row: null };
     setListing(null);
     setAttempt(count => count + 1);
   };
@@ -300,6 +407,13 @@ const Navigator = (props: HierarchyPickerProps) => {
     setListing({ ...fresh, loadingMore: true, moreMessage: undefined });
     requestPage(props.loadItems, { parentId, query: listedQuery, cursor: nextCursor }).then(page => {
       if (generation.current !== token) return;
+      // From the button, focus moves to the first row it brought; when the last page takes the
+      // button and brought none, to the row the button followed.
+      const listed = new Set(fresh.items.map(item => item.id));
+      const added = page.items.find(item => !listed.has(item.id));
+      if ((added || !page.nextCursor) && footerRef.current?.contains(document.activeElement)) {
+        focusTarget.current = { location: parentId, row: added?.id ?? rowIds.at(-1) ?? null };
+      }
       setListing(shown => shown && { ...shown, items: appendUnique(shown.items, page.items),
         nextCursor: page.nextCursor, loadingMore: false });
     }, error => {
@@ -314,7 +428,6 @@ const Navigator = (props: HierarchyPickerProps) => {
     if (disabled) return;
     const rows = [...listRef.current?.querySelectorAll<HTMLElement>('[role="option"]') ?? []];
     const index = rows.indexOf(event.target as HTMLElement);
-    const item = index >= 0 ? items[index] : undefined;
     const focusRow = (target: number) => rows[Math.max(0, Math.min(target, rows.length - 1))]?.focus();
     switch (event.key) {
       case "ArrowDown":
@@ -329,15 +442,6 @@ const Navigator = (props: HierarchyPickerProps) => {
       case "End":
         focusRow(rows.length - 1);
         break;
-      case "Enter":
-      case " ":
-        if (!item) return;
-        activate(item);
-        break;
-      case "ArrowRight":
-        if (item?.kind !== "container") return;
-        openContainer(item);
-        break;
       case "ArrowLeft":
       case "Backspace":
         if (location.trail.length === 0) return;
@@ -349,26 +453,31 @@ const Navigator = (props: HierarchyPickerProps) => {
     event.preventDefault();
   };
 
+  const search = (next: string) => {
+    setText(next);
+    setPendingPrefill(null);
+    setPrefilledLeaf(null);
+    leaveView();
+  };
+
   const onSearchKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Tab" && event.shiftKey && !text) {
+      event.preventDefault();
+      focusCrumb.current = true;
+      setSearchFocused(false);
+      return;
+    }
     if (event.key !== "Escape" || !text) return;
     event.preventDefault();
-    setText("");
+    search("");
     setQuery("");
   };
 
-  const iconFor = (item: Item): ReactNode => {
-    const custom = item.icon && icons && Object.hasOwn(icons, item.icon) ? icons[item.icon] : undefined;
+  const iconFor = (icon: string | undefined, kind: Item["kind"]): ReactNode => {
+    const custom = icon && icons && Object.hasOwn(icons, icon) ? icons[icon] : undefined;
     if (isValidElement(custom)) return custom;
-    return item.kind === "container" ? <FolderIcon size={20} /> : <FileIcon size={20} />;
+    return kind === "container" ? <FolderIcon size={20} /> : <FileIcon size={20} />;
   };
-
-  const locationSelected = value !== null && value === locationId;
-  const rowSelected = value !== null && items.some(item => item.id === value);
-  const selectedTitle = value === null || locationSelected || rowSelected || status === "loading"
-    ? null
-    : chosen?.id === value ? chosen.title
-    : value === root.id ? root.title
-    : location.trail.find(ancestor => ancestor.id === value)?.title ?? value;
 
   const crumb = (title: string, depth: number) => {
     const isCurrent = depth === location.trail.length;
@@ -382,12 +491,6 @@ const Navigator = (props: HierarchyPickerProps) => {
         onClick={() => goTo(depth, false)}
       >
         {title}
-        {isCurrent && locationSelected && (
-          <>
-            <CheckIcon aria-hidden="true" size={12} className="text-kumo-brand" />
-            <span className="sr-only">, selected</span>
-          </>
-        )}
       </Button>
     );
   };
@@ -396,14 +499,14 @@ const Navigator = (props: HierarchyPickerProps) => {
   let announcement: ReactNode;
   if (status === "loading") announcement = "Loading…";
   else if (status === "failed") announcement = fresh?.message;
-  else if (items.length === 0) announcement = query ? `No results for "${query}".` : "Nothing here.";
+  else if (rows.length === 0) announcement = query ? `No results for "${query}".` : "Nothing here.";
   else {
     announcement = (
       <>
         <span className="sr-only">
-          {items.length} {query ? (items.length === 1 ? "result" : "results") : (items.length === 1 ? "item" : "items")}
+          {rows.length} {query ? (rows.length === 1 ? "result" : "results") : (rows.length === 1 ? "item" : "items")}
         </span>
-        {fresh?.moreMessage}
+        {fresh?.moreMessage && <>{" "}<span className="text-kumo-danger">{fresh.moreMessage}</span></>}
       </>
     );
   }
@@ -415,88 +518,107 @@ const Navigator = (props: HierarchyPickerProps) => {
       className={cn("flex flex-col overflow-hidden rounded-lg border border-kumo-line bg-kumo-base",
         disabled && "opacity-60")}
     >
-      <div className="flex flex-col gap-2 border-b border-kumo-line p-2">
-        <nav aria-label="Location" className="flex min-w-0 flex-wrap items-center gap-0.5 text-sm">
-          {crumb(root.title, 0)}
-          {location.detached && location.trail.length > 0 && (
-            <>
-              {separator}
-              <span className="px-1 text-kumo-subtle">…</span>
-            </>
-          )}
-          {location.trail.map((ancestor, index) => (
-            <span key={ancestor.id} className="contents">
-              {separator}
-              {crumb(ancestor.title, index + 1)}
-            </span>
-          ))}
-        </nav>
-        {searchPlaceholder && (
-          <FilterInput
-            label={searchPlaceholder}
-            value={text}
+      {root.selectable === true && (
+        <div className="border-b border-kumo-line p-2">
+          <button
+            type="button"
+            aria-pressed={rootChosen}
             disabled={disabled}
-            onChange={setText}
-            onKeyDown={onSearchKeyDown}
-          />
-        )}
-      </div>
-      {metaLabel && (
-        <div className="flex justify-end border-b border-kumo-line px-4 py-1 text-xs text-kumo-subtle">
-          {metaLabel}
+            onClick={() => select(asContainer(root))}
+            className={cn(
+              "flex w-full items-center gap-3 rounded-lg border p-3 text-left text-sm outline-none",
+              "focus-visible:ring-2 focus-visible:ring-kumo-focus",
+              rootChosen ? "border-kumo-brand bg-kumo-tint text-kumo-strong" : "border-kumo-hairline",
+              !disabled && "cursor-pointer hover:bg-kumo-tint",
+            )}
+          >
+            <ChoiceBody
+              mark={rootChosen ? "checked" : "unchecked"}
+              icon={iconFor(root.icon, "container")}
+              title={`All of ${root.title}`}
+              subtitle={root.subtitle}
+            />
+          </button>
         </div>
       )}
-      <div ref={viewportRef} className={cn("max-h-80 overflow-y-auto p-1", status === "loading" && "flex flex-col")}>
+      <div className="flex min-h-11 items-center gap-2 border-b border-kumo-line p-2">
+        {!searchOpen && (
+          <nav ref={crumbsRef} aria-label="Location" className="flex min-w-0 flex-1 flex-wrap items-center gap-0.5 text-sm">
+            {crumb(root.title, 0)}
+            {location.detached && location.trail.length > 0 && (
+              <>
+                {separator}
+                <span className="px-1 text-kumo-subtle">…</span>
+              </>
+            )}
+            {location.trail.map((ancestor, index) => (
+              <span key={ancestor.id} className="contents">
+                {separator}
+                {crumb(ancestor.title, index + 1)}
+              </span>
+            ))}
+          </nav>
+        )}
+        {searchPlaceholder && (
+          <div
+            className={cn("ml-auto shrink-0 transition-[width] duration-150", searchOpen ? "w-full" : "w-40")}
+            onFocus={() => setSearchFocused(true)}
+            onBlur={() => setSearchFocused(false)}
+          >
+            <FilterInput
+              label={searchPlaceholder}
+              placeholder={searchOpen ? searchPlaceholder : "Search"}
+              value={text}
+              disabled={disabled}
+              onChange={search}
+              onKeyDown={onSearchKeyDown}
+            />
+          </div>
+        )}
+      </div>
+      {/* One fixed height, so neither a navigation nor the listing it loads moves the form. */}
+      <div className={cn("h-80 overflow-y-auto p-1", status === "loading" && "flex flex-col")}>
         <div
           ref={listRef}
           role="listbox"
-          aria-label={locationTitle}
-          aria-busy={status === "loading" || undefined}
+          aria-label={query ? "Search results" : locationTitle}
+          aria-busy={status === "loading" || fresh?.loadingMore || undefined}
           aria-disabled={disabled || undefined}
-          tabIndex={items.length === 0 && !disabled ? 0 : -1}
+          tabIndex={rowIds.length === 0 && !disabled ? 0 : -1}
           onKeyDown={onListKeyDown}
           className="flex flex-col rounded-md outline-none focus-visible:ring-2 focus-visible:ring-kumo-focus"
         >
-          {items.map((item, index) => {
-            const selected = item.id === value;
-            const inert = disabled || (item.kind === "leaf" && !item.selectable);
-            // A search result says where it lives, unless it describes itself.
-            const subtitle = item.subtitle
-              ?? (query && item.path?.length ? item.path.map(ancestor => ancestor.title).join(" / ") : undefined);
-            return (
-              <div
-                key={item.id}
-                role="option"
-                aria-selected={selected}
-                aria-disabled={inert || undefined}
-                tabIndex={!disabled && index === activeIndex ? 0 : -1}
-                onFocus={() => setActiveId(item.id)}
-                onClick={() => activate(item)}
-                className={cn(
-                  "flex min-h-10 items-center gap-3 rounded-md px-2 py-1.5 text-sm outline-none",
-                  "focus-visible:ring-2 focus-visible:ring-kumo-focus",
-                  inert ? "cursor-default" : "cursor-pointer hover:bg-kumo-tint",
-                  item.kind === "leaf" && !item.selectable && "text-kumo-inactive",
-                  selected && "bg-kumo-tint text-kumo-strong",
-                )}
-              >
-                <span aria-hidden="true" className="flex size-5 shrink-0 items-center justify-center overflow-hidden text-kumo-subtle [&>svg]:size-5">
-                  {iconFor(item)}
-                </span>
-                <span className="flex min-w-0 flex-1 flex-col">
-                  <span className="truncate">{item.title}</span>
-                  {subtitle && <span className="truncate text-xs text-kumo-subtle">{subtitle}</span>}
-                </span>
-                {item.meta && <span className="shrink-0 text-xs text-kumo-subtle">{item.meta}</span>}
-                {selected && <CheckIcon aria-hidden="true" size={16} className="shrink-0 text-kumo-brand" />}
-                {item.kind === "container" && (
-                  <CaretRightIcon aria-hidden="true" size={16} className="shrink-0 text-kumo-subtle" />
-                )}
-              </div>
-            );
-          })}
+          {/* Keyed by location, so focus on it does not carry over to the next location's row. */}
+          {scope && (
+            <Row
+              key={scope.id}
+              title={scope.choice?.title ?? `Everything in ${scope.title}`}
+              subtitle={scope.choice?.subtitle}
+              icon={iconFor(scope.icon, "container")}
+              action="choose"
+              selected={value === scope.id}
+              disabled={disabled}
+              tabbable={focusId === scope.id}
+              onFocus={() => setActiveId(scope.id)}
+              onActivate={() => select(scope)}
+            />
+          )}
+          {rows.map(item => (
+            <Row
+              key={item.id}
+              title={item.title}
+              subtitle={query ? searchSubtitle(item) : item.subtitle}
+              icon={iconFor(item.icon, item.kind)}
+              action={item.kind === "container" ? "open" : item.selectable ? "choose" : "none"}
+              selected={item.id === value}
+              disabled={disabled}
+              tabbable={focusId === item.id}
+              onFocus={() => setActiveId(item.id)}
+              onActivate={() => item.kind === "container" ? openContainer(item) : select(item)}
+            />
+          ))}
         </div>
-        <div className={cn("flex flex-wrap items-center gap-2 px-2 py-1 text-sm text-kumo-subtle empty:hidden",
+        <div ref={footerRef} className={cn("flex flex-wrap items-center gap-2 px-2 py-1 text-sm text-kumo-subtle empty:hidden",
           status === "loading" && "m-auto")}>
           {status === "loading" && <span aria-hidden="true"><Loader size="sm" /></span>}
           <div role="status" aria-live="polite" className={cn(status === "failed" && "text-kumo-danger")}>
@@ -506,17 +628,12 @@ const Navigator = (props: HierarchyPickerProps) => {
             <Button size="xs" disabled={disabled} onClick={retry}>Retry</Button>
           )}
           {status === "ready" && fresh?.nextCursor && (
-            <Button size="xs" loading={fresh.loadingMore} disabled={disabled} onClick={loadMore}>
-              Load more
-            </Button>
+            // Not Kumo's `loading`, which disables the button and so drops its focus.
+            <Button size="xs" disabled={disabled} onClick={loadMore}>Load more</Button>
           )}
+          {fresh?.loadingMore && <span aria-hidden="true"><Loader size="sm" /></span>}
         </div>
       </div>
-      {selectedTitle !== null && (
-        <div className="truncate border-t border-kumo-line px-3 py-2 text-sm text-kumo-default">
-          Selected: {selectedTitle}
-        </div>
-      )}
     </div>
   );
 };

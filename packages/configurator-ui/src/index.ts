@@ -147,12 +147,28 @@ export type AutocompleteProps = {
   disabled?: boolean;
 };
 
+/**
+ * How an open container is offered as a choice, in the row its listing starts with. Only the
+ * gatekeeper knows what connecting a container grants (its whole subtree, or the node alone, as
+ * for a page whose subpages it cannot read), so it says so here.
+ */
+export type ConfiguratorUIHierarchyChoice = {
+  /** Defaults to "Everything in" and the container's title, which suits a grant of its subtree. */
+  title?: string;
+  /** What connecting it grants, such as whether that reaches what is added later. None by default. */
+  subtitle?: string;
+};
+
 /** An ancestor of a {@link ConfiguratorUIHierarchyItem}, as its breadcrumb shows it. */
 export type ConfiguratorUIHierarchyAncestor = {
   id: string;
   title: string;
-  /** As for {@link ConfiguratorUIHierarchyItem.selectable}: whether returning to it selects it. */
+  /** As for {@link ConfiguratorUIHierarchyItem.selectable}: whether, once open, it is offered as a choice. */
   selectable?: boolean;
+  /** As for {@link ConfiguratorUIHierarchyItem.icon}, shown on that choice. */
+  icon?: string;
+  /** As for {@link ConfiguratorUIHierarchyItem.choice}. */
+  choice?: ConfiguratorUIHierarchyChoice;
 };
 
 /** One node listed by a {@link HierarchyPicker}. */
@@ -172,14 +188,15 @@ export type ConfiguratorUIHierarchyItem = {
    */
   icon?: string;
   subtitle?: string;
-  /** Short secondary detail shown in its own column, such as a formatted modification date. */
-  meta?: string;
   /**
-   * Whether the node can be connected. Defaults to true. An unselectable container still opens, and
-   * while it is open nothing is selected, so a grouping such as "Shared with me" can be browsed
+   * Whether the node can be connected. Defaults to true. A leaf is chosen from its own row; a
+   * container from the row its listing starts with once it is open (see `choice`). An unselectable
+   * container still opens, without that row, so a grouping such as "Shared with me" can be browsed
    * without being offered as a resource.
    */
   selectable?: boolean;
+  /** For a container, how it is offered as a choice once open. */
+  choice?: ConfiguratorUIHierarchyChoice;
   /**
    * The node's ancestors below the root, outermost first. Optional in a listing, where the picker
    * knows where it is, but needed for search results and for `loadItem`, so the breadcrumb can show
@@ -192,8 +209,15 @@ export type ConfiguratorUIHierarchyItem = {
 export type ConfiguratorUIHierarchyRoot = {
   id: string;
   title: string;
-  /** Whether the root itself can be connected, meaning everything the picker reaches. */
+  /**
+   * Whether the root itself can be connected, meaning everything the picker reaches. When it can, it
+   * is offered above the list, as "All of" its title.
+   */
   selectable?: boolean;
+  /** Shown under that choice, saying what it covers. */
+  subtitle?: string;
+  /** Key into the picker's `icons` for that choice. */
+  icon?: string;
 };
 
 /** One request a {@link HierarchyPicker} makes of its `loadItems`. */
@@ -221,22 +245,25 @@ export type ConfiguratorUIHierarchyPage = {
 /** Props of {@link HierarchyPicker}. */
 export type HierarchyPickerProps = {
   name: string;
-  /** Id of the selected node (or the root's), or null when nothing is selected. */
+  /**
+   * Id of the selected node (or the root's), or null when nothing is selected. The root's id is let
+   * go of unless the root is selectable.
+   */
   value?: string | null;
   root: ConfiguratorUIHierarchyRoot;
   loadItems(request: ConfiguratorUIHierarchyRequest): Promise<ConfiguratorUIHierarchyPage>;
   /**
-   * Looks up the node a `value` names, with its `path`, so a pre-filled value opens where it lives
-   * instead of at the root. Resolving null or failing leaves the picker at the root, still showing
-   * the value as selected.
+   * Looks up the node a `value` names, with its `path`, so a pre-filled value opens where it lives.
+   * A pre-filled value other than the root's needs it: one it resolves null for, fails on, finds
+   * cannot be connected, or resolves to a node of another id is let go of, since the picker cannot
+   * show it as that choice.
    */
   loadItem?(id: string): Promise<ConfiguratorUIHierarchyItem | null>;
   /**
-   * Receives the new selection and the node it names (for the root, a container named after it).
-   * Only the user's own navigation changes the selection: opening a container selects it when it is
-   * selectable and clears the selection when it is not; choosing a leaf narrows the selection to it,
-   * and choosing it again returns it to what opening the location selected: the location, or
-   * nothing. Unchoosing therefore never selects more than the user had.
+   * Receives the user's choice and the node it names (for the root or an open container, a container
+   * named after it), or null when the picker lets go of it. As in a file dialog, a choice lasts while
+   * it is in view: moving to another location or searching lets go of it, except the root's, whose
+   * choice is always in view, and so does a pre-filled value `loadItem` cannot show.
    */
   onChange(value: string | null, item: ConfiguratorUIHierarchyItem | null): void;
   /**
@@ -245,10 +272,11 @@ export type HierarchyPickerProps = {
    * from assistive technology, since the title names the node. Define the map once at module level.
    */
   icons?: Record<string, unknown>;
-  /** Shows a search box with this placeholder. Omit it for a picker without search. */
+  /**
+   * Shows a search box beside the breadcrumb, named by this text. While in use it takes the
+   * breadcrumb's place and shows this text as its placeholder. Omit it for a picker without search.
+   */
   searchPlaceholder?: string;
-  /** Heading for the column showing nodes' `meta`. */
-  metaLabel?: string;
   disabled?: boolean;
 };
 
@@ -306,7 +334,8 @@ export function Autocomplete(_props: AutocompleteProps): unknown {
 
 /**
  * Navigable list for choosing one node of a hierarchy -- the whole hierarchy, a container in it, or a
- * single leaf -- with breadcrumbs, optional search, and paging. Provided by the sandbox runtime.
+ * single leaf -- with breadcrumbs, optional search, and paging. As in a file dialog, a choice lasts
+ * while it is in view. Provided by the sandbox runtime.
  */
 export function HierarchyPicker(_props: HierarchyPickerProps): unknown {
   throw new Error("HierarchyPicker is provided by the configurator UI sandbox runtime.");
