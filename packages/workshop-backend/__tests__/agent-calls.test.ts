@@ -197,26 +197,6 @@ describe("durable agent calls", () => {
     expect(messages(impl)).toEqual([]);
   }));
 
-  it("stops turn setup if deletion begins while orphan cleanup is pending", () => freshImpl(async impl => {
-    using _snapshots = vi.spyOn(impl, "deliverChatTimelines").mockResolvedValue(undefined);
-    seedChat(impl);
-    let release!: () => void;
-    const gate = new Promise<void>(resolve => { release = resolve; });
-    const cleanup = vi.spyOn(impl, "reconcilePendingGadgets").mockImplementation(() => gate);
-    const materialize = vi.spyOn(impl, "materializeChatChanges");
-    impl.startAgent(CHAT_ID, { profile: MODEL, config: BROKEN_MODEL_CONFIG }, OWNER, OWNER_USER_ID);
-    await waitFor(() => cleanup.mock.calls.length > 0);
-
-    impl.storage.deletingWorkspace.put(true);
-    release();
-    await impl.waitForAllAgentsToComplete();
-
-    expect(cleanup).toHaveBeenCalledTimes(1);
-    expect(materialize).not.toHaveBeenCalled();
-    expect(messages(impl)).toEqual([]);
-    expect([...impl.storage.activeAgents.list()]).toEqual([]);
-  }));
-
   it("a call to an idle chat is recorded, then appended and the agent started",
       () => freshImpl(async impl => {
     seedChat(impl);

@@ -520,7 +520,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // Heads, previews, source fences and badge calculations are disposable. Only private horizons
   // are written here; the workspace's log reconstructs everything else after normal DO eviction.
   #chatTimelines = new Map<string, {version: number; heads: Map<number, ChatTimelineHead>}>();
-  #readMessageCounts = new Map<string, number>();
   #readCursors = new Map<string, NonNullable<ReturnType<UserStorage["chatReadCursors"]["get"]>>>();
   #timelineLoads = new Map<string, Promise<void>>();
   #unreadRevision = 0;
@@ -557,9 +556,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           this.#forgetUnreadChat(workspaceId, cursor.chatId);
         }
       }
-      for (let head of state.heads) {
-        this.#readMessageCounts.set(`${workspaceId}:${head.chatId}`, head.readMessageCount ?? 0);
-      }
       this.#unreadChanged();
     })().finally(() => this.#timelineLoads.delete(workspaceId));
     this.#timelineLoads.set(workspaceId, pending);
@@ -594,7 +590,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         chats.push({workspaceId, chatId: head.chatId, chatTitle: head.chatTitle,
           latestSequence: head.latestSequence, latestMessagePreview: head.latestMessagePreview,
           latestActivityAt: head.latestActivityAt, readThroughSequence, readEpoch: cursor?.readEpoch ?? 0,
-          unreadMessageCount: Math.max(0, head.messageCount - (this.#readMessageCounts.get(key) ?? 0))});
+          unreadMessageCount: Math.max(0, head.messageCount - (head.readMessageCount ?? 0))});
       }
     }
     return {revision: this.#unreadRevision, chats,
@@ -651,9 +647,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       this.#forgetUnreadChat(workspaceId, id);
     }
     for (let head of heads) {
-      let key = `${workspaceId}:${head.chatId}`;
-      if (!timeline.heads.has(head.chatId)) this.#readMessageCounts.set(key, head.readMessageCount ?? 0);
-      timeline.heads.set(head.chatId, head);
+      timeline.heads.set(head.chatId, {...head,
+        readMessageCount: timeline.heads.get(head.chatId)?.readMessageCount ?? head.readMessageCount ?? 0});
     }
     timeline.version = version;
     if (heads.length || removed.length) this.#unreadChanged();
@@ -711,7 +706,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       let cursor = {workspaceId, chatId, readThroughSequence: throughSequence, readEpoch};
       this.storage.chatReadCursors.put(cursor);
       this.#readCursors.set(key, cursor);
-      this.#readMessageCounts.set(key, readMessageCount);
+      this.#chatTimelines.get(workspaceId)!.heads.get(chatId)!.readMessageCount = readMessageCount;
       changed = true;
     }
     if (changed) this.#unreadChanged();
@@ -738,7 +733,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let cursor = {workspaceId, chatId, readThroughSequence: fromSequence - 1, readEpoch: readEpoch + 1};
     this.storage.chatReadCursors.put(cursor);
     this.#readCursors.set(`${workspaceId}:${chatId}`, cursor);
-    this.#readMessageCounts.set(`${workspaceId}:${chatId}`, state.heads[0].readMessageCount ?? 0);
+    this.#chatTimelines.get(workspaceId)!.heads.get(chatId)!.readMessageCount = state.heads[0].readMessageCount ?? 0;
     this.#unreadChanged();
   }
 
@@ -749,7 +744,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   #forgetUnreadChat(workspaceId: string, chatId: number): void {
     let key = `${workspaceId}:${chatId}`;
-    this.#readMessageCounts.delete(key);
     this.storage.chatReadCursors.delete(key);
     this.#readCursors.delete(key);
   }
@@ -760,9 +754,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.chatReadCursors.byWorkspace.delete(workspaceId);
     for (let [key, cursor] of this.#readCursors) {
       if (cursor.workspaceId === workspaceId) this.#readCursors.delete(key);
-    }
-    for (let key of this.#readMessageCounts.keys()) {
-      if (key.startsWith(workspaceId + ":")) this.#readMessageCounts.delete(key);
     }
     if (hadChats) this.#unreadChanged();
   }

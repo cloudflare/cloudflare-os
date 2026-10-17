@@ -18,12 +18,13 @@ const withImpl = async <T>(
 ) => runInDurableObject(stub, (instance) => fn(Reflect.get(instance, "impl") as Impl));
 
 // Fault at the caller's dispatch/ACK boundary, not by throwing inside the pool's DO wrapper.
-const interceptDispatch = (
+const interceptUser = <K extends "syncWorkspaceChats" | "deleteGadget" | "getChatContext">(
   impl: Impl,
+  method: K,
   intercept: (
     user: DurableObjectStub<UserDurableObject>,
-    args: Parameters<UserDurableObject["syncWorkspaceChats"]>,
-  ) => Promise<void>,
+    ...args: Parameters<UserDurableObject[K]>
+  ) => ReturnType<UserDurableObject[K]>,
 ) => {
   const original = impl.users;
   let calls = 0;
@@ -33,14 +34,14 @@ const interceptDispatch = (
       if (key === "get")
         return (id: DurableObjectId) =>
           new Proxy(target.get(id), {
-            get(user, method) {
-              if (method === "syncWorkspaceChats") {
-                return async (...args: Parameters<UserDurableObject["syncWorkspaceChats"]>) => {
+            get(user, key) {
+              if (key === method) {
+                return (...args: Parameters<UserDurableObject[K]>) => {
                   calls++;
-                  await intercept(user, args);
+                  return intercept(user, ...args);
                 };
               }
-              return Reflect.get(user, method);
+              return Reflect.get(user, key);
             },
           });
       return Reflect.get(target, key);
@@ -54,30 +55,19 @@ const interceptDispatch = (
   };
 };
 
-const failDispatch = (impl: Impl, afterApply: boolean) =>
-  interceptDispatch(impl, async (user, args) => {
-    if (afterApply) await user.syncWorkspaceChats(...args);
-    throw new Error(afterApply ? "ACK lost" : "before dispatch");
-  });
+const interceptDispatch = (impl: Impl,
+  intercept: (user: DurableObjectStub<UserDurableObject>, args: Parameters<UserDurableObject["syncWorkspaceChats"]>) => Promise<void>,
+) => interceptUser(impl, "syncWorkspaceChats", (user, ...args) => intercept(user, args));
 
 const interceptRemoval = (
   impl: Impl,
   intercept: (user: DurableObjectStub<UserDurableObject>, workspaceId: string) => Promise<void>,
-) => {
-  const original = impl.users;
-  impl.users = new Proxy(original, {
-    get(target, key) {
-      if (key === "idFromString") return (id: string) => target.idFromString(id);
-      if (key === "get") return (id: DurableObjectId) => new Proxy(target.get(id), {
-        get(user, method) {
-          if (method === "deleteGadget") return (workspaceId: string) => intercept(user, workspaceId);
-          return Reflect.get(user, method);
-        },
-      });
-      return Reflect.get(target, key);
-    },
-  });
-  return () => { impl.users = original; };
+) => interceptUser(impl, "deleteGadget", intercept).restore;
+
+const expectAcknowledged = (impl: Impl) => {
+  for (const reader of impl.storage.unreadReaders.list()) {
+    expect(reader.timelineVersion).toBe(impl.storage.chatTimelineVersion.get());
+  }
 };
 
 const setup = async () => {
@@ -103,7 +93,7 @@ const setup = async () => {
     impl.storage.ownerId.put(id.toString());
     impl.ownerId = id.toString();
     impl.storage.chatTimelineVersion.put(1);
-    impl.storage.chatTimelineOutbox.put({ sequence: 1, userId: id.toString() });
+    impl.storage.unreadReaders.put({userId: id.toString(), profileId: "owner@example.com"});
     // Model the persisted alarm that queueing schedules, without letting it fire during the test.
     await impl.ctx.storage.setAlarm(Date.now() + 60_000);
     return id.toString();
@@ -111,7 +101,7 @@ const setup = async () => {
   return { stub, recipientId };
 };
 
-describe("durable unread projection outbox", () => {
+describe("durable unread delivery checkpoints", () => {
   it("journals message deletions without invalidating the caller's open timeline iterator", async () => {
     const {stub, recipientId} = await setup();
     await withImpl(stub, async impl => {
@@ -225,15 +215,19 @@ describe("durable unread projection outbox", () => {
     await withImpl(stub, async (impl) => {
       const id = impl.users.idFromName(`revoked-reader-${crypto.randomUUID()}`).toString();
       const user = impl.users.get(impl.users.idFromString(id));
+      using verify = vi.spyOn(impl, "authorizeCollaborator").mockResolvedValue("build");
+      await runInDurableObject(user, instance => {
+        instance.storage.profile.put({type: "user", id: "reader@example.com", name: "Reader"});
+      });
       await user.newGadget(impl.ctx.id.toString(), "Workspace");
       await user.syncWorkspaceChats(impl.ctx.id.toString(), 0, [
         { chatId: 1, chatTitle: "Old", latestSequence: 0 },
       ]);
-      impl.storage.unreadReaders.put({ userId: id, profileId: "reader@example.com" });
-      using verify = vi.spyOn(impl, "authorizeCollaborator").mockResolvedValue(null);
+      await impl.deliverChatTimelines(true);
+      verify.mockClear().mockResolvedValue(null);
       // A sharing write alone journals cleanup; no later message or browser click is required.
       impl.storage.shareKeys.put({ id: "changed-key", alias: "revoked-link" });
-      await impl.deliverChatTimelines();
+      await impl.deliverChatTimelines(true);
       expect(verify).toHaveBeenCalledWith("reader@example.com", expect.anything(), {
         requireRole: "build",
       });
@@ -267,13 +261,12 @@ describe("durable unread projection outbox", () => {
     await withImpl(stub, async (impl) => {
       const ids = [recipientId, ...Array.from({length: 2}, () =>
         impl.users.idFromName(crypto.randomUUID()).toString())].toSorted();
-      // Put the failing reader before both a healthy reader and the owner in outbox order.
+      // Put the failing reader before both a healthy reader and the owner in delivery order.
       impl.ownerId = ids[2];
       impl.storage.ownerId.put(ids[2]);
       for (const id of ids) {
         await impl.users.get(impl.users.idFromString(id)).newGadget(impl.ctx.id.toString(), "Workspace");
-        if (id !== impl.ownerId) impl.storage.unreadReaders.put({userId: id, profileId: id});
-        impl.storage.chatTimelineOutbox.put({sequence: 1, userId: id});
+        impl.storage.unreadReaders.put({userId: id, profileId: id});
       }
       using verify = vi.spyOn(impl, "authorizeCollaborator").mockImplementation(async (profileId) => {
         if (failure === "authorization" && profileId === ids[0]) throw new Error("needs repair");
@@ -288,9 +281,10 @@ describe("durable unread projection outbox", () => {
         for (const id of ids.slice(1)) {
           expect((await impl.users.get(impl.users.idFromString(id)).getUnreadState()).unreadChatCount).toBe(1);
         }
-        expect([...impl.storage.chatTimelineOutbox.list()]).toEqual([
-          {sequence: impl.storage.chatTimelineVersion.get(), userId: ids[0], afterVersion: undefined},
-        ]);
+        expect(impl.storage.unreadReaders.get(ids[0])?.timelineVersion).toBeUndefined();
+        for (const id of ids.slice(1)) {
+          expect(impl.storage.unreadReaders.get(id)?.timelineVersion).toBe(impl.storage.chatTimelineVersion.get());
+        }
         expect(impl.storage.chatTimelineRetryAt.get()).toBeGreaterThan(Date.now());
         const attempts = verify.mock.calls.length;
         await impl.deliverChatTimelines();
@@ -364,7 +358,7 @@ describe("durable unread projection outbox", () => {
         await expect(impl.deliverChatTimelines(true)).rejects.toThrow("Collaborator unavailable");
         expect(await impl.users.get(impl.users.idFromString(recipientId)).getGadget(impl.ctx.id.toString())).toBeNull();
         expect(impl.storage.deletingWorkspace.get()).toBe(true);
-        expect(impl.storage.chatTimelineOutbox.get(readerId)).toBeDefined();
+        expect(impl.storage.unreadReaders.get(readerId)).toBeDefined();
         expect(impl.storage.chatTimelineRetryAt.get()).toBeGreaterThan(Date.now());
       } finally {
         restore();
@@ -377,7 +371,7 @@ describe("durable unread projection outbox", () => {
     await withImpl(stub, async impl => { expect(impl.ownerId).toBeUndefined(); });
   });
 
-  it.each(["before dispatch", "lost ACK", "outbox cleanup", "storage deletion"])(
+  it.each(["before dispatch", "lost ACK", "reader cleanup", "storage deletion"])(
     "resumes workspace deletion after eviction at %s without resurrecting collaborator badges",
     async (boundary) => {
       const { stub, recipientId } = await setup();
@@ -393,9 +387,9 @@ describe("durable unread projection outbox", () => {
           await user.deleteGadget(workspaceId);
           if (user.id.toString() === id && boundary === "lost ACK") throw new Error(boundary);
         });
-        const remove = impl.storage.chatTimelineOutbox.delete.bind(impl.storage.chatTimelineOutbox);
-        using _cleanup = vi.spyOn(impl.storage.chatTimelineOutbox, "delete").mockImplementation((userId) => {
-          if (userId === id && boundary === "outbox cleanup") throw new Error(boundary);
+        const remove = impl.storage.unreadReaders.delete.bind(impl.storage.unreadReaders);
+        using _cleanup = vi.spyOn(impl.storage.unreadReaders, "delete").mockImplementation((userId) => {
+          if (userId === id && boundary === "reader cleanup") throw new Error(boundary);
           return remove(userId);
         });
         using _deleteAll = vi.spyOn(impl.ctx.storage, "deleteAll");
@@ -419,7 +413,7 @@ describe("durable unread projection outbox", () => {
       await withImpl(stub, async (impl) => {
         expect(impl.ownerId).toBeUndefined();
         expect(impl.storage.chatMeta.get(1)).toBeUndefined();
-        expect([...impl.storage.chatTimelineOutbox.list()]).toEqual([]);
+        expect([...impl.storage.unreadReaders.list()]).toEqual([]);
         const reader = impl.users.get(impl.users.idFromString(readerId));
         await reader.syncWorkspaceChats(impl.ctx.id.toString(), 999, [
           {chatId: 1, chatTitle: "Delayed", latestSequence: 2},
@@ -526,6 +520,7 @@ describe("durable unread projection outbox", () => {
         entered.resolve();
         await release.promise;
       });
+      using materialize = vi.spyOn(impl, "materializeChatChanges");
       const restore = interceptRemoval(impl, async () => { throw new Error("cleanup unavailable"); });
       try {
         impl.startAgent(1, {profile: {type: "agent", id: "model", name: "Model"},
@@ -536,6 +531,7 @@ describe("durable unread projection outbox", () => {
         release.resolve();
         await impl.waitForAllAgentsToComplete();
         expect(cleanup).toHaveBeenCalledTimes(1);
+        expect(materialize).not.toHaveBeenCalled();
         expect([...impl.storage.activeAgents.list()]).toEqual([]);
         expect([...impl.storage.chats.list()].map(message => message.type)).toEqual(["message"]);
         await expect(impl.deliverChatTimelines(true)).rejects.toThrow("cleanup unavailable");
@@ -604,16 +600,7 @@ describe("durable unread projection outbox", () => {
           } } : {}),
         };
       });
-      const users = impl.users;
-      impl.users = new Proxy(users, {
-        get(target, key) {
-          if (key === "idFromString") return (id: string) => target.idFromString(id);
-          if (key === "get") return (id: DurableObjectId) => new Proxy(target.get(id), {
-            get(user, method) { return method === "getChatContext" ? lookup : Reflect.get(user, method); },
-          });
-          return Reflect.get(target, key);
-        },
-      });
+      const dispatch = interceptUser(impl, "getChatContext", lookup);
       try {
         const message = [...impl.storage.chats.list()].find(message => message.type === "connectionRequest")!;
         impl.storage.chats.put({...message, state: "accepted"});
@@ -630,7 +617,7 @@ describe("durable unread projection outbox", () => {
         expect([...impl.storage.activeAgents.list()]).toEqual([]);
       } finally {
         gate.resolve();
-        impl.users = users;
+        dispatch.restore();
       }
     });
   });
@@ -643,27 +630,9 @@ describe("durable unread projection outbox", () => {
     await withImpl(stub, async (impl) => {
       const user = impl.users.get(impl.users.idFromString(recipientId));
       expect((await user.getUnreadState()).unreadChatCount).toBe(1);
-      expect([...impl.storage.chatTimelineOutbox.list()]).toEqual([]);
+      expectAcknowledged(impl);
     });
     expect(alerts).not.toHaveBeenCalled();
-  });
-
-  it("reconstructs recipient fanout from persisted dirty intent after eviction", async () => {
-    const { stub, recipientId } = await setup();
-    await withImpl(stub, async (impl) => {
-      impl.storage.chatTimelineOutbox.delete(recipientId);
-      impl.storage.chatTimelineDirty.put(true);
-    });
-    await evictDurableObject(stub);
-    await runDurableObjectAlarm(stub);
-    await withImpl(stub, async (impl) => {
-      expect(
-        (await impl.users.get(impl.users.idFromString(recipientId)).getUnreadState())
-          .unreadChatCount,
-      ).toBe(1);
-      expect(impl.storage.chatTimelineDirty.get()).toBe(false);
-      expect([...impl.storage.chatTimelineOutbox.list()]).toEqual([]);
-    });
   });
 
   it("does not erase activity queued while an earlier snapshot's ACK is in flight", async () => {
@@ -701,87 +670,50 @@ describe("durable unread projection outbox", () => {
         unreadChatCount: 1,
         chats: [{ latestSequence: 2, readThroughSequence: 1 }],
       });
-      expect([...impl.storage.chatTimelineOutbox.list()]).toEqual([]);
+      expectAcknowledged(impl);
     });
   });
 
-  it("persists a bounded retry deadline when dispatch fails, then recovers after eviction", async () => {
-    const { stub, recipientId } = await setup();
-    await withImpl(stub, async (impl) => {
-      const failure = failDispatch(impl, false);
-      try {
-        await expect(impl.deliverChatTimelines()).rejects.toThrow("before dispatch");
-        expect([...impl.storage.chatTimelineOutbox.list()]).toHaveLength(1);
-        expect(impl.storage.chatTimelineRetryAt.get()).toBeGreaterThan(Date.now());
-        await impl.deliverChatTimelines();
-        expect(failure.calls()).toBe(1);
-        // Advance the persisted deadline instead of changing workerd's clock.
+  it.each(["before dispatch", "lost ACK", "checkpoint write"])(
+    "recovers after eviction at %s, without replaying an accepted snapshot or clearing later reads",
+    async boundary => {
+      const { stub, recipientId } = await setup();
+      await withImpl(stub, async (impl) => {
+        // Warm the receiver so the ACK boundary is independent of initial enrollment.
+        const user = impl.users.get(impl.users.idFromString(recipientId));
+        await user.getUnreadState();
+        await impl.deliverChatTimelines(true);
+        const checkpointBefore = impl.storage.unreadReaders.get(recipientId)!.timelineVersion;
+        const dispatch = interceptDispatch(impl, async (user, args) => {
+          if (boundary === "before dispatch") throw new Error(boundary);
+          await user.syncWorkspaceChats(...args);
+          if (boundary === "lost ACK") throw new Error(boundary);
+        });
+        using checkpoint = vi.spyOn(impl.storage.unreadReaders, "put");
+        if (boundary === "checkpoint write") checkpoint.mockImplementationOnce(() => { throw new Error(boundary); });
+        impl.storage.chatTimelineRetryAt.put(Date.now() + 60_000);
+        impl.storage.chats.put({chatId: 1, sequence: 2, timestamp: impl.getChatTimestamp(),
+          author: {type: "agent", id: "test", name: "Test"}, type: "message", message: "New activity"});
+        try {
+          await expect(impl.deliverChatTimelines(true)).rejects.toThrow(boundary);
+          expect(impl.storage.unreadReaders.get(recipientId)?.timelineVersion).toBe(checkpointBefore);
+          expect(impl.storage.chatTimelineRetryAt.get()).toBeGreaterThan(Date.now());
+          await impl.deliverChatTimelines();
+          expect(dispatch.calls()).toBe(1);
+        } finally { dispatch.restore(); }
+        await user.markChatRead({workspaceId: impl.ctx.id.toString(), chatId: 1, throughSequence: 1, readEpoch: 0});
         impl.storage.chatTimelineRetryAt.put(0);
-      } finally {
-        failure.restore();
-      }
-    });
-    await evictDurableObject(stub);
-    await runDurableObjectAlarm(stub);
-    await withImpl(stub, async (impl) => {
-      expect(
-        (await impl.users.get(impl.users.idFromString(recipientId)).getUnreadState())
-          .unreadChatCount,
-      ).toBe(1);
-      expect([...impl.storage.chatTimelineOutbox.list()]).toEqual([]);
-    });
-  });
-
-  it("deduplicates an accepted effect whose ACK was lost, even if the user reads before retry", async () => {
-    const { stub, recipientId } = await setup();
-    await withImpl(stub, async (impl) => {
-      const failure = failDispatch(impl, true);
-      try {
-        await expect(impl.deliverChatTimelines()).rejects.toThrow("ACK lost");
-      } finally {
-        failure.restore();
-      }
-      const user = impl.users.get(impl.users.idFromString(recipientId));
-      expect((await user.getUnreadState()).revision).toBe(1);
-      await user.markChatRead({
-        workspaceId: impl.ctx.id.toString(),
-        chatId: 1,
-        throughSequence: 1,
-        readEpoch: 0,
       });
-      impl.storage.chatTimelineRetryAt.put(0);
-    });
-    await evictDurableObject(stub);
-    await runDurableObjectAlarm(stub);
-    await withImpl(stub, async (impl) => {
-      expect(
-        await impl.users.get(impl.users.idFromString(recipientId)).getUnreadState(),
-      ).toMatchObject({ revision: 2, unreadChatCount: 0, chats: [{ readThroughSequence: 1 }] });
-      expect([...impl.storage.chatTimelineOutbox.list()]).toEqual([]);
-    });
-  });
-
-  it("reconciles an ACK received before local outbox cleanup failed", async () => {
-    const { stub, recipientId } = await setup();
-    await withImpl(stub, async (impl) => {
-      using _ = vi.spyOn(impl.storage.chatTimelineOutbox, "delete").mockImplementationOnce(() => {
-        throw new Error("cleanup interrupted");
+      await evictDurableObject(stub);
+      await runDurableObjectAlarm(stub);
+      await withImpl(stub, async (impl) => {
+        const state = await impl.users.get(impl.users.idFromString(recipientId)).getUnreadState();
+        expect(state).toMatchObject({revision: 3, unreadChatCount: 1,
+          chats: [{readThroughSequence: 1, latestSequence: 2, latestMessagePreview: "New activity"}]});
+        expectAcknowledged(impl);
       });
-      await expect(impl.deliverChatTimelines()).rejects.toThrow("cleanup interrupted");
-      expect(
-        (await impl.users.get(impl.users.idFromString(recipientId)).getUnreadState()).revision,
-      ).toBe(1);
-      expect([...impl.storage.chatTimelineOutbox.list()]).toHaveLength(1);
-      impl.storage.chatTimelineRetryAt.put(0);
-    });
-    await evictDurableObject(stub);
-    await runDurableObjectAlarm(stub);
-    await withImpl(stub, async (impl) => {
-      const state = await impl.users.get(impl.users.idFromString(recipientId)).getUnreadState();
-      expect([state.revision, state.unreadChatCount]).toEqual([1, 1]);
-      expect([...impl.storage.chatTimelineOutbox.list()]).toEqual([]);
-    });
-  });
+    },
+  );
 
   it("does not restore unread state if access was removed while delivery was pending", async () => {
     const { stub, recipientId } = await setup();
@@ -796,7 +728,7 @@ describe("durable unread projection outbox", () => {
         (await impl.users.get(impl.users.idFromString(recipientId)).getUnreadState())
           .unreadChatCount,
       ).toBe(0);
-      expect([...impl.storage.chatTimelineOutbox.list()]).toEqual([]);
+      expectAcknowledged(impl);
     });
   });
 });

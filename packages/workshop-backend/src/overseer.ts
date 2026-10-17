@@ -946,7 +946,7 @@ class OverseerImpl implements AgentHooks {
     let times: number[] = [];
 
     if (this.storage.deletingWorkspace.get() ||
-        [...this.storage.chatTimelineOutbox.list({ limit: 1 })].length) {
+        this.#pendingTimelineReaders().length) {
       times.push(this.storage.chatTimelineRetryAt.get() || Date.now());
     }
 
@@ -1024,15 +1024,25 @@ class OverseerImpl implements AgentHooks {
 
   #timelineDelivery: Promise<void> | undefined;
 
+  #pendingTimelineReaders() {
+    let version = this.storage.chatTimelineVersion.get();
+    let deleting = this.storage.deletingWorkspace.get();
+    return [...this.storage.unreadReaders.list()].filter(reader =>
+      deleting || reader.timelineVersion === undefined || reader.timelineVersion < version);
+  }
+
   /** Replay the durable unread projection without replaying transient alerts or push sends. */
   deliverChatTimelines(immediate = false): Promise<void> {
     if (this.#timelineDelivery) return this.#timelineDelivery;
-    immediate = this.#flushTimelineRecipients() || immediate;
     if (!immediate && this.storage.chatTimelineRetryAt.get() > Date.now()) return Promise.resolve();
     this.#timelineDelivery = (async () => {
+      // Arm recovery before the first RPC. A reader's acknowledged version is also its outbox:
+      // it remains pending until it catches up with the source, or acknowledges deletion.
+      this.storage.chatTimelineRetryAt.put(Date.now() + 30_000);
+      this.#updateAlarm();
       let failures = new Map<string, unknown>();
       // Do not hold a storage cursor across RPC or deletion; concurrent turns can queue more.
-      let pending = [...this.storage.chatTimelineOutbox.list()];
+      let pending = this.#pendingTimelineReaders();
       while (pending.length) {
         for (let record of pending) {
           try {
@@ -1041,14 +1051,13 @@ class OverseerImpl implements AgentHooks {
               // Removing the listing also fences any delayed snapshot. Cleanup is idempotent,
               // and its journal survives resets and lost ACKs until all recipients are done.
               await user.deleteGadget(this.ctx.id.toString());
-              this.storage.chatTimelineOutbox.delete(record.userId);
+              this.storage.unreadReaders.delete(record.userId);
               continue;
             }
             // An empty snapshot only removes metadata; no observer verification is needed.
             // In particular, opening an empty workspace must not register observers twice.
             if (record.userId !== this.ownerId && [...this.storage.chatMeta.list({limit: 1})].length) {
-              let reader = this.storage.unreadReaders.get(record.userId);
-              let role = reader && await this.authorizeCollaborator(reader.profileId, user,
+              let role = await this.authorizeCollaborator(record.profileId, user,
                   {requireRole: "build"});
               // Deletion may have been requested during verification. Leave this recipient
               // queued for cleanup rather than disclosing another snapshot.
@@ -1056,35 +1065,28 @@ class OverseerImpl implements AgentHooks {
               if (role !== "build") {
                 await user.forgetWorkspaceChats(this.ctx.id.toString());
                 this.storage.unreadReaders.delete(record.userId);
-                this.storage.chatTimelineOutbox.delete(record.userId);
                 continue;
               }
             }
             // Storage subscribers run BEFORE their write, in its transaction. They journal only
-            // the dirty version; read the committed timeline after the synchronous write finishes.
+            // the source version; read the committed timeline after the synchronous write finishes.
             // Capture version + heads together after authorization's awaits, never mix versions.
             let version = this.storage.chatTimelineVersion.get();
-            let changed = record.afterVersion === undefined ? undefined :
-                [...this.storage.chatTimelineChanges.byVersion.list({startAfter: record.afterVersion})];
+            let changed = record.timelineVersion === undefined ? undefined :
+                [...this.storage.chatTimelineChanges.byVersion.list({startAfter: record.timelineVersion})];
             let ids = changed?.map(change => change.chatId);
             let heads = this.chatTimelineHeads(ids);
             let deleted = ids?.filter(id => !this.storage.chatMeta.get(id));
             await user.syncWorkspaceChats(this.ctx.id.toString(), version, heads, deleted);
             let reader = this.storage.unreadReaders.get(record.userId);
             if (reader) this.storage.unreadReaders.put({...reader, timelineVersion: version});
-            // A lost ACK leaves this queued. The receiver fences duplicates against its source
-            // version, rebuilding that fence from this workspace's log after eviction.
-            if ((this.storage.chatTimelineOutbox.get(record.userId)?.sequence ?? Infinity) <= version) {
-              this.storage.chatTimelineOutbox.delete(record.userId);
-            }
           } catch (error) {
             // A disconnected account may require interactive repair. Keep its intent, but do
             // not block other users or immediately retry it in this drain's next pass.
             failures.set(record.userId, error);
           }
         }
-        this.#flushTimelineRecipients();
-        pending = [...this.storage.chatTimelineOutbox.list()].filter(record => !failures.has(record.userId));
+        pending = this.#pendingTimelineReaders().filter(record => !failures.has(record.userId));
       }
       if (failures.size) throw failures.values().next().value;
       this.storage.chatTimelineRetryAt.put(0);
@@ -1105,15 +1107,20 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Storage subscribers must not list: their caller may already hold the DO's only KV iterator.
-  // Journal dirtiness in the source transaction, then fan out and arm recovery before any RPC.
+  // Advancing the source version makes every reader's older checkpoint pending, in the same
+  // transaction as the message. No separate per-recipient enqueue/cleanup transaction is needed.
   queueUnreadSnapshot(chatId?: number): void {
     if (!this.ownerId) return;
+    if (!this.storage.unreadReaders.get(this.ownerId)) {
+      this.storage.unreadReaders.put({userId: this.ownerId, profileId: this.ownerProfileId ?? ""});
+    }
     this.storage.chatTimelineVersion.put(this.storage.chatTimelineVersion.get() + 1);
     if (chatId !== undefined) this.storage.chatTimelineChanges.put({
       chatId, version: this.storage.chatTimelineVersion.get(),
     });
-    this.storage.chatTimelineDirty.put(true);
-    this.#scheduleTimelineDelivery();
+    let idle = this.storage.chatTimelineRetryAt.get() === 0;
+    if (idle) this.storage.chatTimelineRetryAt.put(Date.now() + 30_000);
+    this.#scheduleTimelineDelivery(idle);
   }
 
   #scheduleTimelineDelivery(immediate = false): void {
@@ -1125,27 +1132,6 @@ class OverseerImpl implements AgentHooks {
         event: "chat.unread.delivery.deferred", error,
       });
     }));
-  }
-
-  #flushTimelineRecipients(): boolean {
-    if (!this.storage.chatTimelineDirty.get() || !this.ownerId) return false;
-    let firstPending = [...this.storage.chatTimelineOutbox.list({limit: 1})].length === 0;
-    // Try live delivery below; the alarm is the durable fallback, not an immediate competing
-    // invocation that would enter the agent keep-alive handler on every timeline append.
-    if (firstPending) this.storage.chatTimelineRetryAt.put(Date.now() + 30_000);
-    let sequence = this.storage.chatTimelineVersion.get();
-    for (let userId of new Set([this.ownerId,
-        ...[...this.storage.unreadReaders.list()].map(reader => reader.userId)])) {
-      let pending = this.storage.chatTimelineOutbox.get(userId);
-      let reader = this.storage.unreadReaders.get(userId);
-      // Even the owner needs a delivery checkpoint, not a private read cursor in the workspace.
-      if (!reader) this.storage.unreadReaders.put({userId, profileId: this.ownerProfileId ?? ""});
-      this.storage.chatTimelineOutbox.put({sequence, userId,
-        afterVersion: pending ? pending.afterVersion : reader?.timelineVersion});
-    }
-    this.storage.chatTimelineDirty.put(false);
-    this.#updateAlarm();
-    return firstPending;
   }
 
   #timelineCache = new Map<number, {
@@ -1195,7 +1181,8 @@ class OverseerImpl implements AgentHooks {
     if (this.storage.deletingWorkspace.get()) return;
     let reader = this.storage.unreadReaders.get(userId);
     if (reader?.profileId === profileId && !catchUp) return;
-    this.storage.unreadReaders.put({...reader, userId, profileId});
+    // Reopening restores a dismissed User DO projection, even without any new thread changes.
+    this.storage.unreadReaders.put({userId, profileId});
     this.queueUnreadSnapshot();
   }
 
@@ -1204,7 +1191,6 @@ class OverseerImpl implements AgentHooks {
     this.storage.deletingWorkspace.put(true);
     this.destroyAllLiveChats();
     this.queueUnreadSnapshot();
-    this.#flushTimelineRecipients();
     // Start cleanup after the gate returns, without inheriting an older metadata retry delay.
     this.#scheduleTimelineDelivery(true);
   }
@@ -1451,8 +1437,8 @@ class OverseerImpl implements AgentHooks {
         this.queueUnreadSnapshot(meta.id);
       },
     });
-    // An interrupted source invocation may have persisted dirtiness but not fanned it out yet.
-    if (this.storage.chatTimelineDirty.get() || this.storage.deletingWorkspace.get()) {
+    // Checkpoints survive interruption before dispatch and after a lost ACK.
+    if (this.#pendingTimelineReaders().length || this.storage.deletingWorkspace.get()) {
       this.#scheduleTimelineDelivery();
     }
   }

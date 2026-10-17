@@ -32,6 +32,22 @@ const setup = async (existingUser?: DurableObjectStub<UserDurableObject>) => {
   return {user, workspace, workspaceId};
 };
 type Fixture = Awaited<ReturnType<typeof setup>>;
+const sharedWorkspace = async (role: "build" | "use" = "build") => {
+  const fixture = await setup();
+  const ownerProfile = {type: "user" as const, id: "owner@example.com", name: "Owner"};
+  const profile = {type: "user" as const, id: "reader@example.com", name: "Reader"};
+  const reader = env.TEST_USER.getByName(crypto.randomUUID());
+  await runInDurableObject(fixture.user, instance => { instance.storage.profile.put(ownerProfile); });
+  await runInDurableObject(reader, instance => { instance.storage.profile.put(profile); });
+  // The listing intentionally predates reader enrollment, and may be stale after a downgrade.
+  await reader.recordSharedGadgetOpen(fixture.workspaceId, "Workspace", ownerProfile, "build");
+  await withImpl(fixture.workspace, async impl => {
+    impl.storage.collaborators.put({profile,
+      addedBy: [{type: "user", sharer: ownerProfile.id, role, created: new Date()}]});
+    expect(impl.storage.unreadReaders.get(reader.id.toString())).toBeUndefined();
+  });
+  return {...fixture, reader, profile};
+};
 const append = async ({workspace}: Fixture, sequence: number, text = "Hello", chatId = 1) =>
   withImpl(workspace, async impl => {
     impl.storage.chats.put({chatId, sequence, timestamp: new Date(10_000 + sequence),
@@ -51,18 +67,8 @@ class Subscriber extends RpcTarget implements UnreadStateSubscriber {
 
 describe("user-owned horizons and disposable message counts", () => {
   it.each([0, 1])("enrolls an existing build listing during reconstruction with %i initial messages", async (initialMessages) => {
-    const fixture = await setup();
-    const ownerProfile = {type: "user" as const, id: "owner@example.com", name: "Owner"};
-    const profile = {type: "user" as const, id: "reader@example.com", name: "Reader"};
-    const reader = env.TEST_USER.getByName(crypto.randomUUID());
-    await runInDurableObject(fixture.user, instance => { instance.storage.profile.put(ownerProfile); });
-    await runInDurableObject(reader, instance => { instance.storage.profile.put(profile); });
-    await reader.recordSharedGadgetOpen(fixture.workspaceId, "Workspace", ownerProfile, "build");
-    await withImpl(fixture.workspace, async impl => {
-      impl.storage.collaborators.put({profile,
-        addedBy: [{type: "user", sharer: ownerProfile.id, role: "build", created: new Date()}]});
-      expect(impl.storage.unreadReaders.get(reader.id.toString())).toBeUndefined();
-    });
+    const fixture = await sharedWorkspace();
+    const {reader, profile} = fixture;
     if (initialMessages) await append(fixture, 0);
 
     // A listing saved before rollout must join fanout without opening a workspace session.
@@ -89,17 +95,8 @@ describe("user-owned horizons and disposable message counts", () => {
   });
 
   it("does not enroll a stale build listing when its collaborator has only use access", async () => {
-    const fixture = await setup();
-    const ownerProfile = {type: "user" as const, id: "owner@example.com", name: "Owner"};
-    const profile = {type: "user" as const, id: "reader@example.com", name: "Reader"};
-    const reader = env.TEST_USER.getByName(crypto.randomUUID());
-    await runInDurableObject(fixture.user, instance => { instance.storage.profile.put(ownerProfile); });
-    await runInDurableObject(reader, instance => { instance.storage.profile.put(profile); });
-    await reader.recordSharedGadgetOpen(fixture.workspaceId, "Workspace", ownerProfile, "build");
-    await withImpl(fixture.workspace, async impl => {
-      impl.storage.collaborators.put({profile,
-        addedBy: [{type: "user", sharer: ownerProfile.id, role: "use", created: new Date()}]});
-    });
+    const fixture = await sharedWorkspace("use");
+    const {reader} = fixture;
     await append(fixture, 0);
     expect((await reader.getUnreadState()).chats).toEqual([]);
     await withImpl(fixture.workspace, async impl => {
@@ -108,17 +105,8 @@ describe("user-owned horizons and disposable message counts", () => {
   });
 
   it.each([false, true])("refreshes unread on reopening a dismissed shared workspace (reset before delivery: %s)", async (reset) => {
-    const fixture = await setup();
-    const ownerProfile = {type: "user" as const, id: "owner@example.com", name: "Owner"};
-    const profile = {type: "user" as const, id: "reader@example.com", name: "Reader"};
-    const reader = env.TEST_USER.getByName(crypto.randomUUID());
-    await runInDurableObject(fixture.user, instance => { instance.storage.profile.put(ownerProfile); });
-    await runInDurableObject(reader, instance => { instance.storage.profile.put(profile); });
-    await reader.recordSharedGadgetOpen(fixture.workspaceId, "Workspace", ownerProfile, "build");
-    await withImpl(fixture.workspace, async impl => {
-      impl.storage.collaborators.put({profile,
-        addedBy: [{type: "user", sharer: ownerProfile.id, role: "build", created: new Date()}]});
-    });
+    const fixture = await sharedWorkspace();
+    const {reader, profile} = fixture;
     await append(fixture, 0, "Existing unread message");
     const received: UserUnreadState[] = [];
     using subscriber = new RpcStub(new Subscriber(state => received.push(state)));
@@ -137,7 +125,8 @@ describe("user-owned horizons and disposable message counts", () => {
       try {
         if (reset) {
           await vi.waitFor(() => expect(paused).toHaveBeenCalled());
-          expect(instance.impl.storage.chatTimelineDirty.get()).toBe(true);
+          expect(instance.impl.storage.unreadReaders.get(reader.id.toString())?.timelineVersion)
+            .toBeUndefined();
         }
       } finally {
         client[Symbol.dispose]();
@@ -145,7 +134,10 @@ describe("user-owned horizons and disposable message counts", () => {
     });
     if (reset) {
       await evictDurableObject(fixture.workspace);
-      await withImpl(fixture.workspace, impl => impl.runAlarmTasks());
+      await withImpl(fixture.workspace, impl => {
+        impl.storage.chatTimelineRetryAt.put(0); // Run the persisted fallback alarm when due.
+        return impl.runAlarmTasks();
+      });
     }
     // No new message, resubscription or getUnreadState() may repair the warm User DO.
     await vi.waitFor(() => expect(received.at(-1)).toMatchObject({unreadMessageCount: 1,
