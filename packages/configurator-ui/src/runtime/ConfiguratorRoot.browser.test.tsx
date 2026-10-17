@@ -5,12 +5,13 @@ import { act } from "preact/test-utils";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
-import type { ConfiguratorUIOption, ConfiguratorUISpec } from "../index.ts";
+import type { ConfiguratorUIHierarchyItem, ConfiguratorUIOption, ConfiguratorUISpec } from "../index.ts";
 import { Autocomplete } from "./Autocomplete.tsx";
 import { Button } from "./Button.tsx";
 import { CheckboxList } from "./CheckboxList.tsx";
 import { ConfiguratorRoot } from "./ConfiguratorRoot.tsx";
 import { Field } from "./Field.tsx";
+import { HierarchyPicker } from "./HierarchyPicker.tsx";
 import { Notice } from "./Notice.tsx";
 import { RadioCards } from "./RadioCards.tsx";
 import { collectResourceUrl, createSession, type ConfiguratorSession } from "./session.ts";
@@ -489,6 +490,36 @@ describe("Button", () => {
     finish.focus();
     finish.click();
     await expect.element(button("Count")).toHaveFocus();
+  });
+});
+
+describe("HierarchyPicker", () => {
+  it("leaves the focus a navigation lost to the picker, which takes it into the next listing", async () => {
+    const tree: Record<string, ConfiguratorUIHierarchyItem[]> = {
+      drive: [{ id: "reports", title: "Reports", kind: "container" }],
+      reports: [{ id: "q1", title: "Q1.pdf", kind: "leaf" }],
+    };
+    const { values } = await mount({
+      initial: { target: null },
+      resourceUrl: () => "https://example.com/",
+      render: ({ values: { target = null }, setValues }) => (
+        <HierarchyPicker
+          name="target"
+          value={target}
+          root={{ id: "drive", title: "My Drive", selectable: true }}
+          loadItems={async ({ parentId }) => ({ items: tree[parentId] ?? [] })}
+          onChange={next => setValues({ target: next })}
+        />
+      ),
+    });
+    const option = (name: string) => page.getByRole("option", { name, exact: false });
+
+    await userEvent.click(option("Reports"));
+    await userEvent.click(option("Q1.pdf"));
+    // Going up lets go of the choice, which renders the whole form without the focused row.
+    await userEvent.keyboard("{ArrowLeft}");
+    await expect.element(option("Reports")).toHaveFocus();
+    expect(values().target).toBeNull();
   });
 });
 
