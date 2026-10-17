@@ -190,6 +190,18 @@ describe("listActions", () => {
     expect(ids).toEqual(expected);
   });
 
+  it("names the chat each action was requested from, and no chat for a hook", async () => {
+    let storage = makeActionStorage();
+    putAction(storage, 0, { caller: { from: "agent", chatId: 3 } });
+    putAction(storage, 1, { caller: { from: "gadget", chatId: 4, gadgetId: 2 } });
+    putAction(storage, 2, { caller: { from: "hook" } });
+    let client = await openFakeOverseer(storage);
+
+    let page = await client.listActions({ filter: "pending" });
+    expect(page.entries.map(e => e.type === "action" ? e.chatId : null))
+        .toEqual([undefined, 4, 3]);
+  });
+
   it("applies the default limit and reports more history", async () => {
     let storage = makeActionStorage();
     let total = ACTION_HISTORY_PAGE_DEFAULT_LIMIT + 10;
