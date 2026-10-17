@@ -113,14 +113,28 @@ function optionMatches(parts: (string | undefined)[], query: string): boolean {
 }
 
 /**
- * Enough of a Drive ID to tell same-named results apart and to match against a Drive URL.
- *
- * Duplicate folder and file names are ordinary, and the picker's other columns can be identical
- * too, so without this the user cannot see which capability they are granting. A tail rather than
- * the whole ID because `meta` does not shrink, and a full one would crowd out the subtitle.
+ * When two names would look the same in the picker. First the name as the configurator runtime
+ * shows it (`packages/configurator-ui/src/runtime/options.ts`: controls and bidi formatting
+ * stripped, then clipped to 240), so any two the runtime shows identically match; then folded
+ * further, past what the runtime strips, because a false match costs only an ID tail.
  */
-function idTail(id: string): string {
-  return id.length > 8 ? `…${id.slice(-8)}` : id;
+function sameNameKey(title: string): string {
+  let shown = title.replace(/[\p{Cc}\p{Bidi_Control}]/gu, "").slice(0, 240);
+  return shown.normalize("NFKC").replace(/[\p{C}\p{Z}]/gu, "").toLowerCase();
+}
+
+/**
+ * Adds the tail of a Drive ID to each result whose name looks like another's, which is enough to
+ * tell them apart. Duplicate names are ordinary, and the picker's other columns can match too, so
+ * without it the user cannot see which capability they are granting; a distinct name needs no ID.
+ */
+function tellApartSameNamed(options: ConfiguratorOption[]): ConfiguratorOption[] {
+  let keys = options.map(option => sameNameKey(option.title));
+  let counts = new Map<string, number>();
+  for (let key of keys) counts.set(key, (counts.get(key) ?? 0) + 1);
+  return options.map((option, index) => counts.get(keys[index])! > 1
+    ? { ...option, meta: option.value.length > 8 ? `…${option.value.slice(-8)}` : option.value }
+    : option);
 }
 
 /** A person's email address, which the picker resolves to the direct message with them. */
@@ -434,15 +448,14 @@ export class DriveFileConfiguratorUI extends RpcTarget implements DriveFileConfi
         namePrefix: query, excludeMimeTypes: [FOLDER_MIME_TYPE],
       }),
     );
-    return files.map(file => ({
+    return tellApartSameNamed(files.map(file => ({
       value: file.id,
       title: file.name,
       subtitle: [
         file.mimeType,
         file.modifiedTime ? `Modified ${new Date(file.modifiedTime).toLocaleDateString()}` : undefined,
       ].filter(Boolean).join(" · ") || undefined,
-      meta: idTail(file.id),
-    }));
+    })));
   }
 }
 
@@ -465,13 +478,12 @@ export class DriveFolderConfiguratorUI extends RpcTarget implements DriveFolderC
         mimeType: FOLDER_MIME_TYPE, namePrefix: query, corpus: { kind: "allDrives" },
       }),
     );
-    return files.filter(file => file.capabilities?.canListChildren === true).map(file => ({
+    return tellApartSameNamed(files.filter(file => file.capabilities?.canListChildren === true).map(file => ({
       value: file.id,
       title: file.name,
       subtitle: file.driveId
         ? "In a shared drive"
         : file.owners?.[0]?.displayName ?? file.owners?.[0]?.emailAddress ?? "My Drive",
-      meta: idTail(file.id),
-    }));
+    })));
   }
 }

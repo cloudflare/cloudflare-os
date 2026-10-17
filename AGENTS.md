@@ -20,8 +20,9 @@ The project structure is:
 * packages/workshop-shared: Shared API definitions between client and server.
     * This defines the application's RPC interface.
     * The RPC protocol is Cap'n Web, which has similar semantics to Cloudflare's Worker-to-Worker RPC system, while being able to run in a browser over WebSocket. Read the readme for details.
-* packages/configurator-ui: Type-only component helpers used by optional gatekeeper resource configurator UI modules.
-    * Gatekeeper configurator UI modules are compiled by `scripts/build-gatekeeper-configurator.ts` as part of package builds.
+* packages/configurator-ui: The authoring API (`src/index.ts`, type-only stubs) for optional gatekeeper resource configurator UI modules, the sandbox runtime that renders them (`src/runtime/`: Kumo components on `preact/compat`), and the build that bundles both into each configurator's frame (`build/`).
+    * Gatekeeper configurator UI modules are compiled by `scripts/build-gatekeeper-configurator.ts` as part of package builds. Each frame is one self-contained HTML document: the minified runtime, its Tailwind/Kumo CSS, and the module, under a content security policy that admits only those scripts by hash and allows no network access. Kumo and Base UI support only React, so the browser suite (`vitest.browser.config.ts`, Chromium) is what catches an upgrade that stops working on Preact; `build/frame.test.ts` drives a generated frame over the real Cap'n Web host protocol.
+    * `pnpm dev-server` rebuilds a gatekeeper's frames when its `src/configurator/` changes, not when the runtime does: restart it after editing `src/runtime/`.
 * packages/ui: Shared runtime React UI used across the Workshop and gatekeeper management apps.
     * Kumo remains the primitive and token foundation. Reusable Gadgets interaction patterns and composed controls belong here rather than being reimplemented in individual apps.
 * packages/gatekeeper-*: Gatekeeper workers for external service integrations.
