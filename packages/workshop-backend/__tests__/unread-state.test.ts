@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "capnweb";
 import { describe, expect, it, vi } from "vitest";
@@ -105,6 +105,55 @@ describe("user-owned horizons and disposable message counts", () => {
     await withImpl(fixture.workspace, async impl => {
       expect(impl.storage.unreadReaders.get(reader.id.toString())).toBeUndefined();
     });
+  });
+
+  it.each([false, true])("refreshes unread on reopening a dismissed shared workspace (reset before delivery: %s)", async (reset) => {
+    const fixture = await setup();
+    const ownerProfile = {type: "user" as const, id: "owner@example.com", name: "Owner"};
+    const profile = {type: "user" as const, id: "reader@example.com", name: "Reader"};
+    const reader = env.TEST_USER.getByName(crypto.randomUUID());
+    await runInDurableObject(fixture.user, instance => { instance.storage.profile.put(ownerProfile); });
+    await runInDurableObject(reader, instance => { instance.storage.profile.put(profile); });
+    await reader.recordSharedGadgetOpen(fixture.workspaceId, "Workspace", ownerProfile, "build");
+    await withImpl(fixture.workspace, async impl => {
+      impl.storage.collaborators.put({profile,
+        addedBy: [{type: "user", sharer: ownerProfile.id, role: "build", created: new Date()}]});
+    });
+    await append(fixture, 0, "Existing unread message");
+    const received: UserUnreadState[] = [];
+    using subscriber = new RpcStub(new Subscriber(state => received.push(state)));
+    using _subscription = await reader.subscribeToUnreadState(subscriber);
+    await withImpl(fixture.workspace, impl => impl.deliverChatTimelines(true));
+    await vi.waitFor(() => expect(received.at(-1)?.unreadMessageCount).toBe(1));
+
+    await reader.forgetSharedGadget(fixture.workspaceId);
+    await vi.waitFor(() => expect(received.at(-1)?.chats).toEqual([]));
+    await runInDurableObject(fixture.workspace, async instance => {
+      expect(instance.impl.storage.unreadReaders.get(reader.id.toString())).toBeDefined();
+      using _capsules = vi.spyOn(instance.impl, "ensureAmbientCapsules").mockResolvedValue(undefined);
+      using paused = reset ? vi.spyOn(instance.impl, "deliverChatTimelines").mockResolvedValue(undefined) : undefined;
+      using notify = new NativeRpcStub(() => {});
+      const client = await instance.open(reader.id.toString(), profile.id, notify);
+      try {
+        if (reset) {
+          await vi.waitFor(() => expect(paused).toHaveBeenCalled());
+          expect(instance.impl.storage.chatTimelineDirty.get()).toBe(true);
+        }
+      } finally {
+        client[Symbol.dispose]();
+      }
+    });
+    if (reset) {
+      await evictDurableObject(fixture.workspace);
+      await withImpl(fixture.workspace, impl => impl.runAlarmTasks());
+    }
+    // No new message, resubscription or getUnreadState() may repair the warm User DO.
+    await vi.waitFor(() => expect(received.at(-1)).toMatchObject({unreadMessageCount: 1,
+      chats: [{workspaceId: fixture.workspaceId, chatId: 1, latestSequence: 0,
+        latestMessagePreview: "Existing unread message", readThroughSequence: -1, readEpoch: 0}]}));
+    await append(fixture, 1, "Later message");
+    await vi.waitFor(() => expect(received.at(-1)).toMatchObject({unreadMessageCount: 2,
+      chats: [{latestMessagePreview: "Later message"}]}));
   });
 
   it("counts visible messages rather than sparse timeline entries or distinct threads", async () => {

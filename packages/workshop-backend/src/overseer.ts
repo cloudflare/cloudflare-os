@@ -1191,10 +1191,10 @@ class OverseerImpl implements AgentHooks {
         (!!msg.message.trim() || !!msg.attachments?.length);
   }
 
-  trackUnreadReader(userId: string, profileId: string): void {
+  trackUnreadReader(userId: string, profileId: string, {catchUp = false} = {}): void {
     if (this.storage.deletingWorkspace.get()) return;
     let reader = this.storage.unreadReaders.get(userId);
-    if (reader?.profileId === profileId) return;
+    if (reader?.profileId === profileId && !catchUp) return;
     this.storage.unreadReaders.put({...reader, userId, profileId});
     this.queueUnreadSnapshot();
   }
@@ -10150,9 +10150,10 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
           });
           return;
         }
-        // Catch up whatever happened while they were away; changes from here on reach them
-        // through the session fan-out (joinOutputsFanout).
-        if (role === "build") this.impl.trackUnreadReader(userId, profileId);
+        // Reopening can restore a dismissed listing whose User DO projection was discarded,
+        // even though this workspace still has its delivery enrollment.
+        if (role === "build") this.impl.trackUnreadReader(userId, profileId, {catchUp: true});
+        // Catch up outputs; changes from here on reach them through joinOutputsFanout.
         await this.impl.syncOutputsTo(clientUser);
       })();
     }

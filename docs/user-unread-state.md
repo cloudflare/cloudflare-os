@@ -119,6 +119,8 @@ A cold User DO fetches current heads and counts through its saved horizons from 
 using their build-role/observer authorization gate. An initial subscription waits for those loads.
 Reconstruction also idempotently enrolls the user for future workspace deliveries, so shared
 listings saved before this feature receive updates without reopening the workspace.
+Reopening a shared workspace explicitly queues catch-up after restoring its listing, even when
+already enrolled: dismissing the listing discards the warm User DO's unread projection.
 One failing workspace does not block healthy ones: `unavailableWorkspaceIds` explicitly reports
 missing heads, and aggregate counts are lower bounds, not a claim that missing threads are read.
 The web client shows a status and retries with backoff; incomplete totals do not replace native
@@ -202,7 +204,8 @@ Fault tests also keep the initial subscription pending during cold reconstructio
 workspaces with explicit incomplete state, retry missing heads, and leave a thread's horizon
 unchanged if its partial read's source count lookup fails. Deletion tests exercise `deleteSelf()`
 with a simulated cold-recipient callback delivered as a real RPC event through the DO input gate,
-and an unhealthy collaborator.
+and an unhealthy collaborator. Reopening a dismissed shared workspace restores counts and previews
+through its existing live subscription, including after real source eviction before catch-up delivery.
 Chromium tests verify actual viewport geometry, focus, and pointer input for marking unread.
 
 Useful commands (workerd tests require local loopback sockets):
