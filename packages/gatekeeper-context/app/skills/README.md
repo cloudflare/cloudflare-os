@@ -68,12 +68,14 @@ collection and the role chosen when the picker opened, and shares with each pick
 they are delivered; a backend refusal rejects that delivery, so the picker shows the message beside
 the person. Cancelling the picker does not undo shares already delivered.
 
-`Share “<collection title>”` starts with an **Add users with role** selector and **Select users**
-button. Compact access rows show the current account first, then **Anyone in organization** (No access
-or Can view), then a dashed divider and the other members. Access controls use ghost-button dropdown
-menus; member menus contain role changes and a separate destructive **Remove access** action, or
-**Leave collection** for the current account. The last owner cannot leave or be demoted. **Done**
-is the only footer action and stays visible while the member list scrolls.
+`Share “<collection title>”` starts with an **Add users with role** dropdown and **Select users**
+button. Compact access rows show the current account as **You** with a generic profile icon, then
+**Anyone in organization** (No access or Can view), then a dashed divider and the other members.
+The add-users role and access controls use ghost-button dropdown menus with right-aligned selection
+checkmarks; member menus contain role changes and a separate destructive **Remove access** action,
+or **Leave collection** for the current account. The last owner cannot leave or be demoted. A neutral
+**Done** button is the only footer action and stays visible while the member list scrolls. The
+Workshop's person picker uses the same neutral **Done** action.
 
 Anyone a collection was shared with as a viewer or editor can leave it from the collection's row menu,
 including viewers, who cannot open the Share dialog. Owners leave from the Share dialog, which knows

@@ -230,7 +230,7 @@ export default function GatekeeperUserPickerDialog({
           )}
         </div>
         <div className="flex justify-end px-5 pb-5">
-          <Button variant="primary" onClick={close} disabled={closing}>Done</Button>
+          <Button variant="secondary" onClick={close} disabled={closing}>Done</Button>
         </div>
       </Dialog>
     </Dialog.Root>

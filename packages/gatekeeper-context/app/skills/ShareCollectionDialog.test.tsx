@@ -92,7 +92,7 @@ describe("ShareCollectionDialog", () => {
       roleTrigger?.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
       roleTrigger?.click();
     });
-    const editorOption = [...document.querySelectorAll<HTMLElement>("[role=option]")]
+    const editorOption = [...document.querySelectorAll<HTMLElement>("[role=menuitem]")]
       .find((option) => option.textContent === "Editor");
     expect(editorOption).toBeDefined();
     await act(async () => {

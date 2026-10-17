@@ -4,10 +4,9 @@ import {
   Dialog,
   DropdownMenu,
   Loader,
-  Select,
   Text,
 } from "@cloudflare/kumo";
-import { Buildings, CaretDown, Warning, WarningCircle, X } from "@phosphor-icons/react";
+import { Buildings, CaretDown, User, Warning, WarningCircle, X } from "@phosphor-icons/react";
 import { RpcTarget } from "capnweb";
 import { useEffect, useRef, useState } from "react";
 import type {
@@ -198,7 +197,7 @@ export const ShareCollectionDialog = ({
   const otherMembers = sharing?.members.filter((member) => !member.isViewer) ?? [];
 
   const renderMember = (member: ContextCollectionMember) => {
-    const name = member.displayName ?? "Collection creator";
+    const name = member.isViewer ? "You" : member.displayName ?? "Collection creator";
     const isOwner = member.role === "owner";
     const soleOwner = isOwner && ownerCount === 1;
     const canChangeRole = permissions?.canShare
@@ -211,10 +210,10 @@ export const ShareCollectionDialog = ({
           aria-hidden="true"
           className="flex size-[26px] shrink-0 items-center justify-center rounded-full bg-kumo-tint text-xs font-medium text-kumo-default"
         >
-          {name.trim().charAt(0).toUpperCase() || "?"}
+          {member.isViewer ? <User size={16} /> : name.trim().charAt(0).toUpperCase() || "?"}
         </span>
         <span className="min-w-0 flex-1 truncate text-sm text-kumo-default">
-          {name}{member.isViewer && <span className="text-kumo-subtle"> (You)</span>}
+          {name}
         </span>
         {canChangeRole || canRemove ? (
           <DropdownMenu>
@@ -240,7 +239,7 @@ export const ShareCollectionDialog = ({
                   className="text-xs"
                   onClick={() => { if (role !== member.role) void changeRole(member, role); }}
                 >
-                  {MEMBER_ROLE_LABELS[role]}
+                  <span className="min-w-0 flex-1 pr-4">{MEMBER_ROLE_LABELS[role]}</span>
                 </DropdownMenu.Item>
               ))}
               {canRemove && (
@@ -277,7 +276,7 @@ export const ShareCollectionDialog = ({
         className="top-[8%]! flex max-h-[84dvh] w-[min(560px,calc(100vw-32px))]! translate-y-0! flex-col bg-kumo-base p-0"
         size="sm"
       >
-        <div className="flex shrink-0 items-start justify-between gap-4 px-4 pb-4 pt-5 sm:px-6">
+        <div className="flex shrink-0 items-start justify-between gap-4 px-4 pb-2 pt-5 sm:px-6">
           <Dialog.Title className="min-w-0 text-[17px] leading-6 font-medium tracking-[-0.35px] text-kumo-default">
             Share <span className="text-kumo-subtle">“{collection.title}”</span>
           </Dialog.Title>
@@ -290,7 +289,7 @@ export const ShareCollectionDialog = ({
             )}
           />
         </div>
-        <div className="flex min-h-0 max-h-[min(72vh,680px)] flex-col gap-5 overflow-y-auto px-4 py-5 sm:px-6">
+        <div className="flex min-h-0 max-h-[min(72vh,680px)] flex-col gap-5 overflow-y-auto px-4 pt-2 pb-5 sm:px-6">
           {!state || !permissions || !sharing ? (
             loadError ? (
               <Banner
@@ -329,20 +328,35 @@ export const ShareCollectionDialog = ({
 
               <div className="flex flex-wrap items-center gap-2 rounded-xl bg-kumo-tint p-3">
                 <Text>Add users with role</Text>
-                <Select<ContextCollectionRole>
-                  aria-label="Role for users you add"
-                  size="sm"
-                  className="w-28"
-                  value={newRole}
-                  // Each picker session keeps the role it opened with.
-                  disabled={!permissions.canShare || (pending !== null && pending !== "picker")}
-                  onValueChange={(role) => { if (role) setNewRole(role); }}
-                  renderValue={(role) => COLLECTION_ROLE_LABELS[role]}
-                >
-                  {roleOptions.map((role) => (
-                    <Select.Option key={role} value={role}>{COLLECTION_ROLE_LABELS[role]}</Select.Option>
-                  ))}
-                </Select>
+                <DropdownMenu>
+                  <DropdownMenu.Trigger
+                    // Each picker session keeps the role it opened with.
+                    disabled={!permissions.canShare || (pending !== null && pending !== "picker")}
+                    render={(
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="group shrink-0 gap-1.5 text-xs"
+                        aria-label="Role for users you add"
+                      >
+                        {COLLECTION_ROLE_LABELS[newRole]}
+                        <CaretDown size={10} weight="bold" className="group-data-[popup-open]:rotate-180" />
+                      </Button>
+                    )}
+                  />
+                  <DropdownMenu.Content align="end" sideOffset={6}>
+                    {roleOptions.map((role) => (
+                      <DropdownMenu.Item
+                        key={role}
+                        selected={role === newRole}
+                        className="text-xs"
+                        onClick={() => setNewRole(role)}
+                      >
+                        <span className="min-w-0 flex-1 pr-4">{COLLECTION_ROLE_LABELS[role]}</span>
+                      </DropdownMenu.Item>
+                    ))}
+                  </DropdownMenu.Content>
+                </DropdownMenu>
                 <Button
                   variant="primary"
                   className="ml-auto shrink-0"
@@ -385,14 +399,14 @@ export const ShareCollectionDialog = ({
                         className="text-xs"
                         onClick={() => { if (sharing.everyoneCanView) void setEveryoneCanView(false); }}
                       >
-                        No access
+                        <span className="min-w-0 flex-1 pr-4">No access</span>
                       </DropdownMenu.Item>
                       <DropdownMenu.Item
                         selected={sharing.everyoneCanView}
                         className="text-xs"
                         onClick={() => { if (!sharing.everyoneCanView) void setEveryoneCanView(true); }}
                       >
-                        Can view
+                        <span className="min-w-0 flex-1 pr-4">Can view</span>
                       </DropdownMenu.Item>
                     </DropdownMenu.Content>
                   </DropdownMenu>
@@ -406,7 +420,7 @@ export const ShareCollectionDialog = ({
           )}
         </div>
         <div className="flex shrink-0 items-center justify-end gap-2 border-t border-kumo-line px-4 py-3 sm:px-6">
-          <Button variant="primary" onClick={dialog.requestClose} disabled={pending !== null}>Done</Button>
+          <Button variant="secondary" onClick={dialog.requestClose} disabled={pending !== null}>Done</Button>
         </div>
       </Dialog>
     </Dialog.Root>
