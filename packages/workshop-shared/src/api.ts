@@ -197,6 +197,14 @@ export type UserNotification = {
   chatTitle: string;
 };
 
+/** A browser's Web Push subscription: the endpoint its push service issued, and the keys that encrypt pushes to it. */
+export type WebPushSubscription = {
+  /** Push service URL the browser issued for this subscription. */
+  endpoint: string;
+  /** The browser's encryption keys, base64url-encoded as `PushSubscription.toJSON()` returns them. */
+  keys: { p256dh: string; auth: string };
+};
+
 /** How long a workspace's notifications stay muted: until a time, or until the user unmutes it. */
 export type NotificationMute = { until: Date, indefinite?: never } | { indefinite: true, until?: never };
 
@@ -204,8 +212,8 @@ export type NotificationMute = { until: Date, indefinite?: never } | { indefinit
 export interface NotificationSubscriber extends RpcTarget {
   /**
    * Present a notification to the active user. Resolve only once the user has seen it, or is
-   * already viewing its chat; if no subscriber resolves promptly, the backend falls back to mobile
-   * push delivery.
+   * already viewing its chat; if no subscriber resolves promptly, the backend falls back to push to
+   * the user's registered devices and browsers.
    */
   notify(notification: UserNotification): Promise<void>;
 }
@@ -511,15 +519,18 @@ export interface AuthenticatedApi extends RpcTarget {
   hasPasswordLogin(): Promise<boolean>;
 
   /**
-   * Connect the native app's one-time central device registration to this authenticated user. Each
-   * registered device gets push; a device that registers again replaces its own subscription. The
-   * deployment never receives an APNs device token or Cloudflare account token.
+   * Register one of the user's devices for push: the native app's one-time central device
+   * registration, or this browser's Web Push subscription. Each registered device gets push; a
+   * device that registers again replaces its own subscription. The deployment never receives an
+   * APNs device token or Cloudflare account token. A browser's subscription passes through it to
+   * the central notification service, which delivers to an endpoint only for its most recent
+   * registration.
    */
-  registerNotificationDevice(deviceRegistrationId: string): Promise<void>;
+  registerNotificationDevice(registration: string | WebPushSubscription): Promise<void>;
 
   /**
    * Subscribe while this client can visibly present notifications. Dispose the returned handle
-   * when the page becomes hidden so the backend can promptly fall back to mobile push.
+   * when the page becomes hidden so the backend can promptly fall back to push.
    */
   subscribeToNotifications(
       subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>>;
@@ -1501,6 +1512,13 @@ export type ServerConfig = {
    * overrides the brand CSS variables with this (and derived shades) at runtime.
    */
   accentColor: string;
+
+  /**
+   * The central notification service's VAPID public key (base64url), which browsers subscribe to
+   * Web Push with. Absent when this deployment can't send browser push, which hides the browser
+   * notification setting.
+   */
+  webPushPublicKey?: string;
 };
 
 /**

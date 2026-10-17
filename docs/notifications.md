@@ -4,9 +4,9 @@ Notifications are a platform feature, not a gatekeeper. The Workshop backend sig
 the Cloudflare-operated notification service with the installation's signing key. Each User
 Durable Object stores one opaque subscription id per registered device, keyed by the
 install-scoped device key the service returns with it, so a device that registers again replaces
-its own subscription. The central service owns APNs delivery and the device/subscription
-directory, and accepts only fixed, typed notification templates. It does not accept arbitrary
-notification text or any provider OAuth credential.
+its own subscription. The central service owns APNs and Web Push delivery and the
+device/subscription directory, and accepts only fixed, typed notification templates. It does not
+accept arbitrary notification text or any provider OAuth credential.
 
 ## Registration
 
@@ -50,6 +50,8 @@ Data boundaries:
 - Workshop core stores only opaque central subscription ids, which are bound to the installation
   and useless without the install signing key, and the install-scoped device key each one reaches.
 - A one-time device registration id is short-lived and cannot send a notification.
+- A browser's Web Push endpoint and keys pass through the User DO to the service; the installation
+  stores only the subscription id the service returns for them.
 
 The native app hands the SPA a one-time registration id by setting
 `window.__CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__` before load or dispatching a
@@ -59,6 +61,17 @@ The native app hands the SPA a one-time registration id by setting
 time the signed-in app mounts (a WebSocket reconnect does not remount it) to request one.
 The SPA reports the outcome to `webkit.messageHandlers.cloudflareOSNotificationReady` as
 `{type: "ready"}` or `{type: "failed"}`.
+
+A desktop browser registers as a device too, with its Web Push subscription as the registration.
+When the deployment advertises the service's VAPID public key (`ServerConfig.webPushPublicKey`), the
+profile page offers a "Browser notifications" switch. Turning it on asks for permission, registers
+`/sw.js`, subscribes with that key, and passes the endpoint and keys to `registerNotificationDevice`.
+The service delivers to an endpoint only for its most recent registration, so when another account
+in the same browser profile registers it, the previous account's subscription stops working. The
+browser remembers which user it subscribed for: each sign-in registers that user's subscription
+again, which renews it with the service, and unsubscribes one held for anyone else; signing out
+unsubscribes it. Phones and tablets never offer the switch, and neither does either native app, since
+the Cloudflare OS app pushes there.
 
 ## Delivery
 
@@ -77,9 +90,11 @@ flowchart LR
     Audit[(Dedupe, rate limit, audit state)]
   end
 
-  subgraph Apple[Apple and phone boundary]
+  subgraph Devices[Device boundary]
     APNS[APNs]
     App[Cloudflare OS app]
+    WebPush[Browser push service]
+    Worker[Workshop service worker]
   end
 
   Agent -->|completed or needs permission| User
@@ -91,6 +106,8 @@ flowchart LR
   Delivery --> Audit
   Delivery -->|fixed APNs template| APNS
   APNS --> App
+  Delivery -->|encrypted Web Push| WebPush
+  WebPush --> Worker
 ```
 
 Only the event id, event type, task id (`<workspaceId>:<chatId>`), bounded chat title, opaque
@@ -109,7 +126,9 @@ callback turn; the decision does not transfer ownership. Pauses created by older
 retained execution record, so their first decision instead adopts the deciding person's account
 and notifications, matching the older behavior.
 The deep link opens the chat with `showChat`, which leaves full-screen preview and switches a phone
-showing the workspace's app to the chat.
+showing the workspace's app to the chat. The service worker shows a browser's push even with every
+Workshop tab closed; clicking it focuses the most recently used Workshop window and opens the chat
+there, or opens a new window.
 
 A user can mute a workspace, for a while or until they unmute it, from its menu in the sidebar, the
 workspace list, or the editor's menu on a phone. The mute lives on that workspace's record in the
@@ -125,6 +144,8 @@ The trusted deploy service injects these into the backend; the private key is a 
 - `CFOS_INSTALL_ID`
 - `CFOS_INSTALL_KEY_ID`
 - `CFOS_INSTALL_PRIVATE_KEY` (base64 PKCS#8 P-256)
+- `NOTIFICATION_WEB_PUSH_PUBLIC_KEY` (the service's VAPID public key, base64url)
 
-Self-hosted deployments may omit them. Browser notifications continue to work; native device
-registration fails and the SPA reports `{type: "failed"}` to the app.
+Self-hosted deployments may omit them. In-tab notifications continue to work; native device
+registration fails and the SPA reports `{type: "failed"}` to the app. Without
+`NOTIFICATION_WEB_PUSH_PUBLIC_KEY` the browser notification switch is hidden.
