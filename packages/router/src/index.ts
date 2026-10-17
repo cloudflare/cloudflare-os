@@ -18,7 +18,29 @@ export interface Env {
   ASSETS?: Fetcher;
   /** Dormant until custom domains + Email Routing exist; the handler ships anyway. */
   GATEKEEPER_EMAIL?: Service<EmailEntrypoint>;
+  /**
+   * This Worker's version, injected by the service that installed the deployment (no config here
+   * declares it). Typed structurally because its shape is not ours to guarantee.
+   */
+  CF_VERSION_METADATA?: { tag?: unknown };
   [key: string]: unknown;
+}
+
+/**
+ * Carries the router's version tag to the backend, which reports it to admins as part of the
+ * deployment's "modified" check. The backend's copy of this name is ROUTER_VERSION_HEADER in
+ * packages/workshop-backend/src/deployment-updates.ts (the router does not depend on
+ * workshop-shared). It is a display label, never authority: any request reaching the backend could
+ * carry it, which is why the router overwrites whatever value a client sent.
+ */
+const ROUTER_VERSION_HEADER = "Cloudflare-OS-Router-Version";
+
+/** Forwards `req` to the backend, stamped with this router's version tag. */
+function forwardToBackend(req: Request, env: Env): Promise<Response> {
+  const tag = env.CF_VERSION_METADATA?.tag;
+  const headers = new Headers(req.headers);
+  headers.set(ROUTER_VERSION_HEADER, typeof tag === "string" ? tag : "");
+  return env.WORKSHOP_BACKEND.fetch(new Request(req, { headers }));
 }
 
 export default {
@@ -37,7 +59,7 @@ export default {
     if (url.pathname === "/api" || url.pathname.startsWith("/api/") ||
         url.pathname === "/blueprint-screenshot" ||
         url.pathname.startsWith("/blueprint-screenshot/")) {
-      return env.WORKSHOP_BACKEND.fetch(req);
+      return forwardToBackend(req, env);
     }
 
     // Note: gatekeeper OAuth redirects land on the gatekeeper Workers themselves, at
@@ -56,7 +78,7 @@ export default {
     // expected here -- run the Vite dev server with `pnpm dev-client` and open localhost:3000
     // directly instead. (We don't try to forward to localhost:3000 becaues it doesn't work well:
     // Vite's HMR socket gets disconnected every time wrangler restarts workerd.)
-    return env.WORKSHOP_BACKEND.fetch(req);
+    return forwardToBackend(req, env);
   },
 
   async email(message, env) {
