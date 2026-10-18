@@ -30,6 +30,8 @@ packages/workshop-shared/src/api.ts
 packages/workshop-backend/__tests__/admin-config.test.ts
   s_f4752a3f31547a::t_eff2dd8e80a7cf 389,457-473
   s_f4752a3f31547a::t_8cc5dd80b72380 474
+  s_f4752a3f31547a::t_6825df40bbe8bd 3
+  s_f4752a3f31547a::t_3ccc9d3da5a48b 456
 packages/workshop-backend/__tests__/chatgpt-oauth.test.ts
   s_f4752a3f31547a::t_b61a6b4718a423 121
   s_f4752a3f31547a::t_ca0a0263fdbf0d 1-120,122-196
