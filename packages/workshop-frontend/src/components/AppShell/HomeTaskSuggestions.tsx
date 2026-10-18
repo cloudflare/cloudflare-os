@@ -123,9 +123,9 @@ export default function HomeTaskSuggestions({
 
   return (
     <section aria-label="Example tasks" className="flex flex-col gap-1">
-      <h3 className="px-1 pb-1 text-[12px] font-medium uppercase tracking-[0.06em] text-kumo-inactive">
+      <h2 className="px-1 pb-1 text-[12px] font-medium uppercase tracking-[0.06em] text-kumo-inactive">
         Get started
-      </h3>
+      </h2>
       <ul className="flex flex-col gap-0.5">
         {visible.map((suggestion) => (
           <SuggestionRow

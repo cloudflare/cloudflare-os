@@ -32,6 +32,7 @@ function WorkspacesPage() {
         </Link>
       </header>
       <div className="min-h-0 flex-1">
+        <h2 className="sr-only">Your workspaces</h2>
         <GadgetList showHeader={false} />
       </div>
     </div>
