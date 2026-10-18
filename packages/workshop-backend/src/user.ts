@@ -1,6 +1,6 @@
 import { RpcStub } from "capnweb";
 import type { ChatReadState, ChatTimelineHead, UnreadStateScope, UnreadStateSubscriber, UserUnreadState, UnreadThread, UserUnreadSummary, WorkspaceUnreadSummary } from "@gadgets/workshop-shared/api";
-import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription, type ChatGptSignInStart, type ChatGptSignInStatus } from '@gadgets/workshop-shared/api';
+import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription, type ChatGptSignInStart, type ChatGptSignInStatus, SUGGESTED_MODELS, chatGptModelId } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
@@ -29,7 +29,7 @@ import {
   authorizeDevice, deliver, deliverBadge, registerAuthorizedDevice, registerDevice,
 } from "./notification-service.js";
 import {
-  CHATGPT_REDIRECT_URI, ChatGptGrantRevoked, exchangeCode, parseCallback, refreshCredential,
+  chatGptRedirectUri, ChatGptGrantRevoked, exchangeCode, parseCallback, refreshCredential,
   startSignIn, type ChatGptAccessToken, type ChatGptCredential,
 } from "./chatgpt-oauth.js";
 import {
@@ -1653,10 +1653,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       agentHostId = crypto.randomUUID();
       this.storage.chatGptAgentHostId.put(agentHostId);
     }
-    let { authorizeUrl, pending } = await startSignIn(agentHostId);
+    let { authorizeUrl, pending } =
+        await startSignIn(agentHostId, chatGptRedirectUri(this.env.PUBLIC_BASE_URL));
     this.storage.pendingChatGptSignIn.put(pending);
     logger.info("ChatGPT sign-in started", { event: "chatgpt.signin.started" });
-    return { authorizeUrl, redirectUri: CHATGPT_REDIRECT_URI };
+    return { authorizeUrl, redirectUri: pending.redirectUri };
   }
 
   async completeChatGptSignIn(callbackUrl: string): Promise<ChatGptSignInStatus> {
@@ -1677,7 +1678,22 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
     this.storage.chatGptCredential.put(credential);
     logger.info("ChatGPT sign-in completed", { event: "chatgpt.signin.completed" });
+    this.#addChatGptModels(await getGatewayModels(this.env));
     return this.getChatGptSignIn();
+  }
+
+  // Adds the OpenAI models the deployment suggests as ChatGPT subscription models, so that signing
+  // in leaves the user with models to pick. One whose ID is already taken is left as it is.
+  #addChatGptModels(models: GatewayModels | null): void {
+    for (let [model, suggested] of Object.entries(SUGGESTED_MODELS.openai)) {
+      let id = chatGptModelId(model);
+      if (suggested.hidden || modelKind("openai", model) !== "language" ||
+          this.storage.aiModels.get(id) || models?.get(id)) {
+        continue;
+      }
+      this.#putModel({ type: "agent", id, name: `${suggested.name} (ChatGPT)` },
+          { provider: "openai", model, apiToken: "", credential: "chatgpt" }, models);
+    }
   }
 
   async signOutChatGpt(): Promise<void> {
