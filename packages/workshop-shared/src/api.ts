@@ -2389,6 +2389,13 @@ export type WorkspaceMetadata = {
   ownerInvitesOnly?: boolean;
 
   /**
+   * True while the workspace is private to its owner because it has run one of the owner's
+   * ChatGPT subscription models (see `AiModelConfig.credential`): nobody else can open it, and
+   * it can't be shared until the owner calls `Overseer.allowSharing()`.
+   */
+  ownerOnly?: boolean;
+
+  /**
    * Various objects in the API specify a gadgetId, but make the property optional. When omitted,
    * the default gadget ID should be assumed. This is largely for backwards compatibility with
    * records that were stored before workspaces could have multiple gadgets.
@@ -3417,6 +3424,14 @@ export interface Overseer extends RpcTarget {
 
   /** List all collaborators. Available to owner and all collaborators. */
   listCollaborators(): Promise<CollaboratorInfo[]>;
+
+  /**
+   * Lift the lock that running a ChatGPT subscription model put on the workspace (see
+   * `WorkspaceMetadata.ownerOnly`), so that it can be shared again. Owner only. Throws while any
+   * agent turn is running. Using a ChatGPT model here again locks the workspace again, and is
+   * refused while it is shared.
+   */
+  allowSharing(): Promise<void>;
 
   /**
    * Add a collaborator by username/email. The caller must be the owner or an existing
