@@ -1114,6 +1114,14 @@ export const MAX_UPDATE_HOURS = 720;
  */
 export const ROUTER_TAG_PROBE_PATH = "/api/router-tag";
 
+/**
+ * The path a Workshop browser GETs, through the router, to learn the version id of the backend that
+ * new requests reach: `{ version: string | null }`, never cached, `null` where the backend has no
+ * version id. A deploy does not move the WebSocket a tab already holds, so a tab whose
+ * `ServerConfig.backendVersion` differs is still talking to an older backend, and reconnects.
+ */
+export const VERSION_PATH = "/api/version";
+
 /** All admin-managed deployment settings, returned by AdminApi.getSettings() for the admin UI. */
 export type AdminSettingsView = {
   /** Whether new account signups are allowed. */
@@ -1648,6 +1656,12 @@ export type ServerConfig = {
    * overrides the brand CSS variables with this (and derived shades) at runtime.
    */
   accentColor: string;
+
+  /**
+   * The version id of the backend answering this connection, or undefined where it has none.
+   * Compared with what VERSION_PATH answers to notice a connection that outlived a deploy.
+   */
+  backendVersion?: string;
 };
 
 /**

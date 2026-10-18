@@ -39,6 +39,11 @@ export async function getAuthVendors(env: Cloudflare.Env): Promise<AuthVendorInf
   return results.filter((v): v is AuthVendorInfo => v !== null);
 }
 
+/** This backend version's id, or undefined where it has none; see ServerConfig.backendVersion. */
+export function backendVersion(env: Cloudflare.Env): string | undefined {
+  return env.CF_VERSION_METADATA?.id || undefined;
+}
+
 export async function getServerConfig(env: Cloudflare.Env): Promise<ServerConfig> {
   // The admin-config KV get and the per-vendor describe() RPCs are independent — run them
   // concurrently so the KV get isn't serialized ahead of N cross-Worker calls on every (re)connect.
@@ -59,5 +64,6 @@ export async function getServerConfig(env: Cloudflare.Env): Promise<ServerConfig
     banner: config.banner.text,
     bannerColor: config.banner.color,
     accentColor: config.accentColor,
+    backendVersion: backendVersion(env),
   };
 }
