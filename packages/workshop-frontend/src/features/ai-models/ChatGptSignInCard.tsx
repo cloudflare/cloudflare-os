@@ -3,7 +3,7 @@ import { Button, useKumoToastManager } from '@cloudflare/kumo'
 import { OpenAiLogo } from '@phosphor-icons/react'
 import type { ChatGptSignInStatus } from '@gadgets/workshop-shared/api'
 import { rpcFailureDescription } from '../../rpcErrors'
-import { ChatGptPasteDialog } from './ChatGptPasteDialog'
+import { ChatGptSignInDialog } from './ChatGptSignInDialog'
 import type { ChatGptSignIn, StartedChatGptSignIn } from './useChatGptSignIn'
 
 /** Sign in with ChatGPT, for the models that run on the user's own ChatGPT subscription. */
@@ -41,6 +41,8 @@ export const ChatGptSignInCard = ({ status, signIn }: {
   }
 
   const signedIn = status.state === 'signedIn'
+  // A sign-in the Workshop's own callback page finished arrives as a new status.
+  if (flow && signedIn) setFlow(null)
 
   return (
     <div className="flex items-center gap-3 rounded-xl border border-kumo-line px-4 py-3">
@@ -54,7 +56,7 @@ export const ChatGptSignInCard = ({ status, signIn }: {
         <p className="text-kumo-subtle">
           {signedIn
             ? 'Your ChatGPT models run on your subscription, in workspaces only you can open.'
-            : 'Sign in to add OpenAI models that run on your ChatGPT plan instead of an API key.'}
+            : 'Sign in to use OpenAI models on your ChatGPT plan instead of an API key. Its models are added for you.'}
         </p>
       </div>
       {signedIn ? (
@@ -68,13 +70,17 @@ export const ChatGptSignInCard = ({ status, signIn }: {
       )}
 
       {flow && (
-        <ChatGptPasteDialog
+        <ChatGptSignInDialog
           key={flow.authorizeUrl}
           flow={flow}
           onComplete={async (callbackUrl) => {
             await signIn.complete(callbackUrl)
             setFlow(null)
-            toasts.add({ title: 'Signed in with ChatGPT', variant: 'success' })
+            toasts.add({
+              title: 'Signed in with ChatGPT',
+              description: 'Your subscription’s models were added.',
+              variant: 'success',
+            })
           }}
           onClose={() => setFlow(null)}
         />

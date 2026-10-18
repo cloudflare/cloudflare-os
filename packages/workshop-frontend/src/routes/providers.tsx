@@ -154,7 +154,6 @@ function ProvidersPage() {
 
   const { authenticatedApi } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
-  const chatGptSignIn = useChatGptSignIn(authenticatedApi)
   const [chatModels, setChatModels] = useState<AiChatAuthorInfo[]>([])
   const [decisionModels, setDecisionModels] = useState<AiChatAuthorInfo[]>([])
   const [quickModel, setQuickModel] = useState<string | null>(null)
@@ -194,6 +193,9 @@ function ProvidersPage() {
       setLoading(false)
     }
   }
+
+  // Signing in adds the subscription's models, so the list reloads.
+  const chatGptSignIn = useChatGptSignIn(authenticatedApi, () => void fetchAll())
 
   useEffect(() => { fetchAll() }, [authenticatedApi])
 

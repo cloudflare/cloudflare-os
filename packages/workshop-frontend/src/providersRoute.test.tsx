@@ -166,7 +166,8 @@ describe('ProvidersPage Sign in with ChatGPT', () => {
     expect(tab.location.replace).toHaveBeenCalledWith(START.authorizeUrl)
     const dialog = document.body.querySelector('[role="dialog"]')!
     expect(dialog.textContent).toContain('the tab will show an error page')
-    expect(dialog.textContent).toContain(START.redirectUri)
+    expect(dialog.textContent).toContain('This site can’t be reached')
+    expect(dialog.textContent).toContain('127.0.0.1:1455/auth/callback?code=')
 
     api.completeChatGptSignIn.mockResolvedValue({ state: 'signedIn', email: 'dan@example.com' })
     await pasteAddress(` ${CALLBACK} `)
@@ -189,6 +190,64 @@ describe('ProvidersPage Sign in with ChatGPT', () => {
     expect(dialog.textContent).toContain('This sign-in has expired. Start again.')
     expect(button('Connect').disabled).toBe(false)
     expect(document.body.textContent).not.toContain('Signed in as')
+  })
+
+  it('connects as soon as the sign-in address is pasted, and reloads the models', async () => {
+    await renderPage({ state: 'signedOut' })
+    stubTab()
+    api.beginChatGptSignIn.mockResolvedValue(START)
+    await act(async () => button('Sign in with ChatGPT').click())
+    api.listModels.mockClear()
+    api.completeChatGptSignIn.mockResolvedValue({ state: 'signedIn' })
+
+    const input = document.body.querySelector<HTMLInputElement>('[role="dialog"] input')!
+    const paste = new Event('paste', { bubbles: true, cancelable: true })
+    Object.assign(paste, { clipboardData: { getData: () => ` ${CALLBACK}\n` } })
+    await act(async () => input.dispatchEvent(paste))
+
+    expect(api.completeChatGptSignIn).toHaveBeenCalledExactlyOnceWith(CALLBACK)
+    await vi.waitFor(() => expect(document.body.querySelector('[role="dialog"]')).toBeNull())
+    // The sign-in added the subscription's models.
+    expect(api.listModels).toHaveBeenCalled()
+  })
+
+  it('leaves other pasted text to be edited', async () => {
+    await renderPage({ state: 'signedOut' })
+    stubTab()
+    api.beginChatGptSignIn.mockResolvedValue(START)
+    await act(async () => button('Sign in with ChatGPT').click())
+
+    const input = document.body.querySelector<HTMLInputElement>('[role="dialog"] input')!
+    const paste = new Event('paste', { bubbles: true, cancelable: true })
+    Object.assign(paste, { clipboardData: { getData: () => 'https://chatgpt.com/' } })
+    await act(async () => input.dispatchEvent(paste))
+
+    expect(paste.defaultPrevented).toBe(false)
+    expect(api.completeChatGptSignIn).not.toHaveBeenCalled()
+  })
+
+  // OpenAI accepts the Workshop's own address there, so nothing has to be pasted.
+  it('waits for the Workshop\'s own callback page when the sign-in returns here', async () => {
+    await renderPage({ state: 'signedOut' })
+    stubTab()
+    api.beginChatGptSignIn.mockResolvedValue(
+        { ...START, redirectUri: `${window.location.origin}/connect/chatgpt` })
+    await act(async () => button('Sign in with ChatGPT').click())
+
+    const dialog = document.body.querySelector('[role="dialog"]')!
+    expect(dialog.textContent).toContain('Waiting for you to sign in')
+    expect(dialog.querySelector('input')).toBeNull()
+
+    api.getChatGptSignIn.mockResolvedValue({ state: 'signedIn', email: 'dan@example.com' })
+    api.listModels.mockClear()
+    const channel = new BroadcastChannel('chatgpt-sign-in')
+    // oxlint-disable-next-line require-post-message-target-origin -- a BroadcastChannel takes no origin.
+    await act(async () => channel.postMessage('signedIn'))
+    channel.close()
+
+    await vi.waitFor(() => expect(document.body.textContent).toContain('Signed in as dan@example.com'))
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+    expect(api.listModels).toHaveBeenCalled()
   })
 
   it('links to the sign-in page when the browser blocked the tab', async () => {
