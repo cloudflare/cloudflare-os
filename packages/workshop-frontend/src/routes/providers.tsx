@@ -16,6 +16,8 @@ import AddModelModal, { type ModelModalMode } from '../AddModelModal'
 import { useDocumentTitle } from '../useDocumentTitle'
 import { useCloudflareLimitsEnabled } from '../ServerConfigContext'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from '../components/menuStyles'
+import { ChatGptSignInCard } from '../features/ai-models/ChatGptSignInCard'
+import { useChatGptSignIn } from '../features/ai-models/useChatGptSignIn'
 
 export const Route = createFileRoute('/providers')({ component: ProvidersPage })
 
@@ -157,6 +159,7 @@ function ProvidersPage() {
   // A deployment that applies Cloudflare limits runs quick tasks on its own model, so the server
   // refuses a quick model of the user's there.
   const quickModelChoosable = !useCloudflareLimitsEnabled()
+  const chatGptSignIn = useChatGptSignIn(authenticatedApi)
   const [chatModels, setChatModels] = useState<AiChatAuthorInfo[]>([])
   const [decisionModels, setDecisionModels] = useState<AiChatAuthorInfo[]>([])
   const [quickModel, setQuickModel] = useState<string | null>(null)
@@ -307,6 +310,12 @@ function ProvidersPage() {
       )}
 
       <div className="chat-panel flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pt-1 pb-16">
+        {chatGptSignIn.status && chatGptSignIn.status.state !== 'unavailable' && (
+          <div className="px-3 pb-2">
+            <ChatGptSignInCard status={chatGptSignIn.status} signIn={chatGptSignIn} />
+          </div>
+        )}
+
         {/* Notices */}
         {(gatewayMode || (!gatewayMode && hasChatModel)) && !loading && !loadError && (
           <div className="flex flex-col gap-2.5 px-3 pb-2">
@@ -412,6 +421,7 @@ function ProvidersPage() {
         }}
         authenticatedApi={authenticatedApi}
         aiConfig={aiConfig}
+        chatGptSignIn={chatGptSignIn.status ?? undefined}
       />
       {sourceMode && (
         <AddModelModal
@@ -425,6 +435,7 @@ function ProvidersPage() {
           }}
           authenticatedApi={authenticatedApi}
           aiConfig={aiConfig}
+          chatGptSignIn={chatGptSignIn.status ?? undefined}
         />
       )}
     </div>

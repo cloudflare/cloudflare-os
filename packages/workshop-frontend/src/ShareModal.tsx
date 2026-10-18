@@ -1,7 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, useId, type KeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Checkbox, Dialog, useKumoToastManager } from '@cloudflare/kumo'
-import { Check, Copy, Link, PencilSimple, ShieldCheck, ShieldWarning, Trash, UserPlus, UsersThree, X } from '@phosphor-icons/react'
+import { Check, Copy, Link, LockSimple, PencilSimple, ShieldCheck, ShieldWarning, Trash, UserPlus, UsersThree, X } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
 import {
   Overseer,
@@ -266,8 +266,15 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
   const containsRestrictedData = metadata.containsRestrictedData === true
   // The server refuses share links and non-owner invites once this is set; hide those controls.
   const ownerInvitesOnly = metadata.ownerInvitesOnly === true
-  const canInvite = !ownerInvitesOnly || isOwner
-  const canUseShareLinks = !ownerInvitesOnly
+  // The server refuses every invite and share link while the owner's ChatGPT subscription keeps
+  // the workspace private. The workspace lists open this modal on a snapshot that no update
+  // replaces, so allowing sharing is remembered against the metadata it was allowed for.
+  const [sharingAllowedFor, setSharingAllowedFor] = useState<WorkspaceMetadata | null>(null)
+  const [allowingSharing, setAllowingSharing] = useState(false)
+  const [allowSharingError, setAllowSharingError] = useState<string | null>(null)
+  const ownerOnly = metadata.ownerOnly === true && sharingAllowedFor !== metadata
+  const canInvite = !ownerOnly && (!ownerInvitesOnly || isOwner)
+  const canUseShareLinks = !ownerOnly && !ownerInvitesOnly
   const directoryQuery = addUsername.trim()
   // Everyone who already holds what this dialog grants -- the caller, the owner (absent from
   // listCollaborators() when the caller is a collaborator), and collaborators with the workspace or
@@ -494,6 +501,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
         setStaged(current => inFlight ? current : current.filter(recipient => recipient.error))
         setNewShareLinkId(null)
         setNewShareLinkCopied(false)
+        setAllowSharingError(null)
         setInvitedNames([])
         setInvitedLinkCopied(false)
         setNewLinkNote('')
@@ -687,6 +695,19 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
     } finally {
       addingRef.current = false
       setAdding(false)
+    }
+  }
+
+  const handleAllowSharing = async () => {
+    setAllowingSharing(true)
+    setAllowSharingError(null)
+    try {
+      await overseer.allowSharing()
+      setSharingAllowedFor(metadata)
+    } catch (err) {
+      setAllowSharingError(err instanceof Error && err.message ? err.message : 'Failed to allow sharing.')
+    } finally {
+      setAllowingSharing(false)
     }
   }
 
@@ -932,7 +953,9 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
               {target.kind === 'gadget' ? `Share “${target.title}”` : `Invite to “${metadata.title}”`}
             </Dialog.Title>
             <Dialog.Description className="mt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
-              {canUseShareLinks
+              {ownerOnly
+                ? 'Only you can open it.'
+                : canUseShareLinks
                 ? 'Invite people or share a link.'
                 : canInvite ? 'Invite people.' : 'Manage access.'}
             </Dialog.Description>
@@ -950,6 +973,28 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
           className={`chat-panel min-h-0 flex-1 overscroll-contain px-4 pb-6 sm:px-6 ${directoryOpen ? 'overflow-hidden' : 'overflow-y-auto'}`}
           onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}
         >
+          {ownerOnly && (
+            <div className="mb-3 flex items-start gap-2.5 rounded-2xl bg-kumo-warning-tint px-3 py-2.5">
+              <div className="grid h-6 w-6 shrink-0 place-items-center text-kumo-warning">
+                <LockSimple size={18} weight="duotone" />
+              </div>
+              <div className="min-w-0 flex-1 text-[12px] leading-[18px] tracking-[-0.1px] text-kumo-default">
+                <p className="font-medium">Private while it uses your ChatGPT subscription</p>
+                <p>
+                  Nobody else can open this workspace, and sharing is off until you allow it. Once it
+                  is shared, using a ChatGPT model here again needs it unshared first.
+                </p>
+                {isOwner && (
+                  <WorkshopButton className="mt-2" onClick={() => void handleAllowSharing()} disabled={allowingSharing}>
+                    {allowingSharing ? 'Allowing…' : 'Allow sharing'}
+                  </WorkshopButton>
+                )}
+                {allowSharingError && (
+                  <p role="alert" className="mt-1.5 text-kumo-danger">{allowSharingError}</p>
+                )}
+              </div>
+            </div>
+          )}
           {(containsRestrictedData || ownerInvitesOnly) && (
             <div className="mb-3 flex items-start gap-2.5 rounded-2xl bg-kumo-warning-tint px-3 py-2.5">
               <div className="grid h-6 w-6 shrink-0 place-items-center text-kumo-warning">
