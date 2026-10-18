@@ -7,8 +7,8 @@ import { useSessionCheck } from './useSessionCheck'
  * open, so its backend keeps answering until the socket breaks; new requests reach the new one.
  * `socketVersion` is what the socket's backend reports (ServerConfig.backendVersion), compared
  * on each session check with what a new request reaches. A session reconnects away from a given
- * version only once, so a gradual rollout that lands the new socket on the old version again
- * cannot loop it.
+ * version only once, ever, so a gradual rollout that lands new sockets and new requests on either
+ * version cannot loop it.
  */
 export const useStaleBackendReconnect = (
   socketVersion: string | undefined,
@@ -18,11 +18,11 @@ export const useStaleBackendReconnect = (
   const session = useRef({ socketVersion, connectionLost })
   session.current = { socketVersion, connectionLost }
   const checking = useRef(false)
-  const reconnectedFrom = useRef<string | undefined>(undefined)
+  const reconnectedFrom = useRef(new Set<string>())
 
   // Read through the ref after the fetch too: the socket may have changed meanwhile.
   const isCheckable = (version: string | undefined): version is string =>
-    version !== undefined && !session.current.connectionLost && version !== reconnectedFrom.current
+    version !== undefined && !session.current.connectionLost && !reconnectedFrom.current.has(version)
 
   useSessionCheck(() => {
     const version = session.current.socketVersion
@@ -32,7 +32,7 @@ export const useStaleBackendReconnect = (
       checking.current = false
       if (typeof latest !== 'string' || latest === version) return
       if (session.current.socketVersion !== version || !isCheckable(version)) return
-      reconnectedFrom.current = version
+      reconnectedFrom.current.add(version)
       onReconnect()
     })
   })

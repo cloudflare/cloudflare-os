@@ -96,6 +96,23 @@ describe('useStaleBackendReconnect', () => {
     expect(onReconnect).toHaveBeenCalledTimes(2)
   })
 
+  it('does not reconnect away from a version again after reconnecting away from another', async () => {
+    await render('v1')
+    await sessionCheck()
+    expect(onReconnect).toHaveBeenCalledOnce()
+
+    // Mid-rollout, the new socket reaches v2 while new requests reach v1, and then the reverse.
+    answer = versionAnswer('v1')
+    await render('v2')
+    await sessionCheck()
+    expect(onReconnect).toHaveBeenCalledTimes(2)
+
+    answer = versionAnswer('v2')
+    await render('v1')
+    await sessionCheck()
+    expect(onReconnect).toHaveBeenCalledTimes(2)
+  })
+
   it.each([
     ['the same version', versionAnswer('v1')],
     ['no version', versionAnswer(null)],
