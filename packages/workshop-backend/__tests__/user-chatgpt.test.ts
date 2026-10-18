@@ -30,7 +30,7 @@ function jwt(claims: object): string {
   return `${encode({alg: "none"})}.${encode(claims)}.signature`;
 }
 
-type Deployment = { admin?: Partial<AdminConfig>; gateway?: boolean };
+type Deployment = { admin?: Partial<AdminConfig>; gateway?: boolean; publicBaseUrl?: string };
 
 let userCounter = 0;
 
@@ -53,6 +53,7 @@ function inUser<T>(f: (user: UserDurableObject, storage: UserStorage) => Promise
       BLUEPRINTS: {
         get: async () => serializeAdminConfig({ ...DEFAULT_ADMIN_CONFIG, ...deployment.admin }),
       } as unknown as KVNamespace,
+      ...(deployment.publicBaseUrl && { PUBLIC_BASE_URL: deployment.publicBaseUrl }),
     };
     try {
       return await f(user, impl.storage);
@@ -81,11 +82,11 @@ afterEach(() => {
 
 // Starts a sign-in and returns the address OpenAI would send the browser to, and the nonce the
 // ID token must carry.
-async function begin(user: UserDurableObject) {
+async function begin(user: UserDurableObject, redirectUri = CHATGPT_REDIRECT_URI) {
   const start = await user.beginChatGptSignIn();
-  expect(start.redirectUri).toBe(CHATGPT_REDIRECT_URI);
+  expect(start.redirectUri).toBe(redirectUri);
   const params = new URL(start.authorizeUrl).searchParams;
-  const callback = new URL(CHATGPT_REDIRECT_URI);
+  const callback = new URL(redirectUri);
   callback.search = new URLSearchParams(
       { code: "the-code", state: params.get("state")!, client_id: "issued" }).toString();
   return { callbackUrl: callback.toString(), nonce: params.get("nonce")! };
@@ -106,6 +107,39 @@ describe("Sign in with ChatGPT", () => {
     expect(await user.getChatGptSignIn()).toEqual(status);
     expect(JSON.stringify(status)).not.toMatch(/access|refresh|issued/);
     expect((await user.getChatGptAccessToken()).token).toBe("new-access");
+  }));
+
+  // OpenAI accepts the Workshop's own address there, so the sign-in needs no pasting.
+  it("returns to the Workshop itself when it is served from a loopback address", () =>
+      inUser(async user => {
+    const { callbackUrl, nonce } = await begin(user, "http://localhost:8787/connect/chatgpt");
+    tokenEndpoint(tokens(nonce));
+    expect((await user.completeChatGptSignIn(callbackUrl)).state).toBe("signedIn");
+  }, { publicBaseUrl: "http://localhost:8787" }));
+
+  it("adds the suggested OpenAI models as ChatGPT models", () => inUser(async (user, storage) => {
+    const { callbackUrl, nonce } = await begin(user);
+    tokenEndpoint(tokens(nonce));
+    await user.completeChatGptSignIn(callbackUrl);
+    const added = [...storage.aiModels.list()];
+    expect(added.map(record => record.profile.id)).toContain("chatgpt/gpt-6.1-sol");
+    expect(added.find(record => record.profile.id === "chatgpt/gpt-6.1-sol")).toEqual({
+      profile: { type: "agent", id: "chatgpt/gpt-6.1-sol", name: "GPT-6.1 Sol (ChatGPT)" },
+      config: { provider: "openai", model: "gpt-6.1-sol", apiToken: "", credential: "chatgpt" },
+    });
+    // Superseded models stay out, as they do from pickers.
+    expect(added.map(record => record.profile.id)).not.toContain("chatgpt/gpt-6-sol");
+    expect((await user.getChatContext("chatgpt/gpt-6-luna")).aiModel?.config.credential)
+        .toBe("chatgpt");
+  }));
+
+  it("keeps a model the user already has under a preset's ID", () => inUser(async (user, storage) => {
+    const mine = { ...PROFILE, id: "chatgpt/gpt-6.1-sol", name: "Mine" };
+    await user.addModel(mine, { ...CHATGPT, model: "gpt-6.1-sol" });
+    const { callbackUrl, nonce } = await begin(user);
+    tokenEndpoint(tokens(nonce));
+    await user.completeChatGptSignIn(callbackUrl);
+    expect(storage.aiModels.get(mine.id)?.profile.name).toBe("Mine");
   }));
 
   it("completes a sign-in once", () => inUser(async user => {

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  CHATGPT_REDIRECT_URI, ChatGptGrantRevoked, exchangeCode, parseCallback, refreshCredential,
-  startSignIn, type ChatGptCredential, type PendingChatGptSignIn,
+  CHATGPT_REDIRECT_URI, ChatGptGrantRevoked, chatGptRedirectUri, exchangeCode, parseCallback,
+  refreshCredential, startSignIn, type ChatGptCredential, type PendingChatGptSignIn,
 } from "../src/chatgpt-oauth.js";
 
 const HOST_ID = "0b6d6c1e-4a6f-4f1e-9a35-5b8d3c1f2e7a";
@@ -23,16 +23,33 @@ function tokenEndpoint(body: object, status = 200) {
   return { fetchFn, requests };
 }
 
-async function pendingSignIn(): Promise<{ authorizeUrl: URL; pending: PendingChatGptSignIn }> {
-  let { authorizeUrl, pending } = await startSignIn(HOST_ID);
+async function pendingSignIn(redirectUri = CHATGPT_REDIRECT_URI)
+    : Promise<{ authorizeUrl: URL; pending: PendingChatGptSignIn }> {
+  let { authorizeUrl, pending } = await startSignIn(HOST_ID, redirectUri);
   return { authorizeUrl: new URL(authorizeUrl), pending };
 }
 
-function callbackUrl(params: Record<string, string>): string {
-  let url = new URL(CHATGPT_REDIRECT_URI);
+function callbackUrl(params: Record<string, string>, redirectUri = CHATGPT_REDIRECT_URI): string {
+  let url = new URL(redirectUri);
   url.search = new URLSearchParams(params).toString();
   return url.toString();
 }
+
+describe("chatGptRedirectUri", () => {
+  // OpenAI accepts only http loopback addresses with a port.
+  it.each([
+    "http://localhost:8787", "http://localhost:8787/", "http://127.0.0.1:3000/app",
+  ])("returns to the Workshop itself when it is served from %s", base => {
+    expect(chatGptRedirectUri(base)).toBe(`${new URL(base).origin}/connect/chatgpt`);
+  });
+
+  it.each([
+    "https://os.example.com/", "https://localhost:8787", "http://localhost", "http://example.com:80",
+    "not a url", undefined,
+  ])("returns to the loopback address nothing answers for %s", base => {
+    expect(chatGptRedirectUri(base)).toBe(CHATGPT_REDIRECT_URI);
+  });
+});
 
 describe("startSignIn", () => {
   it("asks for direct API access for this agent host, bound by PKCE, state and nonce", async () => {
@@ -84,6 +101,16 @@ describe("parseCallback", () => {
     expect(() => parseCallback(url, pending)).toThrow(message);
   });
 
+  it("reads the callback from the Workshop's own address, and refuses the loopback one", async () => {
+    let redirect = "http://localhost:8787/connect/chatgpt";
+    let { authorizeUrl, pending } = await pendingSignIn(redirect);
+    expect(authorizeUrl.searchParams.get("redirect_uri")).toBe(redirect);
+    let params = { code: "c", state: pending.state, client_id: "issued" };
+    expect(parseCallback(callbackUrl(params, redirect), pending)).toEqual(
+        { code: "c", clientId: "issued" });
+    expect(() => parseCallback(callbackUrl(params), pending)).toThrow("should start with");
+  });
+
   it("refuses the callback of another sign-in", async () => {
     let { pending } = await pendingSignIn();
     expect(() => parseCallback(
@@ -125,6 +152,16 @@ describe("exchangeCode", () => {
       code_verifier: pending.verifier, redirect_uri: CHATGPT_REDIRECT_URI,
       resource: "https://api.openai.com/v1",
     });
+  });
+
+  it("exchanges with the redirect the sign-in started with", async () => {
+    let { pending } = await pendingSignIn("http://localhost:8787/connect/chatgpt");
+    let { fetchFn, requests } = tokenEndpoint({
+      access_token: "access", refresh_token: "refresh", expires_in: 3600, scope: SCOPE,
+      id_token: jwt({ nonce: pending.nonce }),
+    });
+    await exchangeCode({ code: "c", clientId: "issued" }, pending, fetchFn);
+    expect(requests[0].get("redirect_uri")).toBe("http://localhost:8787/connect/chatgpt");
   });
 
   it("refuses an ID token issued for another sign-in", async () => {

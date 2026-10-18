@@ -633,6 +633,9 @@ export interface AuthenticatedApi extends RpcTarget {
    * Finish the sign-in that `beginChatGptSignIn()` started, given the full address OpenAI sent the
    * browser to. Replaces any earlier sign-in. Throws if the address is not from the pending
    * sign-in, the sign-in has expired, or OpenAI refused it.
+   *
+   * Also adds the OpenAI models SUGGESTED_MODELS offers as ChatGPT subscription models, under
+   * `chatGptModelId()`, except any the user already has under that ID.
    */
   completeChatGptSignIn(callbackUrl: string): Promise<ChatGptSignInStatus>;
 
@@ -1805,12 +1808,29 @@ export type ChatGptSignInStart = {
   /** OpenAI's sign-in page, for the client to open in a new tab. */
   authorizeUrl: string;
   /**
-   * Where OpenAI sends that tab once the user has signed in: an address on the user's own
-   * computer, where nothing answers, so the page fails to load. The user copies the address the
-   * tab ends at, which starts with this, into `completeChatGptSignIn()`.
+   * Where OpenAI sends that tab once the user has signed in. OpenAI accepts only addresses on the
+   * user's own computer, so this is one where nothing answers, the page fails to load, and the
+   * user copies the address the tab ends at, which starts with this, into
+   * `completeChatGptSignIn()`. When the Workshop itself is served from such an address (as in
+   * local development), it is the Workshop's own CHATGPT_CALLBACK_PATH instead, whose page
+   * finishes the sign-in.
    */
   redirectUri: string;
 };
+
+/**
+ * The Workshop page OpenAI sends a ChatGPT sign-in back to when the Workshop is served from an
+ * address on the user's own computer (see `ChatGptSignInStart.redirectUri`).
+ */
+export const CHATGPT_CALLBACK_PATH = "/connect/chatgpt";
+
+/**
+ * The ID of the ChatGPT subscription model for OpenAI's `model`: the ID
+ * `AuthenticatedApi.completeChatGptSignIn()` adds it under, and the one to add it under by hand.
+ */
+export function chatGptModelId(model: string): string {
+  return `chatgpt/${model}`;
+}
 
 /** Information about the AI gateway configuration. Returned by `AuthenticatedApi.getAiConfig()`. */
 export type AiGatewayInfo = {

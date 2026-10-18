@@ -1,11 +1,28 @@
 // Sign in with ChatGPT: the OAuth flow that lets a user run OpenAI models on their own ChatGPT
 // subscription (see docs/chatgpt-sign-in.md). It is pi's public-client flow (pi-ai's
 // auth/oauth/openai-chatgpt), minus the local callback server it listens with: OpenAI accepts only
-// loopback redirects, so the browser lands on an address nothing answers and the user pastes it
-// back. Pure apart from `fetch`, which tests replace.
+// loopback redirects, so unless the Workshop itself is served from one, the browser lands on an
+// address nothing answers and the user pastes it back. Pure apart from `fetch`, which tests replace.
 
-/** Where OpenAI sends the browser once the user has signed in; the same address pi and Codex use. */
+import { CHATGPT_CALLBACK_PATH } from "@gadgets/workshop-shared/api";
+
+/**
+ * Where OpenAI sends the browser once the user has signed in, unless the Workshop is served from a
+ * loopback address (see chatGptRedirectUri()); the same address pi and Codex use.
+ */
 export const CHATGPT_REDIRECT_URI = "http://127.0.0.1:1455/auth/callback";
+
+/**
+ * The redirect for a Workshop served at `publicBaseUrl`: its own CHATGPT_CALLBACK_PATH when that is
+ * an http loopback address with a port, the only kind OpenAI accepts besides CHATGPT_REDIRECT_URI
+ * (as in local development), and otherwise CHATGPT_REDIRECT_URI.
+ */
+export function chatGptRedirectUri(publicBaseUrl: string | undefined): string {
+  let url = URL.parse(publicBaseUrl ?? "");
+  let loopback = url?.protocol === "http:" && url.port !== "" &&
+      (url.hostname === "localhost" || url.hostname === "127.0.0.1");
+  return loopback ? `${url!.origin}${CHATGPT_CALLBACK_PATH}` : CHATGPT_REDIRECT_URI;
+}
 
 /**
  * The API a ChatGPT sign-in's token is for. pi recognizes a sign-in by this exact base URL (with a
@@ -27,6 +44,7 @@ const EXPIRY_MARGIN_MS = 3 * 60 * 1000;
 
 /** A started sign-in, held by the user's object until its callback arrives or it expires. */
 export type PendingChatGptSignIn = {
+  redirectUri: string;
   state: string;
   verifier: string;
   nonce: string;
@@ -58,15 +76,17 @@ function randomValue(): string {
 }
 
 /**
- * Start a sign-in for the installation `agentHostId` (a UUID OpenAI identifies the agent host by).
- * Returns the page to send the user to and what completing the sign-in will need.
+ * Start a sign-in for the installation `agentHostId` (a UUID OpenAI identifies the agent host by)
+ * that returns to `redirectUri` (see chatGptRedirectUri()). Returns the page to send the user to
+ * and what completing the sign-in will need.
  */
-export async function startSignIn(agentHostId: string)
+export async function startSignIn(agentHostId: string, redirectUri: string)
     : Promise<{ authorizeUrl: string; pending: PendingChatGptSignIn }> {
   let verifier = randomValue();
   let challenge = new Uint8Array(await crypto.subtle.digest(
       "SHA-256", new TextEncoder().encode(verifier))).toBase64({alphabet: "base64url", omitPadding: true});
   let pending: PendingChatGptSignIn = {
+    redirectUri,
     state: randomValue(),
     verifier,
     nonce: randomValue(),
@@ -78,7 +98,7 @@ export async function startSignIn(agentHostId: string)
     agent_name_hint: "Gadgets",
     ext_agent_host_id: `urn:uuid:${agentHostId}`,
     response_type: "code",
-    redirect_uri: CHATGPT_REDIRECT_URI,
+    redirect_uri: redirectUri,
     resource: CHATGPT_API_BASE_URL,
     scope: SCOPE,
     state: pending.state,
@@ -101,9 +121,9 @@ export function parseCallback(callbackUrl: string, pending: PendingChatGptSignIn
   } catch {
     throw new Error("Paste the full address from the tab that ChatGPT sent you to.");
   }
-  let expected = new URL(CHATGPT_REDIRECT_URI);
+  let expected = new URL(pending.redirectUri);
   if (url.origin !== expected.origin || url.pathname !== expected.pathname) {
-    throw new Error(`The address should start with ${CHATGPT_REDIRECT_URI}.`);
+    throw new Error(`The address should start with ${pending.redirectUri}.`);
   }
   if (url.searchParams.get("state") !== pending.state) {
     throw new Error("That address is from a different sign-in. Paste the one from the tab you " +
@@ -126,7 +146,7 @@ export async function exchangeCode(
     client_id: callback.clientId,
     code: callback.code,
     code_verifier: pending.verifier,
-    redirect_uri: CHATGPT_REDIRECT_URI,
+    redirect_uri: pending.redirectUri,
     resource: CHATGPT_API_BASE_URL,
   });
   // The ID token came straight from OpenAI over TLS, so its claims are read without checking its
