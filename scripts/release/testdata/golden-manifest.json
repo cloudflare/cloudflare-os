@@ -1293,6 +1293,10 @@
           "type": "browser"
         },
         {
+          "name": "CF_VERSION_METADATA",
+          "type": "version_metadata"
+        },
+        {
           "name": "LOADER",
           "type": "worker_loader"
         },

@@ -90,10 +90,6 @@ declare global {
       // deployServiceInstall() (deployment-updates.ts) is its only reader, and shape-checks it.
       CLOUDFLARE_OS_DEPLOYMENT?: unknown;
 
-      // This Worker version's metadata. The service that installed the deployment adds the binding
-      // to every Worker it uploads, so it is declared here rather than in cloudflare.config.ts.
-      CF_VERSION_METADATA?: WorkerVersionMetadata;
-
       // Daily free-tier LLM-call limit (per user). Defaults to DEFAULT_DAILY_LLM_CALL_LIMIT.
       DAILY_LLM_CALL_LIMIT?: string;
 

@@ -704,8 +704,8 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
 /**
  * The version tag of the running version of a Worker, read from the `CF_VERSION_METADATA`
  * version-metadata binding in its `env`, or undefined when it has no such binding or the tag is
- * empty. Never throws. Takes `env` as a plain object because no public Worker config declares the
- * binding: the service that installs a deployment adds it.
+ * empty. Never throws. Takes `env` as a plain object because no public gatekeeper config declares
+ * the binding: the service that installs a deployment adds it.
  */
 export function workerVersionTag(env: object): string | undefined {
   try {
