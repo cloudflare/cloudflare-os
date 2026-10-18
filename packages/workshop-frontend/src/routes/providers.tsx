@@ -159,7 +159,6 @@ function ProvidersPage() {
   // A deployment that applies Cloudflare limits runs quick tasks on its own model, so the server
   // refuses a quick model of the user's there.
   const quickModelChoosable = !useCloudflareLimitsEnabled()
-  const chatGptSignIn = useChatGptSignIn(authenticatedApi)
   const [chatModels, setChatModels] = useState<AiChatAuthorInfo[]>([])
   const [decisionModels, setDecisionModels] = useState<AiChatAuthorInfo[]>([])
   const [quickModel, setQuickModel] = useState<string | null>(null)
@@ -199,6 +198,9 @@ function ProvidersPage() {
       setLoading(false)
     }
   }
+
+  // Signing in adds the subscription's models, so the list reloads.
+  const chatGptSignIn = useChatGptSignIn(authenticatedApi, () => void fetchAll())
 
   useEffect(() => { fetchAll() }, [authenticatedApi])
 
