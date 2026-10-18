@@ -24,6 +24,7 @@ packages/workshop-backend/src/server.ts
   s_f4752a3f31547a::t_4bea13067dddaf 285,287-290,293-296
   s_f4752a3f31547a::t_0743c0a8a641f4 284,286,291-292
   s_f4752a3f31547a::t_a6ca920bfbb98f 297
+  s_f4752a3f31547a::t_05aa1d0e5dfc96 4
 packages/workshop-shared/src/api.ts
   s_f4752a3f31547a::t_7831ec927b9cef 593-619,1170-1171,1482-1491,1745-1769,2013-2021
   s_f4752a3f31547a::t_b1f00f6e697150 2022
