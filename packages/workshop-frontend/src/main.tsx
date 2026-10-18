@@ -14,6 +14,7 @@ import FrontendErrorBoundary from './FrontendErrorBoundary'
 import { installWorkshopErrorReporting, reportIssue } from './errorReporting'
 import { applySiteFavicon, cacheBustSiteLogoUrl } from './siteLogoUtils'
 import { getBackendHost } from './connectHandoff';
+import { useStaleBackendReconnect } from './features/stale-session/useStaleBackendReconnect'
 
 // ---------------------------------------------------------------------------
 // Dev auto-login: if VITE_DEV_AUTO_LOGIN=true, automatically create/login
@@ -170,6 +171,12 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('online', () => void probeOnWake());
 
+// Drops a connection that is up, so that handleBroken replaces it as if it had broken: for a
+// socket still talking to a backend that a deploy replaced (see useStaleBackendReconnect).
+function reconnectNow() {
+  if (!isConnectionLost) disposeQuietly(currentStub);
+}
+
 // Current stub. handleBroken() will replace this on disconnect.
 installWorkshopErrorReporting()
 let currentStub = startConnection();
@@ -240,6 +247,8 @@ function AppWithConnection() {
   useEffect(() => {
     return applySiteFavicon(serverConfig?.siteLogo?.url);
   }, [serverConfig]);
+
+  useStaleBackendReconnect(serverConfig?.backendVersion, rpcState.connectionLost, reconnectNow);
 
   return (
     <ThemeProvider>
