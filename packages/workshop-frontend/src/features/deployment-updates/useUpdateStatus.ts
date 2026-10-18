@@ -3,6 +3,7 @@ import type { RpcStub } from 'capnweb'
 import type { AdminApi, DeploymentUpdateStatus } from '@gadgets/workshop-shared/api'
 import { useAuthenticatedApi } from '../../AuthContext'
 import { logRpcFailure } from '../../rpcErrors'
+import { probeRouterTag } from './probeRouterTag'
 
 /**
  * Whether a newer release is available, for an admin of a deployment the deploy flow installed.
@@ -34,6 +35,7 @@ export const useUpdateStatus = (): DeploymentUpdateStatus | null => {
           release()
           return null
         }
+        await probeRouterTag()
         return await api.getUpdateStatus()
       })
       .then(

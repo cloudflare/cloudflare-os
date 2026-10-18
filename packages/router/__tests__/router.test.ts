@@ -82,6 +82,99 @@ describe('router fetch', () => {
   });
 });
 
+/** A backend stub that records each request it receives, after reading its body. */
+function recordingFetcher(): { fetcher: Fetcher; received: { req: Request; body: string }[] } {
+  const received: { req: Request; body: string }[] = [];
+  const fetcher = {
+    fetch: async (req: Request) => {
+      received.push({ req, body: await req.text() });
+      return new Response('backend');
+    },
+  } as unknown as Fetcher;
+  return { fetcher, received };
+}
+
+describe('router version header', () => {
+  const HEADER = 'Cloudflare-OS-Router-Version';
+  const versioned = { CF_VERSION_METADATA: { id: 'v', tag: 'r42:abcd1234', timestamp: '' } };
+
+  it('carries the router tag on every request forwarded to the backend', async () => {
+    const withAssets = recordingFetcher();
+    const prod = makeEnv({
+      ...versioned,
+      WORKSHOP_BACKEND: withAssets.fetcher,
+      ASSETS: stubFetcher('assets'),
+    });
+    await route(prod, '/api/workshop');
+    await route(prod, '/blueprint-screenshot/abc');
+    const dev = recordingFetcher();
+    await route(makeEnv({ ...versioned, WORKSHOP_BACKEND: dev.fetcher }), '/blueprints/123');
+
+    const forwarded = [...withAssets.received, ...dev.received];
+    expect(forwarded.map(({ req }) => new URL(req.url).pathname))
+      .toEqual(['/api/workshop', '/blueprint-screenshot/abc', '/blueprints/123']);
+    for (const { req } of forwarded) expect(req.headers.get(HEADER)).toBe('r42:abcd1234');
+  });
+
+  it('overwrites a client-supplied value', async () => {
+    const backend = recordingFetcher();
+    const env = makeEnv({ ...versioned, WORKSHOP_BACKEND: backend.fetcher });
+    const req = new Request('https://example.com/api', { headers: { [HEADER]: 'forged' } });
+    await router.fetch!(req, env, {} as ExecutionContext);
+    expect(backend.received[0].req.headers.get(HEADER)).toBe('r42:abcd1234');
+  });
+
+  it('sends an empty value when the router has no tag', async () => {
+    for (const extra of [{}, { CF_VERSION_METADATA: { id: 'v', timestamp: '' } }]) {
+      const backend = recordingFetcher();
+      const env = makeEnv({ ...extra, WORKSHOP_BACKEND: backend.fetcher });
+      const req = new Request('https://example.com/api', { headers: { [HEADER]: 'forged' } });
+      await router.fetch!(req, env, {} as ExecutionContext);
+      expect(backend.received[0].req.headers.get(HEADER)).toBe('');
+    }
+  });
+
+  it('preserves the method, body and other headers', async () => {
+    const backend = recordingFetcher();
+    const env = makeEnv({ ...versioned, WORKSHOP_BACKEND: backend.fetcher });
+    const req = new Request('https://example.com/api/client-errors?x=1', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: 'session=s' },
+      body: '{"a":1}',
+    });
+    await router.fetch!(req, env, {} as ExecutionContext);
+    const [{ req: forwarded, body }] = backend.received;
+    expect(forwarded.method).toBe('POST');
+    expect(forwarded.url).toBe('https://example.com/api/client-errors?x=1');
+    expect(forwarded.headers.get('Content-Type')).toBe('application/json');
+    expect(forwarded.headers.get('Cookie')).toBe('session=s');
+    expect(body).toBe('{"a":1}');
+  });
+
+  it('passes a WebSocket upgrade through to the backend', async () => {
+    let upgrade: string | null = null;
+    let tag: string | null = null;
+    const backend = {
+      fetch: async (req: Request) => {
+        upgrade = req.headers.get('Upgrade');
+        tag = req.headers.get(HEADER);
+        const [client, server] = Object.values(new WebSocketPair());
+        server.accept();
+        return new Response(null, { status: 101, webSocket: client });
+      },
+    } as unknown as Fetcher;
+    const env = makeEnv({ ...versioned, WORKSHOP_BACKEND: backend });
+    const req = new Request('https://example.com/api', { headers: { Upgrade: 'websocket' } });
+    const res = await router.fetch!(req, env, {} as ExecutionContext);
+    expect(upgrade).toBe('websocket');
+    expect(tag).toBe('r42:abcd1234');
+    expect(res.status).toBe(101);
+    expect(res.webSocket).not.toBeNull();
+    res.webSocket!.accept();
+    res.webSocket!.close();
+  });
+});
+
 describe('router email', () => {
   it('forwards to GATEKEEPER_EMAIL when bound', async () => {
     const received: unknown[] = [];

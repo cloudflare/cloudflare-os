@@ -17,6 +17,7 @@ import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import {
   stripTrailingSlashes,
+  workerVersionTag,
   type AccountDescription,
   type ApprovalQueue,
   type ConnectHandoff,
@@ -301,6 +302,10 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
           "databases you share. Build agents that draft documents, organize notes, or manage " +
           "database records.",
     };
+  }
+
+  async versionTag(): Promise<string | undefined> {
+    return workerVersionTag(this.env);
   }
 
   async connectAccount(callback: Fetcher<GatekeeperConnectCallback>): Promise<{ url: string }> {

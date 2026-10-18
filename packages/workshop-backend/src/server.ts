@@ -1,7 +1,7 @@
 import { RpcStub, RpcTarget, newHttpBatchRpcResponse, newWebSocketRpcSession, RpcSessionOptions } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import type { JWTPayload } from "jose";
-import { PublicApi, AuthenticatedApi, Overseer, GadgetMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, AiModelProvider, ModelKind, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenGadgetError, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, NotificationSubscriber, NotificationMute } from '@gadgets/workshop-shared/api';
+import { PublicApi, ROUTER_TAG_PROBE_PATH, AuthenticatedApi, Overseer, GadgetMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, AiModelProvider, ModelKind, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenGadgetError, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, NotificationSubscriber, NotificationMute } from '@gadgets/workshop-shared/api';
 import type { UiFeatureFlags } from "@gadgets/workshop-shared/feature-flags";
 import { getServerConfig } from "./deployment-config.js";
 import { isPasswordAuthEnabled, getAuthGatekeeperAllowlist } from "./auth/config.js";
@@ -31,6 +31,7 @@ import { verifyCfAccessJwt } from "./access.js";
 import { resolveUiFeatureFlags } from "./feature-flags";
 import { serveSiteLogo, SITE_LOGO_PATH } from "./site-logo.js";
 import { createWorkshopLogger } from "./observability";
+import { deployServiceInstall, routerVersionTag } from "./deployment-updates.js";
 import { retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
 import { deviceSessionCallback } from "./auth/device-session-callback.js";
 
@@ -39,6 +40,14 @@ const logger = createWorkshopLogger("workshop.server");
 // Set once we've asked the AdminSettings DO to install the bundled blueprints (see the
 // fetch handler), so later requests skip the call. The DO holds the real answer.
 let bundledBlueprintInstallStarted = false;
+
+// The router version tag this isolate last reported to the AdminSettings DO, when, and the report
+// itself, settling once the DO has recorded it (see the fetch handler), so a request repeating the
+// tag skips the call. The DO keeps whichever report reaches it last, from any isolate, so a repeat
+// is skipped only for ROUTER_TAG_REPORT_INTERVAL_MS: then this isolate reports again, replacing an
+// older tag another isolate's late report stored.
+let routerTagReport: { tag: string, at: number, recorded: Promise<void> } | undefined;
+const ROUTER_TAG_REPORT_INTERVAL_MS = 60_000;
 
 const USER_SEARCH_POLICY_CACHE_TTL_MS = 30_000;
 
@@ -888,6 +897,34 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext) {
     let url = new URL(req.url);
+
+    // Read on every request, off the critical path: a failure only means the next request reports
+    // it again. Only the update status of a deployment the deploy flow installed reads the tag, so
+    // any other deployment skips the call. A session's RPCs travel over one WebSocket, so the
+    // browser POSTs to ROUTER_TAG_PROBE_PATH before reading the status, which answers once this
+    // isolate's report of the tag it carries is recorded, whichever request started that report.
+    let routerTag = routerVersionTag(req.headers);
+    let now = Date.now();
+    if (routerTag !== undefined && deployServiceInstall(env) !== null &&
+        (routerTag !== routerTagReport?.tag ||
+            now - routerTagReport.at >= ROUTER_TAG_REPORT_INTERVAL_MS)) {
+      let recorded = ctx.exports.AdminSettings.getByName("").recordRouterTag(routerTag)
+          .catch((err: unknown) => {
+            if (routerTagReport === report) routerTagReport = undefined;
+            logger.warn("failed to record the router's version tag", {
+              event: "deployment.router-tag.record.failed", error: err,
+            });
+          });
+      let report = { tag: routerTag, at: now, recorded };
+      routerTagReport = report;
+      ctx.waitUntil(recorded);
+    }
+    if (url.pathname === ROUTER_TAG_PROBE_PATH && req.method === "POST") {
+      if (routerTag !== undefined && routerTagReport?.tag === routerTag) {
+        await routerTagReport.recorded;
+      }
+      return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+    }
 
     if (url.pathname === SITE_LOGO_PATH) {
       return serveSiteLogo(req, env.BLUEPRINT_CONTENT);
