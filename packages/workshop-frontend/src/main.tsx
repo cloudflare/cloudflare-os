@@ -191,6 +191,10 @@ function AppWithConnection() {
   });
   const [serverConfig, setServerConfig] = useState<ServerConfig | null>(null);
   const [serverConfigError, setServerConfigError] = useState(false);
+  // The backend version, kept with the connection that reported it: `serverConfig` still holds the
+  // previous connection's until the new one answers.
+  const [socketVersion, setSocketVersion] =
+    useState<{ stub: RpcStub<PublicApi>; version: string | undefined } | null>(null);
 
   useEffect(() => {
     const viewport = window.visualViewport;
@@ -233,6 +237,7 @@ function AppWithConnection() {
             ...cfg,
             siteLogo: { url: cacheBustSiteLogoUrl(cfg.siteLogo.url) },
           } : cfg);
+          setSocketVersion({ stub: rpcState.stub, version: cfg.backendVersion });
         }
       })
       .catch(() => { if (!cancelled) setServerConfigError(true); });
@@ -248,7 +253,8 @@ function AppWithConnection() {
     return applySiteFavicon(serverConfig?.siteLogo?.url);
   }, [serverConfig]);
 
-  useStaleBackendReconnect(serverConfig?.backendVersion, rpcState.connectionLost, reconnectNow);
+  useStaleBackendReconnect(
+      socketVersion?.stub === rpcState.stub ? socketVersion.version : undefined, reconnectNow);
 
   return (
     <ThemeProvider>

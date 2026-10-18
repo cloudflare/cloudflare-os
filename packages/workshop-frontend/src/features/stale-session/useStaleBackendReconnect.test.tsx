@@ -29,17 +29,17 @@ describe('useStaleBackendReconnect', () => {
   const fetch = vi.fn<typeof globalThis.fetch>(async () => answer())
   const onReconnect = vi.fn<() => void>()
 
-  const Session = ({ socketVersion, connectionLost }:
-      { socketVersion: string | undefined; connectionLost: boolean }) => {
-    useStaleBackendReconnect(socketVersion, connectionLost, onReconnect)
+  const Session = ({ socketVersion }: { socketVersion: string | undefined }) => {
+    useStaleBackendReconnect(socketVersion, onReconnect)
     return null
   }
 
-  const render = async (socketVersion: string | undefined, connectionLost = false) => {
+  // `undefined` is a socket whose backend has not reported its version yet, as while replacing it.
+  const render = async (socketVersion: string | undefined) => {
     await act(async () => {
       root.render(
         <StrictMode>
-          <Session socketVersion={socketVersion} connectionLost={connectionLost} />
+          <Session socketVersion={socketVersion} />
         </StrictMode>,
       )
     })
@@ -85,7 +85,7 @@ describe('useStaleBackendReconnect', () => {
   it('does not reconnect away from the same version twice, as in a split rollout', async () => {
     await render('v1')
     await sessionCheck()
-    await render('v1', true)
+    await render(undefined)
     await render('v1')
     await sessionCheck()
     expect(onReconnect).toHaveBeenCalledOnce()
@@ -127,10 +127,8 @@ describe('useStaleBackendReconnect', () => {
     expect(onReconnect).not.toHaveBeenCalled()
   })
 
-  it('does not check a socket with no version, or one being replaced', async () => {
+  it('does not check a socket whose backend has not reported a version', async () => {
     await render(undefined)
-    await sessionCheck()
-    await render('v1', true)
     await sessionCheck()
     expect(fetch).not.toHaveBeenCalled()
   })
@@ -140,7 +138,7 @@ describe('useStaleBackendReconnect', () => {
     answer = () => new Promise(resolve => { respond = resolve })
     await render('v1')
     await sessionCheck()
-    await render('v1', true)
+    await render(undefined)
     await act(async () => { respond(Response.json({ version: 'v2' })) })
     expect(onReconnect).not.toHaveBeenCalled()
   })
