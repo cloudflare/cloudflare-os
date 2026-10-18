@@ -138,6 +138,7 @@ function AppRow({
         <DropdownMenu.Trigger
           render={
             <button
+              aria-label={`Actions for ${gadget.title || 'Untitled Workspace'}`}
               className="p-1.5 text-kumo-subtle hover:text-kumo-default rounded-md hover:bg-kumo-fill transition-colors sm:opacity-0 sm:group-hover:opacity-100 focus:opacity-100"
             >
               <DotsThreeVertical size={16} />
@@ -371,6 +372,7 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
+              aria-label="Search workspaces"
               placeholder="Search workspaces…"
               className="h-9 w-full rounded-lg border border-kumo-line bg-kumo-base pl-9 pr-4 text-[13px] tracking-[-0.25px] text-kumo-default placeholder:text-kumo-inactive transition-[border-color,box-shadow] duration-150 ease-out focus:border-kumo-ring focus:outline-none focus:ring-[3px] focus:ring-kumo-ring/15"
             />

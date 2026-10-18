@@ -772,6 +772,7 @@ export const ChatComposer = ({
             <textarea
               value={inputValue}
               role="combobox"
+              aria-label="Message"
               aria-autocomplete="list"
               aria-expanded={slashCommandPicker.open}
               aria-controls={slashCommandPicker.open ? slashCommandPicker.listboxId : undefined}
