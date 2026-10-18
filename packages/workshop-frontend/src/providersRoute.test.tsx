@@ -5,7 +5,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type * as Kumo from '@cloudflare/kumo'
-import type { AiChatAuthorInfo, ModelKind } from '@gadgets/workshop-shared/api'
+import type { AiChatAuthorInfo, ChatGptSignInStart, ChatGptSignInStatus, ModelKind } from '@gadgets/workshop-shared/api'
 
 const api = vi.hoisted(() => ({
   listModels: vi.fn<(kind?: ModelKind) => Promise<AiChatAuthorInfo[]>>(async (kind) => kind === 'decision'
@@ -14,6 +14,10 @@ const api = vi.hoisted(() => ({
   getQuickModel: async () => null,
   getAiConfig: async () => ({ enabled: false }),
   setQuickModel: vi.fn<(modelId: string | null) => Promise<void>>(async () => {}),
+  getChatGptSignIn: vi.fn<() => Promise<ChatGptSignInStatus>>(async () => ({ state: 'unavailable' })),
+  beginChatGptSignIn: vi.fn<() => Promise<ChatGptSignInStart>>(),
+  completeChatGptSignIn: vi.fn<(callbackUrl: string) => Promise<ChatGptSignInStatus>>(),
+  signOutChatGpt: vi.fn<() => Promise<void>>(async () => {}),
 }))
 
 vi.mock('@cloudflare/kumo', async (importOriginal) => ({
@@ -84,5 +88,128 @@ describe('ProvidersPage quick model', () => {
     api.listModels.mockResolvedValueOnce([])
     await renderPage()
     expect(document.body.textContent).not.toContain('Quick model:')
+  })
+})
+
+// A stand-in for the tab the page opens, recording where it was sent.
+function stubTab() {
+  const tab = { opener: {} as unknown, location: { replace: vi.fn<(url: string) => void>() }, close: vi.fn<() => void>() }
+  const open = vi.fn<(url: string, target: string) => typeof tab | null>(() => tab)
+  vi.stubGlobal('open', open)
+  return { tab, open }
+}
+
+function button(name: string) {
+  const found = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+    .find(candidate => candidate.textContent === name)
+  if (!found) throw new Error(`No button ${name}`)
+  return found
+}
+
+async function pasteAddress(address: string) {
+  const input = document.body.querySelector<HTMLInputElement>('[role="dialog"] input')!
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, address)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await act(async () => button('Connect').click())
+}
+
+describe('ProvidersPage Sign in with ChatGPT', () => {
+  const START: ChatGptSignInStart = {
+    authorizeUrl: 'https://auth.openai.com/oauth/authorize?state=abc',
+    redirectUri: 'http://127.0.0.1:1455/auth/callback',
+  }
+  const CALLBACK = 'http://127.0.0.1:1455/auth/callback?code=xyz&state=abc'
+
+  let root: Root | undefined
+  let container: HTMLDivElement | undefined
+
+  afterEach(() => {
+    act(() => root?.unmount())
+    container?.remove()
+    document.body.innerHTML = ''
+    vi.unstubAllGlobals()
+    api.getChatGptSignIn.mockReset().mockResolvedValue({ state: 'unavailable' })
+    api.beginChatGptSignIn.mockReset()
+    api.completeChatGptSignIn.mockReset()
+    api.signOutChatGpt.mockClear()
+  })
+
+  async function renderPage(status: ChatGptSignInStatus) {
+    api.getChatGptSignIn.mockResolvedValue(status)
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<ProvidersPage />))
+    await vi.waitFor(() => expect(document.body.textContent).toContain('Decision model'))
+  }
+
+  it('offers nothing while the deployment does not offer signing in', async () => {
+    await renderPage({ state: 'unavailable' })
+    expect(document.body.textContent).not.toContain('ChatGPT')
+  })
+
+  // A tab opened once the RPC has answered is no longer the click's, and the browser blocks it.
+  it('opens the sign-in tab within the click, then finishes with the address the tab ends at', async () => {
+    await renderPage({ state: 'signedOut' })
+    const { tab, open } = stubTab()
+    let answer!: (start: ChatGptSignInStart) => void
+    api.beginChatGptSignIn.mockReturnValue(new Promise(resolve => { answer = resolve }))
+
+    await act(async () => button('Sign in with ChatGPT').click())
+    expect(open).toHaveBeenCalledOnce()
+    expect(tab.opener).toBeNull()
+    expect(tab.location.replace).not.toHaveBeenCalled()
+
+    await act(async () => answer(START))
+    expect(tab.location.replace).toHaveBeenCalledWith(START.authorizeUrl)
+    const dialog = document.body.querySelector('[role="dialog"]')!
+    expect(dialog.textContent).toContain('the tab will show an error page')
+    expect(dialog.textContent).toContain(START.redirectUri)
+
+    api.completeChatGptSignIn.mockResolvedValue({ state: 'signedIn', email: 'dan@example.com' })
+    await pasteAddress(` ${CALLBACK} `)
+
+    expect(api.completeChatGptSignIn).toHaveBeenCalledExactlyOnceWith(CALLBACK)
+    await vi.waitFor(() => expect(document.body.querySelector('[role="dialog"]')).toBeNull())
+    expect(document.body.textContent).toContain('Signed in as dan@example.com')
+  })
+
+  it('shows why an address did not finish the sign-in, and lets the user try another', async () => {
+    await renderPage({ state: 'signedOut' })
+    stubTab()
+    api.beginChatGptSignIn.mockResolvedValue(START)
+    await act(async () => button('Sign in with ChatGPT').click())
+
+    api.completeChatGptSignIn.mockRejectedValueOnce(new Error('This sign-in has expired. Start again.'))
+    await pasteAddress(CALLBACK)
+
+    const dialog = document.body.querySelector('[role="dialog"]')!
+    expect(dialog.textContent).toContain('This sign-in has expired. Start again.')
+    expect(button('Connect').disabled).toBe(false)
+    expect(document.body.textContent).not.toContain('Signed in as')
+  })
+
+  it('links to the sign-in page when the browser blocked the tab', async () => {
+    await renderPage({ state: 'signedOut' })
+    vi.stubGlobal('open', vi.fn<() => null>(() => null))
+    api.beginChatGptSignIn.mockResolvedValue(START)
+
+    await act(async () => button('Sign in with ChatGPT').click())
+
+    const dialog = document.body.querySelector('[role="dialog"]')!
+    expect(dialog.textContent).toContain('blocked the sign-in tab')
+    expect(dialog.querySelector<HTMLAnchorElement>(`a[href="${START.authorizeUrl}"]`)).not.toBeNull()
+  })
+
+  it('shows who is signed in, and signs out', async () => {
+    await renderPage({ state: 'signedIn' })
+    expect(document.body.textContent).toContain('Signed in with ChatGPT')
+
+    await act(async () => button('Sign out').click())
+
+    expect(api.signOutChatGpt).toHaveBeenCalledOnce()
+    expect(button('Sign in with ChatGPT')).toBeTruthy()
   })
 })

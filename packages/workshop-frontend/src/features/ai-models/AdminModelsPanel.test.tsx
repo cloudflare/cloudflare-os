@@ -226,6 +226,7 @@ const settingCheckbox = (label: string) => {
   return input
 }
 
+const CHATGPT_SIGN_IN_LABEL = 'Users may sign in with ChatGPT'
 const userModelsSwitch = () => settingSwitch('Users may add their own models')
 const userModelsCheckbox = () => settingCheckbox('Users may add their own models')
 
@@ -401,13 +402,15 @@ describe('AdminModelsPanel', () => {
   })
 
   const render = async (
-    { gatewayModels }: Pick<AdminSettingsView, 'gatewayModels'> = { gatewayModels: GATEWAY_MODELS },
+    { gatewayModels, chatGptSignInEnabled = true }:
+      Pick<AdminSettingsView, 'gatewayModels'> & { chatGptSignInEnabled?: boolean } = { gatewayModels: GATEWAY_MODELS },
   ) => {
     const setGatewayModelMode = vi.fn<AdminApi['setGatewayModelMode']>(async () => {})
     const addGatewayModel = vi.fn<AdminApi['addGatewayModel']>(async () => {})
     const removeGatewayModel = vi.fn<AdminApi['removeGatewayModel']>(async () => {})
     const setUserModelsEnabled = vi.fn<AdminApi['setUserModelsEnabled']>(async () => {})
     const setModelsDevSuggestions = vi.fn<AdminApi['setModelsDevSuggestions']>(async () => {})
+    const setChatGptSignInEnabled = vi.fn<AdminApi['setChatGptSignInEnabled']>(async () => {})
     const setGatewayModelSettings = vi.fn<AdminApi['setGatewayModelSettings']>(async () => {})
     const setDefaultReasoning = vi.fn<AdminApi['setDefaultReasoning']>(async () => {})
     const setGatewayProviderEnabled = vi.fn<AdminApi['setGatewayProviderEnabled']>(async () => {})
@@ -419,7 +422,7 @@ describe('AdminModelsPanel', () => {
     const onChanged = vi.fn<() => Promise<void>>(async () => {})
     const admin = {
       setGatewayModelMode, addGatewayModel, removeGatewayModel, setUserModelsEnabled,
-      setModelsDevSuggestions, setGatewayModelSettings, setDefaultReasoning,
+      setModelsDevSuggestions, setChatGptSignInEnabled, setGatewayModelSettings, setDefaultReasoning,
       setGatewayProviderEnabled, testGatewayProvider, testGatewayModel, testNewGatewayModel,
     } as unknown as RpcStub<AdminApi>
     const container = document.createElement('div')
@@ -427,24 +430,57 @@ describe('AdminModelsPanel', () => {
     root = createRoot(container)
     // Shows what a re-read of the settings reported.
     const show = (reported: GatewayModels) => act(async () => root!.render(
-      <AdminModelsPanel admin={admin} gatewayModels={reported} onChanged={onChanged} />))
+      <AdminModelsPanel
+        admin={admin} gatewayModels={reported} chatGptSignInEnabled={chatGptSignInEnabled} onChanged={onChanged}
+      />))
     await act(async () => root!.render(
-      <AdminModelsPanel admin={admin} gatewayModels={gatewayModels} onChanged={onChanged} />))
+      <AdminModelsPanel
+        admin={admin} gatewayModels={gatewayModels} chatGptSignInEnabled={chatGptSignInEnabled} onChanged={onChanged}
+      />))
     return {
       setGatewayModelMode, addGatewayModel, removeGatewayModel, setUserModelsEnabled,
-      setModelsDevSuggestions, setGatewayModelSettings, setDefaultReasoning,
+      setModelsDevSuggestions, setChatGptSignInEnabled, setGatewayModelSettings, setDefaultReasoning,
       setGatewayProviderEnabled, testGatewayProvider, testGatewayModel, testNewGatewayModel,
       onChanged, show,
     }
   }
 
   describe('outside AI Gateway mode', () => {
-    it('explains where models are managed instead of offering controls', async () => {
+    it('explains where models are managed, offering only whether users may sign in with ChatGPT', async () => {
       await render({ gatewayModels: undefined })
 
       expect(document.body.textContent).toContain('only when the deployment provides them through AI Gateway')
       expect(document.body.textContent).toContain('each user adds their own models')
-      expect(document.body.querySelectorAll('button, input, [role="radio"]')).toHaveLength(0)
+      expect(Array.from(document.body.querySelectorAll('[role="switch"]'), (control) => control.getAttribute('aria-label')))
+        .toEqual([CHATGPT_SIGN_IN_LABEL])
+      expect(document.body.querySelectorAll('[role="radio"]')).toHaveLength(0)
+    })
+  })
+
+  describe('whether users may sign in with ChatGPT', () => {
+    it.each([
+      ['outside AI Gateway mode', undefined],
+      ['in AI Gateway mode', GATEWAY_MODELS],
+    ])('sets the opposite of what the server reported %s, then re-reads the settings', async (_mode, gatewayModels) => {
+      const { setChatGptSignInEnabled, onChanged } = await render({ gatewayModels, chatGptSignInEnabled: false })
+      expect(settingSwitch(CHATGPT_SIGN_IN_LABEL).getAttribute('aria-checked')).toBe('false')
+
+      await click(settingCheckbox(CHATGPT_SIGN_IN_LABEL))
+
+      expect(setChatGptSignInEnabled).toHaveBeenCalledExactlyOnceWith(true)
+      expect(onChanged).toHaveBeenCalledOnce()
+    })
+
+    // On a gateway deployment a ChatGPT model is one of the user's own models.
+    it.each([
+      [false, undefined],
+      [true, GATEWAY_MODELS],
+    ])('names the user-models setting it needs only in AI Gateway mode (%s)', async (needed, gatewayModels) => {
+      await render({ gatewayModels })
+
+      const meaning = document.getElementById(settingSwitch(CHATGPT_SIGN_IN_LABEL).getAttribute('aria-describedby')!)
+      expect(meaning?.textContent?.includes('Users may add their own models')).toBe(needed)
+      expect(meaning?.textContent).toContain('Nothing is deleted.')
     })
   })
 
