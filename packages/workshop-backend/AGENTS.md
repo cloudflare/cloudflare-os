@@ -89,4 +89,7 @@ them:
   enforced where a model is about to run: `user.ts:getChatContext()` and
   `LanguageModelGatekeeper.startSession()`. The Auto Router model's pool (`modelSettings[id]
   .allowedModels`, or else the enabled providers) is built there too; a model binding takes the
-  current pool at each session start, not the one it was minted with.
+  current pool at each session start, not the one it was minted with. A ChatGPT subscription model
+  (`AiModelConfig.credential`, behind `AdminConfig.chatGptSignInEnabled`) bypasses the gateway and
+  goes directly to OpenAI on its user's own sign-in, which only `chatGptAccess()` in overseer.ts
+  hands out, to the owner of a workspace it locks to them (see `docs/chatgpt-sign-in.md`).
