@@ -457,6 +457,9 @@ export function normalizeAdminConfig(p: Partial<AdminConfig>): AdminConfig {
     adminAuditRetentionDays: isAdminAuditRetention(p.adminAuditRetentionDays)
       ? p.adminAuditRetentionDays
       : DEFAULT_ADMIN_CONFIG.adminAuditRetentionDays,
+    chatGptSignInEnabled: typeof p.chatGptSignInEnabled === "boolean"
+      ? p.chatGptSignInEnabled
+      : DEFAULT_ADMIN_CONFIG.chatGptSignInEnabled,
   };
 }
 
@@ -663,6 +666,14 @@ export function serializeAdminConfig(config: AdminConfig): string {
 /** Read the admin config from the KV mirror. Cheap enough for the hot path (a single KV get). */
 export async function readAdminConfig(env: Cloudflare.Env): Promise<AdminConfig> {
   return parseAdminConfig(await env.BLUEPRINTS.get(ADMIN_CONFIG_KEY), adminConfigSeed(env));
+}
+
+/**
+ * Whether users may sign in with ChatGPT and run their ChatGPT subscription models. On an AI
+ * Gateway deployment those are models of their own, so it takes users being allowed those too.
+ */
+export function isChatGptSignInAvailable(config: AdminConfig, gatewayMode: boolean): boolean {
+  return config.chatGptSignInEnabled && (!gatewayMode || config.userModelsEnabled);
 }
 
 // --- Resource-disable helpers ---

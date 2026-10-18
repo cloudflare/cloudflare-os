@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES, DEFAULT_UPDATE_MINIMUM_AGE_HOURS, DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, type GatewayModel, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS } from "@gadgets/workshop-shared/api";
-import { adminConfigSeed, changesModelSettings, defaultOutputFormatId, effectiveAdminConfig, isUpdateCheckInterval, isUpdateHours, normalizeAdminConfig, parseAdminConfig, parseAdminConfigSeed, readAdminConfig, parseRestrictedWebFetchHosts, reorderFormats, resolveFormatOutput, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig, diffAdminConfig } from "../src/admin-config.js";
+import { adminConfigSeed, changesModelSettings, defaultOutputFormatId, effectiveAdminConfig, isChatGptSignInAvailable, isUpdateCheckInterval, isUpdateHours, normalizeAdminConfig, parseAdminConfig, parseAdminConfigSeed, readAdminConfig, parseRestrictedWebFetchHosts, reorderFormats, resolveFormatOutput, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig, diffAdminConfig } from "../src/admin-config.js";
 import { DEFAULT_ADMIN_CONFIG, type AdminConfig, type FormatCuration } from "../src/storage-schema/admin-settings-storage.js";
 
 describe("parseAdminConfig", () => {
@@ -779,5 +779,24 @@ describe("diffAdminConfig", () => {
         configWith({ disabledResources: { ["k".repeat(300)]: ["x"] } }));
     expect(cut.key).toHaveLength(MAX_ADMIN_AUDIT_ARG_LENGTH);
     expect(cut.key!.endsWith("…")).toBe(true);
+  });
+});
+
+describe("Sign in with ChatGPT", () => {
+  it("is offered unless that is stored as off", () => {
+    expect(DEFAULT_ADMIN_CONFIG.chatGptSignInEnabled).toBe(true);
+    expect(parseAdminConfig(null).chatGptSignInEnabled).toBe(true);
+    for (let stored of ["{}", '{"chatGptSignInEnabled":null}', '{"chatGptSignInEnabled":0}']) {
+      expect(parseAdminConfig(stored).chatGptSignInEnabled, stored).toBe(true);
+    }
+    expect(parseAdminConfig('{"chatGptSignInEnabled":false}').chatGptSignInEnabled).toBe(false);
+  });
+
+  it("takes users' own models too on an AI Gateway deployment", () => {
+    let config = (patch: object) => ({ ...DEFAULT_ADMIN_CONFIG, ...patch });
+    expect(isChatGptSignInAvailable(config({}), true)).toBe(true);
+    expect(isChatGptSignInAvailable(config({ userModelsEnabled: false }), true)).toBe(false);
+    expect(isChatGptSignInAvailable(config({ userModelsEnabled: false }), false)).toBe(true);
+    expect(isChatGptSignInAvailable(config({ chatGptSignInEnabled: false }), false)).toBe(false);
   });
 });

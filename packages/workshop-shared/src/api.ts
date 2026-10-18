@@ -835,6 +835,33 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   getAiConfig(): Promise<AiGatewayInfo>;
 
+  /**
+   * Whether the user is signed in with ChatGPT, which lets them add OpenAI models that run on their
+   * own ChatGPT subscription (see `AiModelConfig.credential`).
+   */
+  getChatGptSignIn(): Promise<ChatGptSignInStatus>;
+
+  /**
+   * Start signing in with ChatGPT. The client opens `authorizeUrl` in a new tab; once the user has
+   * signed in there, OpenAI sends that tab to `redirectUri`, and the client passes the address it
+   * ends at to `completeChatGptSignIn()`. Only one sign-in is pending at a time, so starting
+   * another abandons the last. Throws while unavailable (see `ChatGptSignInStatus`).
+   */
+  beginChatGptSignIn(): Promise<ChatGptSignInStart>;
+
+  /**
+   * Finish the sign-in that `beginChatGptSignIn()` started, given the full address OpenAI sent the
+   * browser to. Replaces any earlier sign-in. Throws if the address is not from the pending
+   * sign-in, the sign-in has expired, or OpenAI refused it.
+   */
+  completeChatGptSignIn(callbackUrl: string): Promise<ChatGptSignInStatus>;
+
+  /**
+   * Forget the user's ChatGPT sign-in. Their ChatGPT models stay configured but can't run until
+   * they sign in again.
+   */
+  signOutChatGpt(): Promise<void>;
+
   /** Resolve UI feature flags for the authenticated user. */
   getUiFeatureFlags(): Promise<UiFeatureFlags>;
 
@@ -1458,6 +1485,8 @@ export type AdminSettingsView = {
    * allow, in a workspace that has observed restricted data.
    */
   restrictedWebFetchApprovals: boolean;
+  /** Whether users may sign in with ChatGPT (see AdminApi.setChatGptSignInEnabled). */
+  chatGptSignInEnabled: boolean;
   /** Every bound gatekeeper and its resource types, with enabled state (not hidden when disabled). */
   resourceVendors: AdminResourceVendor[];
   /** The blueprints promoted as standard output formats, in menu order (including disabled ones). */
@@ -1633,7 +1662,7 @@ export const ADMIN_SETTING_METHODS = [
   "setInstanceInstructions", "setResourceEnabled", "setGatekeeperMode", "setAnnouncement",
   "setBanner", "setAccentColor", "setBlueprintFeatured", "promoteFormat", "removeFormat",
   "updateFormat", "setFormatOrder", "setGatewayModelMode", "addGatewayModel",
-  "removeGatewayModel", "setUserModelsEnabled", "setModelsDevSuggestions",
+  "removeGatewayModel", "setUserModelsEnabled", "setModelsDevSuggestions", "setChatGptSignInEnabled",
   "setGatewayModelSettings", "setDefaultReasoning", "setGatewayProviderEnabled",
   "setUpdateChecksEnabled", "setUpdateCheckIntervalMinutes", "setUpdateMinimumAgeHours",
   "setUpdateNoticeSnoozeHours", "setRestrictedWebFetchHosts", "setRestrictedWebFetchApprovals",
@@ -1967,6 +1996,16 @@ export interface AdminApi {
   setModelsDevSuggestions(enabled: boolean): Promise<void>;
 
   /**
+   * Set whether users may sign in with ChatGPT and add OpenAI models that run on their own ChatGPT
+   * subscription (see AiModelConfig.credential). On by default. On an AI Gateway deployment it
+   * also takes users being allowed their own models (see setUserModelsEnabled).
+   *
+   * Off stops every ChatGPT model at its next request and refuses new sign-ins. Nothing stored is
+   * deleted, so the models and sign-ins work again once this is back on.
+   */
+  setChatGptSignInEnabled(enabled: boolean): Promise<void>;
+
+  /**
    * Replace what the deployment sets for one of its gateway models (see GatewayModelSettings):
    * a field left out of `settings` is unset, and an empty `settings` unsets everything. Throws
    * if `modelId` is not one of the deployment's gateway models, or if the compaction budget is
@@ -2279,6 +2318,31 @@ export type AiModelProvider =
 /** The model ID of AI Gateway's Auto Router, the one model of "cloudflare-auto-router". */
 export const AUTO_ROUTER_MODEL_ID = "cloudflare/auto";
 
+/**
+ * Where the user stands with Sign in with ChatGPT. Returned by
+ * `AuthenticatedApi.getChatGptSignIn()`:
+ *   - 'unavailable': the deployment does not offer it (see AdminApi.setChatGptSignInEnabled).
+ *   - 'signedOut':   the user can sign in.
+ *   - 'signedIn':    the user's ChatGPT models can run. `email` is the ChatGPT account's, when
+ *                    OpenAI reported one, for display only.
+ */
+export type ChatGptSignInStatus =
+  | { state: "unavailable" }
+  | { state: "signedOut" }
+  | { state: "signedIn"; email?: string };
+
+/** A started Sign in with ChatGPT flow. Returned by `AuthenticatedApi.beginChatGptSignIn()`. */
+export type ChatGptSignInStart = {
+  /** OpenAI's sign-in page, for the client to open in a new tab. */
+  authorizeUrl: string;
+  /**
+   * Where OpenAI sends that tab once the user has signed in: an address on the user's own
+   * computer, where nothing answers, so the page fails to load. The user copies the address the
+   * tab ends at, which starts with this, into `completeChatGptSignIn()`.
+   */
+  redirectUri: string;
+};
+
 /** Information about the AI gateway configuration. Returned by `AuthenticatedApi.getAiConfig()`. */
 export type AiGatewayInfo = {
   enabled: true;
@@ -2535,6 +2599,16 @@ export type AiModelConfig = {
 
   /** Name of the specific model, as specified to the provider's API. */
   model: string;
+
+  /**
+   * Set when the model runs on the user's own ChatGPT subscription rather than an API key. Only
+   * for provider "openai", with an empty `apiToken` and no `apiUrl`, `extraHeaders` or
+   * `accountId`: requests go directly to OpenAI with the user's ChatGPT sign-in (see
+   * `AuthenticatedApi.beginChatGptSignIn()`), even on an AI Gateway deployment. OpenAI allows
+   * this for its subscriber's own use only, so the model runs only in workspaces the user owns
+   * and nobody else can reach (see `WorkspaceMetadata.ownerOnly`), and can't be the quick model.
+   */
+  credential?: "chatgpt";
 
   /**
    * Secret API token for the respective provider, for billing purposes. For providers "anthropic",

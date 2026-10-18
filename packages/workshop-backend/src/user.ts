@@ -1,6 +1,6 @@
 import { RpcStub } from "capnweb";
 import type { ChatReadState, ChatTimelineHead, UnreadStateScope, UnreadStateSubscriber, UserUnreadState, UnreadThread, UserUnreadSummary, WorkspaceUnreadSummary } from "@gadgets/workshop-shared/api";
-import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
+import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription, type ChatGptSignInStart, type ChatGptSignInStatus } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
@@ -16,18 +16,22 @@ import {
 import { chatKey, chatKeyPrefix } from "./storage-schema/overseer-storage.js";
 import { recordAnalytics } from "./analytics";
 import { createWorkshopLogger } from "./observability";
-import { getGatewayModels, type GatewayModels } from "./ai-gateway.js";
+import { getAiGatewayConfig, getGatewayModels, type GatewayModels } from "./ai-gateway.js";
 import { utcDayKey, nextUtcMidnightIso, DailyQuotaResult } from "./ai-gateway-billing/limits/config.js";
 import { isCloudflareLimitsEnabled } from "./ai-gateway-billing/config.js";
 import type { AdminSettings } from "./admin-settings.js";
 import { deleteBlueprintContent } from "./blueprint-archive.js";
 import { isReservedBlueprintKey, readBlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
-import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./admin-config.js";
+import { filterEnabledResources, isChatGptSignInAvailable, isResourceDisabled, readAdminConfig } from "./admin-config.js";
 import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
 import { CONNECT_FLOW_LIFETIME_MS, handoffTargetOrigin, hashPresentedSecret, hashSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS } from "./connect-handoff.js";
 import {
   authorizeDevice, deliver, deliverBadge, registerAuthorizedDevice, registerDevice,
 } from "./notification-service.js";
+import {
+  CHATGPT_REDIRECT_URI, ChatGptGrantRevoked, exchangeCode, parseCallback, refreshCredential,
+  startSignIn, type ChatGptAccessToken, type ChatGptCredential,
+} from "./chatgpt-oauth.js";
 import {
   DEVICE_HANDOFF_LIFETIME_MS, isDeviceHandoffState, sealDeviceSessionHandoff,
   type DeviceSessionCredential, type DeviceSessionHandoff,
@@ -320,6 +324,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // The latest registration with the notification service; the next one waits for it to settle.
   #notificationRegistration: Promise<unknown> = Promise.resolve();
   #unreadSubscribers = new Map<object, {scope: UnreadStateScope; subscriber: RpcStub<UnreadStateSubscriber>}>();
+  // The ChatGPT refresh in flight, which concurrent token requests share (see getChatGptAccessToken()).
+  #chatGptRefresh?: Promise<ChatGptCredential>;
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -1350,6 +1356,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
                  copySecretsFrom?: string): Promise<void> {
     let models = await getGatewayModels(this.env);
     models?.refuseUserModel();
+    if (config.credential) await this.#refuseChatGptUnavailable();
     let source: AiModelConfig | undefined;
     if (copySecretsFrom !== undefined) {
       source = this.#getHandAddedModel(copySecretsFrom, models).config;
@@ -1373,6 +1380,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (config.provider !== stored.provider || config.model !== stored.model) {
       throw new Error("A model's provider and model ID can't be changed.");
     }
+    if (config.credential !== stored.credential) {
+      throw new Error("Whether a model runs on a ChatGPT subscription can't be changed.");
+    }
+    if (config.credential) await this.#refuseChatGptUnavailable();
     this.#putModel(profile, resolveWithheldSecrets(config, stored), models);
   }
 
@@ -1387,7 +1398,17 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   #putModel(profile: AiChatAuthorInfo, config: AiModelConfig, models: GatewayModels | null) {
-    if (models && !models.addableProviders.includes(config.provider)) {
+    if (config.credential) {
+      // Runs directly on OpenAI, whatever the deployment's gateway serves (see getModel()).
+      if (config.provider !== "openai") {
+        throw new Error("Only OpenAI models can run on a ChatGPT subscription.");
+      }
+      if (config.apiToken !== "" || config.apiUrl !== undefined ||
+          config.extraHeaders !== undefined || config.accountId !== undefined) {
+        throw new Error("A model that runs on a ChatGPT subscription takes no API token, URL, " +
+            "headers or account.");
+      }
+    } else if (models && !models.addableProviders.includes(config.provider)) {
       throw new Error(`Provider "${config.provider}" is not available in AI Gateway mode.`);
     }
     if (config.provider === "cloudflare-auto-router") {
@@ -1420,6 +1441,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       throw new Error("Quick tasks run on the deployment's own model while it applies " +
           "Cloudflare usage limits.");
     }
+    if (id !== null && this.storage.aiModels.get(id)?.config.credential) {
+      throw new Error("A model that runs on a ChatGPT subscription can't be the quick model, " +
+          "which also runs in workspaces other people own.");
+    }
     this.storage.quickModel.put(id);
   }
 
@@ -1429,11 +1454,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   // The quick model the user chose, while it resolves. A gateway model is not stored here, so
   // the choice is looked up the way a chat's model is. Quick tasks are counted against no usage
-  // limit, so a deployment that applies Cloudflare limits keeps them on its own quick model.
+  // limit, so a deployment that applies Cloudflare limits keeps them on its own quick model. A
+  // model on a ChatGPT subscription stored before setQuickModel() refused one is passed over: quick
+  // tasks also run in workspaces other people own.
   #chosenQuickModel(models: GatewayModels | null): UserAiModelRecord | undefined {
     let id = this.storage.quickModel.get();
     if (!id || isCloudflareLimitsEnabled(this.env)) return undefined;
-    return this.#resolveModel(id, models);
+    let model = this.#resolveModel(id, models);
+    return model?.config.credential ? undefined : model;
   }
 
   async getPreferredModel(): Promise<string | null> {
@@ -1594,6 +1622,113 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   #resolveModel(id: string, models: GatewayModels | null): UserAiModelRecord | undefined {
     if (models?.get(id)) return models.resolve(id);
     return models && !models.userModels ? undefined : this.storage.aiModels.get(id);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Sign in with ChatGPT (see chatgpt-oauth.ts and docs/chatgpt-sign-in.md).
+  // ---------------------------------------------------------------------------------------------
+
+  async #chatGptAvailable(): Promise<boolean> {
+    return isChatGptSignInAvailable(
+        await readAdminConfig(this.env), getAiGatewayConfig(this.env) !== null);
+  }
+
+  async #refuseChatGptUnavailable(): Promise<void> {
+    if (!await this.#chatGptAvailable()) {
+      throw new Error("Sign in with ChatGPT is turned off on this deployment by an administrator.");
+    }
+  }
+
+  async getChatGptSignIn(): Promise<ChatGptSignInStatus> {
+    if (!await this.#chatGptAvailable()) return { state: "unavailable" };
+    let credential = this.storage.chatGptCredential.get();
+    if (!credential) return { state: "signedOut" };
+    return { state: "signedIn", ...(credential.email !== undefined && { email: credential.email }) };
+  }
+
+  async beginChatGptSignIn(): Promise<ChatGptSignInStart> {
+    await this.#refuseChatGptUnavailable();
+    let agentHostId = this.storage.chatGptAgentHostId.get();
+    if (!agentHostId) {
+      agentHostId = crypto.randomUUID();
+      this.storage.chatGptAgentHostId.put(agentHostId);
+    }
+    let { authorizeUrl, pending } = await startSignIn(agentHostId);
+    this.storage.pendingChatGptSignIn.put(pending);
+    logger.info("ChatGPT sign-in started", { event: "chatgpt.signin.started" });
+    return { authorizeUrl, redirectUri: CHATGPT_REDIRECT_URI };
+  }
+
+  async completeChatGptSignIn(callbackUrl: string): Promise<ChatGptSignInStatus> {
+    await this.#refuseChatGptUnavailable();
+    let pending = this.storage.pendingChatGptSignIn.get();
+    if (!pending || pending.expiresAt.valueOf() < Date.now()) {
+      throw new Error("This sign-in has expired. Sign in with ChatGPT again.");
+    }
+    let callback = parseCallback(callbackUrl, pending);
+    // Consumed before the exchange, so that the address can't complete a second sign-in.
+    this.storage.pendingChatGptSignIn.put(null);
+    let credential: ChatGptCredential;
+    try {
+      credential = await exchangeCode(callback, pending);
+    } catch (error) {
+      logger.warn("ChatGPT sign-in failed", { event: "chatgpt.signin.failed", error });
+      throw error;
+    }
+    this.storage.chatGptCredential.put(credential);
+    logger.info("ChatGPT sign-in completed", { event: "chatgpt.signin.completed" });
+    return this.getChatGptSignIn();
+  }
+
+  async signOutChatGpt(): Promise<void> {
+    this.storage.chatGptCredential.put(null);
+    this.storage.pendingChatGptSignIn.put(null);
+    logger.info("ChatGPT sign-out", { event: "chatgpt.signin.signedOut" });
+  }
+
+  /**
+   * DO NOT MAKE PUBLIC -- returns the user's ChatGPT access token. Only a workspace's Overseer may
+   * call it, and only for its owner in a workspace nobody else can reach (see chatGptAccess() in
+   * overseer.ts). Refreshes the token once it is due, sharing one refresh among concurrent calls.
+   */
+  async getChatGptAccessToken(): Promise<ChatGptAccessToken> {
+    await this.#refuseChatGptUnavailable();
+    let credential = this.storage.chatGptCredential.get();
+    if (!credential) {
+      throw new Error("Sign in with ChatGPT to use your ChatGPT subscription models.");
+    }
+    if (credential.expiresAt.valueOf() <= Date.now()) {
+      this.#chatGptRefresh ??= this.#refreshChatGpt(credential)
+          .finally(() => this.#chatGptRefresh = undefined);
+      credential = await this.#chatGptRefresh;
+    }
+    return { token: credential.accessToken, expiresAt: credential.expiresAt };
+  }
+
+  async #refreshChatGpt(credential: ChatGptCredential): Promise<ChatGptCredential> {
+    // A sign-in or sign-out while the refresh is in flight replaces the stored credential, which
+    // the refresh must then leave alone.
+    let unchanged = () =>
+        this.storage.chatGptCredential.get()?.refreshToken === credential.refreshToken;
+    try {
+      let refreshed = await refreshCredential(credential);
+      if (unchanged()) {
+        this.storage.chatGptCredential.put(refreshed);
+      } else if (!this.storage.chatGptCredential.get()) {
+        throw new Error("Sign in with ChatGPT to use your ChatGPT subscription models.");
+      }
+      logger.debug("ChatGPT token refreshed", { event: "chatgpt.refresh.completed" });
+      return refreshed;
+    } catch (error) {
+      if (!(error instanceof ChatGptGrantRevoked)) {
+        logger.warn("ChatGPT token refresh failed", { event: "chatgpt.refresh.failed", error });
+        throw error;
+      }
+      if (unchanged()) this.storage.chatGptCredential.put(null);
+      logger.info("ChatGPT sign-in revoked", { event: "chatgpt.refresh.revoked" });
+      throw new Error("Your ChatGPT sign-in has expired or was revoked. Sign in with ChatGPT again.",
+          { cause: error });
+    }
   }
 
   async listWorkspaces(): Promise<WorkspaceMetadataWithTimestamps[]> {
