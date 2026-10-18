@@ -679,6 +679,7 @@ export class CanvaGatekeeperImpl extends DurableObject<Env, CanvaGatekeeperImplP
     write: op => this.#creds.run((creds, read) => op(new CanvaApi(async () => creds.accessToken), read)),
     read: op => this.#read(op),
     recordJob: record => this.ctx.storage.kv.put(`${JOB_PREFIX}${record.actionId}`, record),
+    recordedJob: actionId => this.ctx.storage.kv.get<CanvaJobRecord>(`${JOB_PREFIX}${actionId}`),
   };
   readonly #actions = canvaActions.bind(this.#journal, this.#actionHost);
 
@@ -1074,18 +1075,17 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
   }
 
   /**
-   * A pending design as a page serves it, which may be long after the cursor was built: the row
-   * Canva now has once the action applied, the pending row while it waits, and nothing once it was
-   * rejected or failed. The pending row's times are kept so the row holds its sort position.
+   * A pending design as a page serves it, which may be long after the cursor was built: the pending
+   * row while the action waits or its job runs, and nothing once it was rejected or failed. Once
+   * Canva has assigned the id, the row takes it, so the cursor's duplicate check drops whichever of
+   * this row and Canva's lists second, but it stays synthetic: nothing Canva returned is served
+   * through the injection, which the cursor does not authorize as an observation. The row's times
+   * are kept so it holds its sort position.
    */
   #revalidateDesign(design: CanvaDesign, me: StoredIdentity): CanvaDesign | null {
     const host = this.#host;
     const resolved = host.resolve(design.id);
-    if (!isProvisional(resolved)) {
-      const made = host.jobForRef(design.id);
-      const real = made?.kind === "createDesign" ? made.design : made?.kind === "generateDesign" ? made.design : undefined;
-      return { ...(real ?? design), id: resolved, createdAt: design.createdAt, updatedAt: design.updatedAt };
-    }
+    if (!isProvisional(resolved)) return { ...design, id: resolved };
     const action = pendingActionFor(resolved, host.pending());
     if (action !== undefined) {
       const row = pendingRow(action, me);
@@ -1100,11 +1100,7 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
   #revalidateAsset(asset: CanvaImageAsset, me: StoredIdentity): CanvaImageAsset | null {
     const host = this.#host;
     const resolved = host.resolve(asset.id);
-    if (!isProvisional(resolved)) {
-      const made = host.jobForRef(asset.id);
-      const real = made?.kind === "removeBackground" ? made.asset : undefined;
-      return { ...(real ?? asset), id: resolved, createdAt: asset.createdAt, updatedAt: asset.updatedAt };
-    }
+    if (!isProvisional(resolved)) return { ...asset, id: resolved };
     const action = pendingActionFor(resolved, host.pending());
     if (action?.kind === "removeBackground") return pendingTransformedAsset(action.payload, me);
     const job = host.jobForRef(resolved);
@@ -1185,12 +1181,15 @@ class CanvaAccountSessionImpl extends RpcTarget implements CanvaAccountSession {
     if (opts.sortBy !== undefined && !DESIGN_SORTS.has(opts.sortBy)) {
       throw new Error(`listDesigns(): sortBy must be one of ${[...DESIGN_SORTS].map(s => `"${s}"`).join(", ")}.`);
     }
-    const query = { query: opts.query, ownership: opts.ownership, sort_by: opts.sortBy };
+    // The documented default, sent to Canva rather than left to its own (relevance, even with no
+    // query), so the order the pending rows merge into is the order Canva returned.
+    const sortBy: CanvaDesignSort = opts.sortBy ?? (opts.query !== undefined ? "relevance" : "modified_descending");
+    const query = { query: opts.query, ownership: opts.ownership, sort_by: sortBy };
     const what = opts.query ? `designs matching "${opts.query}"` : "designs";
     // A search cannot say whether a pending design would match, and a design the agent makes is
     // its own, so only an unqueried listing that admits owned designs shows pending ones.
     const inject = opts.query === undefined && opts.ownership !== "shared"
-      ? this.#injectDesigns(await this.#host.identity(), opts.sortBy ?? "modified_descending")
+      ? this.#injectDesigns(await this.#host.identity(), sortBy)
       : undefined;
     return this.#cursor<CanvaDesign>({
       ...(inject ? { inject } : {}),

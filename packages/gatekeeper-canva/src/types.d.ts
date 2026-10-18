@@ -421,9 +421,10 @@ export interface CanvaAccountSession {
    * megapixels. Returns the new asset at once, under a temporary id and with its name and size
    * predicted from the source; it appears in `listFolderItems("uploads")`, `getImageAsset()`
    * accepts its id, and `createDesign({ assetId })` can place it before it exists. Once the user
-   * approves, the gatekeeper starts the job on Canva, which usually completes within seconds.
-   * Keep the returned asset and poll `getImageAsset()` with its id; do not call this again for the
-   * same image, as every approval spends credits. Check `getProfile().canRemoveBackgrounds` first;
+   * approves, the gatekeeper starts the job on Canva, which usually completes within seconds (if
+   * it takes longer, the user is asked to approve again and the same job is resumed). Keep the
+   * returned asset and poll `getImageAsset()` with its id; do not call this again for the same
+   * image, as every approval spends credits. Check `getProfile().canRemoveBackgrounds` first;
    * Canva refuses the job for users on plans without it.
    *
    * @param assetId The source image asset, which must have finished uploading, or the temporary id

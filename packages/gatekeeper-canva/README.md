@@ -82,8 +82,11 @@ You can see and manage connected accounts in settings (via the account menu in t
   `removeBackground()`, and the actions then apply in order.
 - **Generation and background removal are asynchronous.** Approving a `generateDesign` or
   `removeBackground` action starts a job on Canva. Applying a removal waits up to 20 seconds for
-  the job, which usually suffices; a generation can take minutes, so its design stays pending
-  until a read of its id finds the job done. `getDesign()` / `getImageAsset()` with the temporary
+  the job, which usually suffices; if Canva is still working after that, the approval card reports
+  it and asks the user to approve again, and the retry resumes the same job (no second request, no
+  further credits), so the temporary id stays live for actions that depend on the asset. A
+  generation can take minutes, so its design stays pending until a read of its id finds the job
+  done. `getDesign()` / `getImageAsset()` with the temporary
   id poll the job, and `listGeneratedDesigns()` / `listBackgroundRemovals()` list every job with
   its status. Jobs expire on Canva after 24 hours. Both features are plan-gated; `getProfile()`
   reports `canGenerateDesigns` and `canRemoveBackgrounds`.

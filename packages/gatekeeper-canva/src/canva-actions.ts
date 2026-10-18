@@ -17,7 +17,7 @@ import {
   type TaggedAction,
 } from "@gadgets/gatekeeper-kit/actions";
 import { buildDescription } from "@gadgets/gatekeeper-kit/action-description";
-import { isCredentialsExpired, type CredentialRead } from "@gadgets/gatekeeper-kit/credentials";
+import { isCredentialsChanged, isCredentialsExpired, type CredentialRead } from "@gadgets/gatekeeper-kit/credentials";
 import type { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
 import {
   CanvaApi,
@@ -105,13 +105,16 @@ export type CanvaActionHost = {
   read<T>(op: (api: CanvaApi) => Promise<T>): Promise<T>;
   /** Records what an apply did, for the reads and revert to read back. */
   recordJob(record: CanvaJobRecord): void;
+  /** What an earlier attempt at this action recorded, so a retry resumes rather than repeats. */
+  recordedJob(actionId: number): CanvaJobRecord | undefined;
 };
 
 const CREDITS_WARNING = "**This spends your Canva AI credits.** They are not refunded if the result is unwanted.";
 
-// How long apply waits for a background removal before leaving it to the reads to finish. Canva
-// says the job usually takes seconds, and a bound result lets an action that depends on the new
-// asset apply straight after this one.
+// How long apply waits for a background removal. Canva says the job usually takes seconds. The
+// action stays pending until the job ends, so the temporary id it provides stays live for the
+// actions that depend on it: a wait that runs out asks the user to approve again, and the retry
+// resumes the same job rather than starting another.
 const TRANSFORMATION_WAIT_MS = 20_000;
 const TRANSFORMATION_POLL_MS = 2_000;
 
@@ -166,7 +169,9 @@ function applyFailure(error: unknown, what: string): never {
     throw new Error(`Canva is rate limiting this account or its AI credits are used up, so it could not ${what} ` +
       `(${error.message}). Nothing was spent; try again later.`);
   }
-  if (isCredentialsExpired(error)) throw error;
+  // A dead grant, or one the account replaced while the request was being prepared: in both
+  // cases the request was never sent, so a retry is right.
+  if (isCredentialsExpired(error) || isCredentialsChanged(error)) throw error;
   const detail = error instanceof Error ? error.message : String(error);
   throw new ActionOutcomeUnknownError(`The request to ${what} failed after it may have reached Canva ` +
     `(${detail}). ${APPLY_OUTCOME_UNKNOWN_MESSAGE}`);
@@ -174,7 +179,7 @@ function applyFailure(error: unknown, what: string): never {
 
 /**
  * Follows a transformation job for a bounded time, so the usual case binds its asset inside apply.
- * A poll that fails leaves the job as last seen: it was started, and the reads will finish it.
+ * A poll that fails leaves the job as last seen: it was started, and the next attempt resumes it.
  */
 async function awaitTransformation(host: CanvaActionHost, job: CanvaImageTransformationJobResponse):
     Promise<CanvaImageTransformationJobResponse> {
@@ -307,31 +312,63 @@ export const canvaActions = defineActions<CanvaActionHost, CanvaActions>({
     provides: payload => [payload.ref],
     dependsOn: payload => isProvisional(payload.assetId) ? [payload.assetId] : [],
     apply: async (payload, host, ctx) => {
-      const at = Date.now();
       const sourceAssetId = host.refs.requireResolved(payload.assetId, { expectedKind: "asset" });
-      const base = {
-        kind: "removeBackground" as const, actionId: ctx.id, at, ref: payload.ref, sourceAssetId,
+      // An earlier attempt that ran out of time left the job running: resume it, never start another.
+      const earlier = host.recordedJob(ctx.id);
+      const resumed = earlier?.kind === "removeBackground" && earlier.jobId !== null ? earlier : undefined;
+      const base = resumed ?? {
+        kind: "removeBackground" as const, actionId: ctx.id, at: Date.now(), ref: payload.ref, sourceAssetId,
         sourceName: payload.sourceName, sourceDimensions: payload.sourceDimensions,
         ...(payload.name !== undefined ? { name: payload.name } : {}),
       };
-      let job: CanvaImageTransformationJobResponse;
-      try {
-        job = await host.write(api => api.createImageTransformation({
-          asset_id: sourceAssetId,
-          transformations: [{ type: "background_removal" }],
-          ...(payload.name !== undefined ? { name: payload.name } : {}),
-        }));
-      } catch (error) {
-        if (isRefusal(error)) {
-          host.recordJob({ ...base, jobId: null, status: "failed", error: { code: "refused", message: error.message } });
+      let state: ReturnType<typeof transformationStateFromJob>;
+      if (resumed && resumed.status !== "in_progress") {
+        // A read settled the job meanwhile (or found it expired): its outcome stands.
+        state = {
+          jobId: resumed.jobId, status: resumed.status,
+          ...(resumed.asset ? { asset: resumed.asset } : {}), ...(resumed.error ? { error: resumed.error } : {}),
+        };
+      } else {
+        let job: CanvaImageTransformationJobResponse;
+        if (resumed) {
+          job = { id: resumed.jobId!, status: "in_progress" };
+        } else {
+          try {
+            job = await host.write(api => api.createImageTransformation({
+              asset_id: sourceAssetId,
+              transformations: [{ type: "background_removal" }],
+              ...(payload.name !== undefined ? { name: payload.name } : {}),
+            }));
+          } catch (error) {
+            if (isRefusal(error)) {
+              host.recordJob({ ...base, jobId: null, status: "failed", error: { code: "refused", message: error.message } });
+            }
+            applyFailure(error, "start the background removal");
+          }
+          // Recorded before the wait, so a read during it sees the job running, and a retry finds it.
+          host.recordJob({ ...base, ...transformationStateFromJob(job) });
         }
-        applyFailure(error, "start the background removal");
+        state = transformationStateFromJob(await awaitTransformation(host, job));
+        host.recordJob({ ...base, ...state });
       }
-      // Recorded before the wait, so a read during it sees the job running rather than nothing.
-      host.recordJob({ ...base, ...transformationStateFromJob(job) });
-      const state = transformationStateFromJob(await awaitTransformation(host, job));
-      if (state.asset) host.refs.bind(payload.ref, state.asset.id);
-      host.recordJob({ ...base, ...state });
+      if (state.status === "failed") {
+        const reason = state.error ? `${state.error.message} (${state.error.code})` : "the job failed";
+        throw new ActionApplyError(`Canva could not remove the background: ${reason}. The credits it spent are not refunded.`);
+      }
+      if (!state.asset) {
+        throw new Error("Canva is still removing the background. Approve this action again in a moment; " +
+          "the same job is resumed, so the request is not sent twice and no further credits are spent.");
+      }
+      host.refs.bind(payload.ref, state.asset.id);
+    },
+    reject: async (_payload, host, ctx) => {
+      // The job is on Canva whether or not this action stays: rejecting it would strand the actions
+      // that wait for the asset while the asset arrives anyway. Approving again finishes it.
+      const earlier = host.recordedJob(ctx.id);
+      if (earlier?.kind === "removeBackground" && earlier.jobId !== null && earlier.status === "in_progress") {
+        throw new Error("Canva has already started this background removal and the credits are spent, so it " +
+          "can't be rejected. Approve it again to finish it.");
+      }
     },
   },
 }, {
