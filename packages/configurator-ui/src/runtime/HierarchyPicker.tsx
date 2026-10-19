@@ -605,20 +605,24 @@ const Navigator = (props: HierarchyPickerProps) => {
           onKeyDown={onListKeyDown}
           className="flex flex-col rounded-md outline-none focus-visible:ring-2 focus-visible:ring-kumo-focus"
         >
-          {/* Keyed by location, so focus on it does not carry over to the next location's row. */}
+          {/* Keyed by location, so focus on it does not carry over to the next location's row. Set
+              apart from the contents, since choosing it takes all of them. */}
           {scope && (
-            <Row
-              key={scope.id}
-              title={scope.choice?.title ?? `Everything in ${scope.title}`}
-              subtitle={scope.choice?.subtitle}
-              icon={iconFor(scope.icon, "container")}
-              action="choose"
-              selected={value === scope.id}
-              disabled={disabled}
-              tabbable={focusId === scope.id}
-              onFocus={() => setActiveId(scope.id)}
-              onActivate={() => select(scope)}
-            />
+            <>
+              <Row
+                key={scope.id}
+                title={scope.choice?.title ?? `Everything in ${scope.title}`}
+                subtitle={scope.choice?.subtitle}
+                icon={iconFor(scope.icon, "container")}
+                action="choose"
+                selected={value === scope.id}
+                disabled={disabled}
+                tabbable={focusId === scope.id}
+                onFocus={() => setActiveId(scope.id)}
+                onActivate={() => select(scope)}
+              />
+              <div aria-hidden="true" className="mx-2 my-1 border-t border-kumo-line" />
+            </>
           )}
           {rows.map(item => (
             <Row
