@@ -1,12 +1,16 @@
-import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
+import { createExecutionContext, env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
+import { ObservationGate, privateObservers } from "@gadgets/gatekeeper-kit/observers";
 import type { GatekeeperUserSelectionExchange } from "@gadgets/workshop-shared/gatekeeper";
 import { ContextApiImpl } from "../src/context-api.js";
 import { canReadCollection, collectionPermissions } from "../src/collection-access.js";
-import type { ContextCollectionDurableObject } from "../src/context-collection.js";
+import { ContextCollectionDurableObject } from "../src/context-collection.js";
 import type { UserLibraryDurableObject } from "../src/user-library.js";
 import type { LibraryRegistryDurableObject } from "../src/registry-do.js";
 import { domainName } from "../src/domain.js";
+import { LibraryReadSession } from "../src/library-read.js";
+import { publicCollectionsKvKey, metadataToSummary } from "../src/collection-kv.js";
+import { ContextAccount } from "../src/library-gatekeeper.js";
 
 // Storage persists across the file's tests, so each gets its own sharing domain.
 let domain = "";
@@ -65,14 +69,27 @@ async function permissions(id: string, accountId: string) {
   return collectionPermissions(await collection(id).getAccess(accountId), false);
 }
 
+function readSession(accountId: string): LibraryReadSession {
+  let authorizer = {
+    async authorizeObservation() {},
+    [Symbol.dispose]() {},
+  } as unknown as ConstructorParameters<typeof ObservationGate>[0];
+  return new LibraryReadSession(
+    testEnv, testEnv.COLLECTIONS, testEnv.USER_LIBRARIES, domain, accountId,
+    new ObservationGate(authorizer, privateObservers("No observers in this access-check fixture.")));
+}
+
 /**
  * A management API for `accountId` whose user picker resolves tickets to `accounts`. An
  * `unreachable` account's verifier fails as an outage would.
  */
 function api(
-    accountId: string, accounts: { domain: string; accountId: string; unreachable?: true }[]) {
+    accountId: string, accounts: { domain: string; accountId: string; unreachable?: true }[],
+    spentTickets = new Set<string>()) {
   let exchange = {
-    async redeem() {
+    async redeem(ticket: string) {
+      if (spentTickets.has(ticket)) throw new Error("Ticket already spent.");
+      spentTickets.add(ticket);
       return accounts.map(account => ({
         verifier: {
           async getAccountId(sharingDomain: string) {
@@ -93,16 +110,32 @@ function api(
 function fakeArtifacts() {
   let minted = 0;
   let mintGate = Promise.resolve();
+  let nextRevocation: (() => Promise<void>) | undefined;
+  let nextDeletion: (() => Promise<void>) | undefined;
   let fake = {
     revoked: [] as string[],
     activeTokens: new Set<string>(),
     failDeletion: false,
     failRevocations: false,
+    failListing: false,
     /** Hold token mints until the returned function is called. */
     holdMints() {
       let { promise, resolve } = Promise.withResolvers<void>();
       mintGate = promise;
       return () => resolve();
+    },
+    /** Pause one revocation; a reconstructed collection can retry it independently. */
+    holdNextRevocation() {
+      let entered = Promise.withResolvers<void>();
+      let resume = Promise.withResolvers<void>();
+      nextRevocation = async () => { entered.resolve(); await resume.promise; };
+      return { entered: entered.promise, release: resume.resolve };
+    },
+    holdNextDeletion() {
+      let entered = Promise.withResolvers<void>();
+      let resume = Promise.withResolvers<void>();
+      nextDeletion = async () => { entered.resolve(); await resume.promise; };
+      return { entered: entered.promise, release: resume.resolve };
     },
     binding: undefined as unknown as Artifacts,
   };
@@ -114,13 +147,16 @@ function fakeArtifacts() {
       return token;
     },
     async revokeToken(tokenId: string) {
+      let pause = nextRevocation;
+      nextRevocation = undefined;
+      await pause?.();
       if (fake.failRevocations) throw new Error("Artifacts is unavailable.");
       fake.revoked.push(tokenId);
       fake.activeTokens.delete(tokenId);
       return true;
     },
     async listTokens() {
-      if (fake.failRevocations) throw new Error("Artifacts is unavailable.");
+      if (fake.failRevocations || fake.failListing) throw new Error("Artifacts is unavailable.");
       return {
         tokens: [...fake.activeTokens].map(id => ({
           id, scope: "write", state: "active", expiresAt: new Date().toISOString(),
@@ -134,6 +170,9 @@ function fakeArtifacts() {
     },
     async get() { return repo; },
     async delete() {
+      let pause = nextDeletion;
+      nextDeletion = undefined;
+      await pause?.();
       if (fake.failDeletion) throw new Error("Artifacts is unavailable.");
       fake.activeTokens.clear();
     },
@@ -141,8 +180,8 @@ function fakeArtifacts() {
   return fake;
 }
 
-/** A private git collection owned by alice and edited by bob, backed by `artifacts`. */
-async function createGitCollection(artifacts: Artifacts) {
+/** A git collection backed by `artifacts`; private ones are owned by alice and edited by bob. */
+async function createGitCollection(artifacts: Artifacts, visibility: "private" | "public" = "private") {
   let id = `collection-${nextId++}`;
   let stub = collection(id);
   await runInDurableObject(stub, (instance: ContextCollectionDurableObject) => {
@@ -151,12 +190,14 @@ async function createGitCollection(artifacts: Artifacts) {
   });
   let now = new Date();
   await stub.initialize({
-    id, title: "Mirror", description: "", visibility: "private",
+    id, title: "Mirror", description: "", visibility,
     created: now, lastUpdated: now, documentCount: 0,
     content: { source: "git", remote: "", branch: "main", lastRefreshedAt: now },
-  }, domain, "alice");
-  await library("alice").createOwnedCollection(id);
-  await stub.share("alice", [{ accountId: "bob", displayName: "bob" }], "editor");
+  }, domain, visibility === "private" ? "alice" : "");
+  if (visibility === "private") {
+    await library("alice").createOwnedCollection(id);
+    await stub.share("alice", [{ accountId: "bob", displayName: "bob" }], "editor");
+  }
   return stub;
 }
 
@@ -177,6 +218,13 @@ describe("collection sharing", () => {
       .rejects.toThrow("Collection not found or you don't have access.");
     await expect(settled(collection(id).share("bob", [{ accountId: "carol", displayName: "carol" }], "viewer")))
       .rejects.toThrow("Only editors and owners");
+    let spent = new Set<string>();
+    let selected = api("bob", [{ domain, accountId: "carol" }], spent);
+    await expect(selected.shareContextCollection(id, "unspent", "viewer")).rejects.toThrow("not found");
+    expect(spent.has("unspent")).toBe(false);
+    await collection(id).setMemberRole("alice", "bob", "editor");
+    await selected.shareContextCollection(id, "unspent", "viewer");
+    expect((await collection(id).getAccess("carol")).role).toBe("viewer");
   });
 
   it("lets a viewer leave, after which it is gone from their library", async () => {
@@ -356,7 +404,7 @@ describe("collection sharing", () => {
     let gone = await createCollection("alice");
     let kept = await createCollection("alice");
     let unreachable = await createCollection("alice");
-    await collection(gone).deleteSelf();
+    await collection(gone).deleteSelf("alice", false);
     // As a share racing the deletion would leave it.
     await library("alice").addSharedCollection(gone);
     await runInDurableObject(collection(unreachable), (instance: ContextCollectionDurableObject) => {
@@ -390,9 +438,96 @@ describe("collection sharing", () => {
     await expect(api("alice", [{ domain, accountId: "bob", unreachable: true }])
       .shareContextCollection(id, "ticket", "viewer")).rejects.toThrow("Verifier unavailable.");
   });
+
+  it("honors revocation in a read session that has already read the collection", async () => {
+    let id = await createCollection("alice");
+    await collection(id).putContextDocument("plan.md", { description: "Launch plan", body: "Ship it." });
+    await collection(id).share("alice", [{ accountId: "bob", displayName: "Bob" }], "viewer");
+    using session = readSession("bob");
+    expect((await session.read(`${id}/plan.md`))?.content).toBe("Ship it.");
+    await collection(id).removeMember("alice", "bob");
+    expect(await session.read(`${id}/plan.md`)).toBeNull();
+    expect((await session.list()).entries).toEqual([]);
+    expect((await session.list({ collectionId: id })).entries).toEqual([]);
+    expect(await session.search("Ship")).toEqual([]);
+  });
 });
 
 describe("git tokens of members who lose write access", () => {
+  it.each(["removal", "demotion", "share", "disconnection", "last member"] as const)(
+    "recovers credential cleanup after restart during %s", async (operation) => {
+      let artifacts = fakeArtifacts();
+      let stub = await createGitCollection(artifacts.binding);
+      let token = await stub.createGitToken("bob");
+      if (operation === "last member") await stub.removeAccount("alice");
+
+      await runInDurableObject(stub, async (instance: ContextCollectionDurableObject, state) => {
+        let paused = artifacts.holdNextRevocation();
+        let change = operation === "demotion" ? instance.setMemberRole("alice", "bob", "viewer")
+          : operation === "share" ? instance.share("alice", [{ accountId: "bob", displayName: "Bob" }], "viewer")
+          : operation === "disconnection" ? instance.removeAccount("bob")
+          : instance.removeMember(operation === "last member" ? "bob" : "alice", "bob");
+        try {
+          await paused.entered;
+          expect(artifacts.activeTokens.has(token.id)).toBe(true);
+          expect((await instance.getAccess("bob")).role)
+            .toBe(operation === "demotion" || operation === "share" ? "viewer" : null);
+          expect(await state.storage.getAlarm()).not.toBeNull();
+
+          let restarted = new ContextCollectionDurableObject(state, { ...testEnv, ARTIFACTS: artifacts.binding });
+          await restarted.alarm();
+          expect(artifacts.activeTokens.has(token.id)).toBe(false);
+          expect(await state.storage.getAlarm()).toBeNull();
+          if (operation === "last member") expect((await state.storage.list()).size).toBe(0);
+        } finally {
+          paused.release();
+          await change;
+        }
+      });
+    });
+
+  it("recovers credential cleanup after restart while forgetting the member's library entry", async () => {
+    let artifacts = fakeArtifacts();
+    let stub = await createGitCollection(artifacts.binding);
+    let token = await stub.createGitToken("bob");
+    let entered = Promise.withResolvers<void>();
+    let resume = Promise.withResolvers<void>();
+    let memberLibrary = library("bob");
+    let forget: UserLibraryDurableObject["forgetCollection"];
+    await runInDurableObject(memberLibrary, (memberIndex: UserLibraryDurableObject) => {
+      let prototype = Object.getPrototypeOf(memberIndex);
+      forget = prototype.forgetCollection;
+      prototype.forgetCollection = async function (this: UserLibraryDurableObject, id: string) {
+        forget.call(this, id);
+        if (this === memberIndex) {
+          entered.resolve();
+          await resume.promise;
+        }
+      };
+    });
+    try {
+      await runInDurableObject(stub, async (instance: ContextCollectionDurableObject, state) => {
+        let removal = instance.removeMember("alice", "bob");
+        try {
+          await entered.promise;
+          expect((await instance.getAccess("bob")).role).toBeNull();
+          expect(artifacts.activeTokens.has(token.id)).toBe(true);
+          expect(await state.storage.getAlarm()).not.toBeNull();
+          let restarted = new ContextCollectionDurableObject(state, { ...testEnv, ARTIFACTS: artifacts.binding });
+          await restarted.alarm();
+          expect(artifacts.activeTokens.has(token.id)).toBe(false);
+        } finally {
+          resume.resolve();
+          await removal;
+        }
+      });
+    } finally {
+      await runInDurableObject(memberLibrary, (memberIndex: UserLibraryDurableObject) => {
+        Object.getPrototypeOf(memberIndex).forgetCollection = forget;
+      });
+    }
+  });
+
   it.each(["leave", "disconnect", "delete"] as const)(
     "retains cleanup state through an Artifacts outage during %s", async (operation) => {
       let artifacts = fakeArtifacts();
@@ -403,8 +538,9 @@ describe("git tokens of members who lose write access", () => {
       artifacts.failRevocations = true;
       artifacts.failDeletion = true;
       let deletion = operation === "leave" ? stub.removeMember("bob", "bob")
-        : operation === "disconnect" ? stub.removeAccount("bob") : stub.deleteSelf();
-      await expect(settled(deletion)).rejects.toThrow("Artifacts is unavailable.");
+        : operation === "disconnect" ? stub.removeAccount("bob") : stub.deleteSelf("alice", false);
+      if (operation === "disconnect") await deletion;
+      else await expect(settled(deletion)).rejects.toThrow("Artifacts is unavailable.");
       expect(artifacts.activeTokens.has(token.id)).toBe(true);
       expect(canReadCollection(await stub.getAccess("bob"))).toBe(false);
       await runInDurableObject(stub, async (_instance, state) => {
@@ -488,13 +624,123 @@ describe("git tokens of members who lose write access", () => {
     expect(artifacts.activeTokens.has(bobToken.id)).toBe(true);
   });
 
+  it("finishes the legacy sweep durably so later removal does not depend on listing tokens", async () => {
+    let artifacts = fakeArtifacts();
+    let stub = await createGitCollection(artifacts.binding);
+    artifacts.activeTokens.add("legacy-token");
+    await stub.setMemberRole("alice", "bob", "owner");
+    await stub.setMemberRole("bob", "alice", "viewer");
+    artifacts.failListing = true;
+    await runInDurableObject(stub, async (_instance, state) => {
+      let restarted = new ContextCollectionDurableObject(state, { ...testEnv, ARTIFACTS: artifacts.binding });
+      await restarted.removeMember("bob", "alice");
+    });
+    expect(artifacts.activeTokens.has("legacy-token")).toBe(false);
+    expect((await stub.getAccess("alice")).role).toBeNull();
+  });
+
+  it("rechecks delete permission after an earlier queued demotion", async () => {
+    let artifacts = fakeArtifacts();
+    let stub = await createGitCollection(artifacts.binding);
+    await stub.setMemberRole("alice", "bob", "owner");
+    let token = await stub.createGitToken("bob");
+    await runInDurableObject(stub, async (instance: ContextCollectionDurableObject) => {
+      let paused = artifacts.holdNextRevocation();
+      let demotion = instance.setMemberRole("alice", "bob", "viewer");
+      await paused.entered;
+      let deletion = instance.deleteSelf("bob", false);
+      paused.release();
+      await demotion;
+      await expect(deletion).rejects.toThrow("Collection not found");
+    });
+    expect((await stub.getAccess("alice")).exists).toBe(true);
+    expect(artifacts.activeTokens.has(token.id)).toBe(false);
+  });
+
+  it("finishes the real revoke sequence while external deletion is unavailable and refuses racing shares", async () => {
+    let artifacts = fakeArtifacts();
+    let stub = await createGitCollection(artifacts.binding);
+    let token = await stub.createGitToken("bob");
+    let collectionId = (await stub.getMetadata()).id;
+    await stub.removeAccount("alice");
+    let other = await createCollection("carol");
+    artifacts.failDeletion = true;
+    artifacts.failRevocations = true;
+    let paused = artifacts.holdNextDeletion();
+    let account = new ContextAccount(Object.assign(createExecutionContext(), {
+      props: { sharingDomain: domain, accountId: "bob" },
+    }), testEnv);
+    let revocation = account.revoke();
+    try {
+      await Promise.race([paused.entered, revocation.then(() => {
+        throw new Error("Revocation finished without reaching repository cleanup.");
+      })]);
+      await expect(api("carol", [{ domain, accountId: "bob" }])
+        .shareContextCollection(other, "racing-share", "viewer")).rejects.toThrow("disconnected");
+    } finally {
+      paused.release();
+      await revocation;
+    }
+    stub = collection(collectionId);
+    expect(await indexedIds("bob")).toEqual([]);
+    expect((await stub.getAccess("bob")).exists).toBe(false);
+    expect(artifacts.activeTokens.has(token.id)).toBe(true);
+    artifacts.failDeletion = false;
+    artifacts.failRevocations = false;
+    await runDurableObjectAlarm(stub);
+    expect(artifacts.activeTokens.has(token.id)).toBe(false);
+    await expect(settled(library("bob").addSharedCollection(other))).rejects.toThrow("disconnected");
+  });
+
+  it("does not postpone a pending deletion's alarm during disconnection", async () => {
+    let artifacts = fakeArtifacts();
+    let stub = await createGitCollection(artifacts.binding);
+    await stub.createGitToken("bob");
+    artifacts.failDeletion = true;
+    await expect(settled(stub.deleteSelf("alice", false))).rejects.toThrow("Artifacts is unavailable");
+    let retryAt = Date.now() + 60_000;
+    await runInDurableObject(stub, async (_instance, state) => {
+      state.storage.kv.put("gitTokenRevokeAttempts", 12);
+      await state.storage.setAlarm(retryAt);
+    });
+    artifacts.failRevocations = true;
+    await stub.removeAccount("bob");
+    await runInDurableObject(stub, async (_instance, state) => {
+      expect(await state.storage.getAlarm()).toBe(retryAt);
+    });
+  });
+
+  it("hides a pending-deletion public collection from an existing session and every content read", async () => {
+    let artifacts = fakeArtifacts();
+    let stub = await createGitCollection(artifacts.binding, "public");
+    let meta = await stub.getMetadata();
+    await testEnv.CONTEXT_COLLECTIONS.put(publicCollectionsKvKey(domain), JSON.stringify([metadataToSummary(meta)]));
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.kv.put("documents:plan.md", {
+        path: "plan.md", name: "plan.md", description: "Launch plan", contentType: "text/markdown",
+        body: "Ship it.", lastUpdated: new Date(),
+      });
+    });
+    using session = readSession("reader");
+    expect((await session.read(`${meta.id}/plan.md`))?.content).toBe("Ship it.");
+    artifacts.failDeletion = true;
+    await expect(settled(stub.deleteSelf("admin", true))).rejects.toThrow("Artifacts is unavailable");
+    expect(await stub.getContextDocument("plan.md")).toBeNull();
+    expect(await stub.listContextDocuments()).toEqual([]);
+    expect(await stub.search("Ship")).toEqual([]);
+    expect(await session.read(`${meta.id}/plan.md`)).toBeNull();
+    expect((await session.list()).entries).toEqual([]);
+    expect((await session.list({ collectionId: meta.id })).entries).toEqual([]);
+    expect(await session.search("Ship")).toEqual([]);
+  });
+
   it("finishes a pending mint before deleting, and mints nothing afterwards", async () => {
     let artifacts = fakeArtifacts();
     let stub = await createGitCollection(artifacts.binding);
     await runInDurableObject(stub, async (instance: ContextCollectionDurableObject, state) => {
       let releaseMint = artifacts.holdMints();
       let mint = instance.createGitToken("bob");
-      let deletion = instance.deleteSelf();
+      let deletion = instance.deleteSelf("alice", false);
       await Promise.race([deletion, scheduler.wait(100)]);
       releaseMint();
       let token = await mint;

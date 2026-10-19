@@ -81,7 +81,6 @@ export function UserSearchCombobox({
 
   useEffect(() => {
     setActiveIndex(0)
-    setDismissed(false)
   }, [query, search, searching])
 
   const selectCurrentUser = (user: UserDirectoryRecord) => {

@@ -153,10 +153,12 @@ Direct sharing must update the recipient UserLibrary DO synchronously, not throu
 A recipient UI that is already open picks up the new share on its next load or explicit refresh;
 there is no push from the library to open UIs.
 
-`LibraryReadSession` currently caches enabled collection membership for the session. Do not use
-that cached membership as authorization after introducing sharing: existing sessions must honor
-revocation and must not indefinitely miss new shares. Apply live access checks before revealing
-content or catalog metadata.
+`LibraryReadSession` checks private membership live on every call: existing sessions must honor
+revocation and see new shares. Whole-library search and listing therefore make an extra access-check
+RPC per indexed private collection before fetching data, with bounded concurrency. Do not replace
+these checks with a membership cache: collection data calls do not independently authorize the
+account. Any future optimization must preserve live authorization before revealing content or
+catalog metadata.
 Scoped reads, listings, and searches check live private membership before public discovery, so
 access to an owned or shared private collection does not depend on the public-collection KV snapshot.
 
@@ -165,8 +167,8 @@ invariant: collections are keyed by ID everywhere, and a share cannot be refused
 recipient already has a collection with that title. Remove `#assertUniqueCollectionTitle` from
 create and update in `context-api.ts`, `DUPLICATE_COLLECTION_TITLE_ERROR` from `context-types.ts`,
 and `app/skills/collectionTitle.ts` with its uses in `CreateCollectionDialog.tsx` and
-`EditCollectionDialog.tsx`. Collections with the same title are told apart by their owned/shared
-labels.
+`EditCollectionDialog.tsx`. Collection identity remains its ID. Owned/shared labels explain access,
+but same-titled collections can have identical labels.
 
 The Skills navigator currently opens skills rather than arbitrary collections. Add an Open
 collection action for every reader, reusing the existing collection file surface, so collections
@@ -229,23 +231,35 @@ Artifacts' maximum lifetime of one year. Track the issuing account for newly cre
 and, when an account is demoted to viewer or loses its grant, revoke every token it minted, so
 access revocation does not merely hide token controls. Tokens minted before sharing existed have no
 recorded issuer; only the creator could mint them, so they are treated as the creator's. They stay
-while the creator keeps write access, so no existing mirror is unexpectedly revoked, and are
-revoked once the creator loses it, including by disconnecting.
+while the creator keeps write access, so no existing mirror is unexpectedly revoked. On the first
+loss of that access, list the legacy tokens, durably give them issuer records, and mark the sweep
+complete before revoking them. Retries then use those records, without repeating token discovery
+after each later grant change.
 
 The collection runs grant changes, token minting, and deletion one at a time, because each awaits
 another service: a mint checks its issuer's access among the grant changes, so a removal either
 refuses it or finds its token recorded; a share cannot interleave its library and grant writes with
 a removal; and a mint never writes into storage a deletion has wiped. A share with several of one
 person's accounts indexes the collection in every library first and then writes all their grants
-together. Every grant change revokes the recorded tokens of any issuer without write access, even
+together. On a git-backed collection, a cleanup alarm is persisted before the first external call
+that follows a demotion or removal; the grants and token issuer records are its durable work list.
+The alarm resumes revocation after a restart during library-index cleanup or any Artifacts call,
+and deletes a collection left without members even if the interrupted mutation never reached
+deletion. Every grant change revokes the recorded tokens of any issuer without write access, even
 when the change itself was a no-op, so repeating it retries. A failed revocation keeps its record,
-schedules an alarm that retries with backoff, and is reported to whoever removed or demoted the
-issuer (not on disconnection, where the account itself is going away).
+backs off the alarm, and is reported to whoever removed or demoted the issuer (not on disconnection,
+where the account itself is going away).
+Deletion re-checks the actor's current delete permission inside that same queue, so a queued
+demotion or removal cannot leave an earlier authorization usable.
 
 Deletion persists a pending-cleanup marker and alarm before external work and immediately denies
-collection access. If Artifacts repository deletion fails, report the failure and retain the repo
-identity and token issuer records; the alarm retries deletion until it succeeds. Only then clear
-the collection's storage and alarm, including when its last member leaves or disconnects.
+collection access, including content reads from already-open sessions. Public discovery IDs may
+be cached, but their existence is checked live before use. If Artifacts repository deletion fails,
+retain the repo identity and token issuer records; the alarm retries deletion until it succeeds.
+Disconnection still finishes wiping the account's library, leaving provider cleanup to the
+collection's alarm. A later disconnect preserves a pending deletion's earlier retry rather than
+replacing it with token-revocation backoff. Only successful cleanup clears the collection's storage
+and alarm, including when its last member leaves or disconnects.
 
 ## UI integration
 

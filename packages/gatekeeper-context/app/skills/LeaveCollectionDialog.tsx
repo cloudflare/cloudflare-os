@@ -6,12 +6,14 @@ import { useMutationDialog } from "./useMutationDialog";
 
 type LeaveCollectionDialogProps = {
   collection: { id: string; title: string };
+  /** Reconcile access when leaving rejects, since token cleanup can fail after the membership was removed. */
+  onChanged: () => void;
   onLeft: () => void;
   onClose: () => void;
 };
 
 /** Confirms giving up the viewer's own access to a collection someone shared with them. */
-export const LeaveCollectionDialog = ({ collection, onLeft, onClose }: LeaveCollectionDialogProps) => {
+export const LeaveCollectionDialog = ({ collection, onChanged, onLeft, onClose }: LeaveCollectionDialogProps) => {
   const context = useContextApi();
   const toasts = useKumoToastManager();
   const [leaving, setLeaving] = useState(false);
@@ -25,6 +27,7 @@ export const LeaveCollectionDialog = ({ collection, onLeft, onClose }: LeaveColl
       onLeft();
       dialog.closeAfterSuccess();
     } catch (error) {
+      onChanged();
       toasts.add({
         title: error instanceof Error ? error.message : "You could not leave this collection.",
         variant: "error",
@@ -56,9 +59,13 @@ export const LeaveCollectionDialog = ({ collection, onLeft, onClose }: LeaveColl
         </div>
         <div className="px-4 py-5 sm:px-6">
           <Text size="sm" variant="secondary">
-            You and your agents will lose access to{" "}
-            <span className="font-medium text-kumo-default">{collection.title}</span>. To get it back,
-            someone with access will need to share it with you again.
+            You will leave{" "}
+            <span className="font-medium text-kumo-default">{collection.title}</span>. Someone with
+            sharing access will need to share it with you again to restore your membership.
+          </Text>
+          <Text size="sm" variant="secondary" DANGEROUS_className="mt-3">
+            If you are the last member of a collection without an owner, leaving permanently deletes
+            the collection and all its documents, even if anyone in the organization can view it.
           </Text>
         </div>
         <div className="flex items-center justify-end gap-2 border-t border-kumo-line px-4 py-3 sm:px-6">

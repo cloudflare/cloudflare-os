@@ -8,7 +8,7 @@ import {
 } from "@cloudflare/kumo";
 import { Buildings, CaretDown, User, Warning, WarningCircle, X } from "@phosphor-icons/react";
 import { RpcTarget } from "capnweb";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   ContextApi,
   ContextCollectionMember,
@@ -23,6 +23,7 @@ import {
   type UserSelectionReceiver,
 } from "../bridge";
 import { COLLECTION_ROLE_LABELS } from "./collectionRole";
+import { LeaveCollectionDialog } from "./LeaveCollectionDialog";
 import { useMutationDialog } from "./useMutationDialog";
 
 type ShareCollectionDialogProps = {
@@ -57,21 +58,29 @@ class CollectionShareReceiver extends RpcTarget implements UserSelectionReceiver
   readonly #context: Pick<ContextApi, "shareContextCollection">;
   readonly #collectionId: string;
   readonly #role: ContextCollectionRole;
+  readonly #onSettled: () => void;
 
   constructor(
     context: Pick<ContextApi, "shareContextCollection">,
     collectionId: string,
     role: ContextCollectionRole,
+    onSettled: () => void,
   ) {
     super();
     this.#context = context;
     this.#collectionId = collectionId;
     this.#role = role;
+    this.#onSettled = onSettled;
   }
 
   // Resolving tells the picker the person was added; a rejection's message is shown beside them.
   async receive({ ticket }: UserSelection): Promise<void> {
-    await this.#context.shareContextCollection(this.#collectionId, ticket, this.#role);
+    try {
+      await this.#context.shareContextCollection(this.#collectionId, ticket, this.#role);
+    } finally {
+      // Cancelling the picker stops waiting, not a share already delivered to the backend.
+      this.#onSettled();
+    }
   }
 }
 
@@ -86,7 +95,10 @@ export const ShareCollectionDialog = ({
   const selectUsers = useSelectUsers();
   const [state, setState] = useState<ShareState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [reloadKey, setReloadKey] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [confirmLeave, setConfirmLeave] = useState(false);
+  const mountedRef = useRef(false);
+  const loadSequence = useRef(0);
   const [selectedRole, setSelectedRole] = useState<ContextCollectionRole>("viewer");
   // "picker", "everyone", or the memberId whose grant is being changed.
   const [pending, setPending] = useState<string | null>(null);
@@ -99,48 +111,63 @@ export const ShareCollectionDialog = ({
     onClose();
   });
 
-  useEffect(() => {
-    let cancelled = false;
-    Promise.all([
-      context.getContextCollectionSharing(collection.id),
-      context.getContextCollectionPermissions(collection.id),
-    ]).then(
-      ([sharing, permissions]) => {
-        if (cancelled) return;
-        setState({ sharing, permissions });
-        setLoadError(null);
-      },
-      (loadFailure: unknown) => {
-        if (!cancelled) setLoadError(errorMessage(loadFailure, "Sharing settings could not be loaded."));
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [collection.id, context, reloadKey]);
+  const reload = useCallback(async () => {
+    if (!mountedRef.current) return;
+    // Unmounting also bumps the sequence, so a stale or orphaned load never sets state.
+    const sequence = ++loadSequence.current;
+    const isCurrent = () => sequence === loadSequence.current;
+    setLoading(true);
+    try {
+      const [sharing, permissions] = await Promise.all([
+        context.getContextCollectionSharing(collection.id),
+        context.getContextCollectionPermissions(collection.id),
+      ]);
+      if (!isCurrent()) return;
+      setState({ sharing, permissions });
+      setLoadError(null);
+    } catch (loadFailure) {
+      if (isCurrent()) setLoadError(errorMessage(loadFailure, "Sharing settings could not be loaded."));
+    } finally {
+      if (isCurrent()) setLoading(false);
+    }
+  }, [collection.id, context]);
 
-  const reload = () => setReloadKey((key) => key + 1);
+  useEffect(() => {
+    mountedRef.current = true;
+    void reload();
+    return () => {
+      mountedRef.current = false;
+      loadSequence.current++;
+    };
+  }, [reload]);
+
+  const controlsDisabled = pending !== null || loading || loadError !== null;
 
   const mutate = async (key: string, action: () => Promise<void>, fallback: string) => {
-    if (pending) return false;
+    if (controlsDisabled) return;
     setPending(key);
     setError(null);
     try {
       await action();
-      return true;
     } catch (failure) {
       setError(errorMessage(failure, fallback));
-      return false;
     } finally {
       // The backend can commit an ACL change and still reject (e.g. Git token revocation fails).
       changedRef.current = true;
+      await reload();
       setPending(null);
     }
   };
 
   const addPeople = async () => {
-    if (pending) return;
-    const receiver = new CollectionShareReceiver(context, collection.id, newRole);
+    if (controlsDisabled) return;
+    let pickerOpen = true;
+    const receiver = new CollectionShareReceiver(context, collection.id, newRole, () => {
+      if (!pickerOpen) {
+        onChanged();
+        void reload();
+      }
+    });
     setPending("picker");
     setError(null);
     try {
@@ -148,10 +175,11 @@ export const ShareCollectionDialog = ({
     } catch (failure) {
       setError(errorMessage(failure, "The person picker could not be opened."));
     } finally {
-      // Picks delivered before a cancellation stay shared, so always assume something changed.
+      pickerOpen = false;
+      // An in-flight delivery may finish later; its receiver reconciles again when it settles.
       changedRef.current = true;
+      await reload();
       setPending(null);
-      reload();
     }
   };
 
@@ -161,23 +189,14 @@ export const ShareCollectionDialog = ({
       () => context.setContextCollectionMemberRole(collection.id, member.memberId, role),
       "The role could not be changed.",
     );
-    reload();
   };
 
   const removeMember = async (member: ContextCollectionMember) => {
-    const removed = await mutate(
+    await mutate(
       member.memberId,
-      () => member.isViewer
-        ? context.leaveContextCollection(collection.id)
-        : context.removeContextCollectionMember(collection.id, member.memberId),
-      member.isViewer ? "You could not leave this collection." : "The person could not be removed.",
+      () => context.removeContextCollectionMember(collection.id, member.memberId),
+      "The person could not be removed.",
     );
-    if (removed && member.isViewer) {
-      leftRef.current = true;
-      dialog.closeAfterSuccess();
-      return;
-    }
-    reload();
   };
 
   const setEveryoneCanView = async (everyoneCanView: boolean) => {
@@ -186,7 +205,6 @@ export const ShareCollectionDialog = ({
       () => context.setContextCollectionEveryoneCanView(collection.id, everyoneCanView),
       "Organization access could not be changed.",
     );
-    reload();
   };
 
   const permissions = state?.permissions;
@@ -221,7 +239,7 @@ export const ShareCollectionDialog = ({
         {canChangeRole || canRemove ? (
           <DropdownMenu>
             <DropdownMenu.Trigger
-              disabled={pending !== null}
+              disabled={controlsDisabled}
               render={(
                 <Button
                   variant="ghost"
@@ -251,7 +269,10 @@ export const ShareCollectionDialog = ({
                   <DropdownMenu.Item
                     variant="danger"
                     className="text-xs"
-                    onClick={() => void removeMember(member)}
+                    onClick={() => {
+                      if (member.isViewer) setConfirmLeave(true);
+                      else void removeMember(member);
+                    }}
                   >
                     {member.isViewer ? "Leave collection" : "Remove access"}
                   </DropdownMenu.Item>
@@ -300,7 +321,7 @@ export const ShareCollectionDialog = ({
                 size="sm"
                 icon={<WarningCircle weight="fill" />}
                 description={loadError}
-                action={<Button size="xs" variant="secondary" onClick={reload}>Retry</Button>}
+                action={<Button size="xs" variant="secondary" disabled={loading} onClick={() => void reload()}>Retry</Button>}
               />
             ) : (
               <div role="status" aria-label="Loading sharing settings" className="flex justify-center py-8">
@@ -316,7 +337,7 @@ export const ShareCollectionDialog = ({
                   icon={<WarningCircle weight="fill" />}
                   title="Sharing settings may be out of date"
                   description={loadError}
-                  action={<Button size="xs" variant="secondary" onClick={reload}>Retry</Button>}
+                  action={<Button size="xs" variant="secondary" disabled={loading} onClick={() => void reload()}>Retry</Button>}
                 />
               )}
               {!sharing.hasOwner && (
@@ -342,7 +363,7 @@ export const ShareCollectionDialog = ({
                 <DropdownMenu>
                   <DropdownMenu.Trigger
                     // Each picker session keeps the role it opened with.
-                    disabled={!permissions.canShare || (pending !== null && pending !== "picker")}
+                    disabled={!permissions.canShare || loading || loadError !== null || (pending !== null && pending !== "picker")}
                     render={(
                       <Button
                         variant="ghost"
@@ -372,7 +393,7 @@ export const ShareCollectionDialog = ({
                   variant="primary"
                   className="ml-auto shrink-0"
                   loading={pending === "picker"}
-                  disabled={!permissions.canShare || pending !== null}
+                  disabled={!permissions.canShare || controlsDisabled}
                   onClick={() => void addPeople()}
                 >
                   Select users
@@ -391,7 +412,7 @@ export const ShareCollectionDialog = ({
                   <span className="min-w-0 flex-1 text-sm text-kumo-default">Anyone in organization</span>
                   <DropdownMenu>
                     <DropdownMenu.Trigger
-                      disabled={!permissions.canShare || pending !== null}
+                      disabled={!permissions.canShare || controlsDisabled}
                       render={(
                         <Button
                           variant="ghost"
@@ -434,6 +455,21 @@ export const ShareCollectionDialog = ({
           <Button variant="secondary" onClick={dialog.requestClose} disabled={pending !== null}>Done</Button>
         </div>
       </Dialog>
+      {confirmLeave && (
+        <LeaveCollectionDialog
+          collection={collection}
+          onChanged={() => {
+            changedRef.current = true;
+            onChanged();
+            void reload();
+          }}
+          onLeft={() => {
+            leftRef.current = true;
+            dialog.closeAfterSuccess();
+          }}
+          onClose={() => setConfirmLeave(false)}
+        />
+      )}
     </Dialog.Root>
   );
 };

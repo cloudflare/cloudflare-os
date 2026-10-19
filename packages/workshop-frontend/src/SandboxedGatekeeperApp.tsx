@@ -44,10 +44,10 @@ type OpenUserPicker = (receiver: RpcStub<GatekeeperUserSelectionReceiver>) => Pr
 type CancelUserPicker = () => void
 
 type UserPicker = {
+  id: number
   receiver: RpcStub<GatekeeperUserSelectionReceiver>
   deliveries: Set<RpcPromise<void>>
   resolve: () => void
-  reject: (error: Error) => void
 }
 
 const USER_PICKER_CANCELLED = 'Person selection cancelled. A delivery may already have been accepted.'
@@ -168,9 +168,10 @@ class GatekeeperAppHostImpl extends RpcTarget {
   // (AuthenticatedApi.createGatekeeperUserSelection) and delivers it to `receiver.receive()` — to
   // the iframe, not to the gatekeeper's server. The app decides what a selection is for: it can send
   // the ticket to its backend at once, or hold it in form state and submit it later, while it is
-  // valid. The promise resolves when the picker closes and every delivery has settled, or rejects
-  // immediately on cancellation (including frame teardown). Cancellation cannot undo a delivery
-  // the app may already have accepted. Otherwise it stays pending while open (no timeout).
+  // valid. The promise resolves when the picker closes: after every delivery has settled, or
+  // immediately on cancellation, when deliveries may still be running. Frame teardown also
+  // cancels, but the app then sees its connection close instead. Cancellation cannot undo a
+  // delivery the app may already have accepted. Otherwise it stays pending while open (no timeout).
   // Only one picker can be open at a time.
   selectUsers(receiver: RpcStub<GatekeeperUserSelectionReceiver>): Promise<void> {
     if (typeof receiver?.dup !== 'function') {
@@ -280,6 +281,7 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId }: {
   // callbacks from a cancelled picker cannot close a newly opened picker.
   const [userPicker, setUserPicker] = useState<UserPicker | null>(null)
   const openPickerRef = useRef<UserPicker | null>(null)
+  const nextPickerId = useRef(0)
   const overlayRef = useRef<OverlayState>(null)
   // Push the Workshop's resolved light/dark mode and deployment accent whenever either changes.
   const { resolvedThemeMode } = useTheme()
@@ -352,31 +354,28 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId }: {
     }
     // Promise.withResolvers is not in this package's ES2023 TypeScript lib.
     let resolve!: () => void
-    let reject!: (error: Error) => void
-    const promise = new Promise<void>((resolver, rejecter) => {
+    const promise = new Promise<void>((resolver) => {
       resolve = resolver
-      reject = rejecter
     })
-    const open: UserPicker = { receiver, deliveries: new Set(), resolve, reject }
+    const open: UserPicker = { id: ++nextPickerId.current, receiver, deliveries: new Set(), resolve }
     openPickerRef.current = open
     setUserPicker(open)
     return promise
   }, [])
   // Normal closing waits for deliveries; cancellation releases ownership immediately even if
   // a receiver never settles. Neither path may dispose or settle the same picker twice.
-  const finishUserPicker = useCallback((open: UserPicker, cancelled: boolean) => {
+  const finishUserPicker = useCallback((open: UserPicker) => {
     if (openPickerRef.current !== open) return
     openPickerRef.current = null
     setUserPicker(null)
     open.receiver[Symbol.dispose]()
     for (const delivery of open.deliveries) delivery[Symbol.dispose]()
     open.deliveries.clear()
-    if (cancelled) open.reject(new Error(USER_PICKER_CANCELLED))
-    else open.resolve()
+    open.resolve()
   }, [])
   const cancelUserPicker = useCallback<CancelUserPicker>(() => {
     const open = openPickerRef.current
-    if (open) finishUserPicker(open, true)
+    if (open) finishUserPicker(open)
   }, [finishUserPicker])
   // The gatekeeper-defined capability remains opaque; this host only relays it through `ui`.
   const capabilityRef = useRef<unknown>(null)
@@ -460,6 +459,7 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId }: {
       />
       {userPicker && (
         <GatekeeperUserPickerDialog
+          key={userPicker.id}
           authenticatedApi={authenticatedApi}
           gatekeeperId={gatekeeperVendorId}
           onSelected={async (selection) => {
@@ -474,8 +474,8 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId }: {
               if (userPicker.deliveries.delete(delivery)) delivery[Symbol.dispose]()
             }
           }}
-          onClose={() => finishUserPicker(userPicker, false)}
-          onCancel={() => finishUserPicker(userPicker, true)}
+          onClose={() => finishUserPicker(userPicker)}
+          onCancel={() => finishUserPicker(userPicker)}
         />
       )}
     </>

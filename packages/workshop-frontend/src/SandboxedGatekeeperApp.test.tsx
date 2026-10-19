@@ -2,6 +2,7 @@
 /* eslint-disable react/react-in-jsx-scope */
 
 import { act } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
   createMemoryHistory,
@@ -22,24 +23,37 @@ import type {
   GatekeeperUserSelectionReceiver,
 } from "@gadgets/workshop-shared/gatekeeper";
 import SandboxedGatekeeperApp from "./SandboxedGatekeeperApp";
+import type GatekeeperUserPickerDialog from "./features/gatekeeper-sharing/GatekeeperUserPickerDialog";
+import type * as Kumo from "@cloudflare/kumo";
 
-// The trusted picker is exercised by its own suite; here it is a stand-in exposing the callbacks
-// the host wires it to, plus the close button the host's tests click.
-type PickerProps = {
-  onSelected(selection: GatekeeperUserSelection): Promise<void>;
-  onClose(): void;
-  onCancel(): void;
-};
-const picker = vi.hoisted(() => ({ props: null as PickerProps | null }));
-vi.mock("./features/gatekeeper-sharing/GatekeeperUserPickerDialog", () => ({
-  default: (props: PickerProps) => {
-    picker.props = props;
-    return <>
-      <button type="button" aria-label="Close person picker" onClick={props.onClose} />
-      <button type="button" aria-label="Cancel person picker" onClick={props.onCancel} />
-    </>;
-  },
-}));
+// Most host cases use callback controls; the replacement race exercises the real picker state.
+type PickerProps = ComponentProps<typeof GatekeeperUserPickerDialog>;
+const picker = vi.hoisted(() => ({ props: null as PickerProps | null, real: false }));
+vi.mock("./features/gatekeeper-sharing/GatekeeperUserPickerDialog", async (importOriginal) => {
+  const { default: RealPicker } = await importOriginal<{
+    default: typeof GatekeeperUserPickerDialog;
+  }>();
+  return {
+    default: (props: PickerProps) => {
+      picker.props = props;
+      if (picker.real) return <RealPicker {...props} />;
+      return <>
+        <button type="button" aria-label="Close person picker" onClick={props.onClose} />
+        <button type="button" aria-label="Cancel person picker" onClick={props.onCancel} />
+      </>;
+    },
+  };
+});
+
+// The mock factory is hoisted; defer JSX until rendering, after its imports are initialized.
+function DialogPart({ children }: { children?: ReactNode }) {
+  return <>{children}</>;
+}
+
+vi.mock("@cloudflare/kumo", async (importOriginal) => {
+  const actual = await importOriginal<typeof Kumo>();
+  return { ...actual, Dialog: Object.assign(DialogPart, { Root: DialogPart, Title: DialogPart }) };
+});
 
 vi.mock("./ThemeContext", () => ({
   useTheme: () => ({ resolvedThemeMode: "light" }),
@@ -126,6 +140,7 @@ describe("SandboxedGatekeeperApp navigation", () => {
     container?.remove();
     vi.restoreAllMocks();
     picker.props = null;
+    picker.real = false;
   });
 
   // Mount the host under a router and complete the iframe's handshake, leaving `host` connected.
@@ -231,6 +246,35 @@ describe("SandboxedGatekeeperApp navigation", () => {
     await expect(secondPick).resolves.toBeUndefined();
   });
 
+  it("starts a usable, empty picker when closing and reopening are batched", async () => {
+    picker.real = true;
+    await mountApp();
+    let first!: Promise<void>;
+    await act(async () => {
+      first = host!.selectUsers(new TestReceiver());
+      await tick();
+    });
+    const input = container!.querySelector('input')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'previous@example.com');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const done = () => [...container!.querySelectorAll('button')].find(button => button.textContent === 'Done')!;
+    let second!: Promise<void>;
+    await act(async () => {
+      done().click();
+      picker.props!.onClose();
+      second = host!.selectUsers(new TestReceiver());
+      await tick();
+    });
+    await first;
+    expect(container!.querySelector('input')?.value).toBe('');
+    expect(done().disabled).toBe(false);
+    expect(await settled(second)).toBe(false);
+    await act(async () => done().click());
+    await expect(second).resolves.toBeUndefined();
+  });
+
   it("cancels a stalled delivery and ignores its late callbacks after reopening", async () => {
     await mountApp();
     const receiver = new TestReceiver();
@@ -242,7 +286,6 @@ describe("SandboxedGatekeeperApp navigation", () => {
       await tick();
     });
     const oldPicker = picker.props!;
-    const outcome = pendingPick.then(() => undefined, (error: unknown) => error);
     const delivery = oldPicker.onSelected(ALICE);
     // Disposal need not retract a call already accepted by the app.
     const deliveryOutcome = delivery.catch(() => {});
@@ -254,9 +297,8 @@ describe("SandboxedGatekeeperApp navigation", () => {
     );
     if (!cancelPicker) throw new Error("Missing person picker cancel button");
     await act(async () => cancelPicker.click());
-    const error = await outcome;
-    expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toMatch(/cancelled.*delivery may already have been accepted/i);
+    // Cancelling resolves at once, while the delivery is still running.
+    await expect(pendingPick).resolves.toBeUndefined();
     expect(document.querySelector('button[aria-label="Cancel person picker"]')).toBeNull();
     // Closing must release the call itself, without waiting for the app's backend.
     await vi.waitFor(async () => expect(await settled(delivery)).toBe(true));
@@ -300,11 +342,10 @@ describe("SandboxedGatekeeperApp navigation", () => {
     const oldPicker = picker.props!;
     const delivery = oldPicker.onSelected(ALICE).catch(() => {});
     await vi.waitFor(() => expect(receiver.received).toEqual([ALICE]));
-    // The client keeps its side of the session, so it observes the host releasing the receiver.
-    const outcome = pendingPick.then(() => undefined, (error: unknown) => error);
+    // Teardown closes the app's connection, so the client sees a transport failure, not a cancel.
     await act(async () => root!.unmount());
     root = undefined;
-    expect(await outcome).toBeInstanceOf(Error);
+    await expect(pendingPick).rejects.toThrow("Peer closed");
     await vi.waitFor(() => expect(receiver.disposeCount).toBe(1));
     oldPicker.onClose();
     oldPicker.onCancel();

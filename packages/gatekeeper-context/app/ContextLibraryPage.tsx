@@ -1697,6 +1697,8 @@ function CollectionEditor({
       setSharing(meta?.visibility === "private" ? loadedSharing : null);
       setSupportsGitCollections(viewer.supportsGitCollections);
     } catch (err) {
+      setPermissions(NO_PERMISSIONS);
+      setSharing(null);
       console.error("Failed to load documents:", err);
     } finally {
       setLoading(false);

@@ -51,6 +51,9 @@ function makeSession({ publicDiscoveryFails = false } = {}) {
   let collections = {
     idFromName: (name: string) => name,
     get: (name: string) => ({
+      async getAccess() {
+        return { exists: true, visibility: "public" };
+      },
       async getMetadata() {
         let id = name.split(":").at(-1);
         return { title: `${id} title`, description: `${id} description`, documentCount: 1 };

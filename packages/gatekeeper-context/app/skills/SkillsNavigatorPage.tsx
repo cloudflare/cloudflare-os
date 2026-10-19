@@ -246,6 +246,7 @@ export const SkillsNavigatorPage = ({ onSelectSkill, onOpenCollection }: SkillsN
       {pendingLeave && (
         <LeaveCollectionDialog
           collection={pendingLeave}
+          onChanged={reload}
           onLeft={reload}
           onClose={() => setPendingLeave(null)}
         />

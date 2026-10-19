@@ -29,8 +29,8 @@ export const CONTEXT_OBSERVER_DENIED =
 
 /**
  * Strategy C for the broad Context Library singleton. Collections are the data sets: public
- * collections are domain-wide, while each private collection belongs to one account. The prefix
- * keeps markers recorded before this tracker moved to the kit.
+ * collections are domain-wide; private collections admit their grantees and, when enabled, everyone
+ * in the sharing domain. The prefix keeps markers recorded before this tracker moved to the kit.
  */
 export function contextObserverStrategy(kv: ObserverKv, sharingDomain: string): ObserverStrategy {
   return trackedCollectionObservers<Fetcher<ContextVerifierApi>>({

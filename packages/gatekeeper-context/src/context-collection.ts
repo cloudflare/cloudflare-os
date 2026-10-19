@@ -133,8 +133,8 @@ type GrantRecord = {
   grantedAt: Date;
 };
 
-// Which account minted a git write token, so losing write access can revoke it. Tokens minted
-// before sharing existed have no record and are left alone.
+// Which account minted a git write token, so losing write access can revoke it. Legacy tokens are
+// attributed to the creator and recorded when their first sweep runs.
 type GitTokenIssuerRecord = {
   tokenId: string;
   accountId: string;
@@ -168,6 +168,8 @@ function makeContextCollectionStorage(storage: DurableObjectStorage) {
       aclVersion: 0,
       // Consecutive failed attempts to revoke a token whose issuer lost write access.
       gitTokenRevokeAttempts: 0,
+      // Once all pre-sharing tokens have issuer records, later changes need no legacy-token scan.
+      legacyGitTokensSwept: false,
       // Keep deletion durable until external cleanup succeeds; pending collections are unreadable.
       deletionPending: false,
       metadata: <StoredContextCollectionMetadata>{
@@ -429,6 +431,8 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     await this.#serializeAccessChange(async () => {
       this.#authorizeGrantChange(actorId, memberId, null);
       if (this.storage.grants.get(memberId)) {
+        // Forgetting the library entry awaits another service before revocation can arm the alarm.
+        await this.#armGitTokenCleanup();
         this.storage.grants.delete(memberId);
         try {
           await this.#library(memberId).forgetCollection(this.getMetadata().id);
@@ -454,11 +458,20 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
    */
   async removeAccount(accountId: string): Promise<void> {
     await this.#serializeAccessChange(async () => {
+      // A pending deletion already owns its retry alarm.
+      if (this.storage.deletionPending.get()) return;
       this.#ensureGrants();
       if (this.storage.grants.get(accountId)) this.storage.grants.delete(accountId);
-      // A failed revocation is not reported: the account is going away, and the alarm retries it.
+      // The alarm owns failed credential cleanup once the account is gone.
       await this.#revokeUnauthorizedGitTokens();
-      await this.#deleteIfMemberless();
+      try {
+        await this.#deleteIfMemberless();
+      } catch (err) {
+        logger.warn("collection deletion will retry after account disconnection", {
+          event: "collection.disconnect.delete.pending", collectionId: this.getMetadata().id,
+          error: err,
+        });
+      }
     });
   }
 
@@ -486,6 +499,15 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     return collectionPermissions(this.getAccess(accountId), false).canEdit;
   }
 
+  // Arm before any external await that follows a grant change, so a restart cannot strand a token.
+  // Grants and issuer records already contain everything the alarm needs to resume cleanup.
+  async #armGitTokenCleanup(): Promise<void> {
+    if (this.getMetadata().content.source !== "git") return;
+    if (await this.ctx.storage.getAlarm() === null) {
+      await this.ctx.storage.setAlarm(Date.now() + GIT_TOKEN_REVOKE_RETRY_MS);
+    }
+  }
+
   /**
    * Revoke every git token whose issuer no longer has write access, so losing it is not merely
    * hidden. Tokens with no issuer record were minted before sharing existed, when only the creator
@@ -502,22 +524,29 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     let records = Array.from(this.storage.gitTokenIssuers.list());
     let revocable = records.filter(record => !this.#canEdit(record.accountId));
     let creator = this.storage.ownerAccountId.get();
-    let creatorLostAccess = meta.content.source === "git" && !!creator && !this.#canEdit(creator);
+    let sweepLegacyTokens = meta.content.source === "git" && !!creator && !this.#canEdit(creator)
+      && !this.storage.legacyGitTokensSwept.get();
 
-    if (revocable.length > 0 || creatorLostAccess) {
+    if (revocable.length > 0 || sweepLegacyTokens) {
+      // Rearm retries too, in case the runtime stops while an alarm's external call is pending.
+      await this.#armGitTokenCleanup();
       let repo: ArtifactsRepo | undefined;
       try {
         repo = await this.#artifacts().get(meta.id);
-        if (creatorLostAccess) {
+        if (sweepLegacyTokens) {
           let recorded = new Set(records.map(record => record.tokenId));
-          for (let token of (await repo.listTokens()).tokens) {
-            if (token.scope === "write" && token.state === "active" && !recorded.has(token.id)) {
-              revocable.push({ tokenId: token.id, accountId: creator });
-            }
-          }
+          let legacy = (await repo.listTokens()).tokens
+            .filter(token => token.scope === "write" && token.state === "active" && !recorded.has(token.id))
+            .map(token => ({ tokenId: token.id, accountId: creator }));
+          // Make the sweep's work durable before revoking; a restart resumes from issuer records.
+          this.storage.transaction(() => {
+            for (let record of legacy) this.storage.gitTokenIssuers.put(record);
+            this.storage.legacyGitTokensSwept.put(true);
+          });
+          revocable.push(...legacy);
         }
       } catch (err) {
-        if (creatorLostAccess) unrevoked.add(creator);
+        if (sweepLegacyTokens) unrevoked.add(creator);
         logger.error("failed to list git tokens to revoke", {
           event: "artifacts.issuer.token.list.failed", collectionId: meta.id, error: err,
         });
@@ -554,11 +583,16 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     }
   }
 
-  /** Retries pending collection deletion or failed git token revocations. */
+  /** Resumes credential cleanup and memberless deletion, including interrupted grant changes. */
   async alarm(): Promise<void> {
     await this.#serializeAccessChange(async () => {
       if (this.storage.deletionPending.get()) await this.#deleteSelf();
-      else await this.#revokeUnauthorizedGitTokens();
+      else {
+        let unrevoked = await this.#revokeUnauthorizedGitTokens();
+        if (!await this.#deleteIfMemberless() && unrevoked.size === 0) {
+          await this.ctx.storage.deleteAlarm();
+        }
+      }
     });
   }
 
@@ -636,6 +670,7 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
   }
 
   listAgentSkills(): SkillIndexEntry[] {
+    if (this.storage.deletionPending.get()) return [];
     if (this.#isGitBased()) this.#startBackgroundArtifactRefresh();
     this.#ensureSkillIndex();
     return [...this.storage.skillIndex.list()];
@@ -680,6 +715,7 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
   }
 
   async listContextDocuments(prefix?: string): Promise<ContextDocumentSummary[]> {
+    if (this.storage.deletionPending.get()) return [];
     // Trigger git mirror revalidation in the background on reads.
     if (this.#isGitBased()) this.#startBackgroundArtifactRefresh();
     let options = prefix ? { prefix } : undefined;
@@ -700,6 +736,7 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
 
   /** Lenient read: bad/missing paths return null, not RPC errors. Mutations validate paths. */
   async getContextDocument(path: string): Promise<ContextDocument | null> {
+    if (this.storage.deletionPending.get()) return null;
     // Trigger git mirror revalidation in the background on reads.
     if (this.#isGitBased()) this.#startBackgroundArtifactRefresh();
 
@@ -1188,6 +1225,7 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
 
   /** Linear scan over one collection. Replace with an index if collection size makes it matter. */
   async search(query: string, limit: number = 20): Promise<{ path: string; name: string; description: string; snippet?: string; score: number }[]> {
+    if (this.storage.deletionPending.get()) return [];
     if (this.#isGitBased()) this.#startBackgroundArtifactRefresh();
 
     let tokens = query.toLowerCase().split(/\s+/).filter(t => t.length > 0);
@@ -1232,9 +1270,12 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
 
   // --- Deletion ---
 
-  /** Delete the collection, in turn with grant changes and token mints. */
-  deleteSelf(): Promise<void> {
-    return this.#serializeAccessChange(() => this.#deleteSelf());
+  /** Delete only if the actor may still do so when queued grant changes have finished. */
+  deleteSelf(actorId: string, isAdmin: boolean): Promise<void> {
+    return this.#serializeAccessChange(async () => {
+      if (!collectionPermissions(this.getAccess(actorId), isAdmin).canDelete) throw new Error(NOT_FOUND);
+      await this.#deleteSelf();
+    });
   }
 
   async #deleteSelf(): Promise<void> {
@@ -1243,7 +1284,9 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     // Persist the intent and its retry before any external operation can fail. Never erase the
     // repo identity or issuer records while an external write credential could still be live.
     this.storage.deletionPending.put(true);
-    await this.ctx.storage.setAlarm(Date.now() + GIT_TOKEN_REVOKE_RETRY_MS);
+    let retryAt = Date.now() + GIT_TOKEN_REVOKE_RETRY_MS;
+    let alarm = await this.ctx.storage.getAlarm();
+    if (alarm === null || alarm > retryAt) await this.ctx.storage.setAlarm(retryAt);
 
     if (id) {
       if (meta.visibility === "public") {

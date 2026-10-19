@@ -202,6 +202,27 @@ describe('UserSearchCombobox', () => {
     expect(search).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps refreshed results dismissed after blur or Escape until the user reopens them', async () => {
+    const { input, update } = await render()
+    await act(async () => input.focus())
+    await typeInto(input, 'ada')
+    await act(async () => input.blur())
+    await update({ search: () => new RpcPromise(Promise.resolve([GRACE])) })
+    await act(async () => vi.advanceTimersByTimeAsync(225))
+    expect(document.activeElement).not.toBe(input)
+    expect(input.getAttribute('aria-expanded')).toBe('false')
+    expect(container.querySelector('[role="listbox"]')).toBeNull()
+
+    await act(async () => input.focus())
+    expect(container.querySelector('[role="option"]')?.textContent).toContain(GRACE.name)
+    await pressKey(input, 'Escape')
+    await update({ search: () => new RpcPromise(Promise.resolve([ADA])) })
+    await act(async () => vi.advanceTimersByTimeAsync(225))
+    expect(input.getAttribute('aria-expanded')).toBe('false')
+    await typeInto(input, 'ada ')
+    expect(container.querySelector('[role="option"]')?.textContent).toContain(ADA.name)
+  })
+
   it('does not submit empty text or a directory search, including after a failure', async () => {
     const pending = deferred<UserDirectoryRecord[]>()
     const onSearchStateChange = vi.fn<NonNullable<Props['onSearchStateChange']>>()

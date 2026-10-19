@@ -295,6 +295,42 @@ describe("GatekeeperUserPickerDialog", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
+  it.each(["missing person", "mint rejection", "delivery rejection"] as const)(
+    "keeps a %s visible after Done and allows retry before an explicit close",
+    async (failure) => {
+      const minting = Promise.withResolvers<GatekeeperUserSelection | null>();
+      const delivery = Promise.withResolvers<void>();
+      let attempts = 0;
+      const { onClose, props } = await mount(
+        () => ++attempts === 1 ? minting.promise : Promise.resolve(selectionFor(ALICE)),
+        () => attempts === 1 ? delivery.promise : Promise.resolve(),
+      );
+      await act(async () => props().onSelect(ALICE));
+      await act(async () => doneButton().click());
+      expect(doneButton().disabled).toBe(true);
+
+      await act(async () => {
+        if (failure === "missing person") minting.resolve(null);
+        else if (failure === "mint rejection") minting.reject(new Error("Mint unavailable."));
+        else minting.resolve(selectionFor(ALICE));
+      });
+      if (failure === "delivery rejection") {
+        await act(async () => delivery.reject(new Error("Collection access refused.")));
+      }
+      expect(onClose).not.toHaveBeenCalled();
+      expect(notice()).toContain(ALICE.name);
+      expect(added()).toBe("");
+      expect(doneButton().disabled).toBe(false);
+      expect(container!.querySelector('input')!.disabled).toBe(false);
+
+      await act(async () => props().onSelect(ALICE));
+      expect(added()).toBe(ALICE.name);
+      expect(onClose).not.toHaveBeenCalled();
+      await act(async () => doneButton().click());
+      expect(onClose).toHaveBeenCalledOnce();
+    },
+  );
+
   it("keeps concurrent picks distinct when they settle out of order", async () => {
     const deliveries = new Map<string, PromiseWithResolvers<void>>();
     const { onSelected, props } = await mount(mintFor, (selection) => {

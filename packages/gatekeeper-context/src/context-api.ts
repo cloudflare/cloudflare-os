@@ -121,7 +121,7 @@ export class ContextApiImpl extends RpcTarget implements ContextApi {
       }
     } catch (err) {
       // Indexing failed; delete the now-unreachable collection.
-      await this.#collection(id).deleteSelf().catch(() => {});
+      await this.#collection(id).deleteSelf(this.accountId, this.isAdmin).catch(() => {});
       throw err;
     }
     return metadata;
@@ -162,8 +162,7 @@ export class ContextApiImpl extends RpcTarget implements ContextApi {
   }
 
   async deleteContextCollection(collectionId: string): Promise<void> {
-    if (!(await this.#permissions(collectionId)).canDelete) throw new Error(NOT_FOUND);
-    await this.#collection(collectionId).deleteSelf();
+    await this.#collection(collectionId).deleteSelf(this.accountId, this.isAdmin);
   }
 
   async getContextCollectionMetadata(collectionId: string): Promise<ContextCollectionMetadata | null> {

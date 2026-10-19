@@ -22,9 +22,9 @@ const logger = obsContext.createLogger({
 
 @validateRpc()
 export class LibraryReadSession extends RpcTarget implements ContextLibrary {
-  // Public collections are domain-wide and change only by admin action, so a session lists them
-  // once. Private membership is never cached: every call asks the library, which checks each
-  // collection live, so a session honors revocations and new shares made after it started.
+  // Cache public discovery, not existence: every use checks that each collection is still public
+  // and live. Private membership is never cached, so existing sessions honor revocations and new
+  // shares made after they started.
   #publicIds?: Promise<string[]>;
 
   constructor(
@@ -51,7 +51,7 @@ export class LibraryReadSession extends RpcTarget implements ContextLibrary {
     return this.userLibraries.get(this.userLibraries.idFromName(domainName(this.domain, this.accountId)));
   }
 
-  #publicCollectionIds(): Promise<string[]> {
+  #discoveredPublicIds(): Promise<string[]> {
     return this.#publicIds ??= listPublicCollectionsFromKv(this.env, this.domain).then(
       entries => entries.map(entry => entry.id),
       (err: unknown) => {
@@ -61,18 +61,26 @@ export class LibraryReadSession extends RpcTarget implements ContextLibrary {
       });
   }
 
+  async #isLivePublic(collectionId: string): Promise<boolean> {
+    let access = await this.#collection(collectionId).getAccess(this.accountId);
+    return access.exists && access.visibility === "public";
+  }
+
   // Private collections first, as the library lists them.
   async #libraryIds(): Promise<string[]> {
-    let [privateCollections, publicIds] = await Promise.all([
+    let [privateCollections, discovered] = await Promise.all([
       this.#userLib().listPrivateLibrary(this.domain, this.accountId),
-      this.#publicCollectionIds(),
+      this.#discoveredPublicIds(),
     ]);
+    let live = await mapWithConcurrency(discovered, MAX_COLLECTION_FANOUT,
+      async id => await this.#isLivePublic(id) ? id : null);
+    let publicIds = live.filter(id => id !== null);
     return [...new Set([...privateCollections.map(collection => collection.id), ...publicIds])];
   }
 
   async #inLibrary(collectionId: string): Promise<boolean> {
     return await this.#userLib().hasPrivateLibraryCollection(this.domain, this.accountId, collectionId)
-      || (await this.#publicCollectionIds()).includes(collectionId);
+      || ((await this.#discoveredPublicIds()).includes(collectionId) && await this.#isLivePublic(collectionId));
   }
 
   // A read revealing no collection contents is authorized against the admission baseline, so it

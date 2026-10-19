@@ -29,12 +29,20 @@ without selecting a user. Picking someone does not re-run the current search: pe
 or being added are excluded when each search is issued and hidden from results returned earlier.
 If minting or delivery fails, the current query is refreshed so the person can be selected again,
 including when the server excluded them from a search made while their selection was pending.
+Refreshed results stay dismissed after blur or Escape until the user focuses, types, or uses an
+arrow key to reopen them.
 Each person the app accepts is announced to assistive technology by their snapshotted name.
 
 **Done** and the close button both wait for ticket minting and selection deliveries before closing.
-**Stop waiting and close** or frame teardown cancels the picker and disposes its outstanding mint and
-delivery RPC promises as well as its receiver. Cancellation cannot undo a selection the app already
-accepted. A superseded or abandoned directory search is disposed as soon as it is no longer needed.
+If a pending mint or delivery fails, closing is cancelled so the error remains visible and the user
+can retry or choose **Done** again. Every picker session starts with fresh search and selection state,
+including when closing one and opening another are batched in the same render.
+**Stop waiting and close** cancels the picker and disposes its outstanding mint and delivery RPC
+promises as well as its receiver; frame teardown does the same. Closing and cancelling both resolve
+`selectUsers()`; after a cancellation, a delivery already sent to the app may still settle, and
+cancellation cannot undo a selection the app already accepted. `selectUsers()` rejects only when the
+picker cannot be opened or, on teardown, when the app's connection to the host closes. A superseded
+or abandoned directory search is disposed as soon as it is no longer needed.
 
 ## Authentication modes
 

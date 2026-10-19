@@ -50,7 +50,10 @@ export interface UserSelectionReceiver extends RpcTarget {
   receive(selection: UserSelection): Promise<void>
 }
 
-/** Opens the host's picker; resolves when it closes, rejects on cancellation or refusal. */
+/**
+ * Opens the host's picker; resolves when it closes, including on cancellation, when deliveries may
+ * still be running. Rejects when the picker cannot be opened or the connection to the host is lost.
+ */
 export type SelectUsers = (receiver: UserSelectionReceiver) => Promise<void>
 
 const SelectUsersContext = createContext<SelectUsers | null>(null)

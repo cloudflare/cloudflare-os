@@ -138,7 +138,11 @@ export default function GatekeeperUserPickerDialog({
       reserved.current.delete(user.id)
       if (active.current) {
         setPending((current) => current.filter((id) => id !== user.id))
-        if (!accepted.current.has(user.id)) setSearchRevision((current) => current + 1)
+        if (!accepted.current.has(user.id)) {
+          closeRequested.current = false
+          setClosing(false)
+          setSearchRevision((current) => current + 1)
+        }
       }
     })
   }
