@@ -192,7 +192,7 @@ describe("ShareCollectionDialog", () => {
 
   it("reports possibly committed rejections on close and surfaces failed refreshes", async () => {
     let loads = 0;
-    const getContextCollectionSharing = vi.fn(async () => {
+    const getContextCollectionSharing = vi.fn<ContextApi["getContextCollectionSharing"]>(async () => {
       loads += 1;
       if (loads === 2) throw new Error("Network down.");
       return twoOwners;
@@ -204,7 +204,7 @@ describe("ShareCollectionDialog", () => {
         throw new Error("Access was changed, but Git tokens could not be revoked yet.");
       },
     } as unknown as ContextApi;
-    const onChanged = vi.fn();
+    const onChanged = vi.fn<() => void>();
     root = await renderDialog(onChanged);
 
     await choose(document.querySelector<HTMLElement>("[aria-label='Role for Bob']"), "Can edit");
