@@ -94,11 +94,12 @@ There is no binding to add. `run-dev-server.ts` binds every `packages/gatekeeper
 
 ### Step 6: Add resource selection UI
 
-Add a resource selection UI for each resource type returned in `getSupportedResources()`. This will be used by users to select the specific resource.
+Add a resource selection UI for each connect card. A card is one resource type returned in `getSupportedResources()`, together with any types whose `groupedWith` names it. This will be used by users to select the specific resource.
 
-- Workshop calls `GatekeeperUser.startResourceConfigurator(resourceUrlPattern)` with the selected resource's `urlPattern`.
+- Workshop calls `GatekeeperUser.startResourceConfigurator(resourceUrlPattern)` with the `urlPattern` of a type on the card: the card's own type from the connect dialog, or a binding's own type from a blueprint. Return the card's configurator for every type on it.
 - Return `iframeHtml` of the selection UI and `ui` for any RPCs that UI needs.
 - When the user selects "Add connection", Workshop asks the iframe for the selected resource URL.
+- Group types (`SupportedResource.groupedWith`) when they are one choice at different granularities, such as a whole drive, a folder or a file. Each type is still granted separately, and a grouped card asks for the missing ones in one consent request, so group only types that need the same authorization. The gatekeeper's `getGatekeeperClassFor` decides which type a returned URL is, while Workshop's grant check takes the first type in declaration order whose pattern matches it, so declare a narrower type before a broader one whose pattern also matches its URLs.
 
 Keep the iframe-facing capability narrow, only what's necessary to provide desired interface to help user find and select the resource.
 
@@ -112,6 +113,7 @@ If you use this:
 
 - UI modules live in `src/configurator/*-ui.tsx`.
 - `resourceUrl()` returns the selected resource URL.
+- A module that can return several types reads `acceptedResourceUrlPatterns` from the context every callback receives (`render`, `isReady`, `resourceUrl`, `initialValuesFromResourceUrl`): the types Workshop will take, which leave out a grouped type the account hasn't granted and anything a blueprint binding doesn't want. Show other types if that helps the user find their way, but don't let them be chosen, and keep `isReady` false while one is. It is `undefined` from an older Workshop, which takes any type. The list is read when the frame starts, and Workshop restarts the frame when it changes.
 - `src/configurator/*-types.d.ts` describes the iframe-facing `ui` API.
 - Each module is compiled on its own: it may import only `@gadgets/configurator-ui` and types. URL grammar it shares with the server is copied, and a test keeps the copies in step.
 - The frame's content security policy allows exactly the scripts the build wrote (by hash) and no network access; anything the UI needs goes through `ui`.
