@@ -17,6 +17,7 @@ const frontendReportingEnabled =
   loadEnv(watchMode || devMode ? "development" : "production", packageDir)
       .VITE_FRONTEND_ERROR_REPORTING === "true";
 const configuratorDir = join(packageDir, "src", "configurator");
+const runtimeDir = resolve(import.meta.dirname, "../packages/configurator-ui/src/runtime");
 const generatedDir = join(packageDir, "src", "generated");
 const vendorId = basename(packageDir).replace(/^gatekeeper-/, "");
 const sourceBase = `app:///gatekeeper/${vendorId}/configurator`;
@@ -115,22 +116,42 @@ if (initial.writtenCount > 0) {
 
 if (!watchMode) process.exit(0);
 
-let timer: NodeJS.Timeout | undefined;
-watch(configuratorDir, { persistent: true }, () => {
-  clearTimeout(timer);
-  timer = setTimeout(() => {
-    buildConfiguratorUIs().then(result => {
+let building = false;
+let changed = false;
+/** One pass at a time, so an older pass cannot write last; a change during a pass earns one more. */
+const build = async () => {
+  changed = true;
+  if (building) return;
+  building = true;
+  while (changed) {
+    changed = false;
+    try {
+      const result = await buildConfiguratorUIs();
       if (result.ok && result.writtenCount > 0) {
         console.log(`generated ${result.writtenCount} configurator UI module${result.writtenCount === 1 ? "" : "s"}: ${packageDir}`);
       }
-    }).catch(error => {
+    } catch (error) {
       console.error(`failed to generate configurator UI modules: ${packageDir}`);
       console.error(error);
-    });
-  }, 50);
+    }
+  }
+  building = false;
+};
+let timer: NodeJS.Timeout | undefined;
+const rebuild = () => {
+  clearTimeout(timer);
+  timer = setTimeout(build, 50);
+};
+watch(configuratorDir, { persistent: true }, rebuild);
+// The runtime's sources are bundled into every frame. Its build (`build/`) is loaded into this
+// process, so a change there still needs a restart.
+watch(runtimeDir, { persistent: true, recursive: true }, (_, name) => {
+  if (name?.includes(".test.")) return;
+  runtime = undefined;
+  rebuild();
 });
 
-logInfo(`watching configurator UI modules: ${configuratorDir}`);
+logInfo(`watching configurator UI modules and their runtime: ${configuratorDir}, ${runtimeDir}`);
 
 process.on("SIGINT", () => process.exit(0));
 process.on("SIGTERM", () => process.exit(0));
