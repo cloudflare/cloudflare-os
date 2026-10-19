@@ -47,6 +47,15 @@ describe("scroll forwarding", () => {
     expect(forwardScroll).toHaveBeenCalledExactlyOnceWith(0, 200);
   });
 
+  it("gives a wheel gesture that turns back to whatever can take it then", async () => {
+    list.scrollTop = list.scrollHeight;
+    expect(wheel(list, 100)).toBe(true);
+    expect(wheel(list, -100)).toBe(false);
+
+    await forwarded();
+    expect(forwardScroll).toHaveBeenCalledExactlyOnceWith(0, 100);
+  });
+
   it("gives the next wheel gesture to whatever is under the pointer then", async () => {
     wheel(header, 100);
     await new Promise(resolve => setTimeout(resolve, WHEEL_PAUSE_MS));

@@ -32,7 +32,8 @@ const scrollsWithin = (target: EventTarget | null, deltaX: number, deltaY: numbe
  * scrolls rather than moving the modal underneath it -- including trackpad momentum, which a manual
  * `scrollBy` would lose. As the browser does with nested scrollers, the rest of the gesture goes the
  * same way: a list reaching its end does not hand it to the modal, and a list the modal slides under
- * the pointer does not take it over.
+ * the pointer does not take it over. A wheel gesture ends when the wheel pauses or turns back, which
+ * momentum never does.
  */
 export const forwardScrolls = (host: Pick<ResourceConfiguratorHost, "forwardScroll">): void => {
   let pendingX = 0;
@@ -54,13 +55,16 @@ export const forwardScrolls = (host: Pick<ResourceConfiguratorHost, "forwardScro
 
   let wheelForwarded = false;
   let wheelGestureEnd = -Infinity;
+  let wheelDeltaY = 0;
   window.addEventListener("wheel", event => {
     // Pinch and Ctrl+wheel zoom the page.
     if (event.ctrlKey) return;
-    if (event.timeStamp > wheelGestureEnd) {
+    // Turning back counts only vertically: a vertical swipe's small horizontal deltas can flip sign.
+    if (event.timeStamp > wheelGestureEnd || event.deltaY * wheelDeltaY < 0) {
       wheelForwarded = !scrollsWithin(event.target, event.deltaX, event.deltaY);
     }
     wheelGestureEnd = event.timeStamp + WHEEL_GESTURE_GAP_MS;
+    wheelDeltaY = event.deltaY || wheelDeltaY;
     if (!wheelForwarded) return;
     // Cancelled, hence not passive, so a list moving under the pointer does not scroll as well.
     event.preventDefault();
