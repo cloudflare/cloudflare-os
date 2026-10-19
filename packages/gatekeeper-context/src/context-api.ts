@@ -117,7 +117,7 @@ export class ContextApiImpl extends RpcTarget implements ContextApi {
       if (visibility === "public") {
         await this.#registry().addPublic(this.domain, metadataToSummary(metadata));
       } else {
-        await this.#userLib().createOwnedCollection(id, title, description, icon);
+        await this.#userLib().createOwnedCollection(id);
       }
     } catch (err) {
       // Indexing failed; delete the now-unreachable collection.
@@ -272,24 +272,20 @@ export class ContextApiImpl extends RpcTarget implements ContextApi {
     }
 
     let selections = await this.userSelectionExchange.redeem(ticket);
-    // Only a Context verifier in this sharing domain names an account; the browser cannot.
-    let recipients = (await Promise.all(selections.map(async ({ verifier, profile }) => {
-      try {
-        let accountId = await asVerifier<Fetcher<ContextVerifierApi>>(verifier)
-            .getAccountId(this.domain);
-        return { accountId, displayName: profile.displayName };
-      } catch {
-        return null;
-      }
-    }))).filter(recipient => recipient !== null);
+    // Only a Context verifier in this sharing domain names an account; the browser cannot. A
+    // failure to ask is not mistaken for an account elsewhere: it rejects, and the share can be
+    // retried with a new selection.
+    let recipients = (await Promise.all(selections.map(async ({ verifier, profile }) => ({
+      accountId: await asVerifier<Fetcher<ContextVerifierApi>>(verifier).getAccountId(this.domain),
+      displayName: profile.displayName,
+    })))).filter((recipient): recipient is { accountId: string; displayName: string } =>
+      recipient.accountId !== null);
     if (recipients.length === 0) {
       throw new Error("This person hasn't turned on Skills yet, so you can't share with them.");
     }
     // Every result is an account of the one person selected, so sharing with each of them gives
-    // that person nothing beyond what was chosen.
-    for (let { accountId, displayName } of recipients) {
-      await collection.share(this.accountId, accountId, role, displayName);
-    }
+    // that person nothing beyond what was chosen. One call, so their grants land together.
+    await collection.share(this.accountId, recipients, role);
   }
 
   async setContextCollectionMemberRole(

@@ -52,20 +52,22 @@ which today deletes every collection the account owns. Change it to remove the a
 from every collection it holds one on (owned and shared indexes alike), then:
 
 - If another owner remains, nothing else changes.
-- If no owner remains and no other grant exists and `everyoneCanView` is off, delete the
-  collection, including its Artifacts repo as `deleteForRevokedOwner` does today.
-- If no owner remains but the collection is still shared (any grant or `everyoneCanView`), keep
-  it and record that it has no active owner. Disconnecting cannot be refused, so this is the one
-  way the no-owner invariant breaks. Grantees keep their roles and permissions; editors cannot
-  delete the collection or grant ownership, even when no owner remains.
-- When the last grant on an ownerless collection is removed and `everyoneCanView` is off, delete
-  the collection, since no one can reach it any more.
+- If no grant remains, delete the collection, including its Artifacts repo, even if
+  `everyoneCanView` is on: nobody could manage it any more, and the disconnecting account's data
+  would otherwise outlive it with no way to delete it.
+- If no owner remains but another grant does, keep it and record that it has no active owner.
+  Disconnecting cannot be refused, so this is the one way the no-owner invariant breaks. Grantees
+  keep their roles and permissions; editors cannot delete the collection or grant ownership, even
+  when no owner remains.
+- When the last grant on an ownerless collection is removed, delete the collection, whether or not
+  `everyoneCanView` is on.
 - A disconnected account cannot reclaim anything: re-adding Context mints a new random account
   ID.
 - Show a collection without an active owner as such in the Share dialog and labels.
 
-`revoke()` still wipes the account's `UserLibraryDurableObject`; `#propagate` and `deleteSelf`
-already skip a missing owned record.
+`revoke()` first marks the account's `UserLibraryDurableObject` disconnected and reads its index in
+the same step, so a share racing the disconnect is either in the index it visits or refused. It
+then wipes the library, keeping the disconnected mark so a late share is still refused.
 
 ### Existing authorization seams
 
@@ -223,12 +225,16 @@ Existing git tokens permit direct writes independently of the management UI, and
 Artifacts' maximum lifetime of one year. Track the issuing account for newly created mirror tokens
 and, when an account is demoted to viewer or loses its grant, revoke every token it minted, so
 access revocation does not merely hide token controls. Tokens minted before sharing existed have no
-recorded issuer and are left alone, so no owner's existing mirror is unexpectedly revoked.
+recorded issuer; only the creator could mint them, so they are treated as the creator's. They stay
+while the creator keeps write access, so no existing mirror is unexpectedly revoked, and are
+revoked once the creator loses it, including by disconnecting.
 
-The collection runs grant changes and token minting one at a time, because each awaits another
-service: a mint checks its issuer's access among the grant changes, so a removal either refuses it
-or finds its token recorded, and a share cannot interleave its library and grant writes with a
-removal. Every grant change revokes the recorded tokens of any issuer without write access, even
+The collection runs grant changes, token minting, and deletion one at a time, because each awaits
+another service: a mint checks its issuer's access among the grant changes, so a removal either
+refuses it or finds its token recorded; a share cannot interleave its library and grant writes with
+a removal; and a mint never writes into storage a deletion has wiped. A share with several of one
+person's accounts indexes the collection in every library first and then writes all their grants
+together. Every grant change revokes the recorded tokens of any issuer without write access, even
 when the change itself was a no-op, so repeating it retries. A failed revocation keeps its record,
 schedules an alarm that retries with backoff, and is reported to whoever removed or demoted the
 issuer (not on disconnection, where the account itself is going away).
@@ -294,8 +300,8 @@ Protect consumer-visible behavior with focused tests and real-browser smoke chec
   safely rather than reporting false success.
 - Collections with the same title can coexist, whether owned or shared.
 - Disconnecting an account removes its grants. A collection left with another owner is unchanged;
-  one left with no owner is deleted if unshared, and otherwise keeps working for grantees, shows
-  that it has no active owner, and gives editors no additional permissions.
+  one left with no grant is deleted, and one left with no owner but other grants keeps working for
+  grantees, shows that it has no active owner, and gives editors no additional permissions.
 - Mirror-token revocation follows the agreed policy.
 - Existing owned and deployment-public collections behave as before.
 
@@ -312,6 +318,7 @@ Settled while implementing; revisit if product direction differs.
    remove themselves.
 2. A ticket naming several eligible accounts shares with all of them; one naming none fails with
    "This person hasn't turned on Skills yet, so you can't share with them."
-3. Losing write access revokes the git tokens that account minted; legacy untagged tokens stay.
+3. Losing write access revokes the git tokens that account minted; tokens minted before sharing
+   are the creator's.
 4. Collections left without an owner retain their existing grants without giving editors ownership
-   powers. Removing the last grant deletes the collection unless `everyoneCanView` is on.
+   powers. Removing the last grant deletes the collection, even if `everyoneCanView` is on.

@@ -2,25 +2,30 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
 
-import { act, type ReactNode } from "react";
+import { act, type ComponentProps, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { newMessagePortRpcSession, RpcPromise, RpcTarget, type RpcStub } from "capnweb";
-import type { AuthenticatedApi, UserDirectoryRecord } from "@gadgets/workshop-shared/api";
+import type { AuthenticatedApi, ServerConfig, UserDirectoryRecord } from "@gadgets/workshop-shared/api";
 import type { GatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
 import type * as Kumo from '@cloudflare/kumo';
+import type * as UserSearch from "../user-directory/UserSearchCombobox";
+import { ServerConfigContext } from "../../ServerConfigContext";
 import GatekeeperUserPickerDialog from "./GatekeeperUserPickerDialog";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const captured = vi.hoisted(() => ({ props: null as unknown }));
 
-vi.mock("../user-directory/UserSearchCombobox", () => ({
-  UserSearchCombobox: (props: unknown) => {
-    captured.props = props;
-    return null;
-  },
-}));
+vi.mock("../user-directory/UserSearchCombobox", async (importOriginal) => {
+  const { UserSearchCombobox } = await importOriginal<typeof UserSearch>();
+  return {
+    UserSearchCombobox: (props: ComponentProps<typeof UserSearchCombobox>) => {
+      captured.props = props;
+      return <UserSearchCombobox {...props} />;
+    },
+  };
+});
 
 vi.mock("@cloudflare/kumo", async (importOriginal) => {
   const Part = ({ children }: { children?: ReactNode }) => <>{children}</>;
@@ -37,7 +42,7 @@ vi.mock("../../components/WorkshopControls", () => ({
 vi.mock("../../components/PersonAvatar", () => ({ PersonAvatar: () => null }));
 
 type CapturedProps = {
-  search(query: string): Promise<UserDirectoryRecord[]>;
+  search(query: string): RpcPromise<UserDirectoryRecord[]>;
   onSelect(user: UserDirectoryRecord): void;
   onValueChange(value: string): void;
   onSubmit(): void;
@@ -48,6 +53,7 @@ const BOB: UserDirectoryRecord = { id: "bob@example.com", name: "Bob" };
 const CAROL: UserDirectoryRecord = { id: "carol@example.com", name: "Carol" };
 
 type Mint = (vendorId: string, selectedUserId: string) => Promise<GatekeeperUserSelection | null>;
+type SearchUsers = (query: string, excludeIds: string[]) => RpcPromise<UserDirectoryRecord[]>;
 type Deliver = (selection: GatekeeperUserSelection) => Promise<void>;
 
 // What the Workshop mints for a directory record in these tests: a ticket naming the person, and
@@ -72,12 +78,17 @@ describe("GatekeeperUserPickerDialog", () => {
     sessions.length = 0;
     container?.remove();
     captured.props = null;
+    vi.useRealTimers();
+    Reflect.deleteProperty(Element.prototype, "scrollIntoView");
   });
 
-  async function mount(mint: Mint, deliver: Deliver = async () => {}) {
-    const searchUsers = vi.fn<
-      (query: string, excludeIds: string[]) => Promise<UserDirectoryRecord[]>
-    >(async () => [ALICE, BOB, CAROL]);
+  async function mount(
+    mint: Mint,
+    deliver: Deliver = async () => {},
+    { searchEnabled = false, searchUsers: search = () => new RpcPromise(Promise.resolve([ALICE, BOB, CAROL])) }:
+      { searchEnabled?: boolean; searchUsers?: SearchUsers } = {},
+  ) {
+    const searchUsers = vi.fn<SearchUsers>(search);
     const createSelection = vi.fn<
       (vendorId: string, selectedUserId: string) => RpcPromise<GatekeeperUserSelection | null>
     >((vendorId, selectedUserId) => new RpcPromise(mint(vendorId, selectedUserId)));
@@ -85,25 +96,40 @@ describe("GatekeeperUserPickerDialog", () => {
     const onClose = vi.fn<() => void>();
     const onCancel = vi.fn<() => void>();
 
+    if (searchEnabled) {
+      // The real combobox debounces searches and scrolls its active option into view.
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      Object.defineProperty(Element.prototype, "scrollIntoView", { configurable: true, value: () => {} });
+    }
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
     await act(async () => root!.render(
-      <GatekeeperUserPickerDialog
-        authenticatedApi={
-          { searchUsers, createGatekeeperUserSelection: createSelection } as unknown as RpcStub<AuthenticatedApi>
-        }
-        gatekeeperId="context"
-        onSelected={onSelected}
-        onClose={onClose}
-        onCancel={onCancel}
-      />,
+      <ServerConfigContext.Provider value={{ userSearchEnabled: searchEnabled } as ServerConfig}>
+        <GatekeeperUserPickerDialog
+          authenticatedApi={
+            { searchUsers, createGatekeeperUserSelection: createSelection } as unknown as RpcStub<AuthenticatedApi>
+          }
+          gatekeeperId="context"
+          onSelected={onSelected}
+          onClose={onClose}
+          onCancel={onCancel}
+        />
+      </ServerConfigContext.Provider>,
     ));
     return { searchUsers, createSelection, onSelected, onClose, onCancel, props: () => captured.props as CapturedProps };
   }
 
+  async function searchFor(query: string) {
+    await act(async () => (captured.props as CapturedProps).onValueChange(query));
+    await act(async () => vi.advanceTimersByTimeAsync(200));
+  }
+
   const added = () => container!.querySelector('[aria-label="Added people"]')?.textContent ?? "";
-  const notice = () => container!.querySelector('p[role="status"]')?.textContent;
+  const notice = () => container!.querySelector('p[role="status"]:not([aria-live])')?.textContent;
+  const announcement = () => container!.querySelector('[role="status"][aria-live="polite"]')?.textContent;
+  const options = () => Array.from(container!.querySelectorAll<HTMLElement>('[role="option"]'));
+
   const closeButton = () => container!.querySelector<HTMLButtonElement>('[aria-label="Close person picker"]')!;
   const doneButton = () => Array.from(container!.querySelectorAll('button'))
     .find(button => button.textContent === 'Done')!;
@@ -146,11 +172,39 @@ describe("GatekeeperUserPickerDialog", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it("shows the name the Workshop snapshotted, not the search result's", async () => {
+  it("shows and announces the name the Workshop snapshotted, not the search result's", async () => {
     const { props } = await mount(async () => selectionFor(ALICE, "Alice Renamed"));
+    expect(announcement()).toBe("");
 
     await act(async () => props().onSelect(ALICE));
     expect(added()).toBe("Alice Renamed");
+    expect(announcement()).toBe("Added Alice Renamed");
+  });
+
+  it("keeps the current search when a pick settles, hiding picked people from its results", async () => {
+    const delivery = Promise.withResolvers<void>();
+    // The directory double ignores exclusions, so anything hidden here is hidden by the picker.
+    const { searchUsers, props } = await mount(mintFor, () => delivery.promise, { searchEnabled: true });
+    const shown = () => options().map(option => option.textContent);
+
+    await act(async () => props().onSelect(ALICE));
+    await searchFor("a");
+    expect(searchUsers).toHaveBeenCalledExactlyOnceWith("a", [ALICE.id]);
+    expect(shown()).toEqual([`${BOB.name}${BOB.id}`, `${CAROL.name}${CAROL.id}`]);
+
+    await act(async () => { delivery.resolve(); await delivery.promise; });
+    await act(async () => vi.advanceTimersByTimeAsync(200));
+    expect(added()).toBe("Alice");
+    expect(searchUsers).toHaveBeenCalledOnce();
+    expect(shown()).toEqual([`${BOB.name}${BOB.id}`, `${CAROL.name}${CAROL.id}`]);
+
+    await act(async () => options()[0].click());
+    await act(async () => vi.advanceTimersByTimeAsync(200));
+    expect(added()).toBe("AliceBob");
+    expect(searchUsers).toHaveBeenCalledOnce();
+    await searchFor("a");
+    expect(searchUsers).toHaveBeenLastCalledWith("a", [ALICE.id, BOB.id]);
+    expect(shown()).toEqual([`${CAROL.name}${CAROL.id}`]);
   });
 
   it("shows the app's own error for a selection it rejected, leaving the person unselected", async () => {
@@ -160,6 +214,7 @@ describe("GatekeeperUserPickerDialog", () => {
     await act(async () => props().onSelect(ALICE));
     expect(notice()).toBe("Alice: Collection not found.");
     expect(added()).toBe("");
+    expect(announcement()).toBe("");
     // The person stays selectable: not excluded from search, and a new pick mints a new ticket.
     await props().search("al");
     expect(searchUsers).toHaveBeenLastCalledWith("al", []);
@@ -293,6 +348,51 @@ describe("GatekeeperUserPickerDialog", () => {
       expect(onSelected).not.toHaveBeenCalled();
       expect(onClose).not.toHaveBeenCalled();
       expect(added()).not.toContain("Alice");
+    },
+  );
+
+  it.each(["supersede", "unmount"] as const)(
+    "releases a stalled directory search before the backend resolves on %s, without late results",
+    async (action) => {
+      const searching = Promise.withResolvers<UserDirectoryRecord[]>();
+      const started = Promise.withResolvers<void>();
+
+      class StalledSearchApi extends RpcTarget implements Pick<AuthenticatedApi, "searchUsers"> {
+        searchUsers(_query: string, _excludeIds: string[]) {
+          started.resolve();
+          return searching.promise;
+        }
+      }
+
+      const { port1, port2 } = new MessageChannel();
+      const backend = newMessagePortRpcSession(port1, new StalledSearchApi());
+      const api = newMessagePortRpcSession<StalledSearchApi>(port2);
+      sessions.push(backend, api);
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      const { searchUsers } = await mount(mintFor, undefined, {
+        searchEnabled: true,
+        searchUsers: (query, excludeIds) => api.searchUsers(query, excludeIds),
+      });
+      await searchFor("ada");
+      await act(async () => started.promise);
+      const rejected = vi.fn<(error: unknown) => void>();
+      // Observe the in-flight remote promise before disposal, rather than reusing a disposed stub.
+      void searchUsers.mock.results[0].value.catch(rejected);
+
+      if (action === "supersede") {
+        await act(async () => (captured.props as CapturedProps).onValueChange("adb"));
+      } else {
+        await act(async () => root!.unmount());
+        root = undefined;
+      }
+
+      expect(rejected).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        message: "RPC was canceled because the RpcPromise was disposed.",
+      }));
+      await act(async () => { searching.resolve([ALICE]); await searching.promise; });
+      expect(options()).toEqual([]);
+      expect(consoleError).not.toHaveBeenCalled();
+      consoleError.mockRestore();
     },
   );
 

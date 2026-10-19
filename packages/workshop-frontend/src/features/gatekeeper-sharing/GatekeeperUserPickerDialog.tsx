@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button, Dialog } from '@cloudflare/kumo'
 import { Check, X } from '@phosphor-icons/react'
 import type { RpcPromise, RpcStub } from 'capnweb'
@@ -62,6 +62,7 @@ export default function GatekeeperUserPickerDialog({
   const [closing, setClosing] = useState(false)
   // Set when a pick fails; cleared on the next keystroke.
   const [notice, setNotice] = useState<string | null>(null)
+  const [announcement, setAnnouncement] = useState('')
   const [overlayContainer, setOverlayContainer] = useState<HTMLElement | null>(null)
 
   useEffect(() => {
@@ -90,9 +91,12 @@ export default function GatekeeperUserPickerDialog({
     }
   }, [closing, onClose, pending.length])
 
-  const excludeIds = useMemo(() => [...picked.map(({ id }) => id), ...pending], [picked, pending])
+  const excludeIds = [...picked.map(({ id }) => id), ...pending]
+  // Exclusions are read when each search is issued, so a pick never re-runs the current query;
+  // the combobox hides people picked after it was issued.
   const search = useCallback(
-    (value: string) => authenticatedApi.searchUsers(value, excludeIds), [authenticatedApi, excludeIds])
+    (value: string) => authenticatedApi.searchUsers(value, [...accepted.current, ...reserved.current]),
+    [authenticatedApi])
   const atLimit = picked.length + pending.length >= MAX_PICKED_PEOPLE
 
   const pick = (user: UserDirectoryRecord) => {
@@ -120,6 +124,7 @@ export default function GatekeeperUserPickerDialog({
         if (!active.current) return
         accepted.current.add(user.id)
         setPicked((current) => [...current, { id: user.id, name: selection.profile.displayName }])
+        setAnnouncement(`Added ${selection.profile.displayName}`)
       },
     ).catch((error: unknown) => {
       if (!active.current) return
@@ -181,6 +186,7 @@ export default function GatekeeperUserPickerDialog({
               searchEnabled={searchEnabled}
               inputName="gatekeeper-share-people-search"
               search={search}
+              excludeIds={excludeIds}
               onValueChange={(value) => { setQuery(value); setNotice(null) }}
               onSelect={pick}
               onSubmit={() => {
@@ -205,6 +211,7 @@ export default function GatekeeperUserPickerDialog({
           {notice && (
             <p role="status" className="mt-2 px-3 text-[12px] text-kumo-danger">{notice}</p>
           )}
+          <p role="status" aria-live="polite" className="sr-only">{announcement}</p>
           {(picked.length > 0 || pending.length > 0) && (
             <ul aria-label="Added people" className="mt-3 flex flex-wrap gap-2">
               {picked.map((user) => (

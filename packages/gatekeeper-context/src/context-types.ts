@@ -195,15 +195,6 @@ export type ContextDocumentSummary = {
   lastUpdated: Date;
 };
 
-/** A user's record of a collection they created. */
-export type OwnedCollectionRecord = {
-  id: string;
-  title: string;
-  description: string;
-  icon?: string;
-  lastUpdated: Date;
-};
-
 /**
  * An account's role on a private collection. Every role reads all of its content; see
  * ContextCollectionPermissions for what each may change.

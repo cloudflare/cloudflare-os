@@ -172,20 +172,19 @@ export class ContextAccount
     return {};
   }
   /**
-   * Leave every collection this account holds a role on. Each collection deletes itself once no one
-   * else can reach it; public collections are domain-owned.
+   * Leave every collection this account holds a role on. Each collection deletes itself once it
+   * has no members left; public collections are domain-owned.
    */
   async revoke(): Promise<void> {
     let domain = this.ctx.props.sharingDomain;
     let accountId = this.ctx.props.accountId;
     let userLibrary = this.#userLibraries().get(
       this.#userLibraries().idFromName(domainName(domain, accountId)));
-    let collectionIds = await userLibrary.listIndexedCollectionIds();
+    let collectionIds = await userLibrary.beginDisconnect();
     await Promise.all(collectionIds.map(collectionId =>
       this.#collections().get(this.#collections().idFromName(domainName(domain, collectionId)))
           .removeAccount(accountId)));
-    // Clear any residual library state.
-    await userLibrary.deleteAll();
+    await userLibrary.finishDisconnect();
   }
   reconnect(): never {
     throw new Error("The Context Library is a singleton gatekeeper; it has no connect flow.");
@@ -219,11 +218,8 @@ export class ContextVerifier
           .getAccess(this.ctx.props.accountId))));
   }
 
-  async getAccountId(sharingDomain: string): Promise<string> {
-    if (sharingDomain !== this.ctx.props.sharingDomain) {
-      throw new Error("This account belongs to another sharing domain.");
-    }
-    return this.ctx.props.accountId;
+  async getAccountId(sharingDomain: string): Promise<string | null> {
+    return sharingDomain === this.ctx.props.sharingDomain ? this.ctx.props.accountId : null;
   }
 }
 
@@ -286,7 +282,7 @@ export class ContextGatekeeper
     let gate = new ObservationGate(authorizer.dup(), this.#observers);
     try {
       return new LibraryReadSession(
-        this.#collections(), this.#userLibraries(),
+        this.env, this.#collections(), this.#userLibraries(),
         this.ctx.props.sharingDomain, this.ctx.props.accountId, gate);
     } catch (err) {
       gate[Symbol.dispose]();

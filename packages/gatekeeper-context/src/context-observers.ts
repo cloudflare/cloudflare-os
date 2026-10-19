@@ -13,9 +13,9 @@ export interface ContextVerifierApi extends GatekeeperUserVerifier {
   hasCollectionsAccess(sharingDomain: string, collectionIds: string[]): Promise<boolean[]>;
   /**
    * The account's ID, so a collection can be shared with the person a user-picker ticket names.
-   * Throws for any other sharing domain, which this account has no collections in.
+   * Null for any other sharing domain, which this account has no collections in.
    */
-  getAccountId(sharingDomain: string): Promise<string>;
+  getAccountId(sharingDomain: string): Promise<string | null>;
 }
 
 /**

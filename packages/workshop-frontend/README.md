@@ -25,13 +25,14 @@ Gatekeeper management apps can open the Workshop-owned **Select users** picker t
 With directory search enabled, users select only directory results; empty or failed searches do not
 offer an exact-username/email fallback. With search disabled, users enter an exact identifier
 directly. Arrow keys navigate options while focus stays in the input; Tab moves to the next control
-without selecting a user.
+without selecting a user. Picking someone does not re-run the current search: people already added
+or being added are excluded when each search is issued and hidden from results returned earlier.
+Each person the app accepts is announced to assistive technology by their snapshotted name.
 
 **Done** and the close button both wait for ticket minting and selection deliveries before closing.
 **Stop waiting and close** or frame teardown cancels the picker and disposes its outstanding mint and
 delivery RPC promises as well as its receiver. Cancellation cannot undo a selection the app already
-accepted.
-
+accepted. A superseded or abandoned directory search is disposed as soon as it is no longer needed.
 
 ## Authentication modes
 

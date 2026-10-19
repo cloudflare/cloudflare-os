@@ -62,16 +62,21 @@ function makeSession() {
   let userLibraries = {
     idFromName: (name: string) => name,
     get: () => ({
-      async listLibrary() {
-        return [{ id: "public" }, { id: "private" }];
+      async listPrivateLibrary() {
+        return [{ id: "private" }];
       },
-      async hasLibraryCollection(_domain: string, _accountId: string, id: string) {
-        return id === "public" || id === "private";
+      async hasPrivateLibraryCollection(_domain: string, _accountId: string, id: string) {
+        return id === "private";
       },
     }),
   } as unknown as DurableObjectNamespace<UserLibraryDurableObject>;
+  let env = {
+    CONTEXT_COLLECTIONS: {
+      async get() { return JSON.stringify([{ id: "public", lastUpdated: new Date() }]); },
+    },
+  } as unknown as Pick<Cloudflare.Env, "CONTEXT_COLLECTIONS">;
   let session = new LibraryReadSession(
-    collections, userLibraries, DOMAIN, "owner",
+    env, collections, userLibraries, DOMAIN, "owner",
     new ObservationGate(
       authorizer as unknown as ConstructorParameters<typeof ObservationGate>[0], strategy));
   return { session, strategy, authorized };
@@ -85,7 +90,7 @@ describe("LibraryReadSession sharing", () => {
     let listing = await session.list();
 
     expect(listing.entries.map(entry => entry.type === "collection" && entry.id))
-      .toEqual(["public", "private"]);
+      .toEqual(["private", "public"]);
     expect(authorized).toHaveLength(1);
     expect(authorized[0].excludeObservers).toBeUndefined();
     await strategy.addObserver("later", verifier(["public"]));

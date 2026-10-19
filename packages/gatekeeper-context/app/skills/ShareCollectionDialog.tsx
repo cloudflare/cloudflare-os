@@ -87,7 +87,7 @@ export const ShareCollectionDialog = ({
   const [state, setState] = useState<ShareState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
-  const [newRole, setNewRole] = useState<ContextCollectionRole>("viewer");
+  const [selectedRole, setSelectedRole] = useState<ContextCollectionRole>("viewer");
   // "picker", "everyone", or the memberId whose grant is being changed.
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -127,12 +127,13 @@ export const ShareCollectionDialog = ({
     setError(null);
     try {
       await action();
-      changedRef.current = true;
       return true;
     } catch (failure) {
       setError(errorMessage(failure, fallback));
       return false;
     } finally {
+      // The backend can commit an ACL change and still reject (e.g. Git token revocation fails).
+      changedRef.current = true;
       setPending(null);
     }
   };
@@ -193,6 +194,8 @@ export const ShareCollectionDialog = ({
   const roleOptions: ContextCollectionRole[] = permissions?.canManageOwners
     ? ["viewer", "editor", "owner"]
     : ["viewer", "editor"];
+  // The viewer can lose owner management (e.g. by demoting themselves) after picking "owner".
+  const newRole = roleOptions.includes(selectedRole) ? selectedRole : "editor";
   const ownerCount = sharing?.members.filter((member) => member.role === "owner").length ?? 0;
   const otherMembers = sharing?.members.filter((member) => !member.isViewer) ?? [];
 
@@ -306,6 +309,16 @@ export const ShareCollectionDialog = ({
             )
           ) : (
             <>
+              {loadError && (
+                <Banner
+                  variant="error"
+                  size="sm"
+                  icon={<WarningCircle weight="fill" />}
+                  title="Sharing settings may be out of date"
+                  description={loadError}
+                  action={<Button size="xs" variant="secondary" onClick={reload}>Retry</Button>}
+                />
+              )}
               {!sharing.hasOwner && (
                 <Banner
                   variant="alert"
@@ -348,7 +361,7 @@ export const ShareCollectionDialog = ({
                         key={role}
                         selected={role === newRole}
                         className="text-base"
-                        onClick={() => setNewRole(role)}
+                        onClick={() => setSelectedRole(role)}
                       >
                         <span className="min-w-0 flex-1 pr-4">{COLLECTION_ROLE_LABELS[role]}</span>
                       </DropdownMenu.Item>

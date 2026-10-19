@@ -4,7 +4,7 @@
 import { act, useLayoutEffect, useState, type ComponentProps } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { RpcStub } from 'capnweb'
+import { RpcPromise, type RpcStub } from 'capnweb'
 import type { AuthenticatedApi, UserDirectoryRecord } from '@gadgets/workshop-shared/api'
 import { UserSearchCombobox } from './UserSearchCombobox'
 
@@ -40,6 +40,7 @@ function deferred<T>() {
 const ADA: UserDirectoryRecord = { id: 'ada@example.com', name: 'Ada Lovelace' }
 const GRACE: UserDirectoryRecord = { id: 'grace@example.com', name: 'Grace Hopper' }
 type Props = ComponentProps<typeof UserSearchCombobox>
+type PlainSearch = (query: string) => Promise<UserDirectoryRecord[]>
 
 describe('UserSearchCombobox', () => {
   let root: Root
@@ -60,17 +61,19 @@ describe('UserSearchCombobox', () => {
   })
 
   async function render(
-    overrides: Partial<Props> = {},
+    {
+      search = vi.fn<PlainSearch>(async () => [ADA]),
+      ...overrides
+    }: Partial<Omit<Props, 'search'>> & { search?: PlainSearch } = {},
     observeRender?: (value: string) => void,
   ) {
     const onSelect = vi.fn<Props['onSelect']>()
     const onSubmit = vi.fn<Props['onSubmit']>()
-    const search = vi.fn<Props['search']>(async () => [ADA])
     const props = {
       authenticatedApi: {} as RpcStub<AuthenticatedApi>,
       selected: false,
       inputName: 'test-people',
-      search,
+      search: (query: string) => new RpcPromise(search(query)),
       onSelect,
       onSubmit,
       ...overrides,
@@ -108,7 +111,7 @@ describe('UserSearchCombobox', () => {
 
   it('never renders, highlights, clicks, or submits results for a previous query', async () => {
     const pending = deferred<UserDirectoryRecord[]>()
-    const search = vi.fn<Props['search']>(query => query === 'ada' ? Promise.resolve([ADA]) : pending.promise)
+    const search = vi.fn<PlainSearch>(query => query === 'ada' ? Promise.resolve([ADA]) : pending.promise)
     const staleRender = vi.fn<(value: string) => void>(value => {
       if (value !== 'grace') return
       expect(container.querySelector('[role="option"]')).toBeNull()
@@ -202,7 +205,7 @@ describe('UserSearchCombobox', () => {
   it('does not submit empty text or a directory search, including after a failure', async () => {
     const pending = deferred<UserDirectoryRecord[]>()
     const onSearchStateChange = vi.fn<NonNullable<Props['onSearchStateChange']>>()
-    const search = vi.fn<Props['search']>(() => pending.promise)
+    const search = vi.fn<PlainSearch>(() => pending.promise)
     const { input, onSubmit } = await render({ search, onSearchStateChange })
     await pressKey(input, 'Enter')
     await typeInto(input, '   ', false)
@@ -268,7 +271,7 @@ describe('UserSearchCombobox', () => {
 
   it('discards an in-flight result when directory search is disabled without clearing the query', async () => {
     const pending = deferred<UserDirectoryRecord[]>()
-    const search = vi.fn<Props['search']>(() => pending.promise)
+    const search = vi.fn<PlainSearch>(() => pending.promise)
     const { input, update, onSubmit, onSelect } = await render({ search })
     await typeInto(input, 'ada')
     expect(search).toHaveBeenCalledTimes(1)
@@ -296,6 +299,19 @@ describe('UserSearchCombobox', () => {
     await pressKey(input, 'Enter')
     expect(onSelect).toHaveBeenCalledWith(ADA)
     expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('hides excluded people from the current results without searching again', async () => {
+    const search = vi.fn<PlainSearch>(async () => [ADA, GRACE])
+    const { input, update, onSelect } = await render({ search })
+    await typeInto(input, 'a')
+    await update({ excludeIds: [ADA.id] })
+    const options = container.querySelectorAll('[role="option"]')
+    expect(Array.from(options, option => option.textContent)).toEqual([`${GRACE.name}${GRACE.id}`])
+    expect(input.getAttribute('aria-activedescendant')).toBe(options[0].id)
+    await pressKey(input, 'Enter')
+    expect(onSelect).toHaveBeenCalledWith(GRACE)
+    expect(search).toHaveBeenCalledOnce()
   })
 
 })

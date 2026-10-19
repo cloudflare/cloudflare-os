@@ -3,7 +3,7 @@ import { act, useState } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, expect, it, vi } from 'vitest'
 import { page, userEvent } from 'vitest/browser'
-import type { RpcStub } from 'capnweb'
+import { RpcPromise, type RpcStub } from 'capnweb'
 import type { AuthenticatedApi, UserDirectoryRecord } from '@gadgets/workshop-shared/api'
 import { UserSearchCombobox } from './UserSearchCombobox'
 
@@ -24,7 +24,7 @@ it.each([
 ])('Tabs past $name without losing focus or selecting a person', async ({ results }) => {
   const onSelect = vi.fn<(user: UserDirectoryRecord) => void>()
   const onSubmit = vi.fn<() => void>()
-  const search = async (): Promise<UserDirectoryRecord[]> => results
+  const search = () => new RpcPromise(Promise.resolve<UserDirectoryRecord[]>(results))
   const Harness = () => {
     const [value, setValue] = useState('')
     return <>

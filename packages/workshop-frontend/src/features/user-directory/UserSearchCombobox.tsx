@@ -7,7 +7,7 @@ import {
   useRef,
   useState,
 } from 'react'
-import type { RpcStub } from 'capnweb'
+import type { RpcPromise, RpcStub } from 'capnweb'
 import type { AuthenticatedApi, UserDirectoryRecord } from '@gadgets/workshop-shared/api'
 import { PersonAvatar } from '../../components/PersonAvatar'
 import { isImeComposing } from '../../keyboardEvent'
@@ -30,7 +30,9 @@ type Props = {
   /** Disable directory lookup and accept only a typed exact identifier. */
   searchEnabled?: boolean
   inputName: string
-  search: (query: string) => Promise<UserDirectoryRecord[]>
+  search: (query: string) => RpcPromise<UserDirectoryRecord[]>
+  /** People hidden from results, such as ones chosen after the current search was issued. */
+  excludeIds?: readonly string[]
   onValueChange: (value: string) => void
   onSelect: (user: UserDirectoryRecord) => void
   /** Submit a typed exact identifier when directory search is disabled. */
@@ -47,6 +49,7 @@ export function UserSearchCombobox({
   searchEnabled = true,
   inputName,
   search,
+  excludeIds,
   onValueChange,
   onSelect,
   onSubmit,
@@ -62,7 +65,9 @@ export function UserSearchCombobox({
   const inputRef = useRef<HTMLInputElement>(null)
 
   const open = searching && directory.current && !dismissed
-  const results = directory.results
+  const results = excludeIds
+    ? directory.results.filter(user => !excludeIds.includes(user.id))
+    : directory.results
   const optionCount = results.length
   const searchState = useMemo<UserSearchState>(() => ({
     status: directory.status,
@@ -90,7 +95,7 @@ export function UserSearchCombobox({
 
   useLayoutEffect(() => {
     if (open) activeOptionRef.current?.scrollIntoView({ block: 'nearest' })
-  }, [activeIndex, open, results])
+  }, [activeIndex, open, directory.results, optionCount])
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (disabled || isImeComposing(event)) return

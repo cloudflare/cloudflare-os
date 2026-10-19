@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
+import type { RpcPromise } from 'capnweb'
 import type { UserDirectoryRecord } from '@gadgets/workshop-shared/api'
 
-type Search = (query: string) => Promise<UserDirectoryRecord[]>
+type Search = (query: string) => RpcPromise<UserDirectoryRecord[]>
 type SearchSnapshot = {
   status: 'loading' | 'failed' | 'ready'
   query: string
@@ -36,10 +37,17 @@ export function useUserDirectorySearch({
       return
     }
     let cancelled = false
+    let request: RpcPromise<UserDirectoryRecord[]> | undefined
     setSnapshot({ status: 'loading', query, results: [], search })
     // Every keystroke from every user would otherwise hit the one directory DO.
     const timer = window.setTimeout(() => {
-      search(query).then(
+      const pending = search(query)
+      request = pending
+      pending.finally(() => {
+        if (request !== pending) return
+        request = undefined
+        pending[Symbol.dispose]()
+      }).then(
         users => {
           if (!cancelled) setSnapshot({ status: 'ready', query, results: users, search })
         },
@@ -53,6 +61,8 @@ export function useUserDirectorySearch({
     return () => {
       cancelled = true
       window.clearTimeout(timer)
+      request?.[Symbol.dispose]()
+      request = undefined
     }
   }, [query, search, searching])
 

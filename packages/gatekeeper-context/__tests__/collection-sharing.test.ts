@@ -45,7 +45,7 @@ async function createCollection(owner: string): Promise<string> {
     id, title: "Runbooks", description: "", visibility: "private",
     created: now, lastUpdated: now, documentCount: 0, content: { source: "web" },
   }, domain, owner);
-  await library(owner).createOwnedCollection(id, "Runbooks", "");
+  await library(owner).createOwnedCollection(id);
   return id;
 }
 
@@ -53,19 +53,31 @@ async function libraryIds(accountId: string): Promise<string[]> {
   return (await library(accountId).listLibrary(domain, accountId)).map(entry => entry.id);
 }
 
+/** Every collection ID in an account's library index, whether or not the account still has access. */
+async function indexedIds(accountId: string): Promise<string[]> {
+  return runInDurableObject(library(accountId), (_instance, state) =>
+    ["ownedCollections:", "sharedCollections:"]
+      .flatMap(prefix => [...state.storage.kv.list({ prefix })].map(([key]) => key.slice(prefix.length)))
+      .toSorted());
+}
+
 async function permissions(id: string, accountId: string) {
   return collectionPermissions(await collection(id).getAccess(accountId), false);
 }
 
-/** A management API for `accountId` whose user picker resolves tickets to `accounts`. */
-function api(accountId: string, accounts: { domain: string; accountId: string }[]) {
+/**
+ * A management API for `accountId` whose user picker resolves tickets to `accounts`. An
+ * `unreachable` account's verifier fails as an outage would.
+ */
+function api(
+    accountId: string, accounts: { domain: string; accountId: string; unreachable?: true }[]) {
   let exchange = {
     async redeem() {
       return accounts.map(account => ({
         verifier: {
           async getAccountId(sharingDomain: string) {
-            if (sharingDomain !== account.domain) throw new Error("other domain");
-            return account.accountId;
+            if (account.unreachable) throw new Error("Verifier unavailable.");
+            return sharingDomain === account.domain ? account.accountId : null;
           },
         },
         profile: { displayName: account.accountId },
@@ -107,6 +119,14 @@ function fakeArtifacts() {
       fake.activeTokens.delete(tokenId);
       return true;
     },
+    async listTokens() {
+      if (fake.failRevocations) throw new Error("Artifacts is unavailable.");
+      return {
+        tokens: [...fake.activeTokens].map(id => ({
+          id, scope: "write", state: "active", expiresAt: new Date().toISOString(),
+        })),
+      };
+    },
   };
   fake.binding = {
     async create(name: string) {
@@ -135,8 +155,8 @@ async function createGitCollection(artifacts: Artifacts) {
     created: now, lastUpdated: now, documentCount: 0,
     content: { source: "git", remote: "", branch: "main", lastRefreshedAt: now },
   }, domain, "alice");
-  await library("alice").createOwnedCollection(id, "Mirror", "");
-  await stub.share("alice", "bob", "editor", "bob");
+  await library("alice").createOwnedCollection(id);
+  await stub.share("alice", [{ accountId: "bob", displayName: "bob" }], "editor");
   return stub;
 }
 
@@ -155,13 +175,13 @@ describe("collection sharing", () => {
     });
     await expect(api("bob", []).putContextDocument(id, "a.md", { description: "", body: "x" }))
       .rejects.toThrow("Collection not found or you don't have access.");
-    await expect(settled(collection(id).share("bob", "carol", "viewer", "carol")))
+    await expect(settled(collection(id).share("bob", [{ accountId: "carol", displayName: "carol" }], "viewer")))
       .rejects.toThrow("Only editors and owners");
   });
 
   it("lets a viewer leave, after which it is gone from their library", async () => {
     let id = await createCollection("alice");
-    await collection(id).share("alice", "bob", "viewer", "bob");
+    await collection(id).share("alice", [{ accountId: "bob", displayName: "bob" }], "viewer");
     await api("bob", []).leaveContextCollection(id);
 
     expect(await libraryIds("bob")).toEqual([]);
@@ -182,11 +202,11 @@ describe("collection sharing", () => {
 
   it("lets editors share as viewer or editor but not touch ownership", async () => {
     let id = await createCollection("alice");
-    await collection(id).share("alice", "bob", "editor", "bob");
+    await collection(id).share("alice", [{ accountId: "bob", displayName: "bob" }], "editor");
 
-    await collection(id).share("bob", "carol", "editor", "carol");
+    await collection(id).share("bob", [{ accountId: "carol", displayName: "carol" }], "editor");
     expect(await permissions(id, "carol")).toMatchObject({ canEdit: true, canDelete: false });
-    await expect(settled(collection(id).share("bob", "dave", "owner", "dave")))
+    await expect(settled(collection(id).share("bob", [{ accountId: "dave", displayName: "dave" }], "owner")))
       .rejects.toThrow("Only owners can change who owns this collection.");
     await expect(settled(collection(id).setMemberRole("bob", "alice", "editor")))
       .rejects.toThrow("Only owners can change who owns this collection.");
@@ -201,14 +221,14 @@ describe("collection sharing", () => {
     await expect(settled(collection(id).setMemberRole("alice", "alice", "editor")))
       .rejects.toThrow("A collection needs an owner.");
 
-    await collection(id).share("alice", "bob", "owner", "bob");
+    await collection(id).share("alice", [{ accountId: "bob", displayName: "bob" }], "owner");
     await collection(id).removeMember("alice", "alice");
 
     expect(await libraryIds("alice")).toEqual([]);
     expect(canReadCollection(await collection(id).getAccess("alice"))).toBe(false);
     expect(await permissions(id, "bob")).toMatchObject({ canManageOwners: true, canDelete: true });
     // Owners are peers: the new owner may remove another owner, but never the last one.
-    await collection(id).share("bob", "carol", "owner", "carol");
+    await collection(id).share("bob", [{ accountId: "carol", displayName: "carol" }], "owner");
     await collection(id).removeMember("carol", "bob");
     expect((await collection(id).getSharing("carol")).members.map(member => member.memberId))
       .toEqual(["carol"]);
@@ -216,19 +236,19 @@ describe("collection sharing", () => {
 
   it("revokes access despite a stale library entry", async () => {
     let id = await createCollection("alice");
-    await collection(id).share("alice", "bob", "viewer", "bob");
+    await collection(id).share("alice", [{ accountId: "bob", displayName: "bob" }], "viewer");
     await collection(id).removeMember("alice", "bob");
     // A library write that failed or raced leaves an entry behind; listings must ignore it.
     await library("bob").addSharedCollection(id);
 
     expect(await libraryIds("bob")).toEqual([]);
-    expect(await library("bob").hasLibraryCollection(domain, "bob", id)).toBe(false);
+    expect(await library("bob").hasPrivateLibraryCollection(domain, "bob", id)).toBe(false);
     expect(canReadCollection(await collection(id).getAccess("bob"))).toBe(false);
   });
 
   it("makes everyone-viewable a read permission only, independent of grants", async () => {
     let id = await createCollection("alice");
-    await collection(id).share("alice", "bob", "viewer", "bob");
+    await collection(id).share("alice", [{ accountId: "bob", displayName: "bob" }], "viewer");
     await collection(id).setEveryoneCanView("alice", true);
 
     expect(canReadCollection(await collection(id).getAccess("stranger"))).toBe(true);
@@ -250,7 +270,7 @@ describe("collection sharing", () => {
 
   it("keeps a disconnected last owner's shared collection for its members", async () => {
     let id = await createCollection("alice");
-    await collection(id).share("alice", "bob", "editor", "bob");
+    await collection(id).share("alice", [{ accountId: "bob", displayName: "bob" }], "editor");
     await collection(id).removeAccount("alice");
 
     let access = await collection(id).getAccess("bob");
@@ -258,7 +278,7 @@ describe("collection sharing", () => {
     expect(await permissions(id, "bob")).toEqual({
       canEdit: true, canShare: true, canManageOwners: false, canDelete: false,
     });
-    await expect(settled(collection(id).share("bob", "bob", "owner", "bob")))
+    await expect(settled(collection(id).share("bob", [{ accountId: "bob", displayName: "bob" }], "owner")))
       .rejects.toThrow("Only owners can change who owns this collection.");
     await expect(api("bob", []).deleteContextCollection(id)).rejects.toThrow();
     expect(await libraryIds("bob")).toEqual([id]);
@@ -270,7 +290,7 @@ describe("collection sharing", () => {
 
   it("leaves a collection unchanged when one of several owners disconnects", async () => {
     let id = await createCollection("alice");
-    await collection(id).share("alice", "bob", "owner", "bob");
+    await collection(id).share("alice", [{ accountId: "bob", displayName: "bob" }], "owner");
     await collection(id).removeAccount("alice");
 
     expect(await collection(id).getAccess("bob")).toMatchObject({ hasOwner: true, role: "owner" });
@@ -288,15 +308,68 @@ describe("collection sharing", () => {
 
   it("keeps a member's grant and library entry in step when re-sharing races removal", async () => {
     let id = await createCollection("alice");
-    await collection(id).share("alice", "bob", "viewer", "bob");
+    await collection(id).share("alice", [{ accountId: "bob", displayName: "bob" }], "viewer");
     await runInDurableObject(collection(id), (instance: ContextCollectionDurableObject) =>
       Promise.all([
-        instance.share("alice", "bob", "editor", "bob"),
+        instance.share("alice", [{ accountId: "bob", displayName: "bob" }], "editor"),
         instance.removeMember("alice", "bob"),
       ]));
 
     expect((await collection(id).getAccess("bob")).role).toBeNull();
-    expect(await library("bob").listIndexedCollectionIds()).toEqual([]);
+    expect(await indexedIds("bob")).toEqual([]);
+  });
+
+  it("deletes an everyone-viewable collection once its last member is gone", async () => {
+    let disconnected = await createCollection("alice");
+    await collection(disconnected).setEveryoneCanView("alice", true);
+    await collection(disconnected).removeAccount("alice");
+    expect((await collection(disconnected).getAccess("stranger")).exists).toBe(false);
+
+    let left = await createCollection("alice");
+    await collection(left).share("alice", [{ accountId: "bob", displayName: "bob" }], "editor");
+    await collection(left).setEveryoneCanView("bob", true);
+    await collection(left).removeAccount("alice");
+    await collection(left).removeMember("bob", "bob");
+    expect((await collection(left).getAccess("stranger")).exists).toBe(false);
+  });
+
+  it("forgets entries of deleted collections, and lists the rest when one can't be reached", async () => {
+    let gone = await createCollection("alice");
+    let kept = await createCollection("alice");
+    let unreachable = await createCollection("alice");
+    await collection(gone).deleteSelf();
+    // As a share racing the deletion would leave it.
+    await library("alice").addSharedCollection(gone);
+    await runInDurableObject(collection(unreachable), (instance: ContextCollectionDurableObject) => {
+      instance.getLibraryEntry = () => { throw new Error("Collection unavailable."); };
+    });
+
+    expect(await libraryIds("alice")).toEqual([kept]);
+    expect(await indexedIds("alice")).toEqual([kept, unreachable].toSorted());
+  });
+
+  it("refuses a share that lands while the recipient is disconnecting", async () => {
+    let id = await createCollection("alice");
+    let bob = [{ accountId: "bob", displayName: "bob" }];
+    expect(await library("bob").beginDisconnect()).toEqual([]);
+    await expect(settled(collection(id).share("alice", bob, "viewer"))).rejects.toThrow("disconnected");
+    await library("bob").finishDisconnect();
+    await expect(settled(collection(id).share("alice", bob, "viewer"))).rejects.toThrow("disconnected");
+
+    expect((await collection(id).getAccess("bob")).role).toBeNull();
+    expect(await indexedIds("bob")).toEqual([]);
+  });
+
+  it("shares with all of a person's accounts or none", async () => {
+    let id = await createCollection("alice");
+    await library("carol").beginDisconnect();
+    await expect(api("alice", [{ domain, accountId: "bob" }, { domain, accountId: "carol" }])
+      .shareContextCollection(id, "ticket", "viewer")).rejects.toThrow("disconnected");
+    expect((await collection(id).getAccess("bob")).role).toBeNull();
+
+    // A verifier that can't be asked is an error to retry, not a person without Skills.
+    await expect(api("alice", [{ domain, accountId: "bob", unreachable: true }])
+      .shareContextCollection(id, "ticket", "viewer")).rejects.toThrow("Verifier unavailable.");
   });
 });
 
@@ -379,5 +452,38 @@ describe("git tokens of members who lose write access", () => {
     artifacts.failRevocations = false;
     await stub.setMemberRole("alice", "bob", "viewer");
     expect(artifacts.revoked).toContain(token.id);
+  });
+
+  it("revokes the creator's tokens from before sharing once the creator loses write access", async () => {
+    let artifacts = fakeArtifacts();
+    let stub = await createGitCollection(artifacts.binding);
+    // Minted before sharing existed, so it has no issuer record.
+    artifacts.activeTokens.add("legacy-token");
+    let bobToken = await stub.createGitToken("bob");
+
+    await stub.setMemberRole("alice", "bob", "owner");
+    expect(artifacts.activeTokens.has("legacy-token")).toBe(true);
+
+    await stub.setMemberRole("bob", "alice", "viewer");
+    expect(artifacts.revoked).toContain("legacy-token");
+    expect(artifacts.activeTokens.has(bobToken.id)).toBe(true);
+  });
+
+  it("finishes a pending mint before deleting, and mints nothing afterwards", async () => {
+    let artifacts = fakeArtifacts();
+    let stub = await createGitCollection(artifacts.binding);
+    await runInDurableObject(stub, async (instance: ContextCollectionDurableObject, state) => {
+      let releaseMint = artifacts.holdMints();
+      let mint = instance.createGitToken("bob");
+      let deletion = instance.deleteSelf();
+      await Promise.race([deletion, scheduler.wait(100)]);
+      releaseMint();
+      let token = await mint;
+      await deletion;
+      expect(artifacts.activeTokens.has(token.id)).toBe(false);
+      expect((await state.storage.list()).size).toBe(0);
+    });
+
+    await expect(settled(stub.createGitToken("bob"))).rejects.toThrow("Collection not found");
   });
 });
