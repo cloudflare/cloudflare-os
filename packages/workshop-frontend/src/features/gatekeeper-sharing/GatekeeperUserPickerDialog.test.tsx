@@ -207,6 +207,30 @@ describe("GatekeeperUserPickerDialog", () => {
     expect(shown()).toEqual([`${CAROL.name}${CAROL.id}`]);
   });
 
+  it("refreshes a search that excluded a pending person when their delivery fails", async () => {
+    const delivery = Promise.withResolvers<void>();
+    const { searchUsers, createSelection, props } = await mount(mintFor, () => delivery.promise, {
+      searchEnabled: true,
+      searchUsers: (_query, excludeIds) => new RpcPromise(Promise.resolve(
+        [ALICE].filter(user => !excludeIds.includes(user.id)),
+      )),
+    });
+
+    await act(async () => props().onSelect(ALICE));
+    await searchFor("alice");
+    expect(options()).toEqual([]);
+    expect(searchUsers).toHaveBeenCalledExactlyOnceWith("alice", [ALICE.id]);
+
+    await act(async () => delivery.reject(new Error("Try again.")));
+    await act(async () => vi.advanceTimersByTimeAsync(200));
+    expect(notice()).toBe("Alice: Try again.");
+    expect(searchUsers).toHaveBeenLastCalledWith("alice", []);
+    expect(options().map(option => option.textContent)).toEqual([`${ALICE.name}${ALICE.id}`]);
+
+    await act(async () => options()[0].click());
+    expect(createSelection).toHaveBeenCalledTimes(2);
+  });
+
   it("shows the app's own error for a selection it rejected, leaving the person unselected", async () => {
     const { searchUsers, createSelection, props } = await mount(
       mintFor, async () => { throw new Error("Collection not found."); });

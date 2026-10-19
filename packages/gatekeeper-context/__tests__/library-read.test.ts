@@ -38,7 +38,7 @@ const DOCUMENT = {
 };
 
 // The owner's library: one public collection and one private collection.
-function makeSession() {
+function makeSession({ publicDiscoveryFails = false } = {}) {
   let kv = makeKv();
   let strategy = contextObserverStrategy(kv, DOMAIN);
   let authorized: ObservationDescription[] = [];
@@ -57,6 +57,9 @@ function makeSession() {
       },
       async listContextDocuments() { return [DOCUMENT]; },
       async getContextDocument() { return DOCUMENT; },
+      async search() {
+        return [{ path: DOCUMENT.path, name: DOCUMENT.name, description: DOCUMENT.description, score: 1 }];
+      },
     }),
   } as unknown as DurableObjectNamespace<ContextCollectionDurableObject>;
   let userLibraries = {
@@ -72,7 +75,10 @@ function makeSession() {
   } as unknown as DurableObjectNamespace<UserLibraryDurableObject>;
   let env = {
     CONTEXT_COLLECTIONS: {
-      async get() { return JSON.stringify([{ id: "public", lastUpdated: new Date() }]); },
+      async get() {
+        if (publicDiscoveryFails) throw new Error("Public discovery is unavailable.");
+        return JSON.stringify([{ id: "public", lastUpdated: new Date() }]);
+      },
     },
   } as unknown as Pick<Cloudflare.Env, "CONTEXT_COLLECTIONS">;
   let session = new LibraryReadSession(
@@ -111,5 +117,17 @@ describe("LibraryReadSession sharing", () => {
         .rejects.toThrow(CONTEXT_OBSERVER_DENIED);
       await strategy.addObserver("owner-account", verifier(["public", "private"]));
     }
+  });
+
+  it("reads, lists and searches a private collection while public discovery is unavailable", async () => {
+    let { session } = makeSession({ publicDiscoveryFails: true });
+
+    expect(await session.read("private/plan.md")).toMatchObject({
+      docId: "private/plan.md", content: "Ship it.",
+    });
+    expect((await session.list({ collectionId: "private" })).entries)
+      .toMatchObject([{ path: "plan.md", type: "document" }]);
+    expect(await session.search("plan", { collectionId: "private" }))
+      .toMatchObject([{ docId: "private/plan.md", collectionId: "private" }]);
   });
 });

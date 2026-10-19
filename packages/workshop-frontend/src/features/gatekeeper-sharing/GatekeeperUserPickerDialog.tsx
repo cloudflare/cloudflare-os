@@ -46,6 +46,7 @@ export default function GatekeeperUserPickerDialog({
   onCancel,
 }: Props) {
   const [query, setQuery] = useState('')
+  const [searchRevision, setSearchRevision] = useState(0)
   const [picked, setPicked] = useState<PickedPerson[]>([])
   // Picks whose minting or delivery hasn't settled yet, by user id. Closing waits for them so the
   // app has every selection the user made before `selectUsers()` resolves.
@@ -92,11 +93,11 @@ export default function GatekeeperUserPickerDialog({
   }, [closing, onClose, pending.length])
 
   const excludeIds = [...picked.map(({ id }) => id), ...pending]
-  // Exclusions are read when each search is issued, so a pick never re-runs the current query;
-  // the combobox hides people picked after it was issued.
+  // Successful picks stay excluded without re-running the query. Failed picks invalidate it:
+  // the server may have omitted them from results fetched while they were pending.
   const search = useCallback(
     (value: string) => authenticatedApi.searchUsers(value, [...accepted.current, ...reserved.current]),
-    [authenticatedApi])
+    [authenticatedApi, searchRevision])
   const atLimit = picked.length + pending.length >= MAX_PICKED_PEOPLE
 
   const pick = (user: UserDirectoryRecord) => {
@@ -135,7 +136,10 @@ export default function GatekeeperUserPickerDialog({
         : `Couldn't select ${user.name}. Try again.`)
     }).finally(() => {
       reserved.current.delete(user.id)
-      if (active.current) setPending((current) => current.filter((id) => id !== user.id))
+      if (active.current) {
+        setPending((current) => current.filter((id) => id !== user.id))
+        if (!accepted.current.has(user.id)) setSearchRevision((current) => current + 1)
+      }
     })
   }
 

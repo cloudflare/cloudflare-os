@@ -44,7 +44,8 @@ Ownership invariants, pending product confirmation:
 - Owners are peers: any owner can demote or remove any other owner.
 - No management operation may leave a collection without an owner. The last owner cannot demote
   or remove themselves; they transfer ownership by granting `owner` to someone else first, or
-  delete the collection.
+  delete the collection. A single user-selection ticket may name several accounts: reject a batch
+  that would demote every owner, even when each account could be demoted individually.
 - Editors cannot change any owner's grant.
 
 Owner account deletion: disconnecting an optional Context account calls `ContextAccount.revoke()`,
@@ -156,6 +157,8 @@ there is no push from the library to open UIs.
 that cached membership as authorization after introducing sharing: existing sessions must honor
 revocation and must not indefinitely miss new shares. Apply live access checks before revealing
 content or catalog metadata.
+Scoped reads, listings, and searches check live private membership before public discovery, so
+access to an owned or shared private collection does not depend on the public-collection KV snapshot.
 
 Drop collection title uniqueness. It was added in #504 as a navigator convenience, not an
 invariant: collections are keyed by ID everywhere, and a share cannot be refused because the

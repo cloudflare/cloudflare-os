@@ -388,6 +388,13 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
       role: ContextCollectionRole): Promise<void> {
     await this.#serializeAccessChange(async () => {
       for (let { accountId } of recipients) this.#authorizeGrantChange(actorId, accountId, role);
+      if (role !== "owner") {
+        let recipientIds = new Set(recipients.map(recipient => recipient.accountId));
+        let owners = [...this.storage.grants.list()].filter(grant => grant.role === "owner");
+        if (owners.length > 0 && owners.every(owner => recipientIds.has(owner.accountId))) {
+          throw new Error("A collection needs an owner. Make someone else an owner first.");
+        }
+      }
       let id = this.getMetadata().id;
       await Promise.all(recipients.map(({ accountId }) =>
         this.#library(accountId).addSharedCollection(id)));

@@ -71,8 +71,8 @@ export class LibraryReadSession extends RpcTarget implements ContextLibrary {
   }
 
   async #inLibrary(collectionId: string): Promise<boolean> {
-    return (await this.#publicCollectionIds()).includes(collectionId)
-      || this.#userLib().hasPrivateLibraryCollection(this.domain, this.accountId, collectionId);
+    return await this.#userLib().hasPrivateLibraryCollection(this.domain, this.accountId, collectionId)
+      || (await this.#publicCollectionIds()).includes(collectionId);
   }
 
   // A read revealing no collection contents is authorized against the admission baseline, so it

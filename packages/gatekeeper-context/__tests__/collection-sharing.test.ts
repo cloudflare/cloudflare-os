@@ -234,6 +234,25 @@ describe("collection sharing", () => {
       .toEqual(["carol"]);
   });
 
+  it("keeps an owner across all accounts in one user selection", async () => {
+    let id = await createCollection("alice");
+    await collection(id).share("alice", [{ accountId: "alice-other", displayName: "Alice" }], "owner");
+    let selected = api("alice", [
+      { domain, accountId: "alice" },
+      { domain, accountId: "alice-other" },
+    ]);
+
+    await expect(selected.shareContextCollection(id, "ticket", "viewer"))
+      .rejects.toThrow("A collection needs an owner.");
+    expect((await collection(id).getSharing("alice")).members.map(member => member.role))
+      .toEqual(["owner", "owner"]);
+
+    await collection(id).share("alice", [{ accountId: "bob", displayName: "Bob" }], "owner");
+    await selected.shareContextCollection(id, "another-ticket", "viewer");
+    expect((await collection(id).getSharing("bob")).members.map(member => [member.memberId, member.role]))
+      .toEqual([["bob", "owner"], ["alice", "viewer"], ["alice-other", "viewer"]]);
+  });
+
   it("revokes access despite a stale library entry", async () => {
     let id = await createCollection("alice");
     await collection(id).share("alice", [{ accountId: "bob", displayName: "bob" }], "viewer");

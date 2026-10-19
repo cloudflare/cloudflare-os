@@ -337,7 +337,7 @@ export const ShareCollectionDialog = ({
                 />
               )}
 
-              <div className="flex flex-wrap items-center gap-2 rounded-xl bg-kumo-tint p-3">
+              <div className="flex flex-wrap items-center gap-x-0 gap-y-2 rounded-xl bg-kumo-tint p-3">
                 <Text>Add users with role</Text>
                 <DropdownMenu>
                   <DropdownMenu.Trigger

@@ -27,6 +27,8 @@ offer an exact-username/email fallback. With search disabled, users enter an exa
 directly. Arrow keys navigate options while focus stays in the input; Tab moves to the next control
 without selecting a user. Picking someone does not re-run the current search: people already added
 or being added are excluded when each search is issued and hidden from results returned earlier.
+If minting or delivery fails, the current query is refreshed so the person can be selected again,
+including when the server excluded them from a search made while their selection was pending.
 Each person the app accepts is announced to assistive technology by their snapshotted name.
 
 **Done** and the close button both wait for ticket minting and selection deliveries before closing.
