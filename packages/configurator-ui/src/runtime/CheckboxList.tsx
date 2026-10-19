@@ -1,6 +1,9 @@
+import { Badge } from "@cloudflare/kumo/components/badge";
 import { Button } from "@cloudflare/kumo/components/button";
 import { Checkbox } from "@cloudflare/kumo/components/checkbox";
-import { useEffect, useEffectEvent, useState } from "react";
+import { Field } from "@cloudflare/kumo/primitives/field";
+import { cn } from "@cloudflare/kumo/utils";
+import { useEffect, useEffectEvent, useId, useState } from "react";
 import type { CheckboxListProps, ConfiguratorUIOption } from "../index.ts";
 import { useFieldLabel } from "./Field.tsx";
 import { FilterInput } from "./FilterInput.tsx";
@@ -17,6 +20,47 @@ const FILTER_THRESHOLD = 6;
 const ListStatus = ({ name, text }: { name?: string; text: string }) => (
   <p data-name={name} className="m-0 text-sm text-kumo-subtle">{text}</p>
 );
+
+type OptionRowProps = {
+  option: ConfiguratorUIOption;
+  checked: boolean;
+  disabled: boolean;
+  onToggle(): void;
+};
+
+/**
+ * One option, toggled from anywhere on its row. Its own field, as in Kumo's labelled `Checkbox`, so
+ * the list's field label names none of the checkboxes; the title names it and the rest describes it.
+ */
+const OptionRow = ({ option, checked, disabled, onToggle }: OptionRowProps) => {
+  const id = useId();
+  const describedBy = [option.subtitle && `${id}-subtitle`, option.meta && `${id}-meta`]
+    .filter(Boolean).join(" ");
+  return (
+    <Field.Root>
+      <Field.Label
+        className={cn("flex items-start gap-3 rounded-md px-2 py-1.5 text-sm",
+          disabled ? "cursor-not-allowed" : "cursor-pointer hover:bg-kumo-tint")}
+      >
+        <Checkbox
+          className="mt-0.5"
+          checked={checked}
+          disabled={disabled}
+          onCheckedChange={onToggle}
+          aria-labelledby={`${id}-title`}
+          aria-describedby={describedBy || undefined}
+        />
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span id={`${id}-title`} className="truncate">{option.title}</span>
+          {option.subtitle ? (
+            <span id={`${id}-subtitle`} className="truncate text-xs text-kumo-subtle">{option.subtitle}</span>
+          ) : null}
+        </span>
+        {option.meta ? <Badge variant="secondary"><span id={`${id}-meta`}>{option.meta}</span></Badge> : null}
+      </Field.Label>
+    </Field.Root>
+  );
+};
 
 /** One list's load, and its options once they arrive. */
 type OptionsLoad = { promise: Promise<ConfiguratorUIOption[]>; options?: ConfiguratorUIOption[] };
@@ -117,84 +161,65 @@ const NamedCheckboxList = ({
   const clearable = matches.filter(option => selected.has(option.value));
 
   return (
-    <div data-name={name} className="grid gap-2">
-      {showFilter ? (
-        <FilterInput label="Filter options" placeholder="Filter..." value={filter} disabled={disabled}
-          onChange={text => store.setFilter(name, text)} />
-      ) : null}
-
-      <div className="flex items-baseline justify-between gap-3">
-        <span className={selected.size > 0 ? "text-sm font-medium" : "text-sm text-kumo-subtle"}>
+    // Spans the field's grid: Kumo's `Field` lays out any field holding a checkbox as one checkbox
+    // beside its label, which would push the label of a whole list into a column of its own.
+    <div data-name={name}
+      className="col-span-full flex flex-col overflow-hidden rounded-lg border border-kumo-line bg-kumo-base">
+      <div className="flex min-h-11 flex-wrap items-center gap-x-3 gap-y-2 border-b border-kumo-line p-2 pl-3">
+        {showFilter ? (
+          <div className="min-w-40 flex-1">
+            <FilterInput label="Filter options" placeholder="Filter..." value={filter} disabled={disabled}
+              onChange={text => store.setFilter(name, text)} />
+          </div>
+        ) : null}
+        <span className={cn("text-sm", !showFilter && "flex-1", selected.size > 0 ? "font-medium" : "text-kumo-subtle")}>
           {selected.size > 0
             ? `${selected.size} of ${options.length} selected`
             : `None of ${options.length} selected`}
         </span>
-        <span className="flex shrink-0 gap-1">
-          {selectable.length > 0 ? (
-            <Button
-              variant="ghost"
-              size="xs"
-              disabled={disabled}
-              onClick={() => emit(new Set([...selected, ...selectable.map(option => option.value)]))}
-            >
-              {needle ? `Select ${matches.length} shown` : "Select all"}
-            </Button>
-          ) : null}
-          {clearable.length > 0 ? (
-            <Button
-              variant="ghost"
-              size="xs"
-              disabled={disabled}
-              onClick={() => {
-                const next = new Set(selected);
-                for (const option of clearable) next.delete(option.value);
-                emit(next);
-              }}
-            >
-              {needle ? `Clear ${clearable.length} shown` : "Clear"}
-            </Button>
-          ) : null}
-        </span>
+        {disabled ? null : (
+          <span className="flex shrink-0 gap-1">
+            {selectable.length > 0 ? (
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => emit(new Set([...selected, ...selectable.map(option => option.value)]))}
+              >
+                {needle ? `Select ${matches.length} shown` : "Select all"}
+              </Button>
+            ) : null}
+            {clearable.length > 0 ? (
+              <Button
+                variant="ghost"
+                size="xs"
+                onClick={() => {
+                  const next = new Set(selected);
+                  for (const option of clearable) next.delete(option.value);
+                  emit(next);
+                }}
+              >
+                {needle ? `Clear ${clearable.length} shown` : "Clear"}
+              </Button>
+            ) : null}
+          </span>
+        )}
       </div>
 
       {matches.length === 0 ? (
-        <ListStatus text={`Nothing matches "${filter.trim()}".`} />
+        <p className="m-0 p-3 text-sm text-kumo-subtle">{`Nothing matches "${filter.trim()}".`}</p>
       ) : (
         // Keyed by the filter so a new filter starts at the top, while selecting keeps the scroll.
         <div key={needle} role="group" aria-label={fieldLabel ?? undefined}
-          className="grid max-h-66 gap-0.5 overflow-y-auto p-px">
-          {matches.map(option => {
-            const isSelected = selected.has(option.value);
-            return (
-              <div
-                key={option.value}
-                className={isSelected
-                  ? "rounded-md px-2.5 py-2 ring ring-kumo-interact bg-kumo-tint"
-                  : "rounded-md px-2.5 py-2 hover:bg-kumo-elevated"}
-              >
-                <Checkbox
-                  checked={isSelected}
-                  disabled={disabled}
-                  onCheckedChange={() => toggle(option.value)}
-                  label={(
-                    <span className="grid min-w-0 gap-px">
-                      <span className="flex min-w-0 items-baseline gap-2">
-                        <span className="truncate">{option.title}</span>
-                        {option.meta ? (
-                          <span className="ml-auto shrink-0 rounded bg-kumo-elevated px-1.5 text-xs text-kumo-subtle">
-                            {option.meta}
-                          </span>
-                        ) : null}
-                      </span>
-                      {option.subtitle ? (
-                        <span className="truncate text-sm text-kumo-subtle">{option.subtitle}</span>
-                      ) : null}
-                    </span>
-                  )}
-                />
-              </div>
-            );
-          })}
+          className="flex max-h-66 flex-col overflow-y-auto p-1">
+          {matches.map(option => (
+            <OptionRow
+              key={option.value}
+              option={option}
+              checked={selected.has(option.value)}
+              disabled={disabled}
+              onToggle={() => toggle(option.value)}
+            />
+          ))}
         </div>
       )}
     </div>
