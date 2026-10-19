@@ -461,6 +461,40 @@ describe("a value the module sets", () => {
     await expect.element(option("Everything in Reports")).toHaveAttribute("aria-selected", "true");
     expect(loadItem).toHaveBeenCalledExactlyOnceWith("reports");
   });
+
+  it("lets go of a locked leaf the module sets, though the listing shows it", async () => {
+    const loadItem = vi.fn(async (): Promise<Item | null> => ({ ...locked, path: [] }));
+    const onChange = await render({ loadItems: source(), loadItem });
+    await expect.element(option("Locked.doc")).toBeVisible();
+
+    await act(() => setFromModule("locked"));
+
+    await expect.poll(() => onChange.mock.lastCall).toEqual([null, null]);
+    await expect.element(option("Locked.doc")).toHaveAttribute("aria-selected", "false");
+  });
+
+  it("goes back to a pick the module takes while the next search is being typed", async () => {
+    const loadItem = vi.fn(async (): Promise<Item | null> => ({ ...q1, path: [{ id: "reports", title: "Reports" }] }));
+    await render({
+      loadItems: source({ q1: [q1] }), loadItem, searchPlaceholder: "Search Drive", accepts: () => false,
+    });
+    const search = page.getByRole("searchbox", { name: "Search Drive" });
+    await userEvent.fill(search, "q1");
+    await userEvent.click(option("Q1.pdf"));
+
+    // Typed, then the pick taken, before the debounced search starts: the rows showing it are about
+    // to give way.
+    const input = search.element() as HTMLInputElement;
+    await act(() => {
+      input.value = "q2";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      setFromModule("q1");
+    });
+
+    await expect.element(list()).toHaveAccessibleName("Reports");
+    await expect.element(option("Q1.pdf")).toHaveAttribute("aria-selected", "true");
+    expect(loadItem).toHaveBeenCalledExactlyOnceWith("q1");
+  });
 });
 
 describe("loading", () => {

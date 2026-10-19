@@ -322,10 +322,13 @@ const Navigator = (props: HierarchyPickerProps) => {
   const searchOpen = searchFocused || text !== "";
   const focusId = activeId !== null && rowIds.includes(activeId) ? activeId : rowIds[0];
   const rootChosen = root.selectable === true && value === root.id;
-  // A choice is on screen on the root's card, the open container's own row, or a leaf's row. A
-  // container's row in a listing opens it, so its choice is the row it opens to.
-  const choiceShown = value !== null && (rootChosen || value === scope?.id
-    || rows.some(row => row.kind === "leaf" && row.id === value));
+  // Rows about to give way to the search being typed are no longer in view; the root's card is.
+  const settled = text.trim() === query;
+  // A choice is on screen on the root's card, the open container's own row, or the row of a leaf
+  // that can be chosen. A container's row in a listing opens it, so its choice is the row it opens to.
+  const showsChoice = (item: Item) => item.kind === "leaf" && item.selectable === true && item.id === value;
+  const choiceShown = value !== null
+    && (rootChosen || settled && (value === scope?.id || rows.some(showsChoice)));
   if (value !== seenValue) {
     setSeenValue(value);
     if (value !== null && !choiceShown) {
@@ -383,8 +386,7 @@ const Navigator = (props: HierarchyPickerProps) => {
   };
 
   const select = (item: Item) => {
-    // Rows about to give way to the search being typed are no longer in view; the root's card is.
-    if (disabled || item.id === value || (item.id !== root.id && text.trim() !== query)) return;
+    if (disabled || item.id === value || (item.id !== root.id && !settled)) return;
     setPendingPrefill(null);
     props.onChange(item.id, item);
   };
@@ -633,7 +635,7 @@ const Navigator = (props: HierarchyPickerProps) => {
               subtitle={query ? searchSubtitle(item) : item.subtitle}
               icon={iconFor(item.icon, item.kind)}
               action={item.kind === "container" ? "open" : item.selectable ? "choose" : "none"}
-              selected={item.kind === "leaf" && item.id === value}
+              selected={showsChoice(item)}
               disabled={disabled}
               tabbable={focusId === item.id}
               onFocus={() => setActiveId(item.id)}
