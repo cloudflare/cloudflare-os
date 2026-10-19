@@ -340,6 +340,20 @@ describe('GadgetEditor, opening a chat from a notification', () => {
     expect(isChatVisible('workspace', 3)).toBe(false)
     window.history.replaceState(null, '', window.location.pathname)
   })
+
+  it('withdraws the visible chat in the conversation list and restores it on return', async () => {
+    mocks.search = { chat: 3 }
+    await openEditor('desktop')
+    expect(isChatVisible('workspace', 3)).toBe(true)
+
+    mocks.search = {}
+    await openEditor('desktop')
+    expect(isChatVisible('workspace', 3)).toBe(false)
+
+    mocks.search = { chat: 3 }
+    await openEditor('desktop')
+    expect(isChatVisible('workspace', 3)).toBe(true)
+  })
 })
 
 // A use-only collaborator is verified as each gadget opens, so the view gets a gadget's stub only

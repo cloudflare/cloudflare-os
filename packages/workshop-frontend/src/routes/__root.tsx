@@ -16,6 +16,7 @@ import OnboardingWizard from '../OnboardingWizard'
 import AccountSelectionModal from '../components/billing/AccountSelectionModal'
 import { NotificationBridge } from '../features/notifications/NotificationBridge'
 import { BrowserPushBridge } from '../features/notifications/BrowserPushBridge'
+import { UnreadStateBridge } from '../features/notifications/UnreadStateBridge'
 import {
   DeviceSessionHandoff,
   hasDeviceSessionParameters,
@@ -128,14 +129,16 @@ function RootComponent() {
       <FeatureFlagsProvider>
         <TooltipProvider>
           <Toasty>
-            <NotificationBridge authenticatedApi={authenticatedApi} />
-            <BrowserPushBridge />
-            <NativeAppBridge />
-            <PageUpdateNotice />
-            <AuthenticatedShell
-              authenticatedApi={authenticatedApi}
-              isWorkspaceEditor={isWorkspaceEditor}
-            />
+            <UnreadStateBridge authenticatedApi={authenticatedApi}>
+              <NotificationBridge authenticatedApi={authenticatedApi} />
+              <BrowserPushBridge />
+              <NativeAppBridge />
+              <PageUpdateNotice />
+              <AuthenticatedShell
+                authenticatedApi={authenticatedApi}
+                isWorkspaceEditor={isWorkspaceEditor}
+              />
+            </UnreadStateBridge>
           </Toasty>
         </TooltipProvider>
       </FeatureFlagsProvider>
