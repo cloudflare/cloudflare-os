@@ -3,6 +3,7 @@
 // "typescript" (7.x, tsgo), build-time transpilers stay on the JS-based 6.x line.
 import ts from "typescript6";
 import { CONFIGURATOR_MODULE_GLOBAL } from "../src/runtime/moduleGlobal.ts";
+import { sourceTrailer } from "./sourceTrailer.ts";
 
 /** One configurator module, ready to embed in its frame. */
 export type ConfiguratorModule = {
@@ -92,10 +93,7 @@ export const transpileConfiguratorModule = (
   const moduleName = fileName.replace(/\.tsx$/, "");
   const sourceUrl = `${sourceBase}/${moduleName}.js`;
   const mapped = frontendReporting && output.sourceMapText !== undefined;
-  const trailer = mapped
-    ? `//# sourceURL=${sourceUrl}\n//# sourceMappingURL=${sourceUrl}.map`
-    : `//# sourceURL=${sourceUrl}`;
-  const script = `${MODULE_SCRIPT_PREFIX}${body}\n};\n${trailer}`;
+  const script = `${MODULE_SCRIPT_PREFIX}${body}\n};\n${sourceTrailer(sourceUrl, mapped)}`;
   if (!mapped) return { script, sourceMap: null };
 
   const sourceMap = JSON.parse(output.sourceMapText!);

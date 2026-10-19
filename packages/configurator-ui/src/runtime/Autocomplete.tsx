@@ -1,16 +1,10 @@
 import { Combobox } from "@cloudflare/kumo/components/combobox";
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from "react";
 import type { AutocompleteProps, ConfiguratorUIOption } from "../index.ts";
-import { failureMessage, sanitizeOptions } from "./options.ts";
+import { failureMessage, sanitizeOptions, SEARCH_DEBOUNCE_MS, type OptionsState } from "./options.ts";
 import { reportFrontendIssue } from "./reporting.ts";
 import { useConfiguratorState, useConfiguratorStore } from "./storeContext.ts";
 
-type Suggestions =
-  | { status: "loading" }
-  | { status: "ready"; options: ConfiguratorUIOption[] }
-  | { status: "failed"; message: string };
-
-const DEBOUNCE_MS = 180;
 const POPUP_MAX_HEIGHT = 240;
 const POPUP_MIN_HEIGHT = 96;
 const POPUP_MARGIN = 12;
@@ -40,7 +34,6 @@ export const Autocomplete = ({
   const [open, setOpen] = useState(false);
   // Only while open: the host reports the viewport on every frame its modal scrolls.
   const viewport = useConfiguratorState(state => open ? state.viewport : null);
-  const closeRequests = useConfiguratorState(state => state.popupCloseRequests);
   // A disabled field with no value forgets what was typed into it, so enabling it again (once the
   // field it depends on is chosen) starts blank, as configurators written for the old runtime expect.
   const forgetQuery = disabled && !value && storedQuery !== "";
@@ -49,7 +42,7 @@ export const Autocomplete = ({
   }, [forgetQuery, store, queryName]);
   const query = forgetQuery ? "" : storedQuery;
 
-  const [suggestions, setSuggestions] = useState<Suggestions>({ status: "loading" });
+  const [suggestions, setSuggestions] = useState<OptionsState>({ status: "loading" });
   const anchorRef = useRef<HTMLDivElement>(null);
   const requestRef = useRef(0);
   const timerRef = useRef<number | undefined>(undefined);
@@ -74,7 +67,7 @@ export const Autocomplete = ({
     // so a quick Enter cannot pick it and a late reply to that query is discarded.
     requestRef.current++;
     setSuggestions({ status: "loading" });
-    timerRef.current = window.setTimeout(() => void load(text), DEBOUNCE_MS);
+    timerRef.current = window.setTimeout(() => void load(text), SEARCH_DEBOUNCE_MS);
   };
 
   useEffect(() => () => {
@@ -82,17 +75,13 @@ export const Autocomplete = ({
     requestRef.current++;
   }, []);
 
-  // The host resized its window, so the popup's position is stale, or focus left for the host. A
-  // request since mount only: effects run a frame late, and the user may have opened it already.
-  const seenCloseRequests = useRef(closeRequests);
-  useEffect(() => {
-    if (closeRequests === seenCloseRequests.current) return;
-    seenCloseRequests.current = closeRequests;
+  // The host resized its window, so the popup's position is stale, or focus left for the host.
+  useLayoutEffect(() => store.onPopupClose(() => {
     setOpen(false);
     if (anchorRef.current?.contains(document.activeElement)) {
       (document.activeElement as HTMLElement).blur();
     }
-  }, [closeRequests]);
+  }), [store]);
 
   // The frame is only as tall as the form, so the popup is fitted to the host's viewport instead:
   // below the input, down to the bottom of what the host can show.

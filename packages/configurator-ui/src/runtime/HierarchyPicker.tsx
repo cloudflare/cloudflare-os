@@ -11,9 +11,9 @@ import type {
   HierarchyPickerProps,
 } from "../index.ts";
 import { FilterInput } from "./FilterInput.tsx";
-import { displayText, failureMessage, identifier, MAX_OPTIONS } from "./options.ts";
+import { displayText, failureMessage, identifier, MAX_OPTIONS, SEARCH_DEBOUNCE_MS } from "./options.ts";
 import { reportFrontendIssue } from "./reporting.ts";
-import { useConfiguratorStore } from "./storeContext.ts";
+import { useCollectionHold } from "./storeContext.ts";
 
 type Item = ConfiguratorUIHierarchyItem;
 type Ancestor = ConfiguratorUIHierarchyAncestor;
@@ -37,7 +37,6 @@ type Listing = Page & {
   moreMessage?: string;
 };
 
-const SEARCH_DEBOUNCE_MS = 180;
 const AT_ROOT: Location = { trail: [], detached: false };
 
 const sanitizeChoice = (value: unknown): ConfiguratorUIHierarchyChoice | undefined => {
@@ -209,7 +208,6 @@ export const HierarchyPicker = (props: HierarchyPickerProps) =>
 
 const Navigator = (props: HierarchyPickerProps) => {
   const { name, value = null, root, icons, searchPlaceholder, disabled = false } = props;
-  const store = useConfiguratorStore();
 
   // A module's render builds its callbacks afresh on every render, and a new identity must not
   // restart a load.
@@ -241,6 +239,15 @@ const Navigator = (props: HierarchyPickerProps) => {
   // Bumped whenever the listing a response would update is replaced, so a late page is dropped.
   const generation = useRef(0);
 
+  const forgetPrefill = () => {
+    setPendingPrefill(null);
+    setPrefilledLeaf(null);
+  };
+  const clearSearch = () => {
+    setText("");
+    setQuery("");
+  };
+
   const prefilling = pendingPrefill !== null;
   const current = location.trail.at(-1);
   const locationId = current?.id ?? root.id;
@@ -248,10 +255,17 @@ const Navigator = (props: HierarchyPickerProps) => {
 
   useEffect(() => {
     if (pendingPrefill === null) return;
+    /** Shows `item` where it lives, or, with none to show as that choice, leaves nothing chosen. */
+    const settle = (item?: Item) => {
+      if (item) {
+        setLocation(locationOf(item));
+        if (item.kind === "leaf") setPrefilledLeaf(item);
+      } else dropPrefill();
+      setPendingPrefill(null);
+    };
     // An unselectable root is no choice the picker can show, and no node `loadItem` knows.
     if (pendingPrefill === root.id) {
-      dropPrefill();
-      setPendingPrefill(null);
+      settle();
       return;
     }
     let cancelled = false;
@@ -259,18 +273,11 @@ const Navigator = (props: HierarchyPickerProps) => {
       .then(() => loadItem(pendingPrefill))
       .then(sanitizeItem)
       .then(item => {
-        if (cancelled) return;
-        // Shown where it lives, or, when it cannot be shown as that choice, not chosen at all.
-        if (item?.selectable && item.id === pendingPrefill) {
-          setLocation(locationOf(item));
-          if (item.kind === "leaf") setPrefilledLeaf(item);
-        } else dropPrefill();
-        setPendingPrefill(null);
+        if (!cancelled) settle(item?.selectable && item.id === pendingPrefill ? item : undefined);
       }, error => {
         if (cancelled) return;
         reportFrontendIssue("configurator.hierarchy-item-load", error);
-        dropPrefill();
-        setPendingPrefill(null);
+        settle();
       });
     return () => {
       cancelled = true;
@@ -334,18 +341,12 @@ const Navigator = (props: HierarchyPickerProps) => {
     if (value !== null && !choiceShown) {
       setPendingPrefill(value);
       setPrefilledLeaf(null);
-      setText("");
-      setQuery("");
+      clearSearch();
     } else setPendingPrefill(null);
   }
   // A value nothing on screen shows as chosen (a pre-fill still being looked up, or found in a folder
-  // that is still listing or failed to) is held back from collection. A layout effect, so the hold
-  // is on record before anything collects in the same turn.
-  const held = value !== null && !choiceShown;
-  useLayoutEffect(() => {
-    store.setHold(name, held ? "Configurator is not showing its choice." : null);
-    return () => store.setHold(name, null);
-  }, [store, name, held]);
+  // that is still listing or failed to) is held back from collection.
+  useCollectionHold(name, value !== null && !choiceShown ? "Configurator is not showing its choice." : null);
 
   // Moves focus to `focusTarget` once its listing is shown, holding it on the list while it loads.
   // Only focus the picker lost, to the page or within its list and footer, is moved: a user who went
@@ -394,11 +395,9 @@ const Navigator = (props: HierarchyPickerProps) => {
   const navigate = (next: Location, fromList: boolean) => {
     if (disabled) return;
     leaveView();
-    setPendingPrefill(null);
-    setPrefilledLeaf(null);
+    forgetPrefill();
     setLocation(next);
-    setText("");
-    setQuery("");
+    clearSearch();
     // The row that started it goes with the listing it was in.
     focusTarget.current = fromList ? { location: next.trail.at(-1)?.id ?? root.id, row: null } : null;
   };
@@ -476,8 +475,7 @@ const Navigator = (props: HierarchyPickerProps) => {
 
   const search = (next: string) => {
     setText(next);
-    setPendingPrefill(null);
-    setPrefilledLeaf(null);
+    forgetPrefill();
     leaveView();
   };
 
@@ -525,7 +523,7 @@ const Navigator = (props: HierarchyPickerProps) => {
     announcement = (
       <>
         <span className="sr-only">
-          {rows.length} {query ? (rows.length === 1 ? "result" : "results") : (rows.length === 1 ? "item" : "items")}
+          {`${rows.length} ${query ? "result" : "item"}${rows.length === 1 ? "" : "s"}`}
         </span>
         {fresh?.moreMessage && <>{" "}<span className="text-kumo-danger">{fresh.moreMessage}</span></>}
       </>

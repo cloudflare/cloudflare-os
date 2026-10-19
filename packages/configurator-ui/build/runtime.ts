@@ -5,6 +5,7 @@ import { Scanner } from "@tailwindcss/oxide";
 import capnwebValidate from "capnweb-validate/esbuild";
 import { build } from "esbuild";
 import { PREACT_ALIASES } from "./aliases.ts";
+import { sourceTrailer } from "./sourceTrailer.ts";
 
 const packageDir = join(import.meta.dirname, "..");
 const runtimeDir = join(packageDir, "src", "runtime");
@@ -42,7 +43,7 @@ const bundleScript = async ({ frontendReporting, sourceUrl }: ConfiguratorRuntim
     jsx: "automatic",
     alias: PREACT_ALIASES,
     // Generates the runtime validators behind the frame's `@validateRpc()`.
-    plugins: [capnwebValidate({ tsconfig: join(packageDir, "tsconfig.json"), cwd: packageDir })],
+    plugins: [capnwebValidate({ tsconfig: join(packageDir, "tsconfig.validate.json"), cwd: packageDir })],
     define: {
       __FRONTEND_REPORTING__: String(frontendReporting),
       "process.env.NODE_ENV": JSON.stringify("production"),
@@ -58,10 +59,10 @@ const bundleScript = async ({ frontendReporting, sourceUrl }: ConfiguratorRuntim
   const script = result.outputFiles.find(file => file.path.endsWith(".js"));
   const map = result.outputFiles.find(file => file.path.endsWith(".js.map"));
   if (!script) throw new Error("The configurator runtime bundle produced no script.");
-  const trailer = map
-    ? `//# sourceURL=${sourceUrl}\n//# sourceMappingURL=${sourceUrl}.map`
-    : `//# sourceURL=${sourceUrl}`;
-  return { script: `${script.text.trimEnd()}\n${trailer}`, sourceMap: map?.text ?? null };
+  return {
+    script: `${script.text.trimEnd()}\n${sourceTrailer(sourceUrl, map !== undefined)}`,
+    sourceMap: map?.text ?? null,
+  };
 };
 
 /** Compiles `styles.css` with the bundled script as its only source of class names. */

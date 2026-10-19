@@ -22,8 +22,6 @@ export type ConfiguratorState = Readonly<{
    */
   holds: ReadonlyMap<string, string>;
   viewport: ParentViewport;
-  /** Bumped when the host window resizes or focus leaves the frame, closing any open popup. */
-  popupCloseRequests: number;
 }>;
 
 /** The external store behind a configurator: one per frame. */
@@ -37,7 +35,9 @@ export type ConfiguratorStore = {
   /** Places a hold on collection for `name`, giving its reason, or with `null` releases it. */
   setHold(name: string, reason: string | null): void;
   setViewport(viewport: ParentViewport): void;
+  /** Closes any open popup: the host window resized, or focus left the frame. */
   requestPopupClose(): void;
+  onPopupClose(listener: () => void): () => void;
 };
 
 export const createConfiguratorStore = (
@@ -50,9 +50,9 @@ export const createConfiguratorStore = (
     filters: {},
     holds: new Map(),
     viewport: { iframeTop: 0, viewportHeight: 0 },
-    popupCloseRequests: 0,
   };
   const listeners = new Set<() => void>();
+  const popupCloseListeners = new Set<() => void>();
   const update = (next: Partial<ConfiguratorState>) => {
     state = { ...state, ...next };
     for (const listener of listeners) listener();
@@ -88,6 +88,14 @@ export const createConfiguratorStore = (
       update({ holds });
     },
     setViewport: viewport => update({ viewport }),
-    requestPopupClose: () => update({ popupCloseRequests: state.popupCloseRequests + 1 }),
+    requestPopupClose() {
+      for (const listener of popupCloseListeners) listener();
+    },
+    onPopupClose(listener) {
+      popupCloseListeners.add(listener);
+      return () => {
+        popupCloseListeners.delete(listener);
+      };
+    },
   };
 };

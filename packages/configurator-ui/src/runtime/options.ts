@@ -9,6 +9,14 @@ export const MAX_TEXT_LENGTH = 240;
  * names a different resource -- so a longer one drops its option instead.
  */
 export const MAX_ID_LENGTH = 2048;
+/** How long typing pauses before a search goes out. */
+export const SEARCH_DEBOUNCE_MS = 180;
+
+/** Where a control's load of its options stands. */
+export type OptionsState =
+  | { status: "loading" }
+  | { status: "ready"; options: ConfiguratorUIOption[] }
+  | { status: "failed"; message: string };
 
 // Control characters and bidirectional formatting. Titles come from third parties (a shared file's
 // name, a channel's topic), and these let one visually reorder or hide text around it -- `U+202E`

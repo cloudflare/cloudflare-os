@@ -1,25 +1,20 @@
 import { Button } from "@cloudflare/kumo/components/button";
 import { Checkbox } from "@cloudflare/kumo/components/checkbox";
-import { useEffect, useEffectEvent, useLayoutEffect, useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 import type { CheckboxListProps, ConfiguratorUIOption } from "../index.ts";
 import { useFieldLabel } from "./Field.tsx";
 import { FilterInput } from "./FilterInput.tsx";
 import {
-  checkboxSelection, failureMessage, sanitizeOptions, withUnavailableOptions,
+  checkboxSelection, failureMessage, sanitizeOptions, withUnavailableOptions, type OptionsState,
 } from "./options.ts";
 import { reportFrontendIssue } from "./reporting.ts";
 import type { ConfiguratorStore } from "./store.ts";
-import { useConfiguratorState, useConfiguratorStore } from "./storeContext.ts";
-
-type Load =
-  | { status: "loading" }
-  | { status: "ready"; options: ConfiguratorUIOption[] }
-  | { status: "failed"; message: string };
+import { useCollectionHold, useConfiguratorState, useConfiguratorStore } from "./storeContext.ts";
 
 /** The filter only earns its space once the list is long enough to scroll. */
 const FILTER_THRESHOLD = 6;
 
-const Notice = ({ name, text }: { name: string; text: string }) => (
+const ListStatus = ({ name, text }: { name?: string; text: string }) => (
   <p data-name={name} className="m-0 text-sm text-kumo-subtle">{text}</p>
 );
 
@@ -57,7 +52,7 @@ const startLoad = (
   return load;
 };
 
-const cachedLoad = (store: ConfiguratorStore, name: string): Load => {
+const cachedLoad = (store: ConfiguratorStore, name: string): OptionsState => {
   const options = loadsOf(store).get(name)?.options;
   return options ? { status: "ready", options } : { status: "loading" };
 };
@@ -67,7 +62,7 @@ const NamedCheckboxList = ({
 }: CheckboxListProps) => {
   const store = useConfiguratorStore();
   const fieldLabel = useFieldLabel();
-  const [current, setLoad] = useState(() => cachedLoad(store, name));
+  const [optionsState, setOptionsState] = useState(() => cachedLoad(store, name));
   const filter = useConfiguratorState(state => state.filters[name] ?? "");
   // An inline `loadOptions` is new on every render, and must not reload.
   const load = useEffectEvent(loadOptions);
@@ -77,30 +72,26 @@ const NamedCheckboxList = ({
     const { promise } = startLoad(store, name, load);
     let cancelled = false;
     promise.then(loaded => {
-      if (!cancelled) setLoad({ status: "ready", options: loaded });
+      if (!cancelled) setOptionsState({ status: "ready", options: loaded });
     }, error => {
       if (cancelled) return;
       reportFrontendIssue("configurator.checkbox-list-load", error);
-      setLoad({ status: "failed", message: failureMessage(error, "Could not load options.") });
+      setOptionsState({ status: "failed", message: failureMessage(error, "Could not load options.") });
     });
     return () => {
       cancelled = true;
     };
   }, [store, name]);
 
-  const held = current.status === "failed" && !disabled;
-  // A layout effect, so the failure is on record before anything collects in the same turn.
-  useLayoutEffect(() => {
-    store.setHold(name, held ? "Configurator options did not load." : null);
-    return () => store.setHold(name, null);
-  }, [store, name, held]);
+  useCollectionHold(name,
+    optionsState.status === "failed" && !disabled ? "Configurator options did not load." : null);
 
-  if (current.status === "loading") return <Notice name={name} text="Loading..." />;
-  if (current.status === "failed") return <Notice name={name} text={current.message} />;
+  if (optionsState.status === "loading") return <ListStatus name={name} text="Loading..." />;
+  if (optionsState.status === "failed") return <ListStatus name={name} text={optionsState.message} />;
 
-  const options = withUnavailableOptions(current.options, value);
-  if (options.length === 0) return <Notice name={name} text="Nothing to choose from." />;
-  const selected = checkboxSelection(current.options, value, allSelected);
+  const options = withUnavailableOptions(optionsState.options, value);
+  if (options.length === 0) return <ListStatus name={name} text="Nothing to choose from." />;
+  const selected = checkboxSelection(optionsState.options, value, allSelected);
 
   const showFilter = options.length > FILTER_THRESHOLD;
   const needle = showFilter ? filter.trim().toLowerCase() : "";
@@ -167,7 +158,7 @@ const NamedCheckboxList = ({
       </div>
 
       {matches.length === 0 ? (
-        <p className="m-0 text-sm text-kumo-subtle">{`Nothing matches "${filter.trim()}".`}</p>
+        <ListStatus text={`Nothing matches "${filter.trim()}".`} />
       ) : (
         // Keyed by the filter so a new filter starts at the top, while selecting keeps the scroll.
         <div key={needle} role="group" aria-label={fieldLabel ?? undefined}
