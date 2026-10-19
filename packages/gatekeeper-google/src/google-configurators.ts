@@ -1,5 +1,6 @@
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
+import { displayText } from "@gadgets/configurator-ui/options";
 import { BigQueryApi } from "./bigquery-api";
 import { GoogleCalendarApi } from "./calendar-api";
 import { ChatApi, chatSpaceIdFromReference, isChatNoAccessError } from "./chat-api";
@@ -114,13 +115,11 @@ function optionMatches(parts: (string | undefined)[], query: string): boolean {
 
 /**
  * When two names would look the same in the picker. First the name as the configurator runtime
- * shows it (`packages/configurator-ui/src/runtime/options.ts`: controls and bidi formatting
- * stripped, then clipped to 240), so any two the runtime shows identically match; then folded
- * further, past what the runtime strips, because a false match costs only an ID tail.
+ * shows it, so any two the runtime shows identically match; then folded further, past what the
+ * runtime strips, because a false match costs only an ID tail.
  */
 function sameNameKey(title: string): string {
-  let shown = title.replace(/[\p{Cc}\p{Bidi_Control}]/gu, "").slice(0, 240);
-  return shown.normalize("NFKC").replace(/[\p{C}\p{Z}]/gu, "").toLowerCase();
+  return (displayText(title) ?? "").normalize("NFKC").replace(/[\p{C}\p{Z}]/gu, "").toLowerCase();
 }
 
 /**
