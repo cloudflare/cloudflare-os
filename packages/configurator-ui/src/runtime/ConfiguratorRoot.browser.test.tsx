@@ -191,10 +191,13 @@ describe("CheckboxList", () => {
     expect(values().tools).toBe("search,create");
   });
 
+  // Partly selected, so an enabled list would offer both Select all and Clear.
   it("offers no way to change the selection while disabled", async () => {
-    await mount(checkboxSpec(async () => tools, true));
+    await mount({ ...checkboxSpec(async () => tools, true), initial: { tools: "tool-1" } });
+    await expect.element(page.getByText("1 of 12 selected")).toBeVisible();
     await expect.element(page.getByRole("checkbox", { name: "Tool 1", exact: true })).toBeDisabled();
-    expect(page.getByRole("button").elements()).toEqual([]);
+    expect(page.getByRole("button", { name: "Select all" }).elements()).toEqual([]);
+    expect(page.getByRole("button", { name: "Clear" }).elements()).toEqual([]);
   });
 
   it("blocks readiness and collection while its options failed to load, unless it is disabled", async () => {
