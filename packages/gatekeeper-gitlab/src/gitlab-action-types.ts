@@ -3,7 +3,8 @@
 // onto remote data) and the write paths (which create and apply them) share one vocabulary.
 // Same shape as gatekeeper-github's, with GitLab's names and options.
 
-import type { GitOid } from "@gadgets/workshop-shared/gatekeeper";
+import type { ActionDescription, ActionKind, GitOid } from "@gadgets/workshop-shared/gatekeeper";
+import type { ResourceKind } from "./gitlab-env";
 import type {
   GitLabCreateIssueOptions,
   GitLabCreateMergeRequestOptions,
@@ -218,6 +219,60 @@ export type GitLabAction =
   | ResolveDiffThreadAction
   | MergeMergeRequestAction
   | PushAction;
+
+/**
+ * The kind of each action, which users' auto-approval rules key on, so a tag must never change. A
+ * force push has a kind of its own: enabling ordinary pushes does not let history be rewritten.
+ */
+const ACTION_KINDS = {
+  createIssue: { tag: "gitlab.createIssue", label: "Create issues" },
+  createMergeRequest: { tag: "gitlab.createMergeRequest", label: "Create merge requests" },
+  setTitle: { tag: "gitlab.setTitle", label: "Rename issues and merge requests" },
+  setBody: { tag: "gitlab.setBody", label: "Edit issue and merge request descriptions" },
+  addLabels: { tag: "gitlab.addLabels", label: "Add labels" },
+  removeLabels: { tag: "gitlab.removeLabels", label: "Remove labels" },
+  changeState: { tag: "gitlab.changeState", label: "Close and reopen issues and merge requests" },
+  postComment: { tag: "gitlab.postComment", label: "Post comments" },
+  postReview: { tag: "gitlab.postReview", label: "Submit reviews that comment or request changes" },
+  replyToDiffComment: { tag: "gitlab.replyToDiffComment", label: "Reply to diff threads" },
+  resolveDiffThread: { tag: "gitlab.resolveDiffThread", label: "Resolve and reopen diff threads" },
+  mergeMergeRequest: { tag: "gitlab.mergeMergeRequest", label: "Merge merge requests" },
+  push: { tag: "gitlab.push", label: "Push commits" },
+  forcePush: { tag: "gitlab.forcePush", label: "Force-push commits" },
+} satisfies Record<GitLabAction["type"] | "forcePush", ActionKind>;
+
+type AutoApprovalKind = keyof typeof ACTION_KINDS;
+
+// The auto-approvable kinds each binding's session can submit, so a pre-approval UI lists only
+// those its actions can carry. Merges never appear: they are never auto-approvable.
+const ISSUE_ACTIONS: AutoApprovalKind[] =
+  ["setTitle", "setBody", "addLabels", "removeLabels", "changeState", "postComment"];
+const MERGE_REQUEST_ACTIONS: AutoApprovalKind[] =
+  [...ISSUE_ACTIONS, "postReview", "replyToDiffComment", "resolveDiffThread"];
+const BINDING_ACTIONS: Record<ResourceKind, AutoApprovalKind[]> = {
+  project: ["createIssue", "createMergeRequest", ...MERGE_REQUEST_ACTIONS, "push", "forcePush"],
+  issue: ISSUE_ACTIONS,
+  mergeRequest: MERGE_REQUEST_ACTIONS,
+};
+
+/** The kinds a binding of `resourceKind` may submit auto-approvable actions of. */
+export function autoApprovableKinds(resourceKind: ResourceKind): ActionKind[] {
+  return BINDING_ACTIONS[resourceKind].map(kind => ACTION_KINDS[kind]);
+}
+
+/**
+ * The action's kind, and whether it may be applied without a person once the user has enabled
+ * that kind. Every action may be except a merge and an approving review, which always wait for a
+ * person: an approval shares its kind with the other reviews, so enabling those never covers it.
+ */
+export function autoApprovalOf(action: GitLabAction): Pick<ActionDescription, "actionKind" | "autoApprovable"> {
+  const kind: AutoApprovalKind = action.type === "push" && action.force ? "forcePush" : action.type;
+  return {
+    actionKind: ACTION_KINDS[kind],
+    autoApprovable: action.type !== "mergeMergeRequest" &&
+      !(action.type === "postReview" && action.review.decision === "approve"),
+  };
+}
 
 /**
  * The Markdown fields apply posts, rewriting `#~N` / `!~N` provisional references to real numbers

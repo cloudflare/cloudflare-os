@@ -5,6 +5,8 @@ import {
   stripTrailingSlashes,
   workerVersionTag,
   type AccountDescription,
+  type ActionDescription,
+  type ActionKind,
   type ConnectHandoff,
   type Cursor,
   type Gatekeeper,
@@ -492,6 +494,53 @@ function describeGitHubAction(action: GitHubAction): RenderedDescription {
       return { description };
     }
   }
+}
+
+/**
+ * The kind of each action, which users' auto-approval rules key on, so a tag must never change. A
+ * force push has a kind of its own: enabling ordinary pushes does not let history be rewritten.
+ */
+const ACTION_KINDS = {
+  createIssue: { tag: "github.createIssue", label: "Create issues" },
+  createPullRequest: { tag: "github.createPullRequest", label: "Create pull requests" },
+  setTitle: { tag: "github.setTitle", label: "Rename issues and pull requests" },
+  setBody: { tag: "github.setBody", label: "Edit issue and pull request bodies" },
+  addLabels: { tag: "github.addLabels", label: "Add labels" },
+  removeLabels: { tag: "github.removeLabels", label: "Remove labels" },
+  changeState: { tag: "github.changeState", label: "Close and reopen issues and pull requests" },
+  postComment: { tag: "github.postComment", label: "Post comments" },
+  postReview: { tag: "github.postReview", label: "Submit reviews that comment or request changes" },
+  replyToDiffComment: { tag: "github.replyToDiffComment", label: "Reply to diff threads" },
+  mergePullRequest: { tag: "github.mergePullRequest", label: "Merge pull requests" },
+  push: { tag: "github.push", label: "Push commits" },
+  forcePush: { tag: "github.forcePush", label: "Force-push commits" },
+} satisfies Record<GitHubAction["type"] | "forcePush", ActionKind>;
+
+type AutoApprovalKind = keyof typeof ACTION_KINDS;
+
+// The auto-approvable kinds each binding's session can submit, so a pre-approval UI lists only
+// those its actions can carry. Merges never appear: they are never auto-approvable.
+const ISSUE_ACTIONS: AutoApprovalKind[] =
+  ["setTitle", "setBody", "addLabels", "removeLabels", "changeState", "postComment"];
+const PULL_ACTIONS: AutoApprovalKind[] = [...ISSUE_ACTIONS, "postReview", "replyToDiffComment"];
+const BINDING_ACTIONS: Record<ResourceKind, AutoApprovalKind[]> = {
+  repo: ["createIssue", "createPullRequest", ...PULL_ACTIONS, "push", "forcePush"],
+  issue: ISSUE_ACTIONS,
+  pull: PULL_ACTIONS,
+};
+
+/**
+ * The action's kind, and whether it may be applied without a person once the user has enabled
+ * that kind. Every action may be except a merge and an approving review, which always wait for a
+ * person: an approval shares its kind with the other reviews, so enabling those never covers it.
+ */
+function autoApprovalOf(action: GitHubAction): Pick<ActionDescription, "actionKind" | "autoApprovable"> {
+  const kind: AutoApprovalKind = action.type === "push" && action.force ? "forcePush" : action.type;
+  return {
+    actionKind: ACTION_KINDS[kind],
+    autoApprovable: action.type !== "mergePullRequest" &&
+      !(action.type === "postReview" && action.review.decision === "approve"),
+  };
 }
 
 type StoredActionRecord = {
@@ -3660,8 +3709,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     return TYPES_CODE;
   }
 
-  async getAutoApprovableActions() {
-    return [];
+  async getAutoApprovableActions(): Promise<ActionKind[]> {
+    return BINDING_ACTIONS[this.ctx.props.resourceKind].map(kind => ACTION_KINDS[kind]);
   }
 
   async submitActionForApproval(
@@ -3671,10 +3720,12 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   ): Promise<void> {
     this.#stageAction(action);
     try {
-      // The text comes from the staged payload, not the caller, so it always shows what applies.
+      // The text and the auto-approval verdict come from the staged payload, not the caller, so
+      // they always describe what applies.
       await approvalQueue.submitAction(action.approvalId, {
         ...presentation,
         ...describeGitHubAction(action),
+        ...autoApprovalOf(action),
       });
     } catch (error) {
       this.ctx.storage.kv.delete(this.#actionRecordKey(action.approvalId));

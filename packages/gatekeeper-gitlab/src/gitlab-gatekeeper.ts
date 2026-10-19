@@ -11,6 +11,7 @@
 import { DurableObject, RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import {
+  type ActionKind,
   type ApprovalQueue,
   type Cursor,
   type Gatekeeper,
@@ -57,6 +58,8 @@ import {
 } from "./gitlab-api";
 import {
   apiKind,
+  autoApprovableKinds,
+  autoApprovalOf,
   escapeQuickActions,
   referenceBearingTexts,
   replaceProvisionalReferences,
@@ -1259,8 +1262,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     return TYPES_CODE;
   }
 
-  async getAutoApprovableActions() {
-    return [];
+  async getAutoApprovableActions(): Promise<ActionKind[]> {
+    return autoApprovableKinds(this.#props().resourceKind);
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GitLabProject | GitLabIssue | GitLabMergeRequest> {
@@ -1835,8 +1838,11 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   ): Promise<void> {
     this.#stageAction(action);
     try {
-      // The text comes from the staged payload, not the caller, so it always shows what applies.
-      await approvalQueue.submitAction(action.approvalId, { ...presentation, ...describeGitLabAction(action) });
+      // The text and the auto-approval verdict come from the staged payload, not the caller, so
+      // they always describe what applies.
+      await approvalQueue.submitAction(action.approvalId, {
+        ...presentation, ...describeGitLabAction(action), ...autoApprovalOf(action),
+      });
     } catch (error) {
       this.ctx.storage.kv.delete(this.#actionRecordKey(action.approvalId));
       this.#pendingActionsCache = undefined;

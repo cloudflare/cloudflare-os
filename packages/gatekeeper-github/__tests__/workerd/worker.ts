@@ -10,7 +10,7 @@
 
 import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint, restore } from "cloudflare:workers";
 import type {
-  AccountDescription, ActionDescription, ConnectHandoff, GatekeeperUser, GitCache, HookController,
+  AccountDescription, ActionDescription, ActionKind, ConnectHandoff, GatekeeperUser, GitCache, HookController,
   HookDescription, GitPullHints, GitPullTransfer,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { GitHubGatekeeperImpl, GitHubHookDriver as GitHubHookDriverImpl, type GitHubVerifierApi } from "../../src/github.js";
@@ -136,6 +136,9 @@ export type MergePullRequestActionData = Extract<
 export type IssueEditActionData = Extract<
   Parameters<GitHubGatekeeperImpl["submitActionForApproval"]>[1], { type: "setTitle" | "changeState" }>;
 
+/** Any of github.ts's (unexported) action records, read off the real submit signature. */
+export type GitHubActionData = Parameters<GitHubGatekeeperImpl["submitActionForApproval"]>[1];
+
 /** The listing methods `TestHooks.listingPages` drives. */
 export type ListingMethod = "listIssues" | "searchIssues" | "listPullRequests" | "searchPullRequests";
 
@@ -170,11 +173,8 @@ type GatekeeperFacet = Pick<GitHubGatekeeperImpl, "gitPull"> & {
     : Promise<CreatePullRequestActionData>;
   prepareMergePullRequest(pullId: string, options?: GitHubPullRequestMergeOptions)
     : Promise<MergePullRequestActionData>;
-  submitActionForApproval(
-    queue: unknown,
-    action: PushActionData | CreatePullRequestActionData | PostReviewActionData | MergePullRequestActionData
-      | IssueEditActionData,
-    description: ActionDescription): Promise<void>;
+  submitActionForApproval(queue: unknown, action: GitHubActionData, description: ActionDescription): Promise<void>;
+  getAutoApprovableActions(): Promise<ActionKind[]>;
   applyAction(actionId: number, cache: RpcStub<GitCache>): Promise<void>;
   rejectAction(actionId: number): Promise<undefined | { restart?: boolean }>;
   revertAction(actionId: number): Promise<undefined | { message?: string; canRetry?: boolean }>;
@@ -317,6 +317,19 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   ): Promise<Outcome<void>> {
     return await outcome(() =>
       this.#gatekeeper(facetName, props).submitActionForApproval(queue, action, description));
+  }
+
+  /** Submits a hand-built `action` record, as a session does once it has prepared one. */
+  async submitAction(
+    facetName: string, props: GatekeeperProps,
+    queue: unknown, action: GitHubActionData, description: ActionDescription,
+  ): Promise<Outcome<void>> {
+    return await outcome(() =>
+      this.#gatekeeper(facetName, props).submitActionForApproval(queue, action, description));
+  }
+
+  async autoApprovableActions(facetName: string, props: GatekeeperProps): Promise<Outcome<ActionKind[]>> {
+    return await outcome(() => this.#gatekeeper(facetName, props).getAutoApprovableActions());
   }
 
   async rejectAction(

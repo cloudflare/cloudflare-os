@@ -1268,7 +1268,34 @@ describe("approval cards", () => {
         { label: "Diff comment 1", kind: "text", value: comment, syntax: "markdown" },
       ],
       descriptionIsComplete: true,
+      actionKind: { tag: "gitlab.postReview", label: "Submit reviews that comment or request changes" },
+      autoApprovable: false,
     } }]);
+  });
+
+  it("offers comment and request-changes reviews for auto-approval, never an approval or a merge, which still apply once approved by hand", async () => {
+    const { gitlab, props, name } = await setup("card-auto-approval");
+    const review = new ReviewGitLab(gitlab);
+    gitlab.install();
+    const queued = [];
+    for (const decision of ["comment", "requestChanges", "approve"] as const) {
+      queued.push(await unwrap(await hooks().queueAction(name, props, "preparePostReview",
+        ["133", { revision: REVISION, decision, bodyMarkdown: "Summary" }], DESC)));
+    }
+    queued.push(await unwrap(await hooks().queueAction(name, props, "prepareMergeMergeRequest",
+      ["133", { expectedHeadSha: MR.sha }], DESC)));
+
+    const { submitted } = await hooks().queueLog(name);
+    expect(submitted.map(({ description }) => [description.actionKind?.tag, description.autoApprovable])).toEqual([
+      ["gitlab.postReview", true],
+      ["gitlab.postReview", true],
+      ["gitlab.postReview", false],
+      ["gitlab.mergeMergeRequest", false],
+    ]);
+
+    // Ineligible for auto-approval is not refused: the approval applies when a person approves it.
+    await unwrap(await hooks().applyAction(name, props, queued[2].approvalId));
+    expect(review.approval).not.toBeNull();
   });
 });
 

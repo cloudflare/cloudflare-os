@@ -18,6 +18,18 @@ This package provides GitHub OAuth integration for Gadgets. It serves two purpos
 > permission — and even then login won't be minimal-scope. See [Using a GitHub App
 > instead](#using-a-github-app-instead) if you must.
 
+## Auto-approval
+
+Every queued action carries a stable kind (`github.<action>`, e.g. `github.push`), and the user may
+opt in to approving a kind automatically on a connection. Every action is eligible, including
+closing and reopening, `requestChanges` reviews and force pushes, except two that always wait for a
+person: **merging a pull request** and **an approving review**. An approval shares the
+`github.postReview` kind with comment and request-changes reviews, but is never auto-approvable,
+so enabling that kind does not cover it. A force push has its own kind (`github.forcePush`), so
+enabling ordinary pushes does not let history be rewritten. Excluded actions are still approved
+by hand as before. Each binding advertises through `getAutoApprovableActions()` only the eligible
+kinds its session can submit (an issue binding, for example, never lists pushes).
+
 ## Setting Up GitHub OAuth Credentials
 
 If you're running this project locally and want to use GitHub integrations, you'll need to create
