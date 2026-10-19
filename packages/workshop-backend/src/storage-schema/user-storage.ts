@@ -308,6 +308,9 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       // deliver to them.
       phoneNotificationSubscriptions: <Record<string, string>>{},
       browserNotificationSubscriptions: <Record<string, string>>{},
+      // Latest-value push outbox. Independent of the ephemeral unread subscription revision.
+      notificationBadge: <{version: number; count: number | null; retryAt?: number}>
+          {version: 0, count: null},
 
       // Set once the user's pre-existing workspaces have been asked to populate the outputs index
       // (see #backfillOutputs()). Workspaces created since push on their own.

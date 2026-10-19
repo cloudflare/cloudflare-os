@@ -4,8 +4,9 @@ import { RpcStub, RpcTarget } from "capnweb";
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { NotificationSubscriber, UserNotification, WebPushSubscription } from "@gadgets/workshop-shared/api";
 import {
-  authorizeDevice, deliver, registerAuthorizedDevice, registerDevice,
+  authorizeDevice, deliver, deliverBadge, registerAuthorizedDevice, registerDevice,
 } from "../src/notification-service.js";
+import { makeUserStorage } from "../src/storage-schema/user-storage.js";
 import type { UserDurableObject } from "../src/user.js";
 import { makeUserStorage } from "../src/storage-schema/user-storage.js";
 
@@ -158,6 +159,11 @@ describe("notification service", () => {
     await expect(authorizeDevice(installEnv, "a".repeat(64))).rejects.toThrow();
   });
 
+  it("signs an absolute badge replacement including zero, without alert fields", async () => {
+    const fetcher = stubService();
+    await deliverBadge(installEnv, SUBSCRIPTION_ID, 9, 0);
+    expect(bodies(fetcher, "/v1/badges")).toEqual([{subscriptionId: SUBSCRIPTION_ID, version: 9, count: 0}]);
+  });
   it.each([
     ["taskCompleted", "task_completed"],
     ["permissionRequested", "permission_requested"],
@@ -419,6 +425,38 @@ describe("UserDurableObject notifications", () => {
     });
   });
 
+  it("recovers a pending badge after eviction and retries a lost ACK without replaying an alert", async () => {
+    const fetcher = stubService();
+    const stub = env.TEST_USER.getByName(`badge-${crypto.randomUUID()}`);
+    await runInDurableObject(stub, async (user, ctx) => {
+      Object.defineProperty(user, "env", {value: installEnv});
+      await user.registerNotificationDevice("a".repeat(64));
+      const storage = makeUserStorage(ctx.storage);
+      storage.notificationBadge.put({version: 7, count: 8, retryAt: 0});
+    });
+    await evictDurableObject(stub);
+    await runInDurableObject(stub, async (user, ctx) => {
+      Object.defineProperty(user, "env", {value: installEnv});
+      const storage = makeUserStorage(ctx.storage);
+      fetcher.mockImplementationOnce(async () => { throw new Error("Lost ACK"); });
+      await user.alarm();
+      expect(storage.notificationBadge.get()).toMatchObject({version: 7, count: 8});
+      expect(storage.notificationBadge.get().retryAt).toBeGreaterThan(Date.now());
+      expect(await ctx.storage.getAlarm()).not.toBeNull();
+    });
+    await evictDurableObject(stub);
+    await runInDurableObject(stub, async (user, ctx) => {
+      Object.defineProperty(user, "env", {value: installEnv});
+      const storage = makeUserStorage(ctx.storage);
+      storage.notificationBadge.put({version: 7, count: 8, retryAt: 0});
+      await user.alarm();
+      expect(storage.notificationBadge.get()).toEqual({version: 7, count: 8});
+    });
+    expect(bodies(fetcher, "/v1/badges")).toEqual([
+      {subscriptionId: ONE, version: 7, count: 8}, {subscriptionId: ONE, version: 7, count: 8},
+    ]);
+    expect(pushed(fetcher)).toEqual([]);
+  });
   it("leaves a notification an open tab shows to that tab", async () => {
     expect(await publish(async () => {})).toEqual([]);
   });
