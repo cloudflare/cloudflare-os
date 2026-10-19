@@ -88,12 +88,12 @@ const NamedCheckboxList = ({
     };
   }, [store, name]);
 
-  const blocking = current.status === "failed" && !disabled;
+  const held = current.status === "failed" && !disabled;
   // A layout effect, so the failure is on record before anything collects in the same turn.
   useLayoutEffect(() => {
-    store.setListFailed(name, blocking);
-    return () => store.setListFailed(name, false);
-  }, [store, name, blocking]);
+    store.setHold(name, held ? "Configurator options did not load." : null);
+    return () => store.setHold(name, null);
+  }, [store, name, held]);
 
   if (current.status === "loading") return <Notice name={name} text="Loading..." />;
   if (current.status === "failed") return <Notice name={name} text={current.message} />;

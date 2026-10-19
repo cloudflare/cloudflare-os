@@ -47,8 +47,9 @@ export const ConfiguratorRoot = ({ session }: { session: ConfiguratorSession }) 
   const { store } = session;
   // Only what the module or readiness depends on, so a host scrolling its modal re-renders nothing.
   const values = useSyncExternalStore(store.subscribe, () => store.getState().values);
-  // Never read here: subscribed so that a list failing or recovering re-runs the readiness effect.
-  useSyncExternalStore(store.subscribe, () => store.getState().failedLists);
+  // Never read here: subscribed so that a field placing or releasing a hold on collection re-runs
+  // the readiness effect.
+  useSyncExternalStore(store.subscribe, () => store.getState().holds);
   const rendered = renderModule(session, values);
   // Read during render on purpose: it is the fallback for this very render, and is only written
   // after a successful one commits.

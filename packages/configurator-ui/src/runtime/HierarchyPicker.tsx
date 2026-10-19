@@ -13,6 +13,7 @@ import type {
 import { FilterInput } from "./FilterInput.tsx";
 import { displayText, failureMessage, identifier, MAX_OPTIONS } from "./options.ts";
 import { reportFrontendIssue } from "./reporting.ts";
+import { useConfiguratorStore } from "./storeContext.ts";
 
 type Item = ConfiguratorUIHierarchyItem;
 type Ancestor = ConfiguratorUIHierarchyAncestor;
@@ -221,6 +222,7 @@ export const HierarchyPicker = (props: HierarchyPickerProps) => {
 
 const Navigator = (props: HierarchyPickerProps) => {
   const { name, value = null, root, icons, searchPlaceholder, disabled = false } = props;
+  const store = useConfiguratorStore();
 
   // A module's render builds its callbacks afresh on every render, and a new identity must not
   // restart a load.
@@ -330,6 +332,15 @@ const Navigator = (props: HierarchyPickerProps) => {
   // finds is not in the open location.
   const searchOpen = searchFocused || text !== "";
   const focusId = activeId !== null && rowIds.includes(activeId) ? activeId : rowIds[0];
+  const rootChosen = root.selectable === true && value === root.id;
+  // A value nothing on screen shows as chosen (a pre-fill still being looked up, or found in a folder
+  // that is still listing or failed to) is held back from collection. A layout effect, so the hold
+  // is on record before anything collects in the same turn.
+  const held = value !== null && !rootChosen && !rowIds.includes(value);
+  useLayoutEffect(() => {
+    store.setHold(name, held ? "Configurator is not showing its choice." : null);
+    return () => store.setHold(name, null);
+  }, [store, name, held]);
 
   // Moves focus to `focusTarget` once its listing is shown, holding it on the list while it loads.
   // Only focus the picker lost, to the page or within its list and footer, is moved: a user who went
@@ -363,8 +374,6 @@ const Navigator = (props: HierarchyPickerProps) => {
     focusCrumb.current = false;
     crumb.focus();
   });
-
-  const rootChosen = root.selectable === true && value === root.id;
 
   /** As in a file dialog, a choice lasts while it is in view, and only the root's card always is. */
   const leaveView = () => {

@@ -16,8 +16,11 @@ export type ConfiguratorState = Readonly<{
    * the old runtime kept it, so a list shown again under a name it had before keeps its filter.
    */
   filters: Readonly<Record<string, string>>;
-  /** Enabled CheckboxLists whose options failed to load; any one blocks collection. */
-  failedLists: ReadonlySet<string>;
+  /**
+   * The holds fields place on collection, each with its reason, by field name: an enabled
+   * CheckboxList whose options failed to load, or a HierarchyPicker whose value is not on screen.
+   */
+  holds: ReadonlyMap<string, string>;
   viewport: ParentViewport;
   /** Bumped when the host window resizes or focus leaves the frame, closing any open popup. */
   popupCloseRequests: number;
@@ -31,7 +34,8 @@ export type ConfiguratorStore = {
   clearFields(...names: string[]): void;
   setQuery(name: string, query: string): void;
   setFilter(name: string, filter: string): void;
-  setListFailed(name: string, failed: boolean): void;
+  /** Places a hold on collection for `name`, giving its reason, or with `null` releases it. */
+  setHold(name: string, reason: string | null): void;
   setViewport(viewport: ParentViewport): void;
   requestPopupClose(): void;
 };
@@ -44,7 +48,7 @@ export const createConfiguratorStore = (
     values: { ...initialValues },
     queries: { ...initialQueries },
     filters: {},
-    failedLists: new Set(),
+    holds: new Map(),
     viewport: { iframeTop: 0, viewportHeight: 0 },
     popupCloseRequests: 0,
   };
@@ -76,12 +80,12 @@ export const createConfiguratorStore = (
       if (state.filters[name] === filter) return;
       update({ filters: { ...state.filters, [name]: filter } });
     },
-    setListFailed(name, failed) {
-      if (state.failedLists.has(name) === failed) return;
-      const failedLists = new Set(state.failedLists);
-      if (failed) failedLists.add(name);
-      else failedLists.delete(name);
-      update({ failedLists });
+    setHold(name, reason) {
+      if ((state.holds.get(name) ?? null) === reason) return;
+      const holds = new Map(state.holds);
+      if (reason === null) holds.delete(name);
+      else holds.set(name, reason);
+      update({ holds });
     },
     setViewport: viewport => update({ viewport }),
     requestPopupClose: () => update({ popupCloseRequests: state.popupCloseRequests + 1 }),

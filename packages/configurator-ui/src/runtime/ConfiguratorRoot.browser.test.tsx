@@ -5,7 +5,13 @@ import { act } from "preact/test-utils";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
-import type { ConfiguratorUIHierarchyItem, ConfiguratorUIOption, ConfiguratorUISpec } from "../index.ts";
+import type {
+  ConfiguratorUIHierarchyItem,
+  ConfiguratorUIHierarchyPage,
+  ConfiguratorUIOption,
+  ConfiguratorUISpec,
+  HierarchyPickerProps,
+} from "../index.ts";
 import { Autocomplete } from "./Autocomplete.tsx";
 import { Button } from "./Button.tsx";
 import { CheckboxList } from "./CheckboxList.tsx";
@@ -520,6 +526,56 @@ describe("HierarchyPicker", () => {
     await userEvent.keyboard("{ArrowLeft}");
     await expect.element(option("Reports")).toHaveFocus();
     expect(values().target).toBeNull();
+  });
+
+  const q1: ConfiguratorUIHierarchyItem = {
+    id: "q1", title: "Q1.pdf", kind: "leaf", path: [{ id: "reports", title: "Reports" }],
+  };
+
+  /** A module whose picker opens on `q1`, pre-filled, and that is ready whenever it holds a value. */
+  const prefilledPicker = (source: Pick<HierarchyPickerProps, "loadItem" | "loadItems">): Spec => ({
+    initial: { target: "q1" },
+    isReady: ({ values }) => Boolean(values.target),
+    resourceUrl: ({ values }) => `https://example.com/${values.target}`,
+    render: ({ values: { target = null }, setValues }) => (
+      <HierarchyPicker
+        {...source}
+        name="target"
+        value={target}
+        root={{ id: "drive", title: "My Drive" }}
+        onChange={next => setValues({ target: next })}
+      />
+    ),
+  });
+
+  it("withholds readiness and collection until a pre-filled value is shown", async () => {
+    const lookup = deferred<ConfiguratorUIHierarchyItem | null>();
+    const listing = deferred<ConfiguratorUIHierarchyPage>();
+    const { session, readiness } = await mount(prefilledPicker({
+      loadItem: () => lookup.promise,
+      loadItems: () => listing.promise,
+    }));
+
+    expect(readiness()).toEqual([false]);
+    await expect(collectResourceUrl(session)).rejects.toThrow(/not showing its choice/i);
+    // Found, but not yet in view: its folder is still listing.
+    await act(() => lookup.resolve(q1));
+    await expect.element(page.getByRole("listbox", { name: "Reports" })).toBeInTheDocument();
+    await expect(collectResourceUrl(session)).rejects.toThrow(/not showing its choice/i);
+    await act(() => listing.resolve({ items: [q1] }));
+    await expect.poll(readiness).toEqual([false, true]);
+    await expect(collectResourceUrl(session)).resolves.toBe("https://example.com/q1");
+  });
+
+  it("keeps withholding a pre-filled value whose folder fails to list", async () => {
+    const { session, readiness } = await mount(prefilledPicker({
+      loadItem: async () => q1,
+      loadItems: async () => { throw new Error("Drive is down."); },
+    }));
+
+    await expect.element(page.getByRole("button", { name: "Retry" })).toBeVisible();
+    expect(readiness()).toEqual([false]);
+    await expect(collectResourceUrl(session)).rejects.toThrow(/not showing its choice/i);
   });
 });
 

@@ -37,7 +37,7 @@ export const createSession = <TUI,>(
     moduleReady: false,
     postReadiness() {
       const ready = session.moduleReady && !session.renderFailed && !session.treeFailed
-        && session.store.getState().failedLists.size === 0;
+        && session.store.getState().holds.size === 0;
       if (ready === lastPosted) return;
       lastPosted = ready;
       setSelectionReady(ready);
@@ -50,15 +50,14 @@ const assertCollectable = (session: ConfiguratorSession): void => {
   if (session.renderFailed || session.treeFailed) {
     throw new Error("Configurator failed to render its current state.");
   }
-  if (session.store.getState().failedLists.size > 0) {
-    throw new Error("Configurator options did not load.");
-  }
+  const [hold] = session.store.getState().holds.values();
+  if (hold !== undefined) throw new Error(hold);
 };
 
 /**
  * The resource URL for the values on screen. Refuses when the screen cannot be trusted to show what
- * the URL names: the render failed, options failed to load, or the values changed while the
- * module's `resourceUrl` was computing it.
+ * the URL names: the render failed, a field holds collection (its options failed to load, or its
+ * value is not on screen), or the values changed while the module's `resourceUrl` was computing it.
  */
 export const collectResourceUrl = async (session: ConfiguratorSession): Promise<string> => {
   assertCollectable(session);

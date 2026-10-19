@@ -15,6 +15,8 @@ import type {
   HierarchyPickerProps,
 } from "../index.ts";
 import { HierarchyPicker } from "./HierarchyPicker.tsx";
+import { createConfiguratorStore } from "./store.ts";
+import { StoreContext } from "./storeContext.ts";
 
 type Item = ConfiguratorUIHierarchyItem;
 type LoadItems = (request: ConfiguratorUIHierarchyRequest) => Promise<ConfiguratorUIHierarchyPage>;
@@ -64,18 +66,21 @@ let setFromModule: (value: string | null) => void;
 /** The picker as a configurator holds it: its value follows `onChange`. */
 const Harness = ({ initial = null, onChange, root = ROOT, accepts = () => true, ...props }: HarnessProps) => {
   const [value, setValue] = useState<string | null>(initial);
+  const [store] = useState(() => createConfiguratorStore({}));
   setFromModule = setValue;
   return (
-    <HierarchyPicker
-      {...props}
-      name="target"
-      root={root}
-      value={value}
-      onChange={(next, item) => {
-        if (accepts(next)) setValue(next);
-        onChange(next, item);
-      }}
-    />
+    <StoreContext.Provider value={store}>
+      <HierarchyPicker
+        {...props}
+        name="target"
+        root={root}
+        value={value}
+        onChange={(next, item) => {
+          if (accepts(next)) setValue(next);
+          onChange(next, item);
+        }}
+      />
+    </StoreContext.Provider>
   );
 };
 

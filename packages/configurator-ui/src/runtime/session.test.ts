@@ -26,8 +26,8 @@ describe("collectResourceUrl", () => {
     running.treeFailed = true;
     await expect(collectResourceUrl(running)).rejects.toThrow(/failed to render its current state/i);
     running.treeFailed = false;
-    running.store.setListFailed("tools", true);
-    await expect(collectResourceUrl(running)).rejects.toThrow(/options did not load/i);
+    running.store.setHold("target", "Not showing its choice.");
+    await expect(collectResourceUrl(running)).rejects.toThrow("Not showing its choice.");
   });
 
   it("refuses when the values change or rendering fails while the URL is being built", async () => {
@@ -85,9 +85,9 @@ describe("readiness", () => {
     running.treeFailed = true;
     running.postReadiness();
     running.treeFailed = false;
-    running.store.setListFailed("tools", true);
+    running.store.setHold("tools", "Options did not load.");
     running.postReadiness();
-    running.store.setListFailed("tools", false);
+    running.store.setHold("tools", null);
     running.postReadiness();
     expect(setSelectionReady.mock.calls).toEqual([[true], [false], [true]]);
   });
