@@ -83,7 +83,7 @@ describe("SandboxedGatekeeperApp navigation", () => {
       ui: new RpcStub(new EmptyUi()),
     } as unknown as GatekeeperUiFrame;
     const rootRoute = createRootRoute({
-      component: () => <SandboxedGatekeeperApp frame={frame} gatekeeperVendorId="scheduler" />,
+      component: () => <SandboxedGatekeeperApp frame={frame} gatekeeperVendorId="scheduler" onCapabilityLost={() => {}} />,
     });
     const indexRoute = createRoute({ getParentRoute: () => rootRoute, path: "/" });
     const gadgetRoute = createRoute({
@@ -177,5 +177,61 @@ describe("SandboxedGatekeeperApp navigation", () => {
       await vi.waitFor(() => expect(router.state.location.pathname).toBe("/"));
     });
     expect(router.state.location.search).toEqual({ prompt: "Create a daily brief." });
+  });
+
+  it("tells the owner when a relayed call fails with a do-reset error, not for ordinary errors", async () => {
+    class FlakyUi extends RpcTarget {
+      reset(): never {
+        throw Object.assign(new Error("Durable Object reset"), { durableObjectReset: true });
+      }
+      ordinary(): never {
+        throw new Error("Invalid input");
+      }
+    }
+    const frame = {
+      iframeHtml: "<!doctype html><title>Scheduler</title>",
+      ui: new RpcStub(new FlakyUi()),
+    } as unknown as GatekeeperUiFrame;
+    const onCapabilityLost = vi.fn();
+    const rootRoute = createRootRoute({
+      component: () => (
+        <SandboxedGatekeeperApp
+          frame={frame}
+          gatekeeperVendorId="scheduler"
+          onCapabilityLost={onCapabilityLost}
+        />
+      ),
+    });
+    const router = createRouter({
+      history: createMemoryHistory({ initialEntries: ["/"] }),
+      routeTree: rootRoute.addChildren([createRoute({ getParentRoute: () => rootRoute, path: "/" })]),
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root!.render(<RouterProvider router={router} />));
+
+    const iframe = container.querySelector("iframe");
+    if (!iframe) throw new Error("Missing gatekeeper iframe");
+    const { port1, port2 } = new MessageChannel();
+    const session = newMessagePortRpcSession<{
+      ui: { reset(): Promise<void>; ordinary(): Promise<void> };
+    }>(port1);
+    window.dispatchEvent(
+      new MessageEvent("message", {
+        data: { type: "handshake" },
+        origin: "null",
+        source: iframe.contentWindow,
+        ports: [port2],
+      }),
+    );
+
+    await expect(session.ui.ordinary()).rejects.toThrow("Invalid input");
+    expect(onCapabilityLost).not.toHaveBeenCalled();
+
+    await expect(session.ui.reset()).rejects.toThrow();
+    await vi.waitFor(() => expect(onCapabilityLost).toHaveBeenCalledTimes(1));
+    expect(onCapabilityLost.mock.calls[0]![0]).toBe(frame);
+    session[Symbol.dispose]();
   });
 });
