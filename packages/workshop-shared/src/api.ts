@@ -210,6 +210,55 @@ export interface NotificationSubscriber extends RpcTarget {
   notify(notification: UserNotification): Promise<void>;
 }
 
+/** One user's durable horizon joined with a rebuildable thread head and message count. */
+export type ChatReadState = {
+  /** Workspace containing the thread. */
+  workspaceId: string;
+  /** Thread identifier, scoped to the workspace. */
+  chatId: number;
+  /** Current thread title. */
+  chatTitle: string;
+  /** Sequence of the latest visible text/attachment message; -1 if none. */
+  latestSequence: number;
+  /** Number of unread visible text/attachment messages, excluding internal agent activity. */
+  unreadMessageCount: number;
+  /** First nonempty line of the latest visible message, capped at 240 characters; empty for none. Absent on older servers. */
+  latestMessagePreview?: string;
+  /** Time of the latest visible message; absent for empty threads or older servers. */
+  latestActivityAt?: Date;
+  /** Last read sequence, inclusive; -1 means nothing has been read. */
+  readThroughSequence: number;
+  /** Changes when explicitly marking unread, invalidating older automatic read receipts. */
+  readEpoch: number;
+};
+
+/** An observed read boundary for a single-thread or bulk mark-read command. */
+export type ChatReadReceipt = Pick<ChatReadState,
+    "workspaceId" | "chatId" | "readEpoch"> & {
+  /** Highest observed sequence to mark read; later activity stays unread. */
+  throughSequence: number;
+};
+
+/** Authoritative unread state for one user on one CFOS instance, shared across their devices. */
+export type UserUnreadState = {
+  /** Increasing within a subscription session; a new subscription starts a fresh revision stream. */
+  revision: number;
+  /** Number of loaded threads with at least one unread visible message. */
+  unreadChatCount: number;
+  /** Total unread visible messages across loaded threads; a lower bound while workspaces are unavailable. */
+  unreadMessageCount: number;
+  /** All loaded threads, including read threads; replaces the previous snapshot. */
+  chats: ChatReadState[];
+  /** Workspaces whose heads could not be loaded. Omitted when complete; missing is not read/zero. */
+  unavailableWorkspaceIds?: string[];
+};
+
+/** Callback used by `AuthenticatedApi.subscribeToUnreadState()`. */
+export interface UnreadStateSubscriber extends RpcTarget {
+  /** Receive snapshots; ignore older/equal revisions within this subscription, not across reconnects. */
+  updated(state: UserUnreadState): Promise<void>;
+}
+
 /**
  * When listing gatekeeper vendors or connected accounts, you can filter to only vendors/accounts
  * that support certain features. This type specifies the filter.
@@ -523,6 +572,32 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   subscribeToNotifications(
       subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>>;
+
+  /** Fetch unread state without subscribing or marking anything read. */
+  getUnreadState(): Promise<UserUnreadState>;
+
+  /**
+   * Subscribe to an immediate snapshot and every subsequent unread-state change, even while
+   * hidden. Re-subscribe after disconnect/reset to obtain a fresh snapshot without a fetch/watch
+   * race. Keep the returned handle until logout/close; receiving state never acknowledges alerts.
+   */
+  subscribeToUnreadState(subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>>;
+
+  /** Advance an observed timeline cursor. Stale epochs cannot undo an explicit mark-unread. */
+  markChatRead(receipt: ChatReadReceipt): Promise<void>;
+
+  /**
+   * Mark observed thread boundaries read. A workspace failure does not block healthy workspaces,
+   * but rejects the command to report partial success; retrying the same receipts is safe.
+   */
+  markChatsRead(receipts: ChatReadReceipt[]): Promise<void>;
+
+  /**
+   * Move the cursor immediately before an existing item. Uses the observed epoch so a retry
+   * cannot rewind it twice; invalidates earlier automatic receipts across all devices.
+   */
+  markChatUnread(workspaceId: string, chatId: number, fromSequence: number,
+                 readEpoch: number): Promise<void>;
 
   /**
    * Mute a workspace in the user's list, so its finished tasks notify no tab or device, or unmute

@@ -6,7 +6,7 @@
 
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type {
-  AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput,
+  AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput, ChatReadState,
   GadgetMetadata, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import type { AccountDescription, GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
@@ -120,6 +120,21 @@ export type GadgetRecord = GadgetMetadata & {
   // GadgetMetadata).
 };
 
+/** Workspace-authoritative thread head, optionally joined with an ephemeral horizon-count lookup. */
+export type ChatTimelineHead = Pick<ChatReadState,
+    "chatId" | "chatTitle" | "latestSequence" | "latestMessagePreview" | "latestActivityAt"> & {
+  /** Cumulative number of visible text/attachment messages, not internal timeline entries. */
+  messageCount: number;
+  /** Count through a requested or initial horizon; no user read state is stored in the workspace. */
+  readMessageCount?: number;
+  /** Source version of the last history rewrite that may change counts through existing horizons. */
+  recountVersion?: number;
+  /** Author of the latest countable message, for user-owned notification policy. */
+  latestAuthor?: AiChatAuthorInfo;
+  /** Existing history starts read on upgrade; new items start beyond this boundary. */
+  initialReadThroughSequence?: number;
+};
+
 /**
  * One output of a workspace, as pushed into a user's output index by the Overseer that owns it
  * (see `syncWorkspaceOutputs()`). Carries only what the workspace itself knows: its title,
@@ -157,6 +172,29 @@ export type CloudflareBilling = {
 export function makeUserStorage(storage: DurableObjectStorage) {
   return createTypedStorage(storage, {
     collections: {
+      // Read-only legacy schema, retained to preserve read markers on existing test installs.
+      // Remove with the User DO constructor migration once internal prototype installs have upgraded.
+      chatReadStates: collection<ChatReadState>()({
+        primaryKey: record => `${record.workspaceId}:${record.chatId}`,
+        nonUniqueIndexes: {
+          byWorkspace(record: ChatReadState) { return record.workspaceId; },
+        },
+      }),
+      // Private consumption horizons remain authoritative; summaries below are rebuildable.
+      chatReadCursors: collection<Pick<ChatReadState,
+          "workspaceId" | "chatId" | "readThroughSequence" | "readEpoch">>()({
+        primaryKey: record => `${record.workspaceId}:${record.chatId}`,
+        nonUniqueIndexes: {
+          byWorkspace(record: {workspaceId: string}) { return record.workspaceId; },
+        },
+      }),
+      // One compact projection per workspace, loaded locally after eviction. The version is
+      // persisted with the heads before fanout is acknowledged, making retries idempotent.
+      workspaceChatSummaries: collection<{
+        workspaceId: string;
+        version: number;
+        heads: ChatTimelineHead[];
+      }>()({primaryKey: "workspaceId"}),
       aiModels: collection<UserAiModelRecord>()({
         primaryKey: record => record.profile.id,
       }),
