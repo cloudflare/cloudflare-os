@@ -1,4 +1,4 @@
-import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, validateBindingName } from '@gadgets/workshop-shared/api';
+import { AGENT_SPAWNER_CONNECTION_ID, AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, validateBindingName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replaceSpanChange, validateCodeChangeSchema,
   type FileContent, type CodeContent, type CodeChange,
   type FileChange } from '@gadgets/workshop-shared/code-change';
@@ -245,7 +245,7 @@ async function describeBinding(
     if (!entry) throw new Error(`There is no binding named "${name}" in your env.`);
     switch (entry.type) {
       case "workpiece":
-        return hooks.describeBinding(envName, entry.id);
+        return hooks.describeBinding(envName, entry.id, chatId);
       case "value":
         return `${envName} is the arguments array of a call delivered to this agent (one ` +
             `element per parameter of the call). Any RPC stubs among them may be called directly.`;
@@ -262,7 +262,7 @@ async function describeBinding(
   if (!info) throw new Error(`There is no gadget named "${gadget}" in your env.`);
   // Mirrors the env getEnvForLoader builds: the gadget's own edges shadow GIT and GADGET.
   let edge = info.bindings.find(binding => binding.name === name);
-  if (edge) return hooks.describeBinding(envName, edge.target);
+  if (edge) return hooks.describeBinding(envName, edge.target, chatId);
   if (name === GIT_BINDING_NAME) return hooks.describeGitBinding(envName);
   if (name === "GADGET") {
     // Unlike the gadget bindings in the agent's env, a gadget's env.GADGET is
@@ -498,19 +498,20 @@ export interface AgentHooks {
                 path?: string): Promise<GrepScan>;
 
   /**
-   * Describe a workpiece (a gadget or a gatekeeper) reachable as `envName` in the chat's env,
-   * for the agent's describeBinding tool. (`envName` is provided here only so that it can be
-   * incorporated into the returned description.)
+   * Describe a workpiece (a gadget or a gatekeeper) reachable as `envName` in chat `chatId`'s
+   * env, for the agent's describeBinding tool. (`envName` is provided here only so that it can
+   * be incorporated into the returned description.)
    */
-  describeBinding(envName: string, id: WorkpieceId): Promise<string>;
+  describeBinding(envName: string, id: WorkpieceId, chatId: number): Promise<string>;
 
   /** Describe the env.GIT binding (see GIT_BINDING_NAME), for the describeBinding tool. */
   describeGitBinding(envName: string): string;
 
   /**
-   * Add a binding to the given gadget, pointing at the given workpiece. The binding is provisional
-   * to the chat. The caller is responsible for getting the addition recorded in the chat log (see
-   * `addedBindings` on the "changes" message) so the pending edge gets sequence-stamped.
+   * Add a binding to the given gadget or agent spawner, pointing at the given workpiece. The
+   * binding is provisional to the chat. The caller is responsible for getting the addition
+   * recorded in the chat log (see `addedBindings` on the "changes" message) so the pending edge
+   * gets sequence-stamped.
    */
   addGadgetBinding(gadgetId: WorkpieceId, name: string, target: WorkpieceId, chatId: number): void;
 
@@ -946,9 +947,13 @@ export function formatMissingBlueprintBindings(
       `The blueprint's code expects the following bindings, which ${gadget} does not ` +
       `have yet. Wire up each one under the exact binding name given. For external ` +
       `resources, use setGadgetBinding on ${gadget} (first requesting a connection via ` +
-      `requestConnection if your env doesn't already hold a suitable resource). AI-model ` +
-      `and agent-spawner bindings cannot be created from chat; ask the user to add those ` +
-      `from the gadget's Connections panel.`];
+      `requestConnection if your env doesn't already hold a suitable resource). For an ` +
+      `agent-spawner binding, request a spawner via requestConnection with vendorId ` +
+      `"${AGENT_SPAWNER_CONNECTION_ID}", give it each binding its agents get with ` +
+      `setGadgetBinding on the spawner, under the name left of the \`=\`, then bind the spawner ` +
+      `into ${gadget}; a binding marked "for agent spawners only" goes only into a spawner. ` +
+      `AI-model bindings cannot be created from chat; ask the user to add those from the ` +
+      `gadget's Connections panel.`];
   for (let [name, binding] of Object.entries(bindings)) {
     let details: string;
     switch (binding.type) {
@@ -963,15 +968,19 @@ export function formatMissingBlueprintBindings(
         details = binding.modelKind === "decision"
             ? `an AI decision model binding` : `an AI model binding`;
         break;
-      case "agentSpawner":
-        details = `an agent-spawner binding`;
+      case "agentSpawner": {
+        let env = Object.entries(binding.env).map(([envName, target]) =>
+            `${envName} = ${target.type === "gadget" ? gadget : `binding ${target.name}`}`);
+        details = `an agent-spawner binding whose agents get ${env.join(", ") || "no bindings"}`;
         break;
+      }
       default:
         binding satisfies never;
         details = `unknown`;
         break;
     }
-    lines.push(`* ${name} — ${JSON.stringify(binding.title)} (${details})` +
+    lines.push(`* ${name} — ${JSON.stringify(binding.title)} (${details}` +
+        `${binding.spawnerOnly ? `; for agent spawners only` : ``})` +
         (binding.description ? `: ${binding.description}` : ``));
   }
   return lines.join("\n");
@@ -1253,7 +1262,9 @@ The bindings in your \`env\` belong to this chat; a Gadget's code sees only the 
 
 The addition is part of your proposed changes: like code edits, it takes permanent effect when the user accepts your changes.
 
-NOTE: You do NOT need this tool to use a resource yourself with \`executeCode\` — your own bindings are already available there. ONLY use it when a Gadget's code needs the resource.
+\`gadget\` may also name an agent spawner. The binding then goes to each agent the spawner starts, and \`source\` may also be a Gadget. Spawned agents get it only once the user accepts your changes.
+
+NOTE: You do NOT need this tool to use a resource yourself with \`executeCode\` — your own bindings are already available there. ONLY use it when a Gadget's code, or a spawner's agents, need the resource.
 `.trim();
 
 let EXECUTE_CODE_INTRO = `
@@ -1297,6 +1308,8 @@ List the resource types a gatekeeper vendor offers, so you can construct a resou
 
 let REQUEST_CONNECTION_TOOL_DESCRIPTION = `
 Ask the user to connect a gatekeeper resource (e.g. a ClickHouse cluster, a GitHub repo). Pre-configure as much as you can: always pass vendorId, and pass resourceUrl when you can infer it (use listConnectableResources to learn the URL patterns). The request must resolve to a specific resource: if you pass a resourceUrl it must match one of the vendor's patterns, and if the vendor offers multiple resource types with no whole-instance option you MUST pass a matching resourceUrl. Otherwise the call is rejected with guidance and no card is shown — fix the request and try again. You also choose \`bindingName\`: the name the resource will have in your env once connected (you know why you want the resource, so pick a name that reflects its role). On success this shows the user an accept/deny card in the chat. It does NOT block: your turn ends after a successful call, and you will be resumed once the user accepts (the resource becomes available as \`env.<bindingName>\`, which you can describeBinding and use from executeCode; wire it into a Gadget with setGadgetBinding only if the Gadget's code needs it) or denies (your turn simply ends; wait for the user's next message).
+
+For a Gadget that needs AI agents of its own, rather than calling back into this chat through \`self\`, request an agent spawner: pass vendorId "${AGENT_SPAWNER_CONNECTION_ID}" and no resourceUrl. Once it is accepted, give the spawner's agents the bindings they need with setGadgetBinding on the spawner.
 `.trim();
 
 let CREATE_EXTERNAL_RESOURCE_TOOL_DESCRIPTION = `
@@ -3555,7 +3568,7 @@ async function runAgentPass(
       description: SET_GADGET_BINDING_TOOL_DESCRIPTION,
       parameters: Type.Object({
         gadget: Type.String({
-          description: "Env binding name of the gadget whose bindings to modify.",
+          description: "Env binding name of the gadget (or agent spawner) whose bindings to modify.",
         }),
         source: Type.String({
           description: "Env binding name of the resource to wire into the gadget.",
@@ -3865,7 +3878,8 @@ async function runAgentPass(
       description: REQUEST_CONNECTION_TOOL_DESCRIPTION,
       parameters: Type.Object({
         vendorId: Type.String({
-          description: "Vendor id, as listed in the system prompt (e.g. 'github').",
+          description: "Vendor id, as listed in the system prompt (e.g. 'github'), or " +
+              `'${AGENT_SPAWNER_CONNECTION_ID}' for an agent spawner.`,
         }),
         resourceUrl: Type.Optional(Type.String({
           description:

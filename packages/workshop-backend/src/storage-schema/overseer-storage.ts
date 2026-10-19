@@ -56,6 +56,13 @@ export type GatekeeperRecord = {
   creationSpec?: GatekeeperCreationSpec;
 
   /**
+   * Present on agent spawners only: the bindings given to each agent the spawner starts, keyed
+   * by binding name. Seeded from the AgentSpawnerConfig.env the spawner was created with, then
+   * edited like a gadget's (see GadgetRecord.bindings), and read when an agent is spawned.
+   */
+  bindings?: Record<string, BindingRecord>;
+
+  /**
    * OBSOLETE: Before we had support for multiple gadgets per workspace, the binding name and
    * blueprint annotation information lived on the GatekeeperRecord. These properties continue
    * to be declared only to support migrating them away. The version 0 -> 1 migration copies
@@ -76,13 +83,12 @@ export type StoredBlueprintBindingAnnotation = BlueprintBindingAnnotation & {inc
 /**
  * The props of an agent-spawner gatekeeper's `GatekeeperRecord.class` stub. They are baked into
  * the stored stub, so this is a stored shape like any other record here: they cannot be edited
- * in place, only replaced by minting a new stub (as the version 0 -> 1 migration does).
+ * in place, only replaced by minting a new stub (as the version 0 -> 1 migration does). Stubs
+ * minted before version 6 also carry the overseer's id and the spawner's `env`, which nothing
+ * reads anymore.
  */
 export type AgentSpawnerBindingProps = {
-  /** ID of the overseer under which this agent should run. */
-  overseerId: string,
-
-  config: AgentSpawnerConfig,
+  config: Omit<AgentSpawnerConfig, "env">,
 
   /**
    * DO ID of the user who created this binding. When agents are spawned, the model is
@@ -102,8 +108,9 @@ export type AgentSpawnerBindingProps = {
 export type LegacyAgentSpawnerConfig = Omit<AgentSpawnerConfig, "env"> & {env?: string[]};
 
 /**
- * A binding edge from one gadget to a target workpiece (today always a gatekeeper), stored in
- * GadgetRecord.bindings keyed by binding name.
+ * A binding edge from a gadget or agent spawner to a target workpiece, stored in
+ * GadgetRecord.bindings or GatekeeperRecord.bindings keyed by binding name. A gadget's targets
+ * are gatekeepers; a spawner's may also be gadgets.
  */
 export type BindingRecord = {
   target: WorkpieceId;
@@ -122,8 +129,9 @@ export type BindingRecord = {
    * edge-for-edge via the "changes" message's `addedBindings`). A pending edge is real in the
    * registry so the originating chat's own preview/test runs see it, but for *reads* everything
    * else (mainline loads, other chats, blueprints, "use"-role sharing) treats it as nonexistent.
-   * For *writes* it still occupies its name: another chat attempting to add the same name on
-   * this gadget fails with an explicit error until this chat's changes are accepted or reverted.
+   * A spawner's pending edge reaches no agent at all, since spawned agents run in chats of
+   * their own. For *writes* it still occupies its name: another chat attempting to add the same
+   * name fails with an explicit error until this chat's changes are accepted or reverted.
    */
   pending?: {chatId: number, sequence?: number};
 };
@@ -1178,6 +1186,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //       where the chat log still told: those an agent created from a blueprint name it,
       //       and those created from scratch name none. Every gadget created from here on has
       //       an `upstream` once it is permanent.
+      //   6 = agent spawners' bindings are GatekeeperRecord.bindings edges; their creationSpec
+      //       config no longer carries `env`.
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)
