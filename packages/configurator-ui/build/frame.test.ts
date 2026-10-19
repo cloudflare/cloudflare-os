@@ -62,9 +62,9 @@ const ACCEPTED_TYPES = `
 import { h } from "@gadgets/configurator-ui";
 export default {
   initial: {},
-  isReady: ({ acceptedResourceUrlPatterns }) => acceptedResourceUrlPatterns?.length === 1,
-  resourceUrl: ({ acceptedResourceUrlPatterns }) => acceptedResourceUrlPatterns[0],
-  render: ({ acceptedResourceUrlPatterns }) => <p>Accepts {acceptedResourceUrlPatterns.join(", ")}</p>,
+  isReady: ({ acceptedResourceUrlPatterns }) => (acceptedResourceUrlPatterns?.length ?? 1) === 1,
+  resourceUrl: ({ acceptedResourceUrlPatterns }) => acceptedResourceUrlPatterns?.[0] ?? "https://files.example.com/any",
+  render: ({ acceptedResourceUrlPatterns }) => <p>Accepts {acceptedResourceUrlPatterns?.join(", ") ?? "any type"}</p>,
 };
 `;
 /** Built once per variant, as the build script builds it once per run. */
@@ -114,6 +114,8 @@ class Host extends RpcTarget {
     return false;
   }
 }
+// A Workshop from before getAcceptedResourceUrlPatterns, as a tab left open across a release runs.
+if (location.search === "?older-workshop") delete Host.prototype.getAcceptedResourceUrlPatterns;
 window.addEventListener("message", event => {
   if (event.data?.type === "handshake") globalThis.frameStub = newMessagePortRpcSession(event.ports[0], new Host());
   else events.push(["message", event.data]);
@@ -149,7 +151,7 @@ afterAll(async () => {
 
 type Hosted = { page: Page; frame: () => Frame; events(): Promise<unknown[][]>; consoleErrors: string[] };
 
-const host = async (html: string): Promise<Hosted> => {
+const host = async (html: string, query = ""): Promise<Hosted> => {
   const page = await browser.newPage();
   const consoleErrors: string[] = [];
   page.on("console", message => {
@@ -161,7 +163,7 @@ const host = async (html: string): Promise<Hosted> => {
     if (pathname === "/frame.html") return route.fulfill({ body: html, contentType: "text/plain" });
     return route.fulfill({ body: hostPage, contentType: "text/html" });
   });
-  await page.goto("http://host.test/");
+  await page.goto(`http://host.test/${query}`);
   const frame = () => {
     const child = page.frames().find(candidate => candidate !== page.mainFrame());
     if (!child) throw new Error("The configurator frame is missing.");
@@ -223,6 +225,19 @@ describe("generated configurator frame", () => {
       await expect.poll(async () => (await events()).filter(([kind]) => kind === "ready").at(-1))
         .toEqual(["ready", true]);
       expect(await collect(page)).toEqual({ url: "https://files.example.com/folders/*" });
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
+  // A gatekeeper's new frames reach tabs still running the Workshop they were built after.
+  it("offers every resource type to a host too old to say which it accepts", async () => {
+    const { page, frame, events } = await host(await frameHtml(ACCEPTED_TYPES, false), "?older-workshop");
+    try {
+      await frame().getByText("Accepts any type").waitFor();
+      await expect.poll(async () => (await events()).filter(([kind]) => kind === "ready").at(-1))
+        .toEqual(["ready", true]);
+      expect(await collect(page)).toEqual({ url: "https://files.example.com/any" });
     } finally {
       await page.close();
     }
