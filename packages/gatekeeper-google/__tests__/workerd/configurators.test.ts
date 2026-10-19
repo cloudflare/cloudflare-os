@@ -10,7 +10,7 @@ import {
 } from "../../src/calendar-api";
 import {
   BigQueryConfiguratorUI, CalendarConfiguratorUI, DriveFolderConfiguratorUI, GoogleDocConfiguratorUI,
-  GoogleSheetsConfiguratorUI, GoogleSlidesConfiguratorUI,
+  GoogleGroupConfiguratorUI, GoogleSheetsConfiguratorUI, GoogleSlidesConfiguratorUI,
 } from "../../src/google-configurators";
 import type { GoogleAccessToken } from "../../src/google-api";
 import { OfficeConversion } from "../../src/office-conversion";
@@ -182,6 +182,63 @@ describe("Google resource configurators", () => {
 
     await expect(new CalendarConfiguratorUI(getToken).canWriteCalendar("shared@example.com"))
       .rejects.toThrow("Google Calendar API request failed: 403");
+  });
+
+  describe("the Google Group picker", () => {
+    const FORUM = "cloudidentity.googleapis.com/groups.discussion_forum";
+
+    function stubGroups(calls: URL[] = []) {
+      vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+        let url = new URL(input instanceof Request ? input.url : input.toString());
+        calls.push(url);
+        switch (url.pathname) {
+          case "/oauth2/v3/userinfo":
+            return Response.json({ sub: "1", email: "me@example.com" });
+          case "/v1/groups/-/memberships:searchDirectGroups":
+            return Response.json({
+              memberships: [
+                { group: "groups/g1", groupKey: { id: "eng-oncall@example.com" }, displayName: "Eng on-call",
+                  labels: { [FORUM]: "" }, roles: [{ name: "MEMBER" }, { name: "OWNER" }] },
+                { group: "groups/g2", groupKey: { id: "all@example.com" }, displayName: "Everyone",
+                  labels: { [FORUM]: "" }, roles: [{ name: "MEMBER" }] },
+              ],
+            });
+          case "/v1/groups:lookup":
+            return url.searchParams.get("groupKey.id") === "design@example.com"
+              ? Response.json({ name: "groups/g3" })
+              : Response.json({ error: { code: 403 } }, { status: 403 });
+          case "/v1/groups/g3":
+            return Response.json({
+              name: "groups/g3", groupKey: { id: "design@example.com" }, displayName: "Design",
+            });
+        }
+        return Response.json({ error: { code: 404 } }, { status: 404 });
+      }));
+      return calls;
+    }
+
+    it("offers the account's own groups, filtered by name or address, with its role in each", async () => {
+      let calls = stubGroups();
+      let picker = new GoogleGroupConfiguratorUI(async () => token("access-token"));
+      expect(await picker.listGroups("")).toEqual([
+        { value: "eng-oncall@example.com", title: "Eng on-call", subtitle: "eng-oncall@example.com", meta: "Owner" },
+        { value: "all@example.com", title: "Everyone", subtitle: "all@example.com", meta: "Member" },
+      ]);
+      expect((await picker.listGroups("oncall")).map(option => option.value)).toEqual(["eng-oncall@example.com"]);
+      expect((await picker.listGroups("every")).map(option => option.value)).toEqual(["all@example.com"]);
+      // Typing filters what was read once rather than asking Google again.
+      expect(calls.filter(url => url.pathname.endsWith(":searchDirectGroups"))).toHaveLength(1);
+    });
+
+    it("reaches any group the account can see by its exact address or link", async () => {
+      stubGroups();
+      let picker = new GoogleGroupConfiguratorUI(async () => token("access-token"));
+      let design = [{ value: "design@example.com", title: "Design", subtitle: "design@example.com" }];
+      expect(await picker.listGroups("Design@Example.com")).toEqual(design);
+      expect(await picker.listGroups("https://groups.google.com/a/example.com/g/design/members"))
+        .toEqual(design);
+      expect(await picker.listGroups("hidden@example.com")).toEqual([]);
+    });
   });
 
   it("refreshes a rejected Calendar access token", async () => {

@@ -72,6 +72,7 @@ import DOCS_TYPES_CODE from "./docs-types.txt";
 import BIGQUERY_TYPES_CODE from "./bigquery-types.txt";
 import CALENDAR_TYPES_CODE from "./calendar-types.txt";
 import DRIVE_TYPES_CODE from "./drive-types.txt";
+import GROUPS_TYPES_CODE from "./groups-types.txt";
 import {
   BigQueryConfiguratorUI,
   CalendarConfiguratorUI,
@@ -80,11 +81,13 @@ import {
   ChatThreadConfiguratorUI,
   GmailConfiguratorUI,
   GoogleDocConfiguratorUI,
+  GoogleGroupConfiguratorUI,
   GoogleSheetsConfiguratorUI,
   GoogleSlidesConfiguratorUI,
   DriveAccountConfiguratorUI,
   DriveFileConfiguratorUI,
   DriveFolderConfiguratorUI,
+  GroupsAccountConfiguratorUI,
 } from "./google-configurators";
 import BIGQUERY_CONFIGURATOR_HTML from "./generated/bigquery-configurator-ui.txt";
 import CALENDAR_CONFIGURATOR_HTML from "./generated/calendar-configurator-ui.txt";
@@ -98,6 +101,8 @@ import GOOGLE_SLIDES_CONFIGURATOR_HTML from "./generated/google-slides-configura
 import DRIVE_ACCOUNT_CONFIGURATOR_HTML from "./generated/drive-account-configurator-ui.txt";
 import DRIVE_FILE_CONFIGURATOR_HTML from "./generated/drive-file-configurator-ui.txt";
 import DRIVE_FOLDER_CONFIGURATOR_HTML from "./generated/drive-folder-configurator-ui.txt";
+import GOOGLE_GROUP_CONFIGURATOR_HTML from "./generated/google-group-configurator-ui.txt";
+import GROUPS_ACCOUNT_CONFIGURATOR_HTML from "./generated/groups-account-configurator-ui.txt";
 import GOOGLE_LOGO_SVG from "./google-logo.svg";
 import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS } from "./auth-retry";
@@ -106,7 +111,8 @@ import {
   BIGQUERY_HOST, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
   GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE,
   GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
-  GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE, RESOURCE_BY_KIND,
+  GOOGLE_DRIVE_RESOURCE, GOOGLE_GROUP_RESOURCE, GOOGLE_GROUPS_RESOURCE, GOOGLE_SHEETS_RESOURCE,
+  GOOGLE_SLIDES_RESOURCE, RESOURCE_BY_KIND,
   SUPPORTED_RESOURCES, creatableKind, nativeFileUrl,
   grantedResourceUrlPatterns, hasDriveResourceGrant, isPrivateGrant, OFFICE_IMPORT_GRANT,
   parseResourceUrl, recordedResourceUrlPatterns, type RecordedResourceGrant,
@@ -127,7 +133,8 @@ import {
   type GoogleOAuthEnv,
 } from "./oauth";
 import {
-  DOCS_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX, GMAIL_TYPES_MODULE_PREFIX, stripTypeModulePrefix,
+  DOCS_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX, GMAIL_TYPES_MODULE_PREFIX,
+  GROUPS_TYPES_MODULE_PREFIX, stripTypeModulePrefix,
 } from "./type-bundle";
 
 let googleDocTypesCode: string | undefined;
@@ -155,9 +162,12 @@ function getGoogleDriveTypesCode(): string {
 
 import type {GmailGatekeeperImplProps} from "./gmail";
 import type {GoogleChatGatekeeperImplProps} from "./chat";
+import type {GoogleGroupsGatekeeperImplProps} from "./groups";
+import { GoogleGroupsApi, groupsApiDisabled, groupsErrorStatus } from "./groups-api";
 
 export { GmailGatekeeperImpl } from "./gmail";
 export { GoogleChatGatekeeperImpl } from "./chat";
+export { GoogleGroupsGatekeeperImpl } from "./groups";
 export { ChatHookController, ChatHookDriver } from "./chat-hooks";
 export { GmailHookController, GmailHookDriver } from "./gmail-hooks";
 export { GoogleSheetsGatekeeperImpl } from "./sheets";
@@ -369,14 +379,14 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
       url: "https://google.com",
       logo: { url: GOOGLE_LOGO_URL },
       color: "#e8f0fe",
-      tagline: "Draft replies, edit docs, sheets and slides, search Drive, manage calendars, post to Chat, and analyze data",
+      tagline: "Draft replies, edit docs, sheets and slides, search Drive, manage calendars, post to Chat, look up groups, and analyze data",
       description:
           "Connect your Google account to give Cloudflare OS access to Gmail, Google Docs, Google " +
-          "Sheets, Google Slides, Google Drive, Google Calendar, Google Chat, and BigQuery. Build " +
-          "agents that triage email, draft and edit documents, spreadsheets and presentations, " +
-          "search Drive and read native Docs and Sheets, find focus time, " +
-          "schedule meetings, follow and post to Chat conversations, or run analytics queries on " +
-          "your data.",
+          "Sheets, Google Slides, Google Drive, Google Calendar, Google Chat, Google Groups, and " +
+          "BigQuery. Build agents that triage email, draft and edit documents, spreadsheets and " +
+          "presentations, search Drive and read native Docs and Sheets, find focus time, " +
+          "schedule meetings, follow and post to Chat conversations, see who belongs to which " +
+          "groups, or run analytics queries on your data.",
       providesAuth: true,
     };
   }
@@ -435,6 +445,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
       stripTypeModulePrefix(TYPES_CODE, GMAIL_TYPES_MODULE_PREFIX), getGoogleDocTypesCode(),
       getGoogleSheetsTypesCode(), getGoogleSlidesTypesCode(), CALENDAR_TYPES_CODE,
       BIGQUERY_TYPES_CODE, getDriveAgentTypesCode(), CHAT_TYPES_CODE,
+      stripTypeModulePrefix(GROUPS_TYPES_CODE, GROUPS_TYPES_MODULE_PREFIX),
     ].join("\n");
   }
 }
@@ -880,6 +891,14 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
         };
         return { class: this.ctx.exports.GoogleChatGatekeeperImpl({ props }), resource };
       }
+      case "groupsAccount":
+      case "group": {
+        let props: GoogleGroupsGatekeeperImplProps = {
+          userObjectId,
+          ...(target.kind === "group" ? { groupEmail: target.groupEmail } : {}),
+        };
+        return { class: this.ctx.exports.GoogleGroupsGatekeeperImpl({ props }), resource };
+      }
       case "driveAccount":
       case "driveFolder":
       case "driveFile": {
@@ -965,6 +984,20 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       return {
         iframeHtml: CHAT_THREAD_CONFIGURATOR_HTML,
         ui: new RpcStub(new ChatThreadConfiguratorUI()),
+      };
+    }
+
+    if (resourceUrlPattern === GOOGLE_GROUPS_RESOURCE.urlPattern) {
+      return {
+        iframeHtml: GROUPS_ACCOUNT_CONFIGURATOR_HTML,
+        ui: new RpcStub(new GroupsAccountConfiguratorUI()),
+      };
+    }
+
+    if (resourceUrlPattern === GOOGLE_GROUP_RESOURCE.urlPattern) {
+      return {
+        iframeHtml: GOOGLE_GROUP_CONFIGURATOR_HTML,
+        ui: new RpcStub(new GoogleGroupConfiguratorUI(getToken)),
       };
     }
 
@@ -1061,6 +1094,8 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 //     observer's own token has IAM access to a dataset (BigQuery returns 401/403/404 otherwise).
 //   - Google Chat — strategies A/B: an account binding refuses observers; a conversation or thread
 //     binding checks that the observer can open its conversation.
+//   - Google Groups — strategies A/B: an account binding refuses observers; a single-group binding
+//     checks with hasGroupMembersAccess that the observer can see the group and list its members.
 // The overseer only ever hands this verifier back to a Google gatekeeper, which may therefore trust
 // the boolean results. Creation uses it too: getUserObjectId names the account a user approved a
 // pending creation into, and applyCreation() creates the file through that account.
@@ -1180,6 +1215,20 @@ export class GoogleVerifier extends WorkerEntrypoint<Env, GoogleVerifierProps>
       // Chat answers a space the observer is not a member of with 403 or 404, which
       // isChatNoAccessError recognizes; anything else is transient and must fail the open loudly.
       if (isChatNoAccessError(error)) return false;
+      throw error;
+    }
+  }
+
+  async hasGroupMembersAccess(group: string): Promise<boolean> {
+    let api = new GoogleGroupsApi(opts => this.#getToken(opts));
+    try {
+      await api.getGroup(group);
+      await api.listMembers(group, undefined, 1);
+      return true;
+    } catch (error) {
+      // Only Google's own refusal of these reads denies; a failure to get a token, or anything
+      // transient, throws so the open fails loudly. The API being disabled is no answer either.
+      if (!groupsApiDisabled(error) && isNoAccessStatus(groupsErrorStatus(error))) return false;
       throw error;
     }
   }

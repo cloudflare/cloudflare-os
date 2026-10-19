@@ -15,6 +15,8 @@ import docsDeclared from "../src/docs-types.d.ts?raw";
 import docsShipped from "../src/docs-types.txt?raw";
 import driveDeclared from "../src/drive-types.d.ts?raw";
 import driveShipped from "../src/drive-types.txt?raw";
+import groupsDeclared from "../src/groups-types.d.ts?raw";
+import groupsShipped from "../src/groups-types.txt?raw";
 import sheetsReadDeclared from "../src/sheets-read-types.d.ts?raw";
 import sheetsReadShipped from "../src/sheets-read-types.txt?raw";
 import sheetsDeclared from "../src/sheets-types.d.ts?raw";
@@ -43,6 +45,7 @@ describe("agent-facing TypeScript type modules", () => {
     ["bigquery-types", bigqueryShipped, bigqueryDeclared],
     ["drive-types", driveShipped, driveDeclared],
     ["chat-types", chatShipped, chatDeclared],
+    ["groups-types", groupsShipped, groupsDeclared],
   ])("keeps %s.txt identical to its .d.ts", (name, shipped, declared) => {
     expect(shipped, `${name}.txt drifted from ${name}.d.ts; restore the .txt symlink to the .d.ts`)
       .toBe(declared);
@@ -51,7 +54,7 @@ describe("agent-facing TypeScript type modules", () => {
   it.each([
     "types", "docs-read-types", "docs-types", "sheets-read-types", "sheets-types",
     "slides-read-types", "slides-types", "calendar-types", "bigquery-types", "drive-types",
-    "chat-types",
+    "chat-types", "groups-types",
   ])("ships %s.txt as a symlink to its authoritative declaration", name => {
     expect(readlinkSync(new URL(`../src/${name}.txt`, import.meta.url))).toBe(`${name}.d.ts`);
   });

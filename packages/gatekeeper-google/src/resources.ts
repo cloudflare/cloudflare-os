@@ -10,6 +10,7 @@ import type { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import type { CalendarAvailabilityMode } from "./calendar-types";
 import { validateChatSpaceId, validateChatThreadId } from "./chat-api";
 import { validateGmailLabelName, validateGmailQueryForGrouping } from "./gmail-validate";
+import { groupEmailFromUrlParts, groupUrl } from "./groups-api";
 
 /** Host serving the synthetic BigQuery resource URLs. */
 export const BIGQUERY_HOST = "bigquery.googleapis.com";
@@ -123,6 +124,34 @@ export const GOOGLE_CHAT_THREAD_RESOURCE: SupportedResource = {
   grantable: true,
 };
 
+/**
+ * Every Google Group the connected account can see in its organization.
+ *
+ * Deliberately not shareable: Google decides who can see a group, and who can see its members, per
+ * group and per person, and this grant reaches every group the owner can see, so no collaborator
+ * can be verified against it (see `GoogleGroupsGatekeeperImpl.addObserver`). Users who want a
+ * Gadget others can open should connect a single group instead.
+ */
+export const GOOGLE_GROUPS_RESOURCE: SupportedResource = {
+  urlPattern: "https://groups.google.com/",
+  title: "Google Groups Account",
+  description:
+      "Find groups in your organization, see which groups someone belongs to, and read the " +
+      "members of any group you can see. Read-only. Covers every group you can see, so it " +
+      "cannot be shared with collaborators — connect a single group for that.",
+  grantable: true,
+};
+
+/** One Google Workspace group: its metadata and direct members. */
+export const GOOGLE_GROUP_RESOURCE: SupportedResource = {
+  urlPattern: "https://groups.google.com/a/:domain/g/:group",
+  title: "Google Group",
+  description:
+      "Read one group's details and direct members. Read-only. For the group name@example.com, " +
+      "request https://groups.google.com/a/example.com/g/name.",
+  grantable: true,
+};
+
 /** A BigQuery project, optionally narrowed to a dataset or table. */
 export const BIGQUERY_RESOURCE: SupportedResource = {
   urlPattern: `https://${BIGQUERY_HOST}/:projectId/*`,
@@ -217,6 +246,13 @@ const CHAT_SCOPES = [
   "https://www.googleapis.com/auth/chat.memberships.readonly",
 ];
 
+/**
+ * The scope both Groups resources need. Read-only, because neither binding changes a group; as for
+ * Chat, Google grants it for every group the account can see, so narrowing to one group is enforced
+ * by the binding rather than by consent.
+ */
+const GROUPS_SCOPES = ["https://www.googleapis.com/auth/cloud-identity.groups.readonly"];
+
 /** The OAuth scopes each grantable resource needs. */
 export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] = [
   {
@@ -306,6 +342,14 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
   {
     resource: GOOGLE_CHAT_THREAD_RESOURCE,
     scopes: CHAT_SCOPES,
+  },
+  {
+    resource: GOOGLE_GROUPS_RESOURCE,
+    scopes: GROUPS_SCOPES,
+  },
+  {
+    resource: GOOGLE_GROUP_RESOURCE,
+    scopes: GROUPS_SCOPES,
   },
   {
     resource: BIGQUERY_RESOURCE,
@@ -436,6 +480,9 @@ const SCOPE_COVERED_BY: Record<string, readonly string[]> = {
   "https://www.googleapis.com/auth/chat.users.readstate.readonly": [
     "https://www.googleapis.com/auth/chat.users.readstate",
   ],
+  "https://www.googleapis.com/auth/cloud-identity.groups.readonly": [
+    "https://www.googleapis.com/auth/cloud-identity.groups",
+  ],
 };
 
 function oauthScopeCovers(required: string, granted: ReadonlySet<string>): boolean {
@@ -527,7 +574,9 @@ export type ResourceTarget =
   | { kind: "driveFile"; fileId: string }
   | { kind: "chatAccount" }
   | { kind: "chatSpace"; spaceId: string }
-  | { kind: "chatThread"; spaceId: string; threadId: string };
+  | { kind: "chatThread"; spaceId: string; threadId: string }
+  | { kind: "groupsAccount" }
+  | { kind: "group"; groupEmail: string };
 
 /** The grantable resource each {@link ResourceTarget} kind belongs to. */
 export const RESOURCE_BY_KIND: Record<ResourceTarget["kind"], SupportedResource> = {
@@ -543,6 +592,8 @@ export const RESOURCE_BY_KIND: Record<ResourceTarget["kind"], SupportedResource>
   chatAccount: GOOGLE_CHAT_RESOURCE,
   chatSpace: GOOGLE_CHAT_SPACE_RESOURCE,
   chatThread: GOOGLE_CHAT_THREAD_RESOURCE,
+  groupsAccount: GOOGLE_GROUPS_RESOURCE,
+  group: GOOGLE_GROUP_RESOURCE,
 };
 
 /** The resource kinds createResource() can make: Google's native editor files. */
@@ -596,6 +647,7 @@ export function parseResourceUrl(url: string): ResourceTarget {
     case BIGQUERY_HOST: return parseBigQueryUrl(parsed);
     case "drive.google.com": return parseDriveUrl(parsed);
     case "chat.google.com": return parseChatUrl(parsed);
+    case "groups.google.com": return parseGroupsUrl(url, parsed);
   }
   throw new Error(`Unsupported Google resource URL host: ${parsed.hostname}`);
 }
@@ -720,6 +772,55 @@ function parseChatUrl(parsed: URL): ResourceTarget {
   }
 
   throw new Error(`Unsupported Google Chat resource URL: ${describeUrl(parsed)}`);
+}
+
+/**
+ * The grant is keyed on the canonical forms the configurators mint: the bare host for every group
+ * the account can see, `/a/{domain}/g/{name}` for the Workspace group `name@domain`, lowercased and
+ * with the name encoded by `encodeURIComponent`. Pages within a group, such as a conversation, are
+ * refused rather than widened to the whole group, and so are groups at googlegroups.com
+ * (`/g/{name}`), which Google's Groups API does not serve.
+ *
+ * Anything else that would name the same group is refused rather than normalized, so the URL a
+ * user is shown is exactly the grant. That is checked against `url` itself, because parsing has
+ * already resolved dot segments, which would let `/g/team/%2e%2e/other` read as `other`, and
+ * dropped credentials and the default port.
+ */
+function parseGroupsUrl(url: string, parsed: URL): ResourceTarget {
+  if (parsed.search || parsed.hash) {
+    throw new Error("Google Groups resource URLs must not include query strings or fragments.");
+  }
+  let given = url.endsWith("/") ? url.slice(0, -1) : url;
+  if (/^\/?$/.test(parsed.pathname)) {
+    if (given !== "https://groups.google.com") throw nonCanonicalGroupsUrl();
+    return { kind: "groupsAccount" };
+  }
+
+  let group = /^\/a\/([^/]+)\/g\/([^/]+)\/?$/.exec(parsed.pathname);
+  if (group) {
+    let domain: string, name: string;
+    try {
+      domain = decodeURIComponent(group[1]);
+      name = decodeURIComponent(group[2]);
+    } catch {
+      throw new Error(`Invalid Google Groups resource URL: ${describeUrl(parsed)}`);
+    }
+    let groupEmail = groupEmailFromUrlParts(domain, name);
+    if (given !== groupUrl(groupEmail)) throw nonCanonicalGroupsUrl();
+    return { kind: "group", groupEmail };
+  }
+
+  if (/^\/g\/[^/]+/.test(parsed.pathname)) {
+    throw new Error(
+      "Only Google Workspace groups, at groups.google.com/a/<domain>/g/<name>, can be connected.");
+  }
+  throw new Error(`Unsupported Google Groups resource URL: ${describeUrl(parsed)}`);
+}
+
+function nonCanonicalGroupsUrl(): Error {
+  return new Error(
+    "Google Groups resource URLs must be exactly https://groups.google.com/ or " +
+    "https://groups.google.com/a/<domain>/g/<name>, in lowercase.");
 }
 
 function parseBigQueryUrl(parsed: URL): ResourceTarget {

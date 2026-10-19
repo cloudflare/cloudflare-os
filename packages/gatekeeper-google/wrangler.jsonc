@@ -85,6 +85,12 @@
       "new_sqlite_classes": [
         "GoogleSlidesGatekeeperImpl"
       ]
+    },
+    {
+      "tag": "v9",
+      "new_sqlite_classes": [
+        "GoogleGroupsGatekeeperImpl"
+      ]
     }
   ]
 }

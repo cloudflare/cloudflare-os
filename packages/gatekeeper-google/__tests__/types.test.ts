@@ -7,7 +7,8 @@ import { describe, expect, it } from "vitest";
 import ts from "typescript6";
 import {
   DOCS_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX, GMAIL_TYPES_MODULE_PREFIX,
-  SHEETS_TYPES_MODULE_PREFIX, SLIDES_TYPES_MODULE_PREFIX, stripTypeModulePrefix,
+  GROUPS_TYPES_MODULE_PREFIX, SHEETS_TYPES_MODULE_PREFIX, SLIDES_TYPES_MODULE_PREFIX,
+  stripTypeModulePrefix,
 } from "../src/type-bundle";
 
 const SOURCE_DIR = join(dirname(fileURLToPath(import.meta.url)), "../src");
@@ -123,6 +124,7 @@ function vendorBundle(): string {
     sheetsBundle(), slidesBundle(), source("calendar-types.txt"), source("bigquery-types.txt"),
     stripTypeModulePrefix(source("drive-types.txt"), DRIVE_TYPES_MODULE_PREFIX),
     source("chat-types.txt"),
+    stripTypeModulePrefix(source("groups-types.txt"), GROUPS_TYPES_MODULE_PREFIX),
   ].join("\n");
 }
 
@@ -282,6 +284,36 @@ const unstyled: SheetBorder = { color: "#000000" };
 // @ts-expect-error Wrapping is named as the agent names it.
 const legacy: SheetCellFormat = { wrap: "OVERFLOW_CELL" };
 `).filter(message => !message.includes("'cloudflare:workers'"))).toEqual([]);
+  });
+
+  // Both Groups bindings are read-only: nothing an agent holds may add, remove or change a member.
+  it("gives Google Groups capabilities that only read, in the flat vendor bundle too", () => {
+    const usage = `
+declare const groups: GoogleGroupsSession;
+declare const group: GoogleGroup;
+async function check() {
+  const found: Cursor<GoogleGroupEntry> = await groups.searchGroups("oncall");
+  const mine: Cursor<GoogleGroupMembershipEntry> = await groups.listGroupsOf();
+  const theirs: Cursor<GoogleGroupMembershipEntry> = await groups.listGroupsOf("ada@example.com");
+  const opened: GoogleGroupEntry = await groups.getGroup("groups/01abc");
+  const info: GoogleGroupInfo = await opened.group.getInfo();
+  const members: GoogleGroupMember[] | null = await (await group.listMembers()).next();
+  const member: GoogleGroupMember | null = await group.findMember("ada@example.com");
+  const role: GoogleGroupRole | undefined = member?.role;
+  // @ts-expect-error A group binding cannot change members.
+  group.addMember("ada@example.com");
+  // @ts-expect-error A group binding cannot remove members.
+  group.removeMember("ada@example.com");
+  // @ts-expect-error A group binding cannot change roles.
+  group.setMemberRole("ada@example.com", "owner");
+  return [found, mine, theirs, info, members, role];
+}
+`;
+    for (const bundle of [source("groups-types.txt"), vendorBundle()]) {
+      expect(compileAgentTypes(bundle + usage)
+        // The agent's runtime provides the module the declarations import.
+        .filter(message => !message.includes("'cloudflare:workers'"))).toEqual([]);
+    }
   });
 
   it("hands out only read-only native sessions from Drive", () => {

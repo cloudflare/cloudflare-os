@@ -8,7 +8,7 @@ This package provides Google OAuth integration for Gadgets. It serves two purpos
   which becomes the user's identity.
   The sign-in grant is transient (discarded right after the email is read).
 - **Connections:** when a user connects Google (or signs in and later connects it), the scopes for
-  the selected resources (Gmail, Docs, Sheets, Slides, Drive, Calendar, or BigQuery — see below) are requested
+  the selected resources (Gmail, Docs, Sheets, Slides, Drive, Calendar, Chat, Groups, or BigQuery — see below) are requested
   so gadgets can access those APIs on the user's behalf.
 
 A single Google OAuth client is used for both. Set it up as follows.
@@ -29,7 +29,7 @@ If you're running this project locally and want to use Google API integrations, 
 
 ### Step 2: Enable Required APIs
 
-You'll need to enable the Google APIs that you want to use. Currently supported: Gmail, Google Docs, Google Sheets, Google Slides, Google Drive, Google Calendar, Google Chat, and BigQuery.
+You'll need to enable the Google APIs that you want to use. Currently supported: Gmail, Google Docs, Google Sheets, Google Slides, Google Drive, Google Calendar, Google Chat, Google Groups, and BigQuery.
 
 1. In the left sidebar, go to **APIs & Services** > **Library** (or [click here](https://console.cloud.google.com/apis/library))
 2. Search for "Gmail API"
@@ -55,6 +55,7 @@ You'll need to enable the Google APIs that you want to use. Currently supported:
 22. Click **Enable**
 23. For Chat, enable **Google Chat API**, plus **People API** so direct messages and group chats can be named when Chat omits a participant's name, and so a whole-account Chat connection can search the organization's directory and confirm that everyone in a conversation it starts belongs to the organization.
 24. On the Google Chat API's **Configuration** tab, set an app name, avatar URL, and description, turn off **Interactive features**, and click **Save**. Reads work without this, but Google refuses every Chat send, edit, and reaction until a Chat app is configured.
+25. For Groups, enable the **Cloud Identity API**; without it every Groups read fails. Google also documents its Groups API as needing Groups for Business turned on for the domain, with end users allowed to create groups, both Workspace admin settings.
 
 The Google Drive API powers the Docs, Sheets, and Slides resource pickers, Drive discovery, and Drive scope checks. Native document, spreadsheet, or presentation content opened from a Drive binding is read through the Google Docs, Google Sheets, or Google Slides API. Direct Google Doc reads and edits still go through the Docs API, direct spreadsheet reads and edits go through the Sheets API, and direct presentation reads and edits go through the Slides API.
 
@@ -88,6 +89,7 @@ included). Across all resource types, the gatekeeper can request:
 - `calendar.calendarlist.readonly` so the resource picker can list calendars.
 - `calendar.events` to manage selected calendar and check calendar availability.
 - `chat.spaces.readonly`, `chat.messages`, and `chat.memberships.readonly` for every Chat resource. A whole-account Chat connection adds `chat.users.readstate.readonly` for its unread-only search, and `chat.spaces.create` and `directory.readonly` to start direct messages and group chats with people in the connected account's Workspace directory. Starting a conversation is its own approval kind, separate from sending in an existing one, and people outside the organization can't be added to a new conversation.
+- `cloud-identity.groups.readonly` for both Groups resources: reading groups, their direct members, and the groups someone directly belongs to. A `cloud-identity.groups` grant the account already holds covers it, but neither Groups resource ever requests a scope that can change a group.
 - `bigquery` for BigQuery dry-runs and queries. This is intentionally broader than `bigquery.readonly` because dry-runs use `jobs.insert`; the gatekeeper enforces read-only SQL and resource scope checks before running queries.
 
 ### Step 4: Test Users
@@ -144,12 +146,12 @@ User — see Step 4.)
 2. Create or open a gadget.
 3. Navigate to the **Connections** tab.
 4. Click **+ New Connection**.
-5. Choose a Google resource type: Gmail, Google Doc, Google Spreadsheet, Google Slides Presentation, Google Drive Account, Google Drive Folder, Google Drive File, Google Calendar, or BigQuery.
+5. Choose a Google resource type: Gmail, Google Doc, Google Spreadsheet, Google Slides Presentation, Google Drive Account, Google Drive Folder, Google Drive File, Google Calendar, Google Chat, Google Groups Account, Google Group, or BigQuery.
 6. If prompted, connect a Google account.
 7. You should be redirected to Google's consent screen in a new tab.
 8. The consent screen acts extra-scary since this is an "unverified" test app.
 9. After granting access, the tab closes, and you're back to Gadgets.
-10. Use the picker to choose the mailbox scope, document, presentation, folder, Drive file, project, dataset, or table to connect. (The Google Drive Account resource covers the whole account, so it has no picker.)
+10. Use the picker to choose the mailbox scope, document, presentation, folder, Drive file, group, project, dataset, or table to connect. (The Google Drive Account and Google Groups Account resources cover the whole account, so they have no picker.)
 11. Create the connection. Ask the agent what it can do, or ask it to write a gadget using the new binding.
 
 You can also see your connected accounts and add and remove them in the settings (accessed through the account menu in the upper-right).
@@ -631,6 +633,19 @@ Account, folder, and exact-file Drive bindings request `drive.metadata.readonly`
 Drive observations are typed as files or listable folders. A folder operation observes its positioned folder path plus each disclosed direct child, and native reads observe the file independently. Before a collaborator opens the workspace, the gatekeeper requires their own explicit Drive resource consent and rechecks remembered units with fresh batched metadata reads; folder units must still be live listable folders. Hidden rejected candidates are not disclosed or remembered.
 
 A search that exhausts with no match is owner-relative and cannot be verified against a file. That read is audited, withheld from current observers, and permanently closes later sharing only after the positioned folder path is revalidated. Intermediate empty provider pages do not trigger the restriction.
+
+## Google Groups read-only bindings
+
+Groups exposes two permanent resource URL forms, both read-only and both answered by Google's Cloud Identity Groups API as the connected user:
+
+- `https://groups.google.com/` selects every group the connected account can see. `GoogleGroupsSession` searches the organization's groups by name or address, lists the groups someone directly belongs to, and opens any group the account can see.
+- `https://groups.google.com/a/<domain>/g/<name>` selects the Google Workspace group `<name>@<domain>`. The URL must be exactly this canonical form, lowercase, so the URL a user approves is the grant; pickers and agent connection requests are normalized to it. Its `GoogleGroup` reads the group's metadata and direct members. The binding resolves the address to the group's stable ID on first use and keeps that ID, so it cannot follow the address if the group's address is changed or later given to another group.
+
+Only what Google lets an ordinary user read is reachable, and everything the gatekeeper reads is filtered by each group's own settings: a hidden group is refused to anyone outside it, and a group's member list can be limited to its members or managers. Consumer groups at googlegroups.com are not available, since the Cloud Identity API serves only Workspace groups, and neither are group conversations, which no Google API reads. Membership is direct only: a nested group is reported as one member, and Google answers transitive-membership queries only on premium Workspace editions. Members carry email addresses and roles but no names, which would need the separate directory scope. Nothing here writes, so no Groups read waits for approval and no change is queued.
+
+Search matches names first and then addresses, lowercasing the text for addresses; whether names match regardless of case is up to Google, which does not say. It needs the organization's customer ID, which Google documents no way for a non-administrator to look up. The account binding learns it from the owner of one of the account's own groups in its own email domain, the first time it searches, and keeps it for that Google account, finding it again after a reconnect as a different one. An account in no such group cannot search, though it can still open groups by address and list memberships. The single-group picker offers the account's own groups for the same reason, and reaches any other group by its exact address or groups.google.com link.
+
+A whole-account Groups binding cannot be shared with collaborators: it reaches every group the owner can see, and Google decides who can see each group and its members per group and per person, so no collaborator can be verified against it. A single-group binding admits a collaborator whose own Google account can see the group and list its members, rechecked every time they open the workspace.
 
 ## Troubleshooting
 

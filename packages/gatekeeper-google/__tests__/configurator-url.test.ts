@@ -34,11 +34,14 @@ import chatThreadConfigurator from "../src/configurator/chat-thread-configurator
 import googleDocConfigurator from "../src/configurator/google-doc-configurator-ui";
 import googleSheetsConfigurator from "../src/configurator/google-sheets-configurator-ui";
 import googleSlidesConfigurator from "../src/configurator/google-slides-configurator-ui";
+import googleGroupConfigurator from "../src/configurator/google-group-configurator-ui";
+import groupsAccountConfigurator from "../src/configurator/groups-account-configurator-ui";
 import {
   GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE,
   GOOGLE_CHAT_THREAD_RESOURCE,
   GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
-  GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE,
+  GOOGLE_DRIVE_RESOURCE, GOOGLE_GROUP_RESOURCE, GOOGLE_GROUPS_RESOURCE, GOOGLE_SHEETS_RESOURCE,
+  GOOGLE_SLIDES_RESOURCE,
   parseResourceUrl,
 } from "../src/resources";
 
@@ -394,5 +397,62 @@ describe.each([
   // which no Drive file has, to be chosen by hand rather than sent to `inspectFile`.
   it("prefills nothing, and asks nothing, for an ID outside Drive's alphabet", async () => {
     await expect(prefill(`https://docs.google.com/${path}/d/bad%2Fid/edit`, noUi)).resolves.toEqual({});
+  });
+});
+
+describe("Google Groups configurator URLs", () => {
+  const groupValues = (resourceUrl: string) =>
+    googleGroupConfigurator.initialValuesFromResourceUrl!({
+      resourceUrl, resourceUrlPattern: GOOGLE_GROUP_RESOURCE.urlPattern, ui: noUi,
+    });
+  const groupReady = (email: string) =>
+    googleGroupConfigurator.isReady!({ values: { email } });
+
+  it("mints the whole-account resource", () => {
+    const url = configurableUrl(groupsAccountConfigurator, { scope: "account" });
+    expect(url).toBe(GOOGLE_GROUPS_RESOURCE.urlPattern);
+    expect(parseResourceUrl(url)).toEqual({ kind: "groupsAccount" });
+  });
+
+  it.for([
+    ["team@example.com", "https://groups.google.com/a/example.com/g/team"],
+    ["  Eng-Team@Example.COM ", "https://groups.google.com/a/example.com/g/eng-team"],
+    ["dan's+ops@example.com", "https://groups.google.com/a/example.com/g/dan's%2Bops"],
+  ] as const)("mints a group URL the server parses, and prefills back, from %j", ([email, expected]) => {
+    const groupEmail = email.trim().toLowerCase();
+    expect(groupReady(email)).toBe(true);
+    const url = configurableUrl(googleGroupConfigurator, { email });
+    expect(url).toBe(expected);
+    expect(parseResourceUrl(url)).toEqual({ kind: "group", groupEmail });
+    expect(groupValues(url)).toEqual({ email: groupEmail });
+  });
+
+  // Each address the picker would submit must be one the server accepts, and the reverse.
+  it.for([
+    "", "team", "team@", "team@localhost", "te am@example.com", "a@b@example.com",
+    "team@-example.com", "team@exa_mple.com",
+    // The Kelvin sign lowercases to an ASCII `k`, which would mint the address of another group.
+    "\u212Ateam@example.com",
+  ])("is not ready for %j, which the server would refuse", email => {
+    expect(groupReady(email)).toBe(false);
+    const at = email.lastIndexOf("@");
+    if (at > 0) {
+      expect(() => parseResourceUrl(
+        `https://groups.google.com/a/${email.slice(at + 1)}/g/${encodeURIComponent(email.slice(0, at))}`,
+      )).toThrow();
+    }
+  });
+
+  it("prefills nothing from a URL that names no group", () => {
+    expect(groupValues("https://groups.google.com/")).toEqual({});
+    expect(groupValues("https://groups.google.com/a/example.com/g/%ZZ")).toEqual({});
+    expect(groupValues("https://groups.google.com/g/team")).toEqual({});
+  });
+
+  it("explains that a group connection is shareable but an account one is not", () => {
+    expect(renderedCopy(groupsAccountConfigurator))
+      .toContain("cannot be shared with collaborators");
+    expect(renderedCopy(googleGroupConfigurator))
+      .toContain("only if their own Google account can see the group's members too");
   });
 });

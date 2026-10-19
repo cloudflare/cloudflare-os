@@ -19,9 +19,17 @@ type GoogleJsonResponseOptions = {
   maxBytes: number;
 };
 
-/** A failed Google API request, carrying Google's status code but none of its response prose. */
+/**
+ * A failed Google API request, carrying Google's status and reason codes but none of its response
+ * prose.
+ */
 export class GoogleApiError extends Error {
-  constructor(message: string, readonly providerStatus: string | undefined) {
+  constructor(
+    message: string,
+    readonly providerStatus: string | undefined,
+    readonly httpStatus?: number,
+    readonly providerReasons: readonly string[] = [],
+  ) {
     super(message);
   }
 }
@@ -134,7 +142,8 @@ export async function readGoogleJson<T>(
       ...diagnostics,
     });
     throw new GoogleApiError(
-      `${provider} ${operation} failed [http=${response.status}]`, diagnostics.providerStatus);
+      `${provider} ${operation} failed [http=${response.status}]`, diagnostics.providerStatus,
+      response.status, diagnostics.providerReasons);
   }
 
   let text = await readBoundedText(response, maxBytes, provider);

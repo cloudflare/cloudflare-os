@@ -12,13 +12,14 @@ import type { SpreadsheetInfo, SpreadsheetRange } from "../src/sheets-read-types
 import type { GoogleSpreadsheetSession } from "../src/sheets-types";
 import type { PresentationInfo, Slide } from "../src/slides-read-types";
 import type { GooglePresentationSession } from "../src/slides-types";
+import type { GoogleGroup, GoogleGroupInfo, GoogleGroupsSession } from "../src/groups-types";
 import GoogleWorker, {
-  GatekeeperVendor, GoogleDocGatekeeperImpl, GoogleSheetsGatekeeperImpl,
+  GatekeeperVendor, GoogleDocGatekeeperImpl, GoogleGroupsGatekeeperImpl, GoogleSheetsGatekeeperImpl,
   GoogleSlidesGatekeeperImpl, GoogleVerifier,
 } from "../src/google";
 
 export {
-  GatekeeperVendor, GoogleDocGatekeeperImpl, GoogleSheetsGatekeeperImpl,
+  GatekeeperVendor, GoogleDocGatekeeperImpl, GoogleGroupsGatekeeperImpl, GoogleSheetsGatekeeperImpl,
   GoogleSlidesGatekeeperImpl, GoogleVerifier,
 };
 export default GoogleWorker;
@@ -59,6 +60,11 @@ type SheetsCall = {
 /** An error's message, so a test can assert on a failure that crossed the RPC boundary. */
 function failure(error: unknown): { error: string } {
   return { error: error instanceof Error ? error.message : String(error) };
+}
+
+function disposeRpc(value: unknown): void {
+  if ((typeof value !== "object" && typeof value !== "function") || value === null) return;
+  (value as { [Symbol.dispose]?: () => void })[Symbol.dispose]?.();
 }
 class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   actionId?: number;
@@ -346,6 +352,101 @@ export class TestHooks extends DurableObject<Env> {
   /** Leaves a Slides change claimed, as an activation that died while applying it would. */
   async orphanSlidesClaim(facetName: string, actionId: number): Promise<void> {
     await (this.#slides(facetName) as unknown as TestGoogleSlidesGatekeeper).claimTestAction(actionId);
+  }
+
+  #groups(facetName: string, groupEmail?: string) {
+    let userObjectId = this.ctx.exports.UserAccount.idFromName("test-user").toString();
+    return this.ctx.facets.get<GoogleGroupsGatekeeperImpl>(facetName, () => ({
+      class: this.ctx.exports.GoogleGroupsGatekeeperImpl({
+        props: { userObjectId, ...(groupEmail !== undefined ? { groupEmail } : {}) },
+      }),
+    }));
+  }
+
+  async groupsDescribe(facetName: string, groupEmail?: string)
+      : Promise<ResourceDescription | { error: string }> {
+    try {
+      return await this.#groups(facetName, groupEmail).describe();
+    } catch (error) {
+      return failure(error);
+    }
+  }
+
+  /** The bound group's metadata and members, read through a fresh session of a single-group binding. */
+  async groupsRead(facetName: string, groupEmail: string)
+      : Promise<{ info?: GoogleGroupInfo; members?: string[]; error?: string; observations: string[] }> {
+    let queue = new TestApprovalQueue();
+    using approvalQueue = new RpcStub<ApprovalQueue>(queue);
+    try {
+      using group = await this.#groups(facetName, groupEmail).startSession(
+        approvalQueue as unknown as ApprovalQueue) as GoogleGroup & Disposable;
+      let info = await group.getInfo();
+      using cursor = await group.listMembers() as Awaited<ReturnType<GoogleGroup["listMembers"]>> & Disposable;
+      let members: string[] = [];
+      for (let page = await cursor.next(); page !== null; page = await cursor.next()) {
+        members.push(...page.map(member => member.email));
+      }
+      return { info, members, observations: queue.observations };
+    } catch (error) {
+      return { ...failure(error), observations: queue.observations };
+    }
+  }
+
+  /** What calling each account-wide method on a single-group binding's session does. */
+  async groupsAccountMethodsOnGroup(facetName: string, groupEmail: string): Promise<string[]> {
+    let queue = new TestApprovalQueue();
+    using approvalQueue = new RpcStub<ApprovalQueue>(queue);
+    using group = await this.#groups(facetName, groupEmail).startSession(
+      approvalQueue as unknown as ApprovalQueue) as unknown as
+        Record<string, (argument: string) => Promise<unknown>> & Disposable;
+    let outcomes: string[] = [];
+    for (let [method, argument] of [
+      ["searchGroups", "team"], ["listGroupsOf", "ada@example.com"], ["getGroup", "other@example.com"],
+    ]) {
+      try {
+        let result = await group[method](argument);
+        disposeRpc(result);
+        outcomes.push(`${method}: returned`);
+      } catch (error) {
+        outcomes.push(`${method}: ${failure(error).error}`);
+      }
+    }
+    return outcomes;
+  }
+
+  /** Searches through a fresh session of a whole-account binding, draining the cursor. */
+  async groupsSearch(facetName: string, query: string)
+      : Promise<{ emails?: string[]; error?: string; observations: string[] }> {
+    let queue = new TestApprovalQueue();
+    using approvalQueue = new RpcStub<ApprovalQueue>(queue);
+    try {
+      using session = await this.#groups(facetName).startSession(
+        approvalQueue as unknown as ApprovalQueue) as GoogleGroupsSession & Disposable;
+      using cursor = await session.searchGroups(query) as Awaited<ReturnType<GoogleGroupsSession["searchGroups"]>> & Disposable;
+      let emails: string[] = [];
+      for (let page = await cursor.next(); page !== null; page = await cursor.next()) {
+        for (let entry of page) {
+          emails.push(entry.info.email);
+          (entry.group as unknown as Disposable)[Symbol.dispose]();
+        }
+      }
+      return { emails, observations: queue.observations };
+    } catch (error) {
+      return { ...failure(error), observations: queue.observations };
+    }
+  }
+
+  /** Why the Groups binding refuses `observer`'s own account as a collaborator, or null if it admits it. */
+  async groupsAddObserver(facetName: string, groupEmail: string | undefined, observer: string)
+      : Promise<string | null> {
+    let userObjectId = this.ctx.exports.UserAccount.idFromName(observer).toString();
+    try {
+      await this.#groups(facetName, groupEmail).addObserver(
+        "observer-1", this.ctx.exports.GoogleVerifier({ props: { userObjectId } }));
+      return null;
+    } catch (error) {
+      return failure(error).error;
+    }
   }
 
   #sheets(facetName: string) {

@@ -12,6 +12,9 @@ export const DRIVE_TYPES_MODULE_PREFIX =
 /** Module-only prefix of the Gmail declaration; the flat vendor bundle gets RpcStub from chat-types instead. */
 export const GMAIL_TYPES_MODULE_PREFIX = 'import type { RpcStub } from "cloudflare:workers";\n\n';
 
+/** Module-only prefix of the Google Groups declaration; the flat vendor bundle gets RpcTarget from chat-types instead. */
+export const GROUPS_TYPES_MODULE_PREFIX = 'import type { RpcTarget } from "cloudflare:workers";\n\n';
+
 /** Module-only prefix of the Google Slides declaration. */
 export const SLIDES_TYPES_MODULE_PREFIX =
   "import type {\n" +

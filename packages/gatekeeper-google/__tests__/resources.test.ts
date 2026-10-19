@@ -3,6 +3,7 @@ import {
   BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_CHAT_RESOURCE,
   GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE, GOOGLE_DOC_RESOURCE,
   GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE,
+  GOOGLE_GROUP_RESOURCE, GOOGLE_GROUPS_RESOURCE,
   GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE, IDENTITY_SCOPES,
   LEGACY_GRANTED_RESOURCE_URL_PATTERNS, OFFICE_IMPORT_GRANT, RESOURCE_BY_KIND, RESOURCE_SCOPES,
   SCOPE_DERIVED_RESOURCE_URL_PATTERNS, SUPPORTED_RESOURCES, creatableKind,
@@ -38,6 +39,8 @@ describe("resource declarations", () => {
       "https://chat.google.com/",
       "https://chat.google.com/:kind(room|dm)/:spaceId",
       "https://chat.google.com/:kind(room|dm)/:spaceId/:threadId{/:messageId}?",
+      "https://groups.google.com/",
+      "https://groups.google.com/a/:domain/g/:group",
       "https://bigquery.googleapis.com/:projectId/*",
     ]);
   });
@@ -125,6 +128,20 @@ describe("resource declarations", () => {
       .map(resource => resource.urlPattern);
     expect(resourcesCoveredByScopes(chatPatterns, conversation))
       .toEqual([GOOGLE_CHAT_SPACE_RESOURCE.urlPattern, GOOGLE_CHAT_THREAD_RESOURCE.urlPattern]);
+  });
+
+  // Neither Groups binding changes a group, so neither asks for the read-write scope, and narrowing
+  // to one group is the binding's job, so both ask for the same one.
+  it("requests only the read-only Cloud Identity Groups scope for both Groups resources", () => {
+    const readonly = "https://www.googleapis.com/auth/cloud-identity.groups.readonly";
+    for (const resource of [GOOGLE_GROUPS_RESOURCE, GOOGLE_GROUP_RESOURCE]) {
+      expect(resourceUrlPatternsToOAuthScopes([resource.urlPattern]))
+        .toEqual([...IDENTITY_SCOPES, readonly]);
+    }
+    const groupPatterns = [GOOGLE_GROUPS_RESOURCE.urlPattern, GOOGLE_GROUP_RESOURCE.urlPattern];
+    // An account already holding the read-write scope holds the read-only one too.
+    expect(resourcesCoveredByScopes(groupPatterns,
+      ["https://www.googleapis.com/auth/cloud-identity.groups"])).toEqual(groupPatterns);
   });
 
   it("matches the natural folder URL only to the folder resource", () => {
@@ -407,7 +424,7 @@ describe("parseResourceUrl", () => {
     it.each([
       "https://drive.google.com/drive/folders/",
       "https://drive.google.com/file/d/abc",
-      "https://groups.google.com/g/team",
+      "https://sites.google.com/view/team",
       "https://mail.google.com.evil.example/",
       "https://example.com/",
     ])("rejects %s instead of falling back to Gmail", url => {
@@ -459,8 +476,13 @@ describe("parseResourceUrl", () => {
       });
 
       it("names only the host for an unsupported one", () => {
-        expect(messageFor("https://groups.google.com/g/team?invite=sekrit"))
-          .toBe("Unsupported Google resource URL host: groups.google.com");
+        expect(messageFor("https://sites.google.com/view/team?invite=sekrit"))
+          .toBe("Unsupported Google resource URL host: sites.google.com");
+      });
+
+      it("names only the host and path of an unsupported Google Groups page", () => {
+        expect(messageFor("https://groups.google.com/a/example.com/g/team/c/abc"))
+          .toBe("Unsupported Google Groups resource URL: groups.google.com/a/example.com/g/team/c/abc");
       });
 
       it("names only the scheme for a non-https URL", () => {
@@ -647,6 +669,82 @@ describe("parseResourceUrl", () => {
         ["https://chat.google.com/room/AAAA1234/TTT/MMM", GOOGLE_CHAT_THREAD_RESOURCE],
         ["https://chat.google.com/dm/AAAA1234", GOOGLE_CHAT_SPACE_RESOURCE],
         ["https://chat.google.com/dm/AAAA1234/TTT/MMM", GOOGLE_CHAT_THREAD_RESOURCE],
+      ] as const) {
+        for (const resource of SUPPORTED_RESOURCES) {
+          expect(new URLPattern(resource.urlPattern).test(url)).toBe(resource === expected);
+        }
+      }
+    });
+  });
+
+  describe("groups", () => {
+    it.each([
+      ["every group the account can see", "https://groups.google.com/", { kind: "groupsAccount" }],
+      ["every group, without the trailing slash", "https://groups.google.com", { kind: "groupsAccount" }],
+      ["one group", "https://groups.google.com/a/example.com/g/team",
+        { kind: "group", groupEmail: "team@example.com" }],
+      ["one group with a trailing slash", "https://groups.google.com/a/example.com/g/team/",
+        { kind: "group", groupEmail: "team@example.com" }],
+      ["one group with an encoded name", "https://groups.google.com/a/example.com/g/dan's%2Bops",
+        { kind: "group", groupEmail: "dan's+ops@example.com" }],
+    ] as const)("scopes to %s", (_name, url, expected) => {
+      expect(parseResourceUrl(url)).toEqual(expected);
+    });
+
+    // Each of these names some group, but not in the form a grant is keyed on, so the URL a user
+    // is shown would not be exactly what they grant. The dot segments and the Kelvin sign would
+    // otherwise name other groups altogether: `other@` and `kteam@`.
+    it.each([
+      ["a mixed-case address", "https://groups.google.com/a/Example.COM/g/Eng-Team"],
+      ["a differently encoded name", "https://groups.google.com/a/example.com/g/dan%27s.team"],
+      ["dot segments", "https://groups.google.com/a/example.com/g/team/%2e%2e/other"],
+      ["credentials", "https://user:pw@groups.google.com/a/example.com/g/team"],
+      ["the default port", "https://groups.google.com:443/a/example.com/g/team"],
+      ["a backslash", "https://groups.google.com\\a\\example.com\\g\\team"],
+      ["credentials on the account", "https://user:pw@groups.google.com/"],
+    ])("refuses %s rather than normalizing it", (_name, url) => {
+      expect(() => parseResourceUrl(url)).toThrow(/must be exactly https:\/\/groups\.google\.com/);
+    });
+
+    it("refuses a name that only lowercases into an address", () => {
+      expect(() => parseResourceUrl("https://groups.google.com/a/example.com/g/%E2%84%AAteam"))
+        .toThrow(/Expected an email address/);
+    });
+
+    // A page within a group is refused rather than widened into a grant of the whole group, and a
+    // grant is keyed on the canonical URL, so noise is refused rather than normalized.
+    it.each([
+      "https://groups.google.com/a/example.com/g/team/c/abc123",
+      "https://groups.google.com/a/example.com/g/team/members",
+      "https://groups.google.com/a/example.com/g/",
+      "https://groups.google.com/a/example.com/",
+      "https://groups.google.com/a/example.com/forum/#!forum/team",
+      "https://groups.google.com/my-groups",
+      "https://groups.google.com/a/example.com/g/team?hl=en",
+      "https://groups.google.com/a/example.com/g/team#members",
+    ])("rejects %s", url => {
+      expect(() => parseResourceUrl(url)).toThrow(/Google Groups/);
+    });
+
+    // The address is looked up through Google's API, so only an address it could name is accepted.
+    it.each([
+      "https://groups.google.com/a/not_a_domain/g/team",
+      "https://groups.google.com/a/example.com/g/te%20am",
+      "https://groups.google.com/a/example.com/g/team%40other.com",
+    ])("rejects the malformed address in %s", url => {
+      expect(() => parseResourceUrl(url)).toThrow(/Expected an email address/);
+    });
+
+    // Google's Groups API serves only Google Workspace groups, never googlegroups.com ones.
+    it("refuses a consumer group with a reason", () => {
+      expect(() => parseResourceUrl("https://groups.google.com/g/team"))
+        .toThrow(/Only Google Workspace groups/);
+    });
+
+    it("matches each Groups URL to exactly one resource pattern", () => {
+      for (const [url, expected] of [
+        ["https://groups.google.com/", GOOGLE_GROUPS_RESOURCE],
+        ["https://groups.google.com/a/example.com/g/team", GOOGLE_GROUP_RESOURCE],
       ] as const) {
         for (const resource of SUPPORTED_RESOURCES) {
           expect(new URLPattern(resource.urlPattern).test(url)).toBe(resource === expected);

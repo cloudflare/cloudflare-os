@@ -4,9 +4,13 @@ import { BigQueryApi } from "./bigquery-api";
 import { GoogleCalendarApi } from "./calendar-api";
 import { ChatApi, chatSpaceIdFromReference, isChatNoAccessError } from "./chat-api";
 import type { ChatSpaceInfo } from "./chat-types";
-import { GoogleAccessToken } from "./google-api";
+import { GoogleAccessToken, getGoogleAccountProfile } from "./google-api";
 import { AccessTokenProvider, AccessTokenRequest } from "./auth-retry";
 import { DriveApi, DriveApiDisabledError, FOLDER_MIME_TYPE } from "./drive-api";
+import {
+  GoogleGroupsApi, groupEmailFromLink, groupsErrorStatus, normalizeEmail,
+} from "./groups-api";
+import type { GoogleGroupInfo, GoogleGroupRole } from "./groups-types";
 import type { BigQueryConfiguratorRpc } from "./configurator/bigquery-configurator-types";
 import type { CalendarConfiguratorRpc } from "./configurator/calendar-configurator-types";
 import type { GmailConfiguratorRpc } from "./configurator/gmail-configurator-types";
@@ -26,6 +30,8 @@ import type { ChatThreadConfiguratorRpc } from "./configurator/chat-thread-confi
 import type { DriveAccountConfiguratorRpc } from "./configurator/drive-account-configurator-types";
 import type { DriveFileConfiguratorRpc } from "./configurator/drive-file-configurator-types";
 import type { DriveFolderConfiguratorRpc } from "./configurator/drive-folder-configurator-types";
+import type { GoogleGroupConfiguratorRpc } from "./configurator/google-group-configurator-types";
+import type { GroupsAccountConfiguratorRpc } from "./configurator/groups-account-configurator-types";
 
 /**
  * Mints an access token for a configurator, forwarding `AccessTokenRequest` to the `UserAccount`
@@ -36,6 +42,10 @@ type ConfiguratorTokenGetter = (opts?: AccessTokenRequest) => Promise<GoogleAcce
 const googleTokenGetters = new WeakMap<object, ConfiguratorTokenGetter>();
 const officeConversions = new WeakMap<object, OfficeConversion>();
 const calendarConfiguratorCaches = new WeakMap<object, Promise<ConfiguratorOption[]>>();
+const googleGroupConfiguratorCaches = new WeakMap<object, Promise<ConfiguratorOption[]>>();
+/** Pages of the account's own groups the group picker reads, at 200 groups a page. */
+const GROUP_PICKER_MAX_PAGES = 5;
+const GROUP_PICKER_MAX_OPTIONS = 100;
 const bigQueryConfiguratorCaches = new WeakMap<object, Map<string, ConfiguratorOption[]>>();
 const BIGQUERY_CONFIGURATOR_CACHE_MAX_ENTRIES = 200;
 const BIGQUERY_CONFIGURATOR_EMPTY_LIST_OPTIONS = { maxPages: 1, maxResults: 200 };
@@ -125,6 +135,27 @@ function idTail(id: string): string {
 
 /** A person's email address, which the picker resolves to the direct message with them. */
 const CHAT_EMAIL_RE = /^[A-Za-z0-9_.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
+
+function groupOption(info: GoogleGroupInfo, role?: GoogleGroupRole): ConfiguratorOption {
+  let subtitle = info.name === info.email ? info.description : info.email;
+  return {
+    value: info.email,
+    title: info.name,
+    ...(subtitle ? { subtitle } : {}),
+    ...(role ? { meta: `${role[0].toUpperCase()}${role.slice(1)}` } : {}),
+  };
+}
+
+/** The group a typed email address or pasted groups.google.com link names, if the text is one. */
+function namedGroupEmail(text: string): string | undefined {
+  let linked = groupEmailFromLink(text);
+  if (linked !== undefined) return linked;
+  try {
+    return normalizeEmail(text);
+  } catch {
+    return undefined;
+  }
+}
 
 function chatSpaceOption(space: ChatSpaceInfo, title = space.name): ConfiguratorOption {
   const kind = space.type === "directMessage" ? "Direct message"
@@ -413,6 +444,67 @@ export class ChatSpaceConfiguratorUI extends RpcTarget implements ChatSpaceConfi
       if (!pageToken) break;
     }
     return options.slice(0, 100);
+  }
+}
+
+// RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
+@validateRpc()
+export class GroupsAccountConfiguratorUI extends RpcTarget implements GroupsAccountConfiguratorRpc {}
+
+// RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
+@validateRpc()
+export class GoogleGroupConfiguratorUI extends RpcTarget implements GoogleGroupConfiguratorRpc {
+  constructor(getToken: () => Promise<GoogleAccessToken>) {
+    super();
+    googleTokenGetters.set(this, getToken);
+  }
+
+  /**
+   * The groups this account directly belongs to, matched by name or address, or the one group a
+   * typed email address or pasted groups.google.com link names, which may be any group the
+   * account can see.
+   *
+   * Searching the whole organization would need its customer ID, which someone who is not an
+   * administrator can learn only from one of their own groups, so the picker offers those groups
+   * themselves and reaches any other by its exact address.
+   */
+  async listGroups(query: string): Promise<ConfiguratorOption[]> {
+    let api = new GoogleGroupsApi(googleTokenProvider(this));
+    let text = query.trim();
+    let named = namedGroupEmail(text);
+    if (named !== undefined) {
+      try {
+        let { info } = await api.getGroup(await api.lookupGroup(named));
+        return [groupOption(info)];
+      } catch (error) {
+        let status = groupsErrorStatus(error);
+        if (status === 403 || status === 404) return [];
+        throw error;
+      }
+    }
+    let options = googleGroupConfiguratorCaches.get(this);
+    if (!options) {
+      options = (async () => {
+        let { email } = await getGoogleAccountProfile(googleTokenProvider(this));
+        if (!email) return [];
+        let found: ConfiguratorOption[] = [];
+        let pageToken: string | undefined;
+        for (let pages = 0; pages < GROUP_PICKER_MAX_PAGES; pages++) {
+          let page = await api.listGroupsOf(email, pageToken);
+          found.push(...page.items.map(({ info, role }) => groupOption(info, role)));
+          if (!page.nextPageToken) break;
+          pageToken = page.nextPageToken;
+        }
+        return found;
+      })();
+      // Don't let a transient API error poison the cache permanently.
+      options.catch(() => googleGroupConfiguratorCaches.delete(this));
+      googleGroupConfiguratorCaches.set(this, options);
+    }
+    let resolved = await options;
+    return resolved
+      .filter(option => optionMatches([option.title, option.value, option.subtitle], text))
+      .slice(0, GROUP_PICKER_MAX_OPTIONS);
   }
 }
 

@@ -1,5 +1,5 @@
 // The approval-queue plumbing shared by the gatekeepers whose sessions hand out long-lived
-// capabilities (Gmail, Chat).
+// capabilities (Gmail, Chat, Groups).
 //
 // A message or draft capability can outlive the session that produced it, so the session's
 // approval-queue stub is reference-counted rather than owned by whichever object happened to be

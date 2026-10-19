@@ -838,6 +838,8 @@ its resource types.
 | **google** | Gmail Mailbox | **A** | Always throw. (Future: allow observers who independently have access, e.g. mailing-list members — explicitly out of scope now.) |
 | **google** | Google Chat Conversation / Thread | **B** | Check the observer's own account can open the bound space (`spaces.get`); for a conversation binding, also that it can list the space's members (`members.list`), since a space can restrict its member list to managers and the binding lists members. Everything else the binding reads — including the other participant's name on a direct message — comes from Chat's own space-scoped responses. |
 | **google** | Google Chat Account | **A** | Always throw. The binding spans the owner's direct messages and every conversation they belong to, so there is no one a collaborator could be verified against. Bind a single conversation to share. |
+| **google** | Google Group | **B** | Check the observer's own account can see the bound group (`groups.get`) and list its members (`memberships.list`), since a group can hide itself from non-members and limit its member list to members or managers, and the binding lists members. |
+| **google** | Google Groups Account | **A** | Always throw. The binding reaches every group the owner can see, including hidden groups and member lists only a group's members or managers can view, so there is no one a collaborator could be verified against. Bind a single group to share. |
 | **google** | BigQuery | **C** | Track accessed datasets; verify the observer's IAM access to each. Dataset granularity for now (tables/columns later). |
 | **linear** | Team / Issue | **B** | Check the observer's workspace/team membership, honoring team privacy. |
 | **linear** | Workspace | **C** | Track accessed teams; verify the observer against each (reusing the Team B check). |
@@ -884,6 +886,11 @@ This is why the broad bindings split the way they do:
   reaches the owner's direct messages, where "can this collaborator open it too" has no useful
   answer, and one stray DM read under C would lock the workspace for everyone anyway. Sharing is
   done by binding a single conversation, which is the B row above.
+- **Satisfies both but still A:** Google Groups Account — groups have distinct visibility and a
+  per-group oracle exists, but reads that span groups (search results, "which groups is this person
+  in", an empty answer) describe what the owner can see rather than any one group, and a broad
+  search would routinely touch a group some collaborator cannot see. Sharing is done by binding a
+  single group, the B row above.
 
 ---
 

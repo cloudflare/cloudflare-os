@@ -6,8 +6,8 @@ import deployed from "./cloudflare.config.ts";
 const { compatibilityDate, compatibilityFlags } = deployed.worker;
 
 /**
- * Workerd coverage for nested Drive sessions, Sheets and Slides sessions, the Google Doc Durable
- * Object, and creating files.
+ * Workerd coverage for nested Drive sessions, Sheets and Slides sessions, the Google Doc and Google
+ * Groups Durable Objects, and creating files.
  */
 export default defineConfig({
   plugins: [
@@ -20,6 +20,7 @@ export default defineConfig({
         // Facets and loopback namespaces need test-only registrations in this test pool.
         durableObjects: {
           GOOGLE_DOC_GATEKEEPER: { className: "GoogleDocGatekeeperImpl", useSQLite: true },
+          GOOGLE_GROUPS_GATEKEEPER: { className: "GoogleGroupsGatekeeperImpl", useSQLite: true },
           GOOGLE_SHEETS_GATEKEEPER: { className: "GoogleSheetsGatekeeperImpl", useSQLite: true },
           GOOGLE_SLIDES_GATEKEEPER: { className: "GoogleSlidesGatekeeperImpl", useSQLite: true },
           TEST_HOOKS: { className: "TestHooks", useSQLite: true },
@@ -33,6 +34,7 @@ export default defineConfig({
     include: [
       "__tests__/workerd/google-doc-actions.test.ts",
       "__tests__/workerd/google-file-creation.test.ts",
+      "__tests__/workerd/groups.test.ts",
       "__tests__/workerd/native-sessions.test.ts",
       "__tests__/workerd/sheets-actions.test.ts",
       "__tests__/workerd/sheets-session.test.ts",
