@@ -431,8 +431,10 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     await this.#serializeAccessChange(async () => {
       this.#authorizeGrantChange(actorId, memberId, null);
       if (this.storage.grants.get(memberId)) {
-        // Forgetting the library entry awaits another service before revocation can arm the alarm.
-        await this.#armGitTokenCleanup();
+        // Library cleanup can outlive this invocation; persist the alarm before removing access.
+        if (this.getMetadata().content.source === "git" || [...this.storage.grants.list()].length === 1) {
+          await this.#armAccessCleanup();
+        }
         this.storage.grants.delete(memberId);
         try {
           await this.#library(memberId).forgetCollection(this.getMetadata().id);
@@ -499,10 +501,8 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
     return collectionPermissions(this.getAccess(accountId), false).canEdit;
   }
 
-  // Arm before any external await that follows a grant change, so a restart cannot strand a token.
-  // Grants and issuer records already contain everything the alarm needs to resume cleanup.
-  async #armGitTokenCleanup(): Promise<void> {
-    if (this.getMetadata().content.source !== "git") return;
+  // Grants and issuer records are the alarm's durable work list for revocation and memberless deletion.
+  async #armAccessCleanup(): Promise<void> {
     if (await this.ctx.storage.getAlarm() === null) {
       await this.ctx.storage.setAlarm(Date.now() + GIT_TOKEN_REVOKE_RETRY_MS);
     }
@@ -529,7 +529,7 @@ export class ContextCollectionDurableObject extends DurableObject<Cloudflare.Env
 
     if (revocable.length > 0 || sweepLegacyTokens) {
       // Rearm retries too, in case the runtime stops while an alarm's external call is pending.
-      await this.#armGitTokenCleanup();
+      await this.#armAccessCleanup();
       let repo: ArtifactsRepo | undefined;
       try {
         repo = await this.#artifacts().get(meta.id);

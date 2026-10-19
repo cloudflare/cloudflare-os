@@ -161,6 +161,8 @@ account. Any future optimization must preserve live authorization before reveali
 catalog metadata.
 Scoped reads, listings, and searches check live private membership before public discovery, so
 access to an owned or shared private collection does not depend on the public-collection KV snapshot.
+A public collection whose live access check fails is omitted from whole-library listing and search;
+healthy private and public collections remain available. A failed check never authorizes access.
 
 Drop collection title uniqueness. It was added in #504 as a navigator convenience, not an
 invariant: collections are keyed by ID everywhere, and a share cannot be refused because the
@@ -260,6 +262,9 @@ Disconnection still finishes wiping the account's library, leaving provider clea
 collection's alarm. A later disconnect preserves a pending deletion's earlier retry rather than
 replacing it with token-revocation backoff. Only successful cleanup clears the collection's storage
 and alarm, including when its last member leaves or disconnects.
+The last member leaving a web-backed collection also arms cleanup before removing its grant and
+awaiting library-index cleanup. After a restart, the alarm detects the memberless collection and
+finishes deletion even when the interrupted leave never reached the deletion step.
 
 ## UI integration
 

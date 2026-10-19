@@ -439,6 +439,52 @@ describe("collection sharing", () => {
       .shareContextCollection(id, "ticket", "viewer")).rejects.toThrow("Verifier unavailable.");
   });
 
+  it("deletes a memberless web collection after restart during library cleanup", async () => {
+    let id = await createCollection("alice");
+    await collection(id).putContextDocument("plan.md", { description: "Launch plan", body: "Ship it." });
+    await collection(id).share("alice", [{ accountId: "bob", displayName: "Bob" }], "editor");
+    await collection(id).setEveryoneCanView("alice", true);
+    await collection(id).removeAccount("alice");
+    let entered = Promise.withResolvers<void>();
+    let resume = Promise.withResolvers<void>();
+    let memberLibrary = library("bob");
+    let forget: UserLibraryDurableObject["forgetCollection"];
+    await runInDurableObject(memberLibrary, (memberIndex: UserLibraryDurableObject) => {
+      let prototype = Object.getPrototypeOf(memberIndex);
+      forget = prototype.forgetCollection;
+      prototype.forgetCollection = async function (this: UserLibraryDurableObject, collectionId: string) {
+        forget.call(this, collectionId);
+        if (this === memberIndex) {
+          entered.resolve();
+          await resume.promise;
+        }
+      };
+    });
+    try {
+      await runInDurableObject(collection(id), async (instance: ContextCollectionDurableObject, state) => {
+        let removal = instance.removeMember("bob", "bob");
+        try {
+          await entered.promise;
+          expect(instance.getAccess("bob").role).toBeNull();
+          expect(await state.storage.getAlarm()).not.toBeNull();
+          let restarted = new ContextCollectionDurableObject(state, testEnv);
+          await restarted.alarm();
+          expect(canReadCollection(restarted.getAccess("stranger"))).toBe(false);
+          expect(await restarted.getContextDocument("plan.md")).toBeNull();
+          expect((await state.storage.list()).size).toBe(0);
+          expect(await state.storage.getAlarm()).toBeNull();
+        } finally {
+          resume.resolve();
+          await removal;
+        }
+      });
+    } finally {
+      await runInDurableObject(memberLibrary, (memberIndex: UserLibraryDurableObject) => {
+        Object.getPrototypeOf(memberIndex).forgetCollection = forget;
+      });
+    }
+  });
+
   it("honors revocation in a read session that has already read the collection", async () => {
     let id = await createCollection("alice");
     await collection(id).putContextDocument("plan.md", { description: "Launch plan", body: "Ship it." });

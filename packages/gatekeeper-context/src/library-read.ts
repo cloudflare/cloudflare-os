@@ -72,8 +72,16 @@ export class LibraryReadSession extends RpcTarget implements ContextLibrary {
       this.#userLib().listPrivateLibrary(this.domain, this.accountId),
       this.#discoveredPublicIds(),
     ]);
-    let live = await mapWithConcurrency(discovered, MAX_COLLECTION_FANOUT,
-      async id => await this.#isLivePublic(id) ? id : null);
+    let live = await mapWithConcurrency(discovered, MAX_COLLECTION_FANOUT, async id => {
+      try {
+        return await this.#isLivePublic(id) ? id : null;
+      } catch (err) {
+        logger.warn("failed to check public collection access", {
+          event: "collection.access.check.failed", collectionId: id, error: err,
+        });
+        return null;
+      }
+    });
     let publicIds = live.filter(id => id !== null);
     return [...new Set([...privateCollections.map(collection => collection.id), ...publicIds])];
   }
