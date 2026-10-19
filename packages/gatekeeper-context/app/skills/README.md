@@ -65,8 +65,8 @@ not be unique; these labels tell same-titled collections apart.
 The Share dialog adds people through the Workshop's host-owned person picker
 (`useSelectUsers()` in `bridge.ts`). Each picker session gets its own receiver that fixes the
 collection and the role chosen when the picker opened, and shares with each picked person as soon as
-they are delivered; a backend refusal rejects that delivery, so the picker shows the message beside
-the person. Cancelling the picker does not undo shares already delivered.
+they are delivered; a backend refusal rejects that delivery, so the picker shows the message in a
+status notice that names the person. Cancelling the picker does not undo shares already delivered.
 
 `Share “<collection title>”` starts with an **Add users with role** dropdown and **Select users**
 button. Compact access rows show the current account as **You** with a generic profile icon, then

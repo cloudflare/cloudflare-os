@@ -39,7 +39,7 @@ creator, whose owned index lists the collection; it confers nothing.
 Git-backed content remains read-only in the web editor. Editors and owners use the existing
 mirroring controls rather than bypassing the git-backed storage contract.
 
-Ownership invariants, pending product confirmation:
+Ownership invariants:
 
 - Owners are peers: any owner can demote or remove any other owner.
 - No management operation may leave a collection without an owner. The last owner cannot demote
