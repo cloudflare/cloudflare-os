@@ -2853,6 +2853,10 @@ export interface Overseer extends RpcTarget {
   /**
    * Send a message to the chat from this client. Sending a message causes the LLM to start
    * running if it isn't already.
+   * While it runs, plain text with no capsules, attachments or formats steers it, on the running
+   * turn's model whatever `modelId` is, even null: it waits in `AiChatMetadata.queuedSteers` until
+   * the agent reads it. Anything else, or anything sent after `stopAgent()`, throws until the
+   * agent finishes.
    * If a slash command produces no message, only its visible invocation event is committed and the
    * agent does not run.
    * Slash-command requests cannot include capsules or attachments.
@@ -3002,6 +3006,9 @@ export interface Overseer extends RpcTarget {
    * reflecting this before `stop()` returns.
    *
    * If no LLM is running, `stop()` does nothing and returns immediately.
+   *
+   * Stopping drops the chat's queued steers (see `AiChatMetadata.queuedSteers`), whoever sent them.
+   * The client that stops is expected to put them in its draft, so its user can still send them.
    */
   stopAgent(chatId: number): Promise<void>;
 
@@ -3182,6 +3189,15 @@ export type AiChatMetadata = {
    * linger in stored metadata but are never delivered as truth.)
    */
   proposedChangeWorkpieces?: WorkpieceId[];
+
+  /**
+   * Messages sent while the agent works that it has not read yet, oldest first (see
+   * `Overseer.sendChatMessage`). Each then appears in the chat as a message marked `steered`,
+   * unless a turn ends without reading it and without failing or waiting on the user's decision:
+   * it then prompts the next turn as an ordinary message. Stopping the agent drops them all (see
+   * `Overseer.stopAgent`). Absent when none.
+   */
+  queuedSteers?: {text: string, author: AiChatAuthorInfo}[];
 
   /** If this was started from an agent spawner, the spawner's display name. */
   spawnerName?: string;
@@ -3587,6 +3603,13 @@ export type AiChatMessageBody = {
    * Clients use this to group the two records for display.
    */
   generatedBySlashCommandSequence?: number;
+
+  /**
+   * Sent while the agent was working, so it steers that turn rather than prompting one. The agent
+   * reads it before its next model request, or, if the turn ended before it could and started no
+   * other (it failed, or stopped to wait on the user's decision), when the agent next runs.
+   */
+  steered?: true;
 } | {
   /**
    * A slash command exactly as requested by the client, retained for display and never included in

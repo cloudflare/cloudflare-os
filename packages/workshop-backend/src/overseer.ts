@@ -52,7 +52,7 @@ import { scanWorkpieceForGrep, type GrepScan } from "./grep";
 import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
-import { chatChangeStatuses, foldCompactedCode } from "./agent-compaction";
+import { chatChangeStatuses, foldCompactedCode, isTurnPrompt } from "./agent-compaction";
 import { ambientGatekeeperMode } from "./provisioning-policy";
 import {
   blueprintContentKey, deleteBlueprintContent, readBlueprintRelease, sanitizeBlueprintOutput,
@@ -1070,10 +1070,13 @@ class OverseerImpl implements AgentHooks {
       this.#finishAgentTurn(record.chatId);
     };
     // A reset can land after a request or final response committed but before teardown. Honor
-    // that logged pause/completion instead of issuing another model request.
+    // that logged pause/completion instead of issuing another model request -- unless steers were
+    // queued after the final response: as in #finishAgentTurn, they prompt the next turn.
     let wait = this.#decisionWait(record.chatId);
-    if (wait !== undefined) {
-      let meta = this.storage.chatMeta.get(record.chatId);
+    let meta = this.storage.chatMeta.get(record.chatId);
+    if (wait === null && meta?.queuedSteers) {
+      this.#logQueuedSteers(meta, false);
+    } else if (wait !== undefined) {
       if (meta) {
         delete meta.activeAgent;
         this.storage.chatMeta.put(meta);
@@ -1152,14 +1155,31 @@ class OverseerImpl implements AgentHooks {
   }
 
   // The hand-off once a chat's turn is over and its running-agent state has been torn down: drop
-  // the turn's live context, then deliver whatever was waiting for the chat to go idle -- calls
-  // to the agent recorded during the turn (which start another turn), or failing that the
-  // response an external message is waiting on. Every path that ends a turn goes through here,
-  // so a call recorded mid-turn is never stranded by the way the turn ended.
-  #finishAgentTurn(chatId: number): void {
+  // the turn's live context, then deliver whatever was waiting for the chat to go idle -- steers
+  // the turn never read, calls to the agent recorded during the turn (which start another turn),
+  // or failing that the response an external message is waiting on. Every path that ends a turn
+  // goes through here, so nothing sent mid-turn is stranded by the way the turn ended. `turn` is
+  // the turn that ended, absent if none ran.
+  #finishAgentTurn(chatId: number, turn?: {
+    aiModel: UserAiModelRecord, initiator: AiChatAuthorInfo, initiatorUserId: string,
+  }): void {
     // A turn started by the drain gets a fresh context, and with it a fresh cancel controller --
     // this one may have been aborted.
     this.#liveChats.delete(chatId);
+
+    // Steers the turn never read go to the log as if sent the moment it ended. They prompt the
+    // next turn, on the same agent, unless it can't take one (none ran, or it ended waiting on the
+    // user's decision): they then stay steers, read when the agent next runs.
+    let meta = this.storage.chatMeta.get(chatId);
+    if (meta?.queuedSteers) {
+      let next = turn && !this.#decisionWait(chatId) ? turn : undefined;
+      if (next) meta.activeAgent = next.aiModel.profile;
+      this.#logQueuedSteers(meta, !next);
+      if (next) {
+        this.startAgent(chatId, next.aiModel, next.initiator, next.initiatorUserId);
+        return;
+      }
+    }
 
     if (this.hasPendingAgentCalls(chatId)) {
       this.drainPendingAgentCalls(chatId);
@@ -6625,6 +6645,31 @@ class OverseerImpl implements AgentHooks {
     return chatId;
   }
 
+  // A plain message sent while the agent works steers the running turn: it waits in the chat's
+  // metadata until the agent reads it (see takeSteers), or the turn logs it as it ends (see
+  // #finishAgentTurn, postAgentErrorMessage). A turn being stopped takes none: Stop has handed the
+  // queue to whoever stopped it. Returns whether `message` was queued.
+  steerRunningTurn(chatId: number, userId: string, author: AiChatAuthorInfo,
+                   message: string | SlashCommandRequest, capsules?: CapsuleSpecifier[],
+                   attachments?: ChatAttachmentHandle[], formats?: MessageFormatRef[]): boolean {
+    const isPlainTextMessage = typeof message === "string" && message.trim() !== "" &&
+        !capsules?.length && !attachments?.length && !formats?.length;
+    const turnTakesSteers = this.#runningAgents.has(chatId) &&
+        !this.#liveChats.get(chatId)?.cancelController.signal.aborted;
+    if (!isPlainTextMessage || !turnTakesSteers) return false;
+    let meta = this.getChatMetaOrThrow(chatId);
+    meta.queuedSteers = [...meta.queuedSteers ?? [], {text: message, author}];
+    meta.lastActive = this.getChatTimestamp();
+    this.storage.chatMeta.put(meta);
+    this.recordGadgetAnalytics({
+      event_name: "gadget_interaction",
+      user_id: userId,
+      chat_id: chatId,
+      interaction_type: "chat_message_sent",
+    });
+    return true;
+  }
+
   async sendChatMessage(
     clientUser: DurableObjectStub<UserDurableObject>,
     userMeta: UserChatContext,
@@ -6777,9 +6822,9 @@ class OverseerImpl implements AgentHooks {
       startAfter: chatKey(chatId, response.promptSequence),
     })];
     let nextUserMessageIndex = messagesAfterPrompt.findIndex(
-      message => message.type === "message" && message.author.type === "user",
+      message => message.type === "message" && message.author.type === "user" && !message.steered,
     );
-    // Stop at the next user message, which starts a later turn in the same chat.
+    // Stop at the next user message, which starts a later turn in the same chat. A steer doesn't.
     let messagesInSameTurn = nextUserMessageIndex === -1
       ? messagesAfterPrompt
       : messagesAfterPrompt.slice(0, nextUserMessageIndex);
@@ -6846,7 +6891,15 @@ class OverseerImpl implements AgentHooks {
     this.#updateAlarm();
   }
 
+  // Stops the chat's running agent. Its queued steers are dropped: the client that stops puts them
+  // in its draft (see Overseer.stopAgent).
   cancelAgent(chatId: number) {
+    let meta = this.storage.chatMeta.get(chatId);
+    if (meta?.queuedSteers) {
+      delete meta.queuedSteers;
+      meta.lastActive = this.getChatTimestamp();
+      this.storage.chatMeta.put(meta);
+    }
     // Stop prevents resumption even if the DO disappears before the aborted task's finally runs;
     // restart recovery clears any busy marker left without an execution row.
     this.storage.activeAgents.delete(chatId);
@@ -6870,6 +6923,35 @@ class OverseerImpl implements AgentHooks {
       this.#updateAlarm();
       this.#finishAgentTurn(chatId);
     }
+  }
+
+  // AgentHooks.takeSteers: logs each queued steer at the step boundary where the agent reads it,
+  // so the log keeps the order the model saw.
+  takeSteers(chatId: number): string[] {
+    let meta = this.storage.chatMeta.get(chatId);
+    return meta?.queuedSteers ? this.#logQueuedSteers(meta, true) : [];
+  }
+
+  // Moves the chat's queued steers into its log as user messages, `steered` unless they prompt a
+  // turn, then writes `meta` without them. Subscribers thus get the messages before the metadata,
+  // as subscribeToChat's catch-up delivers them.
+  #logQueuedSteers(meta: StoredChatMetadata, steered: boolean): string[] {
+    let steers = (meta.queuedSteers ?? []).map(({text, author}) => {
+      this.storage.chats.put({
+        chatId: meta.id,
+        sequence: this.nextChatSequence(meta.id),
+        timestamp: this.getChatTimestamp(),
+        author,
+        type: "message",
+        message: text,
+        ...(steered ? {steered: true} : {}),
+      });
+      return text;
+    });
+    delete meta.queuedSteers;
+    meta.lastActive = this.getChatTimestamp();
+    this.storage.chatMeta.put(meta);
+    return steers;
   }
 
   // Describe a workpiece -- a gadget or a gatekeeper -- reachable as `envName` in a chat's env,
@@ -7098,6 +7180,8 @@ class OverseerImpl implements AgentHooks {
     // reflects the spend this turn just incurred, rather than waiting for the cache TTL to lapse.
     let byokOwnerStub: DurableObjectStub<UserDurableObject> | undefined;
     let finished = false;
+    // Why the turn ended early, posted in the `finally`.
+    let failure: {message: string, code?: string} | undefined;
     let startedAt = Date.now();
     const turnLogger = this.logger.with({
       operation: "agent.run",
@@ -7139,8 +7223,7 @@ class OverseerImpl implements AgentHooks {
           let usage = await checkUsageAndBalance(this.env, ownerStub);
           if (!usage.allowed) {
             turn.setErrorType("usage_limit");
-            this.postAgentErrorMessage(chatId, aiModel.profile,
-                usage.reason ?? "Usage limit reached.", "usage_limit");
+            failure = {message: usage.reason ?? "Usage limit reached.", code: "usage_limit"};
             turnLogger.debug("agent run finished", {
               event: "agent.run.finished", outcome: "usage_limit",
               durationMs: Date.now() - startedAt,
@@ -7212,7 +7295,7 @@ class OverseerImpl implements AgentHooks {
         durationMs: Date.now() - startedAt,
       });
 
-      this.postAgentErrorMessage(chatId, aiModel.profile, errorMessage);
+      failure = {message: errorMessage};
     } finally {
       if (owns()) {
         // If this turn billed the user's own Cloudflare account, refresh their cached balance now (in
@@ -7229,6 +7312,12 @@ class OverseerImpl implements AgentHooks {
         // so it can't mask an error propagating out of the turn.
         await this.reconcilePendingGadgets(chatId);
         if (owns()) {
+          // Posted past the turn's last await, so a steer sent as the turn winds down still lands
+          // before the error, which must stay last for Retry to show.
+          if (failure) {
+            this.postAgentErrorMessage(chatId, aiModel.profile, failure.message, failure.code);
+          }
+
           // Note: We no longer emit a stream "clear" event here. The client performs a full clear of
           // provisional streaming state when it observes that the agent is no longer running (i.e. when
           // chat metadata's activeAgent becomes unset, which happens just below).
@@ -7256,7 +7345,9 @@ class OverseerImpl implements AgentHooks {
             this.#publishAgentTurnNotification(chatId, initiator, initiatorUserId);
           }
 
-          this.#finishAgentTurn(chatId);
+          // A failed turn logged its unread steers before its error (see postAgentErrorMessage),
+          // so it starts no follow-up, which would likely fail the same way.
+          this.#finishAgentTurn(chatId, {aiModel, initiator, initiatorUserId});
         }
       }
     }
@@ -8512,6 +8603,10 @@ class OverseerImpl implements AgentHooks {
       return;
     }
 
+    // An error ends the turn early. Log the steers it never read first, so the error stays the
+    // chat's last message, and a Retry reads them.
+    if (meta.queuedSteers) this.#logQueuedSteers(meta, true);
+
     let timestamp = this.getChatTimestamp();
     this.storage.chats.put({
       chatId,
@@ -8950,18 +9045,21 @@ class OverseerImpl implements AgentHooks {
     let titles: string[] = [];
     let pending = false;
     let denied = false;
+    let steered = false;
     let agent: AiChatAuthorInfo | undefined;
     for (let msg of this.storage.chats.list({prefix: chatKeyPrefix(chatId), reverse: true})) {
       if (msg.type === "agentCallback" || msg.type === "agentNudge" ||
           (msg.type === "slashCommand" && msg.request.id.builtin === true &&
            msg.request.id.commandId === "compact") ||
-          (msg.type === "message" && (msg.author.type === "user" || msg.author.type === "gadget"))) {
+          isTurnPrompt(msg)) {
         break;
       }
       // Null means a committed final response, not an interrupted segment to run again.
-      // It also consumed any earlier inline approvals without suspending.
+      // It also consumed any earlier inline approvals without suspending. A steer the agent read
+      // after that response still needs an answer, so the turn is unfinished, waiting on nothing.
       if (!actionIds.length && !requestIds.length && msg.type === "message" &&
-          msg.author.type === "agent" && !msg.toolCalls?.length) return null;
+          msg.author.type === "agent" && !msg.toolCalls?.length) return steered ? undefined : null;
+      steered ||= msg.type === "message" && msg.steered === true;
       if (msg.author.type === "agent") agent ??= msg.author;
       if (msg.type === "connectionRequest" && msg.author.type === "agent") {
         requestIds.push(msg.requestId);
@@ -12042,6 +12140,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       chatId: number, message: string | SlashCommandRequest, chosenModelId: string | null,
       capsules?: CapsuleSpecifier[], attachments?: ChatAttachmentHandle[],
       formats?: MessageFormatRef[]): Promise<void> {
+    // A steer runs on the running turn's model, so it is queued before the sender's model is
+    // looked up: a collaborator need not have that model.
+    let author = await this.#getClientProfile();
+    if (this.impl.steerRunningTurn(
+        chatId, this.clientUserId, author, message, capsules, attachments, formats)) {
+      return;
+    }
     let userMeta = await retryOnDoReset(
         () => this.#clientUser.getChatContext(chosenModelId), this.impl.logger);
     return this.impl.sendChatMessage(
