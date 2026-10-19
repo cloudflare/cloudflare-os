@@ -347,6 +347,24 @@ describe('GatekeeperModal grouped resource types', () => {
     await act(async () => button('Add connection').click())
     expect(testState.toasts).toEqual([{ title: 'Grant access to Service to connect it.', variant: 'error' }])
   })
+
+  // A URL no narrower type names binds the whole-instance catch-all, which the check must see too.
+  it('refuses to connect a grouped catch-all type the account has not granted', async () => {
+    stubResizeObserver()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    testState.ready = true
+    testState.collectedUrl = 'https://catalog.example.com/'
+    const wholeInstance = { ...CATALOG, urlPattern: 'https://*' }
+    await renderModal({ initialVendorId: 'catalog', initialResourceUrlPattern: wholeInstance.urlPattern }, {
+      resource: { ...SERVICE, groupedWith: wholeInstance.urlPattern },
+      otherResources: [wholeInstance],
+      granted: [SERVICE.urlPattern],
+    })
+
+    await vi.waitFor(() => expect(button('Add connection').disabled).toBe(false))
+    await act(async () => button('Add connection').click())
+    expect(testState.toasts).toEqual([{ title: 'Grant access to Whole catalog to connect it.', variant: 'error' }])
+  })
 })
 
 describe('GatekeeperModal model pickers', () => {

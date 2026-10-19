@@ -770,7 +770,9 @@ export default function GatekeeperModal({
       }
       const resourceUrl = await configuratorCollectResourceUrlRef.current?.()
       if (!resourceUrl) throw new Error('Configurator did not provide a resource URL.')
-      const resource = resourceForUrl(selectedConnection, resourceUrl)
+      // A URL no narrower type names binds the card's whole-instance catch-all, if it has one.
+      const resource = resourceForUrl(selectedConnection, resourceUrl) ??
+        selectedConnection.resources?.find(({ urlPattern }) => urlPattern === 'https://*')
       if (resource && !acceptedResourceUrlPatterns.includes(resource.urlPattern)) {
         throw new Error(`Grant access to ${resource.title} to connect it.`)
       }
