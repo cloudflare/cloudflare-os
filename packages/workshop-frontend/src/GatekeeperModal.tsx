@@ -540,18 +540,21 @@ export default function GatekeeperModal({
     ? resourceForUrl(selectedConnection, initialResourceUrl)
     : undefined
 
-  // Grantable resources the chosen connection needs that the selected account hasn't granted yet.
-  // Until these are granted, the resource configurator can't load and the binding can't be created
-  // -- so we surface a focused "grant access" step instead. (An undefined granted set means a
-  // legacy account predating grant tracking; treat it as fully granted.)
-  const missingResourceUrlPatterns = useMemo(() => {
-    const required = selectedConnection ? requiredResourceUrlPatterns(selectedConnection) : []
-    if (!required.length || !selectedAccount) return []
-    const granted = selectedAccount.description.grantedResourceUrlPatterns
-    if (granted === undefined) return []
-    return required.filter(p => !granted.includes(p))
-  }, [selectedConnection, selectedAccount])
-  const hasMissingResourceGrants = missingResourceUrlPatterns.length > 0
+  // The card's grantable types the selected account hasn't granted. Its configurator opens once the
+  // account has granted at least one of them, and offers only the granted ones; the account's Grant
+  // access button asks for the rest. (An undefined granted set means a legacy account predating
+  // grant tracking; treat it as fully granted.)
+  const requiredGrants = selectedConnection ? requiredResourceUrlPatterns(selectedConnection) : []
+  const grantedPatterns = selectedAccount?.description.grantedResourceUrlPatterns
+  const missingGrants = grantedPatterns === undefined
+    ? []
+    : requiredGrants.filter(pattern => !grantedPatterns.includes(pattern))
+  const awaitingGrant = missingGrants.length > 0 && missingGrants.length === requiredGrants.length
+  const acceptedResourceUrlPatterns = (selectedConnection?.resources ?? [])
+    .map(resource => resource.urlPattern)
+    .filter(pattern => !missingGrants.includes(pattern))
+  // A configurator reads the types it may offer only when it starts, so a new grant restarts it.
+  const acceptedKey = acceptedResourceUrlPatterns.join('\n')
 
   useEffect(() => {
     if (!selectedConnection?.vendorId) return
@@ -573,7 +576,7 @@ export default function GatekeeperModal({
 
   useEffect(() => {
     const resourceUrlPattern = selectedConnection?.resourceUrlPattern ?? null
-    if (!open || !resourceUrlPattern || !selectedAccount || hasMissingResourceGrants) {
+    if (!open || !resourceUrlPattern || !selectedAccount || awaitingGrant) {
       updateConfiguratorFrameState(null)
       setConfiguratorError(null)
       setConfiguratorLoading(false)
@@ -616,7 +619,7 @@ export default function GatekeeperModal({
     return () => {
       cancelled = true
     }
-  }, [open, authenticatedApi, selectedConnection?.id, selectedConnection?.resourceUrlPattern, selectedAccount?.id, hasMissingResourceGrants])
+  }, [open, authenticatedApi, selectedConnection?.id, selectedConnection?.resourceUrlPattern, selectedAccount?.id, awaitingGrant, acceptedKey])
 
   const handleSelectAccount = (accountId: number) => {
     pendingInitialAccountIdRef.current = null
@@ -767,6 +770,10 @@ export default function GatekeeperModal({
       }
       const resourceUrl = await configuratorCollectResourceUrlRef.current?.()
       if (!resourceUrl) throw new Error('Configurator did not provide a resource URL.')
+      const resource = resourceForUrl(selectedConnection, resourceUrl)
+      if (resource && !acceptedResourceUrlPatterns.includes(resource.urlPattern)) {
+        throw new Error(`Grant access to ${resource.title} to connect it.`)
+      }
       const overseer = await getOverseer()
       gatekeeper = await overseer.newGatekeeper(selectedAccountId, resourceUrl)
       if (gatekeeper) {
@@ -800,7 +807,7 @@ export default function GatekeeperModal({
         configuratorFrameState.accountId === selectedAccountId &&
         configuratorFrameState.resourceUrlPattern === resourceUrlPattern &&
         configuratorSelectionReady === true &&
-        !hasMissingResourceGrants,
+        !awaitingGrant,
       )
     }
     return false
@@ -884,7 +891,7 @@ export default function GatekeeperModal({
                   />
                 )}
 
-                {selectedConnection.resourceUrlPattern && !hasMissingResourceGrants && (
+                {selectedConnection.resourceUrlPattern && !awaitingGrant && (
                   <ResourceConfiguratorHost
                     frame={configuratorFrameState?.frame ?? null}
                     frameKey={configuratorFrameState?.key ?? null}
@@ -899,7 +906,7 @@ export default function GatekeeperModal({
                       : undefined}
                     initialResourceUrl={prefilledResource ? initialResourceUrl : undefined}
                     resourceUrlPattern={prefilledResource?.urlPattern}
-                    acceptedResourceUrlPatterns={(selectedConnection.resources ?? []).map(resource => resource.urlPattern)}
+                    acceptedResourceUrlPatterns={acceptedResourceUrlPatterns}
                   />
                 )}
 

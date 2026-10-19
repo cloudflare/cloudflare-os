@@ -14,6 +14,8 @@ import { AuthPopupCancelledError } from './features/native-app/authPopup'
 const testState = vi.hoisted(() => ({
   authenticatedApi: null as RpcStub<AuthenticatedApi> | null,
   readinessEvents: [] as (boolean | null)[],
+  ready: null as boolean | null,
+  collectedUrl: 'https://catalog.example.com/',
   toasts: [] as { title: string, variant: string }[],
   frameKeys: [] as number[],
   ensureResources: null as ((patterns: string[]) => Promise<boolean>) | null,
@@ -80,9 +82,9 @@ vi.mock('./ResourceConfiguratorHost', async () => {
     }, [mounted, frameKey])
     useEffect(() => {
       if (!mounted) return
-      onCollectResourceUrlChange?.(() => Promise.resolve('https://catalog.example.com/'))
-      testState.readinessEvents.push(null)
-      onSelectionReadyChange?.(null)
+      onCollectResourceUrlChange?.(() => Promise.resolve(testState.collectedUrl))
+      testState.readinessEvents.push(testState.ready)
+      onSelectionReadyChange?.(testState.ready)
       return () => onCollectResourceUrlChange?.(null)
     }, [mounted, onCollectResourceUrlChange, onSelectionReadyChange])
     return mounted ? <div data-testid="resource-configurator" /> : null
@@ -167,6 +169,8 @@ afterEach(() => {
   container?.remove()
   testState.authenticatedApi = null
   testState.readinessEvents = []
+  testState.ready = null
+  testState.collectedUrl = 'https://catalog.example.com/'
   testState.toasts = []
   testState.frameKeys = []
   testState.ensureResources = null
@@ -237,7 +241,9 @@ describe('GatekeeperModal grouped resource types', () => {
   const GROUPED = { resource: SERVICE, otherResources: [CATALOG] }
   const BOTH_GRANTED = [CATALOG.urlPattern, SERVICE.urlPattern]
 
-  const buttonLabels = () => Array.from(document.body.querySelectorAll('button'), button => button.textContent)
+  const buttons = () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+  const buttonLabels = () => buttons().map(button => button.textContent)
+  const button = (label: string) => buttons().find(candidate => candidate.textContent === label)!
 
   it('lists grouped types as one card', async () => {
     await renderModal({}, { ...GROUPED, granted: BOTH_GRANTED })
@@ -275,23 +281,56 @@ describe('GatekeeperModal grouped resource types', () => {
     })
   })
 
-  // The configurator can return any of the card's types, so the account must hold every one first.
-  it('asks an account missing a grouped type to grant it before the configurator opens', async () => {
-    vi.stubGlobal('ResizeObserver', class {
-      observe() {}
-      disconnect() {}
+  it('asks an account holding none of a card\'s types for all of them before the configurator opens', async () => {
+    stubResizeObserver()
+    api.ensureAccountResources.mockResolvedValue(null)
+    await renderModal({ initialVendorId: 'catalog', initialResourceUrlPattern: CATALOG.urlPattern }, {
+      ...GROUPED,
+      granted: [],
     })
+
+    await vi.waitFor(() => expect(buttonLabels()).toContain('Grant access'))
+    expect(document.body.querySelector('[data-testid="resource-configurator"]')).toBeNull()
+    await act(async () => button('Grant access').click())
+    expect(api.ensureAccountResources.mock.calls).toEqual([[1, [SERVICE.urlPattern, CATALOG.urlPattern]]])
+  })
+
+  // Grouping grants nothing: an account that granted the catalog before services joined its card
+  // keeps connecting the catalog, and is asked for services only when it wants them.
+  it('offers an account the grouped types it has granted, asks for the rest, then offers them too', async () => {
+    stubResizeObserver()
     api.ensureAccountResources.mockResolvedValue(null)
     await renderModal({ initialVendorId: 'catalog', initialResourceUrlPattern: CATALOG.urlPattern }, {
       ...GROUPED,
       granted: [CATALOG.urlPattern],
     })
 
-    await vi.waitFor(() => expect(buttonLabels()).toContain('Grant access'))
-    expect(document.body.querySelector('[data-testid="resource-configurator"]')).toBeNull()
-    await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
-      .find(button => button.textContent === 'Grant access')!.click())
+    await vi.waitFor(() => expect(testState.frameKeys).toHaveLength(1))
+    expect(testState.configurator?.acceptedResourceUrlPatterns).toEqual([CATALOG.urlPattern])
+    await act(async () => button('Grant access').click())
     expect(api.ensureAccountResources.mock.calls).toEqual([[1, [SERVICE.urlPattern]]])
+
+    await act(async () => api.subscriber!.add(
+      1, accountDescription(1, BOTH_GRANTED), VENDOR, [SERVICE, CATALOG], true, 'catalog'))
+    await vi.waitFor(() => expect(testState.frameKeys).toHaveLength(2))
+    expect(testState.configurator?.acceptedResourceUrlPatterns).toEqual([SERVICE.urlPattern, CATALOG.urlPattern])
+  })
+
+  // A configurator should offer only the types the account holds; one that returns another anyway
+  // does not get it connected.
+  it('refuses to connect a grouped type the account has not granted', async () => {
+    stubResizeObserver()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    testState.ready = true
+    testState.collectedUrl = 'https://catalog.example.com/services/s1'
+    await renderModal({ initialVendorId: 'catalog', initialResourceUrlPattern: CATALOG.urlPattern }, {
+      ...GROUPED,
+      granted: [CATALOG.urlPattern],
+    })
+
+    await vi.waitFor(() => expect(button('Add connection').disabled).toBe(false))
+    await act(async () => button('Add connection').click())
+    expect(testState.toasts).toEqual([{ title: 'Grant access to Service to connect it.', variant: 'error' }])
   })
 })
 

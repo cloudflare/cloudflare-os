@@ -368,10 +368,13 @@ export type SupportedResource = {
   creationConfigurator?: boolean;
 
   /**
-   * The urlPattern of the type whose connect card this type is grouped under. Grouped types share
-   * one configurator, which may return a URL of any of them, so startResourceConfigurator must
-   * return it for each. Grouping grants nothing, but the card asks for every grouped type's
-   * authorization before its configurator opens, so group only types that need the same.
+   * The urlPattern of the type whose connect card this type appears on, instead of a card of its
+   * own. A card's types share one configurator, which may return a URL of any of them, so
+   * startResourceConfigurator must return that configurator for each of them.
+   *
+   * Each type is still granted separately: holding a grant for one does not cover the others. The
+   * configurator offers only the types the account has granted, and the Workshop asks for the rest
+   * in a single consent request, so group only types that need the same authorization.
    */
   groupedWith?: string;
 }
