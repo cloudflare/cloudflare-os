@@ -495,3 +495,34 @@ describe('hook toggles', () => {
     expect(isOn()).toBe(true)
   })
 })
+
+describe('queued steers', () => {
+  it('shows every queued steer and hands them all to the draft on Stop', async () => {
+    const server = makeOverseer()
+    const agent = { type: 'agent', id: 'model', name: 'Model' } as const
+    withChatApi(server, undefined, [{
+      ...openChat,
+      activeAgent: agent,
+      queuedSteers: [
+        { text: 'Make it dark.', author: { type: 'user', id: 'me', name: 'Me' } },
+        { text: 'And bigger.', author: { type: 'user', id: 'collaborator', name: 'Collaborator' } },
+      ],
+    }])
+    const stopAgent = vi.fn<(chatId: number) => Promise<void>>(async () => {})
+    Object.assign(server.overseer as object, { stopAgent })
+    await renderChat(server.overseer, { selectedChatId: 1 })
+
+    const text = document.body.textContent ?? ''
+    expect(text.indexOf('Make it dark.')).toBeGreaterThan(-1)
+    expect(text.indexOf('And bigger.')).toBeGreaterThan(text.indexOf('Make it dark.'))
+    expect(text).toContain('Collaborator')
+
+    const stop = document.querySelector<HTMLButtonElement>('[aria-label="Stop agent"]')
+    if (!stop) throw new Error('No Stop button rendered')
+    await act(async () => stop.click())
+
+    const textarea = document.querySelector<HTMLTextAreaElement>('textarea[role="combobox"]')
+    expect(textarea?.value).toBe('Make it dark.\n\nAnd bigger.')
+    expect(stopAgent).toHaveBeenCalledExactlyOnceWith(1)
+  })
+})

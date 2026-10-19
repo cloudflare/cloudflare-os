@@ -101,6 +101,7 @@ export const ChatComposer = ({
   blockedReason,
   chatKey,
   onStop,
+  queuedSteers,
   showThinkingTraces = true,
   onToggleThinkingTraces,
 }: {
@@ -153,7 +154,10 @@ export const ChatComposer = ({
   blockedReason?: string;
   /** Identity of the chat the composer is bound to; a change clears chat-scoped hints. */
   chatKey?: number | null;
-  onStop?: () => void;
+  /** Stops the agent; rejects, once the failure is reported, if it could not. */
+  onStop?: () => Promise<void>;
+  /** Texts of the steers queued for the agent, which Stop moves into the draft. */
+  queuedSteers?: readonly string[];
   showThinkingTraces?: boolean;
   onToggleThinkingTraces?: () => void;
   /** Show the "Pre-approve actions" menu item (only when there are uncovered candidates). */
@@ -198,6 +202,9 @@ export const ChatComposer = ({
     }));
   };
   const [isSending, setIsSending] = useState(false);
+  // Set by Stop until the agent goes idle: a steer sent meanwhile would be refused.
+  const [isStopping, setIsStopping] = useState(false);
+  if (isStopping && !isAgentActive) setIsStopping(false);
   const [catalogVersion, setCatalogVersion] = useState(0);
   // The chat the "may not have been sent" hint belongs to; the render condition scopes it, and
   // leaving the chat dismisses it.
@@ -542,6 +549,20 @@ export const ChatComposer = ({
     });
   };
 
+  const handleStop = () => {
+    if (!onStop) return;
+    setIsStopping(true);
+    if (queuedSteers?.length) {
+      recordDraftEdit();
+      setInputValue([inputValue.trimEnd(), ...queuedSteers].filter(Boolean).join("\n\n"));
+    }
+    // A failed Stop may still have dropped the steers on the server, so the draft keeps them, and
+    // Stop can be pressed again.
+    onStop().catch(() => {
+      if (mountedRef.current) setIsStopping(false);
+    });
+  };
+
   const handleAttachLogs = () => {
     const formatted = onConsumeConsoleLogs();
     recordDraftEdit();
@@ -678,6 +699,10 @@ export const ChatComposer = ({
   const canSend = !isSending && !isAgentActive && !isBlocked &&
     (inputValue.trim().length > 0 || selectedSlashCommand !== null || hasReadyAttachment) &&
     !hasUnreadyAttachment && !isCreatingResource;
+  // While the agent works, a plain message steers it (see ChatInterface's handleSend).
+  const canSteer = isAgentActive && !isSending && !isStopping && !isBlocked &&
+    inputValue.trim().length > 0 && selectedSlashCommand === null && capsules.length === 0 &&
+    formatTokens.length === 0 && pendingAttachments.length === 0 && !isCreatingResource;
   return (
     // isolation: isolate contains z-indexes used inside the composer (the
     // captured-log floating chip with z-10, the textarea/mirror with z-[1])
@@ -816,7 +841,7 @@ export const ChatComposer = ({
                 isBlocked
                   ? blockedReason
                   : isAgentActive
-                    ? "Waiting for agent…"
+                    ? "Message the agent while it works…"
                     : newChat
                       ? "Start a new conversation…"
                       : "Ask a follow-up…"
@@ -896,7 +921,7 @@ export const ChatComposer = ({
                 // Enter sends message (unless Shift is held)
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
-                  if (!isAgentActive && !isBlocked) submitMessage();
+                  if (isAgentActive ? canSteer : !isBlocked) submitMessage();
                   return;
                 }
                 if (activeUrl) {
@@ -984,10 +1009,12 @@ export const ChatComposer = ({
                 selectedModel={selectedModel}
                 onModelChange={onModelChange}
               />
-              {isAgentActive && onStop ? (
+              {isAgentActive && onStop && (
+                // A steer still being sent can't be handed back to the draft yet.
                 <WorkshopIconButton
-                  onClick={onStop}
-                  tone="primary"
+                  onClick={handleStop}
+                  disabled={isSending || isStopping}
+                  tone={canSteer ? "ghost" : "primary"}
                   className="!h-10 !w-10 sm:!h-8 sm:!w-8"
                   aria-label="Stop agent"
                 >
@@ -1000,10 +1027,11 @@ export const ChatComposer = ({
                     <rect x="5" y="5" width="14" height="14" rx="2" />
                   </svg>
                 </WorkshopIconButton>
-              ) : (
+              )}
+              {(!isAgentActive || !onStop || canSteer) && (
                 <WorkshopIconButton
                   onClick={submitMessage}
-                  disabled={!canSend}
+                  disabled={!canSend && !canSteer}
                   tone="primary"
                   className="!h-10 !w-10 disabled:cursor-not-allowed disabled:opacity-30 sm:!h-8 sm:!w-8"
                   aria-label="Send message"
