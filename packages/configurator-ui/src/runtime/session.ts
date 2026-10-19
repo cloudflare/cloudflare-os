@@ -24,6 +24,18 @@ export type ConfiguratorSession<TUI = unknown> = {
   postReadiness(): void;
 };
 
+/**
+ * Why the host may not collect now, or null when it may: readiness is this being null. The render
+ * fields describe the last commit, which follows a change to the values within a microtask, so a
+ * message from the host, which can ask to collect, always finds them current.
+ */
+const refusal = (session: ConfiguratorSession): string | null => {
+  if (session.renderFailed || session.treeFailed) return "Configurator failed to render its current state.";
+  const [hold] = session.store.getState().holds.values();
+  if (hold !== undefined) return hold;
+  return session.moduleReady ? null : "Configurator is not ready.";
+};
+
 /** Creates a session whose readiness reports reach the host once per change. */
 export const createSession = <TUI,>(
   init: Pick<ConfiguratorSession<TUI>, "spec" | "ui" | "store" | "ensureResources">,
@@ -36,8 +48,7 @@ export const createSession = <TUI,>(
     treeFailed: false,
     moduleReady: false,
     postReadiness() {
-      const ready = session.moduleReady && !session.renderFailed && !session.treeFailed
-        && session.store.getState().holds.size === 0;
+      const ready = refusal(session) === null;
       if (ready === lastPosted) return;
       lastPosted = ready;
       setSelectionReady(ready);
@@ -47,17 +58,14 @@ export const createSession = <TUI,>(
 };
 
 const assertCollectable = (session: ConfiguratorSession): void => {
-  if (session.renderFailed || session.treeFailed) {
-    throw new Error("Configurator failed to render its current state.");
-  }
-  const [hold] = session.store.getState().holds.values();
-  if (hold !== undefined) throw new Error(hold);
+  const reason = refusal(session);
+  if (reason !== null) throw new Error(reason);
 };
 
 /**
- * The resource URL for the values on screen. Refuses when the screen cannot be trusted to show what
- * the URL names: the render failed, a field holds collection (its options failed to load, or its
- * value is not on screen), or the values changed while the module's `resourceUrl` was computing it.
+ * The resource URL for the values on screen. Refuses whatever readiness withholds (the render
+ * failed, a field holds collection, or the module does not call the values ready), and values that
+ * changed while the module's `resourceUrl` was computing it.
  */
 export const collectResourceUrl = async (session: ConfiguratorSession): Promise<string> => {
   assertCollectable(session);

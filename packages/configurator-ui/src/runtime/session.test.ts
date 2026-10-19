@@ -5,12 +5,17 @@ import { createConfiguratorStore } from "./store.ts";
 
 const deferred = <T,>() => Promise.withResolvers<T>();
 
-const session = (resourceUrl: ConfiguratorUISpec<null>["resourceUrl"]) => createSession({
-  spec: { initial: {}, resourceUrl, render: () => null },
-  ui: null,
-  store: createConfiguratorStore({ folderId: "F1" }, { folderId: "Reports" }),
-  ensureResources: vi.fn(),
-}, vi.fn());
+/** A session as the root leaves it after rendering values the module calls ready. */
+const session = (resourceUrl: ConfiguratorUISpec<null>["resourceUrl"]) => {
+  const running = createSession({
+    spec: { initial: {}, resourceUrl, render: () => null },
+    ui: null,
+    store: createConfiguratorStore({ folderId: "F1" }, { folderId: "Reports" }),
+    ensureResources: vi.fn(),
+  }, vi.fn());
+  running.moduleReady = true;
+  return running;
+};
 
 describe("collectResourceUrl", () => {
   it("returns what the module builds from the values on screen", async () => {
@@ -28,6 +33,12 @@ describe("collectResourceUrl", () => {
     running.treeFailed = false;
     running.store.setHold("target", "Not showing its choice.");
     await expect(collectResourceUrl(running)).rejects.toThrow("Not showing its choice.");
+  });
+
+  it("refuses values the module does not call ready, as readiness does", async () => {
+    const running = session(() => "https://example.com/");
+    running.moduleReady = false;
+    await expect(collectResourceUrl(running)).rejects.toThrow(/not ready/i);
   });
 
   it("refuses when the values change or rendering fails while the URL is being built", async () => {
