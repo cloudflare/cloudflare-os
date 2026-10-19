@@ -481,10 +481,12 @@ export default function GatekeeperModal({
     const query = searchText.trim().toLowerCase()
     if (!query) return allConnections
     return allConnections.filter(connection => {
+      // A card offers every type grouped on it, so any of their names finds it.
       const haystack = [
         connection.title,
         connection.vendor,
         connection.description,
+        ...(connection.resources ?? []).flatMap(({ title, description }) => [title, description]),
       ].join(' ').toLowerCase()
       const matchesText = query.split(/\s+/).every(token => haystack.includes(token))
       const matchesUrl = query.length >= 3 && Boolean(connection.resources?.some(({ urlPattern }) =>

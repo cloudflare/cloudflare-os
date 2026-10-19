@@ -365,6 +365,24 @@ describe('GatekeeperModal grouped resource types', () => {
     await act(async () => button('Add connection').click())
     expect(testState.toasts).toEqual([{ title: 'Grant access to Whole catalog to connect it.', variant: 'error' }])
   })
+
+  it('finds a grouped card by searching for any type on it', async () => {
+    await renderModal({}, {
+      resource: { ...SERVICE, title: 'Pipeline', description: 'One pipeline' },
+      otherResources: [CATALOG],
+      granted: BOTH_GRANTED,
+    })
+    const search = await vi.waitFor(() =>
+      document.body.querySelector<HTMLInputElement>('input[placeholder="Search services, apps, data sources..."]')!)
+
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'pipeline')
+      search.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+
+    expect(Array.from(document.body.querySelectorAll('button p:first-child'), title => title.textContent))
+      .toEqual([CATALOG.title])
+  })
 })
 
 describe('GatekeeperModal model pickers', () => {
