@@ -1,0 +1,19 @@
+packages/workshop-frontend/src/BlueprintLandingPage.test.tsx
+  s_c57fbc57db258e::t_17f0383bc4d7d0 28,145,162,331-334
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f2d3ed2383d9484de8fe3093d417069cea6082cc",
+  "prompts": {},
+  "sessions": {
+    "s_c57fbc57db258e": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f5990b83cffeLKZGa8awZwvHKE",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,57 @@
+packages/workshop-backend/src/sharing.ts
+  s_a7109235ed9077::t_074748ad9b1094 155-157,165
+  s_a7109235ed9077::t_839092d8bd035b 19-21,158-160,166-168,170-180,222-225,250,253,263-265,267,306-307,320-324,457,465,478,493
+packages/workshop-frontend/src/ShareModal.tsx
+  s_a7109235ed9077::t_0ea3c9a138555a 535-538,633-635,646,1036,1041-1052,1055,1263,1333,1335,1470-1479
+packages/workshop-frontend/src/ShareModal.test.tsx
+  s_a7109235ed9077::t_18660a1d0d3d18 1245-1258,1260-1285
+  s_a7109235ed9077::t_75a080e5e8836e 1259
+packages/workshop-backend/__tests__/sharing.test.ts
+  s_a7109235ed9077::t_d746fbd41529d4 741-742
+  s_a7109235ed9077::t_9f81d2454d2c91 30-31,33-39,632-740
+packages/workshop-frontend/src/useWorkspaceOpen.ts
+  s_a7109235ed9077::t_c7976dd9bbbd74 152-153
+packages/workshop-shared/src/gatekeeper.ts
+  s_a7109235ed9077::t_dd522630327fc2 1217-1227
+  s_a7109235ed9077::t_155250deb15faa 1216
+packages/workshop-backend/src/overseer.ts
+  s_a7109235ed9077::t_363d2e7fb85b9f 10693,10713,10741-10746,10752,10759
+  s_a7109235ed9077::t_36b2141f005faa 5669-5671
+  s_a7109235ed9077::t_861bf0bbfc6b03 1163-1167
+  s_a7109235ed9077::t_4fa11d496b2f8b 9602-9603
+packages/workshop-frontend/src/useWorkspaceOpen.test.tsx
+  s_a7109235ed9077::t_f55a5ea4f8876a 63,145-161
+  s_a7109235ed9077::t_d746fbd41529d4 162
+packages/workshop-backend/__tests__/restricted-observation-latch.test.ts
+  s_a7109235ed9077::t_27ce605c8b3058 118-164
+docs/observers.md
+  s_a7109235ed9077::t_c7b154ca0d45fb 39-42,107
+docs/sharing.md
+  s_a7109235ed9077::t_c7b154ca0d45fb 155-166
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_a7109235ed9077::t_4bd662767abeef 314-315,317-321
+  s_a7109235ed9077::t_2d7af9a72f0e35 9-10,257-293,295-302,304-313,316
+  s_a7109235ed9077::t_7ca9b8f2e4dcfe 294,303
+  s_a7109235ed9077::t_37bc536cb25018 322-324
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_a7109235ed9077::t_2d7af9a72f0e35 304-308,325,330
+packages/workshop-shared/src/api.ts
+  s_a7109235ed9077::t_363d2e7fb85b9f 526-528,1407-1408,1412-1417
+  s_a7109235ed9077::t_5d84ea7534ed97 1418
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ac29532aaa0da8fff5d4ee6f52701828cd57e3ec",
+  "prompts": {},
+  "sessions": {
+    "s_a7109235ed9077": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "21a77a12-1c9c-43d6-a3e6-f5f903d8f179",
+        "model": "claude-watermelon-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

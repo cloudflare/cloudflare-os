@@ -1,0 +1,33 @@
+packages/workshop-backend/src/ai-invoke.ts
+  s_d16787129ca3ae::t_b1bd876887b21a 1,34-38,42-43,61-62,72
+packages/integration-tests/__tests__/ai-gateway-cost.test.ts
+  s_d16787129ca3ae::t_b1bd876887b21a 2-4,15,19,96-97,334-421
+  s_d16787129ca3ae::t_e6916fb4e5fcdf 422
+packages/workshop-backend/__tests__/admin-settings-models.test.ts
+  s_d16787129ca3ae::t_b1bd876887b21a 4,810-1056,1075
+  s_d16787129ca3ae::t_bb415b8715861c 1076
+packages/workshop-shared/src/api.ts
+  s_d16787129ca3ae::t_b1bd876887b21a 1279-1290,1601-1609
+  s_d16787129ca3ae::t_57114e9888a95a 1610
+packages/workshop-backend/__tests__/ai-invoke.test.ts
+  s_d16787129ca3ae::t_b1bd876887b21a 1-87
+packages/workshop-backend/src/admin-settings.ts
+  s_d16787129ca3ae::t_b1bd876887b21a 1,13-14,42-51,591-637,921-923
+  s_d16787129ca3ae::t_1feb9c3384390b 924
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "dcf966f750e5d338474b7c14adbfa17683b10514",
+  "prompts": {},
+  "sessions": {
+    "s_d16787129ca3ae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d53efdfd-725e-49f2-bc5f-96438ab0f01c",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

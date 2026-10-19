@@ -1,0 +1,22 @@
+packages/workshop-frontend/src/components/ActionFields.tsx
+  s_ded0a9f8d148f7::t_5545b29f5eeb77 18-21,71-73,75
+packages/workshop-frontend/src/components/ActionFields.test.tsx
+  s_ded0a9f8d148f7::t_0013916825abe2 13-19
+  s_ded0a9f8d148f7::t_5545b29f5eeb77 86-101
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2c1298b398d0ec9180691234adba967235b6c2f0",
+  "prompts": {},
+  "sessions": {
+    "s_ded0a9f8d148f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "59846bd6-dbd5-465c-834b-fcf9cfb21880",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

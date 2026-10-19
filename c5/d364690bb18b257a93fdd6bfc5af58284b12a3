@@ -1,0 +1,19 @@
+packages/workshop-frontend/src/ShareModal.tsx
+  s_a4e56ba5f906cb::t_d146e6a0682fc6 1093
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c5d364690bb18b257a93fdd6bfc5af58284b12a3",
+  "prompts": {},
+  "sessions": {
+    "s_a4e56ba5f906cb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e4546e1f-1d29-44fd-9b66-e7a5e1c72f5a",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

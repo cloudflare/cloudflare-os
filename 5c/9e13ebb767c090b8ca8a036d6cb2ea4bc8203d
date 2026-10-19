@@ -1,0 +1,40 @@
+packages/workshop-frontend/src/features/deployment-updates/UpdateAvailableNotice.test.tsx
+  s_664125cd80dfd6::t_26e413966058b4 1-36,45-72,76-87,89-173,184-193
+  s_664125cd80dfd6::t_77d3ef368f8e60 37-44
+  s_664125cd80dfd6::t_24a05f85bb4916 174-183
+  s_664125cd80dfd6::t_c60770f302b401 73-75,88
+packages/workshop-frontend/src/features/deployment-updates/updateStatusFixture.ts
+  s_664125cd80dfd6::t_a4386a4ef3353b 1-20
+packages/workshop-frontend/src/features/deployment-updates/useUpdateStatus.test.tsx
+  s_664125cd80dfd6::t_77d3ef368f8e60 39,44
+  s_664125cd80dfd6::t_f777167d8cf10b 120,133
+  s_664125cd80dfd6::t_b3158a81486d55 1-38,40-43,45-119,121-132,134-172
+packages/workshop-frontend/src/features/deployment-updates/AdminUpdatesPanel.tsx
+  s_664125cd80dfd6::t_eb94afc53c1767 1-74
+packages/workshop-frontend/src/features/deployment-updates/AdminUpdatesPanel.test.tsx
+  s_664125cd80dfd6::t_27051243b4d4fd 1-136
+packages/workshop-frontend/src/features/deployment-updates/UpdateAvailableNotice.tsx
+  s_664125cd80dfd6::t_82d8f395c9fa7f 1-60
+packages/workshop-frontend/src/features/deployment-updates/updateNoticeDismissal.ts
+  s_664125cd80dfd6::t_d93ff359053a0a 1-35
+packages/workshop-frontend/src/features/deployment-updates/useUpdateStatus.ts
+  s_664125cd80dfd6::t_9b0238e51b45ea 1-53
+packages/workshop-frontend/src/features/deployment-updates/updateNoticeDismissal.test.ts
+  s_664125cd80dfd6::t_18b8041735d5fa 1-69
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5c9e13ebb767c090b8ca8a036d6cb2ea4bc8203d",
+  "prompts": {},
+  "sessions": {
+    "s_664125cd80dfd6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a41dd87a-7e4a-4acc-8c7e-eae5a69b4d55",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

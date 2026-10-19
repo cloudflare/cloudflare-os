@@ -1,0 +1,67 @@
+packages/workshop-frontend/src/features/wiki/NewTeamSpaceDialog.tsx
+  s_47c456ca6ea293::t_4504adf41ef228 2,4-9,12-13,17-31,40-46,55-60,62,68-79,88,95-96,110,167-211,223
+packages/workshop-frontend/src/features/wiki/PageNotFound.test.tsx
+  s_47c456ca6ea293::t_888da73fac6081 1-307
+packages/workshop-frontend/src/features/wiki/PageNotFound.tsx
+  s_47c456ca6ea293::t_b8ca5823f3ed4b 1-5,7-37,46,48-61,71-177
+packages/workshop-frontend/src/features/wiki/PageRoute.test.tsx
+  s_47c456ca6ea293::t_5c24f234ebe4f7 6,11-15,32-38,62,71-72,79-80
+packages/workshop-frontend/src/features/wiki/PageRoute.tsx
+  s_47c456ca6ea293::t_b5eeb69b068c93 31
+packages/workshop-frontend/src/features/wiki/PageView.test.tsx
+  s_47c456ca6ea293::t_e4e352d06f60aa 12,66-75,77-83,111,126-134,318-390
+packages/workshop-frontend/src/features/wiki/PageView.tsx
+  s_47c456ca6ea293::t_0f7b06604cea18 4-17,33,38,74,84-85,105-108,131-141,197-198,223-249,341-350
+packages/workshop-frontend/src/features/wiki/PublishDialog.test.tsx
+  s_47c456ca6ea293::t_10fad12297d065 81-83,88,108,141-150
+packages/workshop-frontend/src/features/wiki/PublishDialog.tsx
+  s_47c456ca6ea293::t_50736bcaf86df3 35-36,41-42,57,92,94-99
+packages/workshop-frontend/src/features/wiki/ReplaceFromSourceDialog.test.tsx
+  s_47c456ca6ea293::t_5158f70cba06ce 1-301
+packages/workshop-frontend/src/features/wiki/ReplaceFromSourceDialog.tsx
+  s_47c456ca6ea293::t_4c9c4a9ce95399 1-259
+packages/workshop-frontend/src/features/wiki/SpaceContext.tsx
+  s_47c456ca6ea293::t_cf5fff56968893 10-14,38,53
+packages/workshop-frontend/src/features/wiki/SpaceDirectory.tsx
+  s_47c456ca6ea293::t_ec5b118f561568 10,64-88,93,191-197
+packages/workshop-frontend/src/features/wiki/SpaceLayout.tsx
+  s_47c456ca6ea293::t_4b93f7c639120c 4,15-17,21-22,34,98,100-103,106,164-198
+packages/workshop-frontend/src/features/wiki/SpaceSettingsDialog.tsx
+  s_47c456ca6ea293::t_df2936ed7f6fbf 3-4,9,11-13,24-25,35-36,38,48,106-114,228-254,257-264,268-279
+packages/workshop-frontend/src/features/wiki/SyncProgress.test.tsx
+  s_47c456ca6ea293::t_214d38063ed7c7 1-146
+packages/workshop-frontend/src/features/wiki/SyncProgress.tsx
+  s_47c456ca6ea293::t_1bf0cbf3f48e93 1-139
+packages/workshop-frontend/src/features/wiki/SyncSourceDialog.test.tsx
+  s_47c456ca6ea293::t_fab16eedf132fa 1-344
+packages/workshop-frontend/src/features/wiki/SyncSourceDialog.tsx
+  s_47c456ca6ea293::t_ae6dee37dee9d6 1-313
+packages/workshop-frontend/src/features/wiki/WikiSourceAccountPicker.tsx
+  s_47c456ca6ea293::t_42b36033ac6259 1-50
+packages/workshop-frontend/src/features/wiki/useSpace.test.tsx
+  s_47c456ca6ea293::t_8c7a3aabd909a8 8-14,18-33,145-218
+packages/workshop-frontend/src/features/wiki/useWikiSourceAccounts.test.tsx
+  s_47c456ca6ea293::t_93001f7120bb7c 1-217
+packages/workshop-frontend/src/features/wiki/useWikiSourceAccounts.ts
+  s_47c456ca6ea293::t_5bdf0d89989201 1-200
+packages/workshop-frontend/src/features/wiki/useWikiSyncJobs.test.tsx
+  s_47c456ca6ea293::t_f6d1cc658e8683 1-204
+packages/workshop-frontend/src/features/wiki/useWikiSyncJobs.ts
+  s_47c456ca6ea293::t_99740e573ab139 1-172
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4199ce0aae85b377cdf28a16013bea44293b261c",
+  "prompts": {},
+  "sessions": {
+    "s_47c456ca6ea293": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f0644985-87cc-456b-8ee1-1adbbdfaf8cd",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

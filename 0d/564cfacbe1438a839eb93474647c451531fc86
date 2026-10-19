@@ -1,0 +1,19 @@
+packages/workshop-shared/src/api.ts
+  s_fe30841bd8390c::t_a5e4102fa67b34 1398-1406,1422-1439,1579-1581,1585-1609,1829-1843,2687-2690,2692,4052-4060,4202-4211
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0d564cfacbe1438a839eb93474647c451531fc86",
+  "prompts": {},
+  "sessions": {
+    "s_fe30841bd8390c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3cc7444f-cdcb-45a9-9d6f-c9080bf89899",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,23 @@
+packages/workshop-frontend/src/BlueprintLandingPage.tsx
+  s_b235d7e85db519::t_2f8f166adf495a 26-28,464
+packages/workshop-frontend/src/BlueprintSuggestedResourceResolver.test.tsx
+  s_b235d7e85db519::t_ea21ea7d1a2e43 1-145
+packages/workshop-frontend/src/BlueprintSuggestedResourceResolver.tsx
+  s_b235d7e85db519::t_0ce1c34144c4a7 1-137
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6d3b2cdde45e36d8588ac6ff59f034863e5c0b41",
+  "prompts": {},
+  "sessions": {
+    "s_b235d7e85db519": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f73e2ba17ffeG15LUZZx8sUx6N",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

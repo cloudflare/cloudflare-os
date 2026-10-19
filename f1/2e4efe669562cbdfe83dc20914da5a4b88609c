@@ -1,0 +1,19 @@
+packages/integration-tests/__tests__/workshop-wiki.test.ts
+  s_04bfec13ba0561::t_4c9df73e04b07d 169-172,177-187,193,202-219
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f12e4efe669562cbdfe83dc20914da5a4b88609c",
+  "prompts": {},
+  "sessions": {
+    "s_04bfec13ba0561": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6300c1da-fbac-40ad-9b7c-be3104f16453",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

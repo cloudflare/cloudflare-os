@@ -1,0 +1,39 @@
+packages/workshop-frontend/src/modelSelection.ts
+  s_e259f2380cb0a8::t_d0ed22ca524760 1,39-51
+  s_e259f2380cb0a8::t_b55b2c7ad3af7d 52
+packages/workshop-frontend/src/gatekeeper-modal/AgentSpawnerConfigForm.tsx
+  s_e259f2380cb0a8::t_018e2b922c50cd 60-65
+  s_e259f2380cb0a8::t_2ad3f5bac87d06 3-4,69
+  s_e259f2380cb0a8::t_ea466a786e01d5 2,5,7,66-68,70-71,95,134-144,147-150
+packages/workshop-frontend/src/routes/providers.tsx
+  s_e259f2380cb0a8::t_ea466a786e01d5 10,192-193
+packages/workshop-frontend/src/features/chat/composer/ComposerModelSelector.test.tsx
+  s_e259f2380cb0a8::t_f5a8496fe67b78 54-77
+packages/workshop-frontend/src/features/chat/composer/ComposerModelSelector.tsx
+  s_e259f2380cb0a8::t_d0ed22ca524760 4-6,30-47,67-78,82
+packages/workshop-frontend/src/gatekeeper-modal/AgentSpawnerConfigForm.test.tsx
+  s_e259f2380cb0a8::t_f5a8496fe67b78 1-60
+packages/workshop-frontend/src/gatekeeper-modal/AiModelConnectionConfig.tsx
+  s_e259f2380cb0a8::t_a3977f7ccb99f0 4,34-36
+packages/workshop-frontend/src/OnboardingWizard.tsx
+  s_e259f2380cb0a8::t_2500e4a56799d2 25,316-359,537-546
+packages/workshop-frontend/src/BlueprintLandingPage.tsx
+  s_e259f2380cb0a8::t_a3977f7ccb99f0 1405-1406
+  s_e259f2380cb0a8::t_4b751ed1f7c6a8 13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "63836271bcba4beac26b0bf3e980eb746e90c975",
+  "prompts": {},
+  "sessions": {
+    "s_e259f2380cb0a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2360c005-6db4-412b-be00-5e18fb49a0fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

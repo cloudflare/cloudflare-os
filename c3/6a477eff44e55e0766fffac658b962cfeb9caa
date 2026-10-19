@@ -1,0 +1,140 @@
+packages/workshop-frontend/src/features/spaces/SidebarSpaceLinks.test.tsx
+  s_dd2417a6d5bd82::t_054c1a68733474 15,62,76,93-94,101-102
+  s_dd2417a6d5bd82::t_2d979876b5106c 1-14,16-61,63-75,77-92,95-100,103-110
+packages/workshop-frontend/src/features/spaces/useSpaceListings.ts
+  s_dd2417a6d5bd82::t_8449a45d00d980 5,30-32,40,51,90
+  s_dd2417a6d5bd82::t_4494c8d92a7d63 1-4,6-29,33-39,41-50,52-89,91-96
+packages/workshop-frontend/src/features/spaces/useSpaceListings.test.tsx
+  s_dd2417a6d5bd82::t_bfabcb27551c22 1-43,49-56,58-148,171-190
+  s_dd2417a6d5bd82::t_a012722df8a755 149-170
+  s_dd2417a6d5bd82::t_fecf42a53a9d85 44-48,57
+packages/workshop-frontend/src/features/spaces/SpaceSection.tsx
+  s_dd2417a6d5bd82::t_067a1505e75e8f 76-78,104,109-113
+  s_dd2417a6d5bd82::t_4ce7ecb0f5054b 64-67,69-73,89-90,116-120,122-124
+  s_dd2417a6d5bd82::t_e14b1cd39ef8d6 68,81,83-88,103,105,114,121,125
+  s_dd2417a6d5bd82::t_44ba901c30c3ce 208
+  s_dd2417a6d5bd82::t_794933f656c1e4 1,94-95,99,127-135,209-210
+  s_dd2417a6d5bd82::t_97356df792303c 2-63,74-75,79-80,82,91-93,96-98,100-102,106-108,115,126,136-207,211-218
+packages/workshop-frontend/src/features/spaces/SpaceSections.test.tsx
+  s_dd2417a6d5bd82::t_2ba5717b9c4bfe 503-508,510,513-515
+  s_dd2417a6d5bd82::t_16862b14b13588 4,15-18,34,75-76,78,83,106,184,189-193,198-199,203-205,207,280-308,311,315-319,323,415-428,735-738,827-841,843-856
+  s_dd2417a6d5bd82::t_a1c32e7c50f7a9 431-436,438-439
+  s_dd2417a6d5bd82::t_41d86f869ee018 496-502,509,511-512,516-519
+  s_dd2417a6d5bd82::t_1a09c988a82c22 842
+  s_dd2417a6d5bd82::t_e7f4dc3a952e03 166-183,185-188,194-197,200-202,206,208-214
+  s_dd2417a6d5bd82::t_c4bb286e0bfb08 6,440,480,520-541,801-826
+  s_dd2417a6d5bd82::t_c77e4366d63e40 25,141-146,164-165,233-240,563-571,573-576,580-584,589-590,674-687,782-784
+  s_dd2417a6d5bd82::t_090214bc724b4a 148,150-163,309,312-314,325,327,393,441-453,456-462,465-478,593-615,724-725,739-776,785-800
+  s_dd2417a6d5bd82::t_067a1505e75e8f 700-715
+  s_dd2417a6d5bd82::t_44ba901c30c3ce 562,585,587
+  s_dd2417a6d5bd82::t_25a28a6224f9f2 320-322,326,454-455,463-464
+  s_dd2417a6d5bd82::t_00d997302a6d80 572,577-579
+  s_dd2417a6d5bd82::t_054c1a68733474 41-45
+  s_dd2417a6d5bd82::t_53a58d36e20744 330-362,394-414,481-495,616-631,651-659
+  s_dd2417a6d5bd82::t_ee388aa264ea7c 125-126,665-666,669,672-673,688-697
+  s_dd2417a6d5bd82::t_4de0b3d03db5b0 147,149,310,324
+  s_dd2417a6d5bd82::t_c25eb72168ba65 1-3,5,7-14,19-24,26-33,35-40,46-74,77,79-82,84-105,107-124,127-140,215-232,241-279,328-329,363-392,429-430,437,479,542-561,586,588,591-592,632-650,660-664,667-668,670-671,698-699,716-723,726-734,777-781,857-859
+packages/workshop-frontend/src/features/spaces/NewWorkspaceSpaceSelect.tsx
+  s_dd2417a6d5bd82::t_4d936aec4b672d 12,17-18,31
+  s_dd2417a6d5bd82::t_c404c61f2ee728 1-11,13-16,19-30,32-44
+packages/workshop-frontend/src/homePromptFlow.test.tsx
+  s_dd2417a6d5bd82::t_3ee2e66cd51d95 24-25,59-62,87-90,136-137,170,195,204,263-276,278-284,286,328-330,333-351,370-380,499-509
+  s_dd2417a6d5bd82::t_7d54297adfab02 182,319,327
+  s_dd2417a6d5bd82::t_67a4cb81691980 94,178-179,315-318,320-326,331-332
+  s_dd2417a6d5bd82::t_5faeb07955d426 189
+  s_dd2417a6d5bd82::t_820dd215821b52 138-140
+  s_dd2417a6d5bd82::t_1652f8dfe169ec 96-97,115-116,154-155,229,237
+  s_dd2417a6d5bd82::t_fbc34984662266 141-145,535
+  s_dd2417a6d5bd82::t_a1c32e7c50f7a9 7,11-12,15,18,23,26-37,46-47,58,65-80,91-93,95,98-101,135,146-153,156-169,171-177,180-181,183-188,190-194,196-199,201-202,205-228,230-236,238-262,277,285,287-314,381-382,439-446,510-534
+  s_dd2417a6d5bd82::t_bd53bfc982f712 200,203
+  s_dd2417a6d5bd82::t_4c948f765b5a56 383-401,403
+  s_dd2417a6d5bd82::t_5a02f5ab8df975 402,404-438
+  s_dd2417a6d5bd82::t_8ac94389e5c037 352-369,447-498
+  s_dd2417a6d5bd82::t_af43d7b357e8d3 81
+packages/workshop-frontend/src/features/spaces/SpaceSections.tsx
+  s_dd2417a6d5bd82::t_ee388aa264ea7c 84,86-90,108,111,115
+  s_dd2417a6d5bd82::t_97356df792303c 2,6-7,112
+  s_dd2417a6d5bd82::t_802fbeeee52698 3-5,8,10-18,21-24,34-39,43,51-53,56,83,85,93-95,109-110,113-114,116-120,123,126-130
+  s_dd2417a6d5bd82::t_4ce7ecb0f5054b 19-20,49-50,91-92,122,124
+  s_dd2417a6d5bd82::t_e14b1cd39ef8d6 25-33,42,44-48,121
+  s_dd2417a6d5bd82::t_794933f656c1e4 125
+  s_dd2417a6d5bd82::t_aaad16a503f7dd 9,40-41,54,66-82,96-98,104-107
+  s_dd2417a6d5bd82::t_e62aed95a04e49 1,55,57-65,99-103
+packages/workshop-frontend/src/features/spaces/groupWorkspaces.ts
+  s_dd2417a6d5bd82::t_010bb1b4aea096 1-5,7-100
+  s_dd2417a6d5bd82::t_b196d31eebae30 6
+packages/workshop-frontend/src/features/spaces/NewSpaceButton.tsx
+  s_dd2417a6d5bd82::t_5c5df0fcd0ca1b 1,11-21,24-27,29,31
+  s_dd2417a6d5bd82::t_1e1963a735dfda 2-10,22-23,28,30,32-38
+packages/workshop-frontend/src/features/spaces/spaceKinds.ts
+  s_dd2417a6d5bd82::t_b196d31eebae30 1-17
+packages/workshop-frontend/src/features/spaces/SidebarSpaceLinks.tsx
+  s_dd2417a6d5bd82::t_95b9c6147dfba6 1,21-22,24
+  s_dd2417a6d5bd82::t_2031961807102b 12-14
+  s_dd2417a6d5bd82::t_69ac743925600c 19-20,23,25-48
+  s_dd2417a6d5bd82::t_b196d31eebae30 2-11,15-18
+packages/workshop-frontend/src/components/AppShell/AppShell.tsx
+  s_dd2417a6d5bd82::t_b449f273c1ddfc 83-87,90
+packages/workshop-frontend/src/routes/index.tsx
+  s_dd2417a6d5bd82::t_24eb0a2db9fe17 18,28-30,32-34,40,48-49,52,102-103,120-122,129-131,143,145-146,151-152,155-156,246,267-273,275-278
+  s_dd2417a6d5bd82::t_4d936aec4b672d 111-119,144,158,172,200-201,274
+  s_dd2417a6d5bd82::t_73408c46875eca 9,27,64-69,71,73-74,104-110,136-141,147-148,154,169-171,204,256-258
+  s_dd2417a6d5bd82::t_73776cab5acdea 142,279
+packages/workshop-frontend/src/components/AppShell/AppShell.test.tsx
+  s_dd2417a6d5bd82::t_8154a88f0c8a01 67,73
+  s_dd2417a6d5bd82::t_027542fcb60977 8-12,42,59,69
+  s_dd2417a6d5bd82::t_e797b2f1ddb080 36-37
+  s_dd2417a6d5bd82::t_068221cfc99bb3 14-16,33-35,38,48,53-58,60-66,68,70-72
+  s_5dc3536dac0290::t_f37f95cee43c7b 13,74
+packages/workshop-frontend/src/components/AppShell/SidebarWorkspaces.tsx
+  s_dd2417a6d5bd82::t_eb2719c7f65586 30-32,312,314-315,332,410-422
+  s_dd2417a6d5bd82::t_c404c61f2ee728 313
+packages/workshop-frontend/src/features/spaces/useNewWorkspaceSpace.ts
+  s_dd2417a6d5bd82::t_24eb0a2db9fe17 2,4-17,20,27,31-33,47-49,51,53-54
+  s_dd2417a6d5bd82::t_495febdbe3bea5 1,3,18-19,21-26,28-30,34-46,50,52
+packages/workshop-frontend/src/components/GadgetList.tsx
+  s_dd2417a6d5bd82::t_44ba901c30c3ce 3,49,62,143,233-234,239,413-416
+  s_dd2417a6d5bd82::t_725ece6cbe2997 230-232,235-238,240-242,380-384,386,391-392,394-395,576-581
+  s_dd2417a6d5bd82::t_c77e4366d63e40 446
+  s_dd2417a6d5bd82::t_cba24995e45345 9,16,57-60,227-229,385,387-390,393,396-399,410-412
+  s_dd2417a6d5bd82::t_a1b6abdf1ea2d1 2,7,48,61,167-172,189-207,401-409,417-418,480-484,494,570-575
+  s_dd2417a6d5bd82::t_794933f656c1e4 10,425-428,447
+  s_dd2417a6d5bd82::t_173821828d4211 400,419,429,582-583
+packages/workshop-frontend/src/features/spaces/groupWorkspaces.test.ts
+  s_dd2417a6d5bd82::t_402f2b2e3799e4 1-61,74-157
+  s_dd2417a6d5bd82::t_1652f8dfe169ec 62-73
+packages/workshop-frontend/src/routes/workspaces.tsx
+  s_dd2417a6d5bd82::t_cad746ea362d4e 2,5,7,9-10,12,17-18,25-27,32-33,35,40,75-87,103-106,108-111,114-118,126-128
+  s_dd2417a6d5bd82::t_2031961807102b 1,3,11,15-16,34,39,42,48-49,53-55,59,61-63,92-98,123,131-135
+  s_dd2417a6d5bd82::t_fcca94b41a1746 56-58,64-65,72-74
+  s_dd2417a6d5bd82::t_aae955889dd591 107
+  s_dd2417a6d5bd82::t_d5ffacd778f2e1 68-71
+  s_dd2417a6d5bd82::t_4ce7ecb0f5054b 8,36-38,50-52,66-67,119-122,124-125,130,136
+  s_dd2417a6d5bd82::t_4d936aec4b672d 41
+  s_dd2417a6d5bd82::t_f6028eda794558 43-47
+  s_dd2417a6d5bd82::t_4c948f765b5a56 60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c36a477eff44e55e0766fffac658b962cfeb9caa",
+  "prompts": {},
+  "sessions": {
+    "s_5dc3536dac0290": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7875f0fc-71e2-466f-8cfa-7da0e1788fe1",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

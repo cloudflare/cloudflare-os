@@ -1,0 +1,74 @@
+packages/gatekeeper-confluence/src/confluence-api.ts
+  s_fe3ea3b86ac2f8::t_27b151b98fd355 1280-1285,1614,1618-1619,1634
+  s_fe3ea3b86ac2f8::t_e47874fc55ddfd 459-469,471-477,483-484
+  s_fe3ea3b86ac2f8::t_67a340fa414cad 1751-1769
+  s_fe3ea3b86ac2f8::t_56c9ab23d6ea50 373-378,380-390,1746,1770
+  s_fe3ea3b86ac2f8::t_693f96ad4e3d3c 371,752,995-1020,1022-1049,1067-1069,1073-1077,1081-1083
+  s_fe3ea3b86ac2f8::t_4ae58861a1d38f 1732-1745
+  s_fe3ea3b86ac2f8::t_99c096895f9c07 470,482,485
+  s_fe3ea3b86ac2f8::t_6b360a9feba992 29-30,368-370
+  s_fe3ea3b86ac2f8::t_45ac91f1a06306 391-403
+  s_fe3ea3b86ac2f8::t_cb63dcbc7ef2b3 458,478-481,486-491,743-751
+  s_fe3ea3b86ac2f8::t_cde2ff107b4259 379
+  s_fe3ea3b86ac2f8::t_c9a64938a357cd 372,753,1747
+packages/gatekeeper-confluence/__tests__/connect-flow.test.ts
+  s_fe3ea3b86ac2f8::t_accdba64cecbd9 617-618,622,625-629,634-635,639
+  s_fe3ea3b86ac2f8::t_95d248be74d9a3 347-363
+  s_fe3ea3b86ac2f8::t_4311b3fb2f3505 21,610-616,619-621,623-624,630-633,636-638,640
+  s_fe3ea3b86ac2f8::t_3fb63a2c086e9f 641
+packages/gatekeeper-confluence/README.md
+  s_fe3ea3b86ac2f8::t_9577ab01b6becc 176-179
+  s_fe3ea3b86ac2f8::t_928cf7ce6b77e9 352-357
+  s_fe3ea3b86ac2f8::t_d4a0d5ef315a22 307,320-321,344-347
+  s_fe3ea3b86ac2f8::t_682ee0ab99db7e 308-319,348-351,358-368
+  s_fe3ea3b86ac2f8::t_4dafdd5068303d 369
+packages/gatekeeper-confluence/src/self-hosted-api.ts
+  s_fe3ea3b86ac2f8::t_3af4f0fe4dc0d7 202-211,628-633,635-641
+  s_fe3ea3b86ac2f8::t_326aed49bfb62d 52,59,75-77,116-124,574-575,579-580,648-657,670
+  s_fe3ea3b86ac2f8::t_cbc338ffd21638 20-24,184-187
+  s_fe3ea3b86ac2f8::t_e9e6f350d5e591 201
+packages/gatekeeper-confluence/__tests__/wiki-source-session.test.ts
+  s_fe3ea3b86ac2f8::t_a2c403222ca93d 41,52-54,119-120,346-350
+  s_fe3ea3b86ac2f8::t_7aac2504818f11 351-352
+packages/gatekeeper-confluence/__tests__/self-hosted-api.test.ts
+  s_fe3ea3b86ac2f8::t_cbc338ffd21638 608
+  s_fe3ea3b86ac2f8::t_9f8ab5f7cea6ad 618,620
+  s_fe3ea3b86ac2f8::t_81960082ec80c6 41-43,535-543,574,577,609,617
+  s_fe3ea3b86ac2f8::t_cec7c236145b2b 2,441,445-475,544,560-573,575-576,578-607,610,624-629
+  s_fe3ea3b86ac2f8::t_6b269b42a1484a 611-616,619,621-623
+  s_fe3ea3b86ac2f8::t_b8a26da5908bec 476,545,630-631
+packages/gatekeeper-confluence/src/connect-flow.ts
+  s_fe3ea3b86ac2f8::t_795cdd6a673868 385-387
+  s_fe3ea3b86ac2f8::t_9b01977c1e429c 29,224-227,232,235-236,238,240-242
+  s_fe3ea3b86ac2f8::t_adeb75ed389380 228-231,233-234,237,239
+  s_fe3ea3b86ac2f8::t_d2fd2a3713e6a1 243-244
+packages/gatekeeper-confluence/__tests__/cloud-api.test.ts
+  s_fe3ea3b86ac2f8::t_02a5810b91f98c 4-5,7-87,91-92,132-133
+  s_fe3ea3b86ac2f8::t_0a9ce3b2ac611f 6,88-90,93-97,100-102,104-108,110-111,113-121,123-128,130-131
+  s_fe3ea3b86ac2f8::t_6c3f7d1f0b562b 1-3,98-99,103,109,112,122,129
+packages/gatekeeper-confluence/src/confluence.ts
+  s_fe3ea3b86ac2f8::t_cde2ff107b4259 63
+  s_fe3ea3b86ac2f8::t_21e41fc619588b 36,38-39,90,643-650,653,753-754,760-762,764,774-785
+  s_fe3ea3b86ac2f8::t_991444c2d2a1d6 62,755-759,763,765-773
+  s_fe3ea3b86ac2f8::t_5d51fab4aca8eb 786
+packages/gatekeeper-confluence/__tests__/converters.test.ts
+  s_fe3ea3b86ac2f8::t_cb51e2318be9a9 74-75,77,122,125-143
+  s_fe3ea3b86ac2f8::t_2674c09c4a98dd 6-9,73,76,78-121,123,148-170
+  s_fe3ea3b86ac2f8::t_e3c1afd740a111 124,144-147
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bd773afba8ee4c548d3eacb088003b2dd610b811",
+  "prompts": {},
+  "sessions": {
+    "s_fe3ea3b86ac2f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a637a5f0-7726-45d2-b021-8645dab13046",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

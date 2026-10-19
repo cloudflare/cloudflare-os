@@ -1,0 +1,19 @@
+packages/gatekeeper-spotify/src/spotify.ts
+  s_ea0ed5df37b4df::t_81854dd4790ad6 894-895
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "560441a56c741bd7f310a89766b7b6ddc1f62a98",
+  "prompts": {},
+  "sessions": {
+    "s_ea0ed5df37b4df": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3c7267a6-3f35-40d5-ab55-c7a427009a3e",
+        "model": "claude-wafer-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

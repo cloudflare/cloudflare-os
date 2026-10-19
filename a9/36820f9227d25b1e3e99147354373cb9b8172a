@@ -1,0 +1,83 @@
+packages/workshop-frontend/src/features/wiki/PageView.test.tsx
+  s_fe3ea3b86ac2f8::t_6af5765dae8890 128-138,330-338
+  s_fe3ea3b86ac2f8::t_13842820acf78a 88-89,339
+packages/workshop-frontend/src/features/wiki/WikiSourceAccountPicker.tsx
+  s_fe3ea3b86ac2f8::t_1208ef61f5447c 14,23-24,33
+packages/workshop-frontend/src/features/wiki/SpaceSettingsDialog.tsx
+  s_fe3ea3b86ac2f8::t_c056651350a31f 261
+  s_fe3ea3b86ac2f8::t_31a571d63a3302 269-283
+packages/workshop-frontend/src/features/wiki/SyncPersonalSpacesDialog.test.tsx
+  s_fe3ea3b86ac2f8::t_df1cad7e814c13 472-504
+  s_fe3ea3b86ac2f8::t_abee68d641bc69 1-218,221-231,237,241-243,251-380,383-399,401-411,469,513-526
+  s_fe3ea3b86ac2f8::t_8c18a9329635e9 219-220,232-236,238-240,244-250
+  s_fe3ea3b86ac2f8::t_2f751b58dea6be 381-382
+  s_fe3ea3b86ac2f8::t_70bc6cf1391d0b 400
+  s_fe3ea3b86ac2f8::t_a3bdf4d10daa95 412-442,444-452,454-468,508,511-512
+  s_fe3ea3b86ac2f8::t_bb2c68c4c3920b 443,453
+  s_fe3ea3b86ac2f8::t_bc0ab56bcf71b9 470-471,505-507,509-510
+packages/workshop-frontend/src/features/wiki/SyncSourceDialog.test.tsx
+  s_fe3ea3b86ac2f8::t_6af5765dae8890 12,36-54,90,123-124,140,152-155,165,176-177,182-184,212,221,350-429
+  s_fe3ea3b86ac2f8::t_53fe19da42372c 430
+packages/workshop-frontend/src/features/wiki/SyncProgress.tsx
+  s_fe3ea3b86ac2f8::t_dbb3682277d951 26-27,37,100
+packages/workshop-frontend/src/features/wiki/SpaceLayout.tsx
+  s_fe3ea3b86ac2f8::t_c056651350a31f 164,168
+packages/workshop-frontend/src/features/wiki/ReplaceFromSourceDialog.tsx
+  s_fe3ea3b86ac2f8::t_c056651350a31f 9,95,118,232
+  s_fe3ea3b86ac2f8::t_e7ac7a0b07c2ac 233
+packages/workshop-frontend/src/features/wiki/NewTeamSpaceDialog.tsx
+  s_fe3ea3b86ac2f8::t_c056651350a31f 12,31-33,76,83,102,216
+packages/workshop-frontend/src/features/wiki/SyncProgress.test.tsx
+  s_fe3ea3b86ac2f8::t_458f583b88d363 21
+  s_fe3ea3b86ac2f8::t_6af5765dae8890 87-89,96,107-110
+  s_fe3ea3b86ac2f8::t_d50dba9f02d2c2 111-112
+packages/workshop-frontend/src/features/wiki/NewTeamSpaceDialog.test.tsx
+  s_fe3ea3b86ac2f8::t_99d933f36f3716 1-199
+packages/workshop-frontend/src/features/wiki/SyncPersonalSpacesDialog.tsx
+  s_fe3ea3b86ac2f8::t_1208ef61f5447c 40-49,120,251
+  s_fe3ea3b86ac2f8::t_41725f13ddcf55 150
+  s_fe3ea3b86ac2f8::t_873464585a0b13 132-136
+  s_fe3ea3b86ac2f8::t_bacb083704ce28 33-34,37
+  s_fe3ea3b86ac2f8::t_6860dc8eaf331b 268
+  s_fe3ea3b86ac2f8::t_b72cc45ee39210 81-83
+  s_fe3ea3b86ac2f8::t_26a693dd0c174b 141
+  s_fe3ea3b86ac2f8::t_d560e5c6255b03 119,121,123-127
+  s_fe3ea3b86ac2f8::t_4d01bfece4627e 269-286,288-326
+  s_fe3ea3b86ac2f8::t_9e1f67e89e377e 122
+  s_fe3ea3b86ac2f8::t_f23c2ea9e62536 1-32,35-36,38-39,50-80,84-118,128-131,137-140,142-149,151-199,201-250,252-267,287,328-358,361-390
+  s_fe3ea3b86ac2f8::t_71b07465b86e23 200
+  s_fe3ea3b86ac2f8::t_3003f033ed33f1 327
+  s_fe3ea3b86ac2f8::t_2aa757ec537868 359-360
+packages/workshop-frontend/src/features/wiki/SpaceDirectory.tsx
+  s_fe3ea3b86ac2f8::t_c056651350a31f 4,12,17-18,21,27,116-127,211-215
+  s_fe3ea3b86ac2f8::t_d7a78ddecbd1b7 10,80
+  s_fe3ea3b86ac2f8::t_b5ceabc60dd1c6 216-217
+packages/workshop-frontend/src/features/wiki/SyncSourceDialog.tsx
+  s_fe3ea3b86ac2f8::t_e564e15c45a9c9 7,15-16,58-64,67-75,87,94,100,102,104-105,112,114,119-121,123,126-127,133,135-161,165-167,174-190,214-218,232-234,294-330,333-361,378
+  s_fe3ea3b86ac2f8::t_dcf6eddb8ecf6b 379
+packages/workshop-frontend/src/features/wiki/IncludeRestrictedCheckbox.tsx
+  s_fe3ea3b86ac2f8::t_092f26185a9ab5 1-43
+packages/workshop-frontend/src/features/wiki/ReplaceFromSourceDialog.test.tsx
+  s_fe3ea3b86ac2f8::t_6af5765dae8890 27-39,61,148,234-246
+  s_fe3ea3b86ac2f8::t_220f2e0ea85d22 19-26,247-248
+packages/workshop-frontend/src/features/wiki/PageNotFound.test.tsx
+  s_fe3ea3b86ac2f8::t_929ae7903982eb 108
+packages/workshop-frontend/src/features/wiki/useWikiSyncJobs.test.tsx
+  s_fe3ea3b86ac2f8::t_d1e0f6dc7fd45b 60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a936820f9227d25b1e3e99147354373cb9b8172a",
+  "prompts": {},
+  "sessions": {
+    "s_fe3ea3b86ac2f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a637a5f0-7726-45d2-b021-8645dab13046",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

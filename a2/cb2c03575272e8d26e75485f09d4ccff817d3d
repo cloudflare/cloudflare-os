@@ -1,0 +1,51 @@
+plans/restricted-data-sharing.md
+  s_6d79354b9d5d8c::t_49b59056d10678 177-208
+packages/gatekeeper-kit/src/action-description.ts
+  s_2d1ae144546e14::t_8053c38a8e4fd2 73-74,117-124,127-129
+packages/gatekeeper-kit/__tests__/action-description.test.ts
+  s_2d1ae144546e14::t_5cbbfec5f5c54e 126-139
+packages/gatekeeper-kit/USAGE.md
+  s_2d1ae144546e14::t_0de625658249ed 468-472
+  s_2d1ae144546e14::t_4b49575447cd80 466-467,477-478
+packages/gatekeeper-github/src/github.ts
+  s_2d1ae144546e14::t_86e76f87d65d5f 24,325-338,351,355,360,365,374-376,394-396,406,409-411,416-417,420-423
+  s_2d1ae144546e14::t_aa9f5eafcd6f4c 343-344,441-444
+  s_2d1ae144546e14::t_5075f1961f83bb 387-392,427-428
+packages/gatekeeper-google/src/google.ts
+  s_2d1ae144546e14::t_0860b27b025ebd 4,1291-1292,1295,2701-2703,2751
+  s_2d1ae144546e14::t_b9855dada02a35 2705-2706,2750,2752
+packages/gatekeeper-linear/src/linear.ts
+  s_2d1ae144546e14::t_551015d94530d9 20-22,1991,2080,2108,2128-2131,2144,2152,2165-2167,2193,2211,2229,2231,2246,2248,2273,2275,2310,2334,2345,2354-2360,2373
+packages/gatekeeper-confluence/src/confluence-actions.ts
+  s_2d1ae144546e14::t_33366374881e13 394-397,400
+packages/gatekeeper-homeassistant/src/approvals.ts
+  s_2d1ae144546e14::t_0b382c0c36e490 150-151,226-252,263-264,285,287
+packages/gatekeeper-spotify/src/types.d.ts
+  s_2d1ae144546e14::t_3b8295ff18fda9 487-488
+packages/gatekeeper-spotify/src/spotify.ts
+  s_2d1ae144546e14::t_dc731187c30a1a 819-820,1769-1771
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a2cb2c03575272e8d26e75485f09d4ccff817d3d",
+  "prompts": {},
+  "sessions": {
+    "s_2d1ae144546e14": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cd809748-14fd-4762-8298-cc33631a1092",
+        "model": "claude-wafer-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_6d79354b9d5d8c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "32de7eff-dc88-4d7f-82cb-613824de97fc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

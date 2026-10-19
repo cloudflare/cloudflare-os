@@ -1,0 +1,44 @@
+packages/gatekeeper-kit/src/action-description.ts
+  s_6d79354b9d5d8c::t_b160a9ee025740 160-161,163-167,194,198,216,268,282
+  s_6d79354b9d5d8c::t_00e83128ce88da 1-35,73-102,105,108-111,114-125,128-144,168,177-178,182-187,191-193,197,199-206,212-215,217-221,227,229-237,246-250,253-257,264-267,269-276,279-281,283-284,288-296,303-327,330-363
+  s_6d79354b9d5d8c::t_2f5ee5737efe4a 157
+packages/gatekeeper-kit/package.json
+  s_6d79354b9d5d8c::t_00e83128ce88da 8
+packages/gatekeeper-kit/__tests__/action-description.test.ts
+  s_6d79354b9d5d8c::t_5e647d757ba141 1-109,117-118,272-280,295-326,328-343
+  s_6d79354b9d5d8c::t_2f5ee5737efe4a 114-116
+packages/gatekeeper-kit/__tests__/workerd/conformance/gatekeeper.ts
+  s_6d79354b9d5d8c::t_1c30c05ceb6c35 168-169,184
+packages/gatekeeper-kit/__tests__/actions.test.ts
+  s_6d79354b9d5d8c::t_1aebcdcadf478a 832-852,868-869
+packages/gatekeeper-kit/src/actions.ts
+  s_6d79354b9d5d8c::t_1c30c05ceb6c35 104-105,711,720
+packages/gatekeeper-kit/__tests__/workerd/conformance.test.ts
+  s_6d79354b9d5d8c::t_1c30c05ceb6c35 416
+packages/gatekeeper-kit/USAGE.md
+  s_6d79354b9d5d8c::t_61e17a439fefe0 460-465,473-476,479-488
+plans/gatekeeper-kit.md
+  s_6d79354b9d5d8c::t_b75bf128cc4760 922-923
+packages/mcp-shared/src/tools.ts
+  s_6d79354b9d5d8c::t_78f7db3e8cdf4a 4-10,181-183,193,202-204,207,213,217,219,225
+packages/mcp-shared/__tests__/tools.test.ts
+  s_6d79354b9d5d8c::t_78f7db3e8cdf4a 258-263
+packages/mcp-shared/src/session.ts
+  s_6d79354b9d5d8c::t_78f7db3e8cdf4a 196,208,214-217
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2277117647170000eaedcfa4fd4200a6fa2a4d7d",
+  "prompts": {},
+  "sessions": {
+    "s_6d79354b9d5d8c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "32de7eff-dc88-4d7f-82cb-613824de97fc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

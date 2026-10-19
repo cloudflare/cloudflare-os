@@ -1,0 +1,27 @@
+packages/gatekeeper-github/src/git-transport.ts
+  s_5651d7166bfd76::t_ac38ef0c5c0481 269-270,275,280-286,392-402
+  s_5651d7166bfd76::t_044b37174906f5 403
+packages/gatekeeper-github/__tests__/git-transport.test.ts
+  s_5651d7166bfd76::t_ac38ef0c5c0481 347-371
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b3dd592ddcc1929077406c821571b0bef16be5bd",
+  "prompts": {},
+  "humans": {
+    "h_b6783f91d645b1": {
+      "author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  },
+  "sessions": {
+    "s_5651d7166bfd76": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "adf2bca7-d838-413b-817e-c5b33a2b4284",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

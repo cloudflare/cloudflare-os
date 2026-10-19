@@ -1,0 +1,55 @@
+packages/workshop-backend/format-blueprints/workspace-docs/blueprint.json
+  s_fe30841bd8390c::t_6fa4b6f125c161 17-18,20-21
+packages/workshop-backend/format-blueprints/workspace-docs/files/README.md
+  s_fe30841bd8390c::t_787a28918a5dcd 5-24
+packages/workshop-backend/format-blueprints/workspace-docs/files/client.js
+  s_fe30841bd8390c::t_21eae6d5df3959 3-8,11-33,377,380-381,383,395,400,403-409,413,442,462,484,497-500,502,506,509-510,514-515,522-525,533,537,544,554-555,632-633,656,781,815,857-860,866,875,1099,1174,1180,1182-1185,1187,1263-1267,1269,1272-1283,1292-1293,1295-1308,1315,1317,1361,1408,1413-1414,1431-1433,1437-1438,1443,1445,1467-1469,1471-1472,1475,1485-1486,1510,1513,1515-1516,1521,1528-1529,1533-1535,1547,1558
+packages/workshop-backend/format-blueprints/workspace-docs/files/gadget.json
+  s_fe30841bd8390c::t_f871143652fe56 1-6
+packages/workshop-backend/format-blueprints/workspace-docs/files/server.js
+  s_fe30841bd8390c::t_4a3ac9f953d1e8 1-4,6-13,23-31,59,98,123,130-151,170,174,197,204-206,238,242,271
+packages/workshop-backend/format-blueprints/workspace-sheets/blueprint.json
+  s_fe30841bd8390c::t_fadb4d469c1217 16-17,19
+packages/workshop-backend/format-blueprints/workspace-sheets/files/README.md
+  s_fe30841bd8390c::t_92ef759900d92c 158-177,186,196,199-200,214-218
+packages/workshop-backend/format-blueprints/workspace-sheets/files/client.js
+  s_fe30841bd8390c::t_a73fabbcea9a40 2-5,7-26,29-30,36-38,89-90,244-246,254,290,292,294,1105-1106,1122,1126,1150-1152,1155-1156,1160-1178,1181,1183-1188,1225,1229-1231,1250-1258,1260,1263-1268,1270,1272-1285,1288-1292,1294-1302,1822,1824,1992,2011,2114,2304,2354-2357,2359-2362,2370-2372,2379,2381-2383,2388,2392,2413-2414,2440-2444,2451,2453,2455,2459
+packages/workshop-backend/format-blueprints/workspace-sheets/files/gadget.json
+  s_fe30841bd8390c::t_6036213bba2ba5 1-6
+packages/workshop-backend/format-blueprints/workspace-sheets/files/server.js
+  s_fe30841bd8390c::t_bc3d07bb99826d 2-7,20-21,29-34,37,84,152,209,214-215,217,222,226-227,231
+packages/workshop-backend/format-blueprints/workspace-slides/files/README.md
+  s_fe30841bd8390c::t_096965b15ea7c6 17-54,122,249-252,326-331
+packages/workshop-backend/format-blueprints/workspace-slides/files/client.js
+  s_fe30841bd8390c::t_842e6049c3eb2a 19-24,27-29,98-102,2363-2368,2679,3941-3944,3971-3972,3980
+packages/workshop-backend/format-blueprints/workspace-slides/blueprint.json
+  s_26708c3aefbd8e::t_eab9ab9d70fbfb 16-17,19-20
+packages/workshop-backend/format-blueprints/workspace-slides/files/gadget.json
+  s_26708c3aefbd8e::t_c55a5d79d95dbb 1-6
+packages/workshop-backend/format-blueprints/workspace-slides/files/server.js
+  s_26708c3aefbd8e::t_58bb0cd4ea586d 2,27-32,42,209,232
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f77e7eccd213201f6799019e56897d186e44cce6",
+  "prompts": {},
+  "sessions": {
+    "s_26708c3aefbd8e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-aa0b504245202ffe5",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_fe30841bd8390c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3cc7444f-cdcb-45a9-9d6f-c9080bf89899",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

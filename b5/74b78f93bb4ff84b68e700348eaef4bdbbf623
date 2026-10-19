@@ -1,0 +1,35 @@
+packages/gatekeeper-google/__tests__/slides-model.test.ts
+  s_c64553d463df78::t_73b8f9fb226213 2-8,10-12,15-22,45-47,49-50,234-240,242-247,252-399
+  s_c64553d463df78::t_f009374b8b45a3 400
+packages/gatekeeper-google/__tests__/workerd/slides-session.test.ts
+  s_c64553d463df78::t_73b8f9fb226213 150-179
+packages/gatekeeper-google/src/slides-model.ts
+  s_c64553d463df78::t_73b8f9fb226213 2-3,11-13,17-19,21,124-133,163,169-171,178-205,207,215-216
+packages/gatekeeper-google/src/slides-read-types.d.ts
+  s_c64553d463df78::t_73b8f9fb226213 17-22,41-44,89-126,290-291
+packages/gatekeeper-google/__tests__/slides-live-theme.json
+  s_c64553d463df78::t_73b8f9fb226213 1-421
+packages/gatekeeper-google/src/slides-format.ts
+  s_c64553d463df78::t_73b8f9fb226213 3-4,8-10,14-15,154-161,163-168,171-183,296-323
+  s_c64553d463df78::t_2329a865d39627 324
+packages/gatekeeper-google/src/slides-api.ts
+  s_c64553d463df78::t_73b8f9fb226213 15-21,26-30,33,35-36,168-202,206,210,226-227,294,304
+packages/gatekeeper-google/__tests__/slides-fixture.ts
+  s_c64553d463df78::t_73b8f9fb226213 9-13,17-18,20,70-73,78,82,95-150,161-162
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b574b78f93bb4ff84b68e700348eaef4bdbbf623",
+  "prompts": {},
+  "sessions": {
+    "s_c64553d463df78": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "190b76b5-6004-4f84-b206-24043da8572a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

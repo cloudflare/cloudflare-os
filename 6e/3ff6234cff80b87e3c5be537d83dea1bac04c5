@@ -1,0 +1,21 @@
+docs/blueprints.md
+  s_1da8b1c2e6d0c9::t_4b06a854c15b72 123,128,130,158,160
+docs/spaces.md
+  s_1da8b1c2e6d0c9::t_8838f2a7d96b03 153,180,228
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6e3ff6234cff80b87e3c5be537d83dea1bac04c5",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

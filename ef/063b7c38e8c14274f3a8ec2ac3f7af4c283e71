@@ -1,0 +1,21 @@
+scripts/relay-termination.ts
+  s_78236dfcca2d26::t_75a2198363683f 18-25,37-40,77-87
+scripts/relay-termination.test.ts
+  s_78236dfcca2d26::t_5196a848f1318b 38-48,60-69,179,189-204,238-259
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ef063b7c38e8c14274f3a8ec2ac3f7af4c283e71",
+  "prompts": {},
+  "sessions": {
+    "s_78236dfcca2d26": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "54b89734-38df-48af-a8aa-77bd3e03c492",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

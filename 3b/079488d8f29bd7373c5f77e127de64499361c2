@@ -1,0 +1,32 @@
+packages/workshop-shared/src/api.ts
+  s_1da8b1c2e6d0c9::t_68f50969cdb71c 474-476,479
+  s_1da8b1c2e6d0c9::t_a579e82b0da662 5283-5285,5287-5289,5292-5294,5348
+  s_1da8b1c2e6d0c9::t_cf7ffc7d1f0da3 456,480-481
+  s_1da8b1c2e6d0c9::t_a9453e6094ecbb 5456-5457,5498-5501,5504-5514,5518-5519,5549-5556,5572-5577,5614-5616,5648-5663
+  s_1da8b1c2e6d0c9::t_a22ea2a03c327f 5458-5461
+  s_1da8b1c2e6d0c9::t_63838d0ecc0023 5578-5583
+  s_1da8b1c2e6d0c9::t_f15613d5664d48 457
+  s_1da8b1c2e6d0c9::t_12f6329295502f 659-661
+  s_1da8b1c2e6d0c9::t_037eaa34794a00 5349-5350,5353-5354
+  s_1da8b1c2e6d0c9::t_e8c6c77b5fa7dd 5359
+  s_1da8b1c2e6d0c9::t_706b0929752e8d 678
+  s_1da8b1c2e6d0c9::t_7fc444aaca1cbe 5502-5503
+  s_1da8b1c2e6d0c9::t_8bd900e1dc3989 662-664
+  s_1da8b1c2e6d0c9::t_6756a5277ba7e6 5664
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3b079488d8f29bd7373c5f77e127de64499361c2",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

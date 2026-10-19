@@ -1,0 +1,33 @@
+scripts/relay-termination.ts
+  s_78236dfcca2d26::t_75a2198363683f 29-32,69-79
+scripts/relay-termination.test.ts
+  s_78236dfcca2d26::t_5196a848f1318b 38-48,60-69,179,189-192,226-247
+scripts/vp-concurrency.ts
+  s_f0b7db9c8060c8::t_8de796efb870b9 111-114,118-123,130,167-230,252-255,259-260,265-268,271-272
+scripts/vp-concurrency.test.ts
+  s_78236dfcca2d26::t_ff77cf53fc4098 8-9,76-78,80-88,101-106,109-171,220-250
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c9ce944f9f277ad4af824f9a7adf159de5b34927",
+  "prompts": {},
+  "sessions": {
+    "s_78236dfcca2d26": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "54b89734-38df-48af-a8aa-77bd3e03c492",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_f0b7db9c8060c8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3d90149-7790-4227-8b92-f4199d8ba399",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

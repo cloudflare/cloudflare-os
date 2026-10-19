@@ -1,0 +1,19 @@
+packages/mcp-shared/__tests__/user.test.ts
+  s_d4911edf51be0b::t_b7ce23e45a3f34 18,58-60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "009b143123f2f5935236e936787c873dcc3a4ff7",
+  "prompts": {},
+  "sessions": {
+    "s_d4911edf51be0b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f65990fa-92c5-4009-b053-1dddb94ef652",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

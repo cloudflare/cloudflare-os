@@ -1,0 +1,65 @@
+packages/gadget-libraries/page/__tests__/anchors.test.ts
+  s_7a202c3e505e2e::t_06c4e31305ac4b 26-32
+packages/gadget-libraries/page/__tests__/blocks.test.ts
+  s_7a202c3e505e2e::t_0cb78d70210f76 219-229
+packages/gadget-libraries/page/__tests__/comments.test.ts
+  s_7a202c3e505e2e::t_6cec6c10234a94 1,4,40,43,49,60-64,67,200,203-205,272-367
+packages/gadget-libraries/page/__tests__/diagram-svg.test.ts
+  s_7a202c3e505e2e::t_e22c659d84b184 1-86
+packages/gadget-libraries/page/__tests__/diagrams.test.ts
+  s_7a202c3e505e2e::t_51f273fc04f8dc 1-161
+packages/gadget-libraries/page/__tests__/editor-harness.ts
+  s_7a202c3e505e2e::t_7ea628f2d78a47 22-24,31,43-46
+packages/gadget-libraries/page/__tests__/editor.test.ts
+  s_7a202c3e505e2e::t_bb8391bf0f2e24 1060-1071
+packages/gadget-libraries/page/__tests__/host-services.test.ts
+  s_7a202c3e505e2e::t_9f5b386e20994c 1-57
+packages/gadget-libraries/page/__tests__/links.test.ts
+  s_7a202c3e505e2e::t_7b0924aefbccc0 4,181-199
+packages/gadget-libraries/page/__tests__/page-clicks.test.ts
+  s_7a202c3e505e2e::t_19077433a6fb3f 1-82
+packages/gadget-libraries/page/client.ts
+  s_7a202c3e505e2e::t_b063ea1942ca2a 4-12,25,28,31,35,69,104-106,110,120,153,206-209,251,253,263-286
+packages/gadget-libraries/page/library.json
+  s_7a202c3e505e2e::t_5e8dcd091b8c19 3-4
+packages/gadget-libraries/page/src/comments.ts
+  s_7a202c3e505e2e::t_ab64dd133fe1ff 23-28,72-84,113-114,165-170,175-191,212,219,322-325,328
+packages/gadget-libraries/page/src/diagrams.ts
+  s_7a202c3e505e2e::t_9965281bf78298 1-175
+packages/gadget-libraries/page/src/editor.ts
+  s_7a202c3e505e2e::t_78a0adbf115fd7 86-91,1502-1515,1583-1587,1665-1667,1671
+packages/gadget-libraries/page/src/page-clicks.ts
+  s_7a202c3e505e2e::t_68cfe6758bce75 1-49
+packages/gadget-libraries/page/src/styles.ts
+  s_7a202c3e505e2e::t_c6ae12a80e25ac 1-177
+packages/gadget-libraries/page/src/toolbar.ts
+  s_7a202c3e505e2e::t_2fd7a2e0a1e9f4 50
+packages/gadget-libraries/page/src/diagram-svg.ts
+  s_086dfd8ff44e9c::t_a10e79397c22fe 1-97
+packages/gadget-libraries/page/src/host-services.ts
+  s_086dfd8ff44e9c::t_170d9dd4076650 1-105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3d1c9d71612768e2424799748be7554922e2a9af",
+  "prompts": {},
+  "sessions": {
+    "s_086dfd8ff44e9c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a59242f5f2d7b3f0e",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_7a202c3e505e2e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f4225223-4234-4106-a074-f38a4f4dcd30",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

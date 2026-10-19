@@ -1,0 +1,25 @@
+packages/wiki-import/README.md
+  s_f74476d0cbb433::t_d12fb83b793a1f 460-463
+packages/wiki-import/__tests__/fixtures/inline.xhtml
+  s_f74476d0cbb433::t_3a8283869053dd 14-20
+packages/wiki-import/__tests__/storage-to-blocks.test.ts
+  s_f74476d0cbb433::t_76e26f576edf39 333-343
+packages/wiki-import/src/storage-to-blocks.ts
+  s_f74476d0cbb433::t_4f3d4d63b7e968 60,809-810,839-846,871-875,914-916,920-967,1039-1049,1102-1103,1490-1492,1557,1559,1611
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "16c24ce6e1e8bd49cb53e88f06ed255d316500f1",
+  "prompts": {},
+  "sessions": {
+    "s_f74476d0cbb433": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dbbaec07-89a3-4c4a-84e7-31df83ae61b4",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

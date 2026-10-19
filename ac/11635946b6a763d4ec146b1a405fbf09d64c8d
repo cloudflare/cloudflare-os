@@ -1,0 +1,27 @@
+packages/workshop-backend/__tests__/gadget-libraries.test.ts
+  s_9687893864678c::t_c82016465aac68 11-12,173-183,528-530,532-540
+packages/workshop-backend/scripts/build-gadget-libraries.ts
+  s_9687893864678c::t_eacd5e8301c82f 30,202-203,268-269
+packages/workshop-backend/src/agent.ts
+  s_9687893864678c::t_6af377283bc508 19-21,3237-3238,3241-3254,3256
+packages/workshop-backend/src/gadget-libraries.ts
+  s_9687893864678c::t_111828b2734730 59-81
+packages/workshop-backend/src/overseer.ts
+  s_9687893864678c::t_48d7e3775ff9dc 68,7095-7099,7115-7121,7126
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ac11635946b6a763d4ec146b1a405fbf09d64c8d",
+  "prompts": {},
+  "sessions": {
+    "s_9687893864678c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "53be0b5f-c978-4cf6-9c71-1b7089449bb7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

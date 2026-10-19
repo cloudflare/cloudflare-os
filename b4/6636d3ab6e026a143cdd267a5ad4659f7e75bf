@@ -1,0 +1,33 @@
+packages/gatekeeper-github/__tests__/git-commits.test.ts
+  s_b235d7e85db519::t_4dd5363ae37baf 1-4,8,99-104
+packages/gatekeeper-github/__tests__/workerd/pull-simulation.test.ts
+  s_b235d7e85db519::t_6b410adb89c789 14
+packages/gatekeeper-github/__tests__/workerd/push.test.ts
+  s_b235d7e85db519::t_03451ecaac3047 19
+packages/gatekeeper-github/__tests__/workerd/session-git.test.ts
+  s_b235d7e85db519::t_3483562209682a 3
+packages/gatekeeper-github/package.json
+  s_b235d7e85db519::t_22a8f51057f63d 18
+packages/gatekeeper-github/src/github-api.ts
+  s_b235d7e85db519::t_1afe9ee4e484ba 1365,1401
+packages/gatekeeper-github/src/github.ts
+  s_b235d7e85db519::t_b7cb90643b04a8 47-54,62-71,1053,3595
+pnpm-lock.yaml
+  s_b235d7e85db519::t_9cd069a6f11606 470-472
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b46636d3ab6e026a143cdd267a5ad4659f7e75bf",
+  "prompts": {},
+  "sessions": {
+    "s_b235d7e85db519": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f73e2ba17ffeG15LUZZx8sUx6N",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

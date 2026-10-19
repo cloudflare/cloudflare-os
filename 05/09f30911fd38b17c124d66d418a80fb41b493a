@@ -1,0 +1,25 @@
+packages/gadget-libraries/page/README.md
+  s_4a30a440cc2138::t_81a3b930606705 463-467
+packages/gadget-libraries/page/__tests__/links.test.ts
+  s_4a30a440cc2138::t_2fd40361c5f4aa 225-228
+packages/gadget-libraries/page/client.ts
+  s_4a30a440cc2138::t_e6d07ad730a49d 22,33,132,221-225
+packages/gadget-libraries/page/src/sync.ts
+  s_4a30a440cc2138::t_cbae619b53dbde 45-48,50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0509f30911fd38b17c124d66d418a80fb41b493a",
+  "prompts": {},
+  "sessions": {
+    "s_4a30a440cc2138": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8775eb53-edf4-4778-8216-f263267a5316",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

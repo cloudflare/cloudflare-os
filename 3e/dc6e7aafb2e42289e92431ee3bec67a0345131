@@ -1,0 +1,57 @@
+AGENTS.md
+  s_6e159c0858b8f9::t_99a0a2860e5f91 42
+packages/gatekeeper-x/__tests__/workerd/account.test.ts
+  s_6e159c0858b8f9::t_0a739fcdd4293e 187-193
+packages/gatekeeper-x/__tests__/workerd/actions.test.ts
+  s_6e159c0858b8f9::t_24d0fbbf6b1b28 8,10,72,109-166,310-340
+packages/gatekeeper-x/__tests__/workerd/reads.test.ts
+  s_6e159c0858b8f9::t_d6831667bd104e 165-192,207-221
+packages/gatekeeper-x/__tests__/x-env.test.ts
+  s_a0621677aa027b::t_a9bdf175449b2a 3-4,7-14
+packages/gatekeeper-x/__tests__/x-normalize.test.ts
+  s_6e159c0858b8f9::t_3bfa3d38aff181 6-7,127-171
+packages/gatekeeper-x/__tests__/x-text.test.ts
+  s_6e159c0858b8f9::t_310ef9b34324a5 2,43-57,74-85
+packages/gatekeeper-x/src/x-actions.ts
+  s_6e159c0858b8f9::t_f4dbbf0719293e 11,32,34,64-66,134,136,311-318,320-345,348-349,351-355,357-359,361-396,404,434-435,443,476,481,483-484,779-814
+packages/gatekeeper-x/src/x-env.ts
+  s_6e159c0858b8f9::t_143d27eaa35c6c 4,53,55
+packages/gatekeeper-x/src/x-gatekeeper.ts
+  s_6e159c0858b8f9::t_869143ff6c70f9 37,175-176,211
+packages/gatekeeper-x/src/x-normalize.ts
+  s_6e159c0858b8f9::t_4a776ec73fdda0 41-42,288-311,334-350
+packages/gatekeeper-x/src/x-sessions.ts
+  s_6e159c0858b8f9::t_52b6e68d4588cf 28,145-150,195-196,204,256-258,260,263-265,275,281-282,284,287,303-308,314,319,366-367,370,374-378,391,393,627-629,631,710,714,720,730,739,756,793,952-953,958-959
+packages/gatekeeper-x/src/x-text.ts
+  s_6e159c0858b8f9::t_e10cf4bdbaa5f8 5-6,22-24,27,32-34,54-59,105-115
+packages/gatekeeper-x/src/x.ts
+  s_6e159c0858b8f9::t_e76c335032ed22 144-145
+packages/gatekeeper-x/storage-schema.md
+  s_6e159c0858b8f9::t_93c072568be6e9 32
+plans/x-gatekeeper.md
+  s_6e159c0858b8f9::t_526e0a97b62ba2 727-735,737,1058,1067-1078
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3edc6e7aafb2e42289e92431ee3bec67a0345131",
+  "prompts": {},
+  "sessions": {
+    "s_6e159c0858b8f9": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_eda3e264bffecsUpurXN1ZDw8a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_a0621677aa027b": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ed9b3cd70ffezwXnN0F1p3USaM",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

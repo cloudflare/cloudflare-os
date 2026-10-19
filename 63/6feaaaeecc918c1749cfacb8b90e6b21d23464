@@ -1,0 +1,21 @@
+packages/gatekeeper-gitlab/README.md
+  s_b235d7e85db519::t_b156360c3003a6 52-56
+scripts/run-dev-server.ts
+  s_b235d7e85db519::t_48db5d3d29b876 495-497
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "636feaaaeecc918c1749cfacb8b90e6b21d23464",
+  "prompts": {},
+  "sessions": {
+    "s_b235d7e85db519": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f73e2ba17ffeG15LUZZx8sUx6N",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

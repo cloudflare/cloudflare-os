@@ -1,0 +1,34 @@
+packages/workshop-backend/src/overseer.ts
+  s_1308b62841ef11::t_5966aa920f699c 52,1157-1161,5667,5672-5675,5677-5683,5813-5822,5824-5825,5866-5868,11288-11295,11322-11325
+  s_1308b62841ef11::t_3feb8ce013a8ed 5659-5666,5668-5671,5676
+docs/observers.md
+  s_1308b62841ef11::t_5966aa920f699c 37-38
+  s_1308b62841ef11::t_3feb8ce013a8ed 672-673
+packages/workshop-shared/src/gatekeeper.ts
+  s_1308b62841ef11::t_5966aa920f699c 1201-1205
+packages/workshop-backend/__tests__/restricted-writes-to-self.test.ts
+  s_1308b62841ef11::t_5966aa920f699c 1-7,9-145
+  s_1308b62841ef11::t_787b57ce3e7982 8
+packages/workshop-shared/src/api.ts
+  s_1308b62841ef11::t_3feb8ce013a8ed 1341-1342
+packages/workshop-backend/src/auto-approval.ts
+  s_1308b62841ef11::t_5966aa920f699c 6,8,18-43,86-87,97-98
+packages/workshop-backend/__tests__/auto-approval.test.ts
+  s_1308b62841ef11::t_5966aa920f699c 2,6,284-353
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2361f6d6e598224b513f75df827f2e558a8ad3b8",
+  "prompts": {},
+  "sessions": {
+    "s_1308b62841ef11": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "42d4e83c-738d-4593-b0c2-b380cfb18732",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

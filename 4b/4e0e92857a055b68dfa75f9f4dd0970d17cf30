@@ -1,0 +1,20 @@
+packages/workshop-backend/src/git-cache.ts
+  s_5651d7166bfd76::t_8e9aaf05e00054 258,285
+  s_5651d7166bfd76::t_abe36015b50fd1 259-270,1187-1188
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4b4e0e92857a055b68dfa75f9f4dd0970d17cf30",
+  "prompts": {},
+  "sessions": {
+    "s_5651d7166bfd76": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "adf2bca7-d838-413b-817e-c5b33a2b4284",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

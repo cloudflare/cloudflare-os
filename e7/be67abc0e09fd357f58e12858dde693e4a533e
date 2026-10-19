@@ -1,0 +1,31 @@
+AGENTS.md
+  s_1eb750210ff0d3::t_fe1feefe827ef5 155-157
+packages/observability/README.md
+  s_1eb750210ff0d3::t_0c8fa2922e6f18 17-23
+packages/observability/__tests__/metrics.test.ts
+  s_1eb750210ff0d3::t_4f9202d7d13166 1-134
+packages/observability/package.json
+  s_1eb750210ff0d3::t_5cf61b9f675f6a 22-29
+packages/observability/src/metrics-schema.ts
+  s_1eb750210ff0d3::t_625ff1f126813f 1-83
+packages/observability/src/metrics.ts
+  s_1eb750210ff0d3::t_c4f91f0cabb4ec 1-114
+packages/observability/vitest.config.ts
+  s_1eb750210ff0d3::t_584ac5e21f8dee 53
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e7be67abc0e09fd357f58e12858dde693e4a533e",
+  "prompts": {},
+  "sessions": {
+    "s_1eb750210ff0d3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c2837f7d-18a0-4d38-abd2-24948712cc40",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

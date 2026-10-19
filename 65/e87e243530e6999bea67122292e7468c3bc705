@@ -1,0 +1,21 @@
+packages/gatekeeper-kit/__tests__/connect-pages.test.ts
+  s_74dcd05997c352::t_7ee8bd9363033e 53-54,63-66,68,72-79,82-85,88,103-104,106-107,117,121-122,134-136,139-140,144
+packages/gatekeeper-kit/src/connect-pages.ts
+  s_74dcd05997c352::t_f1ca0e483a6aba 142-145,147-157,159-168,207-211
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "65e87e243530e6999bea67122292e7468c3bc705",
+  "prompts": {},
+  "sessions": {
+    "s_74dcd05997c352": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2dfb2d98-17d9-4d21-8fb6-7a60b7c09e36",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

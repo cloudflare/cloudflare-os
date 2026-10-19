@@ -1,0 +1,20 @@
+packages/workshop-backend/src/overseer.ts
+  s_3b2fb672b69c26::t_ecff45f7c9b409 10684-10688,10698
+  s_3b2fb672b69c26::t_b4643a88de6c95 12195-12197,12201
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0cdc07505ac2d8b9fdf5dcf6b8ba7dd0c1ba8ad5",
+  "prompts": {},
+  "sessions": {
+    "s_3b2fb672b69c26": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "57a64fbc-8241-4cf2-93fc-9b7ceae8cf53",
+        "model": "claude-watermelon-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

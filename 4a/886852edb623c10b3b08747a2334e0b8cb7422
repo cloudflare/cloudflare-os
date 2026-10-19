@@ -1,0 +1,75 @@
+.agents/skills/write-gatekeeper/SKILL.md
+  s_b831f88f249552::t_a7a18fa3a3ae43 246
+docs/sharing.md
+  s_b831f88f249552::t_387b541a515628 36,46-47,102,104,113-115,153-154,159,161,163-164,176-194
+  s_f2d13aeb63a5e8::t_93af05a28471a5 162
+docs/observers.md
+  s_b831f88f249552::t_f8ac0362d156bf 33-44,63,75,101,104-106,107-114,147-148,180,210,240-242,246-252,301-302,515,531,616-617,623-624,626,669-672,674-678,684,687,691-696,703-712,724,735-744,752-758,820-822,827-830,839-841,869-870,902-911
+  s_f2d13aeb63a5e8::t_93af05a28471a5 506
+  s_f2d13aeb63a5e8::t_6a7323c9c64234 673,685-686,688-690,697-702
+  s_f2d13aeb63a5e8::t_ee865013b6cd74 507-508
+  s_f2d13aeb63a5e8::t_c516323f2b0e26 76
+  s_f2d13aeb63a5e8::t_f172a39b28fef0 303-308
+  s_f2d13aeb63a5e8::t_2ddee302189ac9 745-751
+  s_7de7d2dc95a2a2::t_3681045e1c094a 679-683
+  s_7de7d2dc95a2a2::t_eb346e25e112f1 540-545
+  s_7de7d2dc95a2a2::t_fe8882099d3c95 593-600
+  s_7de7d2dc95a2a2::t_dc6cf7d3bc8c70 912-918
+plans/restricted-data-sharing.md
+  s_b831f88f249552::t_ee6d49f2ab0377 1-10,13-47,51,53-95,100-104,107-148,150,159-195,199-204,214-229,235-241,246-251,255-280,285-302
+  s_f2d13aeb63a5e8::t_0d960410da4868 242-245
+  s_f2d13aeb63a5e8::t_8eb035bef233b6 205-213
+  s_f2d13aeb63a5e8::t_d6cf00a0fa2ee6 252-254
+  s_f2d13aeb63a5e8::t_bc0463847bff00 48-50,52
+  s_f2d13aeb63a5e8::t_ff7aea09f74306 96-99
+  s_f2d13aeb63a5e8::t_d5bedfcf31e262 149,151-158
+  s_f2d13aeb63a5e8::t_0725ddb5544856 196-198
+  s_f2d13aeb63a5e8::t_7f84cadfc01de5 11-12
+  s_7de7d2dc95a2a2::t_4997d105b31ac1 230-234
+  s_7de7d2dc95a2a2::t_b2eb0ec180ffaf 281-284
+  s_7de7d2dc95a2a2::t_391db6a26cd0a3 105-106
+packages/workshop-backend/__tests__/observer-scope-restart.test.ts
+  s_f2d13aeb63a5e8::t_0034d2530b432c 521-522
+  s_f2d13aeb63a5e8::t_9ebd61da7befea 498-499
+  s_f2d13aeb63a5e8::t_a82965d13a3669 545-546
+  s_f2d13aeb63a5e8::t_292c0127133169 533
+packages/workshop-backend/src/overseer.ts
+  s_7de7d2dc95a2a2::t_dfa6a3b7a00bb5 5703-5708,5712-5715
+  s_7de7d2dc95a2a2::t_f5b3c12f8cbf78 5732-5733
+  s_7de7d2dc95a2a2::t_4dd4072e542c77 5829-5833
+packages/workshop-backend/__tests__/restricted-observation-latch.test.ts
+  s_7de7d2dc95a2a2::t_a87892323d367f 225-253
+  s_7de7d2dc95a2a2::t_3f00ca4243026e 223-224
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4a886852edb623c10b3b08747a2334e0b8cb7422",
+  "prompts": {},
+  "sessions": {
+    "s_7de7d2dc95a2a2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6e3c069-e1cb-4210-aba4-5216199a21ef",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_b831f88f249552": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "010fdb2a-8792-46e0-84cc-2e828765473b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_f2d13aeb63a5e8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c3f23b61-389d-483f-bfc7-4b9547576abe",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

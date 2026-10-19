@@ -1,0 +1,25 @@
+packages/workshop-backend/__tests__/format-blueprint-files.test.ts
+  s_fe30841bd8390c::t_408aead79a418b 12-19,393-671
+packages/workshop-backend/scripts/build-gadget-libraries.ts
+  s_fe30841bd8390c::t_daf6241d9cbaed 79-80,104,124,126,128,130,132
+packages/workshop-backend/scripts/gadget-libraries-source.ts
+  s_fe30841bd8390c::t_0f8ca0d5a0df92 34-38,61-64
+packages/workshop-backend/wrangler.jsonc
+  s_fe30841bd8390c::t_aeb9e2573bb802 7-9
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7510a9465fc16a4101b86e085e179fde393b6e8b",
+  "prompts": {},
+  "sessions": {
+    "s_fe30841bd8390c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3cc7444f-cdcb-45a9-9d6f-c9080bf89899",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

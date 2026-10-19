@@ -1,0 +1,19 @@
+packages/gatekeeper-gitlab/__tests__/workerd/fake-gitlab.ts
+  s_b235d7e85db519::t_7a2c91a1f34d73 4-6,33,35
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "995fd92fb6f9e4ff88e8e008ff34f3364b1efae6",
+  "prompts": {},
+  "sessions": {
+    "s_b235d7e85db519": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f73e2ba17ffeG15LUZZx8sUx6N",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

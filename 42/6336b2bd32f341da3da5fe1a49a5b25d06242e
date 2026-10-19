@@ -1,0 +1,29 @@
+packages/workshop-backend/__tests__/do-retry.test.ts
+  s_d1bbaf80186abb::t_e836dcbc402efc 59-60
+  s_d1bbaf80186abb::t_50a6358abbe71c 2-4
+  s_d1bbaf80186abb::t_25974878b61b55 79-85
+  s_d1bbaf80186abb::t_38beb3d40b9816 44-58,61-78,86-148
+  s_d1bbaf80186abb::t_1123c5a7c69083 149
+packages/workshop-backend/__tests__/loop-limit-restart.test.ts
+  s_d1bbaf80186abb::t_e836dcbc402efc 166-168
+  s_d1bbaf80186abb::t_25974878b61b55 5-6,172-174
+  s_d1bbaf80186abb::t_6356deed6f2d41 1-4,7-78,80-109,111-165,169-171,175-233
+  s_d1bbaf80186abb::t_7868040801bfb8 110
+  s_d1bbaf80186abb::t_7f29813df59df2 79
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "426336b2bd32f341da3da5fe1a49a5b25d06242e",
+  "prompts": {},
+  "sessions": {
+    "s_d1bbaf80186abb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "bc76a637-aa82-4154-bd22-48bced9fd203",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

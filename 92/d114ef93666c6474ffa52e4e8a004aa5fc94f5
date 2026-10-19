@@ -1,0 +1,21 @@
+packages/workshop-frontend/src/features/wiki/SpaceDirectory.tsx
+  s_fe3ea3b86ac2f8::t_1aa877520f019d 3-4
+  s_fe3ea3b86ac2f8::t_ff7985959724ce 9-10
+  s_fe3ea3b86ac2f8::t_994b83af107bdd 117-135
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "92d114ef93666c6474ffa52e4e8a004aa5fc94f5",
+  "prompts": {},
+  "sessions": {
+    "s_fe3ea3b86ac2f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a637a5f0-7726-45d2-b021-8645dab13046",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

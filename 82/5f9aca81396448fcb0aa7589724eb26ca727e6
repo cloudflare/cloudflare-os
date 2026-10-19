@@ -1,0 +1,49 @@
+packages/workshop-backend/vite.config.ts
+  s_b8c46f0245b1b4::t_cff0b2e42af6ff 29-49,55-56
+scripts/vitest-task-vite-config.ts
+  s_b8c46f0245b1b4::t_b7245e841ea258 46-47,68-70,72,75-102,155-169
+packages/integration-tests/vite.config.ts
+  s_b8c46f0245b1b4::t_f5734976d30f5b 1-5,19-35,37-40
+AGENTS.md
+  s_b8c46f0245b1b4::t_ba46381273bcf7 66
+  s_b8c46f0245b1b4::t_ac3852329177f6 65
+packages/integration-tests/vitest.config.ts
+  s_b8c46f0245b1b4::t_7b445ee928c785 2,8,15-17
+scripts/env-passthrough.test.ts
+  s_b8c46f0245b1b4::t_19aa00ec242a9c 26-30,42-43,59-61,64,106
+packages/integration-tests/src/worker-inputs.ts
+  s_b8c46f0245b1b4::t_2ea95aeababa50 1-40,42-117
+packages/integration-tests/__tests__/worker-inputs.test.ts
+  s_b8c46f0245b1b4::t_47456d69df1546 1-72
+packages/integration-tests/src/global-setup.ts
+  s_b8c46f0245b1b4::t_b52cfc0faf130a 39-40
+  s_0f4466b08f049d::t_3a1a3f1146ea47 41-44,58
+  s_b8c46f0245b1b4::t_3f15812ac61069 27-29,31-38
+  s_0f4466b08f049d::t_cf7259671c5100 45-47,55-57
+  s_0f4466b08f049d::t_aab6115bcde7cb 59-61
+  s_0f4466b08f049d::t_dba62305376663 7,48-54,62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "825f9aca81396448fcb0aa7589724eb26ca727e6",
+  "prompts": {},
+  "sessions": {
+    "s_0f4466b08f049d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "19f335f8-0b0d-48c5-b0a6-b3df238be631",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_b8c46f0245b1b4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f5fd5787-c4ea-445f-a41d-3ec290f8da26",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

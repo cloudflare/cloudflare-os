@@ -1,0 +1,38 @@
+packages/workshop-shared/src/api.ts
+  s_544ac41f1d93fd::t_c517b9794fec62 1233-1236
+  s_544ac41f1d93fd::t_b7129c3c422282 1228-1232,1237-1238
+  s_544ac41f1d93fd::t_f48f6788a219d9 1021-1025
+packages/integration-tests/__tests__/ai-gateway-cost.test.ts
+  s_544ac41f1d93fd::t_c517b9794fec62 138,225-230,233
+packages/workshop-backend/__tests__/admin-config.test.ts
+  s_544ac41f1d93fd::t_3f1c4ec77f7c41 235-246
+packages/workshop-backend/__tests__/admin-settings-models.test.ts
+  s_544ac41f1d93fd::t_f4685808b81403 299-336
+  s_544ac41f1d93fd::t_d80bed71dd4d1c 391,394
+packages/workshop-backend/src/admin-config.ts
+  s_544ac41f1d93fd::t_8872b3ea5b2f5d 81-85
+  s_544ac41f1d93fd::t_c5263804d29213 127
+  s_544ac41f1d93fd::t_662079aa9993c1 406-408
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.test.tsx
+  s_544ac41f1d93fd::t_d40a4d115eaf66 42
+packages/workshop-backend/src/admin-settings.ts
+  s_544ac41f1d93fd::t_5c9e22365cab0e 454
+  s_544ac41f1d93fd::t_42b1b4c77b898f 520-525
+  s_544ac41f1d93fd::t_26c3d43f139777 781-784
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d15eeda4a9bf6ced8d3f7b37556ad7273f4fd94c",
+  "prompts": {},
+  "sessions": {
+    "s_544ac41f1d93fd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "344b9e0b-49a0-49eb-ba2c-555255e663d7",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

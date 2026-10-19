@@ -1,0 +1,19 @@
+packages/gatekeeper-github/src/github.ts
+  s_6d79354b9d5d8c::t_645a11a052cc6f 23,25,346-349,352-357,359-361,363-366,368-371,373-380,384-389,396,405,409-417,419-420,424-427,430-431,436-438,441-452,457-463,3704,3708-3712
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d069c321b53dcfd0cd5acfe8defb67aea4e80b5f",
+  "prompts": {},
+  "sessions": {
+    "s_6d79354b9d5d8c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "32de7eff-dc88-4d7f-82cb-613824de97fc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

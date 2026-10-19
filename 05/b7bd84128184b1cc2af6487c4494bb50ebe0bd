@@ -1,0 +1,21 @@
+packages/workshop-backend/src/overseer.ts
+  s_e1dd627472f56c::t_47d961bb40fd57 9929-9932,9937-9938,10069,10074,10809-10811,11208,11215-11216,12529-12531,12675,12832-12833,12888-12891,13113,13164-13166
+packages/workshop-backend/src/server.ts
+  s_e1dd627472f56c::t_9a58e6e3d45b88 129-131,134-135,311-312,760-761
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "05b7bd84128184b1cc2af6487c4494bb50ebe0bd",
+  "prompts": {},
+  "sessions": {
+    "s_e1dd627472f56c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a708a8fa-f215-459a-b93e-8c454b24072f",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

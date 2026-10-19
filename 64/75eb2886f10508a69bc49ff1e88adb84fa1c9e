@@ -1,0 +1,29 @@
+packages/gatekeeper-gitlab/__tests__/gitlab-normalize.test.ts
+  s_b235d7e85db519::t_b2511f04702a82 150-151,153-155,157,159,161,163-164
+packages/gatekeeper-gitlab/__tests__/workerd/actions.test.ts
+  s_b235d7e85db519::t_ffee232d06d169 1-227,229-247,249-259,264-267,269,271,273,275-276,278-283,285-287,295-301,468-567
+packages/gatekeeper-gitlab/__tests__/workerd/worker.ts
+  s_b235d7e85db519::t_21e7e7f78469be 10,12-13,19-22,89-104,107-121,230-275
+packages/gatekeeper-gitlab/src/gitlab-gatekeeper.ts
+  s_b235d7e85db519::t_26dd5d7bc175b0 6-7,12,27,31,36,38,43-46,48-52,69,108-110,117,122-123,146-148,245-248,1401-1782,1784-1889,1904-1915,1918-1922,1925,1927-1928,1930-1939,1958,1960-1963,1970,1979,1995,1997,2001-2002,2005,2007-2008,2013-2017,2023-2025,2028-2029,2030-2056,2070-2136
+packages/gatekeeper-gitlab/src/gitlab-normalize.ts
+  s_b235d7e85db519::t_1af7186a3a6a31 600-603,611,618-620,622-628,630-644
+packages/gatekeeper-gitlab/src/gitlab-sessions.ts
+  s_b235d7e85db519::t_21a7805879e75e 45,76-90,93-106,222,266-280,283-290,293-300,303-310,314-320,324-330,341-347,415-435,438-439,442-443,446-455,481-488
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6475eb2886f10508a69bc49ff1e88adb84fa1c9e",
+  "prompts": {},
+  "sessions": {
+    "s_b235d7e85db519": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f73e2ba17ffeG15LUZZx8sUx6N",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

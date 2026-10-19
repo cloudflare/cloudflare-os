@@ -1,0 +1,27 @@
+scripts/preview/staging-config.ts
+  s_5c298fe15eca19::t_f7b8a018e9045e 22-25,615-679
+.github/workflows/preview.yml
+  s_5c298fe15eca19::t_1702a93b63c2ed 132-142
+scripts/env-passthrough.test.ts
+  s_5c298fe15eca19::t_f9b8563c217198 91-93
+scripts/preview/preview.ts
+  s_5c298fe15eca19::t_7167d6f70753b7 29-33,49,327-330,352,354,356-363,365-366,370,372,375,377,380,383,582-584,586,594,596-597,614-617,628
+scripts/preview/staging-config.test.ts
+  s_5c298fe15eca19::t_d02488437274f1 23,54-62,347-349,351,373-376,492-524
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d9b1ae2956a482ea1e8a269be719dd8d0736d08c",
+  "prompts": {},
+  "sessions": {
+    "s_5c298fe15eca19": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b8696487-f81d-453e-bca9-7b3e55b2c1f7",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

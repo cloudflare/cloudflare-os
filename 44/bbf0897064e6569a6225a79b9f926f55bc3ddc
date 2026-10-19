@@ -1,0 +1,51 @@
+packages/workshop-frontend/src/ShareModal.test.tsx
+  s_d78fe856f76a3c::t_39c46f10ba0f16 71,73,110,129,171-176,190,305,307-308,310-314,318-319,326-381,386,397-407
+packages/workshop-frontend/src/ShareModal.tsx
+  s_d78fe856f76a3c::t_98656c01a0a6f5 1,300-301,306,310,313-314,318-328,340,343,345-348,350-372,478-480,485-486,1064-1066,1071
+packages/workshop-frontend/src/features/wiki/NewTeamSpaceDialog.tsx
+  s_d78fe856f76a3c::t_b142c8cf3d2e48 4,18-20,40-44
+packages/workshop-frontend/src/features/wiki/PageTree.test.tsx
+  s_d78fe856f76a3c::t_5ea416dd2db37e 4,134-171
+packages/workshop-frontend/src/features/wiki/PageTreeNode.tsx
+  s_d78fe856f76a3c::t_713608642581a7 1,77-85
+packages/workshop-frontend/src/features/wiki/PublishDialog.test.tsx
+  s_d78fe856f76a3c::t_4b8d95f6b7c957 62,129-135
+packages/workshop-frontend/src/features/wiki/PublishDialog.tsx
+  s_d78fe856f76a3c::t_b92be20fdb39ea 36,39,88-90
+packages/workshop-frontend/src/features/wiki/WikiSwitcher.tsx
+  s_d78fe856f76a3c::t_83988efcf2c29f 30
+packages/workshop-frontend/src/features/wiki/search/searchParams.test.ts
+  s_d78fe856f76a3c::t_9fc62b7147c602 13-20,23,25
+packages/workshop-frontend/src/features/wiki/search/searchParams.ts
+  s_d78fe856f76a3c::t_206278f8774763 10,12-16,19-20,23-31
+packages/workshop-frontend/src/features/wiki/useCreatePage.test.tsx
+  s_d78fe856f76a3c::t_7ef463b4a1939f 1-89
+packages/workshop-frontend/src/features/wiki/useCreatePage.ts
+  s_d78fe856f76a3c::t_994486d3895249 16-20,48-51
+packages/workshop-frontend/src/features/wiki/usePageResolution.test.tsx
+  s_d78fe856f76a3c::t_4a96bed552d413 33-42,46,69-86
+packages/workshop-frontend/src/features/wiki/usePageResolution.ts
+  s_d78fe856f76a3c::t_961e3d855007f9 15-17,26-28,34,37,43
+packages/workshop-frontend/src/features/wiki/useSpace.test.tsx
+  s_d78fe856f76a3c::t_5fc79a942f20da 1-122
+packages/workshop-frontend/src/features/wiki/useSpace.ts
+  s_d78fe856f76a3c::t_dd7722bd8debd2 36-62,66-67,73-77,80-84,89-92,102,107-108,112-115,127,131,139,144,148,150-151,154-157,161-164,170,173,175-176,178,180,186-190
+packages/workshop-frontend/src/routes/wiki/search.tsx
+  s_d78fe856f76a3c::t_5968b3eae2c98b 9-11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "44bbf0897064e6569a6225a79b9f926f55bc3ddc",
+  "prompts": {},
+  "sessions": {
+    "s_d78fe856f76a3c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "63609131-6dc8-4bbd-89fc-3b9404121acb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

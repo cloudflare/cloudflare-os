@@ -1,0 +1,26 @@
+packages/gatekeeper-kit/__tests__/action-description.test.ts
+  s_ded0a9f8d148f7::t_ef72b06fe6d96b 295-301
+packages/gatekeeper-kit/src/action-description.ts
+  s_ded0a9f8d148f7::t_ef72b06fe6d96b 296-297,306
+packages/workshop-frontend/src/components/ActionFields.tsx
+  s_ded0a9f8d148f7::t_bd2199f8f018af 43,49,96
+  s_ded0a9f8d148f7::t_7702dbd9d831e5 31-42,44-48,50-51,92-93,98-100
+packages/workshop-frontend/src/components/ActionFields.test.tsx
+  s_ded0a9f8d148f7::t_bd2199f8f018af 91,97-123
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "38b42a396640b6847a719661c8e47fcbf5d133f8",
+  "prompts": {},
+  "sessions": {
+    "s_ded0a9f8d148f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "59846bd6-dbd5-465c-834b-fcf9cfb21880",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

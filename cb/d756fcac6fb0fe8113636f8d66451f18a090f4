@@ -1,0 +1,55 @@
+packages/workshop-frontend/src/features/spaces/tree/SpaceTree.test.tsx
+  s_1da8b1c2e6d0c9::t_b2f2822758ba8f 242-254
+  s_1da8b1c2e6d0c9::t_183c1e42fb1a51 1-241,255-366
+packages/workshop-frontend/src/features/spaces/tree/SpaceViewToggle.tsx
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 1,15
+  s_1da8b1c2e6d0c9::t_06c1f31382d5d1 2-14,16-32
+packages/workshop-frontend/src/features/spaces/tree/SpaceTree.tsx
+  s_1da8b1c2e6d0c9::t_5b6d68efe71da0 238-239
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 44-48,76,88-89,118-120,169-173,195-197,236-237,245
+  s_1da8b1c2e6d0c9::t_4b2a9caed13d96 1-43,49-75,77-81,99-112,126-167,174-194,198-234,240-242,246-252
+  s_1da8b1c2e6d0c9::t_faf8cfd1d30b99 82-87,90-98,113-117,121-125,168,235,243-244
+packages/workshop-frontend/src/styles.css
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 2
+packages/workshop-frontend/src/features/spaces/tree/useSpaceViewMode.test.ts
+  s_1da8b1c2e6d0c9::t_afa8dbb4cd59ea 1-6,8-14,17,19-20,24,26,28-34,36-39,41,43-46,48-51,53-55,57-61,63-70,72-78,80,83-84
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 7,15-16,18,21-23,25,27,35,40,42,47,52,56,62,71,79,81-82
+packages/workshop-frontend/src/features/spaces/tree/SpaceViewToggle.test.tsx
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 5-6,10-20,24-25,37-41,76-78,85,90
+  s_1da8b1c2e6d0c9::t_b41d27c18bb9b8 1-4,7-9,21-23,26-36,42-75,79-84,86-89,91-93
+packages/workshop-frontend/src/features/spaces/tree/useSpaceViewMode.ts
+  s_1da8b1c2e6d0c9::t_a07a1bb9220538 22-23
+  s_1da8b1c2e6d0c9::t_20cde8a8c893e2 1-10,14-21,24-30,32-33,35,37,43-57,61-67
+  s_1da8b1c2e6d0c9::t_ce01257e35ec2e 31,34,36,38-42
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 11-13,58-60
+packages/workshop-frontend/package.json
+  s_1da8b1c2e6d0c9::t_291e2a9565a8c1 34
+packages/workshop-frontend/src/features/spaces/tree/workspaceTree.ts
+  s_1da8b1c2e6d0c9::t_7e6db5d78d2cd1 1-6,14-46,49-140,144-222
+  s_1da8b1c2e6d0c9::t_e2386a90f31001 7-13,47-48
+  s_1da8b1c2e6d0c9::t_f494a4fd22b95f 142-143
+  s_1da8b1c2e6d0c9::t_25e7b7fa4c29d0 141
+packages/workshop-frontend/src/features/spaces/tree/workspaceTree.test.ts
+  s_1da8b1c2e6d0c9::t_fb80177419461a 328
+  s_1da8b1c2e6d0c9::t_2de317f756b376 53-60
+  s_1da8b1c2e6d0c9::t_d6d135b4aca2c1 83-88,238-248,250
+  s_1da8b1c2e6d0c9::t_e560d190007fae 1-52,61-82,89-237,249,251-327,329-361
+pnpm-lock.yaml
+  s_1da8b1c2e6d0c9::t_c23743557e72d2 1197-1199,3422,3428,3434,3440,3447,3454,3461,3468,3475,3482,3488,3494,3500,3506,3512,3518,3525,3532,3539,3546,3553,3560,3566,3572
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "cbd756fcac6fb0fe8113636f8d66451f18a090f4",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

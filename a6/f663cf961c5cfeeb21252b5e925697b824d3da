@@ -1,0 +1,45 @@
+packages/workshop-frontend/src/features/wiki/PageView.tsx
+  s_d78fe856f76a3c::t_bbc1e0b0b6aec5 16,152-154
+packages/workshop-frontend/src/features/wiki/WikiShell.tsx
+  s_d78fe856f76a3c::t_922288b3aeede3 14,17-18,95
+packages/workshop-frontend/src/features/wiki/search/ReindexButton.tsx
+  s_d78fe856f76a3c::t_879887f68c04e7 1-48
+packages/workshop-frontend/src/features/wiki/search/SearchBox.test.tsx
+  s_d78fe856f76a3c::t_ebc428a485dd78 1-77
+packages/workshop-frontend/src/features/wiki/search/SearchBox.tsx
+  s_d78fe856f76a3c::t_cfbc2f7ad42898 1-83
+packages/workshop-frontend/src/features/wiki/search/SearchResults.test.tsx
+  s_d78fe856f76a3c::t_45a8905e715ff1 1-199
+packages/workshop-frontend/src/features/wiki/search/SearchResults.tsx
+  s_d78fe856f76a3c::t_9815cb2c2e49ff 1-202
+packages/workshop-frontend/src/features/wiki/search/searchParams.test.ts
+  s_d78fe856f76a3c::t_e8ea574f8764c7 1-18
+packages/workshop-frontend/src/features/wiki/search/searchParams.ts
+  s_d78fe856f76a3c::t_eb373d5282ab4d 1-17
+packages/workshop-frontend/src/features/wiki/search/searchTestUtils.tsx
+  s_d78fe856f76a3c::t_0c197c27ee0554 1-103
+packages/workshop-frontend/src/features/wiki/search/snippet.test.ts
+  s_d78fe856f76a3c::t_a469b814797d8d 1-31
+packages/workshop-frontend/src/features/wiki/search/snippet.ts
+  s_d78fe856f76a3c::t_83f256ee505c7d 1-20
+packages/workshop-frontend/src/routeTree.gen.ts
+  s_d78fe856f76a3c::t_e1e75b1f65f78a 29,119-123,157,178,202,227,248,271,418-424,465,471
+packages/workshop-frontend/src/routes/wiki/search.tsx
+  s_d78fe856f76a3c::t_3f9d105258ed53 1-23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a6f663cf961c5cfeeb21252b5e925697b824d3da",
+  "prompts": {},
+  "sessions": {
+    "s_d78fe856f76a3c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "63609131-6dc8-4bbd-89fc-3b9404121acb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

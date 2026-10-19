@@ -1,0 +1,123 @@
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/anchors.test.ts
+  s_d78fe856f76a3c::t_49a45049e770ab 1-136
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/blocks.test.ts
+  s_d78fe856f76a3c::t_d9c36beba470a3 1-456
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/comments-model.test.ts
+  s_d78fe856f76a3c::t_3872c5ee5692ec 1-154
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/comments.test.ts
+  s_d78fe856f76a3c::t_56ce1a716950cc 1-260
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/document-model.test.ts
+  s_d78fe856f76a3c::t_8c7cfa0b8ae903 1-294
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/editor-harness.ts
+  s_d78fe856f76a3c::t_2fb6bff171629a 1-141
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/editor.test.ts
+  s_d78fe856f76a3c::t_425afc88b42a60 1-908
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/fixtures/google-docs-formatting.html
+  s_d78fe856f76a3c::t_e1b1c7ff4e4c80 1
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/fixtures/google-docs-lists.html
+  s_d78fe856f76a3c::t_de9a3553684faf 1
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/fixtures/legacy-wiki-code.html
+  s_d78fe856f76a3c::t_aa304e432b5669 1-8
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/fixtures/legacy-wiki-expand.html
+  s_d78fe856f76a3c::t_696feee2aee915 1-6
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/fixtures/legacy-wiki-highlighted-code.html
+  s_d78fe856f76a3c::t_0d891b924905fd 1-11
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/fixtures/legacy-wiki-panels.html
+  s_d78fe856f76a3c::t_6a43c5f98cb917 1-26
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/fixtures/legacy-wiki-table.html
+  s_d78fe856f76a3c::t_9d65883e76d119 1-6
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/fixtures/legacy-wiki-tasks.html
+  s_d78fe856f76a3c::t_944e1453df79fb 1-5
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/fixtures/markdown.md
+  s_d78fe856f76a3c::t_fd030d352a6a63 1-37
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/fixtures/plain.txt
+  s_d78fe856f76a3c::t_fa270ca9ae4467 1-4
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/mini-dom.test.ts
+  s_d78fe856f76a3c::t_e75e6487674553 1-151
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/paste.test.ts
+  s_d78fe856f76a3c::t_3e34956bc0f5c4 1-535
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/read-only.test.ts
+  s_d78fe856f76a3c::t_29817b5d560dab 1-167
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/serialize.test.ts
+  s_d78fe856f76a3c::t_dad54cd9703942 1-575
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/session.test.ts
+  s_d78fe856f76a3c::t_768f837e69b0af 1-142
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/shortcuts.test.ts
+  s_d78fe856f76a3c::t_8e72f786e1cc32 1-140
+packages/workshop-backend/format-blueprints/workspace-pages/__tests__/sync.test.ts
+  s_d78fe856f76a3c::t_7c440a6abf0293 1-357
+packages/workshop-backend/format-blueprints/workspace-pages/blueprint.json
+  s_d78fe856f76a3c::t_3d0c87c5827732 1-22
+packages/workshop-backend/format-blueprints/workspace-pages/files/README.md
+  s_d78fe856f76a3c::t_12fc29880de882 1-377
+packages/workshop-backend/format-blueprints/workspace-pages/files/client.ts
+  s_d78fe856f76a3c::t_fd0535b1412d5b 1-500
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/anchors.ts
+  s_d78fe856f76a3c::t_fe9ff8027da289 1-398
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/blocks.ts
+  s_d78fe856f76a3c::t_80fed84af165ed 1-1038
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/comments-model.ts
+  s_d78fe856f76a3c::t_3377131b8b3960 1-292
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/comments.ts
+  s_d78fe856f76a3c::t_466845d6bcd447 1-411
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/document-model.ts
+  s_d78fe856f76a3c::t_81d2555fe78172 1-431
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/dom-types.ts
+  s_d78fe856f76a3c::t_451cb5198cdcb9 1-86
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/dom.ts
+  s_d78fe856f76a3c::t_7bf8811a154e1b 1-45
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/editor.ts
+  s_d78fe856f76a3c::t_935c78c862a576 1-1678
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/history.ts
+  s_d78fe856f76a3c::t_6bb92a1a94536a 1-150
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/identity.ts
+  s_d78fe856f76a3c::t_e3c4e89c378322 1-56
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/images.ts
+  s_d78fe856f76a3c::t_0d137be9f87457 1-110
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/lists.ts
+  s_d78fe856f76a3c::t_b2d1f02f3b736f 1-144
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/mini-dom.ts
+  s_d78fe856f76a3c::t_a0b651c5b3d8fc 1-815
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/paste.ts
+  s_d78fe856f76a3c::t_6ee6c8d9296e27 1-1160
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/presence.ts
+  s_d78fe856f76a3c::t_d2f352a1f42b5e 1-179
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/protocol.ts
+  s_d78fe856f76a3c::t_ed0f5774a8261d 1-116
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/selection.ts
+  s_d78fe856f76a3c::t_ad9a63eabfd140 1-193
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/serialize.ts
+  s_d78fe856f76a3c::t_2eda1ba2013a7d 1-631
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/session.ts
+  s_d78fe856f76a3c::t_3e06b5a57e59ed 1-57
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/shortcuts.ts
+  s_d78fe856f76a3c::t_68adb39a403db0 1-83
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/slash-menu.ts
+  s_d78fe856f76a3c::t_0dc98b7293af3a 1-214
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/sync.ts
+  s_d78fe856f76a3c::t_fbd2a988f83440 1-311
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/tables.ts
+  s_d78fe856f76a3c::t_9c33eea2a52a3a 1-152
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/toc.ts
+  s_d78fe856f76a3c::t_c9345bafc4dd4c 1-45
+packages/workshop-backend/format-blueprints/workspace-pages/files/lib/toolbar.ts
+  s_d78fe856f76a3c::t_33a451708742df 1-157
+packages/workshop-backend/format-blueprints/workspace-pages/files/server.ts
+  s_d78fe856f76a3c::t_56142f8f64ed35 1-397
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "832e75f972cc800e2245571fc69a945d3532fd11",
+  "prompts": {},
+  "sessions": {
+    "s_d78fe856f76a3c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "63609131-6dc8-4bbd-89fc-3b9404121acb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

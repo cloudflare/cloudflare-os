@@ -1,0 +1,21 @@
+packages/integration-tests/__tests__/workshop-spaces.test.ts
+  s_dd2417a6d5bd82::t_6584324ae09394 349
+  s_dd2417a6d5bd82::t_f706025e4fa047 2-3,22,108,484-558
+  s_dd2417a6d5bd82::t_34d3bb6a1c3090 559-560
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "794887b9c6be58689c603436c43b839a8d829bde",
+  "prompts": {},
+  "sessions": {
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

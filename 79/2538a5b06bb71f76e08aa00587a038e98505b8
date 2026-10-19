@@ -1,0 +1,32 @@
+packages/workshop-frontend/src/features/spaces/preview/WorkspacePreviewPane.tsx
+  s_1da8b1c2e6d0c9::t_d24cb9cb3d8cdd 1,4-5,8,75-77,81-82,88,101,105,115-119,122-125,127,129,131
+packages/workshop-frontend/src/features/spaces/tree/SpaceTree.tsx
+  s_1da8b1c2e6d0c9::t_d24cb9cb3d8cdd 2-11,17,19,34-44,74-75,105-109,111-120,164-169,211,230-232,261
+packages/workshop-frontend/src/features/spaces/tree/SpaceTreeLayout.test.tsx
+  s_1da8b1c2e6d0c9::t_a75f6c49804759 306,309,575-576,579,581-582,627,638-661
+  s_1da8b1c2e6d0c9::t_1d4a46d4f0194b 34,48-54,89-91,114-116,118-126,160,192-220,255,258-305,307-308,310-311,314,317,348,356,360,372-373,382,413,431,454-455,460-463,467-468,471-479,540,545,556-565,570,572-574,577-578,580,591-592,601-602,611,613,619,622,628,636-637,662-663
+packages/workshop-frontend/src/features/spaces/preview/WorkspacePreviewPane.test.tsx
+  s_1da8b1c2e6d0c9::t_ca437fcf1c88c6 4,30,180,182-183,220,227-235,257,274-275,277-278,281,285,292,311,356
+packages/workshop-frontend/src/features/spaces/tree/PersonalTree.test.tsx
+  s_1da8b1c2e6d0c9::t_3643f26255c9fd 9,13,38,49-56,70,152-155,165-167,170-184,197-198,204-214,221,229,231,233,235,241
+packages/workshop-frontend/src/features/spaces/tree/SpaceTree.test.tsx
+  s_1da8b1c2e6d0c9::t_77e801f95269bb 100-121,136-141,149-160,260,348,352,362,364-403,416,420-431
+packages/workshop-frontend/src/features/spaces/tree/SpaceTreeLayout.tsx
+  s_1da8b1c2e6d0c9::t_28b9aa346822bc 1,3-5,22,24,28,46-47,56,61-68,93,100-104,111-114,139-140,146,258-262,267,270-281,320,330-332,383,388-400,406-409,413-414,417-433,435-449
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "792538a5b06bb71f76e08aa00587a038e98505b8",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

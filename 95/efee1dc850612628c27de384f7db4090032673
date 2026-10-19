@@ -1,0 +1,33 @@
+packages/workshop-shared/src/api.ts
+  s_1da8b1c2e6d0c9::t_b4297180822708 1985
+  s_1da8b1c2e6d0c9::t_40810716e65496 2528-2531
+  s_1da8b1c2e6d0c9::t_3a98a45dfa509e 5508-5509
+  s_1da8b1c2e6d0c9::t_0dd85444ab5172 362,367-368,381,635,647,2032,2541,5571-5575,5578-5587
+  s_1da8b1c2e6d0c9::t_173eaee575ad5b 2033-2034
+  s_1da8b1c2e6d0c9::t_331de2681e9001 5666-5667
+  s_1da8b1c2e6d0c9::t_c96794eae0efa2 5328
+  s_1da8b1c2e6d0c9::t_e2f28b5dd6ebc1 2520-2524
+  s_1da8b1c2e6d0c9::t_22fee8e080ed99 2550-2552
+  s_1da8b1c2e6d0c9::t_906edde6098bf5 382-383
+  s_1da8b1c2e6d0c9::t_41d29b62bec52b 5270-5277,5283,5287-5288
+  s_1da8b1c2e6d0c9::t_d856a526a2f421 648,1986-1989,2039-2041,2525-2527,5204-5206,5323-5325,5329-5330
+  s_1da8b1c2e6d0c9::t_e029eb58dc054c 636-637
+  s_1da8b1c2e6d0c9::t_715d7ec7cb1556 5409-5410
+  s_1da8b1c2e6d0c9::t_20397026f92e7c 363-366,649-652,2035-2038,2487-2490,2542-2545,2556-2558,5723-5726
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "95efee1dc850612628c27de384f7db4090032673",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

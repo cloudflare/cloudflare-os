@@ -1,0 +1,29 @@
+packages/workshop-backend/__tests__/git-codec.test.ts
+  s_5651d7166bfd76::t_f03ce41ccad621 213-214,216-224,227,233-277
+  s_5651d7166bfd76::t_6b2227a4620ba2 209-212,215,297-308
+  s_5651d7166bfd76::t_ff6c497897a85a 309-310
+packages/workshop-backend/src/git-codec.ts
+  s_5651d7166bfd76::t_f03ce41ccad621 493,497
+  s_5651d7166bfd76::t_cf5862d730a34f 16-21,24,416-421,426-433,440-441,443,445,454,459,463-464,468-469,473-478,480-491,494,498,500-501,506-510,518,529-556
+  s_5651d7166bfd76::t_0cd77d25e3badc 495-496
+packages/workshop-backend/__tests__/git-cache.test.ts
+  s_5651d7166bfd76::t_b6b80e7ca8d920 813
+  s_5651d7166bfd76::t_6b2227a4620ba2 2,806-812,814-837
+  s_5651d7166bfd76::t_4c2667d221ef3c 838-839
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "08146e029f78e600f904aac8eba01d13a52b79ad",
+  "prompts": {},
+  "sessions": {
+    "s_5651d7166bfd76": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "adf2bca7-d838-413b-817e-c5b33a2b4284",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

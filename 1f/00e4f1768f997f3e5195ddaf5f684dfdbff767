@@ -1,0 +1,23 @@
+packages/workshop-backend/__tests__/git-push-actions.test.ts
+  s_388fd26358784d::t_159b0c3854f0d9 161
+packages/workshop-backend/__tests__/restricted-actions.test.ts
+  s_388fd26358784d::t_159b0c3854f0d9 162
+packages/workshop-backend/src/overseer.ts
+  s_388fd26358784d::t_159b0c3854f0d9 5965
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1f00e4f1768f997f3e5195ddaf5f684dfdbff767",
+  "prompts": {},
+  "sessions": {
+    "s_388fd26358784d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "420e3b48-af62-4764-a366-213acb6efb82",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

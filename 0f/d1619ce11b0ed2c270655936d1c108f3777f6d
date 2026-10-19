@@ -1,0 +1,25 @@
+packages/workshop-shared/src/api.ts
+  s_3acff7ccfb55eb::t_25241020a3eb3b 1411-1412
+packages/workshop-frontend/src/components/WorkspaceOpenErrorPage.tsx
+  s_3acff7ccfb55eb::t_25241020a3eb3b 27,29
+packages/workshop-frontend/src/useWorkspaceOpen.test.tsx
+  s_3acff7ccfb55eb::t_25241020a3eb3b 160-161
+packages/workshop-frontend/src/components/WorkspaceOpenErrorPage.test.tsx
+  s_3acff7ccfb55eb::t_25241020a3eb3b 78,83-85,87
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0fd1619ce11b0ed2c270655936d1c108f3777f6d",
+  "prompts": {},
+  "sessions": {
+    "s_3acff7ccfb55eb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9af700bf-e91f-44e9-a0d9-7513f76bfeb4",
+        "model": "claude-watermelon-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

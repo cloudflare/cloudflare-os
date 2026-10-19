@@ -1,0 +1,23 @@
+docs/spaces.md
+  s_1da8b1c2e6d0c9::t_d856a526a2f421 5,44,55,57,60,62,146,152,198-200,209-210,222-223,239,254-260,263
+docs/sharing.md
+  s_1da8b1c2e6d0c9::t_d856a526a2f421 151,179,193,197,205,213,217-224,227
+docs/observers.md
+  s_1da8b1c2e6d0c9::t_320c571ad10e00 548-550,564-568,637-639
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "0a290d6969b4731bb69320d5911f349c49ad4498",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

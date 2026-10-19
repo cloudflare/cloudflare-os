@@ -1,0 +1,78 @@
+docs/spaces.md
+  s_dd2417a6d5bd82::t_e852dac6f061ec 176-177,179,181-184
+  s_dd2417a6d5bd82::t_785d654cd06f2a 120
+  s_dd2417a6d5bd82::t_273dffd660e9ba 215
+  s_dd2417a6d5bd82::t_4488f757cb1959 198-199,201-205
+  s_dd2417a6d5bd82::t_f012269a11cab7 68
+  s_dd2417a6d5bd82::t_e6fec9d42b0b32 94
+  s_dd2417a6d5bd82::t_2e331a4de0af36 110
+  s_dd2417a6d5bd82::t_dc9c3b51f224fa 224
+  s_dd2417a6d5bd82::t_6de0d724e8ed75 142-151,153
+  s_dd2417a6d5bd82::t_ab7819289771ba 117
+  s_dd2417a6d5bd82::t_64ab1b7306797d 152,236
+  s_dd2417a6d5bd82::t_879ec5eb146d80 235
+  s_dd2417a6d5bd82::t_6f0f4f2975717f 192
+  s_dd2417a6d5bd82::t_d48a07ab5114b4 33
+  s_dd2417a6d5bd82::t_f55fd405f31f7f 178,180,220,225
+  s_dd2417a6d5bd82::t_e3484cd22f70a6 163
+  s_dd2417a6d5bd82::t_256c2cedaa37e5 234
+  s_dd2417a6d5bd82::t_4912edcea7e47c 190
+  s_dd2417a6d5bd82::t_60cfe7a645e3f8 104
+  s_dd2417a6d5bd82::t_747dcd9b2bf405 106
+  s_dd2417a6d5bd82::t_f118688a406de6 44
+  s_dd2417a6d5bd82::t_80e84cc5b0a7c1 26
+  s_dd2417a6d5bd82::t_b6871f47c380c9 237
+  s_dd2417a6d5bd82::t_15fa61f4040594 3,5
+  s_dd2417a6d5bd82::t_4c48430a6932b4 185
+docs/sharing.md
+  s_dd2417a6d5bd82::t_7e2b58bae1932b 138,199,213,218-219
+  s_dd2417a6d5bd82::t_a8238bf4a5563b 123
+  s_dd2417a6d5bd82::t_4863d3987ad615 151
+  s_dd2417a6d5bd82::t_70641049bd8d10 211,220-221
+  s_dd2417a6d5bd82::t_90b6e446e5a455 171
+  s_dd2417a6d5bd82::t_060dfb5f6dc90c 179
+  s_dd2417a6d5bd82::t_1951d96da1dbc1 26
+  s_dd2417a6d5bd82::t_cdadffe3441237 159
+  s_dd2417a6d5bd82::t_a4c135973f774b 50
+  s_dd2417a6d5bd82::t_56cfb1f60b84f1 209-210,212,214,216
+  s_dd2417a6d5bd82::t_688fcc51849cc1 187
+  s_dd2417a6d5bd82::t_53601c4baf5bea 215,217
+  s_dd2417a6d5bd82::t_45ce17d2938303 193
+  s_dd2417a6d5bd82::t_924980323965d7 73
+  s_dd2417a6d5bd82::t_b7023565454e7d 102
+  s_dd2417a6d5bd82::t_1a96e9ea064f70 201
+  s_dd2417a6d5bd82::t_cf4c5c0bd56238 197
+  s_dd2417a6d5bd82::t_ca61474596efb9 54
+  s_dd2417a6d5bd82::t_bb8659d76b7caf 30
+  s_dd2417a6d5bd82::t_5df1b4bc7c09dd 164
+  s_dd2417a6d5bd82::t_1a7d732dbaaa92 8
+  s_dd2417a6d5bd82::t_715639283f99b0 222
+docs/observers.md
+  s_dd2417a6d5bd82::t_5b4e90b8393217 111
+  s_dd2417a6d5bd82::t_9b95c24f219a26 564-566
+  s_dd2417a6d5bd82::t_36055e3afe1cd7 648-649
+  s_dd2417a6d5bd82::t_42dd694147a803 95-98
+  s_dd2417a6d5bd82::t_c30a9dc539f499 135-137
+  s_dd2417a6d5bd82::t_d57e35c2ce3d8b 655-656
+  s_dd2417a6d5bd82::t_cf8a7d20dae8a6 635-636
+  s_dd2417a6d5bd82::t_6e90c8f67877c7 560-563
+  s_dd2417a6d5bd82::t_bcf575f13fbf4d 147-149
+  s_dd2417a6d5bd82::t_afce3ddd3805fb 545-548
+  s_dd2417a6d5bd82::t_7344ab5b703c22 127-129
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "50ec393a4b98d5673d96899476959f8d46028503",
+  "prompts": {},
+  "sessions": {
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

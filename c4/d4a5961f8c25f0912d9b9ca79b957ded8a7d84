@@ -1,0 +1,21 @@
+packages/workshop-frontend/src/components/AppShell/SidebarWorkspaces.tsx
+  s_a3ffd2b3785c4b::t_1fc6e4a4f4d0c9 84-85,112,119-122,180-192
+packages/workshop-frontend/src/components/GadgetList.tsx
+  s_a3ffd2b3785c4b::t_1fc6e4a4f4d0c9 188-189,221,231-234,271-283
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c4d4a5961f8c25f0912d9b9ca79b957ded8a7d84",
+  "prompts": {},
+  "sessions": {
+    "s_a3ffd2b3785c4b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7293a67-6b1f-4511-965d-5c835df139d8",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

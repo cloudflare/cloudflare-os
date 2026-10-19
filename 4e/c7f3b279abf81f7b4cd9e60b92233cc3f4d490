@@ -1,0 +1,22 @@
+packages/bundled-blueprints/blueprints/workspace-slides/files/server.ts
+  s_c98a968d9791dd::t_10e346670e7fae 48-49
+  s_c98a968d9791dd::t_06af54dd3e5e3a 104,218-220,354
+packages/bundled-blueprints/blueprints/workspace-slides/__tests__/server.test.ts
+  s_c98a968d9791dd::t_10e346670e7fae 33-40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4ec7f3b279abf81f7b4cd9e60b92233cc3f4d490",
+  "prompts": {},
+  "sessions": {
+    "s_c98a968d9791dd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6cc4e73b-3307-4e86-b24d-b45122beb798",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

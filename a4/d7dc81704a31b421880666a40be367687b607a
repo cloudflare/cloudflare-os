@@ -1,0 +1,35 @@
+packages/workshop-frontend/src/Activity.tsx
+  s_ded0a9f8d148f7::t_bdd4c7dfac565d 23,614,663-670,734
+packages/workshop-frontend/src/components/ActionFields.tsx
+  s_ded0a9f8d148f7::t_937e6403a65cdd 1-18,20-35,39-113
+  s_ded0a9f8d148f7::t_f8dd62522f4acc 36-38
+  s_ded0a9f8d148f7::t_c40dbeb35d77eb 19
+packages/workshop-frontend/src/ActivityNotifications.tsx
+  s_ded0a9f8d148f7::t_bdd4c7dfac565d 8,105-110
+packages/workshop-frontend/src/ActivityNotifications.test.tsx
+  s_ded0a9f8d148f7::t_ace71b748518cd 27,37,56-60,62-63,65-70
+  s_ded0a9f8d148f7::t_6ff95fa9fb5b9c 71
+  s_ded0a9f8d148f7::t_faf167699d66fb 61,64
+packages/workshop-frontend/src/ChatInterface.actions.test.tsx
+  s_ded0a9f8d148f7::t_ace71b748518cd 189-204
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_ded0a9f8d148f7::t_e3c8436ee6231e 98,1525,4910,5024-5028,5092-5096
+packages/workshop-frontend/src/components/ActionFields.test.tsx
+  s_ded0a9f8d148f7::t_f2c2f6952f7d90 1-87
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a4d7dc81704a31b421880666a40be367687b607a",
+  "prompts": {},
+  "sessions": {
+    "s_ded0a9f8d148f7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "59846bd6-dbd5-465c-834b-fcf9cfb21880",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": null
+    }
+  }
+}

@@ -1,0 +1,31 @@
+packages/workshop-backend/__tests__/ai-models.test.ts
+  s_c112dea2bc0662::t_1fbcc462fb56c7 1033-1035,1209-1210,1229,1237-1266
+packages/workshop-backend/src/ai-models.ts
+  s_8d787a1cb5bf3d::t_80640c84255585 259,340-341,346-351,354,360
+packages/workshop-frontend/src/features/ai-models/AddGatewayModelForm.tsx
+  s_c112dea2bc0662::t_8d8dbffd254e78 159,190
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3063aa97ebdb13abc4ac8fdc73e16fb86801dedb",
+  "prompts": {},
+  "sessions": {
+    "s_8d787a1cb5bf3d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5c0955f3-89bf-4faa-a5ec-92428c64cbac",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_c112dea2bc0662": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7b85182d-63dc-42c2-af5a-e365a1753a49",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,38 @@
+packages/workshop-backend/src/gadget-library-resolution.ts
+  s_bf4b4a77da7371::t_dea77d1d01ed87 76-79,90,92-97,100-102,106-107
+  s_bf4b4a77da7371::t_f87de633d69a1f 80-85,103-105
+packages/workshop-frontend/src/GadgetUI.integration.test.tsx
+  s_bf4b4a77da7371::t_67a6b672780de6 128-133,141-142,146-147,151-159,179-195,245,251-253,259-334,348,417,422-423,479
+packages/workshop-backend/__tests__/gadget-libraries.test.ts
+  s_bf4b4a77da7371::t_f87de633d69a1f 303-306
+  s_bf4b4a77da7371::t_aef6b1e67e3cb9 79-100,294-302,307-323
+packages/workshop-backend/package.json
+  s_bf4b4a77da7371::t_dea77d1d01ed87 14
+packages/workshop-backend/src/agent.ts
+  s_bf4b4a77da7371::t_dea77d1d01ed87 364-367,371-372,377,573-575,577,1908-1909,1911-1912,2926-2927
+packages/workshop-backend/scripts/build-gadget-libraries.ts
+  s_bf4b4a77da7371::t_f87de633d69a1f 61-62
+  s_bf4b4a77da7371::t_dea77d1d01ed87 59-60,63,178-184
+packages/workshop-backend/src/overseer.ts
+  s_bf4b4a77da7371::t_dea77d1d01ed87 6812-6817,6838,6849-6851,6853-6854,6856-6858
+packages/workshop-shared/src/api.ts
+  s_bf4b4a77da7371::t_dea77d1d01ed87 3060-3063,3069
+packages/workshop-frontend/src/GadgetUI.tsx
+  s_bf4b4a77da7371::t_88e6ae6b74f216 5,179-200,240-244,321-338,356,360,421
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5f3416bd557aaa645c0147c2714660fea5960158",
+  "prompts": {},
+  "sessions": {
+    "s_bf4b4a77da7371": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b8bb09b2-0331-4c12-b961-f37d8c0d84a5",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

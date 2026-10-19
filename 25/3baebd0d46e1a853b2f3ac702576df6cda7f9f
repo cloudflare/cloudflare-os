@@ -1,0 +1,56 @@
+scripts/with-timeout.ts
+  s_f7e4d422bdb5cf::t_e95910b9050d46 25-27,131
+scripts/vitest-task-vite-config.ts
+  s_f7e4d422bdb5cf::t_8a841045c26323 36,154-155,164,167-171,173,210
+scripts/run-dev-server.ts
+  s_6a80cc9d024e3c::t_4bbd977a8c8736 312-325,334-335
+packages/workshop-backend/vite.config.ts
+  s_006940b98259c8::t_6aad11763144a8 4,50,54
+scripts/env-passthrough.test.ts
+  s_006940b98259c8::t_43d41d1352e0f7 111
+  s_f7e4d422bdb5cf::t_13d03a152056c0 85-86,88
+scripts/vitest-task.test.ts
+  s_006940b98259c8::t_102730836522fd 5,19,21,37-38,72-73,82,84,93
+scripts/vite.config.ts
+  s_f7e4d422bdb5cf::t_855d91f7b63c8a 26,33
+scripts/vp/run.ts
+  s_6a80cc9d024e3c::t_d452bbd1f41e8b 29
+scripts/vp/concurrency.test.ts
+  s_6a80cc9d024e3c::t_8f692dc078ae0a 9-10,434,444-445,453,462,468-534
+scripts/vp/concurrency.ts
+  s_6a80cc9d024e3c::t_58134f009d078a 12-14,360-409,415-417,419-420,423,427
+AGENTS.md
+  s_6a80cc9d024e3c::t_c316e45052fe02 76
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "253baebd0d46e1a853b2f3ac702576df6cda7f9f",
+  "prompts": {},
+  "sessions": {
+    "s_006940b98259c8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2d922cbb-5244-4d7b-8360-411a14d5a340",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_6a80cc9d024e3c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6e4720da-9bf2-4fb9-a123-fbb63d5a2cac",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_f7e4d422bdb5cf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c663f110-c43d-460c-804d-e2d64594b524",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

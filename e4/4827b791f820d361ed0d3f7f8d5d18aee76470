@@ -1,0 +1,45 @@
+packages/workshop-evals/src/config.ts
+  s_494faef1c0ee9f::t_cc0ac30c760e74 2-4,6-13,20,51-64
+packages/workshop-evals/src/eval.ts
+  s_494faef1c0ee9f::t_79a5c14004797f 3,6,35-36
+packages/workshop-evals/src/harness.ts
+  s_494faef1c0ee9f::t_b24512ecf0fcfb 8,44,49,157
+packages/workshop-shared/src/api.ts
+  s_494faef1c0ee9f::t_e93104440e21de 1186,1221-1248
+packages/integration-tests/package.json
+  s_8ab77516abe232::t_344925bb16d895 10-11
+packages/workshop-backend/src/ai-gateway.ts
+  s_8ab77516abe232::t_c2dc4354b46252 1-3
+packages/workshop-evals/src/config.test.ts
+  s_8ab77516abe232::t_e1d82a942cd6e5 4,31-44
+packages/workshop-evals/src/target-egress.test.ts
+  s_8ab77516abe232::t_64b86ddee971c0 2,71-88,96,102-103,105,114,121,123,133,139-195,203,214,237,254
+packages/workshop-evals/src/target.test.ts
+  s_8ab77516abe232::t_88bcc5aa4dcec9 2,5,14,27,31-68,86-90,95-123
+packages/workshop-evals/src/target.ts
+  s_8ab77516abe232::t_648b3d2150f942 6-7,9-13,18,20-25,32-33,36-43,57-60,66-80,82-86,100-123,128-130,133,142,147-154,156-158,171,176,184,190,194,196-197
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e44827b791f820d361ed0d3f7f8d5d18aee76470",
+  "prompts": {},
+  "sessions": {
+    "s_494faef1c0ee9f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8b64a32d-8f92-4557-bb9c-d981ff1f8582",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_8ab77516abe232": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e86ed18c-64f1-4fd8-aac5-62d6b02ca0a0",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

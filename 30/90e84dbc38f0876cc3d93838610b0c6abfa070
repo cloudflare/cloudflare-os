@@ -1,0 +1,36 @@
+packages/workshop-backend/src/server.ts
+  s_1da8b1c2e6d0c9::t_52c0940520d1f7 4,13,21-22,504,508-509
+packages/workshop-backend/src/overseer.ts
+  s_1da8b1c2e6d0c9::t_52c0940520d1f7 9515-9517,9519-9520,9576-9580
+  s_1da8b1c2e6d0c9::t_0cc04a30e24e08 8120-8121,9581
+packages/workshop-backend/src/blueprint-archive.ts
+  s_1da8b1c2e6d0c9::t_52c0940520d1f7 218-221
+packages/workshop-backend/src/blueprint-instantiation.ts
+  s_1da8b1c2e6d0c9::t_52c0940520d1f7 5-8,50-51
+  s_1da8b1c2e6d0c9::t_4a554397cbd4e9 1-4,9-49,52-182
+packages/workshop-backend/__tests__/bundled-blueprints.test.ts
+  s_1da8b1c2e6d0c9::t_52c0940520d1f7 86-88,97-111,229-248
+packages/workshop-backend/src/bundled-blueprints.ts
+  s_1da8b1c2e6d0c9::t_52c0940520d1f7 13,31-32,37-38,43-54,73-74,81
+packages/workshop-backend/__tests__/blueprint-publication.test.ts
+  s_1da8b1c2e6d0c9::t_b917ccce5a6a8b 1-8,10-39,43-45,51-130,132-219,222-291
+  s_1da8b1c2e6d0c9::t_52c0940520d1f7 9,40-42,46-50,131,220-221
+packages/workshop-backend/src/storage-schema/blueprints-kv.ts
+  s_1da8b1c2e6d0c9::t_52c0940520d1f7 50-51
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3090e84dbc38f0876cc3d93838610b0c6abfa070",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

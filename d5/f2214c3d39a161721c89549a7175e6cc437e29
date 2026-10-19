@@ -1,0 +1,32 @@
+packages/bundled-blueprints/__tests__/files.test.ts
+  s_09cc924f63cfa6::t_6a6102c12051ab 489
+  s_09cc924f63cfa6::t_575f1babae0a52 487-488,490-494
+packages/bundled-blueprints/README.md
+  s_09cc924f63cfa6::t_575f1babae0a52 66-71
+packages/bundled-blueprints/src/files.ts
+  s_09cc924f63cfa6::t_575f1babae0a52 204-210,214,551-553
+packages/bundled-blueprints/libraries/sync/__tests__/save-scheduler.test.ts
+  s_09cc924f63cfa6::t_6a6102c12051ab 73,90-103
+  s_09cc924f63cfa6::t_05ebacda289e0d 104-105
+packages/bundled-blueprints/libraries/sync/src/save-scheduler.ts
+  s_09cc924f63cfa6::t_c30d4a003a2783 62,89-92,97,151
+  s_09cc924f63cfa6::t_6a6102c12051ab 85-88,93-94,96,98-99,141-145
+packages/bundled-blueprints/libraries/sync/README.md
+  s_09cc924f63cfa6::t_f90ea00247dd5c 47-50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d5f2214c3d39a161721c89549a7175e6cc437e29",
+  "prompts": {},
+  "sessions": {
+    "s_09cc924f63cfa6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e93a37cc-728a-4e07-9eb0-2f8baf9ec862",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

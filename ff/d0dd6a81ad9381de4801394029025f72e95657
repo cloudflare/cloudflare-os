@@ -1,0 +1,21 @@
+packages/workshop-frontend/src/components/WorkspaceOpenErrorPage.test.tsx
+  s_1da8b1c2e6d0c9::t_82092e42422d12 90-99,119-121
+packages/workshop-frontend/src/components/WorkspaceOpenErrorPage.tsx
+  s_1da8b1c2e6d0c9::t_a32603cb139136 1,10,31-37,54-55
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ffd0dd6a81ad9381de4801394029025f72e95657",
+  "prompts": {},
+  "sessions": {
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+packages/wiki-import/src/source-api.ts
+  s_47c456ca6ea293::t_28956ea95898de 335-336
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "eeba9d945ced5fc88742e978ab7ccff02fc61fa0",
+  "prompts": {},
+  "sessions": {
+    "s_47c456ca6ea293": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f0644985-87cc-456b-8ee1-1adbbdfaf8cd",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

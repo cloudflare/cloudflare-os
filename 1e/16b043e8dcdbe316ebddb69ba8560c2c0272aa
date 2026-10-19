@@ -1,0 +1,25 @@
+packages/workshop-frontend/src/ShareModal.tsx
+  s_120bfa328141d4::t_f2a7598490b221 35-39,323,332,337,342-343,346,355,359-362,370,386,569,572,692,694-695,697,703-722,729-736,759-766,771-792,795-799,821,851,925,1022-1044,1046,1073,1089-1090,1092,1125,1150,1160,1173-1181,1183,1191,1205,1300
+  s_120bfa328141d4::t_12b43a4c7ff42b 41-42
+  s_120bfa328141d4::t_530aa27f43c322 40
+packages/workshop-frontend/src/ShareModal.test.tsx
+  s_120bfa328141d4::t_6a6a8a488f5286 1014-1015
+  s_120bfa328141d4::t_166465ee01b2d9 228-237,240-241,243-249,365-367,371,462-464,466-467,471-484,544,548-549,568,571-572,591-593,638-640,685,687-795,1013,1016
+  s_120bfa328141d4::t_4738d2f09606a4 238-239,242
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1e16b043e8dcdbe316ebddb69ba8560c2c0272aa",
+  "prompts": {},
+  "sessions": {
+    "s_120bfa328141d4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dc904d71-48ae-41f4-8e4e-28d11386de28",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

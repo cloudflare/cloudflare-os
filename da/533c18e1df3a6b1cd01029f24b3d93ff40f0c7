@@ -1,0 +1,47 @@
+docs/autonomous-software-factory-status.md
+  s_4d44abf13c0d3b::t_c88e1c9f0f7cd1 58,70-72,108-109,118-122,180-184,206-214
+  s_4d44abf13c0d3b::t_ac4c3de9365631 192-193
+  s_4d44abf13c0d3b::t_4996ad2c5f760a 1-57,59-69,73-107,110-117,123-179,185-191,194-205,215-298
+docs/autonomous-software-factory.md
+  s_4d44abf13c0d3b::t_614c87f508f143 585-588
+  s_4d44abf13c0d3b::t_19a55b9fcb1f7b 180-184
+  s_4d44abf13c0d3b::t_1e9079883cc2c1 193-195
+  s_4d44abf13c0d3b::t_b73b9315e1315b 3
+  s_7d4be0a205d90a::t_b8eee786ab134e 1-2,4-5,11-171,173,175-179,185-192,196-584,589-833
+  s_4d44abf13c0d3b::t_4996ad2c5f760a 6-10
+  s_4d44abf13c0d3b::t_fa0d5bea5c97bd 172,174
+docs/gatekeeper-runtime.md
+  s_db7865b1de453d::t_3dfed41490a3c4 1-501
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "da533c18e1df3a6b1cd01029f24b3d93ff40f0c7",
+  "prompts": {},
+  "sessions": {
+    "s_4d44abf13c0d3b": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_05dc528e0ffevO0MDl5xsFVln1",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    },
+    "s_7d4be0a205d90a": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_025c0c17bffe2HfeHJt1D1GF0X",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    },
+    "s_db7865b1de453d": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_0376ecccbffer9TEGGA0ysXADx",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Ashish Kumar Singh <ashishsingh@cloudflare.com>"
+    }
+  }
+}

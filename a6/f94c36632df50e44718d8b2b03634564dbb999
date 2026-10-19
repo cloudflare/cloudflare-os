@@ -1,0 +1,83 @@
+packages/gatekeeper-gitlab/__tests__/fixtures/gitlab-docs.ts
+  s_b235d7e85db519::t_fae063c4e05b6b 143
+packages/gatekeeper-gitlab/src/gitlab-api.ts
+  s_b235d7e85db519::t_b9891360257982 87
+  s_b235d7e85db519::t_974594239b200a 278,280-281,284-285,291,299-308,435,445-449,484,497,499,665,667,669,677,1083,1130,1136,1156
+packages/gatekeeper-gitlab/src/types.d.ts
+  s_b235d7e85db519::t_96ad077a6b1f9f 337-338,467
+packages/gatekeeper-gitlab/src/gitlab-gatekeeper.ts
+  s_b235d7e85db519::t_f59b59ff95dc25 23,2684
+  s_b235d7e85db519::t_e9182cb638af98 85,88,92,118,609,883,885,942-943,948,951,1352
+  s_b235d7e85db519::t_eded93357f70c6 1018-1025,1028-1032
+  s_b235d7e85db519::t_a5882bf7483315 78,246
+  s_b235d7e85db519::t_31682143b2e280 91,97,653,662-663,684-685,1919,2171-2178,2181-2185,2209-2215
+  s_b235d7e85db519::t_b6be15d663995b 2216
+  s_b235d7e85db519::t_50dc66101e6e1a 53-54,1641-1645,1647
+packages/gatekeeper-gitlab/__tests__/gitlab-env.test.ts
+  s_b235d7e85db519::t_cff97daf28f0d7 32-47,49-51,62
+  s_b235d7e85db519::t_db81ec3a471b80 48,52-61
+packages/gatekeeper-gitlab/__tests__/gitlab-normalize.test.ts
+  s_b235d7e85db519::t_b64d5ce4056418 8,10,12,15,173-233
+  s_b235d7e85db519::t_9dad5d0a4b9163 132-133,135-143
+packages/gatekeeper-gitlab/__tests__/workerd/reads.test.ts
+  s_b235d7e85db519::t_4bf1c45c4feafe 132-137,200-203,208-216
+  s_b235d7e85db519::t_56ff9707fc1508 196
+packages/gatekeeper-gitlab/__tests__/workerd/resources.test.ts
+  s_b235d7e85db519::t_f03263cf9b88ef 93,147-157
+packages/gatekeeper-gitlab/src/gitlab-env.ts
+  s_b235d7e85db519::t_a9658dcb2a3aa9 44-50,57-70,75-76,79,97
+  s_b235d7e85db519::t_579b2055958963 6,108-139
+  s_b235d7e85db519::t_4d7a11d9b56cc8 51-56,71-74,140
+  s_b235d7e85db519::t_e7b5dd3a0aef52 141-142
+packages/gatekeeper-gitlab/src/gitlab-normalize.ts
+  s_b235d7e85db519::t_4a7578589f197a 36,229,409-425,441-448,636-640,642,648,650-655
+  s_b235d7e85db519::t_4ef633005120c0 359-368
+  s_b235d7e85db519::t_10cf153b63b3db 39,464-471,477-479,481-485,490-499
+packages/gatekeeper-gitlab/src/gitlab-sessions.ts
+  s_b235d7e85db519::t_5b2076f2d0ad71 46-57,144,152,161,176,187,198,266,373,499
+packages/gatekeeper-gitlab/src/gitlab.ts
+  s_b235d7e85db519::t_1cbf9b1f143a7f 832-835,838-839,841-843
+  s_b235d7e85db519::t_5f04cbbb06067f 34,44,50,59-60,278,444-446,475,519-523,525,530,537-538,563-564,567,579,583,585,599-609,611,667,723,852
+packages/gatekeeper-gitlab/__tests__/workerd/session-git.test.ts
+  s_b235d7e85db519::t_1868b0ab1ef075 80-98
+plans/gitlab-gatekeeper.md
+  s_b235d7e85db519::t_42be4a20b7151c 146-149,152-153,289-292,377-381,710-718,761-763,1149-1154
+  s_b235d7e85db519::t_74774635cbd2d5 135-145,150-151,154-158,209-214,630-637,639-650,660-666,1112-1114,1155-1161
+packages/gatekeeper-gitlab/README.md
+  s_b235d7e85db519::t_1e7be18f1548df 100
+  s_b235d7e85db519::t_31c4139c793842 95-99
+AGENTS.md
+  s_b235d7e85db519::t_c026c8d878219c 41
+  s_b235d7e85db519::t_32c5dc668e60c6 38,40
+packages/gatekeeper-gitlab/__tests__/gitlab-api.test.ts
+  s_b235d7e85db519::t_3eecb5c8382dfa 59,181-184,190-192
+packages/gatekeeper-gitlab/storage-schema.md
+  s_b235d7e85db519::t_c85f75fb430d52 21
+packages/gatekeeper-gitlab/__tests__/workerd/account.test.ts
+  s_b235d7e85db519::t_49aaf9d2aec341 90,96,102-104,128-174
+  s_b235d7e85db519::t_7857e59e8e7246 175-176
+packages/gatekeeper-gitlab/__tests__/workerd/worker.ts
+  s_b235d7e85db519::t_c0a2b050722b74 10,12,65,114-134,317,320-343
+packages/gatekeeper-gitlab/__tests__/workerd/actions.test.ts
+  s_b235d7e85db519::t_30eb4d97c2e800 342-360,507-508,510,568-571,573,575-576,578,588-594,597-598,601,613
+  s_b235d7e85db519::t_e96f61e5e9bcfa 361-380
+  s_b235d7e85db519::t_4ed62be32e60d1 103-121,485-487,500,502
+packages/gatekeeper-gitlab/src/gitlab-action-types.ts
+  s_b235d7e85db519::t_b12ed54191c318 166-197
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a6f94c36632df50e44718d8b2b03634564dbb999",
+  "prompts": {},
+  "sessions": {
+    "s_b235d7e85db519": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f73e2ba17ffeG15LUZZx8sUx6N",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

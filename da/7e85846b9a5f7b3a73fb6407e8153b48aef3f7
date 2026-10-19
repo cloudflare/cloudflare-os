@@ -1,0 +1,25 @@
+packages/workshop-frontend/src/connectHandoff.test.tsx
+  s_db771eccf555f0::t_56e4a5afdecabc 38-41,62,81,91-122,124,179
+packages/workshop-frontend/src/connectHandoff.ts
+  s_db771eccf555f0::t_06eeb885282353 74,79-99,108-115,142-145
+packages/workshop-frontend/src/components/auth/OAuthButtons.tsx
+  s_db771eccf555f0::t_06eeb885282353 95-106,118-120,125-129,146
+packages/workshop-frontend/src/components/auth/OAuthButtons.test.tsx
+  s_db771eccf555f0::t_cfae30e6a25c8e 120-121,128,140-147
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "da7e85846b9a5f7b3a73fb6407e8153b48aef3f7",
+  "prompts": {},
+  "sessions": {
+    "s_db771eccf555f0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4b7e01f8-7cff-4694-987e-6a299d99151d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,33 @@
+packages/workshop-backend/src/auth/login-flow.ts
+  s_63b0fe54e7628b::t_37cdac2d876294 17,94-97,99-100,102-104,106-111,115-117
+  s_63b0fe54e7628b::t_15ed2485349e2c 118-119
+packages/workshop-backend/src/server.ts
+  s_63b0fe54e7628b::t_37cdac2d876294 633
+packages/workshop-frontend/src/components/auth/OAuthButtons.tsx
+  s_63b0fe54e7628b::t_37cdac2d876294 28-30,105-106,108,111
+packages/workshop-frontend/src/components/auth/OAuthButtons.test.tsx
+  s_63b0fe54e7628b::t_d3db4eb3304a7f 30
+  s_63b0fe54e7628b::t_8e9f3b8c48c73a 117-144
+  s_63b0fe54e7628b::t_5113b477728831 145-148
+packages/workshop-backend/__tests__/pending-login.test.ts
+  s_63b0fe54e7628b::t_8e9f3b8c48c73a 39-40
+  s_63b0fe54e7628b::t_37cdac2d876294 57-59,62-64
+packages/workshop-shared/src/api.ts
+  s_63b0fe54e7628b::t_37cdac2d876294 43-48,50
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "10cc2d5a7ec3e7cf052055896998140778031f88",
+  "prompts": {},
+  "sessions": {
+    "s_63b0fe54e7628b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4f668d1c-c56c-4f30-91cc-4fbd3f633870",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

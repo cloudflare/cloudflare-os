@@ -1,0 +1,29 @@
+docs/spaces.md
+  s_dd2417a6d5bd82::t_c045c193b94463 95
+  s_dd2417a6d5bd82::t_a77df881486bd1 79
+  s_dd2417a6d5bd82::t_c38dbdd28b678d 60
+  s_dd2417a6d5bd82::t_d02a2c649e1035 50
+  s_dd2417a6d5bd82::t_2a4953b6901f9c 9,21,33-35,37-39
+  s_dd2417a6d5bd82::t_422a2bf21676d7 1-2,4,7-8,10-20,22-29,31,40-49,51-53,55,57-59,61-62,65-78,80-87,89-93
+  s_dd2417a6d5bd82::t_9bcc7ae61576ea 3,5-6,30,32,36,56,63-64,88,94
+  s_dd2417a6d5bd82::t_3a6e2d07543824 54
+  s_dd2417a6d5bd82::t_73c1ea1fc561f3 96
+AGENTS.md
+  s_dd2417a6d5bd82::t_cb6f3f987093bc 19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "10f6a0d7868fbb9f77ebade3142411ff41238256",
+  "prompts": {},
+  "sessions": {
+    "s_dd2417a6d5bd82": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a6ff2717-92f1-4768-9652-f1257b31b328",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

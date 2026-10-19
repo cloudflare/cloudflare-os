@@ -1,0 +1,57 @@
+packages/workshop-shared/src/api.ts
+  s_fe3ea3b86ac2f8::t_283b87e26e539c 27,565-573,1136-1156,1159-1175,5080-5087,5125-5130
+packages/workshop-backend/__tests__/wiki-sync-api.test.ts
+  s_fe3ea3b86ac2f8::t_07f1232fdf70a1 8-9,11,194-201,203,207,213-221,226-242,244-260,263-268,289-339,345-384
+  s_fe3ea3b86ac2f8::t_8f48b2e30b297b 340-344
+packages/workshop-backend/src/spaces.ts
+  s_fe3ea3b86ac2f8::t_739a84d71c9217 11-14,46-47,689-692
+  s_fe3ea3b86ac2f8::t_f5cfb8a420e2a0 1029-1033
+packages/workshop-shared/src/gatekeeper.ts
+  s_fe3ea3b86ac2f8::t_ae3b8c2927f5b6 261-264,935-1003,1072-1078,1122-1124,1132-1137
+packages/workshop-backend/src/search-index.ts
+  s_fe3ea3b86ac2f8::t_f5cfb8a420e2a0 107
+packages/workshop-backend/__tests__/provisioning.test.ts
+  s_fe3ea3b86ac2f8::t_836a4a91388e38 8,10-12,136-206
+  s_fe3ea3b86ac2f8::t_a89b9cab7087e2 207-208
+packages/workshop-backend/src/wiki-sync-steps.ts
+  s_fe3ea3b86ac2f8::t_1a6e0835f58911 699,734-735
+  s_fe3ea3b86ac2f8::t_f879d12a0a7ffa 708-710,758-761,772-778,825-833
+  s_fe3ea3b86ac2f8::t_628c3eb04e9bba 28,147-148,304-319,588,605-624,637-645,680-692,711,713-714,923,1208-1209
+  s_fe3ea3b86ac2f8::t_646574ded6da7b 712,736-739,782
+  s_fe3ea3b86ac2f8::t_827c8bc4a6961b 742,744,748-750,1195-1196,1233,1315-1316,1402
+packages/workshop-backend/__tests__/wiki-sync-steps.test.ts
+  s_fe3ea3b86ac2f8::t_0d5441b56b331b 660
+  s_fe3ea3b86ac2f8::t_f9580c3f47b8ed 496,503
+  s_fe3ea3b86ac2f8::t_b386af7fd84ec3 369,729-730,733,741-742,746,796-857
+  s_fe3ea3b86ac2f8::t_3a80e89fe9f79b 18,30,43-46,51-52,55-56,58,60,65,100-103,147,180,210-214,228-234,250-251,258-262,349-351,355,368,374,630-659,661-720,724-725,728,736,745,748-795,858-859,862,864-900
+  s_fe3ea3b86ac2f8::t_ae14e07ba77557 484-495,497-502,504-533
+  s_fe3ea3b86ac2f8::t_8f48b2e30b297b 860-861,863
+  s_fe3ea3b86ac2f8::t_a1f09b7e74e36b 47-48,61,348,352-354,356-367,370-373,375,721-723,726-727,731-732,734-735,737-740,743-744,747,901
+packages/workshop-backend/src/admin-settings.ts
+  s_fe3ea3b86ac2f8::t_f5cfb8a420e2a0 1,570-573,578-580,609-617
+packages/workshop-backend/src/user.ts
+  s_fe3ea3b86ac2f8::t_f5cfb8a420e2a0 3,1774,1778,1786-1826
+packages/workshop-backend/src/server.ts
+  s_fe3ea3b86ac2f8::t_6516ac2fd1fe61 4,16,22,143-157,475-476,486-495,502,506-519,839-840,843,871-893
+packages/workshop-backend/src/wiki-sync.ts
+  s_fe3ea3b86ac2f8::t_449265ccd8df0e 73-74,169-173,409-410,470,472-473,658
+  s_fe3ea3b86ac2f8::t_739a84d71c9217 117,119-123
+packages/workshop-backend/src/overseer.ts
+  s_fe3ea3b86ac2f8::t_739a84d71c9217 11311
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "028834aeb133186bc10f78b9b12c023cbe948b65",
+  "prompts": {},
+  "sessions": {
+    "s_fe3ea3b86ac2f8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a637a5f0-7726-45d2-b021-8645dab13046",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

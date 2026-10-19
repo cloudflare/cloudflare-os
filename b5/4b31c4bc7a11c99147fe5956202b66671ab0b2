@@ -1,0 +1,64 @@
+scripts/vitest-task.test.ts
+  s_0c2ab7edd98432::t_ecc057dc048f86 79-104,147,161,194,215-216
+  s_0c2ab7edd98432::t_6de8ac45cb568d 4,7-9,11,26-29,140-146,148-160,162-193,195-214
+AGENTS.md
+  s_0c2ab7edd98432::t_2d26f14e3d4985 100
+scripts/vp/concurrency.ts
+  s_0c2ab7edd98432::t_a3384a7655dedd 47
+  s_0c2ab7edd98432::t_5c7a11f5a03d8f 96,161,406,408,461-462,467-468,471-492,495-506
+  s_0c2ab7edd98432::t_783bc20c71e9b3 542,550-552
+  s_0c2ab7edd98432::t_8404b3fce4b9ca 512-513
+  s_0c2ab7edd98432::t_aa30b9f2af33d0 493-494
+  s_0c2ab7edd98432::t_499b5060ab5032 85
+  s_0c2ab7edd98432::t_c766bbecfc9a3a 32-46,51-52
+  s_0c2ab7edd98432::t_fdb4d9b7db93f6 153,156-157
+  s_0c2ab7edd98432::t_c7f16156ad8e38 511
+  s_0c2ab7edd98432::t_bbfc77b9ffd2f1 59
+  s_0c2ab7edd98432::t_9a0f098c91637f 48-50
+  s_0c2ab7edd98432::t_e8c35668dbba46 31,53-58
+  s_0c2ab7edd98432::t_e9525c659f73f0 514-516
+  s_0c2ab7edd98432::t_849333fa85e5de 97,100
+  s_0c2ab7edd98432::t_deea2a2585df73 541,547-548
+  s_0c2ab7edd98432::t_dd45096d439589 98-99,101
+  s_0c2ab7edd98432::t_f15ba46d431035 150-152,154-155,158-160
+  s_0c2ab7edd98432::t_c2be9662ca62c0 405,411-413,415-417
+  s_0c2ab7edd98432::t_c711d9624e3ff5 409-410,414,418-429,463-466,469-470
+  s_1da8b1c2e6d0c9::t_2f399548f77aef 102,162,407,507
+scripts/vitest-task-vite-config.ts
+  s_0c2ab7edd98432::t_b03c05c22ee855 269,271
+  s_0c2ab7edd98432::t_f8f511f481ffb0 220-234
+  s_0c2ab7edd98432::t_945361fbccf764 180-188,190,197,200-210,212-215,217
+  s_0c2ab7edd98432::t_6f9bac96fc7b4e 38
+  s_0c2ab7edd98432::t_3cb21e2f54379c 266-268,276
+  s_0c2ab7edd98432::t_771b5a18f005d7 122-123
+  s_0c2ab7edd98432::t_6de270578fdd69 179,189,191-196,198-199,211,216,218-219
+scripts/vp/run.ts
+  s_0c2ab7edd98432::t_f4131f4cda9a31 12-18
+  s_0c2ab7edd98432::t_90033b67052c5d 4-5
+scripts/vp/concurrency.test.ts
+  s_0c2ab7edd98432::t_05d210654edc49 3,7-11,536-701
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b54b31c4bc7a11c99147fe5956202b66671ab0b2",
+  "prompts": {},
+  "sessions": {
+    "s_0c2ab7edd98432": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5a56be55-d294-47df-b436-2527e0afbfa4",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_1da8b1c2e6d0c9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9d6ab260-4a3d-4bc1-a691-db016cf513e3",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

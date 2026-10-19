@@ -1,0 +1,49 @@
+packages/workshop-frontend/src/routes/gatekeepers.tsx
+  s_3402201043bce4::t_e4697f79b110d5 28,581,601,638
+packages/workshop-frontend/src/ObserverConfigModal.test.tsx
+  s_3402201043bce4::t_823c303e1ba375 194,206,215,233,243,260
+packages/workshop-frontend/src/GatekeeperModal.tsx
+  s_3402201043bce4::t_1e808ebf293e69 39,591-592,613-614,633-634
+packages/workshop-frontend/src/components/billing/OutOfCreditsModal.tsx
+  s_3402201043bce4::t_d43c94daa646f2 8,65
+packages/workshop-frontend/src/ConnectHandoffListener.tsx
+  s_3402201043bce4::t_03af7a79770f31 1-18
+docs/oauth-signin.md
+  s_3402201043bce4::t_07f6f0a494f268 41,46-49
+packages/workshop-frontend/src/components/billing/UsageSettings.tsx
+  s_3402201043bce4::t_b952ba1cdd24c5 10,65
+packages/workshop-frontend/src/OnboardingWizard.tsx
+  s_3402201043bce4::t_5c74a95505402f 35,256
+packages/workshop-frontend/src/connectHandoff.test.tsx
+  s_3402201043bce4::t_6eb183670e172e 1-122
+packages/workshop-frontend/src/ResourcePicker.tsx
+  s_3402201043bce4::t_8356dcf96f61bc 14,403,420-421,437
+packages/workshop-frontend/src/connectHandoff.ts
+  s_3402201043bce4::t_eb866436c805c5 1-73
+packages/workshop-frontend/src/routes/__root.tsx
+  s_3402201043bce4::t_0b4c8fece2f002 10,114
+packages/workshop-frontend/src/BlueprintLandingPage.tsx
+  s_3402201043bce4::t_1cccc52a942661 25,198-199,213-214
+packages/workshop-frontend/src/main.tsx
+  s_3402201043bce4::t_4477c803cf1edf 16
+packages/workshop-frontend/src/ObserverConfigModal.tsx
+  s_3402201043bce4::t_4b8088e692c84c 20,219,233,253
+AGENTS.md
+  s_3402201043bce4::t_9e9e619765e929 25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a51533beb90b3ab6292977d062a059ff33b4e0d5",
+  "prompts": {},
+  "sessions": {
+    "s_3402201043bce4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a32aae8a-81f3-4288-a8db-4d09adf37f7c",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

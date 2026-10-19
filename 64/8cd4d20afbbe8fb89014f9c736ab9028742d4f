@@ -1,0 +1,47 @@
+.gitignore
+  s_fe30841bd8390c::t_751423c83267dd 12-14
+packages/integration-tests/src/worker-inputs.ts
+  s_fe30841bd8390c::t_9bc36dc5711f43 70-72
+packages/workshop-backend/__tests__/format-blueprints.test.ts
+  s_fe30841bd8390c::t_1bd11056348cf4 6-7,22-37,113,117-128
+packages/workshop-backend/package.json
+  s_fe30841bd8390c::t_e73645e73962f0 9,11-13
+packages/workshop-backend/scripts/build-format-blueprints.ts
+  s_fe30841bd8390c::t_97895480460a33 39,100-101,116,118-119,128
+packages/workshop-backend/scripts/build-gadget-libraries.ts
+  s_fe30841bd8390c::t_e12d0d457e9768 1-155
+packages/workshop-backend/scripts/format-blueprint-files.ts
+  s_fe30841bd8390c::t_efa43a99372faa 15-20,169,201-203,206-214,219-224,227-228,370-441,451-454
+packages/workshop-backend/scripts/format-blueprint-manifest.ts
+  s_fe30841bd8390c::t_f5d159a8f7de97 23-28,32,49-50,62-63,71
+packages/workshop-backend/scripts/gadget-libraries-source.ts
+  s_fe30841bd8390c::t_c5a948a8ede272 1-89
+packages/workshop-backend/scripts/import-format-blueprint.ts
+  s_fe30841bd8390c::t_13638dc366466f 216-217
+packages/workshop-backend/src/gadget-libraries.ts
+  s_fe30841bd8390c::t_9d3adf19e16495 1-105
+packages/workshop-backend/tsconfig.blueprints-client.json
+  s_fe30841bd8390c::t_2706b54dcb3945 30-32
+packages/workshop-backend/tsconfig.blueprints-server.json
+  s_fe30841bd8390c::t_03bd6441d5431d 31-41
+packages/workshop-backend/vite.config.ts
+  s_fe30841bd8390c::t_303d8572bf5564 25-35,67-68,97,116
+packages/workshop-backend/vitest.blueprints.config.ts
+  s_fe30841bd8390c::t_2f8b4d34e8a433 11-12,25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "648cd4d20afbbe8fb89014f9c736ab9028742d4f",
+  "prompts": {},
+  "sessions": {
+    "s_fe30841bd8390c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3cc7444f-cdcb-45a9-9d6f-c9080bf89899",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

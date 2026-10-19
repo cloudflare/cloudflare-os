@@ -1,0 +1,19 @@
+packages/workshop-shared/src/code-change.ts
+  s_da75e44ab0f759::t_9e69b4b7227a93 126-129,509-511,608-613
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6070ce231c813ca1aee8e74798c2cb27976f4cc6",
+  "prompts": {},
+  "sessions": {
+    "s_da75e44ab0f759": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f4a2e2318ffeE669L5yTFjVqIq",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

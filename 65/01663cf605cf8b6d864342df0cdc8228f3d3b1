@@ -1,0 +1,21 @@
+packages/workshop-backend/format-blueprints/workspace-pages/files/README.md
+  s_f26907ac192965::t_3f9d203082884a 1
+packages/workshop-backend/format-blueprints/workspace-pages/blueprint.json
+  s_f26907ac192965::t_3f9d203082884a 4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6501663cf605cf8b6d864342df0cdc8228f3d3b1",
+  "prompts": {},
+  "sessions": {
+    "s_f26907ac192965": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "991e3e14-e334-4041-8756-261ee6241c79",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

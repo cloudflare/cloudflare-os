@@ -1,0 +1,53 @@
+AGENTS.md
+  s_c2ca47a7bbff41::t_1452d3635ad83c 71
+packages/workshop-frontend/src/features/ai-models/GatewayTest.tsx
+  s_c2ca47a7bbff41::t_19b78c73a3c79a 31,34-38,43-47
+  s_c2ca47a7bbff41::t_12a4f7ed5bf6f1 21
+packages/workshop-frontend/src/features/ai-models/useGatewayTests.test.tsx
+  s_c2ca47a7bbff41::t_936d01412adecd 1-236
+packages/workshop-frontend/src/features/ai-models/useGatewayTests.ts
+  s_c2ca47a7bbff41::t_5fdee11448e13d 36
+  s_c2ca47a7bbff41::t_5607f584867ef2 37,39
+  s_c2ca47a7bbff41::t_19b78c73a3c79a 17,24-26,38,40-41,48,51-52,61-75,77
+  s_c2ca47a7bbff41::t_2bea36ebdf87b7 46,76
+docs/public-server.md
+  s_c2ca47a7bbff41::t_249d43ee094400 154-193,198-208
+  s_c2ca47a7bbff41::t_bece74efba20d8 195-197
+  s_c2ca47a7bbff41::t_8cf17e88a2fa82 329-333,359-360
+  s_c2ca47a7bbff41::t_fe58a281de4af4 194
+  s_c2ca47a7bbff41::t_5df3f26d3c4082 361-363
+packages/workshop-frontend/src/features/ai-models/GatewayModelRow.tsx
+  s_c2ca47a7bbff41::t_bece74efba20d8 208
+  s_c2ca47a7bbff41::t_480fe381c15a75 192
+  s_c2ca47a7bbff41::t_19b78c73a3c79a 10,18,62-63,71-72,76-77,193,206-207,209-222,224-257,259-280,282-283,286,288,290-308
+packages/workshop-frontend/src/features/ai-models/GatewayModelRow.test.tsx
+  s_c2ca47a7bbff41::t_ee240fb444e415 822
+  s_c2ca47a7bbff41::t_0a4472a8e07868 141-142
+  s_c2ca47a7bbff41::t_1bf696fcbe4de0 12,16,45-47,127-140,143-148,163,170,176-178,186,189,195,714-821,823-881
+packages/workshop-frontend/src/features/ai-models/GatewayProviders.tsx
+  s_c2ca47a7bbff41::t_19b78c73a3c79a 60
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.tsx
+  s_c2ca47a7bbff41::t_d75c2a5baa0751 27,144,193-200,202,206,209,211-214,246,310,318-321,340,343,365,368
+  s_c2ca47a7bbff41::t_fbccd8eddef8c9 142
+  s_c2ca47a7bbff41::t_bece74efba20d8 143
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.test.tsx
+  s_c2ca47a7bbff41::t_ee240fb444e415 359,1064-1065,1074,1096-1098,1119,1121-1122,1194
+  s_c2ca47a7bbff41::t_d38c2490bf80d3 97,250-264,374-375,380,393,900-1063,1066-1073,1075-1095,1099-1118,1120,1123-1193,1195-1241,1382-1425
+  s_c2ca47a7bbff41::t_01aa6cc6e9261a 1426
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5921fb451034d518b97d807bea03ef53b2abe699",
+  "prompts": {},
+  "sessions": {
+    "s_c2ca47a7bbff41": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5835672d-7617-41aa-98d2-c6640f4e44c9",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

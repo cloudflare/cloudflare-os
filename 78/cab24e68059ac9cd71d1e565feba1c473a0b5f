@@ -1,0 +1,50 @@
+packages/gatekeeper-google/src/sheets-simulation.ts
+  s_f8f4e8eafb49cb::t_8de6a5fc2c2eb5 458,462
+  s_f8f4e8eafb49cb::t_a73b1e6a8d048a 460,465-467,469,473
+  s_010272bf0842e6::t_89bd6d6a314e53 482,488-489,493
+  s_f8f4e8eafb49cb::t_a0dfcdfd3071a8 459
+packages/gatekeeper-google/README.md
+  s_f8f4e8eafb49cb::t_a0dfcdfd3071a8 437-438
+packages/gatekeeper-google/__tests__/sheets-simulation.test.ts
+  s_f8f4e8eafb49cb::t_950d3cba6db384 305
+  s_f8f4e8eafb49cb::t_a73b1e6a8d048a 299,302
+  s_010272bf0842e6::t_513e6495f9295d 9
+  s_f8f4e8eafb49cb::t_a0dfcdfd3071a8 8,311-314
+  s_f8f4e8eafb49cb::t_7b1d6d1b5fce56 315
+packages/gatekeeper-google/src/sheets-types.d.ts
+  s_010272bf0842e6::t_ba03bc91a29680 153-155
+  s_010272bf0842e6::t_8963fa0345b410 150-152
+packages/gatekeeper-google/src/sheets.ts
+  s_010272bf0842e6::t_97d5be68717d9f 458
+  s_f8f4e8eafb49cb::t_1db6a72fffaad7 527
+  s_010272bf0842e6::t_cff59fa93f768e 33-34
+packages/gatekeeper-google/__tests__/workerd/sheets-actions.test.ts
+  s_f8f4e8eafb49cb::t_92b2089910739f 1162
+  s_f8f4e8eafb49cb::t_a0dfcdfd3071a8 1163
+  s_010272bf0842e6::t_d778e9b562c8f5 1170-1171,1173-1176
+  s_f8f4e8eafb49cb::t_950d3cba6db384 1160
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "78cab24e68059ac9cd71d1e565feba1c473a0b5f",
+  "prompts": {},
+  "sessions": {
+    "s_010272bf0842e6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "890bd2c4-bc81-47c2-9055-2c1fae3caf90",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_f8f4e8eafb49cb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "96d8cda6-efce-42a7-8834-fd3434ebce3b",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": null
+    }
+  }
+}

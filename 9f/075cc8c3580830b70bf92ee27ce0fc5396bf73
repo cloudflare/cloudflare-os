@@ -1,0 +1,86 @@
+packages/workshop-backend/src/sharing.ts
+  s_a7109235ed9077::t_074748ad9b1094 159
+  s_a7109235ed9077::t_839092d8bd035b 19-21,160-162,164-168,173,176-177,219-222,247,250,260-261,303-304,317-321,454,462,475,490
+  s_3acff7ccfb55eb::t_57cc2b584f683b 169-172,174-175
+  s_3acff7ccfb55eb::t_612035898addc8 262,264
+  s_3acff7ccfb55eb::t_5314c221273f14 23-24
+packages/workshop-frontend/src/ShareModal.tsx
+  s_a7109235ed9077::t_0ea3c9a138555a 535-538,633-635,646,1036,1041-1042,1047-1054,1057,1265,1335,1337,1472-1481
+  s_3acff7ccfb55eb::t_f540126b064c13 1043-1046
+packages/workshop-frontend/src/ShareModal.test.tsx
+  s_a7109235ed9077::t_18660a1d0d3d18 1245-1255,1259-1261,1263-1281,1283-1288
+  s_a7109235ed9077::t_75a080e5e8836e 1262
+  s_3acff7ccfb55eb::t_f540126b064c13 1256-1258,1282
+packages/workshop-backend/__tests__/sharing.test.ts
+  s_a7109235ed9077::t_d746fbd41529d4 750,767
+  s_a7109235ed9077::t_9f81d2454d2c91 32-33,35-41,634-645,650-674,679-691,693-749
+  s_3acff7ccfb55eb::t_65627963381d5c 751-766
+  s_3acff7ccfb55eb::t_10fe66e0fadb37 9-11,646-649,675-678,692
+packages/workshop-shared/src/gatekeeper.ts
+  s_a7109235ed9077::t_dd522630327fc2 1217-1227
+  s_a7109235ed9077::t_155250deb15faa 1216
+packages/workshop-backend/src/overseer.ts
+  s_a7109235ed9077::t_363d2e7fb85b9f 10693,10713,10741-10746,10752,10759
+  s_a7109235ed9077::t_36b2141f005faa 5669-5671
+  s_a7109235ed9077::t_861bf0bbfc6b03 1163-1167
+  s_a7109235ed9077::t_4fa11d496b2f8b 9602-9603
+packages/workshop-frontend/src/useWorkspaceOpen.test.tsx
+  s_a7109235ed9077::t_f55a5ea4f8876a 63,145,147,148-149,151-158
+  s_a7109235ed9077::t_d746fbd41529d4 161
+  s_3acff7ccfb55eb::t_ad610146d7de90 146,150,159-160
+packages/workshop-backend/__tests__/restricted-observation-latch.test.ts
+  s_a7109235ed9077::t_27ce605c8b3058 118-164
+docs/observers.md
+  s_a7109235ed9077::t_c7b154ca0d45fb 39-42,107
+docs/sharing.md
+  s_a7109235ed9077::t_c7b154ca0d45fb 155-159,161-162,164-166
+  s_3acff7ccfb55eb::t_2eb49d524e1dcb 160,163
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_a7109235ed9077::t_4bd662767abeef 316-317,319-323
+  s_a7109235ed9077::t_2d7af9a72f0e35 9-10,257-291,297-304,306-315,318
+  s_a7109235ed9077::t_7ca9b8f2e4dcfe 296,305
+  s_a7109235ed9077::t_37bc536cb25018 324-326
+  s_3acff7ccfb55eb::t_369b3b68e315ce 19-20,292-295
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_a7109235ed9077::t_2d7af9a72f0e35 304-308,325,330
+packages/workshop-shared/src/api.ts
+  s_a7109235ed9077::t_363d2e7fb85b9f 530-531,1411-1412,1416-1421
+  s_a7109235ed9077::t_5d84ea7534ed97 1422
+  s_3acff7ccfb55eb::t_3d8e2a8eaeeb9e 532
+  s_3acff7ccfb55eb::t_9b8c35d648a977 360-362
+  s_3acff7ccfb55eb::t_bc9690beeac45d 350
+packages/workshop-backend/__integration__/open-gadget-rpc.test.ts
+  s_3acff7ccfb55eb::t_8f6ece65e340e7 28-30
+packages/workshop-frontend/src/components/WorkspaceOpenErrorPage.tsx
+  s_3acff7ccfb55eb::t_ad610146d7de90 1,9-10,25-30,45-46
+packages/workshop-backend/__tests__/open-gadget-errors.test.ts
+  s_3acff7ccfb55eb::t_8f6ece65e340e7 12-16
+packages/workshop-frontend/src/useWorkspaceOpen.ts
+  s_3acff7ccfb55eb::t_ad610146d7de90 141,152
+packages/workshop-frontend/src/components/WorkspaceOpenErrorPage.test.tsx
+  s_3acff7ccfb55eb::t_ad610146d7de90 8-11,38,78-87,104-106
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9f075cc8c3580830b70bf92ee27ce0fc5396bf73",
+  "prompts": {},
+  "sessions": {
+    "s_3acff7ccfb55eb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9af700bf-e91f-44e9-a0d9-7513f76bfeb4",
+        "model": "claude-watermelon-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_a7109235ed9077": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "21a77a12-1c9c-43d6-a3e6-f5f903d8f179",
+        "model": "claude-watermelon-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

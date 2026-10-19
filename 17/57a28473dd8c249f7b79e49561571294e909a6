@@ -1,0 +1,19 @@
+packages/workshop-backend/vite.config.ts
+  s_006940b98259c8::t_d0c2bf45334205 64-67,73
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1757a28473dd8c249f7b79e49561571294e909a6",
+  "prompts": {},
+  "sessions": {
+    "s_006940b98259c8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2d922cbb-5244-4d7b-8360-411a14d5a340",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

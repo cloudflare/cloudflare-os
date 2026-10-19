@@ -1,0 +1,53 @@
+packages/workshop-backend/src/user.ts
+  s_b935ef13c35665::t_f2082d2cc9c2da 2,15,725-748
+  s_b935ef13c35665::t_3413edc4309127 749
+packages/workshop-backend/__tests__/chat-model-settings.test.ts
+  s_b935ef13c35665::t_9c251dd6bc9bc4 1-6,8-76,79-81,84-85,87-89,91-113,116-191,203,205-255,265,276,278-318,320-334,336-341,343-351,353-357,364-368
+  s_b935ef13c35665::t_00204bb8089a45 114-115,201
+  s_b935ef13c35665::t_23549f351c6cf7 319,335,342,352
+  s_b935ef13c35665::t_294fd82a8d7e0e 256-264,266-275,277
+  s_b935ef13c35665::t_7f4f0297754bc8 77-78,86
+  s_b935ef13c35665::t_d781ea6c5e976d 192,194
+  s_b935ef13c35665::t_09a5be189332a3 358-363
+  s_b935ef13c35665::t_f190907ca8be6d 7,82-83,90,193,195-200,202,204
+packages/workshop-shared/src/api.ts
+  s_b935ef13c35665::t_21358bdd18594d 583-599,1833-1834,1840-1841,2804-2811,2860-2862,2866,2908-2914,3184-3185,3190-3208,3211-3238,3309-3314
+  s_b935ef13c35665::t_59d6a2a359c803 1625,1704-1705,1708-1711,1715-1716
+  s_b935ef13c35665::t_20a78804a185ec 3186-3189
+  s_b935ef13c35665::t_4dbafb54051699 1618-1619,1626-1627,3209-3210
+packages/workshop-backend/src/storage-schema/user-storage.ts
+  s_b935ef13c35665::t_d47201e843f8b5 9,151-152
+  s_b935ef13c35665::t_f2082d2cc9c2da 150
+  s_b935ef13c35665::t_da55604ddcd123 153
+packages/workshop-backend/src/ai-models.ts
+  s_b935ef13c35665::t_4c1abe9365319b 31-33,35,410-411,414-416,420-421,424-456
+  s_b935ef13c35665::t_59d6a2a359c803 417-419,422-423
+  s_b935ef13c35665::t_a326129b521bfd 413
+  s_b935ef13c35665::t_66e141828bcf59 412
+  s_b935ef13c35665::t_b1f050e66d4820 457
+packages/workshop-backend/__tests__/chat-presets.test.ts
+  s_b935ef13c35665::t_27c442d6832583 1-119
+packages/workshop-backend/src/overseer.ts
+  s_b935ef13c35665::t_ef8a59cce4ea1f 6655
+  s_b935ef13c35665::t_a5f8faea8a270b 3,37,40-41,6096,6641-6642,11332-11338,11539,11543,11566-11580,12196,12222-12224
+  s_b935ef13c35665::t_0d35c88d547f98 6102,6127
+  s_b935ef13c35665::t_c04147076c29bf 6644
+packages/workshop-backend/src/server.ts
+  s_b935ef13c35665::t_fa1739c8753424 4,271-280
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5755467ef461238b81b8a40aea71c64e4d9b091c",
+  "prompts": {},
+  "sessions": {
+    "s_b935ef13c35665": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "58c3f333-baff-470f-84e4-eccedd1e8e9f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

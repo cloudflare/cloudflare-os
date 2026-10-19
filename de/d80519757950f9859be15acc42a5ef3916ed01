@@ -1,0 +1,27 @@
+packages/gatekeeper-gitlab/__tests__/gitlab-api.test.ts
+  s_b235d7e85db519::t_3c30ef6188b1e3 174,177-179,181-191
+packages/gatekeeper-gitlab/__tests__/workerd/resources.test.ts
+  s_b235d7e85db519::t_aa94d217e57f62 6,166-199
+packages/gatekeeper-gitlab/src/gitlab-api.ts
+  s_b235d7e85db519::t_0f8ceab8ff8741 261-272,280,284-286,290-292,452,462-465,554,583,617,635,1117,1121,1123-1124
+packages/gatekeeper-gitlab/src/gitlab.ts
+  s_b235d7e85db519::t_989c095903ada2 430-437,444-447,453,460-465,467-492,494-496,576,851-858
+packages/gatekeeper-gitlab/storage-schema.md
+  s_b235d7e85db519::t_306911be70c50a 19-20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ded80519757950f9859be15acc42a5ef3916ed01",
+  "prompts": {},
+  "sessions": {
+    "s_b235d7e85db519": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f73e2ba17ffeG15LUZZx8sUx6N",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

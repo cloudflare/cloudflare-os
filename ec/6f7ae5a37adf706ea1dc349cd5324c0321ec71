@@ -1,0 +1,42 @@
+packages/gatekeeper-linear/src/linear.ts
+  s_f5d4fa896fc128::t_adb2226cac0284 2155,2178-2179,2220,2230-2231,2236-2239,2288,2303-2305,2314-2315,2321
+  s_f5d4fa896fc128::t_c7e64ca7d35fab 2389-2418,2428-2439,2453,2457,2466-2467,2470,2472,2474,2476
+  s_f5d4fa896fc128::t_1f72890119136d 2589
+  s_f5d4fa896fc128::t_d50f08d2403239 1354-1355,1358,1365
+  s_f5d4fa896fc128::t_3ef4692ff73f65 2113,2116,2128,2132,2148,2152,2173,2188,2192,2217,2234,2253,2258-2260,2272,2277,2279,2299,2339,2341,2363,2365,2374,2376
+  s_f5d4fa896fc128::t_08bb710d938184 1349-1353
+  s_f5d4fa896fc128::t_cc84946bbde4c8 2017,2090-2091,2440-2450
+  s_f5d4fa896fc128::t_301f5056ffa004 2451
+packages/gatekeeper-notion/src/notion-actions.ts
+  s_ea0ed5df37b4df::t_1237dd95cf826f 18,31-34,54-56,684-691,702,710,719,728-729,735,741,747,752-759,761-771,773-777,1008-1018,1030-1031
+packages/gatekeeper-notion/src/notion.ts
+  s_ea0ed5df37b4df::t_1237dd95cf826f 1547-1548,1553
+  s_ea0ed5df37b4df::t_e16eeed0cd98e7 56
+packages/gatekeeper-notion/__tests__/notion-actions.test.ts
+  s_ea0ed5df37b4df::t_c03228671ccd39 1-3,12-34,36-40,42-43,69-89,91-120
+  s_ea0ed5df37b4df::t_64084826c0cc93 35,41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ec6f7ae5a37adf706ea1dc349cd5324c0321ec71",
+  "prompts": {},
+  "sessions": {
+    "s_ea0ed5df37b4df": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3c7267a6-3f35-40d5-ab55-c7a427009a3e",
+        "model": "claude-wafer-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_f5d4fa896fc128": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "41e3e171-c705-490f-8506-a539c1a11e55",
+        "model": "claude-wafer-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

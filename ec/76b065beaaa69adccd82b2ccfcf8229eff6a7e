@@ -1,0 +1,19 @@
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_9687893864678c::t_ba417962f66325 628-629,717-718,755,801-802,835,864
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ec76b065beaaa69adccd82b2ccfcf8229eff6a7e",
+  "prompts": {},
+  "sessions": {
+    "s_9687893864678c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "53be0b5f-c978-4cf6-9c71-1b7089449bb7",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

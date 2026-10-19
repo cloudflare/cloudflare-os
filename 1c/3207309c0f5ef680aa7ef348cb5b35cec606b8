@@ -1,0 +1,22 @@
+packages/gatekeeper-google/__tests__/workerd/gmail-actions.test.ts
+  s_ea0ed5df37b4df::t_5464e780f6a35e 1123,1127-1140
+  s_ea0ed5df37b4df::t_a7cad1f15857e9 1141-1142
+packages/gatekeeper-google/src/gmail.ts
+  s_ea0ed5df37b4df::t_3e73a59d76a5ee 1463-1470
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1c3207309c0f5ef680aa7ef348cb5b35cec606b8",
+  "prompts": {},
+  "sessions": {
+    "s_ea0ed5df37b4df": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3c7267a6-3f35-40d5-ab55-c7a427009a3e",
+        "model": "claude-wafer-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

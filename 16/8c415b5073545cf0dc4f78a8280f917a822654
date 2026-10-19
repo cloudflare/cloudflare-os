@@ -1,0 +1,19 @@
+docs/public-server.md
+  s_a24cd1bf692064::t_cd7d9f705c7a19 83-84
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "168c415b5073545cf0dc4f78a8280f917a822654",
+  "prompts": {},
+  "sessions": {
+    "s_a24cd1bf692064": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a03e8cb-afb5-47be-a446-f8f2b664bb38",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,25 @@
+docs/wiki.md
+  s_04bfec13ba0561::t_0a89c683fa7d36 456-462,652-654
+packages/workshop-backend/__tests__/wiki-sync-gate.test.ts
+  s_04bfec13ba0561::t_93ea9ef736c800 1-84
+packages/workshop-backend/src/server.ts
+  s_04bfec13ba0561::t_dcd0ebaed7dd2f 26,449
+packages/workshop-backend/src/user.ts
+  s_04bfec13ba0561::t_f85c20bee3f9f6 284-312,1218-1219,1490,1545
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e7a98b787154209cd76b81486028adb19f95d077",
+  "prompts": {},
+  "sessions": {
+    "s_04bfec13ba0561": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6300c1da-fbac-40ad-9b7c-be3104f16453",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

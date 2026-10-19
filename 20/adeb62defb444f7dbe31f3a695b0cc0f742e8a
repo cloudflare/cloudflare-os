@@ -1,0 +1,45 @@
+packages/workshop-backend/__tests__/workspace-slides-server.test.ts
+  s_70a74eb525c8be::t_df51d0e0f2813c 10-12,15-16,21,24-25,29-44
+  s_70a74eb525c8be::t_9693aa826c1ca8 26-28
+  s_70a74eb525c8be::t_47c7537093a5b9 17-20,22-23
+  s_70a74eb525c8be::t_c2dbd6e8c9ab0d 1-9,13-14
+packages/workshop-backend/__tests__/workspace-sheets-xlsx.test.ts
+  s_70a74eb525c8be::t_df51d0e0f2813c 743-753
+packages/workshop-backend/vitest.config.ts
+  s_70a74eb525c8be::t_c63325c5a7b17a 3,37-40,42-44
+packages/workshop-backend/format-blueprints/workspace-slides/files/client.ts
+  s_70a74eb525c8be::t_c63325c5a7b17a 2099-2102,2731-2734,2758-2761,2819-2822
+packages/workshop-backend/format-blueprints/workspace-sheets/files/client.ts
+  s_70a74eb525c8be::t_9693aa826c1ca8 611
+  s_70a74eb525c8be::t_c63325c5a7b17a 47,2051,2054-2055,2078
+packages/workshop-backend/format-blueprints/workspace-slides/blueprint.json
+  s_70a74eb525c8be::t_c1cf39eae3ad22 18
+packages/workshop-backend/format-blueprints/workspace-sheets/files/server.ts
+  s_70a74eb525c8be::t_c63325c5a7b17a 363-365
+packages/workshop-backend/format-blueprints/workspace-sheets/files/lib/formula.ts
+  s_70a74eb525c8be::t_9693aa826c1ca8 82-83,121,169
+  s_70a74eb525c8be::t_c63325c5a7b17a 1-81,84-120,122-168,170-176
+packages/workshop-backend/format-blueprints/workspace-sheets/__tests__/formula.test.ts
+  s_70a74eb525c8be::t_9693aa826c1ca8 49-58
+  s_70a74eb525c8be::t_df51d0e0f2813c 1-48,59-66
+packages/workshop-backend/format-blueprints/workspace-sheets/blueprint.json
+  s_70a74eb525c8be::t_c1cf39eae3ad22 18
+packages/workshop-backend/format-blueprints/workspace-sheets/files/README.md
+  s_70a74eb525c8be::t_d61937d5afdcb1 176
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "20adeb62defb444f7dbe31f3a695b0cc0f742e8a",
+  "prompts": {},
+  "sessions": {
+    "s_70a74eb525c8be": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ad7440e2-3857-4332-a283-5fbb8cf921fc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

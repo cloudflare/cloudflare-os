@@ -1,0 +1,21 @@
+packages/gatekeeper-confluence/src/confluence-actions.ts
+  s_6d79354b9d5d8c::t_c10ce0c3efafce 397-400,403-404,411,414-417,421,426-427,435-436,444-446,471,473-478,481-482,486
+packages/gatekeeper-homeassistant/src/approvals.ts
+  s_6d79354b9d5d8c::t_77d2f069b88085 160,167-168,180-182,191-193,253,258,266,269,284-285,287,289-290
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7a68acffcb4ae4c9c02bb0b0c4b6c5a3a5648cd0",
+  "prompts": {},
+  "sessions": {
+    "s_6d79354b9d5d8c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "32de7eff-dc88-4d7f-82cb-613824de97fc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

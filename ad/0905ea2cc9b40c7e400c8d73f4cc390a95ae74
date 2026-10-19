@@ -1,0 +1,20 @@
+packages/observability/__tests__/metrics.test.ts
+  s_f283112744f6b6::t_ae7dd7d12caeb2 124-126,129-130,133,135
+  s_f283112744f6b6::t_dc12f9731f3631 134
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ad0905ea2cc9b40c7e400c8d73f4cc390a95ae74",
+  "prompts": {},
+  "sessions": {
+    "s_f283112744f6b6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "760357fb-05f7-45f4-9c56-c8eb0ef25f35",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

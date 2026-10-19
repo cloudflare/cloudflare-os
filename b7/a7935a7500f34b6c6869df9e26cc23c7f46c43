@@ -1,0 +1,35 @@
+packages/integration-tests/__tests__/external-message-verification.test.ts
+  s_3c1ab8c0a1269e::t_7630df4ac7dd31 1-205
+packages/integration-tests/__tests__/observer-role-scope.test.ts
+  s_3c1ab8c0a1269e::t_1cb232483a9a18 1-181
+packages/integration-tests/fixtures/gatekeeper-test/src/env.d.ts
+  s_3c1ab8c0a1269e::t_41a2936845d54c 15-25
+packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts
+  s_3c1ab8c0a1269e::t_2b0e84180ce31b 30-32,448-456,458,522-553
+packages/integration-tests/fixtures/gatekeeper-test/wrangler.jsonc
+  s_3c1ab8c0a1269e::t_ebfb72a3cde33d 11-36
+packages/integration-tests/src/harness.ts
+  s_3c1ab8c0a1269e::t_a2061949fcf33b 84-89
+packages/workshop-backend/__tests__/fixtures.ts
+  s_3c1ab8c0a1269e::t_04f791c4d926e1 89-93
+packages/workshop-backend/src/overseer.ts
+  s_3c1ab8c0a1269e::t_d1d09a01e4878a 50-51,8954-8977,9487-9495,9500-9501,9578-9584,9592-9603
+packages/workshop-backend/src/sharing.ts
+  s_3c1ab8c0a1269e::t_a9b81dfc2ef811 28-33
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b7a7935a7500f34b6c6869df9e26cc23c7f46c43",
+  "prompts": {},
+  "sessions": {
+    "s_3c1ab8c0a1269e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9ab061e0-fb7c-499d-9776-c0e0a58e311b",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

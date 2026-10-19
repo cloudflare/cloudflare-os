@@ -1,0 +1,23 @@
+packages/workshop-frontend/src/features/ai-models/GatewayProviders.tsx
+  s_c2ca47a7bbff41::t_e9e4b15e2d93fb 1-2,8,10,16,37,60,82,98,100
+packages/workshop-frontend/src/features/ai-models/useGatewayTests.ts
+  s_c2ca47a7bbff41::t_654de99bf6ee96 1-53
+packages/workshop-frontend/src/features/ai-models/GatewayTest.tsx
+  s_c2ca47a7bbff41::t_51fc484283752e 1-61
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2675f69d20cdc433c5330c0d6e9c22358a689f4b",
+  "prompts": {},
+  "sessions": {
+    "s_c2ca47a7bbff41": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5835672d-7617-41aa-98d2-c6640f4e44c9",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

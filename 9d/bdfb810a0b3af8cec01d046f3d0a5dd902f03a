@@ -1,0 +1,37 @@
+packages/wiki-import/__tests__/plan.test.ts
+  s_e1dd627472f56c::t_7f2291963a40bd 9,268,270-271,273-279,290-296,709-711,714,830-832,875,877,1892-1897,1909-1912,1928-1929,1933-2165,2269-2270,2476-2627,2742-2773,2822-2828
+packages/wiki-import/src/identity.ts
+  s_e1dd627472f56c::t_acb34e5b585639 15-19,95-100,125-130
+packages/wiki-import/src/import.ts
+  s_e1dd627472f56c::t_fa316078fdea94 164,463-473,475-476,478-479,483,485-489,495,506-509,511-513,516-522,525-526,528,533-534,536,560-564,621-646,649-651,653,660-662,684,687-688,717-718,817-820,831,848-858,875,907-932,934-945,992,1060-1063,1068,1073-1082,1133-1140,1166,1175,1182-1185,1188-1189,1197-1200,1216-1232,1617-1619,1776-1777,1783-1790,1792-1798,1800-1804,1806-1886,1991,1993-1996,2054-2062,2075,2079-2081,2084
+packages/wiki-import/src/workshop-client.ts
+  s_e1dd627472f56c::t_8c2e909c2a8bdc 301-305,307-314,1001,1004,1010-1013,1018,1189-1205
+packages/wiki-import/__tests__/identity.test.ts
+  s_53ce95e2fb688f::t_2a3c2c0a7f0db2 206-211
+packages/wiki-import/__tests__/workshop-client.test.ts
+  s_e1dd627472f56c::t_dbae928a05c8a0 12,155-159,196,616-617,623,1005-1008,1012-1013,1022-1038,1298-1319,1323-1338,1340
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "9dbdfb810a0b3af8cec01d046f3d0a5dd902f03a",
+  "prompts": {},
+  "sessions": {
+    "s_53ce95e2fb688f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-aecfbaa8110b0ad92",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_e1dd627472f56c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a708a8fa-f215-459a-b93e-8c454b24072f",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

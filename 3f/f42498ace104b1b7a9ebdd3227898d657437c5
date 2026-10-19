@@ -1,0 +1,41 @@
+packages/workshop-backend/__tests__/browser-export.test.ts
+  s_fe30841bd8390c::t_10e753bfaebdfb 212,328-359,377,413,466,499
+packages/workshop-backend/__tests__/fixtures.ts
+  s_fe30841bd8390c::t_8b8e92ac2d8d1a 111
+packages/workshop-backend/__tests__/gadget-libraries.test.ts
+  s_fe30841bd8390c::t_330f381e1947c3 1-402
+packages/workshop-backend/__tests__/public-access.test.ts
+  s_fe30841bd8390c::t_c83d5f56de6d42 38
+packages/workshop-backend/src/agent.ts
+  s_fe30841bd8390c::t_0c9bf44380305c 19-20,664-670,691-692,905-916,1950-1951,1954-1967,2357-2359,2626-2661,2735,2751,2792,2950,3013,3110,3144-3235
+packages/workshop-backend/src/blueprint-archive.ts
+  s_fe30841bd8390c::t_c76ad7fd7674be 44-46
+packages/workshop-backend/src/browser-export.ts
+  s_fe30841bd8390c::t_02175df57e156b 40-43,136-147,152,158-165,169,177-180,190,238,246-247
+packages/workshop-backend/src/gadget-library-resolution.ts
+  s_fe30841bd8390c::t_73ee0345a0dd4e 1-97
+packages/workshop-backend/src/observability.ts
+  s_fe30841bd8390c::t_216e8b73f826b0 15-16,25-26,49-50
+packages/workshop-backend/src/overseer.ts
+  s_fe30841bd8390c::t_605f48387149fb 3,66-73,407-415,1234-1239,2061-2062,2120-2127,2135,4380-4387,4979-4982,5003-5008,5197-5223,5225-5228,5255,5258,6224-6271,7697-7700,10367-10368,10390-10393,10422-10428,11029,11051,11091-11096,11104,11113,11250-11256,12652-12656,12834,13021-13024,13312-13318
+packages/workshop-backend/src/server.ts
+  s_fe30841bd8390c::t_548d05b09e5dc3 584-586
+packages/workshop-backend/vitest.config.ts
+  s_fe30841bd8390c::t_f4802c3f341976 45
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "3ff42498ace104b1b7a9ebdd3227898d657437c5",
+  "prompts": {},
+  "sessions": {
+    "s_fe30841bd8390c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3cc7444f-cdcb-45a9-9d6f-c9080bf89899",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

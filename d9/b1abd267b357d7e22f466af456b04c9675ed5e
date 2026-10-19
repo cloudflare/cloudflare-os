@@ -1,0 +1,19 @@
+packages/gatekeeper-notion/src/notion.ts
+  s_a6fce77f385ef3::t_234490bd9cca57 1415-1418
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d9b1abd267b357d7e22f466af456b04c9675ed5e",
+  "prompts": {},
+  "sessions": {
+    "s_a6fce77f385ef3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dcdf579d-59f1-41a5-8abc-5f482a84b27a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

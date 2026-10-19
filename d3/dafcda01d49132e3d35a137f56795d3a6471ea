@@ -1,0 +1,83 @@
+packages/wiki-import/__tests__/fixtures/adf-extension.xhtml
+  s_d78fe856f76a3c::t_3065935bded1e0 1-20
+packages/wiki-import/__tests__/fixtures/code.xhtml
+  s_d78fe856f76a3c::t_1890741dfbbc8a 1-18
+packages/wiki-import/__tests__/fixtures/expand.xhtml
+  s_d78fe856f76a3c::t_2b6f6592ed39d6 1-10
+packages/wiki-import/__tests__/fixtures/images.xhtml
+  s_d78fe856f76a3c::t_421954815b4a59 1-6
+packages/wiki-import/__tests__/fixtures/inline.xhtml
+  s_d78fe856f76a3c::t_50ff9b95292271 1-8
+packages/wiki-import/__tests__/fixtures/layout.xhtml
+  s_d78fe856f76a3c::t_1d2a4a486145bb 1-15
+packages/wiki-import/__tests__/fixtures/legacy-macro.xhtml
+  s_d78fe856f76a3c::t_ccd5c683580258 1-13
+packages/wiki-import/__tests__/fixtures/links.xhtml
+  s_d78fe856f76a3c::t_c470951f7c6c62 1-8
+packages/wiki-import/__tests__/fixtures/markers.xhtml
+  s_d78fe856f76a3c::t_55bca25d48fb65 1-10
+packages/wiki-import/__tests__/fixtures/panels.xhtml
+  s_d78fe856f76a3c::t_cf0c8e6d3770b7 1-20
+packages/wiki-import/__tests__/fixtures/table.xhtml
+  s_d78fe856f76a3c::t_2ce4ee9126ca0a 1-15
+packages/wiki-import/__tests__/fixtures/tasks.xhtml
+  s_d78fe856f76a3c::t_92f54d7ad0cb6d 1-33
+packages/wiki-import/__tests__/fixtures/toc.xhtml
+  s_d78fe856f76a3c::t_bfe350cccb2763 1-6
+packages/wiki-import/__tests__/fixtures/unknown-macro.xhtml
+  s_d78fe856f76a3c::t_9cb762a4bac57e 1-7
+packages/wiki-import/__tests__/storage-dom.test.ts
+  s_d78fe856f76a3c::t_4d160dc7b3c2ee 1-130
+packages/wiki-import/__tests__/storage-to-blocks.test.ts
+  s_d78fe856f76a3c::t_23269c904725e7 1-950
+packages/wiki-import/package.json
+  s_d78fe856f76a3c::t_de12aba80546c5 1-33
+packages/wiki-import/src/href.ts
+  s_d78fe856f76a3c::t_fd76c25772cde8 1-103
+packages/wiki-import/src/placeholders.ts
+  s_d78fe856f76a3c::t_5c69eec8c988d6 1-80
+packages/wiki-import/src/slug.ts
+  s_d78fe856f76a3c::t_35e39eb08bab1e 1-36
+packages/wiki-import/src/storage-dom.ts
+  s_d78fe856f76a3c::t_56749fb7a6f10f 1-202
+packages/wiki-import/src/storage-to-blocks.ts
+  s_d78fe856f76a3c::t_4512759cc4346b 1-1389
+packages/wiki-import/src/vocabulary.ts
+  s_d78fe856f76a3c::t_b510f91040f1cd 1-597
+packages/wiki-import/tsconfig.json
+  s_d78fe856f76a3c::t_bede7ced7d70f8 1-20
+packages/wiki-import/vite.config.ts
+  s_d78fe856f76a3c::t_63d8a70ca9f352 1-5
+packages/wiki-import/vitest.config.ts
+  s_d78fe856f76a3c::t_998dbaa24fe071 1-10
+packages/wiki-import/__tests__/page-vocabulary.ts
+  s_4e6d1a33f5f3bb::t_4eaa1fad062f65 1-23
+packages/wiki-import/__tests__/slug.test.ts
+  s_4e6d1a33f5f3bb::t_f589317ea06ab4 1-42
+packages/wiki-import/src/emoticons.ts
+  s_4e6d1a33f5f3bb::t_aee8be16fbb4f3 1-49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d3dafcda01d49132e3d35a137f56795d3a6471ea",
+  "prompts": {},
+  "sessions": {
+    "s_4e6d1a33f5f3bb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-abdbf82081c29c3ea",
+        "model": "unknown"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_d78fe856f76a3c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "63609131-6dc8-4bbd-89fc-3b9404121acb",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

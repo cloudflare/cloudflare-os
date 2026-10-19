@@ -1,0 +1,43 @@
+scripts/preview/staging-config.ts
+  s_b885861eb702fb::t_863402505e9f20 25
+  s_b885861eb702fb::t_8e3c8032af45d3 689-690
+scripts/preview/preview.ts
+  s_b885861eb702fb::t_8e3c8032af45d3 625-626
+  s_b885861eb702fb::t_7402319daa6c8f 393-394
+  s_b885861eb702fb::t_5ca8745265785d 338-342,350-352,355-356
+  s_b885861eb702fb::t_863402505e9f20 637-638
+  s_b885861eb702fb::t_fda0573a155518 31
+  s_b885861eb702fb::t_6b103cfccc6987 138-139,150-152
+  s_b885861eb702fb::t_73203165fab5e2 365
+  s_b885861eb702fb::t_6f068d5150d575 133-137,149,153
+  s_b885861eb702fb::t_dd45015219d9c0 140-142
+  s_b885861eb702fb::t_0aee1a37b0c675 366-368,370
+  s_c2ca47a7bbff41::t_afbba72d1afad4 154
+.github/workflows/preview.yml
+  s_b885861eb702fb::t_15b4041336a099 111-112
+  s_b885861eb702fb::t_e1c4f2062f2005 110,132
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "19472f8f197564739c52d1f20daf511a88e2850b",
+  "prompts": {},
+  "sessions": {
+    "s_b885861eb702fb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "182c21a0-87c1-443a-af41-3089b0b30b6b",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_c2ca47a7bbff41": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5835672d-7617-41aa-98d2-c6640f4e44c9",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

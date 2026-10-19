@@ -1,0 +1,21 @@
+packages/gatekeeper-google/src/configurator/calendar-configurator-types.d.ts
+  s_dd3e5252e13c2f::t_0d9802d797d262 15-17
+packages/gatekeeper-google/src/google-configurators.ts
+  s_dd3e5252e13c2f::t_ce32c4fcdfb924 140-143
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "babdcac082fc2895f02e9c2ed00760479a3db07a",
+  "prompts": {},
+  "sessions": {
+    "s_dd3e5252e13c2f": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_f5ab350c8ffedHHe1Y6U08fA66",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

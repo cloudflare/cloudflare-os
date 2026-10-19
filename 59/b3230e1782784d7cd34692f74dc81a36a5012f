@@ -1,0 +1,51 @@
+packages/workshop-backend/src/admin-settings.ts
+  s_d16787129ca3ae::t_8ddb5146d52138 1,10-11,59-67,466,510,514
+  s_d16787129ca3ae::t_908ac19e5eab66 863
+  s_d16787129ca3ae::t_38e1ede5a4b524 9,12,52-56,465,467-475,497,503-509,511-513,515-536,546,550-561,565,573-581,856-862
+  s_d16787129ca3ae::t_3b3f425416c2a7 57-58
+packages/workshop-backend/src/admin-config.ts
+  s_d16787129ca3ae::t_8ddb5146d52138 365
+  s_d16787129ca3ae::t_0b05d3789c47a1 76-77
+  s_d16787129ca3ae::t_ef2f27769faa26 12,74-75,78-84,137-138,327,337-338,348-355,362-364,366-375,415-421,445-446
+packages/workshop-shared/src/api.ts
+  s_d16787129ca3ae::t_908ac19e5eab66 1018-1023,1205-1208,1213-1214,1245-1262,1450-1470,1493-1500,1516-1539
+packages/workshop-backend/__tests__/admin-settings-models.test.ts
+  s_d16787129ca3ae::t_908ac19e5eab66 645-647
+  s_d16787129ca3ae::t_aa678802ce82be 48-50,353-358,360-410,436-644,650,661-665
+packages/workshop-frontend/src/features/ai-models/AdminModelsPanel.test.tsx
+  s_d16787129ca3ae::t_0dabbcfa5e5bbe 8,26-29,32,35,38,40,43,48
+packages/workshop-backend/__tests__/ai-gateway.test.ts
+  s_d16787129ca3ae::t_989fe46e5fed60 422-432
+  s_d16787129ca3ae::t_0120ff567ecb24 12,161-162,164-167,342-384,387-396,398,400-421,433
+  s_d16787129ca3ae::t_ae8dc75e07f801 385-386
+  s_d16787129ca3ae::t_4a8a91f3b525c4 397,399
+  s_d16787129ca3ae::t_0927ac50c602f1 434-435
+packages/workshop-backend/__tests__/user-models.test.ts
+  s_d16787129ca3ae::t_908ac19e5eab66 218-225
+packages/integration-tests/__tests__/ai-gateway-cost.test.ts
+  s_d16787129ca3ae::t_c0073281390b78 6-8,13-17,80-86,94-102,105,157,159,211,266-323,326
+  s_d16787129ca3ae::t_908ac19e5eab66 324-325,327
+packages/workshop-backend/src/ai-gateway.ts
+  s_d16787129ca3ae::t_2207116e254da8 3,33-45,144,159-160,163-164,167,173-174,209-210,215-216,221-223
+  s_d16787129ca3ae::t_8ddb5146d52138 31-32,220
+  s_d16787129ca3ae::t_29613ec68901be 175-176
+packages/workshop-backend/__tests__/admin-config.test.ts
+  s_d16787129ca3ae::t_aefabfe46f9630 3,217-295
+  s_d16787129ca3ae::t_908ac19e5eab66 296-297
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "59b3230e1782784d7cd34692f74dc81a36a5012f",
+  "prompts": {},
+  "sessions": {
+    "s_d16787129ca3ae": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d53efdfd-725e-49f2-bc5f-96438ab0f01c",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

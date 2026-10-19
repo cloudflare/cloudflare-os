@@ -1,0 +1,34 @@
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_544ac41f1d93fd::t_18b7f8bbce24aa 1,4519-4523
+  s_544ac41f1d93fd::t_681b4ac53bc2e7 4016-4020
+  s_544ac41f1d93fd::t_4aa0dd4db38e84 3989-3993
+packages/workshop-frontend/src/routes/index.tsx
+  s_544ac41f1d93fd::t_35383d55fdc1db 1
+  s_544ac41f1d93fd::t_13dfeb848882bf 133-137
+packages/workshop-frontend/src/ChatInterface.actions.test.tsx
+  s_544ac41f1d93fd::t_74deaeda46d1bd 5,18-19,27,294-354,359-362,364-399
+  s_544ac41f1d93fd::t_bf7f652f034c9e 356-358,363
+  s_544ac41f1d93fd::t_2448a9d1591f73 355,400
+packages/workshop-frontend/src/rpcErrors.ts
+  s_544ac41f1d93fd::t_13dfeb848882bf 106-108
+  s_544ac41f1d93fd::t_b894d516431afc 104-105,109-114
+packages/workshop-frontend/src/rpcErrors.test.ts
+  s_544ac41f1d93fd::t_ba745e31223f39 16,134-151
+  s_544ac41f1d93fd::t_e78d3bad34a9e0 152-153
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "932d220e194d788671feaae2208f7c10441908c8",
+  "prompts": {},
+  "sessions": {
+    "s_544ac41f1d93fd": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "344b9e0b-49a0-49eb-ba2c-555255e663d7",
+        "model": "claude-odango-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

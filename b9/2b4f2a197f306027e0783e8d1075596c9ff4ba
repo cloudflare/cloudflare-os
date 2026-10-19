@@ -1,0 +1,30 @@
+packages/workshop-frontend/src/ActivityNotifications.tsx
+  s_447791f85abae0::t_3e9a50452f7412 8,95,97,100-105,129,132,151-156
+packages/workshop-frontend/src/ActivityNotifications.test.tsx
+  s_447791f85abae0::t_43e9e9350bdb77 115-127
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_447791f85abae0::t_3e9a50452f7412 4965,4967,4970-4975,5053-5054,5120-5121
+packages/workshop-frontend/src/ChatInterface.actions.test.tsx
+  s_447791f85abae0::t_43e9e9350bdb77 229-235
+packages/workshop-frontend/src/Activity.test.tsx
+  s_447791f85abae0::t_b21b673e326b4d 12
+  s_447791f85abae0::t_bdf1a292986e7d 1-11,13-76
+packages/workshop-frontend/src/Activity.tsx
+  s_447791f85abae0::t_3e9a50452f7412 649,656,710-713
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b92b4f2a197f306027e0783e8d1075596c9ff4ba",
+  "prompts": {},
+  "sessions": {
+    "s_447791f85abae0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "87f2bcb7-f5c3-4ce1-8051-74c720eea006",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

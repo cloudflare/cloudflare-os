@@ -1,0 +1,41 @@
+STORYBOARD.md
+  s_58819f73dfb5a6::t_aba1b9dea1fb54 179-203
+storyboard/build-deck.py
+  s_58819f73dfb5a6::t_60e9ea49cfda7e 1-420
+storyboard/build-doc.py
+  s_58819f73dfb5a6::t_bb0f90f1e9213c 95,116-123,236,238-241
+storyboard/call-path.svg
+  s_58819f73dfb5a6::t_4fb90d894cb8a0 1-81
+storyboard/crops.json
+  s_58819f73dfb5a6::t_e9ef52748e198b 3-4,38
+storyboard/deck.yaml
+  s_58819f73dfb5a6::t_59eb365ce7b9eb 1-504
+storyboard/doc.md
+  s_58819f73dfb5a6::t_0c441a5b00e52b 3,8-10,26,28-66,68,70-76,126,133,143-145,147,149,151,163-164,170,183,255,257,259-273,275,277,297,299,301,303,305,307,309,311,313,315,317-323,344,350,352,354,356,358-363,365-367,369,371,373,375,377,379,381,383,385,387,389,391,393,395,397,399,401,403,405,407,409,411,413,415,417,419,421,423,425,427,429,431,433,435,437,439,441,443,445,447,449,451,453,455,457,459,461,463,465,467,469,471,473,475,477,479,481,483,485,487,489,491,493,495,497,499,501,503,505,507,509,511,513,515,517,519,521,523,525,527,529,531,533,535,537
+storyboard/tools/diagram.mjs
+  s_74eb0b1cbb84f7::t_a2d627792d5114 1-4,10-13,17-26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b95b52793094076f2fcf0567b9932037acee816d",
+  "prompts": {},
+  "sessions": {
+    "s_58819f73dfb5a6": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ed869cedaffeaNXQbjGyMXeIZR",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_74eb0b1cbb84f7": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_edf458c69ffepVeVZFxEZXzOIj",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+packages/gatekeeper-linear/src/linear.ts
+  s_6d79354b9d5d8c::t_a9922a9ca56de9 20,965-967,1146,1989-1993,2090-2093,2106-2108,2126-2128,2149,2162-2163,2189-2191,2207-2209,2224-2228,2241-2245,2268-2272,2306-2308,2330-2331,2341-2342,2350-2376,2476
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c134eb8d01f34d6413a0dfdf2c334bb5525f7f09",
+  "prompts": {},
+  "sessions": {
+    "s_6d79354b9d5d8c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "32de7eff-dc88-4d7f-82cb-613824de97fc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

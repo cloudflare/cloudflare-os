@@ -1,0 +1,65 @@
+packages/gatekeeper-mcp/src/mcp.ts
+  s_664125cd80dfd6::t_96371cb1c6f5ec 15,194-195
+  s_664125cd80dfd6::t_0801e252285717 196-197
+packages/gatekeeper-github/src/github.ts
+  s_664125cd80dfd6::t_96371cb1c6f5ec 6,1372-1373
+  s_664125cd80dfd6::t_741751a7668668 1374-1375
+packages/gatekeeper-email/src/email.ts
+  s_664125cd80dfd6::t_96371cb1c6f5ec 19,266-267
+  s_664125cd80dfd6::t_5465802e737b53 268-269
+packages/gatekeeper-google/src/google.ts
+  s_664125cd80dfd6::t_96371cb1c6f5ec 3,356-357
+  s_664125cd80dfd6::t_7b1223b6be6af2 358-359
+packages/gatekeeper-homeassistant/src/homeassistant.ts
+  s_664125cd80dfd6::t_96371cb1c6f5ec 6,367-368
+  s_664125cd80dfd6::t_e2397cbd57b067 369-370
+packages/gatekeeper-context/src/library-gatekeeper.ts
+  s_664125cd80dfd6::t_96371cb1c6f5ec 15,388-389
+  s_664125cd80dfd6::t_d12be26a1e2bcb 390-391
+packages/gatekeeper-linear/src/linear.ts
+  s_664125cd80dfd6::t_96371cb1c6f5ec 19,494-495
+  s_664125cd80dfd6::t_72fa5c85bb3182 496-497
+packages/gatekeeper-cloudflare/src/cloudflare.ts
+  s_664125cd80dfd6::t_96371cb1c6f5ec 7,193-194
+  s_664125cd80dfd6::t_427738ded01979 195-196
+packages/gatekeeper-supabase/src/supabase.ts
+  s_664125cd80dfd6::t_96371cb1c6f5ec 6,377-378
+  s_664125cd80dfd6::t_288b45d4289481 379-380
+packages/gatekeeper-zoominfo/src/zoominfo.ts
+  s_664125cd80dfd6::t_96371cb1c6f5ec 6,359-360
+  s_664125cd80dfd6::t_3ac10698d11b1c 361-362
+packages/gatekeeper-mcp-portal/src/portal.ts
+  s_664125cd80dfd6::t_96371cb1c6f5ec 14,292-293
+  s_664125cd80dfd6::t_e931768e5b91fb 294-295
+packages/gatekeeper-spotify/src/spotify.ts
+  s_664125cd80dfd6::t_96371cb1c6f5ec 6,488-489
+  s_664125cd80dfd6::t_327a2c4c8fccca 490-491
+packages/gatekeeper-slack/src/slack.ts
+  s_664125cd80dfd6::t_96371cb1c6f5ec 8,296-297
+  s_664125cd80dfd6::t_b228518b0b9751 298-299
+packages/gatekeeper-confluence/src/confluence.ts
+  s_664125cd80dfd6::t_96371cb1c6f5ec 34,262-263
+  s_664125cd80dfd6::t_07c732aa4dae4c 264-265
+packages/gatekeeper-notion/src/notion.ts
+  s_664125cd80dfd6::t_96371cb1c6f5ec 20,307-308
+  s_664125cd80dfd6::t_c22622bbcbdedf 309-310
+packages/gatekeeper-scheduler/src/scheduler.ts
+  s_664125cd80dfd6::t_96371cb1c6f5ec 28,419-421
+  s_664125cd80dfd6::t_5a794ba72c8415 422-423
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c80b7ca830031cab0c555145d05ba14a78c775f7",
+  "prompts": {},
+  "sessions": {
+    "s_664125cd80dfd6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a41dd87a-7e4a-4acc-8c7e-eae5a69b4d55",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

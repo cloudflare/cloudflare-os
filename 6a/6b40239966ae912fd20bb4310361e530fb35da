@@ -1,0 +1,28 @@
+packages/workshop-frontend/src/features/chat/composer/ChatComposer.tsx
+  s_e259f2380cb0a8::t_36792f17594184 87,127-128,961
+packages/workshop-frontend/src/features/chat/composer/ComposerModelSelector.tsx
+  s_e259f2380cb0a8::t_36792f17594184 8-12,19,24-25
+packages/workshop-frontend/src/features/chat/composer/ComposerModelSelector.test.tsx
+  s_e259f2380cb0a8::t_f38accccc9eaf4 1-54
+packages/workshop-frontend/src/AddModelModal.tsx
+  s_e259f2380cb0a8::t_1e185309ea9d3b 106
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_e259f2380cb0a8::t_d0020aff46edb0 3254-3256,6350
+  s_e259f2380cb0a8::t_36792f17594184 2414-2415,2421,2427,3345
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6a6b40239966ae912fd20bb4310361e530fb35da",
+  "prompts": {},
+  "sessions": {
+    "s_e259f2380cb0a8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2360c005-6db4-412b-be00-5e18fb49a0fc",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,93 @@
+packages/format-blueprints/tsconfig.server-tests.json
+  s_257b4539981478::t_9e36a920597365 1-49
+packages/format-blueprints/tsconfig.client.json
+  s_257b4539981478::t_e62cb68b3bbfd4 1-45
+packages/workshop-backend/scripts/build-format-blueprints.ts
+  s_257b4539981478::t_cab855b09e703b 4-10,17-18,20,24-26,29-31,45,49
+packages/format-blueprints/libraries/README.md
+  s_257b4539981478::t_9e36a920597365 22-23,58-59
+  s_257b4539981478::t_6629823f8e831b 1-21,24-57,60-71
+packages/format-blueprints/tsconfig.tests.json
+  s_257b4539981478::t_9e36a920597365 11-15,42-43
+  s_257b4539981478::t_411dca8f8b0cdb 1-7,9,16-36
+  s_257b4539981478::t_2ccdd14d53f192 10,37
+packages/workshop-backend/package.json
+  s_257b4539981478::t_94ce0873fe1e3a 12,36
+AGENTS.md
+  s_257b4539981478::t_6629823f8e831b 17-18
+packages/format-blueprints/blueprints/workspace-docs/files/README.md
+  s_257b4539981478::t_6629823f8e831b 1-101
+packages/format-blueprints/__tests__/files.test.ts
+  s_257b4539981478::t_cb0c6bb1479508 1-565
+packages/format-blueprints/vitest.config.ts
+  s_257b4539981478::t_ed15362cb9adee 1-53
+packages/format-blueprints/README.md
+  s_257b4539981478::t_9c90d160cd23f9 3-77,79-91,93-103,124-165
+  s_257b4539981478::t_9e36a920597365 78,92,104-110
+packages/integration-tests/src/worker-inputs.ts
+  s_257b4539981478::t_6629823f8e831b 40,42-44,49-57,71-74
+packages/format-blueprints/blueprints/workspace-docs/files/client.ts
+  s_257b4539981478::t_6629823f8e831b 1-1620
+REVIEW.md
+  s_257b4539981478::t_6629823f8e831b 42,119
+packages/format-blueprints/package.json
+  s_257b4539981478::t_c648169f838d4a 2-21
+packages/format-blueprints/tsconfig.node.json
+  s_257b4539981478::t_43f615a5fe9113 1-21
+packages/format-blueprints/__tests__/stubs/cloudflare-workers.ts
+  s_257b4539981478::t_558cbff30740f5 3-11,14-21,28-35,39-42
+  s_257b4539981478::t_63b20a125b9adb 24
+  s_257b4539981478::t_50228c82b2fe2b 1-2,12-13,22-23,25-27,36-38,43
+packages/format-blueprints/src/generate.ts
+  s_257b4539981478::t_4300552ab1034f 1-195
+packages/format-blueprints/blueprints/workspace-slides/files/README.md
+  s_257b4539981478::t_6629823f8e831b 1-377
+packages/integration-tests/__tests__/worker-inputs.test.ts
+  s_257b4539981478::t_6629823f8e831b 24,60-64
+scripts/build-format-blueprints.test.ts
+  s_257b4539981478::t_6629823f8e831b 10
+docs/blueprints.md
+  s_257b4539981478::t_6629823f8e831b 123
+packages/format-blueprints/blueprints/workspace-slides/__tests__/server.test.ts
+  s_257b4539981478::t_cb0c6bb1479508 1-7,9-15,17-38
+  s_257b4539981478::t_9e36a920597365 8,16
+packages/format-blueprints/tsconfig.server.json
+  s_257b4539981478::t_acb2ac9285b524 1-50
+packages/workshop-backend/vite.config.ts
+  s_257b4539981478::t_94ce0873fe1e3a 22-24,65-67,83
+packages/format-blueprints/src/index.ts
+  s_257b4539981478::t_df2c6bc7ee40ca 1-16
+packages/format-blueprints/src/files.ts
+  s_257b4539981478::t_993c32f698e189 1-671
+packages/workshop-shared/src/api.ts
+  s_257b4539981478::t_6629823f8e831b 914-915
+packages/format-blueprints/blueprints/workspace-sheets/__tests__/xlsx.server.test.ts
+  s_257b4539981478::t_9e36a920597365 1-828
+packages/workshop-backend/scripts/import-format-blueprint.ts
+  s_257b4539981478::t_94ce0873fe1e3a 2-4,14,16-19,22-24,28-30
+vite.config.ts
+  s_257b4539981478::t_6629823f8e831b 95
+packages/format-blueprints/blueprints/workspace-sheets/files/README.md
+  s_257b4539981478::t_6629823f8e831b 1-267
+packages/format-blueprints/vite.config.ts
+  s_257b4539981478::t_9e36a920597365 9,16-17,28
+  s_257b4539981478::t_faddd4cb9af617 10-15,18-21,29
+pnpm-lock.yaml
+  s_257b4539981478::t_2fa85b2e602fde 110-114,125-127,979-981
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "95cf5f4d203c6efc6b627ac007fe8e61ae87ccae",
+  "prompts": {},
+  "sessions": {
+    "s_257b4539981478": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ec2780f3-3866-4c3e-bc33-af0ba1c8cd6e",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

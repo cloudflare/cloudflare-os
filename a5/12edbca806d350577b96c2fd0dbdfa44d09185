@@ -1,0 +1,20 @@
+packages/gatekeeper-google/src/gmail.ts
+  s_a6fce77f385ef3::t_dc7a0b56253985 1037-1039,1041
+  s_a6fce77f385ef3::t_2fdf384a0d30b4 1040
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a512edbca806d350577b96c2fd0dbdfa44d09185",
+  "prompts": {},
+  "sessions": {
+    "s_a6fce77f385ef3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "dcdf579d-59f1-41a5-8abc-5f482a84b27a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,75 @@
+docs/observers.md
+  s_c47574cd28be9c::t_4f66c8593c5bd3 841-842,889-893
+packages/gatekeeper-google/README.md
+  s_c47574cd28be9c::t_1d78711ec1b934 11,32,58,92,149,154,637-649
+packages/gatekeeper-google/__tests__/configurator-url.test.ts
+  s_c47574cd28be9c::t_951c7c16ae6bf2 37-38,43-44,402-458
+packages/gatekeeper-google/__tests__/groups-api.test.ts
+  s_c47574cd28be9c::t_feb82599958a84 1-350
+packages/gatekeeper-google/__tests__/types-parity.test.ts
+  s_c47574cd28be9c::t_1ca43d0dcbd381 18-19,48,57
+packages/gatekeeper-google/__tests__/types.test.ts
+  s_c47574cd28be9c::t_63736a804aa3d9 10-11,127,289-318
+packages/gatekeeper-google/__tests__/worker.ts
+  s_c47574cd28be9c::t_7f540d57ce2593 15,17,22,64-68,357-451
+packages/gatekeeper-google/__tests__/workerd/configurators.test.ts
+  s_c47574cd28be9c::t_e3dcf0e2119d8b 13,187-243
+packages/gatekeeper-google/__tests__/workerd/groups.test.ts
+  s_c47574cd28be9c::t_2b1ac13232f115 1-560
+packages/gatekeeper-google/cloudflare.config.ts
+  s_c47574cd28be9c::t_8087e9dd616688 24
+packages/gatekeeper-google/deploy-inputs.json
+  s_c47574cd28be9c::t_735fbf1e060940 9
+packages/gatekeeper-google/src/configurator/google-group-configurator-types.d.ts
+  s_c47574cd28be9c::t_f2979c4c053ecf 1-14
+packages/gatekeeper-google/src/configurator/google-group-configurator-ui.tsx
+  s_c47574cd28be9c::t_ffb771c30da676 1-63
+packages/gatekeeper-google/src/configurator/groups-account-configurator-types.d.ts
+  s_c47574cd28be9c::t_6bac7618eb0e36 1-6
+packages/gatekeeper-google/src/configurator/groups-account-configurator-ui.tsx
+  s_c47574cd28be9c::t_2bf6f5423b7a76 1-31
+packages/gatekeeper-google/src/google-configurators.ts
+  s_c47574cd28be9c::t_a201626f1a9857 7,10-13,33-34,45-48,139-159,450-510
+packages/gatekeeper-google/src/google-verifier-types.ts
+  s_c47574cd28be9c::t_02661fd55328e3 30-31
+packages/gatekeeper-google/src/google.ts
+  s_c47574cd28be9c::t_6a6105070bc943 75,84,90,104-105,114-115,136-137,165-166,170,382,385-389,448,894-901,990-1003,1097-1098,1222-1235
+packages/gatekeeper-google/src/groups-api.ts
+  s_c47574cd28be9c::t_96d9d8c828223b 1-387
+packages/gatekeeper-google/src/groups-types.d.ts
+  s_c47574cd28be9c::t_fc36b129e001a2 1-124
+packages/gatekeeper-google/src/groups-types.txt
+  s_c47574cd28be9c::t_24f66c357bd566 1
+packages/gatekeeper-google/src/groups.ts
+  s_c47574cd28be9c::t_a4fdfead839d22 1-425
+packages/gatekeeper-google/src/resources.ts
+  s_c47574cd28be9c::t_b307c04fbb2c21 13,127-154,249-255,346-353,483-485,577-579,595-596,650,777-825
+packages/gatekeeper-google/src/shared-approval-queue.ts
+  s_c47574cd28be9c::t_54d1f878b62ba0 2
+packages/gatekeeper-google/src/type-bundle.ts
+  s_c47574cd28be9c::t_b4efe6d614f72d 15-17
+packages/gatekeeper-google/vitest.docs-worker.config.ts
+  s_c47574cd28be9c::t_0e688b7b335070 9-10,23,37
+packages/gatekeeper-google/worker-configuration.d.ts
+  s_c47574cd28be9c::t_16ec8d39dbdedb 2,9
+packages/gatekeeper-google/wrangler.jsonc
+  s_c47574cd28be9c::t_5da0caafbbde60 88-93
+scripts/release/testdata/golden-manifest.json
+  s_c47574cd28be9c::t_194aff90c36db0 422,494-499
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5b7a1346b4555661880deda2b4f680b9b5fce462",
+  "prompts": {},
+  "sessions": {
+    "s_c47574cd28be9c": {
+      "agent_id": {
+        "tool": "opencode",
+        "id": "ses_ebfe118c8ffeZm1uw2NrH2mWVC",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}

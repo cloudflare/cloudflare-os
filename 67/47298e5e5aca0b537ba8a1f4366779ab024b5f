@@ -1,0 +1,44 @@
+packages/workshop-shared/src/api.ts
+  s_489d625d331959::t_5413faf68d1537 530-531
+packages/workshop-frontend/src/ShareModal.tsx
+  s_489d625d331959::t_5413faf68d1537 344,361
+packages/workshop-backend/src/overseer.ts
+  s_489d625d331959::t_5413faf68d1537 12940
+plans/restricted-data-sharing.md
+  s_489d625d331959::t_5413faf68d1537 34,59,70,162
+packages/gatekeeper-mcp/README.md
+  s_489d625d331959::t_e68df1d0ed44d0 180-181
+packages/workshop-backend/__tests__/authorize-observation-flags.test.ts
+  s_489d625d331959::t_4edddce55d7377 1-166
+packages/workshop-frontend/src/ShareModal.test.tsx
+  s_489d625d331959::t_5413faf68d1537 1222,1251,1257,1280,1287,1298,1310
+packages/workshop-backend/__tests__/sharing.test.ts
+  s_489d625d331959::t_4edddce55d7377 38-41,635,637,639,652-653,659,666-667,669,685-686,691,697,700,715-716,725,727,738,741,752-753,755,757,762-763
+docs/observers.md
+  s_489d625d331959::t_c3fba7548a6d14 40
+  s_489d625d331959::t_5413faf68d1537 37,41-42,106-107,674-675,715-716
+packages/integration-tests/__tests__/sensitive-observations.test.ts
+  s_489d625d331959::t_4edddce55d7377 7-11,223,225,227,259,263,265,287,292,329,334,340,425,431-432
+packages/workshop-backend/src/sharing.ts
+  s_489d625d331959::t_4edddce55d7377 20,160-163,170,220,248,261,304
+docs/sharing.md
+  s_489d625d331959::t_c485e58bd55e40 155,157,163,165
+.agents/skills/write-gatekeeper/SKILL.md
+  s_489d625d331959::t_e68df1d0ed44d0 246
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6747298e5e5aca0b537ba8a1f4366779ab024b5f",
+  "prompts": {},
+  "sessions": {
+    "s_489d625d331959": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f4bf4a5a-6829-4739-b0ef-433f7036a3b6",
+        "model": "claude-watermelon-eap"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
