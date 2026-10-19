@@ -316,6 +316,21 @@ describe('GatekeeperModal grouped resource types', () => {
     expect(testState.configurator?.acceptedResourceUrlPatterns).toEqual([SERVICE.urlPattern, CATALOG.urlPattern])
   })
 
+  // A type that isn't separately grantable is covered by the account's connection, so the card
+  // offers it without waiting for the types that are.
+  it('offers a card\'s type that isn\'t separately grantable before its grantable types are granted', async () => {
+    stubResizeObserver()
+    await renderModal({ initialVendorId: 'catalog', initialResourceUrlPattern: CATALOG.urlPattern }, {
+      resource: SERVICE,
+      otherResources: [{ ...CATALOG, grantable: false }],
+      granted: [],
+    })
+
+    await vi.waitFor(() => expect(testState.frameKeys).toHaveLength(1))
+    expect(testState.configurator?.acceptedResourceUrlPatterns).toEqual([CATALOG.urlPattern])
+    expect(buttonLabels()).toContain('Grant access')
+  })
+
   // A configurator should offer only the types the account holds; one that returns another anyway
   // does not get it connected.
   it('refuses to connect a grouped type the account has not granted', async () => {

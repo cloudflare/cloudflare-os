@@ -540,19 +540,19 @@ export default function GatekeeperModal({
     ? resourceForUrl(selectedConnection, initialResourceUrl)
     : undefined
 
-  // The card's grantable types the selected account hasn't granted. Its configurator opens once the
-  // account has granted at least one of them, and offers only the granted ones; the account's Grant
-  // access button asks for the rest. (An undefined granted set means a legacy account predating
-  // grant tracking; treat it as fully granted.)
+  // The card's grantable types the selected account hasn't granted. Its configurator offers every
+  // other type, and opens once there is one to offer; the account's Grant access button asks for the
+  // rest. (An undefined granted set means a legacy account predating grant tracking; treat it as
+  // fully granted.)
   const requiredGrants = selectedConnection ? requiredResourceUrlPatterns(selectedConnection) : []
   const grantedPatterns = selectedAccount?.description.grantedResourceUrlPatterns
   const missingGrants = grantedPatterns === undefined
     ? []
     : requiredGrants.filter(pattern => !grantedPatterns.includes(pattern))
-  const awaitingGrant = missingGrants.length > 0 && missingGrants.length === requiredGrants.length
   const acceptedResourceUrlPatterns = (selectedConnection?.resources ?? [])
     .map(resource => resource.urlPattern)
     .filter(pattern => !missingGrants.includes(pattern))
+  const awaitingGrant = missingGrants.length > 0 && acceptedResourceUrlPatterns.length === 0
   // A configurator reads the types it may offer only when it starts, so a new grant restarts it.
   const acceptedKey = acceptedResourceUrlPatterns.join('\n')
 
