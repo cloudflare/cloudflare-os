@@ -874,7 +874,8 @@ export default function GadgetEditor() {
 
   const codeStateReady = effectiveHasCode !== null
   const hasCodeRelatedState = effectiveHasCode === true
-    || anyChatProposedWorkpieces.some(w => !isWorktreeId(w))
+    // (A chat may also propose worktrees, and edits to an agent spawner's bindings.)
+    || anyChatProposedWorkpieces.some(w => workpieces.get(w)?.type === 'gadget')
     || (streamingActiveFile != null && !isWorktreeId(streamingActiveFile.workpieceId))
   const layoutModeReady = chatListReady && (codeStateReady || hasCodeRelatedState)
 

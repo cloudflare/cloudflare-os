@@ -385,6 +385,30 @@ describe('GatekeeperModal grouped resource types', () => {
   })
 })
 
+describe('GatekeeperModal agent spawner request', () => {
+  // The chat's accept flow keeps the modal mounted and opens it for each request.
+  it('opens on the Agent form when reopened for an agent spawner request', async () => {
+    testState.authenticatedApi = authenticatedApi()
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    const render = (open: boolean) => act(async () => root!.render(<GatekeeperModal
+      open={open}
+      onClose={() => {}}
+      getOverseer={() => { throw new Error('not called') }}
+      onCreated={() => Promise.resolve()}
+      initialVendorId={open ? 'agent-spawner' : undefined}
+    />))
+
+    await render(false)
+    await render(true)
+
+    await vi.waitFor(() => {
+      expect(document.body.querySelector('[aria-label="Agent display name"]')).not.toBeNull()
+    })
+  })
+})
+
 describe('GatekeeperModal model pickers', () => {
   // A decision model can back an AI Model binding but can't run an agent. The AI Model picker labels
   // each model with its kind.
