@@ -67,19 +67,19 @@ export function putAction(
 
 /**
  * Forges a client interface over the given storage via open(). `role` picks the returned
- * interface class ("build" opens as the owner); `access` is a "use" viewer's effective access
+ * interface class ("build" opens as `ownerId`); `access` is a "use" viewer's effective access
  * (default: the legacy all-gadget grant); `exports` supplies any ctx.exports entries the
  * exercised paths dereference; `impl` overrides individual members of the forged impl (e.g. to
  * delegate one method to a real OverseerImpl under test).
  */
 export async function openFakeOverseer(
     storage: object,
-    opts: { role?: "build" | "use", access?: CollaboratorAccess, exports?: object,
+    opts: { role?: "build" | "use", access?: CollaboratorAccess, ownerId?: string, exports?: object,
             impl?: object } = {}): Promise<Overseer> {
   let role = opts.role ?? "build";
   let access: CollaboratorAccess = role === "build"
       ? { role: "build" } : opts.access ?? { role: "use", gadgetIds: "all" };
-  let ownerId = "owner-id";
+  let ownerId = opts.ownerId ?? "owner-id";
   let userId = role === "build" ? ownerId : "viewer-id";
   let overseer = {
     open: OverseerDurableObject.prototype.open,
@@ -88,6 +88,7 @@ export async function openFakeOverseer(
       assertGatekeeperUsable: () => {},
       ensureAmbientCapsules: async () => {},
       markOutputsDirty: () => {},
+      trackUnreadReader: () => {},
       joinSession: () => () => {},
       joinPresence: () => () => {},
       joinOutputsFanout: () => () => {},
@@ -110,6 +111,7 @@ export async function openFakeOverseer(
         }),
       },
       storage: Object.assign(storage, {
+        deletingWorkspace: { get: () => false },
         containsRestrictedData: { get: () => false },
         title: { get: () => "Test Workspace" },
       }),

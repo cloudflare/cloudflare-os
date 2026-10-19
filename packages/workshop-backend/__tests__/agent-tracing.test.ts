@@ -11,6 +11,7 @@ import type {
 } from "@gadgets/workshop-shared/api";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { OverseerDurableObject } from "../src/overseer.js";
+import type { UserDurableObject } from "../src/user.js";
 import type { ActionRecord, AutoApproveTagRecord }
   from "../src/storage-schema/overseer-storage.js";
 
@@ -25,6 +26,7 @@ interface OverseerInternals {
       getCloudflareGatekeeperAccount(): Promise<null>;
       consumeDailyLlmCall(): Promise<{ withinLimits: boolean }>;
       publishNotification(notification: UserNotification): Promise<void>;
+      syncWorkspaceChats: UserDurableObject["syncWorkspaceChats"];
     };
   };
   storage: {
@@ -190,6 +192,7 @@ function startTurn(responses: (() => Response)[], {
         publishNotification: async notification => {
           notifications.push([userId, notification]);
         },
+        syncWorkspaceChats: async () => {},
       }),
     };
     impl.storage.chatMeta.put({
