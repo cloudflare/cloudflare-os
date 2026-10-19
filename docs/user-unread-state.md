@@ -1,7 +1,8 @@
 # User-owned unread state
 
 The User DO owns private read horizons and derived counts. The workspace owns the ordered
-timeline. No read receipts are exposed to other users.
+timeline. No read receipts are exposed to other users. See [the UI consumers](user-unread-ui.md)
+for inbox, viewport and native bridge behavior.
 
 Open [the four-slide walkthrough](user-unread-flow.html) in a browser for the dirty-bit,
 processing, clearing and restart flow.

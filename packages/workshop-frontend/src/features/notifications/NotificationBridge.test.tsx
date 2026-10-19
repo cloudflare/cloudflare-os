@@ -16,6 +16,7 @@ const router = { navigate: vi.fn<(options: object) => void>() };
 
 vi.mock("@cloudflare/kumo", () => ({ useKumoToastManager: () => ({ add: addToast }) }));
 vi.mock("@tanstack/react-router", () => ({ useRouter: () => router }));
+vi.mock("./UnreadStateBridge", () => ({ UnreadStateBridge: () => null }));
 
 const notification: UserNotification = {
   id: "notification-1",
@@ -81,7 +82,7 @@ describe("NotificationBridge", () => {
     expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(1);
 
     await act(async () => setVisibility("hidden"));
-    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(dispose).not.toHaveBeenCalled();
     await expect(subscribers[0].notify(notification)).rejects.toThrow("not visible");
     expect(addToast).not.toHaveBeenCalled();
   });
@@ -95,7 +96,7 @@ describe("NotificationBridge", () => {
     await act(() => subscribers[1].notify(notification));
     expect(addToast).toHaveBeenCalledTimes(1);
 
-    // Unsubscribing releases it too, whether hidden or unmounted.
+    // A DO reset while hidden also re-subscribes; visibility itself does not churn the listener.
     await act(async () => setVisibility("hidden"));
     await release(1);
     await act(async () => setVisibility("visible"));
@@ -103,6 +104,17 @@ describe("NotificationBridge", () => {
     await release(2);
     expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledTimes(3);
     root = createRoot(container);
+  });
+
+  it("subscribes when mounted hidden without treating an unseen toast as delivered", async () => {
+    setVisibility("hidden");
+    await render();
+    expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledOnce();
+    await expect(subscribers[0].notify(notification)).rejects.toThrow("not visible");
+    await act(async () => setVisibility("visible"));
+    expect(authenticatedApi.subscribeToNotifications).toHaveBeenCalledOnce();
+    await act(() => subscribers[0].notify(notification));
+    expect(addToast).toHaveBeenCalledOnce();
   });
 
   it("does not retry a subscription that failed", async () => {
