@@ -253,10 +253,10 @@ export type HierarchyPickerProps = {
   root: ConfiguratorUIHierarchyRoot;
   loadItems(request: ConfiguratorUIHierarchyRequest): Promise<ConfiguratorUIHierarchyPage>;
   /**
-   * Looks up the node a `value` names, with its `path`, so a pre-filled value opens where it lives.
-   * A pre-filled value other than the root's needs it: one it resolves null for, fails on, finds
-   * cannot be connected, or resolves to a node of another id is let go of, since the picker cannot
-   * show it as that choice.
+   * Looks up the node a `value` names, with its `path`, so a value the picker is not showing (a
+   * pre-filled one, or one the module sets) opens where it lives. Any such value other than the
+   * root's needs it: one it resolves null for, fails on, finds cannot be connected, or resolves to a
+   * node of another id is let go of, since the picker cannot show it as that choice.
    */
   loadItem?(id: string): Promise<ConfiguratorUIHierarchyItem | null>;
   /**

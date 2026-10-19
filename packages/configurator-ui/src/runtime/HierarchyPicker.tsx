@@ -199,26 +199,13 @@ const Row = ({ action, selected, disabled, tabbable, onFocus, onActivate, ...bod
  * dialog, a choice lasts while it is in view: moving elsewhere or searching lets go of it, except
  * the root's, whose card is always in view.
  *
- * Where it has navigated describes one root, so a new root or a value the module set starts it
- * afresh, pre-filling that value where it lives. A change the module declined leaves it in place.
+ * Where it has navigated describes one root, so a new root starts it afresh. A value nothing on
+ * screen shows as chosen, pre-filled or set by the module later, is looked up and opened where it
+ * lives. Any other change leaves the picker where the user took it: a pick the module takes at once
+ * or after awaiting something, one it declines, or a choice it lets go of.
  */
-export const HierarchyPicker = (props: HierarchyPickerProps) => {
-  const value = props.value ?? null;
-  // `sent` is what the picker just reported, until a render shows whether the module took it. A new
-  // value that is not `sent` is the module's own, even one the picker reported and was declined.
-  const [own, setOwn] = useState<{ value: string | null; generation: number; sent?: string | null }>(
-    { value, generation: 0 });
-  if (value !== own.value) {
-    setOwn({ value, generation: value === own.sent ? own.generation : own.generation + 1 });
-  } else if (own.sent !== undefined) {
-    setOwn({ value, generation: own.generation });
-  }
-  const onChange: HierarchyPickerProps["onChange"] = (next, item) => {
-    setOwn(current => ({ ...current, sent: next }));
-    props.onChange(next, item);
-  };
-  return <Navigator key={`${props.name}\n${props.root.id}\n${own.generation}`} {...props} onChange={onChange} />;
-};
+export const HierarchyPicker = (props: HierarchyPickerProps) =>
+  <Navigator key={`${props.name}\n${props.root.id}`} {...props} />;
 
 const Navigator = (props: HierarchyPickerProps) => {
   const { name, value = null, root, icons, searchPlaceholder, disabled = false } = props;
@@ -230,8 +217,10 @@ const Navigator = (props: HierarchyPickerProps) => {
   const loadItems = useEffectEvent(props.loadItems);
   const dropPrefill = useEffectEvent(() => props.onChange(null, null));
 
-  const [pendingPrefill, setPendingPrefill] = useState(() =>
-    value !== null && !(value === root.id && root.selectable === true) ? value : null);
+  // The value the last render saw, so a change to it is acted on once. Null at first, so a pre-filled
+  // value is a change like any other.
+  const [seenValue, setSeenValue] = useState<string | null>(null);
+  const [pendingPrefill, setPendingPrefill] = useState<string | null>(null);
   const [location, setLocation] = useState<Location>(AT_ROOT);
   const [text, setText] = useState("");
   const [query, setQuery] = useState("");
@@ -333,10 +322,23 @@ const Navigator = (props: HierarchyPickerProps) => {
   const searchOpen = searchFocused || text !== "";
   const focusId = activeId !== null && rowIds.includes(activeId) ? activeId : rowIds[0];
   const rootChosen = root.selectable === true && value === root.id;
+  // A choice is on screen on the root's card, the open container's own row, or a leaf's row. A
+  // container's row in a listing opens it, so its choice is the row it opens to.
+  const choiceShown = value !== null && (rootChosen || value === scope?.id
+    || rows.some(row => row.kind === "leaf" && row.id === value));
+  if (value !== seenValue) {
+    setSeenValue(value);
+    if (value !== null && !choiceShown) {
+      setPendingPrefill(value);
+      setPrefilledLeaf(null);
+      setText("");
+      setQuery("");
+    } else setPendingPrefill(null);
+  }
   // A value nothing on screen shows as chosen (a pre-fill still being looked up, or found in a folder
   // that is still listing or failed to) is held back from collection. A layout effect, so the hold
   // is on record before anything collects in the same turn.
-  const held = value !== null && !rootChosen && !rowIds.includes(value);
+  const held = value !== null && !choiceShown;
   useLayoutEffect(() => {
     store.setHold(name, held ? "Configurator is not showing its choice." : null);
     return () => store.setHold(name, null);
@@ -631,7 +633,7 @@ const Navigator = (props: HierarchyPickerProps) => {
               subtitle={query ? searchSubtitle(item) : item.subtitle}
               icon={iconFor(item.icon, item.kind)}
               action={item.kind === "container" ? "open" : item.selectable ? "choose" : "none"}
-              selected={item.id === value}
+              selected={item.kind === "leaf" && item.id === value}
               disabled={disabled}
               tabbable={focusId === item.id}
               onFocus={() => setActiveId(item.id)}

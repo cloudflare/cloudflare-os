@@ -420,6 +420,47 @@ describe("a value the module sets", () => {
     await expect.element(list()).toHaveAccessibleName("Reports");
     await expect.element(option("Q1.pdf")).toHaveAttribute("aria-selected", "true");
   });
+
+  // A module may take a pick only after awaiting something, such as `ensureResources`.
+  it("leaves the user's search alone when the module takes a pick a moment later", async () => {
+    const loadItem = vi.fn(async (): Promise<Item | null> => ({ ...q1, path: [{ id: "reports", title: "Reports" }] }));
+    const onChange = await render({
+      loadItems: source({ q1: [q1] }), loadItem, searchPlaceholder: "Search Drive", accepts: () => false,
+    });
+    const search = page.getByRole("searchbox", { name: "Search Drive" });
+
+    await userEvent.fill(search, "q1");
+    await userEvent.click(option("Q1.pdf"));
+    await act(() => setFromModule("q1"));
+
+    await expect.element(option("Q1.pdf")).toHaveAttribute("aria-selected", "true");
+    await expect.element(search).toHaveValue("q1");
+    expect(loadItem).not.toHaveBeenCalled();
+    expect(onChange.mock.calls.map(([next]) => next)).toEqual(["q1"]);
+  });
+
+  it("leaves the user where they are when the module lets go of the choice", async () => {
+    await render({ loadItems: source() });
+    await userEvent.click(option("Reports"));
+    await userEvent.click(option("Q1.pdf"));
+
+    await act(() => setFromModule(null));
+
+    await expect.element(option("Q1.pdf")).toHaveAttribute("aria-selected", "false");
+    await expect.element(list()).toHaveAccessibleName("Reports");
+  });
+
+  // A container is chosen from the row it opens to, not from its row in its parent's listing.
+  it("opens a container the module sets, even one the open listing shows", async () => {
+    const loadItem = vi.fn(async (): Promise<Item | null> => ({ ...reports, path: [] }));
+    await render({ loadItems: source(), loadItem });
+    await expect.element(option("Reports")).toBeVisible();
+
+    await act(() => setFromModule("reports"));
+
+    await expect.element(option("Everything in Reports")).toHaveAttribute("aria-selected", "true");
+    expect(loadItem).toHaveBeenCalledExactlyOnceWith("reports");
+  });
 });
 
 describe("loading", () => {
