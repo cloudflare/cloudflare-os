@@ -417,6 +417,7 @@ describe("SkillsNavigatorTree", () => {
 
     const skillRow = row("pricing-analytics");
     expect(skillRow?.textContent).toContain("Skill frontmatter is not valid YAML.");
+    expect(skillRow?.draggable).toBe(false);
     expect(skillRow?.textContent).not.toContain("Unused");
 
     openMenu("pricing-analytics");

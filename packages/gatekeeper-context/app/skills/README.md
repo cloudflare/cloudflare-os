@@ -26,9 +26,9 @@ that skill creation applies, and a hidden manifest leaves a collection looking e
 why. The row carries a warning icon and the validation message from `skillError` on the document
 summary. It is named after its directory, or the collection title for a root manifest, since a
 manifest that does not parse has no metadata name. Selecting it opens the manifest in the editor, as
-for a valid skill. Rename is withheld because it rewrites the manifest's `name`, which needs
-frontmatter that parses; move and delete work as for any skill. Each Git sync that stores invalid
-manifests logs one `context.skill.manifest.invalid` warning naming up to ten of them.
+for a valid skill. Rename and move are withheld because the server validates the manifest before
+either, so they would always fail until it is fixed; delete works as for any skill. Each Git sync
+that stores invalid manifests logs one `context.skill.manifest.invalid` warning naming up to ten.
 
 ## Legacy directories
 

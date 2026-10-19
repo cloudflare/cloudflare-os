@@ -126,7 +126,9 @@ const toListItem = (
     const directoryPath = renamed ? manifestPath.slice(0, manifestPath.lastIndexOf("/")) : node.directoryPath;
     const skill = renamed ? { ...node, name, manifestPath, directoryPath } : node;
     skillsById.set(id, skill);
-    if (writable) {
+    // moveContextSkill, like rename, validates the manifest first, so an invalid one cannot move.
+    const movable = writable && !node.invalid;
+    if (movable) {
       moveSourcesById.set(id, {
         collectionId,
         manifestPath,
@@ -150,7 +152,7 @@ const toListItem = (
           <span aria-hidden>{relativeUpdatedAt(node.lastUpdated, now)}</span>
         </span>
       ),
-      draggable: writable,
+      draggable: movable,
     };
   }
 
