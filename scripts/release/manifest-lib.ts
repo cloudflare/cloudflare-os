@@ -120,8 +120,9 @@ export interface WranglerConfig {
   /** Browser Rendering binding (Gadget PDF exports). */
   browser?: BindingDecl;
   /**
-   * Workers AI binding of a worker that declares its own (gatekeeper-websearch). The backend's
-   * `WORKERS_AI` is hardcoded in buildWorkerEntry instead, which refuses one in its config.
+   * Workers AI binding of a worker that declares its own (gatekeeper-websearch, gatekeeper-google).
+   * The backend's `WORKERS_AI` is hardcoded in buildWorkerEntry instead, which refuses one in its
+   * config.
    */
   ai?: BindingDecl;
   /** Artifacts binding — closed beta, cut from customer manifests. */
@@ -256,8 +257,8 @@ const HANDLED_CONFIG_KEYS = new Set([
   // Browser Rendering (Gadget PDF exports). Unlike artifacts it is generally available, so it
   // passes through to customer instances as a placeholder-free binding, like the AI binding.
   "browser",
-  // Workers AI, for a gatekeeper that calls it itself (gatekeeper-websearch). Placeholder-free,
-  // like browser.
+  // Workers AI, for a gatekeeper that calls it itself (gatekeeper-websearch's searches,
+  // gatekeeper-google's Drive PDF reading). Placeholder-free, like browser.
   "ai",
   // gatekeeper-context's Artifacts binding is closed-beta and cannot be provisioned in arbitrary
   // user accounts; it is dropped from customer manifests (the gatekeeper degrades gracefully).
