@@ -20,14 +20,21 @@ import {
 class UnreadRecorder extends RpcTarget implements UnreadStateSubscriber {
   state: UserUnreadState | undefined;
   async updated(state: UserUnreadState): Promise<void> {
-    if (!this.state || state.revision > this.state.revision) this.state = state;
+    this.state = state;
+  }
+  async chatUpdated(workspaceId: string, chatId: number, chat: ChatReadState | null,
+      counts: Pick<UserUnreadState, "unreadChatCount" | "unreadMessageCount">): Promise<void> {
+    if (!this.state) return;
+    const chats = this.state.chats.filter(item => item.workspaceId !== workspaceId || item.chatId !== chatId);
+    if (chat) chats.push(chat);
+    this.state = {...this.state, ...counts, chats};
   }
 }
 
 const receipt = (chat: ChatReadState) => ({
   workspaceId: chat.workspaceId,
   chatId: chat.chatId,
-  readEpoch: chat.readEpoch,
+  readThroughSequence: chat.readThroughSequence,
   throughSequence: chat.latestSequence,
 });
 let harness: Harness | undefined;
@@ -67,7 +74,7 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
   using _first = await owner.subscribeToUnreadState(firstStub);
   using _second = await secondDevice.subscribeToUnreadState(secondStub);
   await waitFor("both initial unread snapshots", async () =>
-    first.state?.revision === 0 && second.state?.revision === 0 ? true : null,
+    first.state && second.state ? true : null,
   );
 
   using workspace = await owner.newGadget();
@@ -100,10 +107,11 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
   await owner.markChatsRead([receipt(initial)]);
   expect(await owner.getUnreadState()).toMatchObject({ unreadChatCount: 1, unreadMessageCount: 1 });
   await owner.markChatRead(receipt(next));
-  await secondDevice.markChatUnread(workspaceId, chatId, initial.latestSequence, next.readEpoch);
+  await secondDevice.markChatUnread(workspaceId, chatId, initial.latestSequence, next.latestSequence);
   await owner.markChatRead(receipt(next)); // stale automatic read from the other device
   await waitFor("the manual unread boundary on both devices", async () =>
-    first.state?.chats[0]?.readEpoch === 1 && second.state?.chats[0]?.readEpoch === 1 ? true : null,
+    first.state?.chats[0]?.readThroughSequence === initial.latestSequence - 1 &&
+    second.state?.chats[0]?.readThroughSequence === initial.latestSequence - 1 ? true : null,
   );
   expect(first.state?.chats[0]?.readThroughSequence).toBe(initial.latestSequence - 1);
   expect(first.state?.unreadMessageCount).toBe(2);
@@ -144,11 +152,11 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
   });
   expect(viewerUpdates.state!.chats).toEqual([]);
 
-  await secondDevice.markChatRead({ ...receipt(next), readEpoch: third.readEpoch });
+  await secondDevice.markChatRead({ ...receipt(next), readThroughSequence: third.readThroughSequence });
   await waitFor("an observed partial read leaving the later message unread", async () =>
     first.state?.unreadMessageCount === 1 && second.state?.unreadMessageCount === 1 ? true : null,
   );
-  await owner.markChatRead(receipt(third));
+  await owner.markChatRead({...receipt(third), readThroughSequence: next.latestSequence});
   await waitFor("the owner's read clearing both devices but not the collaborator", async () =>
     first.state?.unreadMessageCount === 0 && second.state?.unreadMessageCount === 0 ? true : null,
   );
@@ -179,6 +187,7 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
   await workspace.deleteSelf();
   await waitFor("workspace removal", async () =>
     first.state?.chats.length === 0 && second.state?.chats.length === 0 &&
+    (await backgroundBuilder.getUnreadState()).unreadMessageCount === 0 &&
     (await backgroundBuilder.getUnreadState()).chats.length === 0 ? true : null,
   );
 });
