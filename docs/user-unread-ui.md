@@ -26,8 +26,9 @@ They do not calculate independent unread counts or persist a second set of read 
 - Failed read commands display an error without pretending the state advanced. Missing workspace
   summaries show a status and retry with backoff; incomplete totals do not replace native badges.
 
-`UnreadStateBridge` retains its subscription while hidden and resubscribes after transport/DO reset.
-Hidden windows receive badge updates but never issue automatic read receipts.
+`UnreadStateBridge` releases its live callback while hidden, and refreshes on return or transport/DO
+reset. Unread support therefore adds no hidden-tab callback keeping the User DO resident. Background native badges use the
+separate push-service path; hidden windows never issue automatic read receipts.
 `NotificationBridge` also retains its independent alert subscription while hidden, but rejects
 hidden toast delivery so the existing mobile-push fallback still works. Receiving an unread
 snapshot does not acknowledge an alert or replay one. The WebSocket reconnects independently of
@@ -38,10 +39,11 @@ page visibility.
 The first-party native bridge can optionally implement:
 
 ```ts
-cloudflareOSNative.unreadStateChanged(state: UserUnreadState): void;
+cloudflareOSNative.unreadStateChanged(state: UserUnreadState & { revision: number }): void;
 ```
 
-`UnreadStateBridge` forwards every newer complete snapshot, including while hidden. The native host
+The bridge forwards complete visible-session updates. Its revision is a web-view-local compatibility
+counter, not a persisted unread version. The native host
 must associate it with its verified first-party main frame and saved instance/user, never a claimed
 instance or gadget frame. Use `unreadMessageCount` for that instance, and sum authenticated instance
 counts for an OS badge. A disconnect is stale/unknown, not zero; logout/removal clears that

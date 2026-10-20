@@ -38,14 +38,14 @@ export const ReadTimeline = ({
   const chat = unread?.state?.chats.find(
     (item) => item.workspaceId === workspaceId && item.chatId === chatId,
   );
-  const [visit, setVisit] = useState<{ epoch: number; divider?: number; paused: boolean }>();
+  const [visit, setVisit] = useState<{ horizon: number; divider?: number; paused: boolean }>();
   // A new request also retries a failed page when navigation is already pending; zero is idle.
   const [jump, setJump] = useState(1);
   const root = useRef<HTMLDivElement>(null);
   const pending = useRef(-1);
   const requestedPage = useRef<number | undefined>(undefined);
   const jumpSequence = useRef<number | undefined>(undefined);
-  const localUnreadEpoch = useRef<number | undefined>(undefined);
+  const localUnreadHorizon = useRef<number | undefined>(undefined);
   const requestRead = useRef<(() => void) | undefined>(undefined);
   const latest = useRef({ chat, unread, visit });
   latest.current = { chat, unread, visit };
@@ -55,12 +55,12 @@ export const ReadTimeline = ({
       pending.current = -1;
       return;
     }
-    if (!visit || visit.epoch !== chat.readEpoch) {
-      const localUnread = localUnreadEpoch.current === chat.readEpoch;
-      localUnreadEpoch.current = undefined;
+    if (!visit || chat.readThroughSequence < visit.horizon) {
+      const localUnread = localUnreadHorizon.current === chat.readThroughSequence;
+      localUnreadHorizon.current = undefined;
       const divider =
         chat.latestSequence > chat.readThroughSequence ? chat.readThroughSequence + 1 : undefined;
-      setVisit({ epoch: chat.readEpoch, divider, paused: !!visit });
+      setVisit({ horizon: chat.readThroughSequence, divider, paused: !!visit });
       pending.current = -1;
       if (divider !== undefined && !localUnread) {
         jumpSequence.current = divider;
@@ -68,11 +68,14 @@ export const ReadTimeline = ({
         onUnreadNavigation(true);
         setJump((request) => request + 1);
       }
-    } else if (visit.paused && localUnreadEpoch.current === undefined &&
+    } else if (visit.paused && localUnreadHorizon.current === undefined &&
         chat.readThroughSequence >= chat.latestSequence) {
-      setVisit({ ...visit, paused: false });
+      setVisit({ ...visit, horizon: chat.readThroughSequence, paused: false });
     } else if (visit.divider === undefined && chat.latestSequence > chat.readThroughSequence) {
-      setVisit({ ...visit, divider: chat.readThroughSequence + 1 });
+      setVisit({ ...visit, horizon: chat.readThroughSequence, divider: chat.readThroughSequence + 1 });
+    } else if (visit.horizon !== chat.readThroughSequence) {
+      pending.current = -1;
+      setVisit({...visit, horizon: chat.readThroughSequence});
     }
   }, [chat, visit, onUnreadNavigation]);
 
@@ -194,10 +197,12 @@ export const ReadTimeline = ({
         latestSequence: chat?.latestSequence ?? -1,
         markUnread: (sequence) => {
           if (!chat || !unread || !visit) return;
-          localUnreadEpoch.current = chat.readEpoch + 1;
+          localUnreadHorizon.current = sequence - 1;
           setVisit({ ...visit, divider: sequence, paused: true });
-          void unread.markUnread(chat, sequence).catch(() => {
-            localUnreadEpoch.current = undefined;
+          void unread.markUnread(chat, sequence).then(() => {
+            localUnreadHorizon.current = undefined;
+          }).catch(() => {
+            localUnreadHorizon.current = undefined;
             setVisit(visit);
           });
         },

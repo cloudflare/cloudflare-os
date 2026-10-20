@@ -15,8 +15,7 @@ import { TimelineReadItem } from "./TimelineReadItem";
 import { reportVisibleChat } from "./visibleChat";
 import { TimelineContext } from "./readTimelineContext";
 
-const snapshot = (revision = 1, readThroughSequence = -1, readEpoch = 0): UserUnreadState => ({
-  revision,
+const snapshot = (_update = 1, readThroughSequence = -1): UserUnreadState => ({
   unreadChatCount: readThroughSequence < 2 ? 1 : 0, unreadMessageCount: readThroughSequence < 2 ? 1 : 0,
   chats: [
     {
@@ -25,7 +24,6 @@ const snapshot = (revision = 1, readThroughSequence = -1, readEpoch = 0): UserUn
       chatTitle: "Demo",
       latestSequence: 2,
       readThroughSequence,
-      readEpoch,
       unreadMessageCount: Math.max(0, 2 - readThroughSequence),
     },
   ],
@@ -136,7 +134,7 @@ describe("timeline read/unread experience", () => {
       workspaceId: "workspace",
       chatId: 1,
       throughSequence: 0,
-      readEpoch: 0,
+      readThroughSequence: -1,
     });
     visibleBottom = 350;
     await act(async () =>
@@ -147,18 +145,25 @@ describe("timeline read/unread experience", () => {
       workspaceId: "workspace",
       chatId: 1,
       throughSequence: 2,
-      readEpoch: 0,
+      readThroughSequence: -1,
     });
   });
 
   it("does not acknowledge hidden documents, unfocused windows or a zero-size pane", async () => {
-    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
     await render();
     await update(snapshot());
+    await act(async () => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
     await settle();
     expect(markChatRead).not.toHaveBeenCalled();
-    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
     vi.mocked(document.hasFocus).mockReturnValue(false);
+    await act(async () => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await update(snapshot());
     await act(async () => window.dispatchEvent(new Event("focus")));
     await settle();
     expect(markChatRead).not.toHaveBeenCalled();
@@ -167,7 +172,20 @@ describe("timeline read/unread experience", () => {
     await act(async () => window.dispatchEvent(new Event("resize")));
     await settle();
     expect(markChatRead).not.toHaveBeenCalled();
-    expect(dispose).not.toHaveBeenCalled();
+    expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  it("retries an unconsumed viewport after another receipt advances the observed horizon", async () => {
+    visibleBottom = 350;
+    await render();
+    await update(snapshot());
+    await settle();
+    expect(markChatRead).toHaveBeenLastCalledWith({workspaceId: "workspace", chatId: 1,
+      throughSequence: 2, readThroughSequence: -1});
+    await update(snapshot(2, 0));
+    await settle();
+    expect(markChatRead).toHaveBeenLastCalledWith({workspaceId: "workspace", chatId: 1,
+      throughSequence: 2, readThroughSequence: 0});
   });
 
   it("acknowledges visible messages during continuous streaming renders and resizes", async () => {
@@ -191,7 +209,7 @@ describe("timeline read/unread experience", () => {
         });
       }
       expect(markChatRead).toHaveBeenCalledExactlyOnceWith({
-        workspaceId: "workspace", chatId: 1, throughSequence: 0, readEpoch: 0,
+        workspaceId: "workspace", chatId: 1, throughSequence: 0, readThroughSequence: -1,
       });
     } finally {
       vi.useRealTimers();
@@ -203,22 +221,18 @@ describe("timeline read/unread experience", () => {
     await update(snapshot(1, 2));
     await settle();
     expect(markChatRead).not.toHaveBeenCalled();
-    await update(snapshot(2, 0, 1));
+    await update(snapshot(2, 0));
     await settle();
     expect(container.textContent).toContain("automatic reading paused");
     expect(markChatRead).not.toHaveBeenCalled();
-    await update(snapshot(3, 2, 1));
+    await update(snapshot(3, 2));
     await settle();
     expect(container.textContent).not.toContain("automatic reading paused");
-    await update(snapshot(4, 0, 1));
+    await update(snapshot(4, 0));
     visibleBottom = 350;
     await settle();
-    expect(markChatRead).toHaveBeenLastCalledWith({
-      workspaceId: "workspace",
-      chatId: 1,
-      throughSequence: 2,
-      readEpoch: 1,
-    });
+    expect(markChatRead).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("automatic reading paused");
   });
 
   it("loads older history before acknowledging a newer page, without endlessly retrying a failed page", async () => {
@@ -243,7 +257,7 @@ describe("timeline read/unread experience", () => {
     await settle();
     expect(navigate).toHaveBeenCalled();
     expect(markChatRead).toHaveBeenCalledExactlyOnceWith({
-      workspaceId: "workspace", chatId: 1, throughSequence: 2, readEpoch: 0,
+      workspaceId: "workspace", chatId: 1, throughSequence: 2, readThroughSequence: 0,
     });
   });
 
@@ -260,12 +274,12 @@ describe("timeline read/unread experience", () => {
     expect(markChatRead).toHaveBeenCalledOnce();
     await update(snapshot(2, 2));
     await settle();
+    expect(container.textContent).not.toContain("Jump to first unread");
     markChatRead.mockClear();
     await update(snapshot(3, 1));
     await settle();
-    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({
-      workspaceId: "workspace", chatId: 1, throughSequence: 2, readEpoch: 0,
-    });
+    expect(markChatRead).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("automatic reading paused");
   });
 
   it("cleans viewport listeners/timers on leaving and preserves the visit divider as receipts advance", async () => {
