@@ -3,7 +3,8 @@
 
 import type { AccessTokenProvider } from "./auth-retry";
 import {
-  conversionError, CONVERTED_FROM_PROPERTY, DriveApi, DriveApiRequestError, isInsufficientScope,
+  conversionError, CONVERTED_FROM_PROPERTY, DriveApi, DriveApiRequestError, isDriveFileId,
+  isInsufficientScope,
   type DriveConversionSource, type DriveCopyLocation,
 } from "./drive-api";
 import { GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE } from "./drive-session";
@@ -117,13 +118,6 @@ export async function explainUnopenedFile(
   let type = await mimeType().catch(() => undefined);
   if (type === undefined || type === OFFICE_KINDS[kind].nativeMimeType) return error;
   return officeLabel(kind, type) === undefined ? nonNativeFileError(kind) : officeFileError(kind);
-}
-
-const DRIVE_FILE_ID_PATTERN = /^[A-Za-z0-9_-]{1,256}$/;
-
-/** Whether `id` has the shape of a Drive file ID, checked before it reaches a Drive request path. */
-export function isDriveFileId(id: string): boolean {
-  return DRIVE_FILE_ID_PATTERN.test(id);
 }
 
 /** What {@link OfficeConversion.inspectFile} found. */

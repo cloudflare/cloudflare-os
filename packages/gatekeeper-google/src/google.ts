@@ -37,7 +37,8 @@ import {
   computeReplaceOperations, docTabToMarkdown, markdownToDocRequests, MARKDOWN_RENDERING_VERSION,
   type DocTabSnapshot, type EditableMarkdown,
 } from "./markdown-converter";
-import { DriveApi, DriveApiRequestError } from "./drive-api";
+import { DriveApi, DriveApiRequestError, lacksFileContentAccess, MAX_PDF_BYTES } from "./drive-api";
+import { type AiFetcher, pdfToText, type PdfConverter } from "./drive-pdf";
 import { driveObserverTracker, type DriveObservation } from "./drive-observers";
 import { outsideScope, readFolderRoot, type FolderLocation } from "./drive-folder-scope";
 import {
@@ -46,7 +47,7 @@ import {
   type DriveBindingScope, type DriveCore, type NativeObservation, type NativeRead,
 } from "./drive-session";
 import type {
-  DriveEntry, DriveListOptions, DriveSessionSearchQuery, GoogleDriveFolderSession,
+  DriveEntry, DriveListOptions, DrivePdfText, DriveSessionSearchQuery, GoogleDriveFolderSession,
   GoogleDriveReadSession, GoogleDriveSession,
 } from "./drive-types";
 import { ChatApi, isChatNoAccessError } from "./chat-api";
@@ -2997,7 +2998,7 @@ export class GoogleDriveGatekeeperImpl
         // The natural browser URL, not the internal `_resource` selector the grant is keyed on.
         url: `https://drive.google.com/drive/folders/${encodeURIComponent(scope.folderId)}`,
         title: folder.name,
-        snippet: `List and search direct children, navigate child folders, and read native Google Docs, Sheets and Slides in Drive folder "${folder.name}"`,
+        snippet: `List and search direct children, navigate child folders, read native Google Docs, Sheets and Slides, and read PDFs' text with readPdf() in Drive folder "${folder.name}"`,
         suggestedBindingName: "GOOGLE_DRIVE_FOLDER",
         tsType: "GoogleDriveFolderSession",
       };
@@ -3006,7 +3007,7 @@ export class GoogleDriveGatekeeperImpl
     return {
       url: `https://drive.google.com/file/d/${encodeURIComponent(scope.fileId)}/view`,
       title: file.name,
-      snippet: `Read metadata and, when native, Google Doc, Sheet or Slides content from Drive file "${file.name}"`,
+      snippet: `Read metadata and, when native, Google Doc, Sheet or Slides content, or with readPdf() a PDF's text, from Drive file "${file.name}"`,
       suggestedBindingName: "GOOGLE_DRIVE_FILE",
       tsType: "GoogleDriveReadSession",
     };
@@ -3023,11 +3024,17 @@ export class GoogleDriveGatekeeperImpl
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GoogleDriveSession> {
     let observerTracker = this.#observerTracker();
     let getDriveAccessToken = (opts?: AccessTokenRequest) => this.#getAccessToken(opts);
+    // `pnpm dev-server` drops the AI binding unless started with --use-workers-ai-binding.
+    // `Ai` declares no `fetch`, but the binding has one; conversion goes through it so it can stream.
+    let ai = this.env.AI as unknown as AiFetcher | undefined;
+    let gatewayId = this.env.CF_AI_GATEWAY;
+    let convertPdf: PdfConverter | undefined = ai && (pdf => pdfToText(ai, gatewayId, pdf));
     return new GoogleDriveSessionImpl(
       new DriveApi(getDriveAccessToken),
       new GoogleDocsApi(getDriveAccessToken),
       new GoogleSheetsApi(getDriveAccessToken),
       new GoogleSlidesApi(getDriveAccessToken),
+      convertPdf,
       this.#scope,
       approvalQueue.dup(),
       observations => observerTracker.prepareObservation(observations),
@@ -3172,6 +3179,13 @@ class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession
   }
 }
 
+/** Exact MIME type Drive gives a PDF. */
+const PDF_MIME_TYPE = "application/pdf";
+/** The refusal for an account connected before Drive bindings could read file content. */
+const PDF_ACCESS_MISSING =
+  "This Google account was connected before Drive bindings could read file content. Reconnect " +
+  "it in Workshop to read PDFs.";
+
 /** Drive RPC session implementation, exported for workerd contract coverage. */
 @validateRpc()
 export class GoogleDriveSessionImpl extends RpcTarget
@@ -3181,6 +3195,8 @@ export class GoogleDriveSessionImpl extends RpcTarget
   #docsApi: GoogleDocsApi;
   #sheetsApi: GoogleSheetsApi;
   #slidesApi: GoogleSlidesApi;
+  /** Absent when the deployment has no Workers AI binding, so PDFs cannot be read. */
+  #convertPdf: PdfConverter | undefined;
   #scope: DriveBindingScope;
   /** Set exactly when the scope is a folder, so no core has to be built to learn which it is. */
   #location?: FolderLocation;
@@ -3195,6 +3211,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     docsApi: GoogleDocsApi,
     sheetsApi: GoogleSheetsApi,
     slidesApi: GoogleSlidesApi,
+    convertPdf: PdfConverter | undefined,
     scope: DriveBindingScope,
     approvalQueue: RpcStub<ApprovalQueue>,
     prepareObservation: (
@@ -3208,6 +3225,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     this.#docsApi = docsApi;
     this.#sheetsApi = sheetsApi;
     this.#slidesApi = slidesApi;
+    this.#convertPdf = convertPdf;
     this.#scope = scope;
     this.#location = scope.kind === "folder"
       ? location ?? {folderIds: [scope.folderId]}
@@ -3243,8 +3261,8 @@ export class GoogleDriveSessionImpl extends RpcTarget
     return this.#withQueue(async (queue, core) => {
       let location = await (core as DriveFolderSessionCore).openFolder(folderId);
       return new GoogleDriveSessionImpl(
-        this.#driveApi, this.#docsApi, this.#sheetsApi, this.#slidesApi, this.#scope, queue,
-        this.#prepareObservation, this.#prepareWithheld, location,
+        this.#driveApi, this.#docsApi, this.#sheetsApi, this.#slidesApi, this.#convertPdf,
+        this.#scope, queue, this.#prepareObservation, this.#prepareWithheld, location,
       );
     });
   }
@@ -3265,6 +3283,27 @@ export class GoogleDriveSessionImpl extends RpcTarget
     return this.#openNative(fileId, GOOGLE_SLIDES_MIME_TYPE, "Google Slides presentation",
       (presentationId, queue, read) =>
         new GooglePresentationReadSessionImpl(this.#slidesApi, presentationId, queue, read));
+  }
+
+  async readPdf(fileId: string): Promise<DrivePdfText> {
+    return this.#withQueue(async (queue, core) => {
+      let id = await core.openNativeFile(fileId, PDF_MIME_TYPE, "PDF");
+      let convert = this.#convertPdf;
+      if (!convert) throw new Error("PDF reading is not available on this deployment.");
+      let text = await core.nativeRead(id, PDF_MIME_TYPE)(async () => {
+        let pdf = await this.#driveApi.openDownload(id, MAX_PDF_BYTES).catch((error: unknown) => {
+          throw lacksFileContentAccess(error) ? new Error(PDF_ACCESS_MISSING) : error;
+        });
+        return convert(pdf);
+      }, () => ({
+        title: "Read PDF from Google Drive",
+        description: `Read the text of Drive file ${id}.`,
+      }));
+      // Nothing outlives this call, so the queue is released here; `#withQueue` releases it on a
+      // throw.
+      queue[Symbol.dispose]();
+      return text;
+    });
   }
 
   #coreFor(queue: RpcStub<ApprovalQueue>): DriveCore {

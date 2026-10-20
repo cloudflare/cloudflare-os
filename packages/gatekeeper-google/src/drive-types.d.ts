@@ -126,7 +126,17 @@ export type DriveFolderSearchQuery = Omit<DriveSearchQuery, "directParentId"> & 
 export type DriveSessionSearchQuery =
   DriveSearchQuery & Pick<DriveFolderSearchQuery, "childFolderIds">;
 
-/** Read-only Drive metadata discovery and native Google Docs/Sheets/Slides access. */
+/** Text of a Drive PDF. */
+export type DrivePdfText = {
+  /** The PDF's text as Markdown. Empty when `hasText` is false. */
+  markdown: string;
+  /** False for a scanned or image-only PDF, which has no text layer; it is not OCR'd. */
+  hasText: boolean;
+  /** Whether `markdown` was cut at the size limit. */
+  truncated: boolean;
+};
+
+/** Read-only Drive metadata discovery, native Google Docs/Sheets/Slides access, and PDF text. */
 export interface GoogleDriveReadSession {
   /** Return this capability's immutable scope with current display metadata. */
   getScope(): Promise<DriveScope>;
@@ -163,6 +173,12 @@ export interface GoogleDriveReadSession {
    * capability.
    */
   openGoogleSlides(fileId: string): Promise<GooglePresentationReadSession>;
+
+  /**
+   * Read an in-scope PDF's text, converted to Markdown. Fails asking to reconnect when the Google
+   * account was connected before Drive bindings could read file content.
+   */
+  readPdf(fileId: string): Promise<DrivePdfText>;
 }
 
 /** Read-only navigation within the originally selected folder. */
@@ -192,6 +208,12 @@ export interface GoogleDriveFolderSession extends Pick<GoogleDriveReadSession, "
    * capability.
    */
   openGoogleSlides(fileId: string): Promise<GooglePresentationReadSession>;
+
+  /**
+   * Read a live direct-child PDF's text, converted to Markdown. Fails asking to reconnect when
+   * the Google account was connected before Drive bindings could read file content.
+   */
+  readPdf(fileId: string): Promise<DrivePdfText>;
 
   /** Open a live direct child folder as an independently disposable capability. */
   openFolder(folderId: string): Promise<GoogleDriveFolderSession>;

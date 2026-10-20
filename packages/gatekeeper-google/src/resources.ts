@@ -133,8 +133,8 @@ export const BIGQUERY_RESOURCE: SupportedResource = {
 };
 
 /**
- * Files, folders, and read-only native Google Docs, Sheets and Slides available to the connected
- * account.
+ * Files, folders, read-only native Google Docs, Sheets and Slides, and PDF text available to the
+ * connected account.
  *
  * Whole-account, not just My Drive: listings set `includeItemsFromAllDrives`, so a shared drive the
  * account belongs to is inside this grant.
@@ -146,7 +146,7 @@ export const GOOGLE_DRIVE_RESOURCE: SupportedResource = {
       "Find files and folders anywhere this Google account can read in Drive, including shared " +
       "drives. Full-text search examines indexed file content, descriptions, and OCR text; search " +
       "results contain metadata only, while native Google Docs, Sheets and Slides can be opened " +
-      "read-only.",
+      "read-only, and PDFs can be read as text.",
   grantable: true,
 };
 
@@ -156,18 +156,18 @@ export const GOOGLE_DRIVE_FOLDER_RESOURCE: SupportedResource = {
   title: "Google Drive Folder",
   description:
       "Browse a selected folder or shared drive, search its direct children, and read native " +
-      "Google Docs, Sheets and Slides.",
+      "Google Docs, Sheets and Slides, and PDFs as text.",
   grantable: true,
   groupedWith: GOOGLE_DRIVE_RESOURCE.urlPattern,
 };
 
-/** Metadata and, when native, read-only content for one immutable Drive file ID. */
+/** Metadata and, when native or a PDF, read-only content for one immutable Drive file ID. */
 export const GOOGLE_DRIVE_FILE_RESOURCE: SupportedResource = {
   urlPattern: "https://drive.google.com/file/d/:fileId/view",
   title: "Google Drive File",
   description:
       "Read metadata and, for a native Google Doc, Sheet or Slides presentation, content from one " +
-      "Drive file.",
+      "Drive file, or its text when it is a PDF.",
   grantable: true,
   groupedWith: GOOGLE_DRIVE_RESOURCE.urlPattern,
 };
@@ -263,7 +263,8 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
   {
     resource: GOOGLE_DRIVE_RESOURCE,
     scopes: [
-      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      // File content, not only metadata, so a PDF can be downloaded to read its text.
+      "https://www.googleapis.com/auth/drive.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
       "https://www.googleapis.com/auth/presentations.readonly",
@@ -272,7 +273,8 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
   {
     resource: GOOGLE_DRIVE_FOLDER_RESOURCE,
     scopes: [
-      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      // File content, not only metadata, so a PDF can be downloaded to read its text.
+      "https://www.googleapis.com/auth/drive.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
       "https://www.googleapis.com/auth/presentations.readonly",
@@ -281,7 +283,8 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
   {
     resource: GOOGLE_DRIVE_FILE_RESOURCE,
     scopes: [
-      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      // File content, not only metadata, so a PDF can be downloaded to read its text.
+      "https://www.googleapis.com/auth/drive.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
       "https://www.googleapis.com/auth/presentations.readonly",
@@ -320,9 +323,9 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
 ];
 
 /**
- * Wider Drive grants. `drive.readonly` is requested only by {@link OFFICE_IMPORT_GRANT} and
- * {@link SHARED_DRIVES_GRANT}; full `drive` never is, and appears only in {@link SCOPE_COVERED_BY},
- * where it truthfully subsumes the narrow requirements.
+ * Wider Drive grants. `drive.readonly` is requested by the Drive resources, by
+ * {@link OFFICE_IMPORT_GRANT} and by {@link SHARED_DRIVES_GRANT}; full `drive` never is, and
+ * appears only in {@link SCOPE_COVERED_BY}, where it truthfully subsumes the narrow requirements.
  */
 const DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 const DRIVE_READWRITE_SCOPE = "https://www.googleapis.com/auth/drive";
@@ -341,7 +344,7 @@ export const OFFICE_IMPORT_GRANT = "https://docs.google.com/import";
 
 /**
  * The grant that lets the Drive picker list the shared drives this account belongs to:
- * `drives.list` accepts only `drive.readonly` or `drive`, which no Drive resource requests.
+ * `drives.list` accepts only `drive.readonly` or `drive`.
  *
  * Private, as {@link OFFICE_IMPORT_GRANT} is, and asked for only by the picker's Allow access
  * button, so an account that never opens Shared drives is never asked for it. The picker uses it

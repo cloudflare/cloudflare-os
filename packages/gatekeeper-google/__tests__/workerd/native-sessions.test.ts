@@ -6,8 +6,10 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleDocsApi } from "../../src/docs-api";
 import { DriveApi } from "../../src/drive-api";
+import type { DriveBindingScope } from "../../src/drive-session";
+import type { PdfConverter } from "../../src/drive-pdf";
 import { GoogleDriveSessionImpl } from "../../src/google";
-import type { DriveSessionSearchQuery } from "../../src/drive-types";
+import type { DrivePdfText, DriveSessionSearchQuery } from "../../src/drive-types";
 import { GoogleSheetsApi } from "../../src/sheets-api";
 import type { GoogleSpreadsheetSession } from "../../src/sheets-types";
 import { GoogleSlidesApi } from "../../src/slides-api";
@@ -20,6 +22,40 @@ const DOC_MIME = "application/vnd.google-apps.document";
 const SHEET_MIME = "application/vnd.google-apps.spreadsheet";
 const SLIDES_MIME = "application/vnd.google-apps.presentation";
 const FOLDER_MIME = "application/vnd.google-apps.folder";
+const PDF_MIME = "application/pdf";
+
+const PDF_BYTES = new TextEncoder().encode("%PDF-1.4\n1 0 obj\n");
+const PDF_TEXT: DrivePdfText = { markdown: "### Page 1\nChapter 1", hasText: true, truncated: false };
+const PDF_ACCESS_MISSING =
+  "This Google account was connected before Drive bindings could read file content. Reconnect " +
+  "it in Workshop to read PDFs.";
+/** What `alt=media` answers a token holding only `drive.metadata.readonly`. */
+const NOT_AUTHORIZED_TO_FILE = {
+  error: {
+    code: 403,
+    message: "The user has not granted the app 123456789 read access to the file pdf-1.",
+    errors: [{
+      message: "The user has not granted the app 123456789 read access to the file pdf-1.",
+      reason: "appNotAuthorizedToFile",
+      location: "Authorization",
+    }],
+  },
+};
+
+/** A converter that reads the PDF stream it is given to the end and answers {@link PDF_TEXT}. */
+function fakeConverter(onConvert?: () => void) {
+  const converted: Uint8Array[] = [];
+  const convert: PdfConverter = async pdf => {
+    converted.push(new Uint8Array(await new Response(pdf).arrayBuffer()));
+    onConvert?.();
+    return PDF_TEXT;
+  };
+  return { converted, convert };
+}
+
+function isDownload(url: string): boolean {
+  return new URL(url).searchParams.get("alt") === "media";
+}
 
 const DECK = presentation([
   slide("s1", [shape("t1", text(["Intro"]), { placeholder: "TITLE" })]),
@@ -39,6 +75,8 @@ let providerUrls: string[];
 let providerTabs: unknown[];
 /** Absent for a document the caller cannot edit, as Google returns it. */
 let providerRevision: string | undefined;
+/** What a file download answers. */
+let providerDownload: () => Response;
 
 async function getAccessToken(): Promise<string> {
   return "access-token";
@@ -46,9 +84,18 @@ async function getAccessToken(): Promise<string> {
 
 class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   readonly observations: ObservationDescription[] = [];
+  /** Titles this queue refuses to authorize. */
+  readonly refuse = new Set<string>();
+  /** Set once every stub of this queue, the session's and each duplicate, is released. */
+  released = false;
 
   async authorizeObservation(description: ObservationDescription): Promise<void> {
+    if (this.refuse.has(description.title)) throw new Error("Observation refused");
     this.observations.push(description);
+  }
+
+  [Symbol.dispose](): void {
+    this.released = true;
   }
 
   async getGitCache(): Promise<GitCache> {
@@ -133,15 +180,22 @@ function installProvider(tabs: unknown[] = [docTab("solo", "Solo", "")]) {
   const urls: string[] = [];
   providerTabs = tabs;
   providerRevision = "revision-1";
+  providerDownload = () => new Response(PDF_BYTES, {
+    headers: { "Content-Type": PDF_MIME, "Content-Length": String(PDF_BYTES.byteLength) },
+  });
   vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
     const url = new URL(input instanceof Request ? input.url : input.toString());
     urls.push(url.toString());
     if (url.hostname === "www.googleapis.com" && url.pathname.endsWith("/drive/v3/files")) {
       return Response.json({ files: [providerFile("doc-1", DOC_MIME)] });
     }
+    if (url.hostname === "www.googleapis.com" && isDownload(url.toString())) {
+      return providerDownload();
+    }
     if (url.hostname === "www.googleapis.com" && url.pathname.includes("/drive/v3/files/")) {
       const id = decodeURIComponent(url.pathname.split("/").at(-1)!);
-      const mimeType = id === "doc-1" ? DOC_MIME : id === "deck-1" ? SLIDES_MIME : SHEET_MIME;
+      const mimeType = id === "doc-1" ? DOC_MIME : id === "deck-1" ? SLIDES_MIME
+        : id === "pdf-1" ? PDF_MIME : SHEET_MIME;
       return Response.json(providerFile(id, mimeType));
     }
     if (url.hostname === "docs.googleapis.com") {
@@ -166,7 +220,9 @@ function docFetches(): number {
   }).length;
 }
 
-function newSession() {
+function newSession(
+  convertPdf?: PdfConverter, scope: DriveBindingScope = { kind: "account" },
+) {
   const queue = new TestApprovalQueue();
   const queueStub: RpcStub<ApprovalQueue> = new RpcStub(queue);
   return {
@@ -176,7 +232,8 @@ function newSession() {
       new GoogleDocsApi(getAccessToken),
       new GoogleSheetsApi(getAccessToken),
       new GoogleSlidesApi(getAccessToken),
-      { kind: "account" },
+      convertPdf,
+      scope,
       queueStub,
       async fileIds => ({ pendingSets: fileIds, commit() {} }),
       () => ({ pendingSets: [], commit() {} }),
@@ -294,6 +351,109 @@ describe("Drive nested native sessions", () => {
 
     expect(await cursor.next()).toEqual([expect.objectContaining({ id: "doc-1" })]);
     expect(queue.observations.at(-1)?.title).toBe("Read Google Drive metadata");
+  });
+});
+
+describe("Drive PDF reads", () => {
+  it("returns the converted text after authorizing its read", async () => {
+    let authorizedAtConversion: string[] = [];
+    const converter = fakeConverter(() => {
+      authorizedAtConversion = queue.observations.map(o => o.title);
+    });
+    const { queue, session } = newSession(converter.convert);
+    using owned = session;
+
+    expect(await owned.readPdf("pdf-1")).toEqual(PDF_TEXT);
+    expect(authorizedAtConversion).toEqual(["Open PDF from Google Drive"]);
+
+    expect(converter.converted).toEqual([PDF_BYTES]);
+    const download = new URL(providerUrls.find(isDownload)!);
+    expect(download.pathname).toBe("/drive/v3/files/pdf-1");
+    expect(download.searchParams.get("supportsAllDrives")).toBe("true");
+    // The text is converted before its read is authorized, and authorized before it is returned.
+    expect(queue.observations.map(({ title, description }) => ({ title, description }))).toEqual([
+      {
+        title: "Open PDF from Google Drive",
+        description: "Check current metadata for Drive file pdf-1 and open it as a PDF.",
+      },
+      { title: "Read PDF from Google Drive", description: "Read the text of Drive file pdf-1." },
+    ]);
+  });
+
+  it("withholds the text when its read is not authorized", async () => {
+    const converter = fakeConverter();
+    const { queue, session } = newSession(converter.convert);
+    using owned = session;
+    queue.refuse.add("Read PDF from Google Drive");
+
+    await expect(Promise.resolve(owned.readPdf("pdf-1"))).rejects.toThrow("Observation refused");
+    expect(converter.converted).toHaveLength(1);
+  });
+
+  it("refuses a file that is not a PDF after observing it, without downloading", async () => {
+    const converter = fakeConverter();
+    const { queue, session } = newSession(converter.convert);
+    using owned = session;
+
+    await expect(Promise.resolve(owned.readPdf("doc-1")))
+      .rejects.toThrow("The requested Drive file is not a PDF.");
+    expect(queue.observations.map(o => o.title)).toEqual(["Open PDF from Google Drive"]);
+    expect(providerUrls.some(isDownload)).toBe(false);
+    expect(converter.converted).toEqual([]);
+  });
+
+  it("refuses an ID outside an exact-file binding before contacting Google", async () => {
+    const converter = fakeConverter();
+    const { queue, session } = newSession(converter.convert, { kind: "file", fileId: "pdf-1" });
+    using owned = session;
+
+    await expect(Promise.resolve(owned.readPdf("pdf-2")))
+      .rejects.toThrow("The requested file is outside this Drive binding.");
+    expect(providerUrls).toEqual([]);
+    expect(queue.observations).toEqual([]);
+  });
+
+  it("asks an account connected before content access to reconnect", async () => {
+    providerDownload = () => Response.json(NOT_AUTHORIZED_TO_FILE, { status: 403 });
+    const converter = fakeConverter();
+    const { queue, session } = newSession(converter.convert);
+    using owned = session;
+
+    await expect(Promise.resolve(owned.readPdf("pdf-1"))).rejects.toThrow(PDF_ACCESS_MISSING);
+    expect(converter.converted).toEqual([]);
+    expect(queue.observations.map(o => o.title)).toEqual(["Open PDF from Google Drive"]);
+  });
+
+  it("passes other download failures through", async () => {
+    providerDownload = () => Response.json(
+      { error: { code: 403, errors: [{ reason: "cannotDownloadFile" }] } }, { status: 403 });
+    using session = newSession(fakeConverter().convert).session;
+
+    await expect(Promise.resolve(session.readPdf("pdf-1")))
+      .rejects.toThrow("Google Drive API request failed: 403 (cannotDownloadFile)");
+  });
+
+  it("says PDF reading is unavailable without a converter, without downloading", async () => {
+    const { queue, session } = newSession();
+    using owned = session;
+
+    await expect(Promise.resolve(owned.readPdf("pdf-1")))
+      .rejects.toThrow("PDF reading is not available on this deployment.");
+    expect(providerUrls.some(isDownload)).toBe(false);
+    expect(queue.observations.map(o => o.title)).toEqual(["Open PDF from Google Drive"]);
+  });
+
+  it.each([
+    ["succeeds", "pdf-1"],
+    ["fails", "doc-1"],
+  ])("releases its queue duplicate when the read %s", async (_outcome, fileId) => {
+    const { queue, session } = newSession(fakeConverter().convert);
+
+    await Promise.resolve(session.readPdf(fileId)).catch(() => undefined);
+    expect(queue.released).toBe(false);
+    session[Symbol.dispose]();
+
+    await vi.waitFor(() => expect(queue.released).toBe(true));
   });
 });
 
@@ -478,6 +638,11 @@ describe("folder-scoped native sessions", () => {
     const nativeCalls: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(input instanceof Request ? input.url : input.toString());
+      if (isDownload(url.toString())) {
+        nativeCalls.push("download");
+        onNativeRead?.();
+        return new Response(PDF_BYTES, { headers: { "Content-Type": PDF_MIME } });
+      }
       if (url.pathname === "/batch/drive/v3") {
         return batchResponse(String(init?.body ?? ""), nodes);
       }
@@ -529,7 +694,7 @@ describe("folder-scoped native sessions", () => {
     return nativeCalls;
   }
 
-  function folderSession(nodes: Map<string, Node>) {
+  function folderSession(nodes: Map<string, Node>, convertPdf?: PdfConverter) {
     const queue = new TestApprovalQueue();
     return {
       queue,
@@ -538,6 +703,7 @@ describe("folder-scoped native sessions", () => {
         new GoogleDocsApi(getAccessToken),
         new GoogleSheetsApi(getAccessToken),
         new GoogleSlidesApi(getAccessToken),
+        convertPdf,
         { kind: "folder", folderId: ROOT },
         new RpcStub(queue),
         async fileIds => ({ pendingSets: fileIds, commit() {} }),
@@ -750,6 +916,60 @@ describe("folder-scoped native sessions", () => {
     using ownedDoc = doc;
 
     await expect(Promise.resolve(ownedDoc.getContent())).resolves.toBe("");
+  });
+
+  it("reads a direct-child PDF, checking its place around the download", async () => {
+    const nodes = subtree();
+    nodes.set("pdf-1", { id: "pdf-1", mimeType: PDF_MIME, parents: [ROOT], trashed: false });
+    const nativeCalls = installFolderProvider(nodes);
+    const converter = fakeConverter();
+    const { queue, session } = folderSession(nodes, converter.convert);
+    using owned = session;
+
+    expect(await owned.readPdf("pdf-1")).toEqual(PDF_TEXT);
+    expect(nativeCalls).toEqual(["download"]);
+    expect(queue.observations.map(o => o.title))
+      .toEqual(["Open PDF from Google Drive", "Read PDF from Google Drive"]);
+  });
+
+  it("refuses a PDF moved out of the folder during the download, authorizing no read", async () => {
+    const nodes = subtree();
+    nodes.set("pdf-1", { id: "pdf-1", mimeType: PDF_MIME, parents: [ROOT], trashed: false });
+    installFolderProvider(nodes, () => {
+      nodes.set("pdf-1", { id: "pdf-1", mimeType: PDF_MIME, parents: ["elsewhere"], trashed: false });
+    });
+    const converter = fakeConverter();
+    const { queue, session } = folderSession(nodes, converter.convert);
+    using owned = session;
+
+    await expect(Promise.resolve(owned.readPdf("pdf-1"))).rejects.toThrow(OUTSIDE);
+    expect(queue.observations.map(o => o.title)).toEqual(["Open PDF from Google Drive"]);
+  });
+
+  it("refuses a PDF outside the folder without downloading it", async () => {
+    const nodes = subtree();
+    nodes.set("pdf-1", { id: "pdf-1", mimeType: PDF_MIME, parents: ["elsewhere"], trashed: false });
+    const nativeCalls = installFolderProvider(nodes);
+    const converter = fakeConverter();
+    using session = folderSession(nodes, converter.convert).session;
+
+    await expect(Promise.resolve(session.readPdf("pdf-1"))).rejects.toThrow(OUTSIDE);
+    expect(nativeCalls).toEqual([]);
+    expect(converter.converted).toEqual([]);
+  });
+
+  it("reads PDFs from an opened child folder", async () => {
+    const nodes = subtree();
+    nodes.set("nested", {
+      id: "nested", mimeType: FOLDER_MIME, parents: [ROOT], trashed: false,
+      capabilities: { canListChildren: true },
+    });
+    nodes.set("nested-pdf", { id: "nested-pdf", mimeType: PDF_MIME, parents: ["nested"], trashed: false });
+    installFolderProvider(nodes);
+    using session = folderSession(nodes, fakeConverter().convert).session;
+    using child = await session.openFolder("nested");
+
+    await expect(Promise.resolve(child.readPdf("nested-pdf"))).resolves.toEqual(PDF_TEXT);
   });
 
   it("refuses to open a native file that is already outside the subtree", async () => {

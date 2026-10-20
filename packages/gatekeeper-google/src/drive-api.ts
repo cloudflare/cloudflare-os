@@ -11,12 +11,26 @@ const DRIVE_BATCH_URL = "https://www.googleapis.com/batch/drive/v3";
 const MAX_BATCH_FILES = 100;
 const MAX_BATCH_RESPONSE_BYTES = 1_000_000;
 const MAX_JSON_RESPONSE_BYTES = 5_000_000;
+/** Per-attempt budget for a file download, which carries far more than a metadata read. */
+const DOWNLOAD_TIMEOUT_MS = 60_000;
+/**
+ * The largest PDF {@link DriveApi.openDownload} is asked to stream to Workers AI. The bytes pass
+ * through rather than being held, so this bounds the upload and the conversion's time, not memory.
+ */
+export const MAX_PDF_BYTES = 20 * 1024 * 1024;
 /**
  * Parents one `q` may name. Drive documents no query-length limit, so this is ours: the batched
  * parent proof chunks at 100, and without a cap here a longer set would pass that and then fail
  * the search with an opaque provider 400.
  */
 export const MAX_QUERY_PARENTS = 50;
+
+const DRIVE_FILE_ID_PATTERN = /^[A-Za-z0-9_-]{1,256}$/;
+
+/** Whether `id` has the shape of a Drive file ID, checked before it reaches a Drive request path. */
+export function isDriveFileId(id: string): boolean {
+  return DRIVE_FILE_ID_PATTERN.test(id);
+}
 
 /** Exact MIME type Drive gives a native folder. A shortcut to one has its own type, not this. */
 export const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
@@ -455,6 +469,16 @@ export function isFileInvisible(error: unknown): boolean {
     (error.status === 403 || error.status === 404);
 }
 
+/**
+ * Whether Drive refused to send a file's content because the token cannot read content at all.
+ * A token holding only `drive.metadata.readonly` is refused a download with
+ * `appNotAuthorizedToFile`, which {@link isInsufficientScope} does not match.
+ */
+export function lacksFileContentAccess(error: unknown): boolean {
+  return error instanceof DriveApiRequestError && error.status === 403 &&
+    (error.reason === "appNotAuthorizedToFile" || error.reason === "insufficientPermissions");
+}
+
 const RATE_LIMIT_REASONS = new Set(["rateLimitExceeded", "userRateLimitExceeded", "dailyLimitExceeded"]);
 
 /**
@@ -694,6 +718,37 @@ export class DriveApi {
     });
     let nextPageToken = optionalString(body.nextPageToken, "nextPageToken");
     return { drives, ...(nextPageToken ? { nextPageToken } : {}) };
+  }
+
+  /**
+   * One file's content as a stream, refused in our words when it is larger than `maxBytes`. A
+   * declared `Content-Length` over the limit is refused before the body is read, and the stream
+   * errors as soon as more than `maxBytes` pass through it, so neither a missing nor a wrong header
+   * lets more in. Nothing is buffered: the caller pulls the body through.
+   */
+  async openDownload(fileId: string, maxBytes: number): Promise<ReadableStream<Uint8Array>> {
+    if (!isDriveFileId(fileId)) throw new Error("Not a Google Drive file ID.");
+    let params = new URLSearchParams({ alt: "media", supportsAllDrives: "true" });
+    let response = await fetchWithAuthRetry(
+      `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?${params}`, {},
+      this.getAccessToken, { timeoutMs: DOWNLOAD_TIMEOUT_MS });
+    if (!response.ok) throw await driveError(response);
+    let tooLarge = () =>
+      new Error(`This file is larger than the ${megabytes(maxBytes)} MB limit for reading it.`);
+    if (!response.body) return new ReadableStream({ start: controller => controller.close() });
+    let declared = Number(response.headers.get("Content-Length") ?? "");
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      await response.body.cancel().catch(() => undefined);
+      throw tooLarge();
+    }
+    let total = 0;
+    return response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, controller) {
+        total += chunk.byteLength;
+        if (total > maxBytes) throw tooLarge();
+        controller.enqueue(chunk);
+      },
+    }));
   }
 
   /** Whether the connected account may edit a file's content, as Drive reports it. */

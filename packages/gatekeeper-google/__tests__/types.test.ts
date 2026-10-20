@@ -300,4 +300,35 @@ const legacy: SheetCellFormat = { wrap: "OVERFLOW_CELL" };
     expect(driveTypes).not.toContain("GooglePresentationSession>");
     expect(driveTypes).toContain("export interface GoogleDriveReadSession");
   });
+
+  it("reads PDF text from both Drive sessions", () => {
+    const driveTypes = source("drive-types.d.ts");
+    expect(driveTypes).toContain(`export type DrivePdfText = {
+  /** The PDF's text as Markdown. Empty when \`hasText\` is false. */
+  markdown: string;
+  /** False for a scanned or image-only PDF, which has no text layer; it is not OCR'd. */
+  hasText: boolean;
+  /** Whether \`markdown\` was cut at the size limit. */
+  truncated: boolean;
+};`);
+    expect(driveTypes).toContain(`  /**
+   * Read an in-scope PDF's text, converted to Markdown. Fails asking to reconnect when the Google
+   * account was connected before Drive bindings could read file content.
+   */
+  readPdf(fileId: string): Promise<DrivePdfText>;`);
+    expect(driveTypes).toContain(`  /**
+   * Read a live direct-child PDF's text, converted to Markdown. Fails asking to reconnect when
+   * the Google account was connected before Drive bindings could read file content.
+   */
+  readPdf(fileId: string): Promise<DrivePdfText>;`);
+    expect(compileAgentTypes(driveBundle() + `
+declare const drive: GoogleDriveReadSession;
+declare const folder: GoogleDriveFolderSession;
+const fromDrive: Promise<DrivePdfText> = drive.readPdf("file-1");
+const fromFolder: Promise<DrivePdfText> = folder.readPdf("file-1");
+const text: DrivePdfText = { markdown: "", hasText: false, truncated: false };
+// @ts-expect-error The text says whether it was cut.
+const uncut: DrivePdfText = { markdown: "", hasText: true };
+`)).toEqual([]);
+  });
 });

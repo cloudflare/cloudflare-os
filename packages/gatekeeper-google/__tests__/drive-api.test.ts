@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DRIVE_FILE_ITEM_FIELDS, DriveApi, DriveApiDisabledError, DriveApiRequestError,
-  FOLDER_MIME_TYPE, MAX_QUERY_PARENTS, buildDriveQuery, conversionError, escapeDriveQueryLiteral,
-  isInsufficientScope, type DriveConversionSource,
+  FOLDER_MIME_TYPE, MAX_PDF_BYTES, MAX_QUERY_PARENTS, buildDriveQuery, conversionError,
+  escapeDriveQueryLiteral, isInsufficientScope, lacksFileContentAccess,
+  type DriveConversionSource,
 } from "../src/drive-api";
 
 /** Google's real error envelope for an API that is not enabled on the project. */
@@ -1209,5 +1210,151 @@ describe("conversion errors", () => {
   it("returns an error that is not a Drive HTTP failure unchanged", () => {
     let error = new Error("This file is 11 MB");
     expect(conversionError(error)).toBe(error);
+  });
+});
+
+/**
+ * A body that counts what is read from it and records its cancellation. With no high-water mark
+ * nothing is pulled until a reader asks.
+ */
+function countedBody(chunkBytes: number) {
+  let state = { pulls: 0, cancelled: false };
+  let body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      state.pulls += 1;
+      controller.enqueue(new Uint8Array(chunkBytes));
+    },
+    cancel() {
+      state.cancelled = true;
+    },
+  }, { highWaterMark: 0 });
+  return { body, state };
+}
+
+/** What `alt=media` answers a token holding only `drive.metadata.readonly`, verbatim but the IDs. */
+const NOT_AUTHORIZED_TO_FILE_BODY = {
+  error: {
+    code: 403,
+    message: "The user has not granted the app 123456789 read access to the file pdf-1.",
+    errors: [{
+      message: "The user has not granted the app 123456789 read access to the file pdf-1.",
+      domain: "global",
+      reason: "appNotAuthorizedToFile",
+      location: "Authorization",
+      locationType: "header",
+    }],
+  },
+};
+
+/** Reads a stream to the end, as the conversion request does. */
+async function drain(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+describe("openDownload", () => {
+  it("streams the file from alt=media across all drives, reading nothing until pulled", async () => {
+    let bytes = new Uint8Array([0x25, 0x50, 0x44, 0x46]);
+    let calls = stubFetch([new Response(bytes, {
+      headers: { "Content-Type": "application/pdf", "Content-Length": "4" },
+    })]);
+
+    let stream = await api().openDownload("file-1_A", MAX_PDF_BYTES);
+    expect(await drain(stream)).toEqual(bytes);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url.origin + calls[0].url.pathname)
+      .toBe("https://www.googleapis.com/drive/v3/files/file-1_A");
+    expect(Object.fromEntries(calls[0].url.searchParams))
+      .toEqual({ alt: "media", supportsAllDrives: "true" });
+    expect(calls[0].headers.get("Authorization")).toBe("Bearer tok");
+  });
+
+  it("reads at most a chunk ahead of the caller, and stops when the caller cancels", async () => {
+    let { body, state } = countedBody(1024);
+    stubFetch([new Response(body, { headers: { "Content-Length": String(1024 * 1024) } })]);
+
+    let stream = await api().openDownload("file-1", MAX_PDF_BYTES);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(state.pulls).toBeLessThanOrEqual(1);
+
+    let reader = stream.getReader();
+    for (let i = 0; i < 3; i++) await reader.read();
+    expect(state.pulls).toBeLessThanOrEqual(4);
+    await reader.cancel();
+    expect(state.cancelled).toBe(true);
+  });
+
+  it("refuses a declared Content-Length over the limit without reading the body", async () => {
+    let { body, state } = countedBody(1024);
+    stubFetch([new Response(body, { headers: { "Content-Length": String(MAX_PDF_BYTES + 1) } })]);
+
+    await expect(api().openDownload("file-1", MAX_PDF_BYTES))
+      .rejects.toThrow("This file is larger than the 20 MB limit for reading it.");
+    expect(state).toEqual({ pulls: 0, cancelled: true });
+  });
+
+  it.each([
+    ["no Content-Length", undefined],
+    ["a Content-Length under the size it sends", "10"],
+  ])("errors a streamed body with %s once it passes the limit", async (_label, contentLength) => {
+    let { body, state } = countedBody(600);
+    stubFetch([new Response(body, {
+      headers: contentLength === undefined ? {} : { "Content-Length": contentLength },
+    })]);
+    let limit = 1024 * 1024 + 1;
+
+    let stream = await api().openDownload("file-1", limit);
+
+    await expect(drain(stream)).rejects.toThrow("This file is larger than the 2 MB limit for reading it.");
+    expect(state.cancelled).toBe(true);
+    // The source stops within a chunk or two of the limit rather than running on.
+    expect(state.pulls).toBeGreaterThan(Math.floor(limit / 600));
+    expect(state.pulls).toBeLessThanOrEqual(Math.floor(limit / 600) + 3);
+  });
+
+  it("refuses an ID that is not a Drive file ID without a request", async () => {
+    let calls = stubFetch([]);
+    for (let id of ["", "../about", "file 1", "a/b", "x".repeat(257)]) {
+      await expect(api().openDownload(id, MAX_PDF_BYTES)).rejects.toThrow("Not a Google Drive file ID.");
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("reports a download Drive refuses for want of content access", async () => {
+    stubFetch([jsonResponse(NOT_AUTHORIZED_TO_FILE_BODY, 403)]);
+
+    let error = await api().openDownload("pdf-1", MAX_PDF_BYTES).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(DriveApiRequestError);
+    expect(error).toMatchObject({ status: 403, reason: "appNotAuthorizedToFile" });
+    expect((error as Error).message).not.toContain("123456789");
+    expect(lacksFileContentAccess(error)).toBe(true);
+    // The Office flow's missing-scope check keeps its narrower meaning.
+    expect(isInsufficientScope(error)).toBe(false);
+  });
+
+  it("maps a missing file through the usual Drive failure", async () => {
+    stubFetch([jsonResponse({
+      error: { code: 404, message: "File not found: pdf-1.", errors: [{ reason: "notFound" }] },
+    }, 404)]);
+
+    let error = await api().openDownload("pdf-1", MAX_PDF_BYTES).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(DriveApiRequestError);
+    expect(error).toMatchObject({ status: 404, reason: "notFound" });
+    expect(lacksFileContentAccess(error)).toBe(false);
+  });
+});
+
+describe("lacksFileContentAccess", () => {
+  it("recognizes a 403 appNotAuthorizedToFile or insufficientPermissions only", () => {
+    expect(lacksFileContentAccess(new DriveApiRequestError(403, "appNotAuthorizedToFile"))).toBe(true);
+    expect(lacksFileContentAccess(new DriveApiRequestError(403, "insufficientPermissions"))).toBe(true);
+    expect(lacksFileContentAccess(new DriveApiRequestError(403, "cannotDownloadFile"))).toBe(false);
+    expect(lacksFileContentAccess(new DriveApiRequestError(403))).toBe(false);
+    expect(lacksFileContentAccess(new DriveApiRequestError(401, "appNotAuthorizedToFile"))).toBe(false);
+    expect(lacksFileContentAccess(new Error("appNotAuthorizedToFile"))).toBe(false);
+    expect(isInsufficientScope(new DriveApiRequestError(403, "insufficientPermissions"))).toBe(true);
+    expect(isInsufficientScope(new DriveApiRequestError(403, "appNotAuthorizedToFile"))).toBe(false);
   });
 });
