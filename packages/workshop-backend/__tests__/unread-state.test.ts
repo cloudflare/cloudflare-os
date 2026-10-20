@@ -218,6 +218,46 @@ describe("private horizons and coalesced dirty threads", () => {
     expect(await cursor(fixture)).toBeUndefined();
   });
 
+  it("publishes snapshot-discovered threads and renames before their delayed fanout", async () => {
+    const fixture = await setup();
+    await append(fixture, 0);
+    await settled(fixture);
+    const snapshots: UserUnreadState[] = [];
+    class Subscriber extends RpcTarget implements UnreadStateSubscriber {
+      async updated(state: UserUnreadState) { snapshots.push(state); }
+      async chatUpdated() {}
+    }
+    using callback = new RpcStub(new Subscriber());
+    using _subscription = await fixture.user.subscribeToUnreadState(callback);
+    await vi.waitFor(() => expect(snapshots.at(-1)?.unreadMessageCount).toBe(1));
+    await withImpl(fixture.workspace, async impl => {
+      const gate = Promise.withResolvers<void>();
+      const restore = interceptDelivery(impl, async (user, workspaceId, chatId) => {
+        await gate.promise;
+        await user.messageArrived(workspaceId, chatId);
+      });
+      try {
+        impl.storage.chatMeta.put({id: 2, title: "New thread", started: new Date(), lastActive: new Date(2_000)});
+        impl.storage.chats.put({chatId: 2, sequence: 0, timestamp: new Date(), type: "message",
+          author: {type: "agent", id: "test", name: "Test"}, message: "New message"});
+        impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, title: "Renamed"});
+        // Another device refreshes while source delivery is still pending.
+        const user = impl.users.get(impl.users.idFromString(fixture.user.id.toString()));
+        const refreshed = await user.getUnreadState();
+        expect(refreshed.unreadMessageCount).toBe(2);
+        await vi.waitFor(() => expect(snapshots.at(-1)).toEqual(refreshed));
+      } finally { gate.resolve(); restore(); }
+      await impl.deliverDirtyChats();
+    });
+    await vi.waitFor(() => expect(snapshots.at(-1)?.chats).toEqual(expect.arrayContaining([
+      expect.objectContaining({chatId: 1, chatTitle: "Renamed"}),
+      expect.objectContaining({chatId: 2, unreadMessageCount: 1}),
+    ])));
+    const count = snapshots.length;
+    await fixture.user.getUnreadState();
+    expect(snapshots).toHaveLength(count);
+  });
+
   it.each([false, true])("recovers source eviction (lost ACK: %s)", async lostAck => {
     const fixture = await setup();
     await withImpl(fixture.workspace, async impl => {

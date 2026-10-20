@@ -640,6 +640,13 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         this.#denyUnreadWorkspace(workspaceId);
         return;
       }
+      let changed = previousHeads?.size !== heads.length || heads.some(head => {
+        let previous = previousHeads?.get(head.chatId);
+        return !previous || previous.chatTitle !== head.chatTitle ||
+          previous.latestSequence !== head.latestSequence ||
+          previous.latestMessagePreview !== head.latestMessagePreview ||
+          previous.latestActivityAt?.getTime() !== head.latestActivityAt?.getTime();
+      });
       this.#chatHeads.set(workspaceId, new Map(heads.map(head => [head.chatId, head])));
       await Promise.all(heads.map(async head => {
         let key = `${workspaceId}:${head.chatId}`;
@@ -663,11 +670,17 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           notifiedThroughSequence: state.notifications.at(-1)?.sequence ?? -1};
         if (persistBaseline) this.#storeCursor(baseline);
         else this.#readCursors.set(key, baseline);
+        changed = true;
       }));
-      this.#unavailableWorkspaces.delete(workspaceId);
-      if (!previousHeads && this.#chatHeads.get(workspaceId)) this.#unreadChanged();
+      let wasUnavailable = this.#unavailableWorkspaces.delete(workspaceId);
+      // A snapshot can discover changes before fanout. Publish them before a later reconcile
+      // compares against these refreshed caches and concludes there is nothing left to send.
+      if ((changed || wasUnavailable) && this.#chatHeads.get(workspaceId)) this.#unreadChanged();
     } catch {
-      if (this.#hasWorkspace(workspaceId)) this.#unavailableWorkspaces.add(workspaceId);
+      if (this.#hasWorkspace(workspaceId) && !this.#unavailableWorkspaces.has(workspaceId)) {
+        this.#unavailableWorkspaces.add(workspaceId);
+        this.#unreadChanged();
+      }
     }
   }
 
