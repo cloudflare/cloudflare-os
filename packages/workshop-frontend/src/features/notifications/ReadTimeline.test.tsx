@@ -24,7 +24,6 @@ const snapshot = (_update = 1, readThroughSequence = -1): UserUnreadState => ({
       chatTitle: "Demo",
       latestSequence: 2,
       readThroughSequence,
-      readToken: "token",
       unreadMessageCount: Math.max(0, 2 - readThroughSequence),
     },
   ],
@@ -135,8 +134,6 @@ describe("timeline read/unread experience", () => {
       workspaceId: "workspace",
       chatId: 1,
       throughSequence: 0,
-      readThroughSequence: -1,
-      readToken: "token",
     });
     visibleBottom = 350;
     await act(async () =>
@@ -147,8 +144,6 @@ describe("timeline read/unread experience", () => {
       workspaceId: "workspace",
       chatId: 1,
       throughSequence: 2,
-      readThroughSequence: -1,
-      readToken: "token",
     });
   });
 
@@ -178,31 +173,18 @@ describe("timeline read/unread experience", () => {
     expect(dispose).toHaveBeenCalledOnce();
   });
 
-  it("retries an unconsumed viewport after another receipt advances the observed horizon", async () => {
+  it("does not resend an unchanged viewport boundary when snapshots refresh", async () => {
     visibleBottom = 350;
     await render();
     await update(snapshot());
     await settle();
     expect(markChatRead).toHaveBeenLastCalledWith({workspaceId: "workspace", chatId: 1,
-      throughSequence: 2, readThroughSequence: -1, readToken: "token"});
+      throughSequence: 2});
+    await update(snapshot());
+    await settle();
     await update(snapshot(2, 0));
     await settle();
-    expect(markChatRead).toHaveBeenLastCalledWith({workspaceId: "workspace", chatId: 1,
-      throughSequence: 2, readThroughSequence: 0, readToken: "token"});
-  });
-
-  it("retries a visible receipt with the fresh token after User DO reset", async () => {
-    visibleBottom = 350;
-    await render();
-    await update(snapshot());
-    await settle();
-    const reconnected = snapshot();
-    reconnected.chats[0].readToken = "after-reset";
-    await update(reconnected);
-    await settle();
-    expect(markChatRead).toHaveBeenCalledTimes(2);
-    expect(markChatRead).toHaveBeenLastCalledWith({workspaceId: "workspace", chatId: 1,
-      throughSequence: 2, readThroughSequence: -1, readToken: "after-reset"});
+    expect(markChatRead).toHaveBeenCalledOnce();
   });
 
   it("acknowledges visible messages during continuous streaming renders and resizes", async () => {
@@ -226,7 +208,7 @@ describe("timeline read/unread experience", () => {
         });
       }
       expect(markChatRead).toHaveBeenCalledExactlyOnceWith({
-        workspaceId: "workspace", chatId: 1, throughSequence: 0, readThroughSequence: -1, readToken: "token",
+        workspaceId: "workspace", chatId: 1, throughSequence: 0,
       });
     } finally {
       vi.useRealTimers();
@@ -274,7 +256,7 @@ describe("timeline read/unread experience", () => {
     await settle();
     expect(navigate).toHaveBeenCalled();
     expect(markChatRead).toHaveBeenCalledExactlyOnceWith({
-      workspaceId: "workspace", chatId: 1, throughSequence: 2, readThroughSequence: 0, readToken: "token",
+      workspaceId: "workspace", chatId: 1, throughSequence: 2,
     });
   });
 

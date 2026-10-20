@@ -22,7 +22,6 @@ const snapshot = (sequence: number): UserUnreadState => ({
       unreadMessageCount: 1,
       latestSequence: sequence,
       readThroughSequence: -1,
-      readToken: "token",
     },
   ],
 });
@@ -117,7 +116,7 @@ describe("UnreadStateBridge", () => {
     expect(subscribeToUnreadState).toHaveBeenCalledTimes(2);
   });
 
-  it("exposes explicit read/unread and bulk commands using the observed horizon", async () => {
+  it("exposes explicit read/unread and bulk commands using only the requested boundaries", async () => {
     await render();
     await update(snapshot(4));
     const click = async (name: string) =>
@@ -132,19 +131,15 @@ describe("UnreadStateBridge", () => {
       workspaceId: "workspace-1",
       chatId: 1,
       throughSequence: 4,
-      readThroughSequence: -1,
-      readToken: "token",
     });
     await click("unread");
-    expect(markChatUnread).toHaveBeenCalledExactlyOnceWith("workspace-1", 1, 4, -1, "token");
+    expect(markChatUnread).toHaveBeenCalledExactlyOnceWith("workspace-1", 1, 4);
     await click("all");
     expect(markChatsRead).toHaveBeenCalledWith([
       {
         workspaceId: "workspace-1",
         chatId: 1,
         throughSequence: 4,
-        readThroughSequence: -1,
-        readToken: "token",
       },
     ]);
   });

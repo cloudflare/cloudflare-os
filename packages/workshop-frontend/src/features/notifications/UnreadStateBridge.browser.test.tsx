@@ -14,7 +14,6 @@ const chat: ChatReadState = {
   chatTitle: "Thread",
   latestSequence: 2,
   readThroughSequence: 0,
-  readToken: "token",
   unreadMessageCount: 1,
 };
 
