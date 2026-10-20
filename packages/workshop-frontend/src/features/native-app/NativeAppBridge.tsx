@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useAuthenticatedApi } from '../../AuthContext'
 import { nativeApp } from './nativeApp'
 import { useUnreadState } from '../notifications/UnreadStateBridge'
@@ -8,6 +8,8 @@ import { logRpcFailure } from '../../rpcErrors'
 export const NativeAppBridge = () => {
   const { currentUser, isCurrentUserConfirmed } = useAuthenticatedApi()
   const unread = useUnreadState()?.state
+  // Legacy native bridge ordering is local to this web view, not stored in the User DO.
+  const badgeRevision = useRef(0)
 
   useEffect(() => {
     if (!isCurrentUserConfirmed) return
@@ -19,7 +21,7 @@ export const NativeAppBridge = () => {
   useEffect(() => {
     if (!isCurrentUserConfirmed || currentUser?.type !== 'user' || !unread ||
         unread.unavailableWorkspaceIds?.length) return
-    try { nativeApp()?.unreadStateChanged?.(unread) }
+    try { nativeApp()?.unreadStateChanged?.({...unread, revision: ++badgeRevision.current}) }
     catch (cause) { logRpcFailure('Native unread-state update failed:', cause) }
   }, [currentUser, isCurrentUserConfirmed, unread])
 
