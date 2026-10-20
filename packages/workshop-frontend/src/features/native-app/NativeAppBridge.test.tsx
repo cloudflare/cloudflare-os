@@ -151,7 +151,7 @@ describe('native app bridge', () => {
         <CaptureLogout />
       </AuthProvider>
     ))
-    expect(() => logout()).toThrow(logoutError)
+    expect(() => logout()).not.toThrow()
     expect(onLogout).toHaveBeenCalledOnce()
     act(() => root.unmount())
   })

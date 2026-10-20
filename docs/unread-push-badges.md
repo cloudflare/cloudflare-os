@@ -8,8 +8,9 @@ per-install total. A snapshot with unavailable workspaces is a lower bound, not 
 
 The frontend's optional version-1 `cloudflareOSNative.unreadStateChanged(snapshot)` bridge feeds
 complete absolute totals to native apps. Native clients sum their saved instances' last complete
-totals; they never increment counters from individual messages. The frontend keeps its unread
-subscription while hidden. A confirmed sign-out invokes optional `sessionEnded()` so the shell
+totals; they never increment counters from individual messages. The frontend releases its unread
+subscription while hidden and refreshes when visible again; push handles background badge updates.
+A confirmed sign-out invokes optional `sessionEnded()` so the shell
 can remove that instance's contribution. A reconnect is not a sign-out.
 
 ## Push while native apps are asleep
@@ -36,6 +37,12 @@ dispatch. Lost ACKs replay only versioned replacements, never alert deliveries. 
 durable, unlike frontend subscription revisions, and must not reset at eviction. New device
 enrollment forces an initial complete snapshot. Dead subscriptions are removed only if they have
 not been replaced while the request was in flight.
+
+Cold wakes reconstruct any missing in-memory thread counts before queuing an absolute total.
+While reconstruction is incomplete, the same outbox stores `count: null` with a retry deadline.
+The alarm retries reconstruction without requiring an open browser, including after eviction;
+unknown totals never replace a device's last complete badge. Snapshot-only reconstruction does
+not persist extra read cursors.
 
 The notification service needs the matching `/v1/badges` implementation before deploying this
 producer. Deploying the producer first is safe but leaves a retrying outbox until the endpoint is
