@@ -46,7 +46,7 @@ export type DriveFile = {
   owners?: { displayName?: string; emailAddress?: string }[];
   webViewLink?: string;
   trashed?: boolean;
-  capabilities?: { canListChildren?: boolean };
+  capabilities?: { canListChildren?: boolean; canDownload?: boolean };
   shortcutDetails?: { targetId?: string; targetMimeType?: string };
 };
 
@@ -96,7 +96,7 @@ export function isListableFolderFile(file: DriveFile): boolean {
 /** The per-file field mask. `getFile` sends this; {@link DRIVE_FILE_FIELDS} wraps it for lists. */
 export const DRIVE_FILE_ITEM_FIELDS = [
   "id", "name", "mimeType", "modifiedTime", "size", "parents", "driveId", "trashed",
-  "owners(displayName,emailAddress)", "webViewLink", "capabilities(canListChildren)",
+  "owners(displayName,emailAddress)", "webViewLink", "capabilities(canListChildren,canDownload)",
   "shortcutDetails(targetId,targetMimeType)",
 ].join(",");
 
@@ -241,6 +241,11 @@ const ACCOUNT_WIDE_403_REASONS = new Set([
 const REASON_EXPLANATIONS: Record<string, string> = {
   teamDriveMembershipRequired:
     "the connected account is not a member of the shared drive this item belongs to",
+  cannotDownloadFile:
+    "the connected account is not allowed to download this file; its owner or administrator " +
+    "has restricted downloading it",
+  cannotDownloadAbusiveFile:
+    "Google identified this file as malware or spam, so only its owner can download it",
 };
 
 function googleErrorReason(value: unknown): string | undefined {
@@ -279,6 +284,26 @@ async function readBoundedText(
   }
   chunks.push(decoder.decode());
   return chunks.join("");
+}
+
+/** Where a 206's `Content-Range` says its bytes start. */
+const CONTENT_RANGE_START = /^bytes (\d+)-\d+\/(?:\d+|\*)$/;
+
+/** Up to `length` bytes from the start of `response`'s body; whatever follows is cancelled unread. */
+async function readPrefix(response: Response, length: number): Promise<ArrayBuffer> {
+  if (!response.body) return new ArrayBuffer(0);
+  let reader = response.body.getReader();
+  let bytes = new Uint8Array(length);
+  let filled = 0;
+  while (filled < length) {
+    let { done, value } = await reader.read();
+    if (done) return bytes.slice(0, filled).buffer;
+    let take = Math.min(value.byteLength, length - filled);
+    bytes.set(value.subarray(0, take), filled);
+    filled += take;
+  }
+  await reader.cancel();
+  return bytes.buffer;
 }
 
 function googleErrorReasonFromText(text: string): string | undefined {
@@ -350,10 +375,15 @@ function optionalParents(value: unknown): string[] | undefined {
   return value as string[];
 }
 
-function optionalCanListChildren(value: unknown): boolean | undefined {
+function optionalCapabilities(value: unknown): DriveFile["capabilities"] {
   if (value === undefined) return undefined;
   if (!isRecord(value)) throw new Error("Invalid Google Drive file capabilities");
-  return optionalBoolean(value.canListChildren, "file capabilities.canListChildren");
+  let canListChildren = optionalBoolean(value.canListChildren, "file capabilities.canListChildren");
+  let canDownload = optionalBoolean(value.canDownload, "file capabilities.canDownload");
+  return {
+    ...(canListChildren === undefined ? {} : { canListChildren }),
+    ...(canDownload === undefined ? {} : { canDownload }),
+  };
 }
 
 function parseDriveFile(value: unknown): DriveFile {
@@ -373,11 +403,7 @@ function parseDriveFile(value: unknown): DriveFile {
     if (!isRecord(value.shortcutDetails)) throw new Error("Invalid Google Drive shortcut details");
     shortcutDetails = optionalFields(value.shortcutDetails, ["targetId", "targetMimeType"]);
   }
-  let capabilities: DriveFile["capabilities"];
-  if (value.capabilities !== undefined) {
-    let canListChildren = optionalCanListChildren(value.capabilities);
-    capabilities = canListChildren === undefined ? {} : { canListChildren };
-  }
+  let capabilities = optionalCapabilities(value.capabilities);
   let parents = optionalParents(value.parents);
   let trashed = optionalBoolean(value.trashed, "file trashed");
   return {
@@ -518,7 +544,7 @@ function parseDriveScopeNode(body: string, fileId: string): DriveScopeNode {
   }
   let parents = optionalParents(value.parents);
   let trashed = optionalBoolean(value.trashed, "file trashed");
-  let canListChildren = optionalCanListChildren(value.capabilities);
+  let canListChildren = optionalCapabilities(value.capabilities)?.canListChildren;
   return {
     id: fileId,
     ...optionalFields(value, ["mimeType", "driveId"]),
@@ -731,6 +757,29 @@ export class DriveApi {
       this.getAccessToken, { timeoutMs: DOWNLOAD_TIMEOUT_MS });
     if (!response.ok) throw await driveError(response);
     return response.body ?? new ReadableStream({ start: controller => controller.close() });
+  }
+
+  /**
+   * Up to `length` bytes of one file's content from `offset`, all read before this resolves, or
+   * fewer when the file ends first. Never more, and never from anywhere else: a whole-file answer
+   * to a range from the start is cut to the range, and any other misplaced answer is refused.
+   */
+  async downloadRange(fileId: string, offset: number, length: number): Promise<ArrayBuffer> {
+    if (!isDriveFileId(fileId)) throw new Error("Not a Google Drive file ID.");
+    let params = new URLSearchParams({ alt: "media", supportsAllDrives: "true" });
+    let response = await fetchWithAuthRetry(
+      `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?${params}`,
+      { headers: { Range: `bytes=${offset}-${offset + length - 1}` } },
+      this.getAccessToken, { timeoutMs: DOWNLOAD_TIMEOUT_MS });
+    if (!response.ok) throw await driveError(response);
+    let start = response.status === 206
+      ? CONTENT_RANGE_START.exec(response.headers.get("Content-Range") ?? "")?.[1]
+      : "0";
+    if (start === undefined || Number(start) !== offset) {
+      await response.body?.cancel();
+      throw new Error("Google Drive did not return the requested byte range.");
+    }
+    return readPrefix(response, length);
   }
 
   /** Whether the connected account may edit a file's content, as Drive reports it. */

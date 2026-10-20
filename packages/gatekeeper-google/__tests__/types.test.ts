@@ -322,4 +322,26 @@ const whole: DrivePdfText = { text: "", hasText: true };
 const cut: DrivePdfText = { text: new ReadableStream(), hasText: true, truncated: false };
 `)).toEqual([]);
   });
+
+  it("lets an agent page a file's bytes from both Drive sessions and decode them", () => {
+    expect(compileAgentTypes(driveBundle() + `
+declare const drive: GoogleDriveReadSession;
+declare const folder: GoogleDriveFolderSession;
+async function readCsv(): Promise<string> {
+  const parts: Uint8Array[] = [];
+  let offset = 0;
+  for (;;) {
+    const { content, size } = await drive.readFile("file-1", { offset });
+    parts.push(new Uint8Array(content));
+    offset += content.byteLength;
+    if (offset >= size || content.byteLength === 0) break;
+  }
+  const first = await folder.readFile("file-2", { length: 1024 });
+  const changed: boolean = first.modifiedTime.getTime() > 0;
+  return new TextDecoder().decode(parts[0]) + first.mimeType + changed;
+}
+// @ts-expect-error A range is bytes, not text.
+const text: DriveFileBytes = { mimeType: "text/csv", size: 1, modifiedTime: new Date(), offset: 0, content: "a" };
+`)).toEqual([]);
+  });
 });

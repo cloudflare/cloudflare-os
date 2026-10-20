@@ -439,11 +439,13 @@ describe("Drive native sessions", () => {
   });
 
   // openNativeFile() already reported the Drive metadata, so each content read reports only the
-  // file as the API that reads it names it; a PDF's text is read through Drive itself.
+  // file as the API that reads it names it; a PDF's text and any other file's bytes are read
+  // through Drive itself.
   it.each([
     ["account Doc", { kind: "account" } as const, docMime, "docs/document/file-1"],
     ["account Sheet", { kind: "account" } as const, sheetMime, "sheets/spreadsheet/file-1"],
     ["account PDF", { kind: "account" } as const, pdfMime, "drive/file/file-1"],
+    ["account CSV", { kind: "account" } as const, "text/csv", "drive/file/file-1"],
     ["exact-file Doc", { kind: "file", fileId: "file-1" } as const,
       docMime, "docs/document/file-1"],
     ["exact-file PDF", { kind: "file", fileId: "file-1" } as const,

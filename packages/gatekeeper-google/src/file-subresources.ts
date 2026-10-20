@@ -2,8 +2,8 @@
 // gatekeepers and by the UserAccount that checks an observer against them.
 //
 // Each names the file a read returned data from, as the API that read it names that file:
-//   - `drive/file/<fileId>`: a Drive file's metadata, or a PDF's text, which an observer's own
-//     account may see when Drive lets it see the file.
+//   - `drive/file/<fileId>`: a Drive file's metadata, a PDF's text, or any other file's bytes,
+//     which an observer's own account may see when Drive lets it see the file.
 //   - `drive/folder/<folderId>`: that a Drive folder's children can be listed, which only an
 //     observer whose own account can list them may see. A folder is a Drive file with the same ID,
 //     so the kind is what tells this check from the one above.
