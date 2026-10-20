@@ -14,7 +14,7 @@ const chat: ChatReadState = {
   chatTitle: "Thread",
   latestSequence: 2,
   readThroughSequence: 0,
-  unreadMessageCount: 1, readEpoch: 0,
+  unreadMessageCount: 1,
 };
 
 const Workspace = () => {

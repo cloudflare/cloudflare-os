@@ -24,7 +24,7 @@ vi.mock("../../AuthContext", () => ({
   useAuthenticatedApi: () => ({ authenticatedApi: { setWorkspaceNotificationMute: mock.setMute } }),
 }));
 const chat = { workspaceId: "workspace", chatId: 1, chatTitle: "Thread", latestSequence: 2,
-  readThroughSequence: 0, unreadMessageCount: 1, readEpoch: 0 };
+  readThroughSequence: 0, unreadMessageCount: 1 };
 vi.mock("../../features/notifications/UnreadStateBridge", () => ({
   useUnreadState: () => ({ state: { chats: [chat] }, markManyRead: mock.markManyRead }),
 }));

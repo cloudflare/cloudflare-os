@@ -9,17 +9,20 @@ import type {
   UserUnreadState,
 } from "@gadgets/workshop-shared/api";
 import { logRpcFailure } from "../../rpcErrors";
-import { nativeApp } from "../native-app/nativeApp";
 
 class UnreadSubscriber extends RpcTarget implements UnreadStateSubscriber {
   constructor(
     private readonly receive: (state: UserUnreadState) => void,
+    private readonly receiveChat: UnreadStateSubscriber["chatUpdated"],
     private readonly released: () => void,
   ) {
     super();
   }
   async updated(state: UserUnreadState): Promise<void> {
     this.receive(state);
+  }
+  async chatUpdated(...args: Parameters<UnreadStateSubscriber["chatUpdated"]>): Promise<void> {
+    await this.receiveChat(...args);
   }
   [Symbol.dispose]() {
     this.released();
@@ -43,11 +46,11 @@ const receiptFor = (
 ): ChatReadReceipt => ({
   workspaceId: chat.workspaceId,
   chatId: chat.chatId,
-  readEpoch: chat.readEpoch,
+  readThroughSequence: chat.readThroughSequence,
   throughSequence,
 });
 
-/** One background subscription supplies web indicators, timeline cursors and native badges. */
+/** One visible-session subscription supplies indicators, timeline cursors and native badges. */
 export const UnreadStateBridge = ({
   authenticatedApi,
   children,
@@ -73,8 +76,8 @@ export const UnreadStateBridge = ({
     const subscribe = () => {
       clearTimeout(retryTimer);
       retryTimer = undefined;
+      if (!active || document.visibilityState === "hidden") return;
       const currentGeneration = ++generation;
-      // Revisions are in-memory in the User DO; a reset starts a fresh subscription stream.
       latest = undefined;
       const previous = subscription;
       subscription = undefined;
@@ -84,7 +87,6 @@ export const UnreadStateBridge = ({
       const subscriber = new UnreadSubscriber(
         (next) => {
           if (!active || currentGeneration !== generation) return;
-          if (latest && next.revision <= latest.revision) return;
           latest = next;
           setSnapshot({ api: authenticatedApi, state: next });
           if (next.unavailableWorkspaceIds?.length) {
@@ -99,11 +101,14 @@ export const UnreadStateBridge = ({
           clearTimeout(retryTimer);
           retryTimer = undefined;
           retryDelay = 1_000;
-          try {
-            nativeApp()?.unreadStateChanged?.(next);
-          } catch (cause) {
-            logRpcFailure("Native unread-state update failed:", cause);
-          }
+        },
+        async (workspaceId, chatId, chat, counts) => {
+          if (!active || currentGeneration !== generation || !latest) return;
+          const chats = latest.chats.filter(item =>
+            item.workspaceId !== workspaceId || item.chatId !== chatId);
+          if (chat) chats.push(chat);
+          latest = {...latest, ...counts, chats};
+          setSnapshot({api: authenticatedApi, state: latest});
         },
         () => {
           released = true;
@@ -131,9 +136,19 @@ export const UnreadStateBridge = ({
         },
       );
     };
+    const visibilityChanged = () => {
+      if (document.visibilityState !== "hidden") { subscribe(); return; }
+      ++generation;
+      clearTimeout(retryTimer);
+      const previous = subscription;
+      subscription = undefined;
+      previous?.[Symbol.dispose]();
+    };
+    document.addEventListener("visibilitychange", visibilityChanged);
     subscribe();
     return () => {
       active = false;
+      document.removeEventListener("visibilitychange", visibilityChanged);
       clearTimeout(retryTimer);
       const previous = subscription;
       subscription = undefined;
@@ -162,7 +177,7 @@ export const UnreadStateBridge = ({
           perform(authenticatedApi.markChatsRead(chats.map((chat) => receiptFor(chat)))),
         markUnread: (chat, from) =>
           perform(
-            authenticatedApi.markChatUnread(chat.workspaceId, chat.chatId, from, chat.readEpoch),
+            authenticatedApi.markChatUnread(chat.workspaceId, chat.chatId, from, chat.readThroughSequence),
           ),
       }}
     >

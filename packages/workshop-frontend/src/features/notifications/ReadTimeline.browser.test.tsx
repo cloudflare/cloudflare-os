@@ -55,7 +55,7 @@ it("keeps manual unread for the visit, then resumes viewport reading after leavi
   navigate.mockClear();
   let subscriber: RpcStub<UnreadStateSubscriber> | undefined;
   let state: UserUnreadState = {
-    revision: 1,
+
     unreadChatCount: 1, unreadMessageCount: 1,
     chats: [
       {
@@ -64,14 +64,14 @@ it("keeps manual unread for the visit, then resumes viewport reading after leavi
         chatTitle: "Browser timeline",
         latestSequence: 2,
         readThroughSequence: -1,
-        unreadMessageCount: 1, readEpoch: 0,
+        unreadMessageCount: 1,
       },
     ],
   };
   const markChatRead = vi.fn<AuthenticatedApi["markChatRead"]>(async (receipt) => {
     state = {
       ...state,
-      revision: state.revision + 1,
+
       unreadChatCount: receipt.throughSequence === 2 ? 0 : 1, unreadMessageCount: receipt.throughSequence === 2 ? 0 : 1,
       chats: [{ ...state.chats[0], readThroughSequence: receipt.throughSequence }],
     };
@@ -81,9 +81,9 @@ it("keeps manual unread for the visit, then resumes viewport reading after leavi
     async (_workspace, _chat, from) => {
       state = {
         ...state,
-        revision: state.revision + 1,
+
         unreadChatCount: 1, unreadMessageCount: 1,
-        chats: [{ ...state.chats[0], readThroughSequence: from - 1, unreadMessageCount: 1, readEpoch: 1 }],
+        chats: [{ ...state.chats[0], readThroughSequence: from - 1, unreadMessageCount: 1, }],
       };
       await subscriber!.updated(state);
     },
@@ -127,7 +127,7 @@ it("keeps manual unread for the visit, then resumes viewport reading after leavi
       workspaceId: "workspace",
       chatId: 1,
       throughSequence: 0,
-      readEpoch: 0,
+      readThroughSequence: -1,
     }),
   );
 
@@ -176,24 +176,26 @@ it("keeps manual unread for the visit, then resumes viewport reading after leavi
       workspaceId: "workspace",
       chatId: 1,
       throughSequence: 0,
-      readEpoch: 1,
+      readThroughSequence: -1,
     }),
   );
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+  const observedHorizon = state.chats[0].readThroughSequence;
   await act(async () => userEvent.click(page.getByRole("button", { name: "Mark thread read" })));
   expect(markChatRead).toHaveBeenLastCalledWith({
     workspaceId: "workspace",
     chatId: 1,
     throughSequence: 2,
-    readEpoch: 1,
+    readThroughSequence: observedHorizon,
   });
 });
 
 it.each([false, true])("completes unread navigation with real scroll geometry (short history: %s)", async short => {
   navigate.mockClear();
   const markChatRead = vi.fn<AuthenticatedApi["markChatRead"]>().mockResolvedValue(undefined);
-  const state: UserUnreadState = {revision: 1, unreadChatCount: 1, unreadMessageCount: 1,
+  const state: UserUnreadState = {unreadChatCount: 1, unreadMessageCount: 1,
     chats: [{workspaceId: "workspace", chatId: 1, chatTitle: "Navigation", latestSequence: short ? 0 : 3,
-      readThroughSequence: short ? -1 : 0, readEpoch: 0, unreadMessageCount: 1}]};
+      readThroughSequence: short ? -1 : 0, unreadMessageCount: 1}]};
   const api = {
     markChatRead,
     subscribeToUnreadState: (subscriber: RpcStub<UnreadStateSubscriber>) => {

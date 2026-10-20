@@ -12,8 +12,7 @@ import type {
 import { UnreadStateBridge, useUnreadState } from "./UnreadStateBridge";
 import { reportVisibleChat } from "./visibleChat";
 
-const snapshot = (revision: number): UserUnreadState => ({
-  revision,
+const snapshot = (sequence: number): UserUnreadState => ({
   unreadChatCount: 1, unreadMessageCount: 1,
   chats: [
     {
@@ -21,9 +20,8 @@ const snapshot = (revision: number): UserUnreadState => ({
       chatId: 1,
       chatTitle: "Demo",
       unreadMessageCount: 1,
-      latestSequence: revision,
+      latestSequence: sequence,
       readThroughSequence: -1,
-      readEpoch: 0,
     },
   ],
 });
@@ -45,13 +43,16 @@ const deferred = () => {
 const Commands = () => {
   const unread = useUnreadState();
   const chat = unread?.state?.chats[0];
-  return chat && unread ? (
+  return (
     <>
+      <output>{JSON.stringify(unread?.state ?? null)}</output>
+      {chat && unread && <>
       <button onClick={() => void unread.markRead(chat).catch(() => {})}>read</button>
       <button onClick={() => void unread.markUnread(chat, chat.latestSequence)}>unread</button>
       <button onClick={() => void unread.markManyRead(unread.state!.chats)}>all</button>
+      </>}
     </>
-  ) : null;
+  );
 };
 
 describe("UnreadStateBridge", () => {
@@ -59,7 +60,7 @@ describe("UnreadStateBridge", () => {
   let root: Root;
   let subscribers: RpcStub<UnreadStateSubscriber>[];
   let withdraw: (() => void) | undefined;
-  const nativeUpdate = vi.fn<(state: UserUnreadState) => void>();
+  const currentState = () => JSON.parse(container.querySelector("output")!.textContent!);
   const dispose = vi.fn<() => void>();
   const markChatRead = vi.fn<AuthenticatedApi["markChatRead"]>().mockResolvedValue(undefined);
   const subscribeToUnreadState = vi.fn<
@@ -89,15 +90,6 @@ describe("UnreadStateBridge", () => {
     subscribers = [];
     visibility("visible");
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    Object.assign(window, {
-      cloudflareOSNative: {
-        version: 1,
-        isAvailable: () => true,
-        loginReady() {},
-        returnToInstalls() {},
-        unreadStateChanged: nativeUpdate,
-      },
-    });
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -107,25 +99,24 @@ describe("UnreadStateBridge", () => {
     withdraw = undefined;
     await act(async () => root.unmount());
     container.remove();
-    Reflect.deleteProperty(window, "cloudflareOSNative");
     vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
-  it("receives background changes without marking the hidden chat read or unsubscribing", async () => {
-    visibility("hidden");
+  it("releases hidden subscriptions so callbacks do not pin the User DO, then refreshes on return", async () => {
     withdraw = reportVisibleChat(() => ({ workspaceId: "workspace-1", chatId: 1 }));
     await render();
     await update(snapshot(1));
-    expect(nativeUpdate).toHaveBeenCalledExactlyOnceWith(snapshot(1));
+    expect(currentState()).toEqual(snapshot(1));
+    await act(async () => visibility("hidden"));
     expect(markChatRead).not.toHaveBeenCalled();
-    expect(dispose).not.toHaveBeenCalled();
+    expect(dispose).toHaveBeenCalledOnce();
     await act(async () => visibility("visible"));
     expect(markChatRead).not.toHaveBeenCalled();
-    expect(subscribeToUnreadState).toHaveBeenCalledOnce();
+    expect(subscribeToUnreadState).toHaveBeenCalledTimes(2);
   });
 
-  it("exposes explicit read/unread and bulk commands using the observed sequence and epoch", async () => {
+  it("exposes explicit read/unread and bulk commands using the observed horizon", async () => {
     await render();
     await update(snapshot(4));
     const click = async (name: string) =>
@@ -140,61 +131,58 @@ describe("UnreadStateBridge", () => {
       workspaceId: "workspace-1",
       chatId: 1,
       throughSequence: 4,
-      readEpoch: 0,
+      readThroughSequence: -1,
     });
     await click("unread");
-    expect(markChatUnread).toHaveBeenCalledExactlyOnceWith("workspace-1", 1, 4, 0);
+    expect(markChatUnread).toHaveBeenCalledExactlyOnceWith("workspace-1", 1, 4, -1);
     await click("all");
     expect(markChatsRead).toHaveBeenCalledWith([
       {
         workspaceId: "workspace-1",
         chatId: 1,
         throughSequence: 4,
-        readEpoch: 0,
+        readThroughSequence: -1,
       },
     ]);
   });
 
-  it("ignores stale/duplicate snapshots instead of regressing the native badge", async () => {
+  it("merges a thread delta and its authoritative totals", async () => {
     await render();
     await update(snapshot(3));
-    await update(snapshot(2));
-    await update(snapshot(3));
-    await update({ revision: 4, unreadChatCount: 0, unreadMessageCount: 0, chats: [] });
-    expect(nativeUpdate).toHaveBeenCalledTimes(2);
-    expect(nativeUpdate).toHaveBeenLastCalledWith({ revision: 4, unreadChatCount: 0, unreadMessageCount: 0, chats: [] });
+    await act(() => subscribers[0].chatUpdated("workspace-1", 1, null,
+      {unreadChatCount: 0, unreadMessageCount: 0}));
+    expect(currentState()).toEqual({unreadChatCount: 0, unreadMessageCount: 0, chats: []});
   });
 
-  it("re-subscribes after a User DO reset while hidden, but not after unmount", async () => {
-    visibility("hidden");
+  it("re-subscribes after a User DO reset while visible, but not after unmount", async () => {
     await render();
     await update(snapshot(9));
     await act(async () => subscribers[0][Symbol.dispose]());
     expect(subscribeToUnreadState).toHaveBeenCalledTimes(2);
     await update(snapshot(2));
+    expect(currentState()).toEqual(snapshot(2));
     await act(async () => root.unmount());
     await update(snapshot(3));
-    // A late callback after logout/unmount must not write another account's badge.
-    expect(nativeUpdate).toHaveBeenLastCalledWith(snapshot(2));
+    expect(container.textContent).toBe("");
     await act(async () => subscribers[1][Symbol.dispose]());
     expect(subscribeToUnreadState).toHaveBeenCalledTimes(2);
     root = createRoot(container);
   });
 
-  it("keeps healthy state live, withholds incomplete native totals, and retries missing workspaces", async () => {
+  it("keeps healthy state live and retries missing workspaces", async () => {
     vi.useFakeTimers();
     await render();
     await update(snapshot(1));
     await update({...snapshot(2), unavailableWorkspaceIds: ["workspace-2"]});
     expect(container.querySelector('[role="status"]')?.textContent).toContain("unread counts are unavailable");
     expect(container.querySelector("button")?.textContent).toBe("read");
-    expect(nativeUpdate).toHaveBeenCalledExactlyOnceWith(snapshot(1));
+    expect(currentState()).toEqual({...snapshot(2), unavailableWorkspaceIds: ["workspace-2"]});
     await update({...snapshot(3), unavailableWorkspaceIds: ["workspace-2"]});
     await act(async () => vi.advanceTimersByTimeAsync(1_000));
     expect(subscribeToUnreadState).toHaveBeenCalledTimes(2);
-    await update(snapshot(1)); // New subscription revision stream.
+    await update(snapshot(1)); // Fresh snapshot after reconnect.
     expect(container.querySelector('[role="status"]')).toBeNull();
-    expect(nativeUpdate).toHaveBeenCalledTimes(2);
+    expect(currentState()).toEqual(snapshot(1));
     await act(async () => vi.advanceTimersByTimeAsync(30_000));
     expect(subscribeToUnreadState).toHaveBeenCalledTimes(2);
   });
@@ -216,7 +204,7 @@ describe("UnreadStateBridge", () => {
     await act(async () => vi.advanceTimersByTimeAsync(1));
     expect(subscribeToUnreadState).toHaveBeenCalledTimes(2);
     await update(snapshot(1));
-    expect(nativeUpdate).toHaveBeenCalledExactlyOnceWith(snapshot(1));
+    expect(currentState()).toEqual(snapshot(1));
   });
 
   it("recovers when the subscriber is released before the subscribe ACK arrives", async () => {
@@ -231,7 +219,7 @@ describe("UnreadStateBridge", () => {
     await act(async () => ack.resolve());
     expect(subscribeToUnreadState).toHaveBeenCalledTimes(2);
     await update(snapshot(1));
-    expect(nativeUpdate).toHaveBeenCalledExactlyOnceWith(snapshot(1));
+    expect(currentState()).toEqual(snapshot(1));
   });
 
   it("reports failed read commands without leaking an old account's failure into its replacement", async () => {

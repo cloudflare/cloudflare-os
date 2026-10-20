@@ -24,17 +24,17 @@ let container: HTMLDivElement, root: Root;
 const markManyRead = vi.fn<Unread["markManyRead"]>().mockResolvedValue(undefined);
 const chats = [
   { workspaceId: "workspace-1", chatId: 3, chatTitle: "Unread elsewhere",
-    latestSequence: 8, readThroughSequence: 2, unreadMessageCount: 1, readEpoch: 1,
+    latestSequence: 8, readThroughSequence: 2, unreadMessageCount: 1,
     latestMessagePreview: "The deployment is ready.", latestActivityAt: new Date("2026-10-15T01:00:00Z") },
   { workspaceId: "workspace-2", chatId: 4, chatTitle: "Already read",
-    latestSequence: 6, readThroughSequence: 6, unreadMessageCount: 0, readEpoch: 0,
+    latestSequence: 6, readThroughSequence: 6, unreadMessageCount: 0,
     latestMessagePreview: "Old message", latestActivityAt: new Date("2026-10-14T01:00:00Z") },
 ];
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   vi.clearAllMocks();
   vi.stubGlobal("scrollTo", vi.fn<() => void>());
-  mock.unread = { state: { revision: 3, unreadChatCount: 1, unreadMessageCount: 1, chats }, markManyRead,
+  mock.unread = { state: { unreadChatCount: 1, unreadMessageCount: 1, chats }, markManyRead,
     markRead: vi.fn<Unread["markRead"]>().mockResolvedValue(undefined),
     markUnread: vi.fn<Unread["markUnread"]>().mockResolvedValue(undefined) };
   container = document.body.appendChild(document.createElement("div"));
@@ -61,7 +61,7 @@ it("uses a standard navigation link with a trailing unread count", async () => {
   expect(container.querySelector('[role="menu"]')).toBeNull();
 });
 it("shows message counts in the summary and each thread, not just unread-thread counts", async () => {
-  mock.unread = { ...mock.unread!, state: { revision: 4, unreadChatCount: 2, unreadMessageCount: 7,
+  mock.unread = { ...mock.unread!, state: { unreadChatCount: 2, unreadMessageCount: 7,
     chats: [{ ...chats[0], unreadMessageCount: 4 },
       { ...chats[0], chatId: 9, unreadMessageCount: 3 }] } };
   await render();
@@ -87,7 +87,7 @@ it("orders threads by latest activity and updates when read state changes", asyn
     latestActivityAt: new Date("2026-10-15T02:00:00Z") }];
   await render();
   expect([...container.querySelectorAll("ul h2")].map(item => item.textContent)).toEqual(["Newest", "Unread elsewhere"]);
-  mock.unread = { ...mock.unread!, state: { revision: 4, unreadChatCount: 0, unreadMessageCount: 0, chats: [] } };
+  mock.unread = { ...mock.unread!, state: { unreadChatCount: 0, unreadMessageCount: 0, chats: [] } };
   await act(async () => mock.listeners.forEach(listener => listener()));
   expect(container.textContent).toContain("You’re all caught up");
 });
@@ -100,7 +100,7 @@ it("marks only the currently observed unread boundaries read", async () => {
 
 it.each([false, true])("does not show all caught up while state is %s unavailable", async unavailable => {
   mock.unread!.state = unavailable
-    ? {revision: 4, unreadChatCount: 0, unreadMessageCount: 0, chats: [], unavailableWorkspaceIds: ["workspace-1"]}
+    ? {unreadChatCount: 0, unreadMessageCount: 0, chats: [], unavailableWorkspaceIds: ["workspace-1"]}
     : undefined;
   await render(true);
   expect(container.textContent).toContain(unavailable
