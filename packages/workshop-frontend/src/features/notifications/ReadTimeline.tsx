@@ -55,9 +55,9 @@ export const ReadTimeline = ({
       pending.current = -1;
       return;
     }
+    const localUnread = localUnreadHorizon.current === chat.readThroughSequence;
+    if (localUnread) localUnreadHorizon.current = undefined;
     if (!visit || chat.readThroughSequence < visit.horizon) {
-      const localUnread = localUnreadHorizon.current === chat.readThroughSequence;
-      localUnreadHorizon.current = undefined;
       const divider =
         chat.latestSequence > chat.readThroughSequence ? chat.readThroughSequence + 1 : undefined;
       setVisit({ horizon: chat.readThroughSequence, divider, paused: !!visit });
@@ -217,9 +217,9 @@ export const ReadTimeline = ({
           if (!chat || !unread || !visit) return;
           localUnreadHorizon.current = sequence - 1;
           setVisit({ ...visit, divider: sequence, paused: true });
-          void unread.markUnread(chat, sequence).then(() => {
-            localUnreadHorizon.current = undefined;
-          }).catch(() => {
+          // The RPC ACK can precede its subscriber update. Only that matching snapshot consumes
+          // the local marker; otherwise it would look like a remote rewind and scroll this view.
+          void unread.markUnread(chat, sequence).catch(() => {
             localUnreadHorizon.current = undefined;
             setVisit(visit);
           });

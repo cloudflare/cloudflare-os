@@ -1,7 +1,8 @@
 # Unread state consumers
 
-The web UI and first-party native bridge consume the [unread-state API](user-unread-state.md).
-They do not calculate independent unread counts or persist a second set of read horizons.
+The web UI consumes the [unread-state API](user-unread-state.md), without calculating independent
+unread counts or persisting a second set of read horizons. First-party native forwarding is added
+in [the stacked badge PR](https://github.com/cloudflare/cloudflare-os/pull/842).
 
 ## Web experience
 

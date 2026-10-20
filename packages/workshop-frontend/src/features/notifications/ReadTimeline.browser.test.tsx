@@ -51,7 +51,7 @@ const View = () => {
   );
 };
 
-it("keeps manual unread for the visit, then resumes viewport reading after leaving and returning", async () => {
+it.each([false, true])("keeps manual unread in place, then resumes on return (ACK before snapshot: %s)", async ackFirst => {
   navigate.mockClear();
   let subscriber: RpcStub<UnreadStateSubscriber> | undefined;
   let state: UserUnreadState = {
@@ -85,7 +85,7 @@ it("keeps manual unread for the visit, then resumes viewport reading after leavi
         unreadChatCount: 1, unreadMessageCount: 1,
         chats: [{ ...state.chats[0], readThroughSequence: from - 1, unreadMessageCount: 1, }],
       };
-      await subscriber!.updated(state);
+      if (!ackFirst) await subscriber!.updated(state);
     },
   );
   const api = {
@@ -139,6 +139,7 @@ it("keeps manual unread for the visit, then resumes viewport reading after leavi
     userEvent.click(page.getByRole("menuitem", { name: "Mark unread from here" })),
   );
   expect(markChatUnread).toHaveBeenCalledExactlyOnceWith("workspace", 1, 0);
+  if (ackFirst) await act(async () => subscriber!.updated(state));
   await expect.element(page.getByText(/automatic reading paused/)).toBeVisible();
   const calls = markChatRead.mock.calls.length;
   await new Promise((resolve) => setTimeout(resolve, 400));
