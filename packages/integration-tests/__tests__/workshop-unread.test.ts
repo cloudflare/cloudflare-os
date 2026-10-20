@@ -34,8 +34,6 @@ class UnreadRecorder extends RpcTarget implements UnreadStateSubscriber {
 const receipt = (chat: ChatReadState) => ({
   workspaceId: chat.workspaceId,
   chatId: chat.chatId,
-  readThroughSequence: chat.readThroughSequence,
-  readToken: chat.readToken,
   throughSequence: chat.latestSequence,
 });
 let harness: Harness | undefined;
@@ -108,9 +106,12 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
   await owner.markChatsRead([receipt(initial)]);
   expect(await owner.getUnreadState()).toMatchObject({ unreadChatCount: 1, unreadMessageCount: 1 });
   await owner.markChatRead(receipt(next));
-  const read = (await secondDevice.getUnreadState()).chats.find(chat => chat.chatId === chatId)!;
-  await secondDevice.markChatUnread(workspaceId, chatId, initial.latestSequence, read.readThroughSequence, read.readToken);
-  await owner.markChatRead(receipt(next)); // stale automatic read from the other device
+  await secondDevice.markChatUnread(workspaceId, chatId, initial.latestSequence);
+  await owner.markChatRead(receipt(next)); // A later-processed read clears the manual unread.
+  await waitFor("the later read clearing both devices", async () =>
+    first.state?.unreadMessageCount === 0 && second.state?.unreadMessageCount === 0 ? true : null,
+  );
+  await secondDevice.markChatUnread(workspaceId, chatId, initial.latestSequence);
   await waitFor("the manual unread boundary on both devices", async () =>
     first.state?.chats[0]?.readThroughSequence === initial.latestSequence - 1 &&
     second.state?.chats[0]?.readThroughSequence === initial.latestSequence - 1 ? true : null,
