@@ -42,6 +42,7 @@ The first-party native bridge can optionally implement:
 
 ```ts
 cloudflareOSNative.unreadStateChanged(state: UserUnreadState & { revision: number }): void;
+cloudflareOSNative.sessionEnded(): void;
 ```
 
 The bridge forwards complete visible-session updates. Its revision is a web-view-local compatibility
@@ -50,6 +51,10 @@ must associate it with its verified first-party main frame and saved instance/us
 instance or gadget frame. Use `unreadMessageCount` for that instance, and sum authenticated instance
 counts for an OS badge. A disconnect is stale/unknown, not zero; logout/removal clears that
 instance's native badge. Do not log chat titles.
+
+`sessionEnded()` is called on explicit logout or a confirmed non-user identity, not on a transient
+reconnect. It lets the host remove that instance's contribution. Both callbacks are optional;
+a native bridge failure must not prevent browser logout.
 
 The Electron callback implementation, OS badge/alert presentation and permissions, and retaining
 instance webviews when the window closes to the tray are separate desktop-shell work. This bridge

@@ -738,9 +738,25 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   #queueBadge(force = false): void {
     if (!this.env.NOTIFICATION_SERVICE_URL ||
         !Object.keys(this.storage.notificationSubscriptions.get()).length) return;
-    if (this.#unavailableWorkspaces.size) return;
-    let {unreadMessageCount} = this.#unreadCounts();
     let previous = this.storage.notificationBadge.get();
+    // Cold cursors can omit pre-existing threads whose initial counts lived only in memory.
+    // An incomplete sum must never become an absolute replacement, even if every source is up.
+    let complete = !this.#unavailableWorkspaces.size && [...this.#unreadWorkspaces].every(workspaceId => {
+      let heads = this.#chatHeads.get(workspaceId);
+      return heads !== undefined && (heads === null || [...heads.keys()].every(chatId => {
+        let cursor = this.#readCursors.get(`${workspaceId}:${chatId}`);
+        return cursor && !cursor.unreadDirty;
+      }));
+    });
+    if (!complete) {
+      // Null plus retryAt is reconstruction intent in the existing outbox, surviving eviction.
+      if (previous.count === null && previous.retryAt !== undefined) return;
+      this.storage.notificationBadge.put({...previous, count: null,
+        retryAt: previous.retryAt ?? Date.now() + 1_000});
+      this.ctx.waitUntil(this.#armExpirySweep());
+      return;
+    }
+    let {unreadMessageCount} = this.#unreadCounts();
     if (!force && previous.count === unreadMessageCount) return;
     this.storage.notificationBadge.put({version: previous.version + 1,
       count: unreadMessageCount, retryAt: Date.now() + 1_000});
@@ -749,14 +765,24 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async #flushBadge(): Promise<void> {
     let pending = this.storage.notificationBadge.get();
-    if (pending.retryAt === undefined || pending.retryAt > Date.now() || pending.count === null) return;
+    if (pending.retryAt === undefined || pending.retryAt > Date.now()) return;
+    if (!Object.keys(this.storage.notificationSubscriptions.get()).length) {
+      this.storage.notificationBadge.put({version: pending.version, count: pending.count});
+      return;
+    }
     // The retry deadline precedes the network effect, so eviction/lost ACK can only replay a
     // versioned replacement, never lose the pending intent or duplicate an alert.
     this.storage.notificationBadge.put({...pending, retryAt: Date.now() + 30_000});
     await this.#armExpirySweep();
+    if (pending.count === null) {
+      await this.getUnreadState();
+      this.#queueBadge();
+      return;
+    }
     let failed = false;
     for (let [deviceKey, subscriptionId] of Object.entries(this.storage.notificationSubscriptions.get())) {
-      if (this.storage.notificationBadge.get().version !== pending.version) return;
+      let currentBadge = this.storage.notificationBadge.get();
+      if (currentBadge.version !== pending.version || currentBadge.count !== pending.count) return;
       try {
         if (!await deliverBadge(this.env, subscriptionId, pending.version, pending.count)) {
           let current = this.storage.notificationSubscriptions.get();
@@ -770,7 +796,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         logger.warn("unread badge delivery deferred", {event: "notification.badge.deferred"});
       }
     }
-    if (!failed && this.storage.notificationBadge.get().version === pending.version) {
+    let currentBadge = this.storage.notificationBadge.get();
+    if (!failed && currentBadge.version === pending.version && currentBadge.count === pending.count) {
       this.storage.notificationBadge.put({version: pending.version, count: pending.count});
     }
   }

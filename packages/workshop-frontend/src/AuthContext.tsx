@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useEffect, ReactNode } from 'react
 import { RpcStub } from 'capnweb'
 import { AuthenticatedApi, AiChatAuthorInfo } from '@gadgets/workshop-shared/api'
 import { nativeApp } from './features/native-app/nativeApp'
+import { logRpcFailure } from './rpcErrors'
 
 interface AuthContextType {
   authenticatedApi: RpcStub<AuthenticatedApi>
@@ -61,6 +62,7 @@ export function AuthProvider({ children, authenticatedApi, onLogout }: AuthProvi
     <AuthContext.Provider value={{
       authenticatedApi, logout: () => {
         try { nativeApp()?.sessionEnded?.() }
+        catch (cause) { logRpcFailure('Native session-ended update failed:', cause) }
         finally { onLogout() }
       }, currentUser: identity?.user ?? null,
       isCurrentUserConfirmed: identity?.api === authenticatedApi, isAdmin,
