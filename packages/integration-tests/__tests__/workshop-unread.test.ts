@@ -35,6 +35,7 @@ const receipt = (chat: ChatReadState) => ({
   workspaceId: chat.workspaceId,
   chatId: chat.chatId,
   readThroughSequence: chat.readThroughSequence,
+  readToken: chat.readToken,
   throughSequence: chat.latestSequence,
 });
 let harness: Harness | undefined;
@@ -107,7 +108,8 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
   await owner.markChatsRead([receipt(initial)]);
   expect(await owner.getUnreadState()).toMatchObject({ unreadChatCount: 1, unreadMessageCount: 1 });
   await owner.markChatRead(receipt(next));
-  await secondDevice.markChatUnread(workspaceId, chatId, initial.latestSequence, next.latestSequence);
+  const read = (await secondDevice.getUnreadState()).chats.find(chat => chat.chatId === chatId)!;
+  await secondDevice.markChatUnread(workspaceId, chatId, initial.latestSequence, read.readThroughSequence, read.readToken);
   await owner.markChatRead(receipt(next)); // stale automatic read from the other device
   await waitFor("the manual unread boundary on both devices", async () =>
     first.state?.chats[0]?.readThroughSequence === initial.latestSequence - 1 &&
@@ -152,11 +154,12 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
   });
   expect(viewerUpdates.state!.chats).toEqual([]);
 
-  await secondDevice.markChatRead({ ...receipt(next), readThroughSequence: third.readThroughSequence });
+  await secondDevice.markChatRead({...receipt(third), throughSequence: next.latestSequence});
   await waitFor("an observed partial read leaving the later message unread", async () =>
     first.state?.unreadMessageCount === 1 && second.state?.unreadMessageCount === 1 ? true : null,
   );
-  await owner.markChatRead({...receipt(third), readThroughSequence: next.latestSequence});
+  const partial = (await owner.getUnreadState()).chats.find(chat => chat.chatId === chatId)!;
+  await owner.markChatRead(receipt(partial));
   await waitFor("the owner's read clearing both devices but not the collaborator", async () =>
     first.state?.unreadMessageCount === 0 && second.state?.unreadMessageCount === 0 ? true : null,
   );

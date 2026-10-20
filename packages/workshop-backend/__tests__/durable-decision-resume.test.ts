@@ -1,5 +1,5 @@
 import { env, type RpcStub } from "cloudflare:workers";
-import { runInDurableObject } from "cloudflare:test";
+import { evictDurableObject, runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AiChatAuthorInfo, UserNotification } from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer";
@@ -343,9 +343,10 @@ describe("decision handoff using the existing execution row", () => {
       async ({kind, initiator}) => {
     const notifications = recordNotifications(), requests = inference();
     const s = await scenario(kind, true, initiator);
-    // A second reset of an already-idle pause must not announce it again.
+    // Idle eviction after crash recovery must not announce the same pause again.
     for (let i = 0; i < 2; i++) {
-      await reset(s.stub);
+      if (i === 0) await reset(s.stub);
+      else await evictDurableObject(s.stub);
       await s.visit(async impl => {
         await impl.waitForAllAgentsToComplete();
         expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();

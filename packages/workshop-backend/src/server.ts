@@ -232,8 +232,8 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   markChatUnread(workspaceId: string, chatId: number, fromSequence: number,
-                 readThroughSequence: number): Promise<void> {
-    return retryOnDoReset(() => this.#user.markChatUnread(workspaceId, chatId, fromSequence, readThroughSequence));
+                 readThroughSequence: number, readToken: string): Promise<void> {
+    return retryOnDoReset(() => this.#user.markChatUnread(workspaceId, chatId, fromSequence, readThroughSequence, readToken));
   }
 
   getPreferredModel(): Promise<string | null> {
