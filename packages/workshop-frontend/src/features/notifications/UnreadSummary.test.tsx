@@ -24,10 +24,10 @@ let container: HTMLDivElement, root: Root;
 const markManyRead = vi.fn<Unread["markManyRead"]>().mockResolvedValue(undefined);
 const chats = [
   { workspaceId: "workspace-1", chatId: 3, chatTitle: "Unread elsewhere",
-    latestSequence: 8, readThroughSequence: 2, unreadMessageCount: 1,
+    latestSequence: 8, readThroughSequence: 2, unreadMessageCount: 1, readToken: "token",
     latestMessagePreview: "The deployment is ready.", latestActivityAt: new Date("2026-10-15T01:00:00Z") },
   { workspaceId: "workspace-2", chatId: 4, chatTitle: "Already read",
-    latestSequence: 6, readThroughSequence: 6, unreadMessageCount: 0,
+    latestSequence: 6, readThroughSequence: 6, unreadMessageCount: 0, readToken: "token",
     latestMessagePreview: "Old message", latestActivityAt: new Date("2026-10-14T01:00:00Z") },
 ];
 beforeEach(() => {

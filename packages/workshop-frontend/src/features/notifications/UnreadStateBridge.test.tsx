@@ -22,6 +22,7 @@ const snapshot = (sequence: number): UserUnreadState => ({
       unreadMessageCount: 1,
       latestSequence: sequence,
       readThroughSequence: -1,
+      readToken: "token",
     },
   ],
 });
@@ -132,9 +133,10 @@ describe("UnreadStateBridge", () => {
       chatId: 1,
       throughSequence: 4,
       readThroughSequence: -1,
+      readToken: "token",
     });
     await click("unread");
-    expect(markChatUnread).toHaveBeenCalledExactlyOnceWith("workspace-1", 1, 4, -1);
+    expect(markChatUnread).toHaveBeenCalledExactlyOnceWith("workspace-1", 1, 4, -1, "token");
     await click("all");
     expect(markChatsRead).toHaveBeenCalledWith([
       {
@@ -142,6 +144,7 @@ describe("UnreadStateBridge", () => {
         chatId: 1,
         throughSequence: 4,
         readThroughSequence: -1,
+        readToken: "token",
       },
     ]);
   });

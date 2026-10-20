@@ -43,6 +43,7 @@ export const ReadTimeline = ({
   const [jump, setJump] = useState(1);
   const root = useRef<HTMLDivElement>(null);
   const pending = useRef(-1);
+  const pendingToken = useRef<string | undefined>(undefined);
   const requestedPage = useRef<number | undefined>(undefined);
   const jumpSequence = useRef<number | undefined>(undefined);
   const localUnreadHorizon = useRef<number | undefined>(undefined);
@@ -158,8 +159,10 @@ export const ReadTimeline = ({
           }
         }
         through = Math.min(through, current.chat.latestSequence);
-        if (through <= current.chat.readThroughSequence || through <= pending.current) return;
+        if (through <= current.chat.readThroughSequence ||
+            (through <= pending.current && pendingToken.current === current.chat.readToken)) return;
         pending.current = through;
+        pendingToken.current = current.chat.readToken;
         void current.unread.markRead(current.chat, through).catch(() => {
           pending.current = -1;
         });
