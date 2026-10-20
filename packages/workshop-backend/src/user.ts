@@ -548,7 +548,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   #unreadWorkspaces = new Set<string>();
   #unavailableWorkspaces = new Set<string>();
   #chatWork = new Map<string, Promise<void>>();
-  #notificationWork = new Map<string, Promise<void>>();
   #dirtyTokens = new Map<string, object>();
 
   #cursor(workspaceId: string, chatId: number): ChatReadCursor {
@@ -556,14 +555,13 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       {workspaceId, chatId, readThroughSequence: -1, unreadCount: 0, notifiedThroughSequence: -1};
   }
 
-  #storeCursor(cursor: ChatReadCursor): boolean {
+  #storeCursor(cursor: ChatReadCursor): void {
     let old = this.#readCursors.get(`${cursor.workspaceId}:${cursor.chatId}`);
     if (old && old.readThroughSequence === cursor.readThroughSequence &&
         old.unreadCount === cursor.unreadCount &&
         old.notifiedThroughSequence === cursor.notifiedThroughSequence &&
-        old.unreadDirty === cursor.unreadDirty && old.notificationsDirty === cursor.notificationsDirty) return false;
+        old.unreadDirty === cursor.unreadDirty && old.notificationsDirty === cursor.notificationsDirty) return;
     this.storage.chatReadCursors.put(cursor);
-    return true;
   }
 
   #workspace(workspaceId: string) {
@@ -576,18 +574,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   // Per-thread mutex held across awaits. A reset discards the holder; dirty bits recover its work.
-  async #serialize(work: Map<string, Promise<void>>, key: string, operation: () => Promise<void>) {
-    let previous = work.get(key) ?? Promise.resolve();
+  async #serialize(key: string, operation: () => Promise<void>) {
+    let previous = this.#chatWork.get(key) ?? Promise.resolve();
     let current = previous.catch(() => {}).then(operation);
-    work.set(key, current);
+    this.#chatWork.set(key, current);
     try { await current; }
-    finally { if (work.get(key) === current) work.delete(key); }
-  }
-
-  async #chatState(cursor: ChatReadCursor) {
-    return this.#workspace(cursor.workspaceId).getChatStateForUser(
-      this.ctx.id.toString(), this.storage.profile.get().id, cursor.chatId,
-      cursor.readThroughSequence, cursor.notifiedThroughSequence);
+    finally { if (this.#chatWork.get(key) === current) this.#chatWork.delete(key); }
   }
 
   #unreadCounts() {
@@ -625,51 +617,36 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (changed || wasUnavailable) this.#unreadChanged();
   }
 
-  async #refreshUnreadWorkspace(workspaceId: string, persistBaseline = false): Promise<void> {
+  async #refreshUnreadWorkspace(workspaceId: string, recheckAccess = false): Promise<void> {
+    if (this.#chatHeads.get(workspaceId) === null && !recheckAccess) return;
     try {
       let previousHeads = this.#chatHeads.get(workspaceId);
+      let observedHeads = new Map(previousHeads);
       let heads = await this.#workspace(workspaceId).getChatHeadsForUser(
           this.ctx.id.toString(), this.storage.profile.get().id);
       if (!this.#hasWorkspace(workspaceId)) return;
+      let currentHeads = this.#chatHeads.get(workspaceId);
+      // A thread processor changed this cache during the RPC. Keep its newer result; another
+      // snapshot/fanout can refresh metadata, without merging stale heads into committed counts.
+      if (currentHeads !== previousHeads || (currentHeads?.size ?? 0) !== observedHeads.size ||
+          [...observedHeads].some(([id, head]) => currentHeads?.get(id) !== head)) return;
       if (heads === null) {
         // Preserve both the listing and private horizons. New arrivals must still journal work.
         this.#denyUnreadWorkspace(workspaceId);
+        await this.#armExpirySweep();
         return;
       }
-      let changed = previousHeads?.size !== heads.length || heads.some(head => {
-        let previous = previousHeads?.get(head.chatId);
+      let refreshedHeads = new Map(heads.map(head => [head.chatId, head]));
+      let changed = currentHeads?.size !== refreshedHeads.size || [...refreshedHeads.values()].some(head => {
+        let previous = currentHeads?.get(head.chatId);
         return !previous || previous.chatTitle !== head.chatTitle ||
           previous.latestSequence !== head.latestSequence ||
           previous.latestMessagePreview !== head.latestMessagePreview ||
           previous.latestActivityAt?.getTime() !== head.latestActivityAt?.getTime();
       });
-      this.#chatHeads.set(workspaceId, new Map(heads.map(head => [head.chatId, head])));
-      await Promise.all(heads.map(head => {
-        let key = `${workspaceId}:${head.chatId}`;
-        return this.#serialize(this.#chatWork, key, async () => {
-          if (!this.#hasWorkspace(workspaceId)) return;
-          let existing = this.#readCursors.get(key);
-          if (existing) {
-            if (persistBaseline && !this.storage.chatReadCursors.get(key)) {
-              this.storage.chatReadCursors.put(existing);
-            }
-            if (existing.unreadDirty) await this.#reconcileChat(workspaceId, head.chatId);
-            return;
-          }
-          let cursor = this.#cursor(workspaceId, head.chatId);
-          let state = await this.#chatState(cursor);
-          if (!this.#hasWorkspace(workspaceId)) return;
-          if (state === "denied") { this.#denyUnreadWorkspace(workspaceId); return; }
-          if (!state || this.#readCursors.has(key)) return;
-          // Explicit admission establishes a durable alert baseline, even without unread consumers.
-          // Ordinary snapshot reads keep new counts in memory only.
-          let baseline = {...cursor, unreadCount: state.unreadCount,
-            notifiedThroughSequence: state.notifications.at(-1)?.sequence ?? -1};
-          if (persistBaseline) this.#storeCursor(baseline);
-          else this.#readCursors.set(key, baseline);
-          changed = true;
-        });
-      }));
+      this.#chatHeads.set(workspaceId, refreshedHeads);
+      if (previousHeads === null) await this.#armExpirySweep();
+      await Promise.all([...refreshedHeads.values()].map(head => this.#processChat(workspaceId, head.chatId)));
       let wasUnavailable = this.#unavailableWorkspaces.delete(workspaceId);
       // A snapshot can discover changes before fanout. Publish them before a later reconcile
       // compares against these refreshed caches and concludes there is nothing left to send.
@@ -679,6 +656,83 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         this.#unavailableWorkspaces.add(workspaceId);
         this.#unreadChanged();
       }
+    }
+  }
+
+  // Admission, snapshots, arrivals, read commands and recovery all use this same thread mutex.
+  async #processChat(workspaceId: string, chatId: number, options: {
+    horizon?: {through: number; rewind: boolean};
+    notificationBaseline?: number;
+  } = {}): Promise<void> {
+    let changed = false, reschedule = false;
+    try {
+      await this.#serialize(`${workspaceId}:${chatId}`, async () => {
+        let key = `${workspaceId}:${chatId}`;
+        if (!this.#hasWorkspace(workspaceId) || this.#chatHeads.get(workspaceId) === null) return;
+        if (options.notificationBaseline !== undefined && !this.storage.chatReadCursors.get(key)) {
+          // The existing open callback supplies the boundary: no second source read or snapshot
+          // initialization policy. Journal before fetching so a reset retains the initial skip.
+          let cursor = this.#readCursors.get(key);
+          this.storage.chatReadCursors.put({...this.#cursor(workspaceId, chatId),
+            notifiedThroughSequence: options.notificationBaseline,
+            unreadDirty: cursor ? cursor.unreadDirty : true});
+          if (!cursor || cursor.unreadDirty || cursor.notificationsDirty) {
+            reschedule = true;
+            await this.#armExpirySweep();
+          }
+        }
+        let token = this.#dirtyTokens.get(key);
+        let existing = this.#readCursors.get(key);
+        let cursor = this.#cursor(workspaceId, chatId);
+        let through = options.horizon?.through ?? cursor.readThroughSequence;
+        if (!options.horizon?.rewind) through = Math.max(through, cursor.readThroughSequence);
+        let horizonChanged = through !== cursor.readThroughSequence;
+        let recount = !existing || cursor.unreadDirty || horizonChanged;
+        if (!recount && !cursor.notificationsDirty) return;
+        reschedule ||= !!(cursor.unreadDirty || cursor.notificationsDirty);
+        let state = await this.#workspace(workspaceId).getChatStateForUser(
+          this.ctx.id.toString(), this.storage.profile.get().id, chatId,
+          recount ? through : null, cursor.notificationsDirty ? cursor.notifiedThroughSequence : null);
+        if (!this.#hasWorkspace(workspaceId)) return;
+        if (state === "denied") { this.#denyUnreadWorkspace(workspaceId); return; }
+        if (!state) { this.#forgetChat(workspaceId, chatId); return; }
+        if (this.#chatHeads.get(workspaceId) === null) return;
+        if (horizonChanged && through > state.head.latestSequence) throw new Error("Invalid timeline sequence.");
+        let heads = this.#chatHeads.get(workspaceId) ?? new Map<number, ChatTimelineHead>();
+        let previousHead = heads.get(chatId);
+        heads.set(chatId, state.head);
+        this.#chatHeads.set(workspaceId, heads);
+        let current = this.#cursor(workspaceId, chatId);
+        let updated = {...current, readThroughSequence: through,
+          unreadCount: state.unreadCount ?? current.unreadCount,
+          unreadDirty: this.#dirtyTokens.get(key) === token ? undefined : true as const};
+        if (cursor.unreadDirty || cursor.notificationsDirty || horizonChanged) this.#storeCursor(updated);
+        else this.#readCursors.set(key, updated); // A clean snapshot never writes SQLite.
+        changed = !existing || cursor.unreadCount !== updated.unreadCount || horizonChanged ||
+          !previousHead || previousHead.latestSequence !== state.head.latestSequence ||
+          previousHead.chatTitle !== state.head.chatTitle ||
+          previousHead.latestMessagePreview !== state.head.latestMessagePreview ||
+          previousHead.latestActivityAt?.getTime() !== state.head.latestActivityAt?.getTime();
+        if (cursor.notificationsDirty) {
+          for (let candidate of state.notifications) {
+            if (!this.#hasWorkspace(workspaceId) || !this.#readCursors.has(key) ||
+                this.#chatHeads.get(workspaceId) === null) return;
+            await this.publishNotification({id: candidate.id, kind: candidate.kind,
+              workspaceId, chatId, chatTitle: state.head.chatTitle});
+            let checkpoint = this.#readCursors.get(key);
+            if (!checkpoint) return;
+            this.#storeCursor({...checkpoint,
+              notifiedThroughSequence: Math.max(checkpoint.notifiedThroughSequence, candidate.sequence)});
+          }
+          if (this.#dirtyTokens.get(key) === token) {
+            this.#storeCursor({...this.#cursor(workspaceId, chatId), notificationsDirty: undefined});
+          }
+        }
+      });
+    } finally {
+      // Publish only committed state, after releasing the mutex, including a count whose alert failed.
+      if (changed) this.#unreadChanged(workspaceId, chatId);
+      if (reschedule) await this.#armExpirySweep();
     }
   }
 
@@ -727,35 +781,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       this.#storeCursor({...cursor, unreadDirty: true, notificationsDirty: true});
     }
     await this.#armExpirySweep();
-    await this.#serialize(this.#chatWork, key, () => this.#reconcileChat(workspaceId, chatId));
-    this.ctx.waitUntil(this.#deliverChatNotifications(workspaceId, chatId).catch(error => {
+    try { await this.#processChat(workspaceId, chatId); }
+    catch (error) {
+      // A notification failure need not retry source fanout: the count is already durable and
+      // this user's alarm owns the remaining work. Count failures still prevent the source ACK.
+      if (this.#cursor(workspaceId, chatId).unreadDirty) throw error;
       logger.warn("notification catch-up deferred", {event: "notification.catchup.deferred", error});
-    }));
-  }
-
-  async #reconcileChat(workspaceId: string, chatId: number): Promise<void> {
-    if (!this.#hasWorkspace(workspaceId)) return;
-    let key = `${workspaceId}:${chatId}`;
-    let token = this.#dirtyTokens.get(key);
-    let cursor = this.#cursor(workspaceId, chatId);
-    // A snapshot, arrival or alarm ahead of this waiter may already have finished the recount.
-    if (!cursor.unreadDirty) return;
-    let state = await this.#chatState(cursor);
-    if (!this.#hasWorkspace(workspaceId)) return;
-    if (state === "denied") { this.#denyUnreadWorkspace(workspaceId); return; }
-    if (!state) { this.#forgetChat(workspaceId, chatId); return; }
-    let heads = this.#chatHeads.get(workspaceId) ?? new Map<number, ChatTimelineHead>();
-    let previousHead = heads.get(chatId);
-    heads.set(chatId, state.head);
-    this.#chatHeads.set(workspaceId, heads);
-    let current = this.#cursor(workspaceId, chatId);
-    this.#storeCursor({...current, unreadCount: state.unreadCount,
-      unreadDirty: this.#dirtyTokens.get(key) === token ? undefined : true});
-    if (current.unreadCount !== state.unreadCount || !previousHead ||
-        previousHead.latestSequence !== state.head.latestSequence ||
-        previousHead.chatTitle !== state.head.chatTitle ||
-        previousHead.latestMessagePreview !== state.head.latestMessagePreview) {
-      this.#unreadChanged(workspaceId, chatId);
     }
   }
 
@@ -778,69 +809,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   async #setReadHorizon(workspaceId: string, chatId: number, through: number,
       rewind: boolean): Promise<void> {
     if (!Number.isSafeInteger(through) || through < -1) throw new Error("Invalid timeline sequence.");
-    await this.#serialize(this.#chatWork, `${workspaceId}:${chatId}`, async () => {
-      if (!this.#hasWorkspace(workspaceId)) return;
-      let cursor = this.#cursor(workspaceId, chatId);
-      if (through === cursor.readThroughSequence ||
-          (!rewind && through < cursor.readThroughSequence)) return;
-      let state = await this.#chatState({...cursor, readThroughSequence: through});
-      if (!this.#hasWorkspace(workspaceId)) return;
-      if (state === "denied") { this.#denyUnreadWorkspace(workspaceId); return; }
-      if (!state) return;
-      if (through > state.head.latestSequence) throw new Error("Invalid timeline sequence.");
-      // Fetching the count performs no effects. Commit the new horizon and its count together.
-      let current = this.#cursor(workspaceId, chatId);
-      this.#storeCursor({...current, readThroughSequence: through,
-        unreadCount: state.unreadCount});
-      let heads = this.#chatHeads.get(workspaceId) ?? new Map<number, ChatTimelineHead>();
-      heads.set(chatId, state.head);
-      this.#chatHeads.set(workspaceId, heads);
-      this.#unreadChanged(workspaceId, chatId);
-    });
+    await this.#processChat(workspaceId, chatId, {horizon: {through, rewind}});
   }
 
-  async #deliverChatNotifications(workspaceId: string, chatId: number): Promise<void> {
-    await this.#serialize(this.#notificationWork, `${workspaceId}:${chatId}`, async () => {
-      while (this.#hasWorkspace(workspaceId)) {
-        let key = `${workspaceId}:${chatId}`;
-        let token = this.#dirtyTokens.get(key);
-        let cursor = this.#cursor(workspaceId, chatId);
-        if (!cursor.notificationsDirty) return;
-        let state = await this.#chatState(cursor);
-        if (!this.#hasWorkspace(workspaceId)) return;
-        if (state === "denied") { this.#denyUnreadWorkspace(workspaceId); return; }
-        if (!state) { this.#forgetChat(workspaceId, chatId); return; }
-        for (let candidate of state.notifications) {
-          if (!this.#readCursors.has(key)) return;
-          await this.publishNotification({
-            id: candidate.id,
-            kind: candidate.kind, workspaceId, chatId, chatTitle: state.head.chatTitle,
-          });
-          let current = this.#readCursors.get(key);
-          if (!current) return;
-          this.#storeCursor({...current,
-            notifiedThroughSequence: Math.max(current.notifiedThroughSequence, candidate.sequence)});
-        }
-        // A newly dirtied thread needs another source read, even if this batch was empty.
-        if (this.#dirtyTokens.get(key) !== token) continue;
-        let current = this.#readCursors.get(key);
-        if (current?.notificationsDirty) {
-          this.#storeCursor({...current, notificationsDirty: undefined});
-        }
-        await this.#armExpirySweep();
-        return;
-      }
-    });
-  }
-
-  async #recoverUnread(workspaceId?: string): Promise<void> {
+  async #recoverUnread(): Promise<void> {
     let results = await Promise.allSettled([...this.#readCursors.values()]
-      .filter(cursor => workspaceId === undefined || cursor.workspaceId === workspaceId).map(async cursor => {
-      if (cursor.unreadDirty) await this.#serialize(this.#chatWork,
-        `${cursor.workspaceId}:${cursor.chatId}`,
-        () => this.#reconcileChat(cursor.workspaceId, cursor.chatId));
-      if (cursor.notificationsDirty) await this.#deliverChatNotifications(cursor.workspaceId, cursor.chatId);
-    }));
+      .filter(cursor => (cursor.unreadDirty || cursor.notificationsDirty) &&
+        this.#chatHeads.get(cursor.workspaceId) !== null)
+      .map(cursor => this.#processChat(cursor.workspaceId, cursor.chatId)));
     await this.#armExpirySweep();
     for (let result of results) if (result.status === "rejected") throw result.reason;
   }
@@ -856,6 +832,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   /** Journal removal before the source is destroyed; recount only after releasing the RPC. */
   async workspaceRemoved(workspaceId: string): Promise<void> {
+    this.#chatHeads.delete(workspaceId); // Deletion is a new signal, including for parked denied work.
     for (let cursor of this.#readCursors.values()) {
       if (cursor.workspaceId !== workspaceId) continue;
       this.#dirtyTokens.set(`${workspaceId}:${cursor.chatId}`, {});
@@ -945,7 +922,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * Overseer when attempted.
    */
   async recordSharedGadgetOpen(
-      gadgetId: string, title: string, ownerProfile: AiChatAuthorInfo, role?: CollaboratorRole
+      gadgetId: string, title: string, ownerProfile: AiChatAuthorInfo, role: CollaboratorRole,
+      notificationBaselines: Pick<ChatReadCursor, "chatId" | "notifiedThroughSequence">[]
   ): Promise<void> {
     let record = this.storage.gadgets.get(gadgetId);
     if (record && !record.owner) {
@@ -972,10 +950,13 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
     if (role === "use") this.#forgetUnreadWorkspace(gadgetId);
     else {
-      await this.#refreshUnreadWorkspace(gadgetId, true);
-      this.ctx.waitUntil(this.#recoverUnread(gadgetId).catch(error => {
-        logger.warn("unread recovery deferred", {event: "chat.unread.recovery.deferred", error});
-      }));
+      if (this.#chatHeads.get(gadgetId) === null) {
+        this.#chatHeads.delete(gadgetId); // This callback follows successful workspace authorization.
+        await this.#armExpirySweep();
+      }
+      await Promise.all(notificationBaselines.map(baseline => this.#processChat(gadgetId, baseline.chatId,
+        {notificationBaseline: baseline.notifiedThroughSequence})));
+      await this.#refreshUnreadWorkspace(gadgetId);
     }
   }
 
@@ -2332,6 +2313,15 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     record.credentialExpiresAt = expiresAt;
     this.storage.connectedAccounts.put(record);
 
+    // Re-authentication is a reason to check parked work again, not an authorization grant.
+    let denied = [...this.#chatHeads].filter(([, heads]) => heads === null).map(([id]) => id);
+    if (denied.length) this.ctx.waitUntil((async () => {
+      await Promise.all(denied.map(id => this.#refreshUnreadWorkspace(id, true)));
+      await this.#recoverUnread();
+    })().catch(error => {
+      logger.warn("unread recovery deferred", {event: "chat.unread.recovery.deferred", error});
+    }));
+
     // Re-fetch the description since the user may have re-authed with different info. Best-effort:
     // the credentials are live either way, and a record still showing as expired over a failed
     // describe() would send the user back through a reconnect that changes nothing.
@@ -2480,7 +2470,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let scheduled = await this.ctx.storage.getAlarm();
     let next: number | undefined;
     let consider = (at: number) => { if (next === undefined || at < next) next = at; };
-    if ([...this.#readCursors.values()].some(cursor => cursor.unreadDirty || cursor.notificationsDirty)) {
+    if ([...this.#readCursors.values()].some(cursor =>
+      (cursor.unreadDirty || cursor.notificationsDirty) && this.#chatHeads.get(cursor.workspaceId) !== null)) {
       // Other activity must not postpone an outstanding retry; a fired alarm can schedule anew.
       consider(Math.min(scheduled ?? Infinity, Date.now() + 30_000));
     }

@@ -10489,24 +10489,27 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     return [...this.impl.storage.chatMeta.list()].flatMap(meta => this.impl.chatHead(meta.id) ?? []);
   }
 
-  /** Recalculate count/candidates; "denied" preserves horizons, null confirms deletion. */
+  /** Read count/candidates; null horizons skip the corresponding work. Denial preserves cursors. */
   async getChatStateForUser(userId: string, profileId: string, chatId: number,
-      readThroughSequence: number, notifiedThroughSequence: number) {
+      readThroughSequence: number | null, notifiedThroughSequence: number | null) {
     if (!this.impl.ownerId) return null;
     if (!await this.impl.mayReadChatState(userId, profileId)) return "denied" as const;
     let head = this.impl.chatHead(chatId);
     if (!head) return null;
-    let unreadCount = 0;
-    for (let message of this.impl.storage.chats.list({prefix: chatKeyPrefix(chatId),
-      startAfter: readThroughSequence < 0 ? undefined : chatKey(chatId, readThroughSequence)})) {
-      if (message.type === "message" && message.generatedBySlashCommandSequence === undefined &&
-          (message.message.trim() || message.attachments?.length)) unreadCount++;
-    }
-    let notifications = [...this.impl.storage.chatNotifications.list({
+    let notifications = notifiedThroughSequence === null ? [] : [...this.impl.storage.chatNotifications.list({
       prefix: chatKeyPrefix(chatId),
       startAfter: notifiedThroughSequence < 0 ? undefined : chatKey(chatId, notifiedThroughSequence),
     })].filter(event => event.userId === userId);
-    return {head, unreadCount, notifications};
+    let unreadCount: number | undefined;
+    if (readThroughSequence !== null) {
+      unreadCount = 0;
+      for (let message of this.impl.storage.chats.list({prefix: chatKeyPrefix(chatId),
+        startAfter: readThroughSequence < 0 ? undefined : chatKey(chatId, readThroughSequence)})) {
+        if (message.type === "message" && message.generatedBySlashCommandSequence === undefined &&
+            (message.message.trim() || message.attachments?.length)) unreadCount++;
+      }
+    }
+    return {head, notifications, unreadCount};
   }
 
   /**
@@ -10617,10 +10620,15 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       // (or is refreshed on) their home page.
       let title = this.impl.storage.title.get();
       let gadgetId = this.impl.ctx.id.toString();
+      // Initial admission skips earlier alerts. Carry the timeline boundaries in this existing
+      // callback so the User DO can initialize under its thread mutex without another RPC.
+      let notificationBaselines = role === "build" ? [...this.impl.storage.chatMeta.list()].map(meta => ({
+        chatId: meta.id, notifiedThroughSequence: this.impl.nextChatSequencePeek(meta.id) - 1,
+      })) : [];
       void (async () => {
         try {
           const ownerProfile = await owner.whoami();
-          await clientUser.recordSharedGadgetOpen(gadgetId, title, ownerProfile, role);
+          await clientUser.recordSharedGadgetOpen(gadgetId, title, ownerProfile, role, notificationBaselines);
         } catch (err) {
           this.impl.logger.warn("failed to record shared gadget open", {
             event: "shared.gadget.open.record.failed", gadgetId, error: err,
