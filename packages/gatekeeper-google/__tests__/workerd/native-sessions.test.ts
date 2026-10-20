@@ -681,13 +681,29 @@ describe("Drive file reads", () => {
     expect(queue.observations.map(o => o.title)).toEqual(["Open file from Google Drive"]);
   });
 
-  it("says the file changed when its end moved before the requested range", async () => {
+  it("says the file changed when it shrank past the requested range", async () => {
     answerDownload = () => Response.json(
       { error: { code: 416, errors: [{ reason: "requestedRangeNotSatisfiable" }] } }, { status: 416 });
     using session = newSession().session;
 
     await expect(Promise.resolve(session.readFile("csv-1", { offset: 4 }))).rejects.toThrow(
-      "The Drive file changed while it was being read; read it again from its new size.");
+      "The Drive file changed while it was being read; read it again.");
+  });
+
+  // Its old size and time would make the new bytes look like the whole of the old file, so a
+  // file that grew would be taken as read to its end.
+  it("withholds bytes from a file whose size changed before the download", async () => {
+    const grown = new TextEncoder().encode("NEWREVISION".repeat(10));
+    answerDownload = () => new Response(grown.slice(0, CSV_BYTES.byteLength), {
+      status: 206,
+      headers: { "Content-Range": `bytes 0-${CSV_BYTES.byteLength - 1}/${grown.byteLength}` },
+    });
+    const { queue, session } = newSession();
+    using owned = session;
+
+    await expect(Promise.resolve(owned.readFile("csv-1"))).rejects.toThrow(
+      "The Drive file changed while it was being read; read it again.");
+    expect(queue.observations.map(o => o.title)).toEqual(["Open file from Google Drive"]);
   });
 
   it("withholds the bytes when their read is not authorized", async () => {
@@ -895,14 +911,30 @@ describe("folder-scoped native sessions", () => {
     });
   }
 
-  function installFolderProvider(nodes: Map<string, Node>, onNativeRead?: () => void) {
+  /**
+   * Answers downloads with PDF_BYTES whole, in two chunks pulled one at a time. `onLastChunk`
+   * runs just before the second is sent, so a change it makes lands while the body is still
+   * being read.
+   */
+  function installFolderProvider(
+    nodes: Map<string, Node>, onNativeRead?: () => void, onLastChunk?: () => void,
+  ) {
     const nativeCalls: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = new URL(input instanceof Request ? input.url : input.toString());
       if (isDownload(url.toString())) {
         nativeCalls.push("download");
         onNativeRead?.();
-        return new Response(PDF_BYTES, { headers: { "Content-Type": PDF_MIME } });
+        const half = PDF_BYTES.byteLength >> 1;
+        let sent = 0;
+        return new Response(new ReadableStream<Uint8Array>({
+          pull(controller) {
+            if (sent++ === 0) return controller.enqueue(PDF_BYTES.slice(0, half));
+            onLastChunk?.();
+            controller.enqueue(PDF_BYTES.slice(half));
+            controller.close();
+          },
+        }, { highWaterMark: 0 }), { headers: { "Content-Type": PDF_MIME } });
       }
       if (url.pathname === "/batch/drive/v3") {
         return batchResponse(String(init?.body ?? ""), nodes);
@@ -1276,10 +1308,12 @@ describe("folder-scoped native sessions", () => {
     ]);
   });
 
-  it("refuses bytes from a file moved out of the folder during the download", async () => {
+  // The move lands while the last bytes are still on their way, so only a re-proof taken after the
+  // whole range has arrived can see it: one taken when the download merely starts would pass.
+  it("refuses bytes from a file moved out of the folder before its last byte arrived", async () => {
     const nodes = subtree();
     nodes.set("data-1", dataNode(ROOT));
-    installFolderProvider(nodes, () => nodes.set("data-1", dataNode("elsewhere")));
+    installFolderProvider(nodes, undefined, () => nodes.set("data-1", dataNode("elsewhere")));
     const { queue, session } = folderSession(nodes);
     using owned = session;
 

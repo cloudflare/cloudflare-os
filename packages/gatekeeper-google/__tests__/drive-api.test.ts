@@ -1344,9 +1344,10 @@ describe("downloadRange", () => {
   it("asks alt=media across all drives for exactly the requested bytes", async () => {
     let calls = stubFetch([partial(3, 6)]);
 
-    let bytes = await api().downloadRange("file-1_A", 3, 4);
+    let { content, fileSize } = await api().downloadRange("file-1_A", 3, 4);
 
-    expect(new Uint8Array(bytes)).toEqual(new Uint8Array([3, 4, 5, 6]));
+    expect(new Uint8Array(content)).toEqual(new Uint8Array([3, 4, 5, 6]));
+    expect(fileSize).toBe(10);
     expect(calls[0].url.origin + calls[0].url.pathname)
       .toBe("https://www.googleapis.com/drive/v3/files/file-1_A");
     expect(Object.fromEntries(calls[0].url.searchParams))
@@ -1357,24 +1358,32 @@ describe("downloadRange", () => {
 
   it("returns what there is when the file ends inside the range", async () => {
     stubFetch([partial(8, 9)]);
-    expect(new Uint8Array(await api().downloadRange("file-1", 8, 5)))
+    expect(new Uint8Array((await api().downloadRange("file-1", 8, 5)).content))
       .toEqual(new Uint8Array([8, 9]));
+  });
+
+  it("reports no file size when Drive does not give one", async () => {
+    stubFetch([new Response(BYTES.slice(0, 2), {
+      status: 206, headers: { "Content-Range": "bytes 0-1/*" },
+    })]);
+    expect(await api().downloadRange("file-1", 0, 2)).toEqual({ content: expect.any(ArrayBuffer) });
   });
 
   it("keeps only the requested bytes of a whole-file answer to a range from the start", async () => {
     let { body, state } = countedBody(4);
     stubFetch([new Response(body)]);
 
-    let bytes = await api().downloadRange("file-1", 0, 6);
+    let { content, fileSize } = await api().downloadRange("file-1", 0, 6);
 
-    expect(bytes.byteLength).toBe(6);
+    expect(content.byteLength).toBe(6);
+    expect(fileSize).toBeUndefined();
     expect(state.pulls).toBeLessThanOrEqual(3);
     expect(state.cancelled).toBe(true);
   });
 
   it("never returns more than was asked for, whatever Drive sends", async () => {
     stubFetch([partial(2, 9)]);
-    expect(new Uint8Array(await api().downloadRange("file-1", 2, 3)))
+    expect(new Uint8Array((await api().downloadRange("file-1", 2, 3)).content))
       .toEqual(new Uint8Array([2, 3, 4]));
   });
 

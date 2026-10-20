@@ -3599,13 +3599,14 @@ function contentAccessMissing(what: string): string {
     `Reconnect it in Workshop to read ${what}.`;
 }
 
+/** The refusal for bytes read from another revision than the one whose size was read. */
+const FILE_CHANGED = "The Drive file changed while it was being read; read it again.";
+
 /** A failed file download as a file read reports it. */
 function fileReadError(error: unknown): unknown {
   if (lacksFileContentAccess(error)) return new Error(contentAccessMissing("Drive files"));
   // Only a file that shrank since its size was read refuses a range inside that size.
-  if (error instanceof DriveApiRequestError && error.status === 416) {
-    return new Error("The Drive file changed while it was being read; read it again from its new size.");
-  }
+  if (error instanceof DriveApiRequestError && error.status === 416) return new Error(FILE_CHANGED);
   return error;
 }
 
@@ -3752,12 +3753,14 @@ export class GoogleDriveSessionImpl extends RpcTarget
     let count = Math.min(length, size - offset);
     // The range is read whole inside the fetch, so a folder binding's re-proof after it covers
     // every byte returned.
-    return core.nativeRead(file.id, mimeType)(async (): Promise<DriveFileBytes> => ({
-      mimeType, size, modifiedTime, offset,
-      content: count === 0 ? new ArrayBuffer(0) : await this.#driveApi
-        .downloadRange(file.id, offset, count)
-        .catch((error: unknown) => { throw fileReadError(error); }),
-    }), read => ({
+    return core.nativeRead(file.id, mimeType)(async (): Promise<DriveFileBytes> => {
+      if (count === 0) return {mimeType, size, modifiedTime, offset, content: new ArrayBuffer(0)};
+      let {content, fileSize} = await this.#driveApi.downloadRange(file.id, offset, count)
+        .catch((error: unknown) => { throw fileReadError(error); });
+      // Another size means the bytes came from a revision other than the one described.
+      if (fileSize !== undefined && fileSize !== size) throw new Error(FILE_CHANGED);
+      return {mimeType, size, modifiedTime, offset, content};
+    }, read => ({
       title: "Read file from Google Drive",
       description: `Read ${read.content.byteLength} bytes of Drive file ${file.id}, from byte ${offset}.`,
     }));

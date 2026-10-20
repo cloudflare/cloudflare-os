@@ -153,7 +153,7 @@ export type DriveFileBytes = {
   mimeType: string;
   /** The whole file's size in bytes: it has been read to its end once `offset + content.byteLength` reaches this. */
   size: number;
-  /** When the file was last modified. A later range reporting another time comes from a changed file. */
+  /** When the file was last modified. Ranges reporting different times were read from different versions of it. */
   modifiedTime: Date;
   /** Where `content` starts, in bytes from the start of the file. */
   offset: number;

@@ -286,8 +286,8 @@ async function readBoundedText(
   return chunks.join("");
 }
 
-/** Where a 206's `Content-Range` says its bytes start. */
-const CONTENT_RANGE_START = /^bytes (\d+)-\d+\/(?:\d+|\*)$/;
+/** A 206's `Content-Range`: where its bytes start, and the whole file's size unless `*`. */
+const CONTENT_RANGE = /^bytes (\d+)-\d+\/(\d+|\*)$/;
 
 /** Up to `length` bytes from the start of `response`'s body; whatever follows is cancelled unread. */
 async function readPrefix(response: Response, length: number): Promise<ArrayBuffer> {
@@ -763,8 +763,11 @@ export class DriveApi {
    * Up to `length` bytes of one file's content from `offset`, all read before this resolves, or
    * fewer when the file ends first. Never more, and never from anywhere else: a whole-file answer
    * to a range from the start is cut to the range, and any other misplaced answer is refused.
+   * `fileSize` is the size of the file the bytes came from, when Drive says.
    */
-  async downloadRange(fileId: string, offset: number, length: number): Promise<ArrayBuffer> {
+  async downloadRange(
+    fileId: string, offset: number, length: number,
+  ): Promise<{ content: ArrayBuffer; fileSize?: number }> {
     if (!isDriveFileId(fileId)) throw new Error("Not a Google Drive file ID.");
     let params = new URLSearchParams({ alt: "media", supportsAllDrives: "true" });
     let response = await fetchWithAuthRetry(
@@ -772,14 +775,17 @@ export class DriveApi {
       { headers: { Range: `bytes=${offset}-${offset + length - 1}` } },
       this.getAccessToken, { timeoutMs: DOWNLOAD_TIMEOUT_MS });
     if (!response.ok) throw await driveError(response);
-    let start = response.status === 206
-      ? CONTENT_RANGE_START.exec(response.headers.get("Content-Range") ?? "")?.[1]
-      : "0";
+    let range = response.status === 206
+      ? CONTENT_RANGE.exec(response.headers.get("Content-Range") ?? "")
+      : undefined;
+    let start = response.status === 206 ? range?.[1] : "0";
     if (start === undefined || Number(start) !== offset) {
       await response.body?.cancel();
       throw new Error("Google Drive did not return the requested byte range.");
     }
-    return readPrefix(response, length);
+    let content = await readPrefix(response, length);
+    let total = range?.[2];
+    return total === undefined || total === "*" ? { content } : { content, fileSize: Number(total) };
   }
 
   /** Whether the connected account may edit a file's content, as Drive reports it. */
