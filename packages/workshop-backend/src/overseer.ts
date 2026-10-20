@@ -10489,10 +10489,11 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     return [...this.impl.storage.chatMeta.list()].flatMap(meta => this.impl.chatHead(meta.id) ?? []);
   }
 
-  /** Recalculate one user's count and catch-up candidates from the existing thread timeline. */
+  /** Recalculate count/candidates; "denied" preserves horizons, null confirms deletion. */
   async getChatStateForUser(userId: string, profileId: string, chatId: number,
       readThroughSequence: number, notifiedThroughSequence: number) {
-    if (!await this.impl.mayReadChatState(userId, profileId)) return null;
+    if (!this.impl.ownerId) return null;
+    if (!await this.impl.mayReadChatState(userId, profileId)) return "denied" as const;
     let head = this.impl.chatHead(chatId);
     if (!head) return null;
     let unreadCount = 0;

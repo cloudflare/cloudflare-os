@@ -16,12 +16,15 @@ Each User DO stores one `chatReadCursors` row per thread:
 - `notifiedThroughSequence`: last acknowledged or policy-skipped notification candidate
 - `unreadDirty`, `notificationsDirty`: coalesced pending work
 
-There are no workspace summary blobs, read epochs, source versions, reader enrollment records,
-recipient checkpoints or audit log. Counts hydrate into memory from these local rows once per
-User DO lifetime; normal badge calculations use that memory, not cross-workspace history scans.
-Display metadata is fetched separately and remains in memory. A first visit with no existing row
+There are no workspace summary blobs, persisted read epochs, source versions, reader enrollment
+records, workspace-side recipient checkpoints or audit log. Counts hydrate into memory from these
+local rows once per User DO lifetime; normal badge calculations use that memory, not cross-workspace
+history scans. Display metadata is fetched separately and remains in memory: loading a full thread
+list still contacts its workspaces. A first visit with no existing row
 calculates an initial count in memory; reads alone do not persist it. The next message or explicit
-horizon change persists the row. Existing history is initially unread.
+horizon change persists the row. Explicit admission to a shared workspace also persists its initial
+notification horizon, so dismissal/reopening cannot replay old alerts after eviction. Existing
+history is initially unread.
 
 Only visible text/attachments count. Tool/reasoning records, empty messages and generated
 slash-command expansions do not. Streaming tokens are not separate messages. Horizons may lie
@@ -35,7 +38,8 @@ between visible messages, so gaps in sequence numbers do not inflate counts.
    collaborators. One unavailable recipient leaves the bit set; healthy recipients/threads proceed.
 3. The User DO persists dirty intent and an alarm, then serializes recounts and read commands for
    that thread. It fetches the authoritative absolute count and bounded latest-message metadata
-   from the workspace, and persists the new count before acknowledging.
+   from the workspace, and persists the new count before acknowledging. When admission is denied,
+   the ACK instead confirms durable pending intent; recount waits for re-admission.
 4. Badges are summed in memory. Visible subscribers receive one changed thread plus totals.
    Notification catch-up runs independently against its own horizon.
 5. The workspace clears the bit only after all recipients ACK, and only if no newer mutation
@@ -45,10 +49,14 @@ No input gate is held across source-to-user RPC: the User DO must be able to cal
 workspace. In-memory promises/tokens serialize and coalesce live work only; persisted dirty bits
 and the existing shared alarms recover after eviction, including an ACK lost after commit.
 Constructor recovery preserves an existing alarm rather than resetting the platform retry budget.
+Unrelated activity also preserves an already scheduled retry deadline, so a busy thread cannot
+keep postponing another thread's failed notification delivery.
 
 Read commands count first, then commit horizon and count in one synchronous update. They carry
-the observed old horizon, rejecting stale viewport receipts after an explicit rewind without a
-separate epoch/version. Identical horizons are no-ops. Reading snapshots or reopening a workspace
+the observed old horizon and an opaque, in-memory token. A horizon change or User DO reset
+invalidates the token, so a delayed receipt cannot clear a manual unread even when the horizon
+returns to the same sequence. Reconnecting clients fetch fresh state; tokens never cause storage
+writes. Identical horizons are no-ops. Reading snapshots or reopening an already-listed workspace
 does not rewrite read rows or notify other collaborators. Hidden web clients release their live
 callbacks and resubscribe for a fresh snapshot when visible; background native updates use push.
 
@@ -75,6 +83,9 @@ Fanout never calls `authorizeCollaborator`/`ensureObserver`. Metadata checks cur
 membership and the observer admission already established by opening a workspace; a new
 gatekeeper binding requires fresh interactive admission. Existing sessions' lazy external ACL
 revocation semantics are retained, not replaced with per-message gatekeeper registrations.
+Admission denial is distinct from deletion: it hides metadata/counts but preserves private horizons
+and durable dirty work. New arrivals still journal their dirty bits. Authorized reopening refreshes
+metadata, recounts pending messages, and resumes notifications from `notifiedThroughSequence`.
 Use-only/unlisted users receive no thread metadata. Existing sharing/listing cleanup removes
 their local state on downgrade/revocation/dismissal; thread deletion removes its cursor and
 notification candidates. Workspace deletion first journals dirtiness in the readers' own DOs

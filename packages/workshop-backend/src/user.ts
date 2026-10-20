@@ -542,8 +542,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.gadgets.put(record);
   }
 
-  #chatHeads = new Map<string, Map<number, ChatTimelineHead>>();
+  // Null hides metadata/counts while observer admission is denied, without forgetting the listing.
+  #chatHeads = new Map<string, Map<number, ChatTimelineHead> | null>();
   #readCursors = new Map<string, ChatReadCursor>();
+  #readTokens = new Map<string, string>();
   #unreadWorkspaces = new Set<string>();
   #unavailableWorkspaces = new Set<string>();
   #chatWork = new Map<string, Promise<void>>();
@@ -592,7 +594,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   #unreadCounts() {
     let unreadChatCount = 0, unreadMessageCount = 0;
     for (let cursor of this.#readCursors.values()) {
-      if (!this.#hasWorkspace(cursor.workspaceId)) continue;
+      if (!this.#hasWorkspace(cursor.workspaceId) || this.#chatHeads.get(cursor.workspaceId) === null) continue;
       unreadMessageCount += cursor.unreadCount;
       if (cursor.unreadCount > 0) unreadChatCount++;
     }
@@ -602,49 +604,76 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   #unreadSnapshot(): UserUnreadState {
     let chats: ChatReadState[] = [];
     for (let [workspaceId, heads] of this.#chatHeads) {
-      if (!this.#hasWorkspace(workspaceId)) continue;
+      if (!this.#hasWorkspace(workspaceId) || !heads) continue;
       for (let head of heads.values()) {
-        let cursor = this.#cursor(workspaceId, head.chatId);
-        chats.push({...head, workspaceId, readThroughSequence: cursor.readThroughSequence,
-          unreadMessageCount: cursor.unreadCount});
+        chats.push(this.#readState(workspaceId, head));
       }
     }
     return {...this.#unreadCounts(), chats,
       ...(this.#unavailableWorkspaces.size ? {unavailableWorkspaceIds: [...this.#unavailableWorkspaces]} : {})};
   }
 
-  /** Persisted counts hydrate locally; only a first visit without a cursor needs an initial count. */
-  async getUnreadState(): Promise<UserUnreadState> {
-    await Promise.all([...this.#unreadWorkspaces].map(async workspaceId => {
-      try {
-        let heads = await this.#workspace(workspaceId).getChatHeadsForUser(
+  #readState(workspaceId: string, head: ChatTimelineHead): ChatReadState {
+    let key = `${workspaceId}:${head.chatId}`;
+    let cursor = this.#cursor(workspaceId, head.chatId);
+    let readToken = this.#readTokens.get(key);
+    if (!readToken) this.#readTokens.set(key, readToken = crypto.randomUUID());
+    return {...head, workspaceId, readThroughSequence: cursor.readThroughSequence,
+      unreadMessageCount: cursor.unreadCount, readToken};
+  }
+
+  #denyUnreadWorkspace(workspaceId: string): void {
+    let changed = this.#chatHeads.get(workspaceId) !== null;
+    this.#chatHeads.set(workspaceId, null);
+    let wasUnavailable = this.#unavailableWorkspaces.delete(workspaceId);
+    if (changed || wasUnavailable) this.#unreadChanged();
+  }
+
+  async #refreshUnreadWorkspace(workspaceId: string, persistBaseline = false): Promise<void> {
+    try {
+      let previousHeads = this.#chatHeads.get(workspaceId);
+      let heads = await this.#workspace(workspaceId).getChatHeadsForUser(
           this.ctx.id.toString(), this.storage.profile.get().id);
-        if (!this.#hasWorkspace(workspaceId)) return;
-        if (heads === null) {
-          // A stale listing is not authority. Suppress it locally without rewriting horizons
-          // during a read; a later authorized open refreshes the listing/admission.
-          this.#unreadWorkspaces.delete(workspaceId);
-          this.#chatHeads.delete(workspaceId);
-          this.#unavailableWorkspaces.delete(workspaceId);
+      if (!this.#hasWorkspace(workspaceId)) return;
+      if (heads === null) {
+        // Preserve both the listing and private horizons. New arrivals must still journal work.
+        this.#denyUnreadWorkspace(workspaceId);
+        return;
+      }
+      this.#chatHeads.set(workspaceId, new Map(heads.map(head => [head.chatId, head])));
+      await Promise.all(heads.map(async head => {
+        let key = `${workspaceId}:${head.chatId}`;
+        let existing = this.#readCursors.get(key);
+        if (existing) {
+          if (persistBaseline && !this.storage.chatReadCursors.get(key)) {
+            this.storage.chatReadCursors.put(existing);
+          }
+          if (existing.unreadDirty) await this.#serialize(this.#chatWork, key,
+            () => this.#reconcileChat(workspaceId, head.chatId));
           return;
         }
-        this.#chatHeads.set(workspaceId, new Map(heads.map(head => [head.chatId, head])));
-        await Promise.all(heads.map(async head => {
-          let key = `${workspaceId}:${head.chatId}`;
-          if (this.#readCursors.has(key)) return;
-          let cursor = this.#cursor(workspaceId, head.chatId);
-          let state = await this.#chatState(cursor);
-          if (!state || !this.#hasWorkspace(workspaceId) || this.#readCursors.has(key)) return;
-          // Reads do not enroll or write. New arrivals/explicit read commands persist this row.
-          // A newly admitted collaborator does not receive historical alerts.
-          this.#readCursors.set(key, {...cursor, unreadCount: state.unreadCount,
-            notifiedThroughSequence: state.notifications.at(-1)?.sequence ?? -1});
-        }));
-        this.#unavailableWorkspaces.delete(workspaceId);
-      } catch {
-        if (this.#hasWorkspace(workspaceId)) this.#unavailableWorkspaces.add(workspaceId);
-      }
-    }));
+        let cursor = this.#cursor(workspaceId, head.chatId);
+        let state = await this.#chatState(cursor);
+        if (!this.#hasWorkspace(workspaceId)) return;
+        if (state === "denied") { this.#denyUnreadWorkspace(workspaceId); return; }
+        if (!state || this.#readCursors.has(key)) return;
+        // Explicit admission establishes a durable alert baseline, even without unread consumers.
+        // Ordinary snapshot reads keep new counts in memory only.
+        let baseline = {...cursor, unreadCount: state.unreadCount,
+          notifiedThroughSequence: state.notifications.at(-1)?.sequence ?? -1};
+        if (persistBaseline) this.#storeCursor(baseline);
+        else this.#readCursors.set(key, baseline);
+      }));
+      this.#unavailableWorkspaces.delete(workspaceId);
+      if (!previousHeads && this.#chatHeads.get(workspaceId)) this.#unreadChanged();
+    } catch {
+      if (this.#hasWorkspace(workspaceId)) this.#unavailableWorkspaces.add(workspaceId);
+    }
+  }
+
+  /** Persisted counts hydrate locally; clean cursors never require a recount. */
+  async getUnreadState(): Promise<UserUnreadState> {
+    await Promise.all([...this.#unreadWorkspaces].map(workspaceId => this.#refreshUnreadWorkspace(workspaceId)));
     return this.#unreadSnapshot();
   }
 
@@ -665,9 +694,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   #unreadChanged(workspaceId?: string, chatId?: number): void {
     let head = workspaceId === undefined || chatId === undefined ? undefined :
       this.#chatHeads.get(workspaceId)?.get(chatId);
-    let cursor = head && this.#cursor(workspaceId!, head.chatId);
-    let chat = head && cursor ? {...head, workspaceId: workspaceId!,
-      readThroughSequence: cursor.readThroughSequence, unreadMessageCount: cursor.unreadCount} : null;
+    let chat = head ? this.#readState(workspaceId!, head) : null;
     for (let [token, subscriber] of this.#unreadSubscribers) {
       let update = workspaceId !== undefined && chatId !== undefined
         ? subscriber.chatUpdated(workspaceId, chatId, chat, this.#unreadCounts())
@@ -679,7 +706,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
   }
 
-  /** Reconcile before ACK; notifications have their own independently recoverable horizon. */
+  /** Journal before ACK; reconcile admitted threads and retain denied work for re-admission. */
   async messageArrived(workspaceId: string, chatId: number): Promise<void> {
     if (!this.#hasWorkspace(workspaceId)) return;
     let key = `${workspaceId}:${chatId}`;
@@ -702,6 +729,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let cursor = this.#cursor(workspaceId, chatId);
     let state = await this.#chatState(cursor);
     if (!this.#hasWorkspace(workspaceId)) return;
+    if (state === "denied") { this.#denyUnreadWorkspace(workspaceId); return; }
     if (!state) { this.#forgetChat(workspaceId, chatId); return; }
     let heads = this.#chatHeads.get(workspaceId) ?? new Map<number, ChatTimelineHead>();
     let previousHead = heads.get(chatId);
@@ -718,7 +746,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
   }
 
-  /** Advance only the observed horizon. Matching the old horizon rejects stale viewport receipts. */
+  /** Advance only the observed horizon/token, including across a read/unread/read ABA cycle. */
   async markChatRead(receipt: ChatReadReceipt): Promise<void> {
     await this.markChatsRead([receipt]);
   }
@@ -726,30 +754,34 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   async markChatsRead(receipts: ChatReadReceipt[]): Promise<void> {
     let results = await Promise.allSettled(receipts.map(receipt =>
       this.#setReadHorizon(receipt.workspaceId, receipt.chatId, receipt.throughSequence,
-        receipt.readThroughSequence, false)));
+        receipt.readThroughSequence, false, receipt.readToken)));
     for (let result of results) if (result.status === "rejected") throw result.reason;
   }
 
   async markChatUnread(workspaceId: string, chatId: number, fromSequence: number,
-      readThroughSequence: number): Promise<void> {
-    await this.#setReadHorizon(workspaceId, chatId, fromSequence - 1, readThroughSequence, true);
+      readThroughSequence: number, readToken: string): Promise<void> {
+    await this.#setReadHorizon(workspaceId, chatId, fromSequence - 1, readThroughSequence, true, readToken);
   }
 
   async #setReadHorizon(workspaceId: string, chatId: number, through: number,
-      observed: number, rewind: boolean): Promise<void> {
+      observed: number, rewind: boolean, readToken: string): Promise<void> {
     if (!Number.isSafeInteger(through) || through < -1) throw new Error("Invalid timeline sequence.");
     await this.#serialize(this.#chatWork, `${workspaceId}:${chatId}`, async () => {
       if (!this.#hasWorkspace(workspaceId)) return;
       let cursor = this.#cursor(workspaceId, chatId);
+      if (!readToken || readToken !== this.#readTokens.get(`${workspaceId}:${chatId}`)) return;
       if (cursor.readThroughSequence !== observed || through === cursor.readThroughSequence ||
           (!rewind && through < cursor.readThroughSequence)) return;
       let state = await this.#chatState({...cursor, readThroughSequence: through});
-      if (!state || !this.#hasWorkspace(workspaceId)) return;
+      if (!this.#hasWorkspace(workspaceId)) return;
+      if (state === "denied") { this.#denyUnreadWorkspace(workspaceId); return; }
+      if (!state) return;
       if (through > state.head.latestSequence) throw new Error("Invalid timeline sequence.");
       // Fetching the count performs no effects. Commit the new horizon and its count together.
       let current = this.#cursor(workspaceId, chatId);
       this.#storeCursor({...current, readThroughSequence: through,
         unreadCount: state.unreadCount});
+      this.#readTokens.delete(`${workspaceId}:${chatId}`);
       let heads = this.#chatHeads.get(workspaceId) ?? new Map<number, ChatTimelineHead>();
       heads.set(chatId, state.head);
       this.#chatHeads.set(workspaceId, heads);
@@ -766,6 +798,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         if (!cursor.notificationsDirty) return;
         let state = await this.#chatState(cursor);
         if (!this.#hasWorkspace(workspaceId)) return;
+        if (state === "denied") { this.#denyUnreadWorkspace(workspaceId); return; }
         if (!state) { this.#forgetChat(workspaceId, chatId); return; }
         for (let candidate of state.notifications) {
           if (!this.#readCursors.has(key)) return;
@@ -775,7 +808,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           });
           let current = this.#readCursors.get(key);
           if (!current) return;
-          this.#storeCursor({...current, notifiedThroughSequence: candidate.sequence});
+          this.#storeCursor({...current,
+            notifiedThroughSequence: Math.max(current.notifiedThroughSequence, candidate.sequence)});
         }
         // A newly dirtied thread needs another source read, even if this batch was empty.
         if (this.#dirtyTokens.get(key) !== token) continue;
@@ -789,8 +823,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     });
   }
 
-  async #recoverUnread(): Promise<void> {
-    let results = await Promise.allSettled([...this.#readCursors.values()].map(async cursor => {
+  async #recoverUnread(workspaceId?: string): Promise<void> {
+    let results = await Promise.allSettled([...this.#readCursors.values()]
+      .filter(cursor => workspaceId === undefined || cursor.workspaceId === workspaceId).map(async cursor => {
       if (cursor.unreadDirty) await this.#serialize(this.#chatWork,
         `${cursor.workspaceId}:${cursor.chatId}`,
         () => this.#reconcileChat(cursor.workspaceId, cursor.chatId));
@@ -805,6 +840,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (!this.#readCursors.has(key)) return;
     this.storage.chatReadCursors.delete(key);
     this.#readCursors.delete(key);
+    this.#readTokens.delete(key);
     this.#chatHeads.get(workspaceId)?.delete(chatId);
     this.#unreadChanged(workspaceId, chatId);
   }
@@ -824,12 +860,15 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   #forgetUnreadWorkspace(workspaceId: string): void {
     let cursors = [...this.#readCursors.values()].filter(cursor => cursor.workspaceId === workspaceId);
-    if (!cursors.length) return;
-    this.storage.chatReadCursors.byWorkspace.delete(workspaceId);
-    for (let cursor of cursors) this.#readCursors.delete(`${workspaceId}:${cursor.chatId}`);
-    this.#chatHeads.delete(workspaceId);
-    this.#unavailableWorkspaces.delete(workspaceId);
-    this.#unreadChanged();
+    if (cursors.length) this.storage.chatReadCursors.byWorkspace.delete(workspaceId);
+    for (let cursor of cursors) {
+      let key = `${workspaceId}:${cursor.chatId}`;
+      this.#readCursors.delete(key);
+      this.#readTokens.delete(key);
+    }
+    let hadHeads = this.#chatHeads.delete(workspaceId);
+    let wasUnavailable = this.#unavailableWorkspaces.delete(workspaceId);
+    if (cursors.length || hadHeads || wasUnavailable) this.#unreadChanged();
   }
 
   /**
@@ -924,6 +963,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       });
     }
     if (role === "use") this.#forgetUnreadWorkspace(gadgetId);
+    else {
+      await this.#refreshUnreadWorkspace(gadgetId, true);
+      this.ctx.waitUntil(this.#recoverUnread(gadgetId).catch(error => {
+        logger.warn("unread recovery deferred", {event: "chat.unread.recovery.deferred", error});
+      }));
+    }
   }
 
   /**
@@ -2424,10 +2469,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   // Arm the alarm for the soonest pending expiry, including device sessions and picker selections.
   async #armExpirySweep(): Promise<void> {
+    let scheduled = await this.ctx.storage.getAlarm();
     let next: number | undefined;
     let consider = (at: number) => { if (next === undefined || at < next) next = at; };
     if ([...this.#readCursors.values()].some(cursor => cursor.unreadDirty || cursor.notificationsDirty)) {
-      consider(Date.now() + 30_000);
+      // Other activity must not postpone an outstanding retry; a fired alarm can schedule anew.
+      consider(Math.min(scheduled ?? Infinity, Date.now() + 30_000));
     }
     for (let flow of this.storage.pendingConnectFlows.list()) consider(flow.expiresAt.getTime());
     for (let pending of this.storage.pendingDeviceHandoffs.list()) {

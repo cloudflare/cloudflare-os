@@ -228,11 +228,13 @@ export type ChatReadState = {
   latestActivityAt?: Date;
   /** Last read sequence, inclusive; -1 means nothing has been read. */
   readThroughSequence: number;
+  /** Opaque receipt token; changes with the horizon or User DO lifetime, and is never persisted. */
+  readToken: string;
 };
 
 /** An observed read boundary for a single-thread or bulk mark-read command. */
 export type ChatReadReceipt = Pick<ChatReadState,
-    "workspaceId" | "chatId" | "readThroughSequence"> & {
+    "workspaceId" | "chatId" | "readThroughSequence" | "readToken"> & {
   /** Highest observed sequence to mark read; later activity stays unread. */
   throughSequence: number;
 };
@@ -576,13 +578,13 @@ export interface AuthenticatedApi extends RpcTarget {
   getUnreadState(): Promise<UserUnreadState>;
 
   /**
-   * Subscribe to an immediate snapshot and every subsequent unread-state change, even while
-   * visible. Dispose when hidden; re-subscribe after visibility changes or disconnect/reset.
+   * Subscribe while visible to an immediate snapshot and subsequent unread-state changes.
+   * Dispose when hidden; re-subscribe after visibility changes or disconnect/reset.
    * Receiving state never marks messages read or acknowledges alerts.
    */
   subscribeToUnreadState(subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>>;
 
-  /** Advance a cursor only if its current horizon still matches the receipt's observed horizon. */
+  /** Advance a cursor only if its horizon and opaque token still match the observed state. */
   markChatRead(receipt: ChatReadReceipt): Promise<void>;
 
   /**
@@ -592,11 +594,11 @@ export interface AuthenticatedApi extends RpcTarget {
   markChatsRead(receipts: ChatReadReceipt[]): Promise<void>;
 
   /**
-   * Move the cursor immediately before an existing item if its observed horizon still matches.
+   * Move the cursor immediately before an existing item if its observed horizon/token still match.
    * Repeating an already-applied command performs no write.
    */
   markChatUnread(workspaceId: string, chatId: number, fromSequence: number,
-                 readThroughSequence: number): Promise<void>;
+                 readThroughSequence: number, readToken: string): Promise<void>;
 
   /**
    * Mute a workspace in the user's list, so its finished tasks notify no tab or device, or unmute
