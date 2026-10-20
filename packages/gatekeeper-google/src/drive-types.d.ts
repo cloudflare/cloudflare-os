@@ -158,8 +158,11 @@ export type DriveFileBytes = {
   /** Where `content` starts, in bytes from the start of the file. */
   offset: number;
   /**
-   * The bytes read: `length` of them, fewer where the file ends, and none from its end. Decode
-   * text with `new TextDecoder().decode(content)`.
+   * The bytes read: `length` of them, fewer where the file ends, and none from its end. A range
+   * can end partway through a multi-byte character, so decode text read in several ranges with
+   * one `TextDecoder`, calling `decoder.decode(content, { stream: true })` for each range and
+   * `decoder.decode()` at the end, or join the ranges' bytes before decoding; decoding each range
+   * on its own corrupts the characters split between them.
    */
   content: ArrayBuffer;
 };
