@@ -13,8 +13,10 @@ export const NativeAppBridge = () => {
 
   useEffect(() => {
     if (!isCurrentUserConfirmed) return
-    if (currentUser?.type === 'user') nativeApp()?.loginReady()
-    else nativeApp()?.sessionEnded?.()
+    try {
+      if (currentUser?.type === 'user') nativeApp()?.loginReady()
+      else nativeApp()?.sessionEnded?.()
+    } catch (cause) { logRpcFailure('Native session update failed:', cause) }
   }, [currentUser, isCurrentUserConfirmed])
 
   // Login confirmation precedes the first badge, even if the snapshot arrived before whoami.

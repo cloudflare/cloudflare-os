@@ -156,6 +156,26 @@ describe('native app bridge', () => {
     act(() => root.unmount())
   })
 
+  it.each([user, {type: 'agent', id: 'agent', name: 'Agent'}] satisfies AiChatAuthorInfo[])(
+    'keeps the app mounted when the native identity callback throws for $type', async identity => {
+      const unavailable = vi.fn<() => void>(() => { throw new Error('native bridge unavailable') })
+      vi.stubGlobal('cloudflareOSNative', {
+        version: 1, isAvailable: () => true, loginReady: unavailable, sessionEnded: unavailable,
+        returnToInstalls: vi.fn<() => void>(),
+      })
+      const container = document.createElement('div')
+      const root = createRoot(container)
+      await act(async () => root.render(
+        <AuthProvider authenticatedApi={apiWithWhoami(async () => identity)} onLogout={() => {}}>
+          <NativeAppBridge /><span>App content</span>
+        </AuthProvider>
+      ))
+      expect(unavailable).toHaveBeenCalledOnce()
+      expect(container.textContent).toBe('App content')
+      act(() => root.unmount())
+    },
+  )
+
   it('forwards a snapshot that arrived before login confirmation, in login-then-badge order', async () => {
     const identity = pendingWhoami()
     const calls: string[] = []

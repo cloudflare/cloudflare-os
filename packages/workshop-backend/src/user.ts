@@ -975,10 +975,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     // An incomplete sum must never become an absolute replacement, even if every source is up.
     let complete = !this.#unavailableWorkspaces.size && [...this.#unreadWorkspaces].every(workspaceId => {
       let heads = this.#chatHeads.get(workspaceId);
-      return heads !== undefined && (heads === null || [...heads.keys()].every(chatId => {
+      if (heads === null) return true;
+      if (!heads || !this.#enumeratedUnreadWorkspaces.has(workspaceId)) return false;
+      return [...heads.keys()].every(chatId => {
         let cursor = this.#readCursors.get(`${workspaceId}:${chatId}`);
         return cursor && !cursor.unreadDirty;
-      }));
+      });
     });
     if (!complete) {
       // Null plus retryAt is reconstruction intent in the existing outbox, surviving eviction.
@@ -1141,6 +1143,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   #forgetUnreadWorkspace(workspaceId: string): void {
+    this.#enumeratedUnreadWorkspaces.delete(workspaceId);
     let cursors = [...this.#readCursors.values()].filter(cursor => cursor.workspaceId === workspaceId);
     this.ctx.storage.transactionSync(() => {
       if (cursors.length) this.storage.chatReadCursors.byWorkspace.delete(workspaceId);
@@ -1149,6 +1152,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       }
     });
     if (cursors.length) this.#unreadChanged();
+    else this.#queueBadge(); // A cold deletion can still change a previously delivered badge.
   }
 
   /**

@@ -38,11 +38,13 @@ durable, unlike frontend subscription revisions, and must not reset at eviction.
 enrollment forces an initial complete snapshot. Dead subscriptions are removed only if they have
 not been replaced while the request was in flight.
 
-Cold wakes reconstruct any missing in-memory thread counts before queuing an absolute total.
+Cold wakes enumerate each workspace's complete thread list and reconstruct missing in-memory
+counts before queuing an absolute total; one head fetched by message fanout is not a complete list.
 While reconstruction is incomplete, the same outbox stores `count: null` with a retry deadline.
 The alarm retries reconstruction without requiring an open browser, including after eviction;
 unknown totals never replace a device's last complete badge. Snapshot-only reconstruction does
-not persist extra read cursors.
+not persist extra read cursors. Workspace removal invalidates the outbox even with no cached
+heads/cursors, so deleting a snapshot-only contribution also clears the sleeping device's badge.
 
 The notification service needs the matching `/v1/badges` implementation before deploying this
 producer. Deploying the producer first is safe but leaves a retrying outbox until the endpoint is
