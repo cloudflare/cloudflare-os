@@ -42,7 +42,7 @@ import {
 } from "./markdown-converter";
 import { DriveApi, DriveApiRequestError, lacksFileContentAccess, MAX_BATCH_FILES } from "./drive-api";
 import { CONVERSION_FAILED, pdfToText, type PdfConverter } from "./drive-pdf";
-import { downloadableFile, fileReadRange } from "./drive-file-read";
+import { downloadableFile, fileReadRange, MAX_CONCURRENT_FILE_READS } from "./drive-file-read";
 import type { AiFetcher } from "./workers-ai-markdown";
 import { driveObserverTracker, type DriveObservation } from "./drive-observers";
 import {
@@ -106,7 +106,7 @@ import DRIVE_CONFIGURATOR_HTML from "./generated/drive-configurator-ui.txt";
 import GOOGLE_LOGO_SVG from "./google-logo.svg";
 import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS } from "./auth-retry";
-import { Mutex } from "./mutex";
+import { Mutex, Semaphore } from "./mutex";
 import {
   BIGQUERY_HOST, BIGQUERY_QUERY_PROJECT_PARAM, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
   GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE,
@@ -3365,6 +3365,9 @@ export class GoogleDriveGatekeeperImpl
     return account.getAccessToken(opts);
   });
 
+  /** Shared by every session this binding starts, so the limit holds across all of them. */
+  #fileReads = new Semaphore(MAX_CONCURRENT_FILE_READS);
+
   #getAccessToken(opts?: AccessTokenRequest): Promise<string> {
     return this.#tokens.get(opts);
   }
@@ -3425,6 +3428,7 @@ export class GoogleDriveGatekeeperImpl
       new GoogleSheetsApi(getDriveAccessToken),
       new GoogleSlidesApi(getDriveAccessToken),
       convertPdf,
+      this.#fileReads,
       this.#scope,
       approvalQueue.dup(),
     );
@@ -3621,6 +3625,8 @@ export class GoogleDriveSessionImpl extends RpcTarget
   #slidesApi: GoogleSlidesApi;
   /** Absent when the deployment has no Workers AI binding, so PDFs cannot be read. */
   #convertPdf: PdfConverter | undefined;
+  /** The binding's turns for {@link readFile}, held from its download until it is authorized. */
+  #fileReads: Semaphore;
   #scope: DriveBindingScope;
   /** Set exactly when the scope is a folder, so no core has to be built to learn which it is. */
   #location?: FolderLocation;
@@ -3632,6 +3638,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     sheetsApi: GoogleSheetsApi,
     slidesApi: GoogleSlidesApi,
     convertPdf: PdfConverter | undefined,
+    fileReads: Semaphore,
     scope: DriveBindingScope,
     approvalQueue: RpcStub<ApprovalQueue>,
     location?: FolderLocation,
@@ -3642,6 +3649,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     this.#sheetsApi = sheetsApi;
     this.#slidesApi = slidesApi;
     this.#convertPdf = convertPdf;
+    this.#fileReads = fileReads;
     this.#scope = scope;
     this.#location = scope.kind === "folder"
       ? location ?? {folderIds: [scope.folderId]}
@@ -3676,7 +3684,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
       let location = await (core as DriveFolderSessionCore).openFolder(folderId);
       return new GoogleDriveSessionImpl(
         this.#driveApi, this.#docsApi, this.#sheetsApi, this.#slidesApi, this.#convertPdf,
-        this.#scope, queue, location,
+        this.#fileReads, this.#scope, queue, location,
       );
     });
   }
@@ -3754,7 +3762,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     // The range is read whole inside the fetch, so a folder binding's re-proof after it covers
     // every byte returned. That re-proof re-reads the file's metadata anyway, so a folder binding
     // also refuses a rewrite that kept the size: its modification time moved.
-    return core.nativeRead(file.id, mimeType, current => {
+    return this.#fileReads.run(() => core.nativeRead(file.id, mimeType, current => {
       if (current.modifiedTime !== file.modifiedTime) throw new Error(FILE_CHANGED);
     })(async (): Promise<DriveFileBytes> => {
       if (count === 0) return {mimeType, size, modifiedTime, offset, content: new ArrayBuffer(0)};
@@ -3766,7 +3774,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     }, read => ({
       title: "Read file from Google Drive",
       description: `Read ${read.content.byteLength} bytes of Drive file ${file.id}, from byte ${offset}.`,
-    }));
+    })));
   }
 
   #coreFor(queue: RpcStub<ApprovalQueue>): DriveCore {

@@ -221,7 +221,7 @@ export interface GoogleDriveReadSession {
    * shortcuts and other Google-native files (MIME types starting `application/vnd.google-apps.`),
    * which have no content to download. Fails when Google does not let the account download the
    * file, and asks to reconnect when the account was connected before Drive bindings could read
-   * file content.
+   * file content. A binding runs at most three reads at once; further calls wait their turn.
    */
   readFile(fileId: string, options?: DriveFileReadOptions): Promise<DriveFileBytes>;
 }

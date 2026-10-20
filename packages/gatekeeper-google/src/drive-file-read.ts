@@ -13,6 +13,14 @@ import type { DriveFileReadOptions } from "./drive-types";
  */
 export const MAX_FILE_READ_BYTES = 4_000_000;
 
+/**
+ * The most reads one binding holds at once, across all its sessions; the rest wait their turn.
+ * Each holds its range from the download until the read is authorized, and every Drive binding's
+ * Durable Object may share one isolate's memory. Holding a turn across authorization is safe only
+ * because the Workshop authorizes an observation without waiting on anyone.
+ */
+export const MAX_CONCURRENT_FILE_READS = 3;
+
 /** Every Google-native type starts with this; none has content of its own to download. */
 const GOOGLE_NATIVE_PREFIX = "application/vnd.google-apps.";
 

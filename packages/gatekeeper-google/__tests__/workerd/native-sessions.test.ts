@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleDocsApi } from "../../src/docs-api";
 import { DriveApi } from "../../src/drive-api";
 import type { DriveBindingScope } from "../../src/drive-session";
+import { MAX_CONCURRENT_FILE_READS } from "../../src/drive-file-read";
+import { Semaphore } from "../../src/mutex";
 import type { PdfConverter } from "../../src/drive-pdf";
 import { GoogleDriveSessionImpl } from "../../src/google";
 import type { DrivePdfText, DriveSessionSearchQuery } from "../../src/drive-types";
@@ -102,8 +104,11 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   readonly observations: ObservationDescription[] = [];
   /** Titles this queue refuses to authorize. */
   readonly refuse = new Set<string>();
+  /** Titles whose authorization waits for the promise mapped to them. */
+  readonly holds = new Map<string, Promise<void>>();
 
   async authorizeObservation(description: ObservationDescription): Promise<void> {
+    await this.holds.get(description.title);
     if (this.refuse.has(description.title)) throw new Error("Observation refused");
     this.observations.push(description);
   }
@@ -243,6 +248,7 @@ function newSession(
       new GoogleSheetsApi(getAccessToken),
       new GoogleSlidesApi(getAccessToken),
       convertPdf,
+      new Semaphore(MAX_CONCURRENT_FILE_READS),
       scope,
       queueStub,
     )),
@@ -721,6 +727,24 @@ describe("Drive file reads", () => {
     expect(queue.observations.map(o => o.title)).toEqual(["Open file from Google Drive"]);
   });
 
+  // Each read keeps its bytes until it is authorized, so authorization holding the first three up
+  // must keep a fourth from downloading at all.
+  it("holds at most three reads at once, each until its read is authorized", async () => {
+    const { queue, session } = newSession();
+    using owned = session;
+    const authorized = Promise.withResolvers<void>();
+    queue.holds.set("Read file from Google Drive", authorized.promise);
+
+    const reads = Array.from({ length: 4 }, () => Promise.resolve(owned.readFile("csv-1")));
+    // All four have opened the file, so the fourth is waiting its turn, not merely late.
+    await vi.waitFor(() => expect(queue.observations).toHaveLength(4));
+    expect(downloads).toHaveLength(3);
+
+    authorized.resolve();
+    await Promise.all(reads);
+    expect(downloads).toHaveLength(4);
+  });
+
   it("withholds the bytes when their read is not authorized", async () => {
     const { queue, session } = newSession();
     using owned = session;
@@ -1013,6 +1037,7 @@ describe("folder-scoped native sessions", () => {
         new GoogleSheetsApi(getAccessToken),
         new GoogleSlidesApi(getAccessToken),
         convertPdf,
+        new Semaphore(MAX_CONCURRENT_FILE_READS),
         { kind: "folder", folderId: ROOT },
         new RpcStub(queue),
       )),
