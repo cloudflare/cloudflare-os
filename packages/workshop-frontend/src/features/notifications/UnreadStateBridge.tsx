@@ -49,7 +49,7 @@ const receiptFor = (
   throughSequence,
 });
 
-/** One visible-session subscription supplies indicators, timeline cursors and native badges. */
+/** One visible-session subscription supplies web indicators and timeline cursors. */
 export const UnreadStateBridge = ({
   authenticatedApi,
   children,
