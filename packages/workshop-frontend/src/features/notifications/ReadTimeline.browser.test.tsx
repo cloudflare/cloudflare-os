@@ -194,7 +194,11 @@ it("keeps manual unread for the visit, then resumes viewport reading after leavi
   });
 });
 
-it.each([false, true])("completes unread navigation with real scroll geometry (short history: %s)", async short => {
+it.each([
+  {short: false, hidden: false},
+  {short: true, hidden: false},
+  {short: false, hidden: true},
+])("completes unread navigation with real scroll geometry (short: $short, initially hidden: $hidden)", async ({short, hidden}) => {
   navigate.mockClear();
   const markChatRead = vi.fn<AuthenticatedApi["markChatRead"]>().mockResolvedValue(undefined);
   const state: UserUnreadState = {unreadChatCount: 1, unreadMessageCount: 1,
@@ -214,7 +218,7 @@ it.each([false, true])("completes unread navigation with real scroll geometry (s
     {sequence: 3, type: "message" as const, message: "New text"},
   ].map(body => ({chatId: 1, timestamp: new Date(), author: {type: "agent" as const, id: "test", name: "Test"}, ...body}));
   const ranges = timelineReadRanges(short ? [0] : [0, 3], short ? messages.slice(0, 1) : messages);
-  const View = () => {
+  const NavigationView = () => {
     const viewport = useRef<HTMLDivElement>(null);
     return <div ref={viewport} data-viewport style={{height: 220, width: 440, overflowY: "auto"}}>
       <ReadTimeline workspaceId="workspace" chatId={1} container={viewport} oldestSequence={0}
@@ -226,10 +230,17 @@ it.each([false, true])("completes unread navigation with real scroll geometry (s
     </div>;
   };
   host = document.body.appendChild(document.createElement("div"));
+  if (hidden) host.style.display = "none";
   root = createRoot(host);
   await act(async () => root!.render(
-    <UnreadStateBridge authenticatedApi={api as unknown as RpcStub<AuthenticatedApi>}><View /></UnreadStateBridge>,
+    <UnreadStateBridge authenticatedApi={api as unknown as RpcStub<AuthenticatedApi>}><NavigationView /></UnreadStateBridge>,
   ));
+  await new Promise(resolve => setTimeout(resolve, 100));
+  expect(navigate).toHaveBeenLastCalledWith(hidden);
+  expect(markChatRead).not.toHaveBeenCalled();
+  if (hidden) {
+    await act(async () => { host!.style.display = ""; });
+  }
   await vi.waitFor(() => expect(navigate).toHaveBeenLastCalledWith(false));
   expect(navigate).toHaveBeenCalledWith(true);
   const viewport = host.querySelector<HTMLElement>("[data-viewport]")!;

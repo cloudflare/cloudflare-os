@@ -107,19 +107,38 @@ export const ReadTimeline = ({
       void loadEarlier().catch(() => {});
       return;
     }
-    const frame = requestAnimationFrame(() => {
-      const items = root.current?.querySelectorAll<HTMLElement>("[data-unread-through]");
-      const item = items && [...items].find((element) => Number(element.dataset.unreadThrough) >= target);
-      if (item && container.current) {
-        container.current.scrollTop +=
-          item.getBoundingClientRect().top - container.current.getBoundingClientRect().top;
-      }
-      // A short history may not move scrollTop and therefore emits no scroll event. Let the
-      // chat recompute follow-to-bottom even for that no-op navigation.
-      onUnreadNavigation(false);
-      setJump(0);
-    });
-    return () => cancelAnimationFrame(frame);
+    const viewport = container.current;
+    if (!viewport) return;
+    let frame = 0;
+    const navigate = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        // Mobile keeps the chat mounted behind the gadget pane. Leave the jump pending until
+        // layout exists, then position before enabling viewport receipts.
+        const bounds = viewport.getBoundingClientRect();
+        if (bounds.width <= 0 || bounds.height <= 0) return;
+        const items = root.current?.querySelectorAll<HTMLElement>("[data-unread-through]");
+        const item = items && [...items].find((element) => Number(element.dataset.unreadThrough) >= target);
+        if (item) {
+          viewport.scrollTop += item.getBoundingClientRect().top - bounds.top;
+        }
+        // A short history may not move scrollTop and therefore emits no scroll event. Let the
+        // chat recompute follow-to-bottom even for that no-op navigation.
+        onUnreadNavigation(false);
+        setJump(0);
+      });
+    };
+    const stopWatchingChat = subscribeVisibleChat(navigate);
+    const resize = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(navigate);
+    resize?.observe(viewport);
+    window.addEventListener("resize", navigate);
+    navigate();
+    return () => {
+      cancelAnimationFrame(frame);
+      stopWatchingChat();
+      resize?.disconnect();
+      window.removeEventListener("resize", navigate);
+    };
   }, [jump, visit, chat, oldestSequence, loadingEarlier, loadEarlier, container, onUnreadNavigation]);
 
   const canRead = !!chat && !!visit && !jump;
