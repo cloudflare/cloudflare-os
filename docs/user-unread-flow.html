@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<title>Unread state: dirty bits and recovery</title>
+<style>
+  :root { color-scheme:light dark; --font-size-base:14px; --background:light-dark(#fff,#181818); --foreground:light-dark(#1a1c1f,#eee); --muted-foreground:light-dark(#65686d,#aaa); --border:light-dark(#ddd,#444); --viz-series-1:light-dark(#2179cc,#83c3ff); }
+  * { box-sizing:border-box; }
+  body { margin:0 auto; padding:24px 16px; max-width:800px; font:400 var(--font-size-base)/1.45 system-ui,sans-serif; background:var(--background); color:var(--foreground); }
+  h2 { margin:0 0 6px; font-size:1.4rem; font-weight:500; }
+  h3 { font-size:1.2rem; font-weight:500; }
+  button { font:inherit; cursor:pointer; }
+  button:disabled { opacity:.4; cursor:default; }
+  .btn { padding:8px 14px; border:1px solid var(--border); border-radius:24px; background:transparent; color:var(--foreground); }
+  .btn-primary { background:var(--foreground); color:var(--background); border-color:transparent; }
+  .btn:focus-visible { outline:2px solid var(--viz-series-1); outline-offset:3px; }
+  .text-small { font-size:12px; }
+  .text-muted { color:var(--muted-foreground); }
+  .tabular-nums { font-variant-numeric:tabular-nums; }
+  .viz-controls,.viz-row { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+  code { font-family:ui-monospace,monospace; background:color-mix(in srgb,var(--foreground) 8%,transparent); padding:1px 4px; border-radius:3px; }
+  hr { border:0; border-top:1px solid var(--border); margin:10px 0; }
+  .sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; border:0; }
+  @media (pointer:coarse) { .btn { min-height:44px; } }
+</style>
+</head>
+<body>
+<div id="cfos-message-flow">
+  <div class="mf-heading">
+    <h2 data-step-title>1 · Set dirty before handoff</h2>
+    <div class="text-small text-muted">Thread T7 · new message #11 · Alice read through #10 · Bob read through #8</div>
+  </div>
+  <div class="viz-controls mf-navigation" aria-label="Presentation controls">
+    <button class="btn" type="button" data-action="previous">← Previous</button>
+    <span class="tabular-nums" data-step-number>1 / 4</span>
+    <button class="btn btn-primary" type="button" data-action="next">Next →</button>
+    <button class="btn btn-primary" type="button" data-action="recover" hidden>Run recovery →</button>
+  </div>
+  <div class="mf-diagram" data-diagram role="group" aria-label="Message processing across the Workspace and two User Durable Objects">
+    <svg class="mf-wires" aria-hidden="true"></svg>
+    <div data-scene></div>
+  </div>
+  <div class="text-small mf-detail" data-detail aria-live="polite"></div>
+  <div class="viz-row text-small text-muted mf-legend"><span>SQLite + alarms survive resets</span><span>RAM is disposable</span><span>Alerts: completion / permission requests</span></div>
+  <span class="sr-only">Previous, Next, and left and right arrow keys navigate four slides. The last slide can replay recovery.</span>
+</div>
+<style>
+  #cfos-message-flow { color:var(--foreground); }
+  #cfos-message-flow [hidden] { display:none; }
+  #cfos-message-flow .mf-heading { padding-right:92px; }
+  #cfos-message-flow .mf-navigation { margin:16px 0; }
+  #cfos-message-flow .mf-diagram { position:relative; }
+  #cfos-message-flow .mf-wires { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+  #cfos-message-flow [data-scene] { position:relative; padding:1px 12px; }
+  #cfos-message-flow .mf-node { padding:16px; min-width:0; }
+  #cfos-message-flow .mf-node h3 { margin:0 0 8px; }
+  #cfos-message-flow .mf-source { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px 28px; }
+  #cfos-message-flow .mf-users { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px; }
+  #cfos-message-flow .mf-fields { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px 10px; margin:10px 0; }
+  #cfos-message-flow .mf-fields > * { min-width:0; overflow-wrap:anywhere; white-space:normal; }
+  #cfos-message-flow .mf-fields dd { margin:0; text-align:right; }
+  #cfos-message-flow .mf-fields dt { margin:0; }
+  #cfos-message-flow .mf-fields code { color:var(--foreground); }
+  #cfos-message-flow .mf-transfer { height:68px; display:flex; align-items:center; justify-content:center; }
+  #cfos-message-flow .mf-transfer span { background:var(--background); padding:3px 8px; z-index:1; max-width:85%; text-align:center; overflow-wrap:anywhere; }
+  #cfos-message-flow .mf-storage { color:var(--muted-foreground); }
+  #cfos-message-flow .mf-memory { margin-top:14px; }
+  #cfos-message-flow .mf-memory-content { margin-top:6px; }
+  #cfos-message-flow .mf-outputs { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.4fr); gap:12px; margin-top:12px; }
+  #cfos-message-flow .mf-output { min-width:0; overflow-wrap:anywhere; }
+  #cfos-message-flow .mf-value { margin:5px 0; font-weight:500; }
+  #cfos-message-flow .mf-badge { display:inline-flex; align-items:center; justify-content:center; min-width:30px; min-height:30px; border-radius:50%; background:color-mix(in srgb,var(--viz-series-1) 16%,transparent); color:var(--foreground); }
+  #cfos-message-flow .mf-mark { display:inline-block; width:8px; height:8px; margin-right:6px; background:var(--viz-series-1); border-radius:50%; }
+  #cfos-message-flow .mf-detail { margin:16px 0 10px; }
+  #cfos-message-flow .mf-legend { gap:6px 20px; }
+  #cfos-message-flow .mf-line { margin-top:6px; overflow-wrap:anywhere; }
+  #cfos-message-flow .mf-muted { color:var(--muted-foreground); }
+  @media (max-width:610px) {
+    #cfos-message-flow .mf-users { grid-template-columns:1fr; gap:28px; }
+    #cfos-message-flow .mf-source { grid-template-columns:1fr; gap:12px; }
+    #cfos-message-flow .mf-heading { padding-right:0; }
+  }
+</style>
+<script>
+(() => {
+  const root=document.getElementById('cfos-message-flow');
+  const scene=root.querySelector('[data-scene]');
+  const diagram=root.querySelector('[data-diagram]');
+  const wires=root.querySelector('.mf-wires');
+  const slides=[
+    {title:'1 · Set dirty before handoff',detail:'Persist dirty intent + arm durable alarms before crossing an async boundary.'},
+    {title:'2 · Process from each private horizon',detail:'Commit an absolute count before ACK; badge work coalesces, notification work has its own horizon.'},
+    {title:'3 · Clear only completed work',detail:'Source clearing waits for count ACKs, not push delivery. New work during processing keeps the dirty bit set.'},
+    {title:'4 · Restart without losing work',detail:'Reset after Alice’s count commit, before the source ACK and notification checkpoint.'}
+  ];
+  const valid=value=>value?.version===3&&Number.isInteger(value.step)&&value.step>=0&&value.step<slides.length;
+  const saved=window.openai?.widgetState?.privateContent;
+  let step=valid(saved)?saved.step:0;
+  let recovered=valid(saved)&&saved.recovered===true;
+  const esc=value=>String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  const fields=rows=>`<dl class="mf-fields text-small tabular-nums">${rows.map(([key,value,dirty])=>`<dt><code>${esc(key)}</code></dt><dd>${dirty?'<span class="mf-mark" aria-hidden="true"></span>':''}${esc(value)}</dd>`).join('')}</dl>`;
+  const label=text=>`<div class="mf-storage text-small">${esc(text)}</div>`;
+  function user(name,read) {
+    const alice=name==='Alice';
+    const reset=step===3&&!recovered;
+    const counted=step===1||step===2||(step===3&&(recovered||alice));
+    const clean=step===2||(step===3&&recovered);
+    const count=counted?11-read:10-read;
+    const unreadDirty=!counted;
+    const notificationsDirty=!clean;
+    const notificationId=`n11-${name.toLowerCase()}`;
+    let work='Alarm armed · work pending';
+    if(step===1)work=`Count visible messages after #${read} → ${count}`;
+    if(step===2)work='Caught up · dirty flags cleared';
+    if(reset)work='∅ caches · ∅ running promises';
+    if(step===3&&recovered)work=alice?'Hydrate 1 → retry count → still 1':'Hydrate 2 → recount dirty T7 → store 3';
+    const badge=reset?'∅':step===0?10-read:11-read;
+    const notification=step===0?'Pending #11':step===1?'Await delivery #11':step===2?'Delivered / policy-skipped':recovered?'#11 ACK / policy skip':alice?'#11 effect / ACK uncertain':'#11 still pending';
+    return `<section class="mf-node" data-node data-anchor="${name}">
+      <h3>${name} User DO</h3>
+      ${label('SQLite · chatReadCursors[T7]')}
+      ${fields([
+        ['readThroughSequence',read],
+        ['unreadCount',count],
+        ['notifiedThroughSequence',clean?11:10],
+        ['unreadDirty',unreadDirty?'true':'false',unreadDirty],
+        ['notificationsDirty',notificationsDirty?'true':'false',notificationsDirty]
+      ])}
+      <div class="mf-memory">
+        ${label(reset?'RAM · lost on reset':'RAM · local badge calculation')}
+        <div class="text-small mf-memory-content">${esc(work)}</div>
+      </div>
+      <hr>
+      <div class="mf-outputs">
+        <div class="mf-output"><div class="text-small">Badge total · RAM</div><div class="mf-value"><span class="mf-badge tabular-nums">${badge}</span></div><div class="text-small mf-muted">${reset?'rehydrate locally':'sum local counts'}</div></div>
+        <div class="mf-output"><div class="text-small">Notification catch-up</div><div class="mf-value text-small">${notification}</div><div class="text-small mf-muted">ID ${notificationId}</div><div class="text-small mf-line">${clean?'ACK / skip → horizon 11':reset?'saved horizon 10 survives':'preview + policy + badge'}</div></div>
+      </div>
+    </section>`;
+  }
+  function renderScene() {
+    const clean=step===2||(step===3&&recovered);
+    const reset=step===3&&!recovered;
+    const bus=step===0?'messageArrived(T7) → persist user dirty flags':step===1?'Fetch count + preview + notification candidates':step===2?'Count ACKs from both User DOs':reset?'RESET · durable alarms + dirty intent survive':'ALARM → retry pending work → ACK';
+    const sourceAction=step===0?'Append + dirty bit · same synchronous commit':step===1?'Authoritative reads · each user’s private horizon':clean?'All count ACKs + no newer mutation':'Durable alarm retries unacknowledged handoff';
+    return `<section class="mf-node" data-node data-anchor="workspace">
+        <h3>Workspace DO</h3>
+        <div class="mf-source">
+          <div>${label('SQLite · ordered source')}${fields([
+            ['timeline[T7]','#11'],
+            ['dirtyChats[T7]',clean?'absent':'set',!clean]
+          ])}<div class="text-small">${clean?'Source bit cleared':'Durable alarm armed'}</div></div>
+          <div>${label('Same source → badge + notification work')}
+            <div class="mf-line">#11 · “Deployment is ready.”</div>
+            <div class="text-small mf-line">${step===1?'Alice: 1 unread · Bob: 3 unread':'Visible messages #1–11'}</div>
+            <div class="text-small mf-line">chatNotifications[T7] · eligible #11 · stable IDs</div>
+          </div>
+        </div>
+        <div class="text-small mf-line">${sourceAction}</div>
+      </section>
+      <div class="mf-transfer" data-anchor="bus"><span class="text-small">${bus}</span></div>
+      <div class="mf-users">${user('Alice',10)}${user('Bob',8)}</div>`;
+  }
+  function drawWires() {
+    const bounds=diagram.getBoundingClientRect();
+    if(!bounds.width||!bounds.height)return;
+    wires.setAttribute('viewBox',`0 0 ${bounds.width} ${bounds.height}`);
+    const box=el=>{const b=el.getBoundingClientRect();return{x:b.left-bounds.left,y:b.top-bounds.top,w:b.width,h:b.height};};
+    const node=name=>box(scene.querySelector(`[data-anchor="${name}"]`));
+    const parts=['<defs><marker id="mf-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--viz-series-1)"/></marker></defs>'];
+    for(const el of scene.querySelectorAll('[data-node]')) {
+      const b=box(el);
+      parts.push(`<rect x="${b.x+.5}" y="${b.y+.5}" width="${b.w-1}" height="${b.h-1}" rx="8" fill="none" stroke="var(--border)" stroke-width="1"/>`);
+    }
+    const source=node('workspace'),bus=node('bus');
+    for(const person of ['Alice','Bob']) {
+      const to=node(person),fromX=source.x+source.w/2,fromY=source.y+source.h,toX=to.x+to.w/2;
+      const stacked=person==='Bob'&&diagram.clientWidth<=610;
+      const d=stacked?`M ${fromX} ${fromY} V ${bus.y+bus.h/2} H 5 V ${to.y-14} H ${toX} V ${to.y}`:`M ${fromX} ${fromY} V ${bus.y+bus.h/2} H ${toX} V ${to.y}`;
+      parts.push(`<path d="${d}" fill="none" stroke="var(--viz-series-1)" stroke-width="1.5" ${step===2?'marker-start':'marker-end'}="url(#mf-arrow)"/>`);
+    }
+    wires.innerHTML=parts.join('');
+  }
+  function render() {
+    root.querySelector('[data-step-title]').textContent=slides[step].title;
+    root.querySelector('[data-step-number]').textContent=`${step+1} / ${slides.length}`;
+    root.querySelector('[data-detail]').textContent=step===3&&recovered?'Retry replaces counts, never increments them. Same-ID notification retries are at-least-once attempts, not exactly-once OS alerts.':slides[step].detail;
+    root.querySelector('[data-action="previous"]').disabled=step===0;
+    root.querySelector('[data-action="next"]').hidden=step===3;
+    const recovery=root.querySelector('[data-action="recover"]');
+    recovery.hidden=step!==3;
+    recovery.textContent=recovered?'Show reset again':'Run recovery →';
+    scene.innerHTML=renderScene();
+    requestAnimationFrame(drawWires);
+  }
+  function save() {
+    if(window.openai?.setWidgetState)window.openai.setWidgetState({
+      modelContent:{walkthroughStep:slides[step].title,recovered:step===3&&recovered,design:'Durable per-thread dirty bits; absolute counts before ACK; notifiedThroughSequence advances after notification delivery or policy skip; alarms recover resets. At-least-once delivery attempts, not exactly-once OS alerts.',example:'One thread: latest #11, Alice read #10 → 1 unread, Bob read #8 → 3 unread.'},
+      privateContent:{version:3,step,recovered}
+    }).catch(()=>{});
+  }
+  function move(delta) {
+    const next=Math.max(0,Math.min(slides.length-1,step+delta));
+    if(next===step)return;
+    step=next;recovered=false;render();save();
+  }
+  root.querySelector('[data-action="previous"]').addEventListener('click',()=>move(-1));
+  root.querySelector('[data-action="next"]').addEventListener('click',()=>move(1));
+  root.querySelector('[data-action="recover"]').addEventListener('click',()=>{recovered=!recovered;render();save();});
+  root.addEventListener('keydown',event=>{
+    if(event.key==='ArrowRight'){event.preventDefault();move(1);}
+    if(event.key==='ArrowLeft'){event.preventDefault();move(-1);}
+  });
+  window.addEventListener('openai:set_globals',event=>{
+    const restored=event.detail?.globals?.widgetState?.privateContent;
+    if(valid(restored)){step=restored.step;recovered=restored.recovered===true;render();}
+  });
+  new ResizeObserver(()=>requestAnimationFrame(drawWires)).observe(diagram);
+  render();
+})();
+</script>
+
+</body>
+</html>
+

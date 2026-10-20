@@ -1,153 +1,90 @@
-# Timeline read state
+# User-owned unread state
 
-## Semantics
+The User DO owns private read horizons and derived counts. The workspace owns the ordered
+timeline. No read receipts are exposed to other users.
 
-Each user has an inclusive read pointer into each thread's persisted, ordered timeline, and
-owns that pointer in their User DO. Thread, workspace and instance badges count unread **messages**,
-not outstanding approvals. A countable message is persisted visible text or an attachment; empty
-reasoning/tool-only entries, catalog changes and generated slash-command expansions do not count.
-Streaming tokens do not count separately. A turn can contain several countable messages; push
-policy is independent and may still notify once at turn completion. Reading a permission request
-does not approve it. Toast/push delivery neither creates nor clears read state.
+Open [the four-slide walkthrough](user-unread-flow.html) in a browser for the dirty-bit,
+processing, clearing and restart flow.
 
-The pointer can advance partially, or rewind immediately before an individual rendered work
-item. Grouped work/tool runs are one rendered item; their hidden bookkeeping belongs to the same
-read range. Agent-only catalog changes do not advance the unread head. Existing history starts
-read when the workspace first runs this version; subsequent activity is unread. New threads start
-unread when they receive content. Empty threads are read.
+## Stored state
 
-State is per authenticated user, per instance, synchronized across devices. Only the owner and
-established build collaborators receive thread metadata. Use-only collaborators do not. Deleting
-a thread/workspace, dismissing/revoking access, or downgrading to use-only removes its projection.
-Shared-workspace recipients are reauthorized before every metadata delivery, including retries while
-disconnected. Empty snapshots only remove metadata and do not register observers. A previously
-unopened shared workspace is indexed when its build collaborator first opens it; this does not
-expand discovery or sharing authority.
+Each User DO stores one `chatReadCursors` row per thread:
 
-## Authenticated API
+- `workspaceId`, `chatId`
+- `readThroughSequence`: inclusive read horizon; -1 means nothing read
+- `unreadCount`: absolute count of visible messages after the horizon, not sequence subtraction
+- `notifiedThroughSequence`: last acknowledged or policy-skipped notification candidate
+- `unreadDirty`, `notificationsDirty`: coalesced pending work
 
-[`AuthenticatedApi`](../packages/workshop-shared/src/api.ts) exposes `getUnreadState`,
-`subscribeToUnreadState`, `markChatRead`, `markChatsRead` and `markChatUnread`, with the
-`ChatReadState`, `ChatReadReceipt`, `UserUnreadState` and `UnreadStateSubscriber` contracts.
-Snapshots include read and unread threads; unavailable workspaces are explicit, not false zeroes.
+There are no workspace summary blobs, read epochs, source versions, reader enrollment records,
+recipient checkpoints or audit log. Counts hydrate into memory from these local rows once per
+User DO lifetime; normal badge calculations use that memory, not cross-workspace history scans.
+Display metadata is fetched separately and remains in memory. A first visit with no existing row
+calculates an initial count in memory; reads alone do not persist it. The next message or explicit
+horizon change persists the row. Existing history is initially unread.
 
-Subscribe directly: registration installs the listener before sending the initial full snapshot,
-avoiding a fetch/watch gap. Snapshots replace previous state; ignore older/equal revisions within
-one subscription. Revisions are in-memory: start a fresh revision stream on resubscription. Retain
-the handle while hidden, until logout/shutdown. Resubscribe after transport/DO reset; the initial
-snapshot loads the saved projection and pending fanout catches it up. These callbacks are live hints
-backed by durable state, not a replayable alert log. Keep state scoped to the instance and authenticated user.
+Only visible text/attachments count. Tool/reasoning records, empty messages and generated
+slash-command expansions do not. Streaming tokens are not separate messages. Horizons may lie
+between visible messages, so gaps in sequence numbers do not inflate counts.
 
-Reads use the sequence actually observed, never a server-side "latest now". Workspace/all-read
-commands submit the boundaries from their observed snapshot, preserving activity that arrives
-while the command is in flight. Reads only advance. Explicit unread increments `readEpoch`;
-automatic receipts and duplicate unread requests carrying the previous epoch are ignored. Thus
-an old window cannot immediately clear a deliberate unread marker, and lost-ACK retries are safe.
+## New message: durable handoff before ACK
 
-## Persistence and reset recovery
+1. The workspace commits the timeline change and a `dirtyChats` bit together. It arms its existing
+   shared alarm before crossing an async dispatch boundary.
+2. It awaits `UserDO.messageArrived(workspaceId, chatId)` for the owner and established build
+   collaborators. One unavailable recipient leaves the bit set; healthy recipients/threads proceed.
+3. The User DO persists dirty intent and an alarm, then serializes recounts and read commands for
+   that thread. It fetches the authoritative absolute count and bounded latest-message metadata
+   from the workspace, and persists the new count before acknowledging.
+4. Badges are summed in memory. Visible subscribers receive one changed thread plus totals.
+   Notification catch-up runs independently against its own horizon.
+5. The workspace clears the bit only after all recipients ACK, and only if no newer mutation
+   occurred during the RPCs. A retry recounts; it never blindly increments a count.
 
-The User DO persists private consumption horizons (`workspaceId`, `chatId`,
-`readThroughSequence`, `readEpoch`) plus one compact `workspaceChatSummaries` record per workspace.
-That record holds the last applied source version and each thread's latest head, cumulative message
-count, count through the user's horizon, and bounded preview. It does not copy message history.
-The horizons remain authoritative; the summaries are derived and rebuildable.
+No input gate is held across source-to-user RPC: the User DO must be able to call back into the
+workspace. In-memory promises/tokens serialize and coalesce live work only; persisted dirty bits
+and the existing shared alarms recover after eviction, including an ACK lost after commit.
+Constructor recovery preserves an existing alarm rather than resetting the platform retry budget.
 
-The summary is deliberately one value per workspace, so normal writes are proportional to its
-thread count, not the user's entire account. Previews are bounded, but thread count is not; this
-trades a large-workspace storage-value ceiling for a small local rehydration/read path. This is
-intended for personal workspaces, not unbounded chat collections. If that scale is needed, partition
-the summary by thread rather than truncating heads or silently dropping unread counts.
+Read commands count first, then commit horizon and count in one synchronous update. They carry
+the observed old horizon, rejecting stale viewport receipts after an explicit rewind without a
+separate epoch/version. Identical horizons are no-ops. Reading snapshots or reopening a workspace
+does not rewrite read rows or notify other collaborators. Hidden web clients release their live
+callbacks and resubscribe for a fresh snapshot when visible; background native updates use push.
 
-On normal wake, the User DO loads horizons and summaries from its own KV storage into memory. It
-does not contact the workspaces or scan their histories. Message delivery updates only the affected
-workspace's summary, persisting heads and their source version before ACK. Read changes commit the
-horizon and its summary together in one transaction, writing the summary once per workspace even
-for bulk reads. Badge calculation and snapshot construction remain in-memory. A partial read or
-rewind still resolves its sparse sequence through the authorized workspace before writing.
-An observed receipt ahead of the saved projection first refreshes the workspace through that same
-authorization gate. A history rewrite during count resolution invalidates the result and retries
-once against the current recount generation; continued mutation returns an error instead of saving
-a count from a different generation. Healthy workspaces commit without waiting for other lookups.
-Count-changing history rewrites carry a durable per-thread recount version in the existing source
-change index. They repair the affected workspace's counts through its users' saved horizons; normal
-appends and User DO wake-up do not. A concurrent horizon change leaves the previous summary intact
-and the source delivery pending for retry, rather than committing mismatched counts.
+## Ordered notifications
 
-Only a missing summary (first bootstrap, upgrade from the horizon-only prototype, or repair)
-fetches heads and counts through saved horizons from the workspace's build-role/observer gate.
-Legacy prototype rows preserve their horizons but discard obsolete derived data. An initial
-subscription waits for missing summaries to load. Reconstruction also idempotently enrolls the
-user for future workspace deliveries, so shared listings saved before this feature receive updates
-without reopening the workspace.
-Reopening a shared workspace explicitly queues catch-up after restoring its listing, even when
-already enrolled: dismissing the listing discards the warm User DO's unread projection.
-One failing workspace does not block healthy ones: `unavailableWorkspaceIds` explicitly reports
-missing summaries, and aggregate counts are lower bounds, not a claim that missing threads are read.
-Previously delivered summaries remain usable while a source is unavailable. They represent the
-last acknowledged projection, not a cross-workspace freshness barrier: pending fanout catches them
-up through the durable delivery journal, without a full refresh on every User DO reset. Incoming
-updates join any initial reconstruction, then apply only if their source version is newer. That
-version survives User DO eviction, so lost ACKs and stale retries cannot double-apply a delivery or
-restore an older head. Failures remain failures, not read receipts. Bulk read applies healthy
-workspaces' horizons but reports a failed sparse-count lookup; a monotonic retry is safe.
+The existing policy remains task completion and permission requests, not an alert per visible
+message. The workspace keeps a small `chatNotifications` eligibility index at existing timeline
+positions: recipient, kind and stable UUID. It copies no message bodies. Recording eligibility
+also dirties the thread. Recovery of the same logged outcome reuses its candidate/UUID.
 
-Normal fanout carries only each **changed thread's latest message**: its thread/title, latest
-sequence, cumulative countable-message count, author, timestamp and at most 240 characters of the
-first visible line. No earlier messages or unchanged thread heads are included. Source checkpoints
-and retry watermarks are durable in the workspace. Initial catch-up and cold reconstruction may
-read all heads; ordinary appends use an incremental in-memory source index. Sparse timeline
-sequences are never treated as message counts. Currently the audience is the workspace owner and
-established build collaborators; a future multiplayer thread-membership model can narrow it.
+The User DO fetches candidates after `notifiedThroughSequence`, in order. For each candidate it
+awaits delivery (or an intentional policy skip such as mute), then persists the horizon. Three
+coalesced candidates still produce three delivery attempts. A reset/lost ACK retries the same
+UUID, so the notification service's existing deduplication boundary can recognize it.
 
-The Overseer increments its source version in the same transaction as timeline writes. Each
-`unreadReaders` row stores the recipient's last acknowledged version: an absent/older checkpoint
-**is** pending work. There is no separate outbox, copied pending watermark or fanout transaction.
-The per-thread `chatTimelineChanges` index selects only heads changed since that checkpoint.
-Reopening a dismissed listing clears its delivery checkpoint to request a full catch-up.
+This is not exactly-once OS alert delivery: provider effects and acknowledgement cannot be
+atomically committed with a User DO row. The central service's existing reservation/dedup policy
+still governs that ambiguity. The existing versioned native/push badge-replacement wire protocol
+is separate from read state; no unread source/read versions are introduced.
 
-Typed-storage subscribers run **before** their write and may run inside an existing KV iterator:
-they must not enumerate recipients or construct snapshots. A deferred drain reads committed state,
-arms the shared fallback alarm before RPC, rechecks authority, captures heads and their version
-together, and advances each checkpoint only after ACK. Concurrent writes leave it behind the
-source version for another pass. Failed recipients do not block healthy readers or spin within
-the same drain. Their persisted backoff doubles from 30 seconds up to 30 minutes and survives
-eviction; new messages still reach healthy readers immediately. Full role/observer authorization
-remains mandatory on each attempted metadata delivery, including retries. A successful delivery
-clears backoff, and interactive reopening requests immediate catch-up after connection repair.
-Lost ACKs/checkpoint-write failures safely retry because the receiver fences source versions.
-Callback failures do not roll back read cursors.
+## Authorization and lifecycle
 
-Workspace deletion persists its intent before removing any user's listing and read state. It
-uses the same reader rows, without requiring observer access for removal: a row is deleted only
-after that User DO acknowledges cleanup. The listing removal fences delayed snapshots; only after
-every row is removed does the Overseer delete its own storage. Deletion intent is synchronous;
-cross-DO delivery never holds the input gate, since it may call back into the workspace. Deletion
-clears earlier account-repair backoff because removing metadata needs no observer access. The request
-waits for the owner's listing cleanup, not unhealthy collaborators; the durable alarm finishes
-their cleanup. Alarms resume interrupted deletion without another user action,
-and a deleting workspace refuses new opens, agent callbacks and turn starts. Queued callbacks
-remain untouched until cleanup removes the source storage; recovery alarms and continuations
-returning from model lookup or message preparation cannot resume work during deletion.
-
-Only the read-state projection is replayed. Existing transient toast/mobile-push sends are not
-blindly retried, and this feature does not claim exactly-once OS alert presentation.
+Fanout never calls `authorizeCollaborator`/`ensureObserver`. Metadata checks current build
+membership and the observer admission already established by opening a workspace; a new
+gatekeeper binding requires fresh interactive admission. Existing sessions' lazy external ACL
+revocation semantics are retained, not replaced with per-message gatekeeper registrations.
+Use-only/unlisted users receive no thread metadata. Existing sharing/listing cleanup removes
+their local state on downgrade/revocation/dismissal; thread deletion removes its cursor and
+notification candidates. Workspace deletion first journals dirtiness in the readers' own DOs
+before destroying the source; their alarms can finish cleanup even after the source disappears.
 
 ## Verification
 
-- `unread-state.test.ts`: private horizons, sparse counts, epochs, isolated summary writes, local
-  rehydration after real eviction, atomic read/summary rollback, missing-summary reconstruction,
-  unavailable workspaces, authorization and dismissed-listing catch-up.
-- `unread-outbox.test.ts`: checkpoint fanout, lost ACKs, failed checkpoint writes, real DO eviction,
-  per-recipient capped backoff across eviction, healthy-reader isolation and durable deletion,
-  including in-flight agent/gate races. No alert replay.
-- `workshop-unread.test.ts`: validated WebSocket API with two owner devices and build/use readers;
-  live fanout, private reads, rename and deletion without polling/reopening.
-
-Useful commands (workerd tests require local loopback sockets):
-
-```sh
-pnpm exec vp run -F @gadgets/workshop-backend -F @gadgets/workshop-shared build
-pnpm --filter @gadgets/workshop-backend exec vitest run __tests__/unread-state.test.ts __tests__/unread-outbox.test.ts
-pnpm exec vp run -F @gadgets/integration-tests build:test-gatekeeper
-pnpm --filter @gadgets/integration-tests exec vitest run __tests__/workshop-unread.test.ts
-```
+`packages/workshop-backend/__tests__/unread-state.test.ts` covers sparse counts, atomic horizon/count
+updates, no-op reads, local count rehydration, single-thread deltas, real source/User DO eviction,
+lost source ACKs, concurrent dirtiness, ordered notification catch-up, lost alert ACKs and mute.
+`notifications.test.ts` covers the signed service protocol and badge retry outbox.
+`packages/integration-tests/__tests__/workshop-unread.test.ts` exercises the real WebSocket API,
+two devices, collaborators, partial reads, title changes and deletion.

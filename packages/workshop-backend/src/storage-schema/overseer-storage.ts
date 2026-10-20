@@ -1167,12 +1167,6 @@ export type BlueprintGadgetRecord = {
 export function makeOverseerStorage(storage: DurableObjectStorage) {
   return createTypedStorage(storage, {
     singletons: {
-      // Monotonic source ordering and persisted retry deadline for the user's unread projection.
-      chatTimelineVersion: 0,
-      chatTimelineRetryAt: 0,
-      // Retain deletion intent and recipient cleanup until every User DO acknowledges it.
-      deletingWorkspace: false,
-      unreadBaseline: <Record<number, number> | undefined>undefined,
       // Initialized on first startup.
       ownerId: <string | undefined>undefined,
 
@@ -1272,20 +1266,14 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
     },
 
     collections: {
-      // A missing/older checkpoint is pending delivery. Deleting a reader acknowledges cleanup.
-      // Only established build-role readers receive chat metadata; reverified before delivery.
-      unreadReaders: collection<{
-        userId: string; profileId: string; timelineVersion?: number;
-        // Unix milliseconds and delay milliseconds; cleared on ACK or interactive catch-up.
-        retryAt?: number; retryDelay?: number;
-      }>()({primaryKey: "userId"}),
-      // One latest-change watermark per thread, including tombstones. No message text is copied.
-      chatTimelineChanges: collection<{chatId: number; version: number; recountVersion?: number}>()({
-        primaryKey: "chatId",
-        // Versions are globally unique. A unique index also avoids opening a child KV iterator
-        // when a subscriber updates this record inside another collection's scan.
-        uniqueIndexes: {byVersion: (record: {version: number}) => record.version},
-      }),
+      // Coalesced source-to-user handoff, committed with the message mutation.
+      dirtyChats: collection<{chatId: number}>()({primaryKey: "chatId"}),
+      // Notification candidates reference existing timeline positions, not copied message bodies.
+      chatNotifications: collection<{
+        id: string;
+        chatId: number; sequence: number; userId: string;
+        kind: "taskCompleted" | "permissionRequested";
+      }>()({primaryKey: record => chatKey(record.chatId, record.sequence)}),
       // READ-ONLY LEGACY: the pre-git-storage incremental code log, tightly-packed from version 1
       // (there's no entry for version 0, the starting empty state). Nothing writes it anymore --
       // mainline code lives in `gitObjects` as commits -- and it is read only by the git-storage

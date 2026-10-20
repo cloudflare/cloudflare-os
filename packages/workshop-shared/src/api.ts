@@ -228,35 +228,34 @@ export type ChatReadState = {
   latestActivityAt?: Date;
   /** Last read sequence, inclusive; -1 means nothing has been read. */
   readThroughSequence: number;
-  /** Changes when explicitly marking unread, invalidating older automatic read receipts. */
-  readEpoch: number;
 };
 
 /** An observed read boundary for a single-thread or bulk mark-read command. */
 export type ChatReadReceipt = Pick<ChatReadState,
-    "workspaceId" | "chatId" | "readEpoch"> & {
+    "workspaceId" | "chatId" | "readThroughSequence"> & {
   /** Highest observed sequence to mark read; later activity stays unread. */
   throughSequence: number;
 };
 
 /** Authoritative unread state for one user on one CFOS instance, shared across their devices. */
 export type UserUnreadState = {
-  /** Increasing within a subscription session; a new subscription starts a fresh revision stream. */
-  revision: number;
-  /** Number of loaded threads with at least one unread visible message. */
+  /** Number of the user's threads with at least one unread visible message. */
   unreadChatCount: number;
-  /** Total unread visible messages across loaded threads; a lower bound while workspaces are unavailable. */
+  /** Total unread visible messages, calculated from the user's locally cached per-thread counts. */
   unreadMessageCount: number;
   /** All loaded threads, including read threads; replaces the previous snapshot. */
   chats: ChatReadState[];
-  /** Workspaces whose heads could not be loaded. Omitted when complete; missing is not read/zero. */
+  /** Workspaces whose metadata could not be refreshed. Their cached counts are retained, not zeroed. */
   unavailableWorkspaceIds?: string[];
 };
 
 /** Callback used by `AuthenticatedApi.subscribeToUnreadState()`. */
 export interface UnreadStateSubscriber extends RpcTarget {
-  /** Receive snapshots; ignore older/equal revisions within this subscription, not across reconnects. */
+  /** Receive the initial snapshot, or a replacement when a workspace leaves the user's list. */
   updated(state: UserUnreadState): Promise<void>;
+  /** Replace one thread (null removes it), together with the user's current aggregate counts. */
+  chatUpdated(workspaceId: string, chatId: number, chat: ChatReadState | null,
+    counts: Pick<UserUnreadState, "unreadChatCount" | "unreadMessageCount">): Promise<void>;
 }
 
 /**
@@ -578,12 +577,12 @@ export interface AuthenticatedApi extends RpcTarget {
 
   /**
    * Subscribe to an immediate snapshot and every subsequent unread-state change, even while
-   * hidden. Re-subscribe after disconnect/reset to obtain a fresh snapshot without a fetch/watch
-   * race. Keep the returned handle until logout/close; receiving state never acknowledges alerts.
+   * visible. Dispose when hidden; re-subscribe after visibility changes or disconnect/reset.
+   * Receiving state never marks messages read or acknowledges alerts.
    */
   subscribeToUnreadState(subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>>;
 
-  /** Advance an observed timeline cursor. Stale epochs cannot undo an explicit mark-unread. */
+  /** Advance a cursor only if its current horizon still matches the receipt's observed horizon. */
   markChatRead(receipt: ChatReadReceipt): Promise<void>;
 
   /**
@@ -593,11 +592,11 @@ export interface AuthenticatedApi extends RpcTarget {
   markChatsRead(receipts: ChatReadReceipt[]): Promise<void>;
 
   /**
-   * Move the cursor immediately before an existing item. Uses the observed epoch so a retry
-   * cannot rewind it twice; invalidates earlier automatic receipts across all devices.
+   * Move the cursor immediately before an existing item if its observed horizon still matches.
+   * Repeating an already-applied command performs no write.
    */
   markChatUnread(workspaceId: string, chatId: number, fromSequence: number,
-                 readEpoch: number): Promise<void>;
+                 readThroughSequence: number): Promise<void>;
 
   /**
    * Mute a workspace in the user's list, so its finished tasks notify no tab or device, or unmute

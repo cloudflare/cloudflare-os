@@ -82,6 +82,7 @@ async function scenario(kind: Kind = "connection", active = false, initiator: Ai
     instance["storage"].profile.put(USER);
     instance["storage"].aiModels.put(MODEL);
   });
+  await user.newGadget(stub.id.toString(), "Resume");
   const visit = <T>(fn: (impl: Impl) => T | Promise<T>) =>
     runInDurableObject(env.TEST_OVERSEER.get(stub.id), ({impl}) => fn(impl));
   await visit(impl => {
@@ -349,11 +350,12 @@ describe("decision handoff using the existing execution row", () => {
         await impl.waitForAllAgentsToComplete();
         expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
         expect(impl.storage.activeAgents.get(CHAT)?.initiatorUserId).toBe(s.user.id.toString());
-        await impl.deliverChatTimelines(true);
+        await impl.deliverDirtyChats();
         expect(await impl.ctx.storage.getAlarm()).toBeNull();
       });
     }
-    await vi.waitFor(() => expect(notifications).toEqual([[s.user.id.toString(), expect.objectContaining({
+    await vi.waitFor(() => expect(notifications.filter(([, event]) => event.workspaceId === s.stub.id.toString()))
+      .toEqual([[s.user.id.toString(), expect.objectContaining({
       kind: "permissionRequested", workspaceId: s.stub.id.toString(), chatId: CHAT, chatTitle: "Resume",
     })]]));
     expect(requests()).toBe(0);
@@ -377,11 +379,12 @@ describe("decision handoff using the existing execution row", () => {
       }));
     });
     if (initiator.type === "user") {
-      await vi.waitFor(() => expect(notifications).toEqual([[s.user.id.toString(), expect.objectContaining({
+      await vi.waitFor(() => expect(notifications.filter(([, event]) => event.workspaceId === s.stub.id.toString()))
+        .toEqual([[s.user.id.toString(), expect.objectContaining({
         kind: "taskCompleted", workspaceId: s.stub.id.toString(), chatId: CHAT, chatTitle: "Resume",
       })]]));
     } else {
-      expect(notifications).toEqual([]);
+      expect(notifications.filter(([, event]) => event.workspaceId === s.stub.id.toString())).toEqual([]);
     }
     expect(requests()).toBe(0);
   });
@@ -681,7 +684,7 @@ describe("decision handoff using the existing execution row", () => {
       decide(impl, "connection");
       impl.addChatMessages(CHAT, USER, [{type: "agentNudge", text: "Continue."}]);
       // Set the platform alarm after unrelated unread delivery has settled.
-      await impl.deliverChatTimelines(true);
+      await impl.deliverDirtyChats();
       await impl.ctx.storage.setAlarm(scheduled);
     });
     await reset(s.stub);

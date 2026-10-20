@@ -11,7 +11,6 @@ import type {
 } from "@gadgets/workshop-shared/api";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { OverseerDurableObject } from "../src/overseer.js";
-import type { UserDurableObject } from "../src/user.js";
 import type { ActionRecord, AutoApproveTagRecord }
   from "../src/storage-schema/overseer-storage.js";
 
@@ -25,8 +24,8 @@ interface OverseerInternals {
       getChatContext(): Promise<{ profile: AiChatAuthorInfo, aiModel: AiModel }>;
       getCloudflareGatekeeperAccount(): Promise<null>;
       consumeDailyLlmCall(): Promise<{ withinLimits: boolean }>;
-      publishNotification(notification: UserNotification): Promise<void>;
-      syncWorkspaceChats: UserDurableObject["syncWorkspaceChats"];
+      whoami(): Promise<AiChatAuthorInfo>;
+      messageArrived(): Promise<void>;
     };
   };
   storage: {
@@ -35,6 +34,7 @@ interface OverseerInternals {
     gatekeepers: { put(record: object): void };
     actions: { list(): Iterable<ActionRecord>, put(record: ActionRecord): void };
     autoApproveTags: { put(record: AutoApproveTagRecord): void };
+    chatNotifications: OverseerDurableObject["impl"]["storage"]["chatNotifications"];
   };
   nextChatSequence(chatId: number): number;
   commitAgentStep(...args: unknown[]): Promise<boolean>;
@@ -181,6 +181,12 @@ function startTurn(responses: (() => Response)[], {
   let notifications: [string, UserNotification][] = [];
   let workspace = `agent-tracing-${crypto.randomUUID()}`;
   let session = inOverseer(workspace, async impl => {
+    // The workspace records eligible outcomes; delivery/retry is covered by unread-state.test.
+    impl.storage.chatNotifications.subscribe({
+      add: event => { notifications.push([event.userId, {id: event.id, kind: event.kind,
+        workspaceId: gadgetId, chatId: event.chatId, chatTitle: "Chat"}]); },
+      update: () => {}, remove: () => {},
+    });
     if (usageLimited) impl.env = { ...impl.env, ENABLE_CLOUDFLARE_LIMITS: "true" };
     impl.ownerId = OWNER_USER_ID;
     impl.users = {
@@ -189,10 +195,8 @@ function startTurn(responses: (() => Response)[], {
         getChatContext: async () => ({ profile: OWNER, aiModel: { profile: MODEL, config } }),
         getCloudflareGatekeeperAccount: async () => null,
         consumeDailyLlmCall: async () => ({ withinLimits: false }),
-        publishNotification: async notification => {
-          notifications.push([userId, notification]);
-        },
-        syncWorkspaceChats: async () => {},
+        whoami: async () => OWNER,
+        messageArrived: async () => {},
       }),
     };
     impl.storage.chatMeta.put({

@@ -136,7 +136,6 @@ function isFullyCreated(g: GadgetRecord): g is GadgetMetadataWithTimestamps {
   return g.lastActive !== undefined;
 }
 
-type ChatTimeline = {version: number; heads: Map<number, ChatTimelineHead>};
 type ChatReadCursor = NonNullable<ReturnType<UserStorage["chatReadCursors"]["get"]>>;
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
@@ -215,29 +214,44 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     super(ctx, env);
 
     this.storage = makeUserStorage(ctx.storage);
-    // Preserve private horizons from internal prototype installs. Remove this migration and
-    // chatReadStates once those installs have upgraded or reset; public installs never wrote it.
-    let legacyStates = [...this.storage.chatReadStates.list()];
-    for (let legacy of legacyStates) {
-      let {workspaceId, chatId, readThroughSequence, readEpoch} = legacy;
-      if (!this.storage.chatReadCursors.get(`${workspaceId}:${chatId}`)) {
-        this.storage.chatReadCursors.put({workspaceId, chatId, readThroughSequence, readEpoch});
-        this.storage.workspaceChatSummaries.delete(workspaceId);
-      }
-      this.storage.chatReadStates.deleteRecord(legacy);
+    for (let cursor of this.storage.chatReadCursors.list()) {
+      // Internal prototype rows retain their horizons; only their missing derived count is dirty.
+      if (cursor.unreadCount === undefined) this.storage.chatReadCursors.put({
+        workspaceId: cursor.workspaceId, chatId: cursor.chatId,
+        readThroughSequence: cursor.readThroughSequence, unreadCount: 0,
+        notifiedThroughSequence: -1, unreadDirty: true, notificationsDirty: true,
+      });
     }
     for (let cursor of this.storage.chatReadCursors.list()) {
       this.#readCursors.set(`${cursor.workspaceId}:${cursor.chatId}`, cursor);
     }
-    for (let summary of this.storage.workspaceChatSummaries.list()) {
-      let listing = this.storage.gadgets.get(summary.workspaceId);
-      if (listing && listing.role !== "use") this.#chatTimelines.set(summary.workspaceId, {
-        version: summary.version, heads: new Map(summary.heads.map(head => [head.chatId, head])),
-      });
+    this.storage.chatReadCursors.subscribe({
+      add: cursor => { this.#readCursors.set(`${cursor.workspaceId}:${cursor.chatId}`, cursor); },
+      update: (_old, cursor) => { this.#readCursors.set(`${cursor.workspaceId}:${cursor.chatId}`, cursor); },
+      remove: cursor => { this.#readCursors.delete(`${cursor.workspaceId}:${cursor.chatId}`); },
+    });
+    for (let listing of this.storage.gadgets.list()) {
+      if (listing.role !== "use") this.#unreadWorkspaces.add(listing.id);
     }
+    this.storage.gadgets.subscribe({
+      add: listing => { if (listing.role !== "use") this.#unreadWorkspaces.add(listing.id); },
+      update: (_old, listing) => {
+        if (listing.role === "use") this.#unreadWorkspaces.delete(listing.id);
+        else this.#unreadWorkspaces.add(listing.id);
+      },
+      remove: listing => { this.#unreadWorkspaces.delete(listing.id); },
+    });
     this.adminSettings = this.ctx.exports.AdminSettings;
 
     this.vendors = buildGatekeeperVendorMap(env);
+    if ([...this.#readCursors.values()].some(cursor => cursor.unreadDirty || cursor.notificationsDirty)) {
+      this.ctx.waitUntil((async () => {
+        if (await this.ctx.storage.getAlarm() === null) await this.#armExpirySweep();
+        await this.#recoverUnread();
+      })().catch(error => {
+        logger.warn("unread recovery deferred", {event: "chat.unread.recovery.deferred", error});
+      }));
+    }
   }
 
   // Mirrors the profile into the deployment-wide user directory. Best-effort
@@ -528,105 +542,112 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.gadgets.put(record);
   }
 
-  // Warm calculations use memory; compact workspace summaries survive eviction alongside the
-  // private horizons. Missing summaries alone need authorized reconstruction from the source.
-  #chatTimelines = new Map<string, ChatTimeline>();
+  #chatHeads = new Map<string, Map<number, ChatTimelineHead>>();
   #readCursors = new Map<string, ChatReadCursor>();
-  #timelineLoads = new Map<string, Promise<void>>();
-  #unreadRevision = 0;
+  #unreadWorkspaces = new Set<string>();
+  #unavailableWorkspaces = new Set<string>();
+  #chatWork = new Map<string, Promise<void>>();
+  #notificationWork = new Map<string, Promise<void>>();
+  #dirtyTokens = new Map<string, object>();
 
-  /** Read a workspace through its existing build-role/observer authorization gate. */
-  async loadWorkspaceChats(workspaceId: string,
-      positions?: {chatId: number; sequence: number}[], chatIds?: number[]) {
-    let cursors = positions ?? [...this.#readCursors.values()].filter(cursor => cursor.workspaceId === workspaceId)
-        .map(cursor => ({chatId: cursor.chatId, sequence: cursor.readThroughSequence}));
-    return this.ctx.exports.OverseerDurableObject
-        .get(this.ctx.exports.OverseerDurableObject.idFromString(workspaceId))
-        .getChatTimelineForUser(this.ctx.id.toString(), this.storage.profile.get().id, cursors, chatIds);
+  #cursor(workspaceId: string, chatId: number): ChatReadCursor {
+    return this.#readCursors.get(`${workspaceId}:${chatId}`) ??
+      {workspaceId, chatId, readThroughSequence: -1, unreadCount: 0, notifiedThroughSequence: -1};
   }
 
-  #ensureWorkspaceChats(workspaceId: string, recount = false): Promise<void> {
-    let listing = this.storage.gadgets.get(workspaceId);
-    if (!listing || listing.role === "use") return Promise.resolve();
-    if (this.#chatTimelines.has(workspaceId) && !recount) return Promise.resolve();
-    let pending = this.#timelineLoads.get(workspaceId);
-    if (pending) return pending;
-    pending = (async () => {
-      let cursors = [...this.#readCursors.values()].filter(cursor => cursor.workspaceId === workspaceId);
-      let state = await this.loadWorkspaceChats(workspaceId);
-      let listing = this.storage.gadgets.get(workspaceId);
-      if (!listing || listing.role === "use") return;
-      if (!state) {
-        this.#forgetUnreadWorkspace(workspaceId);
-        this.#chatTimelines.set(workspaceId, {version: -1, heads: new Map()});
-        return;
+  #storeCursor(cursor: ChatReadCursor): boolean {
+    let old = this.#readCursors.get(`${cursor.workspaceId}:${cursor.chatId}`);
+    if (old && old.readThroughSequence === cursor.readThroughSequence &&
+        old.unreadCount === cursor.unreadCount &&
+        old.notifiedThroughSequence === cursor.notifiedThroughSequence &&
+        old.unreadDirty === cursor.unreadDirty && old.notificationsDirty === cursor.notificationsDirty) return false;
+    this.storage.chatReadCursors.put(cursor);
+    return true;
+  }
+
+  #workspace(workspaceId: string) {
+    return this.ctx.exports.OverseerDurableObject.get(
+      this.ctx.exports.OverseerDurableObject.idFromString(workspaceId));
+  }
+
+  #hasWorkspace(workspaceId: string): boolean {
+    return this.#unreadWorkspaces.has(workspaceId);
+  }
+
+  // Only serializes concurrent calculations. Durable dirty bits, not these promises, recover work.
+  async #serialize(work: Map<string, Promise<void>>, key: string, operation: () => Promise<void>) {
+    let previous = work.get(key) ?? Promise.resolve();
+    let current = previous.catch(() => {}).then(operation);
+    work.set(key, current);
+    try { await current; }
+    finally { if (work.get(key) === current) work.delete(key); }
+  }
+
+  async #chatState(cursor: ChatReadCursor) {
+    return this.#workspace(cursor.workspaceId).getChatStateForUser(
+      this.ctx.id.toString(), this.storage.profile.get().id, cursor.chatId,
+      cursor.readThroughSequence, cursor.notifiedThroughSequence);
+  }
+
+  #unreadCounts() {
+    let unreadChatCount = 0, unreadMessageCount = 0;
+    for (let cursor of this.#readCursors.values()) {
+      if (!this.#hasWorkspace(cursor.workspaceId)) continue;
+      unreadMessageCount += cursor.unreadCount;
+      if (cursor.unreadCount > 0) unreadChatCount++;
+    }
+    return {unreadChatCount, unreadMessageCount};
+  }
+
+  #unreadSnapshot(): UserUnreadState {
+    let chats: ChatReadState[] = [];
+    for (let [workspaceId, heads] of this.#chatHeads) {
+      if (!this.#hasWorkspace(workspaceId)) continue;
+      for (let head of heads.values()) {
+        let cursor = this.#cursor(workspaceId, head.chatId);
+        chats.push({...head, workspaceId, readThroughSequence: cursor.readThroughSequence,
+          unreadMessageCount: cursor.unreadCount});
       }
-      if ((this.#chatTimelines.get(workspaceId)?.version ?? -1) >= state.version) return;
-      // A concurrent read may have changed the requested horizon while the source was loading.
-      // Keep its existing projection and let durable fanout retry rather than overwrite its count.
-      if (cursors.length !== [...this.#readCursors.values()].filter(cursor => cursor.workspaceId === workspaceId).length ||
-          cursors.some(cursor => this.#readCursors.get(`${workspaceId}:${cursor.chatId}`) !== cursor)) {
-        throw new Error("Unread horizon changed during reconstruction.");
-      }
-      let timeline = {version: state.version, heads: new Map(state.heads.map(head => [head.chatId, head]))};
-      let removed = [...this.#readCursors.values()]
-          .filter(cursor => cursor.workspaceId === workspaceId && !timeline.heads.has(cursor.chatId))
-          .map(cursor => cursor.chatId);
-      this.#storeChatTimeline(workspaceId, timeline, removed);
-      this.#unreadChanged();
-    })().finally(() => this.#timelineLoads.delete(workspaceId));
-    this.#timelineLoads.set(workspaceId, pending);
-    return pending;
+    }
+    return {...this.#unreadCounts(), chats,
+      ...(this.#unavailableWorkspaces.size ? {unavailableWorkspaceIds: [...this.#unavailableWorkspaces]} : {})};
   }
 
-  #storeChatTimeline(workspaceId: string, timeline: ChatTimeline, removed: number[] = []): void {
-    this.ctx.storage.transactionSync(() => {
-      for (let chatId of removed) this.storage.chatReadCursors.delete(`${workspaceId}:${chatId}`);
-      this.storage.workspaceChatSummaries.put({workspaceId, version: timeline.version,
-        heads: [...timeline.heads.values()]});
-    });
-    for (let chatId of removed) this.#readCursors.delete(`${workspaceId}:${chatId}`);
-    this.#chatTimelines.set(workspaceId, timeline);
-  }
-
-  /** Fetch locally rehydrated state; reconstruct only missing workspace summaries. */
+  /** Persisted counts hydrate locally; only a first visit without a cursor needs an initial count. */
   async getUnreadState(): Promise<UserUnreadState> {
-    let workspaces = [...this.storage.gadgets.list()].filter(workspace => workspace.role !== "use");
-    await Promise.all(workspaces.map(async workspace => {
+    await Promise.all([...this.#unreadWorkspaces].map(async workspaceId => {
       try {
-        await this.#ensureWorkspaceChats(workspace.id);
-      } catch (error) {
-        logger.warn("unread workspace reconstruction deferred", {
-          event: "chat.unread.reconstruction.deferred", gadgetId: workspace.id, error,
-        });
+        let heads = await this.#workspace(workspaceId).getChatHeadsForUser(
+          this.ctx.id.toString(), this.storage.profile.get().id);
+        if (!this.#hasWorkspace(workspaceId)) return;
+        if (heads === null) {
+          // A stale listing is not authority. Suppress it locally without rewriting horizons
+          // during a read; a later authorized open refreshes the listing/admission.
+          this.#unreadWorkspaces.delete(workspaceId);
+          this.#chatHeads.delete(workspaceId);
+          this.#unavailableWorkspaces.delete(workspaceId);
+          return;
+        }
+        this.#chatHeads.set(workspaceId, new Map(heads.map(head => [head.chatId, head])));
+        await Promise.all(heads.map(async head => {
+          let key = `${workspaceId}:${head.chatId}`;
+          if (this.#readCursors.has(key)) return;
+          let cursor = this.#cursor(workspaceId, head.chatId);
+          let state = await this.#chatState(cursor);
+          if (!state || !this.#hasWorkspace(workspaceId) || this.#readCursors.has(key)) return;
+          // Reads do not enroll or write. New arrivals/explicit read commands persist this row.
+          // A newly admitted collaborator does not receive historical alerts.
+          this.#readCursors.set(key, {...cursor, unreadCount: state.unreadCount,
+            notifiedThroughSequence: state.notifications.at(-1)?.sequence ?? -1});
+        }));
+        this.#unavailableWorkspaces.delete(workspaceId);
+      } catch {
+        if (this.#hasWorkspace(workspaceId)) this.#unavailableWorkspaces.add(workspaceId);
       }
     }));
     return this.#unreadSnapshot();
   }
 
-  #unreadSnapshot(): UserUnreadState {
-    let unavailableWorkspaceIds = [...this.storage.gadgets.list()]
-        .filter(workspace => workspace.role !== "use" && !this.#chatTimelines.has(workspace.id))
-        .map(workspace => workspace.id);
-    let chats: ChatReadState[] = [];
-    for (let [workspaceId, timeline] of this.#chatTimelines) {
-      for (let head of timeline.heads.values()) {
-        let key = `${workspaceId}:${head.chatId}`;
-        let cursor = this.#readCursors.get(key);
-        let readThroughSequence = cursor?.readThroughSequence ?? head.initialReadThroughSequence ?? -1;
-        chats.push({workspaceId, chatId: head.chatId, chatTitle: head.chatTitle,
-          latestSequence: head.latestSequence, latestMessagePreview: head.latestMessagePreview,
-          latestActivityAt: head.latestActivityAt, readThroughSequence, readEpoch: cursor?.readEpoch ?? 0,
-          unreadMessageCount: Math.max(0, head.messageCount - (head.readMessageCount ?? 0))});
-      }
-    }
-    return {revision: this.#unreadRevision, chats,
-      ...(unavailableWorkspaceIds.length ? {unavailableWorkspaceIds} : {}),
-      unreadChatCount: chats.filter(chat => chat.unreadMessageCount > 0).length,
-      unreadMessageCount: chats.reduce((count, chat) => count + chat.unreadMessageCount, 0)};
-  }
-
-  /** Install after reconstruction, explicitly reporting unavailable workspaces rather than false zero. */
   async subscribeToUnreadState(subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>> {
     await this.getUnreadState();
     subscriber = subscriber.dup();
@@ -634,212 +655,186 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.#unreadSubscribers.set(token, subscriber);
     let unsubscribe = () => {
       let existing = this.#unreadSubscribers.get(token);
-      if (!existing) return;
-      this.#unreadSubscribers.delete(token);
-      existing[Symbol.dispose]();
+      if (existing) { this.#unreadSubscribers.delete(token); existing[Symbol.dispose](); }
     };
     subscriber.onRpcBroken(unsubscribe);
     this.ctx.waitUntil(subscriber.updated(this.#unreadSnapshot()).catch(unsubscribe));
-    return new RpcStub<{}>({ [Symbol.dispose]: unsubscribe });
+    return new RpcStub<{}>({[Symbol.dispose]: unsubscribe});
   }
 
-  #unreadChanged(): void {
-    this.#unreadRevision++;
-    if (!this.#unreadSubscribers.size) return;
-    let snapshot = this.#unreadSnapshot();
+  #unreadChanged(workspaceId?: string, chatId?: number): void {
+    let head = workspaceId === undefined || chatId === undefined ? undefined :
+      this.#chatHeads.get(workspaceId)?.get(chatId);
+    let cursor = head && this.#cursor(workspaceId!, head.chatId);
+    let chat = head && cursor ? {...head, workspaceId: workspaceId!,
+      readThroughSequence: cursor.readThroughSequence, unreadMessageCount: cursor.unreadCount} : null;
     for (let [token, subscriber] of this.#unreadSubscribers) {
-      this.ctx.waitUntil(subscriber.updated(snapshot).catch(() => {
-        if (this.#unreadSubscribers.delete(token)) subscriber[Symbol.dispose]();
+      let update = workspaceId !== undefined && chatId !== undefined
+        ? subscriber.chatUpdated(workspaceId, chatId, chat, this.#unreadCounts())
+        : subscriber.updated(this.#unreadSnapshot());
+      this.ctx.waitUntil(update.catch(() => {
+        this.#unreadSubscribers.delete(token);
+        subscriber[Symbol.dispose]();
       }));
     }
   }
 
-  /**
-   * Apply latest-message updates for changed threads, not a workspace-wide snapshot per append.
-   * An omitted deletion list denotes an initial full catch-up. Commit heads and their source
-   * version before acknowledging delivery; a lost ACK cannot apply the same update twice.
-   */
-  async syncWorkspaceChats(workspaceId: string, version: number, heads: ChatTimelineHead[],
-      deletedChatIds?: number[]): Promise<void> {
-    let listing = this.storage.gadgets.get(workspaceId);
-    if (!listing || listing.role === "use") return;
-    let needsRecount = () => heads.some(head => {
-      let previous = this.#chatTimelines.get(workspaceId)?.heads.get(head.chatId);
-      return previous && (head.recountVersion ?? 0) > (previous.recountVersion ?? 0);
-    });
-    await this.#ensureWorkspaceChats(workspaceId, needsRecount());
-    // Access/listing may have changed while reconstruction awaited another DO.
-    listing = this.storage.gadgets.get(workspaceId);
-    if (!listing || listing.role === "use") return;
-    let previous = this.#chatTimelines.get(workspaceId)!;
-    if (previous.version >= version) return;
-    // A second rewrite may have joined an older in-flight reconstruction. Do not ACK it with
-    // the old horizon count; the source's durable checkpoint will retry the newer version.
-    if (needsRecount()) throw new Error("Unread history changed during reconstruction.");
-    let timeline = {version, heads: new Map(previous.heads)};
-    let removed = deletedChatIds ?? [...timeline.heads.keys()].filter(id => !heads.some(head => head.chatId === id));
-    for (let id of removed) {
-      timeline.heads.delete(id);
+  /** Reconcile before ACK; notifications have their own independently recoverable horizon. */
+  async messageArrived(workspaceId: string, chatId: number): Promise<void> {
+    if (!this.#hasWorkspace(workspaceId)) return;
+    let key = `${workspaceId}:${chatId}`;
+    this.#dirtyTokens.set(key, {});
+    let cursor = this.#cursor(workspaceId, chatId);
+    if (!cursor.unreadDirty || !cursor.notificationsDirty) {
+      this.#storeCursor({...cursor, unreadDirty: true, notificationsDirty: true});
     }
-    for (let head of heads) {
-      timeline.heads.set(head.chatId, {...head,
-        readMessageCount: timeline.heads.get(head.chatId)?.readMessageCount ?? head.readMessageCount ?? 0});
-    }
-    this.#storeChatTimeline(workspaceId, timeline, removed);
-    if (heads.length || removed.length) this.#unreadChanged();
+    await this.#armExpirySweep();
+    await this.#serialize(this.#chatWork, key, () => this.#reconcileChat(workspaceId, chatId));
+    this.ctx.waitUntil(this.#deliverChatNotifications(workspaceId, chatId).catch(error => {
+      logger.warn("notification catch-up deferred", {event: "notification.catchup.deferred", error});
+    }));
   }
 
-  /** Advance one private horizon, never activity beyond the client's observed boundary. */
+  async #reconcileChat(workspaceId: string, chatId: number): Promise<void> {
+    if (!this.#hasWorkspace(workspaceId)) return;
+    let key = `${workspaceId}:${chatId}`;
+    let token = this.#dirtyTokens.get(key);
+    let cursor = this.#cursor(workspaceId, chatId);
+    let state = await this.#chatState(cursor);
+    if (!this.#hasWorkspace(workspaceId)) return;
+    if (!state) { this.#forgetChat(workspaceId, chatId); return; }
+    let heads = this.#chatHeads.get(workspaceId) ?? new Map<number, ChatTimelineHead>();
+    let previousHead = heads.get(chatId);
+    heads.set(chatId, state.head);
+    this.#chatHeads.set(workspaceId, heads);
+    let current = this.#cursor(workspaceId, chatId);
+    this.#storeCursor({...current, unreadCount: state.unreadCount,
+      unreadDirty: this.#dirtyTokens.get(key) === token ? undefined : true});
+    if (current.unreadCount !== state.unreadCount || !previousHead ||
+        previousHead.latestSequence !== state.head.latestSequence ||
+        previousHead.chatTitle !== state.head.chatTitle ||
+        previousHead.latestMessagePreview !== state.head.latestMessagePreview) {
+      this.#unreadChanged(workspaceId, chatId);
+    }
+  }
+
+  /** Advance only the observed horizon. Matching the old horizon rejects stale viewport receipts. */
   async markChatRead(receipt: ChatReadReceipt): Promise<void> {
     await this.markChatsRead([receipt]);
   }
 
-  /** Resolve sparse timeline positions before applying this user's observed horizons. */
   async markChatsRead(receipts: ChatReadReceipt[]): Promise<void> {
-    if (receipts.some(receipt => !Number.isSafeInteger(receipt.throughSequence) ||
-        receipt.throughSequence < -1)) throw new Error("Invalid timeline sequence.");
-    let results = await Promise.allSettled([...Map.groupBy(receipts, receipt => receipt.workspaceId)]
-        .map(([workspaceId, group]) => this.#markWorkspaceChatsRead(workspaceId, group)));
-    // Healthy workspaces can advance, but the caller must not mistake partial success for a
-    // successful mark-all-read. Retrying these monotonic receipts is safe.
-    for (let result of results) {
-      if (result.status === "rejected") throw result.reason;
-    }
+    let results = await Promise.allSettled(receipts.map(receipt =>
+      this.#setReadHorizon(receipt.workspaceId, receipt.chatId, receipt.throughSequence,
+        receipt.readThroughSequence, false)));
+    for (let result of results) if (result.status === "rejected") throw result.reason;
   }
 
-  async #markWorkspaceChatsRead(workspaceId: string, receipts: ChatReadReceipt[]): Promise<void> {
-    await this.#ensureWorkspaceChats(workspaceId);
-    // Transcript subscriptions can show a message before its asynchronous unread fanout.
-    // Refresh missing/newer heads before clamping, never acknowledge a reduced receipt.
-    if (receipts.some(receipt => {
-      let head = this.#chatTimelines.get(workspaceId)?.heads.get(receipt.chatId);
-      return !head || receipt.throughSequence > head.latestSequence;
-    })) await this.#ensureWorkspaceChats(workspaceId, true);
-    for (let attempt = 0; attempt < 2; ++attempt) {
-      let listing = this.storage.gadgets.get(workspaceId);
-      if (!listing || listing.role === "use") return;
-      let heads = this.#chatTimelines.get(workspaceId)?.heads;
-      let perChat = new Map<number, ChatReadReceipt>();
-      for (let receipt of receipts) {
-        let head = heads?.get(receipt.chatId);
-        let epoch = this.#readCursors.get(`${workspaceId}:${receipt.chatId}`)?.readEpoch ?? 0;
-        if (!head || receipt.readEpoch !== epoch) continue;
-        let throughSequence = Math.min(receipt.throughSequence, head.latestSequence);
-        if (throughSequence > (perChat.get(receipt.chatId)?.throughSequence ?? -2)) {
-          perChat.set(receipt.chatId, {...receipt, throughSequence});
-        }
-      }
-      let observed = [...perChat.values()];
-      if (!observed.length) return;
-      // The usual viewport/all-read receipt is exactly the cached latest message: no RPC
-      // is needed. Resolve only partial sparse-timeline horizons through the source.
-      let local = observed.filter(receipt => receipt.throughSequence === heads!.get(receipt.chatId)!.latestSequence)
-          .map(receipt => ({receipt, head: {...heads!.get(receipt.chatId)!,
-            readMessageCount: heads!.get(receipt.chatId)!.messageCount}}));
-      let partial = observed.filter(receipt => receipt.throughSequence !== heads!.get(receipt.chatId)!.latestSequence);
-      let state = partial.length ? await this.loadWorkspaceChats(workspaceId,
-          partial.map(receipt => ({chatId: receipt.chatId, sequence: receipt.throughSequence})),
-          partial.map(receipt => receipt.chatId)) : undefined;
-      let resolved = [...local, ...partial.flatMap(receipt => {
-        let head = state?.heads.find(candidate => candidate.chatId === receipt.chatId);
-        return head ? [{receipt, head}] : [];
-      })];
-      // Appends do not change counts through an observed boundary, but history rewrites do.
-      // Retry once using the current projection; sustained rewrites remain an explicit failure.
-      if (resolved.some(({receipt, head}) => (head.recountVersion ?? 0) !==
-          (this.#chatTimelines.get(workspaceId)?.heads.get(receipt.chatId)?.recountVersion ?? 0))) {
-        await this.#ensureWorkspaceChats(workspaceId, true);
-        continue;
-      }
-      listing = this.storage.gadgets.get(workspaceId);
-      if (!listing || listing.role === "use") return;
-      let previous = this.#chatTimelines.get(workspaceId);
-      if (!previous) return;
-      let cursors = new Map<string, ChatReadCursor>();
-      let timeline = {version: previous.version, heads: new Map(previous.heads)};
-      for (let {receipt, head} of resolved) {
-        let {chatId, throughSequence, readEpoch} = receipt;
-        let current = timeline.heads.get(chatId);
-        if (!current) continue;
-        let key = `${workspaceId}:${chatId}`;
-        let old = this.#readCursors.get(key);
-        let baseline = current.initialReadThroughSequence ?? -1;
-        if ((old?.readEpoch ?? 0) !== readEpoch || throughSequence <= (old?.readThroughSequence ?? baseline)) continue;
-        cursors.set(key, {workspaceId, chatId, readThroughSequence: throughSequence, readEpoch});
-        timeline.heads.set(chatId, {...current, readMessageCount: head.readMessageCount ?? 0});
-      }
-      if (cursors.size) this.#commitChatReads(cursors, new Map([[workspaceId, timeline]]));
-      return;
-    }
-    throw new Error("Unread history kept changing during read. Retry the receipt.");
-  }
-
-  /** Rewind once per observed epoch; stale devices and lost-ACK retries cannot undo later reads. */
   async markChatUnread(workspaceId: string, chatId: number, fromSequence: number,
-                       readEpoch: number): Promise<void> {
-    await this.#ensureWorkspaceChats(workspaceId);
-    for (let attempt = 0; attempt < 2; ++attempt) {
-      let head = this.#chatTimelines.get(workspaceId)?.heads.get(chatId);
-      if (!head) return;
-      if (!Number.isSafeInteger(fromSequence) || fromSequence < 0 ||
-          fromSequence > head.latestSequence) throw new Error("Invalid timeline sequence.");
-      let state = await this.loadWorkspaceChats(workspaceId, [{chatId, sequence: fromSequence - 1}], [chatId]);
-      let resolved = state?.heads.find(head => head.chatId === chatId);
-      let current = this.#readCursors.get(`${workspaceId}:${chatId}`);
-      let listing = this.storage.gadgets.get(workspaceId);
-      if (!resolved || !listing || listing.role === "use" ||
-          (current?.readEpoch ?? 0) !== readEpoch || !this.#chatTimelines.get(workspaceId)?.heads.has(chatId)) return;
-      if ((resolved.recountVersion ?? 0) !==
-          (this.#chatTimelines.get(workspaceId)!.heads.get(chatId)!.recountVersion ?? 0)) {
-        await this.#ensureWorkspaceChats(workspaceId, true);
-        continue;
-      }
-      let cursor = {workspaceId, chatId, readThroughSequence: fromSequence - 1, readEpoch: readEpoch + 1};
-      let previous = this.#chatTimelines.get(workspaceId)!;
-      let timeline = {version: previous.version, heads: new Map(previous.heads)};
-      timeline.heads.set(chatId, {...timeline.heads.get(chatId)!, readMessageCount: resolved.readMessageCount ?? 0});
-      this.#commitChatReads(new Map([[`${workspaceId}:${chatId}`, cursor]]), new Map([[workspaceId, timeline]]));
-      return;
-    }
-    throw new Error("Unread history kept changing during mark-unread. Retry the request.");
+      readThroughSequence: number): Promise<void> {
+    await this.#setReadHorizon(workspaceId, chatId, fromSequence - 1, readThroughSequence, true);
   }
 
-  #commitChatReads(cursors: Map<string, ChatReadCursor>, timelines: Map<string, ChatTimeline>): void {
-    // A reset must never join a new horizon with an old count-through-horizon (or vice versa).
-    // Write each workspace summary once, including when marking many of its threads read.
-    this.ctx.storage.transactionSync(() => {
-      for (let cursor of cursors.values()) this.storage.chatReadCursors.put(cursor);
-      for (let [workspaceId, timeline] of timelines) {
-        this.storage.workspaceChatSummaries.put({workspaceId, version: timeline.version,
-          heads: [...timeline.heads.values()]});
+  async #setReadHorizon(workspaceId: string, chatId: number, through: number,
+      observed: number, rewind: boolean): Promise<void> {
+    if (!Number.isSafeInteger(through) || through < -1) throw new Error("Invalid timeline sequence.");
+    await this.#serialize(this.#chatWork, `${workspaceId}:${chatId}`, async () => {
+      if (!this.#hasWorkspace(workspaceId)) return;
+      let cursor = this.#cursor(workspaceId, chatId);
+      if (cursor.readThroughSequence !== observed || through === cursor.readThroughSequence ||
+          (!rewind && through < cursor.readThroughSequence)) return;
+      let state = await this.#chatState({...cursor, readThroughSequence: through});
+      if (!state || !this.#hasWorkspace(workspaceId)) return;
+      if (through > state.head.latestSequence) throw new Error("Invalid timeline sequence.");
+      // Fetching the count performs no effects. Commit the new horizon and its count together.
+      let current = this.#cursor(workspaceId, chatId);
+      this.#storeCursor({...current, readThroughSequence: through,
+        unreadCount: state.unreadCount});
+      let heads = this.#chatHeads.get(workspaceId) ?? new Map<number, ChatTimelineHead>();
+      heads.set(chatId, state.head);
+      this.#chatHeads.set(workspaceId, heads);
+      this.#unreadChanged(workspaceId, chatId);
+    });
+  }
+
+  async #deliverChatNotifications(workspaceId: string, chatId: number): Promise<void> {
+    await this.#serialize(this.#notificationWork, `${workspaceId}:${chatId}`, async () => {
+      while (this.#hasWorkspace(workspaceId)) {
+        let key = `${workspaceId}:${chatId}`;
+        let token = this.#dirtyTokens.get(key);
+        let cursor = this.#cursor(workspaceId, chatId);
+        if (!cursor.notificationsDirty) return;
+        let state = await this.#chatState(cursor);
+        if (!this.#hasWorkspace(workspaceId)) return;
+        if (!state) { this.#forgetChat(workspaceId, chatId); return; }
+        for (let candidate of state.notifications) {
+          if (!this.#readCursors.has(key)) return;
+          await this.publishNotification({
+            id: candidate.id,
+            kind: candidate.kind, workspaceId, chatId, chatTitle: state.head.chatTitle,
+          });
+          let current = this.#readCursors.get(key);
+          if (!current) return;
+          this.#storeCursor({...current, notifiedThroughSequence: candidate.sequence});
+        }
+        // A newly dirtied thread needs another source read, even if this batch was empty.
+        if (this.#dirtyTokens.get(key) !== token) continue;
+        let current = this.#readCursors.get(key);
+        if (current?.notificationsDirty) {
+          this.#storeCursor({...current, notificationsDirty: undefined});
+        }
+        await this.#armExpirySweep();
+        return;
       }
     });
-    for (let [key, cursor] of cursors) this.#readCursors.set(key, cursor);
-    for (let [workspaceId, timeline] of timelines) this.#chatTimelines.set(workspaceId, timeline);
-    if (cursors.size) this.#unreadChanged();
   }
 
-  /** Remove inaccessible heads, their durable summary and private horizons. */
-  async forgetWorkspaceChats(workspaceId: string): Promise<void> {
-    this.#forgetUnreadWorkspace(workspaceId);
+  async #recoverUnread(): Promise<void> {
+    let results = await Promise.allSettled([...this.#readCursors.values()].map(async cursor => {
+      if (cursor.unreadDirty) await this.#serialize(this.#chatWork,
+        `${cursor.workspaceId}:${cursor.chatId}`,
+        () => this.#reconcileChat(cursor.workspaceId, cursor.chatId));
+      if (cursor.notificationsDirty) await this.#deliverChatNotifications(cursor.workspaceId, cursor.chatId);
+    }));
+    await this.#armExpirySweep();
+    for (let result of results) if (result.status === "rejected") throw result.reason;
+  }
+
+  #forgetChat(workspaceId: string, chatId: number): void {
+    let key = `${workspaceId}:${chatId}`;
+    if (!this.#readCursors.has(key)) return;
+    this.storage.chatReadCursors.delete(key);
+    this.#readCursors.delete(key);
+    this.#chatHeads.get(workspaceId)?.delete(chatId);
+    this.#unreadChanged(workspaceId, chatId);
+  }
+
+  /** Journal removal before the source is destroyed; recount only after releasing the RPC. */
+  async workspaceRemoved(workspaceId: string): Promise<void> {
+    for (let cursor of this.#readCursors.values()) {
+      if (cursor.workspaceId !== workspaceId) continue;
+      this.#dirtyTokens.set(`${workspaceId}:${cursor.chatId}`, {});
+      this.#storeCursor({...cursor, unreadDirty: true, notificationsDirty: true});
+    }
+    await this.#armExpirySweep();
+    this.ctx.waitUntil(this.#recoverUnread().catch(error => {
+      logger.warn("workspace unread cleanup deferred", {event: "chat.unread.cleanup.deferred", error});
+    }));
   }
 
   #forgetUnreadWorkspace(workspaceId: string): void {
-    let hadChats = !!this.#chatTimelines.get(workspaceId)?.heads.size;
-    this.ctx.storage.transactionSync(() => {
-      this.storage.workspaceChatSummaries.delete(workspaceId);
-      this.storage.chatReadCursors.byWorkspace.delete(workspaceId);
-    });
-    this.#chatTimelines.delete(workspaceId);
-    for (let [key, cursor] of this.#readCursors) {
-      if (cursor.workspaceId === workspaceId) this.#readCursors.delete(key);
-    }
-    if (hadChats) this.#unreadChanged();
+    let cursors = [...this.#readCursors.values()].filter(cursor => cursor.workspaceId === workspaceId);
+    if (!cursors.length) return;
+    this.storage.chatReadCursors.byWorkspace.delete(workspaceId);
+    for (let cursor of cursors) this.#readCursors.delete(`${workspaceId}:${cursor.chatId}`);
+    this.#chatHeads.delete(workspaceId);
+    this.#unavailableWorkspaces.delete(workspaceId);
+    this.#unreadChanged();
   }
 
   /**
-   * Offer a notification to subscribed clients (hidden ones reject). Push to every registered
-   * device unless one acknowledges within 3s. A finished task in a muted workspace goes nowhere.
+   * Offer a notification to visible clients, otherwise use push. The caller advances its
+   * notifiedThroughSequence only once this delivery succeeds or policy intentionally skips it.
    */
   async publishNotification(notification: UserNotification): Promise<void> {
     let mute = this.storage.gadgets.get(notification.workspaceId)?.notificationMute;
@@ -2431,6 +2426,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   async #armExpirySweep(): Promise<void> {
     let next: number | undefined;
     let consider = (at: number) => { if (next === undefined || at < next) next = at; };
+    if ([...this.#readCursors.values()].some(cursor => cursor.unreadDirty || cursor.notificationsDirty)) {
+      consider(Date.now() + 30_000);
+    }
     for (let flow of this.storage.pendingConnectFlows.list()) consider(flow.expiresAt.getTime());
     for (let pending of this.storage.pendingDeviceHandoffs.list()) {
       consider(pending.expiresAt.getTime());
@@ -2456,7 +2454,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (next === undefined) {
       await this.ctx.storage.deleteAlarm();
     } else {
-      await this.ctx.storage.setAlarm(next);
+      await this.ctx.storage.setAlarm(Math.max(1, next));
     }
   }
 
@@ -2465,6 +2463,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * device handoffs and sessions. Device handoff cleanup also deletes its unactivated session.
    */
   async alarm(): Promise<void> {
+    // A stalled workspace/push service must not prevent unrelated auth expiry cleanup.
+    let deliveries = Promise.allSettled([this.#recoverUnread()]);
     let now = Date.now();
     let expiredFlows = Array.from(this.storage.pendingConnectFlows.list())
         .filter(flow => flow.expiresAt.getTime() <= now);
@@ -2499,6 +2499,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       }
     }
     await this.#armExpirySweep();
+    for (let result of await deliveries) if (result.status === "rejected") throw result.reason;
   }
 
   async getGatekeeperClassFor(accountId: number, url: string)
