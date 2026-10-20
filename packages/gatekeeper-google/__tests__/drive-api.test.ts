@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DRIVE_FILE_ITEM_FIELDS, DriveApi, DriveApiDisabledError, DriveApiRequestError,
-  FOLDER_MIME_TYPE, MAX_PDF_BYTES, MAX_QUERY_PARENTS, buildDriveQuery, conversionError,
+  FOLDER_MIME_TYPE, MAX_QUERY_PARENTS, buildDriveQuery, conversionError,
   escapeDriveQueryLiteral, isInsufficientScope, lacksFileContentAccess,
   type DriveConversionSource,
 } from "../src/drive-api";
@@ -1258,7 +1258,7 @@ describe("openDownload", () => {
       headers: { "Content-Type": "application/pdf", "Content-Length": "4" },
     })]);
 
-    let stream = await api().openDownload("file-1_A", MAX_PDF_BYTES);
+    let stream = await api().openDownload("file-1_A");
     expect(await drain(stream)).toEqual(bytes);
 
     expect(calls).toHaveLength(1);
@@ -1271,9 +1271,10 @@ describe("openDownload", () => {
 
   it("reads at most a chunk ahead of the caller, and stops when the caller cancels", async () => {
     let { body, state } = countedBody(1024);
-    stubFetch([new Response(body, { headers: { "Content-Length": String(1024 * 1024) } })]);
+    // The size Drive declares for a 270 MB PDF: no size is refused, and nothing is read for it.
+    stubFetch([new Response(body, { headers: { "Content-Length": String(270 * 1024 * 1024) } })]);
 
-    let stream = await api().openDownload("file-1", MAX_PDF_BYTES);
+    let stream = await api().openDownload("file-1");
     await new Promise(resolve => setTimeout(resolve, 10));
     expect(state.pulls).toBeLessThanOrEqual(1);
 
@@ -1284,38 +1285,15 @@ describe("openDownload", () => {
     expect(state.cancelled).toBe(true);
   });
 
-  it("refuses a declared Content-Length over the limit without reading the body", async () => {
-    let { body, state } = countedBody(1024);
-    stubFetch([new Response(body, { headers: { "Content-Length": String(MAX_PDF_BYTES + 1) } })]);
-
-    await expect(api().openDownload("file-1", MAX_PDF_BYTES))
-      .rejects.toThrow("This file is larger than the 20 MB limit for reading it.");
-    expect(state).toEqual({ pulls: 0, cancelled: true });
-  });
-
-  it.each([
-    ["no Content-Length", undefined],
-    ["a Content-Length under the size it sends", "10"],
-  ])("errors a streamed body with %s once it passes the limit", async (_label, contentLength) => {
-    let { body, state } = countedBody(600);
-    stubFetch([new Response(body, {
-      headers: contentLength === undefined ? {} : { "Content-Length": contentLength },
-    })]);
-    let limit = 1024 * 1024 + 1;
-
-    let stream = await api().openDownload("file-1", limit);
-
-    await expect(drain(stream)).rejects.toThrow("This file is larger than the 2 MB limit for reading it.");
-    expect(state.cancelled).toBe(true);
-    // The source stops within a chunk or two of the limit rather than running on.
-    expect(state.pulls).toBeGreaterThan(Math.floor(limit / 600));
-    expect(state.pulls).toBeLessThanOrEqual(Math.floor(limit / 600) + 3);
+  it("hands back an empty stream for a response without a body", async () => {
+    stubFetch([new Response(null, { status: 200 })]);
+    expect(await drain(await api().openDownload("file-1"))).toEqual(new Uint8Array());
   });
 
   it("refuses an ID that is not a Drive file ID without a request", async () => {
     let calls = stubFetch([]);
     for (let id of ["", "../about", "file 1", "a/b", "x".repeat(257)]) {
-      await expect(api().openDownload(id, MAX_PDF_BYTES)).rejects.toThrow("Not a Google Drive file ID.");
+      await expect(api().openDownload(id)).rejects.toThrow("Not a Google Drive file ID.");
     }
     expect(calls).toEqual([]);
   });
@@ -1323,7 +1301,7 @@ describe("openDownload", () => {
   it("reports a download Drive refuses for want of content access", async () => {
     stubFetch([jsonResponse(NOT_AUTHORIZED_TO_FILE_BODY, 403)]);
 
-    let error = await api().openDownload("pdf-1", MAX_PDF_BYTES).catch((caught: unknown) => caught);
+    let error = await api().openDownload("pdf-1").catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(DriveApiRequestError);
     expect(error).toMatchObject({ status: 403, reason: "appNotAuthorizedToFile" });
@@ -1338,7 +1316,7 @@ describe("openDownload", () => {
       error: { code: 404, message: "File not found: pdf-1.", errors: [{ reason: "notFound" }] },
     }, 404)]);
 
-    let error = await api().openDownload("pdf-1", MAX_PDF_BYTES).catch((caught: unknown) => caught);
+    let error = await api().openDownload("pdf-1").catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(DriveApiRequestError);
     expect(error).toMatchObject({ status: 404, reason: "notFound" });

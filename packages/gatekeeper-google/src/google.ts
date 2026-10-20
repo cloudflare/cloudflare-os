@@ -37,7 +37,7 @@ import {
   computeReplaceOperations, docTabToMarkdown, markdownToDocRequests, MARKDOWN_RENDERING_VERSION,
   type DocTabSnapshot, type EditableMarkdown,
 } from "./markdown-converter";
-import { DriveApi, DriveApiRequestError, lacksFileContentAccess, MAX_PDF_BYTES } from "./drive-api";
+import { DriveApi, DriveApiRequestError, lacksFileContentAccess } from "./drive-api";
 import { type AiFetcher, pdfToText, type PdfConverter } from "./drive-pdf";
 import { driveObserverTracker, type DriveObservation } from "./drive-observers";
 import { outsideScope, readFolderRoot, type FolderLocation } from "./drive-folder-scope";
@@ -3290,17 +3290,24 @@ export class GoogleDriveSessionImpl extends RpcTarget
       let id = await core.openNativeFile(fileId, PDF_MIME_TYPE, "PDF");
       let convert = this.#convertPdf;
       if (!convert) throw new Error("PDF reading is not available on this deployment.");
+      // The conversion has read the whole PDF by the time it resolves, so the checks after the
+      // fetch cover everything the text stream will carry.
+      let converted: DrivePdfText | undefined;
       let text = await core.nativeRead(id, PDF_MIME_TYPE)(async () => {
-        let pdf = await this.#driveApi.openDownload(id, MAX_PDF_BYTES).catch((error: unknown) => {
+        let pdf = await this.#driveApi.openDownload(id).catch((error: unknown) => {
           throw lacksFileContentAccess(error) ? new Error(PDF_ACCESS_MISSING) : error;
         });
-        return convert(pdf);
+        return (converted = await convert(pdf));
       }, () => ({
         title: "Read PDF from Google Drive",
         description: `Read the text of Drive file ${id}.`,
-      }));
-      // Nothing outlives this call, so the queue is released here; `#withQueue` releases it on a
-      // throw.
+      })).catch(async (error: unknown) => {
+        // Text refused after its conversion still holds the response open.
+        await converted?.text.cancel().catch(() => undefined);
+        throw error;
+      });
+      // The stream needs nothing from the queue, so it is released here; `#withQueue` releases it
+      // on a throw.
       queue[Symbol.dispose]();
       return text;
     });

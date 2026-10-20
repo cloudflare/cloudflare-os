@@ -18,10 +18,6 @@ export type GoogleObservabilityFields = {
   providerCode: number;
   providerReasons: string[];
   providerStatus: string;
-  /** Length of converted text, in UTF-16 code units. */
-  textChars: number;
-  /** Whether converted text was cut at its size limit. */
-  truncated: boolean;
   userObjectId: string;
   vendorId: string;
 };

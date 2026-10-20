@@ -126,14 +126,17 @@ export type DriveFolderSearchQuery = Omit<DriveSearchQuery, "directParentId"> & 
 export type DriveSessionSearchQuery =
   DriveSearchQuery & Pick<DriveFolderSearchQuery, "childFolderIds">;
 
-/** Text of a Drive PDF. */
+/** A Drive PDF's text, streamed. */
 export type DrivePdfText = {
-  /** The PDF's text as Markdown. Empty when `hasText` is false. */
-  markdown: string;
+  /**
+   * The PDF's text as UTF-8 Markdown, read as it is converted: pages separated by "### Page N"
+   * headings, and pages before the first with text left out. Read it with
+   * `await new Response(text).text()`, or a reader to stop early; cancel it if unread. Empty when
+   * `hasText` is false. A failure partway through errors the stream.
+   */
+  text: ReadableStream<Uint8Array>;
   /** False for a scanned or image-only PDF, which has no text layer; it is not OCR'd. */
   hasText: boolean;
-  /** Whether `markdown` was cut at the size limit. */
-  truncated: boolean;
 };
 
 /** Read-only Drive metadata discovery, native Google Docs/Sheets/Slides access, and PDF text. */
@@ -175,8 +178,8 @@ export interface GoogleDriveReadSession {
   openGoogleSlides(fileId: string): Promise<GooglePresentationReadSession>;
 
   /**
-   * Read an in-scope PDF's text, converted to Markdown. Fails asking to reconnect when the Google
-   * account was connected before Drive bindings could read file content.
+   * Read an in-scope PDF's text, converted to Markdown and streamed. Fails asking to reconnect
+   * when the Google account was connected before Drive bindings could read file content.
    */
   readPdf(fileId: string): Promise<DrivePdfText>;
 }
@@ -210,8 +213,8 @@ export interface GoogleDriveFolderSession extends Pick<GoogleDriveReadSession, "
   openGoogleSlides(fileId: string): Promise<GooglePresentationReadSession>;
 
   /**
-   * Read a live direct-child PDF's text, converted to Markdown. Fails asking to reconnect when
-   * the Google account was connected before Drive bindings could read file content.
+   * Read a live direct-child PDF's text, converted to Markdown and streamed. Fails asking to
+   * reconnect when the Google account was connected before Drive bindings could read file content.
    */
   readPdf(fileId: string): Promise<DrivePdfText>;
 

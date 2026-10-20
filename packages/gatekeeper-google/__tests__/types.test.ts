@@ -301,34 +301,45 @@ const legacy: SheetCellFormat = { wrap: "OVERFLOW_CELL" };
     expect(driveTypes).toContain("export interface GoogleDriveReadSession");
   });
 
-  it("reads PDF text from both Drive sessions", () => {
+  it("streams PDF text from both Drive sessions", () => {
     const driveTypes = source("drive-types.d.ts");
-    expect(driveTypes).toContain(`export type DrivePdfText = {
-  /** The PDF's text as Markdown. Empty when \`hasText\` is false. */
-  markdown: string;
+    expect(driveTypes).toContain(`/** A Drive PDF's text, streamed. */
+export type DrivePdfText = {
+  /**
+   * The PDF's text as UTF-8 Markdown, read as it is converted: pages separated by "### Page N"
+   * headings, and pages before the first with text left out. Read it with
+   * \`await new Response(text).text()\`, or a reader to stop early; cancel it if unread. Empty when
+   * \`hasText\` is false. A failure partway through errors the stream.
+   */
+  text: ReadableStream<Uint8Array>;
   /** False for a scanned or image-only PDF, which has no text layer; it is not OCR'd. */
   hasText: boolean;
-  /** Whether \`markdown\` was cut at the size limit. */
-  truncated: boolean;
 };`);
     expect(driveTypes).toContain(`  /**
-   * Read an in-scope PDF's text, converted to Markdown. Fails asking to reconnect when the Google
-   * account was connected before Drive bindings could read file content.
+   * Read an in-scope PDF's text, converted to Markdown and streamed. Fails asking to reconnect
+   * when the Google account was connected before Drive bindings could read file content.
    */
   readPdf(fileId: string): Promise<DrivePdfText>;`);
     expect(driveTypes).toContain(`  /**
-   * Read a live direct-child PDF's text, converted to Markdown. Fails asking to reconnect when
-   * the Google account was connected before Drive bindings could read file content.
+   * Read a live direct-child PDF's text, converted to Markdown and streamed. Fails asking to
+   * reconnect when the Google account was connected before Drive bindings could read file content.
    */
   readPdf(fileId: string): Promise<DrivePdfText>;`);
     expect(compileAgentTypes(driveBundle() + `
 declare const drive: GoogleDriveReadSession;
 declare const folder: GoogleDriveFolderSession;
-const fromDrive: Promise<DrivePdfText> = drive.readPdf("file-1");
-const fromFolder: Promise<DrivePdfText> = folder.readPdf("file-1");
-const text: DrivePdfText = { markdown: "", hasText: false, truncated: false };
-// @ts-expect-error The text says whether it was cut.
-const uncut: DrivePdfText = { markdown: "", hasText: true };
+async function read(): Promise<string> {
+  const { text, hasText } = await drive.readPdf("file-1");
+  const flag: boolean = hasText;
+  const reader = (await folder.readPdf("file-2")).text.getReader();
+  const first: Uint8Array | undefined = (await reader.read()).value;
+  await reader.cancel();
+  return new Response(text).text();
+}
+// @ts-expect-error The text is a stream, not a string.
+const whole: DrivePdfText = { text: "", hasText: true };
+// @ts-expect-error Nothing is cut, so there is no truncation flag.
+const cut: DrivePdfText = { text: new ReadableStream(), hasText: true, truncated: false };
 `)).toEqual([]);
   });
 });

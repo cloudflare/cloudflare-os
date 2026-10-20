@@ -1,13 +1,11 @@
-// A Drive PDF's text, from Workers AI's markdown conversion, streamed in both directions.
+// A Drive PDF's text, from Workers AI's markdown conversion, streamed in both directions: neither
+// the PDF nor its text is ever held whole.
 
 import { readTextPrefix } from "@gadgets/gatekeeper-kit/response-body";
 import type { DrivePdfText } from "./drive-types";
 import { obsContext } from "./observability";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.google.drive.pdf", vendorId: "google" });
-
-/** The longest text one PDF read returns; past it the text is cut and marked truncated. */
-export const MAX_PDF_TEXT_CHARS = 1_000_000;
 
 /** Converts one PDF, read from a stream, to its text. */
 export type PdfConverter = (pdf: ReadableStream<Uint8Array>) => Promise<DrivePdfText>;
@@ -29,33 +27,34 @@ const TO_MARKDOWN_URL = "https://workers-binding.ai/to-everything/markdown/trans
 const PDF_NAME = "file.pdf";
 /** What the conversion puts before a PDF's pages once its metadata block is turned off. */
 const PREAMBLE = `# ${PDF_NAME}\n## Contents\n`;
-const PAGE_HEADING = /^### Page \d+$/gm;
+const PAGE_HEADING = /^### Page \d+$/;
+/** Characters of one line held while looking for text, more than any page heading has. */
+const MAX_HEADING_CHARS = 32;
+const TEXT_FORMATS = new Set(["markdown", "text"]);
 const CONVERSION_FAILED = "Google Drive's file could not be converted from PDF.";
 /** Bytes of a failed conversion's response read for its error code. */
 const MAX_ERROR_BYTES = 1024;
-/**
- * Characters of the converted text read before the rest is dropped: the cap, plus the preamble and
- * some leading whitespace that come off before the cap is measured.
- */
-const MAX_DATA_CHARS = PREAMBLE.length + MAX_PDF_TEXT_CHARS + 1024;
-/** Characters kept of any other string field of the response. */
+/** Characters kept of any string field of the response other than the text. */
 const MAX_FIELD_CHARS = 1024;
 /** Input bytes base64-encoded per string conversion, a multiple of 3 so no piece pads. */
 const BASE64_STEP = 0x6000;
 
 /**
  * Converts a PDF with the Workers AI binding, through AI Gateway `gatewayId` when one is named.
- * Neither the PDF nor the whole converted text is ever held: the PDF is encoded into the request as
- * it arrives, and the response is read only up to {@link MAX_PDF_TEXT_CHARS} of text before it is
- * cancelled. Its images are not described (an image-only page yields no text; nothing is OCR'd),
- * so the conversion makes no billed model call. A failed conversion is logged by status and error
- * code only, never by the service's text, and reported in our words; a failure of the PDF stream
- * itself (such as a file over the size limit) is thrown as it is.
+ * The PDF is encoded into the request as it arrives, and the response is read only until its text
+ * begins, which settles `hasText`; the text then streams from the response as it is read, without
+ * the file heading, "## Contents" line, and pages before the first with text. Its images are not
+ * described (an image-only page yields no text; nothing is OCR'd), so the conversion makes no
+ * billed model call. A failed conversion is logged by status and error code only, never by the
+ * service's text, and reported in our words, by a throw before the text begins or by erroring the
+ * stream after; a failure of the PDF stream itself (such as the download breaking off) is thrown
+ * as it is.
  */
 export async function pdfToText(
   ai: AiFetcher, gatewayId: string | undefined, pdf: ReadableStream<Uint8Array>,
 ): Promise<DrivePdfText> {
   let pdfBytes = 0;
+  let uploaded = false;
   let sourceError: { error: unknown } | undefined;
   let options = {
     ...(gatewayId ? { gateway: { id: gatewayId } } : {}),
@@ -63,17 +62,19 @@ export async function pdfToText(
   };
   let { body, cancelPdf } = requestBody(pdf, options, {
     onBytes: count => { pdfBytes += count; },
+    onEnd: () => { uploaded = true; },
     onError: error => { sourceError = { error }; },
   });
-  let failed = async (
-    detail: { error: unknown } | { httpStatus: number; providerCode?: number },
-  ): Promise<never> => {
-    // A fetch holds the body locked, so the download is released through its reader instead.
-    await cancelPdf();
-    if (sourceError) throw sourceError.error;
+  let logFailure = (detail: FailureDetail) => {
     logger.warn("Workers AI failed to convert a PDF", {
       event: "google.drive.pdf.failed", pdfBytes, ...detail,
     });
+  };
+  let failed = async (detail: FailureDetail): Promise<never> => {
+    // A fetch holds the body locked, so the download is released through its reader instead.
+    await cancelPdf();
+    if (sourceError) throw sourceError.error;
+    logFailure(detail);
     throw new Error(CONVERSION_FAILED);
   };
 
@@ -91,36 +92,74 @@ export async function pdfToText(
     let code = /"code"\s*:\s*(\d+)/.exec(prefix)?.[1];
     return failed({ httpStatus: response.status, ...(code ? { providerCode: Number(code) } : {}) });
   }
-  let conversion: Conversion;
+  let conversion = new ConversionReader(response.body);
+  // The service reads the whole PDF before it answers. Holding it to that means the download is
+  // over once this resolves, which checks the caller makes after the fetch rely on.
+  if (!uploaded) {
+    await conversion.cancel();
+    return failed({ error: "the service answered before the PDF was sent" });
+  }
+  let start = new TextStart();
   try {
-    conversion = await readConversion(response.body);
+    while (start.text === undefined) {
+      let data = await conversion.next();
+      if (data === undefined) {
+        start.end();
+        break;
+      }
+      start.feed(data);
+    }
   } catch (error) {
+    await conversion.cancel();
     return failed({ error });
   }
-  if (conversion.format !== "markdown" && conversion.format !== "text") {
-    return failed({
-      error: conversion.format === "error" ? "the service could not convert the file"
-        : "the service answered in an unexpected format",
-    });
+  let first = start.text;
+  let hasText = first !== undefined;
+  logger.info("converted a Drive PDF", { event: "google.drive.pdf.converted", pdfBytes, hasText });
+  if (!hasText) {
+    return { text: new ReadableStream({ start: controller => controller.close() }), hasText };
   }
-  let text = pdfMarkdown(conversion.data ?? "", conversion.dataOverflow);
-  logger.info("converted a Drive PDF", {
-    event: "google.drive.pdf.converted", pdfBytes, textChars: text.markdown.length,
-    hasText: text.hasText, truncated: text.truncated,
-  });
-  return text;
+
+  let encoder = new TextEncoder();
+  let cancelled = false;
+  let text = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      let chunk: string | undefined;
+      try {
+        chunk = first ?? await conversion.next();
+      } catch (error) {
+        // Cancelling ends a read in progress as if the response had broken off.
+        if (cancelled) return;
+        logFailure({ error });
+        controller.error(new Error(CONVERSION_FAILED));
+        await conversion.cancel();
+        return;
+      }
+      first = undefined;
+      if (chunk === undefined) controller.close();
+      else controller.enqueue(encoder.encode(chunk));
+    },
+    cancel: reason => {
+      cancelled = true;
+      return conversion.cancel(reason);
+    },
+  }, { highWaterMark: 0 });
+  return { text, hasText };
 }
+
+/** What a failed conversion is logged with: the error, or the service's status and error code. */
+type FailureDetail = { error: unknown } | { httpStatus: number; providerCode?: number };
 
 /**
  * The conversion request's JSON body, `{"files":[{name, mimeType, data}],"options":…}`, with `data`
  * base64-encoded from `pdf` one chunk at a time as the request is sent. Cancelling the body cancels
  * `pdf`; `cancelPdf` does so too while the body is locked to a request, and does nothing once `pdf`
- * has been read to its end.
+ * has been read to its end, which `onEnd` reports.
  */
 function requestBody(
   pdf: ReadableStream<Uint8Array>,
   options: object,
-  hooks: { onBytes(count: number): void; onError(error: unknown): void },
+  hooks: { onBytes(count: number): void; onEnd(): void; onError(error: unknown): void },
 ): { body: ReadableStream<Uint8Array>; cancelPdf(): Promise<void> } {
   let encoder = new TextEncoder();
   let reader = pdf.getReader();
@@ -146,6 +185,7 @@ function requestBody(
           throw error;
         }
         if (chunk.done) {
+          hooks.onEnd();
           controller.enqueue(encoder.encode(`${base64(carry)}"}],"options":${JSON.stringify(options)}}`));
           controller.close();
           return;
@@ -175,38 +215,146 @@ function base64(bytes: Uint8Array): string {
   return out;
 }
 
-/** The fields of the response's first `result` entry that a conversion is judged by. */
-type Conversion = { format?: string; data?: string; dataOverflow: boolean };
+/**
+ * The text of a conversion response, `{"result":[{format, data, …}], …}`, read from its stream a
+ * chunk at a time. Only `result[0].format` is kept; `result[0].data` is handed on as it is decoded.
+ */
+class ConversionReader {
+  #reader: ReadableStreamDefaultReader<Uint8Array>;
+  #decoder = new TextDecoder();
+  #fields = new StreamingFields(data => { this.#data += data; });
+  /** Text decoded but not yet returned by {@link next}. */
+  #data = "";
+  #ended = false;
 
-/** A string the scanner keeps, as what, and up to how many characters. */
-type Kept = { field: "format" | "data" | "key"; max: number };
+  constructor(body: ReadableStream<Uint8Array>) {
+    this.#reader = body.getReader();
+  }
 
-/** A container the reader is inside: an object and the key being read, or an array and its index. */
-type Frame = { kind: "object"; key?: string } | { kind: "array"; index: number };
+  /**
+   * The next piece of the text, never empty, or `undefined` once the response has ended whole in a
+   * text format. Throws once the response breaks, ends early, or names any other format.
+   */
+  async next(): Promise<string | undefined> {
+    for (;;) {
+      // The halves of a surrogate pair can arrive apart, as two \u escapes, and are kept together
+      // so that neither is encoded alone.
+      let end = this.#data.length;
+      let last = this.#data.charCodeAt(end - 1);
+      if (!this.#ended && last >= 0xd800 && last <= 0xdbff) end -= 1;
+      if (end > 0) {
+        let data = this.#data.slice(0, end);
+        this.#data = this.#data.slice(end);
+        return data;
+      }
+      if (this.#ended) {
+        if (!this.#fields.complete) throw new Error("The conversion response ended early.");
+        if (this.#fields.format === undefined) {
+          throw new Error("the service answered in an unexpected format");
+        }
+        return undefined;
+      }
+      let chunk = await this.#reader.read();
+      if (chunk.done) this.#ended = true;
+      this.#feed(chunk.done ? this.#decoder.decode()
+        : this.#decoder.decode(chunk.value, { stream: true }));
+    }
+  }
+
+  /** Stops reading the response. */
+  async cancel(reason?: unknown): Promise<void> {
+    await this.#reader.cancel(reason).catch(() => undefined);
+  }
+
+  #feed(text: string): void {
+    this.#fields.feed(text);
+    let format = this.#fields.format;
+    if (format !== undefined && !TEXT_FORMATS.has(format)) {
+      throw new Error(format === "error" ? "the service could not convert the file"
+        : "the service answered in an unexpected format");
+    }
+  }
+}
 
 /**
- * Reads `{"result":[{format, data, …}], …}` from a response stream, keeping only those two
- * string fields of the first result and at most {@link MAX_DATA_CHARS} of `data`. Once `data` has
- * overflowed and `format` is known the rest of the response is cancelled unread.
+ * Finds where a conversion's text begins: past the preamble at the very start, blank lines, and
+ * "### Page N" headings of the pages before the first with text. It holds only the line being read
+ * (from its first character that is not whitespace, at most {@link MAX_HEADING_CHARS} of it), the
+ * last heading seen, and what remains of the piece in which the text begins.
  */
-async function readConversion(stream: ReadableStream<Uint8Array>): Promise<Conversion> {
-  let reader = stream.pipeThrough(new TextDecoderStream()).getReader();
-  let json = new StreamingFields();
-  try {
-    for (;;) {
-      let chunk = await reader.read();
-      if (chunk.done) break;
-      json.feed(chunk.value);
-      if (json.result.dataOverflow && json.result.format !== undefined) {
-        await reader.cancel().catch(() => undefined);
-        return json.result;
+class TextStart {
+  /**
+   * The text from the last heading before it on, or from its own line when no heading came first,
+   * once found.
+   */
+  text: string | undefined;
+  /** Characters of the preamble matched so far, or -1 once it has been passed or ruled out. */
+  #preamble = 0;
+  #line = "";
+  /** Whether the line being read began with whitespace, which a heading never does. */
+  #indented = false;
+  #heading: string | undefined;
+
+  /** Reads the next piece of the conversion's text. */
+  feed(data: string): void {
+    if (this.#preamble >= 0) {
+      let matched = 0;
+      while (matched < data.length && this.#preamble + matched < PREAMBLE.length &&
+          data[matched] === PREAMBLE[this.#preamble + matched]) {
+        matched++;
+      }
+      this.#preamble += matched;
+      data = data.slice(matched);
+      if (this.#preamble === PREAMBLE.length) this.#preamble = -1;
+      else if (data === "") return;
+      else data = this.#leavePreamble() + data;
+    }
+    this.#scan(data);
+  }
+
+  /** Reads the end of the conversion's text. */
+  end(): void {
+    if (this.#preamble > 0) this.#scan(this.#leavePreamble());
+    if (this.text === undefined && this.#lineIsText()) this.#found("");
+  }
+
+  /** What was taken for the preamble, read as text after all once the data parts from it. */
+  #leavePreamble(): string {
+    let matched = PREAMBLE.slice(0, this.#preamble);
+    this.#preamble = -1;
+    return matched;
+  }
+
+  #scan(data: string): void {
+    for (let i = 0; i < data.length && this.text === undefined; i++) {
+      let ch = data[i]!;
+      if (ch === "\n") {
+        if (this.#lineIsText()) {
+          this.#found(data.slice(i));
+        } else {
+          this.#line = "";
+          this.#indented = false;
+        }
+      } else if (this.#line === "" && /\s/.test(ch)) {
+        this.#indented = true;
+      } else {
+        this.#line += ch;
+        if (this.#line.length > MAX_HEADING_CHARS) this.#found(data.slice(i + 1));
       }
     }
-  } finally {
-    reader.releaseLock();
   }
-  if (!json.complete) throw new Error("The conversion response ended early.");
-  return json.result;
+
+  /** Whether the line read holds text, noting it as the last heading when it is one. */
+  #lineIsText(): boolean {
+    if (this.#line === "") return false;
+    if (this.#indented || !PAGE_HEADING.test(this.#line)) return true;
+    this.#heading = this.#line;
+    return false;
+  }
+
+  #found(rest: string): void {
+    this.text = `${this.#heading === undefined ? "" : `${this.#heading}\n`}${this.#line}${rest}`;
+  }
 }
 
 const STRING_RUN = /[^"\\]*/y;
@@ -215,23 +363,31 @@ const ESCAPES: Record<string, string> = {
   '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "\t",
 };
 
+/** A container the reader is inside: an object and the key being read, or an array and its index. */
+type Frame = { kind: "object"; key?: string } | { kind: "array"; index: number };
+
 /**
- * An incremental JSON scanner that walks any document but keeps only the strings at
- * `result[0].{format,data}`, each capped. It checks structure only as far as walking needs;
- * the response comes from the binding, and nothing read here decides anything but the text.
+ * An incremental JSON scanner that walks any document but keeps only the string at
+ * `result[0].format`, capped, and hands the string at `result[0].data` to `onData` as it is
+ * decoded. It checks structure only as far as walking needs; the response comes from the binding,
+ * and nothing read here decides anything but the text.
  */
 class StreamingFields {
-  result: Conversion = { dataOverflow: false };
+  format: string | undefined;
   complete = false;
+  #onData: (data: string) => void;
   #stack: Frame[] = [];
   #state: "value" | "valueOrEnd" | "keyOrEnd" | "key" | "colon" | "after" | "string" | "escape" |
     "unicode" | "literal" = "value";
-  /** Whether the string being read is a key rather than a value. */
-  #isKey = false;
-  /** The string being read, when it is kept, and how it is kept. */
+  /** What the string being read is kept as, if anything. */
+  #keep: "key" | "format" | "data" | undefined;
+  /** The key or format being read. */
   #buffer = "";
-  #keep: Kept | undefined;
   #hex = "";
+
+  constructor(onData: (data: string) => void) {
+    this.#onData = onData;
+  }
 
   feed(text: string): void {
     let i = 0;
@@ -327,48 +483,35 @@ class StreamingFields {
   }
 
   #startString(isKey: boolean): void {
-    this.#isKey = isKey;
     this.#buffer = "";
-    this.#keep = isKey ? { field: "key", max: MAX_FIELD_CHARS } : this.#keptField();
+    this.#keep = isKey ? "key" : this.#keptField();
     this.#state = "string";
   }
 
   /** The field a value string at the current position is kept as, if any. */
-  #keptField(): Kept | undefined {
+  #keptField(): "format" | "data" | undefined {
     let [root, result, entry] = this.#stack;
     if (this.#stack.length !== 3 || root?.kind !== "object" || root.key !== "result" ||
         result?.kind !== "array" || result.index !== 0 || entry?.kind !== "object") {
       return undefined;
     }
-    if (entry.key === "data") return { field: "data", max: MAX_DATA_CHARS };
-    if (entry.key === "format") return { field: "format", max: MAX_FIELD_CHARS };
-    return undefined;
+    return entry.key === "data" || entry.key === "format" ? entry.key : undefined;
   }
 
   #append(text: string): void {
-    if (!this.#keep || text === "") return;
-    let room = this.#keep.max - this.#buffer.length;
-    if (text.length > room) {
-      this.#buffer += text.slice(0, room);
-      // The rest of the response may go unread, so the kept text is final now.
-      if (this.#keep.field === "data") {
-        this.result.data = this.#buffer;
-        this.result.dataOverflow = true;
-      }
-    } else {
-      this.#buffer += text;
-    }
+    if (text === "") return;
+    if (this.#keep === "data") this.#onData(text);
+    else if (this.#keep) this.#buffer += text.slice(0, MAX_FIELD_CHARS - this.#buffer.length);
   }
 
   #endString(): void {
-    if (this.#isKey) {
+    if (this.#keep === "key") {
       let top = this.#stack.at(-1);
       if (top?.kind === "object") top.key = this.#buffer;
       this.#state = "colon";
       return;
     }
-    let field = this.#keep?.field;
-    if (field === "data" || field === "format") this.result[field] = this.#buffer;
+    if (this.#keep === "format") this.format = this.#buffer;
     this.#state = "after";
   }
 
@@ -377,23 +520,4 @@ class StreamingFields {
     this.#state = "after";
     if (this.#stack.length === 0) this.complete = true;
   }
-}
-
-/**
- * The conversion's output for one PDF as agent text: without the file heading and "## Contents"
- * line it opens with, keeping the "### Page N" headings between pages. A PDF whose pages hold
- * nothing but those headings has no text layer. `overflow` says the output went on past what was
- * read, so the text is truncated whatever its length.
- */
-export function pdfMarkdown(data: string, overflow = false): DrivePdfText {
-  let body = data.startsWith(PREAMBLE) ? data.slice(PREAMBLE.length) : data;
-  let hasText = body.replace(PAGE_HEADING, "").trim() !== "";
-  if (!hasText) return { markdown: "", hasText, truncated: overflow };
-  let markdown = overflow ? body.trimStart() : body.trim();
-  if (!overflow && markdown.length <= MAX_PDF_TEXT_CHARS) return { markdown, hasText, truncated: false };
-  let end = Math.min(markdown.length, MAX_PDF_TEXT_CHARS);
-  // Never leave half of a surrogate pair at the end.
-  let last = markdown.charCodeAt(end - 1);
-  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
-  return { markdown: markdown.slice(0, end), hasText, truncated: true };
 }

@@ -25,7 +25,7 @@ const FOLDER_MIME = "application/vnd.google-apps.folder";
 const PDF_MIME = "application/pdf";
 
 const PDF_BYTES = new TextEncoder().encode("%PDF-1.4\n1 0 obj\n");
-const PDF_TEXT: DrivePdfText = { markdown: "### Page 1\nChapter 1", hasText: true, truncated: false };
+const PDF_MARKDOWN = "### Page 1\nChapter 1";
 const PDF_ACCESS_MISSING =
   "This Google account was connected before Drive bindings could read file content. Reconnect " +
   "it in Workshop to read PDFs.";
@@ -42,15 +42,31 @@ const NOT_AUTHORIZED_TO_FILE = {
   },
 };
 
-/** A converter that reads the PDF stream it is given to the end and answers {@link PDF_TEXT}. */
+/**
+ * A converter that reads the PDF stream it is given to the end and streams {@link PDF_MARKDOWN},
+ * counting the text streams cancelled unread.
+ */
 function fakeConverter(onConvert?: () => void) {
   const converted: Uint8Array[] = [];
+  const state = { cancelled: 0 };
   const convert: PdfConverter = async pdf => {
     converted.push(new Uint8Array(await new Response(pdf).arrayBuffer()));
     onConvert?.();
-    return PDF_TEXT;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new TextEncoder().encode(PDF_MARKDOWN));
+        controller.close();
+      },
+      cancel() { state.cancelled++; },
+    }, { highWaterMark: 0 });
+    return { text: stream, hasText: true };
   };
-  return { converted, convert };
+  return { converted, convert, state };
+}
+
+/** Reads a PDF read's text stream, as returned over RPC, to the end. */
+async function readText(result: DrivePdfText): Promise<{ text: string; hasText: boolean }> {
+  return { text: await new Response(result.text).text(), hasText: result.hasText };
 }
 
 function isDownload(url: string): boolean {
@@ -363,8 +379,10 @@ describe("Drive PDF reads", () => {
     const { queue, session } = newSession(converter.convert);
     using owned = session;
 
-    expect(await owned.readPdf("pdf-1")).toEqual(PDF_TEXT);
+    const result = await owned.readPdf("pdf-1");
     expect(authorizedAtConversion).toEqual(["Open PDF from Google Drive"]);
+    expect(await readText(result)).toEqual({ text: PDF_MARKDOWN, hasText: true });
+    expect(converter.state.cancelled).toBe(0);
 
     expect(converter.converted).toEqual([PDF_BYTES]);
     const download = new URL(providerUrls.find(isDownload)!);
@@ -380,7 +398,7 @@ describe("Drive PDF reads", () => {
     ]);
   });
 
-  it("withholds the text when its read is not authorized", async () => {
+  it("withholds the text when its read is not authorized, releasing its stream", async () => {
     const converter = fakeConverter();
     const { queue, session } = newSession(converter.convert);
     using owned = session;
@@ -388,6 +406,7 @@ describe("Drive PDF reads", () => {
 
     await expect(Promise.resolve(owned.readPdf("pdf-1"))).rejects.toThrow("Observation refused");
     expect(converter.converted).toHaveLength(1);
+    expect(converter.state.cancelled).toBe(1);
   });
 
   it("refuses a file that is not a PDF after observing it, without downloading", async () => {
@@ -926,7 +945,8 @@ describe("folder-scoped native sessions", () => {
     const { queue, session } = folderSession(nodes, converter.convert);
     using owned = session;
 
-    expect(await owned.readPdf("pdf-1")).toEqual(PDF_TEXT);
+    expect(await readText(await owned.readPdf("pdf-1")))
+      .toEqual({ text: PDF_MARKDOWN, hasText: true });
     expect(nativeCalls).toEqual(["download"]);
     expect(queue.observations.map(o => o.title))
       .toEqual(["Open PDF from Google Drive", "Read PDF from Google Drive"]);
@@ -944,6 +964,8 @@ describe("folder-scoped native sessions", () => {
 
     await expect(Promise.resolve(owned.readPdf("pdf-1"))).rejects.toThrow(OUTSIDE);
     expect(queue.observations.map(o => o.title)).toEqual(["Open PDF from Google Drive"]);
+    expect(converter.converted).toEqual([PDF_BYTES]);
+    expect(converter.state.cancelled).toBe(1);
   });
 
   it("refuses a PDF outside the folder without downloading it", async () => {
@@ -969,7 +991,8 @@ describe("folder-scoped native sessions", () => {
     using session = folderSession(nodes, fakeConverter().convert).session;
     using child = await session.openFolder("nested");
 
-    await expect(Promise.resolve(child.readPdf("nested-pdf"))).resolves.toEqual(PDF_TEXT);
+    expect(await readText(await child.readPdf("nested-pdf")))
+      .toEqual({ text: PDF_MARKDOWN, hasText: true });
   });
 
   it("refuses to open a native file that is already outside the subtree", async () => {
