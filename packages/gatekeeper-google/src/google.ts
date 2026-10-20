@@ -38,7 +38,8 @@ import {
   type DocTabSnapshot, type EditableMarkdown,
 } from "./markdown-converter";
 import { DriveApi, DriveApiRequestError, lacksFileContentAccess } from "./drive-api";
-import { type AiFetcher, CONVERSION_FAILED, pdfToText, type PdfConverter } from "./drive-pdf";
+import { CONVERSION_FAILED, pdfToText, type PdfConverter } from "./drive-pdf";
+import type { AiFetcher } from "./workers-ai-markdown";
 import { driveObserverTracker, type DriveObservation } from "./drive-observers";
 import { outsideScope, readFolderRoot, type FolderLocation } from "./drive-folder-scope";
 import {
