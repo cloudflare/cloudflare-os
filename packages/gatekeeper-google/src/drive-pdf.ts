@@ -2,12 +2,16 @@
 // the PDF nor its text is ever held whole.
 
 import { readTextPrefix } from "@gadgets/gatekeeper-kit/response-body";
+import { PDF_MIME_TYPE } from "./drive-session";
 import type { DrivePdfText } from "./drive-types";
 import { obsContext } from "./observability";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.google.drive.pdf", vendorId: "google" });
 
-/** Converts one PDF, read from a stream, to its text. */
+/**
+ * Converts one PDF, read from a stream, to its text. It may resolve before reading `pdf` to its end,
+ * so a caller that checks the file after converting it must see the end itself.
+ */
 export type PdfConverter = (pdf: ReadableStream<Uint8Array>) => Promise<DrivePdfText>;
 
 /** The Workers AI binding's passthrough to its own services, which `Ai`'s type does not declare. */
@@ -31,13 +35,12 @@ const PAGE_HEADING = /^### Page \d+$/;
 /** Characters of one line held while looking for text, more than any page heading has. */
 const MAX_HEADING_CHARS = 32;
 const TEXT_FORMATS = new Set(["markdown", "text"]);
-const CONVERSION_FAILED = "Google Drive's file could not be converted from PDF.";
+/** The one error a failed conversion is reported with, whatever the service said. */
+export const CONVERSION_FAILED = "Google Drive's file could not be converted from PDF.";
 /** Bytes of a failed conversion's response read for its error code. */
 const MAX_ERROR_BYTES = 1024;
 /** Characters kept of any string field of the response other than the text. */
 const MAX_FIELD_CHARS = 1024;
-/** Input bytes base64-encoded per string conversion, a multiple of 3 so no piece pads. */
-const BASE64_STEP = 0x6000;
 
 /**
  * Converts a PDF with the Workers AI binding, through AI Gateway `gatewayId` when one is named.
@@ -53,27 +56,20 @@ const BASE64_STEP = 0x6000;
 export async function pdfToText(
   ai: AiFetcher, gatewayId: string | undefined, pdf: ReadableStream<Uint8Array>,
 ): Promise<DrivePdfText> {
-  let pdfBytes = 0;
-  let uploaded = false;
-  let sourceError: { error: unknown } | undefined;
   let options = {
     ...(gatewayId ? { gateway: { id: gatewayId } } : {}),
     conversionOptions: { pdf: { metadata: false, images: { convert: false } } },
   };
-  let { body, cancelPdf } = requestBody(pdf, options, {
-    onBytes: count => { pdfBytes += count; },
-    onEnd: () => { uploaded = true; },
-    onError: error => { sourceError = { error }; },
-  });
+  let { body, sent, cancelPdf } = requestBody(pdf, options);
   let logFailure = (detail: FailureDetail) => {
     logger.warn("Workers AI failed to convert a PDF", {
-      event: "google.drive.pdf.failed", pdfBytes, ...detail,
+      event: "google.drive.pdf.failed", pdfBytes: sent.bytes, ...detail,
     });
   };
   let failed = async (detail: FailureDetail): Promise<never> => {
     // A fetch holds the body locked, so the download is released through its reader instead.
     await cancelPdf();
-    if (sourceError) throw sourceError.error;
+    if (sent.error) throw sent.error.error;
     logFailure(detail);
     throw new Error(CONVERSION_FAILED);
   };
@@ -93,12 +89,6 @@ export async function pdfToText(
     return failed({ httpStatus: response.status, ...(code ? { providerCode: Number(code) } : {}) });
   }
   let conversion = new ConversionReader(response.body);
-  // The service reads the whole PDF before it answers. Holding it to that means the download is
-  // over once this resolves, which checks the caller makes after the fetch rely on.
-  if (!uploaded) {
-    await conversion.cancel();
-    return failed({ error: "the service answered before the PDF was sent" });
-  }
   let start = new TextStart();
   try {
     while (start.text === undefined) {
@@ -115,7 +105,9 @@ export async function pdfToText(
   }
   let first = start.text;
   let hasText = first !== undefined;
-  logger.info("converted a Drive PDF", { event: "google.drive.pdf.converted", pdfBytes, hasText });
+  logger.info("converted a Drive PDF", {
+    event: "google.drive.pdf.converted", pdfBytes: sent.bytes, hasText,
+  });
   if (!hasText) {
     return { text: new ReadableStream({ start: controller => controller.close() }), hasText };
   }
@@ -152,28 +144,27 @@ type FailureDetail = { error: unknown } | { httpStatus: number; providerCode?: n
 
 /**
  * The conversion request's JSON body, `{"files":[{name, mimeType, data}],"options":…}`, with `data`
- * base64-encoded from `pdf` one chunk at a time as the request is sent. Cancelling the body cancels
+ * base64-encoded from `pdf` one chunk at a time as the request is sent. `sent` counts the PDF's
+ * bytes read and keeps the error `pdf` itself failed with, if any. Cancelling the body cancels
  * `pdf`; `cancelPdf` does so too while the body is locked to a request, and does nothing once `pdf`
- * has been read to its end, which `onEnd` reports.
+ * has been read to its end.
  */
-function requestBody(
-  pdf: ReadableStream<Uint8Array>,
-  options: object,
-  hooks: { onBytes(count: number): void; onEnd(): void; onError(error: unknown): void },
-): { body: ReadableStream<Uint8Array>; cancelPdf(): Promise<void> } {
+function requestBody(pdf: ReadableStream<Uint8Array>, options: object): {
+  body: ReadableStream<Uint8Array>;
+  sent: { bytes: number; error?: { error: unknown } };
+  cancelPdf(): Promise<void>;
+} {
   let encoder = new TextEncoder();
   let reader = pdf.getReader();
-  let started = false;
+  let sent: { bytes: number; error?: { error: unknown } } = { bytes: 0 };
   // The 0-2 bytes left over from the previous chunk, since base64 encodes whole 3-byte groups.
   let carry = new Uint8Array(0);
   let body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(
+        `{"files":[{"name":${JSON.stringify(PDF_NAME)},"mimeType":"${PDF_MIME_TYPE}","data":"`));
+    },
     async pull(controller) {
-      if (!started) {
-        started = true;
-        controller.enqueue(encoder.encode(
-          `{"files":[{"name":${JSON.stringify(PDF_NAME)},"mimeType":"application/pdf","data":"`));
-        return;
-      }
       // A pull that enqueues nothing is not called again, so read until there is something to
       // send: a chunk smaller than a whole group only adds to the carry.
       for (;;) {
@@ -181,38 +172,29 @@ function requestBody(
         try {
           chunk = await reader.read();
         } catch (error) {
-          hooks.onError(error);
+          sent.error = { error };
           throw error;
         }
         if (chunk.done) {
-          hooks.onEnd();
-          controller.enqueue(encoder.encode(`${base64(carry)}"}],"options":${JSON.stringify(options)}}`));
+          controller.enqueue(encoder.encode(`${carry.toBase64()}"}],"options":${JSON.stringify(options)}}`));
           controller.close();
           return;
         }
-        hooks.onBytes(chunk.value.byteLength);
+        sent.bytes += chunk.value.byteLength;
         let joined = new Uint8Array(carry.byteLength + chunk.value.byteLength);
         joined.set(carry);
         joined.set(chunk.value, carry.byteLength);
         let whole = joined.byteLength - joined.byteLength % 3;
         carry = joined.slice(whole);
         if (whole > 0) {
-          controller.enqueue(encoder.encode(base64(joined.subarray(0, whole))));
+          controller.enqueue(encoder.encode(joined.subarray(0, whole).toBase64()));
           return;
         }
       }
     },
     cancel: reason => reader.cancel(reason),
   });
-  return { body, cancelPdf: () => reader.cancel().catch(() => undefined) };
-}
-
-function base64(bytes: Uint8Array): string {
-  let out = "";
-  for (let i = 0; i < bytes.byteLength; i += BASE64_STEP) {
-    out += btoa(String.fromCharCode(...bytes.subarray(i, i + BASE64_STEP)));
-  }
-  return out;
+  return { body, sent, cancelPdf: () => reader.cancel().catch(() => undefined) };
 }
 
 /**

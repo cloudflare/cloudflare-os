@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type AiFetcher, pdfToText } from "../src/drive-pdf";
 
 // What Workers AI's toMarkdown returned for generated PDFs with metadata off and images unconverted.
@@ -123,13 +123,26 @@ function decodeBase64(data: string): Uint8Array {
 /** 1,000 bytes covering every byte value, so base64 framing errors show. */
 const BYTES = Uint8Array.from({ length: 1000 }, (_, i) => (i * 7) % 256);
 
+if (!("toBase64" in Uint8Array.prototype)) {
+  // oxlint-disable-next-line eslint/no-extend-native -- Node's Uint8Array has no toBase64 yet; workerd's, which the conversion runs on, does.
+  Object.defineProperty(Uint8Array.prototype, "toBase64", {
+    value(this: Uint8Array) {
+      return Buffer.from(this.buffer, this.byteOffset, this.byteLength).toString("base64");
+    },
+  });
+}
+
+beforeEach(() => {
+  vi.spyOn(console, "info").mockImplementation(() => {});
+  vi.spyOn(console, "warn").mockImplementation(() => {});
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
 
 describe("pdfToText", () => {
   it("streams the PDF to the conversion service under a fixed name with metadata and images off", async () => {
-    vi.spyOn(console, "info").mockImplementation(() => {});
     let { ai, sent } = fakeAi(streamedResponse(markdownJson(LARGE_PDF)));
     // Chunk sizes that leave 0, 1 and 2 bytes over a 3-byte base64 group.
     let { stream } = pdfStream(BYTES, [1, 2, 4, 5, 64, 3]);
@@ -152,14 +165,12 @@ describe("pdfToText", () => {
   });
 
   it("streams a PDF that arrives one byte at a time", async () => {
-    vi.spyOn(console, "info").mockImplementation(() => {});
     let { ai, sent } = fakeAi(streamedResponse(markdownJson(LARGE_PDF)));
     await pdfToText(ai, undefined, pdfStream(BYTES, [1]).stream);
     expect(decodeBase64(sent[0]!.json.files[0]!.data)).toEqual(BYTES);
   });
 
   it("encodes an empty and a one-byte PDF", async () => {
-    vi.spyOn(console, "info").mockImplementation(() => {});
     for (let bytes of [new Uint8Array(), Uint8Array.of(0xff)]) {
       let { ai, sent } = fakeAi(streamedResponse(markdownJson(LARGE_PDF)));
       await pdfToText(ai, undefined, pdfStream(bytes).stream);
@@ -168,7 +179,6 @@ describe("pdfToText", () => {
   });
 
   it("routes through the named AI Gateway only when one is set", async () => {
-    vi.spyOn(console, "info").mockImplementation(() => {});
     let { ai, sent } = fakeAi(() => streamedResponse(markdownJson(LARGE_PDF)));
 
     await pdfToText(ai, "instance-gateway", pdfStream(BYTES).stream);
@@ -189,7 +199,6 @@ describe("pdfToText", () => {
         throw new Error("request aborted");
       },
     } as unknown as AiFetcher;
-    vi.spyOn(console, "warn").mockImplementation(() => {});
 
     await expect(pdfToText(ai, undefined, stream)).rejects.toThrow(CONVERSION_FAILED);
     expect(state.cancelled).toBe(true);
@@ -198,7 +207,6 @@ describe("pdfToText", () => {
 
 describe("pdfToText's text", () => {
   it("streams a text PDF's pages without the preamble, keeping its trailing whitespace", async () => {
-    vi.spyOn(console, "info").mockImplementation(() => {});
     expect(await convert(streamedResponse(markdownJson(TEXT_PDF))))
       .toEqual({ hasText: true, text: TEXT_PDF.slice(PREAMBLE.length) });
     expect(await convert(streamedResponse(markdownJson(LARGE_PDF))))
@@ -206,7 +214,6 @@ describe("pdfToText's text", () => {
   });
 
   it("reports a scanned PDF as having no text, with an empty stream", async () => {
-    vi.spyOn(console, "info").mockImplementation(() => {});
     expect(await convert(streamedResponse(markdownJson(SCANNED_PDF))))
       .toEqual({ hasText: false, text: "" });
     expect(await convert(streamedResponse(markdownJson(`${PREAMBLE}### Page 1\n\n\n\n\n### Page 2\n \t\n`))))
@@ -215,14 +222,12 @@ describe("pdfToText's text", () => {
   });
 
   it("leaves out pages before the first with text, keeping that page's heading", async () => {
-    vi.spyOn(console, "info").mockImplementation(() => {});
     let data = `${PREAMBLE}### Page 1\n\n\n\n### Page 2\n  \n\n### Page 3\n\n  First words\n\n### Page 4\n\nMore\n`;
     expect(await convert(streamedResponse(markdownJson(data), 3)))
       .toEqual({ hasText: true, text: "### Page 3\nFirst words\n\n### Page 4\n\nMore\n" });
   });
 
   it("keeps output that does not open with the expected preamble", async () => {
-    vi.spyOn(console, "info").mockImplementation(() => {});
     for (let data of [
       "# Quarterly Report.pdf\n## Contents\n### Page 1\nRevenue\n",
       "# file.pdf\nOnly a title line",
@@ -234,13 +239,11 @@ describe("pdfToText's text", () => {
   });
 
   it("accepts plain-text output", async () => {
-    vi.spyOn(console, "info").mockImplementation(() => {});
     expect(await convert(streamedResponse(markdownJson("Plain words", "text"))))
       .toEqual({ hasText: true, text: "Plain words" });
   });
 
   it("counts a line that only resembles a page heading as text", async () => {
-    vi.spyOn(console, "info").mockImplementation(() => {});
     for (let line of ["### Page one", "  ### Page 1", "### Page 1 ", `### Page ${"1".repeat(40)}`]) {
       expect(await convert(streamedResponse(markdownJson(`${PREAMBLE}### Page 1\n${line}\nrest`), 4)))
         .toEqual({ hasText: true, text: `### Page 1\n${line.trimStart()}\nrest` });
@@ -248,7 +251,6 @@ describe("pdfToText's text", () => {
   });
 
   it("decodes escapes and multi-byte characters split anywhere in the response", async () => {
-    vi.spyOn(console, "info").mockImplementation(() => {});
     // The response as it is on the wire: JSON escapes, \u escapes (one a surrogate pair), and raw
     // multi-byte UTF-8.
     let data = String.raw`# file.pdf\n## Contents\n### Page 1\nQuote \" slash \\ \/ tab\t café \u00e9 😀 \ud83d\ude00 end\n`;
@@ -264,7 +266,6 @@ describe("pdfToText's text", () => {
   });
 
   it("reads only the fields of the first result, wherever they fall", async () => {
-    vi.spyOn(console, "info").mockImplementation(() => {});
     let json = JSON.stringify({
       data: "top-level data",
       result: [
@@ -277,14 +278,13 @@ describe("pdfToText's text", () => {
   });
 
   it("reads a format that comes after the text", async () => {
-    vi.spyOn(console, "info").mockImplementation(() => {});
     expect(await convert(streamedResponse(formatLastJson(TEXT_PDF))))
       .toEqual({ hasText: true, text: TEXT_PDF.slice(PREAMBLE.length) });
     expect(await convert(streamedResponse(formatLastJson(SCANNED_PDF)))).toEqual({ hasText: false, text: "" });
   });
 
   it("logs a conversion's size and whether it had text, never its text", async () => {
-    let info = vi.spyOn(console, "info").mockImplementation(() => {});
+    let info = vi.mocked(console.info);
     let { ai } = fakeAi(streamedResponse(markdownJson(TEXT_PDF)));
 
     let result = await pdfToText(ai, undefined, pdfStream(BYTES, [100]).stream);
@@ -301,7 +301,6 @@ describe("pdfToText's text", () => {
 
 describe("pdfToText's streaming", () => {
   it("returns once the text begins, and reads the rest only as the text is read", async () => {
-    vi.spyOn(console, "info").mockImplementation(() => {});
     let { response, state } = endlessResponse();
 
     let result = await pdfToText(fakeAi(response).ai, undefined, pdfStream(BYTES).stream);
@@ -328,7 +327,6 @@ describe("pdfToText's streaming", () => {
   });
 
   it("cancels the response when the text is cancelled unread", async () => {
-    vi.spyOn(console, "info").mockImplementation(() => {});
     let { response, state } = endlessResponse();
     let result = await pdfToText(fakeAi(response).ai, undefined, pdfStream(BYTES).stream);
     await result.text.cancel();
@@ -336,8 +334,7 @@ describe("pdfToText's streaming", () => {
   });
 
   it("logs no failure when the text is cancelled during a read", async () => {
-    vi.spyOn(console, "info").mockImplementation(() => {});
-    let warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let warn = vi.mocked(console.warn);
     let encoder = new TextEncoder();
     let sent = false;
     let body = new ReadableStream<Uint8Array>({
@@ -361,8 +358,7 @@ describe("pdfToText's streaming", () => {
   });
 
   it("errors the text in its own words when the response ends after the text began", async () => {
-    vi.spyOn(console, "info").mockImplementation(() => {});
-    let warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let warn = vi.mocked(console.warn);
     let json = markdownJson(TEXT_PDF);
     let { ai } = fakeAi(streamedResponse(json.slice(0, json.indexOf("Page 2")), 16));
 
@@ -377,8 +373,7 @@ describe("pdfToText's streaming", () => {
   });
 
   it("errors the text in its own words when reading the response fails", async () => {
-    vi.spyOn(console, "info").mockImplementation(() => {});
-    let warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let warn = vi.mocked(console.warn);
     let encoder = new TextEncoder();
     let sent = false;
     let body = new ReadableStream<Uint8Array>({
@@ -397,8 +392,7 @@ describe("pdfToText's streaming", () => {
   });
 
   it("errors the text when a format after it is not a text format", async () => {
-    vi.spyOn(console, "info").mockImplementation(() => {});
-    let warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let warn = vi.mocked(console.warn);
     let response = streamedResponse(formatLastJson(TEXT_PDF, "error"), 64);
 
     let result = await pdfToText(fakeAi(response).ai, undefined, pdfStream(BYTES).stream);
@@ -411,7 +405,7 @@ describe("pdfToText's streaming", () => {
 
 describe("pdfToText's failures", () => {
   it("fails in its own words when Workers AI cannot convert the file", async () => {
-    let warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let warn = vi.mocked(console.warn);
     let { ai } = fakeAi(streamedResponse(conversionJson({ format: "error", error: PROVIDER_ERROR })));
 
     let error = await pdfToText(ai, undefined, pdfStream(BYTES).stream).catch((caught: unknown) => caught);
@@ -425,7 +419,7 @@ describe("pdfToText's failures", () => {
   });
 
   it("fails in its own words on an HTTP error, logging its status and code but not its body", async () => {
-    let warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let warn = vi.mocked(console.warn);
     let { ai } = fakeAi(streamedResponse(
       '{"errors":[{"message":"Error converting to markdown","code":6006}],"success":false}', 7, 400));
 
@@ -439,7 +433,7 @@ describe("pdfToText's failures", () => {
   });
 
   it("fails in its own words when the binding throws", async () => {
-    let warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let warn = vi.mocked(console.warn);
     let { ai } = fakeAi(new Error("6006: Error converting to markdown"));
 
     let error = await pdfToText(ai, undefined, pdfStream(BYTES).stream).catch((caught: unknown) => caught);
@@ -455,14 +449,13 @@ describe("pdfToText's failures", () => {
     ["after the text's string closes", `{"result":[{"id":"c","format":"markdown","data":"${PREAMBLE.replaceAll("\n", "\\n")}"}`],
     ["before any format", `{"result":[{"id":"c","data":"${PREAMBLE.replaceAll("\n", "\\n")}"}],"success":true}`],
   ])("fails on a response that ends or breaks before any text: %s", async (_label, json) => {
-    let warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let warn = vi.mocked(console.warn);
     let { ai } = fakeAi(streamedResponse(json, 5));
     await expect(pdfToText(ai, undefined, pdfStream(BYTES).stream)).rejects.toThrow(CONVERSION_FAILED);
     expect(warn).toHaveBeenCalledWith(expect.objectContaining({ event: "google.drive.pdf.failed" }));
   });
 
   it("treats an unknown output format as a failure", async () => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
     let { ai } = fakeAi(streamedResponse(markdownJson("text", "html")));
     await expect(pdfToText(ai, undefined, pdfStream(BYTES).stream)).rejects.toThrow(CONVERSION_FAILED);
   });
@@ -470,11 +463,8 @@ describe("pdfToText's failures", () => {
   it.each([
     ["the binding throws mid-upload", "throw"],
     ["the service answers an error before reading the PDF", "error"],
-    ["the service answers a conversion before reading all of the PDF", "early"],
   ])("releases the download when %s", async (_label, outcome) => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
     let { stream, state } = pdfStream(BYTES, [10]);
-    let answer = { cancelled: false };
     let ai = {
       fetch: async (_url: string, init: RequestInit) => {
         let reader = (init.body as ReadableStream<Uint8Array>).getReader();
@@ -482,22 +472,16 @@ describe("pdfToText's failures", () => {
         await reader.read();
         // The request keeps the body locked, as a real fetch does while it runs.
         if (outcome === "throw") throw new Error("binding failed");
-        if (outcome === "error") return streamedResponse('{"errors":[{"code":429}]}', 7, 429);
-        let bytes = new TextEncoder().encode(markdownJson(LARGE_PDF));
-        return new Response(new ReadableStream({
-          start(controller) { controller.enqueue(bytes); },
-          cancel() { answer.cancelled = true; },
-        }));
+        return streamedResponse('{"errors":[{"code":429}]}', 7, 429);
       },
     } as unknown as AiFetcher;
 
     await expect(pdfToText(ai, undefined, stream)).rejects.toThrow(CONVERSION_FAILED);
     expect(state.cancelled).toBe(true);
-    if (outcome === "early") expect(answer.cancelled).toBe(true);
   });
 
   it("throws the PDF stream's own error, such as a download breaking off, as it is", async () => {
-    let warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let warn = vi.mocked(console.warn);
     let brokeOff = new Error("The Google Drive download failed.");
     let sentChunk = false;
     let pdf = new ReadableStream<Uint8Array>({

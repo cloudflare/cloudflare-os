@@ -102,16 +102,10 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   readonly observations: ObservationDescription[] = [];
   /** Titles this queue refuses to authorize. */
   readonly refuse = new Set<string>();
-  /** Set once every stub of this queue, the session's and each duplicate, is released. */
-  released = false;
 
   async authorizeObservation(description: ObservationDescription): Promise<void> {
     if (this.refuse.has(description.title)) throw new Error("Observation refused");
     this.observations.push(description);
-  }
-
-  [Symbol.dispose](): void {
-    this.released = true;
   }
 
   async getGitCache(): Promise<GitCache> {
@@ -462,17 +456,24 @@ describe("Drive PDF reads", () => {
     expect(queue.observations.map(o => o.title)).toEqual(["Open PDF from Google Drive"]);
   });
 
-  it.each([
-    ["succeeds", "pdf-1"],
-    ["fails", "doc-1"],
-  ])("releases its queue duplicate when the read %s", async (_outcome, fileId) => {
-    const { queue, session } = newSession(fakeConverter().convert);
+  it("refuses text converted before the download ended, releasing both", async () => {
+    const download = { cancelled: false };
+    providerDownload = () => new Response(new ReadableStream({
+      start(controller) { controller.enqueue(PDF_BYTES); },
+      cancel() { download.cancelled = true; },
+    }));
+    const converted = { cancelled: false };
+    const convert: PdfConverter = async () => ({
+      text: new ReadableStream({ cancel() { converted.cancelled = true; } }), hasText: true,
+    });
+    const { queue, session } = newSession(convert);
+    using owned = session;
 
-    await Promise.resolve(session.readPdf(fileId)).catch(() => undefined);
-    expect(queue.released).toBe(false);
-    session[Symbol.dispose]();
-
-    await vi.waitFor(() => expect(queue.released).toBe(true));
+    await expect(Promise.resolve(owned.readPdf("pdf-1")))
+      .rejects.toThrow("Google Drive's file could not be converted from PDF.");
+    expect(queue.observations.map(o => o.title)).toEqual(["Open PDF from Google Drive"]);
+    expect(converted.cancelled).toBe(true);
+    expect(download.cancelled).toBe(true);
   });
 });
 

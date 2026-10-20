@@ -38,13 +38,13 @@ import {
   type DocTabSnapshot, type EditableMarkdown,
 } from "./markdown-converter";
 import { DriveApi, DriveApiRequestError, lacksFileContentAccess } from "./drive-api";
-import { type AiFetcher, pdfToText, type PdfConverter } from "./drive-pdf";
+import { type AiFetcher, CONVERSION_FAILED, pdfToText, type PdfConverter } from "./drive-pdf";
 import { driveObserverTracker, type DriveObservation } from "./drive-observers";
 import { outsideScope, readFolderRoot, type FolderLocation } from "./drive-folder-scope";
 import {
   DriveFolderSessionCore, DriveSessionCore, driveModifiedTime,
-  GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE, requireDriveBindingScope,
-  type DriveBindingScope, type DriveCore, type NativeObservation, type NativeRead,
+  GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE, PDF_MIME_TYPE,
+  requireDriveBindingScope, type DriveBindingScope, type DriveCore, type NativeObservation, type NativeRead,
 } from "./drive-session";
 import type {
   DriveEntry, DriveListOptions, DrivePdfText, DriveSessionSearchQuery, GoogleDriveFolderSession,
@@ -3179,8 +3179,6 @@ class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession
   }
 }
 
-/** Exact MIME type Drive gives a PDF. */
-const PDF_MIME_TYPE = "application/pdf";
 /** The refusal for an account connected before Drive bindings could read file content. */
 const PDF_ACCESS_MISSING =
   "This Google account was connected before Drive bindings could read file content. Reconnect " +
@@ -3286,30 +3284,43 @@ export class GoogleDriveSessionImpl extends RpcTarget
   }
 
   async readPdf(fileId: string): Promise<DrivePdfText> {
-    return this.#withQueue(async (queue, core) => {
-      let id = await core.openNativeFile(fileId, PDF_MIME_TYPE, "PDF");
-      let convert = this.#convertPdf;
-      if (!convert) throw new Error("PDF reading is not available on this deployment.");
-      // The conversion has read the whole PDF by the time it resolves, so the checks after the
-      // fetch cover everything the text stream will carry.
-      let converted: DrivePdfText | undefined;
-      let text = await core.nativeRead(id, PDF_MIME_TYPE)(async () => {
-        let pdf = await this.#driveApi.openDownload(id).catch((error: unknown) => {
-          throw lacksFileContentAccess(error) ? new Error(PDF_ACCESS_MISSING) : error;
-        });
-        return (converted = await convert(pdf));
-      }, () => ({
-        title: "Read PDF from Google Drive",
-        description: `Read the text of Drive file ${id}.`,
-      })).catch(async (error: unknown) => {
-        // Text refused after its conversion still holds the response open.
-        await converted?.text.cancel().catch(() => undefined);
-        throw error;
-      });
-      // The stream needs nothing from the queue, so it is released here; `#withQueue` releases it
-      // on a throw.
-      queue[Symbol.dispose]();
-      return text;
+    // The text stream needs no queue of its own, so this reads through the session's, as getEntry.
+    let core = this.#core;
+    let id = await core.openNativeFile(fileId, PDF_MIME_TYPE, "PDF");
+    let convert = this.#convertPdf;
+    if (!convert) throw new Error("PDF reading is not available on this deployment.");
+    let converted: DrivePdfText | undefined;
+    return core.nativeRead(id, PDF_MIME_TYPE)(async () => {
+      let download = (await this.#driveApi.openDownload(id).catch((error: unknown) => {
+        throw lacksFileContentAccess(error) ? new Error(PDF_ACCESS_MISSING) : error;
+      })).getReader();
+      // The checks after this fetch must cover everything the text is converted from, so a
+      // conversion that answers before the download has ended is refused.
+      let downloaded = false;
+      converted = await convert(new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          let chunk = await download.read();
+          if (chunk.done) {
+            downloaded = true;
+            controller.close();
+          } else {
+            controller.enqueue(chunk.value);
+          }
+        },
+        cancel: reason => download.cancel(reason),
+      }, { highWaterMark: 0 }));
+      if (!downloaded) {
+        await download.cancel().catch(() => undefined);
+        throw new Error(CONVERSION_FAILED);
+      }
+      return converted;
+    }, () => ({
+      title: "Read PDF from Google Drive",
+      description: `Read the text of Drive file ${id}.`,
+    })).catch(async (error: unknown) => {
+      // Text refused after its conversion still holds the response open.
+      await converted?.text.cancel().catch(() => undefined);
+      throw error;
     });
   }
 

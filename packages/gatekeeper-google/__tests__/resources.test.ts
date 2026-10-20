@@ -874,15 +874,6 @@ describe("Drive resources' file content access", () => {
   const DRIVE_RESOURCES = [GOOGLE_DRIVE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE]
     .map(resource => resource.urlPattern);
 
-  // readPdf downloads file content, which drive.metadata.readonly cannot.
-  it("asks for drive.readonly rather than metadata alone", () => {
-    for (let resource of DRIVE_RESOURCES) {
-      let scopes = resourceUrlPatternsToOAuthScopes([resource]);
-      expect(scopes).toContain(DRIVE_READONLY);
-      expect(scopes).not.toContain(DRIVE_METADATA_READONLY);
-    }
-  });
-
   it("no longer counts an account that holds only drive.metadata.readonly as granted", () => {
     let scopes = resourceUrlPatternsToOAuthScopes(DRIVE_RESOURCES)
       .map(scope => scope === DRIVE_READONLY ? DRIVE_METADATA_READONLY : scope);

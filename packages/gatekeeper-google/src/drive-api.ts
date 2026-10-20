@@ -470,8 +470,8 @@ export function isFileInvisible(error: unknown): boolean {
  * `appNotAuthorizedToFile`, which {@link isInsufficientScope} does not match.
  */
 export function lacksFileContentAccess(error: unknown): boolean {
-  return error instanceof DriveApiRequestError && error.status === 403 &&
-    (error.reason === "appNotAuthorizedToFile" || error.reason === "insufficientPermissions");
+  return isInsufficientScope(error) || (error instanceof DriveApiRequestError &&
+    error.status === 403 && error.reason === "appNotAuthorizedToFile");
 }
 
 const RATE_LIMIT_REASONS = new Set(["rateLimitExceeded", "userRateLimitExceeded", "dailyLimitExceeded"]);

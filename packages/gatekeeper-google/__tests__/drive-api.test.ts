@@ -1332,7 +1332,5 @@ describe("lacksFileContentAccess", () => {
     expect(lacksFileContentAccess(new DriveApiRequestError(403))).toBe(false);
     expect(lacksFileContentAccess(new DriveApiRequestError(401, "appNotAuthorizedToFile"))).toBe(false);
     expect(lacksFileContentAccess(new Error("appNotAuthorizedToFile"))).toBe(false);
-    expect(isInsufficientScope(new DriveApiRequestError(403, "insufficientPermissions"))).toBe(true);
-    expect(isInsufficientScope(new DriveApiRequestError(403, "appNotAuthorizedToFile"))).toBe(false);
   });
 });

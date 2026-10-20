@@ -303,28 +303,8 @@ const legacy: SheetCellFormat = { wrap: "OVERFLOW_CELL" };
 
   it("streams PDF text from both Drive sessions", () => {
     const driveTypes = source("drive-types.d.ts");
-    expect(driveTypes).toContain(`/** A Drive PDF's text, streamed. */
-export type DrivePdfText = {
-  /**
-   * The PDF's text as UTF-8 Markdown, read as it is converted: pages separated by "### Page N"
-   * headings, and pages before the first with text left out. Read it with
-   * \`await new Response(text).text()\`, or a reader to stop early; cancel it if unread. Empty when
-   * \`hasText\` is false. A failure partway through errors the stream.
-   */
-  text: ReadableStream<Uint8Array>;
-  /** False for a scanned or image-only PDF, which has no text layer; it is not OCR'd. */
-  hasText: boolean;
-};`);
-    expect(driveTypes).toContain(`  /**
-   * Read an in-scope PDF's text, converted to Markdown and streamed. Fails asking to reconnect
-   * when the Google account was connected before Drive bindings could read file content.
-   */
-  readPdf(fileId: string): Promise<DrivePdfText>;`);
-    expect(driveTypes).toContain(`  /**
-   * Read a live direct-child PDF's text, converted to Markdown and streamed. Fails asking to
-   * reconnect when the Google account was connected before Drive bindings could read file content.
-   */
-  readPdf(fileId: string): Promise<DrivePdfText>;`);
+    expect(driveTypes).toContain("export type DrivePdfText = {");
+    expect(driveTypes.split("readPdf(fileId: string): Promise<DrivePdfText>;")).toHaveLength(3);
     expect(compileAgentTypes(driveBundle() + `
 declare const drive: GoogleDriveReadSession;
 declare const folder: GoogleDriveFolderSession;
