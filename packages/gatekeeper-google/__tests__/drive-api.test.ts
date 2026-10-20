@@ -1381,6 +1381,16 @@ describe("downloadRange", () => {
     expect(state.cancelled).toBe(true);
   });
 
+  it("takes a whole-file answer's file size from its length, unless it was encoded", async () => {
+    stubFetch([
+      new Response(BYTES, { headers: { "Content-Length": "10" } }),
+      new Response(BYTES, { headers: { "Content-Length": "4", "Content-Encoding": "gzip" } }),
+    ]);
+
+    expect((await api().downloadRange("file-1", 0, 4)).fileSize).toBe(10);
+    expect((await api().downloadRange("file-1", 0, 4)).fileSize).toBeUndefined();
+  });
+
   it("never returns more than was asked for, whatever Drive sends", async () => {
     stubFetch([partial(2, 9)]);
     expect(new Uint8Array((await api().downloadRange("file-1", 2, 3)).content))

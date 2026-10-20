@@ -784,8 +784,10 @@ export class DriveApi {
       throw new Error("Google Drive did not return the requested byte range.");
     }
     let content = await readPrefix(response, length);
-    let total = range?.[2];
-    return total === undefined || total === "*" ? { content } : { content, fileSize: Number(total) };
+    // A whole-file answer's length is the file's size, unless it was encoded in transit.
+    let total = range ? range[2]
+      : response.headers.has("Content-Encoding") ? null : response.headers.get("Content-Length");
+    return total == null || total === "*" ? { content } : { content, fileSize: Number(total) };
   }
 
   /** Whether the connected account may edit a file's content, as Drive reports it. */

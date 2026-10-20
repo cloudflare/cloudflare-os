@@ -692,12 +692,21 @@ describe("Drive file reads", () => {
 
   // Its old size and time would make the new bytes look like the whole of the old file, so a
   // file that grew would be taken as read to its end.
-  it("withholds bytes from a file whose size changed before the download", async () => {
-    const grown = new TextEncoder().encode("NEWREVISION".repeat(10));
-    answerDownload = () => new Response(grown.slice(0, CSV_BYTES.byteLength), {
+  const grown = new TextEncoder().encode("NEWREVISION".repeat(10));
+  const shrunk = CSV_BYTES.slice(0, -1);
+  it.each([
+    ["grew, by a range's total", () => new Response(grown.slice(0, CSV_BYTES.byteLength), {
       status: 206,
       headers: { "Content-Range": `bytes 0-${CSV_BYTES.byteLength - 1}/${grown.byteLength}` },
-    });
+    })],
+    ["grew, by a whole-file answer's length", () => new Response(grown, {
+      headers: { "Content-Length": String(grown.byteLength) },
+    })],
+    ["shrank, by a whole-file answer's length", () => new Response(shrunk, {
+      headers: { "Content-Length": String(shrunk.byteLength) },
+    })],
+  ])("withholds bytes from a file that %s before the download", async (_name, answer) => {
+    answerDownload = answer;
     const { queue, session } = newSession();
     using owned = session;
 
