@@ -105,7 +105,9 @@ flowchart LR
 ```
 
 Only the event id, event type, task id (`<workspaceId>:<chatId>`), bounded chat title, opaque
-subscription id, and same-origin deep-link path cross the central boundary during a send, plus the
+subscription id, same-origin deep-link path, and optional absolute badge `{count, version}` cross
+the central boundary during an alert send. Separate `POST /v1/badges` replacements carry only
+`{subscriptionId, version, count}`; see [unread push badges](unread-push-badges.md). Both use the
 headers every signed request carries: install id, key id, timestamp, nonce, body digest, and
 signature. Permission details, chat content, gatekeeper grants, and provider credentials do not. A
 visible browser tab is offered the notification first, and push is sent to every registered device

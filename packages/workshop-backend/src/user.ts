@@ -743,10 +743,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     // An incomplete sum must never become an absolute replacement, even if every source is up.
     let complete = !this.#unavailableWorkspaces.size && [...this.#unreadWorkspaces].every(workspaceId => {
       let heads = this.#chatHeads.get(workspaceId);
-      return heads !== undefined && (heads === null || [...heads.keys()].every(chatId => {
+      if (heads === null) return true;
+      if (!heads || !this.#enumeratedUnreadWorkspaces.has(workspaceId)) return false;
+      return [...heads.keys()].every(chatId => {
         let cursor = this.#readCursors.get(`${workspaceId}:${chatId}`);
         return cursor && !cursor.unreadDirty;
-      }));
+      });
     });
     if (!complete) {
       // Null plus retryAt is reconstruction intent in the existing outbox, surviving eviction.
@@ -871,6 +873,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       this.#dirtyTokens.set(`${workspaceId}:${cursor.chatId}`, {});
       this.#storeCursor({...cursor, unreadDirty: true, notificationsDirty: true});
     }
+    // Invalidate even when this workspace had only snapshot counts, lost on eviction.
+    this.#queueBadge();
     await this.#armExpirySweep();
     this.ctx.waitUntil(this.#recoverUnread().catch(error => {
       logger.warn("workspace unread cleanup deferred", {event: "chat.unread.cleanup.deferred", error});
@@ -878,6 +882,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   #forgetUnreadWorkspace(workspaceId: string): void {
+    this.#enumeratedUnreadWorkspaces.delete(workspaceId);
     let cursors = [...this.#readCursors.values()].filter(cursor => cursor.workspaceId === workspaceId);
     if (cursors.length) this.storage.chatReadCursors.byWorkspace.delete(workspaceId);
     for (let cursor of cursors) {
@@ -886,6 +891,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
     let wasDenied = this.#deniedUnreadWorkspaces.delete(workspaceId);
     if (cursors.length || wasDenied) this.#unreadChanged();
+    else this.#queueBadge(); // A cold deletion can still change a previously delivered badge.
   }
 
   /**
