@@ -46,8 +46,6 @@ const receiptFor = (
 ): ChatReadReceipt => ({
   workspaceId: chat.workspaceId,
   chatId: chat.chatId,
-  readThroughSequence: chat.readThroughSequence,
-  readToken: chat.readToken,
   throughSequence,
 });
 
@@ -178,7 +176,7 @@ export const UnreadStateBridge = ({
           perform(authenticatedApi.markChatsRead(chats.map((chat) => receiptFor(chat)))),
         markUnread: (chat, from) =>
           perform(
-            authenticatedApi.markChatUnread(chat.workspaceId, chat.chatId, from, chat.readThroughSequence, chat.readToken),
+            authenticatedApi.markChatUnread(chat.workspaceId, chat.chatId, from),
           ),
       }}
     >

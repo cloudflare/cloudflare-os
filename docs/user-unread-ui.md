@@ -22,7 +22,8 @@ They do not calculate independent unread counts or persist a second set of read 
   use its countable text/attachment boundary, not trailing observations or checkpoints.
 - The visit's divider stays after reading, showing where new activity began. Explicit mark-unread
   pauses automatic reads in already-open views until leaving/re-entering the thread or explicitly
-  marking it read. This prevents immediate accidental acknowledgement.
+  marking it read. This prevents immediate accidental acknowledgement, but does not cancel
+  already-dispatched reads; a later-processed read can clear the manual unread.
 - Failed read commands display an error without pretending the state advanced. Missing workspace
   summaries show a status and retry with backoff; incomplete totals do not replace native badges.
 

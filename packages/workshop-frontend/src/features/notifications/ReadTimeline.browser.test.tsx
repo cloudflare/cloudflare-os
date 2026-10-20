@@ -64,7 +64,6 @@ it("keeps manual unread for the visit, then resumes viewport reading after leavi
         chatTitle: "Browser timeline",
         latestSequence: 2,
         readThroughSequence: -1,
-        readToken: "token",
         unreadMessageCount: 1,
       },
     ],
@@ -128,8 +127,6 @@ it("keeps manual unread for the visit, then resumes viewport reading after leavi
       workspaceId: "workspace",
       chatId: 1,
       throughSequence: 0,
-      readThroughSequence: -1,
-      readToken: "token",
     }),
   );
 
@@ -141,7 +138,7 @@ it("keeps manual unread for the visit, then resumes viewport reading after leavi
   await act(async () =>
     userEvent.click(page.getByRole("menuitem", { name: "Mark unread from here" })),
   );
-  expect(markChatUnread).toHaveBeenCalledExactlyOnceWith("workspace", 1, 0, 0, "token");
+  expect(markChatUnread).toHaveBeenCalledExactlyOnceWith("workspace", 1, 0);
   await expect.element(page.getByText(/automatic reading paused/)).toBeVisible();
   const calls = markChatRead.mock.calls.length;
   await new Promise((resolve) => setTimeout(resolve, 400));
@@ -178,19 +175,14 @@ it("keeps manual unread for the visit, then resumes viewport reading after leavi
       workspaceId: "workspace",
       chatId: 1,
       throughSequence: 0,
-      readThroughSequence: -1,
-      readToken: "token",
     }),
   );
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
-  const observedHorizon = state.chats[0].readThroughSequence;
   await act(async () => userEvent.click(page.getByRole("button", { name: "Mark thread read" })));
   expect(markChatRead).toHaveBeenLastCalledWith({
     workspaceId: "workspace",
     chatId: 1,
     throughSequence: 2,
-    readThroughSequence: observedHorizon,
-    readToken: "token",
   });
 });
 
@@ -203,7 +195,7 @@ it.each([
   const markChatRead = vi.fn<AuthenticatedApi["markChatRead"]>().mockResolvedValue(undefined);
   const state: UserUnreadState = {unreadChatCount: 1, unreadMessageCount: 1,
     chats: [{workspaceId: "workspace", chatId: 1, chatTitle: "Navigation", latestSequence: short ? 0 : 3,
-      readThroughSequence: short ? -1 : 0, unreadMessageCount: 1, readToken: "token"}]};
+      readThroughSequence: short ? -1 : 0, unreadMessageCount: 1}]};
   const api = {
     markChatRead,
     subscribeToUnreadState: (subscriber: RpcStub<UnreadStateSubscriber>) => {
