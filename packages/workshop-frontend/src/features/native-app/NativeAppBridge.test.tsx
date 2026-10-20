@@ -177,7 +177,7 @@ describe('native app bridge', () => {
         <UnreadStateBridge authenticatedApi={api}><NativeAppBridge /></UnreadStateBridge>
       </AuthProvider>
     ))
-    const state: UserUnreadState = {revision: 1, unreadMessageCount: 8, unreadChatCount: 1, chats: []}
+    const state: UserUnreadState = {unreadMessageCount: 8, unreadChatCount: 1, chats: []}
     await act(async () => subscriber.updated(state))
     expect(calls).toEqual([])
     await act(async () => identity.resolve(user))

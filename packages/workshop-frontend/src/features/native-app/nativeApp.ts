@@ -14,7 +14,7 @@ export type CloudflareOSNative = {
   notifications?: NativeNotificationBridge
   authentication?: { open: (id: string, url: string) => void; close: (id: string) => void }
   /** Optional desktop/mobile badge sink. Counts are instance-scoped, not local increments. */
-  unreadStateChanged?: (state: UserUnreadState) => void
+  unreadStateChanged?: (state: UserUnreadState & {revision: number}) => void
   /** Explicit logout or confirmed anonymous identity; transport loss is not session termination. */
   sessionEnded?: () => void
 }
