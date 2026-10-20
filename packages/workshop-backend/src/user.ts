@@ -10,7 +10,7 @@ import {
   makeUserStorage, type BlueprintUserRecord, type CloudflareBilling, type ConnectedAccountRecord,
   type GadgetRecord, type PendingConnectFlow, type PendingDeviceHandoffRecord,
   type PendingHandoffRecord, type UserAiModelRecord, type UserStorage, type WorkspaceOutputEntry,
-  type ChatTimelineHead,
+  type ChatReadCursor, type ChatTimelineHead,
 } from "./storage-schema/user-storage.js";
 import { recordAnalytics } from "./analytics";
 import { createWorkshopLogger } from "./observability";
@@ -136,8 +136,6 @@ function isFullyCreated(g: GadgetRecord): g is GadgetMetadataWithTimestamps {
   return g.lastActive !== undefined;
 }
 
-type ChatReadCursor = NonNullable<ReturnType<UserStorage["chatReadCursors"]["get"]>>;
-
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length != b.length) {
     return false;
@@ -216,13 +214,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage = makeUserStorage(ctx.storage);
     for (let cursor of this.storage.chatReadCursors.list()) {
       // Internal prototype rows retain their horizons; only their missing derived count is dirty.
-      if (cursor.unreadCount === undefined) this.storage.chatReadCursors.put({
-        workspaceId: cursor.workspaceId, chatId: cursor.chatId,
-        readThroughSequence: cursor.readThroughSequence, unreadCount: 0,
-        notifiedThroughSequence: -1, unreadDirty: true, notificationsDirty: true,
-      });
-    }
-    for (let cursor of this.storage.chatReadCursors.list()) {
+      if (cursor.unreadCount === undefined) {
+        cursor = {...cursor, unreadCount: 0,
+          notifiedThroughSequence: -1, unreadDirty: true, notificationsDirty: true};
+        this.storage.chatReadCursors.put(cursor);
+      }
       this.#readCursors.set(`${cursor.workspaceId}:${cursor.chatId}`, cursor);
     }
     this.storage.chatReadCursors.subscribe({
@@ -697,7 +693,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         if (state === "denied") { this.#denyUnreadWorkspace(workspaceId); return; }
         if (!state) { this.#forgetChat(workspaceId, chatId); return; }
         if (this.#chatHeads.get(workspaceId) === null) return;
-        if (horizonChanged && through > state.head.latestSequence) throw new Error("Invalid timeline sequence.");
+        if (horizonChanged && through > state.timelineTailSequence) throw new Error("Invalid timeline sequence.");
         let heads = this.#chatHeads.get(workspaceId) ?? new Map<number, ChatTimelineHead>();
         let previousHead = heads.get(chatId);
         heads.set(chatId, state.head);

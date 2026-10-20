@@ -101,6 +101,12 @@ import {
 } from "./gadget-export";
 
 const logger = createWorkshopLogger("workshop.overseer");
+
+function isCountableChatMessage(message: StoredChatMessage): boolean {
+  return message.type === "message" && message.generatedBySlashCommandSequence === undefined &&
+    (!!message.message.trim() || !!message.attachments?.length);
+}
+
 export const AGENT_RUNNING_ERROR_MESSAGE = "Agent is running, wait for it to finish.";
 
 let CODE_MODE_HARNESS =
@@ -1115,6 +1121,9 @@ class OverseerImpl implements AgentHooks {
         if (this.#dirtyChatTokens.get(chatId) === token) this.storage.dirtyChats.delete(chatId);
       }
       if (failures.length) throw failures[0];
+      // Successful fanout can leave newer mutations pending. Give those the normal short wake,
+      // rather than retaining this pass's failure backoff.
+      this.#unreadRetryAt = 0;
     })().finally(() => {
       this.#chatDelivery = undefined;
       this.#updateAlarm();
@@ -1122,16 +1131,11 @@ class OverseerImpl implements AgentHooks {
     return this.#chatDelivery;
   }
 
-  #isCountableMessage(message: StoredChatMessage): boolean {
-    return message.type === "message" && message.generatedBySlashCommandSequence === undefined &&
-      (!!message.message.trim() || !!message.attachments?.length);
-  }
-
   chatHead(chatId: number): ChatTimelineHead | undefined {
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) return;
     for (let message of this.storage.chats.list({prefix: chatKeyPrefix(chatId), reverse: true})) {
-      if (!this.#isCountableMessage(message)) continue;
+      if (!isCountableChatMessage(message)) continue;
       return {chatId, chatTitle: meta.title, latestSequence: message.sequence,
         latestActivityAt: message.timestamp,
         latestMessagePreview: message.type === "message"
@@ -1154,11 +1158,11 @@ class OverseerImpl implements AgentHooks {
 
   #initializeUnreadTracking(): void {
     this.storage.chats.subscribe({
-      add: message => { if (this.#isCountableMessage(message)) this.markChatDirty(message.chatId); },
+      add: message => { if (isCountableChatMessage(message)) this.markChatDirty(message.chatId); },
       update: (old, message) => {
-        if (this.#isCountableMessage(old) || this.#isCountableMessage(message)) this.markChatDirty(message.chatId);
+        if (isCountableChatMessage(old) || isCountableChatMessage(message)) this.markChatDirty(message.chatId);
       },
-      remove: message => { if (this.#isCountableMessage(message)) this.markChatDirty(message.chatId); },
+      remove: message => { if (isCountableChatMessage(message)) this.markChatDirty(message.chatId); },
     });
     this.storage.chatMeta.subscribe({
       add: meta => this.markChatDirty(meta.id),
@@ -10505,11 +10509,10 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       unreadCount = 0;
       for (let message of this.impl.storage.chats.list({prefix: chatKeyPrefix(chatId),
         startAfter: readThroughSequence < 0 ? undefined : chatKey(chatId, readThroughSequence)})) {
-        if (message.type === "message" && message.generatedBySlashCommandSequence === undefined &&
-            (message.message.trim() || message.attachments?.length)) unreadCount++;
+        if (isCountableChatMessage(message)) unreadCount++;
       }
     }
-    return {head, notifications, unreadCount};
+    return {head, notifications, unreadCount, timelineTailSequence: this.impl.nextChatSequencePeek(chatId) - 1};
   }
 
   /**

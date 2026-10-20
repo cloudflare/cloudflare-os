@@ -48,6 +48,10 @@ between visible messages, so gaps in sequence numbers do not inflate counts.
 5. The workspace clears the bit only after all recipients ACK, and only if no newer mutation
    occurred during the RPCs. A retry recounts; it never blindly increments a count.
 
+After a successful pass, newer pending mutations get the normal one-second alarm; the
+30-second backoff is reserved for failed delivery. Recounts scan the unread timeline tail per
+recipient. An incremental count/index would be a separate performance change, not part of this model.
+
 No input gate is held across source-to-user RPC: the User DO must be able to call back into the
 workspace. In-memory promises/tokens serialize and coalesce live work only; persisted dirty bits
 and the existing shared alarms recover after eviction, including an ACK lost after commit.
@@ -65,7 +69,9 @@ Read commands count first, then commit horizon and count in one synchronous upda
 processed in per-thread mutex order: mark-read only advances the horizon, while mark-unread sets
 the requested boundary and may rewind it. There are no receipt tokens or expected-old-horizon
 checks. A delayed read can clear a manual unread if processed afterward; an older read cannot
-move the horizon backward. Identical horizons are no-ops. Reading snapshots or reopening an
+move the horizon backward. Receipts may include trailing non-countable timeline items; the source's
+actual timeline tail bounds validation, while its latest visible message controls unread navigation.
+Identical horizons are no-ops. Reading snapshots or reopening an
 already-listed workspace does not rewrite read rows or notify other collaborators. Hidden web clients release their live
 callbacks and resubscribe for a fresh snapshot when visible; background native updates use push.
 
@@ -85,8 +91,9 @@ that same RPC skips the unread-history count. There is no separate notification 
 
 This is not exactly-once OS alert delivery: provider effects and acknowledgement cannot be
 atomically committed with a User DO row. The central service's existing reservation/dedup policy
-still governs that ambiguity. The existing versioned native/push badge-replacement wire protocol
-is separate from read state; no unread source/read versions are introduced.
+still governs that ambiguity. Versioned native/push badge replacements are a separate consumer
+layer in [the stacked badge PR](https://github.com/cloudflare/cloudflare-os/pull/842), not part of
+this core change; no unread source/read versions are introduced.
 
 ## Authorization and lifecycle
 
@@ -110,6 +117,7 @@ before destroying the source; their alarms can finish cleanup even after the sou
 `packages/workshop-backend/__tests__/unread-state.test.ts` covers sparse counts, atomic horizon/count
 updates, no-op reads, local count rehydration, single-thread deltas, real source/User DO eviction,
 lost source ACKs, concurrent dirtiness, ordered notification catch-up, lost alert ACKs and mute.
-`notifications.test.ts` covers the signed service protocol and badge retry outbox.
+`notifications.test.ts` covers the signed service protocol and notification delivery. Badge retry
+outbox coverage is added by the stacked badge PR.
 `packages/integration-tests/__tests__/workshop-unread.test.ts` exercises the real WebSocket API,
 two devices, collaborators, partial reads, title changes and deletion.
