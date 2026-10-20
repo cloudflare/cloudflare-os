@@ -1,5 +1,3 @@
-import type { UserUnreadState } from '@gadgets/workshop-shared/api'
-
 type NativeNotificationBridge = {
   currentDeviceRegistration: () => string | undefined
   requestDeviceRegistration: () => void
@@ -13,8 +11,6 @@ export type CloudflareOSNative = {
   returnToInstalls: () => void
   notifications?: NativeNotificationBridge
   authentication?: { open: (id: string, url: string) => void; close: (id: string) => void }
-  /** Optional desktop/mobile badge sink. Counts are instance-scoped, not local increments. */
-  unreadStateChanged?: (state: UserUnreadState) => void
 }
 
 type NativeAppWindow = Window & { cloudflareOSNative?: CloudflareOSNative }

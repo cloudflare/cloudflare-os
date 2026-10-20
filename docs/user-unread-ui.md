@@ -34,20 +34,12 @@ hidden toast delivery so the existing mobile-push fallback still works. Receivin
 snapshot does not acknowledge an alert or replay one. The WebSocket reconnects independently of
 page visibility.
 
-## Native contract and scope
+## Native integration scope
 
-The first-party native bridge can optionally implement:
-
-```ts
-cloudflareOSNative.unreadStateChanged(state: UserUnreadState & { revision: number }): void;
-```
-
-The bridge forwards complete visible-session updates. Its revision is a web-view-local compatibility
-counter, not a persisted unread version. The native host
-must associate it with its verified first-party main frame and saved instance/user, never a claimed
-instance or gadget frame. Use `unreadMessageCount` for that instance, and sum authenticated instance
-counts for an OS badge. A disconnect is stale/unknown, not zero; logout/removal clears that
-instance's native badge. Do not log chat titles.
+This layer exposes unread state to the web UI, but does not forward snapshots to native hosts.
+Native badge forwarding and its bridge contract are a separate consumer layer. Native clients
+must use complete absolute totals rather than message increments; an unavailable total or
+disconnect is stale/unknown, not zero.
 
 The Electron callback implementation, OS badge/alert presentation and permissions, and retaining
 instance webviews when the window closes to the tray are separate desktop-shell work. This bridge
