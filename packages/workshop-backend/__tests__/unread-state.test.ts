@@ -39,10 +39,8 @@ const append = (fixture: Fixture, sequence: number, message = "Hello") =>
   });
 const cursor = (fixture: Fixture) => runInDurableObject(fixture.user, (_instance, ctx) =>
   makeUserStorage(ctx.storage).chatReadCursors.get(`${fixture.workspaceId}:1`));
-const receipt = async (fixture: Fixture, throughSequence: number, readThroughSequence = -1): Promise<ChatReadReceipt> => {
-  const chat = (await fixture.user.getUnreadState()).chats.find(item => item.chatId === 1)!;
-  return {...chat, throughSequence, readThroughSequence};
-};
+const receipt = (fixture: Fixture, throughSequence: number): ChatReadReceipt =>
+  ({workspaceId: fixture.workspaceId, chatId: 1, throughSequence});
 const settled = async (fixture: Fixture) => vi.waitFor(async () => {
   const row = await cursor(fixture);
   expect(row).toBeDefined();
@@ -85,56 +83,53 @@ const interceptDelivery = (impl: Impl,
 };
 
 describe("private horizons and coalesced dirty threads", () => {
-  it("counts messages rather than sequence gaps; commits horizon/count together; rejects stale receipts", async () => {
+  it("counts messages rather than sequence gaps; commits horizon/count together; keeps reads monotonic", async () => {
     const fixture = await setup();
     await append(fixture, 0, "First line\nSecond line");
     await append(fixture, 6, "");
     await append(fixture, 12, "Latest");
     expect(await fixture.user.getUnreadState()).toMatchObject({unreadMessageCount: 2,
       chats: [{latestSequence: 12, latestMessagePreview: "Latest", unreadMessageCount: 2}]});
-    await fixture.user.markChatRead(await receipt(fixture, 0));
+    await fixture.user.markChatRead(receipt(fixture, 0));
     expect(await cursor(fixture)).toMatchObject({readThroughSequence: 0, unreadCount: 1});
-    await fixture.user.markChatRead(await receipt(fixture, 12, 0));
+    await fixture.user.markChatRead(receipt(fixture, 12));
     expect(await cursor(fixture)).toMatchObject({readThroughSequence: 12, unreadCount: 0});
-    await fixture.user.markChatUnread(fixture.workspaceId, 1, 0, 12, (await receipt(fixture, 0)).readToken);
+    await fixture.user.markChatUnread(fixture.workspaceId, 1, 0);
     expect(await cursor(fixture)).toMatchObject({readThroughSequence: -1, unreadCount: 2});
-    await fixture.user.markChatRead(await receipt(fixture, 12, 12));
-    expect(await cursor(fixture)).toMatchObject({readThroughSequence: -1, unreadCount: 2});
+    await fixture.user.markChatRead(receipt(fixture, 12));
+    await fixture.user.markChatRead(receipt(fixture, 0));
+    expect(await cursor(fixture)).toMatchObject({readThroughSequence: 12, unreadCount: 0});
   });
 
   it("does not write read state for reads, repeated receipts, or unchanged UI hydration", async () => {
     const fixture = await setup();
     await append(fixture, 0);
-    const observed = await receipt(fixture, 0);
+    const observed = receipt(fixture, 0);
     await fixture.user.markChatRead(observed);
     await settled(fixture);
-    await runInDurableObject(fixture.user, async (instance, ctx) => {
+    await runInDurableObject(fixture.user, async instance => {
       using write = vi.spyOn(Reflect.get(instance, "storage").chatReadCursors, "put");
       await instance.getUnreadState();
       await instance.getUnreadState();
       await instance.markChatRead(observed);
+      await instance.markChatUnread(fixture.workspaceId, 1, 1);
       expect(write).not.toHaveBeenCalled();
     });
   });
 
-  it.each([false, true])("rejects a delayed receipt after the horizon returns to its old value (reset: %s)", async reset => {
+  it.each([false, true])("applies read/unread commands in processing order (reset: %s)", async reset => {
     const fixture = await setup();
     await append(fixture, 0);
-    const delayed = await receipt(fixture, 0);
+    const delayed = receipt(fixture, 0);
     await fixture.user.markChatRead(delayed);
-    const rewindToken = (await receipt(fixture, 0)).readToken;
-    await fixture.user.markChatUnread(fixture.workspaceId, 1, 0, 0, rewindToken);
+    await fixture.user.markChatUnread(fixture.workspaceId, 1, 0);
     await settled(fixture);
     if (reset) await evictDurableObject(fixture.user);
-    // Hydrating creates a new token after reset; neither that nor ABA revives the old receipt.
-    const fresh = await receipt(fixture, 0);
-    expect(fresh.readToken).not.toBe(delayed.readToken);
+    // Even a previously dispatched read applies if it is processed after the manual unread.
     await fixture.user.markChatRead(delayed);
-    expect(await cursor(fixture)).toMatchObject({readThroughSequence: -1, unreadCount: 1});
-    await fixture.user.markChatRead(fresh);
-    // A delayed retry of the old explicit rewind must not undo the newer read either.
-    await fixture.user.markChatUnread(fixture.workspaceId, 1, 0, 0, rewindToken);
     expect(await cursor(fixture)).toMatchObject({readThroughSequence: 0, unreadCount: 0});
+    await fixture.user.markChatUnread(fixture.workspaceId, 1, 0);
+    expect(await cursor(fixture)).toMatchObject({readThroughSequence: -1, unreadCount: 1});
   });
 
   it("broadcasts removal of an unavailable workspace even when it has no cursors", async () => {
@@ -176,7 +171,7 @@ describe("private horizons and coalesced dirty threads", () => {
     const fixture = await setup();
     await append(fixture, 0);
     await settled(fixture);
-    const observed = await receipt(fixture, 0);
+    const observed = receipt(fixture, 0);
     const {OverseerDurableObject} = await import("../src/overseer.js");
     const original = OverseerDurableObject.prototype.getChatStateForUser;
     const entered = Promise.withResolvers<void>(), gate = Promise.withResolvers<void>();
@@ -195,6 +190,48 @@ describe("private horizons and coalesced dirty threads", () => {
       await Promise.all([update, read]);
     });
     expect(await cursor(fixture)).toMatchObject({readThroughSequence: 0, unreadCount: 0});
+  });
+
+  it.each([false, true])("coalesces snapshot/alarm recalculations across awaits (dirty: %s)", async dirty => {
+    const fixture = await setup();
+    if (dirty) { await append(fixture, 0); await settled(fixture); }
+    const {OverseerDurableObject} = await import("../src/overseer.js");
+    const original = OverseerDurableObject.prototype.getChatStateForUser;
+    const originalHeads = OverseerDurableObject.prototype.getChatHeadsForUser;
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const refreshed = Promise.withResolvers<void>();
+    let metadataReads = 0;
+    using _metadata = vi.spyOn(OverseerDurableObject.prototype, "getChatHeadsForUser")
+      .mockImplementation(async function(...args) {
+        const heads = await originalHeads.apply(this, args);
+        if (++metadataReads === 2) refreshed.resolve();
+        return heads;
+      });
+    using recount = vi.spyOn(OverseerDurableObject.prototype, "getChatStateForUser")
+      .mockImplementation(async function(...args) {
+        entered.resolve();
+        await release.promise;
+        return original.apply(this, args);
+      });
+    await runInDurableObject(fixture.user, async instance => {
+      if (dirty) {
+        const storage = Reflect.get(instance, "storage") as ReturnType<typeof makeUserStorage>;
+        const row = storage.chatReadCursors.get(`${fixture.workspaceId}:1`)!;
+        storage.chatReadCursors.put({...row, unreadDirty: true});
+      }
+      const first = instance.getUnreadState();
+      await entered.promise;
+      const second = instance.getUnreadState();
+      try {
+        await refreshed.promise;
+        // Deliver the second metadata response while the first calculation is still suspended.
+        await new Promise(resolve => setTimeout(resolve, 0));
+      } finally { release.resolve(); }
+      const [one, two] = await Promise.all([first, second, instance.alarm()]);
+      expect(one.unreadMessageCount).toBe(dirty ? 1 : 0);
+      expect(two).toEqual(one);
+    });
+    expect(recount).toHaveBeenCalledOnce();
   });
 
   it("sends a single-thread delta with totals, and removes deleted threads", async () => {
@@ -302,20 +339,34 @@ describe("private horizons and coalesced dirty threads", () => {
     expect(await cursor(fixture)).toMatchObject({unreadCount: 1});
   });
 
-  it("repairs a User DO reset after dirty intent was persisted but before counting", async () => {
+  it("recovers a reset while a recount holds the per-thread mutex", async () => {
     const fixture = await setup();
     await append(fixture, 0);
     await settled(fixture);
-    await runInDurableObject(fixture.user, (_instance, ctx) => {
-      const storage = makeUserStorage(ctx.storage);
-      const row = storage.chatReadCursors.get(`${fixture.workspaceId}:1`)!;
-      storage.chatReadCursors.put({...row, unreadCount: 0, unreadDirty: true, notificationsDirty: true});
-      ctx.storage.setAlarm(Date.now() + 30_000);
-    });
-    await evictDurableObject(fixture.user);
+    const {OverseerDurableObject} = await import("../src/overseer.js");
+    const original = OverseerDurableObject.prototype.getChatStateForUser;
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    let first = true;
+    using recount = vi.spyOn(OverseerDurableObject.prototype, "getChatStateForUser")
+      .mockImplementation(async function(...args) {
+        if (first) { first = false; entered.resolve(); await release.promise; }
+        return original.apply(this, args);
+      });
+    try {
+      await expect(runInDurableObject(fixture.user, async (instance, ctx) => {
+        void instance.messageArrived(fixture.workspaceId, 1).catch(() => {});
+        await entered.promise;
+        expect(makeUserStorage(ctx.storage).chatReadCursors.get(`${fixture.workspaceId}:1`))
+          .toMatchObject({unreadDirty: true});
+        expect(await ctx.storage.getAlarm()).not.toBeNull();
+        ctx.abort("Injected recount reset");
+      })).rejects.toThrow("Injected recount reset");
+    } finally { release.resolve(); }
+    fixture.user = env.TEST_USER.get(fixture.user.id);
     await runDurableObjectAlarm(fixture.user);
     await settled(fixture);
     expect(await cursor(fixture)).toMatchObject({unreadCount: 1});
+    expect(recount.mock.calls.length).toBeGreaterThan(1);
   });
 
   it("fans out to two users with independent horizons without re-registering observers", async () => {
@@ -328,7 +379,7 @@ describe("private horizons and coalesced dirty threads", () => {
       expect(admission).not.toHaveBeenCalled();
     });
     await append(fixture, 0);
-    await fixture.user.markChatRead(await receipt(fixture, 0));
+    await fixture.user.markChatRead(receipt(fixture, 0));
     expect((await fixture.user.getUnreadState()).unreadMessageCount).toBe(0);
     expect((await reader.getUnreadState()).unreadMessageCount).toBe(1);
     await withImpl(fixture.workspace, async impl => { impl.storage.collaborators.delete(profile.id); });
@@ -349,7 +400,7 @@ describe("private horizons and coalesced dirty threads", () => {
     using delivered = vi.spyOn(UserDurableObject.prototype, "publishNotification").mockResolvedValue(undefined);
     const oldId = crypto.randomUUID(), newId = crypto.randomUUID();
     await append(fixture, 0);
-    await reader.markChatRead(await receipt(readerFixture, 0));
+    await reader.markChatRead(receipt(readerFixture, 0));
     await withImpl(fixture.workspace, async impl => {
       impl.storage.chatNotifications.put({id: oldId, chatId: 1, sequence: 0,
         userId: reader.id.toString(), kind: "taskCompleted"});

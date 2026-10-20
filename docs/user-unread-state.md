@@ -52,12 +52,17 @@ Constructor recovery preserves an existing alarm rather than resetting the platf
 Unrelated activity also preserves an already scheduled retry deadline, so a busy thread cannot
 keep postponing another thread's failed notification delivery.
 
-Read commands count first, then commit horizon and count in one synchronous update. They carry
-the observed old horizon and an opaque, in-memory token. A horizon change or User DO reset
-invalidates the token, so a delayed receipt cannot clear a manual unread even when the horizon
-returns to the same sequence. Reconnecting clients fetch fresh state; tokens never cause storage
-writes. Identical horizons are no-ops. Reading snapshots or reopening an already-listed workspace
-does not rewrite read rows or notify other collaborators. Hidden web clients release their live
+Snapshot initialization, dirty recounts and read-horizon changes share one in-memory mutex per
+thread, held across awaits. Waiters recheck the cursor after acquiring it, so an earlier completed
+recount is not repeated unless new dirtiness arrived. A reset discards both the mutex and its
+holder; persisted dirty bits and alarms restart unfinished work without a durable lock to strand.
+
+Read commands count first, then commit horizon and count in one synchronous update. Commands are
+processed in per-thread mutex order: mark-read only advances the horizon, while mark-unread sets
+the requested boundary and may rewind it. There are no receipt tokens or expected-old-horizon
+checks. A delayed read can clear a manual unread if processed afterward; an older read cannot
+move the horizon backward. Identical horizons are no-ops. Reading snapshots or reopening an
+already-listed workspace does not rewrite read rows or notify other collaborators. Hidden web clients release their live
 callbacks and resubscribe for a fresh snapshot when visible; background native updates use push.
 
 ## Ordered notifications

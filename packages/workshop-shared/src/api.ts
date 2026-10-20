@@ -228,13 +228,10 @@ export type ChatReadState = {
   latestActivityAt?: Date;
   /** Last read sequence, inclusive; -1 means nothing has been read. */
   readThroughSequence: number;
-  /** Opaque receipt token; changes with the horizon or User DO lifetime, and is never persisted. */
-  readToken: string;
 };
 
 /** An observed read boundary for a single-thread or bulk mark-read command. */
-export type ChatReadReceipt = Pick<ChatReadState,
-    "workspaceId" | "chatId" | "readThroughSequence" | "readToken"> & {
+export type ChatReadReceipt = Pick<ChatReadState, "workspaceId" | "chatId"> & {
   /** Highest observed sequence to mark read; later activity stays unread. */
   throughSequence: number;
 };
@@ -584,7 +581,7 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   subscribeToUnreadState(subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>>;
 
-  /** Advance a cursor only if its horizon and opaque token still match the observed state. */
+  /** Advance to the requested boundary without moving an already-later read horizon backward. */
   markChatRead(receipt: ChatReadReceipt): Promise<void>;
 
   /**
@@ -594,11 +591,10 @@ export interface AuthenticatedApi extends RpcTarget {
   markChatsRead(receipts: ChatReadReceipt[]): Promise<void>;
 
   /**
-   * Move the cursor immediately before an existing item if its observed horizon/token still match.
+   * Set the horizon immediately before an existing item, allowing a rewind.
    * Repeating an already-applied command performs no write.
    */
-  markChatUnread(workspaceId: string, chatId: number, fromSequence: number,
-                 readThroughSequence: number, readToken: string): Promise<void>;
+  markChatUnread(workspaceId: string, chatId: number, fromSequence: number): Promise<void>;
 
   /**
    * Mute a workspace in the user's list, so its finished tasks notify no tab or device, or unmute
