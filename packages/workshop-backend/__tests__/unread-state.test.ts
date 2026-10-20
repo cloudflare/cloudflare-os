@@ -123,6 +123,24 @@ describe("private horizons and coalesced dirty threads", () => {
     });
   });
 
+  it("accepts observed non-countable timeline boundaries but rejects future receipts", async () => {
+    const fixture = await setup();
+    await append(fixture, 0);
+    await withImpl(fixture.workspace, async impl => {
+      impl.storage.chats.put({chatId: 1, sequence: 1, timestamp: new Date(), type: "error",
+        author: {type: "agent", id: "test", name: "Test"}, message: "Turn failed"});
+      impl.storage.nextChatSequences.put({chatId: 1, nextSequence: 2});
+    });
+    await fixture.user.markChatRead(receipt(fixture, 1));
+    expect(await cursor(fixture)).toMatchObject({readThroughSequence: 1, unreadCount: 0});
+    await fixture.user.markChatUnread(fixture.workspaceId, 1, 1);
+    expect(await cursor(fixture)).toMatchObject({readThroughSequence: 0, unreadCount: 0});
+    await runInDurableObject(fixture.user, async instance => {
+      await expect(instance.markChatRead(receipt(fixture, 2))).rejects.toThrow("Invalid timeline sequence");
+    });
+    expect(await cursor(fixture)).toMatchObject({readThroughSequence: 0, unreadCount: 0});
+  });
+
   it.each([false, true])("applies read/unread commands in processing order (reset: %s)", async reset => {
     const fixture = await setup();
     await append(fixture, 0);
@@ -492,7 +510,7 @@ describe("private horizons and coalesced dirty threads", () => {
     expect(count).toHaveBeenCalledOnce();
   });
 
-  it("does not clear a newer mutation that arrived during fanout", async () => {
+  it("schedules a prompt alarm for a newer mutation that arrived during fanout", async () => {
     const fixture = await setup();
     await withImpl(fixture.workspace, async impl => {
       let first = true;
@@ -508,8 +526,11 @@ describe("private horizons and coalesced dirty threads", () => {
         impl.markChatDirty(1);
         await impl.deliverDirtyChats();
         expect(impl.storage.dirtyChats.get(1)).toBeDefined();
+        expect(await impl.ctx.storage.getAlarm()).toBeLessThanOrEqual(Date.now() + 1_100);
       } finally { restore(); }
-      await impl.deliverDirtyChats();
+    });
+    await runDurableObjectAlarm(fixture.workspace);
+    await withImpl(fixture.workspace, async impl => {
       expect(impl.storage.dirtyChats.get(1)).toBeUndefined();
     });
     expect(await cursor(fixture)).toMatchObject({unreadCount: 1});
