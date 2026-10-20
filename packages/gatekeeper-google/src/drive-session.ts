@@ -487,10 +487,13 @@ export class DriveSessionCore extends DriveCoreBase {
   }
 
   /**
-   * Native reads need no moving-scope check for immutable account/file capabilities. Each reports
-   * the file it reads; openNativeFile() already reported its Drive metadata.
+   * Native reads need no moving-scope check for immutable account/file capabilities, so no
+   * metadata is re-read for `_unchanged` to see. Each reports the file it reads; openNativeFile()
+   * already reported its Drive metadata.
    */
-  nativeRead(fileId: string, expectedMimeType: string): NativeRead {
+  nativeRead(
+    fileId: string, expectedMimeType: string, _unchanged?: (file: DriveFile) => void,
+  ): NativeRead {
     return unguardedNativeRead(this.authorize, [nativeSubresource(fileId, expectedMimeType)]);
   }
 
@@ -667,18 +670,25 @@ export class DriveFolderSessionCore extends DriveCoreBase {
   /**
    * Revalidate the saved path and direct child on every Docs, Sheets, Slides, PDF or file read,
    * which reports the folder it listed and the child it found there as well as the file it read.
+   * `unchanged` sees the file's metadata from each check, before and after the fetch, and throws
+   * to refuse a read of a file that has changed since it was opened.
    */
-  nativeRead(fileId: string, expectedMimeType: string): NativeRead {
+  nativeRead(
+    fileId: string, expectedMimeType: string, unchanged?: (file: DriveFile) => void,
+  ): NativeRead {
     let subresources = fileSubresourceIds([
       this.#folderObservation(), {kind: "file", fileId},
       nativeSubresource(fileId, expectedMimeType),
     ]);
+    let requireCurrent = async () => {
+      let file = await this.#requireDirectFile(fileId);
+      if (file.mimeType !== expectedMimeType) outsideScope();
+      unchanged?.(file);
+    };
     return async <T>(fetch: () => Promise<T>, observe: (value: T) => NativeObservation) => {
-      let before = await this.#requireDirectFile(fileId);
-      if (before.mimeType !== expectedMimeType) outsideScope();
+      await requireCurrent();
       let value = await fetch();
-      let after = await this.#requireDirectFile(fileId);
-      if (after.mimeType !== expectedMimeType) outsideScope();
+      await requireCurrent();
       await this.authorize({...observe(value), subresources});
       return value;
     };

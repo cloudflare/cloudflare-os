@@ -750,12 +750,7 @@ export class DriveApi {
    * body through, and cancels it to stop the download.
    */
   async openDownload(fileId: string): Promise<ReadableStream<Uint8Array>> {
-    if (!isDriveFileId(fileId)) throw new Error("Not a Google Drive file ID.");
-    let params = new URLSearchParams({ alt: "media", supportsAllDrives: "true" });
-    let response = await fetchWithAuthRetry(
-      `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?${params}`, {},
-      this.getAccessToken, { timeoutMs: DOWNLOAD_TIMEOUT_MS });
-    if (!response.ok) throw await driveError(response);
+    let response = await this.#fetchMedia(fileId);
     return response.body ?? new ReadableStream({ start: controller => controller.close() });
   }
 
@@ -768,13 +763,9 @@ export class DriveApi {
   async downloadRange(
     fileId: string, offset: number, length: number,
   ): Promise<{ content: ArrayBuffer; fileSize?: number }> {
-    if (!isDriveFileId(fileId)) throw new Error("Not a Google Drive file ID.");
-    let params = new URLSearchParams({ alt: "media", supportsAllDrives: "true" });
-    let response = await fetchWithAuthRetry(
-      `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?${params}`,
-      { headers: { Range: `bytes=${offset}-${offset + length - 1}` } },
-      this.getAccessToken, { timeoutMs: DOWNLOAD_TIMEOUT_MS });
-    if (!response.ok) throw await driveError(response);
+    let response = await this.#fetchMedia(fileId, {
+      headers: { Range: `bytes=${offset}-${offset + length - 1}` },
+    });
     let range = response.status === 206
       ? CONTENT_RANGE.exec(response.headers.get("Content-Range") ?? "")
       : undefined;
@@ -788,6 +779,17 @@ export class DriveApi {
     let total = range ? range[2]
       : response.headers.has("Content-Encoding") ? null : response.headers.get("Content-Length");
     return total == null || total === "*" ? { content } : { content, fileSize: Number(total) };
+  }
+
+  /** Drive's successful answer to a download of one file's content; any other is thrown. */
+  async #fetchMedia(fileId: string, init: RequestInit = {}): Promise<Response> {
+    if (!isDriveFileId(fileId)) throw new Error("Not a Google Drive file ID.");
+    let params = new URLSearchParams({ alt: "media", supportsAllDrives: "true" });
+    let response = await fetchWithAuthRetry(
+      `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?${params}`, init,
+      this.getAccessToken, { timeoutMs: DOWNLOAD_TIMEOUT_MS });
+    if (!response.ok) throw await driveError(response);
+    return response;
   }
 
   /** Whether the connected account may edit a file's content, as Drive reports it. */

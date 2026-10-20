@@ -694,18 +694,24 @@ describe("Drive file reads", () => {
   // file that grew would be taken as read to its end.
   const grown = new TextEncoder().encode("NEWREVISION".repeat(10));
   const shrunk = CSV_BYTES.slice(0, -1);
+  const n = CSV_BYTES.byteLength;
   it.each([
-    ["grew, by a range's total", () => new Response(grown.slice(0, CSV_BYTES.byteLength), {
-      status: 206,
-      headers: { "Content-Range": `bytes 0-${CSV_BYTES.byteLength - 1}/${grown.byteLength}` },
+    ["the file grew, by a range's total", () => new Response(grown.slice(0, n), {
+      status: 206, headers: { "Content-Range": `bytes 0-${n - 1}/${grown.byteLength}` },
     })],
-    ["grew, by a whole-file answer's length", () => new Response(grown, {
+    ["the file grew, by a whole-file answer's length", () => new Response(grown, {
       headers: { "Content-Length": String(grown.byteLength) },
     })],
-    ["shrank, by a whole-file answer's length", () => new Response(shrunk, {
+    ["the file shrank, by a whole-file answer's length", () => new Response(shrunk, {
       headers: { "Content-Length": String(shrunk.byteLength) },
     })],
-  ])("withholds bytes from a file that %s before the download", async (_name, answer) => {
+    ["the file shrank, by a range of unknown total ending early", () => new Response(shrunk, {
+      status: 206, headers: { "Content-Range": `bytes 0-${n - 2}/*` },
+    })],
+    ["Drive ends a range early", () => new Response(shrunk, {
+      status: 206, headers: { "Content-Range": `bytes 0-${n - 2}/${n}` },
+    })],
+  ])("withholds bytes when %s", async (_name, answer) => {
     answerDownload = answer;
     const { queue, session } = newSession();
     using owned = session;
@@ -884,6 +890,7 @@ describe("folder-scoped native sessions", () => {
     trashed: boolean;
     /** Bytes of content, for a file that has its own. */
     size?: string;
+    modifiedTime?: string;
     capabilities?: { canListChildren: boolean };
   };
 
@@ -961,7 +968,7 @@ describe("folder-scoped native sessions", () => {
         const id = decodeURIComponent(url.pathname.split("/").at(-1)!);
         const node = nodes.get(id);
         if (!node) return Response.json({}, { status: 404 });
-        return Response.json({ ...node, name: id, modifiedTime: "2026-08-20T12:00:00Z" });
+        return Response.json({ name: id, modifiedTime: "2026-08-20T12:00:00Z", ...node });
       }
       nativeCalls.push(url.hostname);
       onNativeRead?.();
@@ -1327,6 +1334,20 @@ describe("folder-scoped native sessions", () => {
     using owned = session;
 
     await expect(Promise.resolve(owned.readFile("data-1"))).rejects.toThrow(OUTSIDE);
+    expect(queue.observations.map(o => o.title)).toEqual(["Open file from Google Drive"]);
+  });
+
+  // Its size is unchanged, so only the modification time the re-proof reads can show the rewrite.
+  it("refuses bytes from a file rewritten at the same size during the download", async () => {
+    const nodes = subtree();
+    nodes.set("data-1", dataNode(ROOT));
+    installFolderProvider(nodes, undefined, () =>
+      nodes.set("data-1", { ...dataNode(ROOT), modifiedTime: "2026-08-21T09:00:00Z" }));
+    const { queue, session } = folderSession(nodes);
+    using owned = session;
+
+    await expect(Promise.resolve(owned.readFile("data-1"))).rejects.toThrow(
+      "The Drive file changed while it was being read; read it again.");
     expect(queue.observations.map(o => o.title)).toEqual(["Open file from Google Drive"]);
   });
 

@@ -3752,13 +3752,16 @@ export class GoogleDriveSessionImpl extends RpcTarget
     }
     let count = Math.min(length, size - offset);
     // The range is read whole inside the fetch, so a folder binding's re-proof after it covers
-    // every byte returned.
-    return core.nativeRead(file.id, mimeType)(async (): Promise<DriveFileBytes> => {
+    // every byte returned. That re-proof re-reads the file's metadata anyway, so a folder binding
+    // also refuses a rewrite that kept the size: its modification time moved.
+    return core.nativeRead(file.id, mimeType, current => {
+      if (current.modifiedTime !== file.modifiedTime) throw new Error(FILE_CHANGED);
+    })(async (): Promise<DriveFileBytes> => {
       if (count === 0) return {mimeType, size, modifiedTime, offset, content: new ArrayBuffer(0)};
       let {content, fileSize} = await this.#driveApi.downloadRange(file.id, offset, count)
         .catch((error: unknown) => { throw fileReadError(error); });
-      // Another size means the bytes came from a revision other than the one described.
-      if (fileSize !== undefined && fileSize !== size) throw new Error(FILE_CHANGED);
+      // Another size, or a range that ends inside the file, means bytes from another revision.
+      if (content.byteLength !== count || (fileSize ?? size) !== size) throw new Error(FILE_CHANGED);
       return {mimeType, size, modifiedTime, offset, content};
     }, read => ({
       title: "Read file from Google Drive",
