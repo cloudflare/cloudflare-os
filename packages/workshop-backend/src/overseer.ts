@@ -7780,11 +7780,9 @@ class OverseerImpl implements AgentHooks {
   // token is handed out only for the owner, and only while nobody else can reach the workspace:
   // the first use locks the workspace to the owner (`ownerOnly`), and a workspace that is shared
   // is refused rather than unshared. Called before every request, so that a request made after
-  // the owner allowed sharing again fails closed until the workspace is unshared. `cached` is
-  // returned again until it expires, which saves the user DO round trip but not the check.
-  async chatGptAccess(userId: string, cached?: ChatGptAccessToken): Promise<ChatGptAccessToken> {
+  // the owner allowed sharing again fails closed until the workspace is unshared.
+  async chatGptAccess(userId: string): Promise<ChatGptAccessToken> {
     await this.#lockToOwnerForChatGpt(userId);
-    if (cached && cached.expiresAt.valueOf() > Date.now()) return cached;
     let token = await this.ownerUserDo().getChatGptAccessToken();
     // Sharing may have been allowed while that was in flight.
     await this.#lockToOwnerForChatGpt(userId);
@@ -7908,9 +7906,7 @@ class OverseerImpl implements AgentHooks {
         if (aiModel.config.credential === "chatgpt") {
           // Runs on the owner's own subscription, so neither the free tier nor a gateway applies.
           // The first token is fetched here so that a refusal ends the turn before it starts.
-          let cached: ChatGptAccessToken | undefined;
-          chatGptToken = async () =>
-              (cached = await this.chatGptAccess(initiatorUserId, cached)).token;
+          chatGptToken = async () => (await this.chatGptAccess(initiatorUserId)).token;
           await chatGptToken();
         } else if (this.ownerId) {
           let ownerStub = this.users.get(this.users.idFromString(this.ownerId));

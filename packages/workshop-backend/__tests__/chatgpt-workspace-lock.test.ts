@@ -98,22 +98,25 @@ describe("ChatGPT subscription models in a workspace", () => {
     expect(getToken).not.toHaveBeenCalled();
   }));
 
-  it("reuse a fresh token, but check the workspace every time", () =>
+  // So that signing out, or an admin turning the feature off, stops a turn already running.
+  it("ask the owner's user object for the token on every request", () =>
       inWorkspace(async (impl, getToken) => {
-    let cached = await impl.chatGptAccess(OWNER_ID);
-    expect(await impl.chatGptAccess(OWNER_ID, cached)).toBe(cached);
-    expect(getToken).toHaveBeenCalledTimes(1);
+    await impl.chatGptAccess(OWNER_ID);
+    getToken.mockRejectedValueOnce(new Error("Sign in with ChatGPT to use this model."));
+    await expect(impl.chatGptAccess(OWNER_ID)).rejects.toThrow("Sign in with ChatGPT");
+    expect(getToken).toHaveBeenCalledTimes(2);
 
     impl.allowSharing();
     shareWith(impl, "bob");
-    await expect(impl.chatGptAccess(OWNER_ID, cached)).rejects.toThrow(UNSHARE);
+    await expect(impl.chatGptAccess(OWNER_ID)).rejects.toThrow(UNSHARE);
+    expect(getToken).toHaveBeenCalledTimes(2);
   }));
 
   it("refuse a token whose workspace was shared while it was fetched", () => {
     let impl: any;
     return inWorkspace(async workspace => {
       impl = workspace;
-      await impl.chatGptAccess(OWNER_ID, { token: "stale", expiresAt: new Date(0) }).then(
+      await impl.chatGptAccess(OWNER_ID).then(
           () => { throw new Error("expected a refusal"); },
           (error: Error) => expect(error.message).toBe(UNSHARE));
     }, async () => {
