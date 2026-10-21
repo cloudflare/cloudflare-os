@@ -978,25 +978,36 @@ describe("Google Chat gatekeeper behaviors", () => {
     await chat.rejectAction(2);
   });
 
-  it("refuses to reject a send that may have posted until a retry settles it", async () => {
+  it("settles a send that may have posted on a retry, whatever a later refusal says", async () => {
     const backend = chatBackend();
     const chat = chatHarness(backend);
     using space = await chat.session();
     using _posted = (await space.post("hello")).message;
     backend.state.createFailure = 503;
     await expect(chat.applyAction(1)).rejects.toThrow();
-    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
     await chat.restart();
-    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
     // A later refusal says nothing about the earlier attempt that may have posted.
     backend.state.createFailure = 403;
     await expect(chat.applyAction(1)).rejects.toThrow();
-    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
     backend.state.createFailure = 0;
     await chat.applyAction(1);
     expect(backend.state.creates).toHaveLength(1);
     await chat.revertAction(1);
     expect(backend.state.deletes).toHaveLength(1);
+  });
+
+  it("withdraws a send that may have posted when it is rejected, leaving any post in Google Chat", async () => {
+    const backend = chatBackend();
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using _posted = (await space.post("hello")).message;
+    backend.state.createFailure = 503;
+    await expect(chat.applyAction(1)).rejects.toThrow();
+    await chat.restart();
+    await chat.rejectAction(1);
+    await expect(chat.applyAction(1)).rejects.toThrow(/Unknown pending Google Chat action/);
+    expect(backend.state.creates).toHaveLength(1);
+    expect(backend.state.deletes).toHaveLength(0);
   });
 
   it("keeps a send rejectable when Chat definitively refuses its first write", async () => {
@@ -1109,7 +1120,6 @@ describe("Google Chat gatekeeper behaviors", () => {
     await message.edit("Resolved");
     backend.state.editFailure = 503;
     await expect(chat.applyAction(1)).rejects.toThrow(/http=503/);
-    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
     backend.state.messages = [];
     await expect(chat.applyAction(1)).rejects.toThrow(/deleted in Google Chat.*Reject it/);
     await chat.rejectAction(1);
@@ -1135,7 +1145,7 @@ describe("Google Chat gatekeeper behaviors", () => {
     await chat.rejectAction(1);
   });
 
-  it("keeps a misplaced reply unrejectable while taking it back fails, until it is deleted by hand", async () => {
+  it("lets a misplaced reply be rejected while taking it back fails, leaving it in Google Chat", async () => {
     const backend = chatBackend();
     backend.state.messages.push(threadMessage("root", "A", "2024-01-01T00:00:00Z"));
     const chat = chatHarness(backend, undefined, "thread");
@@ -1144,10 +1154,9 @@ describe("Google Chat gatekeeper behaviors", () => {
     backend.state.misplaceReplies = true;
     backend.state.repliesOn.add(`${SPACE_NAME}/messages/M1`);
     await expect(chat.applyAction(1)).rejects.toThrow(/removing it failed/);
-    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
-    backend.state.messages = backend.state.messages.filter(message => message.name !== `${SPACE_NAME}/messages/M1`);
-    await expect(chat.applyAction(1)).rejects.toThrow(/deleted in Google Chat.*Reject it/);
     await chat.rejectAction(1);
+    expect(backend.state.messages.some(message => message.name === `${SPACE_NAME}/messages/M1`)).toBe(true);
+    await expect(chat.applyAction(1)).rejects.toThrow(/Unknown pending Google Chat action/);
   });
 
   it("refuses to apply an edit over text changed in Google Chat since it was queued", async () => {
@@ -1701,7 +1710,7 @@ describe("Starting Google Chat conversations", () => {
     using account = await chat.account();
     using _message = (await account.sendDirectMessage([BOB.email, CAROL.email], "hi all")).message;
     backend.state.members.push(member);
-    await expect(chat.applyAction(1)).rejects.toThrow(/no longer holds exactly .* Reject this message/);
+    await expect(chat.applyAction(1)).rejects.toThrow(/no longer holds exactly .* Deny this message to clear it/);
     expect(backend.state.creates).toEqual([]);
     await chat.rejectAction(1);
   });
@@ -1849,7 +1858,6 @@ describe("Starting Google Chat conversations", () => {
     using _second = (await account.sendDirectMessage([CAROL.email, BOB.email], "two")).message;
     backend.state.setupFailure = 503;
     await expect(chat.applyAction(1)).rejects.toThrow();
-    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
     backend.state.setupFailure = 0;
     await chat.applyAction(next);
     await chat.applyAction(last);
@@ -1903,7 +1911,7 @@ describe("Starting Google Chat conversations", () => {
     expect((await cursor.next())?.map(({info}) => [info.text, info.spaceId])).toEqual([["hi all", SPACE_NAME]]);
   });
 
-  it("keeps a send that may have posted in the conversation it set up from being rejected", async () => {
+  it("lets a send that may have posted in the conversation it set up be rejected", async () => {
     const {backend, chat} = accountChat();
     using account = await chat.account();
     using _message = (await account.sendDirectMessage([BOB.email, CAROL.email], "hi all")).message;
@@ -1913,7 +1921,8 @@ describe("Starting Google Chat conversations", () => {
     // A later refusal says nothing about the earlier attempt that may have posted.
     backend.state.createFailure = 403;
     await expect(chat.applyAction(1)).rejects.toThrow();
-    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
+    await chat.rejectAction(1);
+    await expect(chat.applyAction(1)).rejects.toThrow(/Unknown pending Google Chat action/);
   });
 
   it("lets a send be rejected once the post it landed is deleted, whoever has joined since", async () => {
@@ -1929,7 +1938,7 @@ describe("Starting Google Chat conversations", () => {
     await chat.rejectAction(1);
   });
 
-  it("posts nothing, and stays unrejectable, once someone joins after a post that may not have landed", async () => {
+  it("posts nothing, and stays rejectable, once someone joins after a post that may not have landed", async () => {
     const {backend, chat} = accountChat();
     using account = await chat.account();
     using _message = (await account.sendDirectMessage([BOB.email, CAROL.email], "hi all")).message;
@@ -1938,9 +1947,9 @@ describe("Starting Google Chat conversations", () => {
     await expect(chat.applyAction(1)).rejects.toThrow();
     backend.state.createFailure = 0;
     backend.state.members.push(joined("400"));
-    await expect(chat.applyAction(1)).rejects.toThrow(/no longer holds exactly/);
+    await expect(chat.applyAction(1)).rejects.toThrow(/no longer holds exactly .* may already have posted it/);
     expect(backend.state.creates).toEqual([]);
-    await expect(chat.rejectAction(1)).rejects.toThrow(/may already have reached Google/);
+    await chat.rejectAction(1);
   });
 
   it("posts nothing once someone joins the conversation it set up before a refused post", async () => {

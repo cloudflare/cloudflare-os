@@ -4953,7 +4953,9 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
           const existing = await api.findMessageByRfcMessageId(action.spec.messageId, "delivered");
           if (!existing) {
             throw new Error(
-              "The previous Gmail send outcome is still unknown; refusing to risk duplicate delivery.");
+              "The previous Gmail send outcome is still unknown, so it may already have been sent; " +
+              "refusing to risk duplicate delivery. Check your Sent mail, then deny this request to " +
+              "clear it.");
           }
           let approvedFingerprint = store.getSendFingerprint(actionId, action.spec.messageId);
           if (!approvedFingerprint) {
@@ -5019,7 +5021,9 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
           if (!existing) {
             draftSourceSnapshot(action);
             throw new Error(
-              "The previous Gmail draft creation outcome is still unknown; refusing to create a duplicate.");
+              "The previous Gmail draft creation outcome is still unknown, so the draft may already " +
+              "exist; refusing to create a duplicate. Check your Drafts, then deny this request to " +
+              "clear it.");
           }
           const current = await api.getDraft(existing.id);
           const receipt = {
@@ -5206,7 +5210,9 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
             : undefined;
           if (!sent) {
             throw new Error(
-              "The previous Gmail draft send outcome is still unknown; refusing to risk duplicate delivery.");
+              "The previous Gmail draft send outcome is still unknown, so it may already have been " +
+              "sent; refusing to risk duplicate delivery. Check your Sent mail, then deny this " +
+              "request to clear it.");
           }
           const sentMessage = await api.getMessage(sent.id);
           if (sentMessage.id !== sent.id ||
@@ -5278,7 +5284,9 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
             label => label.type === "user" && label.name === action.label.name);
           if (matches.length !== 1) {
             throw new Error(
-              "The previous Gmail label creation outcome is unknown; refusing to map or create a label.");
+              "The previous Gmail label creation outcome is unknown, so the label may already " +
+              "exist; refusing to map or create a label. Check your labels, then deny this request " +
+              "to clear it.");
           }
           store.mapLabelToProvider(actionId, matches[0]);
           break;
@@ -5346,16 +5354,10 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
     const store = new GmailStore(this.ctx.storage);
     const action = store.getAction(actionId);
     if (!action) throw new Error(`Unknown pending Gmail action: ${actionId}`);
+    if (this.#applying.has(actionId)) throw new Error(`Gmail action ${actionId} is already applying.`);
+    // An earlier apply's uncertain outcome does not block the rejection: it withdraws the action,
+    // and whatever Gmail already did stays.
     const receipt = store.getDraftWriteReceipt(actionId);
-    const writeReceipt = (action.type === "draftCreate" || action.type === "draftUpdate")
-      ? receipt
-      : undefined;
-    if (this.#applying.has(actionId) ||
-        (store.isApplying(actionId) &&
-         !(action.type === "draftCreate" && writeReceipt !== undefined))) {
-      throw new Error(
-        `Gmail action ${actionId} has an uncertain provider outcome and must be reconciled first.`);
-    }
     if (receipt && !receipt.missing && action.type === "draftCreate") {
       // The stable Message-ID proves the remote write is real even if its content changed before
       // reconciliation. Preserve that provider draft while rejecting the local pending action.
@@ -5368,6 +5370,7 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
       const resource = store.getDraft(action.draft.logicalId);
       if (resource) {
         // Rejecting reconciliation cannot undo an identified provider write, so keep it visible.
+        // A draft an unidentified write may have created is left in Gmail, untracked.
         if (receipt?.missing) resource.status = "deleted";
         else if (!resource.providerId) resource.status = "rejected";
         resource.version++;

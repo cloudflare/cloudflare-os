@@ -186,8 +186,9 @@ class ChatStore {
   }
 
   /**
-   * Run one write to Google, first marking the action uncertain so rejectAction refuses it until
-   * an apply finishes. A definitive refusal of the first write proves nothing landed, so it clears.
+   * Run one write to Google, first marking the action uncertain so a retry looks for what an
+   * earlier attempt may have written. A definitive refusal of the first write proves nothing
+   * landed, so it clears.
    */
   async attemptWrite<T>(id: number, write: () => Promise<T>): Promise<T> {
     const first = !this.wasAttempted(id);
@@ -798,7 +799,7 @@ async function openConversation(
   if (found) return found.spaceName;
   const spaceName = await store.attemptWrite(actionId,
     () => api.setupConversation(ids, store.setupRequestWith(people, requestId)));
-  // An empty conversation shows nobody anything, so the send stays rejectable until it posts.
+  // An empty conversation shows nobody anything, so a retry has nothing to look for until it posts.
   store.clearAttempt(actionId);
   // Google leaves out of a group chat anyone who blocks the caller, and a replayed setup returns the
   // group as it is now, so posting could reach other people than were approved.
@@ -822,7 +823,7 @@ async function hasExactly(api: ChatApi, spaceName: string, ids: readonly string[
 /** The name a send to exactly some people gives its message, so that a retry can find it. */
 const clientMessageId = (action: ChatSendMessageAction) => `client-${action.requestId}`;
 
-/** Once its target is deleted, nothing an earlier attempt wrote remains, so the action may be rejected. */
+/** Once its target is deleted, nothing an earlier attempt wrote remains for a retry to find. */
 function deletedTarget(store: ChatStore, actionId: number, cause: unknown): Error {
   store.clearAttempt(actionId);
   return new Error("This message was deleted in Google Chat, so this change can no longer be applied. " +
@@ -1617,7 +1618,8 @@ export class GoogleChatGatekeeperImpl
     // A retry may follow a post that landed, so it leaves the attempt mark as it is.
     if (!await hasExactly(api, spaceName, recipients)) {
       throw new Error("This Google Chat conversation no longer holds exactly the people this message is for, " +
-        `so this attempt posted nothing.${retried ? "" : " Reject this message."}`);
+        `so this attempt posted nothing.${retried ? " An earlier attempt may already have posted it." : ""} ` +
+        "Deny this message to clear it.");
     }
     return { spaceName };
   }
@@ -1745,11 +1747,6 @@ export class GoogleChatGatekeeperImpl
     if (!action) throw new Error(`Unknown pending Google Chat action: ${actionId}`);
     if (this.#inFlight.has(actionId)) {
       throw new Error("This Google Chat action is being applied and can no longer be rejected.");
-    }
-    if (store.wasAttempted(actionId)) {
-      throw new Error(
-        "This Google Chat action may already have reached Google. Apply it again to finish it, " +
-        "then undo it if it isn't wanted.");
     }
     // Later actions in the same conversation were written against a simulation that included
     // this one, so the gadget has to start again.
