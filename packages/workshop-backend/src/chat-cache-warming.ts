@@ -1,5 +1,5 @@
 import type { CachedRequest, Resent } from "./ai-models.js";
-import { createWorkshopLogger } from "./observability.js";
+import { createWorkshopLogger, type WorkshopObservabilityFields } from "./observability.js";
 
 const logger = createWorkshopLogger("workshop.cache-warming");
 
@@ -20,8 +20,20 @@ type Warming = {
   timer?: ReturnType<typeof setTimeout>;
 };
 
+// A viewed chat's wait for its next turn after a turn ends, logged when it ends to learn how long
+// users stay away. It keeps the turn's model and what warming costs, not its request, so a pause
+// that outlives its warming holds no prompt in memory.
+type Pause = Pick<CachedRequest, "sentAt" | "cacheLifetime" | "resendCost" | "expiryCost"> & {
+  modelId: string;
+};
+
+// How a pause ended: the chat's next turn started, its last viewer left, a revert changed what
+// the next turn will send, or the chat was deleted.
+type PauseEnd = WorkshopObservabilityFields["pauseEnd"];
+
 type ChatViewers = {
   count: number;
+  pause?: Pause;
   warming?: Warming;
 };
 
@@ -34,17 +46,25 @@ type ChatViewers = {
  * cap, shortly before the cached copy would expire, and again after each such ping. Warming stops
  * when the last viewer leaves, an hour after the turn, before a ping could take the pings past
  * what the cache miss they avoid costs, when a ping's timer fires after the cached copy expired,
- * when a ping fails or finds the cache gone, and on stop(). The viewers' open connections keep
+ * when a ping fails or finds the cache gone, and on end(). The viewers' open connections keep
  * the Durable Object in memory meanwhile. Warming is held in memory only, like the request it
  * resends, so a restart ends it.
+ *
+ * Each pause after such a turn is logged when it ends, with how long it lasted and what a ping and
+ * a miss cost, to show how long warming should run.
  */
 export class ChatCacheWarmer {
   // The chats someone views now.
   #chats = new Map<number, ChatViewers>();
+  readonly #logger: typeof logger;
   readonly #onResent: (chatId: number, resent: Resent) => void;
 
-  /** `onResent` receives each ping the provider answered, to add its cost to the chat's. */
-  constructor(onResent: (chatId: number, resent: Resent) => void) {
+  /**
+   * `gadgetId` names the workspace in the logs. `onResent` receives each ping the provider
+   * answered, to add its cost to the chat's.
+   */
+  constructor(gadgetId: string, onResent: (chatId: number, resent: Resent) => void) {
+    this.#logger = logger.with({gadgetId});
     this.#onResent = onResent;
   }
 
@@ -61,29 +81,44 @@ export class ChatCacheWarmer {
       if (left) return;
       left = true;
       if (--chat.count > 0) return;
-      this.stop(chatId);
+      this.end(chatId, "left");
       this.#chats.delete(chatId);
     };
   }
 
   /**
    * Starts keeping `request`'s prompt cached while someone views `chatId`, replacing any earlier
-   * warming. Called when a turn ends, with its last request.
+   * warming. Called when a turn ends, with its last request and the turn's model.
    */
-  start(chatId: number, request: CachedRequest): void {
-    this.stop(chatId);
+  start(chatId: number, request: CachedRequest, modelId: string): void {
+    this.#stopWarming(chatId);
     let chat = this.#chats.get(chatId);
     // A turn that ended with nobody viewing the chat, such as a callback's, isn't warmed.
     if (!chat) return;
-    chat.warming = {request, sentAt: request.sentAt, spent: 0};
+    let {sentAt, cacheLifetime, resendCost, expiryCost} = request;
+    chat.pause = {modelId, sentAt, cacheLifetime, resendCost, expiryCost};
+    chat.warming = {request, sentAt, spent: 0};
     this.#schedule(chatId, chat.warming);
   }
 
   /**
-   * Stops warming `chatId`: its next turn caches a new request, a revert changed what that turn
-   * will send, or the chat is gone.
+   * Ends `chatId`'s pause and its warming, logging how long the pause lasted. Called when the
+   * chat's next turn starts, a revert changes what that turn will send, or the chat is deleted.
    */
-  stop(chatId: number): void {
+  end(chatId: number, reason: PauseEnd): void {
+    this.#stopWarming(chatId);
+    let chat = this.#chats.get(chatId);
+    let pause = chat?.pause;
+    if (!chat || !pause) return;
+    chat.pause = undefined;
+    this.#logger.info("chat pause ended", {
+      event: "chat.cache_warm.pause.ended", chatId, modelId: pause.modelId, pauseEnd: reason,
+      durationMs: Date.now() - pause.sentAt, cacheLifetimeMs: pause.cacheLifetime,
+      resendCostUsd: pause.resendCost, missCostUsd: pause.expiryCost,
+    });
+  }
+
+  #stopWarming(chatId: number) {
     let chat = this.#chats.get(chatId);
     if (!chat?.warming) return;
     clearTimeout(chat.warming.timer);
@@ -96,7 +131,7 @@ export class ChatCacheWarmer {
     let due = expiry(warming) - PING_LEAD_MS;
     if (due <= Date.now() || due > warming.request.sentAt + WARMING_LIMIT_MS ||
         !worthPinging(warming)) {
-      return this.stop(chatId);
+      return this.#stopWarming(chatId);
     }
     warming.timer = setTimeout(() => void this.#ping(chatId, warming), due - Date.now());
   }
@@ -104,20 +139,21 @@ export class ChatCacheWarmer {
   async #ping(chatId: number, warming: Warming) {
     // A timer delayed past the lead, e.g. while the Durable Object was busy, would pay for a
     // write of the whole prompt.
-    if (Date.now() >= expiry(warming)) return this.stop(chatId);
+    if (Date.now() >= expiry(warming)) return this.#stopWarming(chatId);
     let current = () => this.#chats.get(chatId)?.warming === warming;
     let sentAt = Date.now();
     let resent: Resent;
     try {
       resent = await warming.request.resend();
     } catch (error) {
-      logger.warn("cache warm ping failed", {event: "chat.cache_warm.failed", chatId, error});
-      if (current()) this.stop(chatId);
+      this.#logger.warn("cache warm ping failed",
+          {event: "chat.cache_warm.failed", chatId, error});
+      if (current()) this.#stopWarming(chatId);
       return;
     }
     let {usage} = resent;
     warming.spent += usage.cost.total;
-    logger.info("cache warm ping", {
+    this.#logger.info("cache warm ping", {
       event: "chat.cache_warm.ping", chatId, costUsd: usage.cost.total,
       cacheReadTokens: usage.cacheRead, cacheWriteTokens: usage.cacheWrite,
     });
@@ -126,7 +162,7 @@ export class ChatCacheWarmer {
     if (!current()) return;
     // A ping that read nothing found no cached copy to keep, and one that wrote found it expired
     // or changed.
-    if (usage.cacheRead === 0 || usage.cacheWrite > 0) return this.stop(chatId);
+    if (usage.cacheRead === 0 || usage.cacheWrite > 0) return this.#stopWarming(chatId);
     warming.sentAt = sentAt;
     this.#schedule(chatId, warming);
   }

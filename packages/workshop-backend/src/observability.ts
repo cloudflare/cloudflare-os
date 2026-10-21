@@ -7,6 +7,7 @@ export type WorkshopObservabilityFields = {
   agentName: string;
   autoProvisioned: boolean;
   blueprintId: string;
+  cacheLifetimeMs: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
   callbackInitiated: boolean;
@@ -30,6 +31,7 @@ export type WorkshopObservabilityFields = {
   handoffKind: "connect" | "restore";
   hookId: number;
   logBytes: number;
+  missCostUsd: number;
   modelId: string;
   observerId: string;
   oidCount: number;
@@ -37,8 +39,10 @@ export type WorkshopObservabilityFields = {
   operation: string;
   outcome: "ok" | "error" | "usage_limit" | "no_email" | "signups_disabled";
   path: string;
+  pauseEnd: "turn" | "left" | "revert" | "deleted";
   recordedType: string;
   resourceTitle: string;
+  resendCostUsd: number;
   sequence: number;
   size: number;
   status: number;

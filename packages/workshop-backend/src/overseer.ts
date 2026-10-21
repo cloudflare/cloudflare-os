@@ -715,8 +715,7 @@ class OverseerImpl implements AgentHooks {
   // Per-chat in-memory state for running agents.
   #liveChats = new Map<number, LiveChatContext>();
   #chatSubscribers: Set<RpcStub<AiChatSubscriber>> = new Set();
-  readonly cacheWarmer = new ChatCacheWarmer((chatId, resent) => this.#addRequestCost(
-      chatId, resent.usage, resent.aiGatewayLogId, resent.aiGatewayLogRoute, false));
+  readonly cacheWarmer: ChatCacheWarmer;
 
   #autoApprovalDrainer: AutoApprovalDrainer;
 
@@ -900,7 +899,7 @@ class OverseerImpl implements AgentHooks {
   // (Undelivered calls to the agent live in storage -- `pendingAgentCalls` -- not here; deleteChat
   // removes them itself.)
   destroyLiveChat(chatId: number) {
-    this.cacheWarmer.stop(chatId);
+    this.cacheWarmer.end(chatId, "deleted");
     this.#resumeErrors.delete(chatId);
     this.#unregisterRunningAgent(chatId);
     let meta = this.storage.chatMeta.get(chatId);
@@ -933,7 +932,7 @@ class OverseerImpl implements AgentHooks {
     this.#runningAgents.add(chatId);
     this.#updateAlarm();
     // The turn's own requests keep the cache warm, and its end warms its last request instead.
-    this.cacheWarmer.stop(chatId);
+    this.cacheWarmer.end(chatId, "turn");
   }
 
   // Release a running execution and recompute the alarm. A decision pause or retryable model
@@ -1221,6 +1220,9 @@ class OverseerImpl implements AgentHooks {
         this.storage,
         (record, resolvedBy, autoApproved) =>
             this.applyPendingAction(record, resolvedBy, autoApproved));
+    this.cacheWarmer = new ChatCacheWarmer(ctx.id.toString(), (chatId, resent) =>
+        this.#addRequestCost(
+            chatId, resent.usage, resent.aiGatewayLogId, resent.aiGatewayLogRoute, false));
 
     // Mirror every gadget-registry change into the owner's outputs index. Subscribing here makes
     // the registry the single chokepoint, so creation, acceptance, renaming, reverting and
@@ -4410,7 +4412,7 @@ class OverseerImpl implements AgentHooks {
     this.proposedChangesChanged(chatId);
     // Replay hides the results of reads of reverted content (see agent.ts), so the next request
     // no longer starts with the one being kept warm.
-    this.cacheWarmer.stop(chatId);
+    this.cacheWarmer.end(chatId, "revert");
 
     // Only now delete the provisional gadgets whose creation the revert rejected -- the revert
     // message is also how the agent learns of the rejection on its next turn (revert messages
@@ -7353,7 +7355,7 @@ class OverseerImpl implements AgentHooks {
               finished && !liveChat.cancelController.signal.aborted && !!meta && !!wait && !wait.denied);
 
           // Without `meta`, the chat was deleted while the turn was ending.
-          if (lastRequest && meta) this.cacheWarmer.start(chatId, lastRequest);
+          if (lastRequest && meta) this.cacheWarmer.start(chatId, lastRequest, aiModel.profile.id);
 
           if (finished && meta) {
             // Classified here, past the turn's last await, so a decision made as it ended counts.

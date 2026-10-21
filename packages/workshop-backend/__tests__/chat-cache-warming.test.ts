@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type { Usage } from "@earendil-works/pi-ai";
@@ -15,6 +15,8 @@ declare module "cloudflare:workers" {
 
 const MINUTE = 60_000;
 const CHAT = 7;
+const WORKSPACE = "workspace";
+const MODEL = "model";
 // When the first ping goes out after a request with a 5-minute cache.
 const FIRST_PING = 4.5 * MINUTE;
 
@@ -40,14 +42,18 @@ function request(
   return { cached, resend };
 }
 
+// The log entry for a pause that ended, with `fields`.
+const pauseEnded = (fields: object) =>
+  expect.objectContaining({ event: "chat.cache_warm.pause.ended", ...fields });
+
 describe("ChatCacheWarmer", () => {
   let warmer: ChatCacheWarmer;
-  let resent: ReturnType<typeof vi.fn<ConstructorParameters<typeof ChatCacheWarmer>[0]>>;
+  let resent: ReturnType<typeof vi.fn<ConstructorParameters<typeof ChatCacheWarmer>[1]>>;
 
   beforeEach(() => {
     vi.useFakeTimers();
     resent = vi.fn();
-    warmer = new ChatCacheWarmer(resent);
+    warmer = new ChatCacheWarmer(WORKSPACE, resent);
   });
 
   afterEach(() => {
@@ -57,7 +63,7 @@ describe("ChatCacheWarmer", () => {
   it("resends a viewed chat's request half a minute before its cache would expire", async () => {
     warmer.view(CHAT);
     const { cached, resend } = request();
-    warmer.start(CHAT, cached);
+    warmer.start(CHAT, cached, MODEL);
 
     await vi.advanceTimersByTimeAsync(FIRST_PING - 1);
     expect(resend).not.toHaveBeenCalled();
@@ -73,7 +79,7 @@ describe("ChatCacheWarmer", () => {
   it("doesn't warm a turn that ended with nobody viewing the chat", async () => {
     warmer.view(CHAT)();
     const { cached, resend } = request();
-    warmer.start(CHAT, cached);
+    warmer.start(CHAT, cached, MODEL);
     warmer.view(CHAT);
 
     await vi.advanceTimersByTimeAsync(60 * MINUTE);
@@ -84,7 +90,7 @@ describe("ChatCacheWarmer", () => {
     const leaveFirst = warmer.view(CHAT);
     const leaveSecond = warmer.view(CHAT);
     const { cached, resend } = request();
-    warmer.start(CHAT, cached);
+    warmer.start(CHAT, cached, MODEL);
 
     // Leaving twice counts once, so the chat is still viewed.
     leaveFirst();
@@ -102,7 +108,7 @@ describe("ChatCacheWarmer", () => {
   it("stops once the pings have cost as much as the miss they avoid", async () => {
     warmer.view(CHAT);
     const { cached, resend } = request();
-    warmer.start(CHAT, cached);
+    warmer.start(CHAT, cached, MODEL);
 
     await vi.advanceTimersByTimeAsync(24 * FIRST_PING);
     expect(resend).toHaveBeenCalledTimes(11);
@@ -113,7 +119,7 @@ describe("ChatCacheWarmer", () => {
   it("counts what the pings actually cost against the miss", async () => {
     warmer.view(CHAT);
     const { cached, resend } = request(async () => usage(100_000, 0, 2));
-    warmer.start(CHAT, cached);
+    warmer.start(CHAT, cached, MODEL);
 
     // After five pings costing 2, a sixth estimated at 1 still costs less than 11.5; a seventh
     // would not.
@@ -124,7 +130,7 @@ describe("ChatCacheWarmer", () => {
   it("drops a ping whose timer fires after the cached copy expired", async () => {
     warmer.view(CHAT);
     const { cached, resend } = request();
-    warmer.start(CHAT, cached);
+    warmer.start(CHAT, cached, MODEL);
 
     // The clock moves past the expiry without the timer firing, as when the Durable Object is busy.
     vi.setSystemTime(Date.now() + 5 * MINUTE);
@@ -135,7 +141,7 @@ describe("ChatCacheWarmer", () => {
   it("stops an hour after the turn", async () => {
     warmer.view(CHAT);
     const { cached, resend } = request(undefined, { cacheLifetime: 30 * MINUTE, expiryCost: 1000 });
-    warmer.start(CHAT, cached);
+    warmer.start(CHAT, cached, MODEL);
 
     // Pings at 29.5 and 59 minutes; the next would come after an hour.
     await vi.advanceTimersByTimeAsync(6 * 60 * MINUTE);
@@ -145,7 +151,7 @@ describe("ChatCacheWarmer", () => {
   it("doesn't warm a request whose miss costs no more than one ping", async () => {
     warmer.view(CHAT);
     const { cached, resend } = request(undefined, { expiryCost: 1 });
-    warmer.start(CHAT, cached);
+    warmer.start(CHAT, cached, MODEL);
 
     await vi.advanceTimersByTimeAsync(60 * MINUTE);
     expect(resend).not.toHaveBeenCalled();
@@ -155,7 +161,7 @@ describe("ChatCacheWarmer", () => {
     warmer.view(CHAT);
     const { cached, resend } = request();
     await vi.advanceTimersByTimeAsync(FIRST_PING);
-    warmer.start(CHAT, cached);
+    warmer.start(CHAT, cached, MODEL);
 
     await vi.advanceTimersByTimeAsync(60 * MINUTE);
     expect(resend).not.toHaveBeenCalled();
@@ -169,25 +175,25 @@ describe("ChatCacheWarmer", () => {
   ])("stops after a ping that $name", async ({ answer }) => {
     warmer.view(CHAT);
     const { cached, resend } = request(answer);
-    warmer.start(CHAT, cached);
+    warmer.start(CHAT, cached, MODEL);
 
     await vi.advanceTimersByTimeAsync(60 * MINUTE);
     expect(resend).toHaveBeenCalledTimes(1);
   });
 
-  it("stops on stop(), and when a newer request replaces the warmed one", async () => {
+  it("stops at the next turn, and when a newer request replaces the warmed one", async () => {
     warmer.view(CHAT);
     const first = request();
-    warmer.start(CHAT, first.cached);
-    warmer.stop(CHAT);
+    warmer.start(CHAT, first.cached, MODEL);
+    warmer.end(CHAT, "turn");
     await vi.advanceTimersByTimeAsync(60 * MINUTE);
     expect(first.resend).not.toHaveBeenCalled();
 
     const second = request();
-    warmer.start(CHAT, second.cached);
+    warmer.start(CHAT, second.cached, MODEL);
     await vi.advanceTimersByTimeAsync(2 * MINUTE);
     const third = request();
-    warmer.start(CHAT, third.cached);
+    warmer.start(CHAT, third.cached, MODEL);
     await vi.advanceTimersByTimeAsync(FIRST_PING);
     expect(second.resend).not.toHaveBeenCalled();
     expect(third.resend).toHaveBeenCalledTimes(1);
@@ -197,15 +203,71 @@ describe("ChatCacheWarmer", () => {
     warmer.view(CHAT);
     let answer!: (usage: Usage) => void;
     const { cached, resend } = request(() => new Promise(resolve => { answer = resolve; }));
-    warmer.start(CHAT, cached);
+    warmer.start(CHAT, cached, MODEL);
 
     await vi.advanceTimersByTimeAsync(FIRST_PING);
     expect(resend).toHaveBeenCalledTimes(1);
-    warmer.stop(CHAT);
+    warmer.end(CHAT, "turn");
     answer(usage(100_000));
     await vi.advanceTimersByTimeAsync(60 * MINUTE);
     expect(resend).toHaveBeenCalledTimes(1);
     expect(resent).toHaveBeenCalledExactlyOnceWith(CHAT, { usage: usage(100_000) });
+  });
+
+  describe("logs each pause", () => {
+    let logs: MockInstance<typeof console.info>;
+
+    beforeEach(() => {
+      logs = vi.spyOn(console, "info").mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    // The data that sets the warming limit includes returns after warming has stopped.
+    it("from the turn's last request to the next turn, though warming stopped", async () => {
+      warmer.view(CHAT);
+      warmer.start(CHAT, request().cached, MODEL);
+
+      await vi.advanceTimersByTimeAsync(3 * 60 * MINUTE);
+      // Warming has stopped, and the open pause keeps no timer to hold the Durable Object.
+      expect(vi.getTimerCount()).toBe(0);
+      expect(logs).not.toHaveBeenCalledWith(pauseEnded({}));
+      warmer.end(CHAT, "turn");
+      expect(logs).toHaveBeenLastCalledWith(pauseEnded({
+        gadgetId: WORKSPACE, chatId: CHAT, modelId: MODEL, pauseEnd: "turn",
+        durationMs: 3 * 60 * MINUTE, cacheLifetimeMs: 5 * MINUTE, resendCostUsd: 1,
+        missCostUsd: 11.5,
+      }));
+
+      // Deleting the chat during its next turn doesn't log the ended pause again.
+      logs.mockClear();
+      warmer.end(CHAT, "deleted");
+      expect(logs).not.toHaveBeenCalled();
+    });
+
+    it("once, when the last viewer leaves", async () => {
+      const leaveFirst = warmer.view(CHAT);
+      const leaveSecond = warmer.view(CHAT);
+      warmer.start(CHAT, request().cached, MODEL);
+
+      await vi.advanceTimersByTimeAsync(MINUTE);
+      leaveFirst();
+      expect(logs).not.toHaveBeenCalled();
+      leaveSecond();
+      leaveSecond();
+      warmer.end(CHAT, "turn");
+      expect(logs).toHaveBeenCalledExactlyOnceWith(
+          pauseEnded({ pauseEnd: "left", durationMs: MINUTE }));
+    });
+
+    it("only after a turn that ended in a viewed chat", () => {
+      warmer.start(CHAT, request().cached, MODEL);
+      warmer.view(CHAT);
+      warmer.end(CHAT, "turn");
+      expect(logs).not.toHaveBeenCalled();
+    });
   });
 });
 
@@ -233,7 +295,7 @@ describe("a workspace's warm pings", () => {
       impl.cacheWarmer.view(CHAT);
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       try {
-        impl.cacheWarmer.start(CHAT, request(async () => usage(100_000, 0, 0.25)).cached);
+        impl.cacheWarmer.start(CHAT, request(async () => usage(100_000, 0, 0.25)).cached, MODEL);
         await vi.advanceTimersByTimeAsync(2 * FIRST_PING);
       } finally {
         vi.useRealTimers();
