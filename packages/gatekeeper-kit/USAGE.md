@@ -562,6 +562,10 @@ provider" warning survives.
 substitutes for a provider idempotency key derived from the stable `ActionContext.id`, which is
 what makes a retry safe in the first place.
 
+Rejecting always withdraws the action, whatever its outcome at the provider: the gatekeeper stops
+tracking it, and an effect that already landed stays. So a `reject` hook is cleanup only and must
+not refuse because the outcome is uncertain; one that throws is logged and the record removed anyway.
+
 `submit` refuses a payload whose `dependsOn` names a reference that is neither resolved nor
 provided by a pending or claimed action: once its provider was rejected or failed, every apply
 would fail retryably, and an auto-approvable one would stall the drain behind it. A provider
