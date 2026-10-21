@@ -1,6 +1,6 @@
 // Structured Google Drive API client shared by configurators, sessions, and observer verification.
 
-import type { DriveObservation } from "./drive-observers";
+import type { DriveUnit } from "./file-subresources";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import { obsContext } from "./observability";
 
@@ -63,11 +63,17 @@ export type DriveScopeNode = {
   driveId?: string;
   trashed?: boolean;
   canListChildren?: boolean;
+  /** Present only when asked for, as observer checks do; a scope proof never needs it. */
+  canDownload?: boolean;
 };
 
 /** Field mask for the facts {@link DriveApi.getScopeNodes} uses to prove scope. */
 const DRIVE_SCOPE_NODE_FIELDS =
   "id,mimeType,parents,driveId,trashed,capabilities(canListChildren)";
+
+/** Field mask for {@link DriveApi.checkObservations}: a scope node, and whether it may be downloaded. */
+const DRIVE_OBSERVATION_FIELDS =
+  "id,mimeType,parents,driveId,trashed,capabilities(canListChildren,canDownload)";
 
 /**
  * Whether these facts describe a folder a binding may stand on: a live native folder whose
@@ -544,13 +550,16 @@ function parseDriveScopeNode(body: string, fileId: string): DriveScopeNode {
   }
   let parents = optionalParents(value.parents);
   let trashed = optionalBoolean(value.trashed, "file trashed");
-  let canListChildren = optionalCapabilities(value.capabilities)?.canListChildren;
+  let capabilities = optionalCapabilities(value.capabilities);
+  let canListChildren = capabilities?.canListChildren;
+  let canDownload = capabilities?.canDownload;
   return {
     id: fileId,
     ...optionalFields(value, ["mimeType", "driveId"]),
     ...(parents ? { parents } : {}),
     ...(trashed === undefined ? {} : { trashed }),
     ...(canListChildren === undefined ? {} : { canListChildren }),
+    ...(canDownload === undefined ? {} : { canDownload }),
   };
 }
 
@@ -943,16 +952,20 @@ export class DriveApi {
     return { copy, location: besideOriginal ? "besideOriginal" : "myDrive" };
   }
 
-  /** Fresh access checks for typed file and folder disclosure units. */
-  async checkObservations(observations: readonly DriveObservation[]): Promise<boolean[]> {
+  /**
+   * Fresh access checks for typed disclosure units. Content needs leave to download it, which Drive
+   * withholds from viewers when downloading is restricted; an omitted answer counts as no leave.
+   */
+  async checkObservations(observations: readonly DriveUnit[]): Promise<boolean[]> {
     return this.#batchGetFiles(
       observations.map(observation => observation.fileId),
-      DRIVE_SCOPE_NODE_FIELDS,
+      DRIVE_OBSERVATION_FIELDS,
       (part, _fileId, index) => {
         if (!batchPartAllowed(part)) return false;
         let observation = observations[index];
         if (observation.kind === "file") return true;
-        return isListableFolderNode(parseDriveScopeNode(part.body, observation.fileId));
+        let node = parseDriveScopeNode(part.body, observation.fileId);
+        return observation.kind === "content" ? node.canDownload === true : isListableFolderNode(node);
       },
     );
   }

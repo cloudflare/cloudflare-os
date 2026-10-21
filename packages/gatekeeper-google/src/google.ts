@@ -48,7 +48,7 @@ import { driveObserverTracker, type DriveObservation } from "./drive-observers";
 import {
   DOCS_SUBRESOURCE_NAMESPACE, DRIVE_SUBRESOURCE_NAMESPACE, fileSubresourceId, parseFileSubresource,
   requireFileSubresources, SHEETS_SUBRESOURCE_NAMESPACE, SLIDES_SUBRESOURCE_NAMESPACE,
-  type FileSubresource, type NativeFileSubresource,
+  type DriveUnit, type FileSubresource, type NativeFileSubresource,
 } from "./file-subresources";
 import { outsideScope, readFolderRoot, type FolderLocation } from "./drive-folder-scope";
 import {
@@ -490,8 +490,9 @@ type AccountSubresource =
 /**
  * What a subresource a Google gatekeeper asks an account about names: a calendar or its free/busy
  * (see parseCalendarSubresource), a BigQuery dataset, a Gmail mailbox's owner, a Google Chat
- * conversation, its member list or account (see parseChatSubresource), or a Drive file or folder or
- * a native Docs, Sheets or Slides file (see parseFileSubresource). Throws for any other ID.
+ * conversation, its member list or account (see parseChatSubresource), or a Drive file, its content
+ * or a folder, or a native Docs, Sheets or Slides file (see parseFileSubresource). Throws for any
+ * other ID.
  */
 function parseAccountSubresource(subresource: string): AccountSubresource {
   switch (parseSubresourceId(subresource).namespace) {
@@ -710,7 +711,7 @@ export class UserAccount extends DurableObject<Env> {
     let datasets = new Map<string, BigQueryDatasetRef>();
     let owners = new Map<string, string>();
     let conversations = new Map<string, { spaceName: string; members: boolean }>();
-    let driveUnits = new Map<string, DriveObservation>();
+    let driveUnits = new Map<string, DriveUnit>();
     let nativeFiles = new Map<string, NativeFileSubresource>();
     for (let [subresource, resource] of parsed) {
       if (resource.kind === "bigQueryDataset") datasets.set(subresource, resource.dataset);
@@ -719,7 +720,9 @@ export class UserAccount extends DurableObject<Env> {
       } else if (resource.kind === "chatSpace" || resource.kind === "chatSpaceMembers") {
         conversations.set(subresource,
           { spaceName: resource.spaceName, members: resource.kind === "chatSpaceMembers" });
-      } else if (resource.kind === "file" || resource.kind === "folder") {
+      } else if (
+        resource.kind === "file" || resource.kind === "folder" || resource.kind === "content"
+      ) {
         driveUnits.set(subresource, resource);
       } else if ("calendarId" in resource) {
         (resource.kind === "freeBusy" ? freeBusy : calendars).set(subresource, resource.calendarId);
@@ -1208,11 +1211,13 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 //     hasSpreadsheetAccess and hasPresentationAccess do without reusing answers for addObserver,
 //     which still checks the bound file for reads made before they reported it.
 //   - Google Drive — strategy C by file, kernel-checked: reads report each file whose metadata they
-//     return as `drive/file/<fileId>`, each folder they list as `drive/folder/<folderId>`, and each
-//     native file whose content they read as Docs, Sheets or Slides names it.
-//     checkSubresourceAccess checks a file or folder as verifyDriveObservations does (a Drive grant,
-//     then the file visible or the folder listable), which addObserver still uses, asking Drive
-//     every time, for the bound folder or file and the units recorded before reads reported them.
+//     return as `drive/file/<fileId>`, each file whose PDF text or bytes they return as
+//     `drive/content/<fileId>`, each folder they list as `drive/folder/<folderId>`, and each native
+//     file whose content they read as Docs, Sheets or Slides names it. checkSubresourceAccess
+//     checks a file, its content or a folder as verifyDriveObservations does (a Drive grant, then
+//     the file visible, downloadable or the folder listable), which addObserver still uses, asking
+//     Drive every time, for the bound folder or file and the units recorded before reads reported
+//     them.
 //   - Google Calendar — strategy B reporting subresources: every read reports the calendar or
 //     free/busy it returned, checked by checkSubresourceAccess, where a calendar needs the role
 //     hasCalendarWriterAccess also checks for the bound calendar at admission;
@@ -3443,7 +3448,8 @@ export class GoogleDriveGatekeeperImpl
 
   // Observers: every read reports the Drive units it depends on as subresources (see
   // file-subresources.ts), which the Workshop checks through verifyObserverAccess(): each file
-  // whose metadata it returned, each folder it listed, and each native file whose content it read,
+  // whose metadata it returned, each file whose PDF text or bytes it returned (as content, which
+  // needs leave to download), each folder it listed, and each native file whose content it read,
   // Docs, Sheets and Slides included. A read whose answer is relative to the connected account (an
   // account binding's empty search, a folder it cannot list, or a file it cannot see) reports `[]`;
   // a folder binding's search reports its folders even when empty. Account-binding invisible-file
@@ -3473,15 +3479,15 @@ export class GoogleDriveGatekeeperImpl
   /**
    * Checks the Drive, Docs, Sheets and Slides subresources this binding's reads report, failing
    * the whole call for any other ID. Each observer's UserAccount answers whether their own account
-   * can see each file, list each folder and open each native file, reusing recent answers (see
-   * UserAccount.checkSubresourceAccess).
+   * can see each file, download each file's content, list each folder and open each native file,
+   * reusing recent answers (see UserAccount.checkSubresourceAccess).
    */
   async verifyObserverAccess(
     observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
     subresources: string[],
   ): Promise<{ allowedObserverIds: string[] }> {
     requireFileSubresources(
-      subresources, ["file", "folder", "document", "spreadsheet", "presentation"]);
+      subresources, ["file", "content", "folder", "document", "spreadsheet", "presentation"]);
     return verifyGoogleSubresourceAccess(observers, subresources);
   }
 }
@@ -3714,7 +3720,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     let convert = this.#convertPdf;
     if (!convert) throw new Error("PDF reading is not available on this deployment.");
     let converted: DrivePdfText | undefined;
-    return core.nativeRead(id, PDF_MIME_TYPE)(async () => {
+    return core.nativeRead(id, PDF_MIME_TYPE, {content: true})(async () => {
       let download = (await this.#driveApi.openDownload(id).catch((error: unknown) => {
         throw lacksFileContentAccess(error) ? new Error(contentAccessMissing("PDFs")) : error;
       })).getReader();
@@ -3762,8 +3768,11 @@ export class GoogleDriveSessionImpl extends RpcTarget
     // The range is read whole inside the fetch, so a folder binding's re-proof after it covers
     // every byte returned. That re-proof re-reads the file's metadata anyway, so a folder binding
     // also refuses a rewrite that kept the size: its modification time moved.
-    return this.#fileReads.run(() => core.nativeRead(file.id, mimeType, current => {
-      if (current.modifiedTime !== file.modifiedTime) throw new Error(FILE_CHANGED);
+    return this.#fileReads.run(() => core.nativeRead(file.id, mimeType, {
+      content: true,
+      unchanged: current => {
+        if (current.modifiedTime !== file.modifiedTime) throw new Error(FILE_CHANGED);
+      },
     })(async (): Promise<DriveFileBytes> => {
       if (count === 0) return {mimeType, size, modifiedTime, offset, content: new ArrayBuffer(0)};
       let {content, fileSize} = await this.#driveApi.downloadRange(file.id, offset, count)

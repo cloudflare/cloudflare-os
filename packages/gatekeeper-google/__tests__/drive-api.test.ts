@@ -609,6 +609,19 @@ describe("bulk access verification", () => {
     ])).resolves.toEqual([true, true, false]);
   });
 
+  // A viewer of a file whose downloading is restricted still reads its metadata, so only
+  // canDownload tells content apart; Drive leaves it out unless asked, which must not pass.
+  it("passes a content unit only when the observer may download the file", async () => {
+    const calls = stubFetch([batchResponse([true, false, undefined].map(canDownload => ({
+      status: 200,
+      body: JSON.stringify({ id: "file", mimeType: "application/zip", capabilities: { canDownload } }),
+    })))]);
+
+    await expect(api().checkObservations(Array.from({ length: 3 }, () => ({ kind: "content", fileId: "file" }))))
+      .resolves.toEqual([true, false, false]);
+    expect(decodeURIComponent(calls[0].body ?? "")).toContain("capabilities(canListChildren,canDownload)");
+  });
+
 });
 
 describe("folder scope nodes", () => {

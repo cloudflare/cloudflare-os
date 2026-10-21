@@ -86,6 +86,20 @@ export type NativeRead = <T>(
   observe: (value: T) => NativeObservation,
 ) => Promise<T>;
 
+/** How a session core's `nativeRead` treats one read. */
+export type NativeReadOptions = {
+  /**
+   * Discloses the file's content -- its bytes or a PDF's text -- rather than what a viewer sees, so
+   * the read reports the file's content, which an observer passes only with leave to download.
+   */
+  content?: boolean;
+  /**
+   * Folder bindings only: sees the file's metadata from each re-proof, before and after the fetch,
+   * and throws to refuse a read of a file that has changed since it was opened.
+   */
+  unchanged?: (file: DriveFile) => void;
+};
+
 /**
  * Reads and authorizes with no live scope check, for a binding whose scope cannot move. Every read
  * reports `subresources`: the file it reads, or none for one not created yet.
@@ -103,16 +117,17 @@ export function unguardedNativeRead(
 }
 
 /**
- * The file a read of Drive file `fileId` reads, as its API names it: a Doc, Sheet or Slides
- * presentation through its own API, and any other file, a PDF included, through Drive.
+ * What a read of Drive file `fileId` reads: the file's content when Drive downloads it, and
+ * otherwise the Doc, Sheet or Slides presentation its own API names.
  */
-function nativeSubresource(fileId: string, mimeType: string): FileSubresource {
+function nativeSubresource(fileId: string, mimeType: string, content = false): FileSubresource {
+  if (content) return {kind: "content", fileId};
   switch (mimeType) {
     case GOOGLE_DOC_MIME_TYPE: return {kind: "document", fileId};
     case GOOGLE_SHEET_MIME_TYPE: return {kind: "spreadsheet", fileId};
     case GOOGLE_SLIDES_MIME_TYPE: return {kind: "presentation", fileId};
   }
-  return {kind: "file", fileId};
+  throw new Error(`Google Drive has no native read of ${mimeType} files.`);
 }
 
 /**
@@ -487,14 +502,15 @@ export class DriveSessionCore extends DriveCoreBase {
   }
 
   /**
-   * Native reads need no moving-scope check for immutable account/file capabilities, so no
-   * metadata is re-read for `_unchanged` to see. Each reports the file it reads; openNativeFile()
-   * already reported its Drive metadata.
+   * An account or exact-file capability's scope cannot move, so its reads need no live scope check
+   * and re-read no metadata for `unchanged` to see. Each reports the file it reads;
+   * openNativeFile() already reported its Drive metadata.
    */
   nativeRead(
-    fileId: string, expectedMimeType: string, _unchanged?: (file: DriveFile) => void,
+    fileId: string, expectedMimeType: string, {content}: NativeReadOptions = {},
   ): NativeRead {
-    return unguardedNativeRead(this.authorize, [nativeSubresource(fileId, expectedMimeType)]);
+    return unguardedNativeRead(
+      this.authorize, [nativeSubresource(fileId, expectedMimeType, content)]);
   }
 
   async #cursor(query: DriveListFilesOptions): Promise<Pager<DriveEntry>> {
@@ -670,15 +686,13 @@ export class DriveFolderSessionCore extends DriveCoreBase {
   /**
    * Revalidate the saved path and direct child on every Docs, Sheets, Slides, PDF or file read,
    * which reports the folder it listed and the child it found there as well as the file it read.
-   * `unchanged` sees the file's metadata from each check, before and after the fetch, and throws
-   * to refuse a read of a file that has changed since it was opened.
    */
   nativeRead(
-    fileId: string, expectedMimeType: string, unchanged?: (file: DriveFile) => void,
+    fileId: string, expectedMimeType: string, {content, unchanged}: NativeReadOptions = {},
   ): NativeRead {
     let subresources = fileSubresourceIds([
       this.#folderObservation(), {kind: "file", fileId},
-      nativeSubresource(fileId, expectedMimeType),
+      nativeSubresource(fileId, expectedMimeType, content),
     ]);
     let requireCurrent = async () => {
       let file = await this.#requireDirectFile(fileId);

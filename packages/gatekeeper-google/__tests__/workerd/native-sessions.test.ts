@@ -394,10 +394,11 @@ describe("Drive PDF reads", () => {
         description: "Check current metadata for Drive file pdf-1 and open it as a PDF.",
         subresources: ["drive/file/pdf-1"],
       },
+      // The text is the file's content, so a collaborator needs leave to download the PDF to see it.
       {
         title: "Read PDF from Google Drive",
         description: "Read the text of Drive file pdf-1.",
-        subresources: ["drive/file/pdf-1"],
+        subresources: ["drive/content/pdf-1"],
       },
     ]);
   });
@@ -577,10 +578,11 @@ describe("Drive file reads", () => {
         description: "Check current metadata for Drive file csv-1 and open it as a file.",
         subresources: ["drive/file/csv-1"],
       },
+      // The bytes are the file's content, so a collaborator needs leave to download it to see them.
       {
         title: "Read file from Google Drive",
         description: `Read ${CSV_BYTES.byteLength} bytes of Drive file csv-1, from byte 0.`,
-        subresources: ["drive/file/csv-1"],
+        subresources: ["drive/content/csv-1"],
       },
     ]);
   });
@@ -1268,7 +1270,8 @@ describe("folder-scoped native sessions", () => {
     expect(nativeCalls).toEqual(["download"]);
     expect(queue.observations.map(o => [o.title, o.subresources])).toEqual([
       ["Open PDF from Google Drive", [`drive/folder/${ROOT}`, "drive/file/pdf-1"]],
-      ["Read PDF from Google Drive", [`drive/folder/${ROOT}`, "drive/file/pdf-1"]],
+      ["Read PDF from Google Drive",
+        [`drive/folder/${ROOT}`, "drive/file/pdf-1", "drive/content/pdf-1"]],
     ]);
   });
 
@@ -1345,7 +1348,8 @@ describe("folder-scoped native sessions", () => {
     expect(nativeCalls).toEqual(["download"]);
     expect(queue.observations.map(o => [o.title, o.subresources])).toEqual([
       ["Open file from Google Drive", [`drive/folder/${ROOT}`, "drive/file/data-1"]],
-      ["Read file from Google Drive", [`drive/folder/${ROOT}`, "drive/file/data-1"]],
+      ["Read file from Google Drive",
+        [`drive/folder/${ROOT}`, "drive/file/data-1", "drive/content/data-1"]],
     ]);
   });
 
