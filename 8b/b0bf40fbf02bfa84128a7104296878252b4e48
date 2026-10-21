@@ -1,0 +1,27 @@
+packages/workshop-backend/__tests__/user-chatgpt.test.ts
+  s_78731ca06993b3::t_32a6c91f23c6b4 198
+  s_78731ca06993b3::t_3745ebed906a77 182-197,199-209
+packages/workshop-backend/src/user.ts
+  s_78731ca06993b3::t_017cab6c96650c 213-215,974,988,996-999,1023
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "8bb0bf40fbf02bfa84128a7104296878252b4e48",
+  "prompts": {},
+  "humans": {
+    "h_b6783f91d645b1": {
+      "author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  },
+  "sessions": {
+    "s_78731ca06993b3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "be635040-3481-4ab2-a414-734d35cc3c39",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

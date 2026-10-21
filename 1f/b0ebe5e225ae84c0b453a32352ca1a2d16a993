@@ -1,0 +1,33 @@
+packages/integration-tests/__tests__/google-fake.ts
+  s_7801bbf134048b::t_83a26fb5d00732 38-40
+scripts/release/testdata/golden-manifest.json
+  s_7801bbf134048b::t_88d2cca6dd5845 398-400
+  s_7801bbf134048b::t_e7963b3aa40dc5 397
+packages/gatekeeper-google/cloudflare.config.ts
+  s_7801bbf134048b::t_88d2cca6dd5845 2-3,11-15
+packages/gatekeeper-google/src/env.d.ts
+  s_7801bbf134048b::t_88d2cca6dd5845 1-9
+scripts/release/manifest-lib.ts
+  s_7801bbf134048b::t_88d2cca6dd5845 260-261
+  s_7801bbf134048b::t_3df0b6b0222802 123-125
+packages/gatekeeper-google/wrangler.jsonc
+  s_7801bbf134048b::t_88d2cca6dd5845 18-20
+packages/gatekeeper-google/worker-configuration.d.ts
+  s_7801bbf134048b::t_88d2cca6dd5845 2,5
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1fb0ebe5e225ae84c0b453a32352ca1a2d16a993",
+  "prompts": {},
+  "sessions": {
+    "s_7801bbf134048b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e69110af-6dc8-4306-90ae-798ba71a1a4e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
