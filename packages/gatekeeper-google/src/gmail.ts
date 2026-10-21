@@ -5358,6 +5358,7 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
     // An earlier apply's uncertain outcome does not block the rejection: it withdraws the action,
     // and whatever Gmail already did stays.
     const receipt = store.getDraftWriteReceipt(actionId);
+    const uncertain = store.isApplying(actionId);
     if (receipt && !receipt.missing && action.type === "draftCreate") {
       // The stable Message-ID proves the remote write is real even if its content changed before
       // reconciliation. Preserve that provider draft while rejecting the local pending action.
@@ -5387,6 +5388,9 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
         resource.version++;
         store.putDraft(resource);
       }
+      // Gmail may hold the update, so the retained forward body may no longer be the draft's;
+      // reads fall back to Gmail's own.
+      if (action.type === "draftUpdate" && uncertain) store.clearDraftForwardSnapshot(action.draftId);
     } else if (action.type === "labelCreate") {
       const resource = store.getLabel(action.label.logicalId);
       if (resource) {

@@ -4968,6 +4968,31 @@ describe("Gmail pending sends", () => {
     }
   });
 
+  it("reads and sends Gmail's own draft after denying an inline-forward update whose response was lost",
+      async () => {
+    const {gatekeeper, receive, values, mailbox} = mailHarness({loseDraftUpdateResponse: true});
+    const source = receive({attachments: [attachment]});
+    const session = await gatekeeper.startSession(approvalQueue());
+    await (await session.getMessage(source.id)).createForwardDraft(["recipient@example.com"], "Before");
+    await gatekeeper.applyAction(1);
+    const draft = (await (await session.listDrafts()).next())![0].draft;
+    await draft.update({text: "After"});
+    await expect(gatekeeper.applyAction(2)).rejects.toThrow(/connection lost after draft update/);
+
+    await gatekeeper.rejectAction(2);
+
+    expect(await values.has("gmail:applying:2")).toBe(false);
+    // Gmail holds the update, so reads show it, not the forward body retained from before.
+    const fresh = await gatekeeper.startSession(approvalQueue());
+    const current = (await (await fresh.listDrafts()).next())![0].draft;
+    expect((await current.getContent()).text).toContain("After");
+    // A send queued now is staged against what Gmail holds, so it is not refused as an outside edit.
+    await current.send();
+    await gatekeeper.applyAction(3);
+    expect(await values.has("pending:action:3")).toBe(false);
+    expect(mailbox.some(mail => mail.labelIds.includes("SENT"))).toBe(true);
+  });
+
   it.each(["update", "delete", "send"] as const)(
     "applies a fresh %s to an inline-forward calendar draft the old builder wrote", async operation => {
       const {gatekeeper, receive, drafts, mailbox} = mailHarness();
