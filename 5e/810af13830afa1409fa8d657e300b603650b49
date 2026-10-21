@@ -1,0 +1,24 @@
+packages/gatekeeper-kit/USAGE.md
+  s_c31bf147d9a35f::t_7d3c4da07b9200 565-568
+packages/gatekeeper-kit/__tests__/actions.test.ts
+  s_c31bf147d9a35f::t_9b9963bcfc7471 1068-1082,1288,1307,1309,1312-1313
+packages/gatekeeper-kit/src/actions.ts
+  s_c31bf147d9a35f::t_91b1d79781633f 695-698,707-713
+  s_c31bf147d9a35f::t_914ead8df00627 207-209
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "5e810af13830afa1409fa8d657e300b603650b49",
+  "prompts": {},
+  "sessions": {
+    "s_c31bf147d9a35f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "de85876d-a552-46dc-8098-f2602de083b7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
