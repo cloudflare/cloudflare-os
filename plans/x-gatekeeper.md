@@ -212,8 +212,7 @@ touches `workshop-backend` or `workshop-shared`: gatekeepers are discovered from
 - **`gatekeeper-spotify`**: read-time overlays for library and follow state and provisional `~N`
   playlists (`spotify.ts:1493-1638`). Not its refresh path, which has no single-flight.
 - **Google Chat** (`gatekeeper-google/src/chat.ts`): posting with approvals — pending-message
-  identity, attempt markers, refusing rejection once a send was attempted, revert as delete,
-  per-kind `autoApprovable`.
+  identity, attempt markers, revert as delete, per-kind `autoApprovable`.
 - **`gatekeeper-confluence`**: agent-supplied bytes captured in an `ActionFileStore` and uploaded
   at apply (`confluence.ts:1176-1186`, `confluence-actions.ts:172-190`).
 - **Hooks**: `gatekeeper-github/src/github-hooks.ts` and `gatekeeper-gitlab/src/gitlab-hooks.ts` —
