@@ -131,6 +131,45 @@ describe("descriptions", () => {
   });
 });
 
+describe("rejection", () => {
+  /** A host recording what a reject leaves of a publish's progress and send attempts. */
+  function rejectingHost() {
+    const progress = new Map<number, string[]>();
+    const attempts = new Map<string, { at: number; mediaIds: string[] }>();
+    const released: StoredDraft[][] = [];
+    const host = {
+      me: async () => me,
+      progress: { get: (id: number) => progress.get(id) ?? [], put: progress.set.bind(progress), delete: progress.delete.bind(progress) },
+      attempts: { get: attempts.get.bind(attempts), put: attempts.set.bind(attempts), delete: attempts.delete.bind(attempts) },
+      releaseImages: (drafts: StoredDraft[]) => void released.push(drafts),
+      invalidate: async () => {},
+    } as unknown as XActionHost;
+    const set = actions.bind(new ActionJournal<XAction>(fakeKv(), { namespace: "x" }), host);
+    const submit = <K extends keyof XActions>(kind: K, payload: XActions[K]) =>
+      set.submit({ submitAction: async () => {} } as never, kind, payload, { fence: { generation: me.id } });
+    return { set, submit, progress, attempts, released };
+  }
+
+  it("withdraws a part-published thread, forgetting its progress and the send X never confirmed", async () => {
+    const t = rejectingHost();
+    const id = await t.submit("createPost", { refs: ["~1", "~2"], drafts: [draft("one"), draft("two")], submittedAt: 0 });
+    t.progress.set(id, ["100"]);
+    t.attempts.set(`${id}:1`, { at: 0, mediaIds: [] });
+    await t.set.reject(id);
+    expect(t.progress.size).toBe(0);
+    expect(t.attempts.size).toBe(0);
+    expect(t.released).toHaveLength(1);
+  });
+
+  it("withdraws a List creation X never confirmed, forgetting the attempt", async () => {
+    const t = rejectingHost();
+    const id = await t.submit("createList", { ref: "~1", name: "Friends", owner: theirPost.author, submittedAt: 0 });
+    t.attempts.set(`${id}:0`, { at: 0, mediaIds: [] });
+    await t.set.reject(id);
+    expect(t.attempts.size).toBe(0);
+  });
+});
+
 describe("references between actions", () => {
   it("tracks what a create provides and what depends on it", () => {
     const create: XAction = { kind: "createPost", payload: { refs: ["~1", "~2"], drafts: [], submittedAt: 0 } };

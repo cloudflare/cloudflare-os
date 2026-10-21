@@ -334,13 +334,12 @@ describe("publishing", () => {
     });
     const [{ actionId }] = await t.submitted();
     expect(failure(await t.apply(actionId))).toMatch(/did not confirm whether this post was published/);
-    expect(failure(await t.reject(actionId))).toMatch(/never confirmed whether this post was published/);
     vi.setSystemTime(Date.now() + 6 * 60 * 1000);
     unwrap(await t.apply(actionId));
     expect(postsBy(t.x, ALICE.id)).toHaveLength(1);
   });
 
-  it("won't let a post X may have made be rejected, and posts it once X has had time to show it", async () => {
+  it("posts what X may have made once X has had time to show it", async () => {
     const t = await setup();
     vi.useFakeTimers({ toFake: ["Date"] });
     await t.run([["createPost", { text: "Maybe" }]]);
@@ -352,11 +351,41 @@ describe("publishing", () => {
     });
     const [{ actionId }] = await t.submitted();
     expect(failure(await t.apply(actionId))).toMatch(/did not confirm whether this post was published/);
-    expect(failure(await t.reject(actionId))).toMatch(/never confirmed whether this post was published/);
     expect(failure(await t.apply(actionId))).toMatch(/doesn't show this post yet/);
     vi.setSystemTime(Date.now() + 6 * 60 * 1000);
     unwrap(await t.apply(actionId));
     expect(postsBy(t.x, ALICE.id).map(post => post.text)).toEqual(["Maybe"]);
+  });
+
+  it("withdraws a post X never confirmed when it is rejected, asking X nothing", async () => {
+    const t = await setup();
+    await t.run([["createPost", { text: "Maybe" }]]);
+    // X made the post but its answer was lost, and its timeline doesn't show the post yet.
+    t.x.loseAnswer("POST", /^\/2\/tweets$/);
+    t.x.on("GET", new RegExp(`^/2/users/${ALICE.id}/tweets`), () => json({ meta: { result_count: 0 } }));
+    const [{ actionId }] = await t.submitted();
+    expect(failure(await t.apply(actionId))).toMatch(/did not confirm whether this post was published/);
+    const requests = t.x.requests.length;
+    expect(unwrap(await t.reject(actionId))).toBeUndefined();
+    expect(t.x.requests.length).toBe(requests);
+    expect(failure(await t.apply(actionId))).toMatch(/Unknown pending action/);
+    // What X already published stays there.
+    expect(postsBy(t.x, ALICE.id).map(post => post.text)).toEqual(["Maybe"]);
+    expect(t.x.count("POST", /^\/2\/tweets$/)).toBe(1);
+  });
+
+  it("withdraws a thread part-published when it is rejected, leaving the published posts on X", async () => {
+    const t = await setup();
+    await t.run([["createThread", [{ text: "One" }, { text: "Two" }, { text: "Three" }]]]);
+    let sends = 0;
+    t.x.on("POST", /^\/2\/tweets$/, () => ++sends === 2 ? new Response("upstream error", { status: 503 }) : undefined);
+    const [{ actionId }] = await t.submitted();
+    expect(failure(await t.apply(actionId))).toMatch(/did not confirm whether this post was published/);
+    expect(postsBy(t.x, ALICE.id).map(post => post.text)).toEqual(["One"]);
+    expect(unwrap(await t.reject(actionId))).toBeUndefined();
+    expect(failure(await t.apply(actionId))).toMatch(/Unknown pending action/);
+    expect(postsBy(t.x, ALICE.id).map(post => post.text)).toEqual(["One"]);
+    expect(t.x.count("POST", /^\/2\/tweets$/)).toBe(2);
   });
 
   it("refuses a reply X would refuse, to a post that doesn't summon the account", async () => {
@@ -598,7 +627,6 @@ describe("Lists", () => {
     });
     const [{ actionId }] = await t.submitted();
     expect(failure(await t.apply(actionId))).toMatch(/did not confirm whether this List was created/);
-    expect(failure(await t.reject(actionId))).toMatch(/never confirmed whether this List was created/);
     vi.setSystemTime(Date.now() + 6 * 60 * 1000);
     unwrap(await t.apply(actionId));
     expect(t.x.lists.size).toBe(1);
@@ -625,7 +653,7 @@ describe("Lists", () => {
     expect([...t.x.lists.keys()]).toEqual(["6"]);
   });
 
-  it("won't let a List X may have created be rejected, and creates it once X has had time to list it", async () => {
+  it("creates a List X may have created once X has had time to list it", async () => {
     const t = await setup();
     vi.useFakeTimers({ toFake: ["Date"] });
     // A List of the same name from long ago is not the one this action created.
@@ -639,13 +667,27 @@ describe("Lists", () => {
     });
     const [{ actionId }] = await t.submitted();
     expect(failure(await t.apply(actionId))).toMatch(/did not confirm whether this List was created/);
-    expect(failure(await t.reject(actionId))).toMatch(/never confirmed whether this List was created/);
     expect(failure(await t.apply(actionId))).toMatch(/doesn't show this List yet/);
     vi.setSystemTime(Date.now() + 6 * 60 * 1000);
     unwrap(await t.apply(actionId));
     expect([...t.x.lists.values()].map(list => list.name)).toEqual(["Friends", "Friends"]);
     unwrap(await t.revert(actionId));
     expect([...t.x.lists.keys()]).toEqual(["5"]);
+  });
+
+  it("withdraws a List X never confirmed when it is rejected, leaving any List X made", async () => {
+    const t = await setup();
+    await t.run([["createList", "Friends"]]);
+    t.x.loseAnswer("POST", /^\/2\/lists$/);
+    // X made the List but doesn't list it yet.
+    let looks = 0;
+    t.x.on("GET", /\/owned_lists/, () => ++looks >= 2 ? json({ meta: { result_count: 0 } }) : undefined);
+    const [{ actionId }] = await t.submitted();
+    expect(failure(await t.apply(actionId))).toMatch(/did not confirm whether this List was created/);
+    unwrap(await t.reject(actionId));
+    expect(failure(await t.apply(actionId))).toMatch(/Unknown pending action/);
+    expect(t.x.lists.size).toBe(1);
+    expect(t.x.count("POST", /^\/2\/lists$/)).toBe(1);
   });
 
   it("restores a List's details on revert", async () => {
