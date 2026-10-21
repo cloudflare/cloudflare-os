@@ -1,0 +1,41 @@
+packages/workshop-frontend/src/features/ai-models/ChatGptSignInCard.tsx
+  s_f4752a3f31547a::t_be202082c741a1 6,44-45,59,73,79-83
+packages/workshop-frontend/src/routes/providers.tsx
+  s_f4752a3f31547a::t_be202082c741a1 197-198
+  s_f4752a3f31547a::t_e4e1b65dd6c36c 199
+packages/workshop-frontend/src/features/ai-models/ChatGptCallbackPage.tsx
+  s_f4752a3f31547a::t_71df8c1ebbdbf8 1-26,28-65
+  s_f4752a3f31547a::t_c972c31e3803ee 27
+packages/workshop-frontend/src/features/ai-models/ChatGptCallbackPage.test.tsx
+  s_f4752a3f31547a::t_3385066c857902 1-33,35-69
+  s_f4752a3f31547a::t_c972c31e3803ee 34
+packages/workshop-frontend/src/features/ai-models/ChatGptSignInDialog.tsx
+  s_f4752a3f31547a::t_9ae1d82d6da7bc 1-146
+packages/workshop-frontend/src/routes/connect.chatgpt.tsx
+  s_f4752a3f31547a::t_e6c37c56ef4962 1-6
+packages/workshop-frontend/src/providersRoute.test.tsx
+  s_f4752a3f31547a::t_3385066c857902 169-170,195-243,245-251
+  s_f4752a3f31547a::t_c972c31e3803ee 244
+  s_f4752a3f31547a::t_a8c748dac1ce26 252
+packages/workshop-frontend/src/features/ai-models/useChatGptSignIn.ts
+  s_f4752a3f31547a::t_c972c31e3803ee 62,65
+  s_f4752a3f31547a::t_8607f0dd589900 1,6-12,16-21,38-43,55-61,63-64,66-68,71-72,83-87,92
+packages/workshop-frontend/src/routeTree.gen.ts
+  s_f4752a3f31547a::t_3385066c857902 24,90-94,129,148,168,189,208,227,247,340-346,391
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1366fe545ec70bf49da38a3d1b2e0014fa7af87b",
+  "prompts": {},
+  "sessions": {
+    "s_f4752a3f31547a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2a8928a7-4e3d-4b4d-8e6a-5564c5c9710a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
