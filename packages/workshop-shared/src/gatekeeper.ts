@@ -1156,6 +1156,10 @@ export interface Gatekeeper<Session> extends DurableObject {
    * Indicates that an action was rejected by the user. The gatekeeper should clean up any
    * associated storage.
    *
+   * Rejecting withdraws the action and must succeed even when the provider outcome of an earlier
+   * `applyAction()` is uncertain: refusing would leave the user no way to clear it. The gatekeeper
+   * stops tracking the action; an effect that already landed at the provider stays.
+   *
    * If the returned `restart` flag is true, rejecting this action requires restarting the Gadget.
    * This is sometimes needed by gatekeepers that simulate actions as if they had been approved --
    * the session may be in a state that is difficult to roll back without confusing the Gadget.
