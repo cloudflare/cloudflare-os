@@ -1,0 +1,33 @@
+packages/gatekeeper-x/__tests__/x-actions.test.ts
+  s_c31bf147d9a35f::t_36ed4e6ef48cf1 166
+  s_c31bf147d9a35f::t_c5f74ce1f49f07 134-165,167-172
+packages/gatekeeper-x/__tests__/workerd/actions.test.ts
+  s_c31bf147d9a35f::t_3898e39ea04618 385
+  s_c31bf147d9a35f::t_57c53de28bc34f 342,360-384,386-390,656,678-691
+  s_c31bf147d9a35f::t_8387ee9acbec94 692
+AGENTS.md
+  s_c31bf147d9a35f::t_c5ba424750a335 45
+packages/gatekeeper-x/src/x-actions.ts
+  s_c31bf147d9a35f::t_80762271f8d761 648-649,651-653,703,732,963-964
+plans/x-gatekeeper.md
+  s_c31bf147d9a35f::t_c5ba424750a335 700-701
+  s_c31bf147d9a35f::t_13ac39ba3f42b7 1109-1111
+packages/gatekeeper-x/README.md
+  s_c31bf147d9a35f::t_c5ba424750a335 118,122-123
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1a9b20df5f91ee7c15cd84480f3510933e606663",
+  "prompts": {},
+  "sessions": {
+    "s_c31bf147d9a35f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "de85876d-a552-46dc-8098-f2602de083b7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
