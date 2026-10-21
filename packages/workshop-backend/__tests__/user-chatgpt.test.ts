@@ -179,6 +179,34 @@ describe("Sign in with ChatGPT", () => {
     await expect(user.getChatGptAccessToken()).rejects.toThrow("Sign in with ChatGPT");
   }));
 
+  it("stays signed out when it signs out while a sign-in is finishing", () => inUser(async user => {
+    const { callbackUrl, nonce } = await begin(user);
+    let answer!: (body: object) => void;
+    const { fetchFn } = tokenEndpoint(new Promise<object>(resolve => answer = resolve));
+    const completing = user.completeChatGptSignIn(callbackUrl);
+    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalled());
+    await user.signOutChatGpt();
+    answer(tokens(nonce));
+    await expect(completing).rejects.toThrow("signed out or started another sign-in");
+    expect(await user.getChatGptSignIn()).toEqual({ state: "signedOut" });
+  }));
+
+  it("keeps a sign-in finished while an earlier one was finishing", () =>
+      inUser(async (user, storage) => {
+    const first = await begin(user);
+    let answer!: (body: object) => void;
+    const { fetchFn } = tokenEndpoint(new Promise<object>(resolve => answer = resolve));
+    const completing = user.completeChatGptSignIn(first.callbackUrl);
+    await vi.waitFor(() => expect(fetchFn).toHaveBeenCalled());
+    const second = await begin(user);
+    fetchFn.mockImplementationOnce(async () => Response.json(
+        tokens(second.nonce, { access_token: "second-access" })));
+    await user.completeChatGptSignIn(second.callbackUrl);
+    answer(tokens(first.nonce));
+    await expect(completing).rejects.toThrow("signed out or started another sign-in");
+    expect(storage.chatGptCredential.get()?.accessToken).toBe("second-access");
+  }));
+
   describe("while unavailable", () => {
     it.each([
       ["turned off", { admin: { chatGptSignInEnabled: false } }],

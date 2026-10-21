@@ -212,6 +212,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   #notificationSubscribers = new Map<object, RpcStub<NotificationSubscriber>>();
   // The ChatGPT refresh in flight, which concurrent token requests share (see getChatGptAccessToken()).
   #chatGptRefresh?: Promise<ChatGptCredential>;
+  // Moved on by every sign-in and sign-out, so that a sign-in finishing after one of them leaves
+  // the credential alone. In memory, since the exchange it fences can't outlive this instance.
+  #chatGptSignInGeneration = 0;
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -996,6 +999,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let { authorizeUrl, pending } =
         await startSignIn(agentHostId, chatGptRedirectUri(this.env.PUBLIC_BASE_URL));
     this.storage.pendingChatGptSignIn.put(pending);
+    ++this.#chatGptSignInGeneration;
     logger.info("ChatGPT sign-in started", { event: "chatgpt.signin.started" });
     return { authorizeUrl, redirectUri: pending.redirectUri };
   }
@@ -1009,12 +1013,17 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let callback = parseCallback(callbackUrl, pending);
     // Consumed before the exchange, so that the address can't complete a second sign-in.
     this.storage.pendingChatGptSignIn.put(null);
+    let generation = ++this.#chatGptSignInGeneration;
     let credential: ChatGptCredential;
     try {
       credential = await exchangeCode(callback, pending);
     } catch (error) {
       logger.warn("ChatGPT sign-in failed", { event: "chatgpt.signin.failed", error });
       throw error;
+    }
+    if (generation !== this.#chatGptSignInGeneration) {
+      logger.info("ChatGPT sign-in superseded", { event: "chatgpt.signin.superseded" });
+      throw new Error("You signed out or started another sign-in while this one was finishing.");
     }
     this.storage.chatGptCredential.put(credential);
     logger.info("ChatGPT sign-in completed", { event: "chatgpt.signin.completed" });
@@ -1039,6 +1048,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   async signOutChatGpt(): Promise<void> {
     this.storage.chatGptCredential.put(null);
     this.storage.pendingChatGptSignIn.put(null);
+    ++this.#chatGptSignInGeneration;
     logger.info("ChatGPT sign-out", { event: "chatgpt.signin.signedOut" });
   }
 
