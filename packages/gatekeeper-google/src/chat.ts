@@ -210,6 +210,22 @@ class ChatStore {
     return this.#kv.get(`chat:attempted:${id}`) !== undefined;
   }
 
+  /** Remember a send denied after an attempt, which Google may still have posted. */
+  markWithdrawnAttempt(id: number): void {
+    this.#kv.put(`chat:withdrawnAttempt:${id}`, true);
+    // Action ids count up, so the lowest are the oldest.
+    const ids = [...this.#kv.list({ prefix: "chat:withdrawnAttempt:" })]
+      .map(([key]) => Number(key.slice("chat:withdrawnAttempt:".length)))
+      .toSorted((a, b) => a - b);
+    for (const old of ids.slice(0, Math.max(0, ids.length - MAX_WITHDRAWN_ATTEMPTS))) {
+      this.#kv.delete(`chat:withdrawnAttempt:${old}`);
+    }
+  }
+
+  wasWithdrawnAttempt(id: number): boolean {
+    return this.#kv.get(`chat:withdrawnAttempt:${id}`) !== undefined;
+  }
+
   /** Later edits queued against `from` now expect `to`, the form Chat stored it in. */
   rebaseEdits(spaceName: string, messageName: string, from: string, to: string): void {
     if (from === to) return;
@@ -441,7 +457,11 @@ function resolveMessage(
   const sent = ctx.store.sentMessage(queued);
   if (sent !== undefined) return { committed: sent };
   const action = ctx.store.get(queued);
-  if (action?.type !== "sendMessage") throw new Error("This message was never created.");
+  if (action?.type !== "sendMessage") {
+    throw new Error(ctx.store.wasWithdrawnAttempt(queued)
+      ? `This message was denied, ${WITHDRAWN_ATTEMPT}`
+      : "This message was never created.");
+  }
   if (action.threadName) resolveThread(ctx, action.threadName);
   return { queued, action };
 }
@@ -462,8 +482,9 @@ function resolveThread(ctx: ChatScope, name: string) {
   if (id !== undefined) {
     const action = ctx.store.get(id);
     if (action?.type !== "sendMessage" || !action.startsThread) {
-      throw new Error(
-        "This thread's first message was rejected, so the thread doesn't exist. Reject anything queued in it.");
+      throw new Error(ctx.store.wasWithdrawnAttempt(id)
+        ? `This thread's first message was denied, ${WITHDRAWN_ATTEMPT} Reject anything queued in it.`
+        : "This thread's first message was rejected, so the thread doesn't exist. Reject anything queued in it.");
     }
     return { name, spaceName: requireInScope(ctx, action.spaceName), pending: true };
   }
@@ -680,6 +701,10 @@ async function queueChatMessage(
 
 /** Most people besides the caller that a direct message or group chat can be set up with. */
 const MAX_CONVERSATION_PEOPLE = 49;
+/** Sends denied after an attempt that are remembered; the oldest go first. */
+const MAX_WITHDRAWN_ATTEMPTS = 100;
+const WITHDRAWN_ATTEMPT = "but an earlier attempt may already have posted it in Google Chat. " +
+  "Read the conversation before posting it again.";
 
 const LEAVE_YOURSELF_OUT = "Leave yourself out: you are in every conversation you send to.";
 
@@ -1751,6 +1776,7 @@ export class GoogleChatGatekeeperImpl
     // Later actions in the same conversation were written against a simulation that included
     // this one, so the gadget has to start again.
     const restart = store.listForSpace(chatActionSpaceName(action)).some(entry => entry.id > actionId);
+    if (action.type === "sendMessage" && store.wasAttempted(actionId)) store.markWithdrawnAttempt(actionId);
     store.remove(actionId);
     return restart ? { restart } : undefined;
   }

@@ -4993,6 +4993,27 @@ describe("Gmail pending sends", () => {
     expect(mailbox.some(mail => mail.labelIds.includes("SENT"))).toBe(true);
   });
 
+  it("forwards once in reads after denying an inline-forward update an update still builds on",
+      async () => {
+    const {gatekeeper, receive} = mailHarness({loseDraftUpdateResponse: true});
+    const source = receive({attachments: [attachment]});
+    const session = await gatekeeper.startSession(approvalQueue());
+    await (await session.getMessage(source.id)).createForwardDraft(["recipient@example.com"], "Before");
+    await gatekeeper.applyAction(1);
+    const draft = (await (await session.listDrafts()).next())![0].draft;
+    await draft.update({text: "After"});
+    await expect(gatekeeper.applyAction(2)).rejects.toThrow(/connection lost after draft update/);
+    await draft.update({text: "Third"});
+
+    await gatekeeper.rejectAction(2);
+
+    const fresh = await gatekeeper.startSession(approvalQueue());
+    const current = (await (await fresh.listDrafts()).next())![0].draft;
+    const {text} = await current.getContent();
+    expect(text).toContain("After");
+    expect(text?.split("Forwarded message")).toHaveLength(2);
+  });
+
   it.each(["update", "delete", "send"] as const)(
     "applies a fresh %s to an inline-forward calendar draft the old builder wrote", async operation => {
       const {gatekeeper, receive, drafts, mailbox} = mailHarness();
@@ -6240,6 +6261,19 @@ describe("Gmail pending sends", () => {
     await (await session.getMessage(id)).mutate("star");
     await gatekeeper.applyAction(2);
     expect(mailbox[1].labelIds).toEqual(["SENT", "STARRED"]);
+  });
+
+  it("reports that a send denied while its outcome was unknown may already have been sent",
+      async () => {
+    const {gatekeeper, saveDraft} = mailHarness({loseDraftSendResponse: true});
+    saveDraft(calendarSpec());
+    const session = await gatekeeper.startSession(approvalQueue());
+    const id = await (await (await session.listDrafts()).next())![0].draft.send();
+    await expect(gatekeeper.applyAction(1)).rejects.toThrow(/connection lost after draft send/);
+
+    const {error} = await (await session.getMessage(id)).readAcrossDecision(1, "reject");
+
+    expect(error).toMatch(/denied while its outcome was unknown, so it may already have been sent/);
   });
 
   it("reports that the message was not sent once the send is rejected", async () => {

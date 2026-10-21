@@ -996,6 +996,21 @@ describe("Google Chat gatekeeper behaviors", () => {
     expect(backend.state.deletes).toHaveLength(1);
   });
 
+  it("tells a message capability whose send was denied after an attempt that it may have posted", async () => {
+    const backend = chatBackend();
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using attempted = (await space.post("hello")).message;
+    using unattempted = (await space.post("world")).message;
+    backend.state.createFailure = 503;
+    await expect(chat.applyAction(1)).rejects.toThrow();
+    await chat.rejectAction(1);
+    await chat.rejectAction(2);
+    await expect(Promise.resolve(attempted.edit("again"))).rejects.toThrow(
+      /denied, but an earlier attempt may already have posted it/);
+    await expect(Promise.resolve(unattempted.edit("again"))).rejects.toThrow(/never created/);
+  });
+
   it("withdraws a send that may have posted when it is rejected, leaving any post in Google Chat", async () => {
     const backend = chatBackend();
     const chat = chatHarness(backend);

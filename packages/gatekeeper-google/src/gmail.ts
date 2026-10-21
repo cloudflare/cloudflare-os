@@ -73,6 +73,8 @@ const GMAIL_RESTRICTED_THREAD_RESULT_PAGE_SIZE = 20;
 const MAX_GMAIL_RESTRICTED_THREAD_MESSAGES = 1000;
 const MAX_GMAIL_RESTRICTED_THREAD_PROVIDER_PAGES = 20;
 const GMAIL_FORWARD_SNAPSHOT_ORPHAN_GRACE_MS = 60 * 60 * 1000;
+/** Sends denied while their outcome was unknown that are remembered; the oldest go first. */
+const GMAIL_WITHDRAWN_SEND_MAX = 100;
 // Keep draft inspection aligned with the maximum inline-forward message size.
 const MAX_GMAIL_DRAFT_MIME_BYTES = MAX_GMAIL_FORWARD_SOURCE_BYTES;
 const GMAIL_LOGICAL_ID_RE = /^[A-Za-z0-9_-]{1,256}$/;
@@ -360,6 +362,9 @@ class GmailStore {
     return `gmail:sentAlias:${gmailMessageIdQueryValue(rfcMessageId)}`;
   }
   #sentProviderKey(providerId: string) { return `gmail:sentProvider:${providerId}`; }
+  #withdrawnSendKey(rfcMessageId: string) {
+    return `gmail:withdrawnSend:${gmailMessageIdQueryValue(rfcMessageId)}`;
+  }
 
   #bumpActionGeneration(): void {
     this.#kv.put("pending:actionGeneration", this.actionGeneration() + 1);
@@ -407,6 +412,20 @@ class GmailStore {
     if (action) {
       for (const file of actionFileReferences(action)) this.releaseFile(file);
     }
+  }
+
+  /** Remembers a send denied while its outcome was unknown, which Gmail may still have delivered. */
+  markSendWithdrawn(rfcMessageId: string): void {
+    this.#kv.put(this.#withdrawnSendKey(rfcMessageId), Date.now());
+    const marks = [...this.#kv.list<number>({prefix: "gmail:withdrawnSend:"})]
+      .toSorted(([, a], [, b]) => a - b);
+    for (const [key] of marks.slice(0, Math.max(0, marks.length - GMAIL_WITHDRAWN_SEND_MAX))) {
+      this.#kv.delete(key);
+    }
+  }
+
+  wasSendWithdrawn(rfcMessageId: string): boolean {
+    return this.#kv.get<number>(this.#withdrawnSendKey(rfcMessageId)) !== undefined;
   }
 
   markApplying(id: number): void { this.#kv.put(this.#applyingKey(id), Date.now()); }
@@ -1830,9 +1849,13 @@ function pendingForwardSnapshot(
       description: "Inline forward source snapshot.",
     };
   }
+  // Skipped like the overlay skips them: an action built on a rejected one never applies, and
+  // its snapshot would rebuild the forward on top of a body Gmail may already have.
+  const decisions = store.decisions();
   const actions = store.listActions()
     .filter(({action}) => isDraftAction(action) &&
-      store.resolveDraftId(actionResourceId(action)!) === logicalId)
+      store.resolveDraftId(actionResourceId(action)!) === logicalId &&
+      !(action.dependsOn ?? []).some(id => decisions.get(id) === "rejected"))
     .toReversed();
   for (const {action} of actions) {
     const snapshot = actionSourceAttachment(action);
@@ -3598,7 +3621,8 @@ class GmailMessageStub extends ApprovalQueueRpcTarget implements GmailMessage {
  * Gmail has no such message until the send is approved, so until then this serves the message
  * from the pending action, as the email that will be sent. Once the send is delivered the same
  * capability is Gmail's copy, with nothing for its holder to do; if the send is rejected instead,
- * it reports that the message was not sent. Each call works out afresh where the message stands.
+ * it reports that the message was not sent, or, when the rejected send's outcome was unknown, that
+ * it may already have been. Each call works out afresh where the message stands.
  *
  * The simulated message is read-only. Changing, answering or forwarding it would queue an action
  * on a message that has no Gmail ID yet, and new mail has no thread until Gmail assigns one.
@@ -3627,7 +3651,12 @@ class GmailPendingMessageStub extends ApprovalQueueRpcTarget implements GmailMes
     }
     const overlay = loadGmailOverlay(this.#ctx.store);
     const sent = overlay.sent.find(candidate => candidate.rfcMessageId === this.#rfcMessageId);
-    if (!sent) throw new Error("This message was not sent.");
+    if (!sent) {
+      throw new Error(this.#ctx.store.wasSendWithdrawn(this.#rfcMessageId)
+        ? "This send was denied while its outcome was unknown, so it may already have been sent. " +
+          "Check Sent mail before sending it again."
+        : "This message was not sent.");
+    }
     return {sent, overlay};
   }
 
@@ -5364,6 +5393,9 @@ export class GmailGatekeeperImpl extends DurableObject<Env, GmailGatekeeperImplP
       // reconciliation. Preserve that provider draft while rejecting the local pending action.
       store.mapDraftToProvider(action.draft.logicalId, receipt.draftId, actionId);
     }
+    const sentMessageId = action.type === "send" ? ("spec" in action ? action.spec.messageId : undefined)
+      : action.type === "draftSend" ? action.messageId : undefined;
+    if (uncertain && sentMessageId) store.markSendWithdrawn(sentMessageId);
     store.setDecision(actionId, "rejected");
     store.removeAction(actionId);
     store.clearApplying(actionId);
