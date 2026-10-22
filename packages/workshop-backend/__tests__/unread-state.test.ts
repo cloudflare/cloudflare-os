@@ -438,6 +438,33 @@ describe("private horizons and coalesced dirty threads", () => {
     await withImpl(fixture.workspace, async impl => expect([...impl.storage.dirtyChats.list()]).toEqual([]));
   });
 
+  it.each(["read", "unread"] as const)("preserves pending alerts when %s creates the cursor before first fanout", async command => {
+    const fixture = await setup();
+    const id = crypto.randomUUID();
+    using delivered = vi.spyOn(UserDurableObject.prototype, "publishNotification").mockResolvedValue(undefined);
+    await withImpl(fixture.workspace, async impl => {
+      const release = Promise.withResolvers<void>();
+      const restore = interceptDelivery(impl, async (user, ...args) => {
+        await release.promise;
+        await user.messageArrived(...args);
+      });
+      try {
+        for (const sequence of [0, 10]) impl.storage.chats.put({chatId: 1, sequence, timestamp: new Date(1_000 + sequence),
+          type: "message", author: {type: "agent", id: "test", name: "Test"}, message: "Pending activity"});
+        impl.storage.nextChatSequences.put({chatId: 1, nextSequence: 11});
+        impl.storage.chatNotifications.put({id, chatId: 1, sequence: 10,
+          userId: fixture.user.id.toString(), kind: "permissionRequested"});
+        const user = impl.users.get(impl.users.idFromString(fixture.user.id.toString()));
+        if (command === "read") await user.markChatRead(receipt(fixture, 0));
+        else await user.markChatUnread(fixture.workspaceId, 1, 0);
+      } finally { release.resolve(); restore(); }
+      await impl.deliverDirtyChats();
+    });
+    await settled(fixture);
+    expect(delivered.mock.calls.map(([event]) => event.id)).toEqual([id]);
+    expect(await cursor(fixture)).toMatchObject({notifiedThroughSequence: 10});
+  });
+
   it("does not consume an undelivered alert when a snapshot beats delayed fanout", async () => {
     const fixture = await setup();
     const id = crypto.randomUUID();
@@ -772,6 +799,42 @@ describe("private horizons and coalesced dirty threads", () => {
     expect(await reader.getUnreadState()).toMatchObject({chats: [], unreadMessageCount: 0});
     await reader.updateSharedGadgetRole(fixture.workspaceId, "use");
     expect(await reader.getUnreadState()).toMatchObject({chats: [], unreadMessageCount: 0});
+  });
+
+  it("discards an old recount after workspace removal and readmission", async () => {
+    const fixture = await setup();
+    const {reader, owner} = await addReader(fixture);
+    const readerFixture = {...fixture, user: reader};
+    await append(fixture, 0);
+    await append(fixture, 10);
+    await reader.markChatRead(receipt(readerFixture, 0));
+    const {OverseerDurableObject} = await import("../src/overseer.js");
+    const original = OverseerDurableObject.prototype.getChatStateForUser;
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    using _recount = vi.spyOn(OverseerDurableObject.prototype, "getChatStateForUser")
+      .mockImplementationOnce(async function(...args) {
+        const result = await original.apply(this, args);
+        entered.resolve();
+        await release.promise;
+        return result;
+      });
+    await runInDurableObject(reader, async (instance, ctx) => {
+      const storage = makeUserStorage(ctx.storage);
+      const reading = instance.markChatUnread(fixture.workspaceId, 1, 0);
+      let admission: Promise<void> | undefined;
+      try {
+        await entered.promise;
+        await instance.forgetSharedGadget(fixture.workspaceId);
+        admission = instance.recordSharedGadgetOpen(fixture.workspaceId, "Workspace", owner, "build",
+          [{chatId: 1, notifiedThroughSequence: 10}]);
+        expect(storage.gadgets.get(fixture.workspaceId)).toBeDefined();
+      } finally {
+        release.resolve();
+        await Promise.all([reading, admission]);
+      }
+      expect(storage.chatReadCursors.get(`${fixture.workspaceId}:1`)).toMatchObject({readThroughSequence: 10,
+        unreadCount: 0, notifiedThroughSequence: 10});
+    });
   });
 
   it("does not consume a new thread's pending arrival when an established collaborator reopens", async () => {

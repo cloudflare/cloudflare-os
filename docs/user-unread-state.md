@@ -76,6 +76,8 @@ one in-memory mutex per thread, held across fetches and delivery. Waiters rechec
 acquiring it, so clean threads need no calculation. A reset discards the mutex and its holder;
 persisted dirty bits and alarms restart unfinished work without a durable lock to strand.
 Snapshots do not acquire that mutex or contact the source: they report the last committed local state.
+The in-memory membership entry also identifies that listing's lifetime: removal invalidates queued
+or in-flight work, so an old response cannot recreate cursors after a later readmission.
 
 Read commands count first, then commit horizon and count in one synchronous update. Commands are
 processed in per-thread mutex order: mark-read only advances the horizon, while mark-unread sets
@@ -98,6 +100,7 @@ The User DO fetches candidates after `notifiedThroughSequence`, in order. For ea
 awaits delivery (or an intentional policy skip such as mute), then persists the horizon. Three
 coalesced candidates still produce three delivery attempts. A reset/lost ACK retries the same
 UUID, so the notification service's existing deduplication boundary can recognize it.
+Read commands do not consume pending alerts, even when creating the cursor before first fanout.
 One source RPC returns both counts and candidates. If only notification delivery remains dirty,
 that same RPC skips the unread-history count. There is no separate notification processor or mutex.
 
