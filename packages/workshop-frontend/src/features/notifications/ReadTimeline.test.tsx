@@ -21,8 +21,7 @@ const snapshot = (_update = 1, readThroughSequence = -1): UserUnreadState => ({
     {
       workspaceId: "workspace",
       chatId: 1,
-      chatTitle: "Demo",
-      latestSequence: 2,
+
       readThroughSequence,
       unreadMessageCount: Math.max(0, 2 - readThroughSequence),
     },
@@ -49,14 +48,16 @@ describe("timeline read/unread experience", () => {
   const loadEarlier = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
   const navigate = vi.fn<() => void>();
 
-  const View = ({ oldest = 0, loadingEarlier = false }: { oldest?: number; loadingEarlier?: boolean }) => {
+  const View = ({ oldest = 0, loadingEarlier = false, latestSequence = 2 }: {
+    oldest?: number; loadingEarlier?: boolean; latestSequence?: number;
+  }) => {
     const viewport = useRef<HTMLDivElement>(null);
     return (
       <div ref={viewport} data-viewport>
         <ReadTimeline
           workspaceId="workspace"
           chatId={1}
-          container={viewport}
+          container={viewport} latestSequence={latestSequence}
           oldestSequence={oldest}
           loadingEarlier={loadingEarlier}
           loadEarlier={loadEarlier}
@@ -147,6 +148,21 @@ describe("timeline read/unread experience", () => {
     });
   });
 
+  it("can mark an untouched legacy thread unread without initializing it on open", async () => {
+    await render();
+    await update({chats: [], unreadChatCount: 0, unreadMessageCount: 0});
+    await settle();
+    expect(markChatRead).not.toHaveBeenCalled();
+    const trigger = container.querySelector<HTMLButtonElement>('[data-read-start="1"] button')!;
+    await act(async () => trigger.click());
+    await act(async () => document.querySelector<HTMLElement>('[role="menuitem"]')!.click());
+    expect(markChatUnread).toHaveBeenCalledExactlyOnceWith("workspace", 1, 1);
+    await update(snapshot(1, 0));
+    await settle();
+    expect(container.textContent).toContain("automatic reading paused");
+    expect(markChatRead).not.toHaveBeenCalled();
+  });
+
   it("does not acknowledge hidden documents, unfocused windows or a zero-size pane", async () => {
     await render();
     await update(snapshot());
@@ -232,6 +248,34 @@ describe("timeline read/unread experience", () => {
     await settle();
     expect(markChatRead).not.toHaveBeenCalled();
     expect(container.textContent).toContain("automatic reading paused");
+  });
+
+  it.each([0, 2])("resumes explicit reading when a message beats the mark-read ACK (history starts at %s)", async oldest => {
+    const earlier = (readThroughSequence: number): UserUnreadState => ({
+      ...snapshot(1, readThroughSequence),
+      chats: [{...snapshot(1, readThroughSequence).chats[0], unreadMessageCount: readThroughSequence < 1 ? 1 : 0}],
+    });
+    await render(<View oldest={oldest} latestSequence={1} />);
+    await update(earlier(1));
+    await settle();
+    await update(earlier(0));
+    await settle();
+    expect(container.textContent).toContain("automatic reading paused");
+    const ack = Promise.withResolvers<void>();
+    markChatRead.mockReturnValueOnce(ack.promise);
+    const button = [...container.querySelectorAll("button")].find(button => button.textContent === "Mark thread read")!;
+    await act(async () => button.click());
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({workspaceId: "workspace", chatId: 1, throughSequence: 1});
+    await render(<View oldest={oldest} latestSequence={2} />);
+    await update(snapshot(2, 1)); // Message 2 arrives while the receipt for message 1 is pending.
+    await act(async () => ack.resolve());
+    await settle();
+    expect(container.textContent).not.toContain("automatic reading paused");
+    expect(markChatRead).toHaveBeenCalledOnce();
+    visibleBottom = 350;
+    await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
+    await settle();
+    expect(markChatRead).toHaveBeenLastCalledWith({workspaceId: "workspace", chatId: 1, throughSequence: 2});
   });
 
   it("loads older history before acknowledging a newer page, without endlessly retrying a failed page", async () => {

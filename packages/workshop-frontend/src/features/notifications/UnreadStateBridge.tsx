@@ -33,7 +33,7 @@ type UnreadContextValue = {
   state?: UserUnreadState;
   markRead: (chat: ChatReadState, throughSequence?: number) => Promise<void>;
   markManyRead: (chats: ChatReadState[]) => Promise<void>;
-  markUnread: (chat: ChatReadState, fromSequence: number) => Promise<void>;
+  markUnread: (chat: ChatReadState, fromSequence?: number) => Promise<void>;
 };
 const UnreadContext = createContext<UnreadContextValue | null>(null);
 
@@ -42,7 +42,7 @@ export const useUnreadState = () => useContext(UnreadContext);
 
 const receiptFor = (
   chat: ChatReadState,
-  throughSequence = chat.latestSequence,
+  throughSequence: number,
 ): ChatReadReceipt => ({
   workspaceId: chat.workspaceId,
   chatId: chat.chatId,
@@ -88,15 +88,6 @@ export const UnreadStateBridge = ({
           if (!active || currentGeneration !== generation) return;
           latest = next;
           setSnapshot({ api: authenticatedApi, state: next });
-          if (next.unavailableWorkspaceIds?.length) {
-            // Keep healthy workspaces live, but retry the missing heads even if no new message
-            // arrives. Never overwrite the native badge with an incomplete lower bound.
-            if (!retryTimer) {
-              retryTimer = setTimeout(subscribe, retryDelay);
-              retryDelay = Math.min(retryDelay * 2, 30_000);
-            }
-            return;
-          }
           clearTimeout(retryTimer);
           retryTimer = undefined;
           retryDelay = 1_000;
@@ -166,26 +157,38 @@ export const UnreadStateBridge = ({
     }
   };
 
+  // Explicit menu/bulk actions need an observed boundary. Badges and subscriptions don't.
+  const observedReceipts = async (chats: ChatReadState[]): Promise<ChatReadReceipt[]> => {
+    const heads = new Map(await Promise.all([...new Set(chats.map(chat => chat.workspaceId))]
+      .map(async workspaceId => [workspaceId, await authenticatedApi.getChatHeads(workspaceId)] as const)));
+    return chats.map(chat => {
+      const head = heads.get(chat.workspaceId)?.find(item => item.chatId === chat.chatId);
+      if (!head) throw new Error("Thread is no longer available.");
+      return receiptFor(chat, head.latestSequence);
+    });
+  };
+
   return (
     <UnreadContext.Provider
       value={{
         state,
         markRead: (chat, through) =>
-          perform(authenticatedApi.markChatRead(receiptFor(chat, through))),
+          perform((async () => {
+            const receipt = through === undefined ? (await observedReceipts([chat]))[0] : receiptFor(chat, through);
+            await authenticatedApi.markChatRead(receipt);
+          })()),
         markManyRead: (chats) =>
-          perform(authenticatedApi.markChatsRead(chats.map((chat) => receiptFor(chat)))),
+          perform((async () => {
+            await authenticatedApi.markChatsRead(await observedReceipts(chats));
+          })()),
         markUnread: (chat, from) =>
-          perform(
-            authenticatedApi.markChatUnread(chat.workspaceId, chat.chatId, from),
-          ),
+          perform((async () => {
+            const sequence = from ?? (await observedReceipts([chat]))[0].throughSequence;
+            if (sequence >= 0) await authenticatedApi.markChatUnread(chat.workspaceId, chat.chatId, sequence);
+          })()),
       }}
     >
       <div className="flex h-full min-h-0 flex-col">
-        {!!state?.unavailableWorkspaceIds?.length && (
-          <div role="status" className="shrink-0 bg-kumo-base p-2 text-center text-sm text-kumo-subtle">
-            Some workspace unread counts are unavailable. Retrying…
-          </div>
-        )}
         {failure?.api === authenticatedApi && (
           <div
             role="alert"

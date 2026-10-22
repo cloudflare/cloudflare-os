@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from "@tanstack/react-router";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { AuthenticatedApi } from "@gadgets/workshop-shared/api";
 import type { useUnreadState } from "./UnreadStateBridge";
 import { UnreadSummary } from "./UnreadSummary";
 import { UnreadThreads } from "./UnreadThreads";
@@ -30,11 +31,15 @@ const chats = [
     latestSequence: 6, readThroughSequence: 6, unreadMessageCount: 0,
     latestMessagePreview: "Old message", latestActivityAt: new Date("2026-10-14T01:00:00Z") },
 ];
+const getChatHeads = vi.fn<AuthenticatedApi["getChatHeads"]>().mockImplementation(async workspaceId =>
+  chats.filter(chat => chat.workspaceId === workspaceId));
+  const api = {getChatHeads};
+vi.mock("../../AuthContext", () => ({useAuthenticatedApi: () => ({authenticatedApi: api})}));
 beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   vi.clearAllMocks();
   vi.stubGlobal("scrollTo", vi.fn<() => void>());
-  mock.unread = { state: { unreadChatCount: 1, unreadMessageCount: 1, chats }, markManyRead,
+  mock.unread = { state: { unreadChatCount: 1, unreadMessageCount: 1, chats: chats.map(({workspaceId, chatId, readThroughSequence, unreadMessageCount}) => ({workspaceId, chatId, readThroughSequence, unreadMessageCount})) }, markManyRead,
     markRead: vi.fn<Unread["markRead"]>().mockResolvedValue(undefined),
     markUnread: vi.fn<Unread["markUnread"]>().mockResolvedValue(undefined) };
   container = document.body.appendChild(document.createElement("div"));
@@ -95,16 +100,20 @@ it("orders threads by latest activity and updates when read state changes", asyn
 it("marks only the currently observed unread boundaries read", async () => {
   await render();
   await act(async () => action("Mark all read").click());
-  expect(markManyRead).toHaveBeenCalledExactlyOnceWith([chats[0]]);
+  expect(markManyRead).toHaveBeenCalledExactlyOnceWith([expect.objectContaining({workspaceId: chats[0].workspaceId, chatId: chats[0].chatId})]);
 });
 
-it.each([false, true])("does not show all caught up while state is %s unavailable", async unavailable => {
-  mock.unread!.state = unavailable
-    ? {unreadChatCount: 0, unreadMessageCount: 0, chats: [], unavailableWorkspaceIds: ["workspace-1"]}
-    : undefined;
+it("does not show all caught up while local state is loading", async () => {
+  mock.unread!.state = undefined;
   await render(true);
-  expect(container.textContent).toContain(unavailable
-    ? "once workspace counts are available" : "Loading unread threads…");
+  expect(container.textContent).toContain("Loading unread threads…");
   expect(container.textContent).not.toContain("You’re all caught up");
-  expect(container.querySelector('a[title="Unread threads"]')).not.toBeNull();
+});
+it("keeps unread rows and counts when metadata fails, and supports retrying previews", async () => {
+  getChatHeads.mockRejectedValueOnce(new Error("Unavailable"));
+  await render();
+  expect(container.textContent).toContain("Your unread counts are still available");
+  expect(container.querySelector('ul [aria-label="1 unread message"]')).not.toBeNull();
+  await act(async () => action("Retry").click());
+  expect(container.textContent).toContain("The deployment is ready.");
 });

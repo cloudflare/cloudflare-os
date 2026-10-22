@@ -11,8 +11,7 @@ import "../../styles.css";
 const chat: ChatReadState = {
   workspaceId: "workspace",
   chatId: 1,
-  chatTitle: "Thread",
-  latestSequence: 2,
+
   readThroughSequence: 0,
   unreadMessageCount: 1,
 };
@@ -22,7 +21,7 @@ const Workspace = () => {
   return (
     <main className="flex h-full min-h-0 flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <button onClick={() => void unread.markRead(chat).catch(() => {})}>Mark read</button>
+        <button onClick={() => void unread.markRead(chat, 2).catch(() => {})}>Mark read</button>
       </div>
       <textarea aria-label="Message" className="shrink-0" />
     </main>

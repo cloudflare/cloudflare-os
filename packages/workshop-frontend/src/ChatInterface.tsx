@@ -2734,8 +2734,11 @@ function ChatInterface({
   const toasts = useKumoToastManager();
   const { currentUser } = useAuthenticatedApi();
   const unread = useUnreadState();
-  const readStateFor = (chatId: number) => unread?.state?.chats.find(
-    chat => chat.workspaceId === workspaceId && chat.chatId === chatId);
+  const readStateFor = (chatId: number) => {
+    if (!workspaceId || !unread?.state) return undefined;
+    return unread.state.chats.find(chat => chat.workspaceId === workspaceId && chat.chatId === chatId) ??
+      {workspaceId, chatId, unreadMessageCount: 0, readThroughSequence: -1};
+  };
   const getOverseer = useCallback(() => overseer, [overseer]);
   const cacheRef = useRef<ChatCache>({
     chats: new Map(),
@@ -5514,9 +5517,9 @@ function ChatInterface({
                             const state = readStateFor(chat.id);
                             if (state) void unread?.markRead(state).catch(() => {});
                           }}>Mark thread read</DropdownMenu.Item>
-                          <DropdownMenu.Item disabled={(readStateFor(chat.id)?.latestSequence ?? -1) < 0} onClick={() => {
+                          <DropdownMenu.Item disabled={!readStateFor(chat.id)} onClick={() => {
                             const state = readStateFor(chat.id);
-                            if (state) void unread?.markUnread(state, state.latestSequence).catch(() => {});
+                            if (state) void unread?.markUnread(state).catch(() => {});
                           }}>Mark thread unread</DropdownMenu.Item>
                           <DropdownMenu.Item
                             icon={<Pencil size={12} className="mr-2" />}
@@ -5738,6 +5741,7 @@ function ChatInterface({
                     chatId={selectedChatId}
                     container={messagesContainerRef}
                     oldestSequence={oldestLoadedSequence}
+                    latestSequence={currentMessages.at(-1)?.sequence ?? -1}
                     loadingEarlier={isLoadingEarlier}
                     loadEarlier={handleShowEarlierMessages}
                     onUnreadNavigation={handleUnreadNavigation}

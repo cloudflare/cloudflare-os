@@ -14,6 +14,7 @@ import { TimelineReadItem } from "./TimelineReadItem";
 import { UnreadStateBridge } from "./UnreadStateBridge";
 import { reportVisibleChat } from "./visibleChat";
 import { timelineReadRanges } from "./timelineReadRanges";
+import "../../styles.css";
 
 let root: Root | undefined, host: HTMLDivElement | undefined;
 let withdraw: (() => void) | undefined;
@@ -22,6 +23,7 @@ afterEach(() => {
   act(() => root?.unmount());
   host?.remove();
   withdraw?.();
+  vi.restoreAllMocks();
 });
 
 const View = () => {
@@ -31,7 +33,7 @@ const View = () => {
       <ReadTimeline
         workspaceId="workspace"
         chatId={1}
-        container={viewport}
+        container={viewport} latestSequence={2}
         oldestSequence={0}
         loadingEarlier={false}
         loadEarlier={async () => {}}
@@ -61,8 +63,7 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
       {
         workspaceId: "workspace",
         chatId: 1,
-        chatTitle: "Browser timeline",
-        latestSequence: 2,
+
         readThroughSequence: -1,
         unreadMessageCount: 1,
       },
@@ -73,7 +74,7 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
       ...state,
 
       unreadChatCount: receipt.throughSequence === 2 ? 0 : 1, unreadMessageCount: receipt.throughSequence === 2 ? 0 : 1,
-      chats: [{ ...state.chats[0], readThroughSequence: receipt.throughSequence }],
+      chats: [{ ...state.chats[0], readThroughSequence: receipt.throughSequence, unreadMessageCount: receipt.throughSequence < 2 ? 1 : 0 }],
     };
     await subscriber!.updated(state);
   });
@@ -133,7 +134,7 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
   // The first item's actions are now visible at the viewport edge. Open them as a real pointer user.
   const firstActions = page.getByRole("button", { name: "Read actions for this item" }).nth(0);
   await act(async () => userEvent.click(firstActions));
-  const beforeUnread = marker.getBoundingClientRect().bottom;
+  const beforeUnread = viewport.scrollTop;
   navigate.mockClear();
   await act(async () =>
     userEvent.click(page.getByRole("menuitem", { name: "Mark unread from here" })),
@@ -144,7 +145,7 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
   const calls = markChatRead.mock.calls.length;
   await new Promise((resolve) => setTimeout(resolve, 400));
   expect(markChatRead).toHaveBeenCalledTimes(calls);
-  expect(Math.abs(marker.getBoundingClientRect().bottom - beforeUnread)).toBeLessThan(1);
+  expect(Math.abs(viewport.scrollTop - beforeUnread)).toBeLessThan(1);
   expect(navigate).not.toHaveBeenCalled();
 
   withdraw();
@@ -195,7 +196,7 @@ it.each([
   navigate.mockClear();
   const markChatRead = vi.fn<AuthenticatedApi["markChatRead"]>().mockResolvedValue(undefined);
   const state: UserUnreadState = {unreadChatCount: 1, unreadMessageCount: 1,
-    chats: [{workspaceId: "workspace", chatId: 1, chatTitle: "Navigation", latestSequence: short ? 0 : 3,
+    chats: [{workspaceId: "workspace", chatId: 1,
       readThroughSequence: short ? -1 : 0, unreadMessageCount: 1}]};
   const api = {
     markChatRead,
@@ -214,7 +215,7 @@ it.each([
   const NavigationView = () => {
     const viewport = useRef<HTMLDivElement>(null);
     return <div ref={viewport} data-viewport style={{height: 220, width: 440, overflowY: "auto"}}>
-      <ReadTimeline workspaceId="workspace" chatId={1} container={viewport} oldestSequence={0}
+      <ReadTimeline workspaceId="workspace" chatId={1} container={viewport} latestSequence={2} oldestSequence={0}
         loadingEarlier={false} loadEarlier={async () => {}} onUnreadNavigation={navigate} className="">
         {ranges.map(range => range && <TimelineReadItem key={range.start} {...range}>
           <div style={{height: short ? 20 : 300}}>Message {range.start}<button>Focus chat</button></div>
@@ -242,6 +243,62 @@ it.each([
   expect(viewport.scrollTop > 0).toBe(!short);
   expect(viewport.scrollHeight <= viewport.clientHeight).toBe(short);
   const item = divider.closest<HTMLElement>("[data-read-start]")!;
-  expect(Math.abs(item.getBoundingClientRect().top - viewport.getBoundingClientRect().top))
+  const toolbar = page.getByRole("button", {name: "Jump to first unread"}).element().closest(".sticky")!;
+  expect(Math.abs(item.getBoundingClientRect().top - toolbar.getBoundingClientRect().bottom))
     .toBeLessThan(short ? viewport.clientHeight : 1);
+});
+
+it("jumps below the sticky toolbar and does not acknowledge a message hidden underneath it", async () => {
+  const markChatRead = vi.fn<AuthenticatedApi["markChatRead"]>().mockResolvedValue(undefined);
+  let subscriber: RpcStub<UnreadStateSubscriber> | undefined;
+  const state: UserUnreadState = {unreadChatCount: 1, unreadMessageCount: 3,
+    chats: [{workspaceId: "workspace", chatId: 1,
+      readThroughSequence: -1, unreadMessageCount: 3}]};
+  const api = {markChatRead, subscribeToUnreadState: (next: RpcStub<UnreadStateSubscriber>) => {
+    subscriber = next;
+    void next.updated(state);
+    return Object.assign(Promise.resolve(), {[Symbol.dispose]: () => {}});
+  }};
+  const StickyView = () => {
+    const viewport = useRef<HTMLDivElement>(null);
+    return <div ref={viewport} data-viewport style={{height: 220, width: 440, overflowY: "auto"}}>
+      <ReadTimeline workspaceId="workspace" chatId={1} container={viewport} latestSequence={2} oldestSequence={0}
+        loadingEarlier={false} loadEarlier={async () => {}} onUnreadNavigation={navigate} className="">
+        {[0, 1, 2].map(sequence => <TimelineReadItem key={sequence} start={sequence} end={sequence}>
+          <div style={{height: sequence === 1 ? 20 : 300}}>Message {sequence}</div>
+        </TimelineReadItem>)}
+      </ReadTimeline>
+    </div>;
+  };
+  withdraw = reportVisibleChat(() => ({workspaceId: "workspace", chatId: 1}));
+  host = document.body.appendChild(document.createElement("div"));
+  root = createRoot(host);
+  await act(async () => root!.render(
+    <UnreadStateBridge authenticatedApi={api as unknown as RpcStub<AuthenticatedApi>}><StickyView /></UnreadStateBridge>,
+  ));
+  const viewport = host.querySelector<HTMLElement>("[data-viewport]")!;
+  await vi.waitFor(() => expect(navigate).toHaveBeenLastCalledWith(false));
+  // The divider remains at the visit boundary (message 0), even after its receipt advances.
+  await act(async () => subscriber!.updated({...state, chats: [{...state.chats[0], readThroughSequence: 0}]}));
+  const jump = page.getByRole("button", {name: "Jump to first unread"});
+  await act(async () => userEvent.click(jump));
+  const toolbar = jump.element().closest(".sticky")!;
+  const item = host.querySelector<HTMLElement>('[data-read-start="1"]')!;
+  await vi.waitFor(() => expect(Math.abs(item.getBoundingClientRect().top - toolbar.getBoundingClientRect().bottom)).toBeLessThan(1));
+  const marker = item.querySelector<HTMLElement>("[data-read-through]")!;
+  await act(async () => {
+    viewport.scrollTop += marker.getBoundingClientRect().bottom - viewport.getBoundingClientRect().top - 4;
+    viewport.dispatchEvent(new Event("scroll"));
+  });
+  expect(marker.getBoundingClientRect().bottom).toBeLessThan(toolbar.getBoundingClientRect().bottom);
+  expect(document.hasFocus()).toBe(true);
+  await new Promise(resolve => setTimeout(resolve, 400));
+  expect(markChatRead).not.toHaveBeenCalled();
+  await act(async () => {
+    viewport.scrollTop -= toolbar.getBoundingClientRect().height;
+    viewport.dispatchEvent(new Event("scroll"));
+  });
+  await vi.waitFor(() => expect(markChatRead).toHaveBeenCalledExactlyOnceWith({
+    workspaceId: "workspace", chatId: 1, throughSequence: 1,
+  }));
 });
