@@ -10649,6 +10649,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       let gadgetId = this.impl.ctx.id.toString();
       // Initial admission skips earlier alerts. Carry the timeline boundaries in this existing
       // callback so the User DO can initialize under its thread mutex without another RPC.
+      // Enrollment is best-effort: events racing this first registration are not guaranteed;
+      // subsequent arrivals fan out normally once the User DO has recorded the listing.
       let notificationBaselines = role === "build" ? [...this.impl.storage.chatMeta.list()].map(meta => ({
         chatId: meta.id, notifiedThroughSequence: this.impl.nextChatSequencePeek(meta.id) - 1,
       })) : [];

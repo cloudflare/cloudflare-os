@@ -887,6 +887,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (record && !record.owner) {
       throw new Error("User owns this workspace; it's not shared with them.");
     }
+    let firstAdmission = !record || record.role !== "build";
     let now = new Date();
     if (record) {
       // Already tracked -- update lastActive and cached fields.
@@ -912,8 +913,15 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         this.#unreadChanged(); // Successful authorization restores locally tracked counts.
         await this.#armExpirySweep();
       }
-      await Promise.all(notificationBaselines.map(baseline => this.#processChat(gadgetId, baseline.chatId,
-        {notificationBaseline: baseline.notifiedThroughSequence})));
+      if (firstAdmission) {
+        await Promise.all(notificationBaselines.map(baseline => this.#processChat(gadgetId, baseline.chatId,
+          {notificationBaseline: baseline.notifiedThroughSequence})));
+      } else {
+        // Reopening must not consume arrivals whose first fanout has not reached this DO yet.
+        await Promise.all([...this.#readCursors.values()]
+          .filter(cursor => cursor.workspaceId === gadgetId && (cursor.unreadDirty || cursor.notificationsDirty))
+          .map(cursor => this.#processChat(gadgetId, cursor.chatId)));
+      }
     }
   }
 
