@@ -2908,11 +2908,10 @@ export interface Overseer extends RpcTarget {
 
   /**
    * Accept an agent's pending connection request (a "connectionRequest" chat message). The caller
-   * is responsible for having actually created the gatekeeper (via newGatekeeper(), or
-   * newAgentSpawnerGatekeeper() for an agent spawner) and passes the resulting gatekeeper id. The
-   * gatekeeper is surfaced to the agent as a named binding in the chat's env, under the name the
-   * agent chose when it made the request (see `connectionRequest.bindingName`). This marks the
-   * request accepted, updates the inline card,
+   * is responsible for having actually created the gatekeeper (via newGatekeeper()) and passes the
+   * resulting gatekeeper id. The gatekeeper is surfaced to the agent as a named binding in the
+   * chat's env, under the name the agent chose when it made the request (see
+   * `connectionRequest.bindingName`). This marks the request accepted, updates the inline card,
    * and resumes the agent so it can use the resource.
    */
   acceptConnectionRequest(requestId: string, result: {gatekeeperId: WorkpieceId}): Promise<void>;
@@ -3347,12 +3346,11 @@ export type AiChatMetadata = {
    * (including changes not yet materialized into a durable `changes` message): gadgets and
    * worktrees whose code the chat modified (pinned in the current epoch -- for a worktree, an
    * explicit commit() counts as a modification), gadgets it provisionally created, and gadgets
-   * and agent spawners it added a binding to. A worktree's creation alone is not listed: the
-   * worktree is private to the chat either way, so a checkout made only to be read proposes
-   * nothing (see AiChatMessageBody.createdWorktrees). Absent (or empty) when the chat proposes
-   * nothing -- the pending-changes accept/discard affordances and per-workpiece draft previews
-   * key off this list. Derived server-side and delivered on metadata updates; never submitted by
-   * clients.
+   * it added a binding to. A worktree's creation alone is not listed: the worktree is private to
+   * the chat either way, so a checkout made only to be read proposes nothing (see
+   * AiChatMessageBody.createdWorktrees). Absent (or empty) when the chat proposes nothing --
+   * the pending-changes accept/discard affordances and per-workpiece draft previews key off this
+   * list. Derived server-side and delivered on metadata updates; never submitted by clients.
    * (This replaces the earlier `hasProposedChanges` boolean; values of that retired field may
    * linger in stored metadata but are never delivered as truth.)
    */
@@ -3913,12 +3911,13 @@ export type AiChatMessageBody = {
   worktreeCommits?: {worktreeId: WorkpieceId, commit: string, previousHead: string}[];
 
   /**
-   * Binding edges added to gadgets, or to agent spawners, as part of this batch of changes (by
-   * the agent's setGadgetBinding tool, or by the user binding a connection with a chat open --
-   * in the latter case `change` is omitted). Like `createdGadgets`, the additions are
+   * Binding edges added to gadgets as part of this batch of changes (by the agent's
+   * setGadgetBinding tool, or by the user binding a connection with a chat open -- in the latter
+   * case `change` is omitted). Like `createdGadgets`, the additions are
    * provisional: the edge is visible only from this chat until a merge through this message
    * makes it permanent, and a revert covering it deletes the edge. `name` is the binding's name
-   * within the gadget or spawner identified by `gadgetId`; `target` is the bound workpiece.
+   * within the gadget (or agent spawner) identified by `gadgetId`; `target` is the bound
+   * workpiece.
    */
   addedBindings?: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[];
 
@@ -4076,8 +4075,7 @@ export type AiChatMessageBody = {
   text: string;
 } | {
   /**
-   * The agent requested that the user connect a gatekeeper (e.g. "I need ClickHouse cluster X"),
-   * or add an agent spawner.
+   * The agent requested that the user connect a gatekeeper (e.g. "I need ClickHouse cluster X").
    * Rendered inline in the chat as an accept/deny card. State is mutated in-place when the user
    * accepts or denies; the message is re-delivered to subscribers so the card updates. On accept the
    * agent is resumed with the outcome (see the history builder in agent.ts); on deny the agent is
