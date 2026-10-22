@@ -83,12 +83,24 @@ export type StoredBlueprintBindingAnnotation = BlueprintBindingAnnotation & {inc
 /**
  * The props of an agent-spawner gatekeeper's `GatekeeperRecord.class` stub. They are baked into
  * the stored stub, so this is a stored shape like any other record here: they cannot be edited
- * in place, only replaced by minting a new stub (as the version 0 -> 1 migration does). Stubs
- * minted before version 6 also carry the overseer's id and the spawner's `env`, which nothing
- * reads anymore.
+ * in place, only replaced by minting a new stub (as the version 0 -> 1 migration does).
  */
 export type AgentSpawnerBindingProps = {
-  config: Omit<AgentSpawnerConfig, "env">,
+  /**
+   * OBSOLETE: ID of the overseer under which this agent should run. Present on stubs minted
+   * before version 6, but nothing reads it anymore: a spawn now finds its overseer through the
+   * gatekeeper session (see AgentSpawnerQueueImpl). Declared only so the name is not reused.
+   */
+  overseerId?: string,
+
+  config: Omit<AgentSpawnerConfig, "env"> & {
+    /**
+     * OBSOLETE: The spawner's bindings as of its creation, baked into stubs minted before
+     * version 6. A spawner's bindings now live in `GatekeeperRecord.bindings`, which is what a
+     * spawn reads, so this copy is stale. Declared only so the name is not reused.
+     */
+    env?: AgentSpawnerConfig["env"],
+  },
 
   /**
    * DO ID of the user who created this binding. When agents are spawned, the model is
