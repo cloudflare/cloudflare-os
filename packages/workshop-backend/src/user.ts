@@ -671,11 +671,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           let cursor = this.#readCursors.get(key);
           this.storage.chatReadCursors.put({...this.#cursor(workspaceId, chatId),
             notifiedThroughSequence: options.notificationBaseline,
-            unreadDirty: cursor ? cursor.unreadDirty : true});
-          if (!cursor || cursor.unreadDirty || cursor.notificationsDirty) {
-            reschedule = true;
-            await this.#armExpirySweep();
-          }
+            unreadDirty: cursor ? cursor.unreadDirty : true,
+            notificationsDirty: true});
+          reschedule = true;
+          await this.#armExpirySweep();
         }
         let token = this.#dirtyTokens.get(key);
         let existing = this.#readCursors.get(key);

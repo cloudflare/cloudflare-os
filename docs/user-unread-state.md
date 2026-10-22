@@ -26,7 +26,9 @@ horizon change persists the row. Ordinary snapshots never advance the notificati
 The existing successful-open callback carries initial notification boundaries for shared threads.
 The same thread processor persists a missing cursor's boundary before fetching, so first admission
 cannot race snapshot initialization or replay historical alerts after eviction. A cached initial
-count is reused. Existing history is initially unread.
+count is reused. Admission dirties notification catch-up from the supplied boundary, including
+arrivals ACKed before the listing callback. If a snapshot initialized the count first, that catch-up
+uses a notification-only source read, without recounting. Existing history is initially unread.
 
 Only visible text/attachments count. Tool/reasoning records, empty messages and generated
 slash-command expansions do not. Streaming tokens are not separate messages. Horizons may lie
@@ -102,7 +104,8 @@ membership and the observer admission already established by opening a workspace
 gatekeeper binding requires fresh interactive admission. Existing sessions' lazy external ACL
 revocation semantics are retained, not replaced with per-message gatekeeper registrations.
 Admission denial is distinct from deletion: it hides metadata/counts but preserves private horizons
-and durable dirty work. Confirmed denial parks the work without polling; new arrivals still journal
+and durable dirty work. Before first initialization, a source returns an empty head list rather than
+denying the owner's provisional listing. Confirmed denial parks the work without polling; new arrivals still journal
 their dirty bits. Successful authorization/reopening resumes the same processor. Credential
 restoration also requests a fresh access check, not an authorization grant. A DO restart forgets
 the in-memory denial and checks once again. Transient failures retain alarm retries. Reopening

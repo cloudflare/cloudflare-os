@@ -10489,6 +10489,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
 
   /** Read metadata without changing enrollment, horizons, or observer registrations. */
   async getChatHeadsForUser(userId: string, profileId: string) {
+    // The owner's listing precedes first open. An uninitialized source has no chats, not a denial.
+    if (!this.impl.ownerId) return [];
     if (!await this.impl.mayReadChatState(userId, profileId)) return null;
     return [...this.impl.storage.chatMeta.list()].flatMap(meta => this.impl.chatHead(meta.id) ?? []);
   }

@@ -89,6 +89,34 @@ const interceptDelivery = (impl: Impl,
 };
 
 describe("private horizons and coalesced dirty threads", () => {
+  it("does not park an owner listing observed before its workspace initializes", async () => {
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const workspace = env.TEST_OVERSEER.getByName(crypto.randomUUID());
+    const workspaceId = workspace.id.toString();
+    await user.newGadget(workspaceId, "Workspace");
+    expect(await user.getUnreadState()).toEqual({chats: [], unreadChatCount: 0, unreadMessageCount: 0});
+    const fixture = {user, workspace, workspaceId};
+    const id = crypto.randomUUID();
+    using delivered = vi.spyOn(UserDurableObject.prototype, "publishNotification").mockResolvedValue(undefined);
+    await withImpl(workspace, async impl => {
+      impl.storage.version.put(OVERSEER_STORAGE_VERSION);
+      impl.storage.ownerId.put(user.id.toString());
+      impl.ownerId = user.id.toString();
+      impl.storage.chatMeta.put({id: 1, title: "Demo", started: new Date(), lastActive: new Date()});
+    });
+    await append(fixture, 0);
+    await withImpl(workspace, async impl => {
+      impl.storage.chatNotifications.put({id, chatId: 1, sequence: 0,
+        userId: user.id.toString(), kind: "taskCompleted"});
+      await impl.deliverDirtyChats();
+    });
+    expect(await cursor(fixture)).toMatchObject({unreadCount: 1, notifiedThroughSequence: 0});
+    expect(delivered.mock.calls.map(([event]) => event.id)).toEqual([id]);
+    expect((await user.getUnreadState()).unreadMessageCount).toBe(1);
+    await user.markChatRead(receipt(fixture, 0));
+    expect(await cursor(fixture)).toMatchObject({readThroughSequence: 0, unreadCount: 0});
+  });
+
   it("counts messages rather than sequence gaps; commits horizon/count together; keeps reads monotonic", async () => {
     const fixture = await setup();
     await append(fixture, 0, "First line\nSecond line");
@@ -673,7 +701,12 @@ describe("ordered notification catch-up", () => {
     await impl.deliverDirtyChats();
   });
 
-  it.each([false, true])("does not replay historical alerts after dismissal/readmission (reset: %s)", async reset => {
+  it.each([
+    {reset: false, admitLate: false},
+    {reset: true, admitLate: false},
+    {reset: false, admitLate: true},
+    {reset: true, admitLate: true},
+  ])("skips history but catches up alerts across readmission (reset: $reset, late: $admitLate)", async ({reset, admitLate}) => {
     const fixture = await setup();
     const {reader, owner} = await addReader(fixture);
     const readerFixture = {...fixture, user: reader};
@@ -687,17 +720,26 @@ describe("ordered notification catch-up", () => {
     });
     await settled(readerFixture);
     await reader.forgetSharedGadget(fixture.workspaceId);
-    await reader.recordSharedGadgetOpen(fixture.workspaceId, "Workspace", owner, "build",
-      await notificationBaselines(fixture));
-    // No unread API call is necessary to establish the durable notification baseline.
-    expect(await cursor(readerFixture)).toMatchObject({notifiedThroughSequence: 0});
+    const baselines = await notificationBaselines(fixture);
+    const admit = () => reader.recordSharedGadgetOpen(fixture.workspaceId, "Workspace", owner, "build", baselines);
+    if (!admitLate) {
+      await admit();
+      expect(await cursor(readerFixture)).toMatchObject({notifiedThroughSequence: 0});
+    }
     if (reset) await evictDurableObject(reader);
+    await append(fixture, 1);
     await withImpl(fixture.workspace, async impl => {
       impl.storage.chatNotifications.put({id: ids[1], chatId: 1, sequence: 1,
         userId: reader.id.toString(), kind: "taskCompleted"});
       await impl.deliverDirtyChats();
     });
+    if (admitLate) {
+      expect(await cursor(readerFixture)).toBeUndefined(); // The unlisted reader ACKed without journaling.
+      expect(delivered.mock.calls.map(([event]) => event.id)).toEqual([ids[0]]);
+      await admit();
+    }
     await settled(readerFixture);
+    expect(await cursor(readerFixture)).toMatchObject({unreadCount: 2, notifiedThroughSequence: 1});
     expect(delivered.mock.calls.map(([event]) => event.id)).toEqual(ids);
   });
 
@@ -705,6 +747,7 @@ describe("ordered notification catch-up", () => {
     const fixture = await setup();
     const {reader, owner} = await addReader(fixture);
     const readerFixture = {...fixture, user: reader};
+    using delivered = vi.spyOn(UserDurableObject.prototype, "publishNotification").mockResolvedValue(undefined);
     await append(fixture, 0);
     await reader.forgetSharedGadget(fixture.workspaceId);
     const id = crypto.randomUUID();
@@ -740,7 +783,9 @@ describe("ordered notification catch-up", () => {
       await Promise.all([first, second]);
     });
     expect(await cursor(readerFixture)).toMatchObject({notifiedThroughSequence: 0});
-    expect(count).toHaveBeenCalledOnce();
+    expect(count).toHaveBeenCalledTimes(snapshotFirst ? 2 : 1);
+    if (snapshotFirst) expect(count.mock.calls.at(-1)?.slice(3)).toEqual([null, 0]);
+    expect(delivered).not.toHaveBeenCalled();
   });
 
   it("delivers all three coalesced events in order before advancing notifiedThroughSequence", async () => {
