@@ -18,6 +18,7 @@ export const ReadTimeline = ({
   chatId,
   container,
   oldestSequence,
+  latestSequence,
   loadingEarlier,
   loadEarlier,
   onUnreadNavigation,
@@ -28,6 +29,7 @@ export const ReadTimeline = ({
   chatId: number;
   container: RefObject<HTMLDivElement | null>;
   oldestSequence?: number;
+  latestSequence: number;
   loadingEarlier: boolean;
   loadEarlier: () => Promise<void>;
   onUnreadNavigation: (pending: boolean) => void;
@@ -42,13 +44,14 @@ export const ReadTimeline = ({
   // A new request also retries a failed page when navigation is already pending; zero is idle.
   const [jump, setJump] = useState(1);
   const root = useRef<HTMLDivElement>(null);
+  const toolbar = useRef<HTMLDivElement>(null);
   const pending = useRef(-1);
   const requestedPage = useRef<number | undefined>(undefined);
   const jumpSequence = useRef<number | undefined>(undefined);
   const localUnreadHorizon = useRef<number | undefined>(undefined);
   const requestRead = useRef<(() => void) | undefined>(undefined);
-  const latest = useRef({ chat, unread, visit });
-  latest.current = { chat, unread, visit };
+  const latest = useRef({ chat, unread, visit, latestSequence });
+  latest.current = { chat, unread, visit, latestSequence };
 
   useLayoutEffect(() => {
     if (!chat) {
@@ -59,7 +62,7 @@ export const ReadTimeline = ({
     if (localUnread) localUnreadHorizon.current = undefined;
     if (!visit || chat.readThroughSequence < visit.horizon) {
       const divider =
-        chat.latestSequence > chat.readThroughSequence ? chat.readThroughSequence + 1 : undefined;
+        chat.unreadMessageCount > 0 ? chat.readThroughSequence + 1 : undefined;
       setVisit({ horizon: chat.readThroughSequence, divider, paused: !!visit });
       pending.current = -1;
       if (divider !== undefined && !localUnread) {
@@ -69,9 +72,9 @@ export const ReadTimeline = ({
         setJump((request) => request + 1);
       }
     } else if (visit.paused && localUnreadHorizon.current === undefined &&
-        chat.readThroughSequence >= chat.latestSequence) {
+        chat.unreadMessageCount === 0) {
       setVisit({ ...visit, horizon: chat.readThroughSequence, paused: false });
-    } else if (visit.divider === undefined && chat.latestSequence > chat.readThroughSequence) {
+    } else if (visit.divider === undefined && chat.unreadMessageCount > 0) {
       setVisit({ ...visit, horizon: chat.readThroughSequence, divider: chat.readThroughSequence + 1 });
     } else if (visit.horizon !== chat.readThroughSequence) {
       setVisit({...visit, horizon: chat.readThroughSequence});
@@ -85,7 +88,7 @@ export const ReadTimeline = ({
       !jump ||
       !visit ||
       visit.divider === undefined ||
-      (chat && chat.readThroughSequence >= chat.latestSequence)
+      (chat && chat.unreadMessageCount === 0)
     ) {
       if (visit && jump) {
         onUnreadNavigation(false);
@@ -118,7 +121,8 @@ export const ReadTimeline = ({
         const items = root.current?.querySelectorAll<HTMLElement>("[data-unread-through]");
         const item = items && [...items].find((element) => Number(element.dataset.unreadThrough) >= target);
         if (item) {
-          viewport.scrollTop += item.getBoundingClientRect().top - bounds.top;
+          viewport.scrollTop += item.getBoundingClientRect().top - bounds.top -
+            (toolbar.current?.getBoundingClientRect().height ?? 0);
         }
         // A short history may not move scrollTop and therefore emits no scroll event. Let the
         // chat recompute follow-to-bottom even for that no-op navigation.
@@ -163,11 +167,12 @@ export const ReadTimeline = ({
           return;
         const bounds = viewport.getBoundingClientRect();
         if (bounds.height <= 0 || bounds.width <= 0) return;
+        const readableTop = Math.max(bounds.top, toolbar.current?.getBoundingClientRect().bottom ?? bounds.top);
         let through = current.chat.readThroughSequence;
         for (const marker of content.querySelectorAll<HTMLElement>("[data-read-through]")) {
           const rect = marker.getBoundingClientRect();
           if (
-            rect.bottom >= bounds.top &&
+            rect.bottom > readableTop &&
             rect.bottom <= bounds.bottom &&
             rect.right > bounds.left &&
             rect.left < bounds.right
@@ -175,7 +180,7 @@ export const ReadTimeline = ({
             through = Math.max(through, Number(marker.dataset.readThrough));
           }
         }
-        through = Math.min(through, current.chat.latestSequence);
+        through = Math.min(through, current.latestSequence);
         if (through <= current.chat.readThroughSequence || through <= pending.current) return;
         pending.current = through;
         void current.unread.markRead(current.chat, through).catch(() => {
@@ -206,20 +211,22 @@ export const ReadTimeline = ({
   }, [container, canRead, workspaceId, chatId]);
 
   // New snapshots request a scan without cancelling a timer already armed by streaming/layout.
-  useEffect(() => requestRead.current?.(), [chat, visit]);
+  useEffect(() => requestRead.current?.(), [chat, visit, latestSequence]);
 
   return (
     <TimelineContext.Provider
       value={{
         divider: visit?.divider,
-        latestSequence: chat?.latestSequence ?? -1,
+        latestSequence,
         markUnread: (sequence) => {
-          if (!chat || !unread || !visit) return;
+          if (!workspaceId || !unread?.state) return;
+          // Untouched pre-rollout threads have no cursor until an arrival or explicit command.
+          const target = chat ?? {workspaceId, chatId, unreadMessageCount: 0, readThroughSequence: -1};
           localUnreadHorizon.current = sequence - 1;
-          setVisit({ ...visit, divider: sequence, paused: true });
+          setVisit({ horizon: visit?.horizon ?? sequence - 1, divider: sequence, paused: true });
           // The RPC ACK can precede its subscriber update. Only that matching snapshot consumes
           // the local marker; otherwise it would look like a remote rewind and scroll this view.
-          void unread.markUnread(chat, sequence).catch(() => {
+          void unread.markUnread(target, sequence).catch(() => {
             localUnreadHorizon.current = undefined;
             setVisit(visit);
           });
@@ -227,8 +234,8 @@ export const ReadTimeline = ({
       }}
     >
       <div ref={root} className={className}>
-        {chat && chat.latestSequence > chat.readThroughSequence && (
-          <div className="sticky top-0 z-10 mb-3 flex flex-wrap items-center justify-center gap-2 rounded-md bg-kumo-base p-2 text-sm text-kumo-subtle">
+        {chat && chat.unreadMessageCount > 0 && (
+          <div ref={toolbar} className="sticky top-0 z-10 mb-3 flex flex-wrap items-center justify-center gap-2 rounded-md bg-kumo-base p-2 text-sm text-kumo-subtle">
             {visit?.paused
               ? "Marked unread — automatic reading paused until you leave this thread."
               : "Unread activity"}
@@ -247,7 +254,11 @@ export const ReadTimeline = ({
               size="xs"
               variant="ghost"
               onClick={() => {
-                void unread?.markRead(chat).catch(() => {});
+                void unread?.markRead(chat, latestSequence).then(() => {
+                  setVisit(current => current && {...current, paused: false});
+                  onUnreadNavigation(false);
+                  setJump(0);
+                }).catch(() => {});
               }}
             >
               Mark thread read

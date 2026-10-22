@@ -1,17 +1,49 @@
 import { Button } from "@cloudflare/kumo";
 import { Chats, Check } from "@phosphor-icons/react";
 import { Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import type { ChatTimelineHead } from "@gadgets/workshop-shared/api";
+import type { RpcStub } from "capnweb";
+import type { AuthenticatedApi } from "@gadgets/workshop-shared/api";
+import { useAuthenticatedApi } from "../../AuthContext";
 import { UnreadBadge } from "./UnreadBadge";
 import { useUnreadState } from "./UnreadStateBridge";
 
 /** A live inbox of unread conversations. Previewing a thread never marks it read. */
 export const UnreadThreads = () => {
   const unread = useUnreadState();
-  const chats = (unread?.state?.chats ?? [])
+  const { authenticatedApi } = useAuthenticatedApi();
+  const state = unread?.state;
+  const [metadata, setMetadata] = useState<{
+    api: RpcStub<AuthenticatedApi>;
+    heads: Map<string, ChatTimelineHead>;
+    failed: boolean;
+  }>();
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    let active = true;
+    const workspaceIds = [...new Set((state?.chats ?? [])
+      .filter(chat => chat.unreadMessageCount > 0).map(chat => chat.workspaceId))];
+    void Promise.allSettled(workspaceIds.map(async workspaceId =>
+      ({workspaceId, heads: await authenticatedApi.getChatHeads(workspaceId)})))
+      .then(results => {
+        if (!active) return;
+        const heads = new Map<string, ChatTimelineHead>();
+        let failed = false;
+        for (const result of results) {
+          if (result.status === "rejected" || result.value.heads === null) { failed = true; continue; }
+          for (const head of result.value.heads) heads.set(`${result.value.workspaceId}:${head.chatId}`, head);
+        }
+        setMetadata({api: authenticatedApi, heads, failed});
+      });
+    return () => { active = false; };
+  }, [authenticatedApi, state, retry]);
+  const heads = metadata?.api === authenticatedApi ? metadata.heads : undefined;
+  const chats = (state?.chats ?? [])
     .filter(chat => chat.unreadMessageCount > 0)
+    .map(chat => ({...heads?.get(`${chat.workspaceId}:${chat.chatId}`), ...chat}))
     .toSorted((a, b) => (b.latestActivityAt?.getTime() ?? 0) - (a.latestActivityAt?.getTime() ?? 0)
-      || a.chatTitle.localeCompare(b.chatTitle) || a.workspaceId.localeCompare(b.workspaceId)
+      || (a.chatTitle ?? "").localeCompare(b.chatTitle ?? "") || a.workspaceId.localeCompare(b.workspaceId)
       || a.chatId - b.chatId);
   const [markingRead, setMarkingRead] = useState(false);
 
@@ -34,12 +66,14 @@ export const UnreadThreads = () => {
           Mark all read
         </Button>
       </header>
+      {metadata?.api === authenticatedApi && metadata.failed && (
+        <div role="status" className="flex items-center gap-2 px-3 py-2 text-sm text-kumo-subtle">
+          Some thread previews couldn’t load. Your unread counts are still available.
+          <Button size="xs" variant="ghost" onClick={() => setRetry(value => value + 1)}>Retry</Button>
+        </div>
+      )}
       {!unread?.state ? (
         <p role="status" className="px-3 py-8 text-sm text-kumo-subtle">Loading unread threads…</p>
-      ) : chats.length === 0 && unread.state.unavailableWorkspaceIds?.length ? (
-        <p role="status" className="px-3 py-8 text-sm text-kumo-subtle">
-          Unread threads will appear once workspace counts are available.
-        </p>
       ) : chats.length === 0 ? (
         <div role="status" className="flex flex-col items-center gap-3 px-3 py-16 text-center">
           <Chats size={32} className="text-kumo-inactive" />
@@ -54,7 +88,7 @@ export const UnreadThreads = () => {
                 search={{ chat: chat.chatId, showChat: true }}
                 className="flex min-w-0 items-start gap-3 rounded-lg px-3 py-4 transition-colors hover:bg-kumo-tint focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring">
                 <div className="min-w-0 flex-1">
-                  <h2 className="truncate text-sm font-semibold text-kumo-default">{chat.chatTitle || "Untitled thread"}</h2>
+                  <h2 className="truncate text-sm font-semibold text-kumo-default">{chat.chatTitle || `Thread ${chat.chatId}`}</h2>
                   <p className="mt-1 truncate text-sm text-kumo-subtle">
                     {chat.latestMessagePreview || "New activity"}
                   </p>

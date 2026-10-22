@@ -6,15 +6,20 @@ import { afterEach, expect, it, vi } from "vitest";
 import { UnreadThreads } from "./UnreadThreads";
 import "../../styles.css";
 
-vi.mock("./UnreadStateBridge", () => ({
-  useUnreadState: () => ({ state: { unreadChatCount: 1, unreadMessageCount: 1,
+const unread = { state: { unreadChatCount: 1, unreadMessageCount: 1,
     chats: [{
     workspaceId: "workspace", chatId: 1, chatTitle: "A long thread title that should truncate before the date",
     latestSequence: 2, readThroughSequence: 0, unreadMessageCount: 1,
     latestMessagePreview: "The latest message should stay underneath the thread title.",
     latestActivityAt: new Date("2026-10-13T12:00:00Z"),
-  }] } }),
-}));
+  }] } };
+vi.mock("./UnreadStateBridge", () => ({useUnreadState: () => unread}));
+const api = {getChatHeads: async () => [{
+  chatId: 1, chatTitle: "A long thread title that should truncate before the date",
+  latestSequence: 2, latestMessagePreview: "The latest message should stay underneath the thread title.",
+  latestActivityAt: new Date("2026-10-13T12:00:00Z"),
+}]};
+vi.mock("../../AuthContext", () => ({useAuthenticatedApi: () => ({authenticatedApi: api})}));
 let host: HTMLDivElement | undefined, root: Root | undefined;
 afterEach(async () => { await act(async () => root?.unmount()); host?.remove(); });
 

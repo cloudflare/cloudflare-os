@@ -12,15 +12,15 @@ import type {
 import { UnreadStateBridge, useUnreadState } from "./UnreadStateBridge";
 import { reportVisibleChat } from "./visibleChat";
 
-const snapshot = (sequence: number): UserUnreadState => ({
+const snapshot = (_sequence: number): UserUnreadState => ({
   unreadChatCount: 1, unreadMessageCount: 1,
   chats: [
     {
       workspaceId: "workspace-1",
       chatId: 1,
-      chatTitle: "Demo",
+
       unreadMessageCount: 1,
-      latestSequence: sequence,
+
       readThroughSequence: -1,
     },
   ],
@@ -48,7 +48,7 @@ const Commands = () => {
       <output>{JSON.stringify(unread?.state ?? null)}</output>
       {chat && unread && <>
       <button onClick={() => void unread.markRead(chat).catch(() => {})}>read</button>
-      <button onClick={() => void unread.markUnread(chat, chat.latestSequence)}>unread</button>
+      <button onClick={() => void unread.markUnread(chat)}>unread</button>
       <button onClick={() => void unread.markManyRead(unread.state!.chats)}>all</button>
       </>}
     </>
@@ -71,7 +71,8 @@ describe("UnreadStateBridge", () => {
   });
   const markChatsRead = vi.fn<AuthenticatedApi["markChatsRead"]>().mockResolvedValue(undefined);
   const markChatUnread = vi.fn<AuthenticatedApi["markChatUnread"]>().mockResolvedValue(undefined);
-  const api = { subscribeToUnreadState, markChatRead, markChatsRead, markChatUnread };
+  const getChatHeads = vi.fn<AuthenticatedApi["getChatHeads"]>().mockResolvedValue([{chatId: 1, chatTitle: "Demo", latestSequence: 4}]);
+  const api = { subscribeToUnreadState, markChatRead, markChatsRead, markChatUnread, getChatHeads };
   const render = (authenticatedApi = api) =>
     act(async () =>
       root.render(
@@ -167,22 +168,13 @@ describe("UnreadStateBridge", () => {
     root = createRoot(container);
   });
 
-  it("keeps healthy state live and retries missing workspaces", async () => {
-    vi.useFakeTimers();
-    await render();
-    await update(snapshot(1));
-    await update({...snapshot(2), unavailableWorkspaceIds: ["workspace-2"]});
-    expect(container.querySelector('[role="status"]')?.textContent).toContain("unread counts are unavailable");
-    expect(container.querySelector("button")?.textContent).toBe("read");
-    expect(currentState()).toEqual({...snapshot(2), unavailableWorkspaceIds: ["workspace-2"]});
-    await update({...snapshot(3), unavailableWorkspaceIds: ["workspace-2"]});
-    await act(async () => vi.advanceTimersByTimeAsync(1_000));
-    expect(subscribeToUnreadState).toHaveBeenCalledTimes(2);
-    await update(snapshot(1)); // Fresh snapshot after reconnect.
-    expect(container.querySelector('[role="status"]')).toBeNull();
-    expect(currentState()).toEqual(snapshot(1));
-    await act(async () => vi.advanceTimersByTimeAsync(30_000));
-    expect(subscribeToUnreadState).toHaveBeenCalledTimes(2);
+  it("does not fetch workspace metadata while receiving or reconnecting badge snapshots", async () => {
+    await render(); await update(snapshot(2));
+    expect(getChatHeads).not.toHaveBeenCalled();
+    await act(async () => visibility("hidden"));
+    await act(async () => visibility("visible"));
+    await update(snapshot(3));
+    expect(getChatHeads).not.toHaveBeenCalled();
   });
 
   it("does not retry a rejected subscription in a tight loop", async () => {
