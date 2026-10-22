@@ -801,6 +801,30 @@ describe("private horizons and coalesced dirty threads", () => {
     expect(await reader.getUnreadState()).toMatchObject({chats: [], unreadMessageCount: 0});
   });
 
+  it("publishes a newly admitted all-read cursor to existing subscribers", async () => {
+    const fixture = await setup();
+    const {reader, owner} = await addReader(fixture);
+    await append(fixture, 0);
+    await append(fixture, 10);
+    await reader.forgetSharedGadget(fixture.workspaceId);
+    let received: UserUnreadState | undefined;
+    class Subscriber extends RpcTarget implements UnreadStateSubscriber {
+      async updated(state: UserUnreadState) { received = state; }
+      async chatUpdated(...args: Parameters<UnreadStateSubscriber["chatUpdated"]>) {
+        received = {...args[3], chats: args[2] ? [args[2]] : []};
+      }
+    }
+    using callback = new RpcStub(new Subscriber());
+    using _subscription = await reader.subscribeToUnreadState(callback);
+    await vi.waitFor(() => expect(received?.chats).toEqual([]));
+    await reader.recordSharedGadgetOpen(fixture.workspaceId, "Workspace", owner, "build",
+      [{chatId: 1, notifiedThroughSequence: 10}]);
+    const snapshot = await reader.getUnreadState();
+    expect(snapshot.chats).toEqual([{workspaceId: fixture.workspaceId, chatId: 1,
+      readThroughSequence: 10, unreadMessageCount: 0}]);
+    await vi.waitFor(() => expect(received).toEqual(snapshot));
+  });
+
   it("discards an old recount after workspace removal and readmission", async () => {
     const fixture = await setup();
     const {reader, owner} = await addReader(fixture);

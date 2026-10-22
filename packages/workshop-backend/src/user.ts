@@ -623,7 +623,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         let key = `${workspaceId}:${chatId}`;
         if (!admission || this.#unreadWorkspaces.get(workspaceId) !== admission ||
             (this.#deniedUnreadWorkspaces.has(workspaceId) && !options.recheckAccess)) return;
-        if (options.notificationBaseline !== undefined && !this.storage.chatReadCursors.get(key)) {
+        let existing = this.#readCursors.get(key);
+        if (options.notificationBaseline !== undefined && !existing) {
           // The existing open callback supplies the boundary: no second source read or snapshot
           // initialization policy. Journal before fetching so a reset retains the initial skip.
           this.storage.chatReadCursors.put({...this.#cursor(workspaceId, chatId),
@@ -636,7 +637,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           if (this.#unreadWorkspaces.get(workspaceId) !== admission) return;
         }
         let token = this.#dirtyTokens.get(key);
-        let existing = this.#readCursors.get(key);
         let cursor = this.#cursor(workspaceId, chatId);
         let through = options.horizon?.through ?? cursor.readThroughSequence;
         if (!options.horizon?.rewind) through = Math.max(through, cursor.readThroughSequence);
