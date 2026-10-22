@@ -48,7 +48,7 @@ export const ReadTimeline = ({
   const pending = useRef(-1);
   const requestedPage = useRef<number | undefined>(undefined);
   const jumpSequence = useRef<number | undefined>(undefined);
-  const localUnreadHorizon = useRef<number | undefined>(undefined);
+  const localUnreadRequests = useRef<{horizon: number}[]>([]);
   const requestRead = useRef<(() => void) | undefined>(undefined);
   const latest = useRef({ chat, unread, visit, latestSequence });
   latest.current = { chat, unread, visit, latestSequence };
@@ -58,8 +58,10 @@ export const ReadTimeline = ({
       pending.current = -1;
       return;
     }
-    const localUnread = localUnreadHorizon.current === chat.readThroughSequence;
-    if (localUnread) localUnreadHorizon.current = undefined;
+    const localIndex = localUnreadRequests.current.findLastIndex(request => request.horizon === chat.readThroughSequence);
+    const localUnread = localIndex !== -1;
+    // Subscriber snapshots can coalesce earlier local commands; consume those markers together.
+    if (localUnread) localUnreadRequests.current.splice(0, localIndex + 1);
     if (!visit || chat.readThroughSequence < visit.horizon) {
       const divider =
         chat.unreadMessageCount > 0 ? chat.readThroughSequence + 1 : undefined;
@@ -71,7 +73,7 @@ export const ReadTimeline = ({
         onUnreadNavigation(true);
         setJump((request) => request + 1);
       }
-    } else if (visit.paused && localUnreadHorizon.current === undefined &&
+    } else if (visit.paused && localUnreadRequests.current.length === 0 &&
         chat.unreadMessageCount === 0) {
       setVisit({ ...visit, horizon: chat.readThroughSequence, paused: false });
     } else if (visit.divider === undefined && chat.unreadMessageCount > 0) {
@@ -222,13 +224,21 @@ export const ReadTimeline = ({
           if (!workspaceId || !unread?.state) return;
           // Untouched pre-rollout threads have no cursor until an arrival or explicit command.
           const target = chat ?? {workspaceId, chatId, unreadMessageCount: 0, readThroughSequence: -1};
-          localUnreadHorizon.current = sequence - 1;
+          const request = {horizon: sequence - 1};
+          localUnreadRequests.current.push(request);
+          jumpSequence.current = undefined;
+          requestedPage.current = undefined;
+          if (jump) onUnreadNavigation(false);
+          setJump(0);
           setVisit({ horizon: visit?.horizon ?? sequence - 1, divider: sequence, paused: true });
           // The RPC ACK can precede its subscriber update. Only that matching snapshot consumes
-          // the local marker; otherwise it would look like a remote rewind and scroll this view.
+          // the local markers; otherwise they would look like remote rewinds and scroll this view.
           void unread.markUnread(target, sequence).catch(() => {
-            localUnreadHorizon.current = undefined;
-            setVisit(visit);
+            const index = localUnreadRequests.current.indexOf(request);
+            if (index === -1) return;
+            const latestRequest = index === localUnreadRequests.current.length - 1;
+            localUnreadRequests.current.splice(index, 1);
+            if (latestRequest) setVisit(visit);
           });
         },
       }}

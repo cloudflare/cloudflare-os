@@ -111,6 +111,8 @@ describe("timeline read/unread experience", () => {
         return new DOMRect(0, 0, shown ? 400 : 0, shown ? visibleBottom : 0);
       if (this.dataset.readThrough !== undefined)
         return new DOMRect(0, Number(this.dataset.readThrough) * 100 + 100, 400, 1);
+      if (this.dataset.unreadThrough !== undefined)
+        return new DOMRect(0, Number(this.dataset.unreadThrough) * 100, 400, 100);
       return new DOMRect(0, 0, 400, 20);
     });
     withdraw = reportVisibleChat(() => ({ workspaceId: "workspace", chatId: 1 }));
@@ -153,12 +155,48 @@ describe("timeline read/unread experience", () => {
     await update({chats: [], unreadChatCount: 0, unreadMessageCount: 0});
     await settle();
     expect(markChatRead).not.toHaveBeenCalled();
+    const viewport = container.querySelector<HTMLDivElement>("[data-viewport]")!;
+    viewport.scrollTop = 40;
     const trigger = container.querySelector<HTMLButtonElement>('[data-read-start="1"] button')!;
     await act(async () => trigger.click());
     await act(async () => document.querySelector<HTMLElement>('[role="menuitem"]')!.click());
     expect(markChatUnread).toHaveBeenCalledExactlyOnceWith("workspace", 1, 1);
+    await settle();
+    expect(viewport.scrollTop).toBe(40);
     await update(snapshot(1, 0));
     await settle();
+    expect(container.textContent).toContain("automatic reading paused");
+    expect(markChatRead).not.toHaveBeenCalled();
+    expect(viewport.scrollTop).toBe(40);
+    expect(navigate).not.toHaveBeenCalledWith(true);
+  });
+
+  it.each([
+    {coalesced: false, firstFails: false},
+    {coalesced: true, firstFails: false},
+    {coalesced: true, firstFails: true},
+  ])("keeps overlapping local unread actions in place (coalesced: $coalesced, first fails: $firstFails)",
+      async ({coalesced, firstFails}) => {
+    await render();
+    await update(snapshot(1, 2));
+    await settle();
+    navigate.mockClear();
+    const viewport = container.querySelector<HTMLDivElement>("[data-viewport]")!;
+    viewport.scrollTop = 40;
+    const first = Promise.withResolvers<void>();
+    if (firstFails) markChatUnread.mockReturnValueOnce(first.promise);
+    for (const sequence of [2, 1]) {
+      await act(async () => container.querySelector<HTMLButtonElement>(`[data-read-start="${sequence}"] button`)!.click());
+      await act(async () => document.querySelector<HTMLElement>('[role="menuitem"]')!.click());
+    }
+    expect(markChatUnread.mock.calls).toEqual([["workspace", 1, 2], ["workspace", 1, 1]]);
+    if (firstFails) await act(async () => first.reject(new Error("First command failed")));
+    for (const horizon of coalesced ? [0] : [1, 0]) {
+      await update(snapshot(2, horizon));
+      await settle();
+      expect(viewport.scrollTop).toBe(40);
+    }
+    expect(navigate).not.toHaveBeenCalledWith(true);
     expect(container.textContent).toContain("automatic reading paused");
     expect(markChatRead).not.toHaveBeenCalled();
   });
