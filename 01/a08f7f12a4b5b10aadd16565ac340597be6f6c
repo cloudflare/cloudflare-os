@@ -1,0 +1,24 @@
+docs/chatgpt-sign-in.md
+  s_78731ca06993b3::t_62c5b877fe01b1 21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "01a08f7f12a4b5b10aadd16565ac340597be6f6c",
+  "prompts": {},
+  "humans": {
+    "h_b6783f91d645b1": {
+      "author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  },
+  "sessions": {
+    "s_78731ca06993b3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "be635040-3481-4ab2-a414-734d35cc3c39",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
