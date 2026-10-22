@@ -7,15 +7,18 @@ import { browserPushEnabled, enableBrowserPush, syncBrowserPush } from "./browse
 
 const OWNER_KEY = "gadgets:notifications:browserPushOwner";
 const ENDPOINT = "https://fcm.googleapis.com/wp/new";
+const KEY = "BKey";
 
 type FakeSubscription = {
   endpoint: string;
+  options: { applicationServerKey: ArrayBuffer };
   toJSON: () => PushSubscriptionJSON;
   unsubscribe: Mock<() => Promise<boolean>>;
 };
 
-const fakeSubscription = (endpoint: string): FakeSubscription => ({
+const fakeSubscription = (endpoint: string, key = KEY): FakeSubscription => ({
   endpoint,
+  options: { applicationServerKey: Uint8Array.from(atob(key), c => c.charCodeAt(0)).buffer },
   // As browsers serialize it, expirationTime included.
   toJSON: () => ({ endpoint, expirationTime: null, keys: { p256dh: "BP", auth: "AA" } }),
   unsubscribe: vi.fn<() => Promise<boolean>>(async () => true),
@@ -52,7 +55,7 @@ describe("browser push", () => {
   });
 
   it("registers only the fields the service accepts and records the owner", async () => {
-    await expect(enableBrowserPush(api, "alice", "BKey")).resolves.toBe("granted");
+    await expect(enableBrowserPush(api, "alice", KEY)).resolves.toBe("granted");
 
     expect(registerNotificationDevice.mock.calls).toEqual(
       [[{ endpoint: ENDPOINT, keys: { p256dh: "BP", auth: "AA" } }]]);
@@ -63,7 +66,7 @@ describe("browser push", () => {
   it("leaves no subscription behind when registration fails", async () => {
     registerNotificationDevice.mockRejectedValue(new Error("offline"));
 
-    await expect(enableBrowserPush(api, "alice", "BKey")).rejects.toThrow("offline");
+    await expect(enableBrowserPush(api, "alice", KEY)).rejects.toThrow("offline");
 
     expect(current!.unsubscribe).toHaveBeenCalled();
     expect(localStorage.getItem(OWNER_KEY)).toBeNull();
@@ -74,7 +77,7 @@ describe("browser push", () => {
     localStorage.setItem(OWNER_KEY, "alice");
     registerNotificationDevice.mockRejectedValue(new Error("offline"));
 
-    await expect(enableBrowserPush(api, "alice", "BKey")).rejects.toThrow("offline");
+    await expect(enableBrowserPush(api, "alice", KEY)).rejects.toThrow("offline");
 
     expect(current.unsubscribe).not.toHaveBeenCalled();
     await expect(browserPushEnabled("alice")).resolves.toBe(true);
@@ -84,7 +87,7 @@ describe("browser push", () => {
     current = fakeSubscription("https://fcm.googleapis.com/wp/alice");
     localStorage.setItem(OWNER_KEY, "alice");
 
-    await syncBrowserPush(api, "bob");
+    await syncBrowserPush(api, "bob", KEY);
 
     expect(current.unsubscribe).toHaveBeenCalled();
     expect(registerNotificationDevice).not.toHaveBeenCalled();
@@ -95,9 +98,24 @@ describe("browser push", () => {
     current = fakeSubscription(ENDPOINT);
     localStorage.setItem(OWNER_KEY, "alice");
 
-    await syncBrowserPush(api, "alice");
+    await syncBrowserPush(api, "alice", KEY);
 
     expect(current.unsubscribe).not.toHaveBeenCalled();
+    expect(registerNotificationDevice.mock.calls).toEqual(
+      [[{ endpoint: ENDPOINT, keys: { p256dh: "BP", auth: "AA" } }]]);
+  });
+
+  it("replaces the user's subscription made with a key the deployment no longer advertises", async () => {
+    let stale = current = fakeSubscription("https://fcm.googleapis.com/wp/stale", "BOld");
+    stale.unsubscribe.mockImplementation(async () => {
+      current = null;
+      return true;
+    });
+    localStorage.setItem(OWNER_KEY, "alice");
+
+    await syncBrowserPush(api, "alice", KEY);
+
+    expect(stale.unsubscribe).toHaveBeenCalled();
     expect(registerNotificationDevice.mock.calls).toEqual(
       [[{ endpoint: ENDPOINT, keys: { p256dh: "BP", auth: "AA" } }]]);
   });

@@ -8,7 +8,7 @@ import { BrowserPushBridge } from "./BrowserPushBridge";
 
 const { router, syncBrowserPush } = vi.hoisted(() => ({
   router: { navigate: vi.fn<(options: object) => Promise<void>>() },
-  syncBrowserPush: vi.fn<(api: object, userId: string) => Promise<void>>(),
+  syncBrowserPush: vi.fn<(api: object, userId: string, publicKey: string) => Promise<void>>(),
 }));
 let auth: { authenticatedApi: object; currentUser: { id: string } | null; isCurrentUserConfirmed: boolean };
 
@@ -54,7 +54,7 @@ describe("BrowserPushBridge", () => {
     await render({ authenticatedApi: first, currentUser: alice, isCurrentUserConfirmed: true });
     await render({ authenticatedApi: second, currentUser: alice, isCurrentUserConfirmed: false });
     await render({ authenticatedApi: second, currentUser: alice, isCurrentUserConfirmed: true });
-    expect(syncBrowserPush.mock.calls).toEqual([[first, "alice"]]);
+    expect(syncBrowserPush.mock.calls).toEqual([[first, "alice", "BKey"]]);
   });
 
   it("retries a failed sync on the next reconnect", async () => {
@@ -65,7 +65,7 @@ describe("BrowserPushBridge", () => {
 
     await render({ authenticatedApi: first, currentUser: alice, isCurrentUserConfirmed: true });
     await render({ authenticatedApi: second, currentUser: alice, isCurrentUserConfirmed: true });
-    expect(syncBrowserPush.mock.calls).toEqual([[first, "alice"], [second, "alice"]]);
+    expect(syncBrowserPush.mock.calls).toEqual([[first, "alice", "BKey"], [second, "alice", "BKey"]]);
   });
 
   it("opens the chat a clicked notification names", async () => {

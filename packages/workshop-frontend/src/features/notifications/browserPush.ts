@@ -34,6 +34,11 @@ const registrationOf = (subscription: PushSubscription): WebPushSubscription => 
   return { endpoint: subscription.endpoint, keys: { p256dh: keys.p256dh, auth: keys.auth } };
 };
 
+// The VAPID key a subscription was made with, as the base64url the deployment advertises.
+const keyOf = ({ options: { applicationServerKey: key } }: PushSubscription) =>
+  key && btoa(String.fromCharCode(...new Uint8Array(key)))
+    .replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+
 const currentSubscription = async (): Promise<PushSubscription | null> =>
   (await navigator.serviceWorker.getRegistration("/"))?.pushManager.getSubscription() ?? null;
 
@@ -77,14 +82,21 @@ export const disableBrowserPush = (): Promise<void> => withLock(async () => {
 });
 
 /**
- * Bring this browser's push in line with `userId`, who just signed in: drop a subscription another
- * account holds, and register `userId`'s own again.
+ * Bring this browser's push in line with `userId`, who just signed in, and the deployment's
+ * `publicKey`: drop a subscription another account holds, and register `userId`'s own again.
  */
 export const syncBrowserPush = (
-  api: RpcStub<AuthenticatedApi>, userId: string,
+  api: RpcStub<AuthenticatedApi>, userId: string, publicKey: string,
 ): Promise<void> => withLock(async () => {
   let subscription = await currentSubscription();
   if (subscription && localStorage.getItem(OWNER_KEY) === userId) {
+    // Made with a VAPID key the service no longer signs with, it would receive nothing. Permission
+    // is already granted, so replacing it needs no click.
+    if (keyOf(subscription) !== publicKey) {
+      await subscription.unsubscribe();
+      subscription = await (await navigator.serviceWorker.ready).pushManager.subscribe(
+        { userVisibleOnly: true, applicationServerKey: publicKey });
+    }
     // Registering again renews a subscription the service expired after months without delivery,
     // which would otherwise read as on while nothing arrives.
     await api.registerNotificationDevice(registrationOf(subscription));

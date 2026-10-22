@@ -71,8 +71,10 @@ in the same browser profile registers it, the previous account's subscription st
 browser remembers which user it subscribed for: each sign-in registers that user's subscription
 again, which renews it with the service, and unsubscribes one held for anyone else, so a different
 user who signs in starts with browser notifications off and turns them on themselves; signing out
-unsubscribes it. Phones and tablets never offer the switch, and neither does either native app, since
-the Cloudflare OS app pushes there.
+unsubscribes it. A subscription made with a VAPID key the deployment no longer advertises is
+replaced with one for the current key before it is registered again, so changing the service's key
+costs no one their browser notifications. Phones and tablets never offer the switch, and neither
+does either native app, since the Cloudflare OS app pushes there.
 
 ## Delivery
 

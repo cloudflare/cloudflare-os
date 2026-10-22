@@ -22,7 +22,7 @@ export const BrowserPushBridge = () => {
     if (!confirmedUserId || confirmedUserId === syncedUserId.current || !publicKey ||
         browserPushSupport() !== "supported") return;
     syncedUserId.current = confirmedUserId;
-    syncBrowserPush(authenticatedApi, confirmedUserId).catch(error => {
+    syncBrowserPush(authenticatedApi, confirmedUserId, publicKey).catch(error => {
       if (syncedUserId.current === confirmedUserId) syncedUserId.current = undefined;
       logRpcFailure("Failed to refresh browser notifications:", error);
     });
