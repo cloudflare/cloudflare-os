@@ -79,11 +79,19 @@ export const enableBrowserPush = async (
   return permission;
 };
 
-/** Stop this browser's push. The user's subscription lapses at its next delivery. */
-export const disableBrowserPush = (): Promise<void> => withLock(async () => {
+const release = async () => {
   await (await currentSubscription())?.unsubscribe();
   localStorage.removeItem(OWNER_KEY);
-});
+};
+
+/** Stop this browser's push. The user's subscription lapses at its next delivery. */
+export const disableBrowserPush = async (): Promise<void> => {
+  // At once, without queuing behind a registration: sign-out shows the login page without waiting,
+  // and closing it drops a queued lock request. Then under the lock, for a subscription a
+  // transition already under way makes meanwhile.
+  await release();
+  await withLock(release);
+};
 
 /**
  * Bring this browser's push in line with `userId`, who just signed in, and the deployment's
@@ -93,12 +101,10 @@ export const disableBrowserPush = (): Promise<void> => withLock(async () => {
 export const syncBrowserPush = (
   api: RpcStub<AuthenticatedApi>, userId: string, publicKey: string,
 ): Promise<void> => withLock(async () => {
-  let subscription = await currentSubscription();
   if (localStorage.getItem(OWNER_KEY) !== userId || Notification.permission !== "granted") {
-    await subscription?.unsubscribe();
-    localStorage.removeItem(OWNER_KEY);
-    return;
+    return release();
   }
+  let subscription = await currentSubscription();
   // Subscribe again when the browser holds none (it lost it, or the last replacement failed) or one
   // made with a VAPID key the service no longer signs with. Permission stands, so no click is needed.
   if (!subscription || keyOf(subscription) !== publicKey) {

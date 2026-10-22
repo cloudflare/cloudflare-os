@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { RpcStub } from "capnweb";
 import type { AuthenticatedApi, WebPushSubscription } from "@gadgets/workshop-shared/api";
-import { browserPushEnabled, enableBrowserPush, syncBrowserPush } from "./browserPush";
+import { browserPushEnabled, disableBrowserPush, enableBrowserPush, syncBrowserPush } from "./browserPush";
 
 const OWNER_KEY = "gadgets:notifications:browserPushOwner";
 const ENDPOINT = "https://fcm.googleapis.com/wp/new";
@@ -32,15 +32,19 @@ describe("browser push", () => {
 
   beforeEach(() => {
     current = null;
-    subscribe = vi.fn(async () => (current ??= fakeSubscription(ENDPOINT)));
+    subscribe = vi.fn<() => Promise<FakeSubscription>>(
+      async () => (current ??= fakeSubscription(ENDPOINT)));
     let pushManager = { getSubscription: async () => current, subscribe };
     Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: {
       register: async () => ({}),
       ready: Promise.resolve({ pushManager }),
       getRegistration: async () => ({ pushManager }),
     } });
+    // One transition at a time, as Web Locks grants them.
+    let held: Promise<unknown> = Promise.resolve();
     Object.defineProperty(navigator, "locks", { configurable: true, value: {
-      request: (_name: string, transition: () => Promise<unknown>) => transition(),
+      request: (_name: string, transition: () => Promise<unknown>) =>
+        (held = held.catch(() => {}).then(transition)),
     } });
     vi.stubGlobal("Notification", { permission: "granted", requestPermission: async () => "granted" });
     registerNotificationDevice = vi.fn<(registration: WebPushSubscription) => Promise<void>>(
@@ -134,5 +138,21 @@ describe("browser push", () => {
     expect(registerNotificationDevice.mock.calls).toEqual(
       [[{ endpoint: ENDPOINT, keys: { p256dh: "BP", auth: "AA" } }]]);
     await expect(browserPushEnabled("alice")).resolves.toBe(true);
+  });
+
+  it("unsubscribes at once rather than behind a registration in flight", async () => {
+    current = fakeSubscription(ENDPOINT);
+    localStorage.setItem(OWNER_KEY, "alice");
+    let register!: () => void;
+    registerNotificationDevice.mockReturnValue(new Promise(resolve => { register = resolve; }));
+    let sync = syncBrowserPush(api, "alice", KEY);
+    await vi.waitFor(() => expect(registerNotificationDevice).toHaveBeenCalled());
+
+    let disabled = disableBrowserPush();
+    await vi.waitFor(() => expect(current!.unsubscribe).toHaveBeenCalled());
+    expect(localStorage.getItem(OWNER_KEY)).toBeNull();
+
+    register();
+    await Promise.all([sync, disabled]);
   });
 });

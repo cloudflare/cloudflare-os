@@ -10,20 +10,22 @@ export const BrowserPushBridge = () => {
   const { authenticatedApi, currentUser, isCurrentUserConfirmed } = useAuthenticatedApi();
   const publicKey = useServerConfig()?.webPushPublicKey;
   const router = useRouter();
-  const syncedUserId = useRef<string>(undefined);
+  const synced = useRef<string>(undefined);
   // Mid-reconnect, currentUser can still be the previous account while the API is the next one's,
   // which would register this browser for the wrong account.
   const confirmedUserId = isCurrentUserConfirmed ? currentUser?.id : undefined;
 
   useEffect(() => {
-    // Once per user per page load, not per reconnect: each sync costs a central registration, and
-    // every reconnect re-confirms. A failed sync is retried on the next reconnect, or a long-lived
-    // tab would stay unregistered.
-    if (!confirmedUserId || confirmedUserId === syncedUserId.current || !publicKey ||
-        browserPushSupport() !== "supported") return;
-    syncedUserId.current = confirmedUserId;
+    // Once per user and key per page load, not per reconnect: each sync costs a central
+    // registration, and every reconnect re-confirms. A reconnect can bring a new key, though, which
+    // the browser must subscribe with. A failed sync is retried on the next reconnect, or a
+    // long-lived tab would stay unregistered.
+    if (!confirmedUserId || !publicKey || browserPushSupport() !== "supported") return;
+    let target = `${confirmedUserId}\n${publicKey}`;
+    if (synced.current === target) return;
+    synced.current = target;
     syncBrowserPush(authenticatedApi, confirmedUserId, publicKey).catch(error => {
-      if (syncedUserId.current === confirmedUserId) syncedUserId.current = undefined;
+      if (synced.current === target) synced.current = undefined;
       logRpcFailure("Failed to refresh browser notifications:", error);
     });
   }, [authenticatedApi, confirmedUserId, publicKey]);

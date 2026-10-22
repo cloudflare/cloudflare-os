@@ -11,12 +11,11 @@ const { router, syncBrowserPush } = vi.hoisted(() => ({
   syncBrowserPush: vi.fn<(api: object, userId: string, publicKey: string) => Promise<void>>(),
 }));
 let auth: { authenticatedApi: object; currentUser: { id: string } | null; isCurrentUserConfirmed: boolean };
+let webPushPublicKey: string;
 
 vi.mock("@tanstack/react-router", () => ({ useRouter: () => router }));
 vi.mock("../../AuthContext", () => ({ useAuthenticatedApi: () => auth }));
-vi.mock("../../ServerConfigContext", () => ({
-  useServerConfig: () => ({ webPushPublicKey: "BKey" }),
-}));
+vi.mock("../../ServerConfigContext", () => ({ useServerConfig: () => ({ webPushPublicKey }) }));
 vi.mock("./browserPush", () => ({ browserPushSupport: () => "supported", syncBrowserPush }));
 
 describe("BrowserPushBridge", () => {
@@ -32,6 +31,7 @@ describe("BrowserPushBridge", () => {
   beforeEach(() => {
     router.navigate.mockReset();
     syncBrowserPush.mockReset().mockResolvedValue();
+    webPushPublicKey = "BKey";
     serviceWorker = new EventTarget();
     Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: serviceWorker });
     container = document.createElement("div");
@@ -66,6 +66,15 @@ describe("BrowserPushBridge", () => {
     await render({ authenticatedApi: first, currentUser: alice, isCurrentUserConfirmed: true });
     await render({ authenticatedApi: second, currentUser: alice, isCurrentUserConfirmed: true });
     expect(syncBrowserPush.mock.calls).toEqual([[first, "alice", "BKey"], [second, "alice", "BKey"]]);
+  });
+
+  it("syncs again when a reconnect brings a new key", async () => {
+    let alice = { id: "alice" };
+    let [first, second] = [{}, {}];
+    await render({ authenticatedApi: first, currentUser: alice, isCurrentUserConfirmed: true });
+    webPushPublicKey = "BNew";
+    await render({ authenticatedApi: second, currentUser: alice, isCurrentUserConfirmed: true });
+    expect(syncBrowserPush.mock.calls).toEqual([[first, "alice", "BKey"], [second, "alice", "BNew"]]);
   });
 
   it("opens the chat a clicked notification names", async () => {
