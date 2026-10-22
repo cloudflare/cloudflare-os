@@ -26,15 +26,14 @@ const fakeSubscription = (endpoint: string, key = KEY): FakeSubscription => ({
 
 describe("browser push", () => {
   let current: FakeSubscription | null;
+  let subscribe: Mock<() => Promise<FakeSubscription>>;
   let registerNotificationDevice: Mock<(registration: WebPushSubscription) => Promise<void>>;
   let api: RpcStub<AuthenticatedApi>;
 
   beforeEach(() => {
     current = null;
-    let pushManager = {
-      getSubscription: async () => current,
-      subscribe: async () => (current ??= fakeSubscription(ENDPOINT)),
-    };
+    subscribe = vi.fn(async () => (current ??= fakeSubscription(ENDPOINT)));
+    let pushManager = { getSubscription: async () => current, subscribe };
     Object.defineProperty(navigator, "serviceWorker", { configurable: true, value: {
       register: async () => ({}),
       ready: Promise.resolve({ pushManager }),
@@ -43,7 +42,7 @@ describe("browser push", () => {
     Object.defineProperty(navigator, "locks", { configurable: true, value: {
       request: (_name: string, transition: () => Promise<unknown>) => transition(),
     } });
-    vi.stubGlobal("Notification", { requestPermission: async () => "granted" });
+    vi.stubGlobal("Notification", { permission: "granted", requestPermission: async () => "granted" });
     registerNotificationDevice = vi.fn<(registration: WebPushSubscription) => Promise<void>>(
       async () => {});
     api = { registerNotificationDevice } as unknown as RpcStub<AuthenticatedApi>;
@@ -118,5 +117,22 @@ describe("browser push", () => {
     expect(stale.unsubscribe).toHaveBeenCalled();
     expect(registerNotificationDevice.mock.calls).toEqual(
       [[{ endpoint: ENDPOINT, keys: { p256dh: "BP", auth: "AA" } }]]);
+  });
+
+  it("subscribes again at the next sign-in after replacing the subscription failed", async () => {
+    let stale = current = fakeSubscription("https://fcm.googleapis.com/wp/stale", "BOld");
+    stale.unsubscribe.mockImplementation(async () => {
+      current = null;
+      return true;
+    });
+    localStorage.setItem(OWNER_KEY, "alice");
+    subscribe.mockRejectedValueOnce(new Error("push service unavailable"));
+
+    await expect(syncBrowserPush(api, "alice", KEY)).rejects.toThrow("push service unavailable");
+    await syncBrowserPush(api, "alice", KEY);
+
+    expect(registerNotificationDevice.mock.calls).toEqual(
+      [[{ endpoint: ENDPOINT, keys: { p256dh: "BP", auth: "AA" } }]]);
+    await expect(browserPushEnabled("alice")).resolves.toBe(true);
   });
 });

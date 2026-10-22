@@ -42,6 +42,13 @@ const keyOf = ({ options: { applicationServerKey: key } }: PushSubscription) =>
 const currentSubscription = async (): Promise<PushSubscription | null> =>
   (await navigator.serviceWorker.getRegistration("/"))?.pushManager.getSubscription() ?? null;
 
+// Subscribes with `publicKey`, first registering the service worker that shows pushes if need be.
+const subscribe = async (publicKey: string): Promise<PushSubscription> => {
+  await navigator.serviceWorker.register("/sw.js");
+  return (await navigator.serviceWorker.ready).pushManager.subscribe(
+    { userVisibleOnly: true, applicationServerKey: publicKey });
+};
+
 /** Whether this browser receives `userId`'s push notifications. */
 export const browserPushEnabled = async (userId: string): Promise<boolean> =>
   localStorage.getItem(OWNER_KEY) === userId && await currentSubscription() !== null;
@@ -56,13 +63,10 @@ export const enableBrowserPush = async (
   let permission = await Notification.requestPermission();
   if (permission !== "granted") return permission;
   await withLock(async () => {
-    await navigator.serviceWorker.register("/sw.js");
-    let { pushManager } = await navigator.serviceWorker.ready;
     // Another tab may have enabled push since this one read its status. subscribe() then returns
     // that working subscription, which a failed registration here must not end.
-    let existing = await pushManager.getSubscription();
-    let subscription = await pushManager.subscribe(
-      { userVisibleOnly: true, applicationServerKey: publicKey });
+    let existing = await currentSubscription();
+    let subscription = await subscribe(publicKey);
     try {
       await api.registerNotificationDevice(registrationOf(subscription));
     } catch (error) {
@@ -83,25 +87,25 @@ export const disableBrowserPush = (): Promise<void> => withLock(async () => {
 
 /**
  * Bring this browser's push in line with `userId`, who just signed in, and the deployment's
- * `publicKey`: drop a subscription another account holds, and register `userId`'s own again.
+ * `publicKey`. While `userId` keeps push on here and permission stands, the browser holds a
+ * subscription made with that key, registered again; otherwise it holds none.
  */
 export const syncBrowserPush = (
   api: RpcStub<AuthenticatedApi>, userId: string, publicKey: string,
 ): Promise<void> => withLock(async () => {
   let subscription = await currentSubscription();
-  if (subscription && localStorage.getItem(OWNER_KEY) === userId) {
-    // Made with a VAPID key the service no longer signs with, it would receive nothing. Permission
-    // is already granted, so replacing it needs no click.
-    if (keyOf(subscription) !== publicKey) {
-      await subscription.unsubscribe();
-      subscription = await (await navigator.serviceWorker.ready).pushManager.subscribe(
-        { userVisibleOnly: true, applicationServerKey: publicKey });
-    }
-    // Registering again renews a subscription the service expired after months without delivery,
-    // which would otherwise read as on while nothing arrives.
-    await api.registerNotificationDevice(registrationOf(subscription));
+  if (localStorage.getItem(OWNER_KEY) !== userId || Notification.permission !== "granted") {
+    await subscription?.unsubscribe();
+    localStorage.removeItem(OWNER_KEY);
     return;
   }
-  await subscription?.unsubscribe();
-  localStorage.removeItem(OWNER_KEY);
+  // Subscribe again when the browser holds none (it lost it, or the last replacement failed) or one
+  // made with a VAPID key the service no longer signs with. Permission stands, so no click is needed.
+  if (!subscription || keyOf(subscription) !== publicKey) {
+    await subscription?.unsubscribe();
+    subscription = await subscribe(publicKey);
+  }
+  // Registering again renews a subscription the service expired after months without delivery,
+  // which would otherwise read as on while nothing arrives.
+  await api.registerNotificationDevice(registrationOf(subscription));
 });
