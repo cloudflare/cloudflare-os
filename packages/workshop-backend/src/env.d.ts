@@ -42,7 +42,9 @@ declare global {
       CFOS_INSTALL_ID?: string;           // this installation's central identity
       CFOS_INSTALL_KEY_ID?: string;       // active signing-key generation
       CFOS_INSTALL_PRIVATE_KEY?: string;  // secret: base64 PKCS#8 P-256 key that signs requests
-      NOTIFICATION_WEB_PUSH_PUBLIC_KEY?: string; // VAPID key browsers subscribe to push with
+      // Browser push alone needs this VAPID key, which browsers subscribe with; without it the
+      // profile page offers no browser notifications, and native push is unaffected.
+      NOTIFICATION_WEB_PUSH_PUBLIC_KEY?: string;
 
       // Optional product analytics stream. Deployments can bind this to a
       // structured Cloudflare Pipelines stream; local/dev configs omit it and analytics no-op.
