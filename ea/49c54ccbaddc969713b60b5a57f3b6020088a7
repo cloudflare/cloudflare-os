@@ -1,0 +1,28 @@
+packages/workshop-backend/src/deployment-config.ts
+  s_c5f7f46f37b64a::t_4507ba81a50d10 42-46,67
+packages/workshop-backend/__tests__/backend-version.test.ts
+  s_c5f7f46f37b64a::t_945429b4bab745 1-25,31-50,52-54,57-58
+  s_c5f7f46f37b64a::t_b74f87763f13a2 51,55-56
+  s_c5f7f46f37b64a::t_bc63fb9adbff9f 26-30
+packages/workshop-shared/src/api.ts
+  s_c5f7f46f37b64a::t_4507ba81a50d10 1117-1124,1659-1664
+packages/workshop-backend/src/server.ts
+  s_c5f7f46f37b64a::t_a7e6bf7c81df84 4,6,928-930
+  s_c5f7f46f37b64a::t_ec3ed21379eecc 931
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "ea49c54ccbaddc969713b60b5a57f3b6020088a7",
+  "prompts": {},
+  "sessions": {
+    "s_c5f7f46f37b64a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "af85bbd4-1c2a-4560-b9a2-08288fc06dba",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

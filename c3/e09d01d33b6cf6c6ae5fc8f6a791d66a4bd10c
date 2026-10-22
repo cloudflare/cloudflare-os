@@ -1,0 +1,30 @@
+packages/gatekeeper-google/src/gmail.ts
+  s_c31bf147d9a35f::t_6ca61a40484599 76-77,365-367,417-429,3624-3625,3654-3659,5396-5398
+  s_c31bf147d9a35f::t_92b5494d2d6c74 1852-1854,1857-1858
+  s_c31bf147d9a35f::t_96323fb57c907d 430
+packages/gatekeeper-google/__tests__/workerd/gmail-actions.test.ts
+  s_c31bf147d9a35f::t_20658a9c5e77aa 6265-6276
+  s_c31bf147d9a35f::t_6ce8a154f4eecb 5014
+  s_c31bf147d9a35f::t_dd52ef4cfb61b2 4996-5013,5015-5016,6277
+packages/gatekeeper-google/src/chat.ts
+  s_c31bf147d9a35f::t_24b3587b8a71d6 213-228,460-464,485-487,704-707,1779
+packages/gatekeeper-google/__tests__/workerd/chat-actions.test.ts
+  s_c31bf147d9a35f::t_fa8fbe7b3489be 999-1008,1010,1012-1013
+  s_c31bf147d9a35f::t_f28fe361e4a4d3 1009,1011
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c3e09d01d33b6cf6c6ae5fc8f6a791d66a4bd10c",
+  "prompts": {},
+  "sessions": {
+    "s_c31bf147d9a35f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "de85876d-a552-46dc-8098-f2602de083b7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

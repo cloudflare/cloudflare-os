@@ -1,0 +1,132 @@
+packages/workshop-shared/src/api.ts
+  s_664125cd80dfd6::t_fe49170d7c4f39 1236-1238
+  s_664125cd80dfd6::t_61d4485324dea7 1247-1250
+  s_664125cd80dfd6::t_d5d35b2f3233b1 1125-1126,1131-1132
+  s_664125cd80dfd6::t_6b8dfb522cdbba 1560,1566
+  s_664125cd80dfd6::t_a7a32758a676e3 1235,1239-1246,1251-1253,1257-1258,1278-1279,1283-1284,1298-1303
+  s_664125cd80dfd6::t_18a20dfb637ab3 1234
+  s_f4752a3f31547a::t_7831ec927b9cef 593-619,1162-1163,1474-1483,1731-1755,1999-2007
+  s_f4752a3f31547a::t_b1f00f6e697150 2008
+packages/workshop-backend/src/storage-schema/admin-settings-storage.ts
+  s_664125cd80dfd6::t_5e32fac5d30d22 175-185
+  s_664125cd80dfd6::t_f75c10b7250353 210-213
+  s_f4752a3f31547a::t_b87fa1d24b4d8a 117-122,172
+packages/workshop-backend/src/deployment-updates.ts
+  s_99c5462c433ffc::t_b96b5dba38ec18 4-5,18,32-35,43-50,115,117,122-123,125,127-128,134,157,163,182
+  s_664125cd80dfd6::t_43b9a5cb1b167a 116,118
+  s_664125cd80dfd6::t_0a1c0b13270e8f 1-2,13-17,20,27-31,36-37,39-42,51-53,57-58,100-102,119-121,124,126,129,137,141-142,147,151,155-156,164-168
+  s_664125cd80dfd6::t_2e86c303f1f0c4 54-56,99,103-114
+  s_664125cd80dfd6::t_f610c4e3245d1a 130
+  s_99c5462c433ffc::t_6523e10754ce3d 169,176,179-181
+packages/workshop-backend/__tests__/deployment-updates.test.ts
+  s_664125cd80dfd6::t_30efeb2e004fb7 366
+  s_664125cd80dfd6::t_6e2696d9dcfaec 131
+  s_99c5462c433ffc::t_56569abe91de4c 504-505
+  s_664125cd80dfd6::t_1a1b3d15eab5b3 1-2,4,6,14,18-22,24-26,29-31,34-36,38-39,51-80,82-93,101-115,119-128,187-280,282-286,288-298,315-317,319,321-325,327,329-332,335,337-341,343,345-349,352-360,363,365,399-432,434-441,444-445,447-449,451,506-511,515-530,533-538,540,546-623
+  s_664125cd80dfd6::t_1bab6112050741 625
+  s_664125cd80dfd6::t_606eab025f1207 367
+  s_664125cd80dfd6::t_36475d417d313b 94-95,129,624
+  s_664125cd80dfd6::t_e9e6dab9e829fe 130,626
+  s_99c5462c433ffc::t_01a3a391ef3639 452
+  s_664125cd80dfd6::t_251c96c2c988a5 281,287
+  s_664125cd80dfd6::t_2918197f7b6d70 541-545
+packages/workshop-backend/src/admin-settings.ts
+  s_664125cd80dfd6::t_d2c03dd3e750df 295-299,301-302,411-412,421,423-424,428-434,436-438,1195-1197
+  s_664125cd80dfd6::t_082874cf359fa0 410
+  s_664125cd80dfd6::t_43b9a5cb1b167a 425-426
+  s_664125cd80dfd6::t_f610c4e3245d1a 303-304,420,1198
+  s_664125cd80dfd6::t_3edf9a19a4fd03 1046-1047
+  s_f4752a3f31547a::t_b87fa1d24b4d8a 500,903-907,1168-1170
+  s_f4752a3f31547a::t_9f8d39c894aa64 1171
+packages/workshop-backend/src/env.d.ts
+  s_664125cd80dfd6::t_f1e724e7e1ffae 88-92
+AGENTS.md
+  s_99c5462c433ffc::t_9f315d857e9add 95
+scripts/env-passthrough.test.ts
+  s_99c5462c433ffc::t_c847f78b2ff352 89-90,102-103
+scripts/release/manifest-lib.ts
+  s_99c5462c433ffc::t_10d28424f22b77 486-487
+scripts/run-dev-server.ts
+  s_99c5462c433ffc::t_2d0e7920c21368 83-95,569-572
+packages/workshop-backend/src/chatgpt-oauth.ts
+  s_f4752a3f31547a::t_4753994ca2de21 48-50
+  s_f4752a3f31547a::t_9f9681a56cabd6 205-206
+  s_f4752a3f31547a::t_d54b2d6e6e0440 1-47,51-204,207-220
+packages/workshop-backend/src/admin-config.ts
+  s_f4752a3f31547a::t_b87fa1d24b4d8a 381-383,405-410
+  s_f4752a3f31547a::t_7405a634a1f2b9 411-412
+packages/workshop-backend/__tests__/user-chatgpt.test.ts
+  s_f4752a3f31547a::t_aa0254d0c40788 1-200,202,204-214,216,218-268
+  s_f4752a3f31547a::t_9f00e19cbeea61 201,203,215,217
+packages/workshop-backend/src/user.ts
+  s_f4752a3f31547a::t_cecaa804e85a4e 1027-1031
+  s_f4752a3f31547a::t_84e0720446b145 1041-1042
+  s_f4752a3f31547a::t_4753994ca2de21 26,1006
+  s_f4752a3f31547a::t_f98742d4b26bcc 1023
+  s_f4752a3f31547a::t_f7ca5cdc608e71 2,15,20,24-25,27,211-212,676,700-703,718-728,754-757,763,905-906,939-1005,1007-1022,1024-1026,1032-1040,1043-1044
+  s_f4752a3f31547a::t_ad4917336f255e 1045
+packages/workshop-backend/src/server.ts
+  s_f4752a3f31547a::t_4bea13067dddaf 285,287-290,293-296
+  s_f4752a3f31547a::t_0743c0a8a641f4 284,286,291-292
+  s_f4752a3f31547a::t_a6ca920bfbb98f 297
+  s_cfbc1d06c8420d::t_725b1fc9d25e6d 4
+packages/workshop-backend/__tests__/admin-config.test.ts
+  s_f4752a3f31547a::t_eff2dd8e80a7cf 389,457-473
+  s_f4752a3f31547a::t_8cc5dd80b72380 474
+  s_f4752a3f31547a::t_6825df40bbe8bd 3
+  s_f4752a3f31547a::t_3ccc9d3da5a48b 456
+packages/workshop-backend/__tests__/chatgpt-oauth.test.ts
+  s_f4752a3f31547a::t_b61a6b4718a423 121
+  s_f4752a3f31547a::t_ca0a0263fdbf0d 1-120,122-196
+packages/workshop-backend/src/storage-schema/user-storage.ts
+  s_f4752a3f31547a::t_9f9681a56cabd6 14,233-238
+  s_f4752a3f31547a::t_1237df7e46229b 239
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "036e51b64c8d393871c3ae1855b14afe6f5a7a5f",
+  "prompts": {},
+  "sessions": {
+    "s_664125cd80dfd6": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a41dd87a-7e4a-4acc-8c7e-eae5a69b4d55",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_99c5462c433ffc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "20bc3079-0386-4add-8723-190aaca5307f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": null
+    },
+    "s_c5f7f46f37b64a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "af85bbd4-1c2a-4560-b9a2-08288fc06dba",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_cfbc1d06c8420d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a0f857da-bd21-41aa-8f7f-821771956f2d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    },
+    "s_f4752a3f31547a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2a8928a7-4e3d-4b4d-8e6a-5564c5c9710a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
