@@ -398,7 +398,7 @@ describe("decision handoff using the existing execution row", () => {
       impl.storage.chatMeta.put({...impl.storage.chatMeta.get(CHAT)!,
         queuedSteers: [{text: "Make it dark.", author: USER}]});
     });
-    await evictDurableObject(s.stub);
+    await reset(s.stub);
     await s.visit(async impl => {
       await impl.waitForAllAgentsToComplete();
       const [steer, answer] = [...impl.storage.chats.list()].slice(-2);
@@ -418,7 +418,7 @@ describe("decision handoff using the existing execution row", () => {
       impl.addChatMessages(CHAT, MODEL.profile, [{type: "message", message: "Already done."}]);
       impl.addChatMessages(CHAT, USER, [{type: "message", message: "Make it dark.", steered: true}]);
     });
-    await evictDurableObject(s.stub);
+    await reset(s.stub);
     await s.visit(async impl => {
       await impl.waitForAllAgentsToComplete();
       const log = [...impl.storage.chats.list()];
@@ -586,6 +586,8 @@ describe("decision handoff using the existing execution row", () => {
       impl.cancelAgent(CHAT);
       expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
       expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      // The shared alarm may still cover unread fanout, independently of the cancelled agent.
+      await impl.deliverDirtyChats();
       expect(await impl.ctx.storage.getAlarm()).toBeNull();
       await expect(impl.runAlarmTasks()).resolves.toBeUndefined();
     });
