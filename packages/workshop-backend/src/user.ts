@@ -688,6 +688,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       // Publish only committed state, after releasing the mutex, including a count whose alert failed.
       if (accessRestored) this.#unreadChanged();
       else if (changed) this.#unreadChanged(workspaceId, chatId);
+      else this.#queueBadge(); // A same-count recount can unblock a previously provisional sum.
       if (reschedule) await this.#armExpirySweep();
     }
   }
@@ -739,17 +740,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (!this.env.NOTIFICATION_SERVICE_URL ||
         !Object.keys(this.storage.notificationSubscriptions.get()).length) return;
     let previous = this.storage.notificationBadge.get();
-    // Cold cursors can omit pre-existing threads whose initial counts lived only in memory.
-    // An incomplete sum must never become an absolute replacement, even if every source is up.
-    let complete = !this.#unavailableWorkspaces.size && [...this.#unreadWorkspaces].every(workspaceId => {
-      let heads = this.#chatHeads.get(workspaceId);
-      if (heads === null) return true;
-      if (!heads || !this.#enumeratedUnreadWorkspaces.has(workspaceId)) return false;
-      return [...heads.keys()].every(chatId => {
-        let cursor = this.#readCursors.get(`${workspaceId}:${chatId}`);
-        return cursor && !cursor.unreadDirty;
-      });
-    });
+    // All counts are durable local rows; only an in-flight recount can make the sum provisional.
+    let complete = [...this.#readCursors.values()].every(cursor =>
+      !this.#hasWorkspace(cursor.workspaceId) || this.#deniedUnreadWorkspaces.has(cursor.workspaceId) ||
+      !cursor.unreadDirty);
     if (!complete) {
       // Null plus retryAt is reconstruction intent in the existing outbox, surviving eviction.
       if (previous.count === null && previous.retryAt !== undefined) return;
@@ -777,7 +771,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.notificationBadge.put({...pending, retryAt: Date.now() + 30_000});
     await this.#armExpirySweep();
     if (pending.count === null) {
-      await this.getUnreadState();
       this.#queueBadge();
       return;
     }
@@ -873,7 +866,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       this.#dirtyTokens.set(`${workspaceId}:${cursor.chatId}`, {});
       this.#storeCursor({...cursor, unreadDirty: true, notificationsDirty: true});
     }
-    // Invalidate even when this workspace had only snapshot counts, lost on eviction.
+    // Hold the push total until the pending deletion recount finishes.
     this.#queueBadge();
     await this.#armExpirySweep();
     this.ctx.waitUntil(this.#recoverUnread().catch(error => {
@@ -882,7 +875,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   #forgetUnreadWorkspace(workspaceId: string): void {
-    this.#enumeratedUnreadWorkspaces.delete(workspaceId);
     let cursors = [...this.#readCursors.values()].filter(cursor => cursor.workspaceId === workspaceId);
     if (cursors.length) this.storage.chatReadCursors.byWorkspace.delete(workspaceId);
     for (let cursor of cursors) {
@@ -913,11 +905,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (acknowledged) return;
     this.#queueBadge();
     let badge = this.storage.notificationBadge.get();
-    let complete = this.#unavailableWorkspaces.size === 0;
     let subscriptions = Object.entries(this.storage.notificationSubscriptions.get());
     let results = await Promise.allSettled(subscriptions.map(async ([deviceKey, subscriptionId]) => {
       if (await deliver(this.env, subscriptionId, notification,
-          complete && badge.count !== null ? {count: badge.count, version: badge.version} : undefined)) return;
+          badge.count !== null ? {count: badge.count, version: badge.version} : undefined)) return;
       // This subscription is dead; the device gets a new one when its app next opens. Keep one it
       // registered while this delivery was in flight.
       let { [deviceKey]: current, ...others } = this.storage.notificationSubscriptions.get();
