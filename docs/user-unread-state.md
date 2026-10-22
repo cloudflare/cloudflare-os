@@ -19,16 +19,22 @@ Each User DO stores one `chatReadCursors` row per thread:
 There are no workspace summary blobs, persisted read epochs, source versions, reader enrollment
 records, workspace-side recipient checkpoints or audit log. Counts hydrate into memory from these
 local rows once per User DO lifetime; normal badge calculations use that memory, not cross-workspace
-history scans. Display metadata is fetched separately and remains in memory: loading a full thread
-list still contacts its workspaces. A first visit with no existing row
-calculates an initial count in memory; reads alone do not persist it. The next message or explicit
-horizon change persists the row. Ordinary snapshots never advance the notification horizon.
-The existing successful-open callback carries initial notification boundaries for shared threads.
-The same thread processor persists a missing cursor's boundary before fetching, so first admission
-cannot race snapshot initialization or replay historical alerts after eviction. A cached initial
-count is reused. Admission dirties notification catch-up from the supplied boundary, including
-arrivals ACKed before the listing callback. If a snapshot initialized the count first, that catch-up
-uses a notification-only source read, without recounting. Existing history is initially unread.
+history scans. Badge snapshots and subscriptions read only those local rows, including after eviction;
+they never enumerate workspaces or initialize historical threads. Thread-list titles/previews and
+observed menu-command boundaries use a separate authorized workspace query. A metadata failure
+does not invalidate badge totals.
+
+Rollout does not backfill unread history. The existing workspace schema migration captures
+`nextChatId` as `legacyUnreadChatIdLimit`, without scanning chats or contacting users. New threads
+start at read/notification horizon -1. For an old thread with no cursor, metadata-only changes do
+nothing. The first new message carries its sequence on the existing source dirty record and then
+on the recipient's dirty cursor. The normal count RPC makes one backwards seek for the preceding
+visible message, initializes both horizons there, and counts the new tail in that same RPC.
+The first sequence survives coalescing and resets, so all new messages in a batch remain unread.
+Committing the initial count/horizons removes that temporary cursor field; subsequent deliveries
+never repeat the initialization seek. Existing cursors retain their horizons. Successful first
+admission to a shared workspace starts at the existing callback's captured tail, with historical
+messages read and alerts skipped; subsequent arrivals are reconciled by the same processor.
 
 Only visible text/attachments count. Tool/reasoning records, empty messages and generated
 slash-command expansions do not. Streaming tokens are not separate messages. Horizons may lie
@@ -38,10 +44,12 @@ between visible messages, so gaps in sequence numbers do not inflate counts.
 
 1. The workspace commits the timeline change and a `dirtyChats` bit together. It arms its existing
    shared alarm before crossing an async dispatch boundary.
-2. It awaits `UserDO.messageArrived(workspaceId, chatId)` for the owner and established build
-   collaborators. One unavailable recipient leaves the bit set; healthy recipients/threads proceed.
-3. The User DO persists dirty intent and an alarm, then acquires the thread's single mutex. It reads
-   the current horizons and fetches the absolute count, latest-message metadata and notification
+2. It dispatches `UserDO.messageArrived(workspaceId, chatId)` in parallel to the owner and established build
+   collaborators, with independent dirty threads also dispatched in parallel. One unavailable
+   recipient leaves that thread's bit set; healthy recipients/threads proceed.
+   In-flight handoffs coalesce per thread, so even a newly dirty thread does not wait for another's alert.
+3. The User DO persists dirty intent and, if admitted, an alarm, then acquires the thread's single mutex. It reads
+   the current horizons and fetches the absolute count and notification
    candidates together. It commits the count, delivers notifications in order, and persists each
    successful delivery horizon. New dirtiness during an await stays pending for the next mutex holder.
 4. After releasing the mutex, subscribers receive committed state and in-memory badge totals.
@@ -61,11 +69,11 @@ Constructor recovery preserves an existing alarm rather than resetting the platf
 Unrelated activity also preserves an already scheduled retry deadline, so a busy thread cannot
 keep postponing another thread's failed notification delivery.
 
-Initialization, snapshots, dirty processing, notifications and read commands use one processor and
+Initialization, dirty processing, notifications and read commands use one processor and
 one in-memory mutex per thread, held across fetches and delivery. Waiters recheck the cursor after
 acquiring it, so clean threads need no calculation. A reset discards the mutex and its holder;
 persisted dirty bits and alarms restart unfinished work without a durable lock to strand.
-A metadata response is discarded if the thread cache changed while its RPC was pending.
+Snapshots do not acquire that mutex or contact the source: they report the last committed local state.
 
 Read commands count first, then commit horizon and count in one synchronous update. Commands are
 processed in per-thread mutex order: mark-read only advances the horizon, while mark-unread sets
@@ -103,7 +111,8 @@ Fanout never calls `authorizeCollaborator`/`ensureObserver`. Metadata checks cur
 membership and the observer admission already established by opening a workspace; a new
 gatekeeper binding requires fresh interactive admission. Existing sessions' lazy external ACL
 revocation semantics are retained, not replaced with per-message gatekeeper registrations.
-Admission denial is distinct from deletion: it hides metadata/counts but preserves private horizons
+Badge reads use last-known local access, updated by message processing and existing revocation callbacks.
+Admission denial is distinct from deletion: it hides counts but preserves private horizons
 and durable dirty work. Before first initialization, a source returns an empty head list rather than
 denying the owner's provisional listing. Confirmed denial parks the work without polling; new arrivals still journal
 their dirty bits. Successful authorization/reopening resumes the same processor. Credential

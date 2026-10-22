@@ -1,6 +1,8 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type {
   ChatReadState,
+  ChatTimelineHead,
+  AuthenticatedApi,
   UnreadStateSubscriber,
   UserUnreadState,
 } from "@gadgets/workshop-shared/api";
@@ -31,11 +33,18 @@ class UnreadRecorder extends RpcTarget implements UnreadStateSubscriber {
   }
 }
 
-const receipt = (chat: ChatReadState) => ({
+const receipt = (chat: ChatReadState & Pick<ChatTimelineHead, "latestSequence">) => ({
   workspaceId: chat.workspaceId,
   chatId: chat.chatId,
   throughSequence: chat.latestSequence,
 });
+const observedChat = async (api: {getUnreadState: AuthenticatedApi["getUnreadState"];
+  getChatHeads: AuthenticatedApi["getChatHeads"]}, workspaceId: string, chatId: number) => {
+  const [state, heads] = await Promise.all([api.getUnreadState(), api.getChatHeads(workspaceId)]);
+  const cursor = state.chats.find(chat => chat.workspaceId === workspaceId && chat.chatId === chatId);
+  const head = heads?.find(chat => chat.chatId === chatId);
+  return cursor && head ? {...head, ...cursor} : null;
+};
 let harness: Harness | undefined;
 const network = new NetworkInterceptor({ handlers: [mockChatCompletion("Test chat")] });
 beforeAll(async () => {
@@ -80,7 +89,7 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
   const { id: workspaceId } = await workspace.getMetadata();
   const chatId = await workspace.newChat("First persisted item", null);
   const initial = await waitFor("the newly persisted thread", async () => {
-    const chat = (await owner.getUnreadState()).chats.find((item) => item.chatId === chatId);
+    const chat = await observedChat(owner, workspaceId, chatId);
     return chat && chat.latestSequence >= 0 ? chat : null;
   });
   expect(initial.readThroughSequence).toBe(-1);
@@ -98,7 +107,7 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
 
   await workspace.sendChatMessage(chatId, "Second persisted item", null);
   const next = await waitFor("new activity beyond the read pointer", async () => {
-    const chat = (await owner.getUnreadState()).chats.find((item) => item.chatId === chatId);
+    const chat = await observedChat(owner, workspaceId, chatId);
     return chat && chat.latestSequence > initial.latestSequence ? chat : null;
   });
   expect(next.latestMessagePreview).toBe("Second persisted item");
@@ -127,7 +136,7 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
     (await builder.getUnreadState()).chats.length === 1 ? true : null,
   );
   expect((await viewer.getUnreadState()).chats).toEqual([]);
-  await builder.markChatsRead((await builder.getUnreadState()).chats.map(receipt));
+  // First admission starts with the existing history read.
   expect((await builder.getUnreadState()).unreadChatCount).toBe(0);
   expect((await owner.getUnreadState()).unreadChatCount).toBe(1);
 
@@ -147,10 +156,9 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
     first.state?.unreadMessageCount === 3 && second.state?.unreadMessageCount === 3 &&
     builderUpdates.state?.unreadMessageCount === 1 ? true : null,
   );
-  const third = first.state!.chats[0];
+  const third = (await observedChat(owner, workspaceId, chatId))!;
   expect(third.latestMessagePreview).toBe("Third persisted item");
   expect(builderUpdates.state!.chats[0]).toMatchObject({
-    latestSequence: third.latestSequence, latestMessagePreview: "Third persisted item",
     readThroughSequence: next.latestSequence, unreadMessageCount: 1,
   });
   expect(viewerUpdates.state!.chats).toEqual([]);
@@ -159,7 +167,7 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
   await waitFor("an observed partial read leaving the later message unread", async () =>
     first.state?.unreadMessageCount === 1 && second.state?.unreadMessageCount === 1 ? true : null,
   );
-  const partial = (await owner.getUnreadState()).chats.find(chat => chat.chatId === chatId)!;
+  const partial = (await observedChat(owner, workspaceId, chatId))!;
   await owner.markChatRead(receipt(partial));
   await waitFor("the owner's read clearing both devices but not the collaborator", async () =>
     first.state?.unreadMessageCount === 0 && second.state?.unreadMessageCount === 0 ? true : null,
@@ -168,7 +176,7 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
 
   await workspace.setChatTitle(chatId, "Renamed thread");
   await waitFor("the renamed unread thread", async () =>
-    second.state?.chats[0]?.chatTitle === "Renamed thread" ? true : null,
+    (await owner.getChatHeads(workspaceId))?.find(chat => chat.chatId === chatId)?.chatTitle === "Renamed thread" ? true : null,
   );
   await workspace.deleteChat(chatId);
   await waitFor("thread removal on every device", async () =>

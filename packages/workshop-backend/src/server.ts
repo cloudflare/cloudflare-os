@@ -219,6 +219,10 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return retryOnDoReset(() => this.#user.getUnreadState());
   }
 
+  getChatHeads(workspaceId: string) {
+    return retryOnDoReset(() => this.#user.getChatHeads(workspaceId));
+  }
+
   subscribeToUnreadState(subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>> {
     return this.#user.subscribeToUnreadState(subscriber);
   }
