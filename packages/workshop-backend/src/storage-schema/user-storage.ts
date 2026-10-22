@@ -308,7 +308,7 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       // deliver to them.
       phoneNotificationSubscriptions: <Record<string, string>>{},
       browserNotificationSubscriptions: <Record<string, string>>{},
-      // Latest-value push outbox. Independent of the ephemeral unread subscription revision.
+      // Latest-value push outbox. its version belongs only to the push replacement protocol.
       notificationBadge: <{version: number; count: number | null; retryAt?: number}>
           {version: 0, count: null},
 

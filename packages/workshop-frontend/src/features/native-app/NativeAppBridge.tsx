@@ -21,8 +21,7 @@ export const NativeAppBridge = () => {
 
   // Login confirmation precedes the first badge, even if the snapshot arrived before whoami.
   useEffect(() => {
-    if (!isCurrentUserConfirmed || currentUser?.type !== 'user' || !unread ||
-        unread.unavailableWorkspaceIds?.length) return
+    if (!isCurrentUserConfirmed || currentUser?.type !== 'user' || !unread) return
     try { nativeApp()?.unreadStateChanged?.({...unread, revision: ++badgeRevision.current}) }
     catch (cause) { logRpcFailure('Native unread-state update failed:', cause) }
   }, [currentUser, isCurrentUserConfirmed, unread])
