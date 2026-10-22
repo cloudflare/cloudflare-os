@@ -25,16 +25,17 @@ function makeStorage(): SharingStorage {
 
 const OWNER = "owner@example.com";
 
-function makeManager(ownerInvitesOnly: () => boolean = () => false)
+function makeManager(ownerInvitesOnly: () => boolean = () => false,
+                     ownerOnly: () => boolean = () => false)
     : { storage: SharingStorage; mgr: SharingManager } {
   let storage = makeStorage();
-  return { storage, mgr: new SharingManager(storage, OWNER, ownerInvitesOnly) };
+  return { storage, mgr: new SharingManager(storage, OWNER, ownerInvitesOnly, ownerOnly) };
 }
 
-// A manager whose `ownerInvitesOnly` flag the test can flip at any point.
+// A manager whose `ownerInvitesOnly` and `ownerOnly` flags the test can flip at any point.
 function makeManagerWithFlag() {
-  let flags = { ownerInvitesOnly: false };
-  return { flags, ...makeManager(() => flags.ownerInvitesOnly) };
+  let flags = { ownerInvitesOnly: false, ownerOnly: false };
+  return { flags, ...makeManager(() => flags.ownerInvitesOnly, () => flags.ownerOnly) };
 }
 
 function profile(id: string): AiChatAuthorInfo {
@@ -824,5 +825,97 @@ describe("ownerInvitesOnly", () => {
 
     mgr.addCollaborator({ caller: owner, profile: profile("b"), role: "use" });
     expect(mgr.getEffectiveRole("b")).toBe("use");
+  });
+});
+
+describe("ownerOnly", () => {
+  const PRIVATE = /private while it uses your ChatGPT subscription/;
+
+  it("gives nobody but the owner access", () => {
+    let { storage, flags, mgr } = makeManagerWithFlag();
+    seedCollaborator(storage, "a", [userEdge(OWNER, "build")]);
+    flags.ownerOnly = true;
+
+    expect(mgr.computeEffectiveRoles().size).toBe(0);
+    expect(mgr.getEffectiveRole("a")).toBeUndefined();
+    expect(mgr.getEffectiveRole(OWNER)).toBe("build");
+    expect(mgr.listCollaborators()).toEqual([]);
+
+    // Nothing is deleted, so access returns with the flag cleared.
+    flags.ownerOnly = false;
+    expect(mgr.getEffectiveRole("a")).toBe("build");
+  });
+
+  it("refuses to add collaborators or create or copy share links, even for the owner", async () => {
+    let { storage, flags, mgr } = makeManagerWithFlag();
+    seedLink(storage, "k1", OWNER);
+    flags.ownerOnly = true;
+
+    expect(() => mgr.addCollaborator({ caller: owner, profile: profile("a"), role: "use" }))
+        .toThrow(PRIVATE);
+    await expect(mgr.createShareLink({ caller: owner, role: "use" })).rejects.toThrow(PRIVATE);
+    await expect(mgr.newShareLinkKey({ caller: owner, linkId: "k1" })).rejects.toThrow(PRIVATE);
+    expect(storage.collaborators.get("a")).toBeUndefined();
+    expect([...storage.shareKeys.list()].map(r => r.id)).toEqual(["k1"]);
+  });
+
+  it("persists nothing when the flag is set while a key is being minted", async () => {
+    let { storage, flags, mgr } = makeManagerWithFlag();
+    let created = mgr.createShareLink({ caller: owner, role: "use" });
+    flags.ownerOnly = true;
+    await expect(created).rejects.toThrow(PRIVATE);
+    expect([...storage.shareKeys.list()]).toEqual([]);
+  });
+
+  // A visitor is told no more than that they have no access.
+  it("refuses every redemption as access denied", async () => {
+    let { storage, flags, mgr } = makeManagerWithFlag();
+    let { key } = await mgr.createShareLink({ caller: owner, role: "build" });
+    flags.ownerOnly = true;
+
+    let error = await mgr.redeemShareKey({
+      rawKey: key, profileId: "newbie", fetchProfile: async () => profile("newbie"),
+    }).catch(e => e);
+    expect(getOpenGadgetErrorCode(error)).toBe(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied);
+    expect(storage.collaborators.get("newbie")).toBeUndefined();
+  });
+
+  it("persists nothing when the flag is set during the profile fetch", async () => {
+    let { storage, flags, mgr } = makeManagerWithFlag();
+    let { key } = await mgr.createShareLink({ caller: owner, role: "build" });
+    await expect(mgr.redeemShareKey({
+      rawKey: key, profileId: "newbie",
+      fetchProfile: async () => { flags.ownerOnly = true; return profile("newbie"); },
+    })).rejects.toMatchObject({ code: OPEN_GADGET_ERROR_CODES.workspaceAccessDenied });
+    expect(storage.collaborators.get("newbie")).toBeUndefined();
+  });
+});
+
+describe("hasGrants", () => {
+  it("is false for a workspace never shared", () => {
+    expect(makeManager().mgr.hasGrants()).toBe(false);
+  });
+
+  it("counts a collaborator the owner can reach", () => {
+    let { storage, mgr } = makeManager();
+    seedCollaborator(storage, "a", [userEdge(OWNER, "use")]);
+    expect(mgr.hasGrants()).toBe(true);
+  });
+
+  it("counts a share link nobody has redeemed", () => {
+    let { storage, mgr } = makeManager();
+    seedLink(storage, "k1", OWNER);
+    expect(mgr.hasGrants()).toBe(true);
+  });
+
+  // Neither can be seen or removed in the Share modal, so neither may keep the workspace shared.
+  it("ignores removed collaborators and revoked links", () => {
+    let { storage, mgr } = makeManager();
+    seedCollaborator(storage, "a", [userEdge(OWNER)]);
+    seedCollaborator(storage, "b", [userEdge("a")]);
+    seedLink(storage, "k1", OWNER);
+    mgr.removeCollaborator(owner, "a", []);
+    mgr.revokeShareLink(owner, "k1", []);
+    expect(mgr.hasGrants()).toBe(false);
   });
 });

@@ -1237,6 +1237,11 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // collaborators (enforced by SharingManager).
       ownerInvitesOnly: singleton(false),
 
+      // True while the workspace is private to its owner because it ran one of the owner's
+      // ChatGPT subscription models (see chatGptAccess() in overseer.ts). Nobody else has access
+      // and nothing can be shared (enforced by SharingManager) until the owner allows sharing.
+      ownerOnly: singleton(false),
+
       // A random string, created on the workspace's first agent turn, that leads the
       // project-specific part of the agent's system prompt, so nobody without that prompt can
       // probe a shared prompt cache for it (see runAgentPass).

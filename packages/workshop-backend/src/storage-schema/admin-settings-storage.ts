@@ -114,6 +114,12 @@ export type AdminConfig = {
   updateMinimumAgeHours: number;
   /** How many hours a dismissed update notice stays hidden in the browser that dismissed it. */
   updateNoticeSnoozeHours: number;
+  /**
+   * Whether users may sign in with ChatGPT and run OpenAI models on their own subscription
+   * (default true). On an AI Gateway deployment it also takes `userModelsEnabled` (see
+   * isChatGptSignInAvailable() in admin-config.ts).
+   */
+  chatGptSignInEnabled: boolean;
 };
 
 /**
@@ -163,6 +169,7 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   updateCheckIntervalMinutes: DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES,
   updateMinimumAgeHours: DEFAULT_UPDATE_MINIMUM_AGE_HOURS,
   updateNoticeSnoozeHours: DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS,
+  chatGptSignInEnabled: true,
 };
 
 /**

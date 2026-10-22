@@ -1777,6 +1777,19 @@ describe("System prompt cache blocks", () => {
         .not.toHaveProperty("prompt_cache_key");
   }, 15000);
 
+  // A ChatGPT sign-in refuses every prompt cache field but the key.
+  it("leaves the prompt whole for a GPT-5.6+ model on a ChatGPT subscription", async () => {
+    const handle = getModel(env(), {
+      provider: "openai", model: "gpt-6-luna", apiToken: "", credential: "chatgpt",
+    }, INITIATOR, { sessionAffinity: "chat-7", chatGptToken: async () => "chatgpt-access-token" });
+    const split = await captureBody(handle, true);
+    expect(split).not.toContain("prompt_cache_breakpoint");
+    const body = JSON.parse(split);
+    expect(body.input[0]).toMatchObject({ content: RENDERED_TEXT });
+    expect(Object.keys(body).filter(key => key.startsWith("prompt_cache")))
+        .toEqual(["prompt_cache_key"]);
+  }, 15000);
+
   it.each([
     { name: "a request with no project block, like compaction", model: "gpt-6-luna",
       sections: false },
@@ -1897,6 +1910,103 @@ describe("getDecisionModel routing", () => {
         stopReason: "error",
         errorMessage: expect.stringContaining("Capacity temporarily exceeded"),
       });
+    });
+  });
+});
+
+describe("ChatGPT subscription models", () => {
+  const CHATGPT: AiModelConfig = {
+    provider: "openai", model: "gpt-5.5", apiToken: "", credential: "chatgpt",
+  };
+
+  beforeEach(() => {
+    capturedRequests.length = 0;
+  });
+
+  // Whatever else is configured, the request goes straight to OpenAI on the user's token.
+  it.each([
+    ["the platform gateway", {}],
+    ["a connected user's gateway", { userGateway: { accountId: "user-acct", apiKey: "user-key" } }],
+  ])("go directly to OpenAI with the sign-in's token, past %s", async (_, routing) => {
+    const handle = getModel(env(), CHATGPT, INITIATOR, {
+      ...routing, chatGptToken: async () => "chatgpt-access-token",
+    });
+    expect(handle.aiGatewayLogRoute).toBeUndefined();
+    expect(handle.model.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    const request = await captureRequest(handle, { maxTokens: 1000, temperature: 0.5 });
+    expect(request.url).toBe("https://api.openai.com/v1/responses");
+    expect(request.headers.get("authorization")).toBe("Bearer chatgpt-access-token");
+    expect([...request.headers.keys()].filter(name => name.startsWith("cf-aig-"))).toEqual([]);
+    // pi leaves out what a ChatGPT sign-in refuses, which shows it took the request for one.
+    const body = JSON.parse(request.body);
+    expect(body).not.toHaveProperty("max_output_tokens");
+    expect(body).not.toHaveProperty("temperature");
+  });
+
+  it("ask for the token before every request", async () => {
+    let tokens = ["first-token", "second-token"];
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }), CHATGPT, INITIATOR, {
+      chatGptToken: async () => tokens.shift()!,
+    });
+    await captureRequest(handle);
+    capturedRequests.length = 0;
+    expect((await captureRequest(handle)).headers.get("authorization")).toBe("Bearer second-token");
+  });
+
+  it("fail a request whose token is refused, sending nothing", async () => {
+    const handle = getModel(env(), CHATGPT, INITIATOR, {
+      chatGptToken: async () => { throw new Error("Stop sharing this workspace"); },
+    });
+    const stream = await handle.stream(handle.model, {
+      messages: [{ role: "user", content: "hello", timestamp: 0 }],
+    }, { fetch: fetchStub, maxRetries: 0 });
+    expect((await stream.result()).stopReason).toBe("error");
+    expect(capturedRequests).toEqual([]);
+  });
+
+  it("can't run without a token, so never fall through to a gateway", () => {
+    expect(() => getModel(env(), CHATGPT, INITIATOR)).toThrow("ChatGPT subscription");
+    expect(() => getModel(env({ CF_AI_GATEWAY: undefined }), CHATGPT, INITIATOR))
+        .toThrow("ChatGPT subscription");
+  });
+
+  describe("in a model binding", () => {
+    function startSession(props: object) {
+      const chatGptAccessToken = vi.fn(async (_userId: string) => "binding-token");
+      const overseers = {
+        idFromString: (id: string) => ({ id }),
+        get: () => ({ chatGptAccessToken }),
+      };
+      const gatekeeper = Object.create(LanguageModelGatekeeper.prototype) as LanguageModelGatekeeper;
+      Object.assign(gatekeeper, {
+        env: env({ CF_AI_GATEWAY: undefined }),
+        ctx: {
+          props: { displayName: "Model", config: CHATGPT, initiator: GADGET_INITIATOR, ...props },
+          exports: { OverseerDurableObject: overseers },
+        },
+      });
+      return { session: gatekeeper.startSession(undefined as never), chatGptAccessToken };
+    }
+
+    it("takes its token from the workspace, for the user who minted it", async () => {
+      const { session, chatGptAccessToken } = startSession({
+        creatorUserId: "creator", metadata: { source: "model-binding", gadgetId: "workspace" },
+      });
+      const binding = await session;
+      expect(chatGptAccessToken).toHaveBeenCalledWith("creator");
+      vi.stubGlobal("fetch", fetchStub);
+      try {
+        await expect(binding.run({ prompt: "hello" })).rejects.toThrow();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+      expect(capturedRequests[0].headers.get("authorization")).toBe("Bearer binding-token");
+      expect(chatGptAccessToken).toHaveBeenCalledTimes(2);
+    });
+
+    it("refuses a binding minted before its creator was recorded", async () => {
+      await expect(startSession({ metadata: { source: "model-binding", gadgetId: "workspace" } })
+          .session).rejects.toThrow("Create a new one");
     });
   });
 });

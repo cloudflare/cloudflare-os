@@ -117,6 +117,7 @@ export default function AdminPage() {
   // Re-reads can overlap, since leaving the Models tab drops the panel's in-flight state, and an
   // earlier one answering last must not replace what a later one showed.
   const gatewayModelsRead = useRef(0)
+  const [chatGptSignInEnabled, setChatGptSignInEnabled] = useState(false)
 
   const resourceKey = (vendorId: string, urlPattern: string) => `${vendorId}\u0000${urlPattern}`
 
@@ -139,6 +140,7 @@ export default function AdminPage() {
     setAccentDraft(view.accentColor)
     setFormats(view.formats)
     setGatewayModels(view.gatewayModels)
+    setChatGptSignInEnabled(view.chatGptSignInEnabled)
   }
 
   // Mint the admin capability once (the access check happens server-side) and load settings.
@@ -498,15 +500,18 @@ export default function AdminPage() {
         />
       )}
 
-      {/* AI Gateway models */}
+      {/* AI models */}
       {activeTab === 'models' && (
         <AdminModelsPanel
           admin={admin.api}
           gatewayModels={gatewayModels}
+          chatGptSignInEnabled={chatGptSignInEnabled}
           onChanged={async () => {
             const read = ++gatewayModelsRead.current
             const view = await admin.api.getSettings()
-            if (read === gatewayModelsRead.current) setGatewayModels(view.gatewayModels)
+            if (read !== gatewayModelsRead.current) return
+            setGatewayModels(view.gatewayModels)
+            setChatGptSignInEnabled(view.chatGptSignInEnabled)
           }}
         />
       )}

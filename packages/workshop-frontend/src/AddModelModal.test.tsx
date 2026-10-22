@@ -5,7 +5,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
-import type { AuthenticatedApi, RedactedAiModelConfig } from '@gadgets/workshop-shared/api'
+import type { AiGatewayInfo, AuthenticatedApi, ChatGptSignInStatus, RedactedAiModelConfig } from '@gadgets/workshop-shared/api'
 
 vi.mock('@cloudflare/kumo', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@cloudflare/kumo')>()),
@@ -54,6 +54,36 @@ const type = (element: HTMLInputElement, value: string) => act(() => {
 
 const click = (element: HTMLElement) => act(() => { element.click() })
 
+const radio = (label: string) => {
+  const element = Array.from(document.body.querySelectorAll<HTMLElement>('[role="radio"]'))
+    .find(candidate => candidate.closest('label')?.textContent === label)
+  if (!element) throw new Error(`No radio ${label}`)
+  return element
+}
+
+// The radio forwards its click as a PointerEvent, which jsdom lacks (see `choose`).
+const pick = async (label: string) => {
+  const view: { PointerEvent?: typeof MouseEvent } = window
+  view.PointerEvent = MouseEvent
+  try {
+    await click(radio(label))
+  } finally {
+    delete view.PointerEvent
+  }
+}
+
+const radioLabels = () => Array.from(
+  document.body.querySelectorAll<HTMLElement>('[role="radio"]'), candidate => candidate.closest('label')?.textContent)
+
+const optionLabels = async () => {
+  await click(document.body.querySelector<HTMLElement>('[role="combobox"]')!)
+  const labels = Array.from(document.body.querySelectorAll('[role="option"]'), option => option.textContent)
+  await act(async () => {
+    document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  })
+  return labels
+}
+
 // By keyboard. The option turns Enter into a click it builds as a PointerEvent, which jsdom lacks,
 // so the window has a stand-in for as long as the choice takes.
 const choose = async (label: string) => {
@@ -81,7 +111,11 @@ describe('AddModelModal', () => {
     document.body.innerHTML = ''
   })
 
-  const render = async (mode: ModelModalMode, chatModelsOnly = false) => {
+  const render = async (
+    mode: ModelModalMode,
+    chatModelsOnly = false,
+    { aiConfig = { enabled: false }, chatGptSignIn }: { aiConfig?: AiGatewayInfo, chatGptSignIn?: ChatGptSignInStatus } = {},
+  ) => {
     const updateModel = vi.fn<AuthenticatedApi['updateModel']>(async () => {})
     const addModel = vi.fn<AuthenticatedApi['addModel']>(async () => {})
     const api = { updateModel, addModel } as unknown as RpcStub<AuthenticatedApi>
@@ -95,7 +129,8 @@ describe('AddModelModal', () => {
       onCancel={() => {}}
       onSuccess={() => {}}
       authenticatedApi={api}
-      aiConfig={{ enabled: false }}
+      aiConfig={aiConfig}
+      chatGptSignIn={chatGptSignIn}
     />))
     return { updateModel, addModel }
   }
@@ -189,5 +224,94 @@ describe('AddModelModal', () => {
       { ...CONFIG, model: 'qwen' },
       PROFILE.id,
     )
+  })
+
+  describe('the ChatGPT subscription credential', () => {
+    const SIGNED_IN: ChatGptSignInStatus = { state: 'signedIn', email: 'dan@example.com' }
+    const GATEWAY: AiGatewayInfo = {
+      enabled: true, enabledProviders: ['anthropic'], builtInModelIds: [], userModelsEnabled: true,
+    }
+
+    it.each<[string, ChatGptSignInStatus | undefined]>([
+      ['the deployment does not offer it', { state: 'unavailable' }],
+      ['the caller does not offer it', undefined],
+    ])('is not offered when %s', async (_reason, chatGptSignIn) => {
+      await render({ type: 'add' }, false, { chatGptSignIn })
+      await choose('Other OpenAI...')
+
+      expect(radioLabels()).toEqual([])
+      expect(labeledInput('API Token')).toBeTruthy()
+    })
+
+    it('is offered but cannot be chosen until the user signs in', async () => {
+      await render({ type: 'add' }, false, { chatGptSignIn: { state: 'signedOut' } })
+      await choose('Other OpenAI...')
+
+      expect(radio('ChatGPT subscription').getAttribute('aria-disabled')).toBe('true')
+      expect(radio('API key').getAttribute('aria-checked')).toBe('true')
+      expect(document.body.textContent).toContain('sign in with ChatGPT on the AI Providers page')
+    })
+
+    it('saves a model that runs on the subscription, under a derived ID and with no API key', async () => {
+      const { addModel } = await render({ type: 'add' }, false, { chatGptSignIn: SIGNED_IN })
+      await choose('Other OpenAI...')
+      await pick('ChatGPT subscription')
+
+      expect(() => labeledInput('API Token')).toThrow('No label API Token')
+      await click(button('Advanced Settings'))
+      expect(() => labeledInput('API URL')).toThrow('No label API URL')
+      expect(document.body.querySelector('input[aria-label="Header value"]')).toBeNull()
+
+      await type(labeledInput('Model ID'), 'gpt-6')
+      await type(labeledInput('Display Name'), 'GPT-6 (ChatGPT)')
+      await click(button('Add Model'))
+
+      expect(addModel).toHaveBeenCalledWith(
+        { type: 'agent', id: 'chatgpt/gpt-6', name: 'GPT-6 (ChatGPT)' },
+        { provider: 'openai', model: 'gpt-6', apiToken: '', credential: 'chatgpt' },
+        undefined,
+      )
+    })
+
+    it('stays locked when editing a stored model, which keeps it', async () => {
+      const profile = { type: 'agent' as const, id: 'chatgpt/gpt-6', name: 'GPT-6' }
+      const config: RedactedAiModelConfig = { provider: 'openai', model: 'gpt-6', apiToken: '', credential: 'chatgpt' }
+      const { updateModel } = await render(
+        { type: 'edit', source: { profile, config } }, false, { chatGptSignIn: { state: 'signedOut' } })
+
+      expect(radio('ChatGPT subscription').getAttribute('aria-checked')).toBe('true')
+      expect(radio('ChatGPT subscription').getAttribute('aria-disabled')).toBe('true')
+      expect(radio('API key').getAttribute('aria-disabled')).toBe('true')
+
+      await type(labeledInput('Display Name'), 'GPT-6 on my plan')
+      await click(button('Save Changes'))
+
+      expect(updateModel).toHaveBeenCalledWith({ ...profile, name: 'GPT-6 on my plan' }, config)
+    })
+
+    // A ChatGPT model goes to OpenAI directly, so it needs no gateway provider.
+    it('offers OpenAI on an AI Gateway deployment that has OpenAI off, for the subscription only', async () => {
+      const { addModel } = await render({ type: 'add' }, false, { aiConfig: GATEWAY, chatGptSignIn: SIGNED_IN })
+      await choose('Other OpenAI...')
+
+      expect(radioLabels()).toEqual(['ChatGPT subscription'])
+      expect(radio('ChatGPT subscription').getAttribute('aria-checked')).toBe('true')
+
+      await type(labeledInput('Model ID'), 'gpt-6')
+      await type(labeledInput('Display Name'), 'GPT-6')
+      await click(button('Add Model'))
+
+      expect(addModel).toHaveBeenCalledWith(
+        { type: 'agent', id: 'chatgpt/gpt-6', name: 'GPT-6' },
+        { provider: 'openai', model: 'gpt-6', apiToken: '', credential: 'chatgpt' },
+        undefined,
+      )
+    })
+
+    it('leaves OpenAI out on an AI Gateway deployment that has OpenAI off and offers no sign-in', async () => {
+      await render({ type: 'add' }, false, { aiConfig: GATEWAY, chatGptSignIn: { state: 'unavailable' } })
+
+      expect(await optionLabels()).toEqual(['Other Anthropic...'])
+    })
   })
 })

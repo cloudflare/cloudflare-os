@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
-import { Dialog, Button, Input, Select, Collapsible, useKumoToastManager } from '@cloudflare/kumo'
-import { AiChatAuthorInfo, AiModelProvider, AiGatewayInfo, RedactedAiModelConfig, SUGGESTED_MODELS, modelKind } from '@gadgets/workshop-shared/api'
+import { Dialog, Button, Input, Radio, Select, Collapsible, useKumoToastManager } from '@cloudflare/kumo'
+import { AiChatAuthorInfo, AiModelProvider, AiGatewayInfo, ChatGptSignInStatus, RedactedAiModelConfig, SUGGESTED_MODELS, modelKind } from '@gadgets/workshop-shared/api'
 import { RpcStub } from 'capnweb'
 import { AuthenticatedApi } from '@gadgets/workshop-shared/api'
 import { ExtraHeadersEditor } from './features/ai-models/ExtraHeadersEditor'
@@ -27,7 +27,13 @@ interface AddModelModalProps {
   mode?: ModelModalMode
   /** Leave decision models out, for callers choosing the user's chat model. */
   chatModelsOnly?: boolean
+  /** Whether OpenAI models may run on the user's ChatGPT subscription. Absent offers no such choice. */
+  chatGptSignIn?: ChatGptSignInStatus
 }
+
+// How an OpenAI model is paid for: an API key (on an AI Gateway deployment, the deployment's), or
+// the user's own ChatGPT subscription.
+type OpenAiCredential = 'apiKey' | 'chatgpt'
 
 type SelectionType =
   | { type: 'suggested', provider: AiModelProvider, modelId: string, displayName: string }
@@ -79,12 +85,12 @@ function decodeSelection(value: string): SelectionType {
 }
 
 // Build the flat list of options for the Select dropdown.
-function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null, chatModelsOnly: boolean) {
+function buildOptions(gatewayMode: boolean, offeredProviders: Set<string> | null, chatModelsOnly: boolean) {
   const options: { value: string; label: string; provider: string }[] = []
   const providerOrder = Object.keys(SUGGESTED_MODELS) as AiModelProvider[]
 
   for (const provider of providerOrder) {
-    if (enabledProviders && !enabledProviders.has(provider)) continue
+    if (offeredProviders && !offeredProviders.has(provider)) continue
 
     // In gateway mode, suggested models are already built-in, so don't list them.
     if (!gatewayMode) {
@@ -108,7 +114,7 @@ function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null
   return options
 }
 
-export default function AddModelModal({ visible, onCancel, onSuccess, authenticatedApi, aiConfig, mode = { type: 'add' }, chatModelsOnly = false }: AddModelModalProps) {
+export default function AddModelModal({ visible, onCancel, onSuccess, authenticatedApi, aiConfig, mode = { type: 'add' }, chatModelsOnly = false, chatGptSignIn }: AddModelModalProps) {
   const toasts = useKumoToastManager()
 
   // Edit and clone modes take their initial state from the source model, so the caller remounts
@@ -120,6 +126,8 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
   const [selection, setSelection] = useState<SelectionType | null>(
     source && { type: 'custom', provider: source.config.provider })
   const [selectValue, setSelectValue] = useState<string | undefined>(undefined)
+  const [credential, setCredential] = useState<OpenAiCredential>(
+    source?.config.credential === 'chatgpt' ? 'chatgpt' : 'apiKey')
 
   // Form fields (used for custom models). A null secret keeps the source's withheld value.
   const [modelId, setModelId] = useState(editing ? source!.config.model : '')
@@ -143,6 +151,18 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
   const enabledProviders: Set<string> | null = gatewayMode
     ? new Set(aiConfig.enabledProviders)
     : null
+  const chatGptOffered = chatGptSignIn !== undefined && chatGptSignIn.state !== 'unavailable'
+  // A ChatGPT model goes to OpenAI directly, so the gateway needn't have OpenAI on to offer one.
+  const offeredProviders = enabledProviders && chatGptOffered
+    ? new Set([...enabledProviders, 'openai'])
+    : enabledProviders
+  const apiKeyOffered = (provider: AiModelProvider) => !enabledProviders || enabledProviders.has(provider)
+  const isOpenAi = selection?.provider === 'openai'
+  // A stored ChatGPT model shows its credential even once the deployment stops offering sign-in.
+  const showCredentialChoice = isOpenAi && (chatGptOffered || source?.config.credential === 'chatgpt')
+  const usesChatGpt = isOpenAi && credential === 'chatgpt'
+  // Whether the form asks for the API key, URL and headers the model is reached with.
+  const showCredentials = !gatewayMode && !usesChatGpt
 
   // The server keeps withheld secrets only for the endpoint they were configured for. Once the URL
   // changes, withheld values are shown (and sent) as blank, and header values must be re-entered.
@@ -154,6 +174,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
     if (!visible) {
       setSelection(null)
       setSelectValue(undefined)
+      setCredential('apiKey')
       setModelId('')
       setDisplayName('')
       setApiToken('')
@@ -174,6 +195,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
     setHeaderErrors({})
     const sel = decodeSelection(value)
     setSelection(sel)
+    setCredential(apiKeyOffered(sel.provider) ? 'apiKey' : 'chatgpt')
 
     if (sel.type === 'custom') {
       setModelId('')
@@ -208,7 +230,11 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
 
     const isOllama = selection?.provider === 'ollama'
     const isCloudflare = selection?.provider === 'cloudflare'
-    const showCredentials = !gatewayMode
+
+    // The credential is fixed once saved, so editing needs no sign-in.
+    if (usesChatGpt && !editing && chatGptSignIn?.state !== 'signedIn') {
+      newErrors.credential = 'Sign in with ChatGPT on the AI Providers page first'
+    }
 
     if (showCredentials && selection && isTokenRequired(selection.provider, headerRows) && effectiveApiToken?.trim() === '') {
       newErrors.apiToken = apiToken === null
@@ -261,19 +287,20 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
       const profile: AiChatAuthorInfo = {
         type: 'agent',
         // A model's ID is its identity to chats and settings, so editing never changes it.
-        id: editing ? source!.profile.id : finalModelId,
+        id: editing ? source!.profile.id : usesChatGpt ? `chatgpt/${finalModelId}` : finalModelId,
         name: finalDisplayName,
       }
 
-      const extraHeaders = gatewayMode ? undefined : headerRowsToRecord(headerRows)
+      const extraHeaders = showCredentials ? headerRowsToRecord(headerRows) : undefined
       const contextWindowTokens = parseTokenLimit(contextWindow)
       const outputLimitTokens = parseTokenLimit(outputLimit)
       const config: RedactedAiModelConfig = {
         provider: selection!.provider,
         model: finalModelId,
-        apiToken: gatewayMode ? '' : effectiveApiToken?.trim() ?? null,
-        ...(!gatewayMode && accountId.trim() && { accountId: accountId.trim() }),
-        ...(!gatewayMode && apiUrl.trim() && { apiUrl: apiUrl.trim() }),
+        apiToken: showCredentials ? effectiveApiToken?.trim() ?? null : '',
+        ...(usesChatGpt && { credential: 'chatgpt' as const }),
+        ...(showCredentials && accountId.trim() && { accountId: accountId.trim() }),
+        ...(showCredentials && apiUrl.trim() && { apiUrl: apiUrl.trim() }),
         ...(extraHeaders && { extraHeaders }),
         ...(contextWindowTokens && { contextWindow: contextWindowTokens }),
         ...(outputLimitTokens && { outputLimit: outputLimitTokens }),
@@ -298,12 +325,11 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
     }
   }
 
-  const options = buildOptions(gatewayMode, enabledProviders, chatModelsOnly)
+  const options = buildOptions(gatewayMode, offeredProviders, chatModelsOnly)
   const showCustomFields = selection?.type === 'custom'
   const example = selection ? exampleModel(selection.provider) : null
   const isOllama = selection?.provider === 'ollama'
   const isCloudflare = selection?.provider === 'cloudflare'
-  const showCredentials = !gatewayMode
   const tokenRequired = selection !== null && isTokenRequired(selection.provider, headerRows)
   const title = { add: 'Add AI Model', edit: 'Edit AI Model', clone: 'Clone AI Model' }[mode.type]
 
@@ -362,6 +388,35 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
               </div>
             ))}
           </Select>
+          )}
+
+          {showCredentialChoice && (
+            <Radio.Group<OpenAiCredential>
+              legend="Pay with"
+              value={credential}
+              disabled={editing}
+              onValueChange={(value) => { setCredential(value); setErrors(prev => ({ ...prev, credential: '' })) }}
+              error={errors.credential || undefined}
+              description={
+                editing
+                  ? 'A saved model keeps how it is paid for. Add a new model to change it.'
+                  : chatGptSignIn?.state === 'signedIn'
+                  ? 'A ChatGPT model runs only in workspaces you own, and makes each one private to you while it uses your subscription.'
+                  : 'To use your ChatGPT subscription, sign in with ChatGPT on the AI Providers page.'
+              }
+            >
+              {(apiKeyOffered('openai') || editing) && (
+                <Radio.Item<OpenAiCredential>
+                  value="apiKey"
+                  label={gatewayMode ? 'This deployment’s AI Gateway' : 'API key'}
+                />
+              )}
+              <Radio.Item<OpenAiCredential>
+                value="chatgpt"
+                label="ChatGPT subscription"
+                disabled={!editing && chatGptSignIn?.state !== 'signedIn'}
+              />
+            </Radio.Group>
           )}
 
           {/* Custom model fields */}

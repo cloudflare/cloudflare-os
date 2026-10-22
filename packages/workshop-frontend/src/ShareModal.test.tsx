@@ -137,6 +137,7 @@ type OverseerOverrides = {
     role: CollaboratorRole,
     note?: string,
   ) => Promise<CollaboratorInfo | null>
+  allowSharing?: () => Promise<void>
 }
 
 function fakeOverseer(overrides: OverseerOverrides = {}): RpcStub<Overseer> {
@@ -154,6 +155,7 @@ function fakeOverseer(overrides: OverseerOverrides = {}): RpcStub<Overseer> {
     })),
     createShareLink: async () => ({ key: 'secret', linkId: 'link-1' }),
     updateShareLink: overrides.updateShareLink ?? (async () => {}),
+    allowSharing: overrides.allowSharing ?? (async () => {}),
   } as unknown as RpcStub<Overseer>
 }
 
@@ -1299,6 +1301,62 @@ describe('ShareModal', () => {
     expect(rendered.textContent).not.toContain('Create a share link')
     expect(rendered.textContent).not.toContain('Recipient verification')
     expect(rendered.textContent).toContain('People with access')
+  })
+
+  describe('while the owner’s ChatGPT subscription keeps the workspace private', () => {
+    const OWNER_ONLY = { ...METADATA, ownerOnly: true } as GadgetMetadata
+
+    it('offers no way to add anyone until the owner allows sharing', async () => {
+      const allowSharing = vi.fn<() => Promise<void>>(async () => {})
+      const rendered = await render(fakeOverseer({ allowSharing }), fakeAuthenticatedApi(), OWNER_ONLY)
+
+      expect(rendered.textContent).toContain('Private while it uses your ChatGPT subscription')
+      expect(rendered.textContent).toContain('Nobody else can open this workspace')
+      expect(rendered.querySelector('input[aria-label="Search people"]')).toBeNull()
+      expect(rendered.textContent).not.toContain('Create a share link')
+      expect(rendered.textContent).not.toContain('Recipient verification')
+
+      await click(button(rendered, 'Allow sharing'))
+
+      expect(allowSharing).toHaveBeenCalledOnce()
+      expect(rendered.textContent).not.toContain('Private while it uses your ChatGPT subscription')
+      expect(rendered.querySelector('input[aria-label="Search people"]')).not.toBeNull()
+      expect(rendered.textContent).toContain('Create a share link')
+    })
+
+    it('says why sharing could not be allowed, and stays private', async () => {
+      const rendered = await render(fakeOverseer({
+        allowSharing: async () => { throw new Error('Wait for the agent to finish before allowing sharing.') },
+      }), fakeAuthenticatedApi(), OWNER_ONLY)
+
+      await click(button(rendered, 'Allow sharing'))
+
+      expect(rendered.querySelector('[role="alert"]')?.textContent)
+        .toBe('Wait for the agent to finish before allowing sharing.')
+      expect(rendered.textContent).toContain('Private while it uses your ChatGPT subscription')
+      expect(rendered.querySelector('input[aria-label="Search people"]')).toBeNull()
+      expect(button(rendered, 'Allow sharing').disabled).toBe(false)
+    })
+
+    it('lets only the owner allow sharing', async () => {
+      const rendered = await render(fakeOverseer(), fakeAuthenticatedApi(), {
+        ...OWNER_ONLY, owner: { type: 'user', id: 'owner@cloudflare.com', name: 'Owner' },
+      } as GadgetMetadata)
+
+      expect(rendered.textContent).toContain('Private while it uses your ChatGPT subscription')
+      expect(() => button(rendered, 'Allow sharing')).toThrow('No button labelled “Allow sharing”')
+    })
+
+    it('follows a live update that makes the workspace private again', async () => {
+      const rendered = await render(fakeOverseer(), fakeAuthenticatedApi(), OWNER_ONLY)
+      await click(button(rendered, 'Allow sharing'))
+      expect(rendered.querySelector('input[aria-label="Search people"]')).not.toBeNull()
+
+      await updateMetadata({ ...OWNER_ONLY })
+
+      expect(rendered.textContent).toContain('Private while it uses your ChatGPT subscription')
+      expect(rendered.querySelector('input[aria-label="Search people"]')).toBeNull()
+    })
   })
 
   it('releases the results scroll lock when a live ownerInvitesOnly update stops a collaborator inviting', async () => {

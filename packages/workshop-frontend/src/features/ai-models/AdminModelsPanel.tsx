@@ -30,6 +30,7 @@ const CARD = 'rounded-xl border border-kumo-line bg-kumo-elevated p-6'
 const GROUP_HEADING = 'mb-2 text-sm font-semibold text-kumo-default'
 const USER_MODELS_LABEL = 'Users may add their own models'
 const MODELS_DEV_LABEL = 'Suggest models from models.dev'
+const CHATGPT_SIGN_IN_LABEL = 'Users may sign in with ChatGPT'
 const DEFAULT_REASONING_LABEL = 'Default reasoning level'
 
 // The default-level select's value while the deployment sets no level.
@@ -129,10 +130,12 @@ const DefaultReasoningSetting = ({ level, disabled, onChange }: {
   )
 }
 
-export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
+export const AdminModelsPanel = ({ admin, gatewayModels, chatGptSignInEnabled, onChanged }: {
   admin: RpcStub<AdminApi>
   /** What the server last reported. Absent when the deployment isn't in AI Gateway mode. */
   gatewayModels: AdminSettingsView['gatewayModels']
+  /** What the server last reported. */
+  chatGptSignInEnabled: boolean
   /** Re-read the settings after a write, so that the panel shows what the server holds. */
   onChanged: () => Promise<void>
 }) => {
@@ -158,19 +161,6 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
     if (document.activeElement === document.body) focusBeforeWrite.current?.focus()
     focusBeforeWrite.current = null
   }, [busy])
-
-  if (!gatewayModels) {
-    return (
-      <div className={CARD}>
-        <h2 className="mb-1 text-lg font-semibold text-kumo-strong">Models</h2>
-        <p className="text-sm text-kumo-subtle">
-          Models are managed here only when the deployment provides them through AI Gateway
-          (<code className="font-mono text-xs">CF_AI_GATEWAY</code>). Otherwise each user adds
-          their own models on their Providers page.
-        </p>
-      </div>
-    )
-  }
 
   const reportFailure = (title: string, err: unknown) => {
     console.error(`${title}:`, err)
@@ -224,6 +214,10 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
     write(() => admin.setUserModelsEnabled(enabled))
       .catch((err) => reportFailure(`Couldn’t update “${USER_MODELS_LABEL}”`, err))
 
+  const changeChatGptSignIn = (enabled: boolean) =>
+    write(() => admin.setChatGptSignInEnabled(enabled))
+      .catch((err) => reportFailure(`Couldn’t update “${CHATGPT_SIGN_IN_LABEL}”`, err))
+
   const changeModelsDevSuggestions = (enabled: boolean) =>
     write(() => admin.setModelsDevSuggestions(enabled))
       .catch((err) => reportFailure(`Couldn’t update “${MODELS_DEV_LABEL}”`, err))
@@ -259,6 +253,34 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
     if (!pendingDisable) return
     await changeMode(pendingDisable, 'disabled')
     setPendingDisable(null)
+  }
+
+  const chatGptSignInSwitch = (
+    <SettingSwitch
+      label={CHATGPT_SIGN_IN_LABEL}
+      checked={chatGptSignInEnabled}
+      disabled={busy}
+      onChange={changeChatGptSignIn}
+    >
+      When on, each user can sign in with their own ChatGPT account on their Providers page and add
+      OpenAI models that run on their ChatGPT subscription, in workspaces only they can open.
+      {gatewayModels && ` It also needs “${USER_MODELS_LABEL}” on.`} When off, those
+      models stop working until this is turned back on. Nothing is deleted.
+    </SettingSwitch>
+  )
+
+  if (!gatewayModels) {
+    return (
+      <div className={CARD}>
+        <h2 className="mb-1 text-lg font-semibold text-kumo-strong">Models</h2>
+        <p className="mb-4 text-sm text-kumo-subtle">
+          Models are managed here only when the deployment provides them through AI Gateway
+          (<code className="font-mono text-xs">CF_AI_GATEWAY</code>). Otherwise each user adds
+          their own models on their Providers page.
+        </p>
+        {chatGptSignInSwitch}
+      </div>
+    )
   }
 
   const catalogByProvider = new Map<AiModelProvider, AdminModelView[]>()
@@ -302,6 +324,8 @@ export const AdminModelsPanel = ({ admin, gatewayModels, onChanged }: {
         the models users already added stop working until this is turned back on. Nothing is
         deleted.
       </SettingSwitch>
+
+      {chatGptSignInSwitch}
 
       <DefaultReasoningSetting
         level={defaultReasoning}

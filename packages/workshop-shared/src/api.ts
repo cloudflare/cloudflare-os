@@ -590,6 +590,36 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   getAiConfig(): Promise<AiGatewayInfo>;
 
+  /**
+   * Whether the user is signed in with ChatGPT, which lets them add OpenAI models that run on their
+   * own ChatGPT subscription (see `AiModelConfig.credential`).
+   */
+  getChatGptSignIn(): Promise<ChatGptSignInStatus>;
+
+  /**
+   * Start signing in with ChatGPT. The client opens `authorizeUrl` in a new tab; once the user has
+   * signed in there, OpenAI sends that tab to `redirectUri`, and the client passes the address it
+   * ends at to `completeChatGptSignIn()`. Only one sign-in is pending at a time, so starting
+   * another abandons the last. Throws while unavailable (see `ChatGptSignInStatus`).
+   */
+  beginChatGptSignIn(): Promise<ChatGptSignInStart>;
+
+  /**
+   * Finish the sign-in that `beginChatGptSignIn()` started, given the full address OpenAI sent the
+   * browser to. Replaces any earlier sign-in. Throws if the address is not from the pending
+   * sign-in, the sign-in has expired, or OpenAI refused it.
+   *
+   * Also adds the OpenAI models SUGGESTED_MODELS offers as ChatGPT subscription models, under
+   * `chatGptModelId()`, except any the user already has under that ID.
+   */
+  completeChatGptSignIn(callbackUrl: string): Promise<ChatGptSignInStatus>;
+
+  /**
+   * Forget the user's ChatGPT sign-in. Their ChatGPT models stay configured but can't run until
+   * they sign in again.
+   */
+  signOutChatGpt(): Promise<void>;
+
   /** Resolve UI feature flags for the authenticated user. */
   getUiFeatureFlags(): Promise<UiFeatureFlags>;
 
@@ -1132,6 +1162,8 @@ export type AdminSettingsView = {
   banner: BannerConfig;
   /** Accent color hex, or "" for the default theme. */
   accentColor: string;
+  /** Whether users may sign in with ChatGPT (see AdminApi.setChatGptSignInEnabled). */
+  chatGptSignInEnabled: boolean;
   /** Every bound gatekeeper and its resource types, with enabled state (not hidden when disabled). */
   resourceVendors: AdminResourceVendor[];
   /** The blueprints promoted as standard output formats, in menu order (including disabled ones). */
@@ -1443,6 +1475,16 @@ export interface AdminApi {
   setModelsDevSuggestions(enabled: boolean): Promise<void>;
 
   /**
+   * Set whether users may sign in with ChatGPT and add OpenAI models that run on their own ChatGPT
+   * subscription (see AiModelConfig.credential). On by default. On an AI Gateway deployment it
+   * also takes users being allowed their own models (see setUserModelsEnabled).
+   *
+   * Off stops every ChatGPT model at its next request and refuses new sign-ins. Nothing stored is
+   * deleted, so the models and sign-ins work again once this is back on.
+   */
+  setChatGptSignInEnabled(enabled: boolean): Promise<void>;
+
+  /**
    * Replace what the deployment sets for one of its gateway models (see GatewayModelSettings):
    * a field left out of `settings` is unset, and an empty `settings` unsets everything. Throws
    * if `modelId` is not one of the deployment's gateway models, or if the compaction budget is
@@ -1689,6 +1731,48 @@ export type CloudflareAccountOption = {
 /** Supported AI providers. */
 export type AiModelProvider = "openai" | "anthropic" | "google" | "cloudflare" | "ollama";
 
+/**
+ * Where the user stands with Sign in with ChatGPT. Returned by
+ * `AuthenticatedApi.getChatGptSignIn()`:
+ *   - 'unavailable': the deployment does not offer it (see AdminApi.setChatGptSignInEnabled).
+ *   - 'signedOut':   the user can sign in.
+ *   - 'signedIn':    the user's ChatGPT models can run. `email` is the ChatGPT account's, when
+ *                    OpenAI reported one, for display only.
+ */
+export type ChatGptSignInStatus =
+  | { state: "unavailable" }
+  | { state: "signedOut" }
+  | { state: "signedIn"; email?: string };
+
+/** A started Sign in with ChatGPT flow. Returned by `AuthenticatedApi.beginChatGptSignIn()`. */
+export type ChatGptSignInStart = {
+  /** OpenAI's sign-in page, for the client to open in a new tab. */
+  authorizeUrl: string;
+  /**
+   * Where OpenAI sends that tab once the user has signed in. OpenAI accepts only addresses on the
+   * user's own computer, so this is one where nothing answers, the page fails to load, and the
+   * user copies the address the tab ends at, which starts with this, into
+   * `completeChatGptSignIn()`. When the Workshop itself is served from such an address (as in
+   * local development), it is the Workshop's own CHATGPT_CALLBACK_PATH instead, whose page
+   * finishes the sign-in.
+   */
+  redirectUri: string;
+};
+
+/**
+ * The Workshop page OpenAI sends a ChatGPT sign-in back to when the Workshop is served from an
+ * address on the user's own computer (see `ChatGptSignInStart.redirectUri`).
+ */
+export const CHATGPT_CALLBACK_PATH = "/connect/chatgpt";
+
+/**
+ * The ID of the ChatGPT subscription model for OpenAI's `model`: the ID
+ * `AuthenticatedApi.completeChatGptSignIn()` adds it under, and the one to add it under by hand.
+ */
+export function chatGptModelId(model: string): string {
+  return `chatgpt/${model}`;
+}
+
 /** Information about the AI gateway configuration. Returned by `AuthenticatedApi.getAiConfig()`. */
 export type AiGatewayInfo = {
   enabled: true;
@@ -1931,6 +2015,16 @@ export type AiModelConfig = {
 
   /** Name of the specific model, as specified to the provider's API. */
   model: string;
+
+  /**
+   * Set when the model runs on the user's own ChatGPT subscription rather than an API key. Only
+   * for provider "openai", with an empty `apiToken` and no `apiUrl`, `extraHeaders` or
+   * `accountId`: requests go directly to OpenAI with the user's ChatGPT sign-in (see
+   * `AuthenticatedApi.beginChatGptSignIn()`), even on an AI Gateway deployment. OpenAI allows
+   * this for its subscriber's own use only, so the model runs only in workspaces the user owns
+   * and nobody else can reach (see `GadgetMetadata.ownerOnly`), and can't be the quick model.
+   */
+  credential?: "chatgpt";
 
   /**
    * Secret API token for the respective provider, for billing purposes. For providers "anthropic",
@@ -2217,6 +2311,13 @@ export type GadgetMetadata = {
    * links can no longer be created, copied, or redeemed, and only the owner can add collaborators.
    */
   ownerInvitesOnly?: boolean;
+
+  /**
+   * True while the workspace is private to its owner because it has run one of the owner's
+   * ChatGPT subscription models (see `AiModelConfig.credential`): nobody else can open it, and
+   * it can't be shared until the owner calls `Overseer.allowSharing()`.
+   */
+  ownerOnly?: boolean;
 
   /**
    * Various objects in the API specify a gadgetId, but make the property optional. When omitted,
@@ -3227,6 +3328,14 @@ export interface Overseer extends RpcTarget {
 
   /** List all collaborators. Available to owner and all collaborators. */
   listCollaborators(): Promise<CollaboratorInfo[]>;
+
+  /**
+   * Lift the lock that running a ChatGPT subscription model put on the workspace (see
+   * `GadgetMetadata.ownerOnly`), so that it can be shared again. Owner only. Throws while any
+   * agent turn is running. Using a ChatGPT model here again locks the workspace again, and is
+   * refused while it is shared.
+   */
+  allowSharing(): Promise<void>;
 
   /**
    * Add a collaborator by username/email. The caller must be the owner or an existing

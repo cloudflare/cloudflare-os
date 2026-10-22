@@ -20,7 +20,9 @@
 // Overseer enforces it. This module only answers questions about the sharing graph. The one
 // exception is the `ownerInvitesOnly` flag, which the Overseer supplies as a hook: once it is set,
 // only direct grants from the owner count, so it narrows which edges `computeEffectiveRoles`
-// follows and must be checked synchronously with each grant's storage write.
+// follows and must be checked synchronously with each grant's storage write. The `ownerOnly` flag
+// is a second hook, checked the same way: while it is set, nobody but the owner has access and
+// nothing can be shared.
 
 import { AiChatAuthorInfo, CollaboratorInfo, PermissionEdge, CollaboratorRole, AffectedCollaborator,
     createOpenGadgetError, OPEN_GADGET_ERROR_CODES } from "@gadgets/workshop-shared/api";
@@ -111,11 +113,25 @@ export class SharingManager {
    * `ObservationDescription.ownerInvitesOnly`). `computeEffectiveRoles` reads it to count only
    * direct owner grants once it is set. Grants call it after their last await, right before the
    * storage write, so an observation that sets the flag mid-call cannot slip a grant through.
+   *
+   * `ownerOnly` reports the Overseer's `ownerOnly` flag (see `GadgetMetadata.ownerOnly`), which
+   * `computeEffectiveRoles` reads to grant nobody anything and grants check as they do
+   * `ownerInvitesOnly`.
    */
   constructor(
       private storage: SharingStorage,
       private ownerProfileId: string,
-      private ownerInvitesOnly: () => boolean) {}
+      private ownerInvitesOnly: () => boolean,
+      private ownerOnly: () => boolean) {}
+
+  // Throw if the workspace is private to its owner (see `ownerOnly`). A redemption is refused as
+  // any open() without access is, which tells the visitor nothing about why.
+  #requireSharingAllowed(opts?: { redeeming: boolean }): void {
+    if (!this.ownerOnly()) return;
+    if (opts?.redeeming) throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceAccessDenied);
+    throw new Error("This workspace is private while it uses your ChatGPT subscription. " +
+        "Allow sharing first.");
+  }
 
   // Throw if share links are disabled by `ownerInvitesOnly`. Redemption refusals surface
   // from open(), so they carry the `shareLinksDisabled` open-gadget code; link management throws
@@ -133,6 +149,15 @@ export class SharingManager {
       let link = asLink(record);
       if (link) yield link;
     }
+  }
+
+  /**
+   * Whether anyone but the owner has access or could gain it: a collaborator reachable from the
+   * owner, or a share link that isn't revoked. Everything it counts is listed by
+   * `listCollaborators` and `listShareLinkRecords`, so the owner can see and remove it.
+   */
+  hasGrants(): boolean {
+    return this.computeEffectiveRoles().size > 0 || this.listShareLinkRecords().length > 0;
   }
 
   // ---------------------------------------------------------------------------------------
@@ -170,7 +195,8 @@ export class SharingManager {
    * If the workspace has `ownerInvitesOnly` set, a valid key adds nothing: a collaborator the
    * owner added directly is left as they are (so reopening an old link doesn't fail), and anyone
    * else -- including someone who joined through a link before the flag was set -- is refused with
-   * a `shareLinksDisabled` exception.
+   * a `shareLinksDisabled` exception. While `ownerOnly` is set, every key is refused with a
+   * `workspaceAccessDenied` exception.
    *
    * TODO: The edge is written before the redeeming open()'s observer verification runs, so a
    * recipient whose verification fails lingers in listCollaborators until removed or the link is
@@ -181,6 +207,7 @@ export class SharingManager {
     profileId: string;
     fetchProfile: () => Promise<AiChatAuthorInfo>;
   }): Promise<void> {
+    this.#requireSharingAllowed({ redeeming: true });
     let hash = await hashShareKey(opts.rawKey);
     let keyRecord = this.storage.shareKeys.get(hash);
     if (!keyRecord) return;
@@ -222,6 +249,7 @@ export class SharingManager {
       // setting ownerInvitesOnly, so check again right before the write.
       let profile = await opts.fetchProfile();
       this.#requireShareLinksAllowed({ redeeming: true });
+      this.#requireSharingAllowed({ redeeming: true });
       this.storage.collaborators.put({
         profile,
         addedBy: [{
@@ -278,6 +306,7 @@ export class SharingManager {
       throw new Error(
           "Only the workspace owner can add people to a workspace that contains sensitive data.");
     }
+    this.#requireSharingAllowed();
 
     let callerRole = this.#requireCallerRole(opts.caller);
     if (roleRank(opts.role) > roleRank(callerRole)) {
@@ -419,6 +448,7 @@ export class SharingManager {
     // The link is stored as its first key: the record is keyed by that key's hash.
     let { key, hash } = await this.#mintKey();
     this.#requireShareLinksAllowed();
+    this.#requireSharingAllowed();
     this.storage.shareKeys.put({
       id: hash,
       note: opts.note,
@@ -446,6 +476,7 @@ export class SharingManager {
 
     let { key, hash } = await this.#mintKey();
     this.#requireShareLinksAllowed();
+    this.#requireSharingAllowed();
     this.storage.shareKeys.put({ id: hash, alias: link.id });
     return { key };
   }
@@ -547,6 +578,8 @@ export class SharingManager {
    * (even for a link the owner created) and every `user` edge from anyone but the owner is
    * skipped. People who reached the workspace any other way lose access, and a collaborator whose
    * owner edge grants less than they reached transitively is downgraded to it.
+   *
+   * While `ownerOnly` is set, nobody has access.
    */
   computeEffectiveRoles(opts: {
     removedUser?: string | null;
@@ -557,6 +590,7 @@ export class SharingManager {
     let removedEdge = opts.removedEdge ?? null;
     let revokedLinkId = opts.revokedLinkId ?? null;
     let ownerGrantsOnly = this.ownerInvitesOnly();
+    if (this.ownerOnly()) return new Map();
 
     // Map linkId → {creator, role}, excluding revoked links (the persisted `revoked` flag, and the
     // hypothetical `revokedLinkId` used by preview).

@@ -3,7 +3,7 @@ import { validateRpc } from "capnweb-validate";
 import type {
   AnthropicMessagesCompat, Api, AssistantMessageEventStream, ClassifierApi, ClassifierContext,
   ClassifierModel, ClassifierOptions, ClassifierResult, Context, FetchFunction, Model, ModelCost,
-  OpenAICompletionsCompat, ProviderHeaders, SimpleStreamOptions, StreamFunction,
+  OpenAICompletionsCompat, OpenAIResponsesCompat, ProviderHeaders, SimpleStreamOptions, StreamFunction,
 } from "@earendil-works/pi-ai";
 import { clampThinkingLevel, getSupportedThinkingLevels, normalizeContext }
   from "@earendil-works/pi-ai";
@@ -37,6 +37,7 @@ import {
 } from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
+import { CHATGPT_API_BASE_URL } from "./chatgpt-oauth.js";
 import { hasGpt56PromptCaching, splitSystemPrompt } from "./system-prompt-blocks.js";
 
  /**
@@ -71,6 +72,9 @@ type ModelRoutingOptions = {
   sessionAffinity?: string;
   userGateway?: UserGatewayRouting;
   metadata?: GatewayMetadataContext;
+  // The access token of a ChatGPT subscription model (see AiModelConfig.credential), asked for
+  // before every request. Such a model can't run without one.
+  chatGptToken?: () => Promise<string>;
 };
 
 /**
@@ -459,6 +463,9 @@ type HandleArgs = {
   // gateway over env.WORKERS_AI.fetch() instead of the global fetch (see bindingFetch).
   // A per-call options.fetch still wins, which tests rely on to capture requests.
   fetch?: FetchFunction;
+  // Asked before every request for the token to send as `Authorization`, in place of the one the
+  // SDK derives from `apiKey`, so that a token that lapses or is withdrawn mid-turn is never sent.
+  bearer?: () => Promise<string>;
   // The reasoning level of main turns, and the ID of the pi entry the model's flags come from
   // (see reasoningOptions). No level gives the model its built-in request (see builtInReasoning).
   reasoning?: ReasoningLevel;
@@ -496,6 +503,7 @@ function makeHandle(args: HandleArgs): ModelHandle {
             : {}),
       };
       const transcript = normalizeContext(context);
+      const transport = options.fetch ?? args.fetch;
       const merged: SimpleStreamOptions = {
         // API defaults first, so an explicit per-call option can override them. A handle with a
         // reasoning level sends that level's options in their place. `thinking: false` replaces
@@ -511,8 +519,10 @@ function makeHandle(args: HandleArgs): ModelHandle {
                 ? (anthropicCompat?.supportsMidConvoEffort === true
                     ? { effort: "low" } : { thinkingEnabled: false })
                 : {}),
-        ...(args.fetch !== undefined ? { fetch: args.fetch } : {}),
         ...options,
+        ...(args.bearer !== undefined
+            ? { fetch: withBearer(transport ?? fetch, args.bearer) }
+            : transport !== undefined ? { fetch: transport } : {}),
         ...(args.apiKey !== undefined ? { apiKey: args.apiKey } : {}),
         ...(Object.keys(headers).length > 0 ? { headers } : {}),
         // Session affinity: pi only sends it when caching isn't "none" (fine for us).
@@ -546,6 +556,16 @@ function makeHandle(args: HandleArgs): ModelHandle {
     },
   };
   return handle;
+}
+
+// `fetch` sending `bearer()`'s token as each request's `Authorization`.
+function withBearer(fetch: FetchFunction, bearer: () => Promise<string>): FetchFunction {
+  return async (input, init) => {
+    let headers = new Headers(input instanceof Request ? input.headers : undefined);
+    new Headers(init?.headers).forEach((value, name) => headers.set(name, value));
+    headers.set("Authorization", `Bearer ${await bearer()}`);
+    return fetch(input, { ...init, headers });
+  };
 }
 
 // GPT-5.6 and later keep a separate cache for each prompt_cache_key, so the key pi sets from the
@@ -599,6 +619,28 @@ function signGeminiFunctionCalls(model: Model<Api>, payload: unknown): object | 
 export function getModel(env: Cloudflare.Env, config: AiModelConfig,
                          initiator: AiChatAuthorInfo,
                          options: ModelRoutingOptions = {}): ModelHandle {
+  // A ChatGPT subscription model goes directly to OpenAI on its user's sign-in, however other
+  // models are routed: no gateway can carry the sign-in, and the subscription pays.
+  if (config.credential === "chatgpt") {
+    if (!options.chatGptToken) {
+      throw new Error("A model that runs on a ChatGPT subscription can't be used here.");
+    }
+    const catalog = catalogModel("openai", config.model);
+    const model = openaiModel(config, catalog, CHATGPT_API_BASE_URL, ZERO_COST);
+    // A sign-in refuses the prompt cache fields, so the model is described as one that takes no
+    // explicit breakpoint, or splitSystemPrompt() would add one.
+    const { supportsExplicitPromptCacheMode, ...compat } =
+        (model.compat ?? {}) as OpenAIResponsesCompat;
+    return makeHandle({
+      model: { ...model, compat },
+      // pi takes a key that isn't an API key, at this base URL, for a ChatGPT sign-in, and
+      // leaves out the request fields the subscription refuses. `bearer` sends the real token.
+      apiKey: "chatgpt-sign-in",
+      bearer: options.chatGptToken,
+      sessionAffinity: options.sessionAffinity,
+    });
+  }
+
   // BYOK: a connected user's own Cloudflare account pays for everything (all providers, including
   // Workers AI), routed through the user's own AI Gateway with unified billing. Honored regardless
   // of whether a platform AI Gateway is configured, so connected users are always billed correctly.
@@ -873,19 +915,8 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
       });
     case "openai":
       return makeHandle({
-        model: {
-          id: config.model,
-          name: catalog?.name ?? config.model,
-          api: "openai-responses",
-          provider: "openai",
-          baseUrl: config.apiUrl ?? "https://api.openai.com/v1",
-          reasoning: catalog?.reasoning ?? true,
-          input: catalog?.input ?? ["text", "image"],
-          cost: catalog?.cost ?? ZERO_COST,
-          ...window,
-          thinkingLevelMap: catalog?.thinkingLevelMap,
-          compat: catalog?.compat,
-        },
+        model: openaiModel(config, catalog, config.apiUrl ?? "https://api.openai.com/v1",
+            catalog?.cost ?? ZERO_COST),
         ...directAuth(config, "Authorization"),
         sessionAffinity,
       });
@@ -893,6 +924,24 @@ function getModelDirect(config: AiModelConfig, sessionAffinity?: string): ModelH
       config.provider satisfies never;
       throw new Error(`Unknown provider "${config.provider}".`);
   }
+}
+
+// An OpenAI Responses API model reached directly at `baseUrl`.
+function openaiModel(config: AiModelConfig, catalog: Model<Api> | undefined, baseUrl: string,
+                     cost: ModelCost): Model<Api> {
+  return {
+    id: config.model,
+    name: catalog?.name ?? config.model,
+    api: "openai-responses",
+    provider: "openai",
+    baseUrl,
+    reasoning: catalog?.reasoning ?? true,
+    input: catalog?.input ?? ["text", "image"],
+    cost,
+    ...modelTokenWindow(config, catalog),
+    thinkingLevelMap: catalog?.thinkingLevelMap,
+    compat: catalog?.compat,
+  };
 }
 
 // Workers AI's account-scoped REST root for a direct connection, which needs the config's own
@@ -963,6 +1012,11 @@ export type AiModelGatekeeperProps = {
   displayName: string,
   config: AiModelConfig,
   initiator: AiChatAuthorInfo,
+  /**
+   * The user DO ID of whoever minted the binding, whose model it runs. Absent on bindings minted
+   * before it was recorded, which can't run a ChatGPT subscription model.
+   */
+  creatorUserId?: string,
   metadata?: GatewayMetadataContext,
 };
 
@@ -974,7 +1028,8 @@ export type AiModelGatekeeperProps = {
  */
 async function refuseRevokedModel(env: Cloudflare.Env, props: AiModelGatekeeperProps) {
   let models = await getGatewayModels(env);
-  if (models?.get(props.config.model)?.provider === props.config.provider) {
+  if (!props.config.credential &&
+      models?.get(props.config.model)?.provider === props.config.provider) {
     models.refuseDisabled(props.config.model);
   } else {
     models?.refuseUserModel(props.displayName);
@@ -1015,8 +1070,23 @@ export class LanguageModelGatekeeper
     // minted with, its model is described as one with none set, whatever the admin has set since.
     let { reasoning, ...config } = this.ctx.props.config;
     await refuseRevokedModel(this.env, this.ctx.props);
+    let chatGptToken: (() => Promise<string>) | undefined;
+    if (config.credential === "chatgpt") {
+      // The workspace's Overseer hands out the token, for the user who minted the binding, before
+      // each request (see chatGptAccess() in overseer.ts). The first is asked for here, so that a
+      // refusal is the call's error rather than a failed request.
+      let { creatorUserId, metadata } = this.ctx.props;
+      if (!creatorUserId || !metadata?.gadgetId) {
+        throw new Error("This model binding can't run a ChatGPT subscription model. Create a new one.");
+      }
+      let overseers = this.ctx.exports.OverseerDurableObject;
+      let overseer = overseers.get(overseers.idFromString(metadata.gadgetId));
+      chatGptToken = () => overseer.chatGptAccessToken(creatorUserId);
+      await chatGptToken();
+    }
     let model = getModel(this.env, config, this.ctx.props.initiator, {
       metadata: this.ctx.props.metadata,
+      chatGptToken,
     });
     return new LanguageModelBindingImpl(model);
   }

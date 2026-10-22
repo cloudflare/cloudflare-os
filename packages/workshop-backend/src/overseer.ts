@@ -67,6 +67,7 @@ import {
 } from "./storage-schema/blueprints-kv";
 import { WebFetchEnv } from "./web-fetch";
 import { UserDurableObject, type UserChatContext } from "./user";
+import type { ChatGptAccessToken } from "./chatgpt-oauth.js";
 import type { AgentSpawnerBinding, CallableAgent, SpawnCallableOptions } from "./agent-spawner-binding";
 import { recordAnalytics } from "./analytics";
 import { reportIssue } from "@gadgets/observability/error-reporting";
@@ -7129,6 +7130,42 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
+  // The only way a ChatGPT subscription model's token reaches this workspace (see
+  // docs/chatgpt-sign-in.md). OpenAI lets a subscription do work for its subscriber alone, so the
+  // token is handed out only for the owner, and only while nobody else can reach the workspace:
+  // the first use locks the workspace to the owner (`ownerOnly`), and a workspace that is shared
+  // is refused rather than unshared. Called before every request, so that a request made after
+  // the owner allowed sharing again fails closed until the workspace is unshared.
+  async chatGptAccess(userId: string): Promise<ChatGptAccessToken> {
+    await this.#lockToOwnerForChatGpt(userId);
+    let token = await this.ownerUserDo().getChatGptAccessToken();
+    // Sharing may have been allowed while that was in flight.
+    await this.#lockToOwnerForChatGpt(userId);
+    return token;
+  }
+
+  async #lockToOwnerForChatGpt(userId: string): Promise<void> {
+    if (userId !== this.ownerId) {
+      throw new Error("ChatGPT subscription models only run in workspaces you own.");
+    }
+    let sharing = await this.getSharingManager();
+    if (this.storage.ownerOnly.get()) return;
+    // A live session of a collaborator who has just been removed counts until its restart lands.
+    if (sharing.hasGrants() || this.#hasCollaboratorSession()) {
+      throw new Error("Stop sharing this workspace to use your ChatGPT subscription here.");
+    }
+    this.storage.ownerOnly.put(true);
+  }
+
+  // Lift the lock that chatGptAccess() put on the workspace. Refused while a turn could still be
+  // using the token, since nothing would stop it once the workspace was shared.
+  allowSharing(): void {
+    if ([...this.storage.activeAgents.list()].length > 0) {
+      throw new Error("Wait for the agent to finish, or stop it, before allowing sharing.");
+    }
+    this.storage.ownerOnly.put(false);
+  }
+
   // Start an agent turn for the given chat (fire-and-forget). Persists an `ActiveAgentRecord` so
   // the turn can be resumed after a server restart, and tracks the turn so the keep-alive alarm is
   // held while it runs. `initiatorUserId` is the hex DO ID of the user whose model/account is used,
@@ -7218,7 +7255,13 @@ class OverseerImpl implements AgentHooks {
         // (This runs inside the try so the `finally` below still clears the active-agent state and
         // emits a stream "clear" — otherwise the UI would spin forever on a block.)
         let byokRouting: UserGatewayRouting | undefined;
-        if (this.ownerId) {
+        let chatGptToken: (() => Promise<string>) | undefined;
+        if (aiModel.config.credential === "chatgpt") {
+          // Runs on the owner's own subscription, so neither the free tier nor a gateway applies.
+          // The first token is fetched here so that a refusal ends the turn before it starts.
+          chatGptToken = async () => (await this.chatGptAccess(initiatorUserId)).token;
+          await chatGptToken();
+        } else if (this.ownerId) {
           let ownerStub = this.users.get(this.users.idFromString(this.ownerId));
           let usage = await checkUsageAndBalance(this.env, ownerStub);
           if (!usage.allowed) {
@@ -7245,6 +7288,7 @@ class OverseerImpl implements AgentHooks {
             this.env, aiModel.config, initiator, {
               sessionAffinity,
               userGateway: byokRouting,
+              chatGptToken,
               metadata: { source: "chat", gadgetId: this.ctx.id.toString(), chatId },
             });
         turn.setModel(chosenModel.model);
@@ -10032,7 +10076,8 @@ class OverseerImpl implements AgentHooks {
   async getSharingManager(): Promise<SharingManager> {
     if (!this.#sharingManager) {
       this.#sharingManager = new SharingManager(
-          this.storage, await this.getOwnerProfileId(), () => this.storage.ownerInvitesOnly.get());
+          this.storage, await this.getOwnerProfileId(), () => this.storage.ownerInvitesOnly.get(),
+          () => this.storage.ownerOnly.get());
     }
     return this.#sharingManager;
   }
@@ -10654,6 +10699,14 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     return this.impl.deliverCodeModeText(executionId, delta);
   }
 
+  /**
+   * DO NOT MAKE PUBLIC -- returns a ChatGPT access token. Called by a ChatGPT model's
+   * LanguageModelGatekeeper before each request, for the user who minted it (see chatGptAccess()).
+   */
+  async chatGptAccessToken(userId: string): Promise<string> {
+    return (await this.impl.chatGptAccess(userId)).token;
+  }
+
   /** Called by AgentSelfLoopback when any method is called on the `self` object. */
   deliverAgentCallback(
       chatId: number, methodName: string, args: unknown[],
@@ -11149,6 +11202,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       totalCost: this.impl.storage.totalCost.get(),
       containsRestrictedData: this.impl.storage.containsRestrictedData.get(),
       ownerInvitesOnly: this.impl.storage.ownerInvitesOnly.get(),
+      ownerOnly: this.impl.storage.ownerOnly.get(),
       role: "build",
       defaultGadgetId: this.impl.defaultGadgetId,
     };
@@ -11174,6 +11228,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       totalCost: this.impl.storage.totalCost.get(),
       containsRestrictedData: this.impl.storage.containsRestrictedData.get(),
       ownerInvitesOnly: this.impl.storage.ownerInvitesOnly.get(),
+      ownerOnly: this.impl.storage.ownerOnly.get(),
       role: "build",
       defaultGadgetId: this.impl.defaultGadgetId,
     };
@@ -11203,12 +11258,19 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         callback(metadata).catch(unsubscribe);
       }
     };
+    let ownerOnlySubscriber = {
+      update(value: boolean | undefined) {
+        metadata.ownerOnly = value;
+        callback(metadata).catch(unsubscribe);
+      }
+    };
 
     let unsubscribe = () => {
       this.impl.storage.title.unsubscribe(titleSubscriber);
       this.impl.storage.totalCost.unsubscribe(costSubscriber);
       this.impl.storage.containsRestrictedData.unsubscribe(restrictedDataSubscriber);
       this.impl.storage.ownerInvitesOnly.unsubscribe(ownerInvitesOnlySubscriber);
+      this.impl.storage.ownerOnly.unsubscribe(ownerOnlySubscriber);
       callback[Symbol.dispose]();
     };
 
@@ -11216,6 +11278,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     this.impl.storage.totalCost.subscribe(costSubscriber);
     this.impl.storage.containsRestrictedData.subscribe(restrictedDataSubscriber);
     this.impl.storage.ownerInvitesOnly.subscribe(ownerInvitesOnlySubscriber);
+    this.impl.storage.ownerOnly.subscribe(ownerOnlySubscriber);
 
     callback(metadata).catch(unsubscribe);
 
@@ -11454,6 +11517,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       displayName: chatMeta.aiModel!.profile.name,
       config: chatMeta.aiModel!.config,
       initiator: this.impl.gadgetAuthorFor(chatMeta.profile),
+      creatorUserId: this.clientUserId,
       metadata: { source: "model-binding", gadgetId: this.impl.ctx.id.toString() },
     }
 
@@ -12440,6 +12504,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return (await this.impl.getSharingManager()).listCollaborators();
   }
 
+  async allowSharing(): Promise<void> {
+    if (!this.isOwner) {
+      throw new Error("Only the workspace owner can allow sharing.");
+    }
+    this.impl.allowSharing();
+  }
+
   async addCollaborator(username: string, role: CollaboratorRole, note?: string)
       : Promise<CollaboratorInfo | null> {
     // Look up the user DO to check if the account exists.
@@ -12832,6 +12903,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async listObserverRequirements(
       _role: CollaboratorRole): Promise<ObserverBindingNeed[]> { this.#deny(); }
   async listCollaborators(): Promise<CollaboratorInfo[]> { this.#deny(); }
+  async allowSharing(): Promise<void> { this.#deny(); }
   async addCollaborator(_username: string, _role: CollaboratorRole, _note?: string)
       : Promise<CollaboratorInfo | null> { this.#deny(); }
   async removeCollaborator(_profileId: string, _keepUsers: string[])
