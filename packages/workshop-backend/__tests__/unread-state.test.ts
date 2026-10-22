@@ -774,6 +774,37 @@ describe("private horizons and coalesced dirty threads", () => {
     expect(await reader.getUnreadState()).toMatchObject({chats: [], unreadMessageCount: 0});
   });
 
+  it("does not consume a new thread's pending arrival when an established collaborator reopens", async () => {
+    const fixture = await setup();
+    const {reader, owner} = await addReader(fixture);
+    const id = crypto.randomUUID();
+    using delivered = vi.spyOn(UserDurableObject.prototype, "publishNotification").mockResolvedValue(undefined);
+    await withImpl(fixture.workspace, async impl => {
+      const release = Promise.withResolvers<void>();
+      const restore = interceptDelivery(impl, async (user, ...args) => {
+        await release.promise;
+        await user.messageArrived(...args);
+      });
+      try {
+        impl.storage.chatMeta.put({id: 2, title: "New thread", started: new Date(), lastActive: new Date()});
+        impl.storage.chats.put({chatId: 2, sequence: 0, timestamp: new Date(), type: "message",
+          author: {type: "agent", id: "test", name: "Test"}, message: "New activity"});
+        impl.storage.nextChatSequences.put({chatId: 2, nextSequence: 1});
+        impl.storage.chatNotifications.put({id, chatId: 2, sequence: 0,
+          userId: reader.id.toString(), kind: "taskCompleted"});
+        const localReader = impl.users.get(impl.users.idFromString(reader.id.toString()));
+        await localReader.recordSharedGadgetOpen(fixture.workspaceId, "Workspace", owner, "build",
+          [...impl.storage.chatMeta.list()].map(meta => ({chatId: meta.id,
+            notifiedThroughSequence: impl.nextChatSequencePeek(meta.id) - 1})));
+        expect((await localReader.getUnreadState()).chats.some(chat => chat.chatId === 2)).toBe(false);
+      } finally { release.resolve(); restore(); }
+      await impl.deliverDirtyChats();
+    });
+    await vi.waitFor(() => expect(delivered.mock.calls.map(([event]) => event.id)).toEqual([id]));
+    expect((await reader.getUnreadState()).chats.find(chat => chat.chatId === 2))
+      .toMatchObject({readThroughSequence: -1, unreadMessageCount: 1});
+  });
+
   it.each([
     {snapshotFirst: false, reset: false},
     {snapshotFirst: true, reset: false},

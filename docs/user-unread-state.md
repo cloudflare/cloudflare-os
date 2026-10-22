@@ -35,6 +35,8 @@ Committing the initial count/horizons removes that temporary cursor field; subse
 never repeat the initialization seek. Existing cursors retain their horizons. Successful first
 admission to a shared workspace starts at the existing callback's captured tail, with historical
 messages read and alerts skipped; subsequent arrivals are reconciled by the same processor.
+An ordinary reopen does not initialize missing cursors from a fresh tail; it only resumes
+already-tracked dirty work. This preserves new activity whose first fanout is still pending.
 
 Only visible text/attachments count. Tool/reasoning records, empty messages and generated
 slash-command expansions do not. Streaming tokens are not separate messages. Horizons may lie
@@ -119,6 +121,10 @@ their dirty bits. Successful authorization/reopening resumes the same processor.
 restoration also requests a fresh access check, not an authorization grant. A DO restart forgets
 the in-memory denial and checks once again. Transient failures retain alarm retries. Reopening
 still uses the existing best-effort callback, not a new durable re-authorization handoff.
+Initial enrollment does not guarantee coverage of events racing that callback, including a
+thread created after its captured thread list but delivered before the User DO records the listing.
+Once registration completes, new arrivals follow the normal durable handoff. There is no
+additional admission catch-up RPC or durable enrollment workflow.
 Use-only/unlisted users receive no thread metadata. Existing sharing/listing cleanup removes
 their local state on downgrade/revocation/dismissal; thread deletion removes its cursor and
 notification candidates. Workspace deletion first journals dirtiness in the readers' own DOs
