@@ -17,6 +17,10 @@ flowchart LR
     App[Cloudflare OS app]
   end
 
+  subgraph WebPush[Browser push service]
+    Endpoint[Push endpoint and keys]
+  end
+
   subgraph Central[Cloudflare-operated notification service]
     Device[Device registration API]
     Registry[(Device and subscription directory)]
@@ -34,10 +38,11 @@ flowchart LR
   Device -->|store token; return one-time id| Registry
   Device -->|one-time registration id| App
   App -->|inject opaque id| Browser
+  Endpoint -->|endpoint and keys for the VAPID public key| Browser
   Browser -->|registerNotificationDevice| User
   User -->|signed POST /v1/subscriptions| Device
   Key -->|sign request locally| User
-  Device -->|validate install; consume one-time id| Registry
+  Device -->|validate install; consume one-time id or store endpoint| Registry
   Device -->|device key and opaque subscription id| User
   User --> UserState
 ```
