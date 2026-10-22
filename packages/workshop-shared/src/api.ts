@@ -210,24 +210,30 @@ export interface NotificationSubscriber extends RpcTarget {
   notify(notification: UserNotification): Promise<void>;
 }
 
-/** One user's durable horizon joined with a rebuildable thread head and message count. */
+/** One user's private per-thread read horizon and locally stored message count. */
 export type ChatReadState = {
   /** Workspace containing the thread. */
   workspaceId: string;
+  /** Thread identifier, scoped to the workspace. */
+  chatId: number;
+  /** Number of unread visible text/attachment messages, excluding internal agent activity. */
+  unreadMessageCount: number;
+  /** Last read sequence, inclusive; -1 means nothing has been read. */
+  readThroughSequence: number;
+};
+
+/** Display metadata read directly from a workspace, independently of private unread state. */
+export type ChatTimelineHead = {
   /** Thread identifier, scoped to the workspace. */
   chatId: number;
   /** Current thread title. */
   chatTitle: string;
   /** Sequence of the latest visible text/attachment message; -1 if none. */
   latestSequence: number;
-  /** Number of unread visible text/attachment messages, excluding internal agent activity. */
-  unreadMessageCount: number;
   /** First nonempty line of the latest visible message, capped at 240 characters; empty for none. Absent on older servers. */
   latestMessagePreview?: string;
   /** Time of the latest visible message; absent for empty threads or older servers. */
   latestActivityAt?: Date;
-  /** Last read sequence, inclusive; -1 means nothing has been read. */
-  readThroughSequence: number;
 };
 
 /** An observed read boundary for a single-thread or bulk mark-read command. */
@@ -242,10 +248,8 @@ export type UserUnreadState = {
   unreadChatCount: number;
   /** Total unread visible messages, calculated from the user's locally cached per-thread counts. */
   unreadMessageCount: number;
-  /** All loaded threads, including read threads; replaces the previous snapshot. */
+  /** All tracked private thread rows, including read threads; replaces the previous snapshot. */
   chats: ChatReadState[];
-  /** Workspaces whose metadata could not be refreshed. Their cached counts are retained, not zeroed. */
-  unavailableWorkspaceIds?: string[];
 };
 
 /** Callback used by `AuthenticatedApi.subscribeToUnreadState()`. */
@@ -571,8 +575,11 @@ export interface AuthenticatedApi extends RpcTarget {
   subscribeToNotifications(
       subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>>;
 
-  /** Fetch unread state without subscribing or marking anything read. */
+  /** Fetch private horizons and counts from local User DO rows, without querying workspaces. */
   getUnreadState(): Promise<UserUnreadState>;
+
+  /** Query a workspace's thread metadata for display or an observed read boundary; null if access is denied. */
+  getChatHeads(workspaceId: string): Promise<ChatTimelineHead[] | null>;
 
   /**
    * Subscribe while visible to an immediate snapshot and subsequent unread-state changes.

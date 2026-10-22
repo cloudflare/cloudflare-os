@@ -1,5 +1,5 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
-import type { ChatTimelineHead } from "./storage-schema/user-storage.js";
+import type { ChatTimelineHead } from "@gadgets/workshop-shared/api";
 import { validateRpc } from "capnweb-validate";
 import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
@@ -31,6 +31,7 @@ import { GitCacheImpl, WorkspaceGitCache } from "./git-cache";
 import {
   OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToBlueprintUpstreams,
   migrateToGitStorage, migrateToMultiGadget, migrateToSpawnerBindings, migrateToWorkpieceTypes,
+  migrateToUnreadTracking,
 } from "./storage-schema/overseer-migrations";
 import type { Usage } from "@earendil-works/pi-ai";
 import {
@@ -1072,13 +1073,16 @@ class OverseerImpl implements AgentHooks {
 
   #unreadRetryAt = 0;
   #dirtyChatTokens = new Map<number, object>();
-  #chatDelivery: Promise<void> | undefined;
+  #chatDeliveries = new Map<number, Promise<void>>();
 
   // Called by pre-write storage hooks: journal only; read committed data in a microtask.
-  markChatDirty(chatId: number): void {
+  markChatDirty(chatId: number, firstMessageSequence?: number): void {
     if (!this.ownerId) return;
     this.#dirtyChatTokens.set(chatId, {});
-    if (!this.storage.dirtyChats.get(chatId)) this.storage.dirtyChats.put({chatId});
+    let pending = this.storage.dirtyChats.get(chatId);
+    if (!pending || (pending.firstMessageSequence === undefined && firstMessageSequence !== undefined)) {
+      this.storage.dirtyChats.put({chatId, firstMessageSequence: pending?.firstMessageSequence ?? firstMessageSequence});
+    }
     // Arm alongside the dirty write, before any RPC/microtask. Do not enumerate collections
     // here: this hook may run inside a caller's live storage iterator.
     let wake = Date.now() + 1_000;
@@ -1095,14 +1099,15 @@ class OverseerImpl implements AgentHooks {
   }
 
   deliverDirtyChats(): Promise<void> {
-    if (this.#chatDelivery) return this.#chatDelivery;
-    this.#chatDelivery = (async () => {
-      this.#unreadRetryAt = Date.now() + 30_000;
-      this.#updateAlarm();
-      let failures: unknown[] = [];
-      // Close the storage iterator before awaiting any callbacks that can mutate it.
-      for (let {chatId} of Array.from(this.storage.dirtyChats.list())) {
-        let token = this.#dirtyChatTokens.get(chatId);
+    if (!this.#chatDeliveries.size) this.#unreadRetryAt = Date.now() + 30_000;
+    this.#updateAlarm();
+    // Close the iterator before callbacks can mutate it. Coalesce per thread so a stalled alert
+    // cannot block other threads, including those dirtied after this pass starts.
+    let deliveries = Array.from(this.storage.dirtyChats.list()).map(({chatId, firstMessageSequence}) => {
+      let pending = this.#chatDeliveries.get(chatId);
+      if (pending) return pending;
+      let token = this.#dirtyChatTokens.get(chatId);
+      let delivery = (async () => {
         let ownerId = this.ownerId;
         if (!ownerId) return;
         let sharing = await this.getSharingManager();
@@ -1111,24 +1116,24 @@ class OverseerImpl implements AgentHooks {
           .map(reader => this.users.idFromName(reader.profile.id).toString())]);
         let results = await Promise.allSettled([...recipients].map(userId =>
           this.users.get(this.users.idFromString(userId))
-            .messageArrived(this.ctx.id.toString(), chatId)));
-        let rejected = results.filter(result => result.status === "rejected");
-        if (rejected.length) {
-          failures.push(...rejected.map(result => result.reason));
-          continue;
-        }
+            .messageArrived(this.ctx.id.toString(), chatId,
+              chatId < this.storage.legacyUnreadChatIdLimit.get() ? firstMessageSequence ?? null : undefined)));
+        for (let result of results) if (result.status === "rejected") throw result.reason;
         // A newer mutation during the RPCs remains dirty. Reset recovery also retains the bit.
         if (this.#dirtyChatTokens.get(chatId) === token) this.storage.dirtyChats.delete(chatId);
-      }
-      if (failures.length) throw failures[0];
+      })().finally(() => { this.#chatDeliveries.delete(chatId); });
+      this.#chatDeliveries.set(chatId, delivery);
+      return delivery;
+    });
+    return (async () => {
+      let results = await Promise.allSettled(deliveries);
+      for (let result of results) if (result.status === "rejected") throw result.reason;
       // Successful fanout can leave newer mutations pending. Give those the normal short wake,
       // rather than retaining this pass's failure backoff.
       this.#unreadRetryAt = 0;
     })().finally(() => {
-      this.#chatDelivery = undefined;
       this.#updateAlarm();
     });
-    return this.#chatDelivery;
   }
 
   chatHead(chatId: number): ChatTimelineHead | undefined {
@@ -1158,9 +1163,13 @@ class OverseerImpl implements AgentHooks {
 
   #initializeUnreadTracking(): void {
     this.storage.chats.subscribe({
-      add: message => { if (isCountableChatMessage(message)) this.markChatDirty(message.chatId); },
+      add: message => {
+        if (isCountableChatMessage(message)) this.markChatDirty(message.chatId, message.sequence);
+      },
       update: (old, message) => {
-        if (isCountableChatMessage(old) || isCountableChatMessage(message)) this.markChatDirty(message.chatId);
+        if (isCountableChatMessage(old) || isCountableChatMessage(message)) {
+          this.markChatDirty(message.chatId, isCountableChatMessage(old) ? undefined : message.sequence);
+        }
       },
       remove: message => { if (isCountableChatMessage(message)) this.markChatDirty(message.chatId); },
     });
@@ -1170,7 +1179,7 @@ class OverseerImpl implements AgentHooks {
       remove: meta => this.markChatDirty(meta.id),
     });
     this.storage.chatNotifications.subscribe({
-      add: event => this.markChatDirty(event.chatId),
+      add: event => this.markChatDirty(event.chatId, event.sequence),
       update: (_old, event) => this.markChatDirty(event.chatId),
       remove: () => {},
     });
@@ -1384,6 +1393,7 @@ class OverseerImpl implements AgentHooks {
       migrateToWorkpieceTypes(this);
       migrateToBlueprintUpstreams(this);
       migrateToSpawnerBindings(this);
+      migrateToUnreadTracking(this);
       // Do not replace an existing alarm during constructor recovery: setAlarm would reset the
       // platform's retry budget. Cache its time before registering any recovered executions.
       this.#scheduledAlarm = await this.ctx.storage.getAlarm();
@@ -10495,13 +10505,24 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     return [...this.impl.storage.chatMeta.list()].flatMap(meta => this.impl.chatHead(meta.id) ?? []);
   }
 
-  /** Read count/candidates; null horizons skip the corresponding work. Denial preserves cursors. */
+  /** Read count/candidates; null skips work, undefined initializes a legacy horizon in this RPC. */
   async getChatStateForUser(userId: string, profileId: string, chatId: number,
-      readThroughSequence: number | null, notifiedThroughSequence: number | null) {
+      readThroughSequence: number | null | undefined, notifiedThroughSequence: number | null | undefined,
+      firstMessageSequence?: number) {
     if (!this.impl.ownerId) return null;
     if (!await this.impl.mayReadChatState(userId, profileId)) return "denied" as const;
-    let head = this.impl.chatHead(chatId);
-    if (!head) return null;
+    let meta = this.impl.storage.chatMeta.get(chatId);
+    if (!meta) return null;
+    let initialHorizon: number | undefined;
+    if (firstMessageSequence !== undefined) {
+      initialHorizon = -1;
+      for (let message of this.impl.storage.chats.list({prefix: chatKeyPrefix(chatId),
+        end: chatKey(chatId, firstMessageSequence), reverse: true})) {
+        if (isCountableChatMessage(message)) { initialHorizon = message.sequence; break; }
+      }
+    }
+    if (readThroughSequence === undefined) readThroughSequence = initialHorizon ?? -1;
+    if (notifiedThroughSequence === undefined) notifiedThroughSequence = initialHorizon ?? -1;
     let notifications = notifiedThroughSequence === null ? [] : [...this.impl.storage.chatNotifications.list({
       prefix: chatKeyPrefix(chatId),
       startAfter: notifiedThroughSequence < 0 ? undefined : chatKey(chatId, notifiedThroughSequence),
@@ -10514,7 +10535,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
         if (isCountableChatMessage(message)) unreadCount++;
       }
     }
-    return {head, notifications, unreadCount, timelineTailSequence: this.impl.nextChatSequencePeek(chatId) - 1};
+    return {chatTitle: meta.title, notifications, unreadCount, initialHorizon,
+      timelineTailSequence: this.impl.nextChatSequencePeek(chatId) - 1};
   }
 
   /**

@@ -6,7 +6,7 @@
 
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type {
-  AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput, ChatReadState,
+  AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput,
   GadgetMetadata, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import type { AccountDescription, GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
@@ -120,10 +120,6 @@ export type GadgetRecord = GadgetMetadata & {
   // GadgetMetadata).
 };
 
-/** Metadata fetched from the workspace; never persisted in the User DO. */
-export type ChatTimelineHead = Pick<ChatReadState,
-    "chatId" | "chatTitle" | "latestSequence" | "latestMessagePreview" | "latestActivityAt">;
-
 /** Private per-thread consumption state. Counts can be rebuilt from the horizon. */
 export type ChatReadCursor = {
   workspaceId: string;
@@ -133,6 +129,8 @@ export type ChatReadCursor = {
   notifiedThroughSequence: number;
   unreadDirty?: true;
   notificationsDirty?: true;
+  /** A legacy thread's pending first message; removed once both initial horizons are committed. */
+  firstMessageSequence?: number;
 };
 
 /**

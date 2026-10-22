@@ -1240,6 +1240,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
 
       nextActionId: 0,
       nextChatId: 0,
+      // Threads below this rollout cutoff predate unread tracking. New workspaces start at zero.
+      legacyUnreadChatIdLimit: 0,
       nextHookId: 0,
       nextAgentCallId: 0,
 
@@ -1267,7 +1269,11 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
 
     collections: {
       // Coalesced source-to-user handoff, committed with the message mutation.
-      dirtyChats: collection<{chatId: number}>()({primaryKey: "chatId"}),
+      dirtyChats: collection<{
+        chatId: number;
+        /** First incoming message in this pending batch, retained across coalescing and reset. */
+        firstMessageSequence?: number;
+      }>()({primaryKey: "chatId"}),
       // Notification candidates reference existing timeline positions, not copied message bodies.
       chatNotifications: collection<{
         id: string;
