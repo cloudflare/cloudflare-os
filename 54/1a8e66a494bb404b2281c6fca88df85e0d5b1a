@@ -1,0 +1,132 @@
+packages/workshop-backend/__tests__/admin-api-impl.test.ts
+  s_c5f8d284ae2719::t_5ec79192c3c2e3 1-198,201-207,210-228,230-282,285-287,289-291,294-356
+  s_c5f8d284ae2719::t_897c2eb84fe950 199-200,208-209,229,283-284,288,292-293
+packages/workshop-backend/src/git-cache.ts
+  s_c5f8d284ae2719::t_0c0f4f9fe2681e 746-808
+AGENTS.md
+  s_c5f8d284ae2719::t_1de3b404fedbf9 80-83
+  s_c5f8d284ae2719::t_abc2d942520d03 79
+packages/workshop-backend/src/user-directory.ts
+  s_c5f8d284ae2719::t_c37e7b0b13275f 1-4,11-95,98-117,128-144,148-152,154-155,161-218,225-226,229,242-330
+docs/public-server.md
+  s_c5f8d284ae2719::t_1b5ccfedf9d7f4 20
+  s_c5f8d284ae2719::t_edd29abb84cf50 19
+packages/workshop-backend/__tests__/admin-audit.test.ts
+  s_c5f8d284ae2719::t_925a168e48fac0 1-285
+packages/workshop-backend/__tests__/admin-workspace-view.test.ts
+  s_c5f8d284ae2719::t_b80100a22050d6 1-536,540-541,544,548-549
+  s_c5f8d284ae2719::t_92d5acbf425304 537-539,542-543,545-547,550-553
+packages/integration-tests/__tests__/workshop-admin-bounds.test.ts
+  s_c5f8d284ae2719::t_20784b77ff44a1 1-148
+docs/admin-access.md
+  s_c5f8d284ae2719::t_61553a09a6d6f1 368-371
+  s_c5f8d284ae2719::t_39243c390336d0 1-40,42,50-70,72-91,94-197,199-269,271-286,289-361,363-367,372-376
+  s_c5f8d284ae2719::t_8c9552ee3ff5f3 198
+  s_c5f8d284ae2719::t_53b80318ae4bb8 287-288
+  s_c5f8d284ae2719::t_7e62e8ab771ab0 41,43-49,71,92-93,270,362,377-379
+packages/workshop-backend/src/user.ts
+  s_c5f8d284ae2719::t_7b1e9f8e6c6a60 228,230-233,235-239,241,244-246
+  s_c5f8d284ae2719::t_be58689ec10b1a 28
+  s_c5f8d284ae2719::t_2b3d1d42b56527 218-227
+  s_c5f8d284ae2719::t_ef611e442d67ee 2,279,295,302,435,466,646,959-961
+packages/workshop-backend/src/storage-schema/user-storage.ts
+  s_c5f8d284ae2719::t_4284ac709a31a6 249-253
+packages/workshop-backend/__tests__/workspace-directory-feed.test.ts
+  s_c5f8d284ae2719::t_5acf190d9ff922 1-182
+  s_c5f8d284ae2719::t_3b11136ecf9234 183-193
+docs/sharing.md
+  s_c5f8d284ae2719::t_fde4c027e5caa7 157-158
+REVIEW.md
+  s_c5f8d284ae2719::t_bc90124992e100 46-58
+  s_c5f8d284ae2719::t_af1b49462b3549 24-27
+  s_c5f8d284ae2719::t_0913edfd43e5fe 42-45
+packages/integration-tests/__tests__/workshop-admin-inspection.test.ts
+  s_c5f8d284ae2719::t_18f4ac9eb2cde5 1-134,138-176,178-236,238-250,252-288,290-400,402-414,416,418-419,421-428,430-434,436-579
+  s_c5f8d284ae2719::t_4a7a0627468f7e 135-137,177,237,251,289,401,415,417,420,429,435
+packages/workshop-shared/src/api.ts
+  s_c5f8d284ae2719::t_b1508f1c4fab73 2014-2222
+  s_c5f8d284ae2719::t_49a3f9300a0658 439-481,490
+  s_c5f8d284ae2719::t_18c4ad9ebd759f 977-982,984
+  s_c5f8d284ae2719::t_23a7ed3d5a509f 1166-1195
+  s_c5f8d284ae2719::t_a8315e6584b5bf 1349-1721,1723-1729
+packages/workshop-backend/__tests__/admin-access.test.ts
+  s_c5f8d284ae2719::t_0f7004745aa2cc 1-366
+  s_c5f8d284ae2719::t_1ff6e8df565364 367
+packages/integration-tests/__tests__/workshop-admin-audit.test.ts
+  s_c5f8d284ae2719::t_92a57fb716ad4e 1-388
+packages/workshop-backend/__tests__/user-directory-feed.test.ts
+  s_c5f8d284ae2719::t_7db6f6db7b19a3 1-85
+packages/workshop-backend/src/admin-audit.ts
+  s_c5f8d284ae2719::t_c5ebff973734ea 1-7,9-200,205-212,214-226
+  s_c5f8d284ae2719::t_543372b09932e1 213
+  s_c5f8d284ae2719::t_eb4155742685c2 201-204
+  s_c5f8d284ae2719::t_eef7a4137fbaf3 8
+docs/blueprints.md
+  s_c5f8d284ae2719::t_564bfca4836b76 213
+packages/workshop-backend/src/admin-access.ts
+  s_c5f8d284ae2719::t_8fa3e4f0651412 1-386
+  s_c5f8d284ae2719::t_ae9464271a9a03 387-391
+docs/integration-testing.md
+  s_c5f8d284ae2719::t_cc10e6513fb9e6 111-131
+  s_c5f8d284ae2719::t_e8b8650101f50d 132
+packages/workshop-backend/__tests__/admin-settings-audit.test.ts
+  s_c5f8d284ae2719::t_b3760ac5496a9b 1-389
+docs/observers.md
+  s_c5f8d284ae2719::t_e0c14aedc8398b 97-121
+packages/workshop-backend/__integration__/user-directory-rpc.test.ts
+  s_c5f8d284ae2719::t_82af51287a30a9 27-29
+packages/workshop-backend/__tests__/admin-config.test.ts
+  s_c5f8d284ae2719::t_a11a6dbfd1f8a4 2-4,456-624
+packages/workshop-backend/__tests__/admin-settings-models.test.ts
+  s_c5f8d284ae2719::t_6f58d2c67e869c 5,7,28-30,37-38,48-51,54-58,66,72,83-84,88,90,96,101,110-111,121,132,146-147,160,177,194,208,214,216,227,231,241-242,250-251,257-261,263,270,279,281-282,290,293,307-308,325,331,338-339,342,362,368,375-377,380,393-394,420,422-423,465-466,468-470,503,514,525-527,530,534,543,549,551,570,573,584,586,589-590,598,607-608,616,622-624,626,630,641-642,651-652,664,670,679-680,698,714,723-724,734,751,755,771,774,791-793,824,835-836,839,842,853-855,861,868-869,876,887,898-902,909,915,917,920,933,940,942,1231,1313,1319,1334-1335,1342,1354-1355,1360,1371,1379-1380,1407,1467,1529,1595,1610,1638,1647-1648,1677,1694,1696-1697,1699-1708,1710
+packages/workshop-backend/__tests__/deployment-updates.test.ts
+  s_c5f8d284ae2719::t_e3b4c9d7307d82 4,411-412,415-419,423-427,471,483,496,667,671,673,683,685,695-697,704,716,730,744,771
+packages/workshop-backend/__tests__/fixtures.ts
+  s_c5f8d284ae2719::t_bbca5b5288c790 87
+packages/workshop-backend/__tests__/git-cache.test.ts
+  s_c5f8d284ae2719::t_7a1985533eef75 1821-1897
+packages/workshop-backend/__tests__/user-directory.test.ts
+  s_c5f8d284ae2719::t_5fd82504b13171 1,3,150-434
+packages/workshop-backend/cloudflare.config.ts
+  s_c5f8d284ae2719::t_20b805f1d88a98 77-78
+packages/workshop-backend/src/admin-config.ts
+  s_c5f8d284ae2719::t_266a89c4988a05 6-8,13,15,383-390,394-477
+packages/workshop-backend/src/admin-settings.ts
+  s_c5f8d284ae2719::t_627056820d8bec 1,4,9,19-22,99-100,110-113,120,198-201,285-286,292-306,354-355,359,364,368-370,374-376,481-486,494-496,501,510-517,519-520,522-523,528-530,539,552-561,565-594,621-622,624,632,637,652,660,666-668,692-693,746-748,764-766,789-790,792,827-828,842,844,866-868,986,988,992,994,998-999,1001,1010,1017-1025,1027,1042,1056-1057,1062,1071,1140-1150,1154-1159,1161-1165,1167-1168,1170-1178,1186-1187,1191-1192,1199,1204,1211-1212,1216-1217,1224,1231,1241,1248,1256-1257,1261,1265,1269,1273,1277,1281,1285,1289,1293,1297-1298,1302,1306-1307,1331,1335-1336,1340,1344-1464
+packages/workshop-backend/src/env.d.ts
+  s_c5f8d284ae2719::t_bce3922836f868 13-24
+packages/workshop-backend/src/overseer.ts
+  s_c5f8d284ae2719::t_8657efe45c13e2 4-10,30,62-68,520-554,676-703,781-791,944-948,1295-1296,1323-1335,1957,6096-6098,6100-6106,6244-6362,10412-10417,10474-10477,10575-10629,11323-11378,11675-11681,11694-11706,11879,11945,12299,12304,12337,13139-13346
+packages/workshop-backend/src/server.ts
+  s_c5f8d284ae2719::t_f81ae4a6fdd25e 4,26-27,73-75,137,666,673
+packages/workshop-backend/src/storage-schema/admin-settings-storage.ts
+  s_c5f8d284ae2719::t_26a039bfcf3e00 12-13,15-16,118-124,174-175
+packages/workshop-backend/src/storage-schema/overseer-storage.ts
+  s_c5f8d284ae2719::t_6c8b8799e9bb6b 24,1139-1153,1259-1275,1555-1560
+packages/workshop-backend/vitest.config.ts
+  s_c5f8d284ae2719::t_6275d905902a15 88-92,107-108
+packages/workshop-backend/worker-configuration.d.ts
+  s_c5f8d284ae2719::t_0609fc70deb0a7 2,14
+packages/workshop-backend/wrangler.jsonc
+  s_c5f8d284ae2719::t_aef6e0d48ed128 76-81
+scripts/release/testdata/golden-manifest.json
+  s_c5f8d284ae2719::t_8384fe4b2e36d6 1350-1355
+scripts/run-dev-server.ts
+  s_c5f8d284ae2719::t_c517785091962f 588-590
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "541a8e66a494bb404b2281c6fca88df85e0d5b1a",
+  "prompts": {},
+  "sessions": {
+    "s_c5f8d284ae2719": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8910de69-2a98-4e42-ab86-7bfa57a83c02",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
