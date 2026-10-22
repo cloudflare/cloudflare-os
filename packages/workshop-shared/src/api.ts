@@ -5492,6 +5492,9 @@ export type GadgetExportFormat = {
 
   /** File extension, including the leading dot. */
   fileExtension: string;
+
+  /** Suggested download filename, including its extension. Defaults to the Gadget title plus fileExtension when unset. */
+  fileName?: string;
 };
 
 /**

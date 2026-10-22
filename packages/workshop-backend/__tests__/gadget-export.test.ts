@@ -49,6 +49,22 @@ describe("Gadget export formats", () => {
     expect(formats[1]).not.toHaveProperty("ignored");
   });
 
+  it("preserves custom filenames and rejects invalid filename metadata", () => {
+    const format = {
+      id: "pdf", label: "One-pager", mode: "browser",
+      contentType: "application/pdf", fileExtension: ".pdf",
+    };
+    expect(validateExportFormats([{...format, fileName: "One_pager-2026.pdf"}])[0]?.fileName)
+      .toBe("One_pager-2026.pdf");
+    expect(validateExportFormats([format])[0]).not.toHaveProperty("fileName");
+    for (const fileName of ["", "a".repeat(256), 42, null]) {
+      expect(() => validateExportFormats([{...format, fileName}])).toThrow();
+    }
+    for (const fileName of ["one pager.pdf", "reports/one.pdf", "reports\\one.pdf", "café.pdf", "one\n.pdf", "one?.pdf"]) {
+      expect(() => validateExportFormats([{...format, fileName}])).toThrow("invalid file name");
+    }
+  });
+
   it("rejects duplicate ids and unsupported browser content types", () => {
     const format = {
       id: "data",
