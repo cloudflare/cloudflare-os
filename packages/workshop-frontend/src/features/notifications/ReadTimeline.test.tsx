@@ -201,6 +201,38 @@ describe("timeline read/unread experience", () => {
     expect(markChatRead).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])("resumes after a hidden rewind is superseded (ACK while hidden: %s)", async ackHidden => {
+    const allRead = (): UserUnreadState => ({...snapshot(1, 1), unreadChatCount: 0, unreadMessageCount: 0,
+      chats: [{...snapshot(1, 1).chats[0], unreadMessageCount: 0}]});
+    const ack = Promise.withResolvers<void>();
+    markChatUnread.mockReturnValueOnce(ack.promise);
+    await render(<View latestSequence={1} />);
+    await update(allRead());
+    await settle();
+    await act(async () => container.querySelector<HTMLButtonElement>('[data-read-start="1"] button')!.click());
+    await act(async () => document.querySelector<HTMLElement>('[role="menuitem"]')!.click());
+    if (!ackHidden) await act(async () => ack.resolve());
+    await act(async () => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    if (ackHidden) await act(async () => ack.resolve());
+    await update(snapshot(2, 0)); // The unsubscribed callback misses the local echo.
+    await update(allRead()); // Another device marks the thread read while this one is hidden.
+    await act(async () => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await update(allRead());
+    await settle();
+    expect(markChatRead).not.toHaveBeenCalled();
+    visibleBottom = 350;
+    await render(<View latestSequence={2} />);
+    await update(snapshot(3, 1));
+    await settle();
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({workspaceId: "workspace", chatId: 1, throughSequence: 2});
+  });
+
   it("does not acknowledge hidden documents, unfocused windows or a zero-size pane", async () => {
     await render();
     await update(snapshot());
