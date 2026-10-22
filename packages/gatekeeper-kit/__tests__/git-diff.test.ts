@@ -14,6 +14,7 @@ import {
   type GitTreeEntry,
   type TreeDiffSource,
 } from "../src/git-diff";
+import { bufferedGitObject } from "../src/git-objects";
 
 /** Deterministic fake full oid. */
 function oid(n: number): string {
@@ -399,6 +400,27 @@ describe("diffGitTrees", () => {
       expect(file.hunks).toEqual([]);
       expect(file.additions).toBe(0);
     }
+  });
+
+  it("omits a blob the git cache streams, cancelling the stream", async () => {
+    // GitCache.get() streams an object over MAX_BUFFERED_BLOB_SIZE; an adapter over it hands the
+    // diff "unavailable" for one, after cancelling it, through bufferedGitObject().
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      pull: controller => controller.enqueue(new Uint8Array(1024)),
+      cancel: () => { cancelled = true; },
+    });
+    const source: TreeDiffSource = {
+      getTree: async id => id === oid(41) ? [{ mode: "100644", name: "big.bin", oid: oid(9) }] : [],
+      getBlob: async () => {
+        const cached = bufferedGitObject({ type: "blob", content: stream }, "blob");
+        return cached === null || cached === "streamed" ? "unavailable" : cached;
+      },
+    };
+    const files = await diffGitTrees(source, oid(40), oid(41));
+    expect(files.map(file => [file.path, file.diffOmitted])).toEqual([["big.bin", true]]);
+    await Promise.resolve();
+    expect(cancelled).toBe(true);
   });
 
   it("reports submodule pointer and mode-only changes without a patch", async () => {

@@ -48,7 +48,7 @@ async function withImpl(fn: (impl: any) => Promise<void>): Promise<void> {
 let commitCounter = 0;
 async function commitFiles(
     impl: any, files: Record<string, string>, parents: string[] = []): Promise<string> {
-  return await impl.gitStore.writeFilesAsCommit(new Map(Object.entries(files)), {
+  return await impl.gitCache.writeFilesAsCommit(new Map(Object.entries(files)), {
     parents,
     author: { name: "Alice", email: "alice@example.com" },
     message: `test commit ${++commitCounter}`,
@@ -88,7 +88,7 @@ async function chatFiles(impl: any): Promise<Record<string, string>> {
 }
 
 async function commitTree(impl: any, commitId: string): Promise<CodeContent> {
-  return new Map([[GADGET, await impl.gitStore.readCommitFiles(commitId)]]);
+  return new Map([[GADGET, impl.gitCache.readCommitFiles(commitId)]]);
 }
 
 // The user edits the chat's copy of the gadget from `before` to `after`, declaring the pin if
@@ -321,8 +321,8 @@ describe("accepting a re-rooted chat", () => {
     await edit(impl, MERGED, edited);
     expect(await impl.mergeChanges(CHAT, USER_META, "alice-user-do"))
         .toEqual({ outcome: "merged" });
-    expect(Object.fromEntries(await impl.gitStore.readCommitFiles(head(impl)))).toEqual(edited);
-    expect((await impl.gitStore.readCommitObject(head(impl))).parent).toEqual([merge]);
+    expect(Object.fromEntries(impl.gitCache.readCommitFiles(head(impl)))).toEqual(edited);
+    expect(impl.gitCache.readCommitObject(head(impl)).parents).toEqual([merge]);
   }));
 
   it("moves the head to the merge commit though a checkpoint covers the re-root",
@@ -354,7 +354,7 @@ describe("accepting a re-rooted chat", () => {
     expect(await impl.mergeChanges(CHAT, USER_META, "alice-user-do"))
         .toEqual({ outcome: "merged" });
     let accepted = head(impl);
-    expect((await impl.gitStore.readCommitObject(accepted)).parent).toEqual([merge, release]);
+    expect(impl.gitCache.readCommitObject(accepted).parents).toEqual([merge, release]);
     expect(releasesMergedBy(impl.gitCache.readLocalObject(accepted).payload, accepted))
         .toEqual([release]);
     expect(impl.storage.gadgets.get(GADGET).upstream)
@@ -373,7 +373,7 @@ describe("accepting a re-rooted chat", () => {
       }],
     });
     // The merge commit merges the release, as an applied blueprint's will.
-    let merge = await impl.gitStore.writeFilesAsCommit(
+    let merge = await impl.gitCache.writeFilesAsCommit(
         new Map(Object.entries(MAINLINE_EDIT)), {
           parents: [head(impl), release], headers: [releaseMergeHeader(release)],
           author: { name: "Alice", email: "alice@example.com" }, message: "Merge blueprint",
@@ -400,8 +400,8 @@ describe("accepting a re-rooted chat", () => {
     expect(pin(impl)!.mergedCommit).toBe(h1);
     expect(await impl.mergeChanges(CHAT, USER_META, "alice-user-do"))
         .toEqual({ outcome: "merged" });
-    expect(Object.fromEntries(await impl.gitStore.readCommitFiles(head(impl)))).toEqual(MERGED);
-    expect((await impl.gitStore.readCommitObject(head(impl))).parent).toEqual([h1]);
+    expect(Object.fromEntries(impl.gitCache.readCommitFiles(head(impl)))).toEqual(MERGED);
+    expect(impl.gitCache.readCommitObject(head(impl)).parents).toEqual([h1]);
   }));
 });
 

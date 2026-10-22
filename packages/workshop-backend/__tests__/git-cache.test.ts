@@ -1,20 +1,23 @@
 import { describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
-import { deflate } from "pako";
-import type { GitPullHints, GitOid } from "@gadgets/workshop-shared/gatekeeper";
+import { deflateSync } from "node:zlib";
+import {
+  MAX_BUFFERED_BLOB_SIZE,
+  type GitPullHints,
+  type GitOid,
+} from "@gadgets/workshop-shared/gatekeeper";
 import { READ_FILES_RESPONSE_BUDGET } from "@gadgets/workshop-shared/api";
 import { makeMockStorage } from "./mock-storage";
 import {
   EAGER_BLOB_LIMIT,
   GitCacheImpl,
-  GitObjectTooLargeError,
-  MAX_GIT_OBJECT_SIZE,
   WorkspaceGitCache,
 } from "../src/git-cache";
+import { BlobReader, CHUNK_MAX_SIZE } from "../src/git-chunked-blob";
 import { buildSnapshotRelease } from "../src/blueprint-release";
-import { GITDIR, GitStore, blobOid, makeGitObjectsFs } from "../src/git-store";
 import { makeOverseerStorage } from "../src/storage-schema/overseer-storage";
 import {
+  blobOid,
   buildPackBytes,
   concatBytes,
   encodeGitTree,
@@ -158,13 +161,20 @@ const ARRIVALS: {
     deliver: (t, object) => t.cache.importObjects([object]),
   },
   {
-    // As isomorphic-git writes a loose object, through the fs that GitStore hands it.
-    route: "a GitStore write",
+    // As a commit authored here writes a tree: by rebuilding a base that lacks one of the tree's
+    // regular files, adding the file back.
+    route: "a commit written here",
     deliver: async (t, object) => {
-      let oid = await gitObjectOid(object.type, object.payload);
-      await makeGitObjectsFs(t.storage.gitObjects).promises.writeFile(
-          `${GITDIR}/objects/${oid.slice(0, 2)}/${oid.slice(2)}`,
-          encodeLooseObject(object.type, object.payload));
+      let entries = parseGitTree(object.payload);
+      let file = entries.find(entry => entry.mode === "100644")!;
+      let rest = encodeGitTree(entries.filter(entry => entry !== file));
+      await t.cache.importObjects([{ type: "tree", payload: rest }]);
+      let base = await t.cache.writeCommitForTree(await gitObjectOid("tree", rest), {
+        parents: [], author: { name: "A", email: "a@b" }, message: "m", timestamp: new Date(0),
+      });
+      let text = new TextDecoder().decode(fixture(file.oid).payload);
+      expect(await t.cache.writeChangedTree(base, new Map([[file.name, text]])))
+          .toBe(await gitObjectOid("tree", object.payload));
     },
   },
 ];
@@ -369,8 +379,7 @@ describe("puts and metadata recording", () => {
   it("records nothing about what an object refers to when nothing is recorded about it",
       async () => {
     let t = makeCache();
-    let store = new GitStore(t.storage.gitObjects);
-    await store.writeFilesAsCommit(new Map([["a.txt", "a\n"], ["dir/b.txt", "b\n"]]), {
+    await t.cache.writeFilesAsCommit(new Map([["a.txt", "a\n"], ["dir/b.txt", "b\n"]]), {
       parents: [], author: { name: "A", email: "a@b" }, message: "m", timestamp: new Date(0),
     });
     expect(Array.from(t.storage.gitObjects.list())).toHaveLength(5);
@@ -387,23 +396,15 @@ describe("puts and metadata recording", () => {
     expect(() => t.cache.advertiseCommit(G1, "nonsense")).toThrow(/Invalid git object id/);
   });
 
-  it("rejects an oversized put but records its measured size for fail-fast reads", async () => {
+  it("stores a put of any size, chunking a large blob", async () => {
     let t = makeCache();
-    let big = new Uint8Array(MAX_GIT_OBJECT_SIZE + 1).fill(0x61);
-    let oid = await gitObjectOid("blob", big);
-    await expect(t.cache.putFromGatekeeper(G1, "blob", big))
-        .rejects.toThrow(GitObjectTooLargeError);
-
+    let big = new Uint8Array(9_000_000).fill(0x61);
+    let oid = await t.cache.putFromGatekeeper(G1, "blob", big);
+    expect(oid).toBe(await gitObjectOid("blob", big));
+    expect(t.storage.gitObjects.get(oid)).toHaveProperty("chunks");
     let meta = t.storage.gitObjectMetadata.get(oid)!;
-    expect(meta.size).toBe(MAX_GIT_OBJECT_SIZE + 1);
-    expect(meta.type).toBe("blob");
-    expect(meta.onRemote).toStrictEqual([G1]);  // the bytes were hash-verified, just not kept
-    expect(t.cache.hasLocalObject(oid)).toBe(false);
-
-    // Later reads fail fast on the recorded measurement, without re-downloading.
-    await expect(t.cache.ensureObject(oid, { type: "blob" }))
-        .rejects.toThrow(GitObjectTooLargeError);
-    expect(t.pulls).toHaveLength(0);
+    expect(meta).toMatchObject({ type: "blob", size: big.byteLength, onRemote: [G1] });
+    expect(sameBytes(t.cache.readBlob(oid, big.byteLength), big)).toBe(true);
   });
 });
 
@@ -584,22 +585,24 @@ describe("pull driver", () => {
         .rejects.toThrow(/no connection is known to provide it/);
   });
 
-  it("treats a blob its own filter suppressed as too large, recording nothing", async () => {
+  it("fails a blob still missing after a successful pull, which asked for it unfiltered",
+      async () => {
     let t = makeCache();
     let bigOid = "b".repeat(40);
     // G1 proves a tree referencing the blob, so the blob is pullable from G1...
     await t.cache.putFromGatekeeper(
         G1, "tree", treePayload([{ mode: "100644", name: "big.bin", oid: bigOid }]));
-    // ...but serves nothing for it (as a filtered fetch would for an oversized blob).
+    // ...but serves nothing for it.
     t.sources.set(G1, async () => {});
 
     await expect(t.cache.ensureObject(bigOid, { type: "blob" }))
-        .rejects.toThrow(GitObjectTooLargeError);
+        .rejects.toThrow(/Could not pull git object .*a pull completed without providing it/);
+    expect(t.pulls).toHaveLength(1);
+    expect(t.pulls[0].hints.filterBlobSize).toBeUndefined();
     // Absence is gatekeeper behavior, not a measurement: nothing recorded, so the next read
     // retries (self-healing if the omission was a bug).
     expect(t.storage.gitObjectMetadata.get(bigOid)!.size).toBeUndefined();
-    await expect(t.cache.ensureObject(bigOid, { type: "blob" }))
-        .rejects.toThrow(GitObjectTooLargeError);
+    await expect(t.cache.ensureObject(bigOid, { type: "blob" })).rejects.toThrow(/Could not pull/);
     expect(t.pulls).toHaveLength(2);
   });
 });
@@ -1178,28 +1181,54 @@ describe("consumePack", () => {
     expect(t.cache.hasLocalObject(await gitObjectOid("commit", commit))).toBe(false);
   });
 
-  it("measures an oversized entry, skips storing it, and omits it from the result", async () => {
+  it("stores an entry of any size, streaming a large blob into chunks", async () => {
     let t = makeCache();
-    let big = new Uint8Array(MAX_GIT_OBJECT_SIZE + 5).fill(0x7a);
+    let big = randomBytes(20 * 1024 * 1024, 11);
     let bigOid = await gitObjectOid("blob", big);
     let small = new TextEncoder().encode("small\n");
     let smallOid = await gitObjectOid("blob", small);
     let pack = concatBytes(await buildPackBytes(
         [{ type: "blob", payload: big }, { type: "blob", payload: small }]));
 
-    let stored = await new GitCacheImpl(t.cache, G1).consumePack(byteStream(pack));
-    expect(stored).toStrictEqual([smallOid]);
-    expect(t.cache.hasLocalObject(bigOid)).toBe(false);
+    let stored = await new GitCacheImpl(t.cache, G1).consumePack(byteStream(pack, 65536));
+    expect(stored).toStrictEqual([bigOid, smallOid]);
+    expect(chunksOf(t, bigOid).length).toBeGreaterThan(20);
+    expect(sameBytes(t.cache.readBlob(bigOid, big.byteLength), big)).toBe(true);
     let meta = t.storage.gitObjectMetadata.get(bigOid)!;
-    expect(meta.size).toBe(MAX_GIT_OBJECT_SIZE + 5);
+    expect(meta.size).toBe(big.byteLength);
     expect(meta.onRemote).toStrictEqual([G1]);
+    // Chunks are invisible to provenance.
+    for (let chunk of chunksOf(t, bigOid)) {
+      expect(t.storage.gitObjectMetadata.get(chunk)).toBeUndefined();
+    }
   });
 
-  it("resolves a delta against an oversized base it declines to store", async () => {
+  it("writes a streamed blob's chunks outside any transaction", async () => {
+    let t = makeCache();
+    let big = randomBytes(3 * 1024 * 1024, 12);
+    let pack = concatBytes(await buildPackBytes([{ type: "blob", payload: big }]));
+    let inTransaction = 0;
+    let chunkPutsInTransaction = 0;
+    let transaction = t.storage.transaction.bind(t.storage);
+    t.storage.transaction = callback => {
+      inTransaction++;
+      try { return transaction(callback); } finally { inTransaction--; }
+    };
+    let put = t.storage.gitObjects.put.bind(t.storage.gitObjects);
+    t.storage.gitObjects.put = record => {
+      if (inTransaction > 0 && !("chunks" in record)) chunkPutsInTransaction++;
+      put(record);
+    };
+    let [oid] = await t.cache.consumePackFromGatekeeper(G1, byteStream(pack));
+    expect(chunksOf(t, oid).length).toBeGreaterThan(3);
+    expect(chunkPutsInTransaction).toBe(0);
+  });
+
+  it("resolves deltas against a large blob, in the pack or already stored", async () => {
     // How git packs a file similar to a large one (e.g. a second lockfile in a whole-tree blob
     // pull), hand-built: the large blob, then a ref-delta copying its first 16 bytes.
     let t = makeCache();
-    let big = new Uint8Array(MAX_GIT_OBJECT_SIZE + 5).fill(0x7a);
+    let big = new Uint8Array(9_000_005).fill(0x7a);
     let bigOid = await gitObjectOid("blob", big);
     // A one-blob pack minus its trailer, recounted to two entries.
     let prefix = concatBytes(await buildPackBytes([{ type: "blob", payload: big }])).slice(0, -20);
@@ -1208,14 +1237,24 @@ describe("consumePack", () => {
     let varint = (n: number): number[] => n < 0x80 ? [n] : [(n & 0x7f) | 0x80, ...varint(n >>> 7)];
     let delta = new Uint8Array([...varint(big.byteLength), 16, 0x90, 16]);
     let body = concatBytes([prefix, new Uint8Array([(7 << 4) | delta.length]),
-      Uint8Array.from(bigOid.match(/../g)!, h => parseInt(h, 16)), deflate(delta)]);
+      Uint8Array.from(bigOid.match(/../g)!, h => parseInt(h, 16)), deflateSync(delta)]);
     let pack = concatBytes([body, new Uint8Array(await crypto.subtle.digest("SHA-1", body))]);
 
     let target = big.subarray(0, 16);
+    let targetOid = await gitObjectOid("blob", target);
     let stored = await new GitCacheImpl(t.cache, G1).consumePack(byteStream(pack));
-    expect(stored).toStrictEqual([await gitObjectOid("blob", target)]);
-    expect(t.cache.readLocalObject(stored[0])!.payload).toStrictEqual(target);
+    expect(stored).toStrictEqual([bigOid, targetOid]);
+    expect(t.storage.gitObjects.get(bigOid)).toHaveProperty("chunks");
+    expect(t.cache.readLocalObject(targetOid)!.payload).toStrictEqual(target);
     expect(t.storage.gitObjectMetadata.get(bigOid)!.size).toBe(big.byteLength);
+
+    // A thin pack of the delta alone, against the base now in storage.
+    let thin = concatBytes([pack.subarray(0, 12), body.subarray(prefix.length)]);
+    new DataView(thin.buffer).setUint32(8, 1);
+    thin = concatBytes([thin, new Uint8Array(await crypto.subtle.digest("SHA-1", thin))]);
+    let u = makeCache();
+    await u.cache.putFromGatekeeper(G1, "blob", big);
+    expect(await u.cache.consumePackFromGatekeeper(G1, byteStream(thin))).toStrictEqual([targetOid]);
   });
 });
 
@@ -1291,20 +1330,21 @@ describe("importObjects", () => {
 // =======================================================================================
 
 describe("lazy walker reads", () => {
-  it("reads files and listings that isomorphic-git wrote (codec cross-verification)", async () => {
+  it("reads files and listings that the local history writers wrote", async () => {
     let t = makeCache();
-    let store = new GitStore(t.storage.gitObjects);
     let files = new Map([
       ["README.md", "# Hello\n"],
       ["src/app.js", "console.log('hi');\n"],
       ["src/lib/util.js", "export const x = 1;\n"],
     ]);
-    let commit = await store.writeFilesAsCommit(files, {
+    let commit = await t.cache.writeFilesAsCommit(files, {
       parents: [],
       author: { name: "Alice Example", email: "alice@example.com" },
       message: "initial commit",
       timestamp: new Date(1700000000_000),
     });
+    // The id isomorphic-git, which once wrote these, wrote for them.
+    expect(commit).toBe("1def0e8e0b443f6fa2b3a9c84f25eb469979ecd1");
 
     for (let [path, text] of files) {
       expect(await t.cache.readFileAtCommit(commit, path)).toBe(text);
@@ -1332,7 +1372,7 @@ describe("lazy walker reads", () => {
         .toBe('export const answer = 42;\nexport const question = "unknown";\n');
     expect(t.pulls).toHaveLength(1);
     expect(t.pulls[0].hints.type).toBe("blob");
-    expect(t.pulls[0].hints.filterBlobSize).toBe(MAX_GIT_OBJECT_SIZE + 1);
+    expect(t.pulls[0].hints.filterBlobSize).toBeUndefined();
 
     // Non-ASCII UTF-8 names resolve.
     expect(await t.cache.readFileAtCommit(COMMIT_1, "docs/naïve.md")).toBe("naïve UTF-8 name\n");
@@ -1427,38 +1467,24 @@ describe("lazy walker reads", () => {
         .rejects.toThrow("logo.png is not a text file");
   });
 
-  it("fails a read of a measured-oversized blob fast, with a path-specific error", async () => {
+  it("pulls a blob that an old oversize rejection measured, like any other", async () => {
     let t = makeCache();
-    let big = new Uint8Array(MAX_GIT_OBJECT_SIZE + 1).fill(0x61);
+    let big = new Uint8Array(9_000_000).fill(0x61);
     let bigOid = await gitObjectOid("blob", big);
-    await t.cache.putFromGatekeeper(G1, "blob", big).catch(() => {});  // records the measurement
-    let tree = await storeLocal(t.storage, {
-      type: "tree",
-      payload: treePayload([{ mode: "100644", name: "huge.txt", oid: bigOid }]),
+    // A metadata row as a rejected put used to leave it: measured, proven, but not stored.
+    t.storage.gitObjectMetadata.put({
+      oid: bigOid, type: "blob", size: big.byteLength, onRemote: [G1], pullableFrom: [],
+      pendingPush: [],
     });
-    let commit = await storeLocal(t.storage,
-        { type: "commit", payload: commitPayload(tree, [], "huge") });
-    await expect(t.cache.readFileAtCommit(commit, "huge.txt"))
-        .rejects.toThrow(/huge\.txt is too large to read/);
-    expect(t.pulls).toHaveLength(0);
-  });
-
-  it("reads a blob over the gatekeeper cap that the store holds: limits apply only to writes",
-      async () => {
-    let t = makeCache();
-    let text = "a".repeat(MAX_GIT_OBJECT_SIZE + 1);
-    let big = await storeLocal(t.storage, { type: "blob", payload: new TextEncoder().encode(text) });
-    let tree = await storeLocal(t.storage, {
-      type: "tree",
-      payload: treePayload([{ mode: "100644", name: "huge.txt", oid: big }]),
+    t.sources.set(G1, async (oids, hints) => {
+      expect(oids).toStrictEqual([bigOid]);
+      expect(hints.filterBlobSize).toBeUndefined();
+      let pack = concatBytes(await buildPackBytes([{ type: "blob", payload: big }]));
+      await t.cache.consumePackFromGatekeeper(G1, byteStream(pack, 65536));
     });
-    let commit = await storeLocal(t.storage,
-        { type: "commit", payload: commitPayload(tree, [], "huge") });
-    expect(await t.cache.readFileAtCommit(commit, "huge.txt")).toBe(text);
-    expect(await t.cache.readTextBlob(big, undefined, "huge.txt")).toBe(text);
-    expect(await t.cache.readFilesAtCommit(commit, ["huge.txt"]))
-        .toEqual([["huge.txt", { kind: "text", text }]]);
-    expect(t.pulls).toHaveLength(0);
+    let commit = await commitWithFile(t, "huge.txt", bigOid);
+    expect(await t.cache.readFileAtCommit(commit, "huge.txt")).toBe("a".repeat(big.byteLength));
+    expect(t.pulls).toHaveLength(1);
   });
 
   it("fails parsing a tree with a non-UTF-8 entry name, naming the tree", async () => {
@@ -1553,55 +1579,46 @@ describe("client-facing reads (readCommitTree / readFilesAtCommit)", () => {
     expect(t.pulls).toHaveLength(2);
   });
 
-  it("reports binary and oversized content per file, tolerating oversized blobs in the batch",
-      async () => {
+  it("reports binary content per file, and streams a large file's bytes", async () => {
     let t = makeCache();
-    // Three blobs: one measured oversized (a rejected put recorded its size), one the source
-    // omits under the pull's filter (never measured), one ordinary; plus a binary one.
-    let measured = new Uint8Array(MAX_GIT_OBJECT_SIZE + 1).fill(0x61);
-    let measuredOid = await t.cache.putFromGatekeeper(G1, "blob", measured).catch(
-        (err: GitObjectTooLargeError) => err.oid);
-    let omitted = new Uint8Array(MAX_GIT_OBJECT_SIZE + 1).fill(0x62);
-    let omittedOid = await gitObjectOid("blob", omitted);
+    let huge = new Uint8Array(9_000_000).fill(0x61);
+    let hugeOid = await gitObjectOid("blob", huge);
     let text = new TextEncoder().encode("hello\n");
     let textOid = await gitObjectOid("blob", text);
     let binary = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]);
     let binaryOid = await gitObjectOid("blob", binary);
     t.sources.set(G1, async (oids, hints) => {
+      expect(hints.filterBlobSize).toBeUndefined();
       for (let oid of oids) {
-        let payload = oid === omittedOid ? omitted : oid === textOid ? text
+        let payload = oid === hugeOid ? huge : oid === textOid ? text
             : oid === binaryOid ? binary : undefined;
         if (payload === undefined) throw new Error(`test: unexpected want ${oid}`);
-        if (hints.filterBlobSize !== undefined && payload.byteLength >= hints.filterBlobSize) {
-          continue;
-        }
         await t.cache.putFromGatekeeper(G1, "blob", payload);
       }
     });
     let tree = await t.cache.putFromGatekeeper(G1, "tree", treePayload([
       { mode: "100644", name: "binary.png", oid: binaryOid },
-      { mode: "100644", name: "huge-measured.txt", oid: measuredOid },
-      { mode: "100644", name: "huge-omitted.txt", oid: omittedOid },
+      { mode: "100644", name: "huge.txt", oid: hugeOid },
       { mode: "100644", name: "text.txt", oid: textOid },
     ]));
     let commit = await t.cache.putFromGatekeeper(G1, "commit", commitPayload(tree, [], "mixed"));
     t.pulls.length = 0;
 
-    let result = await t.cache.readFilesAtCommit(
-        commit, ["huge-measured.txt", "text.txt", "huge-omitted.txt", "binary.png"]);
-    expect(result).toStrictEqual([
-      ["huge-measured.txt", { kind: "unreadable", message:
-          `huge-measured.txt is too large to read (over ${MAX_GIT_OBJECT_SIZE} bytes)` }],
+    // Last, as the response budget stops at it.
+    let result = await t.cache.readFilesAtCommit(commit, ["text.txt", "binary.png", "huge.txt"]);
+    expect(result.slice(0, 2)).toStrictEqual([
       ["text.txt", { kind: "text", text: "hello\n" }],
-      ["huge-omitted.txt", { kind: "unreadable", message:
-          `huge-omitted.txt is too large to read (over ${MAX_GIT_OBJECT_SIZE} bytes)` }],
       ["binary.png", { kind: "unreadable", message: "binary.png is not a text file" }],
     ]);
-    // The measured blob failed fast before any pull; the omitted one dropped out of the one
-    // batch that did go out, and the rest were local after it -- no retry round trip.
+    let [path, file] = result[2];
+    expect(path).toBe("huge.txt");
+    if (file.kind !== "stream") throw new Error(`expected a stream, got ${file.kind}`);
+    expect(file.byteLength).toBe(huge.byteLength);
+    expect(sameBytes(await contentBytes(file.content), huge)).toBe(true);
+    // One batch, no retry round trip.
     expect(t.pulls).toHaveLength(1);
     expect([...t.pulls[0].oids].toSorted())
-        .toStrictEqual([omittedOid, textOid, binaryOid].toSorted());
+        .toStrictEqual([hugeOid, textOid, binaryOid].toSorted());
   });
 
   it("stops after the response budget, omitting the rest for the client to re-request",
@@ -1625,6 +1642,39 @@ describe("client-facing reads (readCommitTree / readFilesAtCommit)", () => {
     expect(result.every(([, file]) =>
         file.kind === "text" && file.text.length === FILE_SIZE)).toBe(true);
     expect(t.pulls).toHaveLength(0);
+  });
+
+  it("streams a file just over MAX_BUFFERED_BLOB_SIZE, outside the response budget",
+      async () => {
+    let t = makeCache();
+    let exact = new Uint8Array(MAX_BUFFERED_BLOB_SIZE).fill(0x62);
+    let over = new Uint8Array(MAX_BUFFERED_BLOB_SIZE + 1).fill(0x63);
+    over[0] = 0;  // not text, but streams carry bytes unchecked
+    let exactOid = await storeLocal(t.storage, { type: "blob", payload: exact });
+    let overOid = await storeLocal(t.storage, { type: "blob", payload: over });
+    // Eight buffered files fill the budget exactly, so a ninth would be the last one answered;
+    // the streamed ones in between do not count.
+    let entries = [
+      ...Array.from({ length: 8 }, (_, i) => ({ mode: "100644" as const, name: `a${i}`, oid: exactOid })),
+      ...Array.from({ length: 4 }, (_, i) => ({ mode: "100644" as const, name: `b${i}`, oid: overOid })),
+      { mode: "100644" as const, name: "c", oid: exactOid },
+      { mode: "100644" as const, name: "d", oid: exactOid },
+    ];
+    let tree = await storeLocal(t.storage, { type: "tree", payload: treePayload(entries) });
+    let commit = await storeLocal(t.storage,
+        { type: "commit", payload: commitPayload(tree, [], "sizes") });
+    let names = entries.map(entry => entry.name);
+    let result = await t.cache.readFilesAtCommit(commit, names);
+    expect(result.map(([path, file]) => [path, file.kind])).toStrictEqual([
+      ...names.slice(0, 8).map(name => [name, "text"]),
+      ...names.slice(8, 12).map(name => [name, "stream"]),
+      ["c", "text"],
+    ]);
+    for (let [, file] of result.slice(8, 12)) {
+      if (file.kind !== "stream") throw new Error("expected a stream");
+      expect(file.byteLength).toBe(over.length);
+      expect(sameBytes(await contentBytes(file.content), over)).toBe(true);
+    }
   });
 
   it("fails the whole call on a pull failure rather than answering per file", async () => {
@@ -1782,11 +1832,10 @@ describe("worktree read/write helpers", () => {
     await t.cache.assertWorktreePathWritable(COMMIT_1, "src/brand-new.txt");
   });
 
-  it("assertWorktreePathWritable passes an oversized base blob (a set needs no readable base)",
+  it("assertWorktreePathWritable passes a base blob it never reads (a set needs no base)",
       async () => {
     let t = makeCache();
-    let big = new Uint8Array(MAX_GIT_OBJECT_SIZE + 1).fill(0x61);
-    let bigOid = await gitObjectOid("blob", big);
+    let bigOid = "b".repeat(40);
     let tree = await storeLocal(t.storage, {
       type: "tree",
       payload: treePayload([{ mode: "100644", name: "huge.txt", oid: bigOid }]),
@@ -1816,5 +1865,311 @@ describe("resolveCommitId", () => {
     }
     expect(() => t.cache.resolveCommitId("feed".repeat(10))).toThrow(/not known/);
     expect(() => t.cache.resolveCommitId(tree)).toThrow(`${tree} is a tree, not a commit.`);
+  });
+});
+
+// Deterministic pseudo-random bytes (xorshift32, top byte of each state).
+function randomBytes(size: number, seed: number): Uint8Array {
+  let out = new Uint8Array(size);
+  let s = seed >>> 0;
+  for (let i = 0; i < size; i++) {
+    s ^= s << 13;
+    s >>>= 0;
+    s ^= s >>> 17;
+    s ^= s << 5;
+    s >>>= 0;
+    out[i] = s >>> 24;
+  }
+  return out;
+}
+
+async function contentBytes(content: Uint8Array | ReadableStream<Uint8Array>)
+    : Promise<Uint8Array> {
+  if (content instanceof Uint8Array) return content;
+  return new Uint8Array(await new Response(content).arrayBuffer());
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  return Buffer.from(a.buffer, a.byteOffset, a.byteLength)
+      .equals(Buffer.from(b.buffer, b.byteOffset, b.byteLength));
+}
+
+function chunksOf(t: TestCache, oid: GitOid): GitOid[] {
+  let record = t.storage.gitObjects.get(oid);
+  if (record === undefined || !("chunks" in record)) throw new Error(`${oid} is not chunked`);
+  return record.chunks.map(chunk => chunk.oid);
+}
+
+// A commit whose tree holds one file, `name`, with the given blob.
+async function commitWithFile(t: TestCache, name: string, blob: GitOid): Promise<GitOid> {
+  let tree = await storeLocal(t.storage, {
+    type: "tree",
+    payload: treePayload([{ mode: "100644", name, oid: blob }]),
+  });
+  return await storeLocal(t.storage, { type: "commit", payload: commitPayload(tree, [], name) });
+}
+
+describe("chunked blob storage", () => {
+  const MiB = 1024 * 1024;
+
+  // A stream of `data` in pieces of `piece` bytes, plus whether it was cancelled.
+  function streamOf(data: Uint8Array, piece: number) {
+    let state = { cancelled: false };
+    let pos = 0;
+    let stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pos >= data.length) controller.close();
+        else controller.enqueue(data.slice(pos, pos += piece));
+      },
+      cancel() { state.cancelled = true; },
+    });
+    return { stream, state };
+  }
+
+  it("writes a stream as the same blob writeBlob writes, with or without its length",
+      async () => {
+    for (let size of [0, 10, CHUNK_MAX_SIZE, CHUNK_MAX_SIZE + 1, 7 * MiB + 3]) {
+      let t = makeCache();
+      let data = randomBytes(size, size);
+      let expected = { oid: await gitObjectOid("blob", data), byteLength: size };
+      expect(await t.cache.writeBlobStream(streamOf(data, 333_333).stream, size)).toEqual(expected);
+      expect(await t.cache.writeBlobStream(streamOf(data, 1_000_003).stream)).toEqual(expected);
+      expect(await t.cache.writeBlob(data)).toEqual(expected);
+      expect(sameBytes(t.cache.readBlob(expected.oid, size), data)).toBe(true);
+      expect(t.storage.gitObjects.get(expected.oid) !== undefined &&
+          "chunks" in t.storage.gitObjects.get(expected.oid)!).toBe(size > CHUNK_MAX_SIZE);
+    }
+  });
+
+  it("fails a stream that ends short of or runs past its length, storing no blob", async () => {
+    let t = makeCache();
+    let data = randomBytes(3 * MiB, 4);
+    let oid = await gitObjectOid("blob", data);
+    await expect(t.cache.writeBlobStream(streamOf(data, 100_000).stream, data.length + 1))
+        .rejects.toThrow("smaller than its declared size");
+    let long = streamOf(data, 100_000);
+    await expect(t.cache.writeBlobStream(long.stream, MiB))
+        .rejects.toThrow("larger than its declared size");
+    expect(long.state.cancelled).toBe(true);  // read no further than the overrun
+    expect(t.cache.hasLocalObject(oid)).toBe(false);
+  });
+
+  it("opens a file at a commit for reading in pieces, with the path rules of a text read",
+      async () => {
+    let t = makeCache();
+    let data = randomBytes(3 * MiB, 5);
+    data[17] = 0;  // binary: no content rule applies
+    let blob = await storeLocal(t.storage, { type: "blob", payload: data });
+    let commit = await commitWithFile(t, "big.bin", blob);
+    let opened = (await t.cache.openFileAtCommit(commit, "big.bin"))!;
+    expect(opened.oid).toBe(blob);
+    expect(sameBytes(opened.reader.read(MiB, 10), data.subarray(MiB, MiB + 10))).toBe(true);
+    expect(await t.cache.openFileAtCommit(commit, "nope")).toBeUndefined();
+    await expect(t.cache.readFileAtCommitWithOid(commit, "big.bin"))
+        .rejects.toThrow("big.bin is not a text file");
+    expect((await t.cache.openBlob(blob)).size).toBe(data.length);
+  });
+
+  it("writes a repeated large blob once, and shares chunks between edited versions", async () => {
+    let t = makeCache();
+    let data = randomBytes(6 * MiB, 1);
+    let ref = await t.cache.writeBlob(data);
+    let chunks = chunksOf(t, ref.oid);
+    expect(chunks.length).toBeGreaterThan(10);
+    let rows = [...t.storage.gitObjects.list()].length;
+    expect(rows).toBe(new Set(chunks).size + 1);
+
+    let puts = countPuts(t);
+    expect(await t.cache.writeBlob(data)).toEqual(ref);
+    expect(puts.count).toBe(0);
+
+    let mid = 3 * MiB + 777;
+    let edited = concatBytes([data.subarray(0, mid), randomBytes(100, 2), data.subarray(mid)]);
+    let editedRef = await t.cache.writeBlob(edited);
+    let shared = chunksOf(t, editedRef.oid).filter(oid => chunks.includes(oid)).length;
+    expect(shared).toBeGreaterThanOrEqual(chunksOf(t, editedRef.oid).length - 3);
+    expect(puts.count).toBeLessThanOrEqual(4);  // at most 3 new chunks, plus the index row
+    expect(sameBytes(t.cache.readBlob(editedRef.oid), edited)).toBe(true);
+  });
+
+  it("reads a legacy 8 MB inline row whole and in pieces", async () => {
+    let t = makeCache();
+    let data = randomBytes(8_000_000, 3);
+    let oid = await storeLocal(t.storage, { type: "blob", payload: data });
+    expect(t.storage.gitObjects.get(oid)).toHaveProperty("data");
+    expect(sameBytes(t.cache.readLocalObject(oid)!.payload, data)).toBe(true);
+    let reader = t.cache.openLocalBlob(oid)!;
+    expect(reader.size).toBe(data.length);
+    expect(sameBytes(reader.read(5_000_000, 1000), data.subarray(5_000_000, 5_001_000)))
+        .toBe(true);
+    expect(t.cache.blobSize(oid)).toBe(data.length);
+    expect(t.cache.localObjectType(oid)).toBe("blob");
+  });
+
+  it("reads a legacy inline blob over 8 MB whole: stored data is readable", async () => {
+    let t = makeCache();
+    // Compressible, so it fit one row before chunking existed.
+    let text = "a".repeat(8_000_001);
+    let data = new TextEncoder().encode(text);
+    let oid = await storeLocal(t.storage, { type: "blob", payload: data });
+    expect(t.storage.gitObjects.get(oid)).toHaveProperty("data");
+    expect(t.cache.readLocalObject(oid)!.payload.byteLength).toBe(data.length);
+    expect(t.cache.readBlob(oid, data.length).byteLength).toBe(data.length);
+    expect(t.cache.blobSize(oid)).toBe(data.length);
+
+    let commit = await commitWithFile(t, "big.txt", oid);
+    expect(await t.cache.readFileAtCommit(commit, "big.txt")).toBe(text);
+    expect(await t.cache.readTextBlob(oid, undefined, "big.txt")).toBe(text);
+    let [[, file]] = await t.cache.readFilesAtCommit(commit, ["big.txt"]);
+    if (file.kind !== "stream") throw new Error(`expected a stream, got ${file.kind}`);
+    expect(sameBytes(await contentBytes(file.content), data)).toBe(true);
+    expect(await t.cache.fileBytesAtCommit(commit, "big.txt"))
+        .toEqual({ oid, byteLength: data.length });
+    expect(t.pulls).toHaveLength(0);
+  });
+
+  it("reads a large chunked blob whole and in pieces, and walks past it without reading it",
+      async () => {
+    let t = makeCache();
+    let data = randomBytes(9 * MiB, 4);
+    let { oid } = await t.cache.writeBlob(data);
+    expect(sameBytes(t.cache.readLocalObject(oid)!.payload, data)).toBe(true);
+    expect(t.cache.hasLocalObject(oid)).toBe(true);
+    expect(t.cache.localObjectType(oid)).toBe("blob");
+    expect(t.cache.blobSize(oid)).toBe(data.length);
+
+    let commit = await commitWithFile(t, "big.bin", oid);
+    expect(await t.cache.readFileAtCommit(commit, "big.bin")
+        .catch((err: Error) => err.message)).toBe("big.bin is not a text file");
+    expect(await t.cache.fileBytesAtCommit(commit, "big.bin"))
+        .toEqual({ oid, byteLength: data.length });
+
+    // Walks over arbitrary oids see it as a blob without assembling it.
+    let get = t.storage.gitObjects.get.bind(t.storage.gitObjects);
+    let chunkReads = 0;
+    let chunks = new Set(chunksOf(t, oid));
+    t.storage.gitObjects.get = key => {
+      if (chunks.has(key)) chunkReads++;
+      return get(key);
+    };
+    expect(() => t.cache.resolveCommitId(oid)).toThrow(`${oid} is a blob, not a commit.`);
+    expect(() => t.cache.isAncestor(commit, oid)).toThrow(/not a commit/);
+    expect(t.cache.isAncestor(oid, commit)).toBe(false);
+    await expect(t.cache.ensureObject(oid, { type: "tree" })).rejects.toThrow(/is a blob/);
+    expect(t.cache.blobSize(oid)).toBe(data.length);
+    expect(chunkReads).toBe(0);
+  });
+
+  it("marks a commit holding a large blob for push without throwing, and no chunk", async () => {
+    let t = makeCache();
+    let data = randomBytes(3 * MiB, 5);
+    let ref = await t.cache.writeBlob(data);
+    let commit = await t.cache.writeFilesAsCommit(new Map([["big.bin", ref]]), {
+      parents: [], author: { name: "A", email: "a@b" }, message: "m", timestamp: new Date(0),
+    });
+    t.cache.markPushClosure(G2, ACTION, [commit]);
+    let marks = listMarks(t.storage, ACTION);
+    expect(marks).toContain(ref.oid);
+    expect(marks).toHaveLength(3);  // the commit, its tree, the blob
+    for (let chunk of chunksOf(t, ref.oid)) {
+      expect(t.storage.gitObjectMetadata.get(chunk)).toBeUndefined();
+    }
+  });
+
+  it("serves a gatekeeper's chunked blob, but never its chunks", async () => {
+    let t = makeCache();
+    let data = randomBytes(3 * MiB, 6);
+    let stub = new GitCacheImpl(t.cache, G1);
+    let oid = await stub.put("blob", data);
+    expect(t.storage.gitObjects.get(oid)).toHaveProperty("chunks");
+    expect(sameBytes(await contentBytes((await stub.get(oid))!.content), data)).toBe(true);
+    expect(await stub.has(oid)).toBe(true);
+    expect(await stub.stat(oid)).toEqual({ type: "blob", size: data.length });
+    for (let chunk of chunksOf(t, oid)) {
+      expect(t.cache.hasLocalObject(chunk)).toBe(true);
+      expect(await stub.get(chunk)).toBeNull();
+      expect(await stub.has(chunk)).toBe(false);
+      expect(await stub.stat(chunk)).toBeNull();
+      expect(t.storage.gitObjectMetadata.get(chunk)).toBeUndefined();
+    }
+  });
+
+  it("stores a large blob from a pack chunked", async () => {
+    let t = makeCache();
+    let data = randomBytes(3 * MiB, 7);
+    let oid = await gitObjectOid("blob", data);
+    let pack = concatBytes(await buildPackBytes([{ type: "blob", payload: data }]));
+    expect(await t.cache.consumePackFromGatekeeper(G1, byteStream(pack, 65536)))
+        .toStrictEqual([oid]);
+    expect(chunksOf(t, oid).length).toBeGreaterThan(3);
+    expect(sameBytes(t.cache.readBlob(oid, data.length), data)).toBe(true);
+    expect(t.storage.gitObjectMetadata.get(oid)).toMatchObject({ onRemote: [G1], size: data.length });
+  });
+
+  it("streams a pushed chunked blob into the pack without assembling it", async () => {
+    let t = makeCache();
+    let data = randomBytes(5 * MiB, 8);
+    let ref = await t.cache.writeBlob(data);
+    let commit = await t.cache.writeFilesAsCommit(new Map([["big.bin", ref]]), {
+      parents: [], author: { name: "A", email: "a@b" }, message: "m", timestamp: new Date(0),
+    });
+    t.cache.markPushClosure(G2, ACTION, [commit]);
+    let read = vi.spyOn(BlobReader.prototype, "read");
+    let pack = await collect(await new GitCacheImpl(t.cache, G2, ACTION).buildPack());
+    expect(read.mock.calls.filter(([, length]) => length > CHUNK_MAX_SIZE)).toStrictEqual([]);
+    read.mockRestore();
+
+    let u = makeCache();
+    let stored = await u.cache.consumePackFromGatekeeper(G2, byteStream(pack, 65536));
+    expect(new Set(stored)).toStrictEqual(new Set(listMarks(t.storage, ACTION)));
+    expect(stored).toContain(ref.oid);
+    expect(sameBytes(u.cache.readBlob(ref.oid, data.length), data)).toBe(true);
+  });
+
+  it("gets a blob buffered up to MAX_BUFFERED_BLOB_SIZE, and streamed over it", async () => {
+    expect(MAX_BUFFERED_BLOB_SIZE).toBe(CHUNK_MAX_SIZE);
+    let t = makeCache();
+    let stub = new GitCacheImpl(t.cache, G1);
+    let exact = randomBytes(MAX_BUFFERED_BLOB_SIZE, 9);
+    let over = randomBytes(MAX_BUFFERED_BLOB_SIZE + 1, 10);
+    let exactOid = await stub.put("blob", exact);
+    let overOid = await stub.put("blob", over);
+    expect(t.storage.gitObjects.get(overOid)).toHaveProperty("chunks");
+    // A legacy inline row over the size streams too: the rule is by size, not storage form.
+    let legacy = randomBytes(3_000_000, 11);
+    let legacyOid = await storeLocal(t.storage, { type: "blob", payload: legacy });
+    t.storage.gitObjectMetadata.put({ oid: legacyOid, type: "blob", size: legacy.length,
+      onRemote: [G1], pullableFrom: [], pendingPush: [] });
+
+    let exactGot = (await stub.get(exactOid))!;
+    expect(exactGot.content).toBeInstanceOf(Uint8Array);
+    expect(sameBytes(exactGot.content as Uint8Array, exact)).toBe(true);
+    for (let [oid, data] of [[overOid, over], [legacyOid, legacy]] as const) {
+      let got = (await stub.get(oid))!;
+      expect(got.type).toBe("blob");
+      expect(got.content).toBeInstanceOf(ReadableStream);
+      expect(sameBytes(await contentBytes(got.content), data)).toBe(true);
+    }
+  });
+
+  it("answers has() and stat() of a chunked blob without reading its chunks", async () => {
+    let t = makeCache();
+    let data = randomBytes(4 * MiB, 12);
+    let stub = new GitCacheImpl(t.cache, G1);
+    let oid = await stub.put("blob", data);
+    let chunks = new Set(chunksOf(t, oid));
+    let chunkReads = 0;
+    let get = t.storage.gitObjects.get.bind(t.storage.gitObjects);
+    t.storage.gitObjects.get = key => {
+      if (chunks.has(key)) chunkReads++;
+      return get(key);
+    };
+    expect(await stub.has(oid)).toBe(true);
+    expect(await stub.stat(oid)).toEqual({ type: "blob", size: data.length });
+    expect(chunkReads).toBe(0);
+    // A get() hands back a stream, which reads chunks only as it is consumed.
+    let got = (await stub.get(oid))!;
+    expect(chunkReads).toBe(0);
+    await (got.content as ReadableStream<Uint8Array>).cancel();
   });
 });

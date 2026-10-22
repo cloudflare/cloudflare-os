@@ -96,7 +96,7 @@ function addChat(impl: any, id: number): void {
 
 async function commitFiles(
     impl: any, files: Record<string, string>, parents: string[] = []): Promise<string> {
-  return await impl.gitStore.writeFilesAsCommit(new Map(Object.entries(files)), {
+  return await impl.gitCache.writeFilesAsCommit(new Map(Object.entries(files)), {
     parents,
     author: { name: "Alice", email: "alice@example.com" },
     message: "test commit",
@@ -856,11 +856,11 @@ describe("worktree commit head advancements", () => {
 
     // Two explicit commits within one step (as two commit() calls in one executeCode would
     // buffer them): the barrier validates the previousHead chain and applies both in order.
-    let c2 = await impl.gitStore.writeChangedFilesAsCommit(
+    let c2 = await impl.gitCache.writeChangedFilesAsCommit(
         new Map([["a.txt", "two\n"]]),
         { treeBase: c1, parents: [c1], author: { name: "A", email: "a@x" },
           message: "first", timestamp: new Date(1700000000_000) });
-    let c3 = await impl.gitStore.writeChangedFilesAsCommit(
+    let c3 = await impl.gitCache.writeChangedFilesAsCommit(
         new Map([["a.txt", "three\n"]]),
         { treeBase: c1, parents: [c2], author: { name: "A", email: "a@x" },
           message: "second", timestamp: new Date(1700000001_000) });
@@ -989,7 +989,7 @@ describe("epoch reset advances the accepted commit", () => {
     expect(await impl.readFileAtCommit(record.pinBase, "a.txt")).toBe("one!\n");
     expect(await impl.readFileAtCommit(record.pinBase, "new.txt")).toBe("fresh\n");
     expect(await impl.readFileAtCommit(record.pinBase, "src/b.txt")).toBeUndefined();
-    let [autoCommit] = await impl.gitStore.readCommitLog(record.pinBase, { depth: 1 });
+    let [autoCommit] = impl.gitCache.readCommitLog(record.pinBase, { depth: 1 });
     expect(autoCommit.parents).toEqual([c1]);
     expect(autoCommit.author.name).toBe(USER.name);
 
@@ -1063,7 +1063,7 @@ describe("epoch reset advances the accepted commit", () => {
     // commit() would): the accept's flatten equals the head's tree, so the accepted commit
     // becomes the head instead of a new auto-commit.
     await barrier(impl, 1, { changes: [{ change: editChange(id, "a.txt", "one\n", "one!\n") }]});
-    let c2 = await impl.gitStore.writeChangedFilesAsCommit(
+    let c2 = await impl.gitCache.writeChangedFilesAsCommit(
         new Map([["a.txt", "one!\n"]]),
         { treeBase: c1, parents: [c1], author: { name: "A", email: "a@x" },
           message: "explicit", timestamp: new Date(1700000002_000) });
@@ -1091,11 +1091,11 @@ describe("epoch reset advances the accepted commit", () => {
 
     // An explicit commit built the way commit() builds one -- tree from pinBase + (empty)
     // overlay, parent on the last explicit head -- skips both auto-commits in its ancestry.
-    let explicit = await impl.gitStore.writeChangedFilesAsCommit(
+    let explicit = await impl.gitCache.writeChangedFilesAsCommit(
         new Map(), { treeBase: record.pinBase, parents: [record.headCommit],
                      author: { name: "A", email: "a@x" }, message: "explicit",
                      timestamp: new Date(1700000003_000) });
-    let [info] = await impl.gitStore.readCommitLog(explicit, { depth: 1 });
+    let [info] = impl.gitCache.readCommitLog(explicit, { depth: 1 });
     expect(info.parents).toEqual([c1]);
     expect(await impl.readFileAtCommit(explicit, "a.txt")).toBe("three\n");
   }));

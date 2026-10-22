@@ -1108,12 +1108,13 @@ export interface Gatekeeper<Session> extends DurableObject {
    * also reports the terminal status: Workers RPC can replace a stream's original exception with
    * a generic disconnect, so consumers must check `status()` after ingestion fails to recover
    * the producer's error. After draining the stream, require `complete` before accepting the
-   * transfer. Dispose the capability when finished. A requested blob suppressed by
-   * `filterBlobSize` may be omitted; cache ingestion surfaces that as an oversized-file error.
+   * transfer. Dispose the capability when finished. A filter may omit objects only beyond those
+   * requested: the overseer requests an exact blob with no `filterBlobSize`, and stores blobs of
+   * any size.
    *
    * With no filters, the pack must contain the complete trees and blobs for the requested
    * commits. This supports native Git hydration as well as lazy cache population. Consumers own
-   * their storage/transfer limits: a full checkout must not inherit the DO cache's size limit.
+   * their storage/transfer limits.
    *
    * If the gatekeeper ever uses `GitCache`, it MUST implement `gitPull()`. Otherwise, it can leave
    * the method unimplemented.
@@ -1767,6 +1768,17 @@ export type GitOid = string;
 export type GitObjectType = "commit" | "tree" | "blob" | "tag";
 
 /**
+ * The size, in bytes, above which an RPC that can return a git object's (or file's) content
+ * either whole or as a stream returns a stream: `GitCache.get()` returns a `Uint8Array` for an
+ * object of at most this many bytes, and a `ReadableStream` for a larger one.
+ *
+ * This is a choice of representation, not a storage limit: no object is refused for its size.
+ * It equals the workspace store's chunk size, so a buffered answer is never more than one stored
+ * row's worth.
+ */
+export const MAX_BUFFERED_BLOB_SIZE = 1024 * 1024;
+
+/**
  * Interface to the workspace's git object cache, as exposed to one gatekeeper.
  *
  * Each workspace maintains a cache of git objects, i.e. commits and their file trees. This cache
@@ -1811,7 +1823,12 @@ export interface GitCache extends RpcTarget {
    * gatekeeper's view (see the interface doc for the view rules).
    *
    * `content` is strictly the object payload. It does NOT include the `<type> <size>\0` header,
-   * even though that header is included in the hash.
+   * even though that header is included in the hash. It is a `Uint8Array` iff the object's size
+   * is at most `MAX_BUFFERED_BLOB_SIZE` (1 MiB); otherwise a byte stream of the payload, which the
+   * caller must consume or cancel. The rule is by size, not type: trees and commits are buffered
+   * in practice, but a tree of a very large directory can exceed the limit, so a caller narrows
+   * with `instanceof Uint8Array` whatever it fetches. A caller that has no use for a large object
+   * cancels the stream.
    *
    * An object that is pending push to this gatekeeper but not locally cached is pulled through
    * from its recorded source on demand, so a queued cross-remote push can be simulated as if it
@@ -1821,7 +1838,8 @@ export interface GitCache extends RpcTarget {
    * related objects up front rather than faulting once per `get()`. When omitted, the pull
    * requests exactly this object, with its type taken from recorded metadata.
    */
-  get(id: GitOid, hints?: GitPullHints): Promise<{type: GitObjectType, content: Uint8Array} | null>;
+  get(id: GitOid, hints?: GitPullHints)
+      : Promise<{type: GitObjectType, content: Uint8Array | ReadableStream<Uint8Array>} | null>;
 
   /** Return whether the given object exists, under the same scoped view as `get()`. */
   has(id: GitOid): Promise<boolean>;
@@ -1833,7 +1851,8 @@ export interface GitCache extends RpcTarget {
   stat(id: GitOid): Promise<{type: GitObjectType, size: number} | null>;
 
   /**
-   * Add an object to cache. Returns the computed oid.
+   * Add an object to cache. Returns the computed oid. There is no size limit, but the object
+   * travels whole in one RPC message.
    *
    * As with `get()`, the `content` must NOT include the `<type> <size>\0` header.
    *
@@ -1874,8 +1893,8 @@ export interface GitCache extends RpcTarget {
 
   /**
    * Consumes a standard git packfile, storing each object in it as `put()` would, and returns
-   * the oids of those now in the cache. An object too large to store is measured and left out of
-   * the result rather than thrown on; the kernel uses this to recognize oversized-file reads.
+   * the oids of those now in the cache: every object the pack carries, of any size. Large blobs
+   * are stored as they stream in, never held whole.
    *
    * The pack is decoded in one pass, so a delta must follow its base, as in every pack
    * `git upload-pack` sends. Objects are stored as the pack streams in, and its commits last,

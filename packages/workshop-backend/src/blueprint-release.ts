@@ -34,6 +34,7 @@ import {
   encodeGitCommit,
   encodeGitTree,
   gitObjectOid,
+  isReservedTreeEntryName,
   parseGitCommitRefs,
   parseGitTree,
   readGitCommitHeader,
@@ -167,7 +168,7 @@ async function addObject(objects: GitObjectMap, type: GitObjectType, payload: Ui
 }
 
 // Adds the tree for a `path -> text` map, and everything beneath it, returning the tree's oid:
-// the same tree GitStore.writeFilesAsCommit() writes for those files.
+// the same tree WorkspaceGitCache.writeFilesAsCommit() writes for those files.
 async function addFileTree(objects: GitObjectMap, files: ReadonlyMap<string, string>):
     Promise<GitOid> {
   let entries: GitTreeEntry[] = [];
@@ -244,12 +245,14 @@ const COMMIT_SHAPE = new RegExp(
  * - The release's tree is complete. Any other commit's tree is complete or absent, where absent
  *   means its root tree object is.
  * - Every tree is in the form `encodeGitTree()` writes, and holds only subtrees and mode-100644
- *   blobs under names `GitStore` can read back. Every blob is UTF-8 text, at a path of at most
+ *   blobs, under names that the workspace's git store would write (none that
+ *   `isReservedTreeEntryName()` refuses). Every blob is UTF-8 text, at a path of at most
  *   `MAX_FILE_PATH_LENGTH`.
  * - There is no object besides these.
  *
- * Together these make every file the objects describe readable by `GitStore.readCommitFiles()`
- * and editable by a code change, and every commit readable by `GitStore.readCommitLog()`. The
+ * Together these make every file the objects describe readable by
+ * `WorkspaceGitCache.readCommitFiles()` and editable by a code change, and every commit readable
+ * by `WorkspaceGitCache.readCommitLog()`. The
  * keys are trusted to be each object's true oid.
  */
 export function validateReleaseObjects(
@@ -305,7 +308,7 @@ export function validateReleaseObjects(
     for (let { mode, name, oid: child } of entries) {
       // First, because it bounds both the name the next check scans and how deep this recurses.
       if (prefix + name.length > MAX_FILE_PATH_LENGTH) throw invalid(pathTooLong);
-      if (!isReadableName(name)) {
+      if (isReservedTreeEntryName(name)) {
         throw invalid(`tree ${oid} holds the reserved name ${JSON.stringify(name)}`);
       }
       if (mode === "40000") {
@@ -349,17 +352,6 @@ function isCanonicalTree(entries: GitTreeEntry[], payload: Uint8Array): boolean 
   }
   return canonical.byteLength === payload.byteLength &&
       canonical.every((byte, index) => byte === payload[index]);
-}
-
-// Whether GitStore can read a tree holding this name. It reads through isomorphic-git, which
-// refuses, as git's own verify_path() does, a name containing a backslash or one that some
-// filesystem would resolve to `.`, `..` or `.git`: ignoring case, HFS+'s ignorable characters,
-// NTFS's trailing dots and spaces, its `:stream` suffixes and its `git~1` short names.
-function isReadableName(name: string): boolean {
-  let hfs = name.replace(/[\u200C-\u200F\u202A-\u202E\u206A-\u206F\uFEFF]/g, "");
-  let ntfs = hfs.split(":")[0].toLowerCase().replace(/[. ]+$/, "");
-  return !(name.includes("\\") || hfs === "." || hfs === ".." || ntfs === ".git" ||
-      /^\.?git~[1-9]$/.test(ntfs));
 }
 
 // =======================================================================================

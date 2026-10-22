@@ -44,7 +44,7 @@ async function openGit(impl: any): Promise<GitImpl> {
 }
 
 async function commitFiles(impl: any, files: Record<string, string>): Promise<string> {
-  return await impl.gitStore.writeFilesAsCommit(new Map(Object.entries(files)), {
+  return await impl.gitCache.writeFilesAsCommit(new Map(Object.entries(files)), {
     parents: [],
     author: { name: "Alice", email: "alice@example.com" },
     message: "test commit",
@@ -130,7 +130,7 @@ describe("env.GIT worktrees", () => {
     expect(await other.readFile("b.txt")).toBe("bee\n");
 
     let commit = await worktree.commit("first");
-    let [info] = await impl.gitStore.readCommitLog(commit, { depth: 1 });
+    let [info] = impl.gitCache.readCommitLog(commit, { depth: 1 });
     expect(info.parents).toEqual([c1]);
     expect(info.message).toBe("first\n");
     // Gadget callers commit as a spawned agent would: the workspace, under the owner's id.
@@ -141,7 +141,7 @@ describe("env.GIT worktrees", () => {
     // The head advances, so the next commit parents on the last one.
     await worktree.writeFile("a.txt", "two\n");
     let second = await worktree.commit("second");
-    expect((await impl.gitStore.readCommitLog(second, { depth: 1 }))[0].parents)
+    expect(impl.gitCache.readCommitLog(second, { depth: 1 })[0].parents)
         .toEqual([commit]);
 
     // The commit id is the durable handle: a fresh worktree picks up where this one left off.
@@ -184,7 +184,7 @@ describe("env.GIT worktrees", () => {
 
     let commit = await worktree.commit("gadget commit");
     expect(lookups).toBe(1);
-    expect((await impl.gitStore.readCommitLog(commit, { depth: 1 }))[0].author)
+    expect(impl.gitCache.readCommitLog(commit, { depth: 1 })[0].author)
         .toEqual({ name: "My Workspace", email: "owner@commits.example" });
   }, { type: "user", id: OWNER, name: "Owner", commitEmail: "owner@commits.example" }));
 
@@ -194,7 +194,7 @@ describe("env.GIT worktrees", () => {
       let git: GitImpl = await impl.startGatekeeperSession({ type: "git" }, caller);
       let worktree = await git.newWorktree(c1);
       let commit = await worktree.commit("agent commit");
-      return (await impl.gitStore.readCommitLog(commit, { depth: 1 }))[0].author;
+      return impl.gitCache.readCommitLog(commit, { depth: 1 })[0].author;
     };
 
     // Opened while an executeCode run is in progress: the identity the chat's own worktree
@@ -312,13 +312,13 @@ describe("env.GIT readCommit", () => {
     pulls = [];
     let worktree = await git.newWorktree(COMMIT_2);
     let commit = await worktree.commit("untouched");
-    expect(await impl.gitStore.commitTree(commit)).toBe(await impl.gitStore.commitTree(COMMIT_2));
+    expect(impl.gitCache.commitTree(commit)).toBe(impl.gitCache.commitTree(COMMIT_2));
     expect(pulls).toEqual([]);
   }));
 
   it("rejects commits the workspace doesn't know, and non-commits", () => withImpl(async impl => {
     let c1 = await commitFiles(impl, { "a.txt": "one\n" });
-    let tree: string = await impl.gitStore.commitTree(c1);
+    let tree: string = impl.gitCache.commitTree(c1);
     let git = await openGit(impl);
     await expect(git.readCommit("feed".repeat(10))).rejects.toThrow(/not known/);
     await expect(git.readCommit("main")).rejects.toThrow(/not a full git commit id/);

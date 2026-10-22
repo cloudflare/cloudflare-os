@@ -72,7 +72,7 @@ describe("commit reads over the Overseer interface", () => {
 
 // A parentless commit of the files, through the Overseer's own store.
 async function commitFiles(impl: any, files: Record<string, string>): Promise<string> {
-  return await impl.gitStore.writeFilesAsCommit(new Map(Object.entries(files)), {
+  return await impl.gitCache.writeFilesAsCommit(new Map(Object.entries(files)), {
     parents: [],
     author: { name: "Alice", email: "alice@example.com" },
     message: "test commit",

@@ -1326,16 +1326,13 @@ to keep dependents compiling. PR boundaries to be decided later.
 
 ## Punted / future work (deliberately kept open)
 
-- Eliminate `GitStore` by moving its callers to the new `WorkspaceGitCache`.
-  This will require reproducing isomorphic-git's functions for encoding objects
-  (commits, trees, blobs), but this would not be very hard and it would even let
-  us fix some bugs (isomorphic-git's parsing of trees is lossy when names contain
-  invalid UTF-8; we'd rather error).
+- ~~Eliminate `GitStore` by moving its callers to the new `WorkspaceGitCache`.~~
+  Done: `GitStore` and isomorphic-git are gone from workshop-backend, and every
+  object is encoded and parsed by git-codec.ts.
 - Worktree UI (changes view, diffs) — the OT stream + pins already carry everything
   a future subscription needs.
 - Eviction/GC — `gitObjectMetadata` is the re-pull index; the GC-roots enumeration
-  in git-store.ts gains "worktree `headCommit`/`pinBase`/`baseCommit`" when it
-  happens.
+  in git-cache.ts lists worktree `headCommit`/`pinBase`/`baseCommit`.
 - Binary and >1MB file editing; `putStream()` for large blobs; cross-remote push
   of trees referencing oversized blobs (the apply-time pull-through hits
   `put()`'s size rejection and fails with a clear error until then — same-origin

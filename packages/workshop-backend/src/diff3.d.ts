@@ -1,6 +1,5 @@
-// Minimal typings for the `diff3` package (CJS, untyped): the same tiny diff3 engine
-// isomorphic-git uses internally, consumed directly by git-store.ts's threeWayMerge. Shapes match
-// diff3@0.0.3's diff3Merge() return value.
+// Minimal typings for the `diff3` package (CJS, untyped), consumed by three-way-merge.ts's
+// threeWayMerge. Shapes match diff3@0.0.3's diff3Merge() return value.
 
 declare module "diff3" {
   /** A run of lines that merged cleanly. */

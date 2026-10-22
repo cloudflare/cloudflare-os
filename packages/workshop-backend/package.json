@@ -25,9 +25,7 @@
     "capnweb-validate": "catalog:",
     "diff": "catalog:",
     "diff3": "0.0.3",
-    "isomorphic-git": "^1.43.1",
     "jose": "^6.2.12",
-    "pako": "^3.0.2",
     "yjs": "^13.6.33",
     "zod": "catalog:"
   },
@@ -35,7 +33,6 @@
     "@cloudflare/vitest-plugin": "catalog:",
     "@gadgets/bundled-blueprints": "workspace:*",
     "@gadgets/scripts": "workspace:*",
-    "@types/pako": "^3.0.0",
     "dompurify": "^3.4.16",
     "esbuild": "^0.28.2",
     "typescript": "catalog:",

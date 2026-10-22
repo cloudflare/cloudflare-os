@@ -86,8 +86,17 @@ class TestGitCache extends RpcTarget {
     return ancestor === descendant || this.ancestries.has(`${ancestor}:${descendant}`);
   }
 
+  /** The oids `get()` was asked for: a type-only check must `stat()` instead. */
+  readonly gets: GitOid[] = [];
+
   async get(id: GitOid): Promise<{ type: GitObjectType; content: Uint8Array } | null> {
+    this.gets.push(id);
     return this.objects.get(id) ?? null;
+  }
+
+  async stat(id: GitOid): Promise<{ type: GitObjectType; size: number } | null> {
+    const object = this.objects.get(id);
+    return object === undefined ? null : { type: object.type, size: object.content.length };
   }
 
   async buildPack(): Promise<ReadableStream<Uint8Array>> {
@@ -292,8 +301,12 @@ describe("simulated reads over queued pushes", () => {
     expect(await unwrap(await hooks().isSimulatedCommitId(name, props, HEAD1))).toBe(true);
     expect(await unwrap(await hooks().isSimulatedCommitId(name, props, BASE))).toBe(false);
 
+    // Confirmed by type alone: no get(), whose content (a stream, for a huge commit) would be
+    // left unconsumed.
+    cache.gets.length = 0;
     const resolved = await unwrap(await hooks().resolveRef(name, props, "main", stubOf(cache)));
     expect(resolved).toEqual({ id: HEAD1, fromCache: true });
+    expect(cache.gets).toEqual([]);
     const commit = await unwrap(await hooks().getCommit(name, props, "main", stubOf(cache)));
     expect(commit.fromCache).toBe(true);
     expect(commit.details).toMatchObject({ id: HEAD1, message: "first", parents: [BASE], author: { name: "Ada Lovelace" } });

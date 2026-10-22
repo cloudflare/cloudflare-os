@@ -2,15 +2,13 @@ import {createHash} from "node:crypto";
 import {expect, it, vi} from "vitest";
 import {makeMockStorage} from "./mock-storage";
 import {makeOverseerStorage} from "../src/storage-schema/overseer-storage";
-import {GitStore} from "../src/git-store";
-import {MAX_GIT_OBJECT_SIZE, WorkspaceGitCache} from "../src/git-cache";
+import {WorkspaceGitCache} from "../src/git-cache";
 import {buildPackStream, decodeLooseObject, decodePackStream} from "../src/git-codec";
 
 function fixture() {
   const storage = makeOverseerStorage(makeMockStorage());
-  const git = new GitStore(storage.gitObjects);
   const cache = new WorkspaceGitCache(storage, {async pull() {throw new Error("unexpected pull");}});
-  return {storage, git, cache};
+  return {storage, git: cache, cache};
 }
 const options = {parents: [], author: {name: "Test", email: "test@example.com"},
   message: "files", timestamp: new Date(0)};
@@ -29,27 +27,44 @@ it("stores raw bytes and remote blobs in the same ordinary Git object collection
   expect(git.readBlob(oid, ref.byteLength)).toEqual(bytes);
 });
 
-it("accepts the bounded raw upload limit and rejects larger payloads before storing anything", async () => {
+it("stores a blob of any size, chunked, and reads it back", async () => {
   const {git, storage} = fixture();
-  await expect(git.writeBlob(new Uint8Array(MAX_GIT_OBJECT_SIZE + 1))).rejects.toThrow("too large");
-  expect([...storage.gitObjects.list()]).toEqual([]);
-  const bytes = new Uint8Array(MAX_GIT_OBJECT_SIZE);
+  const bytes = new Uint8Array(20 * 1024 * 1024);
   for (let offset = 0; offset < bytes.length; offset += 65536) {
-    crypto.getRandomValues(bytes.subarray(offset, Math.min(offset + 65536, bytes.length)));
+    crypto.getRandomValues(bytes.subarray(offset, offset + 65536));
   }
   const ref = await git.writeBlob(bytes);
-  expect(ref.byteLength).toBe(MAX_GIT_OBJECT_SIZE);
-  expect(storage.gitObjects.get(ref.oid)!.data.byteLength).toBeLessThan(8 * 1024 * 1024);
-  expect(createHash("sha256").update(git.readBlob(ref.oid)).digest("hex"))
-    .toBe(createHash("sha256").update(bytes).digest("hex"));
+  expect(ref).toEqual({oid: createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex"),
+    byteLength: bytes.length});
+  // An index row plus chunk rows, every one of them far within storage's 8 MiB row cap.
+  const records = [...storage.gitObjects.list()];
+  expect(records.length).toBeGreaterThan(20);
+  for (const record of records) {
+    if ("data" in record) expect(record.data.byteLength).toBeLessThan(1.1 * 1024 * 1024);
+  }
+  expect(storage.gitObjects.get(ref.oid)).toHaveProperty("chunks");
+  expect(git.blobSize(ref.oid)).toBe(bytes.length);
+  const reader = git.openLocalBlob(ref.oid)!;
+  const read = new Uint8Array(reader.size);
+  let filled = 0;
+  for (const piece of reader.pieces()) {
+    read.set(piece, filled);
+    filled += piece.length;
+  }
+  expect(Buffer.from(read).equals(Buffer.from(bytes))).toBe(true);
+  // Reads are never refused for size: the whole blob is assembled.
+  expect(Buffer.from(git.readBlob(ref.oid, bytes.length)).equals(Buffer.from(bytes))).toBe(true);
+  expect(() => git.readBlob(ref.oid, bytes.length + 1)).toThrow("length does not match");
+  git.assertBlob(ref.oid, bytes.length);
+  expect(() => git.assertBlob(ref.oid, 1)).toThrow("length does not match");
 });
 
-it("reports a storage-size failure without publishing a reference, and a retry has the same identity", async () => {
+it("reports a storage failure without publishing a reference, and a retry has the same identity", async () => {
   const {git, storage} = fixture();
   const put = vi.spyOn(storage.gitObjects, "put").mockImplementation(() => {
-    throw new Error("SQLITE_TOOBIG");
+    throw new Error("storage failed");
   });
-  await expect(git.writeBlob(Uint8Array.of(17))).rejects.toThrow("too large");
+  await expect(git.writeBlob(Uint8Array.of(17))).rejects.toThrow("storage failed");
   expect([...storage.gitObjects.list()]).toEqual([]);
   put.mockRestore();
   const ref = await git.writeBlob(Uint8Array.of(17));
@@ -92,12 +107,12 @@ it("decodes UTF-8 blobs by content and preserves old blob contents across replac
   const text = "\ufeffhello😀\n", bytes = new TextEncoder().encode(text);
   const ref = await git.writeBlob(bytes);
   const commit = await git.writeFilesAsCommit(new Map([["a.txt", ref]]), options);
-  expect(await git.readCommitFiles(commit)).toEqual(new Map([["a.txt", text]]));
+  expect(git.readCommitFiles(commit)).toEqual(new Map([["a.txt", text]]));
   expect(await cache.readFileAtCommit(commit, "a.txt")).toBe(text);
   const replacement = await git.writeBlob(Uint8Array.of(0, 255));
   const next = await git.writeChangedFilesAsCommit(new Map([["a.txt", replacement]]),
     {...options, treeBase: commit, parents: [commit]});
-  await expect(git.readCommitFiles(next)).rejects.toThrow("not a text file");
+  expect(() => git.readCommitFiles(next)).toThrow("not a text file");
   expect(git.readBlob(ref.oid)).toEqual(bytes);
   expect(await cache.fileBytesAtCommit(commit, "a.txt")).toEqual(ref);
 });

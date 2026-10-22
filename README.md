@@ -245,5 +245,5 @@ Cloudflare OS has far too many open source dependencies to list here. But, we'd 
 
 * [Pi](https://pi.dev/) (specifically, `pi-agent-core`), which made it easy to support every LLM provider with one API.
 * [CodeMirror](https://codemirror.net/) provides our code editor UI and operational transform implementation for synchronizing real-time edits.
-* [isomorphic-git](https://isomorphic-git.org/) is used to implement the backing storage for Gadget code and integration with external git servers.
+* [isomorphic-git](https://isomorphic-git.org/) lets the Context Library sync documents from external git servers.
 * [Vite](https://vite.dev/), which makes the development loop so pleasant.

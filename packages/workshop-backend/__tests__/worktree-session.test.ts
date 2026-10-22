@@ -9,10 +9,10 @@ import type { OverseerDurableObject } from "../src/overseer.js";
 import { WorktreeSessionImpl, type WorktreeSessionHost } from "../src/worktree-session";
 import type { WorktreeTurnAccess } from "../src/agent";
 import { formatUnifiedDiff } from "../src/agent";
-import { MAX_GIT_OBJECT_SIZE, WorkspaceGitCache } from "../src/git-cache";
-import { GitStore } from "../src/git-store";
+import { WorkspaceGitCache } from "../src/git-cache";
 import { makeOverseerStorage } from "../src/storage-schema/overseer-storage";
-import { concatBytes } from "../src/git-codec";
+import { concatBytes, gitObjectOid } from "../src/git-codec";
+import { CHUNK_MAX_SIZE } from "../src/git-chunked-blob";
 import { makeMockStorage } from "./mock-storage";
 import { COMMIT_1, FIXTURE_OBJECTS, PACKED_OIDS, b64Bytes } from "./git-cache-fixtures";
 // Vite's ?raw import; resolved relative to this file, so the test below can compare the
@@ -149,7 +149,7 @@ async function createWorktreeSession(impl: any, chatId: number, commitId: string
 
 async function commitFiles(
     impl: any, files: Record<string, string>, parents: string[] = []): Promise<string> {
-  return await impl.gitStore.writeFilesAsCommit(new Map(Object.entries(files)), {
+  return await impl.gitCache.writeFilesAsCommit(new Map(Object.entries(files)), {
     parents,
     author: { name: "Alice", email: "alice@example.com" },
     message: "test commit",
@@ -166,11 +166,9 @@ function makeLocalHarness(
   let cache: WorkspaceGitCache = new WorkspaceGitCache(storage, {
     pull: (_gatekeeperId, oids, hints) => pull(cache, oids, hints),
   });
-  let gitStore = new GitStore(storage.gitObjects);
   let session = (pinBase: string): WorktreeSessionImpl => {
     let host: WorktreeSessionHost = {
       gitCache: cache,
-      gitStore,
       getWorktreeRecord: () => ({ headCommit: pinBase }),
     };
     let access: WorktreeTurnAccess = {
@@ -184,8 +182,92 @@ function makeLocalHarness(
     };
     return new WorktreeSessionImpl(host, 5, access, async () => USER);
   };
-  return { cache, gitStore, session };
+  return { cache, session };
 }
+
+// Deterministic bytes with no long repeats, so chunking finds content-defined cuts.
+const pseudoRandom = (size: number, seed: number) => {
+  let out = new Uint8Array(size);
+  for (let i = 0, x = seed; i < size; i++) {
+    x = (Math.imul(x, 1103515245) + 12345) >>> 0;
+    out[i] = x >>> 24;
+  }
+  return out;
+};
+const read = async (stream: ReadableStream<Uint8Array>) => new Uint8Array(await new Response(stream).arrayBuffer());
+// Large arrays compare by Buffer, not by vitest's element-wise deep equality.
+const same = (a: Uint8Array, b: Uint8Array) => Buffer.from(a).equals(Buffer.from(b));
+
+describe("streamed bytes", () => {
+  it("reads a range from the middle of a chunked blob, exactly, a piece at a time",
+      () => withImpl(async impl => {
+    addChat(impl, 1);
+    const {session} = await createWorktreeSession(impl, 1, await commitFiles(impl, {}));
+    const data = pseudoRandom(5 * CHUNK_MAX_SIZE, 1);
+    await session.writeBytes("big.bin", data);
+    const range = {offset: 1_234_567, length: 2 * CHUNK_MAX_SIZE + 89};
+    expect(same(await read(await session.readBytes("big.bin", range)),
+                data.subarray(range.offset, range.offset + range.length))).toBe(true);
+    expect(same(await read(await session.readBytes("big.bin")), data)).toBe(true);
+    await expect(session.readBytes("big.bin", {offset: data.length - 1, length: 2}))
+      .rejects.toThrow("Invalid byte range");
+  }));
+
+  it("stops a blob's stream when the session ends mid-read", () => withImpl(async impl => {
+    addChat(impl, 1);
+    const {session, turn} = await createWorktreeSession(impl, 1, await commitFiles(impl, {}));
+    await session.writeBytes("big.bin", pseudoRandom(4 * CHUNK_MAX_SIZE, 2));
+    const reader = (await session.readBytes("big.bin")).getReader();
+    expect((await reader.read()).done).toBe(false);
+    const live = turn.access.getBaseCommit;
+    turn.access.getBaseCommit = () => undefined;
+    try {
+      // At most the piece being delivered is still read; the stream then errors.
+      let error: unknown;
+      let after = 0;
+      for (;;) {
+        try {
+          let result = await reader.read();
+          if (result.done) break;
+          after += result.value.byteLength;
+        } catch (err) {
+          error = err;
+          break;
+        }
+      }
+      expect(after).toBeLessThanOrEqual(CHUNK_MAX_SIZE);
+      expect(String(error)).toContain("not part of the current session");
+    } finally {
+      turn.access.getBaseCommit = live;
+    }
+  }));
+
+  it.each(["default", "bytes"] as const)(
+      "writes a %s stream of odd-sized pieces, of any length, as one blob", type => withImpl(async impl => {
+    addChat(impl, 1);
+    const {session, turn} = await createWorktreeSession(impl, 1, await commitFiles(impl, {}));
+    const data = pseudoRandom(type === "default" ? 30_000_000 : 3 * CHUNK_MAX_SIZE + 5, 3);
+    const piece = 777_777;
+    let pos = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      ...(type === "bytes" ? {type: "bytes" as const} : {}),
+      pull(controller) {
+        if (pos >= data.length) {
+          controller.close();
+          (controller as ReadableByteStreamController).byobRequest?.respond(0);
+          return;
+        }
+        controller.enqueue(data.slice(pos, pos += piece));
+      },
+    });
+    await session.writeBytes("stream.bin", stream);
+    const commit = await session.commit("streamed");
+    await turn.barrier();
+    const ref = await impl.gitCache.fileBytesAtCommit(commit, "stream.bin");
+    expect(ref).toEqual({oid: await gitObjectOid("blob", data), byteLength: data.length});
+    expect(same(impl.gitCache.readBlob(ref.oid, ref.byteLength), data)).toBe(true);
+  }), 60_000);
+});
 
 describe("listFiles", () => {
   it("keeps raw reads observational and preserves text reads, edits and commits", () => withImpl(async impl => {
@@ -196,11 +278,11 @@ describe("listFiles", () => {
     expect(await new Response(await session.readBytes("a.txt")).bytes()).toEqual(new TextEncoder().encode(text));
     expect(turn.access.getOverlayFiles(id).has("a.txt")).toBe(false);
     expect(await session.readFile("a.txt")).toBe(text);
-    expect(await impl.gitStore.readCommitFiles(base)).toEqual(new Map([["a.txt", text]]));
+    expect(impl.gitCache.readCommitFiles(base)).toEqual(new Map([["a.txt", text]]));
     await session.writeFile("a.txt", text + "edited\n");
     const commit = await session.commit("text after raw read");
     await turn.barrier();
-    expect(await impl.gitStore.readCommitFiles(commit)).toEqual(new Map([["a.txt", text + "edited\n"]]));
+    expect(impl.gitCache.readCommitFiles(commit)).toEqual(new Map([["a.txt", text + "edited\n"]]));
   }));
 
   it("resolves byte identities without copying the Git object or adding permission records", () => withImpl(async impl => {
@@ -215,7 +297,7 @@ describe("listFiles", () => {
     const {session} = await createWorktreeSession(impl, 1, commit);
     expect(await new Response(await session.readBytes("a.txt")).text()).toBe("same text\n");
     expect([...impl.storage.gitObjects.list()]).toEqual(before);
-    expect(await impl.gitStore.readCommitFiles(commit)).toEqual(new Map([["a.txt", "same text\n"]]));
+    expect(impl.gitCache.readCommitFiles(commit)).toEqual(new Map([["a.txt", "same text\n"]]));
   }));
 
   it("bounds byte writes and ranges without changing the file on failure", () => withImpl(async impl => {
@@ -231,8 +313,12 @@ describe("listFiles", () => {
       {offset: 4, length: 0}, {offset: 0.5, length: 1}, {offset: Number.MAX_SAFE_INTEGER, length: 1}]) {
       await expect(session.readBytes("data.bin", range)).rejects.toThrow("Invalid byte range");
     }
-    await expect(session.writeBytes("data.bin", new Uint8Array(MAX_GIT_OBJECT_SIZE + 1)))
-      .rejects.toThrow("too large");
+    // Bytes of any size can be written and read back.
+    const large = new Uint8Array(9 * 1024 * 1024);
+    for (let i = 0; i < large.length; i += 4093) large[i] = i & 0xff;
+    await session.writeBytes("large.bin", large);
+    expect(await new Response(await session.readBytes("large.bin", {offset: 4093 * 1000, length: 3}))
+      .bytes()).toEqual(large.slice(4093 * 1000, 4093 * 1000 + 3));
     expect(await new Response(await session.readBytes("data.bin")).bytes()).toEqual(Uint8Array.of(0, 255, 7));
     await session.writeBytes("empty.bin", new Uint8Array());
     expect(await new Response(await session.readBytes("empty.bin")).bytes()).toEqual(new Uint8Array());
@@ -250,7 +336,7 @@ describe("listFiles", () => {
     await turn.barrier();
     expect(impl.getWorktreeRecord(id).headCommit).toBe(commit);
     const value = await impl.gitCache.fileBytesAtCommit(commit, "image.bin");
-    expect(impl.gitStore.readBlob(value.oid, value.byteLength)).toEqual(Uint8Array.of(0, 5, 0, 3, 4));
+    expect(impl.gitCache.readBlob(value.oid, value.byteLength)).toEqual(Uint8Array.of(0, 5, 0, 3, 4));
     await expect(session.readFile("image.bin")).rejects.toThrow(/Binary/);
     await session.deleteFile("image.bin");
     const deleted = await session.commit("delete binary");
@@ -551,18 +637,20 @@ describe("grep", () => {
     ].toSorted());
   });
 
-  it("notes every path sharing one unobtainable oversized blob", async () => {
-    // Two paths with identical content share a single blob oid. The pull "succeeds" but
-    // delivers nothing, which the batched fetch's size filter reads as omitted-for-size: the
-    // skip must then report *each* file holding that blob, not just one of them.
+  it("notes every path sharing one binary blob, and searches a large file", async () => {
+    // Two paths with identical content share a single blob oid: the skip must report *each*
+    // file holding that blob, not just one of them. A file of any size is searched.
     let harness = makeLocalHarness(async () => {});
     let cache = harness.cache;
     let smallBlob = await cache.putFromGatekeeper(
         7, "blob", new TextEncoder().encode("x marks the spot\n"));
-    let sharedOid = "cd".repeat(20);
+    let sharedOid = await cache.putFromGatekeeper(7, "blob", new Uint8Array([0x78, 0, 0x78]));
+    let hugeBlob = await cache.putFromGatekeeper(7, "blob",
+        new TextEncoder().encode(`${"filler line\n".repeat(800_000)}x at the end\n`));
     let treeOid = await cache.putFromGatekeeper(7, "tree", treePayload([
       { mode: "100644", name: "big1.txt", oid: sharedOid },
       { mode: "100644", name: "big2.txt", oid: sharedOid },
+      { mode: "100644", name: "huge.txt", oid: hugeBlob },
       { mode: "100644", name: "small.txt", oid: smallBlob },
     ]));
     let commitOid = await cache.putFromGatekeeper(
@@ -571,25 +659,26 @@ describe("grep", () => {
 
     let result = await session.grep(/x/);
     expect(result).toContain("small.txt:1:x marks the spot");
-    expect(result).toContain("(skipped: big1.txt is too large to read)");
-    expect(result).toContain("(skipped: big2.txt is too large to read)");
+    expect(result).toContain("huge.txt:800001:x at the end");
+    expect(result).toContain("(skipped: big1.txt is not a text file)");
+    expect(result).toContain("(skipped: big2.txt is not a text file)");
 
     // structuredGrep reports the same skips as error entries.
-    expect(await session.structuredGrep(/x/)).toEqual({
+    expect(await session.structuredGrep(/x/, ["big1.txt", "big2.txt", "small.txt"])).toEqual({
       matches: [{ file: "small.txt", line: 1, text: "x marks the spot" }],
       errors: [
-        { file: "big1.txt", error: "big1.txt is too large to read" },
-        { file: "big2.txt", error: "big2.txt is too large to read" },
+        { file: "big1.txt", error: "big1.txt is not a text file" },
+        { file: "big2.txt", error: "big2.txt is not a text file" },
       ],
     });
 
     // A directly named file whose *content* is unreadable fails its scope: alone it throws,
     // beside a searchable path it degrades to a skip.
     await expect(session.grep(/x/, "big1.txt")).rejects.toThrow(
-        "big1.txt is too large to read");
+        "big1.txt is not a text file");
     expect(await session.grep(/x/, ["big1.txt", "small.txt"])).toBe(
         "small.txt:1:x marks the spot\n" +
-        "(skipped: big1.txt is too large to read)");
+        "(skipped: big1.txt is not a text file)");
   });
 });
 
@@ -611,7 +700,7 @@ describe("commit and diff", () => {
 
     // Identity is the turn's initiator; the parent is the previous head; the tree is the
     // overlay over the pin base.
-    let [info] = await impl.gitStore.readCommitLog(commit, { depth: 1 });
+    let [info] = impl.gitCache.readCommitLog(commit, { depth: 1 });
     expect(info.parents).toEqual([c1]);
     expect(info.author).toEqual({ name: "Alice", email: "alice@example.com" });
     expect(info.message).toBe("tweak a.txt\n");
@@ -634,7 +723,7 @@ describe("commit and diff", () => {
 
     // No writes: the commit's tree is the accepted commit's, parented on the head.
     let commit = await session.commit("empty");
-    expect(await impl.gitStore.commitTree(commit)).toBe(await impl.gitStore.commitTree(c1));
+    expect(impl.gitCache.commitTree(commit)).toBe(impl.gitCache.commitTree(c1));
     await turn.barrier();
     expect(impl.storage.gadgets.get(id)!.headCommit).toBe(commit);
     expect(impl.storage.chatMeta.get(1)!.codeBase!.pins).toEqual(
@@ -677,7 +766,7 @@ describe("commit and diff", () => {
     expect(await session2.readFile("a.txt")).toBe("three\n");
     await session2.writeFile("a.txt", "four\n");
     let second = await session2.commit("second");
-    let [info] = await impl.gitStore.readCommitLog(second, { depth: 1 });
+    let [info] = impl.gitCache.readCommitLog(second, { depth: 1 });
     expect(info.parents).toEqual([first]);
     expect(await impl.readFileAtCommit(second, "a.txt")).toBe("four\n");
     await turn2.barrier();
@@ -731,6 +820,21 @@ describe("commit and diff", () => {
     await expect(session.diff(c1.slice(0, 8))).rejects.toThrow(/not a full git commit id/);
   }));
 
+  it("diff() diffs a 9 MB file's change as text", () => withImpl(async impl => {
+    addChat(impl, 1);
+    let big = Array.from({ length: 600_000 }, (_, i) => `line ${i} of the file`).join("\n") + "\n";
+    expect(big.length).toBeGreaterThan(9_000_000);
+    let c1 = await commitFiles(impl, { "big.txt": big });
+    let { session } = await createWorktreeSession(impl, 1, c1);
+    await session.writeFile("big.txt", big.replace("line 543210 of the file\n", "line 543210 changed\n"));
+    let diff = await session.diff();
+    expect(diff).toContain("-line 543210 of the file\n+line 543210 changed\n");
+    expect(diff.length).toBeLessThan(1000);
+    let structured = await session.structuredDiff();
+    expect(structured.errors).toEqual([]);
+    expect(structured.files.map(file => [file.path, file.status])).toEqual([["big.txt", "modified"]]);
+  }), 60_000);
+
   it("diff() reports EOF-newline changes with git's no-newline markers", () => withImpl(async impl => {
     addChat(impl, 1);
     // The base file has no trailing newline; the overlay only adds one. This must be a real
@@ -773,7 +877,7 @@ describe("commit and diff", () => {
       throw new Error("simulated pull outage");
     });
     let cache = harness.cache;
-    let base = await harness.gitStore.writeFilesAsCommit(new Map([["a.txt", "one\n"]]), {
+    let base = await harness.cache.writeFilesAsCommit(new Map([["a.txt", "one\n"]]), {
       parents: [],
       author: { name: "Alice", email: "alice@example.com" },
       message: "base",

@@ -30,7 +30,7 @@ import type { SpawnCallableOptions } from "./agent-spawner-binding";
 import { traceRejectedToolCall, traceTool } from "./agent-tracing";
 import { AgentTurnError, completeText, httpStatusFromError, zeroUsage } from "./ai-invoke";
 import type { ModelHandle } from "./ai-models";
-import { blobOid } from "./git-store";
+import { blobOid } from "./git-codec";
 import type {
   AiChatAgentContext, ChatBindingEntry, CompactionCheckpoint, StoredAssistantMessage,
   StoredChatMessage, StoredToolCall,
@@ -45,6 +45,8 @@ import {
   requestAnthropicCompaction, supportsAnthropicCompaction, withAnthropicCompactionBlock,
 } from "./anthropic-compaction";
 import { formatGrep, type GrepScan } from "./grep";
+import type { BlobReader } from "./git-chunked-blob";
+import { readFileWindow, type LineSource } from "./line-window";
 
 const logger = createWorkshopLogger("workshop.agent");
 const traced = createTracer(obsContext.get);
@@ -130,7 +132,7 @@ export interface WorktreeTurnAccess {
    * Read a file exactly as the file tools do: session content first, else the pinned base
    * (faulting the text into the session content, so later edits apply against it). Returns
    * undefined for an absent (or removed) path; throws the descriptive symlink/submodule errors
-   * and UnreadableContentError for oversized/binary content.
+   * and UnreadableContentError for binary content.
    */
   readFile(worktreeId: WorkpieceId, path: string): Promise<string | undefined>;
 
@@ -391,9 +393,9 @@ export interface AgentHooks {
 
   /**
    * Read a commit's full file map from the workspace's git object store. Commits are immutable,
-   * so results are cacheable by oid (and the store's parse cache makes repeats cheap).
+   * so results are cacheable by oid.
    */
-  readCommitFiles(oid: string): Promise<Map<string, string>>;
+  readCommitFiles(oid: string): Map<string, string>;
 
   /**
    * The paths of the files whose entry differs between two commits' trees, added and removed
@@ -454,17 +456,20 @@ export interface AgentHooks {
    * the path -- never a whole tree -- the lazy base resolver behind worktree session content and
    * the way every unpinned read is served, gadget or worktree. Returns undefined for an absent
    * path; throws descriptive, agent-visible errors for a symlink or submodule path (naming the
-   * target), oversized or binary content, and pull failures.
+   * target), binary content, and pull failures.
    */
   readFileAtCommit(commit: string, path: string): Promise<string | undefined>;
 
   /**
-   * readFileAtCommit that also reports the blob's oid: the file's content address, which an
-   * unpinned read stamps (AiToolCall.observedOid, and the agent's filesRead) so a later edit can
-   * ask whether the committed file is still byte-identical (fileOidAtCommit).
+   * Open one file of a commit's tree by path for reading in pieces, whatever its size, along with
+   * its blob's oid: the file's content address, which an unpinned read stamps
+   * (AiToolCall.observedOid, and the agent's filesRead) so a later edit can ask whether the
+   * committed file is still byte-identical (fileOidAtCommit). The same path rules and errors as
+   * readFileAtCommit, but no content rules: the blob is never decoded here. In-process only; the
+   * reader is not an RPC type.
    */
-  readFileAtCommitWithOid(commit: string, path: string)
-      : Promise<{text: string, oid: string} | undefined>;
+  openFileAtCommit(commit: string, path: string)
+      : Promise<{oid: string, reader: BlobReader} | undefined>;
 
   /**
    * The blob oid of the regular file at `path` in a commit's tree, or undefined for an absent
@@ -480,6 +485,13 @@ export interface AgentHooks {
   readBlobText(oid: string, path: string): Promise<string>;
 
   /**
+   * Open a blob by oid for reading in pieces, whatever its size, never reading it whole: how a
+   * read of a byte-backed file, and replay of a stamped read, render just their window.
+   * In-process only; the reader is not an RPC type.
+   */
+  openBlob(oid: string): Promise<BlobReader>;
+
+  /**
    * Throws the same descriptive errors readFileAtCommit does when `path` names a symlink or
    * submodule in the commit's tree -- the write side of the tree-entry modes rules. Absent
    * paths (new files) and regular files pass, including ones whose content is unreadable
@@ -488,13 +500,13 @@ export interface AgentHooks {
   assertWorktreePathWritable(commit: string, path: string): Promise<void>;
 
   /**
-   * The grep tool's scan: the searchable files under `path` in a workpiece's overlay-over-base
-   * view, with missing base blobs pulled in one batch (see scanWorkpieceForGrep). `base` is the
-   * commit the workpiece's untouched files are read from, or undefined for a gadget with no
-   * committed code.
+   * The grep tool's scan: the lines matching `pattern` in the searchable files under `path` in
+   * a workpiece's overlay-over-base view, with missing base blobs pulled in one batch (see
+   * scanWorkpieceForGrep). `base` is the commit the workpiece's untouched files are read from,
+   * or undefined for a gadget with no committed code.
    */
   grepWorkpiece(turn: WorktreeTurnAccess, workpieceId: WorkpieceId, base: string | undefined,
-                path?: string): Promise<GrepScan>;
+                pattern: RegExp, path?: string): Promise<GrepScan>;
 
   /**
    * Describe a workpiece (a gadget or a gatekeeper) reachable as `envName` in the chat's env,
@@ -1171,7 +1183,7 @@ async function formatBlueprintProposal(
 let READ_FILE_TOOL_DESCRIPTION = `
 Read the content of a file owned by a workpiece (a gadget or worktree) in your \`env\`. If a file changes after you read it, you will either be informed of the change or the outdated result will be replaced with a note telling you to re-read the file; otherwise there is no need to read a file again after you have already read it once. Uploaded files are also available in the chat's scratch worktree when the system prompt lists one; use it for plans and other working files too. Use byte-aware binding operations for binary files.
 
-For a large file, pass \`startLine\` and \`lineCount\` to read a window of it; the result then ends with a line giving the range shown and the \`startLine\` to continue from. Use \`grep\` to find the lines you need first.
+A file of any size can be read, by window: for a large file, pass \`startLine\` and \`lineCount\` to read a window of it; the result then ends with a line giving the range shown and the \`startLine\` to continue from. Use \`grep\` to find the lines you need first. A single line too long to show whole is cut, with a note giving its length. A window whose lines contain binary data (a NUL byte) is an error naming those lines; invalid UTF-8 is shown as U+FFFD.
 `.trim();
 
 let CREATE_GADGET_TOOL_DESCRIPTION = `
@@ -1361,46 +1373,6 @@ function findEditPos(content: string, textToReplace: string): number {
 // tools and history replay so the two can never drift.
 function jsonToolResultText(value: unknown): string {
   return JSON.stringify(value);
-}
-
-/** The line window a readFile call asked for (see AiToolCall's readFile input). */
-export type ReadFileWindow = {startLine?: number, lineCount?: number};
-
-/**
- * Renders a readFile result as the exact text the model sees, for both the live tool and history
- * replay. A read with no window returns the file verbatim when it fits MAX_TOOL_RESULT_CHARS;
- * otherwise, and for any windowed read, the result is the selected lines, a blank line, and
- * `[lines A-B of N; next startLine: B+1]` (without the continuation when B is the last line).
- * `lineCount` is an upper bound: a window ends where the next whole line would push the result
- * past the cap, so the note always says where to continue. Lines are never cut, so a single line
- * longer than the cap is the one result that exceeds it. Lines are 1-based; a final newline does
- * not start a line. The tool schema already requires positive integers. Exported for tests.
- */
-export function readFileWindow(text: string, {startLine, lineCount}: ReadFileWindow): string {
-  if (startLine === undefined && lineCount === undefined &&
-      text.length <= MAX_TOOL_RESULT_CHARS) {
-    return text;
-  }
-  let lines = text.split("\n");
-  if (lines.at(-1) === "") lines.pop();
-  let first = startLine ?? 1;
-  if (first > lines.length) {
-    throw new Error(`startLine ${first} is past the end of the file, which has ` +
-        `${lines.length} line${lines.length === 1 ? "" : "s"}.`);
-  }
-  let note = (last: number) => `[lines ${first}-${last} of ${lines.length}` +
-      (last < lines.length ? `; next startLine: ${last + 1}]` : "]");
-  // Whole lines, at least one, while they fit under the cap with the longest note this file can
-  // produce.
-  let limit = lineCount === undefined ? lines.length : Math.min(lines.length, first - 1 + lineCount);
-  let budget = MAX_TOOL_RESULT_CHARS - note(lines.length - 1).length - 2;
-  let last = first;
-  let chars = lines[first - 1].length;
-  while (last < limit && chars + 1 + lines[last].length <= budget) {
-    chars += 1 + lines[last].length;
-    ++last;
-  }
-  return `${lines.slice(first - 1, last).join("\n")}\n\n${note(last)}`;
 }
 
 /**
@@ -1655,7 +1627,7 @@ async function runAgentPass(
   // Lazily reads a worktree file's base text into the session content, so later edits (and
   // replayed changes) apply against it exactly as if the base tree had been materialized.
   // Returns undefined for a path absent from the base; throws readFileAtCommit's descriptive
-  // errors (symlink/submodule/oversized/binary/pull failure). No-ops for anything that is not a
+  // errors (symlink/submodule/binary/pull failure). No-ops for anything that is not a
   // worktree.
   let faultWorktreeBase = async (worktreeId: WorkpieceId, filename: string)
       : Promise<string | undefined> => {
@@ -1686,24 +1658,33 @@ async function runAgentPass(
       : hooks.readBlobText(value.oid, filename);
   };
 
-  // A file as readFile shows it, or undefined if it does not exist. An unpinned workpiece with
-  // committed code is read live at its base -- a gadget's head (fixed for the turn; see
-  // observeHead) or a worktree's accepted commit -- by path, never by materializing the tree,
-  // and stamped with the blob's oid: replay reproduces the text from it, and editFile compares
-  // it against the file at the head it pins. Pinned workpieces -- and gadgets with no committed
-  // code, whose files exist only in the chat's change stream -- read from the session content,
-  // unstamped: it is never stale within an epoch. Worktree session content is lazy: a path not
-  // yet touched or read resolves against the pinned base commit (with descriptive errors for
-  // symlinks, submodules, and oversized or binary content). A removed path stays removed
-  // (readWorktreeBase).
+  // A file as readFile shows it -- the source its window renders from -- or undefined if it does
+  // not exist. An unpinned workpiece with committed code is read live at its base -- a gadget's
+  // head (fixed for the turn; see observeHead) or a worktree's accepted commit -- by path, never
+  // by materializing the tree, from its blob, which only the window is read from, and stamped
+  // with the blob's oid: replay reproduces the window from it, and editFile compares it against
+  // the file at the head it pins. Pinned workpieces -- and gadgets with no committed code, whose
+  // files exist only in the chat's change stream -- read from the session content, unstamped: it
+  // is never stale within an epoch (a byte-backed file is read from its blob, as unpinned reads
+  // are). Worktree session content is lazy: a path not yet touched or read resolves against the
+  // pinned base commit, decoded whole into the session text so that edits apply against it (with
+  // descriptive errors for symlinks, submodules, and binary content). A removed path stays
+  // removed (readWorktreeBase).
   let readToolFile = async (id: WorkpieceId, filename: string)
-      : Promise<{text: string, oid?: string} | undefined> => {
+      : Promise<{source: LineSource, oid?: string} | undefined> => {
     if (!pinnedGadgets.has(id)) {
       let base = observeHead(id) ?? hooks.getWorktreePinBase(id);
-      if (base !== undefined) return await hooks.readFileAtCommitWithOid(base, filename);
+      if (base !== undefined) {
+        let file = await hooks.openFileAtCommit(base, filename);
+        return file && {source: {kind: "blob", reader: file.reader}, oid: file.oid};
+      }
     }
-    let text = await readSessionText(id, filename) ?? await readWorktreeBase(id, filename);
-    return text === undefined ? undefined : {text};
+    let value = sessionContent.get(id)?.get(filename);
+    if (value !== undefined && typeof value !== "string") {
+      return {source: {kind: "blob", reader: await hooks.openBlob(value.oid)}};
+    }
+    let text = value ?? await readWorktreeBase(id, filename);
+    return text === undefined ? undefined : {source: {kind: "text", text}};
   };
 
   // Seeds the base texts a change's worktree edits need before it applies to the session
@@ -1988,7 +1969,7 @@ async function runAgentPass(
       pinnedGadgets.add(pin.gadgetId);
       return [];
     }
-    let files = await hooks.readCommitFiles(pin.baseCommit);
+    let files = hooks.readCommitFiles(pin.baseCommit);
     let known = filesRead.get(pin.gadgetId);
     let forgotten: string[] = [];
     if (pinnedGadgets.has(pin.gadgetId) && known !== undefined) {
@@ -2360,7 +2341,8 @@ async function runAgentPass(
                       throw new Error("File missing from its observed commit.");
                     }
                     toolOutput = {text: readFileWindow(
-                        await hooks.readBlobText(oid, toolCall.input.filename), toolCall.input)};
+                        {kind: "blob", reader: await hooks.openBlob(oid)}, toolCall.input,
+                        toolCall.input.filename, MAX_TOOL_RESULT_CHARS)};
                     markFileRead(workpieceId, toolCall.input.filename, oid);
                   } else {
                     let {workpieceId} =
@@ -2381,19 +2363,28 @@ async function runAgentPass(
                     const edits = pendingReplayEdits.filter(edit => edit.workpieceId === workpieceId &&
                       edit.filename === toolCall.input.filename);
                     const lastWrite = edits.findLastIndex(edit => edit.toolName === "writeFile");
-                    // A whole-file write supersedes even an unreadable binary base. Do not
-                    // read that obsolete base before replaying the successful replacement.
-                    let value: string | null = lastWrite >= 0 ? null
-                      : await readSessionText(workpieceId, toolCall.input.filename) ??
-                        await faultWorktreeBase(workpieceId, toolCall.input.filename) ?? null;
-                    for (let edit of edits.slice(Math.max(0, lastWrite))) {
-                      value = applyPendingEditToText(value, edit);
-                    }
-                    if (value === null) {
-                      throw new Error("File does not exist.");
+                    const stored = sessionContent.get(workpieceId)?.get(toolCall.input.filename);
+                    let source: LineSource;
+                    if (edits.length === 0 && stored !== undefined && typeof stored !== "string") {
+                      // A byte-backed file, which the live read rendered from its blob.
+                      source = {kind: "blob", reader: await hooks.openBlob(stored.oid)};
+                    } else {
+                      // A whole-file write supersedes even an unreadable binary base. Do not
+                      // read that obsolete base before replaying the successful replacement.
+                      let value: string | null = lastWrite >= 0 ? null
+                        : await readSessionText(workpieceId, toolCall.input.filename) ??
+                          await faultWorktreeBase(workpieceId, toolCall.input.filename) ?? null;
+                      for (let edit of edits.slice(Math.max(0, lastWrite))) {
+                        value = applyPendingEditToText(value, edit);
+                      }
+                      if (value === null) {
+                        throw new Error("File does not exist.");
+                      }
+                      source = {kind: "text", text: value};
                     }
 
-                    toolOutput = {text: readFileWindow(value, toolCall.input)};
+                    toolOutput = {text: readFileWindow(source, toolCall.input,
+                        toolCall.input.filename, MAX_TOOL_RESULT_CHARS)};
                     markFileRead(workpieceId, toolCall.input.filename);
                   }
                   break;
@@ -2941,7 +2932,9 @@ async function runAgentPass(
       throw new Error(stepBuffer.changes.length === 0 && oneFile
           ? "This write is too large to make in one step. Write the file in smaller parts, " +
             "for example by splitting it into several files, or by writing part of it and then " +
-            "adding the rest with edits."
+            "adding the rest with edits. To write content this large to a worktree file in one " +
+            "go, use the worktree binding's writeBytes() in executeCode, which takes content of " +
+            "any size."
           : "Too many code changes in one step. End this response; the changes made so far " +
             "are being saved, and you can continue the work in your next step.");
     }
@@ -3070,7 +3063,7 @@ async function runAgentPass(
         let files: string[];
         let unpinnedHead = !pinnedGadgets.has(info.id) ? observeHead(info.id) : undefined;
         if (unpinnedHead !== undefined) {
-          files = [...(await hooks.readCommitFiles(unpinnedHead)).keys()];
+          files = [...hooks.readCommitFiles(unpinnedHead).keys()];
         } else {
           files = [...(sessionContent.get(info.id)?.keys() ?? [])];
         }
@@ -3244,7 +3237,7 @@ async function runAgentPass(
           if (file === undefined) {
             throw new Error("File does not exist.");
           }
-          let shown = readFileWindow(file.text, window);
+          let shown = readFileWindow(file.source, window, filename, MAX_TOOL_RESULT_CHARS);
           markFileRead(resolved.workpieceId, filename, file.oid);
           return toolResult(shown, file.oid === undefined ? {} : {observedOid: file.oid});
         } catch (error) {
@@ -3279,10 +3272,10 @@ async function runAgentPass(
           let base = pinnedGadgets.has(workpieceId)
               ? worktreeBase(workpieceId)
               : observeHead(workpieceId) ?? hooks.getWorktreePinBase(workpieceId);
-          let scan = await hooks.grepWorkpiece(worktreeTurnAccess, workpieceId, base, path);
+          let scan = await hooks.grepWorkpiece(worktreeTurnAccess, workpieceId, base, re, path);
           // Recorded as shown: replay reads this text back, and a broad match over several
           // large files could otherwise exceed a storage record.
-          let output = formatGrep(scan, re, MAX_TOOL_RESULT_CHARS);
+          let output = formatGrep(scan, MAX_TOOL_RESULT_CHARS);
           return toolResult(output, {output} as Partial<AiToolCall>);
         } catch (error) {
           toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
@@ -3328,7 +3321,7 @@ async function runAgentPass(
           if (!pinnedGadgets.has(resolved.workpieceId)) {
             let head = hooks.getGadgetHead(resolved.workpieceId);
             if (head !== undefined) {
-              pin = {baseCommit: head, baseFiles: await hooks.readCommitFiles(head)};
+              pin = {baseCommit: head, baseFiles: hooks.readCommitFiles(head)};
             }
           }
 
@@ -3405,7 +3398,7 @@ async function runAgentPass(
                     "Re-read the file and try again.");
               }
               if (!hooks.isWorktree(resolved.workpieceId)) {
-                pin = {baseCommit: head, baseFiles: await hooks.readCommitFiles(head)};
+                pin = {baseCommit: head, baseFiles: hooks.readCommitFiles(head)};
               }
             }
           }

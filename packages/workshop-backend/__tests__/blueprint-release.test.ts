@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deflate } from "pako";
+import { deflateSync } from "node:zlib";
 import { MAX_FILE_PATH_LENGTH } from "@gadgets/workshop-shared/code-change";
 import {
   MAX_RELEASE_COMMITS,
@@ -24,9 +24,7 @@ import {
   type GitTreeEntry,
   type PackableObject,
 } from "../src/git-codec";
-import { GitStore } from "../src/git-store";
-import { makeOverseerStorage } from "../src/storage-schema/overseer-storage";
-import { makeMockStorage } from "./mock-storage";
+import { makeLocalGitCache } from "./local-git-cache";
 
 const ALICE = { name: "Alice Example", email: "alice@example.com" };
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -235,7 +233,7 @@ describe("snapshot releases", () => {
     expect(reordered.commitId).toBe(FILES_SNAPSHOT);
   });
 
-  it("writes the tree GitStore writes for the same files, and lists them back", async () => {
+  it("writes the tree the git store writes for the same files, and lists them back", async () => {
     let files = new Map([
       ...FILES,
       ["foo/inner.js", "inner\n"],
@@ -246,13 +244,13 @@ describe("snapshot releases", () => {
       ["bom.txt", "\ufeffkept"],
       ["empty.txt", ""],
     ]);
-    let store = new GitStore(makeOverseerStorage(makeMockStorage()).gitObjects);
+    let store = makeLocalGitCache();
     let viaStore = await store.writeFilesAsCommit(
         files, { parents: [], author: ALICE, message: "files", timestamp: new Date(0) });
 
     let { commitId, objects } = await buildSnapshotRelease(files);
     expect(parseGitCommitRefs(objects.get(commitId)!.payload).tree)
-        .toBe(await store.commitTree(viaStore));
+        .toBe(store.commitTree(viaStore));
     validateReleaseObjects(objects, commitId);
     expect(listReleaseFiles(objects, commitId)).toStrictEqual(files);
   });
@@ -403,7 +401,7 @@ describe("release pack validation", () => {
     new DataView(header.buffer).setUint32(8, 1);
     let body = concatBytes([
       header, new Uint8Array([(7 << 4) | delta.length]),
-      Uint8Array.fromHex(await gitObjectOid("blob", base)), deflate(delta),
+      Uint8Array.fromHex(await gitObjectOid("blob", base)), deflateSync(delta),
     ]);
     let pack = concatBytes([body, new Uint8Array(await crypto.subtle.digest("SHA-1", body))]);
     await expect(readReleasePack(pack, ABSENT)).rejects.toThrow(/delta base .* is unavailable/);
@@ -532,7 +530,7 @@ describe("release pack validation", () => {
     }
   });
 
-  it("refuses exactly the names GitStore cannot read back", async () => {
+  it("refuses exactly the names the git store refuses to write", async () => {
     let names = [
       ".git", ".GIT", ".git. ", ".git:stream", ".git\u200d", "git~1", ".git~1", "GIT~2", "a\\b",
       ".\u200c", "..\ufeff",
@@ -540,14 +538,13 @@ describe("release pack validation", () => {
     ];
     for (let name of names) {
       let files = new Map([[`dir/${name}`, "x\n"]]);
-      let store = new GitStore(makeOverseerStorage(makeMockStorage()).gitObjects);
-      let commit = await store.writeFilesAsCommit(
-          files, { parents: [], author: ALICE, message: "m", timestamp: new Date(0) });
-      let readable = await store.readCommitFiles(commit).then(() => true, () => false);
+      let writable = await makeLocalGitCache().writeFilesAsCommit(
+          files, { parents: [], author: ALICE, message: "m", timestamp: new Date(0) })
+          .then(() => true, () => false);
 
       let snapshot = await buildSnapshotRelease(files);
       let validate = () => validateReleaseObjects(snapshot.objects, snapshot.commitId);
-      if (readable) {
+      if (writable) {
         expect(validate, name).not.toThrow();
       } else {
         expect(validate, name).toThrow(/holds the reserved name/);

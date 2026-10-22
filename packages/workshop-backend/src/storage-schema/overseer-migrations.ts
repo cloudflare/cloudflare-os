@@ -20,7 +20,7 @@ import {
 } from "./overseer-storage";
 import { migrateCodeLogToGit } from "./overseer-git-migration";
 import { retryOnDoReset } from "../do-retry";
-import { GitStore, commitIdentityForAuthor } from "../git-store";
+import { commitIdentityForAuthor, type WorkspaceGitCache } from "../git-cache";
 import type { createWorkshopLogger } from "../observability";
 import type { UserDurableObject } from "../user";
 
@@ -49,8 +49,8 @@ export interface OverseerMigrationHost {
   /** The workspace's storage. */
   storage: OverseerStorage;
 
-  /** The workspace's git object store, which receives the commits the git migration writes. */
-  gitStore: GitStore;
+  /** The workspace's git store, which receives the commits the git migration writes. */
+  gitCache: WorkspaceGitCache;
 
   /** The Overseer's logger, so migration logs carry the workspace's id like all its others. */
   logger: ReturnType<typeof createWorkshopLogger>;
@@ -195,7 +195,7 @@ export async function migrateToGitStorage(host: OverseerMigrationHost): Promise<
   let startedAt = Date.now();
   let { commits } = await migrateCodeLogToGit({
     storage: host.storage,
-    gitStore: host.gitStore,
+    gitCache: host.gitCache,
     ownerIdentity: await ownerCommitIdentity(host),
     defaultGadgetId: host.defaultGadgetId,
     createDefaultGadget: () => host.ensureDefaultGadget(undefined),

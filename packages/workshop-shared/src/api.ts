@@ -2442,11 +2442,17 @@ export type TreeNode =
  * One file's content at a commit, as returned by Overseer.readFilesAtCommit(). `text` carries
  * the file's UTF-8 content; `absent` means the path names no entry at that commit (or names a
  * directory); `unreadable` means the entry exists but cannot be presented as text -- a symlink,
- * a submodule, binary content, or a blob over the git store's per-object size cap -- and carries
- * a descriptive, path-flavored message suitable for display in place of the file.
+ * a submodule, or binary content (never a matter of size) -- and carries a descriptive,
+ * path-flavored message suitable for display in place of the file.
+ *
+ * `stream` is how a regular file over MAX_BUFFERED_BLOB_SIZE arrives instead of `text`: its raw
+ * bytes, `byteLength` of them, as a stream. The server has not checked that they are text, so
+ * the caller applies the same rules it would have (no NUL byte, valid UTF-8). The caller must
+ * consume or cancel every stream it receives.
  */
 export type FileAtCommit =
   | { kind: "text"; text: string }
+  | { kind: "stream"; byteLength: number; content: ReadableStream<Uint8Array> }
   | { kind: "absent" }
   | { kind: "unreadable"; message: string };
 
@@ -2460,8 +2466,8 @@ export const MAX_READ_FILES_PER_CALL = 64;
  * Text bytes after which Overseer.readFilesAtCommit() stops decoding and omits the remaining
  * requested paths from its response (the client re-requests them). Keeps one response well
  * under the RPC message ceiling even with the UTF-16 inflation of serialized text. The first
- * file is always returned whole, however large, so every call makes progress; its size is
- * bounded only by what the git store could hold.
+ * file is always returned whole, however large, so every call makes progress. A `stream` entry's
+ * bytes travel outside the response message, so they do not count toward this budget.
  */
 export const READ_FILES_RESPONSE_BUDGET = 8 * 1024 * 1024;
 
@@ -2706,7 +2712,8 @@ export interface Overseer extends RpcTarget {
    * the workspace's git store are pulled in one batch through the gatekeeper that provided the
    * commit; a pull failure fails the whole call, since it is transient or actionable rather than
    * a fact about any one file, whereas per-file conditions -- absent path, symlink, submodule,
-   * binary or oversized content -- are reported per entry (see FileAtCommit).
+   * binary content -- are reported per entry (see FileAtCommit). A file of any size is read: one
+   * over MAX_BUFFERED_BLOB_SIZE (see `@gadgets/workshop-shared/gatekeeper`) as a `stream` entry.
    *
    * At most MAX_READ_FILES_PER_CALL paths per call. The server stops decoding once the
    * accumulated text exceeds READ_FILES_RESPONSE_BUDGET and omits the remaining paths from the
@@ -3021,9 +3028,16 @@ export interface Overseer extends RpcTarget {
    * Retrying identical bytes returns the same OID. This does not change any worktree or message.
    * Use the OID in a chat attachment, or in a worktree's whole-file `setBytes` change together
    * with the payload's byte length. The blob must be present in this workspace's Git store.
-   * Limited to 8,000,000 bytes; larger-file support is deferred.
+   *
+   * There is no size limit. A `Uint8Array` travels in one RPC message; for large content, pass
+   * `{stream, byteLength}` instead, which the server stores as it arrives without holding it
+   * whole. `byteLength` must be the stream's exact length: it is verified, and a stream that
+   * ends short of it or runs past it fails the call and stores no blob (though pieces already
+   * written may remain, unreferenced, as after any interrupted write). Either way, the OID is
+   * returned only once the whole blob is durably stored.
    */
-  uploadBlob(content: Uint8Array): Promise<GitOid>;
+  uploadBlob(content: Uint8Array | { stream: ReadableStream<Uint8Array>; byteLength: number })
+      : Promise<GitOid>;
 
   /**
    * Fetch the bytes of a committed chat attachment over RPC. The canonical metadata is already

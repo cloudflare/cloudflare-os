@@ -33,7 +33,13 @@ import {
   type TreeDiffFile,
   type TreeDiffSource,
 } from "@gadgets/gatekeeper-kit/git-diff";
-import { commitDetailsFromGitObject, isCommitOid, parseGitCommitPayload } from "@gadgets/gatekeeper-kit/git-objects";
+import {
+  bufferedGitObject,
+  commitDetailsFromGitObject,
+  gitObjectBytes,
+  isCommitOid,
+  parseGitCommitPayload,
+} from "@gadgets/gatekeeper-kit/git-objects";
 import { asVerifier } from "@gadgets/gatekeeper-kit/observers";
 import {
   GitRefUpdateRejectedError,
@@ -1213,11 +1219,11 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
   }
 
   async #tryReadCachedCommitDetails(gitCache: RpcStub<GitCache>, oid: GitOid): Promise<GitLabCommitDetails | null> {
-    const object = await gitCache.get(oid);
-    if (object === null || object.type !== "commit") return null;
+    const payload = await gitObjectBytes(await gitCache.get(oid), "commit");
+    if (payload === null) return null;
     const instanceUrl = this.#instanceUrl();
     const projectPath = this.#projectPath();
-    return commitDetailsFromGitObject(oid, object.content, id => `${instanceUrl}/${projectPath}/-/commit/${id}`);
+    return commitDetailsFromGitObject(oid, payload, id => `${instanceUrl}/${projectPath}/-/commit/${id}`);
   }
 
   // -- Gatekeeper interface ---------------------------------------------------------------
@@ -1498,8 +1504,7 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
       const realHead = await this.#getBranchHeadCached(ref);
       const simulated = this.#simulateBranchHead(ref, realHead);
       if (simulated !== null && simulated !== realHead) {
-        const object = await gitCache.get(simulated);
-        if (object !== null && object.type === "commit") {
+        if ((await gitCache.stat(simulated))?.type === "commit") {
           this.#servedSimulatedCommitIds.add(simulated);
           return { id: simulated, fromCache: true };
         }
@@ -2769,16 +2774,16 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         const side = await this.#recordPendingSideParents(gitCache, sideParents, new Set([...chainIds, current]), onGitLab);
         return { commits, anchor: current, frontier: [current, ...side.frontier], pending: [...chainIds, ...side.pending] };
       }
-      const object = await gitCache.get(current);
-      if (object === null || object.type !== "commit") {
+      const payload = await gitObjectBytes(await gitCache.get(current), "commit");
+      if (payload === null) {
         throw new Error(`Commit ${current} is not available from the workspace git cache.`);
       }
-      const parsed = parseGitCommitPayload(object.content, current);
+      const parsed = parseGitCommitPayload(payload, current);
       this.#servedSimulatedCommitIds.add(current);
       const instanceUrl = this.#instanceUrl();
       const projectPath = this.#projectPath();
       commits.push({
-        summary: commitDetailsFromGitObject(current, object.content, id => `${instanceUrl}/${projectPath}/-/commit/${id}`),
+        summary: commitDetailsFromGitObject(current, payload, id => `${instanceUrl}/${projectPath}/-/commit/${id}`),
         tree: parsed.tree,
       });
       if (parsed.parents.length === 0) {
@@ -2814,12 +2819,12 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
         frontier.push(oid);
         continue;
       }
-      const object = await gitCache.get(oid);
-      if (object === null || object.type !== "commit") continue;
+      const payload = await gitObjectBytes(await gitCache.get(oid), "commit");
+      if (payload === null) continue;
       if (pending.length === MAX_PENDING_CHAIN_COMMITS) throw new Error(`More than ${MAX_PENDING_CHAIN_COMMITS} commits are queued for push.`);
       pending.push(oid);
       this.#servedSimulatedCommitIds.add(oid);
-      stack.push(...parseGitCommitPayload(object.content, oid).parents);
+      stack.push(...parseGitCommitPayload(payload, oid).parents);
     }
     return { pending, frontier };
   }
@@ -2846,10 +2851,8 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
    * cannot be resolved -- the caller degrades.
    */
   async #treeOidOfCommit(gitCache: RpcStub<GitCache>, sha: GitOid): Promise<GitOid> {
-    const object = await gitCache.get(sha);
-    if (object !== null && object.type === "commit") {
-      return parseGitCommitPayload(object.content, sha).tree;
-    }
+    const payload = await gitObjectBytes(await gitCache.get(sha), "commit");
+    if (payload !== null) return parseGitCommitPayload(payload, sha).tree;
     throw new Error(`Could not resolve the tree of commit ${sha}: it is not in the workspace git cache.`);
   }
 
@@ -2864,12 +2867,13 @@ export class GitLabGatekeeperImpl extends DurableObject<Env, GitLabGatekeeperImp
     const projectPath = this.#projectPath();
     return {
       getTree: async oid => {
-        const object = await gitCache.get(oid);
-        return object !== null && object.type === "tree" ? parseGitTreePayload(object.content, oid) : null;
+        const payload = await gitObjectBytes(await gitCache.get(oid), "tree");
+        return payload === null ? null : parseGitTreePayload(payload, oid);
       },
       getBlob: async oid => {
-        const object = await gitCache.get(oid);
-        if (object !== null && object.type === "blob") return object.content;
+        const cached = bufferedGitObject(await gitCache.get(oid), "blob");
+        // A streamed blob is over MAX_DIFF_BLOB_BYTES, so the diff would omit it anyway.
+        if (cached !== null) return cached === "streamed" ? "unavailable" : cached;
         const remote = await this.#withApi(api => api.getBlob(projectPath, oid, MAX_DIFF_BLOB_BYTES));
         return remote === null || remote === "oversized" ? "unavailable" : remote;
       },

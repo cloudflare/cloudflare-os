@@ -1,18 +1,24 @@
 import { describe, expect, it } from "vitest";
 import { deserialize, serialize } from "capnweb";
-import {
-  GITDIR, GitStore, blobOid, commitIdentityForAuthor, makeGitObjectsFs, threeWayMerge,
-} from "../src/git-store";
+import { commitIdentityForAuthor, type WorkspaceGitCache } from "../src/git-cache";
 import { makeOverseerStorage } from "../src/storage-schema/overseer-storage";
 import { makeMockStorage } from "./mock-storage";
-import { writeCommit } from "isomorphic-git";
+import { makeLocalGitCache } from "./local-git-cache";
 import {
-  decodeLooseObject, encodeLooseObject, parseGitCommitRefs, parseGitTree, readGitCommitHeader,
+  EMPTY_TREE_OID, blobOid, decodeLooseObject, encodeGitTree, encodeLooseObject, gitObjectOid,
+  parseGitCommitRefs, parseGitTree, readGitCommitHeader,
 } from "../src/git-codec";
-import { COMMIT_1, COMMIT_3, FIXTURE_OBJECTS, b64Bytes } from "./git-cache-fixtures";
+import {
+  BAD_NAME_TREE, COMMIT_1, COMMIT_3, FIXTURE_OBJECTS, b64Bytes,
+} from "./git-cache-fixtures";
 
-function makeObjects() {
-  return makeOverseerStorage(makeMockStorage()).gitObjects;
+// The workspace's own history through WorkspaceGitCache: the writers, and the local reads that
+// never pull. (The lazy reads and the gatekeeper-facing machinery are git-cache.test.ts's.)
+
+/** A store over fresh mock storage, with the `gitObjects` collection beneath it. */
+function makeStore() {
+  let storage = makeOverseerStorage(makeMockStorage());
+  return { objects: storage.gitObjects, store: makeLocalGitCache(storage) };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -40,7 +46,7 @@ const SECOND_FILES = new Map([
 ]);
 const SECOND_COMMIT_OID = "2352e13eb6af1e9edd23b5d7f3b4272ea12c30d4";
 
-async function writeFixtureHistory(store: GitStore): Promise<void> {
+async function writeFixtureHistory(store: WorkspaceGitCache): Promise<void> {
   let first = await store.writeFilesAsCommit(INITIAL_FILES, {
     parents: [],
     author: ALICE,
@@ -58,16 +64,15 @@ async function writeFixtureHistory(store: GitStore): Promise<void> {
   expect(second).toBe(SECOND_COMMIT_OID);
 }
 
-describe("GitStore", () => {
+describe("local history", () => {
   it("writes commits byte-identical to real git", async () => {
     // writeFixtureHistory asserts the known-good oids, including a nested tree (lib/util.js), a
     // parent link, and a bare-username author.
-    await writeFixtureHistory(new GitStore(makeObjects()));
+    await writeFixtureHistory(makeStore().store);
   });
 
   it("content-addressed writes are idempotent", async () => {
-    let objects = makeObjects();
-    let store = new GitStore(objects);
+    let { objects, store } = makeStore();
     await writeFixtureHistory(store);
     let count = [...objects.list()].length;
 
@@ -76,11 +81,11 @@ describe("GitStore", () => {
   });
 
   it("round-trips file maps through commits, flattening nested trees", async () => {
-    let store = new GitStore(makeObjects());
+    let store = makeStore().store;
     await writeFixtureHistory(store);
 
-    expect(await store.readCommitFiles(INITIAL_COMMIT_OID)).toEqual(INITIAL_FILES);
-    expect(await store.readCommitFiles(SECOND_COMMIT_OID)).toEqual(SECOND_FILES);
+    expect(store.readCommitFiles(INITIAL_COMMIT_OID)).toEqual(INITIAL_FILES);
+    expect(store.readCommitFiles(SECOND_COMMIT_OID)).toEqual(SECOND_FILES);
   });
 
   it("survives Cap'n Web in Overseer.readFilesAtCommit's entry-list shape", async () => {
@@ -88,7 +93,7 @@ describe("GitStore", () => {
     // ship [path, content] pairs rather than a path-keyed object: Cap'n Web can't serialize a
     // null-prototype object at all, and deletes prototype-shadowing keys (and "toJSON") from
     // every ordinary object it deserializes -- either way such files would vanish on the wire.
-    let store = new GitStore(makeObjects());
+    let store = makeStore().store;
     let files = new Map(
         ["__proto__", "constructor", "toString", "toJSON", "lib/hasOwnProperty"]
             .map((name, i) => [name, `v${i}\n`] as const));
@@ -96,13 +101,12 @@ describe("GitStore", () => {
       parents: [], author: ALICE, message: "exotic names", timestamp: new Date(1700000000_000),
     });
 
-    let wire: [path: string, content: string][] = [...await store.readCommitFiles(oid)];
+    let wire: [path: string, content: string][] = [...store.readCommitFiles(oid)];
     expect(new Map(deserialize(serialize(wire)) as typeof wire)).toEqual(files);
   });
 
   it("blobOid is the content address a written file gets, computed without writing", async () => {
-    let objects = makeObjects();
-    let store = new GitStore(objects);
+    let { objects, store } = makeStore();
     await writeFixtureHistory(store);
     let count = [...objects.list()].length;
 
@@ -117,10 +121,10 @@ describe("GitStore", () => {
   });
 
   it("walks commit ancestry with readCommitLog", async () => {
-    let store = new GitStore(makeObjects());
+    let store = makeStore().store;
     await writeFixtureHistory(store);
 
-    let history = await store.readCommitLog(SECOND_COMMIT_OID);
+    let history = store.readCommitLog(SECOND_COMMIT_OID);
     expect(history).toEqual([
       {
         oid: SECOND_COMMIT_OID,
@@ -138,20 +142,20 @@ describe("GitStore", () => {
       },
     ]);
 
-    let limited = await store.readCommitLog(SECOND_COMMIT_OID, { depth: 1 });
+    let limited = store.readCommitLog(SECOND_COMMIT_OID, { depth: 1 });
     expect(limited.map(entry => entry.oid)).toEqual([SECOND_COMMIT_OID]);
   });
 
   it("lists a commit that two lines of history share once, in readCommitLog", async () => {
     // The shape of a gadget's history once it has merged a blueprint built on a release that
     // its own blueprint also has: the walk reaches `shared` from both sides of `merge`.
-    let store = new GitStore(makeObjects());
+    let store = makeStore().store;
     let commit = (message: string, parents: string[], seconds: number) =>
         store.writeFilesAsCommit(new Map(), {
           parents, author: ALICE, message, timestamp: new Date(seconds * 1000),
         });
     let messages = async (oid: string, depth?: number) =>
-        (await store.readCommitLog(oid, { depth })).map(entry => entry.message.trimEnd());
+        store.readCommitLog(oid, { depth }).map(entry => entry.message.trimEnd());
 
     // Written within one second of each other, as publishing and then instantiating can be. Of
     // commits no newer than one another, the first that the walk reached comes first.
@@ -175,47 +179,40 @@ describe("GitStore", () => {
     // An accepted gadget creation with no files yet commits an empty tree (see mergeChanges),
     // so the empty map must produce a valid commit -- byte-identical to real git's, over the
     // canonical empty tree (4b825dc...) -- and read back as zero files.
-    let store = new GitStore(makeObjects());
+    let store = makeStore().store;
     let oid = await store.writeFilesAsCommit(new Map(), {
       parents: [], author: ALICE, message: "create gadget", timestamp: new Date(1700000000_000),
     });
     expect(oid).toBe("bb4cb778675f2b2a4e442e89256aa6da72fd09a2");  // real `git commit-tree` oid
-    expect((await store.readCommitFiles(oid)).size).toBe(0);
+    expect(store.readCommitFiles(oid).size).toBe(0);
   });
 
   it("writes the commit ids isomorphic-git's writer wrote for the same inputs", async () => {
-    // GitStore once wrote commits with isomorphic-git, and every id it wrote then is still the
-    // id of the commit it writes now.
-    let store = new GitStore(makeObjects());
-    let fs = makeGitObjectsFs(makeObjects());
+    // Commits were once written with isomorphic-git, and every id it wrote then is still the id
+    // of the commit written now. The ids are isomorphic-git 1.42's, frozen when it was dropped.
+    let store = makeStore().store;
     let bob = commitIdentityForAuthor({ type: "user", id: "bob", name: "Bob Builder" });
     let timestamp = new Date(1700000000_999);
     let cases = [
-      { parents: [], committer: undefined, message: "root" },
-      { parents: [COMMIT_1], committer: bob, message: "\r\nsubject\r\n\r\nbody\n\n" },
-      { parents: [COMMIT_1, COMMIT_3], committer: undefined, message: "caf\u00e9 \u{1F600}" },
+      { parents: [], committer: undefined, message: "root",
+        oid: "eac7a4244b9bcd6c151d155b5c51bcd83ad0741a" },
+      { parents: [COMMIT_1], committer: bob, message: "\r\nsubject\r\n\r\nbody\n\n",
+        oid: "c8ba320c9d0e2a31591aebf03f65f4a964c3652d" },
+      { parents: [COMMIT_1, COMMIT_3], committer: undefined, message: "caf\u00e9 \u{1F600}",
+        oid: "a30b04aba954490e6c15b805ad75ebc3b48c8e23" },
     ];
-    for (let { parents, committer, message } of cases) {
-      let when = { timestamp: 1700000000, timezoneOffset: 0 };
-      let viaIsomorphicGit = await writeCommit({ fs, gitdir: GITDIR, commit: {
-        message,
-        tree: EMPTY_TREE,
-        parent: parents,
-        author: { ...ALICE, ...when },
-        committer: { ...(committer ?? ALICE), ...when },
-      } });
+    for (let { parents, committer, message, oid } of cases) {
       expect(await store.writeFilesAsCommit(
           new Map(), { parents, author: ALICE, committer, message, timestamp }))
-          .toBe(viaIsomorphicGit);
+          .toBe(oid);
       expect(await store.writeCommitForTree(
           EMPTY_TREE, { parents, author: ALICE, committer, message, timestamp }))
-          .toBe(viaIsomorphicGit);
+          .toBe(oid);
     }
   });
 
   it("writes extra headers, and reads a commit that has them through every reader", async () => {
-    let objects = makeObjects();
-    let store = new GitStore(objects);
+    let { objects, store } = makeStore();
     await writeFixtureHistory(store);
     let marked = await store.writeFilesAsCommit(SECOND_FILES, {
       parents: [SECOND_COMMIT_OID, INITIAL_COMMIT_OID],
@@ -227,14 +224,15 @@ describe("GitStore", () => {
     let payload = decodeLooseObject(objects.get(marked)!.data).payload;
     expect(readGitCommitHeader(payload, "x-merged")).toEqual([INITIAL_COMMIT_OID]);
 
-    let commit = await store.readCommitObject(marked);
-    expect(commit.parent).toEqual([SECOND_COMMIT_OID, INITIAL_COMMIT_OID]);
+    let commit = store.readCommitObject(marked);
+    expect(commit.parents).toEqual([SECOND_COMMIT_OID, INITIAL_COMMIT_OID]);
     expect(commit.message).toBe("merge\n");
-    expect(commit.author).toMatchObject({ ...ALICE, timestamp: 1700000200 });
-    expect(await store.readCommitFiles(marked)).toEqual(SECOND_FILES);
-    expect((await store.readCommitLog(marked)).map(entry => entry.oid))
+    expect(commit.author)
+        .toStrictEqual({ ...ALICE, timestamp: new Date(1700000200_000), utcOffsetMinutes: 0 });
+    expect(store.readCommitFiles(marked)).toEqual(SECOND_FILES);
+    expect(store.readCommitLog(marked).map(entry => entry.oid))
         .toEqual([marked, SECOND_COMMIT_OID, INITIAL_COMMIT_OID]);
-    expect((await store.readCommitLog(marked))[0]).toEqual({
+    expect(store.readCommitLog(marked)[0]).toEqual({
       oid: marked,
       parents: [SECOND_COMMIT_OID, INITIAL_COMMIT_OID],
       message: "merge\n",
@@ -244,7 +242,7 @@ describe("GitStore", () => {
   });
 
   it("refuses a name that would write header lines of its own", async () => {
-    let store = new GitStore(makeObjects());
+    let store = makeStore().store;
     let forged = `Mallory <m@example.com> 1 +0000\nblueprint-release ${COMMIT_1}\nx Mallory`;
     await expect(store.writeFilesAsCommit(new Map(), {
       parents: [], author: { name: forged, email: "m@example.com" }, message: "m",
@@ -252,13 +250,24 @@ describe("GitStore", () => {
     })).rejects.toThrow(/name or email contains/);
   });
 
+  it("writes a file of any size, chunking a large one's blob", async () => {
+    let { objects, store } = makeStore();
+    let random = Array.from({ length: 3 * 1024 * 1024 },
+        () => Math.random().toString(36)[2]).join("");
+    let options = { parents: [], author: ALICE, message: "m", timestamp: new Date(0) };
+    let commit = await store.writeFilesAsCommit(new Map([["lib/big.js", random]]), options);
+    expect(store.readCommitFiles(commit)).toEqual(new Map([["lib/big.js", random]]));
+    let blob = await blobOid(random);
+    expect(objects.get(blob)).toHaveProperty("chunks");
+  });
+
   it("rejects reads of unknown commits", async () => {
-    let store = new GitStore(makeObjects());
-    await expect(store.readCommitFiles("deadbeef".repeat(5))).rejects.toThrow();
+    let store = makeStore().store;
+    expect(() => store.readCommitFiles("deadbeef".repeat(5))).toThrow();
   });
 
   it("rejects malformed file paths", async () => {
-    let store = new GitStore(makeObjects());
+    let store = makeStore().store;
     let options = {
       parents: [], author: ALICE, message: "bad", timestamp: new Date(1700000000_000),
     };
@@ -269,6 +278,58 @@ describe("GitStore", () => {
     let collision = new Map([["a", "file"], ["a/b", "dir entry"]]);
     await expect(store.writeFilesAsCommit(collision, options))
         .rejects.toThrow("conflicting file paths");
+  });
+
+  it("refuses the names git reserves, as a file or a directory", async () => {
+    let { objects, store } = makeStore();
+    let options = {
+      parents: [], author: ALICE, message: "bad", timestamp: new Date(1700000000_000),
+    };
+    for (let path of [".git/config", "src/.GIT", "a/git~1/b", "a\\b", ".git. /x", ".git\u200d"]) {
+      await expect(store.writeFilesAsCommit(new Map([[path, "x\n"]]), options), path)
+          .rejects.toThrow(/^invalid file path: .*git does not allow the name/);
+    }
+    expect([...objects.list()].filter(record =>
+        decodeLooseObject(record.data).type !== "blob")).toStrictEqual([]);
+    // Names that merely resemble them are ordinary.
+    for (let path of [".gitignore", "x.git", "git", "git~0", ".github/workflows/ci.yml"]) {
+      await store.writeFilesAsCommit(new Map([[path, "x\n"]]), options);
+    }
+  });
+
+  it("sorts a tree's entries by their UTF-8 bytes, as real git does", async () => {
+    // U+1F600 follows U+FF5E in UTF-8 but precedes it in UTF-16. Oid from real `git mktree`.
+    let store = makeStore().store;
+    let commit = await store.writeFilesAsCommit(
+        new Map([["\u{1F600}", "x\n"], ["\uFF5E", "x\n"]]),
+        { parents: [], author: ALICE, message: "m", timestamp: new Date(0) });
+    expect(store.commitTree(commit)).toBe("bb40f9cf9c37cab4cee8cbe15ff5dd0df3ddbb9e");
+  });
+
+  it("holds the empty tree whether or not it was ever stored", async () => {
+    // As git does. Release 0 of a blueprint has the empty tree, and is written with no tree.
+    let { objects, store } = makeStore();
+    let commit = await store.writeCommitForTree(EMPTY_TREE_OID, {
+      parents: [], author: ALICE, message: "release 0", timestamp: new Date(0),
+    });
+    expect(objects.get(EMPTY_TREE_OID)).toBeUndefined();
+    expect(store.readCommitFilesIfHeld(commit)).toStrictEqual(new Map());
+    expect(store.readCommitFiles(commit)).toStrictEqual(new Map());
+    expect(store.readLocalObject(EMPTY_TREE_OID)).toStrictEqual(
+        { type: "tree", payload: new Uint8Array() });
+  });
+
+  it("reads files only where the whole tree is held", async () => {
+    let { objects, store } = makeStore();
+    await writeFixtureHistory(store);
+    let readme = parseGitTree(decodeLooseObject(objects.get(
+        store.commitTree(INITIAL_COMMIT_OID))!.data).payload)
+        .find(entry => entry.name === "README.md")!;
+    objects.delete(readme.oid);
+    expect(store.readCommitFilesIfHeld(INITIAL_COMMIT_OID)).toBeUndefined();
+    expect(() => store.readCommitFiles(INITIAL_COMMIT_OID))
+        .toThrow(/not in the workspace's git store/);
+    expect(store.readCommitFilesIfHeld("deadbeef".repeat(5))).toBeUndefined();
   });
 });
 
@@ -286,18 +347,20 @@ describe("writeChangedFilesAsCommit", () => {
   };
 
   function makeFixtureStore() {
-    let objects = makeObjects();
+    let { objects, store } = makeStore();
     for (let object of FIXTURE_OBJECTS) {
       objects.put({
         oid: object.oid,
         data: encodeLooseObject(object.type, b64Bytes(object.payload)),
       });
     }
-    return { objects, store: new GitStore(objects) };
+    return { objects, store };
   }
 
+  type Objects = ReturnType<typeof makeStore>["objects"];
+
   // Decodes the entries of a commit's tree (or of a subdirectory of it) via the raw codec.
-  function entriesOf(objects: ReturnType<typeof makeObjects>, commitOid: string, path?: string) {
+  function entriesOf(objects: Objects, commitOid: string, path?: string) {
     let read = (oid: string) => decodeLooseObject(objects.get(oid)!.data);
     let treeOid = parseGitCommitRefs(read(commitOid).payload).tree;
     for (let segment of path?.split("/") ?? []) {
@@ -308,7 +371,7 @@ describe("writeChangedFilesAsCommit", () => {
   }
 
   // The paths whose entry (oid or mode) differs between two commits' trees, via the raw codec.
-  function changedPaths(objects: ReturnType<typeof makeObjects>, a: string, b: string) {
+  function changedPaths(objects: Objects, a: string, b: string) {
     let flatten = (commitOid: string) => {
       let out = new Map<string, string>();
       let walk = (treeOid: string, prefix: string) => {
@@ -425,192 +488,38 @@ describe("writeChangedFilesAsCommit", () => {
     expect(next.treeOid).toBe(base.treeOid);
   });
 
+  it("copies a reserved name in the base through, but refuses to add one", async () => {
+    // A tree from elsewhere may hold a name that the store would not write itself.
+    let store = makeStore().store;
+    let blob = await store.writeBlob(new TextEncoder().encode("x\n"));
+    let tree = encodeGitTree([{ mode: "100644", name: "a\\b.txt", oid: blob.oid }]);
+    await store.importObjects([{ type: "tree", payload: tree }]);
+    let base = await store.writeCommitForTree(await gitObjectOid("tree", tree), OPTIONS);
+    let rebuilt = await store.writeChangedFilesAsCommit(
+        new Map([["a\\b.txt", "edited\n"], ["b.txt", "b\n"]]), { ...OPTIONS, treeBase: base });
+    expect(store.readCommitFiles(rebuilt))
+        .toStrictEqual(new Map([["a\\b.txt", "edited\n"], ["b.txt", "b\n"]]));
+    await expect(store.writeChangedFilesAsCommit(
+        new Map([["c\\d.txt", "x"]]), { ...OPTIONS, treeBase: base }))
+        .rejects.toThrow("git does not allow the name");
+  });
+
+  it("refuses to rebuild a tree whose entry name is not UTF-8, rather than rename it", async () => {
+    let { store } = makeFixtureStore();
+    let base = await store.writeCommitForTree(BAD_NAME_TREE, OPTIONS);
+    await expect(store.writeChangedFilesAsCommit(new Map([["new.txt", "x"]]),
+                                                 { ...OPTIONS, treeBase: base }))
+        .rejects.toThrow(/not valid UTF-8/);
+  });
+
   it("produces an empty tree when every file is deleted", async () => {
-    let objects = makeObjects();
-    let store = new GitStore(objects);
+    let store = makeStore().store;
     await writeFixtureHistory(store);
     let commit = await store.writeChangedFilesAsCommit(
         new Map([...INITIAL_FILES.keys()].map(path => [path, null])),
         { parents: [INITIAL_COMMIT_OID], author: ALICE, message: "wipe",
           timestamp: new Date(1700001000_000), treeBase: INITIAL_COMMIT_OID });
-    expect((await store.readCommitFiles(commit)).size).toBe(0);
-  });
-});
-
-describe("threeWayMerge", () => {
-  const files = (entries: Record<string, string>) => new Map(Object.entries(entries));
-
-  it("merges a large file both sides changed, conflicts and all", () => {
-    // No size is refused here: whether the result fits is for storage to say when it is
-    // committed. The conflict holds all three versions, about 600K characters.
-    let lines = (word: string) => `${word.repeat(250)}\n`.repeat(200);
-    let result = threeWayMerge(
-        files({ "big.js": lines("base") }),
-        files({ "big.js": lines("ours") }),
-        files({ "big.js": lines("thrs") }));
-    expect(result.conflictPaths).toEqual(["big.js"]);
-    expect(result.files.get("big.js")!.length).toBeGreaterThan(3 * lines("base").length);
-  });
-
-  it("writes a file storage cannot hold as an error naming it, and stores no tree", async () => {
-    // The limit is storage's own (here the mock's, mimicking SQLite's error), on the deflated
-    // object: nothing checks a file's length before the write.
-    let objects = makeObjects();
-    let put = objects.put.bind(objects);
-    objects.put = record => {
-      if (record.data.byteLength > 64 * 1024) throw new Error("string or blob too big: SQLITE_TOOBIG");
-      put(record);
-    };
-    let store = new GitStore(objects);
-    let random = Array.from({ length: 128 * 1024 }, () => Math.random().toString(36)[2]).join("");
-    let options = { parents: [], author: ALICE, message: "m", timestamp: new Date(0) };
-    await expect(store.writeFilesAsCommit(new Map([["lib/big.js", random]]), options))
-        .rejects.toThrow(/^lib\/big\.js is too large to store\. Split it into smaller files/);
-    expect([...objects.list()]).toEqual([]);
-    // Compressible text of the same length fits.
-    let fits = await store.writeFilesAsCommit(
-        new Map([["lib/big.js", "x".repeat(128 * 1024)]]), options);
-    await expect(store.writeChangedFilesAsCommit(new Map([["lib/big.js", random]]),
-                                                 { ...options, treeBase: fits }))
-        .rejects.toThrow("lib/big.js is too large to store");
-  });
-
-  it("merges disjoint changes cleanly", () => {
-    let result = threeWayMerge(
-        files({ "a.js": "a\nb\nc\nd\ne\n", "same.js": "s\n" }),
-        files({ "a.js": "A\nb\nc\nd\ne\n", "same.js": "s\n", "added.js": "new\n" }),
-        files({ "a.js": "a\nb\nc\nd\nE\n", "same.js": "s\n" }));
-    expect(result.conflictPaths).toEqual([]);
-    expect(result.files).toEqual(files({
-      "a.js": "A\nb\nc\nd\nE\n",  // line edits from both sides, merged by diff3
-      "same.js": "s\n",
-      "added.js": "new\n",
-    }));
-  });
-
-  it("lets a lone side win, including deletions", () => {
-    let result = threeWayMerge(
-        files({ "mod.js": "old\n", "deleted-by-ours.js": "x\n", "deleted-by-theirs.js": "y\n" }),
-        files({ "mod.js": "new\n", "deleted-by-theirs.js": "y\n" }),
-        files({ "mod.js": "old\n", "deleted-by-ours.js": "x\n" }));
-    expect(result.conflictPaths).toEqual([]);
-    expect(result.files).toEqual(files({ "mod.js": "new\n" }));
-  });
-
-  it("treats identical changes on both sides as clean", () => {
-    let result = threeWayMerge(
-        files({ "a.js": "old\n" }),
-        files({ "a.js": "new\n", "added.js": "same\n" }),
-        files({ "a.js": "new\n", "added.js": "same\n" }));
-    expect(result.conflictPaths).toEqual([]);
-    expect(result.files).toEqual(files({ "a.js": "new\n", "added.js": "same\n" }));
-  });
-
-  it("marks overlapping edits with 3-way conflict markers", () => {
-    let result = threeWayMerge(
-        files({ "a.js": "line1\nline2\nline3\n" }),
-        files({ "a.js": "line1\nOURS\nline3\n" }),
-        files({ "a.js": "line1\nTHEIRS\nline3\n" }),
-        { ours: "mainline", theirs: "chat", base: "merged" });
-    expect(result.conflictPaths).toEqual(["a.js"]);
-    expect(result.files.get("a.js")).toBe(
-        "line1\n" +
-        "<<<<<<< mainline\n" +
-        "OURS\n" +
-        "||||||| merged\n" +
-        "line2\n" +
-        "=======\n" +
-        "THEIRS\n" +
-        ">>>>>>> chat\n" +
-        "line3\n");
-  });
-
-  it("marks both-sides-added files as conflicts", () => {
-    // The case isomorphic-git's own merge throws MergeNotSupportedError on.
-    let result = threeWayMerge(
-        files({}),
-        files({ "new.js": "foo\n" }),
-        files({ "new.js": "bar\n" }));
-    expect(result.conflictPaths).toEqual(["new.js"]);
-    expect(result.files.get("new.js")).toBe(
-        "<<<<<<< ours\n" +
-        "foo\n" +
-        "||||||| base\n" +
-        "=======\n" +
-        "bar\n" +
-        ">>>>>>> theirs\n");
-  });
-
-  it("keeps modified content on delete-vs-modify conflicts", () => {
-    let result = threeWayMerge(
-        files({ "a.js": "x\n", "b.js": "x\n" }),
-        files({ "b.js": "ours\n" }),                    // ours deleted a.js, modified b.js
-        files({ "a.js": "theirs\n" }));                 // theirs modified a.js, deleted b.js
-    expect(result.conflictPaths).toEqual(["a.js", "b.js"]);
-    expect(result.files).toEqual(files({ "a.js": "theirs\n", "b.js": "ours\n" }));
-  });
-
-  it("preserves bare \\r and U+2028/U+2029, which are not line boundaries here", () => {
-    // A lossy line split (one that treats these as boundaries but drops them) would corrupt
-    // merged content; splitLines keeps them inside their line instead, merely coarsening the
-    // merge granularity for such files.
-    let result = threeWayMerge(
-        files({ "a.js": "one\rtwo\u2028three\nmid\nend\n" }),
-        files({ "a.js": "one\rtwo\u2028three\nmid\nEND\n" }),
-        files({ "a.js": "ONE\rtwo\u2028three\nmid\nend\n" }));
-    expect(result.conflictPaths).toEqual([]);
-    expect(result.files.get("a.js")).toBe("ONE\rtwo\u2028three\nmid\nEND\n");
-  });
-
-  it("terminates unterminated conflict hunks with a newline", () => {
-    let result = threeWayMerge(
-        files({ "a.js": "x" }), files({ "a.js": "y" }), files({ "a.js": "z" }));
-    expect(result.conflictPaths).toEqual(["a.js"]);
-    expect(result.files.get("a.js")).toBe(
-        "<<<<<<< ours\ny\n||||||| base\nx\n=======\nz\n>>>>>>> theirs\n");
-  });
-});
-
-describe("makeGitObjectsFs", () => {
-  const oid = "0123456789abcdef0123456789abcdef01234567";
-  const loosePath = `${GITDIR}/objects/${oid.slice(0, 2)}/${oid.slice(2)}`;
-
-  it("returns a rejected promise from the promise-style detection probe", async () => {
-    let fs = makeGitObjectsFs(makeObjects());
-    // isomorphic-git calls readFile() with no arguments to detect a promise-style fs; a
-    // synchronous throw would misclassify this as a callback-style fs.
-    let probe = (fs.promises.readFile as () => Promise<unknown>)();
-    expect(probe).toBeInstanceOf(Promise);
-    await expect(probe).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it("round-trips loose objects and reports them via stat", async () => {
-    let fs = makeGitObjectsFs(makeObjects());
-    let data = new Uint8Array([1, 2, 3]);
-    await fs.promises.writeFile(loosePath, data);
-    expect(await fs.promises.readFile(loosePath)).toEqual(data);
-    let stat = await fs.promises.stat(loosePath);
-    expect(stat.isFile()).toBe(true);
-    expect(stat.size).toBe(3);
-  });
-
-  it("rejects paths outside the loose-object layout", async () => {
-    let fs = makeGitObjectsFs(makeObjects());
-    await expect(fs.promises.readFile(`${GITDIR}/config`))
-        .rejects.toMatchObject({ code: "ENOENT" });
-    await expect(fs.promises.stat(GITDIR)).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(fs.promises.writeFile(`${GITDIR}/refs/heads/main`, new Uint8Array()))
-        .rejects.toMatchObject({ code: "EPERM" });
-    await expect(fs.promises.readdir(`${GITDIR}/refs`))
-        .rejects.toMatchObject({ code: "ENOENT" });
-    await expect(fs.promises.lstat(loosePath)).rejects.toMatchObject({ code: "ENOSYS" });
-  });
-
-  it("reports missing objects and an empty pack directory", async () => {
-    let fs = makeGitObjectsFs(makeObjects());
-    await expect(fs.promises.readFile(loosePath)).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(fs.promises.stat(loosePath)).rejects.toMatchObject({ code: "ENOENT" });
-    expect(await fs.promises.readdir(`${GITDIR}/objects/pack`)).toEqual([]);
+    expect(store.readCommitFiles(commit).size).toBe(0);
   });
 });
 
@@ -635,8 +544,8 @@ describe("commitIdentityForAuthor", () => {
       email: `Malloryblueprint-release ${COMMIT_1}x Mallory`,
     });
 
-    let objects = makeObjects();
-    let oid = await new GitStore(objects).writeFilesAsCommit(new Map(), {
+    let { objects, store } = makeStore();
+    let oid = await store.writeFilesAsCommit(new Map(), {
       parents: [], author: identity, message: "m", timestamp: new Date(1700000000_000),
     });
     let payload = decodeLooseObject(objects.get(oid)!.data).payload;

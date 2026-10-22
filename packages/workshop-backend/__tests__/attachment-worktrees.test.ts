@@ -8,7 +8,6 @@ import {createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall, type Api, 
 import type {OverseerDurableObject} from "../src/overseer";
 import type {UserDurableObject} from "../src/user";
 import type {CodeChange} from "@gadgets/workshop-shared/code-change";
-import {MAX_GIT_OBJECT_SIZE} from "../src/git-cache";
 declare module "cloudflare:workers" { interface ProvidedEnv {
   TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
   TEST_USER: DurableObjectNamespace<UserDurableObject>;
@@ -68,7 +67,7 @@ describe("scratch worktree attachment ingress", () => {
     let chatId: number, worktreeId: number;
     await inKernel(name, async impl => {
       const user = env.TEST_USER.getByName(crypto.randomUUID());
-      const seed = await impl.gitStore.writeBlob(new TextEncoder().encode("seed\n"));
+      const seed = await impl.gitCache.writeBlob(new TextEncoder().encode("seed\n"));
       chatId = await impl.newChat(user, {profile: USER}, "Old attachments", undefined,
         existing ? [{oid: seed.oid, mimeType: "text/plain", name: "seed.txt"}] : undefined);
       const message = [...impl.storage.chats.list()].find(message => message.type === "message")!;
@@ -82,8 +81,8 @@ describe("scratch worktree attachment ingress", () => {
       const context = impl.getChatAgentContext(chatId);
       delete context.attachmentsMigrated;
       impl.storage.chatContext.put(context);
-      const writeBlob = impl.gitStore.writeBlob.bind(impl.gitStore);
-      const fault = vi.spyOn(impl.gitStore, "writeBlob").mockImplementation(bytes => {
+      const writeBlob = impl.gitCache.writeBlob.bind(impl.gitCache);
+      const fault = vi.spyOn(impl.gitCache, "writeBlob").mockImplementation(bytes => {
         if (bytes[0] === 0) return Promise.reject(new Error("migration interrupted"));
         return writeBlob(bytes);
       });
@@ -181,7 +180,7 @@ describe("scratch worktree attachment ingress", () => {
     impl.storage.chatContext.put(context);
     const sync = impl.ctx.storage.sync.bind(impl.ctx.storage);
     const fault = boundary === "before publication"
-      ? vi.spyOn(impl.gitStore, "writeBlob").mockRejectedValueOnce(new Error("transient failure"))
+      ? vi.spyOn(impl.gitCache, "writeBlob").mockRejectedValueOnce(new Error("transient failure"))
       : vi.spyOn(impl.ctx.storage, "sync").mockImplementationOnce(async () => {
         await sync();
         throw new Error("migration acknowledgement lost");
@@ -202,13 +201,13 @@ describe("scratch worktree attachment ingress", () => {
 
   it("reads and greps a full-size text upload without changing its byte-backed OT state", () => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
-    const small = await impl.gitStore.writeBlob(new TextEncoder().encode("seed"));
+    const small = await impl.gitCache.writeBlob(new TextEncoder().encode("seed"));
     const chatId = await impl.newChat(user, {profile: USER}, "Seed", undefined,
       [{oid: small.oid, mimeType: "text/plain", name: "seed.txt"}]);
     const text = "first line\nneedle\n" + "padding\n".repeat(524286);
     // Exact upload cap, with short lines so the model requests only a small window.
     const bytes = new TextEncoder().encode(text.padEnd(4 * 1024 * 1024, "x").slice(0, 4 * 1024 * 1024));
-    const ref = await impl.gitStore.writeBlob(bytes);
+    const ref = await impl.gitCache.writeBlob(bytes);
     await impl.sendChatMessage(user, {profile: USER}, chatId, "Inspect", undefined,
       [{oid: ref.oid, mimeType: "text/plain", name: "large.txt"}]);
     const worktree = impl.getChatAgentContext(chatId).scratch!.worktreeId;
@@ -231,11 +230,11 @@ describe("scratch worktree attachment ingress", () => {
 
   it.each([false, true])("replays text replacements over a binary %s overlay without reading the obsolete base", existing => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
-    const ref = await impl.gitStore.writeBlob(Uint8Array.of(0, 255));
+    const ref = await impl.gitCache.writeBlob(Uint8Array.of(0, 255));
     const chatId = await impl.newChat(user, {profile: USER}, "Start", undefined,
       existing ? undefined : [{oid: ref.oid, mimeType: "application/octet-stream", name: "data.bin"}]);
     if (existing) {
-      const seed = await impl.gitStore.writeBlob(new TextEncoder().encode("seed"));
+      const seed = await impl.gitCache.writeBlob(new TextEncoder().encode("seed"));
       await impl.sendChatMessage(user, {profile: USER}, chatId, "Seed", undefined,
         [{oid: seed.oid, mimeType: "text/plain", name: "seed.txt"}]);
       await impl.sendChatMessage(user, {profile: USER}, chatId, "Binary", undefined,
@@ -259,10 +258,11 @@ describe("scratch worktree attachment ingress", () => {
 
   it("keeps large local text readable after byte access and DO eviction", async () => {
     const name = crypto.randomUUID();
-    const text = "a".repeat(MAX_GIT_OBJECT_SIZE + 1);
+    // Over 8 MB, so stored chunked.
+    const text = "a".repeat(8_000_001);
     let commit: string, oid: string;
     await inKernel(name, async impl => {
-      commit = await impl.gitStore.writeFilesAsCommit(new Map([["large.txt", text]]), {
+      commit = await impl.gitCache.writeFilesAsCommit(new Map([["large.txt", text]]), {
         parents: [], author: {name: "Test", email: "test@example.com"},
         message: "Large local text", timestamp: new Date(0),
       });
@@ -272,15 +272,15 @@ describe("scratch worktree attachment ingress", () => {
       oid = ref!.oid;
       expect(impl.gitCache.readLocalObject(oid)?.payload.byteLength).toBe(text.length);
       expect(await impl.readFileAtCommit(commit, "large.txt")).toBe(text);
-      expect((await impl.gitStore.readCommitFiles(commit)).get("large.txt")).toBe(text);
+      expect(impl.gitCache.readCommitFiles(commit).get("large.txt")).toBe(text);
       await impl.ctx.storage.sync();
     });
     await abortAllDurableObjects();
     await inKernel(name, async impl => {
-      expect(impl.storage.gitObjects.get(oid)).toBeDefined();
+      expect(impl.storage.gitObjects.get(oid)).toHaveProperty("chunks");
       expect(impl.gitCache.readLocalObject(oid)?.payload.byteLength).toBe(text.length);
       expect(await impl.readFileAtCommit(commit, "large.txt")).toBe(text);
-      expect((await impl.gitStore.readCommitFiles(commit)).get("large.txt")).toBe(text);
+      expect(impl.gitCache.readCommitFiles(commit).get("large.txt")).toBe(text);
     });
   });
 
@@ -301,7 +301,7 @@ describe("scratch worktree attachment ingress", () => {
       if (tree.type !== "worktree") throw new Error("Expected scratch worktree");
       if (bytes[0] === 255) {
         const value = await impl.gitCache.fileBytesAtCommit(tree.baseCommit, "input.csv");
-        expect(impl.gitStore.readBlob(value!.oid, value!.byteLength)).toEqual(bytes);
+        expect(impl.gitCache.readBlob(value!.oid, value!.byteLength)).toEqual(bytes);
         await expect(impl.readFileAtCommit(tree.baseCommit, "input.csv")).rejects.toThrow(/not a text file/);
       } else {
         expect(await impl.readFileAtCommit(tree.baseCommit, "input.csv")).toBe("\ufeffA");
@@ -314,7 +314,7 @@ describe("scratch worktree attachment ingress", () => {
     "projects $size-byte text uploads (existing worktree: $existing, $source)", ({size, existing, source}) => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const stage = async (data: Uint8Array, name: string) => {
-      if (source === "blob") return {oid: (await impl.gitStore.writeBlob(data)).oid,
+      if (source === "blob") return {oid: (await impl.gitCache.writeBlob(data)).oid,
         mimeType: "text/plain", name};
       const id = crypto.randomUUID();
       impl.storage.chatAttachmentContent.put({fileId: id, data, state: {
@@ -345,7 +345,7 @@ describe("scratch worktree attachment ingress", () => {
       .get(worktreeId)?.get("large.txt")
       ?? await impl.readFileAtCommit(impl.getWorktreePinBase(worktreeId)!, "large.txt");
     const workspaceBytes = typeof value === "string" ? new TextEncoder().encode(value)
-      : impl.gitStore.readBlob(value!.oid, value!.byteLength);
+      : impl.gitCache.readBlob(value!.oid, value!.byteLength);
     expect(await crypto.subtle.digest("SHA-256", workspaceBytes)).toEqual(await crypto.subtle.digest("SHA-256", bytes));
     expect([...impl.storage.chats.list()].some(message => message.type === "message" &&
       message.attachments?.some(attachment => attachment.id === id))).toBe(true);
@@ -405,7 +405,7 @@ describe("scratch worktree attachment ingress", () => {
 
   it("reuses deleted generated names but keeps historical upload names reserved", () => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
-    const original = await impl.gitStore.writeBlob(new TextEncoder().encode("original"));
+    const original = await impl.gitCache.writeBlob(new TextEncoder().encode("original"));
     const chatId = await impl.newChat(user, {profile: USER}, "Seed", undefined,
       [{oid: original.oid, mimeType: "text/plain", name: "upload.txt"}]);
     const id = impl.getChatAgentContext(chatId).scratch!.worktreeId;
@@ -437,7 +437,7 @@ describe("scratch worktree attachment ingress", () => {
       const user = env.TEST_USER.getByName(crypto.randomUUID());
       const stage = async (content: Uint8Array, mimeType: string, name: string) => {
         if (source === "blob") return {
-          oid: (await impl.gitStore.writeBlob(content)).oid, mimeType, name,
+          oid: (await impl.gitCache.writeBlob(content)).oid, mimeType, name,
         };
         const upload = validateChatAttachmentUpload({content, mimeType, name});
         const id = crypto.randomUUID();
@@ -456,7 +456,7 @@ describe("scratch worktree attachment ingress", () => {
       const value = overlay ?? await impl.gitCache.fileBytesAtCommit(impl.getWorktreePinBase(worktreeId)!, name);
       if (typeof value !== "object") throw new Error("Expected opaque byte content");
       expect(value.byteLength).toBe(bytes.byteLength);
-      expect(impl.gitStore.readBlob(value.oid, value.byteLength)).toEqual(bytes);
+      expect(impl.gitCache.readBlob(value.oid, value.byteLength)).toEqual(bytes);
       const message = [...impl.storage.chats.list()].findLast(message =>
         message.type === "message" && message.attachments?.some(file => file.name === name));
       if (!message || message.type !== "message") throw new Error("Missing attachment message");
@@ -486,7 +486,7 @@ describe("scratch worktree attachment ingress", () => {
     await inKernel(name, async impl => {
       let upload;
       if (source === "blob") {
-        upload = {oid: (await impl.gitStore.writeBlob(original)).oid,
+        upload = {oid: (await impl.gitCache.writeBlob(original)).oid,
           mimeType: "application/octet-stream", name: "data.bin"};
       } else {
         id = crypto.randomUUID();
@@ -500,7 +500,7 @@ describe("scratch worktree attachment ingress", () => {
       if (!message || message.type !== "message") throw new Error("Missing attachment message");
       id = message.attachments![0].id;
       worktreeId = impl.getChatAgentContext(chatId).scratch!.worktreeId;
-      const replacement = await impl.gitStore.writeBlob(updated);
+      const replacement = await impl.gitCache.writeBlob(updated);
       await step(impl, chatId, {[worktreeId]: [["data.bin", {setBytes: replacement}]]});
       expect(await impl.mergeChanges(chatId, {profile: USER}, USER.id)).toEqual({outcome: "merged"});
       await impl.ctx.storage.sync();
@@ -509,7 +509,7 @@ describe("scratch worktree attachment ingress", () => {
     await inKernel(name, async impl => {
       expect(await impl.getChatAttachmentData(chatId, id)).toEqual(original);
       const value = await impl.gitCache.fileBytesAtCommit(impl.getWorktreePinBase(worktreeId)!, "data.bin");
-      expect(impl.gitStore.readBlob(value!.oid, value!.byteLength)).toEqual(updated);
+      expect(impl.gitCache.readBlob(value!.oid, value!.byteLength)).toEqual(updated);
       await expect(impl.getChatAttachmentData(chatId + 1, id)).rejects.toThrow("not found");
     });
   });
@@ -546,7 +546,7 @@ describe("scratch worktree attachment ingress", () => {
   ])("keeps oversized $name byte-exact and out of first-turn and replay model inputs", file => inKernel(crypto.randomUUID(), async impl => {
     // Valid 9000×1 / 1×9000 PNGs, not merely forged dimension headers.
     const bytes = Uint8Array.fromBase64(file.base64);
-    const blob = await impl.gitStore.writeBlob(bytes);
+    const blob = await impl.gitCache.writeBlob(bytes);
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const chatId = await impl.newChat(user, {profile: USER}, "Inspect the image", undefined,
       [{oid: blob.oid, mimeType: "image/png", name: file.name}]);
@@ -576,7 +576,7 @@ describe("scratch worktree attachment ingress", () => {
     const tree = impl.storage.gadgets.get(impl.getChatAgentContext(chatId).scratch!.worktreeId)!;
     if (tree.type !== "worktree") throw new Error("Expected scratch worktree");
     const value = await impl.gitCache.fileBytesAtCommit(tree.baseCommit, file.name);
-    expect(impl.gitStore.readBlob(value!.oid, value!.byteLength)).toEqual(bytes);
+    expect(impl.gitCache.readBlob(value!.oid, value!.byteLength)).toEqual(bytes);
   }));
 
   it.each(["image/png", "application/pdf"])(
@@ -590,7 +590,7 @@ describe("scratch worktree attachment ingress", () => {
         view.setUint32(16, width); view.setUint32(20, 1000);
       }
       const user = env.TEST_USER.getByName(crypto.randomUUID());
-      const blob = await impl.gitStore.writeBlob(large);
+      const blob = await impl.gitCache.writeBlob(large);
       const batch = Array.from({length: 5}, (_, i) => ({oid: blob.oid, mimeType: "image/png", name: `${i}.png`}));
       const chatId = await impl.newChat(user, {profile: USER}, "First five", undefined, batch);
       for (let i = 1; i < 4; ++i) await impl.sendChatMessage(user, {profile: USER}, chatId, "Five more", undefined, batch);
@@ -599,7 +599,7 @@ describe("scratch worktree attachment ingress", () => {
       const before = await scriptedTurn(impl, chatId, [], "anthropic-messages");
       expect(imageParts(before[0])).toHaveLength(20);
       const lastBytes = mimeType === "image/png" ? small : new TextEncoder().encode("%PDF-1.7");
-      const last = await impl.gitStore.writeBlob(lastBytes);
+      const last = await impl.gitCache.writeBlob(lastBytes);
       await impl.sendChatMessage(user, {profile: USER}, chatId, "One more", undefined,
         [{oid: last.oid, mimeType, name: "last"}]);
       for (let turn = 0; turn < 2; ++turn) {
@@ -627,7 +627,7 @@ describe("scratch worktree attachment ingress", () => {
       const user = env.TEST_USER.getByName(crypto.randomUUID());
       const first = await impl.newChat(user, {profile: USER}, "No attachments");
       await impl.sendChatMessage(user, {profile: USER}, first, "Still no attachments");
-      const blob = await impl.gitStore.writeBlob(new TextEncoder().encode("input"));
+      const blob = await impl.gitCache.writeBlob(new TextEncoder().encode("input"));
       const upload = {oid: blob.oid, mimeType: "text/plain", name: "notes.txt"};
       await impl.sendChatMessage(user, {profile: USER}, first, "First upload", undefined, [upload]);
       const scratch = impl.getChatAgentContext(first).scratch!;
@@ -651,18 +651,18 @@ describe("scratch worktree attachment ingress", () => {
 
   it("accepts any local Git blob and checks attachment signatures and limits when sending", () => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
-    const blob = await impl.gitStore.writeBlob(Uint8Array.of(1));
+    const blob = await impl.gitCache.writeBlob(Uint8Array.of(1));
     const upload = {oid: blob.oid, mimeType: "image/png", name: "bad.png"};
     await expect(impl.newChat(user, {profile: USER}, "Bad MIME", undefined, [upload]))
       .rejects.toThrow("does not match its MIME");
-    const local = await impl.gitStore.writeBlob(Uint8Array.of(2));
+    const local = await impl.gitCache.writeBlob(Uint8Array.of(2));
     const chatId = await impl.newChat(user, {profile: USER}, "Local blob", undefined,
       [{oid: local.oid, mimeType: "application/octet-stream"}]);
     expect(impl.getChatAgentContext(chatId).scratch).toBeDefined();
     await expect(impl.newChat(user, {profile: USER}, "Missing blob", undefined,
       [{oid: "a".repeat(40), mimeType: "application/octet-stream"}]))
       .rejects.toThrow("Unknown Git blob");
-    const tooBig = await impl.gitStore.writeBlob(new Uint8Array(4 * 1024 * 1024 + 1));
+    const tooBig = await impl.gitCache.writeBlob(new Uint8Array(4 * 1024 * 1024 + 1));
     await expect(impl.newChat(user, {profile: USER}, "Too large", undefined,
       [{oid: tooBig.oid, mimeType: "application/octet-stream"}]))
       .rejects.toThrow("too large");

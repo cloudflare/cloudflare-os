@@ -4,7 +4,7 @@
 // Everything a workspace persists in its Overseer is declared in this one file, so that a change
 // to the stored shape of a workspace shows up as a change here. Declare new collections,
 // singletons, and record types here even when the code operating on them lives in another module
-// (git-store.ts, git-cache.ts, sharing.ts, agent.ts, ...). The exception is types that are also
+// (git-cache.ts, sharing.ts, agent.ts, ...). The exception is types that are also
 // part of the wire API (e.g. BlueprintMetadata): those are defined in workshop-shared and stored
 // as-is. Where old records still hold something the wire type has since dropped, the stored
 // shape is declared here as a `Stored*` type extending it (or a `Legacy*` type, for a shape no
@@ -160,7 +160,7 @@ export type GadgetRecord = {
 
   /**
    * The gadget's head commit (40-hex oid) in the workspace's git object store -- its committed
-   * mainline code (see git-store.ts and the `gitObjects` collection). This field is the gadget's
+   * mainline code (see git-cache.ts and the `gitObjects` collection). This field is the gadget's
    * "ref": the store itself has no ref layer. It advances only in mergeChanges(), which requires
    * the accepting chat to have already merged this commit (accepts are fast-forward only), and is
    * surfaced to clients as WorkpieceSummary.commitId.
@@ -306,13 +306,59 @@ export type WorkpieceRecord = GadgetRecord | WorktreeRecord;
 // Git object store
 
 /**
- * One git loose object: `data` is the zlib-deflated object exactly as git would store it under
- * `.git/objects/xx/yyyy...`, and `oid` is its 40-hex SHA-1 name. Content-addressed, hence
- * immutable and idempotent to rewrite.
+ * One object of the workspace git store, in one of two forms. Content-addressed by `oid` (the
+ * 40-hex SHA-1 of the whole object, as git names it) in both, hence immutable and idempotent to
+ * rewrite. Tell the forms apart with `isChunkedBlobRecord()` (git-chunked-blob.ts).
  */
-export interface GitObjectRecord {
+export type GitObjectRecord = GitInlineObjectRecord | GitChunkedBlobRecord;
+
+/**
+ * Any object, stored whole: `data` is the zlib-deflated loose object exactly as git would store
+ * it under `.git/objects/xx/yyyy...`. Every object of up to CHUNK_MAX_SIZE (1 MiB) is written in
+ * this form, and so were all objects before chunking existed, up to 8 MB.
+ */
+export interface GitInlineObjectRecord {
   oid: string;
   data: Uint8Array;
+}
+
+/**
+ * A blob over CHUNK_MAX_SIZE, stored as an index of chunks (see git-chunked-blob.ts). Each chunk
+ * is an ordinary inline blob row of the same collection; the concatenation of the chunks'
+ * payloads, in order, is this blob's payload. `oid` is the SHA-1 of the whole blob (never of the
+ * chunk list), so the chunking is invisible outside the store. Chunks are written before the
+ * index row, so an index row's presence implies its chunks'. Only blobs are ever chunked, so this
+ * form has no `type`.
+ *
+ * An index entry serializes to about 70 bytes, so at the 256 KiB average chunk size an 8 MiB
+ * index row would describe a blob of over 25 GB, beyond a Durable Object's whole storage: one
+ * level of index always suffices.
+ */
+export interface GitChunkedBlobRecord {
+  oid: string;
+  /** Total payload byte length. */
+  size: number;
+  /** Total number of `\n` bytes in the payload. */
+  newlines: number;
+  /** In payload order; non-empty; offsets strictly increasing, the first 0. */
+  chunks: GitBlobChunk[];
+}
+
+/**
+ * One entry of a chunked blob's index. The chunk's own size and newline count are derived from
+ * the next entry's `offset` and `line` (or the record's `size` and `newlines`, for the last), so
+ * neither is stored.
+ */
+export interface GitBlobChunk {
+  /** The chunk's blob oid. */
+  oid: string;
+  /** Byte offset in the whole payload of the chunk's first byte. */
+  offset: number;
+  /**
+   * The number of `\n` bytes in all preceding chunks: equivalently, the 0-based number of the
+   * line containing this chunk's first byte.
+   */
+  line: number;
 }
 
 /**
@@ -325,7 +371,7 @@ export interface GitObjectMetadataRecord {
 
   /**
    * The object's type. Always known at write time: *measured* from hash-verified bytes
-   * (put/consumePack, including oversize rejections), or *asserted* by the referencing context
+   * (put/consumePack), or *asserted* by the referencing context
    * that introduced the oid (a tree entry's mode, a commit's tree/parent headers, an
    * advertisement) -- which is how it can exist for objects never fetched. The two grades are
    * distinguished by `size`: measured writers always record both together, so `size !==
@@ -338,12 +384,12 @@ export interface GitObjectMetadataRecord {
   type: GitObjectType;
 
   /**
-   * The payload byte size. Recorded ONLY from bytes actually measured: a stored put(), or a
-   * put()/pack entry rejected for exceeding MAX_GIT_OBJECT_SIZE (the content was in hand, so
-   * the measurement is proof-grade and lets later reads fail fast). Never inferred from an
-   * object's *absence* -- an omitted blob's size is unknowable, and an absence-based record
-   * would durably trust gatekeeper behavior as if it were a measurement. Doubles as `type`'s
-   * evidentiary grade (see its doc).
+   * The payload byte size. Recorded ONLY from bytes actually measured: a stored put() or pack
+   * entry. (Rows from before every size was stored may also carry the size of an object that
+   * was measured but declined for its size; such an object is pulled like any other.) Never
+   * inferred from an object's *absence* -- an omitted blob's size is unknowable, and an
+   * absence-based record would durably trust gatekeeper behavior as if it were a measurement.
+   * Doubles as `type`'s evidentiary grade (see its doc).
    */
   size?: number;
 
@@ -980,7 +1026,7 @@ type ChatDraftUpdateRecord = {
 /**
  * One incremental update in the workspace-wide Yjs code log (the `code` and `snapshots`
  * collections). Formerly the public `CodeUpdate` wire type; the git-storage transition removed it
- * from the API along with `subscribeToCode()` (mainline code becomes commits; see git-store.ts),
+ * from the API along with `subscribeToCode()` (mainline code becomes commits; see git-cache.ts),
  * leaving it as the internal record type of the retired log, whose one remaining reader is the
  * git-storage migration's replay (overseer-git-migration.ts).
  */
@@ -1263,11 +1309,12 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       }),
 
       // The workspace's git object store: real git loose objects (blobs, trees, commits) keyed
-      // by 40-hex SHA-1 oid. Mainline gadget code lives here as commits, with each
+      // by 40-hex SHA-1 oid, except that a blob over 1 MiB is stored as an index of chunks, each
+      // chunk itself an ordinary blob row (see GitObjectRecord). Mainline gadget code lives here as commits, with each
       // GadgetRecord.commitId pointing at its head (superseding the `code`/`snapshots` Yjs log).
       // There is deliberately no ref layer: gadget/blueprint records and chats' pinned commits
       // are the refs, and all gadgets' histories share this one content-addressed store. See
-      // git-store.ts.
+      // git-cache.ts.
       gitObjects: collection<GitObjectRecord>()({
         primaryKey: "oid",
       }),

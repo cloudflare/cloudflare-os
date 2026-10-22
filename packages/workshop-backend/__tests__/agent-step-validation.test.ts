@@ -61,7 +61,7 @@ describe("agent transform validation boundaries", () => {
     {name: "an unmatched edit", toolName: "editFile", args: {filename: "server.js", textToReplace: "missing", replacement: "wrong"}, error: /No matching text/},
     {name: "a no-op edit", toolName: "editFile", args: {filename: "server.js", textToReplace: "original", replacement: "original"}, error: undefined},
   ])("preserves committed read knowledge after $name", ({toolName, args, error}) => inKernel(async impl => {
-    const commitId = await impl.gitStore.writeFilesAsCommit(new Map([
+    const commitId = await impl.gitCache.writeFilesAsCommit(new Map([
       ["server.js", "original\n"], ["other.js", "untouched\n"],
     ]), {parents: [], author: {name: "Test", email: "test@example.com"}, message: "Initial", timestamp: new Date(0)});
     const gadget = impl.createGadget("Board", "BOARD", undefined, undefined, commitId);

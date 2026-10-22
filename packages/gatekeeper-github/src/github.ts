@@ -71,7 +71,9 @@ import {
 } from "@gadgets/gatekeeper-kit/git-diff";
 import { SessionGitCache } from "@gadgets/gatekeeper-kit/cursors";
 import {
+  bufferedGitObject,
   commitIdsOfSummary,
+  gitObjectBytes,
   isCommitOid,
   parseGitCommitPayload,
 } from "@gadgets/gatekeeper-kit/git-objects";
@@ -4683,11 +4685,11 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       if (pending.length === MAX_PENDING_CHAIN_COMMITS) {
         throw new Error(`More than ${MAX_PENDING_CHAIN_COMMITS} commits are queued for push.`);
       }
-      const object = await gitCache.get(current);
-      if (object === null || object.type !== "commit") {
+      const payload = await gitObjectBytes(await gitCache.get(current), "commit");
+      if (payload === null) {
         throw new Error(`Commit ${current} is not available from the workspace git cache.`);
       }
-      const parsed = parseGitCommitPayload(object.content, current);
+      const parsed = parseGitCommitPayload(payload, current);
       this.#servedSimulatedCommitIds.add(current);
       pending.push(current);
       if (anchor === undefined) {
@@ -4696,7 +4698,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         }
         commits.push({
           summary: commitDetailsFromGitObject(
-            current, object.content, canonicalRepoUrl(this.ctx.props.owner, this.ctx.props.repo)),
+            current, payload, canonicalRepoUrl(this.ctx.props.owner, this.ctx.props.repo)),
           tree: parsed.tree,
         });
       }
@@ -4707,10 +4709,8 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
 
   /** The tree oid of a commit, from cached bytes when available, else GitHub's commit API. */
   async #treeOidOfCommit(gitCache: RpcStub<GitCache>, sha: GitOid): Promise<GitOid> {
-    const object = await gitCache.get(sha);
-    if (object !== null && object.type === "commit") {
-      return parseGitCommitPayload(object.content, sha).tree;
-    }
+    const payload = await gitObjectBytes(await gitCache.get(sha), "commit");
+    if (payload !== null) return parseGitCommitPayload(payload, sha).tree;
     return await this.#cachedRead(this.#cacheKey("commit-tree", sha), ENTITY_CACHE_TTL_MS, async () => {
       const result = await this.#withApi(api =>
         api.getCommitConditional(this.ctx.props.owner, this.ctx.props.repo, sha));
@@ -4731,17 +4731,16 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
     const { owner, repo } = this.ctx.props;
     return {
       getTree: async oid => {
-        const object = await gitCache.get(oid);
-        if (object !== null && object.type === "tree") {
-          return parseGitTreePayload(object.content, oid);
-        }
+        const payload = await gitObjectBytes(await gitCache.get(oid), "tree");
+        if (payload !== null) return parseGitTreePayload(payload, oid);
         const remote = await this.#withApi(api => api.getGitTree(owner, repo, oid));
         if (remote === null || remote.truncated) return null;
         return remote.tree.map(entry => ({ mode: entry.mode, name: entry.path, oid: entry.sha }));
       },
       getBlob: async oid => {
-        const object = await gitCache.get(oid);
-        if (object !== null && object.type === "blob") return object.content;
+        const cached = bufferedGitObject(await gitCache.get(oid), "blob");
+        // A streamed blob is over MAX_DIFF_BLOB_BYTES, so the diff would omit it anyway.
+        if (cached !== null) return cached === "streamed" ? "unavailable" : cached;
         const remote = await this.#withApi(api =>
           api.getGitBlob(owner, repo, oid, MAX_DIFF_BLOB_BYTES));
         return remote === null || remote === "oversized" ? "unavailable" : remote;
@@ -4909,10 +4908,10 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   async #tryReadCachedCommitDetails(
     gitCache: RpcStub<GitCache>, oid: string,
   ): Promise<GitHubCommitDetails | null> {
-    const object = await gitCache.get(oid);
-    if (object === null || object.type !== "commit") return null;
+    const payload = await gitObjectBytes(await gitCache.get(oid), "commit");
+    if (payload === null) return null;
     return commitDetailsFromGitObject(
-      oid, object.content, canonicalRepoUrl(this.ctx.props.owner, this.ctx.props.repo));
+      oid, payload, canonicalRepoUrl(this.ctx.props.owner, this.ctx.props.repo));
   }
 
   async listBranches(filter: GitHubBranchFilter | undefined, pageSize: number): Promise<Cursor<GitHubBranchSummary>> {
@@ -5109,8 +5108,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       if (simulated !== null && simulated !== realHead) {
         // Confirm the commit is actually served by the cache's scoped view (as getCommit does)
         // before answering with an id GitHub does not know.
-        const object = await gitCache.get(simulated);
-        if (object !== null && object.type === "commit") {
+        if ((await gitCache.stat(simulated))?.type === "commit") {
           return { id: simulated, fromCache: true };
         }
       }
@@ -5128,8 +5126,7 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
       // getCommit, GitHub's unknown-full-commit-id answer is 422, not 404; accept both.
       if (gitCache !== undefined && isCommitOid(ref) &&
           error instanceof GitHubApiError && (error.status === 404 || error.status === 422)) {
-        const object = await gitCache.get(ref);
-        if (object !== null && object.type === "commit") return { id: ref, fromCache: true };
+        if ((await gitCache.stat(ref))?.type === "commit") return { id: ref, fromCache: true };
       }
       throw error;
     }

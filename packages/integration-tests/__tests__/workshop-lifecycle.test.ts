@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import {
@@ -126,6 +127,38 @@ it.concurrent("Git blob uploads are reusable, workspace-local, and downloadable 
     .rejects.toThrow("Unknown Git blob.");
   await otherWorkspace.deleteSelf();
 
+  await ws.deleteSelf();
+});
+
+it.concurrent("streams a large blob upload, verifying its declared length", async () => {
+  using publicApi = connect(requireHarness().url);
+  using authenticated = await signUp(publicApi, username());
+  using ws = await authenticated.newGadget();
+
+  // Over MAX_BUFFERED_BLOB_SIZE (1 MiB), so stored chunked, sent in odd-sized pieces.
+  const content = new Uint8Array(3 * 1024 * 1024 + 17);
+  for (let i = 0, x = 7; i < content.length; i++) {
+    x = (Math.imul(x, 1103515245) + 12345) >>> 0;
+    content[i] = x >>> 24;
+  }
+  const streamOf = (data: Uint8Array) => {
+    let pos = 0;
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pos >= data.length) controller.close();
+        else controller.enqueue(data.slice(pos, pos += 333_331));
+      },
+    });
+  };
+  const oid = await ws.uploadBlob({stream: streamOf(content), byteLength: content.length});
+  expect(oid).toBe(createHash("sha1")
+    .update(`blob ${content.length}\0`).update(content).digest("hex"));
+  expect(await ws.uploadBlob(content)).toBe(oid);
+
+  await expect(ws.uploadBlob({stream: streamOf(content), byteLength: content.length + 1}))
+    .rejects.toThrow("smaller than its declared size");
+  await expect(ws.uploadBlob({stream: streamOf(content), byteLength: content.length - 1}))
+    .rejects.toThrow("larger than its declared size");
   await ws.deleteSelf();
 });
 

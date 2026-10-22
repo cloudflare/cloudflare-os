@@ -114,7 +114,7 @@ async function withWorkspace(fn: (workspace: Workspace) => Promise<void>): Promi
 async function commitFiles(
     impl: any, files: Record<string, string>, parents: string[] = [],
     headers: GitCommitHeader[] = []): Promise<string> {
-  return await impl.gitStore.writeFilesAsCommit(new Map(Object.entries(files)), {
+  return await impl.gitCache.writeFilesAsCommit(new Map(Object.entries(files)), {
     parents,
     author: { name: "Carl Collaborator", email: "carl@example.com" },
     message: "Accept chat: a private chat title",
@@ -159,7 +159,7 @@ async function createBlueprint(client: Overseer, title = "Starter", gadgetId = 1
 
 /** The parents of a commit in the workspace's store. */
 async function parentsOf(impl: any, commitId: string): Promise<string[]> {
-  return (await impl.gitStore.readCommitLog(commitId, { depth: 1 }))[0].parents;
+  return impl.gitCache.readCommitLog(commitId, { depth: 1 })[0].parents;
 }
 
 /** The releases that a commit in the workspace's store marks as merged. */
@@ -291,11 +291,11 @@ async function instantiated(impl: any)
     : Promise<{ files: Record<string, string>, release: string }> {
   let [gadget, ...others] = [...impl.storage.gadgets.list()];
   expect(others).toEqual([]);
-  let files = Object.fromEntries(await impl.gitStore.readCommitFiles(gadget.commitId));
+  let files = Object.fromEntries(impl.gitCache.readCommitFiles(gadget.commitId));
   let [root, release, ...more] = await parentsOf(impl, gadget.commitId);
   expect(more).toEqual([]);
   expect(await parentsOf(impl, root)).toEqual([]);
-  expect(await impl.gitStore.commitTree(root)).toBe(EMPTY_TREE);
+  expect(impl.gitCache.commitTree(root)).toBe(EMPTY_TREE);
   return { files, release };
 }
 
@@ -349,13 +349,13 @@ describe("publishing a blueprint", () => {
 
     // The release is a commit of its own. It takes the gadget's tree, but nothing of its
     // history, whose messages and authors are not the publisher's to share.
-    let [commit] = await impl.gitStore.readCommitLog(release1, { depth: 1 });
+    let [commit] = impl.gitCache.readCommitLog(release1, { depth: 1 });
     expect(commit).toMatchObject({
       parents: [],
       message: "Release 1: Starter\n",
       author: { name: "Olive", email: "olive@commits.example" },
     });
-    expect(await impl.gitStore.commitTree(release1)).toBe(await impl.gitStore.commitTree(source1));
+    expect(impl.gitCache.commitTree(release1)).toBe(impl.gitCache.commitTree(source1));
     let pack1 = await readReleasePack(await storedContent(`${blueprint.id}/${release1}`), release1);
     expect(Object.fromEntries(listReleaseFiles(pack1, release1))).toEqual(V1);
     expect(pack1.has(source1)).toBe(false);
@@ -367,7 +367,7 @@ describe("publishing a blueprint", () => {
     let release2 = second.commitId!;
     expect(second.version).toBe(2);
     expect(release2).not.toBe(release1);
-    expect((await impl.gitStore.readCommitLog(release2, { depth: 1 }))[0]).toMatchObject({
+    expect(impl.gitCache.readCommitLog(release2, { depth: 1 })[0]).toMatchObject({
       parents: [release1],
       message: "Release 2: Starter\n",
     });
@@ -377,7 +377,7 @@ describe("publishing a blueprint", () => {
     expect(Object.fromEntries(listReleaseFiles(pack2, release2))).toEqual(V2);
     expect([...pack2].filter(([, object]) => object.type === "commit").map(([oid]) => oid)
         .toSorted()).toEqual([release1, release2].toSorted());
-    expect(pack2.has(await impl.gitStore.commitTree(release1))).toBe(false);
+    expect(pack2.has(impl.gitCache.commitTree(release1))).toBe(false);
 
     // The earlier release stays where an instantiation already under way will look for it.
     expect(await storedKeys(blueprint.id))
@@ -459,7 +459,7 @@ describe("publishing a blueprint", () => {
 
     // Its parent is the release that everyone who read the snapshot derived from it.
     let snapshot = await buildSnapshotRelease(new Map(Object.entries(V1)));
-    expect((await impl.gitStore.readCommitLog(release, { depth: 1 }))[0]).toMatchObject({
+    expect(impl.gitCache.readCommitLog(release, { depth: 1 })[0]).toMatchObject({
       parents: [snapshot.commitId],
       message: "Release 4: Older\n",
     });
@@ -472,7 +472,7 @@ describe("publishing a blueprint", () => {
     await commitToGadget(impl, V2);
     await client.updateBlueprint("older-record", { updateCode: true });
     let next = (await publishedMetadata("older-record"))!.commitId!;
-    expect((await impl.gitStore.readCommitLog(next, { depth: 1 }))[0].parents).toEqual([release]);
+    expect(impl.gitCache.readCommitLog(next, { depth: 1 })[0].parents).toEqual([release]);
   }));
 
   it("re-sends the identical pack when a failed publish is retried",
@@ -598,18 +598,18 @@ describe("instantiating a blueprint", () => {
       // The head is the gadget owner's commit of the release's tree. Its first parent is the
       // gadget's own (empty) beginning, and the release comes second, so the gadget's
       // first-parent chain never runs into the blueprint's history.
-      let [head] = await impl.gitStore.readCommitLog(gadget.commitId, { depth: 1 });
-      let [root] = await impl.gitStore.readCommitLog(head.parents[0], { depth: 1 });
+      let [head] = impl.gitCache.readCommitLog(gadget.commitId, { depth: 1 });
+      let [root] = impl.gitCache.readCommitLog(head.parents[0], { depth: 1 });
       expect(head).toMatchObject({
         parents: [root.oid, release],
         message: "Instantiate blueprint: Starter\n",
         author: { name: "Olive", email: "olive@commits.example" },
       });
-      expect(await impl.gitStore.commitTree(head.oid))
-          .toBe(await impl.gitStore.commitTree(release));
+      expect(impl.gitCache.commitTree(head.oid))
+          .toBe(impl.gitCache.commitTree(release));
       expect(releasesMarkedBy(impl, head.oid)).toEqual([release]);
       expect(root).toMatchObject({ parents: [], message: "Create gadget: Starter\n" });
-      expect(await impl.gitStore.commitTree(root.oid)).toBe(EMPTY_TREE);
+      expect(impl.gitCache.commitTree(root.oid)).toBe(EMPTY_TREE);
 
       // Which blueprint the release belongs to is on the gadget, since no commit says.
       let upstream = { blueprintId, commitId: release };
@@ -806,12 +806,12 @@ describe("publishing a blueprint built on another", () => {
 
       // A release's first parent is always its own blueprint's, and Bob's had none to give.
       // So his lineage starts at an empty release of its own.
-      expect((await impl.gitStore.readCommitLog(b0, { depth: 1 }))[0]).toMatchObject({
+      expect(impl.gitCache.readCommitLog(b0, { depth: 1 })[0]).toMatchObject({
         parents: [],
         message: "Release 0: Bob's\n",
         author: { name: "Olive", email: "olive@commits.example" },
       });
-      expect(await impl.gitStore.commitTree(b0)).toBe(EMPTY_TREE);
+      expect(impl.gitCache.commitTree(b0)).toBe(EMPTY_TREE);
 
       // The pack holds the whole history, Alice's included, but nothing of the gadget's own.
       // Besides Bob's files it carries those of the release he built on: someone whose gadget
@@ -872,7 +872,7 @@ describe("publishing a blueprint built on another", () => {
       let b2 = second.commitId!;
       expect(second.version).toBe(2);
       expect(await parentsOf(impl, b2)).toEqual([b1, a3]);
-      expect(await impl.gitStore.commitTree(b2)).toBe(await impl.gitStore.commitTree(b1));
+      expect(impl.gitCache.commitTree(b2)).toBe(impl.gitCache.commitTree(b1));
 
       // Merging what the blueprint already has, here its own release, gives it nothing to add.
       await commitToGadget(impl, BOBS, b2);
@@ -984,7 +984,7 @@ describe("marking the releases a gadget merges", () => {
       expect(headerNames(impl, head))
           .toEqual(["tree", "parent", "parent", "author", "committer", "blueprint-release"]);
       expect(releasesMarkedBy(impl, head)).toEqual([a1]);
-      let [entry] = await impl.gitStore.readCommitLog(head, { depth: 1 });
+      let [entry] = impl.gitCache.readCommitLog(head, { depth: 1 });
       expect(entry.author.name).toBe(`Oliveblueprint-release ${a1}x`);
 
       // The merge of a blueprint applied in their name.
@@ -994,7 +994,7 @@ describe("marking the releases a gadget merges", () => {
       expect(headerNames(impl, merge))
           .toEqual(["tree", "parent", "parent", "author", "committer", "blueprint-release"]);
       expect(releasesMarkedBy(impl, merge)).toEqual([a2]);
-      [entry] = await impl.gitStore.readCommitLog(merge, { depth: 1 });
+      [entry] = impl.gitCache.readCommitLog(merge, { depth: 1 });
       expect(entry.author.name).toBe(`Oliveblueprint-release ${a1}x`);
 
       // And the chat, titled with it, accepted with an edit of its own so that accepting
@@ -1005,7 +1005,7 @@ describe("marking the releases a gadget merges", () => {
       expect(await parentsOf(impl, after.commitId)).toEqual([merge]);
       expect(headerNames(impl, after.commitId))
           .toEqual(["tree", "parent", "author", "committer"]);
-      expect((await impl.gitStore.readCommitLog(after.commitId, { depth: 1 }))[0].message)
+      expect(impl.gitCache.readCommitLog(after.commitId, { depth: 1 })[0].message)
           .toBe(`Accept changes from chat: ${forged}\n`);
     });
   });
@@ -1120,7 +1120,7 @@ async function accept({ impl, client }: Workspace, chatId: number): Promise<any>
 }
 
 async function headFiles(impl: any): Promise<Record<string, string>> {
-  return Object.fromEntries(await impl.gitStore.readCommitFiles(theGadget(impl).commitId));
+  return Object.fromEntries(impl.gitCache.readCommitFiles(theGadget(impl).commitId));
 }
 
 // The gadget owner's own addition to whatever version of a blueprint's files they have.
@@ -1184,7 +1184,7 @@ describe("applying a blueprint to a gadget", () => {
       expect(pinOf(impl, chatId).mergedCommit).toBe(before.commitId);
       expect(await parentsOf(impl, mergeCommit)).toEqual([before.commitId, a2]);
       expect(releasesMarkedBy(impl, mergeCommit)).toEqual([a2]);
-      expect((await impl.gitStore.readCommitLog(mergeCommit, { depth: 1 }))[0]).toMatchObject({
+      expect(impl.gitCache.readCommitLog(mergeCommit, { depth: 1 })[0]).toMatchObject({
         message: "Merge blueprint: Alice's v2\n",
         author: { name: OWNER.name, email: OWNER.commitEmail },
       });
@@ -1287,8 +1287,8 @@ describe("applying a blueprint to a gadget", () => {
           .toEqual([{ gadgetId: merge.gadgetId, baseCommit: mergeCommit, mergedCommit: own }]);
       expect(await parentsOf(impl, mergeCommit)).toEqual([own, b1]);
       expect(releasesMarkedBy(impl, mergeCommit)).toEqual([b1]);
-      expect(await impl.gitStore.commitTree(mergeCommit))
-          .toBe(await impl.gitStore.commitTree(own));
+      expect(impl.gitCache.commitTree(mergeCommit))
+          .toBe(impl.gitCache.commitTree(own));
       let after = await accept(workspace, chatId);
       expect(after.commitId).toBe(mergeCommit);
       expect(after.upstream).toEqual({ blueprintId: bob, commitId: b1 });
@@ -1383,7 +1383,7 @@ describe("applying a blueprint to a gadget", () => {
       // made by hand might. Carol's gadget has that release in its history but never held its
       // files, so there is nothing to merge against.
       let thin = await publishedPack(bob, b1);
-      thin.delete(await impl.gitStore.commitTree(a2));
+      thin.delete(impl.gitCache.commitTree(a2));
       await storeBlueprint("thin", (await publishedMetadata(bob))!,
           concatBytes(await buildPackBytes([...thin.values()])));
       expect(await apply(client, theGadget(impl).id, "thin"))
@@ -1752,7 +1752,7 @@ describe("applying a blueprint to a gadget", () => {
       expect([release, ...more]).toEqual([a1]);
       expect(releasesMarkedBy(impl, gadget.commitId)).toEqual([a1]);
       expect(await parentsOf(impl, root)).toEqual([]);
-      expect(await impl.gitStore.commitTree(root)).toBe(EMPTY_TREE);
+      expect(impl.gitCache.commitTree(root)).toBe(EMPTY_TREE);
       expect(await headFiles(impl)).toEqual({ ...V1, "client.js": "the agent's own\n" });
       expect(gadget.upstream).toEqual({ blueprintId: alice.blueprintId, commitId: a1 });
     });

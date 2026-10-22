@@ -73,9 +73,45 @@ class TestGitCache extends RpcTarget {
     return ancestor === descendant || this.ancestries.has(`${ancestor}:${descendant}`);
   }
 
-  async get(id: GitOid): Promise<{ type: GitObjectType, content: Uint8Array } | null> {
+  /** The oids `get()` was asked for: a type-only check must `stat()` instead. */
+  readonly gets: GitOid[] = [];
+
+  /** Objects `get()` answers as a stream, as the real cache does over MAX_BUFFERED_BLOB_SIZE. */
+  readonly streamed = new Map<GitOid, { type: GitObjectType, content: Uint8Array }>();
+
+  /** The oids whose streamed content was cancelled, and those read to the end. */
+  readonly cancelled: GitOid[] = [];
+  readonly drained: GitOid[] = [];
+
+  async get(id: GitOid)
+      : Promise<{ type: GitObjectType, content: Uint8Array | ReadableStream<Uint8Array> } | null> {
+    this.gets.push(id);
+    const streamed = this.streamed.get(id);
+    if (streamed !== undefined) {
+      let sent = false;
+      return {
+        type: streamed.type,
+        content: new ReadableStream<Uint8Array>({
+          pull: controller => {
+            if (sent) {
+              this.drained.push(id);
+              controller.close();
+            } else {
+              sent = true;
+              controller.enqueue(streamed.content.slice());
+            }
+          },
+          cancel: () => { this.cancelled.push(id); },
+        }, { highWaterMark: 0 }),
+      };
+    }
     const payload = this.commits.get(id);
     return payload === undefined ? null : { type: "commit", content: payload };
+  }
+
+  async stat(id: GitOid): Promise<{ type: GitObjectType, size: number } | null> {
+    const payload = this.commits.get(id);
+    return payload === undefined ? null : { type: "commit", size: payload.length };
   }
 
   async buildPack(): Promise<ReadableStream<Uint8Array>> {
@@ -474,6 +510,26 @@ describe("simulation", () => {
     expect(details.message).toBe("pending");
   });
 
+  it("reads a streamed commit whole, and cancels a streamed object of another type", async () => {
+    const github = new FakeGitHub();
+    github.branches.set("main", BASE);
+    github.install();
+    const gk = await repoGatekeeper();
+    const cache = new TestGitCache().withAncestry(BASE, HEAD1)
+      .withCommit(HEAD1, commitPayload([BASE], "huge"));
+    await queuePush(gk, cache, new TestApprovalQueue(), "main", HEAD1);
+    // HEAD1's message makes it too large to buffer; OTHER is a large blob, not a commit.
+    cache.streamed.set(HEAD1, { type: "commit", content: cache.commits.get(HEAD1)! });
+    cache.streamed.set(OTHER, { type: "blob", content: new Uint8Array(64) });
+
+    const { details } = await gk.getCommit(HEAD1, cache);
+    expect(details.message).toBe("huge");
+    expect(cache.drained).toContain(HEAD1);
+
+    await expect(gk.getCommit(OTHER, cache)).rejects.toThrow(/No commit found for SHA/);
+    await vi.waitFor(() => expect(cache.cancelled).toContain(OTHER));
+  });
+
   it("resolveRef maps a branch with a queued push to its simulated head", async () => {
     const github = new FakeGitHub();
     github.branches.set("main", BASE);
@@ -485,7 +541,11 @@ describe("simulation", () => {
     await queuePush(gk, cache, new TestApprovalQueue(), "main", HEAD1);
 
     // Cache-served, so the session withholds advertisement (the commit is not on GitHub yet).
+    // Confirmed by type alone: no get(), whose content (a stream, for a huge commit) would be
+    // left unconsumed.
+    cache.gets.length = 0;
     expect(await gk.resolveRef("main", cache)).toEqual({ id: HEAD1, fromCache: true });
+    expect(cache.gets).toEqual([]);
     // A real remote resolution is not cache-served.
     expect(await gk.resolveRef("other", cache)).toEqual({ id: OTHER, fromCache: false });
   });
@@ -499,7 +559,9 @@ describe("simulation", () => {
       .withCommit(HEAD1, commitPayload([BASE], "pending"));
     await queuePush(gk, cache, new TestApprovalQueue(), "main", HEAD1);
 
+    cache.gets.length = 0;
     expect(await gk.resolveRef(HEAD1, cache)).toEqual({ id: HEAD1, fromCache: true });
+    expect(cache.gets).toEqual([]);
     // A commit neither GitHub nor the workspace git cache knows still fails (GitHub's unknown-id
     // answer is a 422, which must not be swallowed when the cache cannot serve the id either).
     await expect(gk.resolveRef(OTHER, cache)).rejects.toThrow(/No commit found for SHA/);
