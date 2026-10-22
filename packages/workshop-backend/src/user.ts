@@ -227,13 +227,13 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       remove: cursor => { this.#readCursors.delete(`${cursor.workspaceId}:${cursor.chatId}`); },
     });
     for (let listing of this.storage.gadgets.list()) {
-      if (listing.role !== "use") this.#unreadWorkspaces.add(listing.id);
+      if (listing.role !== "use") this.#unreadWorkspaces.set(listing.id, {});
     }
     this.storage.gadgets.subscribe({
-      add: listing => { if (listing.role !== "use") this.#unreadWorkspaces.add(listing.id); },
+      add: listing => { if (listing.role !== "use") this.#unreadWorkspaces.set(listing.id, {}); },
       update: (_old, listing) => {
         if (listing.role === "use") this.#unreadWorkspaces.delete(listing.id);
-        else this.#unreadWorkspaces.add(listing.id);
+        else if (!this.#unreadWorkspaces.has(listing.id)) this.#unreadWorkspaces.set(listing.id, {});
       },
       remove: listing => { this.#unreadWorkspaces.delete(listing.id); },
     });
@@ -541,7 +541,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   // Admission denial parks dirty work; badge reads use this last-known local access state.
   #deniedUnreadWorkspaces = new Set<string>();
   #readCursors = new Map<string, ChatReadCursor>();
-  #unreadWorkspaces = new Set<string>();
+  // Each listing lifetime has an identity so pre-removal work cannot commit after readmission.
+  #unreadWorkspaces = new Map<string, object>();
   #chatWork = new Map<string, Promise<void>>();
   #dirtyTokens = new Map<string, object>();
 
@@ -616,10 +617,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     recheckAccess?: boolean;
   } = {}): Promise<void> {
     let changed = false, reschedule = false, accessRestored = false;
+    let admission = this.#unreadWorkspaces.get(workspaceId);
     try {
       await this.#serialize(`${workspaceId}:${chatId}`, async () => {
         let key = `${workspaceId}:${chatId}`;
-        if (!this.#hasWorkspace(workspaceId) ||
+        if (!admission || this.#unreadWorkspaces.get(workspaceId) !== admission ||
             (this.#deniedUnreadWorkspaces.has(workspaceId) && !options.recheckAccess)) return;
         if (options.notificationBaseline !== undefined && !this.storage.chatReadCursors.get(key)) {
           // The existing open callback supplies the boundary: no second source read or snapshot
@@ -631,6 +633,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
             notificationsDirty: true});
           reschedule = true;
           await this.#armExpirySweep();
+          if (this.#unreadWorkspaces.get(workspaceId) !== admission) return;
         }
         let token = this.#dirtyTokens.get(key);
         let existing = this.#readCursors.get(key);
@@ -648,7 +651,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           this.ctx.id.toString(), this.storage.profile.get().id, chatId,
           recount ? readFrom : null, cursor.notificationsDirty ? notifyFrom : null,
           cursor.firstMessageSequence);
-        if (!this.#hasWorkspace(workspaceId)) return;
+        if (this.#unreadWorkspaces.get(workspaceId) !== admission) return;
         if (state === "denied") { this.#denyUnreadWorkspace(workspaceId); return; }
         if (!state) { this.#forgetChat(workspaceId, chatId); return; }
         if (this.#deniedUnreadWorkspaces.has(workspaceId) && !options.recheckAccess) return;
@@ -657,7 +660,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         let current = this.#cursor(workspaceId, chatId);
         if (!options.horizon && state.initialHorizon !== undefined) through = state.initialHorizon;
         let updated = {...current, readThroughSequence: through,
-          notifiedThroughSequence: state.initialHorizon ?? (!existing ? state.timelineTailSequence : current.notifiedThroughSequence),
+          notifiedThroughSequence: state.initialHorizon ?? current.notifiedThroughSequence,
           firstMessageSequence: undefined,
           unreadCount: state.unreadCount ?? current.unreadCount,
           unreadDirty: this.#dirtyTokens.get(key) === token ? undefined : true as const};
@@ -665,10 +668,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         changed = !existing || cursor.unreadCount !== updated.unreadCount || cursor.readThroughSequence !== through;
         if (cursor.notificationsDirty) {
           for (let candidate of state.notifications) {
-            if (!this.#hasWorkspace(workspaceId) || !this.#readCursors.has(key) ||
+            if (this.#unreadWorkspaces.get(workspaceId) !== admission || !this.#readCursors.has(key) ||
                 this.#deniedUnreadWorkspaces.has(workspaceId)) return;
             await this.publishNotification({id: candidate.id, kind: candidate.kind,
               workspaceId, chatId, chatTitle: state.chatTitle});
+            if (this.#unreadWorkspaces.get(workspaceId) !== admission) return;
             let checkpoint = this.#readCursors.get(key);
             if (!checkpoint) return;
             this.#storeCursor({...checkpoint,
