@@ -87,10 +87,9 @@ const release = async () => {
 /** Stop this browser's push. The user's subscription lapses at its next delivery. */
 export const disableBrowserPush = async (): Promise<void> => {
   // At once, without queuing behind a registration: sign-out shows the login page without waiting,
-  // and closing it drops a queued lock request. Then under the lock, for a subscription a
-  // transition already under way makes meanwhile.
-  await release();
-  await withLock(release);
+  // and closing it drops a queued lock request. And under the lock, requested now so it keeps this
+  // click's place among other tabs' transitions, for a subscription one under way makes meanwhile.
+  await Promise.all([release(), withLock(release)]);
 };
 
 /**
