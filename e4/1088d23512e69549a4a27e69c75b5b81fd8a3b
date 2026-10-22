@@ -1,0 +1,54 @@
+packages/workshop-backend/src/admin-audit.ts
+  s_c5f8d284ae2719::t_be53f57a8c7081 191-192
+  s_c5f8d284ae2719::t_02d7d57aff117c 188-190
+  s_c5f8d284ae2719::t_16d0a56b994e58 193-195
+  s_c5f8d284ae2719::t_9fe6e1b4fa5e33 27,33-39,42-43,46-51,64,66-67,73-74,79-80,87,91-92,95,106-108,139-142,157,165-168,198,206-224,226,228-233,240,268
+AGENTS.md
+  s_c5f8d284ae2719::t_ba97ae5f387e15 80
+REVIEW.md
+  s_c5f8d284ae2719::t_1d63e1dcfefe0f 48-55
+docs/admin-access.md
+  s_c5f8d284ae2719::t_ff7c9471330174 30-32,122-127,142-147,155-179,183,187-216,226-227,286-290,295-296,298-326,329-334,344,347,387-390,401,407-416,428,436-437,440-445,447-451,459-464,466-467
+docs/observers.md
+  s_c5f8d284ae2719::t_a5fcefcf037e14 107-109,113-114,117-119
+docs/sharing.md
+  s_c5f8d284ae2719::t_cf196c6fa686c7 157
+packages/integration-tests/__tests__/workshop-admin-audit.test.ts
+  s_c5f8d284ae2719::t_797c45d9c9d403 7,82,88,372-423
+packages/integration-tests/__tests__/workshop-admin-inspection.test.ts
+  s_c5f8d284ae2719::t_184eb9e230ef3d 7-9,219,307,309,314-315,321-324,387-388,391-392,407,416,456-576,625,627,633-653,655
+packages/workshop-backend/__tests__/admin-access.test.ts
+  s_c5f8d284ae2719::t_601190b87ce538 6-7,10-13,16,38-41,269-351
+packages/workshop-backend/__tests__/admin-api-impl.test.ts
+  s_c5f8d284ae2719::t_136a0f4c7d2106 6,109-119,162-163,176-180,212-218,228-229,237-238,241,354,358-362
+packages/workshop-backend/__tests__/admin-audit.test.ts
+  s_c5f8d284ae2719::t_71e067c1084d95 36,66-73,80-83,86,94-98,101,126-151,214-219,223-238,333,335,337,339-430
+packages/workshop-backend/__tests__/admin-workspace-view.test.ts
+  s_c5f8d284ae2719::t_015d97900cd14f 150,154,211-218,241,295-296,383-430,438-454,546-589,608-609,622,624-625,658-662
+packages/workshop-backend/src/admin-access.ts
+  s_c5f8d284ae2719::t_18ccda52841994 18-19,113,150-154,230,366-370,378-382,400-405,410-431
+packages/workshop-backend/src/admin-settings.ts
+  s_c5f8d284ae2719::t_046afdb3584db5 1370,1395,1400-1401,1404-1406,1445,1447
+packages/workshop-backend/src/overseer.ts
+  s_c5f8d284ae2719::t_c0e6703a86aa5c 7-9,63-67,6350,10586-10590,10617-10622,10630-10631,13149-13152,13176-13177,13190-13199,13201-13204,13207,13209-13235,13247,13249,13275-13296,13300-13304,13308-13309,13315-13321,13325-13326,13330-13332,13336-13354,13358-13368,13370-13386
+packages/workshop-backend/src/storage-schema/overseer-storage.ts
+  s_c5f8d284ae2719::t_4a2eff439ec199 1143-1148
+packages/workshop-shared/src/api.ts
+  s_c5f8d284ae2719::t_41405396584eea 459-461,1169-1171,1499-1509,1554-1560,1563-1571,1576-1577,1601-1607,1609-1628,1716-1719,1751-1754,1770-1778,2102-2109,2168-2170,2225-2227,2238-2251
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e41088d23512e69549a4a27e69c75b5b81fd8a3b",
+  "prompts": {},
+  "sessions": {
+    "s_c5f8d284ae2719": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8910de69-2a98-4e42-ab86-7bfa57a83c02",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}

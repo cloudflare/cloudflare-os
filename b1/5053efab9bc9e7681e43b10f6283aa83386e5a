@@ -1,0 +1,28 @@
+packages/gatekeeper-google/src/chat.ts
+  s_c31bf147d9a35f::t_78be15c246f744 189-191,802,826,1621-1622
+packages/gatekeeper-google/__tests__/workerd/gmail-actions.test.ts
+  s_c31bf147d9a35f::t_2c8604b490cbaa 2015-2036,3897-3898
+  s_c31bf147d9a35f::t_83d7683153e8fb 943-970,2037,3843,3875-3896,3899
+  s_c31bf147d9a35f::t_493c31c1691fb3 2038,3900
+packages/gatekeeper-google/__tests__/workerd/chat-actions.test.ts
+  s_c31bf147d9a35f::t_b645a3c0d50774 1009
+  s_c31bf147d9a35f::t_766ca0ddaa9a12 981,999-1008,1010-1012,1148,1158-1159,1713,1914,1924-1925,1941,1950,1952
+packages/gatekeeper-google/src/gmail.ts
+  s_c31bf147d9a35f::t_1846a2a81c28ce 4956-4958,5024-5026,5213-5215,5287-5289,5357-5359,5373
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b15053efab9bc9e7681e43b10f6283aa83386e5a",
+  "prompts": {},
+  "sessions": {
+    "s_c31bf147d9a35f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "de85876d-a552-46dc-8098-f2602de083b7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
