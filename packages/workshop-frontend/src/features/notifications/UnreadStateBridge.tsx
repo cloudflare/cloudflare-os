@@ -158,14 +158,22 @@ export const UnreadStateBridge = ({
   };
 
   // Explicit menu/bulk actions need an observed boundary. Badges and subscriptions don't.
-  const observedReceipts = async (chats: ChatReadState[]): Promise<ChatReadReceipt[]> => {
+  const observedReceipts = async (chats: ChatReadState[]) => {
     const heads = new Map(await Promise.all([...new Set(chats.map(chat => chat.workspaceId))]
-      .map(async workspaceId => [workspaceId, await authenticatedApi.getChatHeads(workspaceId)] as const)));
-    return chats.map(chat => {
+      .map(async workspaceId => [workspaceId, await authenticatedApi.getChatHeads(workspaceId).catch(() => null)] as const)));
+    const receipts: ChatReadReceipt[] = [];
+    let unavailable = false;
+    for (const chat of chats) {
       const head = heads.get(chat.workspaceId)?.find(item => item.chatId === chat.chatId);
-      if (!head) throw new Error("Thread is no longer available.");
-      return receiptFor(chat, head.latestSequence);
-    });
+      if (head) receipts.push(receiptFor(chat, head.latestSequence));
+      else unavailable = true;
+    }
+    return {receipts, unavailable};
+  };
+  const observedReceipt = async (chat: ChatReadState) => {
+    const {receipts} = await observedReceipts([chat]);
+    if (!receipts.length) throw new Error("Thread is no longer available.");
+    return receipts[0];
   };
 
   return (
@@ -174,16 +182,18 @@ export const UnreadStateBridge = ({
         state,
         markRead: (chat, through) =>
           perform((async () => {
-            const receipt = through === undefined ? (await observedReceipts([chat]))[0] : receiptFor(chat, through);
+            const receipt = through === undefined ? await observedReceipt(chat) : receiptFor(chat, through);
             await authenticatedApi.markChatRead(receipt);
           })()),
         markManyRead: (chats) =>
           perform((async () => {
-            await authenticatedApi.markChatsRead(await observedReceipts(chats));
+            const {receipts, unavailable} = await observedReceipts(chats);
+            if (receipts.length) await authenticatedApi.markChatsRead(receipts);
+            if (unavailable) throw new Error("Some threads are no longer available; other read receipts were submitted.");
           })()),
         markUnread: (chat, from) =>
           perform((async () => {
-            const sequence = from ?? (await observedReceipts([chat]))[0].throughSequence;
+            const sequence = from ?? (await observedReceipt(chat)).throughSequence;
             if (sequence >= 0) await authenticatedApi.markChatUnread(chat.workspaceId, chat.chatId, sequence);
           })()),
       }}

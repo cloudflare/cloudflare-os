@@ -49,7 +49,7 @@ const Commands = () => {
       {chat && unread && <>
       <button onClick={() => void unread.markRead(chat).catch(() => {})}>read</button>
       <button onClick={() => void unread.markUnread(chat)}>unread</button>
-      <button onClick={() => void unread.markManyRead(unread.state!.chats)}>all</button>
+      <button onClick={() => void unread.markManyRead(unread.state!.chats).catch(() => {})}>all</button>
       </>}
     </>
   );
@@ -143,6 +143,22 @@ describe("UnreadStateBridge", () => {
         throughSequence: 4,
       },
     ]);
+  });
+
+  it.each(["rejected", "denied", "deleted"] as const)("marks healthy threads read when another workspace is %s", async failure => {
+    using _ = vi.spyOn(console, "error").mockImplementation(() => {});
+    if (failure === "rejected") getChatHeads.mockRejectedValueOnce(new Error("Workspace unavailable"));
+    else getChatHeads.mockResolvedValueOnce(failure === "denied" ? null : []);
+    getChatHeads.mockResolvedValueOnce([{chatId: 2, chatTitle: "Healthy thread", latestSequence: 6}]);
+    await render();
+    const state = snapshot(1);
+    await update({...state, unreadChatCount: 2, unreadMessageCount: 2,
+      chats: [...state.chats, {...state.chats[0], workspaceId: "workspace-2", chatId: 2}]});
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "all")!.click());
+    expect(markChatsRead).toHaveBeenCalledExactlyOnceWith([
+      {workspaceId: "workspace-2", chatId: 2, throughSequence: 6},
+    ]);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Couldn’t update read state");
   });
 
   it("merges a thread delta and its authoritative totals", async () => {
