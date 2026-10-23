@@ -71,7 +71,7 @@ flowchart LR
     SourceDirty[(dirtyChats)]
     User[User Durable Object]
     Cursor[(chatReadCursors: counts, dirty bits, notifiedThroughSequence)]
-    Browser[Visible browser subscriber]
+    Browser[Browser subscriber, visible or hidden]
     Key[Install signing private key]
   end
 
@@ -94,7 +94,7 @@ flowchart LR
   User -->|fetch count and candidates after notification horizon| Workspace
   User -->|commit absolute unread count| Cursor
   User -->|visible client first| Browser
-  Browser -->|presentation acknowledged| User
+  Browser -->|acknowledge only when visible| User
   User -->|advance notifiedThroughSequence after delivery or policy skip| Cursor
   User -->|fallback if no acknowledgement| Delivery
   Key -->|sign request locally| User
@@ -109,8 +109,9 @@ subscription id, and same-origin deep-link path cross the central boundary durin
 headers every signed request carries: install id, key id, timestamp, nonce, body digest, and
 signature. Permission details, chat content, gatekeeper grants, and provider credentials do not. A
 visible browser tab is offered the notification first, and push is sent to every registered device
-only if no tab acknowledges it within three seconds. A tab subscribes while visible, and again if a
-User DO reset drops its subscription. When the service answers `device_gone` or
+only if no tab acknowledges it within three seconds. Tabs retain their subscriptions while hidden,
+but hidden clients reject `notify()` without presenting a toast, preserving push as the fallback.
+A tab resubscribes if a User DO reset drops its subscription. When the service answers `device_gone` or
 `invalid_subscription`, the User DO drops that subscription; the device subscribes again when its
 app next opens. Any other failure, including `invalid_signature`, keeps it. Only turns a person
 started announce completion; callback turns, such as a schedule, and spawned agents notify only

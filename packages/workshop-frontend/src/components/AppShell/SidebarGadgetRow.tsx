@@ -7,6 +7,8 @@ import type { GadgetMetadataWithTimestamps, NotificationMute } from '@gadgets/wo
 import { WorkspaceNotificationsMenu } from '../../features/notifications/WorkspaceNotificationsMenu'
 import { describeMute } from '../../features/notifications/notificationMute'
 import { isImeComposing } from '../../keyboardEvent'
+import { useUnreadState } from '../../features/notifications/UnreadStateBridge'
+import { UnreadBadge } from '../../features/notifications/UnreadBadge'
 
 function initials(title: string | undefined): string {
   const t = (title || 'Untitled').trim()
@@ -40,6 +42,10 @@ export default function SidebarGadgetRow({
   const [renaming, setRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(gadget.title || '')
   const inputRef = useRef<HTMLInputElement>(null)
+  const unread = useUnreadState()
+  const unreadChats = unread?.state?.chats.filter(chat =>
+    chat.workspaceId === gadget.id && chat.unreadMessageCount > 0) ?? []
+  const unreadMessages = unreadChats.reduce((count, chat) => count + chat.unreadMessageCount, 0)
 
   useEffect(() => {
     if (renaming) inputRef.current?.focus()
@@ -62,20 +68,20 @@ export default function SidebarGadgetRow({
     <Link
       to="/workspace/$id"
       params={{ id: gadget.id }}
-      className="group flex h-8 items-center gap-2 rounded-lg pl-1.5 pr-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-default transition-colors hover:bg-kumo-tint"
-      activeProps={{ className: 'flex h-8 items-center gap-2 rounded-lg pl-1.5 pr-1 text-[13px] leading-[18px] tracking-[-0.25px] bg-kumo-fill text-kumo-strong font-medium' }}
+      className="group flex h-8 min-w-0 items-center gap-2 rounded-lg pl-1.5 pr-2.5 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-default transition-colors hover:bg-kumo-tint"
+      activeProps={{ className: 'flex h-8 min-w-0 items-center gap-2 rounded-lg pl-1.5 pr-2.5 text-[13px] leading-[18px] tracking-[-0.25px] bg-kumo-fill text-kumo-strong font-medium' }}
       onClick={(e) => {
         if (renaming) e.preventDefault()
       }}
       title={collapsed ? gadget.title || 'Untitled workspace' : undefined}
     >
-      <div
-        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-kumo-fill text-[10px] font-medium text-kumo-subtle"
-        aria-hidden="true"
-      >
-        {initials(gadget.title)}
+      <div className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-kumo-fill text-[10px] font-medium text-kumo-subtle">
+        <span aria-hidden="true">{initials(gadget.title)}</span>
+        {collapsed && unreadChats.length > 0 && <span
+          role="img"
+          aria-label={`${unreadMessages} unread ${unreadMessages === 1 ? "message" : "messages"}`}
+          className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-kumo-badge-blue" />}
       </div>
-
       {!collapsed && (
         <>
           {renaming ? (
@@ -101,20 +107,28 @@ export default function SidebarGadgetRow({
 
           {/* Inside the row's <Link>: stopPropagation blocks the Link's SPA handler, so preventDefault
               is needed to stop the native <a> from navigating. */}
-          <div onClick={(e) => { e.stopPropagation(); e.preventDefault() }}>
+          <div className="relative flex h-6 min-w-6 shrink-0 items-center justify-center"
+            onClick={(e) => { e.stopPropagation(); e.preventDefault() }}>
+            {/* Reuse the trailing slot: a hidden actions button must not squeeze the title/badge. */}
+            <span className="pointer-events-none group-hover:invisible group-focus-within:invisible">
+              <UnreadBadge count={unreadMessages} />
+            </span>
             <DropdownMenu>
               <DropdownMenu.Trigger
                 render={
                   <button
                     type="button"
                     aria-label="Workspace actions"
-                    className="flex h-6 w-6 items-center justify-center rounded-md text-kumo-subtle opacity-0 transition-[opacity,color,background-color] group-hover:opacity-100 hover:bg-kumo-fill hover:text-kumo-default focus:opacity-100"
+                    className="absolute inset-0 flex h-6 w-full items-center justify-center rounded-md text-kumo-subtle opacity-0 transition-[opacity,color,background-color] group-hover:opacity-100 hover:bg-kumo-fill hover:text-kumo-default focus:opacity-100"
                   >
                     <DotsThree size={14} weight="bold" />
                   </button>
                 }
               />
               <DropdownMenu.Content className={MENU_CONTENT} style={MENU_POSITIONER_STYLE}>
+                <DropdownMenu.Item disabled={unreadChats.length === 0} onClick={() => {
+                  void unread?.markManyRead(unreadChats).catch(() => {})
+                }} className={MENU_ITEM}>Mark workspace read</DropdownMenu.Item>
                 <DropdownMenu.Item
                   onClick={startRename}
                   className={MENU_ITEM}
