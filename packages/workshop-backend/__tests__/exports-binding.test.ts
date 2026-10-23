@@ -5,7 +5,7 @@ import type { WorkpieceId } from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { GadgetExports } from "../src/exports-binding";
 import type {
-  ChatBindingEntry, GatekeeperCaller, GatekeeperRecord, OverseerStorage,
+  GatekeeperCaller, GatekeeperRecord, OverseerStorage,
 } from "../src/storage-schema/overseer-storage";
 
 declare module "cloudflare:workers" {
@@ -14,17 +14,12 @@ declare module "cloudflare:workers" {
   }
 }
 
-// Exercises the shape of gadget bindings in the agent's executeCode env -- `{rpc, exports}` --
-// and the `exports` session behind them (exports-session.ts). A real export through it is
-// exercised end to end in the integration suite (workshop-changes.test.ts).
+// Exercises the `exports` session behind gadget bindings (exports-session.ts). A real export
+// through it is exercised end to end in the integration suite (workshop-changes.test.ts).
 
 // The slice of the (unexported) OverseerImpl these tests drive.
 type Impl = {
   storage: OverseerStorage;
-  makeBindingLoopback(target: unknown, caller: GatekeeperCaller): unknown;
-  getEnvForAgent(chatId: number, bindings: Record<string, ChatBindingEntry>,
-                 executionId: string): Record<string, unknown>;
-  getEnvForLoader(gadgetId: WorkpieceId, caller: GatekeeperCaller): Record<string, unknown>;
   startGatekeeperSession(target: unknown, caller: GatekeeperCaller): Promise<GadgetExports>;
   describeBinding(envName: string, id: WorkpieceId): Promise<string>;
 };
@@ -55,28 +50,6 @@ async function withImpl(fn: (impl: Impl) => Promise<void>): Promise<void> {
 }
 
 describe("gadget bindings in the agent's env", () => {
-  it("pair each gadget's rpc stub with its exports, leaving other bindings bare",
-      () => withImpl(async impl => {
-    // Observe the loopback targets rather than opaque service stubs.
-    impl.makeBindingLoopback = (target: unknown) => target;
-    let agentEnv = impl.getEnvForAgent(CHAT_ID, {
-      APP: { type: "workpiece", id: 100 },
-      DB: { type: "workpiece", id: 5 },
-      GONE: { type: "workpiece", id: 999 },
-    }, "exec-1");
-    expect(agentEnv).toEqual({
-      GIT: { type: "git" },
-      APP: { rpc: { type: "gadget", id: 100 }, exports: { type: "exports", id: 100 } },
-      DB: { type: "gatekeeper", id: 5 },
-    });
-
-    // A gadget's own env keeps direct RPC stubs and offers no exports.
-    expect(impl.getEnvForLoader(100, { from: "gadget", gadgetId: 100 })).toEqual({
-      GADGET: { type: "gadget", id: 100 },
-      GIT: { type: "git" },
-      DB: { type: "gatekeeper", id: 5 },
-    });
-  }));
 
   it("export only the agent's chat, and only to the agent", () => withImpl(async impl => {
     // A gadget with no server code offers nothing to export.

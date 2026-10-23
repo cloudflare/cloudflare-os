@@ -19,6 +19,12 @@ function makeOverseer(
       // The quarantine gate (see the dedicated pending-restart tests); no connection is blocked
       // in these fixtures.
       assertGatekeeperUsable: () => {},
+      // Every connection in these fixtures is on the legacy observer protocol (see
+      // observer-ledger.ts and observer-ledger.test.ts for the tracked one).
+      observerLedger: {
+        initialize: async () => {},
+        assertHooksAllowed: () => {},
+      },
       storage: {
         boundHooks: { get: () => hook && ({ ...hook, gatekeeperId: 1 }) },
         gatekeepers: {

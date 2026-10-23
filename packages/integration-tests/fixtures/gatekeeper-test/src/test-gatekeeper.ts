@@ -94,7 +94,8 @@ type HookState = {
   disableCount: number;
 };
 
-function outcomeKey(label: string, resourceUrl?: string): string {
+function outcomeKey(label: string, resourceUrl?: string, subresource?: string): string {
+  if (subresource !== undefined) return `outcome:${label}:${resourceUrl}#${subresource}`;
   return resourceUrl ? `outcome:${label}:${resourceUrl}` : `outcome:${label}`;
 }
 
@@ -104,16 +105,50 @@ function newAccountLabel(): string {
 
 @validateRpc()
 export class TestControl extends DurableObject<Cloudflare.Env> {
-  setVerifyOutcome(label: string, outcome: VerifyOutcome, resourceUrl?: string): void {
-    this.ctx.storage.kv.put(outcomeKey(label, resourceUrl), outcome);
+  setVerifyOutcome(
+      label: string, outcome: VerifyOutcome, resourceUrl?: string, subresource?: string): void {
+    this.ctx.storage.kv.put(outcomeKey(label, resourceUrl, subresource), outcome);
   }
 
-  getVerifyOutcome(label: string, resourceUrl?: string): VerifyOutcome {
-    // A resource-specific outcome wins over a label-wide one. Default to admitting: a
-    // collaborator's first open has to be able to succeed.
-    return this.ctx.storage.kv.get<VerifyOutcome>(outcomeKey(label, resourceUrl))
+  getVerifyOutcome(label: string, resourceUrl?: string, subresource?: string): VerifyOutcome {
+    // A subresource-specific outcome wins over a resource-specific one, which wins over a
+    // label-wide one. Default to admitting: a collaborator's first open has to be able to succeed.
+    return (subresource !== undefined
+        ? this.ctx.storage.kv.get<VerifyOutcome>(outcomeKey(label, resourceUrl, subresource))
+        : undefined)
+        ?? this.ctx.storage.kv.get<VerifyOutcome>(outcomeKey(label, resourceUrl))
         ?? this.ctx.storage.kv.get<VerifyOutcome>(outcomeKey(label))
         ?? { allow: true };
+  }
+
+  /** Answers TestVerifier.checkObserverAccess(): one verify outcome per subresource. */
+  checkObserverAccess(label: string, subresources: string[]): boolean[] {
+    return subresources.map(id => {
+      const [resourceUrl, subresource] = JSON.parse(id) as [string, string];
+      return this.getVerifyOutcome(label, resourceUrl, subresource).allow;
+    });
+  }
+
+  /**
+   * Whether the binding at `resourceUrl` advertises kernel observer tracking. Read on every
+   * describe() and observation, so flipping it upgrades an existing legacy binding in place.
+   */
+  setObserverTracking(resourceUrl: string, enabled: boolean): void {
+    this.ctx.storage.kv.put(`observer-tracking:${resourceUrl}`, enabled);
+  }
+
+  isObserverTracked(resourceUrl: string): boolean {
+    return this.ctx.storage.kv.get<boolean>(`observer-tracking:${resourceUrl}`) ?? false;
+  }
+
+  recordHistoryExport(resourceUrl: string): void {
+    this.ctx.storage.kv.put(
+        `history-exports:${resourceUrl}`, this.getHistoryExportCount(resourceUrl) + 1);
+  }
+
+  /** Every getHistoricalSubresources() call: the Workshop should need exactly one. */
+  getHistoryExportCount(resourceUrl: string): number {
+    return this.ctx.storage.kv.get<number>(`history-exports:${resourceUrl}`) ?? 0;
   }
 
   recordObserverEvent(event: ObserverEvent): void {
@@ -560,9 +595,10 @@ export class TestAccount
 /**
  * Reports which account is asking.
  *
- * `GatekeeperUserVerifier` has no methods of its own; the convention (see its declaration) is that a
- * gatekeeper adds a non-standard method and trusts the answer, because the overseer only ever hands a
- * verifier back to the vendor that minted it.
+ * `GatekeeperUserVerifier`'s only standard method is `checkObserverAccess()`, for tracked bindings;
+ * otherwise the convention (see its declaration) is that a gatekeeper adds a non-standard method
+ * and trusts the answer, because the overseer only ever hands a verifier back to the vendor that
+ * minted it.
  */
 export interface TestVerifierApi extends GatekeeperUserVerifier {
   identify(): Promise<string>;
@@ -573,6 +609,16 @@ export class TestVerifier
     extends WorkerEntrypoint<Cloudflare.Env, AccountProps> implements TestVerifierApi {
   async identify(): Promise<string> {
     return this.ctx.props.label;
+  }
+
+  /**
+   * Each ID encodes its resource URL and local subresource: grant unless the test refused this
+   * account for that subresource, at that binding, or everywhere (`/control/verify-outcome`).
+   */
+  async checkObserverAccess(subresources: string[]): Promise<{ granted: boolean[] }> {
+    const granted = await control(this.ctx.exports)
+        .checkObserverAccess(this.ctx.props.label, subresources);
+    return { granted };
   }
 }
 
@@ -588,10 +634,12 @@ export interface TestSession {
   /**
    * `restricted` marks the observation `containsRestrictedData`; `ownerInvitesOnly` marks it
    * `ownerInvitesOnly`. `excludeObservers` lists observer ids (from `/control/observer-events`)
-   * that must not see it.
+   * that must not see it. `subresources` are local IDs the read depends on: qualified with the
+   * resource URL before reporting them on a tracked observation (`[]` if omitted), or before
+   * keeping them in the legacy binding's history for `getHistoricalSubresources()` to export.
    */
-  readValue(restricted?: boolean, ownerInvitesOnly?: boolean, excludeObservers?: string[])
-      : Promise<number>;
+  readValue(restricted?: boolean, ownerInvitesOnly?: boolean, excludeObservers?: string[],
+            subresources?: string[]): Promise<number>;
   /** `incomplete` omits the `descriptionIsComplete` claim, as a summary-only gatekeeper would. */
   writeValue(value: number, opts?: { autoApprovable?: boolean; incomplete?: boolean }): Promise<number>;
   writeValues(values: number[]): Promise<number[]>;
@@ -613,21 +661,30 @@ class TestSessionTarget extends RpcTarget implements TestSession {
       approvalQueue: RpcStub<ApprovalQueue>,
       private readonly state: DurableObjectStub<TestControl>,
       private readonly label: string,
+      private readonly resourceUrl: string,
       private readonly ctx: DurableObjectState) {
     super();
     this.approvalQueue = approvalQueue.dup();
   }
 
   async readValue(
-      restricted?: boolean, ownerInvitesOnly?: boolean, excludeObservers?: string[])
-      : Promise<number> {
+      restricted?: boolean, ownerInvitesOnly?: boolean, excludeObservers?: string[],
+      subresources?: string[]): Promise<number> {
+    const tracked = await this.state.isObserverTracked(this.resourceUrl);
+    // JSON tuples preserve both resource scope and arbitrary local IDs without delimiter collisions.
+    const qualified = (subresources ?? []).map(id => JSON.stringify([this.resourceUrl, id]));
     await this.approvalQueue.authorizeObservation({
       title: "Read the test value",
       description: "Read the deterministic value exposed by the integration-test gatekeeper.",
       ...(restricted ? { containsRestrictedData: true } : {}),
       ...(ownerInvitesOnly ? { ownerInvitesOnly: true } : {}),
       ...(excludeObservers ? { excludeObservers } : {}),
+      ...(tracked ? { subresources: qualified } : {}),
     });
+    if (!tracked && subresources) {
+      const history = this.ctx.storage.kv.get<string[]>(HISTORY_KEY) ?? [];
+      this.ctx.storage.kv.put(HISTORY_KEY, [...new Set([...history, ...qualified])]);
+    }
     return 42;
   }
 
@@ -675,6 +732,9 @@ class TestSessionTarget extends RpcTarget implements TestSession {
 
 const SET_VALUE_ACTION_KIND: ActionKind = { tag: "set-value", label: "Set value" };
 
+/** Where a legacy binding keeps the subresources its reads depended on, in its own storage. */
+const HISTORY_KEY = "observer-history";
+
 /** Polls rather than parks a promise: the release arrives on another request to TestControl. */
 async function waitForApplyRelease(state: DurableObjectStub<TestControl>, label: string) {
   for (const deadline = Date.now() + 30_000; !await state.isApplyReleased(label);) {
@@ -713,6 +773,7 @@ export class TestGatekeeper
       };
     }
     const name = decodeURIComponent(new URL(this.ctx.props.resourceUrl).pathname.split("/").pop()!);
+    const tracked = await control(this.ctx.exports).isObserverTracked(this.ctx.props.resourceUrl);
     return {
       url: this.ctx.props.resourceUrl,
       // Distinct per binding, so a message covering two failing bindings names both.
@@ -720,7 +781,14 @@ export class TestGatekeeper
       snippet: `The test resource ${name}.`,
       suggestedBindingName: "TEST_THING",
       tsType: "TestThing",
+      ...(tracked ? { supportsObserverTracking: true } : {}),
     };
+  }
+
+  /** What this binding's legacy-mode reads recorded, for the Workshop's one-time import. */
+  async getHistoricalSubresources(): Promise<string[]> {
+    await control(this.ctx.exports).recordHistoryExport(this.ctx.props.resourceUrl);
+    return this.ctx.storage.kv.get<string[]>(HISTORY_KEY) ?? [];
   }
 
   async getTypeScriptTypes(): Promise<string> {
@@ -732,8 +800,8 @@ export class TestGatekeeper
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<TestSession> {
-    return new TestSessionTarget(
-        approvalQueue, control(this.ctx.exports), this.ctx.props.label, this.ctx);
+    return new TestSessionTarget(approvalQueue, control(this.ctx.exports), this.ctx.props.label,
+        this.ctx.props.resourceUrl, this.ctx);
   }
 
   [restore](): ConnectionProbe {
@@ -870,10 +938,12 @@ export default {
     }
 
     // Set what addObserver() should do for one account, either everywhere or (when `resourceUrl`
-    // is given) at one binding only.
-    // Body: {"label": "...", "allow": false, "reason": "...", "resourceUrl": "..."}
+    // is given) at one binding only. With `subresource` too, it sets what checkObserverAccess()
+    // answers for that one subresource of a tracked binding.
+    // Body: {"label": "...", "allow": false, "reason": "...", "resourceUrl": "...",
+    //        "subresource": "..."}
     if (url.pathname === "/control/verify-outcome" && req.method === "POST") {
-      const { label, allow, reason, resourceUrl } = body as Record<string, unknown>;
+      const { label, allow, reason, resourceUrl, subresource } = body as Record<string, unknown>;
       if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
       if (typeof allow !== "boolean") return badRequest("`allow` must be a boolean");
       if (reason !== undefined && typeof reason !== "string") {
@@ -882,12 +952,40 @@ export default {
       if (resourceUrl !== undefined && !isNonEmptyString(resourceUrl)) {
         return badRequest("`resourceUrl` must be a non-empty string when present");
       }
+      if (subresource !== undefined && !isNonEmptyString(subresource)) {
+        return badRequest("`subresource` must be a non-empty string when present");
+      }
+      if (subresource !== undefined && resourceUrl === undefined) {
+        return badRequest("`subresource` needs `resourceUrl`");
+      }
 
       const outcome: VerifyOutcome = allow
         ? { allow: true }
         : { allow: false, reason: reason ?? "The test gatekeeper refused this account." };
-      await control(ctx.exports).setVerifyOutcome(label, outcome, resourceUrl);
+      await control(ctx.exports).setVerifyOutcome(label, outcome, resourceUrl, subresource);
       return new Response(null, { status: 204 });
+    }
+
+    // Make the binding at `resourceUrl` advertise kernel observer tracking, or stop. Set before
+    // connecting for a binding tracked from creation, or after to upgrade a legacy one.
+    // Body: {"resourceUrl": "...", "enabled": boolean}
+    if (url.pathname === "/control/observer-tracking" && req.method === "POST") {
+      const { resourceUrl, enabled } = body as Record<string, unknown>;
+      if (!isNonEmptyString(resourceUrl)) {
+        return badRequest("`resourceUrl` must be a non-empty string");
+      }
+      if (typeof enabled !== "boolean") return badRequest("`enabled` must be a boolean");
+      await control(ctx.exports).setObserverTracking(resourceUrl, enabled);
+      return new Response(null, { status: 204 });
+    }
+
+    // Body: {"resourceUrl": "..."} -> {"count": number}, one per getHistoricalSubresources().
+    if (url.pathname === "/control/history-export-count" && req.method === "POST") {
+      const { resourceUrl } = body as Record<string, unknown>;
+      if (!isNonEmptyString(resourceUrl)) {
+        return badRequest("`resourceUrl` must be a non-empty string");
+      }
+      return Response.json({ count: await control(ctx.exports).getHistoryExportCount(resourceUrl) });
     }
 
     // Read back the addObserver()/removeObserver() calls one binding's gatekeeper has seen, in
