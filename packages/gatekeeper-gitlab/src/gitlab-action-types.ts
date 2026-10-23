@@ -247,10 +247,11 @@ type AutoApprovalKind = keyof typeof ACTION_KINDS;
 // those its actions can carry. Merges never appear: they are never auto-approvable.
 const ISSUE_ACTIONS: AutoApprovalKind[] =
   ["setTitle", "setBody", "addLabels", "removeLabels", "changeState", "postComment"];
+// A merge request's push only fast-forwards, so force pushes come from the project alone.
 const MERGE_REQUEST_ACTIONS: AutoApprovalKind[] =
-  [...ISSUE_ACTIONS, "postReview", "replyToDiffComment", "resolveDiffThread"];
+  [...ISSUE_ACTIONS, "postReview", "replyToDiffComment", "resolveDiffThread", "push"];
 const BINDING_ACTIONS: Record<ResourceKind, AutoApprovalKind[]> = {
-  project: ["createIssue", "createMergeRequest", ...MERGE_REQUEST_ACTIONS, "push", "forcePush"],
+  project: ["createIssue", "createMergeRequest", ...MERGE_REQUEST_ACTIONS, "forcePush"],
   issue: ISSUE_ACTIONS,
   mergeRequest: MERGE_REQUEST_ACTIONS,
 };

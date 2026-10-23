@@ -139,7 +139,8 @@ Implemented TTL cache families:
 - `cache:repo-v2:<owner>:<repo>` -> `GitHubRepoMetadata` (v2: the shape gained `defaultBranch`,
   and etag revalidation can keep an old-shaped entry alive past the TTL)
 - `cache:issue:<realId>` -> `GitHubIssueDetails`
-- `cache:pull:<realId>` -> `GitHubPullRequestDetails`
+- `cache:pull-v2:<realId>` -> `GitHubPullRequestDetails` (v2: v1 normalized a deleted fork's head
+  as this repository's)
 - `cache:list-issues-v2:<encodedQuery>:p<page>` -> `(GitHubIssueSummary | null)[]`, one entry per
   upstream row (`null` for pull requests), so a page keeps the length that ends the walk (v2: v1
   stored filtered, short pages)
@@ -159,7 +160,7 @@ Implemented TTL cache families:
 ### Cache TTLs
 
 - Viewer cache: 5 minutes
-- Entity caches (`repo-v2`, `issue`, `pull`, `discussion-reviews`, `resolve-ref`, `diff-v2`):
+- Entity caches (`repo-v2`, `issue`, `pull-v2`, `discussion-reviews`, `resolve-ref`, `diff-v2`):
   30 seconds
 - List/search caches: 15 seconds
 - `merge-base` entries never expire (a merge base is a pure function of its two key commits);

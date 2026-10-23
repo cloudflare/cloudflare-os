@@ -272,6 +272,24 @@ export interface GitLabMergeRequest extends GitLabIssuable {
   getMergeBase(): Promise<string>;
 
   /**
+   * Pushes a commit to this merge request's source branch, adding it to the merge request -- the
+   * way a fix made in a worktree gets to a merge request under review: mount the head commit that
+   * `getDetails()` returns, commit your changes on top of it, and push the result.
+   *
+   * `commitId` must be a full 40-character commit id (e.g. the result of a worktree `commit()`),
+   * and the commit's history must be locally available down to a commit read through this merge
+   * request -- which is automatic for commits authored on top of its head.
+   *
+   * The push must be a fast-forward: if the merge request has moved past the head your work was
+   * based on, the push fails with an error saying so; read its new head and rebase onto it, or
+   * merge it in. A merge request from a fork cannot be pushed to, since its source branch is in
+   * another project, and neither can a merged one. GitLab's protected-branch and push rules are
+   * checked by GitLab when the push is made: a push they reject is not made, and GitLab's reason
+   * is reported.
+   */
+  push(commitId: string): Promise<void>;
+
+  /**
    * Merges the merge request.
    *
    * Fails with GitLab's reason when the request is not mergeable -- for example unresolved

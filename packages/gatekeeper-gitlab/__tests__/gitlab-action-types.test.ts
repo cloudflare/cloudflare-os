@@ -81,10 +81,11 @@ describe("auto-approval", () => {
   it("advertises, per binding, exactly the eligible kinds its actions can carry, and never a merge", () => {
     const issue = ["setTitle", "setBody", "addLabels", "removeLabels", "changeState", "postComment"]
       .map(type => `gitlab.${type}`);
-    const mergeRequest = [...issue, "gitlab.postReview", "gitlab.replyToDiffComment", "gitlab.resolveDiffThread"];
+    const mergeRequest =
+      [...issue, "gitlab.postReview", "gitlab.replyToDiffComment", "gitlab.resolveDiffThread", "gitlab.push"];
     expect(tags("issue")).toEqual(issue);
     expect(tags("mergeRequest")).toEqual(mergeRequest);
     expect(tags("project")).toEqual(
-      ["gitlab.createIssue", "gitlab.createMergeRequest", ...mergeRequest, "gitlab.push", "gitlab.forcePush"]);
+      ["gitlab.createIssue", "gitlab.createMergeRequest", ...mergeRequest, "gitlab.forcePush"]);
   });
 });

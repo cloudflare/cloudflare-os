@@ -345,6 +345,33 @@ describe("GitHubRepoSessionImpl push", () => {
   });
 });
 
+describe("GitHubPullRequestImpl push", () => {
+  it("pushes to its own pull request, declares the commit, and queues nothing once it is there", async () => {
+    const queue = new TestApprovalQueue();
+    const prepared: string[][] = [];
+    const submitted: unknown[] = [];
+    let action: object | null = { type: "push", branch: "feature" };
+    const session = pullSession(queue, "7", {
+      preparePullRequestPush: async (pullId: string, commitId: string) => {
+        prepared.push([pullId, commitId]);
+        return action;
+      },
+      submitActionForApproval: async (_queue: unknown, _action: unknown, presentation: unknown) => {
+        submitted.push(presentation);
+      },
+    });
+
+    await session.push(oid(1));
+    action = null;  // the head branch is already at the commit
+    await session.push(oid(1));
+    await expect(session.push("abc1234")).rejects.toThrow(/full 40-character commit id/);
+
+    expect(prepared).toEqual([["7", oid(1)], ["7", oid(1)]]);
+    expect(submitted).toMatchObject([{ pushedCommits: [oid(1)], implementsRevert: true }]);
+    expect(queue.observations).toEqual([]);
+  });
+});
+
 describe("GitHubPullRequestImpl advertising", () => {
   it("advertises the head and base shas returned by getDetails", async () => {
     const queue = new TestApprovalQueue();
