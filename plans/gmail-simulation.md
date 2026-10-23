@@ -208,7 +208,8 @@ draft.
   without the agent doing anything. The store already records which Gmail ID each sent Message-ID
   maps to when a send completes.
 - **After rejection**, the message reports that it was not sent, or, when the rejected send's
-  outcome was unknown, that it may already have been sent.
+  outcome was unknown, that it may already have been sent. Only the binding's 100 most recent
+  such sends are remembered; an older one reports that it was not sent.
 
 A pending message is read-only. The gatekeeper refuses the following, with an error saying they
 become available once the message has been delivered:

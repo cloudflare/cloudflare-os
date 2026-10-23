@@ -1077,8 +1077,9 @@ these actions — the kit does, so it is the only one that both strands dependen
 The one terminal failure that does **not** cascade is an orphaned claim: its stored answer says the
 effect is unknown, so "was not applied" cannot be asserted over its dependents — the argument that
 keeps `claimed` out of `listUndecided` below, which converting the claim makes no more decidable.
-They stay pending, fail at the provider if the effect never landed, and clear by rejection —
-exactly a corpus dependent whose creator never resolved.
+They stay pending while it is, failing their applies on the unresolved reference. Rejecting the
+claim withdraws it, and nothing can bind its reference after that, so the rejection strands the
+dependents whose references it never bound, as rejecting a pending action does.
 
 **A dependent is refused at submit once nothing can provide its reference.** The cascade scans
 submitted records, so a dependent submitted *after* its provider was rejected escaped it, and every
