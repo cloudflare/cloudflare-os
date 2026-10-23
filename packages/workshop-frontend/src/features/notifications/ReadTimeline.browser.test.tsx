@@ -26,21 +26,21 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const View = () => {
+const View = ({sequences = [0, 1, 2]}: {sequences?: number[]}) => {
   const viewport = useRef<HTMLDivElement>(null);
   return (
     <div ref={viewport} data-viewport style={{ height: 220, width: 440, maxWidth: "100%", overflowY: "auto" }}>
       <ReadTimeline
         workspaceId="workspace"
         chatId={1}
-        container={viewport} latestSequence={2}
+        container={viewport} latestSequence={sequences.at(-1) ?? -1}
         oldestSequence={0}
         loadingEarlier={false}
         loadEarlier={async () => {}}
         onUnreadNavigation={navigate}
         className="px-3"
       >
-        {[0, 1, 2].map((sequence) => (
+        {sequences.map((sequence) => (
           <TimelineReadItem key={sequence} start={sequence} end={sequence}>
             <div style={{ height: 300 }}>
               Item {sequence}
@@ -186,6 +186,37 @@ it.each([false, true])("keeps manual unread in place, then resumes on return (AC
     chatId: 1,
     throughSequence: 2,
   });
+});
+
+it("keeps unread navigation pending until replay renders its target", async () => {
+  navigate.mockClear();
+  const markChatRead = vi.fn<AuthenticatedApi["markChatRead"]>().mockResolvedValue(undefined);
+  const state: UserUnreadState = {unreadChatCount: 1, unreadMessageCount: 2,
+    chats: [{workspaceId: "workspace", chatId: 1, readThroughSequence: 2, unreadMessageCount: 2}]};
+  const api = {markChatRead, subscribeToUnreadState: (subscriber: RpcStub<UnreadStateSubscriber>) => {
+    void subscriber.updated(state);
+    return Object.assign(Promise.resolve(), {[Symbol.dispose]: () => {}});
+  }};
+  withdraw = reportVisibleChat(() => ({workspaceId: "workspace", chatId: 1}));
+  host = document.body.appendChild(document.createElement("div"));
+  root = createRoot(host);
+  const render = (sequences: number[]) => act(async () => root!.render(
+    <UnreadStateBridge authenticatedApi={api as unknown as RpcStub<AuthenticatedApi>}>
+      <View sequences={sequences} />
+    </UnreadStateBridge>,
+  ));
+  await render([0, 1, 2]);
+  await new Promise(resolve => setTimeout(resolve, 400));
+  expect(navigate).toHaveBeenCalledWith(true);
+  expect(navigate).not.toHaveBeenCalledWith(false);
+  expect(markChatRead).not.toHaveBeenCalled();
+
+  await render([0, 1, 2, 3, 4]);
+  await vi.waitFor(() => expect(navigate).toHaveBeenLastCalledWith(false));
+  const toolbar = page.getByRole("button", {name: "Jump to first unread"}).element().closest(".sticky")!;
+  const item = host.querySelector<HTMLElement>('[data-read-start="3"]')!;
+  expect(Math.abs(item.getBoundingClientRect().top - toolbar.getBoundingClientRect().bottom)).toBeLessThan(1);
+  expect(markChatRead).not.toHaveBeenCalled();
 });
 
 it.each([

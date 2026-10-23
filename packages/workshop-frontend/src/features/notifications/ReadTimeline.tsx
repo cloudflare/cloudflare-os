@@ -49,6 +49,7 @@ export const ReadTimeline = ({
   const requestedPage = useRef<number | undefined>(undefined);
   const jumpSequence = useRef<number | undefined>(undefined);
   const localUnreadRequests = useRef<{horizon: number; acknowledgedSnapshot?: object}[]>([]);
+  const latestAction = useRef<object | undefined>(undefined);
   const requestRead = useRef<(() => void) | undefined>(undefined);
   const latest = useRef({ chat, unread, visit, latestSequence });
   latest.current = { chat, unread, visit, latestSequence };
@@ -73,7 +74,7 @@ export const ReadTimeline = ({
         !request.acknowledgedSnapshot || request.acknowledgedSnapshot === chat);
     }
     if (!visit || chat.readThroughSequence < visit.horizon) {
-      const divider =
+      const divider = localUnread && visit ? visit.divider :
         chat.unreadMessageCount > 0 ? chat.readThroughSequence + 1 : undefined;
       setVisit({ horizon: chat.readThroughSequence, divider, paused: !!visit });
       pending.current = -1;
@@ -132,10 +133,9 @@ export const ReadTimeline = ({
         if (bounds.width <= 0 || bounds.height <= 0) return;
         const items = root.current?.querySelectorAll<HTMLElement>("[data-unread-through]");
         const item = items && [...items].find((element) => Number(element.dataset.unreadThrough) >= target);
-        if (item) {
-          viewport.scrollTop += item.getBoundingClientRect().top - bounds.top -
-            (toolbar.current?.getBoundingClientRect().height ?? 0);
-        }
+        if (!item) return; // The unread snapshot can arrive before history replay.
+        viewport.scrollTop += item.getBoundingClientRect().top - bounds.top -
+          (toolbar.current?.getBoundingClientRect().height ?? 0);
         // A short history may not move scrollTop and therefore emits no scroll event. Let the
         // chat recompute follow-to-bottom even for that no-op navigation.
         onUnreadNavigation(false);
@@ -153,7 +153,7 @@ export const ReadTimeline = ({
       resize?.disconnect();
       window.removeEventListener("resize", navigate);
     };
-  }, [jump, visit, chat, oldestSequence, loadingEarlier, loadEarlier, container, onUnreadNavigation]);
+  }, [jump, visit, chat, oldestSequence, latestSequence, loadingEarlier, loadEarlier, container, onUnreadNavigation]);
 
   const canRead = !!chat && !!visit && !jump;
   useEffect(() => {
@@ -236,6 +236,7 @@ export const ReadTimeline = ({
           const target = chat ?? {workspaceId, chatId, unreadMessageCount: 0, readThroughSequence: -1};
           const request: (typeof localUnreadRequests.current)[number] = {horizon: sequence - 1};
           localUnreadRequests.current.push(request);
+          latestAction.current = request;
           jumpSequence.current = undefined;
           requestedPage.current = undefined;
           if (jump) onUnreadNavigation(false);
@@ -247,9 +248,10 @@ export const ReadTimeline = ({
           }).catch(() => {
             const index = localUnreadRequests.current.indexOf(request);
             if (index === -1) return;
-            const latestRequest = index === localUnreadRequests.current.length - 1;
             localUnreadRequests.current.splice(index, 1);
-            if (latestRequest) setVisit(visit);
+            if (latestAction.current === request) {
+              setVisit(current => visit && {...visit, horizon: current?.horizon ?? visit.horizon});
+            }
           });
         },
       }}
@@ -275,7 +277,10 @@ export const ReadTimeline = ({
               size="xs"
               variant="ghost"
               onClick={() => {
+                const action = {};
+                latestAction.current = action;
                 void unread?.markRead(chat, latestSequence).then(() => {
+                  if (latestAction.current !== action) return;
                   setVisit(current => current && {...current, paused: false});
                   onUnreadNavigation(false);
                   setJump(0);
