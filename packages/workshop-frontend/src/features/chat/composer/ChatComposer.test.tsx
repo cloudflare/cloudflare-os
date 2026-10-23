@@ -5,7 +5,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { RpcStub } from "capnweb";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import type { Overseer, SlashCommandChoice } from "@gadgets/workshop-shared/api";
+import type { Overseer, ServerConfig, SlashCommandChoice } from "@gadgets/workshop-shared/api";
 
 type TestToast = {
   title: string;
@@ -30,6 +30,7 @@ const testState = vi.hoisted(() => ({
     url: string;
     onSelectAccount: (accountId: number, vendorId: string, resource: { urlPattern: string }) => void;
   },
+  transcribeAudio: vi.fn<(audio: Uint8Array) => Promise<string>>(),
 }));
 
 vi.mock("@cloudflare/kumo", async (importOriginal) => ({
@@ -38,7 +39,9 @@ vi.mock("@cloudflare/kumo", async (importOriginal) => ({
 }));
 
 vi.mock("../../../AuthContext", () => ({
-  useAuthenticatedApi: () => ({ authenticatedApi: {} }),
+  useAuthenticatedApi: () => ({
+    authenticatedApi: { transcribeAudio: testState.transcribeAudio },
+  }),
 }));
 
 vi.mock("../../../useVendorBranding", () => ({
@@ -60,6 +63,8 @@ vi.mock("../../../GatekeeperModal", () => ({
   },
 }));
 
+import { ServerConfigContext } from "../../../ServerConfigContext";
+import { installFakeMicrophone } from "./fakeMicrophone";
 import { ChatComposer } from "./ChatComposer";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -81,6 +86,14 @@ const typeText = async (textarea: HTMLTextAreaElement, text: string) => {
     textarea.setSelectionRange(text.length, text.length);
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
     await new Promise(requestAnimationFrame);
+  });
+};
+
+// jsdom has no Range layout; the URL panel measures the line its URL sits on.
+const stubRangeLayout = () => {
+  Range.prototype.getBoundingClientRect = () => new DOMRect();
+  onTestFinished(() => {
+    delete (Range.prototype as Partial<Range>).getBoundingClientRect;
   });
 };
 
@@ -504,11 +517,7 @@ describe("ChatComposer", () => {
   // Pastes `url` after "Summarize ", picks account 4 for it, and has the connection fail.
   const pasteFailingUrl = async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-    // jsdom has no Range layout; the URL panel measures the line its URL sits on.
-    Range.prototype.getBoundingClientRect = () => new DOMRect();
-    onTestFinished(() => {
-      delete (Range.prototype as Partial<Range>).getBoundingClientRect;
-    });
+    stubRangeLayout();
     const createCapsuleGatekeeper = vi.fn<
       Parameters<typeof ChatComposer>[0]["createCapsuleGatekeeper"]
     >(async () => {
@@ -613,5 +622,171 @@ describe("ChatComposer", () => {
     });
     expect(changed.timeout).toBeUndefined();
     expect(changed.actions).toBeUndefined();
+  });
+
+  describe("dictation", () => {
+    type ComposerProps = Parameters<typeof ChatComposer>[0];
+    const renderComposer = async (transcriptionEnabled: boolean) => {
+      const onSend = vi.fn<ComposerProps["onSend"]>();
+      container = document.createElement("div");
+      document.body.append(container);
+      root = createRoot(container);
+      const render = (props: Partial<ComposerProps> = {}) => act(async () => root!.render(
+        <ServerConfigContext.Provider value={{ transcriptionEnabled } as ServerConfig}>
+          <ChatComposer
+            createCapsuleGatekeeper={async () => null}
+            getOverseer={() => ({} as RpcStub<Overseer>)}
+            onSend={onSend}
+            isAgentActive={false}
+            models={[]}
+            selectedModel={{ id: "model-a" }}
+            onModelChange={() => {}}
+            {...props}
+          />
+        </ServerConfigContext.Provider>,
+      ));
+      await render();
+      const textarea = container.querySelector<HTMLTextAreaElement>('[role="combobox"]')!;
+      return { onSend, textarea, render };
+    };
+
+    const dictateButton = () => container!.querySelector<HTMLButtonElement>(
+      'button[aria-label="Dictate"]');
+
+    afterEach(() => {
+      testState.transcribeAudio.mockReset();
+    });
+
+    it.each([
+      { draft: "Make a chart please", selection: [7, 12], expected: "Make a bar chart please" },
+      { draft: "Make a", selection: [6, 6], expected: "Make a bar chart" },
+      { draft: "please", selection: [0, 0], expected: "bar chart please" },
+    ])("puts the transcript over the selection in $draft without sending it",
+        async ({ draft, selection: [start, end], expected }) => {
+      const microphone = installFakeMicrophone();
+      testState.transcribeAudio.mockResolvedValue("bar chart");
+      const { onSend, textarea } = await renderComposer(true);
+      await typeText(textarea, draft);
+      await act(async () => dictateButton()!.click());
+
+      // The caret moves while the recording is made, and the transcript follows it.
+      textarea.setSelectionRange(start, end);
+      await act(async () => microphone.recorders[0].stop());
+      // The composer places the caret on the next frame.
+      await act(async () => {
+        await new Promise(requestAnimationFrame);
+      });
+
+      expect(testState.transcribeAudio).toHaveBeenCalledOnce();
+      expect(textarea.value).toBe(expected);
+      const caret = expected.indexOf("bar chart") + "bar chart".length;
+      expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([caret, caret]);
+      expect(onSend).not.toHaveBeenCalled();
+    });
+
+    it("puts a late transcript in the draft without taking focus from where the user moved it",
+        async () => {
+      const microphone = installFakeMicrophone();
+      const transcript = Promise.withResolvers<string>();
+      testState.transcribeAudio.mockReturnValue(transcript.promise);
+      const { textarea } = await renderComposer(true);
+      await typeText(textarea, "Make a");
+      await act(async () => dictateButton()!.click());
+      await act(async () => microphone.recorders[0].stop());
+      // Another field on the page, such as the conversation's rename field.
+      const elsewhere = document.createElement("input");
+      document.body.append(elsewhere);
+      elsewhere.focus();
+
+      await act(async () => transcript.resolve("bar chart"));
+      await act(async () => {
+        await new Promise(requestAnimationFrame);
+      });
+
+      expect(textarea.value).toBe("Make a bar chart");
+      expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([16, 16]);
+      expect(document.activeElement).toBe(elsewhere);
+      elsewhere.remove();
+    });
+
+    type CapsuleSelection = (capsuleStart: number, capsuleEnd: number, length: number) =>
+      [number, number];
+    it.each<{ selected: string; select: CapsuleSelection; expected: string }>([
+      { selected: "everything", select: (_s, _e, length) => [0, length], expected: "bar chart" },
+      { selected: "the capsule", select: (s, e) => [s, e], expected: "Summarize bar chart now" },
+      {
+        selected: "from inside the capsule into the text after it",
+        select: (s, e) => [s + 2, e + 2],
+        expected: "Summarize bar chart ow",
+      },
+    ])("puts the transcript over a selection of $selected that breaks a capsule",
+        async ({ select, expected }) => {
+      const microphone = installFakeMicrophone();
+      testState.transcribeAudio.mockResolvedValue("bar chart");
+      stubRangeLayout();
+      const gatekeeper = {
+        getId: async () => 9,
+        describe: async () => ({ title: "Budget", url }),
+        [Symbol.dispose]: () => {},
+      };
+      const { textarea, render } = await renderComposer(true);
+      await render({
+        createCapsuleGatekeeper: async () =>
+          gatekeeper as unknown as Awaited<ReturnType<ComposerProps["createCapsuleGatekeeper"]>>,
+      });
+      await typeText(textarea, `Summarize ${url}`);
+      await act(async () => {
+        testState.capsuleOverlayProps!.onSelectAccount(4, "google", { urlPattern: url });
+        await vi.waitFor(() => expect(textarea.value).not.toContain(url));
+        await new Promise(requestAnimationFrame);
+      });
+      const capsuleStart = "Summarize ".length;
+      const capsuleEnd = textarea.value.trimEnd().length;
+      await typeText(textarea, `${textarea.value}now`);
+      await act(async () => dictateButton()!.click());
+
+      textarea.setSelectionRange(...select(capsuleStart, capsuleEnd, textarea.value.length));
+      await act(async () => microphone.recorders[0].stop());
+      await act(async () => {
+        await new Promise(requestAnimationFrame);
+      });
+
+      expect(textarea.value).toBe(expected);
+      const caret = expected.indexOf("bar chart") + "bar chart".length;
+      expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([caret, caret]);
+    });
+
+    it("keeps a dictation under way when the composer becomes blocked", async () => {
+      const microphone = installFakeMicrophone();
+      testState.transcribeAudio.mockResolvedValue("bar chart");
+      const { textarea, render } = await renderComposer(true);
+      await act(async () => dictateButton()!.click());
+
+      await render({ blockedReason: "Waiting for your approval" });
+      expect(microphone.track.stop).not.toHaveBeenCalled();
+      await act(async () => microphone.recorders[0].stop());
+
+      expect(textarea.value).toBe("bar chart");
+      expect(dictateButton()!.disabled).toBe(true);
+    });
+
+    it("gives focus back to the composer when a dictation is cancelled", async () => {
+      installFakeMicrophone();
+      const { textarea } = await renderComposer(true);
+      await act(async () => dictateButton()!.click());
+      const cancel = container!.querySelector<HTMLButtonElement>(
+        'button[aria-label="Cancel dictation"]')!;
+      cancel.focus();
+
+      await act(async () => cancel.click());
+
+      expect(document.activeElement).toBe(textarea);
+    });
+
+    it("offers no microphone once the deployment turns voice input off", async () => {
+      installFakeMicrophone();
+      await renderComposer(false);
+      expect(dictateButton()).toBeNull();
+    });
   });
 });

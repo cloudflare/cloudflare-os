@@ -134,6 +134,19 @@ describe("admin config site logo", () => {
   });
 });
 
+describe("admin config transcription", () => {
+  it("keeps transcription off unless an admin stored it on", () => {
+    for (let stored of [undefined, null, "true", 1]) {
+      let config = normalizeAdminConfig({ transcriptionEnabled: stored as boolean });
+      expect(config.transcriptionEnabled, String(stored)).toBe(false);
+    }
+    expect(parseAdminConfig("{}").transcriptionEnabled).toBe(false);
+    let on = parseAdminConfig(serializeAdminConfig(
+        { ...DEFAULT_ADMIN_CONFIG, transcriptionEnabled: true }));
+    expect(on.transcriptionEnabled).toBe(true);
+  });
+});
+
 describe("admin config gateway models", () => {
   let added: GatewayModel =
       { provider: "anthropic", id: "claude-test", name: "Claude Test", contextWindow: 500000 };

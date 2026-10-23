@@ -38,6 +38,7 @@ import ComposerFormatMenuItems from "../../../components/format/ComposerFormatMe
 import { WorkshopIconButton } from "../../../components/WorkshopControls";
 import { handlePickerKeyDown } from "../../../pickerNavigation";
 import { useAuthenticatedApi } from "../../../AuthContext";
+import { useServerConfig } from "../../../ServerConfigContext";
 import { useVendorBranding } from "../../../useVendorBranding";
 import { useSlashCommandPicker } from "./slash-commands/SlashCommandPicker";
 import { isImeComposing } from "../../../keyboardEvent";
@@ -50,6 +51,8 @@ import {
 import { CapturedConsoleLogsPrompt } from "./CapturedConsoleLogsPrompt";
 import ComposerAddMenu from "./ComposerAddMenu";
 import { ComposerModelSelector, type SelectedModel } from "./ComposerModelSelector";
+import { ComposerDictation } from "./ComposerDictation";
+import { dictationSupported, focusIsFree } from "./useDictation";
 import { useComposerDraft } from "./draft/useComposerDraft";
 import { buildComposerSubmission } from "./composerSubmission";
 import {
@@ -216,6 +219,7 @@ export const ChatComposer = ({
   const [cursorPosition, setCursorPosition] = useState(0);
   const pickerCaretRef = useRef<{key: string | null; text: string}>({key: null, text: ""});
   const { authenticatedApi } = useAuthenticatedApi();
+  const transcriptionEnabled = useServerConfig()?.transcriptionEnabled === true;
   const vendorBranding = useVendorBranding(authenticatedApi);
   const selectedSlashCommandRef = useRef(selectedSlashCommand);
   selectedSlashCommandRef.current = selectedSlashCommand;
@@ -661,6 +665,40 @@ export const ChatComposer = ({
     });
   };
 
+  // Lands at the caret, or over the selection, as they are when the transcript arrives rather than
+  // when recording started, since the user may keep typing while it is transcribed. The selection
+  // is deleted as an edit of its own: a capsule an edit breaks takes the edit's new text with it.
+  // Focus returns to the composer only if nothing else took it meanwhile.
+  const insertTranscript = (transcript: string) => {
+    let draft = currentComposerDocument();
+    const textarea = composerTextareaRef.current;
+    let start = Math.min(textarea?.selectionStart ?? draft.text.length, draft.text.length);
+    const end = Math.min(textarea?.selectionEnd ?? draft.text.length, draft.text.length);
+    if (start === end) {
+      start = snapCaretOutOfRanges(start, currentTokenRanges(), "nearest");
+    } else {
+      const deletion = applyComposerTextEdit(
+        draft, draft.text.slice(0, start) + draft.text.slice(end), start);
+      draft = deletion.document;
+      // The start of the first capsule it broke, when that began before the selection.
+      start = Math.min(start, deletion.caret ?? start);
+    }
+    const before = draft.text.slice(0, start);
+    const after = draft.text.slice(start);
+    const leading = before !== "" && !/\s$/.test(before) ? " " : "";
+    const trailing = after !== "" && !/^\s/.test(after) ? " " : "";
+    const inserted = leading + transcript + trailing;
+    const insertion = applyComposerTextEdit(
+      draft, before + inserted + after, start + inserted.length);
+    recordDraftEdit();
+    commitComposerDocument(insertion.document);
+    const caret = start + leading.length + transcript.length;
+    requestAnimationFrame(() => {
+      if (focusIsFree()) composerTextareaRef.current?.focus();
+      moveCaret(caret);
+    });
+  };
+
   // What the mirror paints as objects rather than text. Memoized because the composer re-renders for
   // plenty of reasons that leave the text alone (attachments, agent activity, menus).
   const mirrorTokens = useMemo<MirrorToken[]>(() => [
@@ -1009,6 +1047,14 @@ export const ChatComposer = ({
                 selectedModel={selectedModel}
                 onModelChange={onModelChange}
               />
+              {transcriptionEnabled && dictationSupported() && (
+                <ComposerDictation
+                  transcribe={(audio) => authenticatedApi.transcribeAudio(audio)}
+                  onTranscript={insertTranscript}
+                  disabled={isBlocked}
+                  onReturnFocus={() => composerTextareaRef.current?.focus()}
+                />
+              )}
               {isAgentActive && onStop && (
                 // A steer still being sent can't be handed back to the draft yet.
                 <WorkshopIconButton

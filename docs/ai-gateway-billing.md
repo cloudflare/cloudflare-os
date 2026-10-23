@@ -24,6 +24,11 @@ The balance shown to users is read live from their Cloudflare AI Gateway billing
 [Cloudflare dashboard](https://dash.cloudflare.com/?to=/:account/ai/ai-gateway) — the platform never
 holds money.
 
+Dictated prompts are outside this flow: transcribing one (`AuthenticatedApi.transcribeAudio`) is
+not a counted call, is never routed through the user's account, and always bills the deployment's
+Workers AI, through the platform gateway when the binding reaches it, with gateway logging and
+caching off. It is off until an admin turns on **Voice input** on the General tab of `/admin`.
+
 ## Connecting Cloudflare
 
 Billing is tied to the **Cloudflare gatekeeper**: the OAuth tokens live in that gatekeeper's
