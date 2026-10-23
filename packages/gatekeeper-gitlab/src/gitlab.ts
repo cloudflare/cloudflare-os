@@ -31,13 +31,15 @@ import {
 import { NONCE_KEY, advanceToOAuth, claimOAuth, putInitiation } from "@gadgets/gatekeeper-kit/connect-handshake";
 import { CONNECT_TIMEOUT_MS, NONCE_BYTES, generateNonce } from "@gadgets/gatekeeper-kit/connect-nonce";
 import {
-  CredentialCoordinator,
+  CredentialCoordinator, CredentialsExpiredError,
   isConnectionSuperseded,
   isCredentialsExpired,
   type RejectionVerdict,
 } from "@gadgets/gatekeeper-kit/credentials";
 import { notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
+import { beginCentralOAuth, redeemCentralOAuth, refreshCentralOAuth, revokeCentralOAuth,
+  type CentralOAuthGrant } from "@gadgets/gatekeeper-kit/central-oauth";
 import { createPkce } from "@gadgets/gatekeeper-kit/oauth-client";
 import { PreviewOAuth, PreviewOAuthConfigurationError } from "@gadgets/gatekeeper-kit/preview-oauth";
 import {
@@ -151,12 +153,26 @@ export default {
     const path = relPath.slice(1).split("/");
 
     if (path.length === 2 && path[0].length === 64 && path[1].length === NONCE_BYTES * 2) {
-      if (!env.CLIENT_ID || !env.CLIENT_SECRET) {
+      if (!env.CENTRAL_GATEKEEPER_URL && (!env.CLIENT_ID || !env.CLIENT_SECRET)) {
         return htmlResponse(NOT_CONFIGURED_HTML);
       }
 
       const doId = path[0];
       const initiationNonce = path[1];
+      if (env.CENTRAL_GATEKEEPER_URL) {
+        const begun = await accountFor(ctx, doId)?.beginOAuthFlow(initiationNonce, getRedirectUri(env));
+        if (!begun) return htmlResponse(INVALID_LINK_HTML);
+        try {
+          return Response.redirect(await beginCentralOAuth(env, "gitlab", {
+            accountId: doId, nonce: begun.oauthNonce, scopes: begun.scopes,
+            callbackPath: `${basePath}/oauth`, providerOrigin: instanceUrl(env),
+          }, `${instanceUrl(env)}/oauth/authorize`), 302);
+        } catch (error) {
+          console.error("GitLab broker failed to start consent", error);
+          return htmlResponse(errorPageHtml("GitLab connection unavailable",
+            "Unable to start authorization. Contact your Cloudflare OS administrator, then restart the connection flow."), 503);
+        }
+      }
       const previewOAuth = previewOAuthFor(env);
       if (previewOAuth instanceof Response) return previewOAuth;
       const begun = await accountFor(ctx, doId)?.beginOAuthFlow(initiationNonce, previewOAuth.redirectUri);
@@ -166,7 +182,7 @@ export default {
 
       // The authorize page is on the browser-facing instance: the user's own session must reach it.
       return Response.redirect(buildAuthorizeUrl(instanceUrl(env), {
-        clientId: env.CLIENT_ID,
+        clientId: env.CLIENT_ID!,
         redirectUri: previewOAuth.redirectUri,
         scopes: begun.scopes,
         state: await previewOAuth.createAuthorizationState({ userObjectId: doId, oauthNonce: begun.oauthNonce }),
@@ -175,6 +191,21 @@ export default {
     }
 
     if (relPath === "/oauth") {
+      if (env.CENTRAL_GATEKEEPER_URL) {
+        const result = await redeemCentralOAuth(env, "gitlab", url.searchParams.get("ticket") ?? "");
+        const stub = accountFor(ctx, result.accountId);
+        let handoff: ConnectHandoff | null | undefined;
+        try { handoff = await stub?.acceptCentralGrant(result.grant, result.nonce); }
+        catch (error) {
+          await revokeCentralOAuth(env, "gitlab", `cgc1.${result.grant.credentialId}`);
+          throw error;
+        }
+        if (!handoff) {
+          await revokeCentralOAuth(env, "gitlab", `cgc1.${result.grant.credentialId}`);
+          return htmlResponse(INVALID_LINK_HTML);
+        }
+        return htmlResponse(connectHandoffPageHtml(handoff));
+      }
       // The kit decides whose callback this is: a preview's, arriving at the stable Worker, is
       // relayed there with GitLab's parameters (an `error` included) and the state untouched.
       const previewOAuth = previewOAuthFor(env);
@@ -263,7 +294,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
 }
 
 /** The live grant: the token pair and the scopes it was requested with (the token response carries none). */
-type GitLabGrant = GitLabOAuthGrant & { scopes: string[] };
+type GitLabGrant = GitLabOAuthGrant & { scopes: string[]; providerOrigin?: string };
 
 /** A reconnect's grant, staged until the Workshop confirms it, and the connection it replaces. */
 type ReconnectStage = { grant: GitLabGrant; startedUnder: string };
@@ -311,6 +342,15 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
     refresh: async (grant: GitLabGrant): Promise<GitLabGrant> => {
       logger.info("refreshing GitLab access token", { event: "gitlab.token.refresh" });
       try {
+        if (grant.refreshToken.startsWith("cgc1.")) {
+          if (!this.env.CENTRAL_GATEKEEPER_URL || grant.providerOrigin !== instanceUrl(this.env)) {
+            throw new CredentialsExpiredError("Reconnect GitLab after changing its managed instance configuration.");
+          }
+          const result = await refreshCentralOAuth(this.env, "gitlab", grant.refreshToken, grant.accessToken);
+          if (!result.ok) throw new CredentialsExpiredError("Managed GitLab authorization was revoked.");
+          return this.#centralGrant(result.grant);
+        }
+        if (this.env.CENTRAL_GATEKEEPER_URL) throw new CredentialsExpiredError("Reconnect GitLab through the managed service.");
         const refreshed = await refreshAccessToken(gitlabInstance(this.env),
           { refreshToken: grant.refreshToken, ...oauthApp(this.env) });
         return { ...refreshed, scopes: grant.scopes };
@@ -372,6 +412,7 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
    * null when the callback's nonce doesn't match.
    */
   async acceptAuthCode(code: string, oauthNonce: string): Promise<ConnectHandoff | null> {
+    if (this.env.CENTRAL_GATEKEEPER_URL) throw new Error("Direct OAuth is disabled for this managed gatekeeper.");
     const kv = this.ctx.storage.kv;
     const attempt = claimOAuth<ConnectAttempt>(kv, oauthNonce, Date.now());
     if (attempt === null) return null;
@@ -391,6 +432,33 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
       scopes,
     };
 
+    return this.#acceptGrant(grant, attempt, callback);
+  }
+
+  #centralGrant(grant: CentralOAuthGrant): GitLabGrant {
+    if (grant.providerData?.origin !== instanceUrl(this.env)) throw new Error("Managed GitLab grant belongs to another instance.");
+    return { accessToken: grant.accessToken, refreshToken: `cgc1.${grant.credentialId}`,
+      expiresAt: grant.expiresAt, scopes: grant.scopes, providerOrigin: instanceUrl(this.env) };
+  }
+
+  /** Redeemed tickets still have to claim the account's live OAuth nonce and connection generation. */
+  async acceptCentralGrant(delivered: CentralOAuthGrant, oauthNonce: string): Promise<ConnectHandoff | null> {
+    if (!this.env.CENTRAL_GATEKEEPER_URL) throw new Error("Managed OAuth is not configured.");
+    const kv = this.ctx.storage.kv;
+    const attempt = claimOAuth<ConnectAttempt>(kv, oauthNonce, Date.now());
+    if (!attempt) return null;
+    const grant = this.#centralGrant(delivered);
+    const callback = kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
+    if (!callback) {
+      await this.#revokeTokens(grant.refreshToken);
+      return null;
+    }
+    return this.#acceptGrant(grant, attempt, callback);
+  }
+
+  async #acceptGrant(grant: GitLabGrant, attempt: ConnectAttempt,
+      callback: Fetcher<GatekeeperConnectCallback>): Promise<ConnectHandoff> {
+    const kv = this.ctx.storage.kv;
     // A disconnect may have landed during the exchange: a finished one wiped the account and its
     // callback, one still running has moved the connection generation `connect` fences on. The
     // new tokens are revoked rather than left live where nobody knows about them.
@@ -488,6 +556,10 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
    */
   async getAccessToken(): Promise<string> {
     const { creds } = await this.#creds.snapshot(this.#recovery.refresh, this.#recovery);
+    if (this.env.CENTRAL_GATEKEEPER_URL && (!creds.refreshToken.startsWith("cgc1.") ||
+        creds.providerOrigin !== instanceUrl(this.env))) {
+      throw new Error("Reconnect GitLab through the configured managed service.");
+    }
     return creds.accessToken;
   }
 
@@ -535,6 +607,11 @@ export class UserAccount extends DurableObject<Env> implements AccountCredential
    * partner, so both are; failures are logged, not fatal -- the caller drops its copy regardless.
    */
   async #revokeTokens(...tokens: string[]): Promise<void> {
+    const central = tokens.find(token => token.startsWith("cgc1."));
+    if (central) {
+      await revokeCentralOAuth(this.env, "gitlab", central);
+      return;
+    }
     if (!this.env.CLIENT_ID || !this.env.CLIENT_SECRET) return;
     for (const token of tokens) {
       try {

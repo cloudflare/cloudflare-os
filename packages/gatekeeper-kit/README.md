@@ -30,6 +30,7 @@ Workshop owns connect completion ticket minting and redemption.
 | --- | --- | --- |
 | Assembly and lifetime | Independent leaf contracts; no Layer 2 assembly is shipped. | Worker, account, and resource-facet RPC surfaces; stub disposal; keeping stateful kit objects stable for one Durable Object activation. |
 | Connect | Nonce generation and comparison, the two-stage handshake, staged reconnect escrow, hardened handoff HTML, and browser mutation guards. | Provider exchange, staged payload shape, exact live commit, provider cleanup policy, routes, and authorization parameters. |
+| Central OAuth | Signed installation requests and single-use ticket redemption; only short-lived tokens enter the instance. | Provider endpoints, metadata validation, scope policy, credential lifecycle and central service deployment. |
 | Preview OAuth | Signed state, stable-to-preview callback relay, and return-host validation. | Deployment configuration, provider callback parameters, issuer checks, and retaining the exact redirect URI for code exchange. |
 | Credentials | Atomic credential records, refresh coalescing, identity and connection generations, replay, and rejection adjudication. | Grant shape and projection, the refresh callback (see OAuth token endpoint), and display-safe errors. |
 | Credential expiry and simple auth retry | Durable deduplication of expiry notifications and one-refresh/one-replay helpers. | Deciding what proves grant expiry beyond an OAuth `invalid_grant`, provider refresh and revoke calls, and choosing the coordinator flow versus the standalone retry helper. |
@@ -77,6 +78,7 @@ import {
 | `./credentials` | Account-side `CredentialCoordinator` and consumer-side `CredentialSource`. | An OAuth-shaped provider stores, refreshes, or rejects credentials. |
 | `./credential-expiry` | Durable, deduplicated `credentialsExpired()` notification. | An account has a Workshop connect callback to notify. |
 | `./auth-retry` | One refresh and replay without account adjudication. | A token flow has no `CredentialSource`; otherwise use `CredentialSource.run()`. |
+| `./central-oauth` | `beginCentralOAuth`, `redeemCentralOAuth`, `refreshCentralOAuth`, `revokeCentralOAuth` | Managed-install OAuth broker client. |
 | `./cache` | Authority-partitioned Durable Object TTL caching. | Provider reads repeat and reconnects must fence stale fills. |
 | `./single-flight` | Keyed coalescing of concurrent work, without caching results. | Concurrent callers must share one in-flight request or write, such as two approvals that would each create the same resource. |
 | `./serial-queue` | FIFO serialization of async operations; a failed one never blocks the next. | Operations on shared state must not interleave, such as preparing changes that each check those queued before them. |

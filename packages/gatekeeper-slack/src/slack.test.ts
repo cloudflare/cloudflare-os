@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SlackApi, SlackApiError, type SlackInstallation, type SlackOAuthGrant } from "./slack-api";
+import * as centralOAuth from "@gadgets/gatekeeper-kit/central-oauth";
 import { stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 
 // These tests exercise binding/observer behavior in Node; the production RPC schema is checked
@@ -22,6 +23,7 @@ vi.mock("./generated/conversation-configurator-ui.txt", () => ({ default: "" }))
 vi.mock("./generated/thread-configurator-ui.txt", () => ({ default: "" }));
 
 const {
+  default: slackWorker,
   SlackUserImpl, SlackWorkspaceGatekeeperImpl, SlackConversationGatekeeperImpl,
   SlackThreadGatekeeperImpl, SlackVerifier, UserAccount,
 } = await import("./slack");
@@ -69,6 +71,28 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
+});
+
+describe("managed Slack consent failures", () => {
+  it("renders a recoverable error when the central broker refuses a suspended installation", async () => {
+    const account = { beginOAuthFlow: vi.fn(async () => ({ oauthNonce: "b".repeat(64), scopes: ["users:read"] })) };
+    const ctx = { exports: { UserAccount: { idFromString: (id: string) => id, get: () => account } } };
+    const env = { BASE_URL: "https://instance.example/gatekeeper/slack", CENTRAL_GATEKEEPER_URL: "https://central.example" };
+    const request = new Request(`${env.BASE_URL}/${"a".repeat(64)}/${"c".repeat(64)}`);
+    const begin = vi.spyOn(centralOAuth, "beginCentralOAuth")
+      .mockRejectedValueOnce(new Error("Central slack OAuth request failed (401)"));
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const refused = await slackWorker.fetch(request, env as never, ctx as never);
+    expect(refused.status).toBe(503);
+    expect(refused.headers.get("Cache-Control")).toBe("no-store");
+    expect(await refused.text()).toContain("Contact your Cloudflare OS administrator");
+
+    // A new attempt can proceed after the operator restores the installation.
+    begin.mockResolvedValueOnce("https://slack.com/oauth/v2/authorize?client_id=test");
+    const restored = await slackWorker.fetch(request, env as never, ctx as never);
+    expect(restored.status).toBe(302);
+    expect(restored.headers.get("Location")).toBe("https://slack.com/oauth/v2/authorize?client_id=test");
+  });
 });
 
 describe("Slack resource binding identity", () => {
@@ -243,5 +267,57 @@ describe("Slack org observer isolation", () => {
     expect(await verifier.hasConversationAccess("CTWO", "TTWO")).toBe(false);
     vi.spyOn(SlackApi.prototype, "listWorkspaces").mockRejectedValue(new SlackApiError("ratelimited", 429));
     await expect(verifier.hasWorkspaceAccess("TONE")).rejects.toMatchObject({ code: "ratelimited" });
+  });
+});
+
+
+describe("managed Slack connection", () => {
+  const grant = () => ({ credentialId: "c".repeat(64), accessToken: "managed-user-token",
+    expiresAt: Date.now() + 3_600_000, scopes: ["users:read"],
+    providerData: { userId: "UUSER", teamId: "TONE", isEnterpriseInstall: false } });
+  function fixture() {
+    // Workers supplies timingSafeEqual; the hosting shim here uses exact byte equality.
+    vi.stubGlobal("crypto", { getRandomValues: crypto.getRandomValues.bind(crypto),
+      subtle: { timingSafeEqual: (a: Uint8Array, b: Uint8Array) => a.byteLength === b.byteLength && a.every((value, index) => value === b[index]) } });
+    const ctx = { ...context({}), id: { toString: () => "a".repeat(64) } };
+    const account = new UserAccount(ctx as never, { CENTRAL_GATEKEEPER_URL: "https://central.test" } as never);
+    const callback = { reconnectComplete: vi.fn(async (ticket: string) => ({ targetOrigin: "https://instance.test", ticket })) };
+    ctx.storage.kv.put("callback", callback);
+    ctx.storage.kv.put("accessToken", token);
+    return { ctx, account, callback };
+  }
+  it("stages managed reconnects, consumes nonce once, and stores only an opaque refresh reference", async () => {
+    const { ctx, account } = fixture();
+    ctx.storage.kv.put("refreshToken", "legacy-refresh-secret");
+    await account.prepareReconnect("init", ["users:read"]);
+    const flow = await account.beginOAuthFlow("init");
+    expect(await account.acceptCentralGrant(grant(), "wrong")).toBeNull();
+    const handoff = await account.acceptCentralGrant(grant(), flow!.oauthNonce);
+    expect(ctx.storage.kv.get("accessToken")).toEqual(token);
+    expect(await account.acceptCentralGrant(grant(), flow!.oauthNonce)).toBeNull();
+    await account.commitReconnect(handoff!.ticket);
+    expect(ctx.storage.kv.get("centralCredential")).toBe(`cgc1.${"c".repeat(64)}`);
+    expect(ctx.storage.kv.get("refreshToken")).toBeUndefined();
+    expect(await account.getAccessToken()).toMatchObject({ token: "managed-user-token" });
+    await expect(account.acceptAuthCode("code", "nonce")).rejects.toThrow("Direct OAuth is disabled");
+  });
+  it("refreshes centrally and preserves org installation metadata without a provider secret", async () => {
+    const { ctx, account } = fixture();
+    ctx.storage.kv.put("accessToken", { token: "expired", expires: new Date(0) });
+    ctx.storage.kv.put("centralCredential", `cgc1.${"c".repeat(64)}`);
+    const refreshed = { ...grant(), providerData: { userId: "UUSER", teamId: "", isEnterpriseInstall: true, enterpriseId: "EORG" } };
+    const refresh = vi.spyOn(centralOAuth, "refreshCentralOAuth").mockResolvedValue({ ok: true, grant: refreshed });
+    expect((await account.getAccessToken()).token).toBe("managed-user-token");
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(await account.getInstallation()).toEqual({ teamId: "", isEnterpriseInstall: true, enterpriseId: "EORG" });
+    expect(ctx.storage.kv.get("refreshToken")).toBeUndefined();
+  });
+  it("refuses grants missing user/workspace identity before committing them", async () => {
+    const { ctx, account } = fixture();
+    await account.prepareReconnect("init", ["users:read"]);
+    const flow = await account.beginOAuthFlow("init");
+    await expect(account.acceptCentralGrant({ ...grant(), providerData: { userId: "bot", teamId: "" } }, flow!.oauthNonce))
+      .rejects.toThrow("Invalid managed Slack");
+    expect(ctx.storage.kv.get("accessToken")).toEqual(token);
   });
 });

@@ -140,3 +140,12 @@ Enterprise DM regressions include nonmatching shared-team metadata, membership o
 page, nonempty search validation, and denial when the conversation is absent from that workspace.
 Validate the Worker RPC schema with `pnpm exec capnweb-validate build --out .wrangler/validate`
 from this package before a local Wrangler dry-run.
+
+## Managed central OAuth
+
+Managed installations can set `CENTRAL_GATEKEEPER_URL` and the installer-owned
+`CFOS_INSTALL_ID`, `CFOS_INSTALL_KEY_ID`, and `CFOS_INSTALL_PRIVATE_KEY` secrets. The central
+confidential Slack app holds the client secret and rotating user refresh token. The instance
+stores expiring user access credentials and an opaque central reference, including enterprise
+installation metadata when present. Existing read-only scopes and resource approvals still apply.
+Standalone `CLIENT_ID`/`CLIENT_SECRET` OAuth remains available with no central URL.

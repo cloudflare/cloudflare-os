@@ -3,6 +3,7 @@
 // (gitlab-gatekeeper.ts) so neither imports the other for these.
 
 import { stripTrailingSlashes, type SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
+import type { CentralOAuthEnv } from "@gadgets/gatekeeper-kit/central-oauth";
 import type { PreviewOAuthEnv } from "@gadgets/gatekeeper-kit/preview-oauth";
 import { isCredentialsExpired, type RejectionVerdict } from "@gadgets/gatekeeper-kit/credentials";
 import { DEFAULT_INSTANCE_URL, GitLabApi, GitLabApiError, type GitLabInstance } from "./gitlab-api";
@@ -14,7 +15,7 @@ import { DEFAULT_INSTANCE_URL, GitLabApi, GitLabApiError, type GitLabInstance } 
  * cannot be registered with the OAuth application -- sends GitLab to the stable Worker's
  * callback, which relays to the preview (see `gatekeeper-kit/preview-oauth`).
  */
-export type Env = Cloudflare.Env & PreviewOAuthEnv & {
+export type Env = Cloudflare.Env & PreviewOAuthEnv & CentralOAuthEnv & {
   /** Where this worker is reachable; the OAuth redirect URI is `${BASE_URL}/oauth`. */
   BASE_URL?: string;
   /** OAuth application credentials (secrets). */

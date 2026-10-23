@@ -7,7 +7,9 @@ import {
   GatekeeperUserVerifier, ObservationDescription,
   stripTrailingSlashes, workerVersionTag, type ConnectHandoff,
 } from "@gadgets/workshop-shared/gatekeeper";
-import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
+import { connectHandoffPageHtml, errorPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
+import { beginCentralOAuth, redeemCentralOAuth, refreshCentralOAuth, revokeCentralOAuth,
+  type CentralOAuthEnv, type CentralOAuthGrant } from "@gadgets/gatekeeper-kit/central-oauth";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
 import {
   SlackApi, SlackApiError, SlackAccessToken, SlackConversationTypeFilter, SlackOAuthGrant,
@@ -62,7 +64,7 @@ function constantTimeEqual(a: string, b: string): boolean {
   return crypto.subtle.timingSafeEqual(bufA, bufB);
 }
 
-type Env = Cloudflare.Env & {
+type Env = Cloudflare.Env & CentralOAuthEnv & {
   // Public worker URL without a trailing slash; defaults to the local dev route.
   BASE_URL?: string;
   // OAuth app credentials (wrangler secrets / .dev.vars); not in wrangler.jsonc.
@@ -236,7 +238,7 @@ export default {
     let path = relPath.slice(1).split("/");
 
     if (path.length === 2 && path[0].length === 64 && path[1].length === NONCE_BYTES * 2) {
-      if (!env.CLIENT_ID || !env.CLIENT_SECRET) {
+      if (!env.CENTRAL_GATEKEEPER_URL && (!env.CLIENT_ID || !env.CLIENT_SECRET)) {
         return new Response(NOT_CONFIGURED_HTML,
             { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
@@ -250,14 +252,40 @@ export default {
             { headers: { "Content-Type": "text/html; charset=utf-8" } });
       }
 
+      if (env.CENTRAL_GATEKEEPER_URL) {
+        try {
+          return Response.redirect(await beginCentralOAuth(env, "slack", {
+            accountId: doId, nonce: begun.oauthNonce, scopes: begun.scopes, callbackPath: `${basePath}/oauth`,
+          }, "https://slack.com/oauth/v2/authorize"), 302);
+        } catch (error) {
+          console.error("Slack broker failed to start consent", error);
+          return htmlResponse(errorPageHtml("Slack connection unavailable",
+            "Unable to start authorization. Contact your Cloudflare OS administrator, then restart the connection flow."), 503);
+        }
+      }
       let authUrl = new URL("https://slack.com/oauth/v2/authorize");
-      authUrl.searchParams.set("client_id", env.CLIENT_ID);
+      authUrl.searchParams.set("client_id", env.CLIENT_ID!);
       authUrl.searchParams.set("redirect_uri", getBaseUrl(env) + "/oauth");
       // User scopes produce the read-only user token needed for private channels and DMs.
       authUrl.searchParams.set("user_scope", begun.scopes.join(","));
       authUrl.searchParams.set("state", `${doId}:${begun.oauthNonce}`);
       return Response.redirect(authUrl.toString(), 302);
     } else if (relPath === "/oauth") {
+      if (env.CENTRAL_GATEKEEPER_URL) {
+        const result = await redeemCentralOAuth(env, "slack", url.searchParams.get("ticket") ?? "");
+        const stub = ctx.exports.UserAccount.get(ctx.exports.UserAccount.idFromString(result.accountId));
+        let handoff: ConnectHandoff | null;
+        try { handoff = await stub.acceptCentralGrant(result.grant, result.nonce); }
+        catch (error) {
+          await revokeCentralOAuth(env, "slack", `cgc1.${result.grant.credentialId}`);
+          throw error;
+        }
+        if (!handoff) {
+          await revokeCentralOAuth(env, "slack", `cgc1.${result.grant.credentialId}`);
+          return htmlResponse(INVALID_LINK_HTML);
+        }
+        return htmlResponse(connectHandoffPageHtml(handoff));
+      }
       let error = url.searchParams.get("error");
       if (error) return new Response(`Slack authorization failed: ${error}`);
 
@@ -326,6 +354,25 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
 }
 
 // ── UserAccount DO: token storage + rotation ────────────────────────
+
+type AccountGrant = SlackOAuthGrant & { centralCredential?: string };
+
+function centralSlackGrant(grant: CentralOAuthGrant): AccountGrant {
+  const data = grant.providerData;
+  if (!data || typeof data.userId !== "string" || !/^[UW][A-Z0-9]+$/.test(data.userId) ||
+      typeof data.teamId !== "string" || !( /^T[A-Z0-9]+$/.test(data.teamId) ||
+        data.teamId === "" && data.isEnterpriseInstall === true && typeof data.enterpriseId === "string" && /^E[A-Z0-9]+$/.test(data.enterpriseId))) {
+    throw new Error("Invalid managed Slack installation identity.");
+  }
+  return { accessToken: { token: grant.accessToken, expires: new Date(grant.expiresAt) },
+    centralCredential: `cgc1.${grant.credentialId}`, grantedScopes: grant.scopes,
+    userId: data.userId, teamId: data.teamId,
+    ...(typeof data.teamName === "string" ? { teamName: data.teamName } : {}),
+    isEnterpriseInstall: data.isEnterpriseInstall === true,
+    ...(typeof data.enterpriseId === "string" ? { enterpriseId: data.enterpriseId } : {}),
+    ...(typeof data.enterpriseName === "string" ? { enterpriseName: data.enterpriseName } : {}),
+  };
+}
 
 export class UserAccount extends DurableObject<Env> {
   // Serialize refresh, reconnect, and revoke because rotating refresh tokens are single-use.
@@ -409,6 +456,20 @@ export class UserAccount extends DurableObject<Env> {
    * null when the callback's nonce doesn't match.
    */
   async acceptAuthCode(code: string, oauthNonce: string): Promise<ConnectHandoff | null> {
+    if (this.env.CENTRAL_GATEKEEPER_URL) throw new Error("Direct OAuth is disabled for this managed gatekeeper.");
+    return this.#acceptGrant(oauthNonce, async () => {
+      if (!this.env.CLIENT_ID || !this.env.CLIENT_SECRET) throw new Error("The Slack Gatekeeper is not configured.");
+      return exchangeAuthCode(code, this.env.CLIENT_ID, this.env.CLIENT_SECRET, getBaseUrl(this.env) + "/oauth");
+    });
+  }
+
+  /** A central ticket is bound to the same two-stage nonce as a direct provider callback. */
+  async acceptCentralGrant(grant: CentralOAuthGrant, oauthNonce: string): Promise<ConnectHandoff | null> {
+    if (!this.env.CENTRAL_GATEKEEPER_URL) throw new Error("Managed OAuth is not configured.");
+    return this.#acceptGrant(oauthNonce, async () => centralSlackGrant(grant));
+  }
+
+  async #acceptGrant(oauthNonce: string, mint: () => Promise<AccountGrant>): Promise<ConnectHandoff | null> {
     let stored = this.ctx.storage.kv.get<StoredNonce>("nonce");
     if (!stored || stored.stage !== "oauth" ||
         Date.now() >= stored.expiresAt || !constantTimeEqual(stored.value, oauthNonce)) {
@@ -419,17 +480,12 @@ export class UserAccount extends DurableObject<Env> {
     let reconnect = stored.reconnect;
 
     let completion = await this.#updateCredentials(async () => {
-      if (!this.env.CLIENT_ID || !this.env.CLIENT_SECRET) {
-        throw new Error("The Slack Gatekeeper is not configured.");
-      }
-
       let callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
       if (!callback) {
         throw new Error("Took too long to complete the authorization. Please try again.");
       }
 
-      let grant = await exchangeAuthCode(
-          code, this.env.CLIENT_ID, this.env.CLIENT_SECRET, getBaseUrl(this.env) + "/oauth");
+      let grant = await mint();
 
       // The reconnect URL is a bearer capability, so the new grant is only staged until the Workshop
       // has confirmed the browser that finished the flow is the owner's (see commitReconnect). Bound
@@ -457,8 +513,10 @@ export class UserAccount extends DurableObject<Env> {
           if (storedToken?.token === completion.grant.accessToken.token) {
             this.ctx.storage.kv.delete("accessToken");
             this.ctx.storage.kv.delete("refreshToken");
+            this.ctx.storage.kv.delete("centralCredential");
           }
         });
+        if (completion.grant.centralCredential) await revokeCentralOAuth(this.env, "slack", completion.grant.centralCredential);
         throw err;
       }
     }
@@ -468,15 +526,18 @@ export class UserAccount extends DurableObject<Env> {
   /** Makes the grant staged under `stageId` live; see GatekeeperUser.commitReconnect. */
   async commitReconnect(stageId: string): Promise<void> {
     await this.#updateCredentials(async () => {
-      let grant = commitStagedCredentials<SlackOAuthGrant>(this.ctx.storage.kv, Date.now(), stageId);
+      let grant = commitStagedCredentials<AccountGrant>(this.ctx.storage.kv, Date.now(), stageId);
       if (!grant) throw new Error("No reconnect is awaiting confirmation. Please try again.");
       this.#writeGrant(grant);
     });
   }
 
-  #writeGrant(grant: SlackOAuthGrant) {
+  #writeGrant(grant: AccountGrant) {
     this.ctx.storage.kv.put<SlackAccessToken>("accessToken", grant.accessToken);
-    if (grant.refreshToken) this.ctx.storage.kv.put<string>("refreshToken", grant.refreshToken);
+    if (grant.centralCredential) this.ctx.storage.kv.put("centralCredential", grant.centralCredential);
+    else this.ctx.storage.kv.delete("centralCredential");
+    if (grant.refreshToken && !grant.centralCredential) this.ctx.storage.kv.put<string>("refreshToken", grant.refreshToken);
+    else this.ctx.storage.kv.delete("refreshToken");
     this.ctx.storage.kv.put<string[]>("grantedScopes", grant.grantedScopes);
     this.ctx.storage.kv.put<string>("userId", grant.userId);
     this.ctx.storage.kv.put<string>("teamId", grant.teamId);
@@ -517,12 +578,27 @@ export class UserAccount extends DurableObject<Env> {
   async #getAccessTokenLocked(): Promise<SlackAccessToken> {
     let cached = this.ctx.storage.kv.get<SlackAccessToken>("accessToken");
     if (!cached) throw new Error("No Slack credentials set.");
+    const centralCredential = this.ctx.storage.kv.get<string>("centralCredential");
+    if (!!centralCredential !== !!this.env.CENTRAL_GATEKEEPER_URL) {
+      throw new Error("Reconnect Slack through the configured OAuth service.");
+    }
     // Normalize the persisted expiry before comparing it.
     let expires = new Date(cached.expires);
     if (expires.valueOf() > Date.now() + ACCESS_TOKEN_EXPIRY_SAFETY_MS) {
       return { token: cached.token, expires };
     }
 
+    if (centralCredential) {
+      const result = await refreshCentralOAuth(this.env, "slack", centralCredential);
+      if (!result.ok) {
+        const callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
+        await callback?.credentialsExpired();
+        throw new Error("Slack credentials have expired or been revoked. Please reconnect.");
+      }
+      const grant = centralSlackGrant(result.grant);
+      this.#writeGrant(grant);
+      return grant.accessToken;
+    }
     let refreshToken = this.ctx.storage.kv.get<string>("refreshToken");
     if (!refreshToken) {
       // Legacy non-rotating tokens do not expire.
@@ -559,8 +635,12 @@ export class UserAccount extends DurableObject<Env> {
     await this.#updateCredentials(async () => {
       let cached = this.ctx.storage.kv.get<SlackAccessToken>("accessToken");
       let refreshToken = this.ctx.storage.kv.get<string>("refreshToken");
-      if (refreshToken) await revokeToken(refreshToken);
-      if (cached) await revokeToken(cached.token);
+      const centralCredential = this.ctx.storage.kv.get<string>("centralCredential");
+      if (centralCredential) await revokeCentralOAuth(this.env, "slack", centralCredential);
+      else {
+        if (refreshToken) await revokeToken(refreshToken);
+        if (cached) await revokeToken(cached.token);
+      }
       this.ctx.storage.deleteAlarm();
       this.ctx.storage.deleteAll();
     });
