@@ -864,7 +864,7 @@ describe("subscriptions count as sessions", () => {
       () => withImpl(async (impl, restarts) => {
     stubFacets(impl);
     // A collaborator's (non-owner) build session whose session counting is the real impl's.
-    let client = await openFakeOverseer({}, { impl: {
+    let client = await openFakeOverseer({ chatMeta: { list: () => [] } }, { impl: {
       ownerId: "real-owner-id",
       joinSession: (kind: string) => impl.joinSession(kind),
       subscribeToConsoleLogs: async () => new NativeRpcStub<{}>({ [Symbol.dispose]() {} } as any),

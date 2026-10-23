@@ -210,6 +210,57 @@ export interface NotificationSubscriber extends RpcTarget {
   notify(notification: UserNotification): Promise<void>;
 }
 
+/** One user's private per-thread read horizon and locally stored message count. */
+export type ChatReadState = {
+  /** Workspace containing the thread. */
+  workspaceId: string;
+  /** Thread identifier, scoped to the workspace. */
+  chatId: number;
+  /** Number of unread visible text/attachment messages, excluding internal agent activity. */
+  unreadMessageCount: number;
+  /** Last read sequence, inclusive; -1 means nothing has been read. */
+  readThroughSequence: number;
+};
+
+/** Display metadata read directly from a workspace, independently of private unread state. */
+export type ChatTimelineHead = {
+  /** Thread identifier, scoped to the workspace. */
+  chatId: number;
+  /** Current thread title. */
+  chatTitle: string;
+  /** Sequence of the latest visible text/attachment message; -1 if none. */
+  latestSequence: number;
+  /** First nonempty line of the latest visible message, capped at 240 characters; empty for none. Absent on older servers. */
+  latestMessagePreview?: string;
+  /** Time of the latest visible message; absent for empty threads or older servers. */
+  latestActivityAt?: Date;
+};
+
+/** An observed read boundary for a single-thread or bulk mark-read command. */
+export type ChatReadReceipt = Pick<ChatReadState, "workspaceId" | "chatId"> & {
+  /** Highest observed sequence to mark read; later activity stays unread. */
+  throughSequence: number;
+};
+
+/** Authoritative unread state for one user on one CFOS instance, shared across their devices. */
+export type UserUnreadState = {
+  /** Number of the user's threads with at least one unread visible message. */
+  unreadChatCount: number;
+  /** Total unread visible messages, calculated from the user's locally cached per-thread counts. */
+  unreadMessageCount: number;
+  /** All tracked private thread rows, including read threads; replaces the previous snapshot. */
+  chats: ChatReadState[];
+};
+
+/** Callback used by `AuthenticatedApi.subscribeToUnreadState()`. */
+export interface UnreadStateSubscriber extends RpcTarget {
+  /** Receive the initial snapshot, or a replacement when a workspace leaves the user's list. */
+  updated(state: UserUnreadState): Promise<void>;
+  /** Replace one thread (null removes it), together with the user's current aggregate counts. */
+  chatUpdated(workspaceId: string, chatId: number, chat: ChatReadState | null,
+    counts: Pick<UserUnreadState, "unreadChatCount" | "unreadMessageCount">): Promise<void>;
+}
+
 /**
  * When listing gatekeeper vendors or connected accounts, you can filter to only vendors/accounts
  * that support certain features. This type specifies the filter.
@@ -523,6 +574,34 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   subscribeToNotifications(
       subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>>;
+
+  /** Fetch private horizons and counts from local User DO rows, without querying workspaces. */
+  getUnreadState(): Promise<UserUnreadState>;
+
+  /** Query a workspace's thread metadata for display or an observed read boundary; null if access is denied. */
+  getChatHeads(workspaceId: string): Promise<ChatTimelineHead[] | null>;
+
+  /**
+   * Subscribe while visible to an immediate snapshot and subsequent unread-state changes.
+   * Dispose when hidden; re-subscribe after visibility changes or disconnect/reset.
+   * Receiving state never marks messages read or acknowledges alerts.
+   */
+  subscribeToUnreadState(subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>>;
+
+  /** Advance to the requested boundary without moving an already-later read horizon backward. */
+  markChatRead(receipt: ChatReadReceipt): Promise<void>;
+
+  /**
+   * Mark observed thread boundaries read. A workspace failure does not block healthy workspaces,
+   * but rejects the command to report partial success; retrying the same receipts is safe.
+   */
+  markChatsRead(receipts: ChatReadReceipt[]): Promise<void>;
+
+  /**
+   * Set the horizon immediately before an existing item, allowing a rewind.
+   * Repeating an already-applied command performs no write.
+   */
+  markChatUnread(workspaceId: string, chatId: number, fromSequence: number): Promise<void>;
 
   /**
    * Mute a workspace in the user's list, so its finished tasks notify no tab or device, or unmute

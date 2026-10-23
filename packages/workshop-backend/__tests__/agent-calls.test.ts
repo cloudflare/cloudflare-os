@@ -15,6 +15,7 @@ import { keyString } from "@gadgets/typed-storage";
 import type { AgentSpawnerConfig, AiChatAuthorInfo, AiChatMessage } from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { AgentSpawnerBinding } from "../src/agent-spawner-binding";
+import { OVERSEER_STORAGE_VERSION } from "../src/storage-schema/overseer-migrations";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -47,6 +48,7 @@ function freshImpl(fn: (impl: any, instance: OverseerDurableObject) => Promise<v
 }
 
 function seedChat(impl: any): void {
+  impl.storage.version.put(OVERSEER_STORAGE_VERSION);
   impl.ownerId = OWNER_USER_ID;
   impl.storage.chatMeta.put(
       { id: CHAT_ID, title: "Callable agent", started: new Date(0), lastActive: new Date(0) });
@@ -58,6 +60,7 @@ function fakeUsers(impl: any): void {
   impl.users = {
     idFromString: (id: string) => id,
     get: () => ({
+      messageArrived: async () => {}, whoami: async () => OWNER,
       getChatContext: async (modelId: string | null) => ({
         profile: OWNER,
         ...(modelId ? { aiModel: { profile: MODEL, config: BROKEN_MODEL_CONFIG } } : {}),
@@ -75,7 +78,7 @@ function gatedFakeUsers(impl: any): () => void {
   let realGet = impl.users.get;
   impl.users.get = () => {
     let user = realGet();
-    return { getChatContext: async (modelId: string | null) => {
+    return { messageArrived: async () => {}, whoami: async () => OWNER, getChatContext: async (modelId: string | null) => {
       await gate;
       return user.getChatContext(modelId);
     } };
@@ -273,7 +276,7 @@ describe("durable agent calls", () => {
     seedChat(impl);
     impl.users = {
       idFromString: (id: string) => id,
-      get: () => ({ getChatContext: async (modelId: string | null) => {
+      get: () => ({ messageArrived: async () => {}, whoami: async () => OWNER, getChatContext: async (modelId: string | null) => {
         if (modelId) throw new Error(`No such model: ${modelId}`);
         return { profile: OWNER };
       } }),
@@ -296,9 +299,10 @@ describe("durable agent calls", () => {
     seedChat(impl);
     impl.users = {
       idFromString: (id: string) => id,
-      get: () => ({ getChatContext: async () => { throw new Error("user DO unreachable"); } }),
+      get: () => ({ messageArrived: async () => {}, whoami: async () => OWNER, getChatContext: async () => { throw new Error("user DO unreachable"); } }),
     };
 
+    await impl.deliverDirtyChats();
     expect(await impl.ctx.storage.getAlarm()).toBeNull();
     await deliver(impl, "retryLater", []);
     await new Promise(resolve => setTimeout(resolve, 20));
@@ -345,6 +349,7 @@ describe("durable agent calls", () => {
     await handler;
     expect(impl.storage.chatMeta.get(CHAT_ID).activeAgent).toBeUndefined();
     expect(messages(impl).map(msg => msg.type)).toEqual(["agentCallback", "error"]);
+    await impl.deliverDirtyChats();
     expect(await impl.ctx.storage.getAlarm()).toBeNull();
   }));
 
@@ -360,7 +365,7 @@ describe("durable agent calls", () => {
     let realGet = impl.users.get;
     impl.users.get = () => {
       let user = realGet();
-      return { getChatContext: async (modelId: string | null) => {
+      return { messageArrived: async () => {}, whoami: async () => OWNER, getChatContext: async (modelId: string | null) => {
         if (++lookups === 2) await lookupGate;
         return user.getChatContext(modelId);
       } };
@@ -409,7 +414,7 @@ describe("durable agent calls", () => {
     seedChat(impl);
     impl.users = {
       idFromString: (id: string) => id,
-      get: () => ({ getChatContext: async () => { throw new Error("user DO unreachable"); } }),
+      get: () => ({ messageArrived: async () => {}, whoami: async () => OWNER, getChatContext: async () => { throw new Error("user DO unreachable"); } }),
     };
     await deliver(impl, "stillUnreachable", []);
     await new Promise(resolve => setTimeout(resolve, 20));
@@ -468,6 +473,7 @@ describe("durable agent calls", () => {
     releases[1]();
     await waitFor(() => impl.storage.chatMeta.get(CHAT_ID).activeAgent === undefined &&
         messages(impl).filter(msg => msg.type === "error").length === 2);
+    await impl.deliverDirtyChats();
     expect(await impl.ctx.storage.getAlarm()).toBeNull();
 
     // ...and the next work to become outstanding gets a fresh time, not the stale one.
@@ -625,6 +631,8 @@ describe("durable agent calls", () => {
       // The real user DO answers the drain after the restart (its default profile, no model), so
       // the record must name a genuine id in its namespace.
       userId = impl.users.newUniqueId().toString();
+      impl.storage.ownerId.put(userId);
+      impl.ownerId = userId;
       impl.storage.pendingAgentCalls.put({
         chatId: CHAT_ID, callId: 0, methodName: "survivor", args: [7], argsSummary: "[7]",
         initiatorUserId: userId, initiatorModelId: null,
@@ -650,6 +658,8 @@ describe("durable agent calls", () => {
     await withImpl(name, async impl => {
       seedChat(impl);
       let userId = impl.users.newUniqueId().toString();
+      impl.storage.ownerId.put(userId);
+      impl.ownerId = userId;
       // A turn interrupted by the restart, whose model the real user DO no longer knows...
       impl.storage.chatMeta.put({ ...impl.storage.chatMeta.get(CHAT_ID), activeAgent: MODEL });
       impl.storage.activeAgents.put({

@@ -120,6 +120,19 @@ export type GadgetRecord = GadgetMetadata & {
   // GadgetMetadata).
 };
 
+/** Private per-thread consumption state. Counts can be rebuilt from the horizon. */
+export type ChatReadCursor = {
+  workspaceId: string;
+  chatId: number;
+  readThroughSequence: number;
+  unreadCount: number;
+  notifiedThroughSequence: number;
+  unreadDirty?: true;
+  notificationsDirty?: true;
+  /** A legacy thread's pending first message; removed once both initial horizons are committed. */
+  firstMessageSequence?: number;
+};
+
 /**
  * One output of a workspace, as pushed into a user's output index by the Overseer that owns it
  * (see `syncWorkspaceOutputs()`). Carries only what the workspace itself knows: its title,
@@ -157,6 +170,12 @@ export type CloudflareBilling = {
 export function makeUserStorage(storage: DurableObjectStorage) {
   return createTypedStorage(storage, {
     collections: {
+      chatReadCursors: collection<ChatReadCursor>()({
+        primaryKey: record => `${record.workspaceId}:${record.chatId}`,
+        nonUniqueIndexes: {
+          byWorkspace(record: ChatReadCursor) { return record.workspaceId; },
+        },
+      }),
       aiModels: collection<UserAiModelRecord>()({
         primaryKey: record => record.profile.id,
       }),

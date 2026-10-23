@@ -1240,6 +1240,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
 
       nextActionId: 0,
       nextChatId: 0,
+      // Threads below this rollout cutoff predate unread tracking. New workspaces start at zero.
+      legacyUnreadChatIdLimit: 0,
       nextHookId: 0,
       nextAgentCallId: 0,
 
@@ -1266,6 +1268,18 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
     },
 
     collections: {
+      // Coalesced source-to-user handoff, committed with the message mutation.
+      dirtyChats: collection<{
+        chatId: number;
+        /** First incoming message in this pending batch, retained across coalescing and reset. */
+        firstMessageSequence?: number;
+      }>()({primaryKey: "chatId"}),
+      // Notification candidates reference existing timeline positions, not copied message bodies.
+      chatNotifications: collection<{
+        id: string;
+        chatId: number; sequence: number; userId: string;
+        kind: "taskCompleted" | "permissionRequested";
+      }>()({primaryKey: record => chatKey(record.chatId, record.sequence)}),
       // READ-ONLY LEGACY: the pre-git-storage incremental code log, tightly-packed from version 1
       // (there's no entry for version 0, the starting empty state). Nothing writes it anymore --
       // mainline code lives in `gitObjects` as commits -- and it is read only by the git-storage

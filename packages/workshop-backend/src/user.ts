@@ -1,4 +1,5 @@
 import { RpcStub } from "capnweb";
+import type { ChatReadReceipt, ChatReadState, ChatTimelineHead, UnreadStateSubscriber, UserUnreadState } from "@gadgets/workshop-shared/api";
 import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
@@ -9,6 +10,7 @@ import {
   makeUserStorage, type BlueprintUserRecord, type CloudflareBilling, type ConnectedAccountRecord,
   type GadgetRecord, type PendingConnectFlow, type PendingDeviceHandoffRecord,
   type PendingHandoffRecord, type UserAiModelRecord, type UserStorage, type WorkspaceOutputEntry,
+  type ChatReadCursor,
 } from "./storage-schema/user-storage.js";
 import { recordAnalytics } from "./analytics";
 import { createWorkshopLogger } from "./observability";
@@ -204,14 +206,48 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   private vendors: Map<string, Service<GatekeeperVendor>>;
   private adminSettings: DurableObjectNamespace<AdminSettings>;
   #notificationSubscribers = new Map<object, RpcStub<NotificationSubscriber>>();
+  #unreadSubscribers = new Map<object, RpcStub<UnreadStateSubscriber>>();
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
 
     this.storage = makeUserStorage(ctx.storage);
+    for (let cursor of this.storage.chatReadCursors.list()) {
+      // Internal prototype rows retain their horizons; only their missing derived count is dirty.
+      if (cursor.unreadCount === undefined) {
+        cursor = {...cursor, unreadCount: 0,
+          notifiedThroughSequence: -1, unreadDirty: true, notificationsDirty: true};
+        this.storage.chatReadCursors.put(cursor);
+      }
+      this.#readCursors.set(`${cursor.workspaceId}:${cursor.chatId}`, cursor);
+    }
+    this.storage.chatReadCursors.subscribe({
+      add: cursor => { this.#readCursors.set(`${cursor.workspaceId}:${cursor.chatId}`, cursor); },
+      update: (_old, cursor) => { this.#readCursors.set(`${cursor.workspaceId}:${cursor.chatId}`, cursor); },
+      remove: cursor => { this.#readCursors.delete(`${cursor.workspaceId}:${cursor.chatId}`); },
+    });
+    for (let listing of this.storage.gadgets.list()) {
+      if (listing.role !== "use") this.#unreadWorkspaces.set(listing.id, {});
+    }
+    this.storage.gadgets.subscribe({
+      add: listing => { if (listing.role !== "use") this.#unreadWorkspaces.set(listing.id, {}); },
+      update: (_old, listing) => {
+        if (listing.role === "use") this.#unreadWorkspaces.delete(listing.id);
+        else if (!this.#unreadWorkspaces.has(listing.id)) this.#unreadWorkspaces.set(listing.id, {});
+      },
+      remove: listing => { this.#unreadWorkspaces.delete(listing.id); },
+    });
     this.adminSettings = this.ctx.exports.AdminSettings;
 
     this.vendors = buildGatekeeperVendorMap(env);
+    if ([...this.#readCursors.values()].some(cursor => cursor.unreadDirty || cursor.notificationsDirty)) {
+      this.ctx.waitUntil((async () => {
+        if (await this.ctx.storage.getAlarm() === null) await this.#armExpirySweep();
+        await this.#recoverUnread();
+      })().catch(error => {
+        logger.warn("unread recovery deferred", {event: "chat.unread.recovery.deferred", error});
+      }));
+    }
   }
 
   // Mirrors the profile into the deployment-wide user directory. Best-effort
@@ -477,7 +513,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         { ...this.storage.notificationSubscriptions.get(), [deviceKey]: subscriptionId });
   }
 
-  /** Subscribe a visible authenticated client to live user notifications. */
+  /** Subscribe an authenticated client, including background listeners, to live notifications. */
   async subscribeToNotifications(
       subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>> {
     subscriber = subscriber.dup();
@@ -502,9 +538,289 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.gadgets.put(record);
   }
 
+  // Admission denial parks dirty work; badge reads use this last-known local access state.
+  #deniedUnreadWorkspaces = new Set<string>();
+  #readCursors = new Map<string, ChatReadCursor>();
+  // Each listing lifetime has an identity so pre-removal work cannot commit after readmission.
+  #unreadWorkspaces = new Map<string, object>();
+  #chatWork = new Map<string, Promise<void>>();
+  #dirtyTokens = new Map<string, object>();
+
+  #cursor(workspaceId: string, chatId: number): ChatReadCursor {
+    return this.#readCursors.get(`${workspaceId}:${chatId}`) ??
+      {workspaceId, chatId, readThroughSequence: -1, unreadCount: 0, notifiedThroughSequence: -1};
+  }
+
+  #storeCursor(cursor: ChatReadCursor): void {
+    let old = this.#readCursors.get(`${cursor.workspaceId}:${cursor.chatId}`);
+    if (old && old.readThroughSequence === cursor.readThroughSequence &&
+        old.unreadCount === cursor.unreadCount &&
+        old.notifiedThroughSequence === cursor.notifiedThroughSequence &&
+        old.unreadDirty === cursor.unreadDirty && old.notificationsDirty === cursor.notificationsDirty &&
+        old.firstMessageSequence === cursor.firstMessageSequence) return;
+    this.storage.chatReadCursors.put(cursor);
+  }
+
+  #workspace(workspaceId: string) {
+    return this.ctx.exports.OverseerDurableObject.get(
+      this.ctx.exports.OverseerDurableObject.idFromString(workspaceId));
+  }
+
+  #hasWorkspace(workspaceId: string): boolean {
+    return this.#unreadWorkspaces.has(workspaceId);
+  }
+
+  // Per-thread mutex held across awaits. A reset discards the holder; dirty bits recover its work.
+  async #serialize(key: string, operation: () => Promise<void>) {
+    let previous = this.#chatWork.get(key) ?? Promise.resolve();
+    let current = previous.catch(() => {}).then(operation);
+    this.#chatWork.set(key, current);
+    try { await current; }
+    finally { if (this.#chatWork.get(key) === current) this.#chatWork.delete(key); }
+  }
+
+  #unreadCounts() {
+    let unreadChatCount = 0, unreadMessageCount = 0;
+    for (let cursor of this.#readCursors.values()) {
+      if (!this.#hasWorkspace(cursor.workspaceId) || this.#deniedUnreadWorkspaces.has(cursor.workspaceId)) continue;
+      unreadMessageCount += cursor.unreadCount;
+      if (cursor.unreadCount > 0) unreadChatCount++;
+    }
+    return {unreadChatCount, unreadMessageCount};
+  }
+
+  #unreadSnapshot(): UserUnreadState {
+    let chats: ChatReadState[] = [];
+    for (let cursor of this.#readCursors.values()) {
+      if (this.#hasWorkspace(cursor.workspaceId) && !this.#deniedUnreadWorkspaces.has(cursor.workspaceId)) {
+        chats.push(this.#readState(cursor));
+      }
+    }
+    return {...this.#unreadCounts(), chats};
+  }
+
+  #readState(cursor: ChatReadCursor): ChatReadState {
+    return {workspaceId: cursor.workspaceId, chatId: cursor.chatId,
+      readThroughSequence: cursor.readThroughSequence, unreadMessageCount: cursor.unreadCount};
+  }
+
+  #denyUnreadWorkspace(workspaceId: string): void {
+    if (this.#deniedUnreadWorkspaces.has(workspaceId)) return;
+    this.#deniedUnreadWorkspaces.add(workspaceId);
+    this.#unreadChanged();
+  }
+
+  // Admission, arrivals, read commands and recovery all use this same thread mutex.
+  async #processChat(workspaceId: string, chatId: number, options: {
+    horizon?: {through: number; rewind: boolean};
+    notificationBaseline?: number;
+    recheckAccess?: boolean;
+  } = {}): Promise<void> {
+    let changed = false, reschedule = false, accessRestored = false;
+    let admission = this.#unreadWorkspaces.get(workspaceId);
+    try {
+      await this.#serialize(`${workspaceId}:${chatId}`, async () => {
+        let key = `${workspaceId}:${chatId}`;
+        if (!admission || this.#unreadWorkspaces.get(workspaceId) !== admission ||
+            (this.#deniedUnreadWorkspaces.has(workspaceId) && !options.recheckAccess)) return;
+        let existing = this.#readCursors.get(key);
+        if (options.notificationBaseline !== undefined && !existing) {
+          // The existing open callback supplies the boundary: no second source read or snapshot
+          // initialization policy. Journal before fetching so a reset retains the initial skip.
+          this.storage.chatReadCursors.put({...this.#cursor(workspaceId, chatId),
+            readThroughSequence: options.notificationBaseline, unreadCount: 0,
+            notifiedThroughSequence: options.notificationBaseline,
+            unreadDirty: true,
+            notificationsDirty: true});
+          reschedule = true;
+          await this.#armExpirySweep();
+          if (this.#unreadWorkspaces.get(workspaceId) !== admission) return;
+        }
+        let token = this.#dirtyTokens.get(key);
+        let cursor = this.#cursor(workspaceId, chatId);
+        let through = options.horizon?.through ?? cursor.readThroughSequence;
+        if (!options.horizon?.rewind) through = Math.max(through, cursor.readThroughSequence);
+        let horizonChanged = through !== cursor.readThroughSequence;
+        let recount = !existing || cursor.unreadDirty || horizonChanged;
+        if (!recount && !cursor.notificationsDirty) return;
+        reschedule ||= !!(cursor.unreadDirty || cursor.notificationsDirty);
+        let initializing = cursor.firstMessageSequence !== undefined;
+        let readFrom = initializing && !options.horizon ? undefined : through;
+        let notifyFrom = initializing ? undefined : cursor.notifiedThroughSequence;
+        let state = await this.#workspace(workspaceId).getChatStateForUser(
+          this.ctx.id.toString(), this.storage.profile.get().id, chatId,
+          recount ? readFrom : null, cursor.notificationsDirty ? notifyFrom : null,
+          cursor.firstMessageSequence);
+        if (this.#unreadWorkspaces.get(workspaceId) !== admission) return;
+        if (state === "denied") { this.#denyUnreadWorkspace(workspaceId); return; }
+        if (!state) { this.#forgetChat(workspaceId, chatId); return; }
+        if (this.#deniedUnreadWorkspaces.has(workspaceId) && !options.recheckAccess) return;
+        accessRestored = this.#deniedUnreadWorkspaces.delete(workspaceId);
+        if (horizonChanged && through > state.timelineTailSequence) throw new Error("Invalid timeline sequence.");
+        let current = this.#cursor(workspaceId, chatId);
+        if (!options.horizon && state.initialHorizon !== undefined) through = state.initialHorizon;
+        let updated = {...current, readThroughSequence: through,
+          notifiedThroughSequence: state.initialHorizon ?? current.notifiedThroughSequence,
+          firstMessageSequence: undefined,
+          unreadCount: state.unreadCount ?? current.unreadCount,
+          unreadDirty: this.#dirtyTokens.get(key) === token ? undefined : true as const};
+        this.#storeCursor(updated);
+        changed = !existing || cursor.unreadCount !== updated.unreadCount || cursor.readThroughSequence !== through;
+        if (cursor.notificationsDirty) {
+          for (let candidate of state.notifications) {
+            if (this.#unreadWorkspaces.get(workspaceId) !== admission || !this.#readCursors.has(key) ||
+                this.#deniedUnreadWorkspaces.has(workspaceId)) return;
+            await this.publishNotification({id: candidate.id, kind: candidate.kind,
+              workspaceId, chatId, chatTitle: state.chatTitle});
+            if (this.#unreadWorkspaces.get(workspaceId) !== admission) return;
+            let checkpoint = this.#readCursors.get(key);
+            if (!checkpoint) return;
+            this.#storeCursor({...checkpoint,
+              notifiedThroughSequence: Math.max(checkpoint.notifiedThroughSequence, candidate.sequence)});
+          }
+          if (this.#dirtyTokens.get(key) === token) {
+            this.#storeCursor({...this.#cursor(workspaceId, chatId), notificationsDirty: undefined});
+          }
+        }
+      });
+    } finally {
+      // Publish only committed state, after releasing the mutex, including a count whose alert failed.
+      if (accessRestored) this.#unreadChanged();
+      else if (changed) this.#unreadChanged(workspaceId, chatId);
+      if (reschedule) await this.#armExpirySweep();
+    }
+  }
+
+  /** Badge reads use only local rows, including immediately after eviction. */
+  async getUnreadState(): Promise<UserUnreadState> {
+    return this.#unreadSnapshot();
+  }
+
+  /** Display metadata follows the workspace's existing authorization and query path. */
+  async getChatHeads(workspaceId: string): Promise<ChatTimelineHead[] | null> {
+    if (!this.#hasWorkspace(workspaceId)) return null;
+    return this.#workspace(workspaceId).getChatHeadsForUser(
+      this.ctx.id.toString(), this.storage.profile.get().id);
+  }
+
+  async subscribeToUnreadState(subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>> {
+    subscriber = subscriber.dup();
+    let token = {};
+    this.#unreadSubscribers.set(token, subscriber);
+    let unsubscribe = () => {
+      let existing = this.#unreadSubscribers.get(token);
+      if (existing) { this.#unreadSubscribers.delete(token); existing[Symbol.dispose](); }
+    };
+    subscriber.onRpcBroken(unsubscribe);
+    this.ctx.waitUntil(subscriber.updated(this.#unreadSnapshot()).catch(unsubscribe));
+    return new RpcStub<{}>({[Symbol.dispose]: unsubscribe});
+  }
+
+  #unreadChanged(workspaceId?: string, chatId?: number): void {
+    let cursor = workspaceId === undefined || chatId === undefined ? undefined :
+      this.#readCursors.get(`${workspaceId}:${chatId}`);
+    let chat = cursor && this.#hasWorkspace(cursor.workspaceId) &&
+      !this.#deniedUnreadWorkspaces.has(cursor.workspaceId) ? this.#readState(cursor) : null;
+    for (let [token, subscriber] of this.#unreadSubscribers) {
+      let update = workspaceId !== undefined && chatId !== undefined
+        ? subscriber.chatUpdated(workspaceId, chatId, chat, this.#unreadCounts())
+        : subscriber.updated(this.#unreadSnapshot());
+      this.ctx.waitUntil(update.catch(() => {
+        this.#unreadSubscribers.delete(token);
+        subscriber[Symbol.dispose]();
+      }));
+    }
+  }
+
+  /** Journal before ACK; reconcile admitted threads and retain denied work for re-admission. */
+  async messageArrived(workspaceId: string, chatId: number, firstMessageSequence?: number | null): Promise<void> {
+    if (!this.#hasWorkspace(workspaceId)) return;
+    let key = `${workspaceId}:${chatId}`;
+    // Legacy metadata changes don't enroll history. Wait for a new message or an explicit command.
+    if (firstMessageSequence === null && !this.#readCursors.has(key)) return;
+    this.#dirtyTokens.set(key, {});
+    let cursor = this.#cursor(workspaceId, chatId);
+    if (!cursor.unreadDirty || !cursor.notificationsDirty) {
+      this.#storeCursor({...cursor, unreadDirty: true, notificationsDirty: true,
+        firstMessageSequence: this.#readCursors.has(key) ? cursor.firstMessageSequence : firstMessageSequence ?? undefined});
+    }
+    await this.#armExpirySweep();
+    try { await this.#processChat(workspaceId, chatId); }
+    catch (error) {
+      // A notification failure need not retry source fanout: the count is already durable and
+      // this user's alarm owns the remaining work. Count failures still prevent the source ACK.
+      if (this.#cursor(workspaceId, chatId).unreadDirty) throw error;
+      logger.warn("notification catch-up deferred", {event: "notification.catchup.deferred", error});
+    }
+  }
+
+  /** Advance to the requested boundary; older read requests never move the horizon backward. */
+  async markChatRead(receipt: ChatReadReceipt): Promise<void> {
+    await this.markChatsRead([receipt]);
+  }
+
+  async markChatsRead(receipts: ChatReadReceipt[]): Promise<void> {
+    let results = await Promise.allSettled(receipts.map(receipt =>
+      this.#setReadHorizon(receipt.workspaceId, receipt.chatId, receipt.throughSequence,
+        false)));
+    for (let result of results) if (result.status === "rejected") throw result.reason;
+  }
+
+  async markChatUnread(workspaceId: string, chatId: number, fromSequence: number): Promise<void> {
+    await this.#setReadHorizon(workspaceId, chatId, fromSequence - 1, true);
+  }
+
+  async #setReadHorizon(workspaceId: string, chatId: number, through: number,
+      rewind: boolean): Promise<void> {
+    if (!Number.isSafeInteger(through) || through < -1) throw new Error("Invalid timeline sequence.");
+    await this.#processChat(workspaceId, chatId, {horizon: {through, rewind}});
+  }
+
+  async #recoverUnread(recheckAccess = false): Promise<void> {
+    let results = await Promise.allSettled([...this.#readCursors.values()]
+      .filter(cursor => (cursor.unreadDirty || cursor.notificationsDirty) &&
+        (recheckAccess || !this.#deniedUnreadWorkspaces.has(cursor.workspaceId)))
+      .map(cursor => this.#processChat(cursor.workspaceId, cursor.chatId, {recheckAccess})));
+    await this.#armExpirySweep();
+    for (let result of results) if (result.status === "rejected") throw result.reason;
+  }
+
+  #forgetChat(workspaceId: string, chatId: number): void {
+    let key = `${workspaceId}:${chatId}`;
+    if (!this.#readCursors.has(key)) return;
+    this.storage.chatReadCursors.delete(key);
+    this.#readCursors.delete(key);
+    this.#unreadChanged(workspaceId, chatId);
+  }
+
+  /** Journal removal before the source is destroyed; recount only after releasing the RPC. */
+  async workspaceRemoved(workspaceId: string): Promise<void> {
+    this.#deniedUnreadWorkspaces.delete(workspaceId); // Deletion also wakes parked work.
+    for (let cursor of this.#readCursors.values()) {
+      if (cursor.workspaceId !== workspaceId) continue;
+      this.#dirtyTokens.set(`${workspaceId}:${cursor.chatId}`, {});
+      this.#storeCursor({...cursor, unreadDirty: true, notificationsDirty: true});
+    }
+    await this.#armExpirySweep();
+    this.ctx.waitUntil(this.#recoverUnread().catch(error => {
+      logger.warn("workspace unread cleanup deferred", {event: "chat.unread.cleanup.deferred", error});
+    }));
+  }
+
+  #forgetUnreadWorkspace(workspaceId: string): void {
+    let cursors = [...this.#readCursors.values()].filter(cursor => cursor.workspaceId === workspaceId);
+    if (cursors.length) this.storage.chatReadCursors.byWorkspace.delete(workspaceId);
+    for (let cursor of cursors) {
+      let key = `${workspaceId}:${cursor.chatId}`;
+      this.#readCursors.delete(key);
+    }
+    let wasDenied = this.#deniedUnreadWorkspaces.delete(workspaceId);
+    if (cursors.length || wasDenied) this.#unreadChanged();
+  }
+
   /**
-   * Offer a notification to visible clients; push it to every registered device unless one
-   * acknowledges within 3s. A finished task in a workspace the user muted goes nowhere.
+   * Offer a notification to visible clients, otherwise use push. The caller advances its
+   * notifiedThroughSequence only once this delivery succeeds or policy intentionally skips it.
    */
   async publishNotification(notification: UserNotification): Promise<void> {
     let mute = this.storage.gadgets.get(notification.workspaceId)?.notificationMute;
@@ -568,12 +884,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * Overseer when attempted.
    */
   async recordSharedGadgetOpen(
-      gadgetId: string, title: string, ownerProfile: AiChatAuthorInfo, role?: CollaboratorRole
+      gadgetId: string, title: string, ownerProfile: AiChatAuthorInfo, role: CollaboratorRole,
+      notificationBaselines: Pick<ChatReadCursor, "chatId" | "notifiedThroughSequence">[]
   ): Promise<void> {
     let record = this.storage.gadgets.get(gadgetId);
     if (record && !record.owner) {
       throw new Error("User owns this workspace; it's not shared with them.");
     }
+    let firstAdmission = !record || record.role !== "build";
     let now = new Date();
     if (record) {
       // Already tracked -- update lastActive and cached fields.
@@ -593,6 +911,22 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         lastActive: now,
       });
     }
+    if (role === "use") this.#forgetUnreadWorkspace(gadgetId);
+    else {
+      if (this.#deniedUnreadWorkspaces.delete(gadgetId)) {
+        this.#unreadChanged(); // Successful authorization restores locally tracked counts.
+        await this.#armExpirySweep();
+      }
+      if (firstAdmission) {
+        await Promise.all(notificationBaselines.map(baseline => this.#processChat(gadgetId, baseline.chatId,
+          {notificationBaseline: baseline.notifiedThroughSequence})));
+      } else {
+        // Reopening must not consume arrivals whose first fanout has not reached this DO yet.
+        await Promise.all([...this.#readCursors.values()]
+          .filter(cursor => cursor.workspaceId === gadgetId && (cursor.unreadDirty || cursor.notificationsDirty))
+          .map(cursor => this.#processChat(gadgetId, cursor.chatId)));
+      }
+    }
   }
 
   /**
@@ -605,6 +939,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (!record?.owner) return;
     record.role = role;
     this.storage.gadgets.put(record);
+    if (role === "use") this.#forgetUnreadWorkspace(gadgetId);
   }
 
   /**
@@ -617,6 +952,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (record && record.owner) {
       this.storage.gadgets.delete(gadgetId);
       this.storage.outputs.byWorkspace.delete(gadgetId);
+      this.#forgetUnreadWorkspace(gadgetId);
     }
   }
 
@@ -966,6 +1302,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   async deleteGadget(id: string): Promise<void> {
     this.storage.gadgets.delete(id);
     this.storage.outputs.byWorkspace.delete(id);
+    this.#forgetUnreadWorkspace(id);
   }
 
   /**
@@ -1945,6 +2282,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     record.credentialExpiresAt = expiresAt;
     this.storage.connectedAccounts.put(record);
 
+    // Re-authentication is a reason to check parked work again, not an authorization grant.
+    let hadDenied = this.#deniedUnreadWorkspaces.size > 0;
+    if (hadDenied) this.ctx.waitUntil(this.#recoverUnread(true).catch(error => {
+      logger.warn("unread recovery deferred", {event: "chat.unread.recovery.deferred", error});
+    }));
+
     // Re-fetch the description since the user may have re-authed with different info. Best-effort:
     // the credentials are live either way, and a record still showing as expired over a failed
     // describe() would send the user back through a reconnect that changes nothing.
@@ -2090,8 +2433,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   // Arm the alarm for the soonest pending expiry, including device sessions and picker selections.
   async #armExpirySweep(): Promise<void> {
+    let scheduled = await this.ctx.storage.getAlarm();
     let next: number | undefined;
     let consider = (at: number) => { if (next === undefined || at < next) next = at; };
+    if ([...this.#readCursors.values()].some(cursor =>
+      (cursor.unreadDirty || cursor.notificationsDirty) && !this.#deniedUnreadWorkspaces.has(cursor.workspaceId))) {
+      // Other activity must not postpone an outstanding retry; a fired alarm can schedule anew.
+      consider(Math.min(scheduled ?? Infinity, Date.now() + 30_000));
+    }
     for (let flow of this.storage.pendingConnectFlows.list()) consider(flow.expiresAt.getTime());
     for (let pending of this.storage.pendingDeviceHandoffs.list()) {
       consider(pending.expiresAt.getTime());
@@ -2117,7 +2466,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (next === undefined) {
       await this.ctx.storage.deleteAlarm();
     } else {
-      await this.ctx.storage.setAlarm(next);
+      await this.ctx.storage.setAlarm(Math.max(1, next));
     }
   }
 
@@ -2126,6 +2475,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * device handoffs and sessions. Device handoff cleanup also deletes its unactivated session.
    */
   async alarm(): Promise<void> {
+    // A stalled workspace/push service must not prevent unrelated auth expiry cleanup.
+    let deliveries = Promise.allSettled([this.#recoverUnread()]);
     let now = Date.now();
     let expiredFlows = Array.from(this.storage.pendingConnectFlows.list())
         .filter(flow => flow.expiresAt.getTime() <= now);
@@ -2160,6 +2511,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       }
     }
     await this.#armExpirySweep();
+    for (let result of await deliveries) if (result.status === "rejected") throw result.reason;
   }
 
   async getGatekeeperClassFor(accountId: number, url: string)

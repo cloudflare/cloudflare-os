@@ -66,7 +66,11 @@ The SPA reports the outcome to `webkit.messageHandlers.cloudflareOSNotificationR
 flowchart LR
   subgraph Install[One customer CFOS installation]
     Agent[Agent turn]
+    Workspace[Workspace Durable Object]
+    Candidates[(chatNotifications: stable event IDs)]
+    SourceDirty[(dirtyChats)]
     User[User Durable Object]
+    Cursor[(chatReadCursors: counts, dirty bits, notifiedThroughSequence)]
     Browser[Visible browser subscriber]
     Key[Install signing private key]
   end
@@ -82,9 +86,16 @@ flowchart LR
     App[Cloudflare OS app]
   end
 
-  Agent -->|completed or needs permission| User
+  Agent -->|completed or needs permission| Workspace
+  Workspace -->|record eligibility at timeline sequence| Candidates
+  Workspace -->|commit with timeline change| SourceDirty
+  SourceDirty -->|messageArrived; retain until ACK| User
+  User -->|persist dirty intent before ACK| Cursor
+  User -->|fetch count and candidates after notification horizon| Workspace
+  User -->|commit absolute unread count| Cursor
   User -->|visible client first| Browser
   Browser -->|presentation acknowledged| User
+  User -->|advance notifiedThroughSequence after delivery or policy skip| Cursor
   User -->|fallback if no acknowledgement| Delivery
   Key -->|sign request locally| User
   Delivery -->|validate install and subscription| Registry
