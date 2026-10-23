@@ -1,0 +1,45 @@
+packages/workshop-frontend/src/features/instance-admin/InstanceAdminModeNote.test.tsx
+  s_c5f8d284ae2719::t_4d844677ee780d 1-59
+packages/workshop-frontend/src/ShareModal.test.tsx
+  s_c5f8d284ae2719::t_b88ba1779d0415 1304-1329
+packages/workshop-frontend/src/features/instance-admin/InstanceAdminModeNote.tsx
+  s_c5f8d284ae2719::t_0899556bf8eccb 1-33
+packages/workshop-frontend/src/features/admin-audit/AdminAuditPanel.test.tsx
+  s_c5f8d284ae2719::t_b21872968fe173 316-350
+packages/workshop-frontend/src/features/instance-admin/DeploymentAdminAccessNotice.test.tsx
+  s_c5f8d284ae2719::t_f286ac67c73221 1-100,103-104
+  s_c5f8d284ae2719::t_fb316b44f14199 101-102
+packages/workshop-frontend/src/features/instance-admin/DeploymentAdminAccessNotice.tsx
+  s_c5f8d284ae2719::t_de40c1b550d1e5 1-59
+  s_c5f8d284ae2719::t_ae256dcb5ad24b 60
+packages/workshop-frontend/src/Activity.tsx
+  s_c5f8d284ae2719::t_a950aae07687f6 25,37-39,167,455-457
+packages/workshop-frontend/src/AdminPage.tsx
+  s_c5f8d284ae2719::t_5ab571ec1b9bf3 17-18,959-967,969-971,1008-1012
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_c5f8d284ae2719::t_aa7d766617cd5d 2065
+packages/workshop-frontend/src/OnboardingWizard.test.tsx
+  s_c5f8d284ae2719::t_4ea6719f3f1db4 8,96-111
+packages/workshop-frontend/src/OnboardingWizard.tsx
+  s_c5f8d284ae2719::t_5fd24f6bdd3442 13,241-243
+packages/workshop-frontend/src/ShareModal.tsx
+  s_c5f8d284ae2719::t_b0a718d70a42fb 339-343,1020,1025-1031
+packages/workshop-frontend/src/features/admin-audit/AdminAuditPanel.tsx
+  s_c5f8d284ae2719::t_c3a820e0cf2928 15,49,155-167,182
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a649dc3bdd686f8e8b8368749efeb7611cea13af",
+  "prompts": {},
+  "sessions": {
+    "s_c5f8d284ae2719": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8910de69-2a98-4e42-ab86-7bfa57a83c02",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
