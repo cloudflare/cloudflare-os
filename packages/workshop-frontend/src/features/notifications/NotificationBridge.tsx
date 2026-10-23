@@ -113,10 +113,15 @@ export const NotificationBridge = ({
 
   useEffect(() => {
     let subscription: RpcStub<{}> | undefined;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let retryDelay = 1_000;
 
     let updateSubscription = () => {
-      subscription?.[Symbol.dispose]();
+      clearTimeout(retryTimer);
+      retryTimer = undefined;
+      const previous = subscription;
       subscription = undefined;
+      previous?.[Symbol.dispose]();
 
       let live = false;
       let subscriber = new NotificationSubscriberImpl(notification => {
@@ -143,14 +148,21 @@ export const NotificationBridge = ({
       }) as unknown as RpcStub<NotificationSubscriber>;
       let nextSubscription = authenticatedApi.subscribeToNotifications(subscriber);
       subscription = nextSubscription;
-      nextSubscription.then(() => { live = true; }, error => {
+      nextSubscription.then(() => {
+        if (subscription !== nextSubscription) return;
+        live = true;
+        retryDelay = 1_000;
+      }, error => {
         if (subscription !== nextSubscription) return;
         logRpcFailure("Notification subscription failed:", error);
+        retryTimer = setTimeout(updateSubscription, retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 30_000);
       });
     };
 
     updateSubscription();
     return () => {
+      clearTimeout(retryTimer);
       const previous = subscription;
       subscription = undefined;
       previous?.[Symbol.dispose]();

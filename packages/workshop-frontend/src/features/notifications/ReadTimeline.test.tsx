@@ -48,8 +48,8 @@ describe("timeline read/unread experience", () => {
   const loadEarlier = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
   const navigate = vi.fn<() => void>();
 
-  const View = ({ oldest = 0, loadingEarlier = false, latestSequence = 2 }: {
-    oldest?: number; loadingEarlier?: boolean; latestSequence?: number;
+  const View = ({ oldest = 0, loadingEarlier = false, latestSequence = 2, sequences = [0, 1, 2] }: {
+    oldest?: number; loadingEarlier?: boolean; latestSequence?: number; sequences?: number[];
   }) => {
     const viewport = useRef<HTMLDivElement>(null);
     return (
@@ -64,7 +64,7 @@ describe("timeline read/unread experience", () => {
           onUnreadNavigation={navigate}
           className=""
         >
-          {[0, 1, 2]
+          {sequences
             .filter((sequence) => sequence >= oldest)
             .map((sequence) => (
               <TimelineReadItem key={sequence} start={sequence} end={sequence}>
@@ -91,6 +91,10 @@ describe("timeline read/unread experience", () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 320));
     });
+  };
+  const markUnreadFrom = async (sequence: number) => {
+    await act(async () => container.querySelector<HTMLButtonElement>(`[data-read-start="${sequence}"] button`)!.click());
+    await act(async () => document.querySelector<HTMLElement>('[role="menuitem"]')!.click());
   };
 
   beforeEach(() => {
@@ -172,11 +176,13 @@ describe("timeline read/unread experience", () => {
   });
 
   it.each([
-    {coalesced: false, firstFails: false},
-    {coalesced: true, firstFails: false},
-    {coalesced: true, firstFails: true},
-  ])("keeps overlapping local unread actions in place (coalesced: $coalesced, first fails: $firstFails)",
-      async ({coalesced, firstFails}) => {
+    {sequences: [2, 1], coalesced: false, firstFails: false},
+    {sequences: [2, 1], coalesced: true, firstFails: false},
+    {sequences: [2, 1], coalesced: true, firstFails: true},
+    {sequences: [1, 2], coalesced: false, firstFails: false},
+    {sequences: [1, 2], coalesced: true, firstFails: false},
+  ])("keeps overlapping local unread selections $sequences in place (coalesced: $coalesced, first fails: $firstFails)",
+      async ({sequences, coalesced, firstFails}) => {
     await render();
     await update(snapshot(1, 2));
     await settle();
@@ -185,19 +191,75 @@ describe("timeline read/unread experience", () => {
     viewport.scrollTop = 40;
     const first = Promise.withResolvers<void>();
     if (firstFails) markChatUnread.mockReturnValueOnce(first.promise);
-    for (const sequence of [2, 1]) {
-      await act(async () => container.querySelector<HTMLButtonElement>(`[data-read-start="${sequence}"] button`)!.click());
-      await act(async () => document.querySelector<HTMLElement>('[role="menuitem"]')!.click());
-    }
-    expect(markChatUnread.mock.calls).toEqual([["workspace", 1, 2], ["workspace", 1, 1]]);
+    for (const sequence of sequences) await markUnreadFrom(sequence);
+    expect(markChatUnread.mock.calls).toEqual(sequences.map(sequence => ["workspace", 1, sequence]));
     if (firstFails) await act(async () => first.reject(new Error("First command failed")));
-    for (const horizon of coalesced ? [0] : [1, 0]) {
+    const horizons = sequences.map(sequence => sequence - 1);
+    for (const horizon of coalesced ? horizons.slice(-1) : horizons) {
       await update(snapshot(2, horizon));
       await settle();
       expect(viewport.scrollTop).toBe(40);
+      expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart)
+        .toBe(String(sequences.at(-1)));
     }
     expect(navigate).not.toHaveBeenCalledWith(true);
     expect(container.textContent).toContain("automatic reading paused");
+    expect(markChatRead).not.toHaveBeenCalled();
+  });
+
+  it("keeps a newer manual unread paused when an earlier mark-read ACK arrives", async () => {
+    await render();
+    await update(snapshot(1, 0));
+    await settle();
+    const ack = Promise.withResolvers<void>();
+    markChatRead.mockReturnValueOnce(ack.promise);
+    const markRead = [...container.querySelectorAll("button")].find(button => button.textContent === "Mark thread read")!;
+    await act(async () => markRead.click());
+    await update(snapshot(2, 2)); // The read ran first, but its ACK is still in flight.
+    await markUnreadFrom(1);
+    await update(snapshot(3, 0));
+    visibleBottom = 350;
+    await act(async () => ack.resolve());
+    await settle();
+    expect(container.textContent).toContain("automatic reading paused");
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith({workspaceId: "workspace", chatId: 1, throughSequence: 2});
+  });
+
+  it("rolls back a failed newer unread without treating the earlier successful rewind as remote", async () => {
+    await render();
+    await update(snapshot(1, 2));
+    await settle();
+    navigate.mockClear();
+    const viewport = container.querySelector<HTMLDivElement>("[data-viewport]")!;
+    viewport.scrollTop = 40;
+    const failed = Promise.withResolvers<void>();
+    markChatUnread.mockResolvedValueOnce(undefined).mockReturnValueOnce(failed.promise);
+    await markUnreadFrom(2);
+    await markUnreadFrom(1);
+    await update(snapshot(2, 1)); // The first command's snapshot precedes the second failure.
+    await act(async () => failed.reject(new Error("Second command failed")));
+    await settle();
+    expect(viewport.scrollTop).toBe(40);
+    expect(navigate).not.toHaveBeenCalledWith(true);
+    expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("2");
+    expect(container.textContent).toContain("automatic reading paused");
+    expect(markChatRead).not.toHaveBeenCalled();
+  });
+
+  it("waits for replay to render the first unread message before completing navigation", async () => {
+    await render();
+    const state = snapshot(1, 2);
+    await update({...state, unreadChatCount: 1, unreadMessageCount: 1,
+      chats: [{...state.chats[0], unreadMessageCount: 1}]});
+    await settle();
+    expect(navigate).not.toHaveBeenCalledWith(false);
+    expect(markChatRead).not.toHaveBeenCalled();
+    const viewport = container.querySelector<HTMLDivElement>("[data-viewport]")!;
+    expect(viewport.scrollTop).toBe(0);
+    await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
+    await settle();
+    expect(navigate).toHaveBeenLastCalledWith(false);
+    expect(viewport.scrollTop).toBe(280); // Message 3 is positioned below the 20px toolbar.
     expect(markChatRead).not.toHaveBeenCalled();
   });
 
