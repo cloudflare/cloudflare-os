@@ -9,8 +9,12 @@ export default defineConfig({
   run: {
     tasks: {
       // Shared by every package whose tests run under vitest; see the module for why the two
-      // vitest scratch paths have to be excluded for this to cache at all.
-      test: vitestTask(['vitest run', 'vitest run -c vitest.node.config.ts']),
+      // vitest scratch paths have to be excluded for this to cache at all. The workerd suite loads
+      // the collection Durable Object, which imports `@gadgets/typed-storage` from its `dist/`.
+      test: {
+        ...vitestTask(['vitest run', 'vitest run -c vitest.node.config.ts']),
+        dependsOn: ['@gadgets/typed-storage#build'],
+      },
       // The integration harness boots this validated tree without rebuilding it per test file.
       'build:integration-worker': {
         command: withTestTimeout('capnweb-validate build --out .wrangler/validate'),

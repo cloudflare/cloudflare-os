@@ -21,6 +21,7 @@ import {
   hasDeviceSessionParameters,
 } from '../features/native-app/DeviceSessionHandoff'
 import { NativeAppBridge } from '../features/native-app/NativeAppBridge'
+import { PageUpdateNotice } from '../features/stale-session/PageUpdateNotice'
 
 export const Route = createRootRoute({
   component: RootComponent,
@@ -101,6 +102,7 @@ function RootComponent() {
     return (
       <TooltipProvider>
         <Toasty>
+          <PageUpdateNotice />
           <div className="flex h-full min-h-0 flex-col">
             {showHeader && <Header />}
             <main className="min-h-0 flex-1 overflow-y-auto">
@@ -129,6 +131,7 @@ function RootComponent() {
             <NotificationBridge authenticatedApi={authenticatedApi} />
             <BrowserPushBridge />
             <NativeAppBridge />
+            <PageUpdateNotice />
             <AuthenticatedShell
               authenticatedApi={authenticatedApi}
               isWorkspaceEditor={isWorkspaceEditor}

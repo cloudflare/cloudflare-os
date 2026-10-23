@@ -3,12 +3,16 @@ import {
   ArrowClockwise,
   Buildings,
   Clock,
+  FolderOpen,
   GitBranch,
   PencilSimple,
   PlusIcon,
   ScrollIcon,
+  ShareNetwork,
+  SignOut,
   TrashIcon,
   User,
+  Users,
   UploadSimple,
 } from "@phosphor-icons/react";
 import {
@@ -17,10 +21,15 @@ import {
   type HierarchicalListItem,
 } from "@gadgets/ui/hierarchical-list";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { ContextCollectionMetadata } from "../../src/context-types";
+import type {
+  ContextCollectionMetadata,
+  ContextCollectionPermissions,
+  EnabledCollectionInfo,
+} from "../../src/context-types";
 import { useContextApi } from "../bridge";
 import type { AddSkillTarget } from "./AddSkillDialog";
 import type { NavigatorDeleteTarget } from "./DeleteNavigatorNodeDialog";
+import { COLLECTION_ROLE_LABELS } from "./collectionRole";
 import { RenameInput } from "./RenameInput";
 import {
   canMoveSkillNavigatorNode,
@@ -43,15 +52,20 @@ import type { UploadSkillsTarget } from "./UploadSkillsDialog";
 type SkillsNavigatorTreeProps = {
   navigator: readonly SkillNavigatorCollection[];
   collectionMetadata: ReadonlyMap<string, ContextCollectionMetadata>;
+  /** Missing entries mean no permissions beyond reading. */
+  collectionPermissions: ReadonlyMap<string, ContextCollectionPermissions>;
   failedDocumentCollectionIds: ReadonlySet<string>;
-  manageableCollectionIds: ReadonlySet<string>;
   writableCollectionIds: ReadonlySet<string>;
   supportsGitCollections: boolean;
   expandAll: boolean;
   onSelectSkill: (collectionId: string, manifestPath: string) => void;
+  onOpenCollection: (collectionId: string) => void;
   onAddSkill: (target: AddSkillTarget) => void;
   onUploadSkills: (target: UploadSkillsTarget) => void;
   onEditCollection: (collection: ContextCollectionMetadata) => void;
+  onShareCollection: (collection: { id: string; title: string }) => void;
+  /** Owners leave from the Share dialog, which knows whether another owner remains. */
+  onLeaveCollection: (collection: { id: string; title: string }) => void;
   onDelete: (target: NavigatorDeleteTarget) => void;
   onRetryCollection: (collectionId: string) => Promise<void>;
   onChanged: () => void;
@@ -60,6 +74,22 @@ type SkillsNavigatorTreeProps = {
 type PendingRename = { collectionId: string; path: string; name: string };
 
 const skillCountLabel = (count: number) => `${count} ${count === 1 ? "skill" : "skills"}`;
+
+// Ownership comes from the viewer's live role, not from which index lists the collection.
+const collectionAccess = ({ source, membership }: EnabledCollectionInfo) => {
+  if (source === "public") {
+    return { icon: <Buildings aria-hidden size={12} />, label: "Organization" };
+  }
+  if (!membership || membership.role === "owner") {
+    return membership?.shared
+      ? { icon: <Users aria-hidden size={12} />, label: "Shared" }
+      : { icon: <User aria-hidden size={12} />, label: "Private" };
+  }
+  return {
+    icon: <Users aria-hidden size={12} />,
+    label: `Shared with you · ${COLLECTION_ROLE_LABELS[membership.role]}`,
+  };
+};
 
 const relativeUpdatedAt = (date: Date, now: number) => {
   const age = formatSkillUpdatedAt(date, now);
@@ -140,19 +170,22 @@ const toListItem = (
   };
 };
 
-/** Interactive skill hierarchy with actions limited to writable collections. */
+/** Interactive skill hierarchy with actions limited by the viewer's collection permissions. */
 export const SkillsNavigatorTree = ({
   navigator,
   collectionMetadata,
+  collectionPermissions,
   failedDocumentCollectionIds,
-  manageableCollectionIds,
   writableCollectionIds,
   supportsGitCollections,
   expandAll,
   onSelectSkill,
+  onOpenCollection,
   onAddSkill,
   onUploadSkills,
   onEditCollection,
+  onShareCollection,
+  onLeaveCollection,
   onDelete,
   onRetryCollection,
   onChanged,
@@ -219,19 +252,18 @@ export const SkillsNavigatorTree = ({
         now,
       ));
     }
+    const access = collectionAccess(collection);
     return {
       id,
       name: collection.title,
       icon: collection.icon ? <span aria-hidden>{collection.icon}</span> : undefined,
-      metadata: metadata ? (
+      metadata: (
         <span className="flex items-center gap-3">
           <span className="flex items-center gap-1">
-            {metadata.visibility === "public"
-              ? <Buildings aria-hidden size={12} />
-              : <User aria-hidden size={12} />}
-            {metadata.visibility === "public" ? "Organization" : "Private"}
+            {access.icon}
+            {access.label}
           </span>
-          {metadata.content.source === "git" && (
+          {metadata?.content.source === "git" && (
             <span className="flex items-center gap-1">
               <GitBranch aria-hidden size={12} />
               Git managed
@@ -248,7 +280,7 @@ export const SkillsNavigatorTree = ({
             </span>
           )}
         </span>
-      ) : undefined,
+      ),
       droppable: writable,
       children: listChildren,
     };
@@ -372,12 +404,26 @@ export const SkillsNavigatorTree = ({
 
     const collectionInfo = collectionsById.get(item.id);
     if (collectionInfo) {
-      if (!manageableCollectionIds.has(collectionId)) return null;
+      const { collection } = collectionInfo;
+      const permissions = collectionPermissions.get(collectionId);
       const metadata = collectionMetadata.get(collectionId);
       const writable = writableCollectionIds.has(collectionId);
-      const refreshable = metadata?.content.source === "git" && supportsGitCollections;
+      const refreshable = Boolean(permissions?.canEdit)
+        && metadata?.content.source === "git"
+        && supportsGitCollections;
+      const editableMetadata = permissions?.canEdit ? metadata : undefined;
+      const sharable = Boolean(permissions?.canShare);
+      const deletable = Boolean(permissions?.canDelete) && !failedDocumentCollectionIds.has(collectionId);
+      const leavable = collection.membership !== undefined && collection.membership.role !== "owner";
       return (
         <>
+          <DropdownMenu.Item
+            icon={<FolderOpen size={13} className="mr-2" />}
+            onClick={() => onOpenCollection(collectionId)}
+          >
+            Open collection
+          </DropdownMenu.Item>
+          {(writable || refreshable) && <DropdownMenu.Separator />}
           {writable && (
             <>
               <DropdownMenu.Item
@@ -411,23 +457,40 @@ export const SkillsNavigatorTree = ({
               Refresh
             </DropdownMenu.Item>
           )}
-          {(writable || refreshable) && <DropdownMenu.Separator />}
-          {metadata && (
+          {(editableMetadata || sharable || deletable || leavable) && <DropdownMenu.Separator />}
+          {editableMetadata && (
             <DropdownMenu.Item
               icon={<PencilSimple size={13} className="mr-2" />}
-              onClick={() => onEditCollection(metadata)}
+              onClick={() => onEditCollection(editableMetadata)}
             >
               Edit
             </DropdownMenu.Item>
           )}
-          {!failedDocumentCollectionIds.has(collectionId) && (
+          {sharable && (
+            <DropdownMenu.Item
+              icon={<ShareNetwork size={13} className="mr-2" />}
+              onClick={() => onShareCollection({ id: collectionId, title: collection.title })}
+            >
+              Share
+            </DropdownMenu.Item>
+          )}
+          {leavable && (
+            <DropdownMenu.Item
+              icon={<SignOut size={13} className="mr-2" />}
+              variant="danger"
+              onClick={() => onLeaveCollection({ id: collectionId, title: collection.title })}
+            >
+              Leave
+            </DropdownMenu.Item>
+          )}
+          {deletable && (
             <DropdownMenu.Item
               icon={<TrashIcon size={13} className="mr-2" />}
               variant="danger"
               onClick={() => onDelete({
                 type: "collection",
                 collectionId,
-                name: collectionInfo.collection.title,
+                name: collection.title,
               })}
             >
               Delete

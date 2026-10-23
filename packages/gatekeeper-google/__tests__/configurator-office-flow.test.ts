@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OFFICE_KINDS, type OfficeKind } from "../src/office-conversion";
 import { OFFICE_IMPORT_GRANT, RESOURCE_BY_KIND } from "../src/resources";
+import { nodes, text } from "./configurator-tree";
 
 vi.mock("@gadgets/configurator-ui", () => ({
   h: (component: unknown, props: unknown, ...children: unknown[]) => ({
@@ -98,22 +99,6 @@ describe("the shared Office conversion flow", () => {
     expect(code).toBe("");
   });
 });
-
-type Node = { component: unknown; props: Record<string, any>; children: unknown[] };
-
-function nodes(tree: unknown): Node[] {
-  if (Array.isArray(tree)) return tree.flatMap(nodes);
-  if (!tree || typeof tree !== "object" || !("component" in tree)) return [];
-  const node = tree as Node;
-  return [node, ...nodes(node.children)];
-}
-
-function text(tree: unknown): string {
-  if (typeof tree === "string") return tree;
-  if (Array.isArray(tree)) return tree.map(text).join("");
-  if (tree && typeof tree === "object" && "children" in tree) return text((tree as Node).children);
-  return "";
-}
 
 type Spec = {
   initial: Record<string, string | null | undefined>;

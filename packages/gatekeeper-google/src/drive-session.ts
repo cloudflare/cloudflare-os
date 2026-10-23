@@ -2,8 +2,8 @@ import { isObservationRefused } from "@gadgets/gatekeeper-kit/observers";
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { CursorPager, type Pager } from "./cursor";
 import {
-  DriveApiRequestError, FOLDER_MIME_TYPE, MAX_QUERY_PARENTS, isListableFolderFile,
-  isListableFolderNode,
+  FOLDER_MIME_TYPE, MAX_QUERY_PARENTS, SHORTCUT_MIME_TYPE,
+  isFileInvisible, isListableFolderFile, isListableFolderNode,
   type DriveApi, type DriveFile, type DriveListFilesOptions, type DriveScopeNode,
 } from "./drive-api";
 import {
@@ -17,13 +17,14 @@ import type {
   DriveScope, DriveSearchQuery,
 } from "./drive-types";
 
-const SHORTCUT_MIME_TYPE = "application/vnd.google-apps.shortcut";
 /** Exact MIME type for native Google Docs files. */
 export const GOOGLE_DOC_MIME_TYPE = "application/vnd.google-apps.document";
 /** Exact MIME type for native Google Sheets files. */
 export const GOOGLE_SHEET_MIME_TYPE = "application/vnd.google-apps.spreadsheet";
 /** Exact MIME type for native Google Slides files. */
 export const GOOGLE_SLIDES_MIME_TYPE = "application/vnd.google-apps.presentation";
+/** Exact MIME type Drive gives a PDF. */
+export const PDF_MIME_TYPE = "application/pdf";
 
 const FOLDER_MOVED = "The connected Drive folder moved to another drive; open a new listing.";
 
@@ -63,7 +64,7 @@ type FolderPageScope = {driveId: string | undefined; parents: DriveScopeNode[]};
 export type NativeObservation = Omit<ObservationDescription, "excludeObservers">;
 
 /**
- * Performs one native Docs, Sheets or Slides read and authorizes it before the value is disclosed.
+ * Performs one Docs, Sheets, Slides or PDF read and authorizes it before the value is disclosed.
  *
  * The fetch is a thunk rather than a value so a scope check can refuse before the provider is
  * contacted at all.
@@ -307,18 +308,6 @@ function emptySearchDescription(scope: DriveBindingScope, query: DriveListFilesO
   let clauses = queryClauses(query);
   if (clauses.length) text += `; ${clauses.join("; ")}`;
   return clip(`${text}.`, MAX_OBSERVATION_DESCRIPTION);
-}
-
-/**
- * Drive's indistinguishable "absent or not permitted" answer about one file.
- *
- * One definition, because both cores and the batch path must agree on it: a reason Google
- * documents as account-wide is an outage, not a scope fact, and recording it would narrow a
- * listing or deny a binding for everyone.
- */
-function isFileInvisible(error: unknown): boolean {
-  return error instanceof DriveApiRequestError && !error.isAccountWide &&
-    (error.status === 403 || error.status === 404);
 }
 
 /**
@@ -669,7 +658,7 @@ export class DriveFolderSessionCore extends DriveCoreBase {
     return {folderIds: [...this.#location.folderIds, folder.id]};
   }
 
-  /** Revalidate the saved path and direct child on every native Docs, Sheets or Slides read. */
+  /** Revalidate the saved path and direct child on every Docs, Sheets, Slides or PDF read. */
   nativeRead(fileId: string, expectedMimeType: string): NativeRead {
     return async <T>(fetch: () => Promise<T>, observe: (value: T) => NativeObservation) => {
       let before = await this.#requireDirectFile(fileId);

@@ -61,10 +61,15 @@ export type StepUsage = {
   modelSteps?: number;
 };
 
+/** One compaction checkpoint of a chat: the summary that replaces its messages before `to`. */
+export type ChatCompaction = { to: number; summary: string };
+
 /** Canonical state observed after one agent activation ends. */
 export type AgentTurnResult = {
   outcome: AgentTurnOutcome;
   history: AiChatMessage[];
+  /** The chat's compaction checkpoints, oldest first. */
+  compactions: ChatCompaction[];
   workpieces: WorkpieceSummary[];
   usage: {
     lastStepTokens?: number;
@@ -456,6 +461,7 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
   #terminal = false;
   #closed = false;
   #lastHistory: AiChatMessage[] = [];
+  #lastCompactions: ChatCompaction[] = [];
   #lastWorkpieces: WorkpieceSummary[] = [];
   #lastUsage: AgentTurnResult["usage"] = {};
 
@@ -863,10 +869,19 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
       endSequence: number | undefined, cancellationDeadline?: number): Promise<AgentTurnResult> {
     const chatId = this.#chatId;
     if (chatId === undefined) {
-      return { outcome: observedOutcome, history: [], workpieces: [], usage: {} };
+      return { outcome: observedOutcome, history: [], compactions: [], workpieces: [], usage: {} };
     }
+    // Pages load newest first, each bounded below by the checkpoint before it.
+    const compactions: ChatCompaction[] = [];
+    const loadPage = async (before?: number) => {
+      const page = await this.#workspace.getChatHistory(chatId, before);
+      if (page.compacted !== undefined) {
+        compactions.unshift({ to: page.compacted.to, summary: page.compacted.summary });
+      }
+      return page;
+    };
     const loadState = () => Promise.all([
-      loadAllChatHistory(before => this.#workspace.getChatHistory(chatId, before)),
+      loadAllChatHistory(loadPage),
       this.#workspace.listChats(),
       this.#loadWorkpieces(),
     ]);
@@ -916,15 +931,17 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
     const steps = this.#chatSubscriber.steps(chatId);
     if (steps.length > 0) usage.steps = steps;
     this.#lastHistory = history;
+    this.#lastCompactions = compactions;
     this.#lastWorkpieces = workpieces;
     this.#lastUsage = usage;
-    return { outcome, history, workpieces, usage };
+    return { outcome, history, compactions, workpieces, usage };
   }
 
   #resultWithLastState(outcome: AgentTurnOutcome): AgentTurnResult {
     return {
       outcome,
       history: [...this.#lastHistory],
+      compactions: [...this.#lastCompactions],
       workpieces: [...this.#lastWorkpieces],
       usage: { ...this.#lastUsage },
     };

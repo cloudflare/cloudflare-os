@@ -5,7 +5,7 @@ import {
   GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE,
   GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE, IDENTITY_SCOPES,
   LEGACY_GRANTED_RESOURCE_URL_PATTERNS, OFFICE_IMPORT_GRANT, RESOURCE_BY_KIND, RESOURCE_SCOPES,
-  SCOPE_DERIVED_RESOURCE_URL_PATTERNS, SUPPORTED_RESOURCES, creatableKind,
+  SCOPE_DERIVED_RESOURCE_URL_PATTERNS, SHARED_DRIVES_GRANT, SUPPORTED_RESOURCES, creatableKind,
   grantedResourceUrlPatterns, hasDriveResourceGrant, isPrivateGrant,
   nativeFileUrl, parseResourceUrl,
   recordedResourceUrlPatterns, resourceUrlPatternsToOAuthScopes, resourcesCoveredByScopes,
@@ -154,23 +154,23 @@ describe("resourceUrlPatternsToOAuthScopes", () => {
     ]);
   });
 
-  // Pins every permanent scope each Drive resource needs. No broader Drive scope is ever
-  // requested; a wider one only ever arrives from a grant the account already held.
+  // Pins every permanent scope each Drive resource needs: drive.readonly, so a PDF's content can be
+  // downloaded, and never full drive.
   it.each([
     [GOOGLE_DRIVE_RESOURCE, [
-      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/drive.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
       "https://www.googleapis.com/auth/presentations.readonly",
     ]],
     [GOOGLE_DRIVE_FOLDER_RESOURCE, [
-      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/drive.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
       "https://www.googleapis.com/auth/presentations.readonly",
     ]],
     [GOOGLE_DRIVE_FILE_RESOURCE, [
-      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/drive.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
       "https://www.googleapis.com/auth/presentations.readonly",
@@ -209,7 +209,7 @@ describe("resourceUrlPatternsToOAuthScopes", () => {
   it("covers a Drive resource's spreadsheets.readonly with a spreadsheets grant", () => {
     expect(resourcesCoveredByScopes([GOOGLE_DRIVE_FILE_RESOURCE.urlPattern], [
       ...IDENTITY_SCOPES,
-      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/drive.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets",
       "https://www.googleapis.com/auth/presentations.readonly",
@@ -330,12 +330,13 @@ describe("resourcesCoveredByScopes", () => {
       ])).toEqual([]);
     }
 
+    // Full metadata access plus the read-write editor scopes still cannot read a file's content.
     expect(resourcesCoveredByScopes(folderIntent, [
       "https://www.googleapis.com/auth/drive.metadata",
       "https://www.googleapis.com/auth/documents",
       "https://www.googleapis.com/auth/spreadsheets",
       "https://www.googleapis.com/auth/presentations",
-    ])).toEqual(folderIntent);
+    ])).toEqual([]);
     // Sheets needs the read-write `spreadsheets` scope, which only `drive` subsumes.
     expect(resourcesCoveredByScopes(
       [GOOGLE_DOC_RESOURCE.urlPattern, GOOGLE_SHEETS_RESOURCE.urlPattern],
@@ -781,11 +782,12 @@ describe("Office import grant", () => {
     expect(LEGACY_GRANTED_RESOURCE_URL_PATTERNS).not.toContain(OFFICE_IMPORT_GRANT);
   });
 
-  // connectAccount requests every supported resource when the caller names none.
+  // connectAccount requests every supported resource when the caller names none. The Drive
+  // resources bring drive.readonly; the copy's drive.file comes only from this grant.
   it("is not part of a first connection's request-everything default", () => {
     let everything = resourceUrlPatternsToOAuthScopes(
       SUPPORTED_RESOURCES.map(resource => resource.urlPattern));
-    expect(everything).not.toContain(DRIVE_READONLY);
+    expect(everything).toContain(DRIVE_READONLY);
     expect(everything).not.toContain(DRIVE_FILE);
   });
 
@@ -837,5 +839,49 @@ describe("Office import grant", () => {
     let declined = { ...grant, oauthScopes: resourceUrlPatternsToOAuthScopes([GOOGLE_SHEETS_RESOURCE.urlPattern]) };
     expect(grantedResourceUrlPatterns(declined)).toEqual([GOOGLE_SHEETS_RESOURCE.urlPattern]);
     expect(recordedResourceUrlPatterns(declined)).toContain(OFFICE_IMPORT_GRANT);
+  });
+});
+
+describe("shared drives grant", () => {
+  const DRIVE_READONLY = "https://www.googleapis.com/auth/drive.readonly";
+
+  it("is a private grant, not a resource anything can list, offer or bind", () => {
+    expect(isPrivateGrant(SHARED_DRIVES_GRANT)).toBe(true);
+    expect(SUPPORTED_RESOURCES.map(resource => resource.urlPattern)).not.toContain(SHARED_DRIVES_GRANT);
+    expect(messageFor(SHARED_DRIVES_GRANT)).toBeTruthy();
+  });
+
+  it("asks for drive.readonly only, which full drive also covers", () => {
+    expect(resourceUrlPatternsToOAuthScopes([SHARED_DRIVES_GRANT])).toEqual([...IDENTITY_SCOPES, DRIVE_READONLY]);
+    expect(resourcesCoveredByScopes([SHARED_DRIVES_GRANT], ["https://www.googleapis.com/auth/drive"]))
+      .toEqual([SHARED_DRIVES_GRANT]);
+  });
+
+  // drive.readonly covers every Drive resource's scopes, but a resource is granted only when chosen.
+  it("implies no Drive resource", () => {
+    let grant = {
+      resourceUrlPatterns: [SHARED_DRIVES_GRANT],
+      oauthScopes: resourceUrlPatternsToOAuthScopes([SHARED_DRIVES_GRANT]),
+    };
+    expect(grantedResourceUrlPatterns(grant)).toEqual([SHARED_DRIVES_GRANT]);
+    expect(hasDriveResourceGrant(grantedResourceUrlPatterns(grant))).toBe(false);
+  });
+});
+
+describe("Drive resources' file content access", () => {
+  const DRIVE_READONLY = "https://www.googleapis.com/auth/drive.readonly";
+  const DRIVE_METADATA_READONLY = "https://www.googleapis.com/auth/drive.metadata.readonly";
+  const DRIVE_RESOURCES = [GOOGLE_DRIVE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE]
+    .map(resource => resource.urlPattern);
+
+  it("no longer counts an account that holds only drive.metadata.readonly as granted", () => {
+    let scopes = resourceUrlPatternsToOAuthScopes(DRIVE_RESOURCES)
+      .map(scope => scope === DRIVE_READONLY ? DRIVE_METADATA_READONLY : scope);
+    let granted = grantedResourceUrlPatterns({ resourceUrlPatterns: DRIVE_RESOURCES, oauthScopes: scopes });
+    expect(granted).toEqual([]);
+    expect(hasDriveResourceGrant(granted)).toBe(false);
+    // A reconnect asks for them again.
+    expect(recordedResourceUrlPatterns({ resourceUrlPatterns: DRIVE_RESOURCES, oauthScopes: scopes }))
+      .toEqual(DRIVE_RESOURCES);
   });
 });

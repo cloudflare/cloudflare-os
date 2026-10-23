@@ -94,24 +94,30 @@ There is no binding to add. `run-dev-server.ts` binds every `packages/gatekeeper
 
 ### Step 6: Add resource selection UI
 
-Add a resource selection UI for each resource type returned in `getSupportedResources()`. This will be used by users to select the specific resource.
+Add a resource selection UI for each connect card. A card is one resource type returned in `getSupportedResources()`, together with any types whose `groupedWith` names it. This will be used by users to select the specific resource.
 
-- Workshop calls `GatekeeperUser.startResourceConfigurator(resourceUrlPattern)` with the selected resource's `urlPattern`.
+- Workshop calls `GatekeeperUser.startResourceConfigurator(resourceUrlPattern)` with the `urlPattern` of a type on the card: the card's own type from the connect dialog, or a binding's own type from a blueprint. Return the card's configurator for every type on it.
 - Return `iframeHtml` of the selection UI and `ui` for any RPCs that UI needs.
 - When the user selects "Add connection", Workshop asks the iframe for the selected resource URL.
+- Group types (`SupportedResource.groupedWith`) when they are one choice at different granularities, such as a whole drive, a folder or a file. Each type is still granted separately, and a grouped card asks for the missing ones in one consent request, so group only types that need the same authorization. The gatekeeper's `getGatekeeperClassFor` decides which type a returned URL is, while Workshop's grant check takes the first type in declaration order whose pattern matches it, so declare a narrower type before a broader one whose pattern also matches its URLs. A whole-instance `https://*` type is the exception: the check skips it and uses it only for a URL no other type on the card matches, so it can be declared anywhere.
 
 Keep the iframe-facing capability narrow, only what's necessary to provide desired interface to help user find and select the resource.
 
 #### Optional helper: `@gadgets/configurator-ui`
 
-For simple configuration UIs, consider using `@gadgets/configurator-ui`. It provides the basic form components that look consistent to the Gadget Workshop and a build script that turns `src/configurator/*-ui.tsx` into `iframeHtml`. Gatekeepers with more specialized UI needs can produce their own `iframeHtml`.
+For configuration UIs, use `@gadgets/configurator-ui`. It provides form components built on Kumo (rendered with Preact standing in for React inside the frame) that look and behave like the rest of the Workshop, and a build that turns `src/configurator/*-ui.tsx` into `iframeHtml`. Gatekeepers whose needs the components cannot meet can produce their own `iframeHtml`.
+
+Components: `Section`, `Field`, `TextInput`, `RadioCards`, `CheckboxList` (multi-select; refuses more than 200 options rather than truncating), `Autocomplete` (search-as-you-type, one result), `HierarchyPicker` (choose the whole hierarchy from a card above the list, or an open container or a leaf from its own row; as in a file dialog, a choice lasts while it is in view; a container's `choice` says what connecting it grants, since only the gatekeeper knows whether that is its whole subtree; breadcrumbs, optional search, paging and `loadItem`, which pre-filling anything but the root needs; nodes name icons the configurator supplies in `icons`; a location that cannot be listed yet, such as one waiting on a grant, returns a page with `unavailable` set to why, shown with Retry like a failed load but not reported as an error), `Button` (an action in the form; call the render context's `ensureResources` from its click to ask for access the next step needs) and `Notice` (an inline info or error message, announced to screen readers). The runtime strips control and bidi-formatting characters from titles, subtitles and meta it shows, since those come from third parties.
 
 If you use this:
 
 - UI modules live in `src/configurator/*-ui.tsx`.
 - `resourceUrl()` returns the selected resource URL.
+- A module that can return several types reads `acceptedResourceUrlPatterns` from the context every callback receives (`render`, `isReady`, `resourceUrl`, `initialValuesFromResourceUrl`): the types Workshop will take, which leave out a grouped type the account hasn't granted and anything a blueprint binding doesn't want. Show other types if that helps the user find their way, but don't let them be chosen, and keep `isReady` false while one is. It is `undefined` from an older Workshop, which takes any type. The list is read when the frame starts, and Workshop restarts the frame when it changes.
 - `src/configurator/*-types.d.ts` describes the iframe-facing `ui` API.
-- `scripts/build-gatekeeper-configurator.ts` generates `src/generated/*.txt`.
+- Each module is compiled on its own: it may import only `@gadgets/configurator-ui` and types. URL grammar it shares with the server is copied, and a test keeps the copies in step.
+- The frame's content security policy allows exactly the scripts the build wrote (by hash) and no network access; anything the UI needs goes through `ui`.
+- `scripts/build-gatekeeper-configurator.ts` generates `src/generated/*.txt`, using the runtime and build in `packages/configurator-ui` (`src/runtime/`, `build/`).
 - Nothing invokes `build-gatekeeper-configurator.ts` by hand. `vite.config.ts` re-exports the
   shared `build` and `build:configurator` Vite+ tasks from
   `scripts/gatekeeper-configurator-vite-config.ts`; `build` is just `tsc` and depends on
@@ -135,7 +141,7 @@ When something already knows the exact resource — most importantly an AI agent
   },
   ```
 
-  The runtime seeds these values before first render and reflects them in `Autocomplete`/`TextInput`/`RadioCards` inputs. Make sure your `resourceUrl(values)` and `initialValuesFromResourceUrl(url)` are inverses so a prefilled form round-trips to the same URL. **Every gatekeeper with selectable resources should support this** so agents can fully pre-configure a connection.
+  The runtime seeds these values before first render and reflects them in `Autocomplete`/`TextInput`/`RadioCards`/`HierarchyPicker` inputs. Make sure your `resourceUrl(values)` and `initialValuesFromResourceUrl(url)` are inverses so a prefilled form round-trips to the same URL. **Every gatekeeper with selectable resources should support this** so agents can fully pre-configure a connection.
 
 ### Step 7: STOP — Ask operator whether to proceed to phase 2
 

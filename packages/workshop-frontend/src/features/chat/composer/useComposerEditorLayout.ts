@@ -74,7 +74,12 @@ export const useComposerEditorLayout = ({
       measureUrlLineOffsetRef.current();
     };
     syncLayout();
-    const observer = new ResizeObserver(syncLayout);
+    // Showing or hiding the scrollbar resizes the content box too, so this also catches overflow
+    // changes made by resizeTextarea.
+    const observer = new ResizeObserver(([entry]) => {
+      mirrorRef.current?.syncWidth(textarea, entry.contentRect.width);
+      syncLayout();
+    });
     observer.observe(textarea);
     return () => observer.disconnect();
   }, [mirrorRef, textareaRef]);

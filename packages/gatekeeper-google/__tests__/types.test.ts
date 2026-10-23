@@ -300,4 +300,26 @@ const legacy: SheetCellFormat = { wrap: "OVERFLOW_CELL" };
     expect(driveTypes).not.toContain("GooglePresentationSession>");
     expect(driveTypes).toContain("export interface GoogleDriveReadSession");
   });
+
+  it("streams PDF text from both Drive sessions", () => {
+    const driveTypes = source("drive-types.d.ts");
+    expect(driveTypes).toContain("export type DrivePdfText = {");
+    expect(driveTypes.split("readPdf(fileId: string): Promise<DrivePdfText>;")).toHaveLength(3);
+    expect(compileAgentTypes(driveBundle() + `
+declare const drive: GoogleDriveReadSession;
+declare const folder: GoogleDriveFolderSession;
+async function read(): Promise<string> {
+  const { text, hasText } = await drive.readPdf("file-1");
+  const flag: boolean = hasText;
+  const reader = (await folder.readPdf("file-2")).text.getReader();
+  const first: Uint8Array | undefined = (await reader.read()).value;
+  await reader.cancel();
+  return new Response(text).text();
+}
+// @ts-expect-error The text is a stream, not a string.
+const whole: DrivePdfText = { text: "", hasText: true };
+// @ts-expect-error Nothing is cut, so there is no truncation flag.
+const cut: DrivePdfText = { text: new ReadableStream(), hasText: true, truncated: false };
+`)).toEqual([]);
+  });
 });

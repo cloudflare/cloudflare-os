@@ -1551,9 +1551,14 @@ describe("applying a blueprint to a gadget", () => {
   });
 
   it("records the bindings the release declares that the gadget lacks", async () => {
+    let spawner = {
+      title: "Spawner", description: "", type: "agentSpawner" as const,
+      env: { DB: { type: "binding" as const, name: "FEEDS_SPAWNER" } },
+    };
     let bindings = {
       HAS: declaredBinding("Has"), LACKS: declaredBinding("Lacks"),
       FEEDS_SPAWNER: { ...declaredBinding("Feeds a spawner"), spawnerOnly: true as const },
+      SPAWN: spawner,
     };
     let pack = await buildSnapshotRelease(new Map(Object.entries(V1)));
     await storeBlueprint("bound", metadataFor("Bound", { commitId: pack.commitId, bindings }),
@@ -1562,14 +1567,18 @@ describe("applying a blueprint to a gadget", () => {
     await withWorkspace(async workspace => {
       let { impl } = workspace;
       await commitToGadget(impl, V1);
-      impl.storage.gadgets.put({ ...theGadget(impl), bindings: { HAS: { target: 99 } } });
+      impl.storage.gadgets.put(
+          { ...theGadget(impl), bindings: { HAS: { target: 99 }, SPAWN: { target: 98 } } });
 
+      // A spawner-only binding is missing only along with a spawner whose agents get it.
       let chatId = await propose(workspace, "bound");
       expect(proposal(impl, chatId).merge.missingBindings).toEqual({ LACKS: bindings.LACKS });
 
       // A gadget the agent creates from the blueprint starts with none of them.
-      expect((await impl.fetchBlueprint("bound")).merge.missingBindings)
-          .toEqual({ HAS: bindings.HAS, LACKS: bindings.LACKS });
+      expect((await impl.fetchBlueprint("bound")).merge.missingBindings).toEqual({
+        HAS: bindings.HAS, LACKS: bindings.LACKS, FEEDS_SPAWNER: bindings.FEEDS_SPAWNER,
+        SPAWN: spawner,
+      });
     });
   });
 
@@ -2270,17 +2279,9 @@ describe("having the agent review a blueprint merged into a gadget", () => {
       let chatId = await propose(workspace, "unchained", { modelId: "some-model" });
 
       let [summary] = userTexts((await runReview(impl, chatId))[0]);
-      expect(summary).toContain([
-        `The blueprint's code expects the following bindings, which the gadget does not have ` +
-            `yet. Wire up each one under the exact binding name given. For external resources, ` +
-            `use setGadgetBinding on the gadget (first requesting a connection via ` +
-            `requestConnection if your env doesn't already hold a suitable resource). AI-model ` +
-            `and agent-spawner bindings cannot be created from chat; ask the user to add those ` +
-            `from the gadget's Connections panel.`,
-        `* LACKS — "Lacks" (external resource via the "github" gatekeeper; resource URL ` +
-            `pattern "https://github.com/*")`,
-        ``,
-      ].join("\n"));
+      expect(summary).toContain(
+        `\n* LACKS — "Lacks" (external resource via the "github" gatekeeper; resource URL ` +
+            `pattern "https://github.com/*")\n`);
       expect(summary).toContain("\n* Wire up the bindings listed above.\n");
       expect(summary).not.toContain("is a guess");
     });

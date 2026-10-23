@@ -4,7 +4,7 @@
 import { act, type ComponentProps, type ReactElement, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { RpcStub } from 'capnweb'
+import { RpcPromise, type RpcStub } from 'capnweb'
 import type {
   AiChatAuthorInfo,
   AuthenticatedApi,
@@ -161,13 +161,15 @@ type AuthenticatedApiOverrides = {
   searchUsers?: (query: string, excludeIds: string[]) => Promise<UserDirectoryRecord[]>
 }
 
-function fakeAuthenticatedApi(overrides: AuthenticatedApiOverrides = {}): RpcStub<AuthenticatedApi> {
+function fakeAuthenticatedApi({
+  searchUsers = async (query) => query ? [{
+    id: `${query}@example.com`,
+    name: query === 'ada' ? 'Ada' : query,
+  }] : [],
+}: AuthenticatedApiOverrides = {}): RpcStub<AuthenticatedApi> {
   return {
-    searchUsers: async (query: string, _excludeIds: string[]) => query ? [{
-      id: `${query}@example.com`,
-      name: query === 'ada' ? 'Ada' : query,
-    }] : [],
-    ...overrides,
+    // Like the real stub, return a disposable RpcPromise.
+    searchUsers: (query: string, excludeIds: string[]) => new RpcPromise(searchUsers(query, excludeIds)),
   } as unknown as RpcStub<AuthenticatedApi>
 }
 
@@ -1069,6 +1071,10 @@ describe('ShareModal', () => {
 
     expect(input.value).toBe('grace')
     expect(rendered.textContent).not.toContain('Ada Lovelace')
+    expect(input.getAttribute('aria-activedescendant')).toBeNull()
+    expect(rendered.querySelector('[role="option"]')).toBeNull()
+    expect(stagedNames(rendered)).toEqual([])
+    expect(button(rendered, 'Invite').disabled).toBe(true)
     expect(addCollaborator).not.toHaveBeenCalled()
   })
 

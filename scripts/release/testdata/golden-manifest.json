@@ -395,6 +395,10 @@
     "gatekeeper-google": {
       "bindings": [
         {
+          "name": "AI",
+          "type": "ai"
+        },
+        {
           "name": "CLIENT_ID",
           "text": "$SECRET(CLIENT_ID)",
           "type": "secret_text"
@@ -1291,6 +1295,10 @@
         {
           "name": "BROWSER",
           "type": "browser"
+        },
+        {
+          "name": "CF_VERSION_METADATA",
+          "type": "version_metadata"
         },
         {
           "name": "LOADER",

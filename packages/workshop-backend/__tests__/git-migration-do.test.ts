@@ -11,8 +11,9 @@
 // impl.storage. The public DO surface (open() etc.) is deliberately never called:
 // #initializeNewWorkspace would stamp version 4 and shadow the scenario.
 //
-// The version-3 action-index backfill, the version-4 workpiece-type stamp and the version-5
-// blueprint-upstream backfill ride the same constructor trigger, so their tests live here too.
+// The version-3 action-index backfill, the version-4 workpiece-type stamp, the version-5
+// blueprint-upstream backfill and the version-6 spawner-bindings move ride the same constructor
+// trigger, so their tests live here too.
 
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
@@ -393,7 +394,40 @@ describe("the blueprint-upstream backfill via the Overseer constructor", () => {
       let storage = Object.create(impl.storage, { chatMeta: unread, chats: unread });
       migrateToBlueprintUpstreams(Object.create(impl, { storage: { value: storage } }));
 
+      expect(impl.storage.version.get()).toBe(5);
+    });
+  });
+});
+
+describe("the spawner-bindings move via the Overseer constructor", () => {
+  it("turns each spawner's env into bindings, dropping entries whose targets are gone",
+      async () => {
+    let config = { displayName: "Triage", modelId: null };
+    await inOverseer("spawner-bindings", async impl => {
+      expect(impl.storage.version.get()).toBe(0);
+      let cls = impl.ctx.exports.AgentSpawnerGatekeeper({ props: { config } });
+      impl.storage.gadgets.put({
+        type: "gadget", id: 100, title: "Desk", created: new Date(0), bindingName: "DESK",
+        bindings: {},
+      });
+      impl.storage.gatekeepers.put(
+          { id: 1, class: cls, creationSpec: { type: "ambient", vendorId: "test" } });
+      let env = { DESK: 100, DB: 1, GONE: 99 };
+      impl.storage.gatekeepers.put(
+          { id: 2, class: cls, creationSpec: { type: "agentSpawner", config: { ...config, env } } });
+      impl.storage.version.put(5);
+    });
+
+    await abortAllDurableObjects();
+
+    await inOverseer("spawner-bindings", async impl => {
       expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
+      expect(impl.storage.gatekeepers.get(2)).toMatchObject({
+        creationSpec: { type: "agentSpawner", config },
+        bindings: { DESK: { target: 100 }, DB: { target: 1 } },
+      });
+      expect(impl.storage.gatekeepers.get(2).creationSpec.config).not.toHaveProperty("env");
+      expect(impl.storage.gatekeepers.get(1).bindings).toBeUndefined();
     });
   });
 });

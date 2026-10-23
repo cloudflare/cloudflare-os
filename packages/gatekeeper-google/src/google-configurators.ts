@@ -1,12 +1,16 @@
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
+import { displayText } from "@gadgets/configurator-ui/options";
 import { BigQueryApi } from "./bigquery-api";
 import { GoogleCalendarApi } from "./calendar-api";
 import { ChatApi, chatSpaceIdFromReference, isChatNoAccessError } from "./chat-api";
 import type { ChatSpaceInfo } from "./chat-types";
 import { GoogleAccessToken } from "./google-api";
 import { AccessTokenProvider, AccessTokenRequest } from "./auth-retry";
-import { DriveApi, DriveApiDisabledError, FOLDER_MIME_TYPE } from "./drive-api";
+import {
+  DriveApi, DriveApiDisabledError, FOLDER_MIME_TYPE, SHORTCUT_MIME_TYPE, isFileInvisible,
+  isListableFolderFile, isListableFolderNode, type DriveFile, type DriveFileList, type DriveScopeNode,
+} from "./drive-api";
 import type { BigQueryConfiguratorRpc } from "./configurator/bigquery-configurator-types";
 import type { CalendarConfiguratorRpc } from "./configurator/calendar-configurator-types";
 import type { GmailConfiguratorRpc } from "./configurator/gmail-configurator-types";
@@ -23,9 +27,10 @@ import type {
 } from "./configurator/chat-account-configurator-types";
 import type { ChatSpaceConfiguratorRpc } from "./configurator/chat-space-configurator-types";
 import type { ChatThreadConfiguratorRpc } from "./configurator/chat-thread-configurator-types";
-import type { DriveAccountConfiguratorRpc } from "./configurator/drive-account-configurator-types";
-import type { DriveFileConfiguratorRpc } from "./configurator/drive-file-configurator-types";
-import type { DriveFolderConfiguratorRpc } from "./configurator/drive-folder-configurator-types";
+import type {
+  DriveConfiguratorRpc, DriveNode, DriveNodeAncestor, DriveNodePage,
+} from "./configurator/drive-configurator-types";
+import { parseResourceUrl, SHARED_DRIVES_GRANT } from "./resources";
 
 /**
  * Mints an access token for a configurator, forwarding `AccessTokenRequest` to the `UserAccount`
@@ -35,6 +40,7 @@ type ConfiguratorTokenGetter = (opts?: AccessTokenRequest) => Promise<GoogleAcce
 
 const googleTokenGetters = new WeakMap<object, ConfiguratorTokenGetter>();
 const officeConversions = new WeakMap<object, OfficeConversion>();
+const sharedDrivesGrantChecks = new WeakMap<object, () => Promise<boolean>>();
 const calendarConfiguratorCaches = new WeakMap<object, Promise<ConfiguratorOption[]>>();
 const bigQueryConfiguratorCaches = new WeakMap<object, Map<string, ConfiguratorOption[]>>();
 const BIGQUERY_CONFIGURATOR_CACHE_MAX_ENTRIES = 200;
@@ -113,14 +119,30 @@ function optionMatches(parts: (string | undefined)[], query: string): boolean {
 }
 
 /**
- * Enough of a Drive ID to tell same-named results apart and to match against a Drive URL.
- *
- * Duplicate folder and file names are ordinary, and the picker's other columns can be identical
- * too, so without this the user cannot see which capability they are granting. A tail rather than
- * the whole ID because `meta` does not shrink, and a full one would crowd out the subtitle.
+ * When two names would look the same in the picker. First the name as the configurator runtime
+ * shows it, so any two the runtime shows identically match; then folded further, past what the
+ * runtime strips, because a false match costs only an ID tail.
  */
-function idTail(id: string): string {
-  return id.length > 8 ? `…${id.slice(-8)}` : id;
+function sameNameKey(title: string): string {
+  return (displayText(title) ?? "").normalize("NFKC").replace(/[\p{C}\p{Z}]/gu, "").toLowerCase();
+}
+
+/**
+ * Adds the tail of a Drive ID to each node whose name looks like another's in the same page, which
+ * is enough to tell them apart. Duplicate names are ordinary, and a node's other columns can match
+ * too, so without it the user cannot see which capability they are granting; a distinct name needs
+ * no ID.
+ */
+function tellApartSameNamed(nodes: DriveNode[]): DriveNode[] {
+  let keys = nodes.map(node => sameNameKey(node.title));
+  let counts = new Map<string, number>();
+  for (let key of keys) counts.set(key, (counts.get(key) ?? 0) + 1);
+  return nodes.map((node, index) => {
+    if (counts.get(keys[index])! < 2) return node;
+    let id = parseDriveNodeId(node.id)?.fileId ?? node.id;
+    let tail = id.length > 8 ? `…${id.slice(-8)}` : id;
+    return { ...node, detail: node.detail ? `${node.detail} · ${tail}` : tail };
+  });
 }
 
 /** A person's email address, which the picker resolves to the direct message with them. */
@@ -416,62 +438,203 @@ export class ChatSpaceConfiguratorUI extends RpcTarget implements ChatSpaceConfi
   }
 }
 
-@validateRpc()
-export class DriveAccountConfiguratorUI extends RpcTarget implements DriveAccountConfiguratorRpc {}
+/** The whole account's node in the Drive picker, which binds everything the account can read. */
+const DRIVE_ROOT_ID = "drive";
+const SHARED_DRIVES: DriveNodeAncestor = { id: "shared-drives", title: "Shared drives" };
+const SHARED_WITH_ME: DriveNodeAncestor = { id: "shared-with-me", title: "Shared with me" };
+const DRIVE_PAGE_SIZE = 100;
+/** Bounds the walk up a pre-filled node's ancestors, which costs one request per level. */
+const MAX_DRIVE_PATH_DEPTH = 20;
+const DRIVE_BROWSE_DISABLED =
+  "Browsing Drive requires the Google Drive API to be enabled for this OAuth project.";
 
-@validateRpc()
-export class DriveFileConfiguratorUI extends RpcTarget implements DriveFileConfiguratorRpc {
-  constructor(getToken: () => Promise<GoogleAccessToken>) {
-    super();
-    googleTokenGetters.set(this, getToken);
+/** The Drive file a folder or file node names. Groupings and the root name none. */
+function parseDriveNodeId(id: string): { kind: "folder" | "file"; fileId: string } | undefined {
+  let match = /^(folder|file):(.+)$/s.exec(id);
+  return match ? { kind: match[1] as "folder" | "file", fileId: match[2] } : undefined;
+}
+
+/** My Drive's root folder id, read afresh: Allow access may reconnect the account as someone else. */
+async function myDriveId(drive: DriveApi): Promise<string> {
+  return (await drive.getFile("root")).id;
+}
+
+/**
+ * The picker's node for a listed file. A shortcut stands for its target, as read into `targets`, and
+ * outlives it: one whose target is gone, trashed or out of reach is left out.
+ */
+function driveFileNode(
+  file: DriveFile, detail?: string, targets?: ReadonlyMap<string, DriveScopeNode | undefined>,
+): DriveNode | undefined {
+  let { id, mimeType } = file;
+  let listable = file.capabilities?.canListChildren === true;
+  if (mimeType === SHORTCUT_MIME_TYPE) {
+    let targetId = file.shortcutDetails?.targetId;
+    let target = targetId ? targets?.get(targetId) : undefined;
+    if (target?.trashed !== false) return undefined;
+    id = target.id;
+    mimeType = target.mimeType;
+    // Judged as a folder binding is, so a folder shortcut is offered only when it would connect.
+    listable = isListableFolderNode(target);
   }
+  let shown = {
+    title: file.name,
+    ...(file.modifiedTime ? { modifiedTime: file.modifiedTime } : {}),
+    ...(detail ? { detail } : {}),
+  };
+  return mimeType === FOLDER_MIME_TYPE
+    ? { id: `folder:${id}`, kind: "folder", listable, ...shown }
+    : { id: `file:${id}`, kind: "file", ...(mimeType ? { mimeType } : {}), ...shown };
+}
 
-  async listDriveFiles(query: string): Promise<ConfiguratorOption[]> {
-    let drive = new DriveApi(googleTokenProvider(this));
-    let { files } = await withDriveApiEnabled(
-      "Drive file search requires the Google Drive API to be enabled for this OAuth project.",
-      () => drive.listFiles({
-        namePrefix: query, excludeMimeTypes: [FOLDER_MIME_TYPE],
-      }),
-    );
-    return files.map(file => ({
-      value: file.id,
-      title: file.name,
-      subtitle: [
-        file.mimeType,
-        file.modifiedTime ? `Modified ${new Date(file.modifiedTime).toLocaleDateString()}` : undefined,
-      ].filter(Boolean).join(" · ") || undefined,
-      meta: idTail(file.id),
-    }));
+function drivePage(nodes: DriveNode[], nextPageToken: string | undefined): DriveNodePage {
+  return { nodes: tellApartSameNamed(nodes), ...(nextPageToken ? { nextCursor: nextPageToken } : {}) };
+}
+
+/** A page of listed files. A listing carries nothing of a shortcut's target, so they are read in one batch. */
+async function driveFilePage(
+  drive: DriveApi,
+  { files, nextPageToken }: DriveFileList,
+  detail?: (file: DriveFile) => string,
+): Promise<DriveNodePage> {
+  let targetIds = files.flatMap(file => file.shortcutDetails?.targetId || []);
+  let read = await drive.getScopeNodes(targetIds);
+  let targets = new Map(targetIds.map((id, index) => [id, read[index]] as const));
+  return drivePage(files.flatMap(file => driveFileNode(file, detail?.(file), targets) ?? []), nextPageToken);
+}
+
+/**
+ * A file's ancestors up to the whole account, outermost first. Undefined when one is out of reach
+ * (shared from a folder this account cannot see) or the walk is too deep, since a partial path
+ * would misstate where the file lives. My Drive's root is read only for a path that could end there.
+ */
+async function drivePath(drive: DriveApi, file: DriveFile): Promise<DriveNodeAncestor[] | undefined> {
+  let ancestors: DriveFile[] = [];
+  let top = file;
+  for (let parentId = top.parents?.[0]; parentId; parentId = top.parents?.[0]) {
+    if (ancestors.length === MAX_DRIVE_PATH_DEPTH) return undefined;
+    try {
+      top = await drive.getFile(parentId);
+    } catch (error) {
+      if (isFileInvisible(error)) return undefined;
+      throw error;
+    }
+    ancestors.unshift(top);
+  }
+  // Judged as `readFolderRoot` judges a folder binding, so the picker offers only folders that connect.
+  let folders = ancestors.map(folder =>
+    ({ id: `folder:${folder.id}`, title: folder.name, listable: isListableFolderFile(folder) }));
+  if (top.driveId === top.id) return [SHARED_DRIVES, ...folders];
+  if (top.driveId === undefined && top.id === await myDriveId(drive)) {
+    return folders.map((folder, index) => index === 0 ? { ...folder, title: "My Drive" } : folder);
+  }
+  return undefined;
+}
+
+/**
+ * The picker's id for the folder or file a pasted Drive, Docs, Sheets or Slides link names, read as
+ * a resource URL is once the index a browser signed in to several accounts adds (`/u/1/`) is
+ * dropped. Undefined for anything else, which is searched for by name.
+ */
+function linkedDriveNodeId(text: string): string | undefined {
+  let url = URL.parse(text.trim());
+  if (!url) return undefined;
+  url.pathname = url.pathname.replace(/\/u\/\d+\//, "/");
+  let target;
+  try {
+    target = parseResourceUrl(url.href);
+  } catch {
+    return undefined;
+  }
+  switch (target.kind) {
+    case "driveFolder": return `folder:${target.folderId}`;
+    case "driveFile": return `file:${target.fileId}`;
+    case "doc": return `file:${target.documentId}`;
+    case "sheets": return `file:${target.spreadsheetId}`;
+    case "slides": return `file:${target.presentationId}`;
+    default: return undefined;
   }
 }
 
 @validateRpc()
-export class DriveFolderConfiguratorUI extends RpcTarget implements DriveFolderConfiguratorRpc {
-  constructor(getToken: () => Promise<GoogleAccessToken>) {
+export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorRpc {
+  constructor(getToken: () => Promise<GoogleAccessToken>, holdsSharedDrivesGrant: () => Promise<boolean>) {
     super();
     googleTokenGetters.set(this, getToken);
+    sharedDrivesGrantChecks.set(this, holdsSharedDrivesGrant);
   }
 
   /**
-   * One page of folders this account can list children of, across My Drive, "Shared with me", and
-   * every shared drive it belongs to. An interactive search, not an exhaustive enumeration.
+   * Search spans My Drive, "Shared with me" and every shared drive, wherever the picker is open;
+   * a folder's listing spans them too, since its id does not say which it lives in. A pasted link
+   * is answered with the one node it names, found as a pre-filled value is.
    */
-  async listDriveFolders(query: string): Promise<ConfiguratorOption[]> {
+  async listDriveNodes(parentId: string, query: string, cursor: string | null): Promise<DriveNodePage> {
+    let linked = linkedDriveNodeId(query);
+    if (linked) {
+      let node = await this.getDriveNode(linked);
+      return { nodes: node ? [node] : [] };
+    }
     let drive = new DriveApi(googleTokenProvider(this));
-    let { files } = await withDriveApiEnabled(
-      "Drive folder search requires the Google Drive API to be enabled for this OAuth project.",
-      () => drive.listFiles({
-        mimeType: FOLDER_MIME_TYPE, namePrefix: query, corpus: { kind: "allDrives" },
-      }),
-    );
-    return files.filter(file => file.capabilities?.canListChildren === true).map(file => ({
-      value: file.id,
-      title: file.name,
-      subtitle: file.driveId
-        ? "In a shared drive"
-        : file.owners?.[0]?.displayName ?? file.owners?.[0]?.emailAddress ?? "My Drive",
-      meta: idTail(file.id),
-    }));
+    let page = { pageSize: DRIVE_PAGE_SIZE, ...(cursor ? { pageToken: cursor } : {}) };
+    return withDriveApiEnabled<DriveNodePage>(DRIVE_BROWSE_DISABLED, async () => {
+      if (query.trim()) {
+        return driveFilePage(drive,
+          await drive.listFiles({ ...page, namePrefix: query, corpus: { kind: "allDrives" } }),
+          file => file.driveId
+            ? "In a shared drive"
+            : file.owners?.[0]?.displayName ?? file.owners?.[0]?.emailAddress ?? "My Drive");
+      }
+      if (parentId === DRIVE_ROOT_ID) {
+        let myDrive = await myDriveId(drive);
+        return {
+          nodes: [
+            { id: `folder:${myDrive}`, title: "My Drive", kind: "folder", listable: true },
+            { ...SHARED_DRIVES, kind: "group" },
+            { ...SHARED_WITH_ME, kind: "group" },
+          ],
+        };
+      }
+      if (parentId === SHARED_DRIVES.id) {
+        // Drive lists shared drives only under a wider grant than browsing needs, so the picker asks
+        // for it when the user first opens them.
+        if (!(await sharedDrivesGrantChecks.get(this)!())) {
+          return { nodes: [], needsGrant: SHARED_DRIVES_GRANT };
+        }
+        let { drives, nextPageToken } = await drive.listSharedDrives(page);
+        return drivePage(
+          drives.map(({ id, name }) => ({ id: `folder:${id}`, title: name, kind: "sharedDrive" })),
+          nextPageToken);
+      }
+      if (parentId === SHARED_WITH_ME.id) {
+        return driveFilePage(drive,
+          await drive.listFiles({ ...page, sharedWithMe: true, orderBy: "folder,name" }));
+      }
+      let folder = parseDriveNodeId(parentId);
+      if (folder?.kind !== "folder") throw new Error("Unknown Drive location.");
+      return driveFilePage(drive, await drive.listFiles({
+        ...page, directParentIds: [folder.fileId], corpus: { kind: "allDrives" }, orderBy: "folder,name",
+      }));
+    });
+  }
+
+  async getDriveNode(id: string): Promise<DriveNode | null> {
+    let fileId = parseDriveNodeId(id)?.fileId;
+    if (!fileId) return null;
+    let drive = new DriveApi(googleTokenProvider(this));
+    return withDriveApiEnabled<DriveNode | null>(DRIVE_BROWSE_DISABLED, async () => {
+      let file: DriveFile;
+      try {
+        file = await drive.getFile(fileId);
+      } catch (error) {
+        if (isFileInvisible(error)) return null;
+        throw error;
+      }
+      // A folder named as a file, or a shortcut, is not the node the id claims.
+      let node = file.trashed ? undefined : driveFileNode(file);
+      if (node?.id !== id) return null;
+      let path = await drivePath(drive, file);
+      return path ? { ...node, path } : node;
+    });
   }
 }

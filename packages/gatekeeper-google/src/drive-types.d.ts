@@ -126,7 +126,20 @@ export type DriveFolderSearchQuery = Omit<DriveSearchQuery, "directParentId"> & 
 export type DriveSessionSearchQuery =
   DriveSearchQuery & Pick<DriveFolderSearchQuery, "childFolderIds">;
 
-/** Read-only Drive metadata discovery and native Google Docs/Sheets/Slides access. */
+/** A Drive PDF's text, streamed. */
+export type DrivePdfText = {
+  /**
+   * The PDF's text as UTF-8 Markdown, read as it is converted: pages separated by "### Page N"
+   * headings, and pages before the first with text left out. Read it with
+   * `await new Response(text).text()`, or a reader to stop early; cancel it if unread. Empty when
+   * `hasText` is false. A failure partway through errors the stream.
+   */
+  text: ReadableStream<Uint8Array>;
+  /** False for a scanned or image-only PDF, which has no text layer; it is not OCR'd. */
+  hasText: boolean;
+};
+
+/** Read-only Drive metadata discovery, native Google Docs/Sheets/Slides access, and PDF text. */
 export interface GoogleDriveReadSession {
   /** Return this capability's immutable scope with current display metadata. */
   getScope(): Promise<DriveScope>;
@@ -163,6 +176,12 @@ export interface GoogleDriveReadSession {
    * capability.
    */
   openGoogleSlides(fileId: string): Promise<GooglePresentationReadSession>;
+
+  /**
+   * Read an in-scope PDF's text, converted to Markdown and streamed. Fails asking to reconnect
+   * when the Google account was connected before Drive bindings could read file content.
+   */
+  readPdf(fileId: string): Promise<DrivePdfText>;
 }
 
 /** Read-only navigation within the originally selected folder. */
@@ -192,6 +211,12 @@ export interface GoogleDriveFolderSession extends Pick<GoogleDriveReadSession, "
    * capability.
    */
   openGoogleSlides(fileId: string): Promise<GooglePresentationReadSession>;
+
+  /**
+   * Read a live direct-child PDF's text, converted to Markdown and streamed. Fails asking to
+   * reconnect when the Google account was connected before Drive bindings could read file content.
+   */
+  readPdf(fileId: string): Promise<DrivePdfText>;
 
   /** Open a live direct child folder as an independently disposable capability. */
   openFolder(folderId: string): Promise<GoogleDriveFolderSession>;

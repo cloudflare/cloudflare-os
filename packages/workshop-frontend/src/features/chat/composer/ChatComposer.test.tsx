@@ -198,6 +198,93 @@ describe("ChatComposer", () => {
     expect(consoleError).toHaveBeenCalledTimes(transient ? 0 : 1);
     consoleError.mockRestore();
   });
+
+  describe("while the agent works", () => {
+    type ComposerProps = Parameters<typeof ChatComposer>[0];
+
+    const mountRoot = () => {
+      container = document.createElement("div");
+      document.body.append(container);
+      root = createRoot(container);
+    };
+    const render = (props: Partial<ComposerProps>) => act(async () => root!.render(
+      <ChatComposer
+        createCapsuleGatekeeper={async () => null}
+        getOverseer={() => ({} as RpcStub<Overseer>)}
+        onSend={() => {}}
+        isAgentActive
+        models={[]}
+        selectedModel={{ id: "model-a" }}
+        onModelChange={() => {}}
+        chatKey={7}
+        draftStorageKey="draft:chat-7"
+        {...props}
+      />,
+    ));
+    const textarea = () => container!.querySelector<HTMLTextAreaElement>('[role="combobox"]')!;
+    const button = (label: string) =>
+      container!.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`);
+    const pressEnter = () => act(async () => {
+      textarea().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+    });
+
+    it("steers on Enter, and keeps Stop disabled while the steer sends", async () => {
+      let finishSend: (() => void) | undefined;
+      const onSend = vi.fn<ComposerProps["onSend"]>(
+        () => new Promise<void>((resolve) => { finishSend = resolve; }),
+      );
+      mountRoot();
+      await render({ onSend, onStop: async () => {} });
+
+      await typeText(textarea(), "Make it dark.");
+      await pressEnter();
+      expect(onSend).toHaveBeenCalledWith("Make it dark.", "model-a", undefined, undefined, undefined);
+      expect(button("Stop agent")!.disabled).toBe(true);
+      await act(async () => finishSend!());
+      expect(textarea().value).toBe("");
+      expect(button("Stop agent")!.disabled).toBe(false);
+    });
+
+    it("puts the dropped steers after the draft, and steers nothing until the agent is idle",
+        async () => {
+      const onSend = vi.fn<ComposerProps["onSend"]>();
+      const onStop = vi.fn<() => Promise<void>>(async () => {});
+      mountRoot();
+      await render({ onSend, onStop, queuedSteers: ["A"] });
+
+      await typeText(textarea(), "Half a thought  ");
+      expect(button("Send message")).not.toBeNull();
+      await act(async () => button("Stop agent")!.click());
+      expect(onStop).toHaveBeenCalledOnce();
+      expect(textarea().value).toBe("Half a thought\n\nA");
+      expect(button("Stop agent")!.disabled).toBe(true);
+      expect(button("Send message")).toBeNull();
+      await pressEnter();
+      expect(onSend).not.toHaveBeenCalled();
+
+      await render({ onSend, onStop, queuedSteers: [], isAgentActive: false });
+      await pressEnter();
+      expect(onSend).toHaveBeenCalledWith("Half a thought\n\nA", "model-a", undefined, undefined, undefined);
+    });
+
+    it("keeps the dropped steers in the draft when Stop fails", async () => {
+      let failStop: ((err: Error) => void) | undefined;
+      const onStop = vi.fn<() => Promise<void>>(
+        () => new Promise<void>((_, reject) => { failStop = reject; }),
+      );
+      mountRoot();
+      await render({ onStop, queuedSteers: ["A"] });
+      await typeText(textarea(), "Draft");
+
+      await act(async () => button("Stop agent")!.click());
+      expect(button("Stop agent")!.disabled).toBe(true);
+      await act(async () => failStop!(new Error("Peer closed WebSocket")));
+      expect(textarea().value).toBe("Draft\n\nA");
+      expect(button("Stop agent")!.disabled).toBe(false);
+    });
+  });
+
   it("keeps add-menu actions enabled after inserting a skill and removes the legacy button", async () => {
     const skill = {
       selection: { gatekeeperId: 42, commandId: "review" },

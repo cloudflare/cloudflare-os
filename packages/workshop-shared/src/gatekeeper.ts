@@ -366,6 +366,17 @@ export type SupportedResource = {
    * on this flag rather than probing, since RPC stubs cannot report optional-method presence.
    */
   creationConfigurator?: boolean;
+
+  /**
+   * The urlPattern of the type whose connect card this type appears on, instead of a card of its
+   * own. A card's types share one configurator, which may return a URL of any of them, so
+   * startResourceConfigurator must return that configurator for each of them.
+   *
+   * Each type is still granted separately: holding a grant for one does not cover the others. The
+   * configurator offers only the types the account has granted, and the Workshop asks for the rest
+   * in a single consent request, so group only types that need the same authorization.
+   */
+  groupedWith?: string;
 }
 
 /** Removes every trailing slash from a string in linear time. */
@@ -490,6 +501,13 @@ export interface ResourceConfiguratorHost extends RpcTarget {
    * pre-filled and editable.
    */
   getInitialResource(): Promise<{ resourceUrl: string; resourceUrlPattern: string } | null>;
+
+  /**
+   * The resource types (urlPatterns) the Workshop asks this configurator to choose among, so one
+   * that can return several (see SupportedResource.groupedWith) offers only these. For a creation
+   * configurator, this is the type being created.
+   */
+  getAcceptedResourceUrlPatterns(): Promise<string[]>;
 
   /**
    * Update the parent's iframe sizing to match content in selection/configuration UI.
@@ -704,8 +722,8 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
 /**
  * The version tag of the running version of a Worker, read from the `CF_VERSION_METADATA`
  * version-metadata binding in its `env`, or undefined when it has no such binding or the tag is
- * empty. Never throws. Takes `env` as a plain object because no public Worker config declares the
- * binding: the service that installs a deployment adds it.
+ * empty. Never throws. Takes `env` as a plain object because no public gatekeeper config declares
+ * the binding: the service that installs a deployment adds it.
  */
 export function workerVersionTag(env: object): string | undefined {
   try {

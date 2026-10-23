@@ -23,6 +23,9 @@
 .disabled { color: var(--text-color-kumo-inactive); }
 
 .textarea {
+  /* The clip spans the textarea's container; an inline textarea leaves room for a descender
+     below it there, through which the top of the next scrolled-out line shows. */
+  display: block;
   color: transparent;
   -webkit-text-fill-color: transparent;
   caret-color: var(--text-color-kumo-default);

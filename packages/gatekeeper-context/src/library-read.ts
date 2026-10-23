@@ -1,4 +1,4 @@
-// Agent read path over enabled collections. Every returned result is authorized as an observation;
+// Agent read path over the account's library. Every returned result is authorized as an observation;
 // results revealing collection contents are attributed to those collections for observer checks.
 
 import { RpcTarget } from "capnweb";
@@ -6,11 +6,13 @@ import { validateRpc } from "capnweb-validate";
 import type { ObservationGate, ObservationInput } from "@gadgets/gatekeeper-kit/observers";
 import {
   ContextSearchResult, ContextListing, ContextListingEntry, ContextReadResult,
-  ContextCollectionVisibility, decodeDocId, encodeDocId, isTextContentType, VENDOR_ID,
+  decodeDocId, encodeDocId, isTextContentType, VENDOR_ID,
   type ContextLibrary,
 } from "./context-types.js";
 import type { ContextCollectionDurableObject } from "./context-collection.js";
 import type { UserLibraryDurableObject } from "./user-library.js";
+import { listPublicCollectionsFromKv } from "./collection-kv.js";
+import { MAX_COLLECTION_FANOUT, mapWithConcurrency } from "./concurrency.js";
 import { domainName } from "./domain.js";
 import { obsContext } from "./observability.js";
 
@@ -18,16 +20,15 @@ const logger = obsContext.createLogger({
   component: "gatekeeper.context", vendorId: VENDOR_ID,
 });
 
-// Fanout cap for whole-library search/list.
-const MAX_COLLECTION_FANOUT = 8;
-
 @validateRpc()
 export class LibraryReadSession extends RpcTarget implements ContextLibrary {
-  // Per-session enabled set. Visibility is retained by the source API, though observer enforcement
-  // uses collection-level access checks rather than the old sticky sharing prohibition.
-  #enabledPromise?: Promise<Map<string, ContextCollectionVisibility>>;
+  // Cache public discovery, not existence: every use checks that each collection is still public
+  // and live. Private membership is never cached, so existing sessions honor revocations and new
+  // shares made after they started.
+  #publicIds?: Promise<string[]>;
 
   constructor(
+    private env: Pick<Cloudflare.Env, "CONTEXT_COLLECTIONS">,
     private collections: DurableObjectNamespace<ContextCollectionDurableObject>,
     private userLibraries: DurableObjectNamespace<UserLibraryDurableObject>,
     private domain: string,
@@ -50,9 +51,44 @@ export class LibraryReadSession extends RpcTarget implements ContextLibrary {
     return this.userLibraries.get(this.userLibraries.idFromName(domainName(this.domain, this.accountId)));
   }
 
-  // Computed once per session; search/list/read share it.
-  #enabled(): Promise<Map<string, ContextCollectionVisibility>> {
-    return (this.#enabledPromise ??= this.#userLib().getEnabledCollections(this.domain));
+  #discoveredPublicIds(): Promise<string[]> {
+    return this.#publicIds ??= listPublicCollectionsFromKv(this.env, this.domain).then(
+      entries => entries.map(entry => entry.id),
+      (err: unknown) => {
+        // Not cached, so the next call tries again.
+        this.#publicIds = undefined;
+        throw err;
+      });
+  }
+
+  async #isLivePublic(collectionId: string): Promise<boolean> {
+    let access = await this.#collection(collectionId).getAccess(this.accountId);
+    return access.exists && access.visibility === "public";
+  }
+
+  // Private collections first, as the library lists them.
+  async #libraryIds(): Promise<string[]> {
+    let [privateCollections, discovered] = await Promise.all([
+      this.#userLib().listPrivateLibrary(this.domain, this.accountId),
+      this.#discoveredPublicIds(),
+    ]);
+    let live = await mapWithConcurrency(discovered, MAX_COLLECTION_FANOUT, async id => {
+      try {
+        return await this.#isLivePublic(id) ? id : null;
+      } catch (err) {
+        logger.warn("failed to check public collection access", {
+          event: "collection.access.check.failed", collectionId: id, error: err,
+        });
+        return null;
+      }
+    });
+    let publicIds = live.filter(id => id !== null);
+    return [...new Set([...privateCollections.map(collection => collection.id), ...publicIds])];
+  }
+
+  async #inLibrary(collectionId: string): Promise<boolean> {
+    return await this.#userLib().hasPrivateLibraryCollection(this.domain, this.accountId, collectionId)
+      || ((await this.#discoveredPublicIds()).includes(collectionId) && await this.#isLivePublic(collectionId));
   }
 
   // A read revealing no collection contents is authorized against the admission baseline, so it
@@ -67,15 +103,14 @@ export class LibraryReadSession extends RpcTarget implements ContextLibrary {
     collectionId?: string;
     limit?: number;
   }): Promise<ContextSearchResult[]> {
-    let enabled = await this.#enabled();
     let limit = opts?.limit ?? 20;
 
     let targetIds: string[];
     if (opts?.collectionId) {
-      if (!enabled.has(opts.collectionId)) return [];
+      if (!await this.#inLibrary(opts.collectionId)) return [];
       targetIds = [opts.collectionId];
     } else {
-      targetIds = [...enabled.keys()];
+      targetIds = await this.#libraryIds();
     }
 
     let perCollection = await mapWithConcurrency(targetIds, MAX_COLLECTION_FANOUT, async (collectionId) => {
@@ -142,8 +177,7 @@ export class LibraryReadSession extends RpcTarget implements ContextLibrary {
     if (!decoded) return null;
     let { collectionId, path } = decoded;
 
-    let enabled = await this.#enabled();
-    if (!enabled.has(collectionId)) return null;
+    if (!await this.#inLibrary(collectionId)) return null;
 
     let doc = await this.#collection(collectionId).getContextDocument(path);
     // No document found (missing or inaccessible) → nothing was observed, so don't record one.
@@ -168,10 +202,9 @@ export class LibraryReadSession extends RpcTarget implements ContextLibrary {
 
   // Fetch without recording; list() authorizes.
   async #fetchListing(opts?: { collectionId?: string; path?: string }): Promise<ContextListing> {
-    let enabled = await this.#enabled();
-
     if (!opts?.collectionId) {
-      let collectionEntries = await mapWithConcurrency([...enabled.keys()], MAX_COLLECTION_FANOUT,
+      let libraryIds = await this.#libraryIds();
+      let collectionEntries = await mapWithConcurrency(libraryIds, MAX_COLLECTION_FANOUT,
         async (collectionId): Promise<ContextListingEntry | null> => {
           try {
             let meta = await this.#collection(collectionId).getMetadata();
@@ -192,7 +225,7 @@ export class LibraryReadSession extends RpcTarget implements ContextLibrary {
       return { entries: collectionEntries.filter((e): e is ContextListingEntry => e !== null) };
     }
 
-    if (!enabled.has(opts.collectionId)) {
+    if (!await this.#inLibrary(opts.collectionId)) {
       return { collectionId: opts.collectionId, entries: [] };
     }
 
@@ -225,19 +258,4 @@ export class LibraryReadSession extends RpcTarget implements ContextLibrary {
 
     return { collectionId: opts.collectionId, path: opts.path, entries };
   }
-}
-
-async function mapWithConcurrency<T, R>(
-    items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  let results: R[] = Array.from({ length: items.length });
-  let next = 0;
-  async function worker(): Promise<void> {
-    while (next < items.length) {
-      let i = next++;
-      results[i] = await fn(items[i]);
-    }
-  }
-  let workers = Array.from({ length: Math.min(limit, items.length) }, () => worker());
-  await Promise.all(workers);
-  return results;
 }

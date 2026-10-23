@@ -37,16 +37,18 @@ import {
   computeReplaceOperations, docTabToMarkdown, markdownToDocRequests, MARKDOWN_RENDERING_VERSION,
   type DocTabSnapshot, type EditableMarkdown,
 } from "./markdown-converter";
-import { DriveApi, DriveApiRequestError } from "./drive-api";
+import { DriveApi, DriveApiRequestError, lacksFileContentAccess } from "./drive-api";
+import { CONVERSION_FAILED, pdfToText, type PdfConverter } from "./drive-pdf";
+import type { AiFetcher } from "./workers-ai-markdown";
 import { driveObserverTracker, type DriveObservation } from "./drive-observers";
 import { outsideScope, readFolderRoot, type FolderLocation } from "./drive-folder-scope";
 import {
   DriveFolderSessionCore, DriveSessionCore, driveModifiedTime,
-  GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE, requireDriveBindingScope,
-  type DriveBindingScope, type DriveCore, type NativeObservation, type NativeRead,
+  GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE, PDF_MIME_TYPE,
+  requireDriveBindingScope, type DriveBindingScope, type DriveCore, type NativeObservation, type NativeRead,
 } from "./drive-session";
 import type {
-  DriveEntry, DriveListOptions, DriveSessionSearchQuery, GoogleDriveFolderSession,
+  DriveEntry, DriveListOptions, DrivePdfText, DriveSessionSearchQuery, GoogleDriveFolderSession,
   GoogleDriveReadSession, GoogleDriveSession,
 } from "./drive-types";
 import { ChatApi, isChatNoAccessError } from "./chat-api";
@@ -82,9 +84,7 @@ import {
   GoogleDocConfiguratorUI,
   GoogleSheetsConfiguratorUI,
   GoogleSlidesConfiguratorUI,
-  DriveAccountConfiguratorUI,
-  DriveFileConfiguratorUI,
-  DriveFolderConfiguratorUI,
+  DriveConfiguratorUI,
 } from "./google-configurators";
 import BIGQUERY_CONFIGURATOR_HTML from "./generated/bigquery-configurator-ui.txt";
 import CALENDAR_CONFIGURATOR_HTML from "./generated/calendar-configurator-ui.txt";
@@ -95,9 +95,7 @@ import GMAIL_CONFIGURATOR_HTML from "./generated/gmail-configurator-ui.txt";
 import GOOGLE_DOC_CONFIGURATOR_HTML from "./generated/google-doc-configurator-ui.txt";
 import GOOGLE_SHEETS_CONFIGURATOR_HTML from "./generated/google-sheets-configurator-ui.txt";
 import GOOGLE_SLIDES_CONFIGURATOR_HTML from "./generated/google-slides-configurator-ui.txt";
-import DRIVE_ACCOUNT_CONFIGURATOR_HTML from "./generated/drive-account-configurator-ui.txt";
-import DRIVE_FILE_CONFIGURATOR_HTML from "./generated/drive-file-configurator-ui.txt";
-import DRIVE_FOLDER_CONFIGURATOR_HTML from "./generated/drive-folder-configurator-ui.txt";
+import DRIVE_CONFIGURATOR_HTML from "./generated/drive-configurator-ui.txt";
 import GOOGLE_LOGO_SVG from "./google-logo.svg";
 import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS } from "./auth-retry";
@@ -105,10 +103,11 @@ import { Mutex } from "./mutex";
 import {
   BIGQUERY_HOST, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
   GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE,
-  GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
-  GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE, RESOURCE_BY_KIND,
+  GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE,
+  RESOURCE_BY_KIND,
   SUPPORTED_RESOURCES, creatableKind, nativeFileUrl,
   grantedResourceUrlPatterns, hasDriveResourceGrant, isPrivateGrant, OFFICE_IMPORT_GRANT,
+  SHARED_DRIVES_GRANT,
   parseResourceUrl, recordedResourceUrlPatterns, type RecordedResourceGrant,
 } from "./resources";
 import {
@@ -900,10 +899,12 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     let id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
     let account = this.ctx.exports.UserAccount.get(id);
     let getToken = async (opts?: AccessTokenRequest) => await account.getAccessToken(opts);
-    // The grant is read on every call, since it arrives through a pop-up while the dialog is open.
+    // A private grant is read on every call, since it arrives through a pop-up while the dialog is
+    // open.
+    let holds = (grant: string) => async () =>
+      (await account.getGrantedResourceUrlPatterns()).includes(grant);
     let officeConversion = (kind: OfficeKind) => new OfficeConversion(
-      kind, async opts => (await getToken(opts)).token,
-      async () => (await account.getGrantedResourceUrlPatterns()).includes(OFFICE_IMPORT_GRANT));
+      kind, async opts => (await getToken(opts)).token, holds(OFFICE_IMPORT_GRANT));
 
     if (resourceUrlPattern === BIGQUERY_RESOURCE.urlPattern) {
       return {
@@ -968,24 +969,14 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       };
     }
 
-    if (resourceUrlPattern === GOOGLE_DRIVE_RESOURCE.urlPattern) {
+    // One picker for the whole account and every type grouped with it: a folder or a file.
+    let groupedWith = SUPPORTED_RESOURCES
+      .find(resource => resource.urlPattern === resourceUrlPattern)?.groupedWith;
+    if (resourceUrlPattern === GOOGLE_DRIVE_RESOURCE.urlPattern ||
+        groupedWith === GOOGLE_DRIVE_RESOURCE.urlPattern) {
       return {
-        iframeHtml: DRIVE_ACCOUNT_CONFIGURATOR_HTML,
-        ui: new RpcStub(new DriveAccountConfiguratorUI()),
-      };
-    }
-
-    if (resourceUrlPattern === GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern) {
-      return {
-        iframeHtml: DRIVE_FOLDER_CONFIGURATOR_HTML,
-        ui: new RpcStub(new DriveFolderConfiguratorUI(getToken)),
-      };
-    }
-
-    if (resourceUrlPattern === GOOGLE_DRIVE_FILE_RESOURCE.urlPattern) {
-      return {
-        iframeHtml: DRIVE_FILE_CONFIGURATOR_HTML,
-        ui: new RpcStub(new DriveFileConfiguratorUI(getToken)),
+        iframeHtml: DRIVE_CONFIGURATOR_HTML,
+        ui: new RpcStub(new DriveConfiguratorUI(getToken, holds(SHARED_DRIVES_GRANT))),
       };
     }
 
@@ -3008,7 +2999,7 @@ export class GoogleDriveGatekeeperImpl
         // The natural browser URL, not the internal `_resource` selector the grant is keyed on.
         url: `https://drive.google.com/drive/folders/${encodeURIComponent(scope.folderId)}`,
         title: folder.name,
-        snippet: `List and search direct children, navigate child folders, and read native Google Docs, Sheets and Slides in Drive folder "${folder.name}"`,
+        snippet: `List and search direct children, navigate child folders, read native Google Docs, Sheets and Slides, and read PDFs' text with readPdf() in Drive folder "${folder.name}"`,
         suggestedBindingName: "GOOGLE_DRIVE_FOLDER",
         tsType: "GoogleDriveFolderSession",
       };
@@ -3017,7 +3008,7 @@ export class GoogleDriveGatekeeperImpl
     return {
       url: `https://drive.google.com/file/d/${encodeURIComponent(scope.fileId)}/view`,
       title: file.name,
-      snippet: `Read metadata and, when native, Google Doc, Sheet or Slides content from Drive file "${file.name}"`,
+      snippet: `Read metadata and, when native, Google Doc, Sheet or Slides content, or with readPdf() a PDF's text, from Drive file "${file.name}"`,
       suggestedBindingName: "GOOGLE_DRIVE_FILE",
       tsType: "GoogleDriveReadSession",
     };
@@ -3034,11 +3025,17 @@ export class GoogleDriveGatekeeperImpl
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GoogleDriveSession> {
     let observerTracker = this.#observerTracker();
     let getDriveAccessToken = (opts?: AccessTokenRequest) => this.#getAccessToken(opts);
+    // `pnpm dev-server` drops the AI binding unless started with --use-workers-ai-binding.
+    // `Ai` declares no `fetch`, but the binding has one; conversion goes through it so it can stream.
+    let ai = this.env.AI as unknown as AiFetcher | undefined;
+    let gatewayId = this.env.CF_AI_GATEWAY;
+    let convertPdf: PdfConverter | undefined = ai && (pdf => pdfToText(ai, gatewayId, pdf));
     return new GoogleDriveSessionImpl(
       new DriveApi(getDriveAccessToken),
       new GoogleDocsApi(getDriveAccessToken),
       new GoogleSheetsApi(getDriveAccessToken),
       new GoogleSlidesApi(getDriveAccessToken),
+      convertPdf,
       this.#scope,
       approvalQueue.dup(),
       observations => observerTracker.prepareObservation(observations),
@@ -3183,6 +3180,11 @@ class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession
   }
 }
 
+/** The refusal for an account connected before Drive bindings could read file content. */
+const PDF_ACCESS_MISSING =
+  "This Google account was connected before Drive bindings could read file content. Reconnect " +
+  "it in Workshop to read PDFs.";
+
 /** Drive RPC session implementation, exported for workerd contract coverage. */
 @validateRpc()
 export class GoogleDriveSessionImpl extends RpcTarget
@@ -3192,6 +3194,8 @@ export class GoogleDriveSessionImpl extends RpcTarget
   #docsApi: GoogleDocsApi;
   #sheetsApi: GoogleSheetsApi;
   #slidesApi: GoogleSlidesApi;
+  /** Absent when the deployment has no Workers AI binding, so PDFs cannot be read. */
+  #convertPdf: PdfConverter | undefined;
   #scope: DriveBindingScope;
   /** Set exactly when the scope is a folder, so no core has to be built to learn which it is. */
   #location?: FolderLocation;
@@ -3206,6 +3210,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     docsApi: GoogleDocsApi,
     sheetsApi: GoogleSheetsApi,
     slidesApi: GoogleSlidesApi,
+    convertPdf: PdfConverter | undefined,
     scope: DriveBindingScope,
     approvalQueue: RpcStub<ApprovalQueue>,
     prepareObservation: (
@@ -3219,6 +3224,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     this.#docsApi = docsApi;
     this.#sheetsApi = sheetsApi;
     this.#slidesApi = slidesApi;
+    this.#convertPdf = convertPdf;
     this.#scope = scope;
     this.#location = scope.kind === "folder"
       ? location ?? {folderIds: [scope.folderId]}
@@ -3254,8 +3260,8 @@ export class GoogleDriveSessionImpl extends RpcTarget
     return this.#withQueue(async (queue, core) => {
       let location = await (core as DriveFolderSessionCore).openFolder(folderId);
       return new GoogleDriveSessionImpl(
-        this.#driveApi, this.#docsApi, this.#sheetsApi, this.#slidesApi, this.#scope, queue,
-        this.#prepareObservation, this.#prepareWithheld, location,
+        this.#driveApi, this.#docsApi, this.#sheetsApi, this.#slidesApi, this.#convertPdf,
+        this.#scope, queue, this.#prepareObservation, this.#prepareWithheld, location,
       );
     });
   }
@@ -3276,6 +3282,47 @@ export class GoogleDriveSessionImpl extends RpcTarget
     return this.#openNative(fileId, GOOGLE_SLIDES_MIME_TYPE, "Google Slides presentation",
       (presentationId, queue, read) =>
         new GooglePresentationReadSessionImpl(this.#slidesApi, presentationId, queue, read));
+  }
+
+  async readPdf(fileId: string): Promise<DrivePdfText> {
+    // The text stream needs no queue of its own, so this reads through the session's, as getEntry.
+    let core = this.#core;
+    let id = await core.openNativeFile(fileId, PDF_MIME_TYPE, "PDF");
+    let convert = this.#convertPdf;
+    if (!convert) throw new Error("PDF reading is not available on this deployment.");
+    let converted: DrivePdfText | undefined;
+    return core.nativeRead(id, PDF_MIME_TYPE)(async () => {
+      let download = (await this.#driveApi.openDownload(id).catch((error: unknown) => {
+        throw lacksFileContentAccess(error) ? new Error(PDF_ACCESS_MISSING) : error;
+      })).getReader();
+      // The checks after this fetch must cover everything the text is converted from, so a
+      // conversion that answers before the download has ended is refused.
+      let downloaded = false;
+      converted = await convert(new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          let chunk = await download.read();
+          if (chunk.done) {
+            downloaded = true;
+            controller.close();
+          } else {
+            controller.enqueue(chunk.value);
+          }
+        },
+        cancel: reason => download.cancel(reason),
+      }, { highWaterMark: 0 }));
+      if (!downloaded) {
+        await download.cancel().catch(() => undefined);
+        throw new Error(CONVERSION_FAILED);
+      }
+      return converted;
+    }, () => ({
+      title: "Read PDF from Google Drive",
+      description: `Read the text of Drive file ${id}.`,
+    })).catch(async (error: unknown) => {
+      // Text refused after its conversion still holds the response open.
+      await converted?.text.cancel().catch(() => undefined);
+      throw error;
+    });
   }
 
   #coreFor(queue: RpcStub<ApprovalQueue>): DriveCore {

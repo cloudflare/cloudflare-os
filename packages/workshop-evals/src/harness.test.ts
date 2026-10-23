@@ -26,7 +26,7 @@ const fakes = vi.hoisted(() => {
     author: { type: "agent", id: "agent", name: "agent" },
     type: "changes",
   }];
-  const result: AgentTurnResult = { outcome, history, workpieces, usage: {} };
+  const result: AgentTurnResult = { outcome, history, compactions: [], workpieces, usage: {} };
   const session: WorkshopAgentSession = {
     username: "agent",
     connectionDrops: 0,

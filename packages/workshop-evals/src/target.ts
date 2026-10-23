@@ -4,9 +4,14 @@ import type { RpcStub } from "capnweb";
 import {
   openAgentSession, type AgentSessionOptions, type WorkshopAgentSession,
 } from "@gadgets/integration-tests/agent-session";
-import { startHarness, type Harness, type WorkerConfig } from "@gadgets/integration-tests/harness";
+import {
+  ADMIN_USERNAME, startHarness, type Harness, type WorkerConfig,
+} from "@gadgets/integration-tests/harness";
 import { NetworkInterceptor } from "@gadgets/integration-tests/network-interceptor";
-import { HTTPS_ONLY_PROVIDERS, type AiModelProvider } from "@gadgets/workshop-shared/api";
+import { connect, signUp } from "@gadgets/integration-tests/rpc-client";
+import {
+  HTTPS_ONLY_PROVIDERS, type AiModelProvider, type GatewayModelSettings,
+} from "@gadgets/workshop-shared/api";
 import type { ContextApi } from "../../gatekeeper-context/src/context-types.js";
 import type { EvalModel } from "./config.js";
 import type { EvalSkill } from "./task.js";
@@ -209,8 +214,9 @@ export function evalNetworkInterceptor(
   });
 }
 
-// One Workshop per model per test process, shared by that eval file's concurrent trials; each trial
-// still signs up its own user with its own workspace. On one 16 GB runner, 40 trials on four
+// One Workshop per model and model settings per test process, shared by that eval file's
+// concurrent trials; each trial still signs up its own user with its own workspace. On one 16 GB
+// runner, 40 trials on four
 // Workshops peaked at 7.7 GB, where 40 Workshops ran out of memory. The price is that a workerd
 // crash drops every trial's socket on the Workshop: turns reconnect, and a check that fails in
 // flight makes the trial a run error (EvalVerifier.collect), which is never stored as the agent's
@@ -218,20 +224,41 @@ export function evalNetworkInterceptor(
 // when its DO aborts, so WorkshopAgentSession.close() stays connected until that abort.
 const workshops = new Map<string, Promise<Harness>>();
 
-function workshopFor(access: LocalModelAccess, model: EvalModel): Promise<Harness> {
-  const key = `${model.provider}/${model.model}`;
+// Settings are applied before the Workshop is handed to any trial, so none runs without them.
+async function startWorkshop(
+    access: LocalModelAccess, model: EvalModel,
+    modelSettings: GatewayModelSettings | undefined): Promise<Harness> {
+  const workshop = await startHarness({
+    gatekeepers: [
+      { binding: "CONTEXT", dir: SKILLS_DIR, patch: config => { delete config.build; } },
+    ],
+    enableGadgetExecution: true,
+    ...(access.kind === "gateway"
+      ? { patchWorkshop: (config: WorkerConfig) => configureGateway(config, access, model) }
+      : {}),
+  });
+  if (modelSettings === undefined) return workshop;
+  try {
+    using publicApi = connect(workshop.url);
+    using user = await signUp(publicApi, ADMIN_USERNAME);
+    using admin = await user.getAdminApi();
+    if (admin === null) throw new Error("The eval Workshop's admin API was unavailable");
+    await admin.setGatewayModelSettings(model.model, modelSettings);
+    return workshop;
+  } catch (error) {
+    await workshop.server.close();
+    throw error;
+  }
+}
+
+function workshopFor(
+    access: LocalModelAccess, model: EvalModel,
+    modelSettings: GatewayModelSettings | undefined): Promise<Harness> {
+  const key = `${model.provider}/${model.model}/${JSON.stringify(modelSettings ?? null)}`;
   let workshop = workshops.get(key);
   if (workshop === undefined) {
     unconfirmedRuntimes++;
-    workshop = startHarness({
-      gatekeepers: [
-        { binding: "CONTEXT", dir: SKILLS_DIR, patch: config => { delete config.build; } },
-      ],
-      enableGadgetExecution: true,
-      ...(access.kind === "gateway"
-        ? { patchWorkshop: (config: WorkerConfig) => configureGateway(config, access, model) }
-        : {}),
-    });
+    workshop = startWorkshop(access, model, modelSettings);
     workshops.set(key, workshop);
   }
   return workshop;
@@ -257,8 +284,9 @@ export async function closeLocalEvalRuntimes(): Promise<void> {
 
 /** Open one fresh agent session, as its own user, on this process's Workshop for `model`. */
 export async function openLocalEvalTarget(
-    access: LocalModelAccess, model: EvalModel, turnTimeoutMs: number): Promise<LocalEvalTarget> {
-  const workshop = await workshopFor(access, model);
+    access: LocalModelAccess, model: EvalModel, turnTimeoutMs: number,
+    modelSettings?: GatewayModelSettings): Promise<LocalEvalTarget> {
+  const workshop = await workshopFor(access, model, modelSettings);
   const options: AgentSessionOptions = {
     modelId: model.model,
     turnTimeoutMs,

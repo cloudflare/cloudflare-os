@@ -1787,6 +1787,164 @@ describe("System prompt cache blocks", () => {
   }, 15000);
 });
 
+describe("Resending a request to keep its cache", () => {
+  beforeEach(() => {
+    capturedRequests.length = 0;
+  });
+
+  // A stream of server-sent events, each named by its type as Anthropic and OpenAI name theirs,
+  // logged by AI Gateway as `log-1`.
+  const events = (sent: Record<string, unknown>[]) => new Response(
+      sent.map(event => `event: ${String(event.type)}\ndata: ${JSON.stringify(event)}\n\n`).join(""),
+      { headers: { "content-type": "text/event-stream", "cf-aig-log-id": "log-1" } });
+
+  // Answers every request to a 100k-token prompt with an empty reply in the API's own format, 90k
+  // of the prompt read from the cache unless Anthropic caches none of it. Anthropic's reply counts
+  // 5k tokens, which a resend doesn't send again.
+  const answering = ({ cached = true } = {}) => (async (input: RequestInfo | URL,
+                                                        init?: RequestInit) => {
+    const request = new Request(input as RequestInfo, init);
+    capturedRequests.push({ url: request.url, headers: request.headers, body: await request.text() });
+    const { pathname } = new URL(request.url);
+    if (pathname.endsWith("/messages")) {
+      return events([
+        { type: "message_start", message: {
+          id: "message", type: "message", role: "assistant", model: "claude", content: [],
+          stop_reason: null, stop_sequence: null,
+          usage: cached ? {
+            input_tokens: 10, cache_read_input_tokens: 90_000, cache_creation_input_tokens: 9_990,
+            output_tokens: 1,
+          } : { input_tokens: 100_000, output_tokens: 1 },
+        } },
+        { type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null },
+          usage: { output_tokens: 5_000 } },
+        { type: "message_stop" },
+      ]);
+    }
+    if (pathname.endsWith("/responses")) {
+      return events([{ type: "response.completed", response: {
+        id: "response", status: "completed", output: [],
+        usage: {
+          input_tokens: 100_000, output_tokens: 1, total_tokens: 100_001,
+          input_tokens_details: { cached_tokens: 90_000 },
+        },
+      } }]);
+    }
+    return new Response(`data: ${JSON.stringify({
+      id: "completion", object: "chat.completion.chunk", created: 0, model: "model",
+      choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+      usage: {
+        prompt_tokens: 100_000, completion_tokens: 1, total_tokens: 100_001,
+        prompt_tokens_details: { cached_tokens: 90_000 },
+      },
+    })}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+  }) as typeof fetch;
+
+  // An agent turn's request: a split system prompt whose static text and tools come to about 10k
+  // tokens, and a user message.
+  async function send(handle: ModelHandle,
+                      options: NonNullable<Parameters<ModelHandle["stream"]>[2]> = {}) {
+    const message = await handle.stream(handle.model, {
+      messages: [
+        {
+          role: "system", content: "Shared instructions. ".repeat(1_900),
+          sections: { environment: "This workspace's gadgets." },
+          toolsAdded: [{ name: "lookUp", description: "Looks up.", parameters: Type.Object({}) }],
+          timestamp: 0,
+        },
+        { role: "user", content: "hello", timestamp: 0 },
+      ],
+    }, { fetch: answering(), maxRetries: 0, ...options }).result();
+    expect(message.stopReason).toBe("stop");
+  }
+
+  // A captured request's headers, less the ones that differ between a request and its resend.
+  const sharedHeaders = ({ headers }: CapturedRequest) => Object.fromEntries(
+      [...headers].filter(([name]) =>
+          !["content-length", "cf-aig-metadata", "cf-aig-skip-cache"].includes(name)));
+
+  it("resends an Anthropic request as sent, with a one-token cap, marked and logged in the gateway",
+      async () => {
+    const handle = getModel(env(), { provider: "anthropic", model: "claude-opus-5-5", apiToken: "" },
+        INITIATOR, {
+          sessionAffinity: "chat-7",
+          metadata: { source: "chat", gadgetId: "gadget-123", chatId: 7 },
+        });
+    await send(handle);
+    expect(handle.aiGatewayLogRoute).toBeDefined();
+    await expect(handle.lastRequest?.resend()).resolves.toMatchObject({
+      usage: { cacheRead: 90_000 },
+      aiGatewayLogId: "log-1",
+      aiGatewayLogRoute: handle.aiGatewayLogRoute,
+    });
+
+    const [sent, resent] = capturedRequests;
+    expect(resent.url).toBe(sent.url);
+    expect(JSON.parse(resent.body)).toEqual({ ...JSON.parse(sent.body), max_tokens: 1 });
+    expect(sharedHeaders(resent)).toEqual(sharedHeaders(sent));
+    expect(JSON.parse(resent.headers.get("cf-aig-metadata")!)).toEqual({
+      user: "user-123", source: "cache-warm", gadgetId: "gadget-123", chatId: 7,
+    });
+    expect(resent.headers.get("cf-aig-skip-cache")).toBe("true");
+    expect(sent.headers.get("cf-aig-skip-cache")).toBeNull();
+    expect(handle.lastRequest?.cacheLifetime).toBe(5 * 60_000);
+  }, 15000);
+
+  it("resends a GPT-5.6+ request as sent, with the smallest output cap", async () => {
+    const handle = getModel(env({ CF_AI_GATEWAY: undefined }),
+        { provider: "openai", model: "gpt-6-luna", apiToken: "direct-api-token" }, INITIATOR,
+        { sessionAffinity: "chat-7" });
+    await send(handle);
+    await expect(handle.lastRequest?.resend())
+        .resolves.toMatchObject({ usage: { cacheRead: 90_000 } });
+
+    const [sent, resent] = capturedRequests;
+    expect(JSON.parse(resent.body)).toEqual({ ...JSON.parse(sent.body), max_output_tokens: 16 });
+    expect(sharedHeaders(resent)).toEqual(sharedHeaders(sent));
+    expect(handle.lastRequest?.cacheLifetime).toBe(30 * 60_000);
+  }, 15000);
+
+  it("prices a resend as a read of the whole prompt and a one-token answer, and a miss as a " +
+      "write of the chat's own part", async () => {
+    const handle = getModel(env(), { provider: "anthropic", model: "claude-opus-5-5", apiToken: "" },
+        INITIATOR);
+    await send(handle);
+
+    const { cacheRead, cacheWrite, output } = handle.model.cost;
+    expect(handle.lastRequest?.resendCost).toBeCloseTo((100_000 * cacheRead + output) / 1e6, 8);
+    // The tools and static system text, about 10k tokens, are cached apart from the chat's part.
+    const ownTokens = handle.lastRequest!.expiryCost / ((cacheWrite - cacheRead) / 1e6);
+    expect(ownTokens).toBeGreaterThan(89_900);
+    expect(ownTokens).toBeLessThan(90_100);
+  }, 15000);
+
+  it.each([
+    { name: "a Claude given a thinking budget, which must stay below the cap",
+      config: { provider: "anthropic", model: "claude-haiku-4-5", reasoning: "high" } },
+    { name: "OpenAI models before GPT-5.6, whose cache has no set lifetime",
+      config: { provider: "openai", model: "gpt-5.2" } },
+    { name: "Workers AI", config: { provider: "cloudflare", model: WORKERS_AI_CONFIG.model } },
+  ] as const)("keeps no request to resend for $name", async ({ config }) => {
+    const handle = getModel(env({ CF_AI_GATEWAY_PROVIDERS: "anthropic,openai,cloudflare" }),
+        { ...config, apiToken: "" }, INITIATOR);
+    await send(handle);
+    expect(handle.lastRequest).toBeUndefined();
+  }, 15000);
+
+  it("keeps no request that the provider didn't cache, or that the handle sent with caching off",
+      async () => {
+    const handle = getModel(env(), ANTHROPIC_CONFIG, INITIATOR);
+    await send(handle);
+    expect(handle.lastRequest).toBeDefined();
+    await send(handle, { cacheRetention: "none" });
+    expect(handle.lastRequest).toBeUndefined();
+
+    // As for a prompt below the model's minimum.
+    await send(handle, { fetch: answering({ cached: false }) });
+    expect(handle.lastRequest).toBeUndefined();
+  }, 15000);
+});
+
 // An env whose platform gateway rides a Workers AI binding answering with `run`.
 function bindingRunEnv(run: (...args: unknown[]) => Promise<unknown>): Cloudflare.Env {
   return env({

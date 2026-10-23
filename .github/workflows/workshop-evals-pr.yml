@@ -57,6 +57,10 @@ concurrency:
 env:
   NODE_VERSION: "24.19.0"
   EVAL_TRIALS: "10"
+  # Per-task models and trials, as WORKSHOP_EVAL_TASK_OVERRIDES (packages/workshop-evals/src/config.ts).
+  # Compaction runs one trial on each provider's model: enough to show it pass or fail on each path,
+  # though the comparison draws no statistics from one trial.
+  EVAL_TASK_OVERRIDES: '{"compaction": {"models": ["gpt-6-luna", "claude-sonnet-5-5"], "trials": 1}}'
 
 jobs:
   trust:
@@ -176,6 +180,7 @@ jobs:
           CF_AI_GATEWAY_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
           CF_AI_GATEWAY_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
           WORKSHOP_EVAL_TRIALS: ${{ env.EVAL_TRIALS }}
+          WORKSHOP_EVAL_TASK_OVERRIDES: ${{ env.EVAL_TASK_OVERRIDES }}
           WORKSHOP_EVAL_COMMIT: ${{ matrix.sha }}
           TASKS: ${{ join(matrix.tasks, ' ') }}
         run: |
@@ -203,7 +208,8 @@ jobs:
               packages/workshop-evals/.wrangler/evals/results.json > "$file"; then
               echo "::error::No results for $task"
               rm -f "$file"
-            elif node scripts/evals/validate-results.ts "$file" "$EVAL_TRIALS"; then
+            elif node scripts/evals/validate-results.ts "$file" "$(jq -r --arg task "$task" \
+              --arg trials "$EVAL_TRIALS" '.[$task].trials // $trials' <<< "$EVAL_TASK_OVERRIDES")"; then
               clean+=("$task")
             fi
           done

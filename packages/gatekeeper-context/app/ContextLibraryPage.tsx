@@ -18,7 +18,9 @@ import {
   UploadSimple,
   FilePlus,
   FolderPlus,
+  ShareNetwork,
   User,
+  Users,
   X,
 } from "@phosphor-icons/react";
 import {
@@ -31,6 +33,8 @@ import {
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import type {
   ContextCollectionMetadata,
+  ContextCollectionPermissions,
+  ContextCollectionSharing,
   ContextDocumentSummary,
   ContextGitTokenCreateResult,
   ContextGitTokenInfo,
@@ -65,6 +69,8 @@ import {
 import { extractDescription } from "../src/description-extractors";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { COLLECTION_ROLE_LABELS } from "./skills/collectionRole";
+import { ShareCollectionDialog } from "./skills/ShareCollectionDialog";
 import { SkillsNavigatorPage } from "./skills/SkillsNavigatorPage";
 import { fileToBase64, readUploadFile } from "./uploadFiles";
 
@@ -456,10 +462,15 @@ export default function ContextLibraryPage() {
     );
   }
 
-  return <SkillsNavigatorPage onSelectSkill={(collectionId, manifestPath) => {
-    setSelectedCollection(collectionId);
-    setSelectedDoc(manifestPath);
-  }} />;
+  return (
+    <SkillsNavigatorPage
+      onSelectSkill={(collectionId, manifestPath) => {
+        setSelectedCollection(collectionId);
+        setSelectedDoc(manifestPath);
+      }}
+      onOpenCollection={goToCollection}
+    />
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -488,28 +499,36 @@ function MetaField({
 }
 
 // The collection overview — identity, description, and metadata shown in the detail pane when no
-// file is selected. Collection-level actions (edit/delete) live on the index's ⋮ menu.
+// file is selected. Collection-level actions (edit/share/delete) live on the index's ⋮ menu.
 function CollectionOverview({
   metadata,
-  canWrite,
+  permissions,
+  sharing,
   supportsGitCollections,
   refreshingSource,
   onRefreshSource,
   onEditDetails,
   onManageGitTokens,
+  onShare,
   onDelete,
 }: {
   metadata: ContextCollectionMetadata;
-  canWrite: boolean;
+  permissions: ContextCollectionPermissions;
+  /** Private collections only; null while loading or when it could not be read. */
+  sharing: ContextCollectionSharing | null;
   supportsGitCollections: boolean;
   refreshingSource: boolean;
   onRefreshSource: () => void;
   onEditDetails: () => void;
   onManageGitTokens: () => void;
+  onShare: () => void;
   onDelete: () => void;
 }) {
   const isPublic = metadata.visibility === "public";
   const isSynced = metadata.content.source === "git";
+  const viewerRole = sharing?.members.find((member) => member.isViewer)?.role;
+  const sharedRole = viewerRole === "owner" ? undefined : viewerRole;
+  const othersCanRead = Boolean(sharing && (sharing.everyoneCanView || sharing.members.length > 1));
   return (
     <div className="ctx-scroll @container min-h-0 flex-1 overflow-auto">
       <div className="mx-auto max-w-[850px] px-8 py-10 sm:px-11 sm:py-12">
@@ -526,38 +545,54 @@ function CollectionOverview({
                 </p>
               </div>
             </div>
-            {canWrite && (
-              <div className="flex shrink-0 items-center gap-2">
-                {isSynced && supportsGitCollections && (
-                  <WorkshopButton
-                    tone="secondary"
-                    className="h-9!"
-                    onClick={onRefreshSource}
-                    loading={refreshingSource}
-                  >
-                    Refresh
-                  </WorkshopButton>
-                )}
-                <CollectionOptionsMenu
-                  isSynced={isSynced}
-                  supportsGitCollections={supportsGitCollections}
-                  onEditDetails={onEditDetails}
-                  onManageGitTokens={onManageGitTokens}
-                  onDelete={onDelete}
-                />
-              </div>
-            )}
+            <div className="flex shrink-0 items-center gap-2">
+              {permissions.canEdit && isSynced && supportsGitCollections && (
+                <WorkshopButton
+                  tone="secondary"
+                  className="h-9!"
+                  onClick={onRefreshSource}
+                  loading={refreshingSource}
+                >
+                  Refresh
+                </WorkshopButton>
+              )}
+              <CollectionOptionsMenu
+                permissions={permissions}
+                isSynced={isSynced}
+                supportsGitCollections={supportsGitCollections}
+                onEditDetails={onEditDetails}
+                onManageGitTokens={onManageGitTokens}
+                onShare={onShare}
+                onDelete={onDelete}
+              />
+            </div>
           </div>
 
           <div className="mt-9 grid grid-cols-2 gap-x-8 gap-y-5 @xl:grid-cols-4">
             <MetaField label="Source">
               <span className="inline-flex items-center gap-1.5">
-                {isPublic ? <Buildings size={12} className="shrink-0" /> : <User size={12} className="shrink-0" />}
-                {isPublic ? "Your organization" : "You"}
+                {isPublic
+                  ? <Buildings size={12} className="shrink-0" />
+                  : sharedRole || othersCanRead
+                  ? <Users size={12} className="shrink-0" />
+                  : <User size={12} className="shrink-0" />}
+                {isPublic
+                  ? "Your organization"
+                  : sharing && !sharing.hasOwner
+                  ? "No active owner"
+                  : sharedRole
+                  ? `Shared with you · ${COLLECTION_ROLE_LABELS[sharedRole]}`
+                  : "You"}
               </span>
             </MetaField>
             <MetaField label="Access">
-              {isPublic ? "Everyone (required)" : "Private to you"}
+              {isPublic
+                ? "Everyone (required)"
+                : sharing?.everyoneCanView
+                ? "Anyone in your organization"
+                : sharing && sharing.members.length > 1
+                ? `${sharing.members.length} people`
+                : "Private to you"}
             </MetaField>
             <MetaField label="Documents">{metadata.documentCount}</MetaField>
             <MetaField label={isSynced ? "Refreshed" : "Updated"} align="right">
@@ -609,7 +644,7 @@ function CollectionOverview({
                     ? supportsGitCollections
                       ? "This git mirror is empty. Mirror content from git, then refresh."
                       : "No Git content was cached before synchronization became unavailable."
-                    : canWrite
+                    : permissions.canEdit
                     ? "Use the + in the Files panel to create or upload skills or files. Agents use the names and descriptions to decide what to read."
                     : "This collection is empty."}
                 </p>
@@ -622,19 +657,26 @@ function CollectionOverview({
   );
 }
 
+// Renders nothing when the viewer may only read the collection.
 function CollectionOptionsMenu({
+  permissions,
   isSynced,
   supportsGitCollections,
   onEditDetails,
   onManageGitTokens,
+  onShare,
   onDelete,
 }: {
+  permissions: ContextCollectionPermissions;
   isSynced: boolean;
   supportsGitCollections: boolean;
   onEditDetails: () => void;
   onManageGitTokens: () => void;
+  onShare: () => void;
   onDelete: () => void;
 }) {
+  const { canEdit, canShare, canDelete } = permissions;
+  if (!canEdit && !canShare && !canDelete) return null;
   return (
     <KebabMenu
       trigger={
@@ -647,14 +689,16 @@ function CollectionOptionsMenu({
         </WorkshopIconButton>
       }
     >
-      <DropdownMenu.Item
-        icon={<PencilSimple size={13} className="mr-2" />}
-        onClick={onEditDetails}
-        className={MENU_ITEM}
-      >
-        Edit details
-      </DropdownMenu.Item>
-      {isSynced && supportsGitCollections && (
+      {canEdit && (
+        <DropdownMenu.Item
+          icon={<PencilSimple size={13} className="mr-2" />}
+          onClick={onEditDetails}
+          className={MENU_ITEM}
+        >
+          Edit details
+        </DropdownMenu.Item>
+      )}
+      {canEdit && isSynced && supportsGitCollections && (
         <DropdownMenu.Item
           icon={<Key size={13} className="mr-2" />}
           onClick={onManageGitTokens}
@@ -663,14 +707,25 @@ function CollectionOptionsMenu({
           Manage git tokens
         </DropdownMenu.Item>
       )}
-      <DropdownMenu.Separator />
-      <DropdownMenu.Item
-        icon={<Trash size={13} className="mr-2" />}
-        onClick={onDelete}
-        className={`${MENU_ITEM_DANGER} text-kumo-danger`}
-      >
-        Delete collection
-      </DropdownMenu.Item>
+      {canShare && (
+        <DropdownMenu.Item
+          icon={<ShareNetwork size={13} className="mr-2" />}
+          onClick={onShare}
+          className={MENU_ITEM}
+        >
+          Share
+        </DropdownMenu.Item>
+      )}
+      {canDelete && (canEdit || canShare) && <DropdownMenu.Separator />}
+      {canDelete && (
+        <DropdownMenu.Item
+          icon={<Trash size={13} className="mr-2" />}
+          onClick={onDelete}
+          className={`${MENU_ITEM_DANGER} text-kumo-danger`}
+        >
+          Delete collection
+        </DropdownMenu.Item>
+      )}
     </KebabMenu>
   );
 }
@@ -1537,6 +1592,14 @@ function FileView({
 // Collection Editor (file manager + document editor)
 // ---------------------------------------------------------------------------
 
+// Read-only until permissions load, so edit controls never flash to viewers.
+const NO_PERMISSIONS: ContextCollectionPermissions = {
+  canEdit: false,
+  canShare: false,
+  canManageOwners: false,
+  canDelete: false,
+};
+
 function CollectionEditor({
   collectionId,
   selectedPath,
@@ -1558,12 +1621,13 @@ function CollectionEditor({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsMode, setSettingsMode] = useState<"edit" | "delete">("edit");
   const [gitTokensOpen, setGitTokensOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const openSettings = (m: "edit" | "delete") => {
     setSettingsMode(m);
     setSettingsOpen(true);
   };
-  // Default read-only until access loads so edit controls never flash to viewers.
-  const [canWrite, setCanWrite] = useState(false);
+  const [permissions, setPermissions] = useState(NO_PERMISSIONS);
+  const [sharing, setSharing] = useState<ContextCollectionSharing | null>(null);
   const [supportsGitCollections, setSupportsGitCollections] = useState(false);
   const [refreshingSource, setRefreshingSource] = useState(false);
 
@@ -1614,21 +1678,27 @@ function CollectionEditor({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dirInputRef = useRef<HTMLInputElement>(null);
-  const canEditDocuments = canWrite && metadata?.content.source !== "git";
+  const canEditDocuments = permissions.canEdit && metadata?.content.source !== "git";
 
   const loadDocs = useCallback(async () => {
     try {
-      const [meta, list, writable, viewer] = await Promise.all([
+      const [meta, list, loadedPermissions, viewer, loadedSharing] = await Promise.all([
         context.getContextCollectionMetadata(collectionId),
         context.listContextDocuments(collectionId),
-        context.canWriteContextCollection(collectionId),
+        context.getContextCollectionPermissions(collectionId),
         context.getViewerInfo(),
+        // Only private collections have sharing state; it labels the overview and is not needed
+        // for anything else.
+        context.getContextCollectionSharing(collectionId).catch(() => null),
       ]);
       setMetadata(meta);
       setDocs(list);
-      setCanWrite(writable);
+      setPermissions(loadedPermissions);
+      setSharing(meta?.visibility === "private" ? loadedSharing : null);
       setSupportsGitCollections(viewer.supportsGitCollections);
     } catch (err) {
+      setPermissions(NO_PERMISSIONS);
+      setSharing(null);
       console.error("Failed to load documents:", err);
     } finally {
       setLoading(false);
@@ -1941,6 +2011,15 @@ function CollectionEditor({
         />
       )}
 
+      {shareOpen && metadata && (
+        <ShareCollectionDialog
+          collection={{ id: collectionId, title: metadata.title }}
+          onChanged={() => void loadDocs()}
+          onLeft={onBack}
+          onClose={() => setShareOpen(false)}
+        />
+      )}
+
       {/* In-app confirmation for tree ⋮ deletes (files and folders). */}
       <Dialog.Root
         open={!!pendingDelete && deletePresentation.presenting}
@@ -2028,17 +2107,17 @@ function CollectionEditor({
                     {metadata.title}
                   </span>
                 </button>
-                {canWrite && (
-                  <div className="pr-1 sm:hidden">
-                    <CollectionOptionsMenu
-                      isSynced={metadata.content.source === "git"}
-                      supportsGitCollections={supportsGitCollections}
-                      onEditDetails={() => openSettings("edit")}
-                      onManageGitTokens={() => setGitTokensOpen(true)}
-                      onDelete={() => openSettings("delete")}
-                    />
-                  </div>
-                )}
+                <div className="pr-1 sm:hidden">
+                  <CollectionOptionsMenu
+                    permissions={permissions}
+                    isSynced={metadata.content.source === "git"}
+                    supportsGitCollections={supportsGitCollections}
+                    onEditDetails={() => openSettings("edit")}
+                    onManageGitTokens={() => setGitTokensOpen(true)}
+                    onShare={() => setShareOpen(true)}
+                    onDelete={() => openSettings("delete")}
+                  />
+                </div>
               </div>
             </div>
           )}
@@ -2124,7 +2203,7 @@ function CollectionEditor({
                   ? supportsGitCollections
                     ? "No files yet. Mirror content from git, then refresh."
                     : "No Git content was cached before synchronization became unavailable."
-                  : canWrite ? "No files yet. Use + to create or upload skills or files." : "No files yet."}
+                  : permissions.canEdit ? "No files yet. Use + to create or upload skills or files." : "No files yet."}
               </p>
             ) : (
               <FolderView folder={tree} depth={0} ctx={ctx} />
@@ -2165,12 +2244,14 @@ function CollectionEditor({
           ) : metadata ? (
             <CollectionOverview
               metadata={metadata}
-              canWrite={canWrite}
+              permissions={permissions}
+              sharing={sharing}
               supportsGitCollections={supportsGitCollections}
               refreshingSource={refreshingSource}
               onRefreshSource={handleRefreshArtifactSource}
               onEditDetails={() => openSettings("edit")}
               onManageGitTokens={() => setGitTokensOpen(true)}
+              onShare={() => setShareOpen(true)}
               onDelete={() => openSettings("delete")}
             />
           ) : null}

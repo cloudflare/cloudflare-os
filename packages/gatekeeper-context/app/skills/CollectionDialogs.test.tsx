@@ -8,6 +8,7 @@ import type { ContextApi, ContextCollectionMetadata } from "../../src/context-ty
 import { DEFAULT_COLLECTION_ICON } from "../components/CollectionIconPicker";
 import { CreateCollectionDialog } from "./CreateCollectionDialog";
 import { EditCollectionDialog } from "./EditCollectionDialog";
+import { LeaveCollectionDialog } from "./LeaveCollectionDialog";
 
 const mocks = vi.hoisted(() => ({ api: null as ContextApi | null }));
 
@@ -39,14 +40,6 @@ const button = (label: string) => [...document.querySelectorAll<HTMLButtonElemen
 
 const radio = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('[role="radio"]')]
   .find((candidate) => candidate.closest("label")?.textContent?.includes(label));
-
-const collectionSummary = (id: string, title: string) => ({
-  id,
-  title,
-  description: "",
-  source: "private" as const,
-  lastUpdated: new Date(),
-});
 
 describe("collection dialogs", () => {
   let container: HTMLDivElement | undefined;
@@ -97,7 +90,6 @@ describe("collection dialogs", () => {
     } as unknown as ContextApi;
     render(
       <CreateCollectionDialog
-        collections={[]}
         viewerInfo={{ isAdmin: true, supportsGitCollections: true }}
         onCreated={() => {}}
         onClose={() => {}}
@@ -152,7 +144,6 @@ describe("collection dialogs", () => {
     render(
       <EditCollectionDialog
         collection={collection}
-        collections={[collectionSummary(collection.id, collection.title)]}
         supportsGitCollections
         onUpdated={() => {}}
         onClose={() => {}}
@@ -170,61 +161,32 @@ describe("collection dialogs", () => {
     expect(updateContextCollection).toHaveBeenCalledWith("collection", { branch: "release" });
   });
 
-  it("shows an inline error for a duplicate collection name when creating", () => {
-    const createContextCollection = vi.fn<ContextApi["createContextCollection"]>();
-    mocks.api = { createContextCollection } as unknown as ContextApi;
-    render(
-      <CreateCollectionDialog
-        collections={[collectionSummary("existing", "Engineering")]}
-        viewerInfo={{ isAdmin: false, supportsGitCollections: false }}
-        onCreated={() => {}}
-        onClose={() => {}}
-      />,
-    );
-
-    act(() => setInputValue(
-      document.querySelector<HTMLInputElement>('input[placeholder^="A short name"]')!,
-      " engineering ",
-    ));
-
-    expect(document.body.textContent).toContain("A collection with this name already exists.");
-    expect(button("Add collection")?.disabled).toBe(true);
-    expect(createContextCollection).not.toHaveBeenCalled();
-  });
-
-  it("shows an inline error for another collection's name when editing", () => {
-    const updateContextCollection = vi.fn<ContextApi["updateContextCollection"]>();
-    mocks.api = {
-      updateContextCollection,
-      listContextCollectionGitTokens: async () => ({ tokens: [] }),
-    } as unknown as ContextApi;
-    const collection: ContextCollectionMetadata = {
-      id: "collection",
-      title: "Engineering",
-      description: "",
-      visibility: "private",
-      created: new Date(),
-      lastUpdated: new Date(),
-      documentCount: 0,
-      content: { source: "web" },
+  it.each([false, true])("reconciles the library after confirming leave (cleanup rejects: %s)", async (rejectCleanup) => {
+    let membership = true;
+    const leaveContextCollection = vi.fn<ContextApi["leaveContextCollection"]>(async () => {
+      membership = false;
+      if (rejectCleanup) throw new Error("Access was changed, but Git tokens could not be revoked yet.");
+    });
+    mocks.api = { leaveContextCollection } as unknown as ContextApi;
+    const Parent = () => {
+      const [member, setMember] = React.useState(membership);
+      const [left, setLeft] = React.useState(false);
+      return <>
+        <p>{member ? "Member in library" : "No membership in library"}</p>
+        <p>{left ? "Leave succeeded" : "Leave not confirmed successful"}</p>
+        <LeaveCollectionDialog
+          collection={{ id: "collection", title: "Engineering" }}
+          onChanged={() => setMember(membership)}
+          onLeft={() => { setMember(membership); setLeft(true); }}
+          onClose={() => {}}
+        />
+      </>;
     };
-    render(
-      <EditCollectionDialog
-        collection={collection}
-        collections={[
-          collectionSummary(collection.id, collection.title),
-          collectionSummary("existing", "Marketing"),
-        ]}
-        supportsGitCollections={false}
-        onUpdated={() => {}}
-        onClose={() => {}}
-      />,
-    );
-
-    act(() => setInputValue(document.querySelector<HTMLInputElement>('input[aria-label="Name"]')!, "marketing"));
-
-    expect(document.body.textContent).toContain("A collection with this name already exists.");
-    expect(button("Save changes")?.disabled).toBe(true);
-    expect(updateContextCollection).not.toHaveBeenCalled();
+    render(<Parent />);
+    expect(leaveContextCollection).not.toHaveBeenCalled();
+    await act(async () => button("Leave")?.click());
+    expect(document.body.textContent).toContain("No membership in library");
+    expect(document.body.textContent).toContain(rejectCleanup ? "Leave not confirmed successful" : "Leave succeeded");
+    expect(document.body.textContent?.includes("Git tokens could not be revoked yet")).toBe(rejectCleanup);
   });
 });

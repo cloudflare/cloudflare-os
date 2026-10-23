@@ -5,7 +5,12 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it } from "vitest";
-import type { ContextApi, ContextCollectionMetadata, EnabledCollectionInfo } from "../../src/context-types";
+import type {
+  ContextApi,
+  ContextCollectionMetadata,
+  ContextCollectionPermissions,
+  EnabledCollectionInfo,
+} from "../../src/context-types";
 import { useSkillsNavigatorData } from "./useSkillsNavigatorData";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -31,6 +36,13 @@ const metadata = (id: string, source: "web" | "git"): ContextCollectionMetadata 
     : { source, remote: "", branch: "main", lastRefreshedAt: new Date() },
 });
 
+const permissions = (canEdit: boolean): ContextCollectionPermissions => ({
+  canEdit,
+  canShare: canEdit,
+  canManageOwners: false,
+  canDelete: false,
+});
+
 describe("useSkillsNavigatorData", () => {
   it("tracks capabilities and reports partial document failures", async () => {
     const collections = [
@@ -39,6 +51,7 @@ describe("useSkillsNavigatorData", () => {
       collection("owned-git", "private"),
       collection("failed-web", "private"),
       collection("metadata-failed-web", "private"),
+      collection("permissions-failed-web", "private"),
     ];
     const api = {
       listEnabledContextCollections: async () => collections,
@@ -47,14 +60,17 @@ describe("useSkillsNavigatorData", () => {
         if (id === "failed-web") throw new Error("unavailable");
         return [];
       },
-      canWriteContextCollection: async (id: string) => id !== "organization",
+      getContextCollectionPermissions: async (id: string) => {
+        if (id === "permissions-failed-web") throw new Error("unavailable");
+        return permissions(id !== "organization");
+      },
       getContextCollectionMetadata: async (id: string) => {
         if (id === "metadata-failed-web") throw new Error("unavailable");
         return metadata(id, id === "owned-git" ? "git" : "web");
       },
     } as unknown as ContextApi;
     let writableIds: readonly string[] = [];
-    let manageableIds: readonly string[] = [];
+    let loadedPermissions: ReadonlyMap<string, ContextCollectionPermissions> = new Map();
     let failedDocumentIds: readonly string[] = [];
     let loadedMetadata: ReadonlyMap<string, ContextCollectionMetadata> = new Map();
     let viewerInfo = { isAdmin: false, supportsGitCollections: false };
@@ -63,7 +79,7 @@ describe("useSkillsNavigatorData", () => {
     const Harness = () => {
       const data = useSkillsNavigatorData(api, 0);
       writableIds = [...data.writableCollectionIds];
-      manageableIds = [...data.manageableCollectionIds];
+      loadedPermissions = data.collectionPermissions;
       failedDocumentIds = [...data.failedDocumentCollectionIds];
       loadedMetadata = data.collectionMetadata;
       viewerInfo = data.viewerInfo;
@@ -80,12 +96,15 @@ describe("useSkillsNavigatorData", () => {
     });
 
     expect(writableIds).toEqual(["owned-web"]);
-    expect(manageableIds).toEqual([
+    expect([...loadedPermissions].flatMap(([id, { canEdit }]) => canEdit ? [id] : [])).toEqual([
       "owned-web",
       "owned-git",
       "failed-web",
       "metadata-failed-web",
     ]);
+    // A read-only collection keeps its permissions; a failed load fails closed.
+    expect(loadedPermissions.get("organization")?.canEdit).toBe(false);
+    expect(loadedPermissions.has("permissions-failed-web")).toBe(false);
     expect(failedDocumentIds).toEqual(["failed-web"]);
     expect(loadedMetadata.has("failed-web")).toBe(true);
     expect(loadedMetadata.has("metadata-failed-web")).toBe(false);
@@ -113,7 +132,7 @@ describe("useSkillsNavigatorData", () => {
         if (attempts === 1) throw new Error("unavailable");
         return [retriedDocument];
       },
-      canWriteContextCollection: async () => true,
+      getContextCollectionPermissions: async () => permissions(true),
       getContextCollectionMetadata: async () => metadata("failed-web", "web"),
     } as unknown as ContextApi;
     let current: ReturnType<typeof useSkillsNavigatorData> | undefined;

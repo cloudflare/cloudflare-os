@@ -29,7 +29,7 @@ import type { UserDurableObject } from "../user";
  * new workspace is born at (so it has nothing to migrate). The migrations themselves name
  * their versions literally, since each one's source and target are fixed for good.
  */
-export const OVERSEER_STORAGE_VERSION = 5;
+export const OVERSEER_STORAGE_VERSION = 6;
 
 /**
  * The most chat messages that migrateToBlueprintUpstreams() reads, over all of a workspace's
@@ -169,7 +169,7 @@ export function migrateToMultiGadget(host: OverseerMigrationHost): void {
       }
       let config: AgentSpawnerConfig = {...restConfig, env};
       gk.creationSpec = {...gk.creationSpec, config};
-      let props: AgentSpawnerBindingProps = {overseerId: host.ctx.id.toString(), config};
+      let props: AgentSpawnerBindingProps = {config};
       gk.class = host.ctx.exports.AgentSpawnerGatekeeper({props});
       host.storage.gatekeepers.put(gk);
     }
@@ -347,5 +347,34 @@ export function migrateToBlueprintUpstreams(host: OverseerMigrationHost): void {
   });
   host.logger.info("recorded where gadgets came from", {
     event: "storage.migration.blueprint-upstreams.completed",
+  });
+}
+
+/**
+ * Version 5 -> 6: agent spawners' bindings became editable, so they moved from the spawner's
+ * `creationSpec.config.env` into GatekeeperRecord.bindings, as permanent edges. Entries whose
+ * targets are gone are dropped: spawns always skipped them, and as edges they would hold their
+ * names for good. Synchronous and atomic, like migrateToWorkpieceTypes.
+ */
+export function migrateToSpawnerBindings(host: OverseerMigrationHost): void {
+  if (host.storage.version.get() !== 5) return;
+  host.ctx.storage.transactionSync(() => {
+    for (let record of Array.from(host.storage.gatekeepers.list())) {
+      if (record.creationSpec?.type !== "agentSpawner") continue;
+      // The stored config still has the `env` the current type omits (see AgentSpawnerConfig).
+      let stored: Omit<AgentSpawnerConfig, "env"> & {env?: Record<string, WorkpieceId>} =
+          record.creationSpec.config;
+      let {env = {}, ...config} = stored;
+      record.bindings = Object.fromEntries(Object.entries(env)
+          .filter(([, target]) => host.storage.gadgets.get(target)?.type === "gadget" ||
+                                  host.storage.gatekeepers.get(target))
+          .map(([name, target]) => [name, {target}]));
+      record.creationSpec = {...record.creationSpec, config};
+      host.storage.gatekeepers.put(record);
+    }
+    host.storage.version.put(6);
+  });
+  host.logger.info("moved agent spawners' bindings", {
+    event: "storage.migration.spawner-bindings.completed",
   });
 }

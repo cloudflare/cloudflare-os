@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type {
   ContextApi,
   ContextCollectionMetadata,
+  ContextCollectionPermissions,
   ContextDocumentSummary,
   EnabledCollectionInfo,
 } from "../../src/context-types";
@@ -9,15 +10,17 @@ import type {
 type SkillsNavigatorData = {
   collections: EnabledCollectionInfo[];
   collectionMetadata: ReadonlyMap<string, ContextCollectionMetadata>;
+  /** Absent when the collection's permissions failed to load; treat as no permissions. */
+  collectionPermissions: ReadonlyMap<string, ContextCollectionPermissions>;
   documents: Map<string, ContextDocumentSummary[]>;
   failedDocumentCollectionIds: ReadonlySet<string>;
-  manageableCollectionIds: ReadonlySet<string>;
+  /** Web-backed, editable collections whose documents loaded: targets for skill mutations. */
   writableCollectionIds: ReadonlySet<string>;
   viewerInfo: { isAdmin: boolean; supportsGitCollections: boolean };
   status: "loading" | "ready" | "error";
 };
 
-/** Loads skill collections, their documents, and the viewer's write permissions. */
+/** Loads skill collections, their documents, and the viewer's permissions on each. */
 export const useSkillsNavigatorData = (
   context: ContextApi,
   reloadKey: number,
@@ -25,9 +28,9 @@ export const useSkillsNavigatorData = (
   const [data, setData] = useState<SkillsNavigatorData>({
     collections: [],
     collectionMetadata: new Map(),
+    collectionPermissions: new Map(),
     documents: new Map(),
     failedDocumentCollectionIds: new Set(),
-    manageableCollectionIds: new Set(),
     writableCollectionIds: new Set(),
     viewerInfo: { isAdmin: false, supportsGitCollections: false },
     status: "loading",
@@ -53,11 +56,11 @@ export const useSkillsNavigatorData = (
             }
           })),
           Promise.all(collections.map(async (collection) => {
-            const [canWrite, metadata] = await Promise.all([
-              context.canWriteContextCollection(collection.id).catch(() => false),
+            const [permissions, metadata] = await Promise.all([
+              context.getContextCollectionPermissions(collection.id).catch(() => null),
               context.getContextCollectionMetadata(collection.id).catch(() => null),
             ]);
-            return { id: collection.id, canWrite, metadata };
+            return { id: collection.id, permissions, metadata };
           })),
         ]);
         if (cancelled) return;
@@ -69,16 +72,15 @@ export const useSkillsNavigatorData = (
         ] as const);
         const collectionMetadata = new Map(accessResults.flatMap(({ id, metadata }) =>
           metadata ? [[id, metadata] as const] : []));
-        const manageableCollectionIds = new Set(accessResults.flatMap(({ id, canWrite }) =>
-          canWrite ? [id] : []));
         setData({
           collections,
           collectionMetadata,
+          collectionPermissions: new Map(accessResults.flatMap(({ id, permissions }) =>
+            permissions ? [[id, permissions] as const] : [])),
           documents: new Map(loadedDocuments),
           failedDocumentCollectionIds: failedCollectionIds,
-          manageableCollectionIds,
-          writableCollectionIds: new Set(accessResults.flatMap(({ id, canWrite, metadata }) =>
-            canWrite && metadata?.content.source === "web" && !failedCollectionIds.has(id)
+          writableCollectionIds: new Set(accessResults.flatMap(({ id, permissions, metadata }) =>
+            permissions?.canEdit && metadata?.content.source === "web" && !failedCollectionIds.has(id)
               ? [id]
               : [])),
           viewerInfo,
@@ -105,7 +107,7 @@ export const useSkillsNavigatorData = (
       const writableCollectionIds = new Set(current.writableCollectionIds);
       const metadata = current.collectionMetadata.get(collectionId);
       if (
-        current.manageableCollectionIds.has(collectionId)
+        current.collectionPermissions.get(collectionId)?.canEdit
         && metadata?.content.source === "web"
       ) writableCollectionIds.add(collectionId);
       return {

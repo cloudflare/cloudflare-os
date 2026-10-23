@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { RpcCompatible, RpcStub } from "capnweb";
-import type { WorkshopAgentSession } from "@gadgets/integration-tests/agent-session";
+import type { AgentTurnResult, WorkshopAgentSession } from "@gadgets/integration-tests/agent-session";
 import type {
   AiChatMessage, GadgetClient, WorkpieceId, WorkpieceSummary,
 } from "@gadgets/workshop-shared/api";
@@ -10,6 +10,9 @@ const EVIDENCE_LIMIT = 2_000;
 const VERIFIER_THREW = "verifier.threw";
 
 export type VerifierSession = Pick<WorkshopAgentSession, "openGadget" | "connectionDrops">;
+
+/** The chat as the Workshop recorded it when the turn ended. */
+export type VerifierChat = Pick<AgentTurnResult, "history" | "compactions" | "usage">;
 
 function truncate(value: string): string {
   return value.length > EVIDENCE_LIMIT ? `${value.slice(0, EVIDENCE_LIMIT)}...` : value;
@@ -48,18 +51,21 @@ export class EvalVerifier {
   readonly messages: readonly AiChatMessage[];
   /** What the agent said in chat during this turn, oldest first. Empty when it only acted. */
   readonly replies: readonly string[];
+  readonly chat: VerifierChat;
   readonly #session: VerifierSession;
   readonly #checks: EvalCheck[] = [];
   readonly #pending: Promise<void>[] = [];
 
   constructor(
       session: VerifierSession, workpieces: readonly WorkpieceSummary[],
-      messages: readonly AiChatMessage[] = []) {
+      messages: readonly AiChatMessage[] = [],
+      chat: VerifierChat = { history: [], compactions: [], usage: {} }) {
     this.#session = session;
     this.workpieces = workpieces;
     this.messages = messages;
     this.replies = messages.flatMap(message =>
       message.type === "message" && message.author.type === "agent" ? [message.message] : []);
+    this.chat = chat;
   }
 
   async check(id: string, body: () => Promise<EvalCheckOutcome>): Promise<void> {

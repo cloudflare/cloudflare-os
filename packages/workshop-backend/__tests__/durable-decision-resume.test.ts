@@ -361,6 +361,44 @@ describe("decision handoff using the existing execution row", () => {
     expect(requests()).toBe(0);
   });
 
+  it("recovers a final response with steers it never read by answering them", async () => {
+    const requests = inference(), s = await scenario("connection", true);
+    await s.visit(impl => {
+      decide(impl, "connection");
+      impl.addChatMessages(CHAT, MODEL.profile, [{type: "message", message: "Already done."}]);
+      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(CHAT)!,
+        queuedSteers: [{text: "Make it dark.", author: USER}]});
+    });
+    await evictDurableObject(s.stub);
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
+      const [steer, answer] = [...impl.storage.chats.list()].slice(-2);
+      expect(steer).toEqual(expect.objectContaining({type: "message", author: USER, message: "Make it dark."}));
+      expect(steer).not.toHaveProperty("steered");
+      expect(answer).toEqual(expect.objectContaining({type: "message", message: "Done."}));
+      expect(impl.storage.chatMeta.get(CHAT)?.queuedSteers).toBeUndefined();
+      expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+    });
+    expect(requests()).toBe(1);
+  });
+
+  it("recovers a steer read after the final response without replaying an earlier approval", async () => {
+    const requests = inference(), s = await scenario("action", true);
+    await s.visit(impl => {
+      decide(impl, "action");
+      impl.addChatMessages(CHAT, MODEL.profile, [{type: "message", message: "Already done."}]);
+      impl.addChatMessages(CHAT, USER, [{type: "message", message: "Make it dark.", steered: true}]);
+    });
+    await evictDurableObject(s.stub);
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
+      const log = [...impl.storage.chats.list()];
+      expect(log.filter(m => m.type === "agentNudge")).toEqual([]);
+      expect(log.at(-1)).toEqual(expect.objectContaining({type: "message", message: "Done."}));
+    });
+    expect(requests()).toBe(1);
+  });
+
   it.each(["final response", "pending decision"] as const)(
       "recovers /compact after eviction without inheriting the preceding %s", async previous => {
     const s = await scenario("connection", true), requests = inference();

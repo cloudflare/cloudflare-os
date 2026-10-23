@@ -45,7 +45,11 @@ async function connectHost(
   document.body.append(container)
   root = createRoot(container)
   await act(async () => root!.render(
-    <SandboxedResourceConfigurator frame={frame} onEnsureResources={onEnsureResources} />))
+    <SandboxedResourceConfigurator
+      frame={frame}
+      acceptedResourceUrlPatterns={['https://docs.google.com/document/d/:id']}
+      onEnsureResources={onEnsureResources}
+    />))
 
   const iframe = await vi.waitFor(() => {
     const element = document.body.querySelector('iframe')

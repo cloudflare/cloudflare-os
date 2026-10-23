@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AgentTurnOutcome } from "@gadgets/integration-tests/agent-session";
+import type { GatewayModelSettings } from "@gadgets/workshop-shared/api";
 import type { JsonValue } from "vitest-evals";
 import { z } from "zod";
 import type { EvalVerifier } from "./verifier.js";
@@ -46,6 +47,11 @@ export type EvalTurn = {
 
 export type EvalTask = {
   id: string;
+  /**
+   * What the deployment's admin sets for the task's model before any trial starts (see
+   * AdminApi.setGatewayModelSettings). Only an AI Gateway deployment has such settings.
+   */
+  modelSettings?: GatewayModelSettings;
   turns: readonly [EvalTurn, ...EvalTurn[]];
 };
 
@@ -60,10 +66,15 @@ export function defineEvalTask(task: EvalTask): EvalTask {
   return task;
 }
 
-/** Hash what the agent was asked to do: each turn's prompt and the skills it adds. */
+/**
+ * Hash what the agent was asked to do: each turn's prompt and the skills it adds, and the model
+ * settings it runs under.
+ */
 export function taskVersion(task: EvalTask): string {
+  const turns = task.turns.map(({ prompt, skills }) => ({ prompt, skills }));
   return createHash("sha256")
-      .update(JSON.stringify(task.turns.map(({ prompt, skills }) => ({ prompt, skills }))))
+      .update(JSON.stringify(task.modelSettings === undefined
+        ? turns : { turns, modelSettings: task.modelSettings }))
       .digest("hex");
 }
 

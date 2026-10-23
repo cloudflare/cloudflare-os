@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE } from "../src/drive-session";
+import { isDriveFileId } from "../src/drive-api";
 import { GoogleApiError } from "../src/google-response";
 import {
-  explainUnopenedFile, isDriveFileId, nativeCopyName, nonNativeFileError, OFFICE_KINDS,
+  explainUnopenedFile, nativeCopyName, nonNativeFileError, OFFICE_KINDS,
   officeFileError, officeLabel, OfficeConversion, type OfficeKind,
 } from "../src/office-conversion";
 

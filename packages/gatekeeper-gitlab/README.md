@@ -27,6 +27,16 @@ No encoded Git commands, ref discovery, or arbitrary clone URLs cross this inter
 optional Cloudflare Access credentials remain in the gatekeeper's transport, including on
 self-hosted instances.
 
+## Auto-approval
+
+As in the GitHub gatekeeper, every queued action carries a stable kind (`gitlab.<action>`), and
+every one may be auto-approved once the user opts in to its kind, including closing and reopening,
+resolving and reopening diff threads, `requestChanges` reviews and force pushes (under their own
+`gitlab.forcePush` kind). **Merging a merge request** and **an approving review** always wait for
+a person: an approval shares the `gitlab.postReview` kind with the other reviews but is never
+auto-approvable. Each binding advertises through `getAutoApprovableActions()` only the eligible
+kinds its session can submit.
+
 ## Setting up GitLab OAuth credentials
 
 If you're running this project locally and want to use GitLab integrations, you'll need to create

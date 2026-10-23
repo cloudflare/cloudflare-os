@@ -134,7 +134,7 @@ Tools · Choose how much of this server the Gadget may call.
 (•) Choose tools   Only the tools you tick. Anything else is refused, including tools added later.
 
 Allowed tools · 3 selected. Read-only tools return data straight away; the rest queue for approval.
-[ 🔍 Filter tools... ]
+[ 🔍 Filter tools...                                  ]  3 of 14 selected   Select all   Clear
 ☑ Search issues                                                                        read-only
 ☑ Create issue                                                                    needs approval
 ```

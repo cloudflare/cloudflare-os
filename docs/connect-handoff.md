@@ -284,7 +284,8 @@ to secure and test. The redirect is the single transport, and it works for a gat
   Workshop tab loaded before a deploy that changes the handoff needs a reload before its next
   connect: a connect it starts afterwards writes no nonce, and the popup lands on "This link isn't
   valid" (whose copy says to reload). An old kit's completion page reaches nobody. Every RPC shape
-  change in this repo has the same stale-tab window, and there is no reload mechanism for it.
+  change in this repo has the same stale-tab window. The Workshop offers a reload once it notices a
+  newer frontend, but never reloads by itself.
 - Each connect costs one SPA load in the popup (the handoff page), with its own WebSocket session.
 - A desktop connect completes even if the Workshop tab was closed: the popup redeems the ticket
   itself, and the account is in the user's list the next time any tab subscribes. Native completion

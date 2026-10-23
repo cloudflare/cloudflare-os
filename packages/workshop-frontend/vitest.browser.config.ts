@@ -17,7 +17,9 @@ export default defineConfig({
     attachmentsDir: 'node_modules/.vite/vitest-browser/attachments',
     browser: {
       enabled: true,
-      provider: playwright(),
+      // Headless Chromium hides scrollbars by default, but they take layout space in a desktop
+      // browser with classic scrollbars, which the composer must measure around.
+      provider: playwright({ launchOptions: { ignoreDefaultArgs: ['--hide-scrollbars'] } }),
       headless: true,
       instances: [{ browser: 'chromium' }],
       screenshotDirectory: 'node_modules/.vite/vitest-browser/screenshots',
