@@ -207,7 +207,8 @@ draft.
 - **After approval**, the same capability and the same `GmailMessageId` become Gmail's real copy
   without the agent doing anything. The store already records which Gmail ID each sent Message-ID
   maps to when a send completes.
-- **After rejection**, the message reports that it was not sent.
+- **After rejection**, the message reports that it was not sent, or, when the rejected send's
+  outcome was unknown, that it may already have been sent.
 
 A pending message is read-only. The gatekeeper refuses the following, with an error saying they
 become available once the message has been delivered:
@@ -502,7 +503,8 @@ Left unchanged:
    - if a sent receipt exists (`store.sentMessageByRfcMessageId()`), delegate to a
      `GmailMessageStub` for the provider ID, scoped the way `getMessage()` scopes sent mail today;
    - if the send is still pending, serve the simulation;
-   - otherwise, throw "This message was not sent."
+   - otherwise, throw "This message was not sent.", or, for a send denied while its outcome was
+     unknown, that it may already have been sent.
 
    The simulated methods:
    - **`getMetadata()`** returns the overlay's info, passed through `messageInfo()` so the labels
