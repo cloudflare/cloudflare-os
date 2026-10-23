@@ -15,6 +15,13 @@ This policy may change in the future as the project matures. Until then, thank y
 Lint, build and tests ([`ci.yml`](.github/workflows/ci.yml)) run on every pull request, including
 those from forks.
 
+[`risk-review.yml`](.github/workflows/risk-review.yml) classifies a pull request as low, medium
+or high risk from the paths it touches and the
+[Clef](https://developers.cloudflare.com/workers-ai/models/clef/) decision model. A medium- or
+high-risk change needs a maintainer to approve its head commit before its `risk-review` status
+passes. On
+your pull request, the classifier itself runs only after a maintainer approves the run.
+
 Preview deployments ([`preview.yml`](.github/workflows/preview.yml)) do **not**, this is
 deliberate. Deploying a preview requires a Cloudflare API token that can create Workers
 and storage on a Cloudflare-owned account, and GitHub structurally withholds repository secrets
