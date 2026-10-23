@@ -8,6 +8,8 @@ export const MAX_ATTEMPTS = 8;
 export const RETRY_BASE_MS = 60_000;
 /** Maximum callback retry delay. */
 export const RETRY_MAX_MS = 3_600_000;
+/** Recovery lease granted to one in-flight delivery attempt. */
+export const RECOVERY_DELAY_MS = 5 * 60_000;
 
 /** Immutable registration data retained by a hook controller. */
 export type ScheduleRegistration = {

@@ -36,8 +36,10 @@ import {
   AiGatewayConfig, getAiGatewayConfig, getGatewayModels, type AiGatewayLogRoute,
 } from "./ai-gateway.js";
 import { completeText } from "./ai-invoke.js";
+import { checkUsageAndBalance } from "./ai-gateway-billing/limits/usage-checker.js";
 import { bridgePdfAttachments } from "./chat-attachment-pdf.js";
 import { hasGpt56PromptCaching, splitSystemPrompt } from "./system-prompt-blocks.js";
+import type { UserDurableObject } from "./user";
 
  /**
   * Routing to bill a user's own Cloudflare account for inference (BYOK path once the free tier is
@@ -958,13 +960,43 @@ export function getDecisionModel(env: Cloudflare.Env, config: AiModelConfig,
 }
 
 // =======================================================================================
-
 export type AiModelGatekeeperProps = {
   displayName: string,
   config: AiModelConfig,
   initiator: AiChatAuthorInfo,
   metadata?: GatewayMetadataContext,
+  /**
+   * The workspace owner whose LLM allowance the binding's calls count against, set at mint.
+   * Undefined only on bindings minted before spend gating existed (see bindingUsageGate).
+   */
+  ownerUserId?: string,
 };
+
+/**
+ * The usage gate every binding call passes: the same checkUsageAndBalance() a chat turn passes
+ * at its head, so each run()/decide() call draws one call on the workspace owner's allowance and
+ * refuses with the checker's reason once it is exhausted. Bindings never route through the
+ * owner's own gateway -- BYOK routing is a chat-path concern; a funded owner simply clears the
+ * gate without consuming the daily counter.
+ *
+ * Bindings minted before spend gating carry no ownerUserId in their frozen props, and the stored
+ * gatekeeper record cannot supply it (a DurableObjectClass hides its props), so those bindings
+ * keep a no-op gate rather than breaking on upgrade.
+ */
+function bindingUsageGate(
+    env: Cloudflare.Env, props: AiModelGatekeeperProps,
+    users: () => DurableObjectNamespace<UserDurableObject>): () => Promise<void> {
+  if (props.ownerUserId === undefined) return () => Promise.resolve();
+  return async () => {
+    // The namespace is resolved on first use, not at mint: a directly-constructed test DO has
+    // no ctx.exports, and a binding without an owner never needs it.
+    let namespace = users();
+    let usage = await checkUsageAndBalance(
+        env, namespace.get(namespace.idFromString(props.ownerUserId!)));
+    if (!usage.allowed) throw new Error(usage.reason ?? "Usage limit reached.");
+  };
+}
+
 
 /**
  * Throws if the deployment no longer lets a model binding run its model. A session starts on each
@@ -1018,7 +1050,9 @@ export class LanguageModelGatekeeper
     let model = getModel(this.env, config, this.ctx.props.initiator, {
       metadata: this.ctx.props.metadata,
     });
-    return new LanguageModelBindingImpl(model);
+    let usageGate = bindingUsageGate(
+        this.env, this.ctx.props, () => this.ctx.exports.UserDurableObject);
+    return new LanguageModelBindingImpl(model, usageGate);
   }
 
   applyAction(action: number): Promise<void> {
@@ -1044,7 +1078,9 @@ export class LanguageModelGatekeeper
 
 @validateRpc()
 class LanguageModelBindingImpl extends RpcTarget implements LanguageModelBinding {
-  constructor(private model: ModelHandle) {
+  constructor(
+      private model: ModelHandle,
+      private assertUsageAllowed: () => Promise<void>) {
     super();
   }
 
@@ -1052,6 +1088,8 @@ class LanguageModelBindingImpl extends RpcTarget implements LanguageModelBinding
     // TODO: Should we be calling authorizeObservation() here? It's not really observing anything,
     //   but you might want the audit logs?
     // TODO: Account LLM costs back to the calling gadget.
+    // Each call draws on the workspace owner's allowance (see bindingUsageGate).
+    await this.assertUsageAllowed();
     // A gadget may call its binding many times with the same system prompt.
     return await completeText(this.model, {
       prompt: options.prompt,
@@ -1087,9 +1125,11 @@ export class DecisionModelGatekeeper
       : Promise<DecisionModelBinding> {
     let { config, initiator, metadata } = this.ctx.props;
     await refuseRevokedModel(this.env, this.ctx.props);
-    return new DecisionModelBindingImpl(getDecisionModel(this.env, config, initiator, metadata));
+    let usageGate = bindingUsageGate(
+        this.env, this.ctx.props, () => this.ctx.exports.UserDurableObject);
+    return new DecisionModelBindingImpl(
+        getDecisionModel(this.env, config, initiator, metadata), usageGate);
   }
-
   applyAction(action: number): Promise<void> {
     throw new Error("This gatekeeper implements no actions.");
   }
@@ -1113,11 +1153,14 @@ export class DecisionModelGatekeeper
 
 @validateRpc()
 class DecisionModelBindingImpl extends RpcTarget implements DecisionModelBinding {
-  constructor(private model: DecisionModel) {
+  constructor(
+      private model: DecisionModel,
+      private assertUsageAllowed: () => Promise<void>) {
     super();
   }
 
   async decide(request: DecisionRequest): Promise<Record<string, DecisionAnswer>> {
+    await this.assertUsageAllowed();
     let result = await this.model(request);
     // pi reports a failure in the result; gadget code expects a rejection, as completeText()
     // gives the LLM binding.
