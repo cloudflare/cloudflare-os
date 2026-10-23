@@ -41,6 +41,10 @@ class TestAuthorizer extends RpcTarget implements ObservationAuthorizer {
     this.#seen.push(description.description);
   }
 
+  async authorizeTrackedObservation(): Promise<void> {
+    throw new Error("Tracked observations are not used in this test.");
+  }
+
   async getGitCache(): Promise<GitCache> {
     throw new Error("Git cache is not used in this test.");
   }

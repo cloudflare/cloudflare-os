@@ -4,7 +4,7 @@ import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, W
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
-import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
+import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, TrackedObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
@@ -12,7 +12,8 @@ import {
 import { keyString } from "@gadgets/typed-storage";
 import type { ListOptions } from "@gadgets/typed-storage";
 import {
-  actionLastChangedKey, chatChangeClientKey, chatKey, chatKeyPrefix, makeOverseerStorage,
+  actionLastChangedKey, chatChangeClientKey, chatKey, chatKeyPrefix, connectionVendorId,
+  makeOverseerStorage,
   type ActionRecord, type ActiveAgentRecord, type AgentSpawnerBindingProps,
   type AiChatAgentContext, type BindingRecord,
   type BlueprintGadgetRecord, type BoundHookRecord, type ChatBindingEntry,
@@ -20,6 +21,7 @@ import {
   type ExternalChatRecord, type ExternalMessageRecord, type GadgetRecord, type GatekeeperCaller,
   type GatekeeperClass, type GatekeeperRecord, type ObserverRecord, type OverseerStorage,
   type StoredAssistantMessage, type StoredChatMessage, type StoredChatMetadata,
+  type StoredObservationDescription,
   type WorkpieceRecord, type WorktreeRecord,
 } from "./storage-schema/overseer-storage";
 import type { UserAiModelRecord, WorkspaceOutputEntry } from "./storage-schema/user-storage";
@@ -77,6 +79,9 @@ import { checkUsageAndBalance } from "./ai-gateway-billing/limits/usage-checker"
 import { normalizeAgentCatalog } from "./agent-catalog";
 import { refreshCachedBalance } from "./ai-gateway-billing/cloudflare/connection-service";
 import { SharingManager, SharingCaller, roleRank } from "./sharing";
+import {
+  MAX_VERIFICATION_PASSES, ObserverLedger, observerScopeCovers, requireVerifier,
+} from "./observer-ledger";
 import { AutoApprovalDrainer, autoApprovalRule } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext } from "./observability";
@@ -265,8 +270,7 @@ function defaultBlueprintBindingTitle(record: GatekeeperRecord, bindingName?: st
 }
 
 function gatekeeperVendorId(record: GatekeeperRecord | undefined): string | undefined {
-  let spec = record?.creationSpec;
-  return spec && "vendorId" in spec ? spec.vendorId.toLowerCase() : undefined;
+  return connectionVendorId(record)?.toLowerCase();
 }
 
 // Produce a valid, unused binding name from a suggested base name: sanitized to identifier
@@ -340,7 +344,7 @@ function observerVendorId(record: GatekeeperRecord): string | null {
         "owner must remove the connection before the workspace can be shared, or start a new " +
         "workspace.");
   }
-  return "vendorId" in record.creationSpec ? record.creationSpec.vendorId : null;
+  return connectionVendorId(record) ?? null;
 }
 
 // Human-readable title for an observer binding -- what the user sees both in the config modal and in
@@ -538,7 +542,10 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
   let gatekeeperId = record.gatekeeperId >= 0 ? record.gatekeeperId : undefined;
 
   switch (record.type) {
-    case "observation":
+    case "observation": {
+      // Subresource IDs are enforcement data (see ActionRecord), not display: they
+      // name what was read, and one observation may report thousands.
+      let {subresources: _, ...description} = record.description;
       return {
         id: record.id,
         gatekeeperId,
@@ -547,8 +554,9 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
         createdAt: record.createdAt,
         state: record.state,
         type: "observation",
-        description: record.description,
+        description,
       };
+    }
     case "action":
       return {
         id: record.id,
@@ -734,6 +742,10 @@ class OverseerImpl implements AgentHooks {
   // driver, and push authorization (see git-cache.ts). Per-gatekeeper GitCache stubs are minted
   // from this via `new GitCacheImpl(...)`.
   readonly gitCache: WorkspaceGitCache;
+
+  // Kernel-owned observer tracking for connections that opted in (see observer-ledger.ts).
+  // Legacy connections keep the addObserver/excludeObservers protocol below.
+  readonly observerLedger: ObserverLedger;
 
   // Per-chat in-memory state for running agents.
   #liveChats = new Map<number, LiveChatContext>();
@@ -1229,6 +1241,7 @@ class OverseerImpl implements AgentHooks {
     });
     this.users = this.ctx.exports.UserDurableObject;
     this.ownerId = this.storage.ownerId.get();
+    this.observerLedger = new ObserverLedger(this);
 
     // Run any pending storage migration (see storage-schema/overseer-migrations.ts) before
     // anything else can touch storage. This must happen in the constructor (not just open())
@@ -1378,6 +1391,11 @@ class OverseerImpl implements AgentHooks {
   // `gatekeeper${id}` thanks to the shared workpiece counter).
   gadgetFacetName(id: WorkpieceId): string {
     return this.defaultGadgetId === id ? "gadget" : `gadget${id}`;
+  }
+
+  // Facet name for the given gatekeeper.
+  gatekeeperFacetName(id: WorkpieceId): string {
+    return `gatekeeper${id}`;
   }
 
   // Resolve an agent tool's optional workpiece reference. Absent means the workspace's default
@@ -2665,7 +2683,8 @@ class OverseerImpl implements AgentHooks {
             env[name] = this.makeBindingLoopback(
                 {type: "worktree", id: entry.id, executionId}, caller);
           } else if (this.storage.gatekeepers.get(entry.id)) {
-            env[name] = this.makeBindingLoopback({type: "gatekeeper", id: entry.id}, caller);
+            env[name] = this.makeBindingLoopback(
+                {type: "gatekeeper", id: entry.id, executionId}, caller);
           }
           break;
         }
@@ -4881,7 +4900,7 @@ class OverseerImpl implements AgentHooks {
   // The bare facet stub behind getGatekeeperFacet(): a request made on it leaves the facet unable
   // to call its own ctx.restore().
   #getGatekeeperFacetRaw(id: number, cls?: GatekeeperClass): Fetcher<Gatekeeper<any>> {
-    return this.ctx.facets.get(`gatekeeper${id}`, async () => {
+    return this.ctx.facets.get(this.gatekeeperFacetName(id), async () => {
       let resolved = cls ?? this.storage.gatekeepers.get(id)?.class;
       if (!resolved) {
         throw new Error("no such gatekeeper?");
@@ -4945,7 +4964,7 @@ class OverseerImpl implements AgentHooks {
                                        configuration: string | null}): Promise<void> {
     let id = record.gatekeeperId;
     // A created resource exists only once its creation applies, and that stays pending until then.
-    if (record.action !== "create" && this.#creationPending(id)) {
+    if (record.action !== "create" && this.creationPending(id)) {
       throw new Error("This resource doesn't exist yet. Approve its creation first.");
     }
     let gatekeeper = await this.getGatekeeperFacet(record.gatekeeperId);
@@ -4996,7 +5015,7 @@ class OverseerImpl implements AgentHooks {
     }
     if (gatekeeperRecord) {
       // Restart the facet on the new class before anything else reaches it.
-      this.ctx.facets.abort(`gatekeeper${id}`,
+      this.ctx.facets.abort(this.gatekeeperFacetName(id),
           new Error("Connection restarted because its resource was created."));
       // Minting skipped addGatekeeper's restart: collaborators had no real resource to be
       // verified against until now (see createExternalResource).
@@ -5091,6 +5110,7 @@ class OverseerImpl implements AgentHooks {
       gatekeeperRecord.resourceTitle = description.title;
       gatekeeperRecord.resourceUrl = description.url;
       gatekeeperRecord.hasSlashCommands = description.hasSlashCommands;
+      this.observerLedger.adoptCreatedConnection(gatekeeperRecord, description);
       this.storage.gatekeepers.put(gatekeeperRecord);
     } catch (error) {
       // Still the right teardown with nothing published: it deletes the facet we just created, and
@@ -5165,7 +5185,7 @@ class OverseerImpl implements AgentHooks {
       }
     }
 
-    this.ctx.facets.delete(`gatekeeper${id}`);
+    this.ctx.facets.delete(this.gatekeeperFacetName(id));
     this.storage.gatekeepers.delete(id);
     this.#rebroadcastChatMeta(affectedChats);
   }
@@ -5182,8 +5202,8 @@ class OverseerImpl implements AgentHooks {
       }
 
       case "gatekeeper":
-        return this.getGatekeeperFacet(target.id)
-            .then(facet => this.openGatekeeperSession(target.id, facet, caller));
+        return this.getGatekeeperFacet(target.id).then(facet =>
+            this.openGatekeeperSession(target.id, facet, caller, target.executionId));
 
       case "worktree": {
         // The programmatic Worktree binding (worktree-session.ts). A worktree's uncommitted
@@ -5200,8 +5220,8 @@ class OverseerImpl implements AgentHooks {
         if (record.chatId !== caller.chatId) {
           throw new Error(`No such worktree: ${target.id}`);
         }
-        let turn = this.#activeWorktreeTurns.get(caller.chatId);
-        if (turn === undefined || turn.executionId !== target.executionId) {
+        let execution = this.#activeExecutions.get(caller.chatId);
+        if (execution?.worktree === undefined || execution.executionId !== target.executionId) {
           throw new Error(
               "This worktree binding is no longer live; worktree bindings are usable only " +
               "while the executeCode call they were provided to is running.");
@@ -5209,9 +5229,9 @@ class OverseerImpl implements AgentHooks {
         // Commits go to the turn's initiator: in a collaborative chat, a collaborator's work is
         // attributed to the collaborator, matching how accepted commits use the acting user's
         // profile.
-        let initiator = turn.initiator;
+        let initiator = execution.initiator;
         return Promise.resolve(
-            new WorktreeSessionImpl(this, target.id, turn.access, async () => initiator));
+            new WorktreeSessionImpl(this, target.id, execution.worktree, async () => initiator));
       }
 
       case "exports":
@@ -5238,8 +5258,8 @@ class OverseerImpl implements AgentHooks {
   // the owner standing in for a spawner's creator. Resolved at commit time, so read-only use
   // of env.GIT never waits on the owner's DO.
   async #gitAuthorFor(caller: GatekeeperCaller): Promise<AiChatAuthorInfo> {
-    let turn = caller.from === "agent" ? this.#activeWorktreeTurns.get(caller.chatId) : undefined;
-    if (turn !== undefined) return turn.initiator;
+    let execution = caller.from === "agent" ? this.#activeExecutions.get(caller.chatId) : undefined;
+    if (execution?.worktree !== undefined) return execution.initiator;
     return this.gadgetAuthorFor(await retryOnDoReset(() => this.ownerUserDo().whoami(), this.logger));
   }
 
@@ -5255,12 +5275,18 @@ class OverseerImpl implements AgentHooks {
     };
   }
 
-  // The worktree turn state registered by a running executeCode, keyed by chat (one turn per
-  // chat, and executeCode calls within it are sequential). `executionId` names the registering
-  // execution: worktree loopbacks are minted with it and verified against it, so only stubs from
-  // the currently-running execution resolve. See executeCodeMode.
-  #activeWorktreeTurns = new Map<number,
-      {access: WorktreeTurnAccess, initiator: AiChatAuthorInfo, executionId: string}>();
+  // The executeCode invocation running for each chat (one turn per chat, and executeCode calls
+  // within it are sequential), with the turn's worktree state when it has one. `executionId`
+  // names the registering execution: worktree and gatekeeper loopbacks are minted with it and
+  // verified against it, so only stubs from the currently-running execution resolve. See
+  // executeCodeMode.
+  #activeExecutions = new Map<number,
+      {executionId: string, initiator: AiChatAuthorInfo, worktree?: WorktreeTurnAccess}>();
+
+  // ObserverLedgerHost: whether `executionId` is the executeCode invocation running for `chatId`.
+  isLiveExecution(chatId: number, executionId: string): boolean {
+    return this.#activeExecutions.get(chatId)?.executionId === executionId;
+  }
 
   // Maps chat ID to action numbers recently performed by that chat's agent. These are drained into
   // the chat log after the tool returns. `awaitDecision` is true if any captured action needs it.
@@ -5283,9 +5309,10 @@ class OverseerImpl implements AgentHooks {
 
   async #associateAction(caller: GatekeeperCaller, actionId: number) {
     try {
+      // (A user caller's chat is a slash command's, whose own chat event already shows it.)
       if (caller.from === "agent") {
         this.#getOrCreateCapturedActions(caller.chatId).actions.push(actionId);
-      } else if (caller.from !== "hook" && caller.chatId !== undefined && this.ownerId) {
+      } else if (caller.from === "gadget" && caller.chatId !== undefined && this.ownerId) {
         let owner = this.users.get(this.users.idFromString(this.ownerId));
         let userMeta = await owner.getChatContext(null);
         this.addChatMessages(caller.chatId, this.gadgetAuthorFor(userMeta.profile),
@@ -5298,72 +5325,102 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
+  // A hook firing's `hookId` is revalidated at the synchronous commit point, after any policy
+  // lookup has awaited.
   async authorizeObservation(gatekeeperId: number, description: ObservationDescription,
-                             caller: GatekeeperCaller): Promise<void> {
+                             caller: GatekeeperCaller, hookId?: number): Promise<void> {
     // Forward exclusion: the gatekeeper may name observers who must not see this observation. Since
     // v1 has no per-thread hiding, the only way to let such an observation proceed is if no named
     // observer could reach it -- either they have lost access in the sharing graph, or this
     // connection has left their role's verification scope. See
-    // observers-implementation-plan.md §5 Step 5.
-    if (description.excludeObservers && description.excludeObservers.length > 0) {
+    // observers-implementation-plan.md §5 Step 5. (Legacy connections only: the ledger below
+    // refuses every observation through a tracked one, including one tracked since this check
+    // began.)
+    if (description.excludeObservers && description.excludeObservers.length > 0 &&
+        !this.observerLedger.isTracked(gatekeeperId)) {
       await this.#enforceExcludeObservers(gatekeeperId, description.excludeObservers);
     }
+    await this.#commitObservation(gatekeeperId, description, caller, hookId,
+        commit => this.observerLedger.authorizeObservation(gatekeeperId, description, commit));
+  }
 
+  // `executionId` is an agent session's originating execution (see ApprovalQueueImpl). A hook
+  // firing's `hookId` is revalidated at the synchronous commit point, after any policy lookup or
+  // observer verification has awaited.
+  authorizeTrackedObservation(gatekeeperId: number, description: TrackedObservationDescription,
+                              caller: GatekeeperCaller, executionId?: string,
+                              hookId?: number): Promise<void> {
+    return this.#commitObservation(gatekeeperId, description, caller, hookId,
+        commit => this.observerLedger.authorizeTrackedObservation(
+            gatekeeperId, description, caller, executionId, commit));
+  }
+
+  // Applies an observation's workspace policy and writes its audit record when `authorize` -- the
+  // ledger's decision under the observation's protocol -- calls `commit`: synchronously, at its
+  // final decision, before yielding to any admission or import that could invalidate the audience
+  // or protocol it checked.
+  async #commitObservation(
+      gatekeeperId: number, description: StoredObservationDescription, caller: GatekeeperCaller,
+      hookId: number | undefined,
+      authorize: (commit: (subresources?: string[]) => undefined) => void | Promise<void>)
+      : Promise<void> {
     // Setting ownerInvitesOnly narrows access to direct owner grants (see
     // SharingManager.computeEffectiveRoles), so the first observation to set it snapshots who had
     // access beforehand. The manager may need an RPC on first use; from the flag read below through
     // the diff after the writes, nothing awaits.
     let sharing = description.ownerInvitesOnly && !this.storage.ownerInvitesOnly.get()
         ? await this.getSharingManager() : undefined;
-    let baseline = sharing && !this.storage.ownerInvitesOnly.get()
-        ? sharing.computeEffectiveRoles() : undefined;
 
-    if (description.containsRestrictedData) {
-      this.storage.containsRestrictedData.put(true);
-    }
-    if (description.ownerInvitesOnly) {
-      this.storage.ownerInvitesOnly.put(true);
-    }
+    await authorize(subresources => {
+      if (hookId !== undefined) requireLiveHook(this, hookId);
+      let baseline = sharing && !this.storage.ownerInvitesOnly.get()
+          ? sharing.computeEffectiveRoles() : undefined;
 
-    let actionId = this.storage.nextActionId.get();
-    this.storage.nextActionId.put(actionId + 1);
+      let actionIds = this.storage.transaction(() => {
+        if (description.containsRestrictedData) {
+          this.storage.containsRestrictedData.put(true);
+        }
+        if (description.ownerInvitesOnly) {
+          this.storage.ownerInvitesOnly.put(true);
+        }
 
-    let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
+        // Only a tracked connection's observation keeps `subresources`, which makes it an observer
+        // requirement (see ActionRecord); a pending creation's simulated read must not.
+        let {subresources: _, ...untracked} = description;
+        let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
+        return this.observerLedger.recordObservation({
+          gatekeeperId,
+          caller,
+          resourceTitle: gatekeeper?.resourceTitle,
+          resourceUrl: gatekeeper?.resourceUrl,
+          createdAt: new Date(),
+          state: "approved",
+          type: "observation",
+          description: subresources ? {...untracked, subresources} : untracked,
+        });
+      });
+      for (let actionId of actionIds) this.#associateAction(caller, actionId);
 
-    let record: ActionRecord = {
-      id: actionId,
-      gatekeeperId,
-      caller,
-      resourceTitle: gatekeeper?.resourceTitle,
-      resourceUrl: gatekeeper?.resourceUrl,
-      createdAt: new Date(),
-      state: "approved",
-      type: "observation",
-      description
-    };
-
-    this.storage.actions.put(record);
-    this.#associateAction(caller, actionId);
-
-    if (sharing && baseline) {
-      let affected = sharing.computeAffectedByOwnerInvitesOnly(baseline);
-      if (affected.length > 0) {
-        // Anyone who joined through a link or through another collaborator just lost access (or
-        // was downgraded), so sever live sessions as removeCollaborator does, after the writes
-        // above. The cleanup is best-effort and not awaited: the observation shouldn't wait on
-        // gatekeeper and User-DO round trips, and whatever the restart cuts off self-heals (see
-        // removeCollaborator).
-        this.scheduleAccessRestart(
-            "Gadget restarted to revoke access for people the owner did not add directly.");
-        this.tearDownLostObservers(affected)
-            .then(() => this.refreshAffectedCollaboratorListings(affected))
-            .catch(err => {
-              this.logger.warn("failed to clean up after ownerInvitesOnly revoked access", {
-                event: "sharing.owner.invites.only.cleanup.failed", error: err,
+      if (sharing && baseline) {
+        let affected = sharing.computeAffectedByOwnerInvitesOnly(baseline);
+        if (affected.length > 0) {
+          // Anyone who joined through a link or through another collaborator just lost access (or
+          // was downgraded), so sever live sessions as removeCollaborator does, after the writes
+          // above. The cleanup is best-effort and not awaited: the observation shouldn't wait on
+          // gatekeeper and User-DO round trips, and whatever the restart cuts off self-heals (see
+          // removeCollaborator).
+          this.scheduleAccessRestart(
+              "Gadget restarted to revoke access for people the owner did not add directly.");
+          this.tearDownLostObservers(affected)
+              .then(() => this.refreshAffectedCollaboratorListings(affected))
+              .catch(err => {
+                this.logger.warn("failed to clean up after ownerInvitesOnly revoked access", {
+                  event: "sharing.owner.invites.only.cleanup.failed", error: err,
+                });
               });
-            });
+        }
       }
-    }
+    });
   }
 
   async getChatAttachmentData(chatId: number, id: string): Promise<Uint8Array> {
@@ -5794,7 +5851,7 @@ class OverseerImpl implements AgentHooks {
     // Nobody named can reach the observation. Tear down those who have lost access entirely, since
     // they are no longer set up to observe at all, and de-register the rest from this gatekeeper
     // only. A fresh open racing one of these removals is ordered behind it by
-    // #withObserverGatekeeperLock, so its registration is never silently undone.
+    // #serialized, so its registration is never silently undone.
     let allGatekeeperIds = [...this.storage.gatekeepers.list()].map(gk => gk.id);
     let removals = unauthorized.map(observer => {
       this.storage.observers.delete(observer.profileId);
@@ -6315,8 +6372,8 @@ class OverseerImpl implements AgentHooks {
   // openGatekeeperSession (the chokepoint every gatekeeper session passes through), the
   // slash-command invoke in #prepareChatMessage, GadgetClientImpl.bindWithSuggestedName (the
   // latter two take a client-supplied gatekeeper id and reach the connection outside
-  // openGatekeeperSession), and startHook (the inbound delivery route, whose arming enable may
-  // itself be the widening that scheduled the restart).
+  // openGatekeeperSession), startHook (the inbound delivery route, whose arming enable may itself
+  // be the widening that scheduled the restart), and the ObserverLedger's authorize methods.
   assertGatekeeperUsable(id: number): void {
     if (!this.gatekeeperUsable(id)) {
       throw new Error(
@@ -6326,13 +6383,15 @@ class OverseerImpl implements AgentHooks {
 
   // Every gatekeeper session -- GatekeeperClientImpl.openSession and binding loopbacks via
   // startGatekeeperSession alike -- passes through here, so this is where a connection still
-  // blocked pending a scope-widening restart is refused (see #gatekeepersPendingRestart).
+  // blocked pending a scope-widening restart is refused (see #gatekeepersPendingRestart). Agent
+  // loopbacks carry the execution their authorizers belong to.
   openGatekeeperSession<Session extends RpcCompatible<Session>>(
-      id: number, facet: Fetcher<Gatekeeper<Session>>, caller: GatekeeperCaller)
-      : Promise<RpcStub<Session>> {
+      id: number, facet: Fetcher<Gatekeeper<Session>>, caller: GatekeeperCaller,
+      executionId?: string): Promise<RpcStub<Session>> {
     this.assertGatekeeperUsable(id);
     let queue = this.storage.gatekeepers.get(id)?.creationSpec?.type === "agentSpawner"
-        ? new AgentSpawnerQueueImpl(this, id, caller) : new ApprovalQueueImpl(this, id, caller);
+        ? new AgentSpawnerQueueImpl(this, id, caller)
+        : new ApprovalQueueImpl(this, id, caller, undefined, executionId);
     // @ts-expect-error TODO: Remove annotation when Cap'n Web fixes cyclic type issues
     return facet.startSession(queue);
   }
@@ -6484,9 +6543,11 @@ class OverseerImpl implements AgentHooks {
 
   // Invoke slash-command requests before committing their visible event and optional generated
   // message. A result without a message suppresses only the generated message, not the invocation.
+  // `chatId` is the existing chat the command runs in, to which its reads are attributed; a new
+  // chat's first command runs before the chat exists, so its reads go to the workspace context.
   async #prepareChatMessage(
       message: string | SlashCommandRequest,
-      hasAttachments: boolean): Promise<PreparedChatMessage> {
+      hasAttachments: boolean, chatId?: number): Promise<PreparedChatMessage> {
     if (typeof message !== "string") {
       // A built-in command is handled by the Workshop, not a Gatekeeper: there is nothing to invoke
       // here. Committing the event is what makes the turn a compaction turn (see isCompactionTurn).
@@ -6508,7 +6569,7 @@ class OverseerImpl implements AgentHooks {
       // Display-only, and from the browser, so a bad value is dropped rather than refused.
       message = {...message, commandPosition: sanitizeCommandPosition(message)};
       using authorizer = new NativeRpcStub<ObservationAuthorizer>(
-          new SlashCommandAuthorizerImpl(this, gatekeeperId, {from: "user"}));
+          new SlashCommandAuthorizerImpl(this, gatekeeperId, {from: "user", chatId}));
       let result = await invokeSlashCommand(facet, message, authorizer);
       if (result.message === undefined) {
         return {slashCommand: message, skillName: result.skillName};
@@ -6746,7 +6807,7 @@ class OverseerImpl implements AgentHooks {
     using _chatMessageReservation = this.reserveChatMessagePreparation(chatId);
     await this.#migrateChatAttachments(chatId);
     let prepared = await this.#prepareChatMessage(
-        message, (canonicalAttachments?.length ?? 0) > 0);
+        message, (canonicalAttachments?.length ?? 0) > 0, chatId);
 
     let attachmentFiles = await this.#prepareWorkspaceAttachmentFiles(chatId, canonicalAttachments);
     let scratchWorktree = this.#scratchWorktree(chatId);
@@ -9021,13 +9082,11 @@ class OverseerImpl implements AgentHooks {
     crypto.getRandomValues(bytes);
     let executionId: string = bytes.toBase64();
 
-    // Register the turn's worktree state for the worktree binding loopbacks (see
-    // startGatekeeperSession's "worktree" case), for exactly this execution's duration -- the
-    // executionId is minted into the loopbacks below, so stubs from other executions never
-    // resolve against this registration.
-    if (worktreeTurn !== undefined) {
-      this.#activeWorktreeTurns.set(chatId, {access: worktreeTurn, initiator, executionId});
-    }
+    // Register the execution, with the turn's worktree state, for the binding loopbacks (see
+    // startGatekeeperSession's "worktree" case and ObserverLedger.authorizeTrackedObservation), for
+    // exactly this execution's duration -- the executionId is minted into the loopbacks below, so
+    // stubs from other executions never resolve against this registration.
+    this.#activeExecutions.set(chatId, {executionId, initiator, worktree: worktreeTurn});
 
     if (onOutputText) {
       this.#codeModeOutputSubscribers.set(executionId, onOutputText);
@@ -9116,8 +9175,8 @@ class OverseerImpl implements AgentHooks {
       return log;
     } finally {
       // Guarded by executionId so this cleanup can never clobber a newer registration.
-      if (this.#activeWorktreeTurns.get(chatId)?.executionId === executionId) {
-        this.#activeWorktreeTurns.delete(chatId);
+      if (this.#activeExecutions.get(chatId)?.executionId === executionId) {
+        this.#activeExecutions.delete(chatId);
       }
       this.#codeModeOutputSubscribers.delete(executionId);
       this.#codeModeResolvers.delete(executionId);
@@ -9452,7 +9511,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Whether the gatekeeper's resource is still simulated: its creation is pending.
-  #creationPending(id: WorkpieceId): boolean {
+  creationPending(id: WorkpieceId): boolean {
     return [...this.storage.actions.pendingByGatekeeper.get(id)]
         .some(queued => queued.type === "action" && queued.action === "create");
   }
@@ -9779,33 +9838,33 @@ class OverseerImpl implements AgentHooks {
     // A simulated resource has no account behind it to verify anyone against. Approving its
     // creation restarts every session (see applyPendingAction), so verification happens then.
     // (Filtered after the listing: reading another index mid-listing would end it.)
-    return result.filter(gk => !this.#creationPending(gk.id));
+    return result.filter(gk => !this.creationPending(gk.id));
   }
 
   listObserverRequirements(role: CollaboratorRole): ObserverBindingNeed[] {
     return this.#inScopeGatekeepers(role).map(observerBindingNeed);
   }
 
-  // Tail of the in-flight addObserver/removeObserver chain per `${observerId}/${gatekeeperId}`
-  // (see #withObserverGatekeeperLock). In-memory only, entries dropped as each chain drains; the
-  // calls it orders are themselves re-run/repaired across DO restarts.
-  #observerGatekeeperLocks = new Map<string, Promise<void>>();
+  // Tail of the in-flight observer work chain per key (see #serialized). In-memory only, entries
+  // dropped as each chain drains; the work it orders is itself re-run/repaired across DO restarts.
+  #observerLocks = new Map<string, Promise<void>>();
 
-  // Serialize this DO's addObserver/removeObserver RPCs per (observer, gatekeeper) pair. The
-  // overseer is the only caller of either, so ordering our own calls is enough to close the race
-  // between an exclusion teardown's in-flight removeObserver and a fresh open's addObserver on
-  // the same pair: the add either lands first or waits for the removal and re-registers cleanly.
-  async #withObserverGatekeeperLock<T>(
-      observerId: string, gatekeeperId: number, fn: () => Promise<T>): Promise<T> {
-    let key = `${observerId}/${gatekeeperId}`;
-    let prior = this.#observerGatekeeperLocks.get(key) ?? Promise.resolve();
+  // Run `fn` once every earlier call with the same `key` has settled. Two kinds of key:
+  //   - `${observerId}/${gatekeeperId}` orders this DO's addObserver/removeObserver RPCs per pair.
+  //     The overseer is the only caller of either, so ordering our own calls is enough to close
+  //     the race between an exclusion teardown's in-flight removeObserver and a fresh open's
+  //     addObserver on the same pair: the add either lands first or waits for the removal and
+  //     re-registers cleanly.
+  //   - `admission/${profileId}` orders one profile's ensureObserver calls (see there).
+  async #serialized<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    let prior = this.#observerLocks.get(key) ?? Promise.resolve();
     let release!: () => void;
     let tail = new Promise<void>(resolve => { release = resolve; });
-    this.#observerGatekeeperLocks.set(key, tail);
+    this.#observerLocks.set(key, tail);
     tail.then(() => {
       // Drop the entry once the chain drains; a newer tail means someone queued behind us.
-      if (this.#observerGatekeeperLocks.get(key) === tail) {
-        this.#observerGatekeeperLocks.delete(key);
+      if (this.#observerLocks.get(key) === tail) {
+        this.#observerLocks.delete(key);
       }
     });
     await prior;  // never rejects: each holder settles its own tail via the finally below
@@ -9823,7 +9882,7 @@ class OverseerImpl implements AgentHooks {
   async #removeObserverFromGatekeepers(observerId: string, gatekeeperIds: number[]): Promise<void> {
     await Promise.all(gatekeeperIds.map(async id => {
       try {
-        await this.#withObserverGatekeeperLock(observerId, id,
+        await this.#serialized(`${observerId}/${id}`,
             async () => (await this.getGatekeeperFacet(id)).removeObserver(observerId));
       } catch (err) {
         this.logger.warn("failed to remove observer from gatekeeper", {
@@ -9831,6 +9890,13 @@ class OverseerImpl implements AgentHooks {
         });
       }
     }));
+  }
+
+  // ObserverLedgerHost: a connection's history moved into the ledger, so the registrations its
+  // legacy protocol kept are retired (best-effort, never throws).
+  async retireLegacyObserverRegistrations(gatekeeperId: WorkpieceId): Promise<void> {
+    await Promise.all(Array.from(this.storage.observers.list(),
+        observer => this.#removeObserverFromGatekeepers(observer.observerId, [gatekeeperId])));
   }
 
   // Tear down observer records for collaborators who lost access as a result of a sharing change.
@@ -9917,25 +9983,33 @@ class OverseerImpl implements AgentHooks {
 
   // Bring a non-owner `profileId` into compliance as an observer for their `role`, so that they may
   // open the Gadget. May invoke `configureCb` to ask the user to choose connected accounts for
-  // gatekeeper bindings they haven't configured yet. Re-runs `addObserver` (re-verification) for
-  // already-configured bindings on every open, catching revocation of the user's underlying
-  // resource access promptly. Returns when fully verified; throws to deny access.
-  //
-  // See observers-implementation-plan.md §5 Step 3.
-  //
-  // TODO: Concurrent opens by the same profile race this method -- two calls mint two observerIds
-  //   and the last-written record forgets the other's gatekeeper registrations -- so verification
-  //   needs to be serialized per profile.
-  async ensureObserver(
+  // gatekeeper bindings they haven't configured yet. Re-verifies already-configured bindings on
+  // every open, catching revocation of the user's underlying resource access promptly: a legacy
+  // connection through `addObserver()`, and one the Workshop tracks itself (see observer-ledger.ts)
+  // by asking it to check every requirement the role reaches with the chosen account. Returns
+  // when fully verified; throws to deny access. Serialized per profile, so a queued open rereads
+  // the observer record the preceding one persisted (and they never mint two observerIds); an
+  // account prompt blocks only that profile. See observers-implementation-plan.md §5 Step 3.
+  ensureObserver(
       profileId: string,
       clientUser: DurableObjectStub<UserDurableObject>,
       role: CollaboratorRole,
       configureCb?: RpcStub<ObserverConfigCallback>): Promise<void> {
-    // 1. Select in-scope gatekeepers. If none require an account, there is nothing to verify and
+    return this.#serialized(`admission/${profileId}`,
+        () => this.#ensureObserver(profileId, clientUser, role, configureCb));
+  }
+
+  async #ensureObserver(
+      profileId: string,
+      clientUser: DurableObjectStub<UserDurableObject>,
+      role: CollaboratorRole,
+      configureCb?: RpcStub<ObserverConfigCallback>): Promise<void> {
+    // 1. Select in-scope gatekeepers, and the requirements recorded through the tracked ones (see
+    //    ObserverLedger.observerScope). If none require an account, there is nothing to verify and
     //    no observer record is needed (built-in gatekeepers never name observers in
     //    excludeObservers).
-    let inScope = this.#inScopeGatekeepers(role);
-    if (inScope.length === 0) return;
+    let scope = this.observerLedger.observerScope(role, this.#inScopeGatekeepers(role));
+    if (scope.gatekeepers.length === 0) return;
 
     // 2. Load any existing observer record, and build a working copy of its account choices.
     let record = this.storage.observers.get(profileId);
@@ -9946,14 +10020,13 @@ class OverseerImpl implements AgentHooks {
     // observer's `observerId` is already persisted, so it stays resolvable no matter how this call
     // ends -- which is what makes keeping their registrations on a failure safe (see the catch).
     let returningObserver = record !== undefined;
-    // Gatekeepers this call touched, for a *first-time* observer's rollback only (see the catch):
-    // those we successfully registered the observer with, and those that refused (or whose account
-    // was gone) and have not verified since.
-    let newlyAdded = new Set<number>();
-    let invalidated = new Set<number>();
+    // Legacy gatekeepers this call tried to register the observer with, for a *first-time*
+    // observer's rollback only (see the catch): a refused addObserver may still have registered
+    // them. Tracked connections hold no registrations.
+    let attempted = new Set<number>();
 
     // Failures from the previous pass, keyed by gatekeeper id: an already-configured binding whose
-    // chosen account was disconnected, or which the gatekeeper refused.
+    // chosen account was disconnected, or which refused it.
     let passFailures = new Map<number, ObserverBindingFailure>();
 
     // We may need to re-prompt the configuration modal when an already-configured binding fails, so
@@ -9961,9 +10034,13 @@ class OverseerImpl implements AgentHooks {
     // misbehaving client (or an account that simply keeps failing).
     let reprompts = 0;
     const MAX_CONFIG_REPROMPTS = 1;
+    // Passes re-run because the scope changed while one awaited (see step 6).
+    let scopePasses = 0;
 
     try {
       while (true) {
+        let inScope = scope.gatekeepers;
+
         // 3. Determine uncovered bindings: in-scope gatekeepers with no account choice yet. Ambient
         //    bindings use the collaborator's matching provided account automatically; unlike an
         //    ordinary connection, there is no meaningful account choice when one already exists.
@@ -10027,49 +10104,85 @@ class OverseerImpl implements AgentHooks {
           }
         }
 
-        // 5. Verify all in-scope bindings (covered + newly chosen). For each, resolve the chosen
-        //    account's verifier and hand it to the gatekeeper's addObserver(). Collect *every*
+        // 5. Verify all in-scope bindings (covered + newly chosen) with the chosen accounts: a
+        //    tracked connection by asking it to check its requirements with the account's
+        //    verifier, a legacy one by handing that verifier to its addObserver(). Collect *every*
         //    failure rather than just the first, so a re-prompt can present them all at once.
         let failures = new Map<number, ObserverBindingFailure>();
 
         await Promise.all(inScope.map(async gk => {
+          // Removed while this open awaited: step 6 re-runs the pass without it.
+          if (!this.storage.gatekeepers.get(gk.id)) return;
           let accountId = accountChoices[gk.id];
           let vendorId = observerVendorId(gk);
           if (!vendorId) {
             throw new Error("An observer account was requested for a non-gatekeeper binding.");
           }
 
-          let fail = (reason: string, err?: unknown) => {
-            failures.set(gk.id, {accountId, reason});
-            invalidated.add(gk.id);
+          try {
+            if (gk.observerTracking) {
+              // Until a switched connection's history is imported, this pass's requirements for
+              // it are incomplete: wait for the import, which step 6 sees as a protocol change,
+              // re-running the pass against the imported requirements.
+              if (gk.observerHistoryPending) {
+                await this.observerLedger.importHistory(gk.id);
+                return;
+              }
+              await this.observerLedger.checkAccess(
+                  clientUser, accountId, observerId, gk, scope.requirements.get(gk.id) ?? []);
+              return;
+            }
+            attempted.add(gk.id);
+            let verifier = await requireVerifier(clientUser, accountId, vendorId);
+            // Serialized per (observer, gatekeeper) so this registration can't land while an
+            // exclusion teardown's removeObserver for the same pair is still in flight (which
+            // would delete it moments later); see #serialized.
+            await this.#serialized(`${observerId}/${gk.id}`, async () => {
+              try {
+                await (await this.getGatekeeperFacet(gk.id)).addObserver(observerId, verifier);
+              } catch (err) {
+                // An upgraded gatekeeper's addObserver() throws, and only then is the connection
+                // described, so admitting a collaborator the legacy protocol accepts never
+                // depends on the description. A switch to tracking leaves step 6 to re-run the
+                // pass against the tracked requirements; otherwise the refusal stands.
+                let switched = await this.observerLedger.switchToTracking(gk.id).catch(error => {
+                  this.logger.warn("failed to describe a connection that refused an observer", {
+                    event: "gatekeeper.observer.describe.failed",
+                    gatekeeperId: gk.id, observerId, error,
+                  });
+                  return false;
+                });
+                if (!switched) throw err;
+              }
+            });
+          } catch (err) {
+            // Either a settled denial or an operational failure (expired credentials, upstream
+            // outage). Treat every failure as repairable and let the user try again.
+            failures.set(gk.id, {accountId, reason: stringifyError(err)});
             this.logger.warn("observer verification failed", {
               event: "gatekeeper.observer.verify.failed",
               gatekeeperId: gk.id, vendorId, accountId, observerId, error: err,
             });
-          };
-
-          try {
-            let verifier = await clientUser.getVerifier(accountId, vendorId);
-            if (!verifier) {
-              // Account gone -> the overseer authors the reason. (Wrong vendor throws above.)
-              fail("This account is no longer connected.");
-              return;
-            }
-            // Serialized per (observer, gatekeeper) so this registration can't land while an
-            // exclusion teardown's removeObserver for the same pair is still in flight (which
-            // would delete it moments later); see #withObserverGatekeeperLock.
-            await this.#withObserverGatekeeperLock(observerId, gk.id,
-                async () => (await this.getGatekeeperFacet(gk.id)).addObserver(observerId, verifier));
-            newlyAdded.add(gk.id);
-            // Keep `invalidated` meaning "failed and has not verified since": this binding just
-            // verified on a repaired pass, so the catch below must not roll its registration back.
-            invalidated.delete(gk.id);
-          } catch (err) {
-            // Either a settled denial or an operational failure (expired credentials, upstream
-            // outage). Treat every failure as repairable and let the user try again.
-            fail(stringifyError(err), err);
           }
         }));
+
+        // 6. What this open must verify can change while it awaits: a requirement recorded, a
+        //    connection added, removed, approved, switched to Workshop tracking, or its history
+        //    imported. Successes and failures alike may be stale, so re-run the pass rather than
+        //    admit against them. This check and the publication below share one synchronous
+        //    block, so nothing recorded after it can be missed: an observation checks every
+        //    published observer.
+        let current =
+            this.observerLedger.observerScope(role, this.#inScopeGatekeepers(role), scope);
+        if (!observerScopeCovers(scope, current)) {
+          if (++scopePasses > MAX_VERIFICATION_PASSES) {
+            throw new Error(
+                "What this workspace must verify kept changing while you were being verified. " +
+                "Please try again.");
+          }
+          scope = current;
+          continue;
+        }
 
         if (failures.size > 0) {
           // Drop the failed choices so the re-prompt asks about exactly these bindings. A failed
@@ -10104,14 +10217,13 @@ class OverseerImpl implements AgentHooks {
       // the unpersisted record, so anything left behind would linger unresolvable.
       //
       // A *returning* observer's registrations are all kept -- including the ones this call added.
-      // Their persisted observerId is shared with concurrent opens, so a rollback here could
-      // delete a registration that a concurrent successful open just made and persisted.
-      // De-registering is the fail-open direction: the gatekeeper stops naming that observer in
-      // `excludeObservers`, so an observation it should have excluded them from is admitted with
-      // nothing left to block it. A spurious registration merely blocks fail-closed until it is
-      // lazily cleaned up (see #enforceExcludeObservers) or a later open re-verifies it.
+      // Their persisted observerId remains resolvable by exclusion checks. De-registering is the
+      // fail-open direction: the gatekeeper stops naming that observer in `excludeObservers`, so
+      // an observation it should have excluded them from is admitted with nothing left to block
+      // it. A spurious registration merely blocks fail-closed until it is lazily cleaned up
+      // (see #enforceExcludeObservers) or a later open re-verifies it.
       if (!returningObserver) {
-        await this.#removeObserverFromGatekeepers(observerId, [...newlyAdded, ...invalidated]);
+        await this.#removeObserverFromGatekeepers(observerId, [...attempted]);
       }
 
       // Only this open is denied. Sessions the collaborator already holds are left alone: they
@@ -10120,8 +10232,8 @@ class OverseerImpl implements AgentHooks {
       throw err;
     }
 
-    // 6. Persist the observer record only after all addObserver calls succeed. Creating/updating
-    //    the record is the canonical moment the user becomes a configured observer.
+    // 7. Persist the observer record only after every binding verified. Creating/updating the
+    //    record is the canonical moment the user becomes a configured observer.
     this.storage.observers.put({profileId, observerId, accountChoices});
   }
 
@@ -10790,10 +10902,13 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     // Both returned capabilities revalidate the hook per call rather than trusting this moment:
     // they are held outside this DO (even across resets -- the stored callback is a persistent
     // stub), so this is what ties them to the firing, per the session contract documented on
-    // Gatekeeper.bindHook (workshop-shared/gatekeeper.ts).
+    // Gatekeeper.bindHook (workshop-shared/gatekeeper.ts). The firing's observations are
+    // attributed to the gadget the hook wakes.
+    let gadgetId = record.gadgetId ?? this.impl.defaultGadgetId;
     return {
       callback: makeHookFiringCallback(this.impl, hookId),
-      approvalQueue: new ApprovalQueueImpl(this.impl, record.gatekeeperId, {from: "hook"}, hookId),
+      approvalQueue: new ApprovalQueueImpl(this.impl, record.gatekeeperId,
+          {from: "hook", ...(gadgetId !== undefined ? {gadgetId} : {})}, hookId),
     };
   }
 
@@ -10831,14 +10946,20 @@ type GatekeeperLoopbackProps = {
 };
 
 type BindingLoopbackTarget = {
-  type: "gadget" | "gatekeeper";
+  type: "gadget";
   id: WorkpieceId;
+} | {
+  type: "gatekeeper";
+  id: WorkpieceId;
+
+  // Set on agent loopbacks so tracked observations cannot outlive their executeCode invocation.
+  executionId?: string;
 } | {
   type: "worktree";
   id: WorkpieceId;
 
   // The executeCodeMode execution this loopback was minted for. A worktree binding resolves
-  // against the turn state registered for exactly that execution (see #activeWorktreeTurns), so
+  // against the turn state registered for exactly that execution (see #activeExecutions), so
   // a stub retained past it -- say, stored in a gadget the agent called -- fails closed instead
   // of coming back to life against a later execution's turn.
   executionId: string;
@@ -13361,6 +13482,10 @@ class SlashCommandAuthorizerImpl extends NativeRpcTarget implements ObservationA
     return this.impl.authorizeObservation(this.gatekeeperId, description, this.caller);
   }
 
+  authorizeTrackedObservation(description: TrackedObservationDescription): Promise<void> {
+    return this.impl.authorizeTrackedObservation(this.gatekeeperId, description, this.caller);
+  }
+
   async getGitCache(): Promise<GitCache> {
     return new GitCacheImpl(this.impl.gitCache, this.gatekeeperId);
   }
@@ -13431,14 +13556,23 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
   // observations against a scope the shrink already excluded someone from (or set
   // containsRestrictedData). Session queues (openGatekeeperSession) pass no hookId: they are
   // bounded by the facet's in-DO lifetime, which the session chokepoints already gate.
+  // `executionId` is the agent execution an agent caller's session was minted for.
   constructor(protected impl: OverseerImpl, protected gatekeeperId: number,
-              private caller: GatekeeperCaller, private hookId?: number) {
+              private caller: GatekeeperCaller, private hookId?: number,
+              private executionId?: string) {
     super();
   }
 
   authorizeObservation(description: ObservationDescription): Promise<void> {
     if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
-    return this.impl.authorizeObservation(this.gatekeeperId, description, this.caller);
+    return this.impl.authorizeObservation(
+        this.gatekeeperId, description, this.caller, this.hookId);
+  }
+
+  authorizeTrackedObservation(description: TrackedObservationDescription): Promise<void> {
+    if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
+    return this.impl.authorizeTrackedObservation(
+        this.gatekeeperId, description, this.caller, this.executionId, this.hookId);
   }
 
   async getGitCache(): Promise<GitCache> {

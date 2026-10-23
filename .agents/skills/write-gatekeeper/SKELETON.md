@@ -410,6 +410,10 @@ export class MyGatekeeperImpl extends DurableObject<Env, MyGatekeeperImplProps>
   //   - Strategy D (low-stakes):   make both methods no-ops.
   //   - Strategy C (data-set tracking): record observed sets + store verifiers, and route every read
   //     through an authorizeSetObservation helper that sets `excludeObservers` (see SKILL.md).
+  //   - Workshop-tracked (`supportsObserverTracking` in describe()): always throw (the refusal is
+  //     how the Workshop notices the upgrade at admission); authorize every read with
+  //     authorizeTrackedObservation(), reporting its `subresources`, and implement
+  //     verifyObserverAccess(observers, ids) instead, checking each observer's verifier the same way.
   async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
     let verifier = user as unknown as Fetcher<MyVerifierApi>;
     if (!(await verifier.hasResourceAccess(/* this.ctx.props.resourceId */ "TODO"))) {

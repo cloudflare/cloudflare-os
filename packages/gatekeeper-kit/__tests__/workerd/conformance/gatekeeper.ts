@@ -103,6 +103,10 @@ export class FixtureQueue extends RpcTarget {
     observations.push(description);
   }
 
+  async authorizeTrackedObservation(): Promise<void> {
+    throw new Error("The conformance gatekeeper does not use observer tracking.");
+  }
+
   async submitAction(action: number, description: ActionDescription): Promise<void> {
     submissions.push([action, description]);
   }

@@ -321,6 +321,26 @@ export type ResourceDescription = {
   hasSlashCommands?: true;
 
   /**
+   * Opts this resource into kernel-owned observer tracking. When set, the gatekeeper promises:
+   * - every observation goes through `ObservationAuthorizer.authorizeTrackedObservation()`, never
+   *   `authorizeObservation()`;
+   * - `Gatekeeper.getHistoricalSubresources()` is implemented, so the Workshop can import the
+   *   requirements recorded before it opted in;
+   * - `Gatekeeper.verifyObserverAccess()` is implemented, so the Workshop can check collaborators'
+   *   accounts against those requirements;
+   * - `Gatekeeper.addObserver()` throws, which is how a Workshop still treating the connection as
+   *   legacy learns of the upgrade, and keeps it from admitting anyone it has not checked.
+   *
+   * `addObserver()` is then never called for this resource, and `removeObserver()` only to retire
+   * its legacy registrations. Absence keeps the legacy protocol. A resource advertising support
+   * when it is connected is tracked from the start. One that starts advertising it later is
+   * switched to tracking at its first `authorizeTrackedObservation()` or refused `addObserver()`,
+   * and its history is imported once while it stays in use (see
+   * `Gatekeeper.getHistoricalSubresources()`). Tracking is never downgraded.
+   */
+  supportsObserverTracking?: true;
+
+  /**
    * Some resources implement the ability for the client to subscribe to events. The application
    * implements a "hook", which is a WorkerEntrypoint that implements the TypeScript interface
    * named by `hookTsType` (which must be one of the exports from `getTypescriptTypes()`).
@@ -698,6 +718,8 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
    * account to reach the provider through, though it may still be asked to describe() itself.
    * Creates nothing. The Overseer queues `action` as the creation, which applies before anything
    * else queued on the gatekeeper, through Gatekeeper.applyCreation() once a user approves it.
+   * While the creation is pending, reads are audited but record no observer requirements (see
+   * Gatekeeper.getHistoricalSubresources()).
    * Present only on vendors with a `creatable` resource type.
    */
   createResource?(resourceUrlPattern: string, title: string): Promise<{
@@ -942,10 +964,11 @@ export interface GatekeeperUser extends WorkerEntrypoint {
 
 /**
  * Opaque object representing one of a user's accounts. Minted by `GatekeeperUser`, and then passed
- * to `Gatekeeper.addObserver()`, to verify whether the user is able to access a particular
- * Gatekeeper, and to `Gatekeeper.applyCreation()`, to create a resource with the account's authority.
- * Also returned from `GatekeeperUserSelectionExchange.redeem()` for the selected user's eligible
- * accounts with the same vendor.
+ * to `Gatekeeper.addObserver()` or `Gatekeeper.verifyObserverAccess()`, to verify whether the user
+ * is able to access a particular Gatekeeper, and to `Gatekeeper.applyCreation()`, to create a
+ * resource with the account's authority. Also returned from
+ * `GatekeeperUserSelectionExchange.redeem()` for the selected user's eligible accounts with the
+ * same vendor.
  *
  * At present, this interface has no methods, because it is merely meant to be passed back to the
  * Gatekeeper that created it.
@@ -953,10 +976,10 @@ export interface GatekeeperUser extends WorkerEntrypoint {
  * IMPLEMENTATION NOTE: As of this writing, there is no runtime-supported way to "unwrap" a
  * `Fetcher` passed back to its implementer in order to extract the underlying `props`. This will
  * be added eventually. For now, we recommend that the `GatekeeperUserVerifier` implement a public
- * but non-standard method which the same gatekeeper's `addObserver()` and `applyCreation()`
- * implementations can call. The overseer promises only to pass a `GatekeeperUserVerifier` object
- * back to the same gatekeeper that created it, so they can then call that non-standard method and
- * trust the results.
+ * but non-standard method which the same gatekeeper's `addObserver()`, `verifyObserverAccess()`
+ * and `applyCreation()` implementations can call. The overseer promises only to pass a
+ * `GatekeeperUserVerifier` object back to the same gatekeeper that created it, so they can then
+ * call that non-standard method and trust the results.
  */
 export interface GatekeeperUserVerifier extends WorkerEntrypoint {}
 
@@ -1075,6 +1098,11 @@ export interface Gatekeeper<Session> extends DurableObject {
    * access. However, if the Gadget itself carefully reads only emails addressed to a particular
    * mailing list, then it is OK to reveal those observations to any member of the mailing list.
    * The gatekeeper should ideally permit observers who are mailing list members.
+   *
+   * A resource advertising `ResourceDescription.supportsObserverTracking` must throw instead: a
+   * Workshop treating the connection as legacy only describes it, and switches it to tracking,
+   * once this refuses, and throwing keeps it from admitting a collaborator without checking
+   * anything.
    */
   addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void>;
 
@@ -1087,6 +1115,56 @@ export interface Gatekeeper<Session> extends DurableObject {
    * should just ignore the call rather than throw.
    */
   removeObserver(id: string): Promise<void>;
+
+  /**
+   * For a gatekeeper advertising `ResourceDescription.supportsObserverTracking`: every subresource
+   * ID this gatekeeper's past observations, hook deliveries included, still oblige observers to be
+   * able to read -- completed and pending, plus any binding-wide or owner-only requirement it
+   * records itself -- in the same form as `TrackedObservationDescription.subresources`, which
+   * `verifyObserverAccess()` can check. Not an audit log or listing of today's resources.
+   * IDs obey the same rules as there, except that the export has no count cap of its own: it must
+   * fit in one RPC result (32 MiB serialized), and may repeat an ID. A larger history must be
+   * condensed into coarser IDs, each of which `verifyObserverAccess()` passes only for an observer
+   * who can read every subresource it replaces; it must never be truncated.
+   *
+   * The Workshop calls this once per connection, after switching an existing one to tracking: at
+   * its first `ObservationAuthorizer.authorizeTrackedObservation()`, or when its `addObserver()`
+   * refuses a collaborator. Observations through the connection carry on meanwhile; admission
+   * waits for the import. The Workshop stores the result in one commit, and refuses an export that
+   * breaks these rules, leaving the history pending. It must therefore be read-only and
+   * repeatable: an import that fails or is refused calls it again. `[]` is valid.
+   * Reads made while a creation was pending were simulated and must not be exported. A gatekeeper
+   * connected while already advertising support is never asked.
+   */
+  getHistoricalSubresources?(): Promise<string[]>;
+
+  /**
+   * For a gatekeeper advertising `ResourceDescription.supportsObserverTracking`: which of
+   * `observers` can read every one of `subresources` now. The Workshop calls this to check
+   * collaborators against the subresource IDs this gatekeeper reported in
+   * `TrackedObservationDescription.subresources` or exported from `getHistoricalSubresources()`:
+   * before authorizing a read, for every collaborator who can see the context that made it, and
+   * at admission, for everything the collaborator's role reaches. The answer must not depend on
+   * which of the two is asking, and the Workshop does not say.
+   *
+   * Each observer's `id` is the opaque observer ID `addObserver()` and `excludeObservers` use,
+   * unique within one call. It is not a cache key: the same observer may arrive later with a
+   * different account's verifier. Each `verifier` was minted by this gatekeeper's vendor (see
+   * `GatekeeperUserVerifier`) and is meant for this call only. A call carries at most 10,000
+   * subresource IDs, never none; the Workshop splits larger checks.
+   *
+   * `allowedObserverIds` lists the IDs of the observers whose account can read every one of
+   * `subresources`; every observer it omits is denied. Throw if access cannot be determined
+   * (expired credentials, provider outage). A throw, a malformed result, or an ID that was not
+   * passed in denies every observer in the call.
+   *
+   * The Workshop may call this while one of this gatekeeper's own `authorizeObservation()` calls
+   * is pending, so it must not wait on anything a read holds while it awaits authorization.
+   */
+  verifyObserverAccess?(
+    observers: {id: string, verifier: Fetcher<GatekeeperUserVerifier>}[],
+    subresources: string[],
+  ): Promise<{allowedObserverIds: string[]}>;
 
   /** Returns the provider for describe().hasSlashCommands, if supported. */
   getSlashCommandProvider?(): Promise<SlashCommandProvider>;
@@ -1224,8 +1302,27 @@ export interface ObservationAuthorizer extends RpcTarget {
    * remote service, so that the description can include details about the actual data. As long
    * as the operation is strictly read-only, and the call is made before actually returning any
    * data to the gadget, this is OK.
+   *
+   * A resource advertising `ResourceDescription.supportsObserverTracking` uses
+   * `authorizeTrackedObservation()` instead. Once its connection is tracked, this refuses every
+   * observation through it; and since only that method enforces `subresources`, this refuses a
+   * description carrying them rather than ignoring them.
    */
   authorizeObservation(description: ObservationDescription): Promise<void>;
+
+  /**
+   * `authorizeObservation()` for a resource advertising
+   * `ResourceDescription.supportsObserverTracking`, which must make every observation through
+   * this method. The first call through a connection made under the legacy protocol switches it
+   * to tracking, starting the import of its history (see
+   * `Gatekeeper.getHistoricalSubresources()`), and is then checked like any other.
+   *
+   * Returning normally means the Workshop recorded `description.subresources` and confirmed that
+   * every collaborator who can see the read may access them. A Workshop that predates observer
+   * tracking lacks this method, so the call fails. Let that failure propagate: falling back to
+   * `authorizeObservation()` would let the read through without checking anyone.
+   */
+  authorizeTrackedObservation(description: TrackedObservationDescription): Promise<void>;
 
   /**
    * Get the workspace's git cache, scoped to this gatekeeper (see `GitCache` for the view rules).
@@ -1496,6 +1593,29 @@ export type ObservationDescription = {
    */
   excludeObservers?: string[];
 }
+
+/**
+ * An observation through a resource advertising `ResourceDescription.supportsObserverTracking`,
+ * as passed to `ObservationAuthorizer.authorizeTrackedObservation()`. The Workshop checks
+ * collaborators itself, so it names no observers to exclude.
+ */
+export type TrackedObservationDescription = Omit<ObservationDescription, "excludeObservers"> & {
+  /**
+   * The IDs of everything this disclosure depends on that might restrict who may see it. IDs must
+   * be stable, non-secret, and sufficient for this gatekeeper's `verifyObserverAccess()` to check
+   * access; the Workshop treats them as opaque. Each ID must be well-formed Unicode (no lone
+   * surrogates) with a JavaScript `length` of 1–512 (UTF-16 code units), and a single observation
+   * may report at most 10,000 IDs before deduplication. `[]` means nothing restricts it. Include
+   * any coarse binding-wide requirement the read relies on.
+   *
+   * The Workshop records these IDs on the chat or gadget whose trusted binding authorizer
+   * approved the read (a hook firing's on the gadget the hook wakes, or the workspace for a user
+   * session with no known chat).
+   * Attribution stays with the original authorizer, including child sessions that reuse it;
+   * passing capabilities or data between contexts does not transfer requirements.
+   */
+  subresources: string[];
+};
 
 /** The language a `text` action field is written in, named so the approver knows how it is read. */
 export type ActionFieldSyntax = "markdown" | "html" | "sql";

@@ -149,6 +149,7 @@ describe("excludeObservers against the observer's verification scope", () => {
     let releaseRemove!: () => void;
     let removeReached = new Promise<void>(resolve => {
       impl.getGatekeeperFacet = (id: number) => ({
+        describe: async () => ({}),
         removeObserver: async (observerId: string) => {
           events.push("remove:start");
           resolve();
@@ -250,6 +251,7 @@ describe("a bound agent spawner's env keeps its targets in use scope", () => {
     bindSpawnerIntoGadget(impl);
     let added: string[] = [];
     impl.getGatekeeperFacet = (id: number) => ({
+      describe: async () => ({}),
       addObserver: async (observerId: string) => { added.push(`${id}:${observerId}`); },
       removeObserver: async () => {},
     });

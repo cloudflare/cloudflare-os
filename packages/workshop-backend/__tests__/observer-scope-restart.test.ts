@@ -439,6 +439,7 @@ describe("restarting sessions when verification scope widens", () => {
     impl.storage.observers.put(
         { profileId: "alice", observerId: "obs-1", accountChoices: { 1: 10 } });
     impl.getGatekeeperFacet = () => ({
+      describe: async () => ({}),
       addObserver: async () => { throw new Error("access revoked upstream"); },
       removeObserver: async () => {},
     });

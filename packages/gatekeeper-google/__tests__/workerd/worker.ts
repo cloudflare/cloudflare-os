@@ -157,6 +157,10 @@ class TestApprovalQueue extends RpcTarget {
     }
   }
 
+  async authorizeTrackedObservation(): Promise<void> {
+    throw new Error("Tracked observations are not used by these tests.");
+  }
+
   async submitAction(actionId: number, description: unknown): Promise<void> {
     this.#submissions.push({actionId, description});
     if (this.#pausedSubmission) {

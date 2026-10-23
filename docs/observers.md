@@ -313,11 +313,12 @@ Logic:
    - Only a *first-ever* verification rolls anything back (fully — nothing referenced its
      registrations before the call, and the minted id would otherwise linger unresolvable). A
      returning observer's registrations are **all** kept, including ones this call added: their
-     persisted `observerId` is shared with concurrent opens, so a rollback could delete a
-     registration a concurrent successful open just made and persisted. De-registering is the
-     fail-open direction (the gatekeeper stops naming them in `excludeObservers`); a spurious
-     registration only blocks fail-closed until the lazy cleanup at exclusion time or a later
-     open re-verifies it, and the next successful `addObserver` overwrites its verifier.
+     persisted `observerId` stays resolvable, and sessions their earlier opens admitted may still
+     depend on those registrations (opens by one profile are serialized, so none is concurrent).
+     De-registering is the fail-open direction (the gatekeeper stops naming them in
+     `excludeObservers`); a spurious registration only blocks fail-closed until the lazy cleanup
+     at exclusion time or a later open re-verifies it, and the next successful `addObserver`
+     overwrites its verifier.
    - A denial ends only this open. Sessions the collaborator already holds are untouched, and keep
      the access their own opens verified until they next re-open — the lazy-revocation residual
      described under "Known gaps" below.
@@ -354,9 +355,11 @@ collaborator (see `docs/sharing.md`) — so every client's browser reconnects an
 
 What it gates on is a **live session** of the affected role, not an entry in the sharing table:
 severing sessions is all a restart achieves, so a collaborator who isn't connected has nothing to
-cut, and a solo workspace is never disturbed. `OverseerImpl.joinSession(kind)` counts them, called
-synchronously in each client interface's constructor and released in its `[Symbol.dispose]`, with
-the owner counted apart from the two collaborator roles because the owner is never an observer.
+cut, and a solo workspace is not disturbed (except by an observer-tracking import, below, whose
+restart also replaces client stubs to the facet it aborted). `OverseerImpl.joinSession(kind)`
+counts them, called synchronously in each client interface's constructor and released in its
+`[Symbol.dispose]`, with the owner counted apart from the two collaborator roles because the owner
+is never an observer.
 Being synchronous is the point: the check can neither be skipped by a failed lookup nor land some
 unbounded time after the change. The count is deliberately not derived from `#presence`, which a
 session joins only once its `fetchProfile()` resolves — fine for a roster, fail-open for an access
@@ -439,7 +442,7 @@ gadget-minted children alike:
   needs lifecycle authorization for gadget-authored turns; re-checking person-initiated resumes
   alone does not cover it.
 
-Five events trigger it:
+Six events trigger it:
 
 | Event | What grows |
 |---|---|
@@ -448,12 +451,13 @@ Five events trigger it:
 | A merge that promotes a pending gadget or a pending binding edge into `use` scope | **use** scope, same reason |
 | `enableHook` on a vendor-backed connection not already in `use` scope | **use** scope — the hook delivers the connection's data into a gadget a `use` session can open (a hook waking a still-provisional gadget stays out of `use` scope until promotion; the merge diff reports that widening) |
 | Approving a creation queued by the agent's `createExternalResource` | every role's scope — the connection was published without a restart because until now it only simulated its resource, so nobody was verified against the real one. The restart is unconditional on role, since the connection may already be bound |
+| A legacy connection moving to Workshop tracking (§10) — its history import | every role's scope — sessions were admitted against its legacy registrations, not the imported requirements. The restart is unconditional, even with only the owner connected: the import aborts the connection's facet, and client capabilities hold stubs to it |
 
-The two roles widen independently, so each trigger passes the role it grew and the restart is
-skipped when no collaborator holds it: a new connection is in every `build` collaborator's scope
-at once but in no `use` collaborator's until a gadget binds it, and binding one enters `use` scope
-having been in `build` scope since it was created. A workspace shared only the other way has nobody
-with new verification requirements.
+The two roles widen independently, so each trigger except the import passes the role it grew and
+the restart is skipped when no collaborator holds it: a new connection is in every `build`
+collaborator's scope at once but in no `use` collaborator's until a gadget binds it, and binding
+one enters `use` scope having been in `build` scope since it was created. A workspace shared only
+the other way has nobody with new verification requirements.
 
 The three `use`-scope triggers share one helper (`#restartIfUseScopeWidened`) that compares the
 effective `use` scope before and after rather than firing on any mutation: most merges promote
@@ -588,7 +592,7 @@ For each id in `description.excludeObservers`:
    classified before anything is torn down, so a blocked observation leaves no teardown behind it;
    the removals are then all issued together and awaited with a single `Promise.all`. A fresh
    open's `addObserver` racing one of those `removeObserver` RPCs on the same (observer,
-   gatekeeper) pair is ordered behind it (`#withObserverGatekeeperLock`; the overseer is the only
+   gatekeeper) pair is ordered behind it (`#serialized`, keyed by the pair; the overseer is the only
    caller of either, so ordering its own calls is sufficient), so a fresh registration is never
    silently undone. An observer put back in scope while the teardown is in flight — a bind plus a
    fresh open landing inside a removal's window — is admitted for this one observation; that is
@@ -891,6 +895,127 @@ This is why the broad bindings split the way they do:
 
 ---
 
+## 10. Kernel-owned observer tracking (opt-in connections)
+
+A connection whose `describe()` returns `supportsObserverTracking: true` is tracked by the
+Workshop itself instead of the protocol above (`src/observer-ledger.ts`). Connections without the
+flag keep the legacy `addObserver`/`removeObserver`/`excludeObservers` protocol unchanged, and one
+workspace can mix the two. No shipping gatekeeper opts in yet. The gatekeeper's side of the
+contract (ID rules and limits, `verifyObserverAccess()` answers, the history export) is
+documented on those members in `workshop-shared/src/gatekeeper.ts`, and
+`plans/kernel-observer-tracking.md` records why it is shaped this way.
+
+- **A separate authorization method.** A tracked connection's gatekeeper authorizes every read
+  with `ObservationAuthorizer.authorizeTrackedObservation()`, which a Workshop that predates
+  observer tracking lacks, so the read fails there rather than being disclosed unchecked.
+  `authorizeObservation()` refuses a description carrying `subresources`, and every observation
+  through a tracked connection, whichever protocol its session was minted under.
+- **The audit log is the requirement store.** A tracked observation's audit records keep its
+  `subresources`, and the Workshop strips them from every other observation, so keeping them is
+  what marks a requirement. The record's `caller` attributes it (`observerContextOf`): the agent's
+  chat, the calling gadget, the chat a slash command runs in, the gadget a firing hook wakes, or
+  the workspace context for a hook naming no gadget or a user acting outside any chat (a session
+  opened from the connection itself, a new chat's first slash command, an import). A gadget caller
+  persisted without a `gadgetId` is refused. The sparse multi-key `actions.byObserverRequirement`
+  index holds one key per subresource, `<connection>:<context><id>:<subresource>` (context `w`
+  for workspace, `c` for chats, `g` for gadgets). Admission lists only the distinct keys a role
+  reaches through each tracked connection, never the records under them, so repeated reads of the
+  same data add no admission work. Nothing else stores requirements, so the action log is
+  append-only: deleting an entry would drop its checks. Client action-log entries omit
+  `subresources`.
+- **Checks.** Account choices stay in `observers.accountChoices`, keyed by connection id under both
+  protocols. A tracked connection enters each role's verification scope exactly as a legacy one
+  does: "build" at creation, "use" while a gadget binds it or an enabled hook feeds it. Within that
+  scope, admission checks every requirement the role reaches: "build" reaches every context, "use"
+  the workspace and every gadget. Requirements through a connection outside a "use" collaborator's
+  scope (one nothing binds or hooks) are not checked against them, as under the legacy protocol.
+  Each observation checks its IDs for every configured observer the data reaches, online or not;
+  a collaborator who lost access is skipped. Either way the Workshop looks up each observer's
+  verifier for their chosen account (`getVerifier()` refuses a disconnected or wrong-vendor account
+  even when there is nothing to check) and asks the connection's `verifyObserverAccess()`: one call
+  per 10 observers for a read's audience, and batches of 10,000 IDs for admission, stopping at the
+  first batch that denies. A denial, missing method, failed call, or malformed answer fails closed
+  for every observer in the call, with no legacy fallback and no permission cached between
+  operations.
+- **Bounded persistence.** Live reads and historical imports split their IDs across audit records
+  with a conservative 4 MiB ID-array budget (two bytes per UTF-16 code unit plus per-ID overhead),
+  leaving room for metadata below SQLite's row limit. Each record preserves the original caller
+  and metadata; admission unions every chunk. Live reads verify all IDs before committing all
+  chunks and workspace policy flags in one transaction. A failed write rolls everything back,
+  including action IDs; chat notifications happen only after the transaction commits.
+- **Races.** Admissions are serialized per profile. After verifying, admission recomputes what it
+  must verify and runs the pass again (at most three times) if a connection in its scope appeared,
+  disappeared or changed protocol, or a requirement it did not check was recorded through one;
+  reads through connections outside its scope don't count. It rereads requirements only if its
+  connections changed or an action was recorded meanwhile (only a new action record can add a
+  requirement), so an admission nothing disturbed reads them once. An observation recomputes who
+  it reaches after its checks and checks whoever it gained (at most three times). Both decisions
+  are confirmed in the same synchronous block that publishes them (the observer record; the audit
+  record), so neither can miss the other.
+- **Switch and historical import.** The Workshop does not describe a legacy connection on every
+  use. It looks for an upgrade only when the gatekeeper itself shows one:
+  - one of the connection's reads calls `authorizeTrackedObservation()`, which only an upgraded
+    gatekeeper does. If the description advertises support, the connection switches and the read
+    is checked like any tracked read; otherwise, or if it can't be described, the read is refused;
+  - its `addObserver()` refuses a collaborator, as an upgraded gatekeeper's does. Admission then
+    describes the connection, inside the registration lock; if it advertises support, the
+    connection switches and admission reruns against its tracked requirements. Otherwise, or if
+    it can't be described, the refusal stands. A collaborator the legacy protocol accepts never
+    depends on the description, which may need the owner's credentials.
+
+  A switch sets `observerTracking` and `observerHistoryPending` together: from then on every
+  observation through the connection is checked and recorded by the Workshop, and the legacy
+  `authorizeObservation()` is refused, so no read goes unchecked. Nothing is aborted or
+  restarted. The switch starts the history import in the background: single-flight, it reads
+  `getHistoricalSubresources()` in one call, then one transaction clears `observerHistoryPending`
+  and, for a non-empty export, writes the workspace audit chunks. Reads through the connection
+  carry on meanwhile, recording their own requirements beside the imported ones. Admission waits
+  for the import before verifying anyone against the connection, and treats its completion as a
+  protocol change, so it reruns against the imported requirements. A failed export commits
+  nothing and leaves the history pending: the binding fails like any other verification failure,
+  and the next admission exports again; after the commit, the export is never asked for again.
+  Legacy registrations are then retired best-effort. A connection created while advertising
+  support starts tracked without an export. Tracking is never downgraded.
+
+  Sessions admitted under the legacy protocol stay open across the switch: the legacy protocol
+  verified them against everything read before it, and every tracked read checks them after it.
+  Their next admission checks the imported history too. The export must cover every read the
+  legacy protocol authorized, including one still in flight when the gatekeeper upgraded.
+
+  The residual: an upgraded gatekeeper that wrongly calls `authorizeObservation()` for a read,
+  before any tracked read of its own or any admission, has that read treated as legacy.
+- **Pending creations.** A simulated resource from `createExternalResource` does not switch
+  while its creation is pending; its reads are audited and enforce workspace policy but record no
+  requirements. After approval it switches like any other connection.
+- **Removal.** A disconnected connection's audit records stay, but admission ignores them: its
+  checks go with it, even when data it read survives (edge case 8).
+- **Direct contexts only.** A chat binding read records requirements only on that chat, checked
+  against "build" collaborators; a gadget binding read only on that gadget, checked against
+  "build" and "use" collaborators. Gadget session access, root RPC calls, forged restore stubs,
+  callbacks, spawned chats, code edits, merges, arguments and persistent writes transfer nothing
+  between contexts. This deliberately permits indirect disclosure, such as chat-derived data
+  reaching a gadget without checking its "use" collaborators against the chat's requirements.
+  Attribution follows the original authorizer, not wherever its capability is passed.
+- **Execution fence.** Agent gatekeeper loopbacks carry their `executionId`; a session that
+  outlives its executeCode call cannot authorize a tracked observation.
+- **Hooks.** Tracked connections support hook registration and delivery. A firing's observations
+  are attributed to the gadget the hook wakes, recorded as `{from: "hook", gadgetId}` from the
+  hook record's `gadgetId` (or `defaultGadgetId`), and to the workspace when neither names one.
+  That `gadgetId` is trusted even though an agent-bound hook's is inferred and its callback
+  carries its own restore target. While the hook is enabled, both "build" and "use"
+  collaborators must pass verification before delivery, and later admission checks the recorded
+  subresources. Firings revalidate that the hook exists, is enabled, and its connection is usable
+  on each call and synchronously before the observation's audit/policy commit, after asynchronous
+  verification. A racing disable/delete prevents delivery. Disabling or deleting a hook stops
+  future events and leaves delivered data's requirements in the action log, including across
+  workspace restarts; "build" collaborators stay verified against them, and "use" collaborators
+  only while something else still binds or hooks the connection.
+
+The integration fixture's tracked mode (`/control/observer-tracking`) exercises this end to end in
+`packages/integration-tests/__tests__/observer-tracking.test.ts`.
+
+---
+
 ## Known limitations
 
 Revocations and role changes take effect within seconds -- the revocation restart lands in
@@ -900,8 +1025,6 @@ place here only if its failure mode is *persistent* wrong state that outlives th
 The observer-side deferrals are ledgered in `plans/restricted-data-sharing.md`, each marked at
 its site in the code by a matching `TODO` comment:
 
-- Observer verification is not serialized per profile, so concurrent opens by one collaborator
-  can overwrite each other's records.
 - A mid-registration observer named in `excludeObservers` is read as unknown and the observation
   admitted; persistent, since it lands in chat history (Step 5, item 1). Fix: a pending-id map,
   `observer-verification-fixes`.
