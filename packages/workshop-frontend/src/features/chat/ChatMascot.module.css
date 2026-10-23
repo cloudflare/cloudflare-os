@@ -1,0 +1,139 @@
+/*
+ * Deliberate departure from the Kumo-only colour rule, requested by the user: each chat's tile is
+ * drawn at its own computed hue, which no Kumo token can express. Lightness and chroma are fixed,
+ * and every stop is inside sRGB for every hue, so all chats read alike and no hue is clipped. The
+ * eyes and sheen are the mascot's own white.
+ *
+ * Idle mascots never animate: the chat list mounts one per chat, unvirtualized.
+ */
+
+.mascot {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+}
+
+.tile {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 5px;
+  background: radial-gradient(
+    circle at 35% 30%,
+    oklch(0.88 0.055 var(--mascot-hue)),
+    oklch(0.72 0.115 var(--mascot-hue)) 60%,
+    oklch(0.56 0.09 var(--mascot-hue))
+  );
+}
+
+/* Cut the tile away behind the badge, so the gap shows whatever the row's background is. */
+.mascot[data-needs-you] .tile {
+  mask: radial-gradient(circle at calc(100% - 1.5px) 1.5px, transparent 4.5px, black 5px);
+}
+
+.eyes {
+  position: absolute;
+  top: 5px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  gap: 3px;
+}
+
+.eye {
+  width: 2px;
+  height: 5px;
+  border-radius: 1px;
+  background: oklch(1 0 0);
+}
+
+.badge {
+  position: absolute;
+  top: -1.5px;
+  right: -1.5px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-kumo-danger);
+}
+
+/* Each face has its own still pose; the animations only add motion on top of it. */
+
+.mascot[data-face="thinking"] .eyes {
+  transform: translate(1px, -1.5px);
+  animation: mascot-ponder 2.4s ease-in-out var(--mascot-phase) infinite alternate;
+}
+
+.mascot[data-face="working"] .eye {
+  transform: scaleY(0.6);
+  animation: mascot-type 0.6s ease-in-out var(--mascot-phase) infinite;
+}
+
+.mascot[data-face="working"] .eye + .eye {
+  animation-delay: calc(var(--mascot-phase) + 0.2s);
+}
+
+.mascot[data-face="working"] .tile::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 35%, oklch(1 0 0 / 0.35) 50%, transparent 65%);
+  transform: translateX(-100%);
+  animation: mascot-sheen 1.6s ease-in-out var(--mascot-phase) infinite;
+}
+
+/* The whole mascot pulses, so the badge and its cut-out move together. */
+.mascot[data-face="waiting"] {
+  animation: mascot-pulse 1.3s ease-in-out var(--mascot-phase) infinite;
+}
+
+.mascot[data-face="waiting"] .eye {
+  transform: translateY(-0.5px) scale(1.15, 1.2);
+}
+
+.mascot[data-face="review"] .eyes {
+  top: 6.5px;
+  gap: 2px;
+}
+
+.mascot[data-face="review"] .eye {
+  width: 3.5px;
+  height: 2px;
+  border: 1.5px solid oklch(1 0 0);
+  border-bottom: 0;
+  border-radius: 3px 3px 0 0;
+  background: none;
+}
+
+@keyframes mascot-ponder {
+  to { transform: translate(-0.5px, -1.5px); }
+}
+
+@keyframes mascot-type {
+  0%, 100% { transform: scaleY(0.6); }
+  50% { transform: translateY(-1.5px) scaleY(0.6); }
+}
+
+@keyframes mascot-sheen {
+  60%, 100% { transform: translateX(100%); }
+}
+
+@keyframes mascot-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.08); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mascot[data-face],
+  .mascot[data-face] .eyes,
+  .mascot[data-face] .eye {
+    animation: none;
+  }
+
+  .mascot[data-face] .tile::after {
+    display: none;
+  }
+}

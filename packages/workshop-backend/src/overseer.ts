@@ -563,6 +563,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
         resolvedBy: record.resolvedBy,
         autoApproved: record.autoApproved,
         creation: record.action === "create" || undefined,
+        chatId: "chatId" in record.caller ? record.caller.chatId : undefined,
       };
     case "bindHook":
       return {
