@@ -1,6 +1,6 @@
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
-import type { AgentContext, AgentTurnEvent, AgentTurnInfo, AgentTurnParticipant } from "@gadgets/workshop-shared/agent-integration";
+import type { AgentContext, AgentTurnEvent, AgentTurnInfo, AgentTurnParticipant, WorkspaceReplica } from "@gadgets/workshop-shared/agent-integration";
 import type { OverseerDurableObject } from "./overseer";
 import type { ActiveAgentRecord, AgentIntegrationOrigin } from "./storage-schema/overseer-storage";
 
@@ -13,6 +13,12 @@ export function agentIntegrationGrant(config: string | undefined, vendor: string
   try {
     return JSON.parse(config ?? "null")?.[vendor]?.lifecycle === true;
   } catch { return false; }
+}
+
+/** Replica access is an independent deployment grant, never a gatekeeper assertion. */
+export function agentIntegrationReplicaGrant(config: string | undefined, vendor: string): boolean {
+  try { return JSON.parse(config ?? "null")?.[vendor]?.worktreeReplica === true; }
+  catch { return false; }
 }
 
 /** Lifecycle output of the existing execution row. This class never starts or resumes an agent. */
@@ -50,6 +56,13 @@ export class AgentIntegrations {
       if (r.turnId !== event.turnId || r.lastEvent === event.eventId ||
           r.pending.some(e => e.eventId === event.eventId)) continue;
       r.pending.push(event);
+      if (kind === "finished") {
+        for (const lease of Array.from(this.impl.storage.worktreeReplicaLeases.list())) {
+          if (lease.turnId === r.turnId && lease.gatekeeperId === r.gatekeeperId && !lease.cleanupDeadline) {
+            this.impl.storage.worktreeReplicaLeases.put({...lease, cleanupDeadline: Date.now() + 60 * 60 * 1_000});
+          }
+        }
+      }
       r.retryAt = Date.now();
       this.impl.storage.agentParticipants.put(r);
       queued = true;
@@ -65,7 +78,9 @@ export class AgentIntegrations {
 
   checkContext(gatekeeperId: number, origin: AgentIntegrationOrigin): AgentTurnInfo {
     this.impl.assertGatekeeperUsable(gatekeeperId);
-    if (!this.impl.integrationGrant(gatekeeperId)) throw new Error("Agent integration grant revoked.");
+    if (!this.impl.integrationGrant(gatekeeperId) && !this.impl.replicaGrant(gatekeeperId)) {
+      throw new Error("Agent integration grant revoked.");
+    }
     const row = this.impl.storage.activeAgents.get(origin.chatId);
     if (row?.finishing || row?.integration?.turnId !== origin.turnId || row.integration.segmentId !== origin.segmentId ||
         !this.impl.storage.chatMeta.get(origin.chatId)?.activeAgent) {
@@ -77,10 +92,11 @@ export class AgentIntegrations {
   register(gatekeeperId: number, origin: AgentIntegrationOrigin,
       participant: Fetcher<AgentTurnParticipant>): void {
     this.checkContext(gatekeeperId, origin);
+    if (!this.impl.integrationGrant(gatekeeperId)) throw new Error("Lifecycle participation has not been granted.");
     const id = `${origin.turnId}:${gatekeeperId}`;
     if (this.impl.storage.agentParticipants.get(id)) return;
     this.impl.storage.agentParticipants.put({id, chatId: origin.chatId, gatekeeperId,
-      turnId: origin.turnId, participant, pending: []});
+      turnId: origin.turnId, participant, worktrees: origin.worktrees, pending: []});
   }
 
   deliveryTurn(id: string, event: AgentTurnEvent): AgentTurnInfo {
@@ -112,7 +128,7 @@ export class AgentIntegrations {
         let active = true;
         try {
           const context = new AgentContextImpl(this, r.gatekeeperId,
-            {chatId: r.chatId, turnId: event.turnId, segmentId: event.segmentId}, {id, event}, () => active);
+            {chatId: r.chatId, turnId: event.turnId, segmentId: event.segmentId, worktrees: r.worktrees}, {id, event}, () => active);
           await Promise.race([r.participant.onAgentTurnEvent(event, context), new Promise<never>((_, reject) => {
             timer = setTimeout(() => reject(new Error("Lifecycle callback timed out.")), 60 * 60 * 1_000);
           })]);
@@ -133,6 +149,11 @@ export class AgentIntegrations {
     this.#deliveries.set(id, delivery);
     try { await delivery; }
     finally { this.#deliveries.delete(id); this.changed(); }
+  }
+
+  openReplica(gatekeeperId: number, origin: AgentIntegrationOrigin,
+      phase: AgentTurnInfo["phase"]): Fetcher<WorkspaceReplica> {
+    return this.impl.openWorktreeReplica(gatekeeperId, origin, phase);
   }
 
   /** Wait for required end-of-turn cleanup, including earlier ordered notifications. */
@@ -172,6 +193,9 @@ class AgentContextImpl extends RpcTarget implements AgentContext {
   }
   async getTurn(): Promise<AgentTurnInfo> {
     return this.#turn();
+  }
+  async openWorktreeReplica(): Promise<Fetcher<WorkspaceReplica>> {
+    return this.integrations.openReplica(this.gatekeeperId, this.origin, this.#turn().phase);
   }
   async participate(participant: Fetcher<AgentTurnParticipant>): Promise<void> {
     if (this.delivery) {
