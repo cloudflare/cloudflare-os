@@ -346,7 +346,8 @@ How it builds the label changes:
   - For label changes this is harmless: patching a label Gmail has already changed does nothing.
   - For a send (commit 2) it can show the reply twice in its thread, once as Gmail's copy and once
     as the pending message. That lasts for the instant between Gmail accepting the send and the
-    store recording it, or, after a send whose outcome is unknown, until the approval is retried.
+    store recording it, or, after a send whose outcome is unknown, until the approval is retried
+    or the send is denied, which drops the pending message.
     This is accepted and not fixed.
 
 ### Part 1 steps
