@@ -4,11 +4,14 @@ import { DownloadSimple, GitBranch, List } from '@phosphor-icons/react'
 import type {
   FileAtCommit, Overseer, WorkpieceId, WorkpieceSummary,
 } from '@gadgets/workshop-shared/api'
-import type { CodeChange, FileChange, TextChange } from '@gadgets/workshop-shared/code-change'
+import type {
+  CodeChange, FileChange, FileContent, TextChange,
+} from '@gadgets/workshop-shared/code-change'
 import { RpcStub } from 'capnweb'
 import FileBrowser, { isOpenableKind, type ExpandedDirs, type FileBrowserHandle } from './FileBrowser'
 import { WorkshopButton, WorkshopIconButton } from '../../components/WorkshopControls'
 import CodeEditor, { type EditSession } from './CodeEditor'
+import { BinaryFileView } from './BinaryFileView'
 import CodeDiffEditor from './CodeDiffEditor'
 import type {
   ChatCodeChanges, ChatLiveChangeRows, ChatLiveEditPreviews, EditPreviewEvent,
@@ -21,7 +24,7 @@ import {
   type ChangedFile, type FileChangeStatus,
 } from './workpieceTree'
 import { reportIssue } from '../../errorReporting'
-import { saveTextToFile } from '../../fileTransfers'
+import { saveBlobToFile, saveTextToFile } from '../../fileTransfers'
 import { isTransientRpcError } from '../../rpcErrors'
 
 // The code view over a workpiece's git-backed files -- a gadget's code or a worktree's checkout.
@@ -240,6 +243,8 @@ export default function WorkpieceCodeInterface({
   }), [overseer])
   const readerRef = useRef(reader)
   readerRef.current = reader
+  // Stable per stub: the image view reloads when its identity changes.
+  const readBlob = useCallback((oid: string) => overseer.readBlob(oid), [overseer])
 
   // The content and review bases (see the module comment), from the selected chat's pin for
   // this workpiece, else the accepted commit. Both undefined for a pending (chat-created)
@@ -326,8 +331,8 @@ export default function WorkpieceCodeInterface({
         const files = await commitFileStore.readFiles(readerRef.current, commitId, paths)
         const texts = new Map<string, string | null>()
         for (const [path, file] of files) {
-          if (file.kind === 'unreadable') {
-            throw new Error(`base of an edited file is unreadable: ${path}: ${file.message}`)
+          if (file.kind === 'unreadable' || file.kind === 'blob') {
+            throw new Error(`base of an edited file has no text: ${path}`)
           }
           texts.set(path, file.kind === 'text' ? file.text : null)
         }
@@ -1105,14 +1110,14 @@ export default function WorkpieceCodeInterface({
     return true
   }, [client, bumpContentVersion])
 
-  // The text of a path at the content base, read through the store (for operations on files
-  // the overlay doesn't cover, whose text may not be loaded yet). Null when it has none.
-  const readBaseText = useCallback(async (path: string): Promise<string | null> => {
+  // The content of a path at the content base, read through the store (for operations on files
+  // the overlay doesn't cover, whose content may not be loaded yet). Null when it has none.
+  const readBaseContent = useCallback(async (path: string): Promise<FileContent | null> => {
     const base = contentBaseRef.current
     if (base === undefined) return null
     const files = await commitFileStore.readFiles(readerRef.current, base, [path])
     const file = files.get(path)
-    return file?.kind === 'text' ? file.text : null
+    return file?.kind === 'text' ? file.text : file?.kind === 'blob' ? file.blob : null
   }, [])
 
   // The active file's editing session (see EditSession in CodeEditor). Identity is stable
@@ -1209,13 +1214,13 @@ export default function WorkpieceCodeInterface({
     setActiveFile(filename)
   }
 
-  // A displayed file's text: the overlay's when it covers the path, else read from the content
-  // base (async: the store may not hold it yet). Null for a file with no text (removed, absent,
-  // unreadable).
-  const readDisplayedText = async (filename: string): Promise<string | null> => {
+  // A displayed file's content: the overlay's when it covers the path, else read from the
+  // content base (async: the store may not hold it yet). Null for a file with none (removed,
+  // absent, unreadable).
+  const readDisplayedContent = async (filename: string): Promise<FileContent | null> => {
     const overlaid = overlayText(filename)
-    if (overlaid !== undefined) return typeof overlaid === 'string' ? overlaid : null
-    return readBaseText(filename)
+    if (overlaid !== undefined) return overlaid
+    return readBaseContent(filename)
   }
 
   const handleFileCreate = (filename: string) => {
@@ -1259,7 +1264,7 @@ export default function WorkpieceCodeInterface({
       return
     }
     const target = { client, gadgetId: workpieceId, contentBase }
-    const baseText = await readDisplayedText(oldName).catch(() => null)
+    const baseContent = await readDisplayedContent(oldName).catch(() => null)
     // The read may have outlasted the selection: applyLocalFileChanges targets the *current*
     // gadget, and this rename belongs to the one it started on.
     if (target.client === null || clientRef.current !== target.client ||
@@ -1275,7 +1280,7 @@ export default function WorkpieceCodeInterface({
       toasts.add({ title: 'File not found', variant: 'error' })
       return
     }
-    const text = chatFilesNow?.get(oldName) ?? baseText
+    const text = chatFilesNow?.get(oldName) ?? baseContent
     if (typeof text !== 'string') {
       toasts.add({ title: 'Only text files can be renamed in this editor', variant: 'error' })
       return
@@ -1293,12 +1298,18 @@ export default function WorkpieceCodeInterface({
   }
 
   const handleFileDownload = async (filename: string) => {
-    const text = await readDisplayedText(filename).catch(() => null)
-    if (text === null) {
+    const content = await readDisplayedContent(filename).catch(() => null)
+    if (typeof content === 'string') {
+      saveTextToFile(filename, content)
+      return
+    }
+    const blob = content === null ? null
+      : await readBlob(content.oid).then(stream => new Response(stream).blob()).catch(() => null)
+    if (blob === null) {
       toasts.add({ title: `Could not download ${filename}`, variant: 'error' })
       return
     }
-    saveTextToFile(filename, text)
+    saveBlobToFile(blob, filename)
   }
 
   // ---- render ------------------------------------------------------------------------------
@@ -1374,14 +1385,14 @@ export default function WorkpieceCodeInterface({
     if (overlaid !== undefined) {
       activeResolved = overlaid === null ? { kind: 'absent' }
         : typeof overlaid === 'string' ? { kind: 'text', text: overlaid }
-        : { kind: 'unreadable', message: 'Binary content cannot be displayed in the text editor.' }
+        : { kind: 'blob', blob: overlaid }
     } else if (contentBase !== undefined) {
       activeResolved = activeBaseFiles.get(activeFile)
     }
   }
   const activeFileText = activeResolved?.kind === 'text' ? activeResolved.text : null
-  // A base entry with no readable text (symlink, binary, oversized) shows its reason in place
-  // of content, read-only.
+  // A base entry with no presentable content (symlink, submodule, oversized) shows its reason in
+  // place of content, read-only.
   const activeFileUnreadable = activeResolved?.kind === 'unreadable'
     ? activeResolved.message : null
   // The diff's original side: the review base's text (null = absent there: an added file). The
@@ -1397,11 +1408,13 @@ export default function WorkpieceCodeInterface({
     ? null
     : activeReview.kind === 'text'
       ? activeReview.text
-      : `(${activeReview.message}; its previous content cannot be shown)`
+      : activeReview.kind === 'blob'
+        ? `(${activeFile} is not a text file; its previous content cannot be shown)`
+        : `(${activeReview.message}; its previous content cannot be shown)`
   // Either of the open file's two reads failing is shown in its pane, with a retry.
   const activeFileError = (activeResolved === undefined ? activeBaseError : null) ??
     (activeReviewLoading ? reviewError : null)
-  const activeFileDownloadable = activeFileText !== null
+  const activeFileDownloadable = activeFileText !== null || activeResolved?.kind === 'blob'
   const activeFileModeLabel = !branchMode
     ? 'Viewing'
     : isEditingLocked
@@ -1573,6 +1586,8 @@ export default function WorkpieceCodeInterface({
                   Loading file...
                 </div>
               )
+            ) : activeResolved.kind === 'blob' && activeFile !== null ? (
+              <BinaryFileView filename={activeFile} blob={activeResolved.blob} readBlob={readBlob} />
             ) : activeFileUnreadable !== null ? (
               <CodeEditor
                 filename={activeFile}

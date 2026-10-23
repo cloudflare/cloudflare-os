@@ -1,6 +1,6 @@
-// The client-facing commit reads (Overseer.listTree / readFilesAtCommit / listChangedPaths)
-// through the real OverseerInterface class: oid validation, the per-call path cap, the order of
-// listed paths, and the "use" role's denial. The read semantics themselves are covered by
+// The client-facing commit reads (Overseer.listTree / readFilesAtCommit / listChangedPaths /
+// readBlob) through the real OverseerInterface class: oid validation, the per-call path cap, the
+// order of listed paths, and the "use" role's denial. The read semantics themselves are covered by
 // git-cache.test.ts; this file covers the RPC surface -- and, because
 // capnweb-validate is *not* mocked here, importing overseer.ts compiles the generated validators,
 // including the recursive TreeNode return shape.
@@ -9,7 +9,9 @@ import { describe, expect, it } from "vitest";
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { MAX_READ_FILES_PER_CALL, type Overseer } from "@gadgets/workshop-shared/api";
+import type { FileContent } from "@gadgets/workshop-shared/code-change";
 import type { OverseerDurableObject } from "../src/overseer.js";
+import type { GitStore } from "../src/git-store";
 import { WorkspaceGitCache } from "../src/git-cache";
 import { makeOverseerStorage } from "../src/storage-schema/overseer-storage";
 import { makeMockStorage } from "./mock-storage";
@@ -71,7 +73,8 @@ describe("commit reads over the Overseer interface", () => {
 });
 
 // A parentless commit of the files, through the Overseer's own store.
-async function commitFiles(impl: any, files: Record<string, string>): Promise<string> {
+async function commitFiles(impl: { gitStore: GitStore }, files: Record<string, FileContent>):
+    Promise<string> {
   return await impl.gitStore.writeFilesAsCommit(new Map(Object.entries(files)), {
     parents: [],
     author: { name: "Alice", email: "alice@example.com" },
@@ -80,7 +83,7 @@ async function commitFiles(impl: any, files: Record<string, string>): Promise<st
   });
 }
 
-describe("listChangedPaths over the Overseer interface", () => {
+describe("listChangedPaths and readBlob over the Overseer interface", () => {
   // The real client interface, opened as its owner over a fresh Overseer.
   let doCounter = 0;
   async function withClient(fn: (impl: any, client: Overseer) => Promise<void>): Promise<void> {
@@ -123,5 +126,18 @@ describe("listChangedPaths over the Overseer interface", () => {
   it("is denied to a \"use\" collaborator", async () => {
     let client = await openFakeOverseer({}, { role: "use" });
     await expect(client.listChangedPaths(COMMIT_1, COMMIT_2)).rejects.toThrow(/^Unauthorized/);
+  });
+
+  it("reads back the blob a binary file's entry names", async () => {
+    await withClient(async (impl, client) => {
+      let png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]);
+      let commit = await commitFiles(impl, { "logo.png": await impl.gitStore.writeBlob(png) });
+      let [[, file]] = await client.readFilesAtCommit(commit, ["logo.png"]);
+      if (file.kind !== "blob") throw new Error(`expected a blob entry, got ${file.kind}`);
+      expect(file.blob.byteLength).toBe(png.byteLength);
+      let stream = await client.readBlob(file.blob.oid);
+      expect(new Uint8Array(await new Response(stream).arrayBuffer())).toStrictEqual(png);
+      await expect(client.readBlob("0".repeat(40))).rejects.toThrow("Unknown Git blob.");
+    });
   });
 });

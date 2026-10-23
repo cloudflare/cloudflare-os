@@ -12014,6 +12014,11 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return oid;
   }
 
+  async readBlob(oid: string): Promise<ReadableStream<Uint8Array>> {
+    const bytes = this.impl.gitStore.readBlob(oid);
+    return new ReadableStream({pull: c => { c.enqueue(bytes); c.close(); }}, {highWaterMark: 0});
+  }
+
   // Fetch the bytes of a committed chat attachment over the authenticated RPC connection. The
   // caller already has its canonical metadata from the ChatAttachmentRef in the message.
   async getChatAttachmentContent(chatId: number, id: string): Promise<Uint8Array> {
@@ -12849,6 +12854,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
     this.#deny();
   }
   async uploadBlob(_content: Uint8Array): Promise<string> { this.#deny(); }
+  async readBlob(_oid: string): Promise<ReadableStream<Uint8Array>> { this.#deny(); }
   async getChatAttachmentContent(_chatId: number, _id: string): Promise<Uint8Array> { this.#deny(); }
   async setChatTitle(_chatId: number, _title: string): Promise<void> { this.#deny(); }
   async mergeChanges(_chatId: number): Promise<MergeChangesResult> {

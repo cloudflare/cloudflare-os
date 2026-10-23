@@ -179,8 +179,8 @@ export function resolveRenamePath(path: string, name: string): string | null {
  * review base at all (a pending gadget), where every displayed file is an addition.
  *
  * A removal of a path the review base lacks (added, then deleted, within the chat) is nothing to
- * review and reads as unchanged; an unreadable original (a binary the chat overwrote) can only be
- * reported as modified.
+ * review and reads as unchanged; an unreadable original (a symlink, submodule or oversized file
+ * the chat overwrote) can only be reported as modified.
  */
 export function fileChangeStatus(
   displayed: FileContent | null,
@@ -193,8 +193,10 @@ export function fileChangeStatus(
   }
   if (original.kind === 'absent') return displayed !== null ? 'added' : 'unchanged'
   if (displayed === null) return 'deleted'
-  if (original.kind === 'unreadable' || original.text !== displayed) return 'modified'
-  return 'unchanged'
+  if (original.kind === 'text') return original.text === displayed ? 'unchanged' : 'modified'
+  if (original.kind === 'blob' && typeof displayed !== 'string' &&
+      displayed.oid === original.blob.oid) return 'unchanged'
+  return 'modified'
 }
 
 /**
