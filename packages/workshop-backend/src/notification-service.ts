@@ -78,19 +78,28 @@ export async function registerDevice(
       ? { deviceRegistrationId: registration }
       : { webPush: { endpoint: registration.endpoint,
           keys: { p256dh: registration.keys.p256dh, auth: registration.keys.auth } } };
-  // Someone waits on a registration (a browser's sign-out queues behind it), so a stuck service
-  // fails it rather than holding them. Deliveries run in the background, and wait on the service's
-  // own 10s push sends, so they are left unbounded.
-  let response = await signedPost(env, "/v1/subscriptions", body, AbortSignal.timeout(15_000));
-  return subscription(response);
+  return registrationRequest(async signal =>
+    subscription(await signedPost(env, "/v1/subscriptions", body, signal)));
 }
 
 /** Claim only a native registration authorized for this installation and authenticated CFOS user. */
 export async function registerAuthorizedDevice(
     env: Cloudflare.Env, deviceRegistrationId: string, subject: string,
 ): Promise<{ deviceKey: string; subscriptionId: string }> {
-  return subscription(await signedPost(
-      env, "/v2/subscriptions", { deviceRegistrationId, subject }, AbortSignal.timeout(15_000)));
+  return registrationRequest(async signal =>
+    subscription(await signedPost(env, "/v2/subscriptions", { deviceRegistrationId, subject }, signal)));
+}
+
+// Registration blocks sign-out, so bound the whole response, including parsing its body.
+// AbortSignal.timeout leaves its timer alive after success, delaying Durable Object eviction.
+async function registrationRequest<T>(request: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  let controller = new AbortController();
+  let timeout = setTimeout(() => controller.abort(), 15_000);
+  try {
+    return await request(controller.signal);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function subscription(response: Response): Promise<{ deviceKey: string; subscriptionId: string }> {
@@ -107,16 +116,17 @@ async function subscription(response: Response): Promise<{ deviceKey: string; su
 
 /** Ask the central service for a short-lived grant for this authenticated installation user. */
 export async function authorizeDevice(env: Cloudflare.Env, subject: string): Promise<string> {
-  let response = await signedPost(
-      env, "/v2/device-authorizations", { subject }, AbortSignal.timeout(15_000));
-  if (!response.ok) {
-    throw new Error(`Notification authorization failed with status ${response.status}.`);
-  }
-  let { authorization } = await response.json<{ authorization?: unknown }>();
-  if (!isServiceId(authorization)) {
-    throw new Error("Notification service returned an invalid authorization.");
-  }
-  return authorization;
+  return registrationRequest(async signal => {
+    let response = await signedPost(env, "/v2/device-authorizations", { subject }, signal);
+    if (!response.ok) {
+      throw new Error(`Notification authorization failed with status ${response.status}.`);
+    }
+    let { authorization } = await response.json<{ authorization?: unknown }>();
+    if (!isServiceId(authorization)) {
+      throw new Error("Notification service returned an invalid authorization.");
+    }
+    return authorization;
+  });
 }
 
 /**

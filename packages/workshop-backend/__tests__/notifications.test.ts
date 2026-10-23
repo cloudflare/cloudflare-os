@@ -78,6 +78,60 @@ afterEach(() => {
 });
 
 describe("notification service", () => {
+  const registration = (kind: "legacy" | "authorized" | "authorization") =>
+    kind === "legacy" ? registerDevice(installEnv, "d".repeat(64)) :
+    kind === "authorized" ? registerAuthorizedDevice(installEnv, "d".repeat(64), "a".repeat(64)) :
+    authorizeDevice(installEnv, "a".repeat(64));
+  const registered = { deviceKey: "d".repeat(64), subscriptionId: ONE, authorization: "a".repeat(64) };
+
+  it.each(["legacy", "authorized", "authorization"] as const)(
+      "keeps the %s deadline through body parsing and releases it after success", async kind => {
+    vi.useFakeTimers();
+    const body = Promise.withResolvers<typeof registered>();
+    const parsing = Promise.withResolvers<void>();
+    const response = Response.json({});
+    vi.spyOn(response, "json").mockImplementation(() => {
+      parsing.resolve();
+      return body.promise;
+    });
+    const fetcher = stubService().mockResolvedValue(response);
+    const result = registration(kind);
+    await parsing.promise;
+    try {
+      expect(vi.getTimerCount()).toBe(1);
+      expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(false);
+    } finally {
+      body.resolve(registered);
+      await result;
+    }
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(false);
+  });
+
+  it.each(["legacy", "authorized", "authorization"] as const)(
+      "releases the %s deadline after a malformed response", async kind => {
+    vi.useFakeTimers();
+    stubService().mockResolvedValue(Response.json({}));
+    await expect(registration(kind)).rejects.toThrow();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["legacy", "authorized", "authorization"] as const)(
+      "aborts a stalled %s registration after fifteen seconds", async kind => {
+    vi.useFakeTimers();
+    const sending = Promise.withResolvers<void>();
+    stubService().mockImplementation((_url, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new Error("registration deadline")));
+      sending.resolve();
+    }));
+    const failure = expect(registration(kind)).rejects.toThrow("registration deadline");
+    await sending.promise;
+    await vi.advanceTimersByTimeAsync(15_000);
+    await failure;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("signs the installation's vouch for an opaque CFOS user without a Dashboard credential", async () => {
     const fetcher = stubService();
     const subject = "a".repeat(64);
