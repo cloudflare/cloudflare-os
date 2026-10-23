@@ -553,6 +553,27 @@ function createCapsuleRemarkPlugin(mentionsByToken: Map<string, Mention>) {
   };
 }
 
+function replaceNewlinesWithBreaks(node: MarkdownAstNode) {
+  if (!node.children) return;
+  node.children = node.children.flatMap((child): MarkdownAstNode[] => {
+    if (child.type === "text" && child.value?.includes("\n")) {
+      return child.value.split(/\r?\n/).flatMap((line, index): MarkdownAstNode[] => [
+        ...(index > 0 ? [{ type: "break" }] : []),
+        ...(line ? [{ type: "text", value: line }] : []),
+      ]);
+    }
+    replaceNewlinesWithBreaks(child);
+    return [child];
+  });
+}
+
+// Renders a user's single newline as a hard break. Done in the tree rather than with
+// `white-space: pre-wrap`, which also shows the newlines Markdown puts between block elements,
+// adding a blank line between every list item.
+function lineBreaksRemarkPlugin() {
+  return replaceNewlinesWithBreaks;
+}
+
 // Names the binding edge a gadget-binding tool call touched, as `GADGET.BINDING` when the record
 // says which gadget owns it. (Records written before named chat bindings carry only the binding
 // name, and a still-streaming call may not have either yet.)
@@ -1203,19 +1224,18 @@ function getMarkdownComponents(
   };
 }
 
-const REMARK_PLUGINS_NO_CAPSULES = [remarkGfm];
 const MARKDOWN_COMPONENTS_NO_CAPSULES = getMarkdownComponents();
 
 /**
- * Exported for unit testing (see ChatInterface.markdown.test.tsx), which verifies that a
- * single newline in a user message survives to the DOM as a literal "\n" so the
- * `whitespace-pre-wrap` wrapper at the user-message render site renders it as a hard break.
+ * Exported for unit testing (see ChatInterface.markdown.test.ts). `preserveLineBreaks` renders
+ * single newlines as hard breaks, for text people typed rather than Markdown a model wrote.
  */
 export const MarkdownMessage = memo(function MarkdownMessage(
-  { message, capsules, formats }: {
+  { message, capsules, formats, preserveLineBreaks }: {
     message: string;
     capsules?: CapsuleSpecifier[];
     formats?: MessageFormatRef[];
+    preserveLineBreaks?: boolean;
   },
 ): ReactNode {
   const tokenizedMessage = useMemo(
@@ -1231,10 +1251,12 @@ export const MarkdownMessage = memo(function MarkdownMessage(
     [tokenizedMessage],
   );
   const remarkPlugins = useMemo(
-    () => tokenizedMessage
-      ? [remarkGfm, createCapsuleRemarkPlugin(tokenizedMessage.mentionsByToken)]
-      : REMARK_PLUGINS_NO_CAPSULES,
-    [tokenizedMessage],
+    () => [
+      remarkGfm,
+      ...(tokenizedMessage ? [createCapsuleRemarkPlugin(tokenizedMessage.mentionsByToken)] : []),
+      ...(preserveLineBreaks ? [lineBreaksRemarkPlugin] : []),
+    ],
+    [preserveLineBreaks, tokenizedMessage],
   );
 
   return (
@@ -5987,14 +6009,12 @@ function ChatInterface({
                                     />
                                   </div>
                                 ) : msg.message.trim() && (
-                                  // pre-wrap renders users' single newlines as hard breaks.
-                                  <div className="whitespace-pre-wrap">
-                                    <MarkdownMessage
-                                      message={msg.message}
-                                      capsules={msg.capsules}
-                                      formats={msg.formats}
-                                    />
-                                  </div>
+                                  <MarkdownMessage
+                                    message={msg.message}
+                                    capsules={msg.capsules}
+                                    formats={msg.formats}
+                                    preserveLineBreaks
+                                  />
                                 )}
                               </div>
                               {endsUserGroup && (
@@ -6492,9 +6512,7 @@ function ChatInterface({
                       return (
                         <div key={index} className={`flex flex-col items-end ${sameAuthorAsPrevious ? "mt-2" : "mt-5"}`}>
                           <div className={`${userBubbleClassName} opacity-60`}>
-                            <div className="whitespace-pre-wrap">
-                              <MarkdownMessage message={steer.text} />
-                            </div>
+                            <MarkdownMessage message={steer.text} preserveLineBreaks />
                           </div>
                           {next?.author.id !== steer.author.id && (
                             <div className="mt-1 flex items-center justify-end gap-2 pr-1 text-[11px] leading-4 text-kumo-inactive">
