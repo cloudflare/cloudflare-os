@@ -58,18 +58,41 @@ export const NotificationBridge = ({
   const addToast = useRef(toasts.add);
   addToast.current = toasts.add;
   const router = useRouter();
+  const currentApi = useRef(authenticatedApi);
+  currentApi.current = authenticatedApi;
   const askedNative = useRef(false);
   const claimedRegistrations = useRef(new Set<string>());
 
   useEffect(() => {
     let legacyWindow = window as LegacyNativeNotificationWindow;
     let notifications = nativeApp()?.notifications;
+    let cancelled = false;
+    let requestingAuthorization = false;
     let reportRegistration = (outcome: "ready" | "failed") => {
       if (notifications) {
         notifications.registrationFinished(outcome);
       } else {
         legacyWindow.webkit?.messageHandlers?.cloudflareOSNotificationReady
           ?.postMessage({ type: outcome });
+      }
+    };
+    const requestRegistration = async () => {
+      if (requestingAuthorization) return;
+      requestingAuthorization = true;
+      try {
+        if (notifications?.authorizationRequired) {
+          const authorization = await currentApi.current.authorizeNotificationDevice();
+          if (!cancelled) notifications.requestDeviceRegistration(authorization);
+        } else if (notifications) {
+          notifications.requestDeviceRegistration();
+        } else {
+          legacyWindow.__CLOUDFLARE_OS_REQUEST_NOTIFICATION_DEVICE_REGISTRATION__?.();
+        }
+      } catch (error) {
+        if (!cancelled) reportRegistration("failed");
+        logRpcFailure("Failed to authorize notification device:", error);
+      } finally {
+        requestingAuthorization = false;
       }
     };
     let register = async (deviceRegistrationId: string | undefined) => {
@@ -82,10 +105,14 @@ export const NotificationBridge = ({
         delete legacyWindow.__CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__;
       }
       try {
-        await authenticatedApi.registerNotificationDevice(deviceRegistrationId);
-        reportRegistration("ready");
+        if (notifications?.authorizationRequired) {
+          await currentApi.current.registerAuthorizedNotificationDevice(deviceRegistrationId);
+        } else {
+          await currentApi.current.registerNotificationDevice(deviceRegistrationId);
+        }
+        if (!cancelled) reportRegistration("ready");
       } catch (error) {
-        reportRegistration("failed");
+        if (!cancelled) reportRegistration("failed");
         logRpcFailure("Failed to register notification device:", error);
       }
     };
@@ -99,17 +126,23 @@ export const NotificationBridge = ({
       legacyWindow.__CLOUDFLARE_OS_NOTIFICATION_DEVICE_REGISTRATION__;
     void register(injected);
     window.addEventListener(DEVICE_REGISTRATION_EVENT, onDeviceRegistration);
+    const onAuthorizationRequest = () => { void requestRegistration(); };
+    window.addEventListener("cloudflare-os:notification-authorization-request", onAuthorizationRequest);
     // Each id costs a central registration, and this Effect reruns on every reconnect: ask at most
     // once per mount, and not at all when native already injected one.
     if (!askedNative.current) {
       askedNative.current = true;
       if (!injected) {
-        if (notifications) notifications.requestDeviceRegistration();
-        else legacyWindow.__CLOUDFLARE_OS_REQUEST_NOTIFICATION_DEVICE_REGISTRATION__?.();
+        void requestRegistration();
       }
     }
-    return () => window.removeEventListener(DEVICE_REGISTRATION_EVENT, onDeviceRegistration);
-  }, [authenticatedApi]);
+    return () => {
+      cancelled = true;
+      window.removeEventListener(DEVICE_REGISTRATION_EVENT, onDeviceRegistration);
+      window.removeEventListener("cloudflare-os:notification-authorization-request", onAuthorizationRequest);
+    };
+  // Enrollment belongs to this authenticated mount, not each replacement WebSocket stub.
+  }, []);
 
   useEffect(() => {
     let subscription: RpcStub<{}> | undefined;

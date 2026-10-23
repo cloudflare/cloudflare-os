@@ -39,6 +39,8 @@ describe("NotificationBridge", () => {
   let dispose: Mock<() => void>;
   let authenticatedApi: {
     registerNotificationDevice: Mock<(deviceRegistrationId: string) => Promise<void>>;
+    registerAuthorizedNotificationDevice: Mock<(deviceRegistrationId: string) => Promise<void>>;
+    authorizeNotificationDevice: Mock<() => Promise<string>>;
     subscribeToNotifications: Mock<Subscribe>;
   };
 
@@ -57,6 +59,8 @@ describe("NotificationBridge", () => {
     subscribers = [];
     dispose = vi.fn<() => void>();
     authenticatedApi = {
+      authorizeNotificationDevice: vi.fn<() => Promise<string>>().mockResolvedValue("a".repeat(64)),
+      registerAuthorizedNotificationDevice: vi.fn<(id: string) => Promise<void>>().mockResolvedValue(),
       registerNotificationDevice: vi.fn<(id: string) => Promise<void>>().mockResolvedValue(),
       subscribeToNotifications: vi.fn<Subscribe>(subscriber => {
         subscribers.push(subscriber);
@@ -71,6 +75,51 @@ describe("NotificationBridge", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    Reflect.deleteProperty(window, "cloudflareOSNative");
+  });
+
+  it("obtains a CFOS-authorized grant before asking new native apps to enroll", async () => {
+    const request = vi.fn<(authorization?: string) => void>();
+    const finished = vi.fn<(outcome: "ready" | "failed") => void>();
+    Object.assign(window, { cloudflareOSNative: { version: 1, isAvailable: () => true,
+      loginReady: () => {}, returnToInstalls: () => {}, notifications: {
+        authorizationRequired: true, currentDeviceRegistration: () => undefined,
+        requestDeviceRegistration: request, registrationFinished: finished,
+      } } });
+    await render();
+    expect(request).toHaveBeenCalledExactlyOnceWith("a".repeat(64));
+    await act(async () => window.dispatchEvent(new CustomEvent(
+      "cloudflare-os:notification-device-registration",
+      { detail: { deviceRegistrationId: "native-handle" } },
+    )));
+    expect(authenticatedApi.registerAuthorizedNotificationDevice)
+        .toHaveBeenCalledExactlyOnceWith("native-handle");
+    expect(authenticatedApi.registerNotificationDevice).not.toHaveBeenCalled();
+    expect(finished).toHaveBeenCalledWith("ready");
+    authenticatedApi = { ...authenticatedApi };
+    await render();
+    expect(authenticatedApi.authorizeNotificationDevice).toHaveBeenCalledOnce();
+    await act(async () => window.dispatchEvent(
+      new Event("cloudflare-os:notification-authorization-request")));
+    expect(authenticatedApi.authorizeNotificationDevice).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not hand a late grant to native after the authenticated view unmounts", async () => {
+    let resolve!: (grant: string) => void;
+    authenticatedApi.authorizeNotificationDevice.mockReturnValue(
+        new Promise(done => { resolve = done; }));
+    const request = vi.fn<(authorization?: string) => void>();
+    Object.assign(window, { cloudflareOSNative: { version: 1, isAvailable: () => true,
+      loginReady: () => {}, returnToInstalls: () => {}, notifications: {
+        authorizationRequired: true, currentDeviceRegistration: () => undefined,
+        requestDeviceRegistration: request,
+        registrationFinished: vi.fn<(outcome: "ready" | "failed") => void>(),
+      } } });
+    await render();
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await act(async () => resolve("a".repeat(64)));
+    expect(request).not.toHaveBeenCalled();
   });
 
   it("keeps one subscription across rerenders and declines while hidden", async () => {

@@ -3,6 +3,7 @@ import { RpcStub } from 'capnweb'
 import { PublicApi, AuthenticatedApi } from '@gadgets/workshop-shared/api'
 import { setReportedUserId } from './errorReporting'
 import { NativeConnectSession } from './features/native-app/connectSession'
+import { nativeApp } from './features/native-app/nativeApp'
 import { browserPushSupport, disableBrowserPush } from './features/notifications/browserPush'
 
 const CF_ACCESS_MODE = import.meta.env.VITE_CF_ACCESS_MODE === 'true'
@@ -128,6 +129,7 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
   }
 
   const logout = () => {
+    nativeApp()?.notifications?.disconnect?.()
     setReportedUserId(undefined)
     // On a shared computer, signing out is how the user stops this browser showing their chats.
     const releasePush = browserPushSupport() === 'supported'

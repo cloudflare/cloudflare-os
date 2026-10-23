@@ -528,6 +528,15 @@ export interface AuthenticatedApi extends RpcTarget {
    */
   registerNotificationDevice(registration: string | WebPushSubscription): Promise<void>;
 
+  /** Claim a new native registration using this user's CFOS authorization, not legacy OAuth. */
+  registerAuthorizedNotificationDevice(deviceRegistrationId: string): Promise<void>;
+
+  /**
+   * Authorize native push enrollment as this CFOS user. The single-use central grant is bound to
+   * this installation and user; it carries no provider token or Dashboard credential.
+   */
+  authorizeNotificationDevice(): Promise<string>;
+
   /**
    * Subscribe while this client can visibly present notifications. Dispose the returned handle
    * when the page becomes hidden so the backend can promptly fall back to push.

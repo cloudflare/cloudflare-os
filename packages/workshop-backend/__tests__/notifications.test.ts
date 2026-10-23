@@ -3,7 +3,9 @@ import { runInDurableObject } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "capnweb";
 import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
 import type { NotificationSubscriber, UserNotification, WebPushSubscription } from "@gadgets/workshop-shared/api";
-import { deliver, registerDevice } from "../src/notification-service.js";
+import {
+  authorizeDevice, deliver, registerAuthorizedDevice, registerDevice,
+} from "../src/notification-service.js";
 import type { UserDurableObject } from "../src/user.js";
 
 declare module "cloudflare:workers" {
@@ -48,7 +50,11 @@ function stubService(refuse?: { subscriptionId: string; status: string; code: nu
   let minted = 0;
   let fetcher = vi.fn<Fetch>(async (input, init) => {
     let body = JSON.parse(String(init?.body));
-    if (new URL(String(input)).pathname === "/v1/subscriptions") {
+    const path = new URL(String(input)).pathname;
+    if (path === "/v2/device-authorizations") {
+      return Response.json({ authorization: "a".repeat(64) }, { status: 201 });
+    }
+    if (path === "/v1/subscriptions" || path === "/v2/subscriptions") {
       return Response.json({
         deviceKey: (body.deviceRegistrationId ?? body.webPush.endpoint.at(-1))[0].repeat(64),
         subscriptionId: String(++minted).repeat(64),
@@ -72,6 +78,86 @@ afterEach(() => {
 });
 
 describe("notification service", () => {
+  const registration = (kind: "legacy" | "authorized" | "authorization") =>
+    kind === "legacy" ? registerDevice(installEnv, "d".repeat(64)) :
+    kind === "authorized" ? registerAuthorizedDevice(installEnv, "d".repeat(64), "a".repeat(64)) :
+    authorizeDevice(installEnv, "a".repeat(64));
+  const registered = { deviceKey: "d".repeat(64), subscriptionId: ONE, authorization: "a".repeat(64) };
+
+  it.each(["legacy", "authorized", "authorization"] as const)(
+      "keeps the %s deadline through body parsing and releases it after success", async kind => {
+    vi.useFakeTimers();
+    const body = Promise.withResolvers<typeof registered>();
+    const parsing = Promise.withResolvers<void>();
+    const response = Response.json({});
+    vi.spyOn(response, "json").mockImplementation(() => {
+      parsing.resolve();
+      return body.promise;
+    });
+    const fetcher = stubService().mockResolvedValue(response);
+    const result = registration(kind);
+    await parsing.promise;
+    try {
+      expect(vi.getTimerCount()).toBe(1);
+      expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(false);
+    } finally {
+      body.resolve(registered);
+      await result;
+    }
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(fetcher.mock.calls[0][1]?.signal?.aborted).toBe(false);
+  });
+
+  it.each(["legacy", "authorized", "authorization"] as const)(
+      "releases the %s deadline after a malformed response", async kind => {
+    vi.useFakeTimers();
+    stubService().mockResolvedValue(Response.json({}));
+    await expect(registration(kind)).rejects.toThrow();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["legacy", "authorized", "authorization"] as const)(
+      "aborts a stalled %s registration after fifteen seconds", async kind => {
+    vi.useFakeTimers();
+    const sending = Promise.withResolvers<void>();
+    stubService().mockImplementation((_url, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new Error("registration deadline")));
+      sending.resolve();
+    }));
+    const failure = expect(registration(kind)).rejects.toThrow("registration deadline");
+    await sending.promise;
+    await vi.advanceTimersByTimeAsync(15_000);
+    await failure;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("signs the installation's vouch for an opaque CFOS user without a Dashboard credential", async () => {
+    const fetcher = stubService();
+    const subject = "a".repeat(64);
+    await expect(authorizeDevice(installEnv, subject)).resolves.toBe("a".repeat(64));
+    const [url, init] = fetcher.mock.calls[0];
+    const headers = new Headers(init?.headers);
+    expect(bodies(fetcher, "/v2/device-authorizations")).toEqual([{ subject }]);
+    expect(headers.has("Authorization")).toBe(false);
+    const canonical = [
+      "CFOS1", "POST", new URL(String(url)).pathname,
+      ...["install-id", "key-id", "timestamp", "nonce", "content-digest"]
+          .map(name => headers.get(`x-cfos-${name}`)),
+    ].join("\n");
+    expect(await crypto.subtle.verify(
+        { name: "ECDSA", hash: "SHA-256" }, publicKey,
+        base64urlBytes(headers.get("x-cfos-signature")!), encoder.encode(canonical))).toBe(true);
+    await registerAuthorizedDevice(installEnv, "d".repeat(64), subject);
+    expect(bodies(fetcher, "/v2/subscriptions"))
+        .toEqual([{ subject, deviceRegistrationId: "d".repeat(64) }]);
+  });
+
+  it("refuses malformed central enrollment grants", async () => {
+    stubService().mockResolvedValue(Response.json({ authorization: "not-a-grant" }));
+    await expect(authorizeDevice(installEnv, "a".repeat(64))).rejects.toThrow();
+  });
+
   it.each([
     ["taskCompleted", "task_completed"],
     ["permissionRequested", "permission_requested"],
@@ -187,6 +273,19 @@ async function publish(notify?: () => Promise<void>): Promise<string[]> {
 }
 
 describe("UserDurableObject notifications", () => {
+  it("derives the central subject from the User DO for both authorization and exchange", async () => {
+    const fetcher = stubService();
+    await inUser(async user => {
+      await user.authorizeNotificationDevice();
+      await user.registerAuthorizedNotificationDevice("a".repeat(64));
+    });
+    await inUser(async user => { await user.authorizeNotificationDevice(); });
+    const subjects = bodies(fetcher, "/v2/device-authorizations").map(body => body.subject);
+    expect(subjects[0]).toMatch(/^[0-9a-f]{64}$/);
+    expect(subjects[1]).not.toBe(subjects[0]);
+    expect(bodies(fetcher, "/v2/subscriptions")[0].subject).toBe(subjects[0]);
+  });
+
   it("leaves a notification an open tab shows to that tab", async () => {
     expect(await publish(async () => {})).toEqual([]);
   });
