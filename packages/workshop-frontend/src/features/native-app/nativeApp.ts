@@ -1,6 +1,8 @@
 type NativeNotificationBridge = {
   currentDeviceRegistration: () => string | undefined
-  requestDeviceRegistration: () => void
+  authorizationRequired?: boolean
+  requestDeviceRegistration: (authorization?: string) => void
+  disconnect?: () => void
   registrationFinished: (outcome: 'ready' | 'failed') => void
 }
 

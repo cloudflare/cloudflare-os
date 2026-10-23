@@ -82,6 +82,18 @@ export async function registerDevice(
   // fails it rather than holding them. Deliveries run in the background, and wait on the service's
   // own 10s push sends, so they are left unbounded.
   let response = await signedPost(env, "/v1/subscriptions", body, AbortSignal.timeout(15_000));
+  return subscription(response);
+}
+
+/** Claim only a native registration authorized for this installation and authenticated CFOS user. */
+export async function registerAuthorizedDevice(
+    env: Cloudflare.Env, deviceRegistrationId: string, subject: string,
+): Promise<{ deviceKey: string; subscriptionId: string }> {
+  return subscription(await signedPost(
+      env, "/v2/subscriptions", { deviceRegistrationId, subject }, AbortSignal.timeout(15_000)));
+}
+
+async function subscription(response: Response): Promise<{ deviceKey: string; subscriptionId: string }> {
   if (!response.ok) {
     throw new Error(`Notification registration failed with status ${response.status}.`);
   }
@@ -91,6 +103,20 @@ export async function registerDevice(
     throw new Error("Notification service returned an invalid subscription.");
   }
   return { deviceKey, subscriptionId };
+}
+
+/** Ask the central service for a short-lived grant for this authenticated installation user. */
+export async function authorizeDevice(env: Cloudflare.Env, subject: string): Promise<string> {
+  let response = await signedPost(
+      env, "/v2/device-authorizations", { subject }, AbortSignal.timeout(15_000));
+  if (!response.ok) {
+    throw new Error(`Notification authorization failed with status ${response.status}.`);
+  }
+  let { authorization } = await response.json<{ authorization?: unknown }>();
+  if (!isServiceId(authorization)) {
+    throw new Error("Notification service returned an invalid authorization.");
+  }
+  return authorization;
 }
 
 /**

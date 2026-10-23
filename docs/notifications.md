@@ -34,13 +34,16 @@ flowchart LR
   end
 
   APNS -->|device token| App
-  App -->|Dashboard OAuth plus device token| Device
+  Browser -->|authorizeNotificationDevice| User
+  User -->|signed POST /v2/device-authorizations with own subject| Device
+  Device -->|single-use grant via User and Browser| App
+  App -->|grant plus device token| Device
   Device -->|store token; return one-time id| Registry
   Device -->|one-time registration id| App
   App -->|inject opaque id| Browser
   Endpoint -->|endpoint and keys for the VAPID public key| Browser
   Browser -->|registerNotificationDevice| User
-  User -->|signed POST /v1/subscriptions| Device
+  User -->|signed POST /v1 or /v2/subscriptions| Device
   Key -->|sign request locally| User
   Device -->|validate install; consume one-time id or store endpoint| Registry
   Device -->|device key and opaque subscription id| User
@@ -49,7 +52,9 @@ flowchart LR
 
 Data boundaries:
 
-- The APNs device token and Dashboard OAuth bearer never enter the customer installation.
+- APNs/FCM tokens and native device-management credentials never enter the customer installation.
+- A CFOS login is sufficient: the registered installation vouches for its authenticated User DO's
+  opaque id. New ownership is scoped to `(install id, User DO id)`, not a Dashboard account.
 - The install signing private key is a backend secret, held like `CF_AI_GATEWAY_API_TOKEN`; gadget
   and agent code run in isolates whose env never includes it.
 - Workshop core stores only opaque central subscription ids, which are bound to the installation
@@ -66,6 +71,20 @@ The native app hands the SPA a one-time registration id by setting
 time the signed-in app mounts (a WebSocket reconnect does not remount it) to request one.
 The SPA reports the outcome to `webkit.messageHandlers.cloudflareOSNotificationReady` as
 `{type: "ready"}` or `{type: "failed"}`.
+
+New native apps advertise `cloudflareOSNative.notifications.authorizationRequired`. Once the SPA
+is authenticated, it calls `authorizeNotificationDevice()` and passes the returned single-use
+ten-minute grant to `notifications.requestDeviceRegistration(grant)`. The backend derives the
+subject from its User DO, never from a client-supplied email or account. Native sends the grant and
+provider token directly to the central `/v2/devices` endpoint, keeps its per-install management
+credential in secure storage, and exposes only the one-use registration to the SPA.
+`registerAuthorizedNotificationDevice(id)` exchanges it with the same signed install/user scope.
+CFOS logout calls `notifications.disconnect()`; native revokes that install's device enrollment.
+Provider-token refresh uses the native credential without a Dashboard login or web session.
+
+Deploy central service, then CFOS backend/SPA, then native apps. Older native apps retain the
+legacy Dashboard-authenticated v1 path and globals until upgraded. New native apps never fall back
+to Dashboard authentication against old installations; the installation must be updated first.
 
 A desktop browser registers as a device too, with its Web Push subscription as the registration.
 When the deployment advertises the service's VAPID public key (`ServerConfig.webPushPublicKey`), the

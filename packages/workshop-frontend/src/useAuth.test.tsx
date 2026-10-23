@@ -150,6 +150,25 @@ describe('useAuth error reporting identity', () => {
     expect(setReportedUserId).toHaveBeenLastCalledWith(undefined)
   })
 
+  it('disconnects native push enrollment on CFOS logout', async () => {
+    localStorage.setItem('authToken', 'stored-token')
+    const disconnect = vi.fn<() => void>()
+    Object.assign(window, { cloudflareOSNative: { version: 1, isAvailable: () => true,
+      loginReady: () => {}, returnToInstalls: () => {}, notifications: {
+        currentDeviceRegistration: () => undefined,
+        requestDeviceRegistration: () => {},
+        registrationFinished: () => {},
+        disconnect,
+      } } })
+    try {
+      const { controls } = await mount(stubPublicApi(person))
+      act(() => controls.logout())
+      expect(disconnect).toHaveBeenCalledOnce()
+    } finally {
+      Reflect.deleteProperty(window, 'cloudflareOSNative')
+    }
+  })
+
   it('ignores a lookup that resolves after logout', async () => {
     localStorage.setItem('authToken', 'stored-token')
     const { api, release } = deferredPublicApi()
