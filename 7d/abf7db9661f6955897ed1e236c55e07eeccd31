@@ -1,0 +1,24 @@
+plans/gmail-simulation.md
+  s_c31bf147d9a35f::t_d09d338578ccc1 211-212
+plans/gatekeeper-kit.md
+  s_c31bf147d9a35f::t_d09d338578ccc1 1080-1082
+docs/google-chat-capabilities.md
+  s_c31bf147d9a35f::t_54737d46721bfd 211
+  s_c31bf147d9a35f::t_d09d338578ccc1 212
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7dabf7db9661f6955897ed1e236c55e07eeccd31",
+  "prompts": {},
+  "sessions": {
+    "s_c31bf147d9a35f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "de85876d-a552-46dc-8098-f2602de083b7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
