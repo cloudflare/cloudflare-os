@@ -38,6 +38,12 @@ export default async function(self, env) {
 `query` is 1 to 1,024 characters, the API's limits. The caller picks no provider and no result
 count, and gets up to 10 results.
 
+Ceramic, the provider `search.ts` pins, matches keywords, not meaning. So `types.d.ts` tells the
+agent to send a few specific keywords rather than a question, as
+[Ceramic's agent skill](https://docs.ceramic.ai/api/search/agent-skill) advises. In our blind test
+of 36 questions, two graders scored Ceramic's results about 0.4 points higher out of 4 for queries
+written this way than for the queries a model wrote without the guidance.
+
 ## How a search runs
 
 <p align="center"><img src="../../docs/images/web-search-flow.svg" alt="A search passes the gatekeeper's query check and is recorded in the Activity log before it goes through the Workers AI binding and the deployment's AI Gateway to Ceramic" width="860"></p>
