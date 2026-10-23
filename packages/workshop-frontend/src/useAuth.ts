@@ -3,6 +3,7 @@ import { RpcStub } from 'capnweb'
 import { PublicApi, AuthenticatedApi } from '@gadgets/workshop-shared/api'
 import { setReportedUserId } from './errorReporting'
 import { NativeConnectSession } from './features/native-app/connectSession'
+import { classifyRpcError } from './rpcErrors'
 
 const CF_ACCESS_MODE = import.meta.env.VITE_CF_ACCESS_MODE === 'true'
 
@@ -42,9 +43,16 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
    * newer login from being overwritten by the previous user. Disposal would not be enough on its
    * own: capnweb does not guarantee that disposing a stub rejects calls already in flight.
    *
-   * Nothing is cleared here. Cleanup also runs on unmount, and two instances of this hook can be
+   * Nothing is cleared on cleanup. It also runs on unmount, and two instances of this hook can be
    * mounted at once — the blueprint page runs its own inside the root's — so an inner one going
-   * away must not blank an identity the outer still holds. `logout` is the only thing that clears.
+   * away must not blank an identity the outer still holds.
+   *
+   * The same `whoami` is what notices a refused session. The authenticate call is pipelined, so a
+   * stored token the server no longer knows (expired, revoked, or wiped with the deployment's
+   * storage) still yields a stub, and every call on it fails. An auth failure here signs out, so the
+   * login screen replaces a shell that cannot load anything. Transport failures and object resets
+   * are left to the reconnect path, and `cancelled` keeps a late refusal of a replaced stub from
+   * signing out the session that replaced it.
    */
   useEffect(() => {
     const authenticatedApi = authState.authenticatedApi
@@ -55,7 +63,9 @@ export function useAuth(publicApi: RpcStub<PublicApi>) {
     identity.then((info) => {
       // Only a real user account names a person: for a gadget author `id` is its owner's id.
       if (!cancelled && info.type === 'user') setReportedUserId(info.id)
-    }).catch(() => {})
+    }).catch((err) => {
+      if (!cancelled && classifyRpcError(err) === 'auth') logout()
+    })
     return () => { cancelled = true; untrack() }
   }, [authState.authenticatedApi, nativeConnectSession])
 
