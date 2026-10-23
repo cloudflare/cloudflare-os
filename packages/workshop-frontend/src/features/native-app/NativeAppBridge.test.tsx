@@ -33,6 +33,7 @@ const apiWithWhoami = (whoami: () => Promise<AiChatAuthorInfo>) => ({
 describe('native app bridge', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
+    vi.restoreAllMocks()
   })
 
   it('reports login only after whoami confirms a user, then uses the versioned native object for navigation', async () => {
@@ -203,6 +204,52 @@ describe('native app bridge', () => {
     await act(async () => identity.resolve(user))
     expect(calls).toEqual(['login', 'badge'])
     act(() => root.unmount())
+  })
+
+  it.each([false, true])('keeps native badges subscribed while hidden (hidden on mount: %s)', async hiddenOnMount => {
+    let visibility: DocumentVisibilityState = hiddenOnMount ? 'hidden' : 'visible'
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    const badge = vi.fn<(state: UserUnreadState & {revision: number}) => void>()
+    vi.stubGlobal('cloudflareOSNative', {
+      version: 1, isAvailable: () => true, loginReady: () => {},
+      unreadStateChanged: badge, returnToInstalls: () => {},
+    })
+    const dispose = vi.fn<() => void>()
+    let subscriber!: RpcStub<UnreadStateSubscriber>
+    const subscribeToUnreadState = vi.fn<(value: RpcStub<UnreadStateSubscriber>) => Promise<void> & Disposable>((value) => {
+      subscriber = value
+      return Object.assign(Promise.resolve(), {[Symbol.dispose]: dispose})
+    })
+    const markChatRead = vi.fn<AuthenticatedApi['markChatRead']>()
+    const api = {...apiWithWhoami(async () => user), subscribeToUnreadState, markChatRead} as unknown as RpcStub<AuthenticatedApi>
+    const root = createRoot(document.createElement('div'))
+    try {
+      await act(async () => root.render(
+        <AuthProvider authenticatedApi={api} onLogout={() => {}}>
+          <UnreadStateBridge authenticatedApi={api}><NativeAppBridge /></UnreadStateBridge>
+        </AuthProvider>
+      ))
+      expect(subscribeToUnreadState).toHaveBeenCalledOnce()
+      if (!hiddenOnMount) {
+        visibility = 'hidden'
+        await act(async () => document.dispatchEvent(new Event('visibilitychange')))
+      }
+      expect(dispose).not.toHaveBeenCalled()
+      const state: UserUnreadState = {unreadMessageCount: 8, unreadChatCount: 1, chats: []}
+      await act(async () => subscriber.updated(state))
+      expect(badge).toHaveBeenLastCalledWith({...state, revision: 1})
+      await act(async () => subscriber.chatUpdated('workspace-1', 1, null,
+        {unreadMessageCount: 0, unreadChatCount: 0}))
+      expect(badge).toHaveBeenLastCalledWith({...state, unreadMessageCount: 0, unreadChatCount: 0, revision: 2})
+      expect(document.visibilityState).toBe('hidden')
+      expect(document.hasFocus()).toBe(false)
+      expect(markChatRead).not.toHaveBeenCalled()
+      expect(subscribeToUnreadState).toHaveBeenCalledOnce()
+    } finally {
+      act(() => root.unmount())
+    }
+    expect(dispose).toHaveBeenCalledOnce()
   })
 
   it('ignores malformed, unavailable, and legacy-only bridges', () => {

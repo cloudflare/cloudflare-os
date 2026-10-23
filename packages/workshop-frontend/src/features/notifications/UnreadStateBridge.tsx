@@ -9,6 +9,7 @@ import type {
   UserUnreadState,
 } from "@gadgets/workshop-shared/api";
 import { logRpcFailure } from "../../rpcErrors";
+import { nativeApp } from "../native-app/nativeApp";
 
 class UnreadSubscriber extends RpcTarget implements UnreadStateSubscriber {
   constructor(
@@ -49,7 +50,7 @@ const receiptFor = (
   throughSequence,
 });
 
-/** One visible-session subscription supplies web indicators and timeline cursors. */
+/** One session subscription supplies web indicators, native badges and timeline cursors. */
 export const UnreadStateBridge = ({
   authenticatedApi,
   children,
@@ -66,6 +67,9 @@ export const UnreadStateBridge = ({
   const state = snapshot?.api === authenticatedApi ? snapshot.state : undefined;
 
   useEffect(() => {
+    // Native shells retain hidden views for badges. Keep observing without changing document
+    // visibility: read acknowledgements and foreground delivery still require a visible page.
+    const nativeBadges = typeof nativeApp()?.unreadStateChanged === "function";
     let subscription: RpcStub<{}> | undefined;
     let latest: UserUnreadState | undefined;
     let active = true;
@@ -75,7 +79,7 @@ export const UnreadStateBridge = ({
     const subscribe = () => {
       clearTimeout(retryTimer);
       retryTimer = undefined;
-      if (!active || document.visibilityState === "hidden") return;
+      if (!active || (document.visibilityState === "hidden" && !nativeBadges)) return;
       const currentGeneration = ++generation;
       latest = undefined;
       const previous = subscription;
@@ -128,6 +132,7 @@ export const UnreadStateBridge = ({
     };
     const visibilityChanged = () => {
       if (document.visibilityState !== "hidden") { subscribe(); return; }
+      if (nativeBadges) return;
       ++generation;
       clearTimeout(retryTimer);
       const previous = subscription;
