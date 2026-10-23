@@ -29,7 +29,7 @@ afterEach(() => {
 const View = () => {
   const viewport = useRef<HTMLDivElement>(null);
   return (
-    <div ref={viewport} data-viewport style={{ height: 220, width: 440, overflowY: "auto" }}>
+    <div ref={viewport} data-viewport style={{ height: 220, width: 440, maxWidth: "100%", overflowY: "auto" }}>
       <ReadTimeline
         workspaceId="workspace"
         chatId={1}
@@ -38,7 +38,7 @@ const View = () => {
         loadingEarlier={false}
         loadEarlier={async () => {}}
         onUnreadNavigation={navigate}
-        className=""
+        className="px-3"
       >
         {[0, 1, 2].map((sequence) => (
           <TimelineReadItem key={sequence} start={sequence} end={sequence}>
@@ -214,7 +214,7 @@ it.each([
   const ranges = timelineReadRanges(short ? [0] : [0, 3], short ? messages.slice(0, 1) : messages);
   const NavigationView = () => {
     const viewport = useRef<HTMLDivElement>(null);
-    return <div ref={viewport} data-viewport style={{height: 220, width: 440, overflowY: "auto"}}>
+    return <div ref={viewport} data-viewport style={{height: 220, width: 440, maxWidth: "100%", overflowY: "auto"}}>
       <ReadTimeline workspaceId="workspace" chatId={1} container={viewport} latestSequence={2} oldestSequence={0}
         loadingEarlier={false} loadEarlier={async () => {}} onUnreadNavigation={navigate} className="">
         {ranges.map(range => range && <TimelineReadItem key={range.start} {...range}>
@@ -261,7 +261,7 @@ it("jumps below the sticky toolbar and does not acknowledge a message hidden und
   }};
   const StickyView = () => {
     const viewport = useRef<HTMLDivElement>(null);
-    return <div ref={viewport} data-viewport style={{height: 220, width: 440, overflowY: "auto"}}>
+    return <div ref={viewport} data-viewport style={{height: 220, width: 440, maxWidth: "100%", overflowY: "auto"}}>
       <ReadTimeline workspaceId="workspace" chatId={1} container={viewport} latestSequence={2} oldestSequence={0}
         loadingEarlier={false} loadEarlier={async () => {}} onUnreadNavigation={navigate} className="">
         {[0, 1, 2].map(sequence => <TimelineReadItem key={sequence} start={sequence} end={sequence}>
