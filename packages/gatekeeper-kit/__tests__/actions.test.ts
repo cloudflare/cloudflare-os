@@ -1891,6 +1891,50 @@ describe("dependent actions", () => {
     expect(journal.get(create)).toBeUndefined();
   });
 
+  it("retires the dependents of an unknown outcome once it is rejected", async () => {
+    const { actions, journal } = bind({
+      apply: async () => { throw new ActionOutcomeUnknownError("the request timed out"); },
+    });
+    const create = queued(journal, { kind: "create", payload: { ref: "~1" } });
+    const edit = queued(journal, { kind: "edit", payload: { target: "~1" } });
+    await expect(actions.apply(create)).rejects.toThrow("the request timed out");
+
+    // Withdrawn, nothing can bind ~1 any more, so the dependent could never apply.
+    await actions.reject(create);
+    expect(journal.get(edit)?.state).toBe("failed");
+    expect(journal.get(edit)?.error)
+      .toBe(`This action needed action ${create}, which did not complete.`);
+  });
+
+  it("retires the dependents of an orphaned claim on its first rejection", async () => {
+    const { actions, journal, host } = bind();
+    const create = queued(journal, { kind: "create", payload: { ref: "~1" } });
+    const edit = queued(journal, { kind: "edit", payload: { target: "~1" } });
+    const unrelated = queued(journal, { kind: "edit", payload: { target: "~9" } });
+    // Claimed by an activation that died holding the dispatch.
+    journal.markClaimed(create);
+
+    await actions.reject(create);
+    expect(journal.get(create)).toBeUndefined();
+    expect(journal.get(edit)?.state).toBe("failed");
+    expect(journal.listPending().map(({ id }) => id)).toEqual([unrelated]);
+    // The claim reached its handler, so its own cleanup is not re-run.
+    expect(host.ran).toEqual([]);
+  });
+
+  it("keeps the dependents of a withdrawn unknown outcome whose reference was bound", async () => {
+    const { actions, journal } = bind({
+      isResolvedReference: (_, ref) => ref === "~1",
+      apply: async () => { throw new ActionOutcomeUnknownError("the request timed out"); },
+    });
+    const create = queued(journal, { kind: "create", payload: { ref: "~1" } });
+    const edit = queued(journal, { kind: "edit", payload: { target: "~1" } });
+    await expect(actions.apply(create)).rejects.toThrow("the request timed out");
+
+    await actions.reject(create);
+    expect(journal.get(edit)?.state).toBe("pending");
+  });
+
   it("leaves dependents alone while the creation can still be retried", async () => {
     const { actions, journal } = bind({
       apply: async () => { throw new Error("provider unreachable"); },

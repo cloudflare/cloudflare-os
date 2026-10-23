@@ -107,7 +107,8 @@ export class ActionApplyError extends Error {}
  * Marks an apply failure as terminal with an **unknown** provider outcome: the call may already
  * have taken effect. The record is not pruned and no dependent is retired on its account -- a
  * reference it was to provide may in fact exist at the provider -- so it stays until the user
- * rejects it and the reconciliation warning survives.
+ * rejects it and the reconciliation warning survives. Rejecting it retires the dependents whose
+ * references it never bound, since nothing can bind them once it is withdrawn.
  *
  * Pair it with `claimBeforeApply`. Non-replay rests on the durable claim taken *before* dispatch:
  * without one the record is still `pending` when the handler throws, so an activation that dies
@@ -713,8 +714,9 @@ export function defineActions<Host, M extends Record<string, unknown>>(
           });
         }
         journal.remove(id);
-        // A failure stranded its dependents when it was recorded.
-        if (!failed) strandDependents(id, action);
+        // A known failure stranded its dependents when it was recorded. An unknown outcome left
+        // them waiting on a reference it might still bind, which nothing can once it is withdrawn.
+        if (record.state !== "failed" || record.outcome === "unknown") strandDependents(id, action);
         await resolved("rejected");
       };
 

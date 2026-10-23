@@ -555,8 +555,8 @@ second attempt is safe. `ActionApplyError` is terminal and asserts the provider 
 absent** — it retires the dependents waiting on references this action was to provide.
 `ActionOutcomeUnknownError` is terminal and asserts nothing: use it for a timeout, an aborted
 request, or any failure after the provider was reached. That record is never replayed and never
-pruned, strands no dependent, and holds a slot until the user rejects it, so the "check the
-provider" warning survives.
+pruned, and holds a slot until the user rejects it, so the "check the provider" warning survives.
+It strands no dependent until then; rejecting it retires those whose references it never bound.
 
 `claimBeforeApply` produces that same unknown outcome when an activation dies mid-dispatch. Neither
 substitutes for a provider idempotency key derived from the stable `ActionContext.id`, which is
