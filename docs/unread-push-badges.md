@@ -8,8 +8,10 @@ per-install total. A snapshot with unavailable workspaces is a lower bound, not 
 
 The frontend's optional version-1 `cloudflareOSNative.unreadStateChanged(snapshot)` bridge feeds
 complete absolute totals to native apps. Native clients sum their saved instances' last complete
-totals; they never increment counters from individual messages. The frontend releases its unread
-subscription while hidden and refreshes when visible again; push handles background badge updates.
+totals; they never increment counters from individual messages. A retained native view with this
+badge bridge keeps its unread subscription while hidden, without becoming visible or acknowledging
+reads or alerts. Ordinary browser and legacy views release it while hidden and refresh on return.
+Push handles background updates while the operating system suspends the app.
 A confirmed sign-out invokes optional `sessionEnded()` so the shell
 can remove that instance's contribution. A reconnect is not a sign-out.
 
