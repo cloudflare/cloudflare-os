@@ -393,6 +393,7 @@ describe("the blueprint-upstream backfill via the Overseer constructor", () => {
       let unread = { value: { list: () => { throw new Error("read a chat"); } } };
       let storage = Object.create(impl.storage, { chatMeta: unread, chats: unread });
       migrateToBlueprintUpstreams(Object.create(impl, { storage: { value: storage } }));
+      expect(impl.storage.version.get()).toBe(5);
 
       expect(impl.storage.version.get()).toBe(5);
     });
@@ -428,6 +429,24 @@ describe("the spawner-bindings move via the Overseer constructor", () => {
       });
       expect(impl.storage.gatekeepers.get(2).creationSpec.config).not.toHaveProperty("env");
       expect(impl.storage.gatekeepers.get(1).bindings).toBeUndefined();
+    });
+  });
+});
+
+describe("worktree replica storage initialization", () => {
+  it("opens empty replica collections on wake without eagerly loading workspace files", async () => {
+    const name = "replica-initialization-" + crypto.randomUUID();
+    await inOverseer(name, async impl => {
+      impl.storage.chatContext.put({chatId: 1, bindings: {REPO: 7}});
+      impl.storage.version.put(5);
+    });
+    await abortAllDurableObjects();
+    await inOverseer(name, async impl => {
+      expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
+      expect(impl.storage.chatContext.get(1)).toEqual({chatId: 1, bindings: {REPO: 7}});
+      expect([...impl.storage.worktreeReplicaLeases.list()]).toEqual([]);
+      expect([...impl.storage.worktreeReplicaCommits.list()]).toEqual([]);
+      expect([...impl.storage.gitObjects.list()]).toEqual([]);
     });
   });
 });

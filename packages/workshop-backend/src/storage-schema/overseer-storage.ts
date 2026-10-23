@@ -34,7 +34,39 @@ import type {
   HookDescription, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { SpawnCallableOptions } from "../agent-spawner-binding";
-import type { AgentTurnEvent, AgentTurnParticipant } from "@gadgets/workshop-shared/agent-integration";
+import type {
+  AgentTurnEvent, AgentTurnParticipant, WorktreeBase, WorktreeChange,
+  WorktreeReplicaReceipt, WorkspaceCheckpoint,
+} from "@gadgets/workshop-shared/agent-integration";
+
+/** Persisted checkpoint and lease; IDs are bearer capabilities, not workspace lookup keys. */
+export type WorktreeReplicaLease = {
+  id: string;
+  gatekeeperId: number;
+  chatId: number;
+  turnId: string;
+  expiresAt: number;
+  /** Fixed terminal cleanup boundary; renewal cannot extend it or survive callback ACK. */
+  cleanupDeadline?: number;
+  released?: boolean;
+  /** Bootstrap authority is one-shot even if the replica remains live for synchronization. */
+  gitBootstrapClosed?: boolean;
+  worktrees: WorktreeBase[];
+  checkpoint?: WorkspaceCheckpoint & {
+    /** Legacy upstream-anchored operations; new checkpoints retain only pending operations. */
+    overlay?: WorktreeChange[];
+    /** Bootstrap operations above the accepted commit; absent on legacy checkpoints. */
+    pendingOverlay?: WorktreeChange[];
+  };
+};
+
+/** Written in the same transaction as canonical OTs, never in a subsequent RPC. */
+export type WorktreeReplicaCommit = {
+  id: string;
+  leaseId: string;
+  digest: string;
+  receipt: WorktreeReplicaReceipt;
+};
 
 // =======================================================================================
 // Workpieces
@@ -784,7 +816,10 @@ export type ActiveAgentRecord = {
 };
 
 /** A capability's original scope, never inferred from whichever prompt happens to run later. */
-export type AgentIntegrationOrigin = {chatId: number; turnId: string; segmentId: string};
+export type AgentIntegrationOrigin = {chatId: number; turnId: string; segmentId: string;
+  /** Selection captured when the invocation context was minted, not when a callback is delivered. */
+  worktrees?: WorktreeBase[];
+};
 
 /** Delivery receipts only: no copy of turn progress, waits, model, caller, or execution status. */
 export type AgentParticipantRecord = {
@@ -793,6 +828,8 @@ export type AgentParticipantRecord = {
   gatekeeperId: number;
   turnId: string;
   participant: Fetcher<AgentTurnParticipant>;
+  /** Immutable replica scope retained across lifecycle deliveries. */
+  worktrees?: WorktreeBase[];
   pending: AgentTurnEvent[];
   lastEvent?: string;
   retryAt?: number;
@@ -932,6 +969,9 @@ export type ChatChangeRecord = {
 
   /** The submission echo for user rows (see AiChatSubscriber.changeApplied); absent otherwise. */
   submission?: {clientId: string, seq: number};
+
+  /** Provenance of this row, not of other edits flushed in the same agent step. */
+  sourceReplica?: {leaseId: string, batchId: string};
 
   /**
    * Set when the row is no longer live: a "changes" message has materialized it (its change is part
@@ -1289,6 +1329,12 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
     },
 
     collections: {
+      worktreeReplicaLeases: collection<WorktreeReplicaLease>()({primaryKey: "id"}),
+      worktreeReplicaCommits: collection<WorktreeReplicaCommit>()({
+        primaryKey: "id",
+        nonUniqueIndexes: {byLease: (record: WorktreeReplicaCommit) => record.leaseId},
+      }),
+
       // READ-ONLY LEGACY: the pre-git-storage incremental code log, tightly-packed from version 1
       // (there's no entry for version 0, the starting empty state). Nothing writes it anymore --
       // mainline code lives in `gitObjects` as commits -- and it is read only by the git-storage

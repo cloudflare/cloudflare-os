@@ -48,6 +48,12 @@ export class OverseerDurableObject extends RealOverseerDurableObject {
     if (params.type === "test-response-target") return new FakeChatResponseTarget(params.name);
     return super[restore](params);
   }
+  /** Transfer a real endpoint over RPC, rather than leaking a DO-owned stub out of a test callback. */
+  testReplicaEndpoint(leaseId: string) {
+    return this.ctx.exports.WorkspaceReplicaEndpoint({ props: {
+      overseerId: this.ctx.id.toString(), leaseId,
+    } });
+  }
 }
 /**
  * The `self` object / spawnCallable() stub entrypoint, named explicitly for the same reason as the
@@ -58,6 +64,7 @@ export { AgentSelfLoopback } from "../src/server.js";
 export { GatekeeperLoopback, GadgetTailLoopback } from "../src/server.js";
 /** What an executeCode run's tail worker is minted from, likewise. */
 export { CodeModeTailLoopback } from "../src/server.js";
+export { WorkspaceReplicaEndpoint } from "../src/server.js";
 /**
  * The Workshop's connect callback, reachable through `ctx.exports`: the pool derives those from this
  * module's own declarations, so an entrypoint a test reaches that way has to be named here rather
@@ -302,6 +309,7 @@ export class GatekeeperUserPickerTestHooks extends DurableObject<Cloudflare.Env>
     }
   }
 
+
   /**
    * Open `viewerId`'s app UI for `accountId` the way getGatekeeperApp does, with `ticket` stashed
    * for the fake account to redeem through the exchange it is handed; the outcome lands in the
@@ -322,5 +330,20 @@ export class GatekeeperUserPickerTestHooks extends DurableObject<Cloudflare.Env>
 
   async accountCalls(accountName: string): Promise<string[]> {
     return this.ctx.exports.FakeGatekeeperAccount({ props: { name: accountName } }).calls();
+  }
+}
+
+/** Git provider fixture recognizes only the immutable source commit, not DO-only heads. */
+export class ReplicaGitSource extends DurableObject<Cloudflare.Env> {
+  allowGitCommit(commit: string): void { this.ctx.storage.kv.put("gitCommit", commit); }
+  async gitPull(oids: string[], options: import("@gadgets/workshop-shared/gatekeeper").GitPullHints): Promise<import("@gadgets/workshop-shared/gatekeeper").GitPullTransfer> {
+    if (oids.length !== 1 || oids[0] !== this.ctx.storage.kv.get("gitCommit")) throw new Error("Unknown remote commit");
+    if (options.type !== "commit" || options.commitHistory.kind !== "depth" ||
+        options.commitHistory.depth !== 1 || options.filterBlobSize !== undefined ||
+        options.filterTreeDepth !== undefined) throw new Error("Expected a complete depth-one checkout");
+    return new class extends RpcTarget {
+      stream() { return Promise.resolve(new Response(Uint8Array.of(1, 255)).body!); }
+      status() { return Promise.resolve({state: "complete" as const}); }
+    }();
   }
 }

@@ -1,0 +1,21 @@
+/** Literal oracles for server-ordered OT, not expectations derived by the code under test. */
+export const workspaceCollisionCases = [
+  {name: "independent edits", path: "independent.txt", before: "one\ntwo\n",
+    doText: "ONE\ntwo\n", shellText: "one\nTWO\n", expected: "ONE\nTWO\n"},
+  {name: "same-offset inserts (DO before shell)", path: "insert.txt", before: "ab\n",
+    doText: "aDOb\n", shellText: "aSHELLb\n", expected: "aDOSHELLb\n"},
+  {name: "overlapping replacements retain both inserts", path: "replace.txt", before: "aXb\n",
+    doText: "aDb\n", shellText: "aCb\n", expected: "aDCb\n"},
+  {name: "insert inside a deleted range survives", path: "range.txt", before: "abcdef\n",
+    doText: "abef\n", shellText: "abcXdef\n", expected: "abXef\n"},
+  {name: "DO delete beats shell edit", path: "do-delete.txt", before: "aXb\n",
+    doText: null, shellText: "aCb\n", expected: null},
+  {name: "shell delete beats DO edit", path: "shell-delete.txt", before: "aXb\n",
+    doText: "aDb\n", shellText: null, expected: null},
+  {name: "concurrent deletes stay deleted", path: "both-delete.txt", before: "base\n",
+    doText: null, shellText: null, expected: null},
+  {name: "same-path creation gives incoming shell priority", path: "create.txt", before: null,
+    doText: "DO\n", shellText: "container\n", expected: "container\n"},
+  {name: "Unicode edits preserve surrogate pairs", path: "unicode.txt", before: "😀\nend\n",
+    doText: "😀!\nend\n", shellText: "😀\nEND\n", expected: "😀!\nEND\n"},
+] as const;
