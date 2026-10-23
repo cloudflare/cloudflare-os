@@ -34,6 +34,7 @@ import type {
   HookDescription, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { SpawnCallableOptions } from "../agent-spawner-binding";
+import type { AgentTurnEvent, AgentTurnParticipant } from "@gadgets/workshop-shared/agent-integration";
 
 // =======================================================================================
 // Workpieces
@@ -753,9 +754,10 @@ export type CompactionCheckpoint = {
 
 /**
  * Server-only record describing an in-progress agent turn, enabling resumption after a server
- * restart. Keyed by chatId. `chatMeta.activeAgent` identifies runnable records; a paused turn
- * retains its record (and original authority) until its logged decisions are ready. No separate
- * wait state is stored: the chat log already contains the requests and their outcomes.
+ * restart. Keyed by chatId. `chatMeta.activeAgent` keeps the chat busy through inference and
+ * finalization; `finishing` distinguishes cleanup-only recovery. A paused turn retains its
+ * original authority until its logged decisions are ready. No separate approval wait state is
+ * stored: the chat log already contains the requests and their outcomes.
  *
  * Note we deliberately do NOT store the resolved `AiModelConfig` here, because it contains a secret
  * API token. Instead we store enough to re-fetch it from the initiator's user DO on resume.
@@ -775,6 +777,25 @@ export type ActiveAgentRecord = {
   callbackInitiated: boolean;
   /** Model-lookup attempts since the last successful preparation, bounded across DO resets. */
   resumeAttempts?: number;
+  /** Inference has ended. Recovery retries participant finalization, never the model. */
+  finishing?: true;
+  /** Optional identity for integrations; readiness and progress still come from the chat log. */
+  integration?: {turnId: string; segmentId: string};
+};
+
+/** A capability's original scope, never inferred from whichever prompt happens to run later. */
+export type AgentIntegrationOrigin = {chatId: number; turnId: string; segmentId: string};
+
+/** Delivery receipts only: no copy of turn progress, waits, model, caller, or execution status. */
+export type AgentParticipantRecord = {
+  id: string;
+  chatId: number;
+  gatekeeperId: number;
+  turnId: string;
+  participant: Fetcher<AgentTurnParticipant>;
+  pending: AgentTurnEvent[];
+  lastEvent?: string;
+  retryAt?: number;
 };
 
 /**
@@ -1169,6 +1190,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
     singletons: {
       // Initialized on first startup.
       ownerId: <string | undefined>undefined,
+      // A failed lifecycle cleanup leaves deletion retryable, but must not restart agent work.
+      deleting: false,
 
       // Version of this DO's storage schema, gating lazy migrations. Used to trigger migrations
       // at construction time.
@@ -1412,6 +1435,14 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // `ActiveAgentRecord`.
       activeAgents: collection<ActiveAgentRecord>()({
         primaryKey: "chatId"
+      }),
+
+      agentParticipants: collection<AgentParticipantRecord>()({
+        primaryKey: "id",
+        nonUniqueIndexes: {
+          byChat: (r: AgentParticipantRecord) => r.chatId,
+          retryAt: (r: AgentParticipantRecord) => r.retryAt ?? null,
+        },
       }),
 
       gadgetResponseDeliveries: collection<ExternalMessageRecord>()({

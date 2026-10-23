@@ -10,6 +10,9 @@ declare global {
       // (which is what a secret binding, can carry).
       ADMINS?: string[] | string;
 
+      // Trusted vendor-id -> { lifecycle?: boolean } grants.
+      AGENT_INTEGRATION_GRANTS?: string;
+
       // Workers AI binding (injected by generate-wrangler-prod / run-dev-server; not in base wrangler.jsonc).
       WORKERS_AI: Ai;
 

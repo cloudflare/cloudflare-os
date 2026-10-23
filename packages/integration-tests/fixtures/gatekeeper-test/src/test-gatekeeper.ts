@@ -24,6 +24,7 @@ import {
 } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
+import type { AgentTurnInfo } from "@gadgets/workshop-shared/agent-integration";
 import type {
   AccountDescription, ActionDescription, ActionKind, AgentCatalog, ApprovalQueue, ConnectHandoff,
   Gatekeeper, GatekeeperConnectCallback, GatekeeperUser, GatekeeperUserVerifier, HookController,
@@ -585,6 +586,8 @@ export class TestVerifier
  * `set-value` action whose `autoApprovable` verdict and warnings the caller chooses.
  */
 export interface TestSession {
+  /** Probes the caller's lifecycle capability through the real ApprovalQueue. */
+  readAgentTurn(): Promise<AgentTurnInfo | null>;
   /**
    * `restricted` marks the observation `containsRestrictedData`; `ownerInvitesOnly` marks it
    * `ownerInvitesOnly`. `excludeObservers` lists observer ids (from `/control/observer-events`)
@@ -616,6 +619,11 @@ class TestSessionTarget extends RpcTarget implements TestSession {
       private readonly ctx: DurableObjectState) {
     super();
     this.approvalQueue = approvalQueue.dup();
+  }
+
+  async readAgentTurn(): Promise<AgentTurnInfo | null> {
+    using context = await this.approvalQueue.getAgentContext();
+    return context === null ? null : await context.getTurn();
   }
 
   async readValue(

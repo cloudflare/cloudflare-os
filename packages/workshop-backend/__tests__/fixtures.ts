@@ -111,5 +111,6 @@ export async function openFakeOverseer(
       ...opts.impl,
     },
   } satisfies Pick<OverseerDurableObject, "open"> & { impl: object };
-  return overseer.open(userId, `${userId}-profile`, new NativeRpcStub<() => void>(() => {}));
+  using notifyClosed = new NativeRpcStub<() => void>(() => {});
+  return await overseer.open(userId, `${userId}-profile`, notifyClosed);
 }

@@ -6,6 +6,7 @@ import type { OverseerDurableObject } from "../src/overseer";
 import { UserDurableObject } from "../src/user";
 import { openFakeOverseer } from "./fixtures";
 import type { FakeChatResponseTarget } from "./response-target";
+import { lifecycleExports } from "./lifecycle-fixtures";
 
 const CHAT = 1;
 const USER = {type: "user" as const, id: "original-user", name: "Original user"};
@@ -24,7 +25,10 @@ declare module "cloudflare:workers" {
   }
 }
 
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+const originalGrants = env.AGENT_INTEGRATION_GRANTS;
+afterEach(() => {
+  vi.restoreAllMocks(); vi.unstubAllGlobals(); env.AGENT_INTEGRATION_GRANTS = originalGrants;
+});
 
 function inference(gate?: Promise<void>) {
   let count = 0;
@@ -47,6 +51,19 @@ function inference(gate?: Promise<void>) {
       `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(""),
       {headers: {"content-type": "text/event-stream"}});
     return gate ? gate.then(() => response) : Promise.resolve(response);
+  });
+  return () => count;
+}
+
+function failingInference() {
+  let count = 0;
+  const fetch = globalThis.fetch;
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (url.origin !== MODEL.config.apiUrl) return fetch(input, init);
+    count++;
+    return Promise.resolve(Response.json(
+        {error: {type: "invalid_request_error", message: "Model failure"}}, {status: 400}));
   });
   return () => count;
 }
@@ -81,8 +98,8 @@ async function scenario(kind: Kind = "connection", active = false, initiator: Ai
     instance["storage"].profile.put(USER);
     instance["storage"].aiModels.put(MODEL);
   });
-  const visit = <T>(fn: (impl: Impl) => T | Promise<T>) =>
-    runInDurableObject(env.TEST_OVERSEER.get(stub.id), ({impl}) => fn(impl));
+  const visit = <T>(fn: (impl: Impl, instance: OverseerDurableObject) => T | Promise<T>) =>
+    runInDurableObject(env.TEST_OVERSEER.get(stub.id), instance => fn(instance["impl"], instance));
   await visit(impl => {
     const timestamp = impl.getChatTimestamp();
     impl.storage.chatMeta.put({id: CHAT, title: "Resume", started: timestamp, lastActive: timestamp,
@@ -129,7 +146,522 @@ function recordNotifications() {
   return notifications;
 }
 
+async function participate(impl: Impl, id: number, name = crypto.randomUUID()) {
+  impl.env.AGENT_INTEGRATION_GRANTS = '{"test":{"lifecycle":true}}';
+  impl.storage.gatekeepers.put({id, class: lifecycleExports(impl).TestLifecycleGatekeeper({props: {}}),
+    creationSpec: {type: "ambient", vendorId: "test", accountId: 1}});
+  const meta = impl.storage.chatMeta.get(CHAT)!;
+  impl.storage.chatMeta.put({...meta, activeAgent: MODEL.profile});
+  const origin = impl.integrations.capture(CHAT)!;
+  const receiver = lifecycleExports(impl).TestLifecycleParticipant({props: {name}});
+  await impl.integrations.context(id, origin)!.participate(receiver);
+  impl.storage.chatMeta.put(meta);
+  return {origin, receiver};
+}
+
+function failingDeletionClient(impl: Impl, disable: () => Promise<void>) {
+  // Drive real deleteSelf/disableHook; only the external hook's controller is a fixture.
+  const storage = Object.create(impl.storage, {boundHooks: {value: {
+    list: () => [{id: 42, enabled: true}],
+    get: () => ({enabled: true, controller: {disable}}),
+  }}});
+  return openFakeOverseer(storage, {impl: {
+    ctx: impl.ctx, logger: impl.logger, integrations: impl.integrations,
+    beginDeletion: impl.beginDeletion.bind(impl),
+  }});
+}
+
 describe("decision handoff using the existing execution row", () => {
+  it.each(["finalization", "successor", "stopped successor"] as const)(
+      "retries this chat's failed %s while another chat holds the alarm", async boundary => {
+    const s = await scenario(), gate = Promise.withResolvers<void>(), requests = inference(gate.promise);
+    const retry = Promise.withResolvers<void>();
+    await s.visit(async impl => {
+      const wait = scheduler.wait.bind(scheduler);
+      vi.spyOn(scheduler, "wait").mockImplementation((ms, options) =>
+        ms === 30_000 ? retry.promise : wait(ms, options));
+      const warnings = vi.spyOn(impl.logger, "warn");
+      const {receiver} = await participate(impl, 31);
+      await receiver.setFailure(true);
+      const timestamp = impl.getChatTimestamp();
+      impl.storage.chatMeta.put({id: 2, title: "Long task", started: timestamp, lastActive: timestamp,
+        activeAgent: MODEL.profile});
+      impl.storage.chatContext.put({chatId: 2, bindings: {}, alwaysAvailableCapsuleIds: []});
+      impl.addChatMessages(2, USER, [{type: "message", message: "Run a long task"}]);
+      impl.startAgent(2, MODEL, USER, s.user.id.toString());
+      await vi.waitFor(() => expect(requests()).toBe(1));
+      const alarm = impl.runAlarmTasks();
+      try {
+        if (boundary === "finalization") impl.cancelAgent(CHAT);
+        else await impl.sendChatMessage(s.user, {profile: USER, aiModel: MODEL}, CHAT, "Replace the paused turn");
+        await vi.waitFor(() => expect(warnings).toHaveBeenCalledWith(
+          boundary === "finalization" ? "agent finalization deferred" : "previous turn finalization deferred",
+          expect.objectContaining({event: "agent.lifecycle.finalization.deferred", chatId: CHAT})));
+        if (boundary === "stopped successor") impl.cancelAgent(CHAT);
+        await receiver.setFailure(false);
+        retry.resolve();
+        if (boundary !== "successor") {
+          await vi.waitFor(() => expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined());
+          expect(() => impl.assertChatNotActive(CHAT)).not.toThrow();
+          expect(requests()).toBe(1);
+        } else {
+          await vi.waitFor(() => expect(requests()).toBe(2));
+        }
+        expect(impl.storage.chatMeta.get(2)?.activeAgent).toEqual(MODEL.profile);
+      } finally {
+        await receiver.setFailure(false); retry.resolve(); gate.resolve();
+        await alarm; await impl.waitForAllAgentsToComplete();
+      }
+    });
+  });
+
+  it.each([false, true])("does not spend another chat's recovery budget on handoff (steer: %s)", async steer => {
+    const s = await scenario(), requests = inference();
+    await s.visit(async impl => {
+      vi.spyOn(impl.ctx.storage, "setAlarm").mockResolvedValue();
+      const lookup = vi.spyOn(UserDurableObject.prototype, "getChatContext");
+      const {receiver} = await participate(impl, 31);
+      await receiver.hold("finished");
+      decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT);
+      await receiver.waitUntilHeld();
+      try {
+        const timestamp = impl.getChatTimestamp();
+        impl.storage.chatMeta.put({id: 2, title: "Recover later", started: timestamp, lastActive: timestamp,
+          activeAgent: MODEL.profile});
+        impl.storage.chatContext.put({chatId: 2, bindings: {}, alwaysAvailableCapsuleIds: []});
+        impl.addChatMessages(2, USER, [{type: "message", message: "Other task"}]);
+        impl.storage.activeAgents.put({chatId: 2, modelId: "unrelated-model", resumeAttempts: 3,
+          initiatorUserId: s.user.id.toString(), initiator: USER, callbackInitiated: false});
+        if (steer) expect(impl.steerRunningTurn(CHAT, s.user.id.toString(), USER, "Next task")).toBe(true);
+        await receiver.release(); await impl.waitForAllAgentsToComplete();
+        expect(lookup.mock.calls.every(([id]) => id === MODEL.profile.id)).toBe(true);
+        expect(impl.storage.activeAgents.get(2)?.resumeAttempts).toBe(3);
+        expect([...impl.storage.chats.list()].filter(m => m.chatId === 2 && m.type === "error")).toEqual([]);
+      } finally {
+        await receiver.release(); impl.storage.activeAgents.delete(2); impl.destroyLiveChat(2);
+        await impl.waitForAllAgentsToComplete();
+      }
+    });
+    expect(requests()).toBe(steer ? 2 : 1);
+  });
+
+  it("Stop clears an orphan busy marker without an execution row", async () => {
+    const s = await scenario("connection", true);
+    await s.visit(impl => {
+      impl.storage.activeAgents.delete(CHAT);
+      const before = impl.storage.chatMeta.get(CHAT)!.lastActive;
+      try {
+        impl.cancelAgent(CHAT);
+        expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+        expect(impl.storage.chatMeta.get(CHAT)!.lastActive.getTime()).toBeGreaterThan(before.getTime());
+        expect(() => impl.assertChatNotActive(CHAT)).not.toThrow();
+      } finally { impl.destroyLiveChat(CHAT); }
+    });
+  });
+
+  it.each(["prompt", "callable"] as const)("refuses %s spawning before and during deletion", async route => {
+    const s = await scenario();
+    await s.visit(async impl => {
+      impl.ownerId = s.user.id.toString();
+      const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+      modelLookup(impl, async () => {
+        entered.resolve(); await release.promise; return {profile: USER, aiModel: MODEL};
+      });
+      const config = {displayName: "Spawner", modelId: MODEL.profile.id};
+      const cls = impl.ctx.exports.AgentSpawnerGatekeeper({props: {config, creatorUserId: s.user.id.toString()}});
+      using client = await impl.addGatekeeper(cls, {type: "agentSpawner", config}, s.user.id.toString());
+      using binding = await client.openSession();
+      const spawn = async () => {
+        if (route === "prompt") await binding.spawn("Task", "Do the work");
+        else await binding.spawnCallable("Task", {types: "interface Task {run(): void}", mainType: "Task"});
+      };
+      const history = [...impl.storage.chats.list()], chats = [...impl.storage.chatMeta.list()];
+      const spawning = spawn().then(() => null, (error: unknown) => error);
+      await entered.promise;
+      const deleting = Promise.withResolvers<void>(), releaseDeletion = Promise.withResolvers<void>();
+      using deleter = await failingDeletionClient(impl, async () => {
+        deleting.resolve(); await releaseDeletion.promise; throw new Error("Hook disable failed");
+      });
+      const outcome = deleter.deleteSelf().then(() => null, (error: unknown) => error);
+      await deleting.promise;
+      try {
+        release.resolve();
+        expect(await spawning).toBeInstanceOf(Error);
+        await expect(spawn()).rejects.toThrow(/delet/);
+        expect([...impl.storage.chats.list()]).toEqual(history);
+        expect([...impl.storage.chatMeta.list()]).toEqual(chats);
+        expect([...impl.storage.activeAgents.list()]).toEqual([]);
+      } finally { release.resolve(); releaseDeletion.resolve(); await outcome; }
+    });
+  });
+
+  it.each(["existing", "new"] as const)("does not commit a %s-chat prompt across deletion preparation", async route => {
+    const s = await scenario();
+    await s.visit(async impl => {
+      const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+      using client = await failingDeletionClient(impl, async () => {
+        entered.resolve(); await release.promise; throw new Error("Hook disable failed");
+      });
+      const history = [...impl.storage.chats.list()];
+      const context = {profile: USER, aiModel: MODEL};
+      // Enter preparation first, then delete while it awaits, before any prompt/busy commit.
+      const sending = route === "new" ? impl.newChat(s.user, context, "Must not commit")
+        : impl.sendChatMessage(s.user, context, CHAT, "Must not commit");
+      const sent = sending.then(() => null, (error: unknown) => error);
+      const deleting = client.deleteSelf().then(() => null, (error: unknown) => error);
+      await entered.promise;
+      try {
+        expect(await sent).toBeInstanceOf(Error);
+        expect([...impl.storage.chats.list()]).toEqual(history);
+        expect([...impl.storage.chatMeta.list()]).toHaveLength(1);
+        expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+        expect(() => impl.assertChatNotActive(CHAT)).toThrow();
+      } finally {
+        release.resolve(); expect(await deleting).toEqual(new Error("Hook disable failed"));
+        // Buffer the KV cursor before destroyLiveChat writes metadata.
+        for (const meta of Array.from(impl.storage.chatMeta.list())) impl.destroyLiveChat(meta.id);
+      }
+      expect(impl.storage.deleting.get()).toBe(false);
+    });
+  });
+
+  it.each(["queued", "model lookup"] as const)(
+      "retains an acknowledged callback at %s during failed deletion, then drains it once", async boundary => {
+    const inFlight = boundary === "model lookup";
+    const s = await scenario("connection", !inFlight), requests = inference();
+    await s.visit(async impl => {
+      const lookup = Promise.withResolvers<void>(), releaseLookup = Promise.withResolvers<void>();
+      if (inFlight) modelLookup(impl, async () => {
+        lookup.resolve(); await releaseLookup.promise; return {profile: USER, aiModel: MODEL};
+      });
+      impl.ownerId = s.user.id.toString();
+      await impl.deliverAgentCallback(CHAT, "event", [42], s.user.id.toString(), inFlight ? MODEL.profile.id : null);
+      impl.ownerId = undefined; // No billing fixture is needed for the eventual resumed turn.
+      if (inFlight) await lookup.promise;
+      const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+      using client = await failingDeletionClient(impl, async () => {
+        entered.resolve(); await release.promise; throw new Error("Hook disable failed");
+      });
+      const deleting = client.deleteSelf().then(() => null, (error: unknown) => error);
+      await entered.promise;
+      try {
+        releaseLookup.resolve(); await impl.drainAllPendingAgentCalls();
+        expect([...impl.storage.pendingAgentCalls.list()]).toHaveLength(1);
+        expect([...impl.storage.chats.list()].filter(m => m.type === "agentCallback")).toEqual([]);
+        expect(requests()).toBe(0);
+      } finally { releaseLookup.resolve(); release.resolve(); await deleting; }
+      expect(impl.storage.deleting.get()).toBe(false);
+      expect([...impl.storage.pendingAgentCalls.list()]).toHaveLength(1);
+      await impl.drainAllPendingAgentCalls(); await impl.waitForAllAgentsToComplete();
+      expect([...impl.storage.pendingAgentCalls.list()]).toHaveLength(0);
+      expect([...impl.storage.chats.list()].filter(m => m.type === "agentCallback")).toHaveLength(1);
+      expect(requests()).toBe(inFlight ? 1 : 0);
+    });
+  });
+
+  it("releases a recovered cleanup task when deletion removed its execution row", async () => {
+    const s = await scenario();
+    await s.visit(async impl => {
+      const {receiver} = await participate(impl, 31);
+      await receiver.hold("finished");
+      impl.storage.activeAgents.put({...impl.storage.activeAgents.get(CHAT)!, finishing: true});
+      let settled = false;
+      const alarm = impl.runAlarmTasks().finally(() => { settled = true; });
+      await receiver.waitUntilHeld();
+      using client = await failingDeletionClient(impl, async () => { throw new Error("Hook disable failed"); });
+      const deleting = client.deleteSelf().then(() => null, (error: unknown) => error);
+      try {
+        await receiver.release(); expect(await deleting).toEqual(new Error("Hook disable failed"));
+        await vi.waitFor(() => expect(settled).toBe(true));
+        expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+        expect(impl.storage.deleting.get()).toBe(false);
+      } finally { await receiver.release(); impl.destroyLiveChat(CHAT); await alarm; }
+    });
+  });
+
+  it("keeps the fence after cleanup ACKs until every live deletion call settles", async () => {
+    const s = await scenario();
+    await s.visit(async impl => {
+      const {receiver} = await participate(impl, 31);
+      await receiver.hold("finished");
+      const releases = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+      let entered = 0;
+      using client = await failingDeletionClient(impl, async () => {
+        await releases[entered++].promise; throw new Error("Hook disable failed");
+      });
+      const first = client.deleteSelf().then(() => null, (error: unknown) => error);
+      await receiver.waitUntilHeld();
+      const second = client.deleteSelf().then(() => null, (error: unknown) => error);
+      try {
+        await receiver.release();
+        await vi.waitFor(() => expect(entered).toBe(2));
+        expect([...impl.storage.agentParticipants.list()]).toHaveLength(0);
+        releases[0].resolve(); await first;
+        expect(impl.storage.deleting.get()).toBe(true);
+        expect(() => impl.assertChatNotActive(CHAT)).toThrow();
+        releases[1].resolve(); await second;
+        expect(impl.storage.deleting.get()).toBe(false);
+        expect(() => impl.assertChatNotActive(CHAT)).not.toThrow();
+      } finally {
+        await receiver.release(); releases.forEach(r => r.resolve()); await Promise.all([first, second]);
+      }
+    });
+  });
+
+  it.each([false, true])("preserves a model error across a teardown reset (participant: %s)", async subscribed => {
+    const s = await scenario(), requests = failingInference();
+    const teardown = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    await expect(s.visit(async impl => {
+      if (subscribed) await participate(impl, 31);
+      vi.spyOn(impl, "reconcilePendingGadgets")
+        .mockImplementationOnce(async () => {})
+        .mockImplementationOnce(async () => { teardown.resolve(); await release.promise; });
+      decide(impl, "connection");
+      impl.resumeAgentAfterDecision(CHAT);
+      await teardown.promise;
+      expect(impl.storage.activeAgents.get(CHAT)?.finishing).toBe(true);
+      await impl.ctx.storage.sync();
+      impl.ctx.abort("Injected reset during final teardown");
+    })).rejects.toThrow(/Injected reset/);
+    release.resolve();
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
+      expect([...impl.storage.chats.list()].filter(m => m.type === "error"))
+        .toEqual([expect.objectContaining({message: expect.stringContaining("Model failure")})]);
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+      expect([...impl.storage.agentParticipants.list()]).toHaveLength(0);
+    });
+    expect(requests()).toBe(1);
+  });
+
+  it("logs unread steers before failure and refuses later steers during cleanup", async () => {
+    const s = await scenario(), requests = failingInference();
+    const teardown = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    await s.visit(async impl => {
+      vi.spyOn(impl, "reconcilePendingGadgets")
+        .mockImplementationOnce(async () => {})
+        .mockImplementationOnce(async () => { teardown.resolve(); await release.promise; });
+      decide(impl, "connection");
+      impl.resumeAgentAfterDecision(CHAT);
+      expect(impl.steerRunningTurn(CHAT, s.user.id.toString(), USER, "Keep this for Retry")).toBe(true);
+      await teardown.promise;
+      try {
+        expect(impl.steerRunningTurn(CHAT, s.user.id.toString(), USER, "Too late")).toBe(false);
+        expect(() => impl.assertChatNotActive(CHAT)).toThrow();
+      } finally { release.resolve(); }
+      await impl.waitForAllAgentsToComplete();
+      expect([...impl.storage.chats.list()].slice(-2)).toEqual([
+        expect.objectContaining({type: "message", message: "Keep this for Retry", steered: true}),
+        expect.objectContaining({type: "error", message: expect.stringContaining("Model failure")}),
+      ]);
+      expect(impl.storage.chatMeta.get(CHAT)?.queuedSteers).toBeUndefined();
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      expect(() => impl.assertChatNotActive(CHAT)).not.toThrow();
+    });
+    expect(requests()).toBe(1);
+  });
+
+  it("replacing a paused turn cannot overtake its final cleanup", async () => {
+    const s = await scenario(), requests = inference();
+    await s.visit(async impl => {
+      const {receiver} = await participate(impl, 31);
+      await receiver.hold("finished");
+      impl.addChatMessages(CHAT, USER, [{type: "message", message: "Start a different task"}]);
+      const meta = impl.storage.chatMeta.get(CHAT)!;
+      impl.storage.chatMeta.put({...meta, activeAgent: MODEL.profile});
+      impl.startAgent(CHAT, MODEL, USER, s.user.id.toString());
+      await receiver.waitUntilHeld();
+      try { expect(requests()).toBe(0); }
+      finally { await receiver.release(); await impl.waitForAllAgentsToComplete(); }
+      expect(requests()).toBe(1);
+      expect([...impl.storage.agentParticipants.list()]).toHaveLength(0);
+    });
+  });
+
+  it("waits for every participant before a queued steer starts the next turn", async () => {
+    const requests = inference(), s = await scenario();
+    const notifications = recordNotifications();
+    const lookup = vi.spyOn(UserDurableObject.prototype, "getChatContext");
+    await s.visit(async impl => {
+      const a = (await participate(impl, 31)).receiver;
+      const b = (await participate(impl, 32)).receiver;
+      await a.hold("finished");
+      await b.hold("finished");
+      decide(impl, "connection");
+      impl.resumeAgentAfterDecision(CHAT);
+      await Promise.all([a.waitUntilHeld(), b.waitUntilHeld()]);
+      try {
+        expect(requests()).toBe(1);
+        expect(notifications.filter(([, n]) => n.kind === "taskCompleted")).toHaveLength(0);
+        expect(impl.steerRunningTurn(CHAT, s.user.id.toString(), USER, "Do the next thing")).toBe(true);
+        expect(() => impl.assertChatNotActive(CHAT)).toThrow();
+        await a.release();
+        expect(requests()).toBe(1);
+        expect(impl.storage.activeAgents.get(CHAT)?.finishing).toBe(true);
+      } finally {
+        await a.release(); await b.release();
+        await impl.waitForAllAgentsToComplete();
+      }
+      expect(requests()).toBe(2);
+      expect(lookup.mock.calls).toEqual([[MODEL.profile.id], [MODEL.profile.id]]);
+      expect(lookup.mock.instances.every(user => user.ctx.id.toString() === s.user.id.toString())).toBe(true);
+      await vi.waitFor(() => expect(notifications.filter(([, n]) => n.kind === "taskCompleted")).toHaveLength(2));
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      expect([...impl.storage.agentParticipants.list()]).toHaveLength(0);
+    });
+  });
+
+  it("Stop cancels inference immediately while required finalization remains blocked", async () => {
+    const s = await scenario(), requests = inference();
+    await s.visit(async impl => {
+      const {receiver} = await participate(impl, 31);
+      await receiver.hold("finished");
+      const gate = Promise.withResolvers<void>();
+      modelLookup(impl, async () => { await gate.promise; return {profile: USER, aiModel: MODEL}; });
+      decide(impl, "connection");
+      impl.resumeAgentAfterDecision(CHAT);
+      impl.cancelAgent(CHAT);
+      expect(impl.storage.activeAgents.get(CHAT)?.finishing).toBe(true);
+      gate.resolve();
+      await receiver.waitUntilHeld();
+      try {
+        expect(requests()).toBe(0);
+        expect(() => impl.assertChatNotActive(CHAT)).toThrow();
+        impl.removeGatekeeper(31);
+        expect([...impl.storage.agentParticipants.list()]).toHaveLength(1);
+      } finally { await receiver.release(); await impl.waitForAllAgentsToComplete(); }
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      expect(() => impl.assertChatNotActive(CHAT)).not.toThrow();
+    });
+  });
+
+  it.each(["suspended", "resumed"] as const)(
+      "a blocked %s notification delays completion, not inference", async notification => {
+    const s = await scenario("connection", notification === "suspended"), requests = inference();
+    await s.visit(async impl => {
+      const {receiver} = await participate(impl, 31);
+      await receiver.hold(notification);
+      const alarm = notification === "suspended" ? impl.runAlarmTasks() : undefined;
+      if (notification === "resumed") {
+        decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT);
+      }
+      await receiver.waitUntilHeld();
+      try {
+        if (notification === "suspended") {
+          await impl.waitForAllAgentsToComplete();
+          expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+          expect(impl.storage.activeAgents.get(CHAT)?.finishing).toBeUndefined();
+          decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT);
+        }
+        await vi.waitFor(() => expect(impl.storage.activeAgents.get(CHAT)?.finishing).toBe(true));
+        expect(requests()).toBe(1);
+        expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toEqual(MODEL.profile);
+        expect([...impl.storage.agentParticipants.list()][0].pending.at(-1)?.kind).toBe("finished");
+        expect(() => impl.assertChatNotActive(CHAT)).toThrow();
+        expect((await receiver.release())?.phase).toBe("finishing");
+      } finally { await receiver.release(); await alarm; await impl.waitForAllAgentsToComplete(); }
+      expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      expect([...impl.storage.agentParticipants.list()]).toHaveLength(0);
+    });
+    expect(requests()).toBe(1);
+  });
+
+  it.each(["stop", "denial"] as const)("refuses a new prompt during idle %s finalization", async terminal => {
+    const s = await scenario(), requests = inference();
+    await s.visit(async impl => {
+      const {receiver} = await participate(impl, 31);
+      await receiver.hold("finished");
+      if (terminal === "stop") impl.cancelAgent(CHAT);
+      else {
+        const message = [...impl.storage.chats.list()].findLast(m => m.type === "connectionRequest")!;
+        if (message.type !== "connectionRequest") throw new Error("Missing request");
+        impl.storage.chats.put({...message, state: "denied"});
+        impl.resumeAgentAfterDecision(CHAT);
+      }
+      await receiver.waitUntilHeld();
+      try {
+        expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+        using client = await decisionClient(impl, USER, {
+          steerRunningTurn: impl.steerRunningTurn.bind(impl),
+          sendChatMessage: impl.sendChatMessage.bind(impl),
+        });
+        await expect(client.sendChatMessage(CHAT, "Start a fresh task", MODEL.profile.id))
+          .rejects.toThrow("Agent is running");
+        expect(impl.storage.chatMeta.get(CHAT)?.queuedSteers).toBeUndefined();
+      } finally { await receiver.release(); await impl.waitForAllAgentsToComplete(); }
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      expect(() => impl.assertChatNotActive(CHAT)).not.toThrow();
+    });
+    expect(requests()).toBe(0);
+  });
+
+  it("keeps idle finalization scheduled after its last receipt is ACKed in the background", async () => {
+    const s = await scenario();
+    await s.visit(async impl => {
+      const {receiver} = await participate(impl, 31);
+      await receiver.setFailure(true);
+      // Hold an unrelated alarm task while cleanup fails and background delivery recovers.
+      const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+      vi.spyOn(impl, "deliverReadyExternalMessageResponses").mockImplementationOnce(async () => {
+        entered.resolve(); await release.promise;
+      });
+      const alarm = impl.runAlarmTasks();
+      await entered.promise;
+      try {
+        impl.cancelAgent(CHAT);
+        await impl.waitForAllAgentsToComplete();
+        expect(impl.storage.activeAgents.get(CHAT)?.finishing).toBe(true);
+        expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+        await receiver.setFailure(false);
+        const [receipt] = impl.storage.agentParticipants.list();
+        impl.storage.agentParticipants.put({...receipt, retryAt: Date.now() - 1});
+        await impl.integrations.deliverDue();
+        expect([...impl.storage.agentParticipants.list()]).toHaveLength(0);
+      } finally { release.resolve(); await alarm; }
+      expect(await impl.ctx.storage.getAlarm()).not.toBeNull();
+      await impl.runAlarmTasks();
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      expect(() => impl.assertChatNotActive(CHAT)).not.toThrow();
+    });
+  });
+
+  it("keeps paused segment capabilities expired while resumed model lookup is blocked", async () => {
+    const requests = inference(), s = await scenario("connection", true);
+    await s.visit(async impl => {
+      impl.env.AGENT_INTEGRATION_GRANTS = '{"test":{"lifecycle":true}}';
+      impl.storage.gatekeepers.put({id: 7, class: lifecycleExports(impl).TestLifecycleGatekeeper({props: {}}),
+        creationSpec: {type: "ambient", vendorId: "test", accountId: 1}});
+      const origin = impl.integrations.capture(CHAT)!;
+      const retained = impl.integrations.context(7, origin)!;
+      const meta = impl.storage.chatMeta.get(CHAT)!;
+      delete meta.activeAgent;
+      impl.storage.chatMeta.put(meta);
+      await expect(retained.getTurn()).rejects.toThrow("expired");
+
+      const gate = Promise.withResolvers<void>();
+      const lookup = vi.fn(async () => {
+        await gate.promise;
+        return {profile: USER, aiModel: MODEL};
+      });
+      modelLookup(impl, lookup);
+      try {
+        decide(impl, "connection");
+        impl.resumeAgentAfterDecision(CHAT);
+        expect(lookup).toHaveBeenCalledTimes(1);
+        expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toEqual(MODEL.profile);
+        await expect(retained.getTurn()).rejects.toThrow("expired");
+        expect(impl.storage.activeAgents.get(CHAT)?.integration).toMatchObject({turnId: origin.turnId});
+        expect(impl.storage.activeAgents.get(CHAT)?.integration?.segmentId).not.toBe(origin.segmentId);
+      } finally {
+        gate.resolve();
+        await impl.waitForAllAgentsToComplete();
+      }
+    });
+    expect(requests()).toBe(1);
+  });
+
   it.each(["connection", "action"] as const)("recovers a committed %s decision, before or after teardown", async kind => {
     const requests = inference();
     for (const active of [false, true]) {
@@ -147,6 +679,51 @@ describe("decision handoff using the existing execution row", () => {
       });
     }
     expect(requests()).toBe(2);
+  });
+
+  it.each([
+    {kind: "connection", participant: false}, {kind: "connection", participant: true},
+    {kind: "action", participant: false}, {kind: "action", participant: true},
+  ] as const)("recovers a $kind denial with one completion after cleanup (participant: $participant)",
+      async ({kind, participant}) => {
+    const notifications = recordNotifications(), requests = inference();
+    const s = await scenario(kind, true), name = crypto.randomUUID();
+    const received = () => notifications.filter(([, n]) => n.workspaceId === s.stub.id.toString());
+    await s.visit(async impl => {
+      if (participant) {
+        const {receiver} = await participate(impl, 31, name);
+        await receiver.hold("finished");
+      }
+      // Denial committed while the segment was still active, immediately before eviction.
+      if (kind === "action") {
+        impl.storage.actions.put({...impl.storage.actions.get(7)!, state: "rejected"});
+      } else {
+        const message = [...impl.storage.chats.list()].findLast(m => m.type === "connectionRequest")!;
+        if (message.type !== "connectionRequest") throw new Error("Missing request");
+        impl.storage.chats.put({...message, state: "denied"});
+      }
+      await impl.ctx.storage.sync();
+    });
+    await evictDurableObject(s.stub);
+    await s.visit(async impl => {
+      if (participant) {
+        const receiver = lifecycleExports(impl).TestLifecycleParticipant({props: {name}});
+        await receiver.waitUntilHeld();
+        try {
+          expect(received()).toEqual([]);
+          expect(impl.storage.activeAgents.get(CHAT)?.finishing).toBe(true);
+          expect((await receiver.calls()).map(c => c.event.kind)).toEqual(["finished"]);
+        } finally { await receiver.release(); await impl.waitForAllAgentsToComplete(); }
+      }
+      await impl.waitForAllAgentsToComplete();
+      expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      expect([...impl.storage.agentParticipants.list()]).toEqual([]);
+    });
+    await vi.waitFor(() => expect(received()).toEqual([[s.user.id.toString(), expect.objectContaining({
+      kind: "taskCompleted", workspaceId: s.stub.id.toString(), chatId: CHAT, chatTitle: "Resume",
+    })]]));
+    expect(requests()).toBe(0);
   });
 
   it("claims the row, note, busy state and alarm before model lookup; recovery needs no browser", async () => {
@@ -293,6 +870,7 @@ describe("decision handoff using the existing execution row", () => {
       modelLookup(impl, lookup);
       decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT);
       impl.destroyLiveChat(CHAT);
+      await impl.waitForAllAgentsToComplete();
       const successor = {...MODEL, profile: {...MODEL.profile, id: "successor-model"}};
       const meta = impl.storage.chatMeta.get(CHAT)!;
       impl.storage.chatMeta.put({...meta, activeAgent: successor.profile});
@@ -402,6 +980,7 @@ describe("decision handoff using the existing execution row", () => {
   it.each(["final response", "pending decision"] as const)(
       "recovers /compact after eviction without inheriting the preceding %s", async previous => {
     const s = await scenario("connection", true), requests = inference();
+    const notifications = recordNotifications();
     await s.visit(impl => {
       if (previous === "final response") {
         decide(impl, "connection");
@@ -423,6 +1002,7 @@ describe("decision handoff using the existing execution row", () => {
       expect([...impl.storage.chats.list()].filter(m => m.type === "error")).toEqual([]);
     });
     expect(requests()).toBe(previous === "final response" ? 1 : 0); // Summary only, if compactable.
+    await vi.waitFor(() => expect(notifications.filter(([, n]) => n.kind === "taskCompleted")).toHaveLength(1));
   });
 
   it("waits for both kinds of decision and consumes the handoff only once", async () => {
@@ -555,6 +1135,7 @@ describe("decision handoff using the existing execution row", () => {
       await impl.waitForAllAgentsToComplete();
       expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeDefined();
       impl.cancelAgent(CHAT);
+      await impl.waitForAllAgentsToComplete();
       expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
       expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
       expect(await impl.ctx.storage.getAlarm()).toBeNull();
@@ -609,12 +1190,13 @@ describe("decision handoff using the existing execution row", () => {
       modelLookup(impl, async () => { await gate.promise; return {profile: USER, aiModel: MODEL}; });
       decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT);
       impl.cancelAgent(CHAT);
-      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      expect(impl.storage.activeAgents.get(CHAT)?.finishing).toBe(true);
       await impl.ctx.storage.sync();
       impl.ctx.abort("Injected reset before stopped lookup cleanup");
     })).rejects.toThrow(/Injected reset/);
     gate.resolve();
-    await s.visit(impl => {
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
       expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
       expect(() => impl.assertChatNotActive(CHAT)).not.toThrow();
     });
@@ -684,6 +1266,103 @@ describe("decision handoff using the existing execution row", () => {
       expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
     });
     expect(requests()).toBe(1);
+  });
+
+  it("emits lifecycle from #797's real pause/reset/resume path without another continuation", async () => {
+    const s = await scenario("connection", true), requests = inference();
+    const name = crypto.randomUUID();
+    const receiver = (impl: Impl) => lifecycleExports(impl).TestLifecycleParticipant({props: {name}});
+    const original = await s.visit(async impl => {
+      const {origin} = await participate(impl, 31, name);
+      await impl.integrations.drain(CHAT);
+      return origin;
+    });
+    await evictDurableObject(s.stub);
+    await s.visit(async impl => {
+      await impl.integrations.drain(CHAT);
+      expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+      expect(impl.storage.activeAgents.get(CHAT)?.integration?.turnId).toBe(original.turnId);
+      impl.env.AGENT_INTEGRATION_GRANTS = '{"test":{"lifecycle":true}}';
+      decide(impl, "connection");
+      impl.resumeAgentAfterDecision(CHAT);
+      await impl.waitForAllAgentsToComplete();
+      await impl.integrations.drain(CHAT);
+      const calls = await receiver(impl).calls();
+      expect(calls.map(c => c.event.kind)).toEqual(["suspended", "resumed", "finished"]);
+      expect(calls.every(c => c.event.turnId === original.turnId)).toBe(true);
+      expect(calls[1].event.segmentId).not.toBe(original.segmentId);
+      expect(calls[0].turn.phase).toBe("suspending");
+      expect(calls[2].turn.phase).toBe("finishing");
+      expect([...impl.storage.agentParticipants.list()]).toHaveLength(0);
+    });
+    expect(requests()).toBe(1);
+  });
+
+  it("recovers failed finalization after real eviction without repeating inference", async () => {
+    const s = await scenario(), requests = inference();
+    const name = crypto.randomUUID();
+    const receiver = (impl: Impl) => lifecycleExports(impl).TestLifecycleParticipant({props: {name}});
+    const pending = await s.visit(async impl => {
+      vi.spyOn(impl.ctx.storage, "setAlarm").mockResolvedValue();
+      const {origin, receiver: target} = await participate(impl, 31, name);
+      await target.setFailure(true);
+      decide(impl, "connection");
+      impl.resumeAgentAfterDecision(CHAT);
+      await impl.waitForAllAgentsToComplete();
+      expect(requests()).toBe(1);
+      expect(impl.storage.activeAgents.get(CHAT)).toMatchObject({finishing: true,
+        integration: {turnId: origin.turnId}});
+      expect(() => impl.assertChatNotActive(CHAT)).toThrow();
+      return [...impl.storage.agentParticipants.list()][0].pending;
+    });
+    await evictDurableObject(s.stub);
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
+      expect(requests()).toBe(1);
+      expect(impl.storage.activeAgents.get(CHAT)?.finishing).toBe(true);
+      expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toEqual(MODEL.profile);
+      expect([...impl.storage.agentParticipants.list()][0].pending).toEqual(pending);
+      impl.removeGatekeeper(31);
+      await receiver(impl).setFailure(false);
+      await impl.runAlarmTasks();
+      expect(requests()).toBe(1);
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      expect([...impl.storage.agentParticipants.list()]).toHaveLength(0);
+      const calls = await receiver(impl).calls();
+      expect(calls.filter(c => c.event.kind === "finished").length).toBeGreaterThanOrEqual(1);
+      expect(calls.every(c => pending.some(e => e.eventId === c.event.eventId))).toBe(true);
+    });
+  });
+
+  it.each([false, true])("recovers a reset after the final ACK (queued steer: %s)", async queued => {
+    const s = await scenario(), requests = inference(), name = crypto.randomUUID();
+    const acknowledged = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    await expect(s.visit(async impl => {
+      await participate(impl, 31, name);
+      const drain = impl.integrations.drain.bind(impl.integrations);
+      vi.spyOn(impl.integrations, "drain").mockImplementationOnce(async (...args) => {
+        await drain(...args);
+        acknowledged.resolve();
+        await release.promise;
+      });
+      decide(impl, "connection");
+      impl.resumeAgentAfterDecision(CHAT);
+      await acknowledged.promise;
+      expect([...impl.storage.agentParticipants.list()]).toHaveLength(0);
+      expect(impl.storage.activeAgents.get(CHAT)?.finishing).toBe(true);
+      if (queued) expect(impl.steerRunningTurn(CHAT, s.user.id.toString(), USER, "Next task")).toBe(true);
+      await impl.ctx.storage.sync();
+      impl.ctx.abort("Injected reset after finalization ACK");
+    })).rejects.toThrow(/Injected reset/);
+    release.resolve();
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
+      const calls = await lifecycleExports(impl).TestLifecycleParticipant({props: {name}}).calls();
+      expect(calls.filter(c => c.event.kind === "finished")).toHaveLength(1);
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+    });
+    expect(requests()).toBe(queued ? 2 : 1);
   });
 
   it.each([false, true])("claims an awaited action inside the apply path (auto-approved: %s)", async auto => {

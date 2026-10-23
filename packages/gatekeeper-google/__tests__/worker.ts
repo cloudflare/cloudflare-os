@@ -61,6 +61,7 @@ function failure(error: unknown): { error: string } {
   return { error: error instanceof Error ? error.message : String(error) };
 }
 class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
+  async getAgentContext(): Promise<null> { return null; }
   actionId?: number;
   action?: ActionDescription;
   actionDescription?: string;
