@@ -133,8 +133,8 @@ export const BIGQUERY_RESOURCE: SupportedResource = {
 };
 
 /**
- * Files, folders, read-only native Google Docs, Sheets and Slides, and PDF text available to the
- * connected account.
+ * Files, folders, read-only native Google Docs, Sheets and Slides, PDF text, and any other file's
+ * bytes available to the connected account.
  *
  * Whole-account, not just My Drive: listings set `includeItemsFromAllDrives`, so a shared drive the
  * account belongs to is inside this grant.
@@ -146,7 +146,7 @@ export const GOOGLE_DRIVE_RESOURCE: SupportedResource = {
       "Find files and folders anywhere this Google account can read in Drive, including shared " +
       "drives. Full-text search examines indexed file content, descriptions, and OCR text; search " +
       "results contain metadata only, while native Google Docs, Sheets and Slides can be opened " +
-      "read-only, and PDFs can be read as text.",
+      "read-only, PDFs can be read as text, and any other file's content can be read as bytes.",
   grantable: true,
 };
 
@@ -156,18 +156,18 @@ export const GOOGLE_DRIVE_FOLDER_RESOURCE: SupportedResource = {
   title: "Google Drive Folder",
   description:
       "Browse a selected folder or shared drive, search its direct children, and read native " +
-      "Google Docs, Sheets and Slides, and PDFs as text.",
+      "Google Docs, Sheets and Slides, PDFs as text, and any other file's content as bytes.",
   grantable: true,
   groupedWith: GOOGLE_DRIVE_RESOURCE.urlPattern,
 };
 
-/** Metadata and, when native or a PDF, read-only content for one immutable Drive file ID. */
+/** Metadata and read-only content for one immutable Drive file ID. */
 export const GOOGLE_DRIVE_FILE_RESOURCE: SupportedResource = {
   urlPattern: "https://drive.google.com/file/d/:fileId/view",
   title: "Google Drive File",
   description:
       "Read metadata and, for a native Google Doc, Sheet or Slides presentation, content from one " +
-      "Drive file, or its text when it is a PDF.",
+      "Drive file, its text when it is a PDF, or otherwise its content as bytes.",
   grantable: true,
   groupedWith: GOOGLE_DRIVE_RESOURCE.urlPattern,
 };
@@ -263,7 +263,7 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
   {
     resource: GOOGLE_DRIVE_RESOURCE,
     scopes: [
-      // File content, not only metadata, so a PDF can be downloaded to read its text.
+      // File content, not only metadata, so PDFs and other files can be downloaded.
       "https://www.googleapis.com/auth/drive.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
@@ -273,7 +273,7 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
   {
     resource: GOOGLE_DRIVE_FOLDER_RESOURCE,
     scopes: [
-      // File content, not only metadata, so a PDF can be downloaded to read its text.
+      // File content, not only metadata, so PDFs and other files can be downloaded.
       "https://www.googleapis.com/auth/drive.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
@@ -283,7 +283,7 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
   {
     resource: GOOGLE_DRIVE_FILE_RESOURCE,
     scopes: [
-      // File content, not only metadata, so a PDF can be downloaded to read its text.
+      // File content, not only metadata, so PDFs and other files can be downloaded.
       "https://www.googleapis.com/auth/drive.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
