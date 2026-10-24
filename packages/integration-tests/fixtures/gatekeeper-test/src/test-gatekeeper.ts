@@ -122,11 +122,11 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
         ?? { allow: true };
   }
 
-  /** Answers TestVerifier.checkObserverAccess(): one verify outcome per subresource. */
-  checkObserverAccess(label: string, subresources: string[]): boolean[] {
-    return subresources.map(id => {
+  /** Answers TestVerifier.verifyObserverAccess(): input IDs whose verification outcome denies. */
+  verifyObserverAccess(label: string, subresources: string[]): string[] {
+    return subresources.filter(id => {
       const [resourceUrl, subresource] = JSON.parse(id) as [string, string];
-      return this.getVerifyOutcome(label, resourceUrl, subresource).allow;
+      return !this.getVerifyOutcome(label, resourceUrl, subresource).allow;
     });
   }
 
@@ -602,7 +602,7 @@ export class TestAccount
 /**
  * Reports which account is asking.
  *
- * `GatekeeperUserVerifier`'s only standard method is `checkObserverAccess()`, for tracked bindings;
+ * `GatekeeperUserVerifier`'s only standard method is `verifyObserverAccess()`, for tracked bindings;
  * otherwise the convention (see its declaration) is that a gatekeeper adds a non-standard method
  * and trusts the answer, because the overseer only ever hands a verifier back to the vendor that
  * minted it.
@@ -622,10 +622,10 @@ export class TestVerifier
    * Each ID encodes its resource URL and local subresource: grant unless the test refused this
    * account for that subresource, at that binding, or everywhere (`/control/verify-outcome`).
    */
-  async checkObserverAccess(subresources: string[]): Promise<{ granted: boolean[] }> {
-    const granted = await control(this.ctx.exports)
-        .checkObserverAccess(this.ctx.props.label, subresources);
-    return { granted };
+  async verifyObserverAccess(subresources: string[]): Promise<{ denied: string[] }> {
+    const denied = await control(this.ctx.exports)
+        .verifyObserverAccess(this.ctx.props.label, subresources);
+    return { denied };
   }
 }
 
@@ -947,7 +947,7 @@ export default {
     }
 
     // Set what addObserver() should do for one account, either everywhere or (when `resourceUrl`
-    // is given) at one binding only. With `subresource` too, it sets what checkObserverAccess()
+    // is given) at one binding only. With `subresource` too, it sets what verifyObserverAccess()
     // answers for that one subresource of a tracked binding.
     // Body: {"label": "...", "allow": false, "reason": "...", "resourceUrl": "...",
     //        "subresource": "..."}

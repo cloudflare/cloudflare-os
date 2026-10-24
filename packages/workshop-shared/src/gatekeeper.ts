@@ -326,7 +326,7 @@ export type ResourceDescription = {
    *   requirements recorded before it opted in;
    * - every `ObservationDescription` it submits carries `subresources` (`[]` when the read has no
    *   permission-restricting dependency) and never `excludeObservers`;
-   * - its vendor's `GatekeeperUserVerifier` implements `checkObserverAccess()`.
+   * - its vendor's `GatekeeperUserVerifier` implements `verifyObserverAccess()`.
    *
    * The Workshop then records each observation's subresource IDs against its binding's context
    * and checks that context's collaborators itself; `addObserver()`/`removeObserver()` are no
@@ -970,7 +970,7 @@ export interface GatekeeperUser extends WorkerEntrypoint {
  * Also returned from `GatekeeperUserSelectionExchange.redeem()` for the selected user's eligible
  * accounts with the same vendor.
  *
- * Its only standard method is the optional `checkObserverAccess()`, which the overseer calls itself
+ * Its only standard method is the optional `verifyObserverAccess()`, which the overseer calls itself
  * for resources that opted in to observer tracking. Otherwise it is merely meant to be passed back
  * to the Gatekeeper that created it.
  *
@@ -984,22 +984,23 @@ export interface GatekeeperUser extends WorkerEntrypoint {
  */
 export interface GatekeeperUserVerifier extends WorkerEntrypoint {
   /**
-   * Report whether this verifier's account may read each fully qualified ID reported in
+   * Verify this account's access to the fully qualified IDs reported in
    * `ObservationDescription.subresources` (or `getHistoricalSubresources()`). Each ID must
    * identify its scope unambiguously within this vendor and carry everything needed to check
    * access using this account, without connection-specific context. IDs are stable in meaning
    * and must not contain credentials. The Workshop treats them as opaque strings.
    *
-   * `granted` holds exactly one boolean per ID, in order: `true` only if the account can read it
-   * now. Throws if the check itself cannot be performed (expired credentials, provider outage);
-   * a throw, malformed result, or `false` is a denial. Called only by the Workshop for resources
-   * that opted in to observer tracking; it must not depend on the producing gatekeeper's state.
+   * `denied` contains the input IDs this account cannot read now; an empty array grants access
+   * to the entire batch. Throws if access cannot be determined (expired credentials, provider
+   * outage); a throw, malformed result, or non-empty `denied` array is a denial. Called only by
+   * the Workshop for resources that opted in to observer tracking; it must not depend on the
+   * producing gatekeeper's state.
    *
    * (The array is wrapped in an object because RPC result types re-map a bare array differently
-   * on each hop, and the Workshop relays verifiers: a verifier returning `boolean[]` would stop
+   * on each hop, and the Workshop relays verifiers: a verifier returning `string[]` would stop
    * matching this interface once passed on to `addObserver()` or `applyCreation()`.)
    */
-  checkObserverAccess?(subresources: string[]): Promise<{granted: boolean[]}>;
+  verifyObserverAccess?(subresources: string[]): Promise<{denied: string[]}>;
 }
 
 /** Status of a Git pack stream in its producing gatekeeper. */

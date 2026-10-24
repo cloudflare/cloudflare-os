@@ -1,6 +1,6 @@
 // Kernel-owned observer tracking (docs/observers.md §10), against the fixture gatekeeper's tracked
 // mode: a binding advertises `supportsObserverTracking` once `/control/observer-tracking` says so,
-// reports each read's `subresources`, and its verifier answers `checkObserverAccess()` from the
+// reports each read's `subresources`, and its verifier answers `verifyObserverAccess()` from the
 // outcomes `/control/verify-outcome` sets per subresource.
 
 import { afterAll, beforeAll, expect, it } from "vitest";

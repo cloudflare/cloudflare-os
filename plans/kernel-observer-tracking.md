@@ -14,7 +14,7 @@ mix both.
 
 - **Opt-in by capability, not method probing.** `ResourceDescription.supportsObserverTracking`
   promises `getHistoricalSubresources()`, `subresources` on every observation, and the vendor
-  verifier's `checkObserverAccess()`. RPC stubs can't report method presence, so the flag is read
+  verifier's `verifyObserverAccess()`. RPC stubs can't report method presence, so the flag is read
   explicitly. Once a connection is tracked, losing the flag is a refusal, never a downgrade.
 - **IDs are fully qualified.** Each subresource ID carries enough vendor scope for the observer's
   own verifier to check it, so there is no per-connection scope descriptor and nothing about a

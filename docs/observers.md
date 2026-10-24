@@ -917,7 +917,7 @@ workspace can mix the two. No shipping gatekeeper opts in yet.
   protocols. A tracked connection enters each role's verification scope exactly as a legacy one
   does: "build" at creation, "use" while a gadget binds it or an enabled hook feeds it. Within that
   scope, admission checks every requirement the role reaches through
-  `getVerifier()` + `checkObserverAccess(subresources)`: "build" reaches every context, "use" the
+  `getVerifier()` + `verifyObserverAccess(subresources)`: "build" reaches every context, "use" the
   workspace and every gadget. Requirements through a connection outside a "use" collaborator's
   scope (one nothing binds or hooks) are not checked against them, as under the legacy protocol.
   Each observation checks its IDs for every configured observer the
@@ -927,6 +927,9 @@ workspace can mix the two. No shipping gatekeeper opts in yet.
   10,000 IDs. Each ID must be a string with a JavaScript `length` of 1–512 (UTF-16 code units).
   Complete historical exports have no observation count cap; their IDs undergo the same type and
   length checks and are deduplicated, and admission verifies them in batches.
+  A verifier returns `{ denied: string[] }`, listing the input IDs the account cannot read now.
+  `{ denied: [] }` grants access to the entire batch; any denied ID blocks access. Missing,
+  non-array, sparse, or non-string `denied` values are malformed and fail closed.
 - **Bounded persistence.** Live reads and historical imports split their IDs across audit records
   with a conservative 4 MiB ID-array budget (two bytes per UTF-16 code unit plus per-ID overhead),
   leaving room for metadata below SQLite's row limit. Each record preserves the original caller
@@ -952,6 +955,10 @@ workspace can mix the two. No shipping gatekeeper opts in yet.
   `subresources`, or `excludeObservers`) is refused. A connection created while advertising
   support starts tracked without an export. A tracked connection that stops advertising support
   is refused.
+  Legacy protocol discovery is single-flight but its settled result is not cached, so subsequent
+  initialization, including every admission, detects upgrades without waiting for a new observation.
+  Failed discovery refuses the connection and retries on the next initialization; it never assumes
+  that legacy verification is still enforced.
 - **Pending creations.** A simulated resource from `createExternalResource` is not initialized
   while its creation is pending; its reads are audited and enforce workspace policy but record no
   requirements. Its first use after approval imports it, and the gatekeeper must not export reads

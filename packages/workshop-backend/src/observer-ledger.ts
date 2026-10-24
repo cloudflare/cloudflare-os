@@ -37,12 +37,12 @@ const MAX_SUBRESOURCE_LENGTH = 512;
 const SUBRESOURCE_CHUNK_BYTES = 4 * 1024 * 1024;
 
 /**
- * Most IDs sent to `checkObserverAccess()` in one call. One observation's always fit; the union of
+ * Most IDs sent to `verifyObserverAccess()` in one call. One observation's always fit; the union of
  * every requirement a role reaches, which admission checks, may not.
  */
 const CHECK_BATCH_SIZE = MAX_SUBRESOURCES;
 
-/** Most `checkObserverAccess()` round trips in flight at once for one observation. */
+/** Most `verifyObserverAccess()` round trips in flight at once for one observation. */
 const CHECK_CONCURRENCY = 4;
 
 /**
@@ -55,7 +55,7 @@ export const MAX_VERIFICATION_PASSES = 3;
 // ResourceDescription.supportsObserverTracking). RPC stubs can't report method presence, and
 // their typing makes an optional method uncallable, hence these narrowed views.
 type CheckingVerifier = Fetcher<GatekeeperUserVerifier &
-    Required<Pick<GatekeeperUserVerifier, "checkObserverAccess">>>;
+    Required<Pick<GatekeeperUserVerifier, "verifyObserverAccess">>>;
 type ExportingGatekeeper = Fetcher<Gatekeeper<any> &
     Required<Pick<Gatekeeper<any>, "getHistoricalSubresources">>>;
 
@@ -126,9 +126,8 @@ export function normalizeSubresources(ids: unknown): string[] {
 
 /** The observer ledger of one workspace. See the module comment. */
 export class ObserverLedger {
-  // Per gatekeeper, the in-flight or settled protocol initialization for this object's lifetime.
-  // A legacy result stays cached until an observation shows the gatekeeper was upgraded
-  // (see authorizeObservation); a failed initialization is dropped so the next use retries.
+  // Single-flight protocol initialization. Only tracked or vendorless results stay cached for
+  // this object's lifetime: legacy connections may upgrade independently of the Overseer.
   #initialized = new Map<WorkpieceId, Promise<void>>();
 
   // Connections whose historical import is in flight (see isImporting).
@@ -171,7 +170,7 @@ export class ObserverLedger {
   /**
    * Bring the connection's observer protocol up to date before anything can authorize through
    * it: confirm a tracked one still advertises support, or import a legacy one that has started
-   * advertising it. Single-flight per connection; the result is kept for this object's lifetime.
+   * advertising it. Single-flight per connection; only tracked or vendorless results stay cached.
    * Throws to refuse the connection. A pending creation is simulated, so it has no account behind
    * it and nothing to track until it is approved.
    */
@@ -208,17 +207,9 @@ export class ObserverLedger {
     try {
       description = await (await this.host.getGatekeeperFacet(gatekeeperId)).describe();
     } catch (error) {
-      if (this.isTracked(gatekeeperId)) {
-        throw new Error(
-            "This connection could not confirm the observer tracking it was migrated to, so it " +
-            "can't be used right now. Please retry.", {cause: error});
-      }
-      // Discovery failed for a legacy connection: it keeps the legacy protocol, which is fully
-      // enforced, and discovery is retried next time.
-      this.host.logger.warn("failed to describe connection for observer tracking", {
-        event: "observer.ledger.describe.failed", gatekeeperId, error,
-      });
-      return false;
+      throw new Error(
+          "This connection could not confirm its observer tracking protocol, so it can't be " +
+          "used right now. Please retry.", {cause: error});
     }
 
     if (!this.#storage.gatekeepers.get(gatekeeperId)) {
@@ -234,7 +225,8 @@ export class ObserverLedger {
       }
       return true;
     }
-    if (description.supportsObserverTracking) await this.#import(gatekeeperId);
+    if (!description.supportsObserverTracking) return false;
+    await this.#import(gatekeeperId);
     return true;
   }
 
@@ -498,17 +490,21 @@ export class ObserverLedger {
       let batch = subresources.slice(i, i + CHECK_BATCH_SIZE);
       let result: unknown;
       try {
-        result = await verifier.checkObserverAccess(batch);
+        result = await verifier.verifyObserverAccess(batch);
       } catch (error) {
         throw new Error("This service could not confirm the account's access.", {cause: error});
       }
-      let granted = typeof result === "object" && result !== null && "granted" in result
-          ? result.granted : undefined;
-      if (!Array.isArray(granted) || granted.length !== batch.length ||
-          granted.some(each => typeof each !== "boolean")) {
+      let denied = typeof result === "object" && result !== null && "denied" in result
+          ? result.denied : undefined;
+      if (!Array.isArray(denied)) {
         throw new Error("This service returned an invalid access check.");
       }
-      if (granted.some(each => each !== true)) {
+      for (let id of denied) {
+        if (typeof id !== "string") {
+          throw new Error("This service returned an invalid access check.");
+        }
+      }
+      if (denied.length > 0) {
         throw new Error(
             "This account can't access some of the data this workspace read through this " +
             "service.");

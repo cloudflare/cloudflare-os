@@ -316,9 +316,9 @@ describe("a binding that fails verification", () => {
       // The same direct-DO user double supports both legacy and tracked verification.
       const clientUser = {
         getVerifier: async (accountId: number) => ({
-          checkObserverAccess: async (ids: string[]) => {
+          verifyObserverAccess: async (ids: string[]) => {
             checks.push({accountId, ids});
-            return { granted: ids.map(() => true) };
+            return { denied: [] };
           },
         }),
         describeConnectedAccount: async () => null,
@@ -423,9 +423,9 @@ describe("a binding that fails verification", () => {
           checkedAccounts.push(accountId);
           if (accountId === 10) throw new Error("Removed connection must not be checked");
           return {
-            checkObserverAccess: async (ids: string[]) => {
+            verifyObserverAccess: async (ids: string[]) => {
               checks.push(ids);
-              return { granted: ids.map(id => id === "live/read") };
+              return { denied: ids.filter(id => id !== "live/read") };
             },
           };
         },

@@ -9,7 +9,7 @@
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
+import type { ObservationDescription, ResourceDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { OverseerDurableObject } from "../src/overseer.js";
 
 declare module "cloudflare:workers" {
@@ -22,6 +22,10 @@ const OWNER = "owner";
 const CAROL = "carol";
 const OBSERVER_ID = "obs-carol";
 const GATEKEEPER_ID = 1;
+const RESOURCE_DESCRIPTION: ResourceDescription = {
+  url: "https://example.com/1", title: "Connection", snippet: "",
+  suggestedBindingName: "C", tsType: "C",
+};
 
 let doCounter = 0;
 
@@ -44,6 +48,7 @@ async function withImpl(
 
     let removals: Removals = [];
     impl.getGatekeeperFacet = (id: number) => ({
+      describe: async () => RESOURCE_DESCRIPTION,
       removeObserver: async (observerId: string) => { removals.push(`${id}:${observerId}`); },
     });
 
@@ -149,6 +154,7 @@ describe("excludeObservers against the observer's verification scope", () => {
     let releaseRemove!: () => void;
     let removeReached = new Promise<void>(resolve => {
       impl.getGatekeeperFacet = (id: number) => ({
+        describe: async () => RESOURCE_DESCRIPTION,
         removeObserver: async (observerId: string) => {
           events.push("remove:start");
           resolve();
@@ -250,6 +256,7 @@ describe("a bound agent spawner's env keeps its targets in use scope", () => {
     bindSpawnerIntoGadget(impl);
     let added: string[] = [];
     impl.getGatekeeperFacet = (id: number) => ({
+      describe: async () => RESOURCE_DESCRIPTION,
       addObserver: async (observerId: string) => { added.push(`${id}:${observerId}`); },
       removeObserver: async () => {},
     });
