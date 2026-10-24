@@ -1448,7 +1448,13 @@ export const FUNCTIONS: Record<string, FormulaFunction> = (() => {
   F.TODAY = () => { const n = new Date(); return Math.floor(dateToSerial(new Date(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate())))); };
   F.NOW = () => { const n = new Date(); return dateToSerial(new Date(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate(), n.getHours(), n.getMinutes(), n.getSeconds()))); };
   F.DATE = (a, c, H) => excelDate(H.toNum(s(a, c, H, 0)), H.toNum(s(a, c, H, 1)), H.toNum(s(a, c, H, 2)));
-  F.TIME = (a, c, H) => { const h = H.toNum(s(a, c, H, 0)); const m = H.toNum(s(a, c, H, 1)); const sec = H.toNum(s(a, c, H, 2)); return (h * 3600 + m * 60 + sec) / 86400; };
+  // As in Excel: whole hours, minutes and seconds (each at most 32767), wrapped into one day; a negative total is #NUM!.
+  F.TIME = (a, c, H) => {
+    const [h, m, sec] = [0, 1, 2].map((i) => Math.trunc(H.toNum(s(a, c, H, i))));
+    const total = h * 3600 + m * 60 + sec;
+    if (h > 32767 || m > 32767 || sec > 32767 || total < 0) throw ERR.NUM();
+    return (total % 86400) / 86400;
+  };
   // Date parts read the date as it shows (see dateParts); a negative serial is no date at all.
   const partsOf = (a: Ast[], c: EvalCtx, H: Helpers) => { const serial = H.toNum(s(a, c, H, 0)); if (serial < 0) throw ERR.NUM(); return dateParts(serial); };
   F.YEAR = (a, c, H) => partsOf(a, c, H).y;
