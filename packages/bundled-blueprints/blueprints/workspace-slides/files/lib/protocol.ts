@@ -5,7 +5,7 @@
  * nothing here ships in the bundled gadget.
  */
 
-/** A scalar a block prop may hold: the deck is JSON, and every prop is a string, number or flag. */
+/** A scalar a block prop may hold: the deck is JSON, and every prop is a string, number or flag (or null, when unset). */
 export type PropValue = string | number | boolean;
 
 /**

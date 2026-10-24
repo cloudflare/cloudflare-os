@@ -26,6 +26,7 @@ const gadget = {
   updateBlocks: vi.fn(async () => true),
   addBlock: vi.fn(async () => "n1"),
   reorderBlock: vi.fn(async () => true),
+  removeBlock: vi.fn(async () => true),
 };
 
 beforeAll(async () => {
@@ -153,4 +154,39 @@ it("menu rows work from the keyboard, and their keys don't reach the slide", asy
   key("Escape");
   expect(document.querySelector(".pop:not(.closing)")).toBeNull();
   expect(document.activeElement).toBe(more);
+});
+
+describe("in-place text", () => {
+  // A field stays up through a save while another field is being edited; typing its text back
+  // to what it was before that save is a change of its own.
+  it("saves a field changed back after a save it outlived", async () => {
+    await select("t1");
+    const field = onStage("t1").querySelector<HTMLElement>(".inline-edit")!;
+    const before = field.textContent!;
+    const other = Object.assign(document.createElement("div"), { contentEditable: "true", tabIndex: 0 });
+    onStage("t1").parentElement!.appendChild(other);
+    type(field, "changed");
+    other.focus();
+    await settle();
+    expect(onStage("t1").querySelector(".inline-edit")).toBe(field);
+    type(field, before);
+    other.focus();
+    await settle();
+    other.remove();
+    expect(gadget.updateBlock.mock.calls).toEqual([
+      ["s1", "t1", { props: { text: "changed" } }],
+      ["s1", "t1", { props: { text: before } }],
+    ]);
+  });
+
+  it("Delete saves the text being typed first, so undo brings it back", async () => {
+    await select("t1");
+    type(onStage("t1").querySelector<HTMLElement>(".inline-edit")!, "typed");
+    button("Delete").click();
+    await settle();
+    expect(calls(gadget.updateBlock, gadget.removeBlock)).toEqual([
+      ["s1", "t1", { props: { text: "typed" } }],
+      ["s1", "t1"],
+    ]);
+  });
 });

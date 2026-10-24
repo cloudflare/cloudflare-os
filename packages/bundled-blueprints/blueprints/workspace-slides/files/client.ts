@@ -1810,6 +1810,9 @@ function makeEditable(elem: HTMLElement, placeholder?: string): void {
 function bindInlineText<E extends HTMLElement>(elem: E, slide: Slide, block: Block, propKey: string, transform?: ((raw: PropValue) => string) | null, placeholder = "Type here"): E {
   const raw = (block.props || {})[propKey] ?? "";
   if (inlineEditing(block)) {
+    // The value last saved: the field can outlive a save while another field
+    // is being edited (renderWhenIdle), and typing the old text back must save.
+    let saved = String(raw);
     makeEditable(elem, placeholder);
     // Markup a transform adds (a title's highlighted words) stays while the
     // text is selected and edited, and follows the text as you type, so the
@@ -1843,7 +1846,8 @@ function bindInlineText<E extends HTMLElement>(elem: E, slide: Slide, block: Blo
       let v = (elem.querySelector("span") ? editableText(elem) : elem.innerText).replace(/\u00A0/g, " ");
       // A field cleared to nothing can leave a stray line break behind.
       if (!v.trim()) v = "";
-      if (v === String(raw)) return;
+      if (v === saved) return;
+      saved = v;
       block.props = { ...block.props || {}, [propKey]: v };
       await api.updateBlock(slide.id, block.id, { props: { [propKey]: v } });
       renderWhenIdle();
@@ -5158,6 +5162,8 @@ async function duplicateSelectedBlock(): Promise<void> {
   await insertCopies(selectedBlocks());
 }
 function deleteSelectedBlock(): void {
+  // The text being typed is saved first, so undoing the deletion brings it back.
+  commitInlineEdit();
   const slide = currentSlide();
   const ids = selectedBlocks(slide).map((b) => b.id);
   if (!slide || !ids.length) return;
