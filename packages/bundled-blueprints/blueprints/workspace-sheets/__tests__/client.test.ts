@@ -545,6 +545,26 @@ describe("pivot tables", () => {
     expect(Object.values((replaced as { cells: CellMap }).cells).map((c) => c.value)).toContain("0.0000001");
   });
 
+  it("update formulas on the visible sheet that read them", async () => {
+    const source = sheet("s1"), pivot: SheetMeta = { ...sheet("p1"), name: "Pivot", pivot: {
+      sourceSheetId: "s1", sourceRange: "A1:B2", rowField: "Region", columnField: "", valueField: "Amount", aggregate: "sum",
+      showRowTotals: false, showColumnTotals: false, filterField: "", filterValues: [],
+    } };
+    const h = await loadClient(source);
+    h.callbacks.operation({ type: "operation", senderId: "someone-else", revision: 2, structure: { title: "Book", sheetOrder: ["s1", "p1"], sheets: { s1: source, p1: pivot } }, lastModified: 0, deletes: [], upserts: [
+      { sheetId: "s1", ref: "A1", cell: cell("Region") }, { sheetId: "s1", ref: "B1", cell: cell("Amount") },
+      { sheetId: "s1", ref: "A2", cell: cell("North") }, { sheetId: "s1", ref: "B2", cell: cell("10") }, { sheetId: "s1", ref: "D1", cell: cell("=Pivot!B2") },
+    ] });
+    await settle(); await settle();
+    expect(shown("D1")).toBe("10");
+    const grid = document.querySelector<HTMLElement>(".grid-scroll")!;
+    grid.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    grid.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    typeIntoActiveCell("20");
+    await settle(); await settle();
+    expect(shown("D1")).toBe("20");
+  });
+
   it("follow an undone edit to their source", async () => {
     const source = sheet("s1"), pivot: SheetMeta = { ...sheet("p1"), name: "Pivot", pivot: {
       sourceSheetId: "s1", sourceRange: "A1:B2", rowField: "Region", columnField: "", valueField: "Amount", aggregate: "sum",

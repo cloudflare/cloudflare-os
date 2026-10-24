@@ -58,7 +58,7 @@ const BATTERY: [string, Scalar][] = [
   ["=SUMPRODUCT((A1:A3>1)*A1:A3)", 5], ["=SUMPRODUCT(--(A1:A3>1))", 2], ["=SUMPRODUCT(A1:A3>1)", 0], ["=SUMPRODUCT(A1:A3*2,A1:A3)", 28],
   ["=SUMPRODUCT((A1:A3>1)*A1:A4)", "#VALUE!"], ["=SUMPRODUCT(A1:A3/(A1:A3-2))", "#DIV/0!"],
   // Truncating at 15 digits: 4.35 * 100 is 434.99999999999994 in binary.
-  ["=ROUNDDOWN(4.35,2)", 4.35], ["=TRUNC(4.35,2)", 4.35], ["=ROUNDDOWN(1.15*100,0)", 115], ["=ROUNDUP(0.1*3,1)", 0.3], ["=FLOOR(0.3,0.1)", 0.3], ["=CEILING(0.3,0.1)", 0.3],
+  ["=ROUND(2.4999999995,0)", 2], ["=ROUND(1.005,2)", 1.01], ["=ROUND(-2.5,0)", -3], ["=ROUNDDOWN(4.35,2)", 4.35], ["=TRUNC(4.35,2)", 4.35], ["=ROUNDDOWN(1.15*100,0)", 115], ["=ROUNDUP(0.1*3,1)", 0.3], ["=FLOOR(0.3,0.1)", 0.3], ["=CEILING(0.3,0.1)", 0.3],
   // An empty cell's value shows as 0, as in Excel.
   ["=Z1", 0], ["=A1:A3", 1], ["=SQRT(-1)", "#NUM!"], ["=LN(0)", "#NUM!"], ["=ABS(-3)", 3], ["=POWER(2,0.5)", Math.SQRT2],
   ["=MEDIAN(1,2,3,4)", 2.5], ["=STDEV(1,2,3,4)", 1.2909944487358056], ["=LARGE(A1:A3,1)", 3], ["=RANK(2,A1:A3)", 2],

@@ -2674,7 +2674,7 @@ function refreshPivot(sheetId: string, save = true) {
   sheet.rowHeights = { ...sheet.rowHeights, 0: 30 };
   if (save) { queueStructure(); queueReplacement(sheetId); }
   rebuildEngine();
-  if (activeSheetId === sheetId) renderGrid();
+  renderGrid(); // formulas on any sheet may read the pivot
 }
 // A pivot's source may hold formulas that read other sheets, so any edit refreshes every pivot
 // after a short pause rather than tracing dependencies. Refreshing writes only pivot sheets and

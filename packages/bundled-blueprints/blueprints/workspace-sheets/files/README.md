@@ -69,7 +69,7 @@ There is no agent API for filters, pivot tables, row heights or deleting charts;
 
 ## Formulas
 
-The engine (`lib/formula.ts`) has 100+ functions across math, statistics, logic, text, lookup, date/time and information, and follows Excel's results so exported workbooks recalculate the same. What matters when writing formulas:
+The engine (`lib/formula.ts`) has 100+ functions across math, statistics, logic, text, lookup, date/time and information, and follows Excel's results, so an exported workbook almost always recalculates to the values the grid shows. What matters when writing formulas:
 
 - Cross-sheet references: `Sheet2!A1`, `'Sales Data'!B4`; a name with an apostrophe is `'Owner\'s Sheet'!A1` (or `''`). `HYPERLINK(url, label)` and plain `http(s)` values are links.
 - Not supported (the formula is invalid): whole-column/row references (`A:A`, `1:1`), structured references (`[ ]`), `@`, and `;` outside an array constant.
