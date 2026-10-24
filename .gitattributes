@@ -5,3 +5,8 @@
 # `types:generate --check` diffs each committed worker-configuration.d.ts against freshly generated
 # output.
 * text=auto eol=lf
+
+# Written by `pnpm api-schema:generate` and checked by `pnpm api-schema:check`; GitHub collapses
+# them in diffs.
+packages/api-schema/generated/** linguist-generated
+packages/api-cli/generated/** linguist-generated

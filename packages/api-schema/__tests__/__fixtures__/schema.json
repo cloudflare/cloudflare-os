@@ -1,0 +1,723 @@
+{
+  "format": "capnweb-schema/0",
+  "entry": "FixturePublicApi",
+  "constants": {
+    "SERVICE_SALT": [
+      1,
+      2,
+      254,
+      255
+    ]
+  },
+  "services": {
+    "Cursor": {
+      "doc": "Reached only through parameters of client-implemented callbacks, so the server's.",
+      "direction": "server",
+      "methods": [
+        {
+          "name": "position",
+          "doc": "",
+          "params": [],
+          "returns": {
+            "kind": "number"
+          }
+        }
+      ]
+    },
+    "FixtureAdmin": {
+      "doc": "Method-only, extending nothing, as upstream's AdminApi.",
+      "direction": "server",
+      "methods": [
+        {
+          "name": "setBanner",
+          "doc": "",
+          "params": [
+            {
+              "name": "text",
+              "type": {
+                "kind": "string"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          }
+        }
+      ]
+    },
+    "FixtureAuthedApi": {
+      "doc": "The authenticated API, as upstream's AuthenticatedApi.",
+      "direction": "server",
+      "methods": [
+        {
+          "name": "findNotes",
+          "doc": "An optional middle parameter, and one whose flag collides with the runtime's `--url`.",
+          "params": [
+            {
+              "name": "query",
+              "type": {
+                "kind": "string"
+              },
+              "optional": false,
+              "doc": ""
+            },
+            {
+              "name": "limit",
+              "type": {
+                "kind": "number"
+              },
+              "optional": true,
+              "doc": ""
+            },
+            {
+              "name": "url",
+              "type": {
+                "kind": "string"
+              },
+              "optional": true,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "array",
+            "element": {
+              "kind": "ref",
+              "name": "Note"
+            }
+          }
+        },
+        {
+          "name": "getAdmin",
+          "doc": "A nullable capability over a method-only interface.",
+          "params": [],
+          "returns": {
+            "kind": "union",
+            "branches": [
+              {
+                "kind": "null"
+              },
+              {
+                "kind": "stub",
+                "service": "FixtureAdmin"
+              }
+            ]
+          }
+        },
+        {
+          "name": "importArchive",
+          "doc": "A stream parameter.",
+          "params": [
+            {
+              "name": "archive",
+              "type": {
+                "kind": "readableStream",
+                "element": {
+                  "kind": "bytes"
+                }
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "openNotebook",
+          "doc": "A capability hop, with an optional callback that is never passed.\n@param id The notebook's ID.",
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "string"
+              },
+              "optional": false,
+              "doc": "The notebook's ID."
+            },
+            {
+              "name": "observer",
+              "type": {
+                "kind": "stub",
+                "service": "NotesSubscriber"
+              },
+              "optional": true,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "stub",
+            "service": "Notebook"
+          }
+        },
+        {
+          "name": "setMood",
+          "doc": "A string-literal union.",
+          "params": [
+            {
+              "name": "mood",
+              "type": {
+                "kind": "ref",
+                "name": "Mood"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          }
+        },
+        {
+          "name": "setNickname",
+          "doc": "A nullable scalar.",
+          "params": [
+            {
+              "name": "name",
+              "type": {
+                "kind": "union",
+                "branches": [
+                  {
+                    "kind": "null"
+                  },
+                  {
+                    "kind": "string"
+                  }
+                ]
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          }
+        }
+      ]
+    },
+    "FixturePublicApi": {
+      "doc": "The entry interface, as upstream's PublicApi.",
+      "direction": "server",
+      "methods": [
+        {
+          "name": "authenticate",
+          "doc": "Exchanges a token for the authenticated API: the table's root.",
+          "params": [
+            {
+              "name": "token",
+              "type": {
+                "kind": "string"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "stub",
+            "service": "FixtureAuthedApi"
+          }
+        },
+        {
+          "name": "download",
+          "doc": "A stream result.",
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "number"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "readableStream",
+            "element": {
+              "kind": "bytes"
+            }
+          }
+        },
+        {
+          "name": "legacy",
+          "doc": "The notes API from before accounts.\n@deprecated Use authenticate.",
+          "params": [],
+          "returns": {
+            "kind": "stub",
+            "service": "LegacyNotes"
+          },
+          "deprecated": "Use authenticate."
+        },
+        {
+          "name": "login",
+          "doc": "A credential method: not a command.",
+          "params": [
+            {
+              "name": "username",
+              "type": {
+                "kind": "string"
+              },
+              "optional": false,
+              "doc": ""
+            },
+            {
+              "name": "passwordHash",
+              "type": {
+                "kind": "bytes"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "union",
+            "branches": [
+              {
+                "kind": "null"
+              },
+              {
+                "kind": "string"
+              }
+            ]
+          }
+        },
+        {
+          "name": "ping",
+          "doc": "Round trip.",
+          "params": [],
+          "returns": {
+            "kind": "void"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "build",
+          "doc": "An optional property.\n@deprecated Read version.",
+          "type": {
+            "kind": "number"
+          },
+          "optional": true,
+          "deprecated": "Read version."
+        },
+        {
+          "name": "version",
+          "doc": "A property, read by pipelining.",
+          "type": {
+            "kind": "string"
+          },
+          "optional": false
+        }
+      ]
+    },
+    "LegacyNotes": {
+      "doc": "@deprecated Kept for clients from before accounts.",
+      "direction": "server",
+      "methods": [
+        {
+          "name": "list",
+          "doc": "@deprecated",
+          "params": [],
+          "returns": {
+            "kind": "array",
+            "element": {
+              "kind": "ref",
+              "name": "Note"
+            }
+          },
+          "deprecated": ""
+        },
+        {
+          "name": "release",
+          "doc": "A handle the server returned, passed back, so one that travels both ways.",
+          "params": [
+            {
+              "name": "handle",
+              "type": {
+                "kind": "stub",
+                "service": "{}"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          }
+        },
+        {
+          "name": "watch",
+          "doc": "A function whose parameter is a capability the server implements.",
+          "params": [
+            {
+              "name": "callback",
+              "type": {
+                "kind": "function",
+                "params": [
+                  {
+                    "name": "cursor",
+                    "type": {
+                      "kind": "stub",
+                      "service": "Cursor"
+                    },
+                    "optional": false
+                  }
+                ],
+                "returns": {
+                  "kind": "void"
+                }
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "stub",
+            "service": "{}"
+          }
+        }
+      ],
+      "deprecated": "Kept for clients from before accounts."
+    },
+    "Notebook": {
+      "doc": "A capability reached by a hop.",
+      "direction": "server",
+      "methods": [
+        {
+          "name": "connect",
+          "doc": "An `any` tail.",
+          "params": [],
+          "returns": {
+            "kind": "stub"
+          }
+        },
+        {
+          "name": "file",
+          "doc": "An object and an object union.\n@mutates",
+          "params": [
+            {
+              "name": "note",
+              "type": {
+                "kind": "ref",
+                "name": "Note"
+              },
+              "optional": false,
+              "doc": ""
+            },
+            {
+              "name": "destination",
+              "type": {
+                "kind": "ref",
+                "name": "Destination"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          },
+          "mutates": true
+        },
+        {
+          "name": "lock",
+          "doc": "A handle.",
+          "params": [],
+          "returns": {
+            "kind": "stub",
+            "service": "{}"
+          }
+        },
+        {
+          "name": "move",
+          "doc": "Named unions joined with `undefined`, as an optional parameter and in a result: still by name.",
+          "params": [
+            {
+              "name": "destination",
+              "type": {
+                "kind": "ref",
+                "name": "Destination"
+              },
+              "optional": true,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "union",
+            "branches": [
+              {
+                "kind": "ref",
+                "name": "Mood"
+              },
+              {
+                "kind": "undefined"
+              }
+            ]
+          }
+        },
+        {
+          "name": "outline",
+          "doc": "A recursive named result.",
+          "params": [],
+          "returns": {
+            "kind": "ref",
+            "name": "Outline"
+          }
+        },
+        {
+          "name": "subscribe",
+          "doc": "A callback interface.",
+          "params": [
+            {
+              "name": "subscriber",
+              "type": {
+                "kind": "stub",
+                "service": "NotesSubscriber"
+              },
+              "optional": false,
+              "doc": ""
+            },
+            {
+              "name": "since",
+              "type": {
+                "kind": "date"
+              },
+              "optional": true,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "stub",
+            "service": "{}"
+          }
+        },
+        {
+          "name": "upload",
+          "doc": "Bytes, and an optional boolean.",
+          "params": [
+            {
+              "name": "content",
+              "type": {
+                "kind": "bytes"
+              },
+              "optional": false,
+              "doc": ""
+            },
+            {
+              "name": "pinned",
+              "type": {
+                "kind": "boolean"
+              },
+              "optional": true,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          }
+        },
+        {
+          "name": "watchTitle",
+          "doc": "A bare-function callback.",
+          "params": [
+            {
+              "name": "callback",
+              "type": {
+                "kind": "function",
+                "params": [
+                  {
+                    "name": "title",
+                    "type": {
+                      "kind": "string"
+                    },
+                    "optional": false
+                  }
+                ],
+                "returns": {
+                  "kind": "void"
+                }
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "stub",
+            "service": "{}"
+          }
+        }
+      ]
+    },
+    "NotesSubscriber": {
+      "doc": "Implemented by the client, as upstream's subscribers.",
+      "direction": "client",
+      "methods": [
+        {
+          "name": "added",
+          "doc": "A note was added.",
+          "params": [
+            {
+              "name": "note",
+              "type": {
+                "kind": "ref",
+                "name": "Note"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          }
+        },
+        {
+          "name": "edited",
+          "doc": "A parameter of a client-implemented method: a capability the server implements.",
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "number"
+              },
+              "optional": false,
+              "doc": ""
+            },
+            {
+              "name": "cursor",
+              "type": {
+                "kind": "stub",
+                "service": "Cursor"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          }
+        },
+        {
+          "name": "ready",
+          "doc": "",
+          "params": [],
+          "returns": {
+            "kind": "void"
+          }
+        },
+        {
+          "name": "removed",
+          "doc": "",
+          "params": [
+            {
+              "name": "id",
+              "type": {
+                "kind": "number"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          }
+        }
+      ]
+    },
+    "{}": {
+      "doc": "",
+      "direction": "both",
+      "methods": []
+    }
+  },
+  "shapes": {
+    "Destination": {
+      "kind": "union",
+      "branches": [
+        {
+          "kind": "object",
+          "properties": {
+            "kind": {
+              "kind": "literal",
+              "value": "folder"
+            },
+            "path": {
+              "kind": "string"
+            }
+          }
+        },
+        {
+          "kind": "object",
+          "properties": {
+            "kind": {
+              "kind": "literal",
+              "value": "inbox"
+            }
+          }
+        }
+      ]
+    },
+    "Mood": {
+      "kind": "union",
+      "branches": [
+        {
+          "kind": "literal",
+          "value": "busy"
+        },
+        {
+          "kind": "literal",
+          "value": "calm"
+        }
+      ]
+    },
+    "Note": {
+      "kind": "object",
+      "properties": {
+        "body": {
+          "kind": "bytes"
+        },
+        "created": {
+          "kind": "date"
+        },
+        "id": {
+          "kind": "number"
+        },
+        "size": {
+          "kind": "bigint"
+        },
+        "tags": {
+          "kind": "union",
+          "branches": [
+            {
+              "kind": "array",
+              "element": {
+                "kind": "string"
+              }
+            },
+            {
+              "kind": "undefined"
+            }
+          ]
+        },
+        "title": {
+          "kind": "string"
+        }
+      }
+    },
+    "Outline": {
+      "kind": "object",
+      "properties": {
+        "children": {
+          "kind": "array",
+          "element": {
+            "kind": "ref",
+            "name": "Outline"
+          }
+        },
+        "title": {
+          "kind": "string"
+        }
+      }
+    }
+  }
+}

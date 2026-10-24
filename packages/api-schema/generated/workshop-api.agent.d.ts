@@ -1,0 +1,3089 @@
+// Generated from packages/workshop-shared/src/api.ts by packages/api-schema/scripts/generate.ts -- do not edit.
+// The Workshop API as an agent holding an AuthenticatedApi stub sees it, without the credential methods.
+// Change api.ts and run `pnpm api-schema:generate`.
+
+/** Top-level API exposed to the user after they have authenticated. */
+export interface AuthenticatedApi {
+  /**
+   * Add a blueprint to the user's library by reference, caching the current public metadata
+   * snapshot for list rendering.
+   */
+  addBlueprintToLibrary(blueprintId: Awaitable<string>): Promise<void>;
+  /**
+   * Adds a new model to the user's configured set. The ID must not name a model the user already
+   * added; use `updateModel()` to replace one.
+   *
+   * `copySecretsFrom` names a hand-added model (see `getModelConfig()`) whose stored secrets fill
+   * in the `null` secrets of `config`, which is how a model is cloned without the client ever
+   * holding the secrets. The rules of `updateModel()` for keeping a secret apply to copying one.
+   * Without it, `config` must contain no `null` secrets. With it, `profile.id` must also not name
+   * a model provided by the deployment's AI Gateway configuration.
+   *
+   * Throws on a deployment whose users may not add their own models (see
+   * `AiGatewayInfo.userModelsEnabled`), as `updateModel()` does.
+   */
+  addModel(profile: Awaitable<AiChatAuthorInfo>, config: Awaitable<RedactedAiModelConfig>, copySecretsFrom?: Awaitable<string>): Promise<void>;
+  /**
+   * Whether the current user is a deployment admin. Used by the client to decide whether to show
+   * the admin UI.
+   */
+  amIAdmin(): Promise<boolean>;
+  /**
+   * Stage a two-minute, single-use device-session transfer for a native app. The state is an
+   * opaque 16–512 character URL-safe value and the key is an uncompressed P-256 public key encoded
+   * as unpadded base64url. The encrypted credential remains server-side until the browser POSTs
+   * the returned ticket to `/api/device-session/callback`, which redirects to the fixed, claimed
+   * HTTPS app link. Repeating a live state reissues its ticket and invalidates the previous one.
+   */
+  beginDeviceSessionHandoff(publicKey: Awaitable<string>, state: Awaitable<string>): Promise<DeviceSessionHandoffStart>;
+  /**
+   * Redeem a finished connect flow's handoff. Called by the Workshop's own /connect/handoff page
+   * running in the popup, over the popup's session, which is the initiating user's (the SPA
+   * authenticates as any Workshop tab does: from the shared localStorage token, or from the
+   * Cloudflare Access identity in an Access deployment). `ticket` is the handoff ticket from the
+   * page's URL fragment; `nonce` must be the one connectAccount() / reconnectAccount() /
+   * ensureAccountResources() returned for the flow that produced the ticket, read from the popup's
+   * own sessionStorage. Both are single-use. Activates the pending connect / reconnect /
+   * ensure-resources grant, after which the account (or its restored credentials) appears via
+   * subscribeConnectedAccounts(). Throws with a user-facing message if the ticket or nonce is
+   * unknown to this user, already used, or expired, or they belong to different flows.
+   */
+  completeConnectHandoff(ticket: Awaitable<string>, nonce: Awaitable<string>): Promise<void>;
+  /** Mark the onboarding wizard as completed. */
+  completeOnboarding(): Promise<void>;
+  /**
+   * Connect this account to a specific account on a third-party service. Returns the URL which the
+   * Workshop opens as a disowned popup to complete the authorization, plus the flow's nonce (see
+   * `ConnectFlowStart`). When the flow finishes, the popup lands on the Workshop's own
+   * /connect/handoff page, which redeems the handoff with completeConnectHandoff() over its own
+   * session; only then is the account added to the list, which can be observed through
+   * subscribeConnectedAccounts().
+   *
+   * `resourceUrlPatterns`, if given, limits the connection to the authorization needed for those
+   * grantable resource types (those with `grantable`; see `SupportedResource`). If omitted,
+   * authorization for all of the vendor's resource types is requested. An empty array is meaningful
+   * and distinct from omitting it: it requests no resource authorization at all, which is how a
+   * caller connects an account for a non-resource purpose (e.g. billing) without asking the user to
+   * grant data access it will never use.
+   */
+  connectAccount(vendorId: Awaitable<string>, resourceUrlPatterns?: Awaitable<string[]>): Promise<ConnectFlowStart>;
+  /**
+   * Mint a single-use ticket for a user selected on behalf of a gatekeeper app,
+   * redeemable through that gatekeeper app's exchange capability (see
+   * GatekeeperUserSelectionExchangeImpl). Returns null if the selected user is
+   * this user or does not exist.
+   */
+  createGatekeeperUserSelection(vendorId: Awaitable<string>, selectedUserId: Awaitable<string>): Promise<null | GatekeeperUserSelection>;
+  /** Deletes a configured model. */
+  deleteModel(id: Awaitable<string>): Promise<void>;
+  /**
+   * Delete a blueprint that the user owns. Works even if the source gadget has been deleted
+   * (operates on User DO + KV directly).
+   */
+  deleteOrphanedBlueprint(blueprintId: Awaitable<string>): Promise<void>;
+  /** Remove a connected account, revoking the token. */
+  disconnectAccount(accountId: Awaitable<number>): Promise<void>;
+  /**
+   * Remove a shared gadget from the user's home page listing. Does NOT revoke the user's
+   * access -- if they open the gadget again (e.g., via link), it reappears on their home page.
+   */
+  dismissSharedGadget(gadgetId: Awaitable<string>): Promise<void>;
+  /**
+   * Ensure the authorization for the listed grantable resource types (by `urlPattern`) is granted
+   * on a connected account, expanding if needed. Returns a flow to open as a disowned popup (as for
+   * connectAccount()) to authorize them, or null if nothing was needed. Completion is redeemed via
+   * completeConnectHandoff(); the updated grant is then observable via subscribeConnectedAccounts().
+   * Returning null also re-reads the account's description, so a list of granted resource types
+   * that was out of date is corrected and observable the same way.
+   */
+  ensureAccountResources(accountId: Awaitable<number>, resourceUrlPatterns: Awaitable<string[]>): Promise<null | ConnectFlowStart>;
+  /**
+   * Returns a capability for managing deployment-wide admin settings, or null when the caller is not
+   * an admin. The access check happens once here, so the returned stub's methods need no per-call
+   * checks. (Authentication config — sign-in providers, password login — is intentionally not
+   * managed here; it stays env-var driven.)
+   */
+  getAdminApi(): Promise<null | AdminApi>;
+  /**
+   * Get AI configuration info, including whether AI Gateway mode is active and which providers
+   * are available. The frontend uses this to adjust the model management UI.
+   */
+  getAiConfig(): Promise<AiGatewayInfo>;
+  /**
+   * Fetch a user's avatar image by user ID. Returns null if no avatar has been set.
+   * Accepts any user ID so that other users' avatars can be displayed (e.g. in chat).
+   */
+  getAvatar(userId: Awaitable<string>): Promise<Uint8Array | null>;
+  /** Get the user's current free-tier usage and connected-account balance. */
+  getCloudflareUsage(): Promise<CloudflareUsageInfo>;
+  /**
+   * Get the app frame (self-contained iframe HTML + the gatekeeper's `ui` capability) for the given
+   * gatekeeper id, or null if there is no such UI-providing gatekeeper. The Workshop hosts the HTML
+   * in a sandboxed iframe and exposes `ui` to it over a MessagePort RPC session.
+   */
+  getGatekeeperApp(id: Awaitable<string>): Promise<null | GatekeeperUiFrame>;
+  /**
+   * Gets the profile and configuration of a model the user added by hand, i.e. not one provided
+   * by the deployment's AI Gateway configuration, with its secrets withheld.
+   */
+  getModelConfig(id: Awaitable<string>): Promise<{
+    config: RedactedAiModelConfig;
+    profile: AiChatAuthorInfo;
+  }>;
+  /** Return a blueprint created by the current user, or null if it is not owned by this user. */
+  getOwnBlueprint(blueprintId: Awaitable<string>): Promise<null | BlueprintUserSummary>;
+  /**
+   * Get the user's preferred model, chosen during onboarding. Returns null if the user has not
+   * set a preference (or explicitly chose "No agent"). The preference may name a model that is
+   * no longer offered (see setPreferredModel).
+   */
+  getPreferredModel(): Promise<null | string>;
+  /** Get the quick model setting. */
+  getQuickModel(): Promise<null | string>;
+  /** Resolve UI feature flags for the authenticated user. */
+  getUiFeatureFlags(): Promise<UiFeatureFlags>;
+  /**
+   * Whether this account has a password set. False for accounts created via an OAuth provider, in
+   * which case the change-password UI should be hidden.
+   */
+  hasPasswordLogin(): Promise<boolean>;
+  /**
+   * Import a `.gadget` archive from another Workshop instance. The imported blueprint is stored
+   * as a local blueprint owned by the current user.
+   */
+  importBlueprint(archive: Awaitable<ReadableStream<Uint8Array>>): Promise<string>;
+  /**
+   * Returns info about whether the blueprint is in the user's library.
+   * Returns null if not in library, or { uploaded } if it is.
+   */
+  isBlueprintInLibrary(blueprintId: Awaitable<string>): Promise<null | {
+    uploaded: boolean;
+  }>;
+  /** Returns whether the blueprint is pinned by the current user. */
+  isBlueprintPinned(blueprintId: Awaitable<string>): Promise<boolean>;
+  /** Returns true if the user has completed the onboarding wizard. */
+  isOnboardingCompleted(): Promise<boolean>;
+  /**
+   * List the auto-provisioning ("ambient") gatekeepers the user can opt into right now: those set to
+   * 'optional' by the admin that the user hasn't added yet. Rendered as an "Available" section on the
+   * Connectors page. ('enabled' ones are already provisioned; 'disabled' ones aren't offered.) Returns
+   * the same shape as listGatekeeperVendors (with no resources) so the connect UI handles both
+   * identically, routing on `description.autoProvisionsAccount`.
+   */
+  listAddableGatekeepers(): Promise<GatekeeperVendorInfo[]>;
+  /**
+   * List the Cloudflare accounts the connected grant can access. Used to prompt account selection
+   * when the user has more than one. Returns an empty array if not connected. Connecting Cloudflare
+   * is done via the Cloudflare gatekeeper (connectAccount("cloudflare")) or by signing in with it.
+   */
+  listCloudflareAccounts(): Promise<CloudflareAccountOption[]>;
+  /**
+   * List the deployment-wide featured blueprints. This is served from a KV snapshot rather
+   * than directly from the AdminSettings durable object.
+   */
+  listFeaturedBlueprints(): Promise<BlueprintPublicInfo[]>;
+  /**
+   * List metadata about all the user's Gadgets. Used to display the front-page listing.
+   *
+   * Provisional gadgets are hidden.
+   *
+   * TODO: Pagination, sort options.
+   */
+  listGadgets(): Promise<GadgetMetadataWithTimestamps[]>;
+  /**
+   * List the gatekeepers that expose a full-page management UI (VendorDescription.providesUi) and are
+   * available to this user. The Workshop renders a nav entry + page per entry. Independent of whether
+   * the gatekeeper is a singleton.
+   */
+  listGatekeeperApps(): Promise<GatekeeperAppInfo[]>;
+  /** List all third-party services that this account can connect to. */
+  listGatekeeperVendors(filter?: Awaitable<GatekeeperVendorFilter>): Promise<GatekeeperVendorInfo[]>;
+  /**
+   * List the blueprints currently in the user's library. This includes uploaded `.gadget`
+   * archives (stored locally) and blueprints saved by reference from other publishers.
+   */
+  listLibraryBlueprints(): Promise<BlueprintLibrarySummary[]>;
+  /**
+   * List the user's configured AI models of one kind, by default the language models, which can
+   * chat.
+   *
+   * Note that the list returned here could be different from a particular gadget's Overseer,
+   * especially if the gadget is owned by someone else.
+   */
+  listModels(kind?: Awaitable<ModelKind>): Promise<AiChatAuthorInfo[]>;
+  /**
+   * The deployment's standard output formats, in the order they should be offered -- what fills a
+   * "New Document / New Slides / ..." menu. Empty when the deployment promotes none.
+   *
+   * These are ordinary blueprints an admin has promoted.
+   */
+  listOutputFormats(): Promise<OutputFormatOffer[]>;
+  /**
+   * List the outputs of all the user's workspaces. Used to display the Outputs page, which lets
+   * the user find things they made without remembering which workspace they made them in.
+   *
+   * Served from an index in the user's own account which each workspace pushes to; a workspace
+   * shared with the user contributes its outputs from the first time the user opens it (matching
+   * when it appears in listGadgets()), and stops updating them if their access is revoked.
+   * Provisional gadgets (still awaiting acceptance of a chat's changes) are never included.
+   *
+   * TODO: Pagination, sort options.
+   */
+  listOutputs(): Promise<ListOutputsResult>;
+  /**
+   * List all blueprints created by the current user (from User DO). Useful for an audit
+   * view in Settings.
+   */
+  listOwnBlueprints(): Promise<BlueprintUserSummary[]>;
+  /**
+   * Create a new workspace. It will start out titled "Untitled Workspace".
+   *
+   * Note: A gadget is considered "provisional" until it has some sort of activity, such as a
+   *   chat message or code edit. Provisional gadgets do not appear on the home page and will be
+   *   automatically deleted after some time. Note in particular that calling
+   *   new*Gatekeeper() will not clear the provisional bit (as long as the gatekeeper isn't bound
+   *   into a gadget), so provisional gadgets are useful to allow the user to write an initial
+   *   chat message without explicitly creating a new gadget.
+   *
+   * TODO(multi-gadget): This should be renamed to newWorkspace().
+   */
+  newGadget(): Pipelined<Overseer>;
+  /**
+   * Create a new gadget from a blueprint. Reads the blueprint from KV, downloads code from
+   * R2, creates a new Overseer DO, initializes it with the blueprint's code, and creates
+   * gatekeepers from the provided binding assignments.
+   *
+   * Every required binding in the blueprint must have a corresponding entry in `bindings`,
+   * keyed by binding name. Throws if any are missing or if accountId/modelId are invalid.
+   *
+   * The returned Overseer can be used immediately (pipelining-friendly).
+   */
+  newGadgetFromBlueprint(blueprintId: Awaitable<string>, bindings: Awaitable<{
+    [key: string]: BlueprintBindingAssignment;
+  }>): Pipelined<Overseer>;
+  /**
+   * Open an existing gadget.
+   *
+   * If `shareKey` is provided, the server redeems it before opening, adding the caller as a
+   * collaborator. If the key is invalid or expired, the call throws an exception. If the gadget has
+   * `ownerInvitesOnly` set (see `GadgetMetadata`), a caller the owner has not added directly
+   * is refused with a `shareLinksDisabled` coded exception. This design
+   * allows share-key redemption and gadget opening in a single round trip, and further calls
+   * can be pipelined on the returned Overseer.
+   *
+   * To allow for pipelining, this throws an exception if the gadget doesn't exist. Expected
+   * missing and authorization failures carry a code from `OPEN_GADGET_ERROR_CODES`.
+   *
+   * `configureObservers` is invoked only when the opening user is a non-owner who must choose
+   * connected accounts for one or more gatekeeper bindings before they can observe the gadget (see
+   * ObserverConfigCallback). It is never called for the owner or an already-configured observer,
+   * so the common-case open is still a single pipelined round trip.
+   *
+   * TODO(multi-gadget): This should be renamed to openWorkspace().
+   */
+  openGadget(id: Awaitable<string>, shareKey?: Awaitable<string>, configureObservers?: ObserverConfigCallback): Pipelined<Overseer>;
+  /**
+   * Opt into an ambient gatekeeper: mint its connected account for this user (no OAuth flow). Only
+   * works while the vendor's mode is 'optional' (or 'enabled') and the user has no account yet; the
+   * new account then appears via subscribeConnectedAccounts(). Throws otherwise.
+   */
+  provisionAmbientAccount(vendorId: Awaitable<string>): Promise<void>;
+  /**
+   * Re-authenticate a connected account whose credentials have expired (or may be about to
+   * expire). Returns a flow to open as a disowned popup (as for connectAccount()). Once the OAuth
+   * flow completes and the popup's /connect/handoff page redeems the handoff via
+   * completeConnectHandoff(), the account is updated and subscribers are notified with
+   * credentialsValid: true.
+   */
+  reconnectAccount(accountId: Awaitable<number>): Promise<ConnectFlowStart>;
+  /**
+   * Connect the native app's one-time central device registration to this authenticated user. Each
+   * registered device gets push; a device that registers again replaces its own subscription. The
+   * deployment never receives an APNs device token or Cloudflare account token.
+   */
+  registerNotificationDevice(deviceRegistrationId: Awaitable<string>): Promise<void>;
+  /**
+   * Remove a blueprint from the user's library. If the library entry was uploaded by the
+   * current user, this also deletes the backing blueprint content from storage.
+   */
+  removeBlueprintFromLibrary(blueprintId: Awaitable<string>): Promise<void>;
+  /**
+   * Find other users of this deployment by a case-insensitive substring of
+   * their display name or id, for inviting collaborators. Excludes the caller
+   * and every user named by `excludeIds`. Returns at most 10 records, earliest
+   * substring match first.
+   *
+   * Rejects a `query` longer than 1000 characters or containing a line break,
+   * and more than 1000 distinct ids to exclude, the caller's own included.
+   *
+   * Returns no records while the admin has user search turned off
+   * (`ServerConfig.userSearchEnabled`); inviting by exact username/email via
+   * `Overseer.addCollaborator()` still works then.
+   */
+  searchUsers(query: Awaitable<string>, excludeIds: Awaitable<string[]>): Promise<UserDirectoryRecord[]>;
+  /**
+   * Select which Cloudflare account to bill. Persists the choice. Throws if the account isn't
+   * accessible.
+   */
+  selectCloudflareAccount(accountId: Awaitable<string>): Promise<void>;
+  /**
+   * Upload a user avatar image. The data should be a compressed image (JPEG/PNG), ideally under
+   * 50 KB. Pass null to remove the avatar.
+   */
+  setAvatar(data: Awaitable<Uint8Array | null>): Promise<void>;
+  /**
+   * Pin a blueprint for quick reuse on the home page. Pinning a public blueprint that isn't
+   * already yours or in your library saves it to your library first.
+   */
+  setBlueprintPinned(blueprintId: Awaitable<string>, pinned: Awaitable<boolean>): Promise<void>;
+  /**
+   * Set the email address used on git commits the user authors, or clear it with null to fall
+   * back to one derived from their user ID. Rejects an address `validateCommitEmail` refuses.
+   */
+  setOwnCommitEmail(email: Awaitable<null | string>): Promise<void>;
+  /** Set the user's own display name, seen in chats, etc. */
+  setOwnDisplayName(name: Awaitable<string>): Promise<void>;
+  /**
+   * Set the user's preferred model. Pass null to indicate "No agent". Any model that resolves is
+   * accepted, including one hidden from pickers, but a new external conversation uses the
+   * preference only while it is offered, and otherwise the first offered model.
+   */
+  setPreferredModel(id: Awaitable<null | string>): Promise<void>;
+  /**
+   * Set the model to use for simple quick tasks, like generating chat titles. Set null to
+   * disable quick model use (e.g. chats will be titled "New Chat").
+   */
+  setQuickModel(id: Awaitable<null | string>): Promise<void>;
+  /**
+   * Mute a workspace in the user's list, so its finished tasks notify no tab or device, or unmute
+   * it with null. Permission requests still come through.
+   */
+  setWorkspaceNotificationMute(workspaceId: Awaitable<string>, mute: Awaitable<null | NotificationMute>): Promise<void>;
+  /** Pin or unpin this workspace in the user's list. */
+  setWorkspacePinned(workspaceId: Awaitable<string>, pinned: Awaitable<boolean>): Promise<void>;
+  /**
+   * Get the UI in which the approver of a creation of the type `resourceUrlPattern` configures it
+   * in their connected account `accountId` (see SupportedResource.creationConfigurator). The
+   * frame's collectResourceUrl() gives CreationApproval.configuration.
+   */
+  startCreationConfigurator(accountId: Awaitable<number>, resourceUrlPattern: Awaitable<string>): Promise<GatekeeperUiFrame>;
+  /**
+   * Get the UI used to choose a specific resource from a connected account.
+   *
+   * `accountId` is the user's connected account that provides this resource.
+   * `resourceUrlPattern` is the `urlPattern` associated with the supported resource.
+   */
+  startResourceConfigurator(accountId: Awaitable<number>, resourceUrlPattern: Awaitable<string>): Promise<GatekeeperUiFrame>;
+  /**
+   * Subscribe to the list of third-party accounts connected to the user's account.
+   *
+   * Dispose the returned stub to cancel the subscription.
+   *
+   * This is subscription-based because the flow to connect a new account completes in a separate
+   * window. When it completes, we want the list of accounts in the Workshop UI to update
+   * immediately, to give the user feedback that the account is now connected.
+   */
+  subscribeConnectedAccounts(subscriber: ConnectedAccountsSubscriber, filter?: Awaitable<ConnectedAccountsFilter>): Pipelined<Empty>;
+  /**
+   * Subscribe while this client can visibly present notifications. Dispose the returned handle
+   * when the page becomes hidden so the backend can promptly fall back to mobile push.
+   */
+  subscribeToNotifications(subscriber: NotificationSubscriber): Pipelined<Empty>;
+  /**
+   * Replaces the configuration of a model the user added by hand. `profile.id` names the model,
+   * and `config.provider` and `config.model` must match the stored values.
+   *
+   * A `null` secret keeps the stored value; for a header, that of the stored header with exactly
+   * the same name. Secrets may be kept only while `config.provider` and `config.apiUrl` are
+   * unchanged, since otherwise the client could direct the stored secrets to a server it controls.
+   * Passing back what `getModelConfig()` returned therefore changes nothing.
+   */
+  updateModel(profile: Awaitable<AiChatAuthorInfo>, config: Awaitable<RedactedAiModelConfig>): Promise<void>;
+  /** Get profile info for the user who is logged in. */
+  whoami(): Promise<AiChatAuthorInfo>;
+  /** Disposes of this stub, releasing the capability it holds. */
+  [Symbol.dispose](): void;
+}
+
+/** Interface implemented by the client to receive action-log upserts. */
+export interface ActionsSubscriber {
+  entry(record: ActionLogEntry): Awaitable<void>;
+  /**
+   * @deprecated Fires after the subscription has caught up to the current time. However, this is
+   * only a useful signal when a subscription is being used to enumerate past actions using a
+   * distant-past `startAfter`. This is not the correct way to use `subscribeToActions()`; use
+   * `listActions()` instead.
+   */
+  ready(): Awaitable<void>;
+}
+
+/**
+ * Capability for managing deployment-wide admin settings, obtained via
+ * AuthenticatedApi.getAdminApi() (which is null for non-admins). The access check happens when the
+ * capability is minted, so these methods don't re-check. Covers branding, agent instructions,
+ * which gatekeeper connectors/resources are offered, and the models an AI Gateway deployment
+ * provides — NOT authentication config (that's env-var driven). Each setter throws on invalid
+ * input.
+ */
+export interface AdminApi {
+  /**
+   * Add a model to the ones the deployment provides, listed after its provider's suggested models
+   * and 'enabled' by default. Throws if the model is malformed (an empty or over-long ID or name,
+   * an over-long `behavesLike`, a token limit that isn't a positive integer), if the gateway does
+   * not serve and enable its provider (see AdminSettingsView.gatewayModels), if a suggested or
+   * added model already has its ID, if the model runtime does not know its `behavesLike` under
+   * its provider, or if what its context window reserves for the response (its output limit, or
+   * WORKERS_AI_OUTPUT_LIMIT for a Cloudflare model that gives none) leaves a prompt no room.
+   */
+  addGatewayModel(model: Awaitable<GatewayModel>): Promise<void>;
+  /**
+   * Ask now for the newest release, whether or not automatic update checks are on, and return
+   * the status that check produces. Null unless the deploy flow installed this deployment. Throws
+   * when the check fails.
+   */
+  checkForUpdates(): Promise<null | DeploymentUpdateStatus>;
+  /** Read all admin-managed settings for the admin UI in one call. */
+  getSettings(): Promise<AdminSettingsView>;
+  /**
+   * Whether a newer release is available. Null unless the deploy flow installed this deployment.
+   * While automatic update checks are off (see setUpdateChecksEnabled) it asks no one and reports
+   * the last check made for the running release, if any.
+   */
+  getUpdateStatus(): Promise<null | DeploymentUpdateStatus>;
+  /**
+   * Returns whether the blueprint is featured on the deployment. Returns null when the blueprint
+   * can't be featured (e.g. it isn't a listable blueprint).
+   */
+  isBlueprintFeatured(blueprintId: Awaitable<string>): Promise<boolean | null>;
+  /**
+   * Offer a blueprint as a standard format, appended last in menu order. Throws if the blueprint
+   * doesn't exist. Promoting one that already is leaves its curation and menu position alone, so
+   * that retrying a promotion whose mirror write failed repairs it rather than being refused.
+   */
+  promoteFormat(blueprintId: Awaitable<string>): Promise<void>;
+  /**
+   * Stop offering a blueprint as a standard format, and forget the deployment's curation of it.
+   * The blueprint itself is untouched.
+   *
+   * Refused for a bundled blueprint (see `AdminFormat.bundled`), which the deployment installed
+   * and will reinstall: `enabled: false` withdraws it without discarding the admin's overrides,
+   * hint and menu position.
+   */
+  removeFormat(blueprintId: Awaitable<string>): Promise<void>;
+  /**
+   * Remove a model added with addGatewayModel(), along with its mode and settings. Throws if no
+   * added model has this ID; a suggested model can't be removed, only disabled.
+   *
+   * Removing frees the ID rather than reserving it. The chats, spawners and preferences that name
+   * the model resolve again if a model is later added under the same ID. A gadget model binding
+   * minted for it carries its own provider and model, so while users may add their own models
+   * (see setUserModelsEnabled) it runs once the model is removed, even if the model was disabled.
+   * To shut a model off, disable it instead.
+   */
+  removeGatewayModel(modelId: Awaitable<string>): Promise<void>;
+  /**
+   * Set the deployment accent color (hex, e.g. "#3b82f6"). Pass "" to reset to the default theme.
+   * Rejects an invalid hex color.
+   */
+  setAccentColor(color: Awaitable<string>): Promise<void>;
+  /**
+   * Set the top-bar notice (centered text in the top navigation bar). Pass "" to clear. Rejects over
+   * MAX_ANNOUNCEMENT_LENGTH.
+   */
+  setAnnouncement(text: Awaitable<string>): Promise<void>;
+  /**
+   * Set the full-width banner. Pass an empty text to hide it. Rejects over MAX_ANNOUNCEMENT_LENGTH or
+   * an invalid color.
+   */
+  setBanner(text: Awaitable<string>, color: Awaitable<BannerColor>): Promise<void>;
+  /** Mark or unmark a blueprint as featured on the deployment. */
+  setBlueprintFeatured(blueprintId: Awaitable<string>, featured: Awaitable<boolean>): Promise<void>;
+  /**
+   * Set the reasoning level of every gateway model that has none of its own, or null for each
+   * model's built-in behaviour. It never applies to a model a user added.
+   */
+  setDefaultReasoning(level: Awaitable<"high" | "low" | "max" | "medium" | "minimal" | "off" | "xhigh" | null>): Promise<void>;
+  /** Reorder the menu. `blueprintIds` must be a permutation of the currently promoted ids. */
+  setFormatOrder(blueprintIds: Awaitable<string[]>): Promise<void>;
+  /**
+   * Set a gatekeeper's availability. For an auto-provisioning ("ambient") gatekeeper, `mode` is the
+   * full three-state (disabled / optional / enabled); for an ordinary gatekeeper only 'disabled' /
+   * 'enabled' are valid ('optional' is rejected). Soft enforcement: it doesn't revoke a capability a
+   * gadget already holds, and 'disabled' leaves an ambient account's data dormant rather than deleting
+   * it.
+   */
+  setGatekeeperMode(vendorId: Awaitable<string>, mode: Awaitable<"disabled" | "enabled" | "optional">): Promise<void>;
+  /**
+   * Set how the deployment offers one of its gateway models (see GatewayModelMode). Setting the
+   * model's default mode forgets the override, so the model follows its default from then on.
+   * Throws if `modelId` is not one of the deployment's gateway models.
+   *
+   * 'disabled' revokes nothing that is stored: the chats, spawners, preferences and gadget model
+   * bindings that name the model keep naming it, and stop resolving for as long as it is disabled.
+   */
+  setGatewayModelMode(modelId: Awaitable<string>, mode: Awaitable<"disabled" | "enabled" | "hidden">): Promise<void>;
+  /**
+   * Replace what the deployment sets for one of its gateway models (see GatewayModelSettings):
+   * a field left out of `settings` is unset, and an empty `settings` unsets everything. Throws
+   * if `modelId` is not one of the deployment's gateway models, or if the compaction budget is
+   * not a positive whole number within the model's maximum (see
+   * AdminModelView.maxCompactionInputBudget).
+   *
+   * The reasoning level may be one the model lacks, since it is fitted to the model when a
+   * request is made (see ReasoningLevel).
+   */
+  setGatewayModelSettings(modelId: Awaitable<string>, settings: Awaitable<GatewayModelSettings>): Promise<void>;
+  /**
+   * Turn a provider on or off beside the ones CF_AI_GATEWAY_PROVIDERS lists. On is the same as
+   * listing it there: its suggested models appear in their default modes, models can be added
+   * under it, and so can users' own while those are allowed. Throws for a provider the gateway
+   * does not serve, and when turning off one that the variable lists: it is a floor, which an
+   * admin adds to.
+   *
+   * Off takes the provider's models out of the deployment's and deletes nothing: their modes and
+   * settings, and the models added under the provider, are kept for when it is back on. It stops
+   * neither a model a user already added under the provider nor a gadget model binding already
+   * minted for one of its models, which setUserModelsEnabled(false) does.
+   */
+  setGatewayProviderEnabled(provider: Awaitable<AiModelProvider>, enabled: Awaitable<boolean>): Promise<void>;
+  /** Replace the agent system-prompt instructions. Pass "" to clear. Rejects over MAX_INSTANCE_INSTRUCTIONS_LENGTH. */
+  setInstanceInstructions(text: Awaitable<string>): Promise<void>;
+  /**
+   * Set whether the admin UI may suggest models from models.dev while an admin adds one. Off by
+   * default.
+   *
+   * The admin's browser reads the setting and, with it on, downloads models.dev's public model
+   * list while an admin adds a model, to fill in the add-model form. It changes nothing the server
+   * does: the server never contacts models.dev, and addGatewayModel() validates a suggested model
+   * like any other.
+   */
+  setModelsDevSuggestions(enabled: Awaitable<boolean>): Promise<void>;
+  /**
+   * Enable or disable a single gatekeeper resource type, keyed by vendor id + resource urlPattern.
+   * Soft enforcement: disabling hides the resource from the connect UI, the resource picker, and the
+   * agent; it doesn't revoke a capability a gadget already holds.
+   */
+  setResourceEnabled(vendorId: Awaitable<string>, urlPattern: Awaitable<string>, enabled: Awaitable<boolean>): Promise<void>;
+  /** Enable or disable new account signups. Existing users can still log in while signups are closed. */
+  setSignupsEnabled(enabled: Awaitable<boolean>): Promise<void>;
+  /**
+   * Set the deployment logo from browser-rasterized PNG bytes and return its canonical public
+   * image, or undefined after reset. Pass null to restore the default Cloudflare OS mark. The
+   * caller must supply decodable PNG data; the server enforces its header, size, and dimensions.
+   */
+  setSiteLogo(data: Awaitable<Uint8Array | null>): Promise<AvatarImage | undefined>;
+  /**
+   * Set the site name shown next to the top-bar logo. Pass "" to reset to DEFAULT_SITE_NAME.
+   * Rejects over MAX_SITE_NAME_LENGTH.
+   */
+  setSiteName(name: Awaitable<string>): Promise<void>;
+  /**
+   * Set how many minutes a successful update check is relied on before the deployment asks again,
+   * DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES by default. A failed check is retried after the interval
+   * or 15 minutes, whichever is shorter. The deployment asks only while an admin is using it
+   * (getUpdateStatus() makes the check when one is due), never on a schedule of its own. Throws
+   * unless `minutes` is a whole number from 1 to MAX_UPDATE_CHECK_INTERVAL_MINUTES.
+   */
+  setUpdateCheckIntervalMinutes(minutes: Awaitable<number>): Promise<void>;
+  /**
+   * Set whether the deployment checks for updates by itself. On by default. When off,
+   * getUpdateStatus() makes no outbound call and admins are never notified; checkForUpdates()
+   * still asks.
+   */
+  setUpdateChecksEnabled(enabled: Awaitable<boolean>): Promise<void>;
+  /**
+   * Set how many hours a newer release must have been available before admins are notified of
+   * it, DEFAULT_UPDATE_MINIMUM_AGE_HOURS by default. It delays the notice only: an update always
+   * installs the newest release. 0 notifies as soon as a check reports an update. Throws unless
+   * `hours` is a whole number from 0 to MAX_UPDATE_HOURS.
+   */
+  setUpdateMinimumAgeHours(hours: Awaitable<number>): Promise<void>;
+  /**
+   * Set how many hours a dismissed update notice stays hidden in the browser that dismissed it,
+   * DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS by default. 0 means a closed notice comes back on the next
+   * visit to Home. Throws unless `hours` is a whole number from 0 to MAX_UPDATE_HOURS.
+   */
+  setUpdateNoticeSnoozeHours(hours: Awaitable<number>): Promise<void>;
+  /**
+   * Set whether users may add models of their own, which run through the deployment's gateway
+   * like the models it provides. On by default.
+   *
+   * Off makes the deployment's models the only ones: a user can't add or edit a model, and the
+   * models users added are neither listed nor resolved. A gadget model binding stops at its next
+   * call unless a gateway model has its provider and model. Nothing stored is deleted, so the
+   * models users added work again once this is back on.
+   */
+  setUserModelsEnabled(enabled: Awaitable<boolean>): Promise<void>;
+  /**
+   * Enable or disable user directory search. The directory itself is maintained
+   * either way, and this switch just controls user access.
+   */
+  setUserSearchEnabled(enabled: Awaitable<boolean>): Promise<void>;
+  /**
+   * Send one request to a gateway model the way a chat turn would, through the gateway, as the
+   * admin, and report what happened within 30 seconds. The request asks for the reasoning level
+   * in effect for the model (its own, else the deployment's default, else what BuiltInReasoning
+   * describes), with the capabilities stated for it and the flags of the model it behaves like,
+   * under a response cap of at most 2,048 tokens. A level that a model takes as a token budget
+   * comes out of that cap, so it is cut to the room the cap leaves and is smaller than a chat's.
+   * It works on a model in any mode, hidden and disabled included, and changes nothing. Throws
+   * outside AI Gateway mode and for an ID that names no gateway model; a request that fails is a
+   * result (see GatewayModelTest).
+   *
+   * A pass says that the model answered that one request. It costs more than
+   * testGatewayProvider(), whose quick request is capped at a few tokens.
+   */
+  testGatewayModel(modelId: Awaitable<string>): Promise<GatewayModelTest>;
+  /**
+   * Send one small request to the first of a provider's SUGGESTED_MODELS through the gateway, as
+   * the admin, and report what happened within 15 seconds: the Workshop can't see which provider
+   * keys the gateway holds. It works on a provider that is off, and changes nothing. Throws for
+   * a provider the gateway does not serve; a request that fails is a result (see
+   * GatewayModelTest).
+   *
+   * A pass says that one model answered once. A 401 or 403 does not tell a provider key the
+   * gateway lacks from a CF_AI_GATEWAY_API_TOKEN that may not run models. The request is a
+   * quick one that takes none of a model's settings: testGatewayModel() sends a model the
+   * request its chats would.
+   */
+  testGatewayProvider(provider: Awaitable<AiModelProvider>): Promise<GatewayModelTest>;
+  /**
+   * Test a model as described, without adding it. It sends one request the way a chat turn would
+   * with no reasoning level set (so asking for what BuiltInReasoning describes, whatever the
+   * deployment's default level is), and one at each reasoning level the model would list once
+   * added (see AdminModelView.reasoningLevels). The requests are sent together, through the
+   * gateway, as the admin, each under testGatewayModel()'s response cap and time limit. The
+   * results come with the request that set no level first, then the levels from least to most.
+   * It stores nothing. Throws outside AI Gateway mode and for a model addGatewayModel() would
+   * refuse, for the same reason; a request that fails is a result (see GatewayModelLevelTest).
+   *
+   * A pass says that the model answered that one request. A model that lists every level is sent
+   * eight requests, each of which may use the whole response cap.
+   */
+  testNewGatewayModel(model: Awaitable<GatewayModel>): Promise<GatewayModelLevelTest[]>;
+  /**
+   * Update one promoted format. Only the provided fields change. `agentHint: ""` clears the hint;
+   * an `overrides` field set to null reverts that field to the blueprint's own declaration.
+   */
+  updateFormat(blueprintId: Awaitable<string>, patch: Awaitable<AdminFormatPatch>): Promise<void>;
+  /** Disposes of this stub, releasing the capability it holds. */
+  [Symbol.dispose](): void;
+}
+
+/**
+ * Interface implemented by the client to receive callback notifications whenever there is new
+ * chat activity. Use Overseer.subscribeToChat() to register a subscriber.
+ */
+export interface AiChatSubscriber {
+  /**
+   * Delivers one accepted change of a chat's change stream: a human submitCodeChange(), an agent
+   * tool edit (broadcast when the tool call completes, superseding the provisional editPreview*
+   * stream of its in-progress content -- see AiChatStreamEvent). Changes must be applied in
+   * revision order within a generation; a gap means events were lost and the client should
+   * rebuild from fresh metadata and history. On a generation switch, first finish the old
+   * generation's remaining changes -- complete once seen through
+   * ChatCodeBase.prior.finalRevision -- before re-basing onto the new stream (see
+   * ChatCodeBase.prior), and ignore stray events only for generations fully left behind.
+   * Subscriptions replay each chat's not-yet-materialized changes, so newly-joined clients can
+   * reconstruct uncommitted state without a separate fetch; changes a `changes` message has since
+   * absorbed are dropped via the message's `watermark` instead (there is no separate "cleared"
+   * event).
+   *
+   * Changes produced by submitCodeChange() echo the submitter's identity as `submission` (the
+   * CodeChangeSubmission's clientId and seq), so the submitting client recognizes its own change
+   * -- in the live feed and in subscribe-replay alike, without depending on ack/broadcast
+   * ordering -- and drops its in-flight buffer instead of re-applying. The echo is informational
+   * only; server-authored changes (agent edits) omit it.
+   */
+  changeApplied(chatId: number, generation: number, revision: number, author: AiChatAuthorInfo, change: CodeChange, submission?: {
+    clientId: string;
+    seq: number;
+  }): Awaitable<void>;
+  /** Indicates the chat thread was deleted. */
+  deleted(chatId: number): Awaitable<void>;
+  /** Adds a message to the chat. */
+  message(msg: AiChatMessage): Awaitable<void>;
+  /** Metadata for the given chat thread has changed, or a new chat thread was created. */
+  metadata(chat: AiChatMetadata): Awaitable<void>;
+  /** Delivers one provisional streaming event. Clients may ignore event types they don't support. */
+  stream(chatId: number, event: AiChatStreamEvent): Awaitable<void>;
+  /**
+   * Sent exactly once, at the start of a subscription, before any other callbacks. Carries an
+   * opaque value identifying the current server (Overseer DO) instance. If a resubscribing client
+   * sees a different value than on its previous subscription, the DO has fully restarted since
+   * then, meaning any in-flight provisional stream content was lost and will be re-streamed from
+   * scratch; the client should discard its provisional streaming state. An unchanged value (a
+   * plain network reconnect to the same live instance) means provisional state should be kept.
+   */
+  streamGeneration(generation: number): Awaitable<void>;
+}
+
+/** Subscription callback for AuthenticatedApi.subscribeConnectedAccounts(). */
+export interface ConnectedAccountsSubscriber {
+  /**
+   * If `credentialsValid` is false, the account's credentials are known to be expired, and the
+   * UI should call reconnectAccount() to fix this if the user tries to select this account.
+   */
+  add(id: number, description: AccountDescription, vendor: VendorDescription, supportedResources: SupportedResource[], credentialsValid: boolean, vendorId: string): Awaitable<void>;
+  /** Called after add() has been called for all accounts known so far. */
+  ready(): Awaitable<void>;
+  remove(id: number): Awaitable<void>;
+}
+
+/**
+ * Interface implemented by the client to receive callback notifications about console logs written
+ * by the gadget.
+ */
+export interface ConsoleLogSubscriber {
+  /**
+   * Deliver a batch of logs. Often just one log is delivered at a time, but for efficiency they
+   * may be batched.
+   *
+   * If `chatId` is non-null, then the logs were generated while running the version of the gadget
+   * code including the changes in the given chat. This can be used to associate the logs with
+   * an ongoing agent session and report them to that session.
+   */
+  event(chatId: null | number, logs: ConsoleLogEvent[]): Awaitable<void>;
+}
+
+export interface Empty {
+  /** Disposes of this stub, releasing the capability it holds. */
+  [Symbol.dispose](): void;
+}
+
+/**
+ * Capability representing one gadget workpiece within a workspace. Obtained from
+ * Overseer.createGadget() or Overseer.getGadget(). Workspace-level concerns (code sync, chats,
+ * sharing, actions, blueprint listing) stay on Overseer; this covers the per-gadget surface.
+ */
+export interface GadgetClient {
+  /**
+   * Propose merging the current release of a blueprint into this gadget: to take an update from
+   * the blueprint the gadget follows, or to switch it to another. The proposal is recorded in a
+   * new chat (see AiChatMessageBody.blueprintMerges), where it is previewed and then accepted
+   * or discarded like any other proposed change. Nothing about the gadget changes until it is
+   * accepted, including which blueprint it follows.
+   *
+   * The merge is three-way, against the newest version the gadget and the release have in
+   * common. If they share no history that version has to be guessed, which is only done if
+   * `allowUnrelated` is set (see ApplyBlueprintResult). Unless the release is already in the
+   * gadget's history, the merge is written as a commit, which the new chat is pinned at.
+   *
+   * A proposal of kind "merge" starts an agent turn in the new chat, to resolve what conflicted
+   * and to check that the two sets of changes work together. `modelId` is the model that runs
+   * it: as for Overseer.newChat(), one of the IDs in the result of `listModels()`, or null for
+   * no agent. No other proposal starts a turn.
+   *
+   * Throws if the blueprint does not exist, or if the gadget is still pending in a chat and so
+   * has no committed code to merge into. Throws too, creating no chat, if the gadget and the
+   * blueprint both changed a file and a version of it, or the merged text, is too large for a
+   * file to hold; the error names the file. Making it smaller, or undoing the gadget's own
+   * changes to it, lets the blueprint be applied.
+   */
+  applyBlueprint(blueprintId: Awaitable<string>, options: Awaitable<{
+    allowUnrelated?: boolean;
+    modelId: null | string;
+  }>): Promise<ApplyBlueprintResult>;
+  /**
+   * Bind the given workpiece (a gatekeeper) into this gadget's `env` under `name`. Throws if the
+   * name is invalid (see validateBindingName()), reserved, or already bound in this gadget
+   * (including bound provisionally by another chat).
+   *
+   * If `chatId` is provided, the binding is treated like an edit made in the given chat -- it is
+   * proposed, but someone needs to click "accept changes" (call `mergeChanges()`) to make it
+   * final. Until then it exists only in the given chat.
+   */
+  bind(name: Awaitable<string>, target: Awaitable<number>, chatId?: Awaitable<number>): Promise<void>;
+  /**
+   * Like bind(), but if the target isn't already bound in this gadget, choose a name based on the
+   * resource's own suggestion (deduplicated against this gadget's existing binding names). If the
+   * target is already bound, does nothing. Either way, returns the target's binding name.
+   */
+  bindWithSuggestedName(target: Awaitable<number>, chatId?: Awaitable<number>): Promise<string>;
+  connectToGadget(chatId?: Awaitable<number>): Promise<UntypedStub>;
+  /**
+   * Create a new blueprint from this gadget's current committed code.
+   * `title` defaults to the gadget's title if omitted.
+   *
+   * The blueprint is always owned by the workspace owner, regardless of who calls this method.
+   *
+   * Steps: generate ID, snapshot code, collect binding metadata, store locally, propagate
+   * to User DO + KV + R2. Maintenance of existing blueprints stays on Overseer (see
+   * Overseer.updateBlueprint() etc.).
+   */
+  createBlueprint(title?: Awaitable<string>, description?: Awaitable<string>, screenshot?: Awaitable<BlueprintScreenshotUpload>): Promise<BlueprintGadgetSummary>;
+  /**
+   * Exports the format with the given ID. If `chatId` is specified, the export
+   * uses changes currently proposed in that chat.
+   */
+  export(id: Awaitable<string>, chatId?: Awaitable<number>): Promise<ReadableStream<Uint8Array>>;
+  /** Get the gatekeeper bound under the given name, or null if there is no such binding. */
+  getBinding(name: Awaitable<string>): Promise<null | GatekeeperClient>;
+  /**
+   * Get the blueprint annotation for the named binding, if one has been set. Annotations live on
+   * the binding edge, not on the target gatekeeper (see BlueprintBindingAnnotation).
+   */
+  getBlueprintAnnotation(name: Awaitable<string>): Promise<null | BlueprintBindingAnnotation>;
+  /**
+   * Lists the Gadget's supported file export formats. If `chatId` is specified,
+   * the formats are read from the code currently proposed in that chat.
+   */
+  getExportFormats(chatId?: Awaitable<number>): Promise<GadgetExportFormat[]>;
+  /** Get the workpiece's ID, unique among all workpieces in the workspace (of any type). */
+  getId(): Promise<number>;
+  /**
+   * Human-readable title, for display. For a gadget this is its user-renamable title; for a
+   * gatekeeper it is the connected resource's title.
+   */
+  getTitle(): Promise<string>;
+  /**
+   * Get the gadget's deployed UI code, to be run inside an iframe sandbox.
+   *
+   * Returns null if the gadget has no deployed UI code (e.g. if it's new, or if it's just an AI
+   * agent with no code).
+   */
+  getUiBundle(chatId?: Awaitable<number>): Promise<null | UiBundle>;
+  /**
+   * List this gadget's bindings.
+   *
+   * If `chatId` is specified, bindings which have been proposed but not yet accepted in the given
+   * chat thread will be included.
+   */
+  listBindings(chatId?: Awaitable<number>): Promise<GadgetBindingInfo[]>;
+  /**
+   * Permanently remove this workpiece from the workspace.
+   *
+   * For a gadget, this deletes its registry entry (including its binding map) and hooks and
+   * clears its files; gatekeepers it bound survive, possibly no longer bound by any gadget. For
+   * a gatekeeper, this destroys the connection itself -- distinct from merely unbinding it from
+   * one gadget (GadgetClient.unbind()).
+   */
+  remove(): Promise<void>;
+  /**
+   * Rename a binding while preserving its target and blueprint annotation. Throws if `oldName`
+   * does not exist or `newName` is reserved or already bound in this gadget.
+   */
+  renameBinding(oldName: Awaitable<string>, newName: Awaitable<string>): Promise<void>;
+  /** Set the blueprint annotation for the named binding. */
+  setBlueprintAnnotation(name: Awaitable<string>, annotation: Awaitable<BlueprintBindingAnnotation>): Promise<void>;
+  /**
+   * Change the workpiece's title.
+   *
+   * (Note gatekeeper titles are initially based on the title of the underlying resource, but this
+   * method does not change the remote resource, only the display name used locally within this
+   * workspace.)
+   */
+  setTitle(title: Awaitable<string>): Promise<void>;
+  /**
+   * Remove the binding with the given name. This only removes the edge from this gadget -- the
+   * target gatekeeper itself survives (possibly no longer bound by any gadget); use
+   * GatekeeperClient.remove() to destroy the connection itself.
+   */
+  unbind(name: Awaitable<string>): Promise<void>;
+  /** Disposes of this stub, releasing the capability it holds. */
+  [Symbol.dispose](): void;
+}
+
+/**
+ * Capability representing one gatekeeper (connection) workpiece. Note that binding-edge
+ * operations -- binding names and blueprint annotations -- live on GadgetClient, since a
+ * gatekeeper may be bound by several gadgets under different names.
+ */
+export interface GatekeeperClient {
+  /** Get the resource description, including the schema of its RPC interface. */
+  describe(): Promise<ResourceDescription>;
+  /** Get the creation spec describing how this gatekeeper was originally created. */
+  getCreationSpec(): Promise<GatekeeperCreationSpec>;
+  /** Get the workpiece's ID, unique among all workpieces in the workspace (of any type). */
+  getId(): Promise<number>;
+  /**
+   * Human-readable title, for display. For a gadget this is its user-renamable title; for a
+   * gatekeeper it is the connected resource's title.
+   */
+  getTitle(): Promise<string>;
+  /**
+   * Open a direct session to this gatekeeper. Particularly useful when using the AI agent to talk
+   * to the resource directly.
+   */
+  openSession(): Promise<UntypedStub>;
+  /**
+   * Permanently remove this workpiece from the workspace.
+   *
+   * For a gadget, this deletes its registry entry (including its binding map) and hooks and
+   * clears its files; gatekeepers it bound survive, possibly no longer bound by any gadget. For
+   * a gatekeeper, this destroys the connection itself -- distinct from merely unbinding it from
+   * one gadget (GadgetClient.unbind()).
+   */
+  remove(): Promise<void>;
+  /**
+   * Change the workpiece's title.
+   *
+   * (Note gatekeeper titles are initially based on the title of the underlying resource, but this
+   * method does not change the remote resource, only the display name used locally within this
+   * workspace.)
+   */
+  setTitle(title: Awaitable<string>): Promise<void>;
+  /** Disposes of this stub, releasing the capability it holds. */
+  [Symbol.dispose](): void;
+}
+
+/** Callback used by `AuthenticatedApi.subscribeToNotifications()`. */
+export interface NotificationSubscriber {
+  /**
+   * Present a notification to the active user. Resolve only once the user has seen it, or is
+   * already viewing its chat; if no subscriber resolves promptly, the backend falls back to mobile
+   * push delivery.
+   */
+  notify(notification: UserNotification): Awaitable<void>;
+}
+
+/**
+ * Provided by the client when opening a gadget. Invoked by the overseer ONLY if the opening user
+ * must choose connected accounts for one or more gatekeeper bindings before they can observe the
+ * gadget. In the common case (owner, or an already-configured observer) this is never called and
+ * open() resolves without an extra round trip. The overseer does not resolve open() until this
+ * returns. If the user cannot or will not provide the needed accounts, the callback should reject,
+ * and the overseer denies the open.
+ *
+ * `configure()` may be called a second time within one open, for the subset of bindings that failed
+ * verification (each carrying an ObserverBindingNeed.failure). This lets the user repair a binding --
+ * typically by re-authenticating the account whose credentials expired -- without leaving the flow.
+ * The overseer bounds the number of such re-prompts, so a client that resubmits an account that
+ * keeps failing eventually gets a denial rather than an endless loop.
+ */
+export interface ObserverConfigCallback {
+  configure(needs: ObserverBindingNeed[]): Awaitable<ObserverAccountChoice[]>;
+}
+
+/**
+ * Interface to a workspace's Overseer, used to display the Gadget Workshop shell UI around that
+ * workspace. Workspace-level concerns live here: the gadget registry, committed code (git
+ * commits in the workspace's shared object store, each gadget's head recorded in
+ * WorkpieceSummary.commitId), per-chat uncommitted changes (a revisioned stream of code changes per
+ * chat, applied on top of commits; see ChatCodeBase), chats, actions/hooks, sharing, and
+ * blueprint listing. Per-gadget operations live on the GadgetClient sub-capability (see
+ * createGadget()/getGadget()).
+ */
+export interface Overseer {
+  /**
+   * Accept an agent's pending connection request (a "connectionRequest" chat message). The caller
+   * is responsible for having actually created the gatekeeper (via newGatekeeper()) and passes the
+   * resulting gatekeeper id. The gatekeeper is surfaced to the agent as a named binding in the
+   * chat's env, under the name the agent chose when it made the request (see
+   * `connectionRequest.bindingName`). This marks the request accepted, updates the inline card,
+   * and resumes the agent so it can use the resource.
+   */
+  acceptConnectionRequest(requestId: Awaitable<string>, result: Awaitable<{
+    gatekeeperId: number;
+  }>): Promise<void>;
+  /**
+   * Add a collaborator by username/email. The caller must be the owner or an existing
+   * collaborator. `role` is the access level to grant; the caller may not grant a role higher
+   * than their own effective role. Returns the new collaborator's info, or null if the username
+   * doesn't correspond to an existing account.
+   */
+  addCollaborator(username: Awaitable<string>, role: Awaitable<CollaboratorRole>, note?: Awaitable<string>): Promise<null | CollaboratorInfo>;
+  /**
+   * Approve an action that is currently in the "pending" state. The action will be performed on
+   * approval. Approving a creation (see ActionLogEntry.creation) requires `creation`: how the
+   * approver chose to make it.
+   */
+  approveAction(id: Awaitable<number>, creation?: Awaitable<CreationApproval>): Promise<void>;
+  /**
+   * Create a new gadget workpiece in this workspace. `title` is required -- gadgets have no
+   * default title. The new gadget starts with no files and no bindings.
+   *
+   * If `chatId` is provided, the creation is provisional to that chat, exactly like code edits
+   * made with a chat open: a `changes` message records it in the chat log (see
+   * `createdGadgets`), and the gadget remains pending (see WorkpieceSummary.chatId) until
+   * the user accepts the chat's changes through that message (merging deletes the pending marker;
+   * reverting deletes the gadget). Without `chatId` the gadget is created permanently, with an
+   * empty initial commit as its head (see WorkpieceSummary.commitId).
+   *
+   * `bindingName` is the name under which the gadget appears in chat envs and the workspace
+   * default binding list (see validateBindingName()). When absent, the server chooses one from
+   * the title (via the quick model when configured, else a generic fallback). Gadget binding
+   * names are unique within the workspace: throws if the name is already taken by another
+   * gadget -- including one still pending in another chat (retry after that chat's changes are
+   * accepted or reverted).
+   */
+  createGadget(title: Awaitable<string>, chatId?: Awaitable<number>, bindingName?: Awaitable<string>): Pipelined<GadgetClient>;
+  /**
+   * Create a share link. The server generates a random 128-bit key, stores its HMAC-SHA-256
+   * hash, and returns the raw key (hex-encoded) along with the id of the link it created. The
+   * caller constructs a URL from the key. The raw key is never stored server-side. `role` is the
+   * access level granted to anyone who redeems the link; the caller may not grant a role higher
+   * than their own effective role.
+   */
+  createShareLink(role: Awaitable<CollaboratorRole>, note?: Awaitable<string>): Promise<{
+    key: string;
+    linkId: string;
+  }>;
+  /** Delete a blueprint. Cleans up KV, R2, User DO, and local storage. */
+  deleteBlueprint(blueprintId: Awaitable<string>): Promise<void>;
+  /** Delete a chat thread. */
+  deleteChat(chatId: Awaitable<number>): Promise<void>;
+  /** Permanently delete the hook. Implies disabling it. */
+  deleteHook(id: Awaitable<number>): Promise<void>;
+  /**
+   * Instruct the workspace to delete itself, removing it from the User's workspace list and
+   * deleting all data. Further method calls will fail.
+   *
+   * TODO: Implement undelete, maybe using PITR...
+   */
+  deleteSelf(): Promise<void>;
+  /**
+   * Deny an agent's pending connection request. Updates the inline card. Does NOT resume the agent:
+   * the turn stays ended so the user can decide what to tell the agent to do instead.
+   */
+  denyConnectionRequest(requestId: Awaitable<string>): Promise<void>;
+  /** Disable the hook with the given ID. Callbacks will stop. */
+  disableHook(id: Awaitable<number>): Promise<void>;
+  /**
+   * Discard the chat's changes not yet materialized into a durable `changes` message, without
+   * affecting any messages. Pins those changes established (and no materialized message declared)
+   * are removed with them, and ChatCodeBase.generation is bumped destructively, exactly as with
+   * revertChanges(): clients' content contains the erased changes, so they must rebuild. A late
+   * retry of an erased change is still recognized rather than applied as new (see
+   * submitCodeChange()).
+   */
+  discardChatDraftChanges(chatId: Awaitable<number>): Promise<void>;
+  /** Enable the hook with the given ID. Callbacks will begin flowing. */
+  enableHook(id: Awaitable<number>): Promise<void>;
+  /**
+   * Materialize the chat's changes not yet covered by a durable `changes` message into one, without
+   * merging anything into the mainline. (Materialization also happens automatically: at agent
+   * turn start, at accept, and when the un-materialized changes grow past a size/age threshold. It
+   * invalidates nothing -- the message's `watermark` tells clients which changes it absorbed.)
+   */
+  finalizeChatDraft(chatId: Awaitable<number>): Promise<void>;
+  /**
+   * Fetch the bytes of a committed chat attachment over RPC. The canonical metadata is already
+   * present in the message's ChatAttachmentRef. Images are inlined there, so this is normally used
+   * only to download non-image attachments on demand.
+   */
+  getChatAttachmentContent(chatId: Awaitable<number>, id: Awaitable<string>): Promise<Uint8Array>;
+  /**
+   * Fetch one page of messages in the chat history for the given chat thread. If `beforeSequence`
+   * is absent, fetch the current tail. Otherwise, fetch messages before that sequence.
+   *
+   * Note that if you plan to subscribe to updates, you should initiate the subscription first,
+   * before fetching history. Otherwise, you could theoretically miss a message that is sent
+   * between when you fetch the history and when you subscribe.
+   *
+   * In typical usage, the client subscribes to all chat activity upfront, but only fetches
+   * histories if and when the user opens a specific.
+   */
+  getChatHistory(chatId: Awaitable<number>, beforeSequence?: Awaitable<number>): Promise<AiChatHistoryPage>;
+  /** Fetch a single message from a chat thread. */
+  getChatMessage(chatId: Awaitable<number>, sequence: Awaitable<number>): Promise<AiChatMessage | undefined>;
+  /**
+   * Walk the commit graph from `fromCommit` (that commit first, then its ancestry), returning up
+   * to `depth` commits' metadata -- all reachable commits when `depth` is omitted. Traversal
+   * order for merge commits follows git log's default (reverse chronological). Like
+   * listTree(), results are immutable and cacheable.
+   */
+  getCommitLog(fromCommit: Awaitable<string>, depth?: Awaitable<number>): Promise<CommitInfo[]>;
+  /**
+   * Get the gadget with the given workpiece ID. To allow for pipelining, this throws an
+   * exception if there is no such gadget.
+   */
+  getGadget(id: Awaitable<number>): Pipelined<GadgetClient>;
+  /** Get an existing gatekeeper by workpiece ID. Throws if the ID doesn't exist. */
+  getGatekeeperById(id: Awaitable<number>): Pipelined<GatekeeperClient>;
+  /** Get metadata describing this workspace. */
+  getMetadata(): Promise<GadgetMetadata>;
+  /**
+   * Fetch one page of action history, newest first by id (creation order). "all" (the default)
+   * pages every record and a record type pages that type — pending records included, each at its
+   * creation position; `filter: "pending"` pages only the currently-pending records — the query
+   * half of the query-for-state/subscribe-for-deltas contract (see subscribeToActions()).
+   *
+   * Page size is a server constant. Pages are full until the last: absence of `nextBeforeId`
+   * means the history is exhausted; otherwise it is the id of the last returned entry, to pass
+   * as `beforeId` for the next-older page.
+   */
+  listActions(options?: Awaitable<{
+    beforeId?: number;
+    filter?: ActionHistoryFilter;
+  }>): Promise<ActionHistoryPage>;
+  /** List the currently-enabled auto-approval rules. */
+  listAutoApprovedActionKinds(): Promise<{
+    actionKind: ActionKind;
+    gatekeeperId: number;
+  }[]>;
+  /** List blueprints created from this workspace's gadgets. */
+  listBlueprints(): Promise<BlueprintGadgetSummary[]>;
+  /**
+   * List the paths whose entry differs between two commits' trees: added, removed, or changed
+   * in content or mode, sorted by code unit (as `Array.prototype.sort()` sorts). Only files are
+   * listed, never a directory: a symlink or submodule is listed as a file is, and a name that is
+   * a file in one tree and a directory in the other lists the file and the paths within the
+   * directory. The two commits may come in either order; the list is the same.
+   *
+   * Like listTree(), only tree objects are read, never blobs, and a subtree with the same id
+   * in both is not read at all, so the cost is proportional to what differs. The result is
+   * immutable and cacheable by the pair of commit IDs.
+   *
+   * This is how a client finds the files a merge changed: where a chat's pin has a `baseCommit`
+   * other than its `mergedCommit` (see ChatGadgetPinState), the files that differ between the
+   * two are changed in the chat even where none of the chat's code changes touch them.
+   */
+  listChangedPaths(fromCommit: Awaitable<string>, toCommit: Awaitable<string>): Promise<string[]>;
+  /** List past AI chats. */
+  listChats(): Promise<AiChatMetadata[]>;
+  /** List all collaborators. Available to owner and all collaborators. */
+  listCollaborators(): Promise<CollaboratorInfo[]>;
+  /**
+   * List information about bound hooks (which could wake up a gadget asynchronously).
+   *
+   * The list spans the whole workspace; each entry names the gadget it wakes (see
+   * BoundHookInfo.gadgetId), so a per-gadget view must filter on that.
+   */
+  listHooks(): Promise<BoundHookInfo[]>;
+  /**
+   * List available language models; decision models are left out. The first listed model should
+   * be the default, unless the user has chosen something else.
+   */
+  listModels(): Promise<AiChatAuthorInfo[]>;
+  /**
+   * List the connections a recipient with `role` must verify before opening this workspace, in
+   * the order the connections were created. Reports what sharing will cost the recipient; it
+   * grants nothing and mints no capability.
+   */
+  listObserverRequirements(role: Awaitable<CollaboratorRole>): Promise<ObserverBindingNeed[]>;
+  /**
+   * List the auto-approvable action kinds offered by gatekeepers bound in this workspace. Each
+   * entry identifies its connection and reports whether a matching auto-approval rule is enabled.
+   */
+  listPreApprovableActions(): Promise<PreApprovableAction[]>;
+  /** List active share links (for management UI). */
+  listShareLinks(): Promise<ShareLinkInfo[]>;
+  /**
+   * Lists slash commands available from Gatekeepers currently attached to this Gadget, including
+   * ambient ones.
+   */
+  listSlashCommands(): Promise<SlashCommandChoice[]>;
+  /**
+   * Read a commit's whole tree as nested TreeNodes: the root directory's entries, each
+   * directory carrying its own, in git tree order (byte order of names, a directory sorting as
+   * if its name had a trailing `/`). Only tree objects are read -- never blobs -- so the
+   * response is proportional to the commit's entry count. Commits are immutable, so responses
+   * are cacheable client-side by commit ID. Like readFilesAtCommit(), the read may pull missing
+   * trees through the gatekeeper that provided the commit.
+   *
+   * Together with readFilesAtCommit() this is how clients read committed code: a workpiece's
+   * tree at its head or accepted commit (outside any chat, or when the open chat has no pin for
+   * it), and the base content of a chat's pins (see ChatCodeBase), one file at a time as it is
+   * opened or edited.
+   */
+  listTree(commitId: Awaitable<string>): Promise<TreeNode[]>;
+  /**
+   * Indicates that the user has requested that the chat's proposed changes be merged into the
+   * mainline. Always merges *everything* the chat proposes -- changes not yet materialized into a
+   * `changes` message are swept in first, and there is no way to accept only a subset.
+   *
+   * Accepting is only ever a fast-forward: every gadget touched by the merged changes must have
+   * its chat pin's ChatGadgetPinState.mergedCommit equal to the gadget's current head commit.
+   * If mainline has advanced past any pin, nothing at all is merged and the call returns a
+   * "stale" outcome (an expected result, not an exception; see MergeChangesResult): call
+   * updateChatFromMainline(), resolve any conflicts, and retry. Where the pin's `baseCommit` is
+   * a merge commit not yet accepted, whose first parent is `mergedCommit`, the head moves
+   * through it: to the merge commit itself if the chat changed nothing since, else to a new
+   * commit on top of it.
+   *
+   * A chat has something to accept when it holds a pin, a gadget or binding edge pending in it,
+   * or a blueprint proposal that is neither merged nor reverted. Otherwise this is a no-op and
+   * records nothing.
+   *
+   * A successful merge closes the chat's current **epoch**: all merged content now lives in
+   * commits, so the chat's code base resets to empty (every pin is dropped, the change stream
+   * restarts at revision 0 under a new generation, and the merge message records
+   * `epochBoundary`). Subsequent edits re-pin lazily against the new heads. The generation bump
+   * is content-preserving: ChatCodeBase.prior describes the closed stream, and in-flight
+   * submissions rooted in it are transformed onto the new generation rather than discarded (see
+   * submitCodeChange()), so a client typing through someone's accept loses nothing.
+   *
+   * A blueprint release the chat proposes to merge into a gadget (see
+   * AiChatMessageBody.blueprintMerges) is accepted with the rest: the gadget's new head gains
+   * the release as a parent, unless its history already holds it, and the gadget follows that
+   * blueprint from then on.
+   */
+  mergeChanges(chatId: Awaitable<number>): Promise<MergeChangesResult>;
+  /**
+   * Create a new gatekeeper for an agent spawner binding. This allows the gadget to
+   * programmatically spawn AI agents to complete tasks.
+   */
+  newAgentSpawnerGatekeeper(config: Awaitable<AgentSpawnerConfig>): Pipelined<GatekeeperClient>;
+  /**
+   * Create a new gatekeeper for an AI model binding. The model can be any returned by
+   * `AuthenticatedApi.listModels()`. A language model's gatekeeper provides a
+   * `LanguageModelBinding`, a decision model's a `DecisionModelBinding`.
+   */
+  newAiModelGatekeeper(modelId: Awaitable<string>): Pipelined<GatekeeperClient>;
+  /**
+   * Starts a new chat with the given initial message or slash-command request. A slash command
+   * always creates a visible chat event, even when it does not produce a message for the agent.
+   * Slash-command requests cannot include capsules or attachments.
+   *
+   * `modelId` is one of the IDs in the result of `listModels()`, or null to inhibit AI response
+   * (useful when using chat to talk between humans).
+   *
+   * `formats` records where the message names one of the deployment's standard output formats, so
+   * the transcript can draw it as a chip. Display only -- what the agent reads is the noun, which
+   * is already in the text.
+   */
+  newChat(initialMessage: Awaitable<SlashCommandRequest | string>, modelId: Awaitable<null | string>, capsules?: Awaitable<CapsuleSpecifier[]>, attachments?: Awaitable<ChatAttachmentHandle[]>, formats?: Awaitable<MessageFormatRef[]>): Promise<number>;
+  /**
+   * Try to create a new gatekeeper for this URL.
+   *
+   * `accountId` is the user's connected account to use to access this resource. To determine an
+   * appropriate account, use `subscribeConnectedAccounts()` with a `filter` for this URL, then
+   * let the user choose one.
+   *
+   * The new gatekeeper is a workspace-level workpiece; it is not bound into any gadget's `env` by
+   * default. Use GadgetClient.bind() / bindWithSuggestedName() to expose it to a gadget.
+   */
+  newGatekeeper(accountId: Awaitable<number>, resourceUrl: Awaitable<string>): Promise<null | GatekeeperClient>;
+  /**
+   * Mint a fresh secret for an existing link so the user can copy a new URL without creating a
+   * whole new link. The old secrets remain valid, and revoking the link revokes them all together.
+   */
+  newShareLinkKey(linkId: Awaitable<string>): Promise<{
+    key: string;
+  }>;
+  /**
+   * Preview what would happen if a collaborator were removed. For a non-owner caller,
+   * if the target has edges from other sources that would survive, returns an empty array
+   * (the target would not actually be affected). Otherwise, returns the list of users whose
+   * access would change (lose access or be downgraded to a lower role) as a consequence, so the
+   * caller can present checkboxes for which to keep vs. remove.
+   */
+  previewRemoveCollaborator(profileId: Awaitable<string>): Promise<AffectedCollaborator[]>;
+  /**
+   * Preview what would happen if a share link were revoked. Returns the list of users whose access
+   * would change (lose access or be downgraded to a lower role) as a consequence, so the caller
+   * can present checkboxes for which to keep vs. remove.
+   */
+  previewRevokeShareLink(linkId: Awaitable<string>): Promise<AffectedCollaborator[]>;
+  /**
+   * Read the content of the named files at a commit. Returns one `[path, FileAtCommit]` entry
+   * per requested path, in request order (a list of pairs rather than a path-keyed object so
+   * that file names like `__proto__`, which RPC deserialization drops from object keys, survive
+   * in transit -- see CodeChange in `@gadgets/workshop-shared/code-change`). Blobs missing from
+   * the workspace's git store are pulled in one batch through the gatekeeper that provided the
+   * commit; a pull failure fails the whole call, since it is transient or actionable rather than
+   * a fact about any one file, whereas per-file conditions -- absent path, symlink, submodule,
+   * binary or oversized content -- are reported per entry (see FileAtCommit).
+   *
+   * At most MAX_READ_FILES_PER_CALL paths per call. The server stops decoding once the
+   * accumulated text exceeds READ_FILES_RESPONSE_BUDGET and omits the remaining paths from the
+   * result, so a missing entry means "not answered, ask again" -- never "absent", which is
+   * always stated explicitly. Responses are cacheable by (commit ID, path).
+   */
+  readFilesAtCommit(commitId: Awaitable<string>, paths: Awaitable<string[]>): Promise<[string, FileAtCommit][]>;
+  /**
+   * Reject an action that is in the "pending" state. This notifies the gatekeeper that it will not
+   * be approved in the future.
+   */
+  rejectAction(id: Awaitable<number>): Promise<void>;
+  /**
+   * Remove the auto-approval rule for `tag` on the given gatekeeper; matching actions then
+   * require manual approval again.
+   */
+  removeAutoApprovedActionKind(gatekeeperId: Awaitable<number>, tag: Awaitable<string>): Promise<void>;
+  /**
+   * Remove a collaborator (identified by profile.id).
+   *
+   * Owner can remove anyone. A non-owner collaborator can only remove their own edge(s)
+   * from the target. If the target still has edges from other sources, they keep access
+   * and the return is an empty array. If no edges remain, the target is fully removed.
+   *
+   * When a target is fully removed, `keepUsers` lists the profile.ids of users who would
+   * lose access transitively but should be retained. Their PermissionEdges through the
+   * removed user are replaced with new edges from the caller. Users reachable only through
+   * the removed user who are NOT in `keepUsers` are also removed.
+   *
+   * Returns the list of users whose access actually changed (removed or downgraded), including
+   * the primary target. An empty array means the caller's edge was removed but no one's effective
+   * access changed (the target retained their role through other edges).
+   */
+  removeCollaborator(profileId: Awaitable<string>, keepUsers: Awaitable<string[]>): Promise<AffectedCollaborator[]>;
+  /**
+   * Retry the agent on the given chat. This starts the agent without adding a new user message.
+   * The agent will re-process the existing chat history using the specified model.
+   *
+   * Throws if an agent is already running on the chat.
+   */
+  retryAgent(chatId: Awaitable<number>, modelId: Awaitable<string>): Promise<void>;
+  /**
+   * Retry publishing a blueprint whose `dirty` flag is set (meaning a previous propagation
+   * to User DO / KV / R2 failed).
+   */
+  retryBlueprintPublish(blueprintId: Awaitable<string>): Promise<void>;
+  /**
+   * Indicates that the user has requested that proposed changes starting from the given sequence
+   * number in the chat thread be reverted.
+   *
+   * Throws if the range covers a still-proposed mainline merge that records no `gadgets` (see
+   * AiChatMessageBody.mainlineMerge for why such a message cannot be erased), or if the range
+   * erases the chat's conversion boundary while keeping an earlier still-proposed batch (see
+   * AiChatMessageBody.conversionBoundary; a revert covering everything, `revertFrom` 0, always
+   * satisfies this).
+   *
+   * Each pin is settled from the log as it stands after the revert: its `baseCommit` is that of
+   * its last surviving declaration, and a pin with none is removed from ChatCodeBase. Its
+   * `mergedCommit` is put back to what the earliest update from mainline the revert covers
+   * records it was before (MainlineMergeGadget.baseCommit), and is otherwise left alone.
+   * Changes not yet materialized into a message are erased
+   * along with the reverted range. Erasing already-applied changes invalidates every client's local
+   * state -- content they may have transformed against is gone -- so ChatCodeBase.generation is
+   * bumped destructively: in-flight submitCodeChange() calls fail and clients rebuild instead of
+   * corrupting the chat.
+   */
+  revertChanges(chatId: Awaitable<number>, revertFrom: Awaitable<number>): Promise<void>;
+  /**
+   * Revoke a share link by its `linkId`, which revokes every secret ever minted for it. Users who
+   * gained access through the link may be transitively removed or downgraded. `keepUsers` lists
+   * profile.ids of users who should be retained at their prior role with fresh edges from the
+   * caller. Returns the list of users whose access actually changed (removed or downgraded).
+   */
+  revokeShareLink(linkId: Awaitable<string>, keepUsers: Awaitable<string[]>): Promise<AffectedCollaborator[]>;
+  /**
+   * Send a message to the chat from this client. Sending a message causes the LLM to start
+   * running if it isn't already.
+   * While it runs, plain text with no capsules, attachments or formats steers it, on the running
+   * turn's model whatever `modelId` is, even null: it waits in `AiChatMetadata.queuedSteers` until
+   * the agent reads it. Anything else, or anything sent after `stopAgent()`, throws until the
+   * agent finishes.
+   * If a slash command produces no message, only its visible invocation event is committed and the
+   * agent does not run.
+   * Slash-command requests cannot include capsules or attachments.
+   *
+   * `modelId` is one of the IDs in the result of `listModels()`, or null to inhibit AI response
+   * (useful when using chat to talk between humans).
+   */
+  sendChatMessage(chatId: Awaitable<number>, message: Awaitable<SlashCommandRequest | string>, modelId: Awaitable<null | string>, capsules?: Awaitable<CapsuleSpecifier[]>, attachments?: Awaitable<ChatAttachmentHandle[]>, formats?: Awaitable<MessageFormatRef[]>): Promise<void>;
+  /**
+   * Enable auto-approval of actions carrying the given `actionKind` (the
+   * ActionDescription.actionKind) on the gatekeeper identified by `gatekeeperId`. Future actions
+   * with that kind's tag whose author marked them `autoApprovable` are then applied automatically
+   * without manual approval, and any matching action(s) already pending are applied immediately.
+   *
+   * Auto-approval rules are workspace-wide per gatekeeper: approving an action kind approves it
+   * no matter which gadget invokes it.
+   *
+   * Once the workspace has read restricted data (`GadgetMetadata.containsRestrictedData`), rules
+   * are stored but never fire: every action pends for manual approval.
+   */
+  setAutoApprovedActionKind(gatekeeperId: Awaitable<number>, actionKind: Awaitable<ActionKind>): Promise<void>;
+  /**
+   * Update the title of a chat. Usually not needed as a title is generated automatically from
+   * the first message.
+   */
+  setChatTitle(chatId: Awaitable<number>, title: Awaitable<string>): Promise<void>;
+  /** Change the workspace title. */
+  setTitle(title: Awaitable<string>): Promise<void>;
+  /**
+   * Request that any ongoing LLM session in the given chat immediately stop.
+   *
+   * If an LLM is running, the session is canceled subscribers will receive a metadata update
+   * reflecting this before `stop()` returns.
+   *
+   * If no LLM is running, `stop()` does nothing and returns immediately.
+   *
+   * Stopping drops the chat's queued steers (see `AiChatMetadata.queuedSteers`), whoever sent them.
+   * The client that stops is expected to put them in its draft, so its user can still send them.
+   */
+  stopAgent(chatId: Awaitable<number>): Promise<void>;
+  /**
+   * Submit one code change on a chat's branch. This is the only way to edit code: committed code
+   * cannot be written directly -- gadget heads only advance when a chat's changes are accepted
+   * (see mergeChanges()).
+   *
+   * `submission.change` is expressed against the chat's content as of
+   * `(submission.generation, submission.revision)` -- that is, the submitter has applied every
+   * accepted change of that generation's stream up to and including that revision (see
+   * ChatCodeBase). The server transforms the change over any changes accepted since, validates it,
+   * appends it to the stream, and broadcasts it (AiChatSubscriber.changeApplied()); the returned
+   * `(generation, revision)` is where it landed.
+   *
+   * `submission.pins` must carry one declaration per *permanent* gadget the change touches that is
+   * not yet pinned in the chat, each naming the head commit the client's content derives from.
+   * The server checks that each declared base is the gadget's current head, or its first parent
+   * (tolerating a race with one concurrent merge), and establishes the pin atomically with the
+   * change. A declaration identical to the existing pin is accepted idempotently; one naming a
+   * different `baseCommit` (a race between two first editors) throws. Exception: a gadget still
+   * pending in this chat has no head commit to pin (see WorkpieceSummary.commitId), so its changes
+   * carry no declaration and build its content up from nothing (see ChatCodeBase). A worktree
+   * declaration is accepted iff its `baseCommit` is the worktree's accepted commit -- the
+   * content as of the chat's last accept, the analog of a gadget's head -- exactly, with no
+   * parent tolerance (only this chat's accept moves it, and that closes the generation).
+   *
+   * Retries: `submission.clientId` names the client's editing session and `submission.seq`
+   * numbers its submissions from 1. The server remembers each session's last accepted seq and
+   * where it landed -- independently of the changes themselves, so recognition survives
+   * materialization, epoch resets, and destructive generation bumps -- and answers a retry of
+   * that seq with the recorded result instead of applying it twice. A transport failure must
+   * therefore be retried with the *same* seq and an identical payload, never renumbered or
+   * re-composed (OT, unlike a CRDT, does not tolerate double-application); a same-seq
+   * submission whose content differs is a client bug and is rejected. A seq one past the last
+   * accepted (or 1 from a new session) is the next change; anything else is rejected -- discard
+   * local edits and rebuild under a fresh clientId. Only the last submission is remembered, so
+   * keep at most one in flight.
+   *
+   * While an agent turn is active, the call throws a retryable error: keep the queued change and
+   * resubmit after the turn ends. (The UI already locks editing during turns; this backstops
+   * races.)
+   *
+   * A submission still rooted in the *previous* generation, when that generation was closed by
+   * a merge (a content-preserving bump; see ChatCodeBase.generation), is transformed across the
+   * boundary and lands in the current generation, so typing straight through someone's accept
+   * is seamless. Such a submission's pin declarations are ignored (they describe pre-merge
+   * heads; the server derives the new pins itself), and it is rejected if it touches a gadget
+   * in ChatCodeBase.prior.discontinuousGadgets (the merge visibly changed that gadget's
+   * content) or a gadget that has since been re-pinned at a different base.
+   *
+   * Every other rejection means the client's local state is unusable: a generation ended by a
+   * destructive bump (revert, draft discard, turn abort), a revision older than the server's
+   * retained transform window, or an invalid change all mean the client must discard its local
+   * edits and rebuild from fresh metadata.
+   */
+  submitCodeChange(chatId: Awaitable<number>, submission: Awaitable<CodeChangeSubmission>): Promise<{
+    generation: number;
+    revision: number;
+  }>;
+  /**
+   * Subscribe to action adds/updates. Dispose the returned stub to unsubscribe.
+   *
+   * The subscription delivers live deltas only — nothing pre-existing is replayed. Query for
+   * state, subscribe for deltas: fetch the current pending set via
+   * listActions({filter: "pending"}) and resolved history via the other filters. As with
+   * subscribeToChat(), initiate the subscribe call before those reads — there is no need to
+   * await its return, only to start it first — so nothing can slip between the snapshot the
+   * pages reflect and the stream.
+   *
+   * The `startAfter` parameter is intended to be used when resubscribing after a disconnect:
+   * specify the time of the last action seen, in order to ensure no actions were missed during
+   * the disconnect. The bound is inclusive -- records last changed at exactly that time are
+   * re-delivered (entries are upserts) -- and the replay arrives in change-time order, not
+   * creation order. If not specified, the subscription starts from the current time.
+   *
+   * Do NOT use `startAfter` as a way to enumerate historical data. Use `listActions()` instead.
+   * To ensure no holes between a subscription and historical data, call `subscribeToActions()`
+   * immediately before `listActions()`, similar to `subscribeToChat()`.
+   */
+  subscribeToActions(subscriber: ActionsSubscriber, startAfter?: Awaitable<Date>): Pipelined<Empty>;
+  /**
+   * Subscribe to all new chat messages (across all threads).
+   *
+   * If `startAt` is given, it must be a date in the past. All messages starting from that date
+   * will be sent upfront. This is intended to allow resubscribing after being disconnected. If
+   * `startAt` is omitted, only new messages will be sent.
+   *
+   * Generally, a client should subscribe to chats immediately on loading the gadget editor. If
+   * the client needs to call any methods like `listChats()` to backfill content, it should make
+   * these calls after `subscribeToChat()`, so that there's no chance of missing a message. (It is
+   * not necessary to wait for `subscribeToChat()` to return -- only to initiate the call before
+   * other read calls.)
+   */
+  subscribeToChat(subscriber: AiChatSubscriber, startAfter?: Awaitable<Date>): Pipelined<Empty>;
+  /**
+   * Subscribe to the gadget worker's console logs. This allows the user to observe console logs
+   * being produced by the gadget.
+   *
+   * At present, logs are not stored, so the only way to see them is to be subscribed when they
+   * happen.
+   *
+   * To unsubscribe, dispose the returned stub.
+   */
+  subscribeToConsoleLogs(subscriber: ConsoleLogSubscriber): Pipelined<Empty>;
+  /**
+   * Get metadata describing this workspace and subscribe to changes.
+   *
+   * `callback` will be called once immediately with the current metadata, then again any time it
+   * changes.
+   *
+   * Disposing the returned `RpcStub` will cancel the subscription.
+   */
+  subscribeToMetadata(callback: (metadata: GadgetMetadata) => Awaitable<void>): Pipelined<Empty>;
+  /**
+   * Receive the current viewer roster, then incremental updates as viewers come and go.
+   * A viewer is present for the lifetime of the openGadget() session.
+   */
+  subscribeToPresence(subscriber: PresenceSubscriber): Pipelined<Empty>;
+  /**
+   * Subscribe to the workspace's workpiece list.
+   *
+   * The subscriber receives one entry() per existing workpiece, followed by ready(), then
+   * incremental entry()/removed() calls as workpieces are created, renamed, or deleted, and
+   * whenever a summary field changes (a gadget's head, a worktree's accepted or head commit).
+   * Gadgets and worktrees are delivered (see WorkpieceSummary for which subscriptions see
+   * worktrees).
+   *
+   * Disposing the returned `RpcStub` will cancel the subscription.
+   */
+  subscribeToWorkpieces(subscriber: WorkpiecesSubscriber): Pipelined<Empty>;
+  /**
+   * Update an existing blueprint. Any combination of metadata and code can be updated
+   * atomically in a single call with one propagation pass.
+   *
+   * - `title` / `description`: if provided, update the respective field.
+   * - `updateCode`: if true, release the source gadget's current committed code as the
+   *   blueprint's next version. If that code is what the blueprint's latest version already
+   *   holds, the version stays as it is.
+   * - `updateBindings`: if true, refresh the blueprint's connection annotations from
+   *   the source gadget's current bindings without changing the code snapshot.
+   *
+   * At least one option must be provided.
+   */
+  updateBlueprint(blueprintId: Awaitable<string>, options: Awaitable<{
+    description?: string;
+    screenshot?: null | BlueprintScreenshotUpload;
+    title?: string;
+    updateBindings?: boolean;
+    updateCode?: boolean;
+  }>): Promise<void>;
+  /**
+   * Merge mainline commits that landed after this chat's pins into the chat's uncommitted state.
+   *
+   * Only *pinned* gadgets participate: an unpinned gadget's code was never modified in this
+   * chat, so it tracks mainline head live and there is nothing to merge into. For each pinned
+   * gadget whose ChatGadgetPinState.mergedCommit is behind the gadget's current head, the server
+   * computes a 3-way text merge (base = the last merged commit, ours = the head, theirs = the
+   * chat's current files) and writes it as commits: the chat's files before the update, and the
+   * merge commit, whose parents are the head and that (see MainlineMergeGadget). The chat's pin
+   * for the gadget then re-roots at the merge commit (see ChatGadgetPinRecord), with the head as
+   * its `mergedCommit`. A gadget whose files in the chat are already in the head's history had
+   * nothing of its own to merge, and re-roots at the head itself. Conflicting hunks are left
+   * inline as 3-way conflict markers (`<<<<<<<`/`|||||||`/`=======`/`>>>>>>>`) for the user or
+   * their agent to clean up; the affected paths, each qualified by its gadget's binding name
+   * (`GADGET_NAME/path`), are returned in sorted order and also recorded on the message. An
+   * empty `conflictPaths` means every file merged cleanly (or there was nothing to merge).
+   *
+   * The update is recorded as a `changes` message carrying `mainlineMerge` and declaring the
+   * re-roots, with no `change`. It then ends the chat's change stream with a destructive bump
+   * of ChatCodeBase.generation, delivered after the message: clients rebuild their content from
+   * the log, re-rooted. Changes a client has submitted and not yet had acknowledged are lost.
+   *
+   * Throws, changing nothing, if both sides changed a file and a version of it, or the merged
+   * text, is too large for a file to hold; the error names the file. Making it smaller on
+   * either side, or undoing the chat's own changes to it, lets the update through.
+   *
+   * Once the chat is up to date (and mainline hasn't moved again), mergeChanges() succeeds as a
+   * plain fast-forward through the merge commit. The update can be reverted like any other
+   * proposed change, which puts the pins back as they were before it (see revertChanges()).
+   */
+  updateChatFromMainline(chatId: Awaitable<number>): Promise<{
+    conflictPaths: string[];
+  }>;
+  /**
+   * Update a share link's management metadata. The raw secrets are not available after creation;
+   * this only edits the stored note used by the management UI.
+   */
+  updateShareLink(linkId: Awaitable<string>, note?: Awaitable<string>): Promise<void>;
+  /**
+   * Store raw bytes as an immutable Git blob and return its OID after durable storage.
+   * Retrying identical bytes returns the same OID. This does not change any worktree or message.
+   * Use the OID in a chat attachment, or in a worktree's whole-file `setBytes` change together
+   * with the payload's byte length. The blob must be present in this workspace's Git store.
+   * Limited to 8,000,000 bytes; larger-file support is deferred.
+   */
+  uploadBlob(content: Awaitable<Uint8Array>): Promise<string>;
+  /** Disposes of this stub, releasing the capability it holds. */
+  [Symbol.dispose](): void;
+}
+
+/**
+ * `init` delivers the full roster once on subscribe.
+ * `add`/`remove` (keyed by `key`) report changes thereafter.
+ */
+export interface PresenceSubscriber {
+  add(participant: PresenceParticipant): Awaitable<void>;
+  init(participants: PresenceParticipant[]): Awaitable<void>;
+  remove(key: string): Awaitable<void>;
+}
+
+/** Callback interface used to receive workpiece-list updates. See Overseer.subscribeToWorkpieces(). */
+export interface WorkpiecesSubscriber {
+  /**
+   * Upsert: called once per existing workpiece when the subscription starts, then again whenever
+   * a workpiece is created or its summary changes (e.g. it is renamed).
+   */
+  entry(summary: WorkpieceSummary): Awaitable<void>;
+  /** Called after entry() has been called for all workpieces known so far. */
+  ready(): Awaitable<void>;
+  /** The workpiece was deleted. */
+  removed(id: number): Awaitable<void>;
+}
+
+export type AccountDescription = {
+  avatar: AvatarImage;
+  displayName?: string;
+  grantedResourceUrlPatterns?: string[];
+  providesUi?: {
+    icon?: AvatarImage;
+    title: string;
+  };
+  singleton?: {
+    tsType: string;
+  };
+  uniqueName?: string;
+};
+
+export type ActionDescription = {
+  actionKind?: ActionKind;
+  autoApprovable?: boolean;
+  awaitDecision?: boolean;
+  description: string;
+  descriptionIsComplete?: boolean;
+  fields?: ActionField[];
+  implementsRevert: boolean;
+  pushedCommits?: string[];
+  title: string;
+};
+
+export type ActionField = {
+  items: string[];
+  kind: "list";
+  label: string;
+  truncated?: {
+    shownBytes: number;
+    totalBytes: number;
+  };
+} | {
+  kind: "file";
+  label: string;
+  mediaType: string;
+  name: string;
+  origin: "agent" | "provider";
+  sha256?: string;
+  size: number;
+  truncated?: {
+    shownBytes: number;
+    totalBytes: number;
+  };
+} | {
+  kind: "inline";
+  label: string;
+  truncated?: {
+    shownBytes: number;
+    totalBytes: number;
+  };
+  value: string;
+} | {
+  kind: "json";
+  label: string;
+  truncated?: {
+    shownBytes: number;
+    totalBytes: number;
+  };
+  value: string;
+} | {
+  kind: "text";
+  label: string;
+  syntax?: ActionFieldSyntax;
+  truncated?: {
+    shownBytes: number;
+    totalBytes: number;
+  };
+  value: string;
+};
+
+export type ActionFieldSyntax = "html" | "markdown" | "sql";
+
+export type ActionHistoryFilter = "action" | "all" | "bindHook" | "observation" | "pending";
+
+export type ActionHistoryPage = {
+  entries: ActionLogEntry[];
+  nextBeforeId?: number;
+};
+
+export type ActionKind = {
+  label: string;
+  tag: string;
+};
+
+export type ActionLogEntry = {
+  appliedAt?: Date;
+  autoApproved?: boolean;
+  createdAt: Date;
+  creation?: true;
+  description: ActionDescription;
+  gatekeeperId?: number;
+  id: number;
+  resolvedBy?: AiChatAuthorInfo;
+  resourceTitle: string;
+  resourceUrl?: string;
+  state: ActionState;
+  type: "action";
+} | {
+  appliedAt?: Date;
+  createdAt: Date;
+  description: HookDescription;
+  enabled: boolean;
+  gatekeeperId?: number;
+  hookId?: number;
+  id: number;
+  resourceTitle: string;
+  resourceUrl?: string;
+  state: ActionState;
+  type: "bindHook";
+} | {
+  appliedAt?: Date;
+  createdAt: Date;
+  description: ObservationDescription;
+  gatekeeperId?: number;
+  id: number;
+  resourceTitle: string;
+  resourceUrl?: string;
+  state: ActionState;
+  type: "observation";
+};
+
+export type ActionState = "approved" | "pending" | "rejected";
+
+export type AdminFormat = {
+  agentHint: string;
+  blueprintDescription: string;
+  blueprintId: string;
+  blueprintTitle: string;
+  bundled: boolean;
+  declared?: BlueprintOutput;
+  enabled: boolean;
+  missing: boolean;
+  output?: BlueprintOutput;
+  overrides?: {
+    icon?: "appWindow" | "chartBar" | "fileText" | "flowArrow" | "gridNine" | "kanban" | "listChecks" | "notebook" | "presentation" | "table";
+    id?: string;
+    noun?: string;
+    plural?: string;
+  };
+};
+
+export type AdminFormatPatch = {
+  agentHint?: string;
+  enabled?: boolean;
+  overrides?: {
+    icon?: "appWindow" | "chartBar" | "fileText" | "flowArrow" | "gridNine" | "kanban" | "listChecks" | "notebook" | "presentation" | "table" | null;
+    id?: null | string;
+    noun?: null | string;
+    plural?: null | string;
+  };
+};
+
+export type AdminGatewayProvider = {
+  enabledBy?: "admin" | "environment";
+  needsApiToken: boolean;
+  provider: AiModelProvider;
+};
+
+export type AdminModelView = {
+  added: boolean;
+  behavesLike?: string;
+  behavesLikeKnown?: boolean;
+  builtInCompactionInputBudget: number;
+  builtInReasoning: BuiltInReasoning;
+  capabilities?: GatewayModelCapabilities;
+  contextWindow: number;
+  defaultMode: "disabled" | "enabled" | "hidden";
+  id: string;
+  maxCompactionInputBudget: number;
+  mode: "disabled" | "enabled" | "hidden";
+  name: string;
+  outputLimit?: number;
+  provider: AiModelProvider;
+  reasoningLevels: ("high" | "low" | "max" | "medium" | "minimal" | "off" | "xhigh")[];
+  runtimeKnown: boolean;
+  settings?: GatewayModelSettings;
+};
+
+export type AdminResource = {
+  description: string;
+  enabled: boolean;
+  icon?: AvatarImage;
+  title: string;
+  urlPattern: string;
+};
+
+export type AdminResourceVendor = {
+  ambientMode: "disabled" | "enabled" | "optional";
+  autoProvisions: true;
+  displayName: string;
+  logo?: AvatarImage;
+  vendorId: string;
+} | {
+  autoProvisions: false;
+  displayName: string;
+  enabled: boolean;
+  logo?: AvatarImage;
+  resources: AdminResource[];
+  vendorId: string;
+};
+
+export type AdminSettingsView = {
+  accentColor: string;
+  announcement: string;
+  banner: BannerConfig;
+  formats: AdminFormat[];
+  gatewayModels?: {
+    defaultReasoning: "high" | "low" | "max" | "medium" | "minimal" | "off" | "xhigh" | null;
+    models: AdminModelView[];
+    modelsDevSuggestions: boolean;
+    providerSettings: AdminGatewayProvider[];
+    providers: AiModelProvider[];
+    userModelsEnabled: boolean;
+  };
+  instanceInstructions: string;
+  resourceVendors: AdminResourceVendor[];
+  signupsEnabled: boolean;
+  siteLogo?: AvatarImage;
+  siteName: string;
+  userSearchEnabled: boolean;
+};
+
+export type AffectedCollaborator = {
+  addedBy: PermissionEdge[];
+  newRole: null | CollaboratorRole;
+  oldRole: CollaboratorRole;
+  profile: AiChatAuthorInfo;
+};
+
+export type AgentCatalog = {
+  entries: AgentCatalogEntry[];
+  truncated?: boolean;
+};
+
+export type AgentCatalogEntry = {
+  description: string;
+  id: string;
+  title: string;
+};
+
+export type AgentSpawnerConfig = {
+  displayName: string;
+  env: {
+    [key: string]: number;
+  };
+  modelId: null | string;
+};
+
+export type AiChatAuthorInfo = {
+  commitEmail?: string;
+  id: string;
+  name: string;
+  type: "agent" | "gadget" | "user";
+};
+
+export type AiChatHistoryPage = {
+  compacted?: {
+    proposedChange?: CodeChange;
+    summary: string;
+    to: number;
+  };
+  messages: AiChatMessage[];
+};
+
+export type AiChatMessage = {
+  actionId: number;
+  actionLog?: ActionLogEntry;
+  author: AiChatAuthorInfo;
+  chatId: number;
+  sequence: number;
+  timestamp: Date;
+  type: "action";
+} | {
+  addedBindings?: {
+    gadgetId: number;
+    name: string;
+    target: number;
+  }[];
+  author: AiChatAuthorInfo;
+  blueprintMerges?: BlueprintMerge[];
+  change?: CodeChange;
+  chatId: number;
+  conversionBoundary?: true;
+  createdGadgets?: {
+    bindingName: string;
+    gadgetId: number;
+    title: string;
+  }[];
+  createdWorktrees?: {
+    bindingName: string;
+    title: string;
+    worktreeId: number;
+  }[];
+  mainlineMerge?: {
+    conflictPaths: string[];
+    gadgets?: MainlineMergeGadget[];
+  };
+  observedCodeVersion?: number;
+  pins?: ChatGadgetPinRecord[];
+  sequence: number;
+  timestamp: Date;
+  type: "changes";
+  watermark?: {
+    changesGeneration: number;
+    throughRevision: number;
+  };
+  worktreeCommits?: {
+    commit: string;
+    previousHead: string;
+    worktreeId: number;
+  }[];
+} | {
+  argsSummary: string;
+  author: AiChatAuthorInfo;
+  bindingName?: string;
+  chatId: number;
+  methodName: string;
+  sequence: number;
+  timestamp: Date;
+  type: "agentCallback";
+} | {
+  attachments?: ChatAttachmentRef[];
+  author: AiChatAuthorInfo;
+  capsules?: CapsuleSpecifier[];
+  chatId: number;
+  formats?: MessageFormatRef[];
+  generatedBySlashCommandSequence?: number;
+  message: string;
+  reasoning?: string;
+  sequence: number;
+  steered?: true;
+  timestamp: Date;
+  toolCalls?: AiToolCall[];
+  type: "message";
+} | {
+  author: AiChatAuthorInfo;
+  bindingName?: string;
+  chatId: number;
+  gatekeeperId?: number;
+  reason: string;
+  requestId: string;
+  resourceTitle?: string;
+  resourceUrl?: string;
+  resourceUrlPattern?: string;
+  sequence: number;
+  state: "accepted" | "denied" | "pending";
+  timestamp: Date;
+  type: "connectionRequest";
+  vendorId: string;
+  vendorLogoUrl?: string;
+  vendorName: string;
+} | {
+  author: AiChatAuthorInfo;
+  chatId: number;
+  code?: string;
+  message: string;
+  sequence: number;
+  timestamp: Date;
+  type: "error";
+} | {
+  author: AiChatAuthorInfo;
+  chatId: number;
+  commits: {
+    commitId: string;
+    gadgetId: number;
+  }[];
+  epochBoundary?: true;
+  mergeThrough: number;
+  sequence: number;
+  timestamp: Date;
+  type: "merge";
+  version?: number;
+  worktreePins?: {
+    baseCommit: string;
+    worktreeId: number;
+  }[];
+} | {
+  author: AiChatAuthorInfo;
+  chatId: number;
+  request: SlashCommandRequest;
+  sequence: number;
+  skillName?: string;
+  timestamp: Date;
+  type: "slashCommand";
+} | {
+  author: AiChatAuthorInfo;
+  chatId: number;
+  resources: AlwaysAvailableResource[];
+  sequence: number;
+  timestamp: Date;
+  type: "catalogChange";
+} | {
+  author: AiChatAuthorInfo;
+  chatId: number;
+  revertFrom: number;
+  sequence: number;
+  timestamp: Date;
+  type: "revert";
+} | {
+  author: AiChatAuthorInfo;
+  chatId: number;
+  sequence: number;
+  text: string;
+  timestamp: Date;
+  type: "agentNudge";
+} | {
+  author: AiChatAuthorInfo;
+  chatId: number;
+  sequence: number;
+  timestamp: Date;
+  type: "useGadget";
+};
+
+export type AiChatMetadata = {
+  activeAgent?: AiChatAuthorInfo;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  codeBase?: ChatCodeBase;
+  compactedTo?: number;
+  id: number;
+  lastActive: Date;
+  promptTokens?: number;
+  proposedChangeWorkpieces?: number[];
+  queuedSteers?: {
+    author: AiChatAuthorInfo;
+    text: string;
+  }[];
+  spawnerName?: string;
+  started: Date;
+  title: string;
+  totalCost?: number;
+  totalTokens?: number;
+};
+
+export type AiChatStreamEvent = {
+  delta: string;
+  toolCallId: string;
+  type: "editPreviewDelta";
+} | {
+  delta: string;
+  toolCallId: string;
+  type: "toolCodeDelta";
+} | {
+  delta: string;
+  toolCallId: string;
+  type: "toolOutputDelta";
+} | {
+  delta: string;
+  type: "reasoningDelta";
+} | {
+  delta: string;
+  type: "textDelta";
+} | {
+  file: {
+    filename: string;
+    workpieceId: number;
+  };
+  textToReplace?: string;
+  toolCallId: string;
+  type: "editPreviewStart";
+} | {
+  file: {
+    filename: string;
+    workpieceId: number;
+  };
+  toolCallId: string;
+  type: "toolCallTarget";
+} | {
+  file: null | {
+    filename: string;
+    workpieceId: number;
+  };
+  type: "setActiveFile";
+} | {
+  nothingToCompact?: boolean;
+  type: "compacted";
+} | {
+  output: BlueprintOutput;
+  toolCallId: string;
+  type: "toolCallOutputFormat";
+} | {
+  toolCallId: string;
+  toolName: "createExternalResource" | "createGadget" | "createWorktree" | "describeBinding" | "editFile" | "executeCode" | "giveUp" | "grep" | "listBlueprints" | "listConnectableResources" | "observeUserChanges" | "readFile" | "requestConnection" | "saveCapsuleAsBinding" | "setBindingHook" | "setGadgetBinding" | "webFetch" | "writeFile";
+  type: "toolCallStarted";
+} | {
+  toolCallId: string;
+  type: "editPreviewClear";
+} | {
+  toolCallId: string;
+  type: "toolCallFinished";
+} | {
+  type: "compacting";
+} | {
+  type: "streamReset";
+};
+
+export type AiGatewayInfo = {
+  builtInModelIds: string[];
+  enabled: true;
+  enabledProviders: AiModelProvider[];
+  userModelsEnabled: boolean;
+} | {
+  enabled: false;
+};
+
+export type AiModelProvider = "anthropic" | "cloudflare" | "google" | "ollama" | "openai";
+
+export type AiToolCall = {
+  error?: string;
+  input: {
+    bindingName: string;
+    blueprintId?: string;
+    title: string;
+  };
+  observedCodeVersion?: number;
+  output?: {
+    blueprintNotes?: string;
+    changeId?: number;
+    gadgetId: number;
+  };
+  toolCallId: string;
+  toolName: "createGadget";
+} | {
+  error?: string;
+  input: {
+    bindingName: string;
+    capsuleId: number;
+  };
+  observedCodeVersion?: number;
+  toolCallId: string;
+  toolName: "saveCapsuleAsBinding";
+} | {
+  error?: string;
+  input: {
+    bindingName: string;
+    commitId: string;
+    title: string;
+  };
+  observedCodeVersion?: number;
+  output?: {
+    baseCommit: string;
+    changeId?: number;
+    worktreeId: number;
+  };
+  toolCallId: string;
+  toolName: "createWorktree";
+} | {
+  error?: string;
+  input: {
+    bindingName: string;
+    entrypoint: null | string;
+  };
+  observedCodeVersion?: number;
+  toolCallId: string;
+  toolName: "setBindingHook";
+} | {
+  error?: string;
+  input: {
+    bindingName: string;
+    resourceUrlPattern: string;
+    title: string;
+    vendorId: string;
+  };
+  observedCodeVersion?: number;
+  output?: {
+    gatekeeperId: number;
+  };
+  toolCallId: string;
+  toolName: "createExternalResource";
+} | {
+  error?: string;
+  input: {
+    bindingName?: string;
+    reason: string;
+    resourceUrl?: string;
+    vendorId: string;
+  };
+  observedCodeVersion?: number;
+  output?: string;
+  toolCallId: string;
+  toolName: "requestConnection";
+} | {
+  error?: string;
+  input: {
+    code: string;
+  };
+  observedCodeVersion?: number;
+  output?: string;
+  toolCallId: string;
+  toolName: "executeCode";
+} | {
+  error?: string;
+  input: {
+    content: string;
+    filename: string;
+    workpiece?: string;
+  };
+  observedCodeVersion?: number;
+  toolCallId: string;
+  toolName: "writeFile";
+} | {
+  error?: string;
+  input: {
+    error: string;
+  };
+  observedCodeVersion?: number;
+  toolCallId: string;
+  toolName: "giveUp";
+} | {
+  error?: string;
+  input: {
+    filename: string;
+    lineCount?: number;
+    startLine?: number;
+    workpiece?: string;
+  };
+  observedCodeVersion?: number;
+  observedCommit?: string;
+  observedOid?: string;
+  toolCallId: string;
+  toolName: "readFile";
+} | {
+  error?: string;
+  input: {
+    filename: string;
+    replacement: string;
+    textToReplace: string;
+    workpiece?: string;
+  };
+  observedCodeVersion?: number;
+  toolCallId: string;
+  toolName: "editFile";
+} | {
+  error?: string;
+  input: {
+    gadget: string;
+    name?: string;
+    source: string;
+  };
+  observedCodeVersion?: number;
+  output?: {
+    changeId: number;
+    gadgetId: number;
+    name: string;
+    target: number;
+  };
+  toolCallId: string;
+  toolName: "setGadgetBinding";
+} | {
+  error?: string;
+  input: {
+    gadget?: string;
+    name: number | string;
+  };
+  observedCodeVersion?: number;
+  output?: string;
+  toolCallId: string;
+  toolName: "describeBinding";
+} | {
+  error?: string;
+  input: {
+    path?: string;
+    pattern: string;
+    workpiece: string;
+  };
+  observedCodeVersion?: number;
+  output?: string;
+  toolCallId: string;
+  toolName: "grep";
+} | {
+  error?: string;
+  input: {
+    raw?: boolean;
+    url: string;
+  };
+  observedCodeVersion?: number;
+  output?: string;
+  toolCallId: string;
+  toolName: "webFetch";
+} | {
+  error?: string;
+  input: {
+    vendorId: string;
+  };
+  observedCodeVersion?: number;
+  output?: string;
+  toolCallId: string;
+  toolName: "listConnectableResources";
+} | {
+  error?: string;
+  input: {};
+  observedCodeVersion?: number;
+  output?: string;
+  toolCallId: string;
+  toolName: "listBlueprints";
+} | {
+  error?: string;
+  input: {};
+  observedCodeVersion?: number;
+  toolCallId: string;
+  toolName: "observeUserChanges";
+};
+
+export type AlwaysAvailableResource = {
+  catalog: null | AgentCatalog;
+  name: string;
+  title: string;
+};
+
+export type ApplyBlueprintResult = {
+  chatId: number;
+  outcome: "proposed";
+} | {
+  outcome: "baseUnavailable";
+} | {
+  outcome: "unrelated";
+} | {
+  outcome: "upToDate";
+};
+
+export type AvatarImage = {
+  url: string;
+};
+
+export type BannerColor = "brand" | "danger" | "info" | "neutral" | "success" | "warning";
+
+export type BannerConfig = {
+  color: BannerColor;
+  text: string;
+};
+
+export type BlueprintBinding = {
+  description: string;
+  env: {
+    [key: string]: SpawnerEnvTarget;
+  };
+  spawnerOnly?: true;
+  suggestedModel?: null | {
+    modelName: string;
+    provider: string;
+  };
+  title: string;
+  type: "agentSpawner";
+} | {
+  description: string;
+  gatekeeperName: string;
+  resourceUrl?: string;
+  spawnerOnly?: true;
+  title: string;
+  type: "gatekeeper";
+  typeUrlPattern: string;
+} | {
+  description: string;
+  modelKind?: ModelKind;
+  spawnerOnly?: true;
+  suggestedModel?: {
+    modelName: string;
+    provider: string;
+  };
+  title: string;
+  type: "aiModel";
+};
+
+export type BlueprintBindingAnnotation = {
+  description: string;
+  suggestValue?: boolean;
+  title: string;
+};
+
+export type BlueprintBindingAssignment = {
+  accountId: number;
+  resourceUrl: string;
+  type: "gatekeeper";
+} | {
+  modelId: string;
+  type: "aiModel";
+} | {
+  modelId: null | string;
+  type: "agentSpawner";
+};
+
+export type BlueprintGadgetSummary = {
+  codeVersionDate: Date;
+  description: string;
+  dirty?: boolean;
+  id: string;
+  screenshotUrl?: string;
+  title: string;
+  unpublishedChanges?: true;
+  version: number;
+};
+
+export type BlueprintLibrarySummary = {
+  addedAt: Date;
+  id: string;
+  metadata: BlueprintMetadata;
+  pinned?: boolean;
+  uploaded: boolean;
+};
+
+export type BlueprintMerge = {
+  baseCommit?: string;
+  blueprintId: string;
+  commitId: string;
+  conflictPaths: string[];
+  gadgetId: number;
+  kind: "fastForward" | "follow" | "merge";
+  missingBindings?: {
+    [key: string]: BlueprintBinding;
+  };
+  title: string;
+  unverifiedBase?: true;
+  version: number;
+};
+
+export type BlueprintMetadata = {
+  author: AiChatAuthorInfo;
+  bindings: {
+    [key: string]: BlueprintBinding;
+  };
+  commitId?: string;
+  created: Date;
+  description: string;
+  lastUpdated: Date;
+  output?: BlueprintOutput;
+  screenshot?: true;
+  title: string;
+  version: number;
+};
+
+export type BlueprintOutput = {
+  icon: "appWindow" | "chartBar" | "fileText" | "flowArrow" | "gridNine" | "kanban" | "listChecks" | "notebook" | "presentation" | "table";
+  id: string;
+  noun: string;
+  plural: string;
+};
+
+export type BlueprintPublicInfo = {
+  id: string;
+  metadata: BlueprintMetadata;
+  screenshotUrl?: string;
+};
+
+export type BlueprintScreenshotUpload = {
+  content: Uint8Array;
+  mimeType: "image/jpeg" | "image/png";
+};
+
+export type BlueprintSource = {
+  type: "deletedWorkspace";
+} | {
+  type: "imported";
+} | {
+  type: "workspace";
+  workspaceId: string;
+  workspaceTitle: string;
+};
+
+export type BlueprintUserSummary = {
+  description: string;
+  id: string;
+  lastUpdated: Date;
+  pinned?: boolean;
+  source: BlueprintSource;
+  title: string;
+  version: number;
+};
+
+export type BoundHookInfo = {
+  description: HookDescription;
+  enabled: boolean;
+  gadgetId: number;
+  gatekeeperId: number;
+  id: number;
+  resourceTitle?: string;
+  resourceUrl?: string;
+};
+
+export type BuiltInReasoning = "adaptive" | "high" | "low" | "max" | "medium" | "minimal" | "off" | "xhigh" | null;
+
+export type BytesRef = {
+  byteLength: number;
+  oid: string;
+};
+
+export type CapsuleSpecifier = {
+  bindingName?: string;
+  description: ResourceDescription;
+  gatekeeperId: number;
+  length: number;
+  position: number;
+  vendorId?: string;
+};
+
+export type ChatAttachmentHandle = {
+  id: string;
+} | {
+  mimeType: string;
+  name?: string;
+  oid: string;
+};
+
+export type ChatAttachmentRef = {
+  content?: Uint8Array;
+  id: string;
+  mimeType: string;
+  name?: string;
+  oid?: string;
+  size: number;
+  workspacePath?: string;
+};
+
+export type ChatCodeBase = {
+  epoch?: number;
+  generation: number;
+  pins: ChatGadgetPinState[];
+  prior?: {
+    discontinuousGadgets: number[];
+    finalRevision: number;
+    generation: number;
+  };
+  revision: number;
+};
+
+export type ChatGadgetPin = {
+  baseCommit: string;
+  gadgetId: number;
+};
+
+export type ChatGadgetPinRecord = {
+  baseCommit: string;
+  gadgetId: number;
+  mergedCommit?: string;
+};
+
+export type ChatGadgetPinState = {
+  baseCommit: string;
+  gadgetId: number;
+  mergedCommit: string;
+};
+
+export type CloudflareAccountOption = {
+  accountId: string;
+  accountName: string;
+};
+
+export type CloudflareUsageInfo = {
+  accountId?: string;
+  accountName?: string;
+  balance: null | number;
+  cloudflareLimitsEnabled: boolean;
+  connected: boolean;
+  dailyLimit: number;
+  dailyUsed: number;
+  needsAccountSelection?: boolean;
+  remaining: number;
+  resetAt?: string;
+  unlimited: boolean;
+};
+
+export type CodeChange = {
+  [key: string]: [string, FileChange][];
+};
+
+export type CodeChangeSubmission = {
+  change: CodeChange;
+  clientId: string;
+  generation: number;
+  pins?: ChatGadgetPin[];
+  revision: number;
+  seq: number;
+};
+
+export type CollaboratorInfo = {
+  addedBy: PermissionEdge[];
+  profile: AiChatAuthorInfo;
+  role?: CollaboratorRole;
+};
+
+export type CollaboratorRole = "build" | "use";
+
+export type CommitIdentity = {
+  email: string;
+  name: string;
+};
+
+export type CommitInfo = {
+  author: CommitIdentity;
+  message: string;
+  oid: string;
+  parents: string[];
+  timestamp: Date;
+};
+
+export type ConnectFlowStart = {
+  nonce: string;
+  url: string;
+};
+
+export type ConnectedAccountsFilter = {
+  includeForcedAutoProvisionedAccounts?: boolean;
+  resourceUrl?: string;
+};
+
+export type ConsoleLogEvent = {
+  level: "debug" | "error" | "info" | "log" | "warn";
+  message: unknown[];
+  timestamp: Date;
+};
+
+export type CreationApproval = {
+  accountId: number;
+  configuration?: string;
+};
+
+export type DeploymentUpdateStatus = {
+  availableSince?: Date;
+  checkIntervalMinutes: number;
+  checkedAt?: Date;
+  checksEnabled: boolean;
+  currentReleaseId: string;
+  latestReleaseId?: string;
+  minimumAgeHours: number;
+  modified: boolean;
+  modifiedWorkers: string[];
+  noticeSnoozeHours: number;
+  notify: boolean;
+  unfinishedWorkers: string[];
+  updateAvailable: boolean;
+  updateUrl: string;
+};
+
+export type DeviceSessionHandoffStart = {
+  ticket: string;
+  userDoId: string;
+};
+
+export type FileAtCommit = {
+  kind: "absent";
+} | {
+  kind: "text";
+  text: string;
+} | {
+  kind: "unreadable";
+  message: string;
+};
+
+export type FileChange = {
+  edit: (number | [number, ...string[]])[];
+} | {
+  remove: true;
+} | {
+  set: string;
+} | {
+  setBytes: BytesRef;
+};
+
+export type GadgetBindingInfo = {
+  chatId?: number;
+  name: string;
+  resourceTitle: string;
+  target: number;
+  vendorId?: string;
+};
+
+export type GadgetExportFormat = {
+  contentType: string;
+  fileExtension: string;
+  id: string;
+  label: string;
+  mode: "browser" | "server";
+};
+
+export type GadgetMetadata = {
+  containsRestrictedData?: boolean;
+  defaultGadgetId?: number;
+  id: string;
+  notificationMute?: NotificationMute;
+  owner?: AiChatAuthorInfo;
+  ownerInvitesOnly?: boolean;
+  pinned?: boolean;
+  role?: CollaboratorRole;
+  title: string;
+  totalCost?: number;
+};
+
+export type GadgetMetadataWithTimestamps = {
+  containsRestrictedData?: boolean;
+  created: Date;
+  defaultGadgetId?: number;
+  id: string;
+  lastActive: Date;
+  notificationMute?: NotificationMute;
+  owner?: AiChatAuthorInfo;
+  ownerInvitesOnly?: boolean;
+  pinned?: boolean;
+  role?: CollaboratorRole;
+  title: string;
+  totalCost?: number;
+};
+
+export type GadgetSummary = {
+  chatId?: number;
+  commitId?: string;
+  id: number;
+  output?: BlueprintOutput;
+  title: string;
+  type: "gadget";
+  upstream?: GadgetUpstream;
+};
+
+export type GadgetUpstream = {
+  blueprintId?: string;
+  commitId?: string;
+};
+
+export type GatekeeperAppInfo = {
+  icon?: AvatarImage;
+  id: string;
+  title: string;
+};
+
+export type GatekeeperCreationSpec = {
+  accountId: number;
+  type: "ambient";
+  vendorId: string;
+} | {
+  config: AgentSpawnerConfig;
+  modelName?: string;
+  modelProvider?: string;
+  type: "agentSpawner";
+} | {
+  modelId: string;
+  modelName: string;
+  provider: string;
+  type: "aiModel";
+} | {
+  resourceUrl?: string;
+  type: "gatekeeper";
+  typeUrlPattern: string;
+  vendorId: string;
+};
+
+export type GatekeeperUiFrame = {
+  iframeHtml: string;
+  ui: UntypedStub;
+};
+
+export type GatekeeperUserProfileSnapshot = {
+  displayName: string;
+};
+
+export type GatekeeperUserSelection = {
+  profile: GatekeeperUserProfileSnapshot;
+  ticket: string;
+};
+
+export type GatekeeperVendorFilter = {
+  resourceUrl?: string;
+};
+
+export type GatekeeperVendorInfo = {
+  description: VendorDescription;
+  id: string;
+  supportedResources: SupportedResource[];
+  unavailable?: boolean;
+};
+
+export type GatewayModel = {
+  behavesLike?: string;
+  capabilities?: GatewayModelCapabilities;
+  contextWindow: number;
+  id: string;
+  name: string;
+  outputLimit?: number;
+  provider: AiModelProvider;
+};
+
+export type GatewayModelCapabilities = {
+  imageInput?: boolean;
+  reasoningLevels?: ("high" | "low" | "max" | "medium" | "minimal" | "off" | "xhigh")[];
+};
+
+export type GatewayModelLevelTest = {
+  message: string;
+  model: string;
+  ok: false;
+  reasoning: "high" | "low" | "max" | "medium" | "minimal" | "off" | "xhigh" | null;
+  status?: number;
+} | {
+  model: string;
+  ok: true;
+  reasoning: "high" | "low" | "max" | "medium" | "minimal" | "off" | "xhigh" | null;
+};
+
+export type GatewayModelSettings = {
+  compactionInputBudget?: number;
+  reasoning?: "high" | "low" | "max" | "medium" | "minimal" | "off" | "xhigh";
+};
+
+export type GatewayModelTest = {
+  message: string;
+  model: string;
+  ok: false;
+  status?: number;
+} | {
+  model: string;
+  ok: true;
+};
+
+export type HookDescription = {
+  description: string;
+  title: string;
+};
+
+export type ListOutputsResult = {
+  catchingUp: boolean;
+  outputs: OutputSummary[];
+};
+
+export type MainlineMergeGadget = {
+  baseCommit: string;
+  chatCommit: string;
+  conflictPaths: string[];
+  gadgetId: number;
+};
+
+export type MergeChangesResult = {
+  outcome: "merged" | "stale";
+};
+
+export type MessageFormatRef = {
+  icon: "appWindow" | "chartBar" | "fileText" | "flowArrow" | "gridNine" | "kanban" | "listChecks" | "notebook" | "presentation" | "table";
+  length: number;
+  noun: string;
+  position: number;
+};
+
+export type ModelKind = "decision" | "language";
+
+export type NotificationMute = {
+  indefinite: true;
+  until?: undefined;
+} | {
+  indefinite?: undefined;
+  until: Date;
+};
+
+export type ObservationDescription = {
+  containsRestrictedData?: boolean;
+  description: string;
+  excludeObservers?: string[];
+  fields?: ActionField[];
+  ownerInvitesOnly?: boolean;
+  title: string;
+};
+
+export type ObserverAccountChoice = {
+  accountId: number;
+  gatekeeperId: number;
+};
+
+export type ObserverBindingFailure = {
+  accountId: number;
+  reason: string;
+};
+
+export type ObserverBindingNeed = {
+  failure?: ObserverBindingFailure;
+  gatekeeperId: number;
+  resourceTitle: string;
+  resourceUrl?: string;
+  vendorId: string;
+};
+
+export type OutputFormatOffer = {
+  blueprintId: string;
+  description: string;
+  output: BlueprintOutput;
+  requiresSetup: boolean;
+};
+
+export type OutputSummary = {
+  created: Date;
+  lastActive: Date;
+  output?: BlueprintOutput;
+  owner?: AiChatAuthorInfo;
+  role?: CollaboratorRole;
+  title: string;
+  workpieceId: number;
+  workspaceId: string;
+  workspaceTitle: string;
+};
+
+export type PermissionEdge = {
+  created: Date;
+  keyId: string;
+  role?: CollaboratorRole;
+  type: "shareKey";
+} | {
+  created: Date;
+  note?: string;
+  role?: CollaboratorRole;
+  sharer: string;
+  type: "user";
+};
+
+export type PreApprovableAction = {
+  actionKind: ActionKind;
+  alreadyEnabled: boolean;
+  gatekeeperId: number;
+  resourceTitle: string;
+  vendorId?: string;
+};
+
+export type PresenceParticipant = {
+  key: string;
+  role: CollaboratorRole;
+  user: AiChatAuthorInfo;
+};
+
+export type RedactedAiModelConfig = {
+  accountId?: string;
+  apiToken: null | string;
+  apiUrl?: string;
+  contextWindow?: number;
+  extraHeaders?: {
+    [key: string]: null | string;
+  };
+  model: string;
+  outputLimit?: number;
+  provider: AiModelProvider;
+};
+
+export type ResourceDescription = {
+  hasSlashCommands?: true;
+  hookTsType?: string;
+  snippet: string;
+  suggestedBindingName: string;
+  title: string;
+  tsType: string;
+  url: string;
+};
+
+export type ShareLinkInfo = {
+  created: Date;
+  createdBy: AiChatAuthorInfo;
+  linkId: string;
+  note?: string;
+  role?: CollaboratorRole;
+};
+
+export type SlashCommandChoice = {
+  description: string;
+  name: string;
+  providerLabel: string;
+  resourceLabel?: string;
+  selection: SlashCommandId;
+};
+
+export type SlashCommandId = {
+  builtin: true;
+  commandId: "compact";
+} | {
+  builtin?: undefined;
+  commandId: string;
+  gatekeeperId: number;
+};
+
+export type SlashCommandRequest = {
+  args: string;
+  commandPosition?: number;
+  id: SlashCommandId;
+};
+
+export type SpawnerEnvTarget = {
+  name: string;
+  type: "binding";
+} | {
+  type: "gadget";
+};
+
+export type SupportedResource = {
+  creatable?: boolean;
+  creationConfigurator?: boolean;
+  description: string;
+  grantable?: boolean;
+  groupedWith?: string;
+  icon?: AvatarImage;
+  title: string;
+  urlPattern: string;
+};
+
+export type TreeNode = {
+  children: TreeNode[];
+  kind: "dir";
+  name: string;
+} | {
+  kind: "executable" | "file" | "submodule" | "symlink";
+  name: string;
+};
+
+export type UiBundle = {
+  jsCode: string;
+};
+
+export type UiFeatureFlags = {
+  "placeholder-flag": boolean;
+};
+
+export type UserDirectoryRecord = {
+  id: string;
+  name: string;
+};
+
+export type UserNotification = {
+  chatId: number;
+  chatTitle: string;
+  id: string;
+  kind: "permissionRequested" | "taskCompleted";
+  workspaceId: string;
+};
+
+export type VendorDescription = {
+  autoProvisionsAccount?: boolean;
+  color?: string;
+  description?: string;
+  displayName: string;
+  logo?: AvatarImage;
+  providesAuth?: boolean;
+  tagline?: string;
+  url: string;
+};
+
+export type WorkpieceSummary = GadgetSummary | WorktreeSummary;
+
+export type WorktreeSummary = {
+  baseCommit: string;
+  chatId: number;
+  headCommit: string;
+  id: number;
+  pinBase: string;
+  title: string;
+  type: "worktree";
+};
+
+/**
+ * A value, or a promise of it. What a call accepts for a value parameter: Cap'n Web resolves a
+ * promise argument before delivering the call, so one call's result is passed to the next without
+ * waiting for it, `root.set(root.get())`. And what a function or a method the caller
+ * implements may return: its result as is, or from an `async` function.
+ */
+export type Awaitable<T> = T | Promise<T>;
+
+/**
+ * What a call returning a capability returns: a promise of the capability, whose methods can be
+ * called before it resolves (promise pipelining): `root.open(id).list()` sends both calls at
+ * once, the second to whatever the first returns. Disposing it disposes the capability.
+ */
+export type Pipelined<T> = Promise<T> & T;
+
+/**
+ * A capability whose interface the API does not declare (an `RpcStub<any>`). `unknown`, so that
+ * calling it takes a deliberate cast to the interface it is known to have: `any` would let every
+ * call through unchecked, and an invented interface would be a guess.
+ */
+export type UntypedStub = unknown;

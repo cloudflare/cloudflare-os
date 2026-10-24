@@ -36,6 +36,12 @@ through logs and errors, then everything else.
   compromised admin session cannot change it. Reject changes that relocate it.
 - `AdminSettings` is the only writer of the authoritative `AdminConfig`. Other code reads through
   `readAdminConfig(env)`.
+- `cf-os api` sends `User-Agent: cf-os-api/<version>`, and except on a local dev instance
+  (`LOCAL_DEV_INSTANCE`, set only by `pnpm dev-server` and the integration harness) the Workshop
+  lets such a session act only as a deployment admin. That is a speed bump against casual use: a
+  client can send any User-Agent, so never rely on it for authorization; the API's own checks are
+  the boundary. Flag code that grants anything by User-Agent, and any deployment config that sets
+  `LOCAL_DEV_INSTANCE`.
 - In `packages/mcp-shared/`, `tools.ts` is the trust boundary: nothing outside it may read a tool's
   annotations, a tool is an observation only when the server declares `readOnlyHint: true`, and
   auto-applying a write additionally requires a `vetted` endpoint. Every SDK OAuth operation must be
@@ -126,3 +132,6 @@ contributor to broaden scope, add refactors, or take on adjacent cleanup.
 - `pnpm-lock.yaml`, unless the change is itself a dependency change — then check it against the
   `minimumReleaseAge` supply-chain policy in `pnpm-workspace.yaml`.
 - Committed `*.gadget` archives in a blueprint directory, which are opaque data.
+- `packages/api-cli/generated/`, `pnpm cf-os api`'s command table and its copy of the agent
+  declarations: `pnpm api-schema:generate` writes them and `pnpm api-schema:check` keeps them in
+  step with `api.ts`, so review `packages/api-cli/generator/emit.ts` instead.

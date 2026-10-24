@@ -1,0 +1,27 @@
+{
+  "name": "@gadgets/api-schema",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./schema": "./src/schema.ts",
+    "./extract": "./src/extract.ts",
+    "./emit/dts": "./src/emit/dts.ts",
+    "./emit/tools": "./src/emit/tools.ts",
+    "./generated/*": "./generated/*"
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "test:run": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
+    "@gadgets/scripts": "workspace:*",
+    "@types/node": "^26.1.0",
+    "capnweb": "catalog:",
+    "typescript": "catalog:",
+    "typescript6": "catalog:",
+    "vitest": "catalog:"
+  }
+}
