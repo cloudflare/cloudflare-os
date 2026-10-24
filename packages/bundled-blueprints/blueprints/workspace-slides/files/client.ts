@@ -2015,6 +2015,31 @@ function bindInlineList<E extends HTMLElement>(list: E, slide: Slide, block: Blo
         caretAt(prev, at);
       }
     });
+    // Pasted (or dropped) lines become rows from the caret on; lines past the
+    // item limit stay together on the last row.
+    textEl.addEventListener("beforeinput", (e) => {
+      if (e.isComposing) return;
+      const data = (e.data ?? e.dataTransfer?.getData("text/plain") ?? "").replace(/\r\n?/g, "\n");
+      const sel = getSelection();
+      const range = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
+      if (!data.includes("\n") || !range || !textEl.contains(range.startContainer)) return;
+      e.preventDefault();
+      const text = textEl.textContent ?? "";
+      const start = offsetIn(textEl, range.startContainer, range.startOffset);
+      const end = offsetIn(textEl, range.endContainer, range.endOffset);
+      const lines = data.split("\n");
+      const room = Math.max(1, maxItems - fields().length + 1);
+      const parts = [...lines.slice(0, room - 1), lines.slice(room - 1).join(" ")];
+      textEl.textContent = text.slice(0, start) + parts[0];
+      let last = textEl, after = row;
+      for (const line of parts.slice(1)) {
+        last = addRow(line, after);
+        after = [...list.children].find((c) => c.contains(last)) as HTMLElement;
+      }
+      const at = last.textContent?.length ?? 0;
+      last.textContent += text.slice(end);
+      caretAt(last, at);
+    });
     if (after) after.after(row);
     else list.appendChild(row);
     return textEl;

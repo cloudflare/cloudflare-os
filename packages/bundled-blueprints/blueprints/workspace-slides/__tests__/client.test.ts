@@ -210,6 +210,27 @@ describe("in-place text", () => {
     advanced().click();
   });
 
+  // Pasted lines become list items, rather than one item with the lines run together.
+  it("splits lines pasted into a bullet row into items", async () => {
+    await select("l1");
+    const row = onStage("l1").querySelectorAll<HTMLElement>(".inline-edit")[0]!;
+    row.tabIndex = 0;
+    row.focus();
+    const range = document.createRange();
+    range.setStart(row.firstChild!, 3);
+    getSelection()!.removeAllRanges();
+    getSelection()!.addRange(range);
+    const paste = Object.assign(new Event("beforeinput", { bubbles: true, cancelable: true }), {
+      inputType: "insertFromPaste", data: null, isComposing: false,
+      dataTransfer: { getData: (type: string) => (type === "text/plain" ? " A\r\nB" : "") },
+    });
+    row.dispatchEvent(paste);
+    expect(paste.defaultPrevented).toBe(true);
+    (document.activeElement as HTMLElement).blur();
+    await settle();
+    expect(gadget.updateBlock).toHaveBeenCalledWith("s1", "l1", { props: { text: "one A\nB\ntwo" } });
+  });
+
   // Chromium inserts pasted lines as <div>s; a highlighted title must keep them as lines.
   it("keeps the lines of text pasted into a highlighted title", async () => {
     await select("h1");
