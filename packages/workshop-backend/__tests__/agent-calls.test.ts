@@ -15,6 +15,7 @@ import { keyString } from "@gadgets/typed-storage";
 import type { AgentSpawnerConfig, AiChatAuthorInfo, AiChatMessage } from "@gadgets/workshop-shared/api";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { AgentSpawnerBinding } from "../src/agent-spawner-binding";
+import { waitFor } from "./fixtures.js";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -89,16 +90,6 @@ function messages(impl: any): AiChatMessage[] {
 
 function pendingCalls(impl: any): any[] {
   return [...impl.storage.pendingAgentCalls.list()];
-}
-
-// Polls until `cond` holds; the drain and the turn are fire-and-forget, so tests observe their
-// effects rather than awaiting them.
-async function waitFor(cond: () => boolean): Promise<void> {
-  for (let i = 0; i < 200; i++) {
-    if (cond()) return;
-    await new Promise(resolve => setTimeout(resolve, 5));
-  }
-  throw new Error("condition not met in time");
 }
 
 function deliver(impl: any, method: string, args: unknown[], modelId: string | null = "m") {

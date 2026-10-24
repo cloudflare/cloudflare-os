@@ -374,11 +374,14 @@ gadget-minted children alike:
   `GatekeeperClientImpl`) each count for their own lifetime, since a client can dispose the parent
   interface while retaining a child stub. They join when minted for a collaborator (the
   constructor's `joinedAs` / `addGatekeeper`'s `joinAs`) and skip it for the owner's mints and
-  internal construction. The raw gadget facet stub `connectToGadget()` returns counts the same
-  way (`getGadgetFacet`'s `joinAs`, released when the stub is disposed): it is the very stub an
+  internal construction. The raw gadget facet stub that `GadgetClient.connectToGadget()` or
+  `Overseer.connectToChatBinding()` returns counts the same way (`getGadgetFacet`'s `joinAs`,
+  released when the stub is disposed): it is the very stub an
   enabled hook's data flows through, and unlike a bind — which aborts gadget facets via
   `bumpVersion` — enabling a hook leaves existing facets running, so an uncounted retained facet
-  would let that widening find no session to sever.
+  would let that widening find no session to sever. The connection session that
+  `connectToChatBinding()` returns counts too, through the lease proxy `#leasedSession` puts
+  around it.
 - **Known gap — `enableHook` neither counts nor aborts gadget-minted children.** The facet-stub
   lease above covers only the stub the overseer minted; a gadget-minted child is independently
   owned (see the preamble) and reachable only by the facet abort — which every binding mutation

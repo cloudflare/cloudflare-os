@@ -3,15 +3,7 @@ import { Text, Loader, Banner } from '@cloudflare/kumo'
 import { Sparkle } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
 import { GadgetClient, ConsoleLogEvent } from '@gadgets/workshop-shared/api'
-
-// We want to inject Cap'n Web into the Gadget. Luckily it has no dependencies, so we can just take
-// the whole module and embed it. We can import the module using ?raw to get a string of the
-// content.
-import CAPNWEB_BUNDLE from 'capnweb?raw'
-
-// btoa() below requires this to stay ASCII; capnweb's build enforces ASCII-only dist bundles
-// since 0.11.1.
-let CAPNWEB_BUNDLE_ANNOTATED = `//# sourceURL=jsrpc.js\n${CAPNWEB_BUNDLE}`
+import { CAPNWEB_MODULE_URL, SANDBOX_HEAD } from './sandboxDocument'
 
 // Unfortunately, we will have to embed the code as a data: URL, because our iframe is totally
 // sandboxed. Even more unfortunately, since it's a module which we need to import from, we can't
@@ -23,7 +15,7 @@ let CAPNWEB_BUNDLE_ANNOTATED = `//# sourceURL=jsrpc.js\n${CAPNWEB_BUNDLE}`
 // In any case, we'll prefix the gadget code with this prefix which imports the Cap'n Web library
 // (from a massive data URL) and sets up the RPC connection to the parent.
 let INJECTED_CODE_PREFIX = encodeURIComponent(String.raw`//# sourceURL=client.js
-import { RpcTarget, RpcStub, newMessagePortRpcSession } from "data:text/javascript;charset=utf-8;base64,${btoa(CAPNWEB_BUNDLE_ANNOTATED)}";
+import { RpcTarget, RpcStub, newMessagePortRpcSession } from "${CAPNWEB_MODULE_URL}";
 
 let gadget;  // RPC stub to the gadget's server-side Durable Object.
 {
@@ -106,8 +98,7 @@ const createSandboxedHtml = (jsCode: string): string => {
   return `<!DOCTYPE html>
 <html>
 <head>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src 'none'; script-src data: 'unsafe-inline'; style-src data: 'unsafe-inline'; img-src data:; media-src data:; object-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'none';">
+  ${SANDBOX_HEAD}
 </head>
 <body>
     <script type="module" src="data:text/javascript;charset=utf-8,${INJECTED_CODE_PREFIX}${encodeURIComponent(jsCode)}"></script>

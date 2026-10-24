@@ -115,6 +115,7 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   listModels: ws => ws.listModels(),
   getChatHistory: ws => ws.getChatHistory(1),
   getChatMessage: ws => ws.getChatMessage(1, 0),
+  connectToChatBinding: ws => ws.connectToChatBinding(1, "GADGET"),
   subscribeToChat: async ws => {
     using sink = stubFor(new ChatSink());
     return await ws.subscribeToChat(sink);

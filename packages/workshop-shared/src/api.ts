@@ -2642,6 +2642,13 @@ export type AgentSpawnerConfig = {
  */
 export const AGENT_SPAWNER_CONNECTION_ID = "agent-spawner";
 
+/** One of a chat's bindings, as a `<gadget-ui>` view's code reaches it. */
+export type ViewBinding =
+  /** A gadget: the server that `env.NAME.rpc` reaches in the agent's `executeCode`. */
+  | { type: "gadget"; rpc: RpcStub<any> }
+  /** A connection the user made: a session on it, with the view as caller. */
+  | { type: "connection"; session: RpcStub<any> };
+
 /**
  * Interface to a workspace's Overseer, used to display the Gadget Workshop shell UI around that
  * workspace. Workspace-level concerns live here: the gadget registry, committed code (git
@@ -3000,6 +3007,15 @@ export interface Overseer extends RpcTarget {
 
   /** Fetch a single message from a chat thread. */
   getChatMessage(chatId: number, sequence: number): Promise<AiChatMessage | undefined>;
+
+  /**
+   * Opens the chat binding `name` for a `<gadget-ui>` view in the chat. The view is the caller of
+   * a connection's session: its reads stay out of the chat, and each write waits for a person's
+   * decision in it. Throws unless `name` is a gadget or a connection a view may use (see
+   * plans/inline-gadget-ui.md). Dispose the result when the view's frame unloads.
+   */
+  // @ts-ignore - TODO: Fix type instantiation issue
+  connectToChatBinding(chatId: number, name: string): Promise<ViewBinding>;
 
   /**
    * Subscribe to all new chat messages (across all threads).

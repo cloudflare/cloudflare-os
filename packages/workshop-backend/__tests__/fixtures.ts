@@ -65,6 +65,15 @@ export function putAction(
   if (id >= storage.nextActionId.get()) storage.nextActionId.put(id + 1);
 }
 
+/** Polls until `cond` holds, for effects the code under test starts without awaiting them. */
+export async function waitFor(cond: () => boolean): Promise<void> {
+  for (let i = 0; i < 200; i++) {
+    if (cond()) return;
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  throw new Error("condition not met in time");
+}
+
 /**
  * Forges a client interface over the given storage via open(). `role` picks the returned
  * interface class ("build" opens as the owner); `exports` supplies any ctx.exports entries the

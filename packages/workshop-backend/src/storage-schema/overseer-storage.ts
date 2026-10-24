@@ -412,6 +412,14 @@ export type GatekeeperCaller = {
   from: "user";
   chatId?: number;
 } | {
+  /**
+   * A `<gadget-ui>` view in an agent answer of the chat, run by whoever views the chat (see
+   * Overseer.connectToChatBinding). Its observations stay out of the chat; its actions post to the
+   * chat and never auto-approve.
+   */
+  from: "view";
+  chatId: number;
+} | {
   from: "hook";
 };
 
