@@ -128,6 +128,21 @@ describe("sync", () => {
     expect(shown("A1")).toBe("theirs");
   });
 
+  it("redraws a remote edit adopted from a late save reply, with what depends on it", async () => {
+    const meta = sheet("s1");
+    const h = await loadClient(meta, { A1: cell("old"), B1: cell('=A1&"!"') });
+    const save = deferred<OperationResult>();
+    h.gadget.applyOperation.mockImplementation(() => save.promise);
+    typeIntoActiveCell("mine");
+    await settle();
+    h.callbacks.operation(remoteEvent(meta, 3, { upserts: [{ sheetId: "s1", ref: "A1", cell: cell("theirs", 3) }] }));
+    await settle(); // the grid draws the remote event (A1 still shows the pending edit)
+    save.resolve({ status: "applied", revision: 2, conflicts: [], upserts: [{ sheetId: "s1", ref: "A1", cell: cell("mine", 2) }], deletes: [] });
+    await settle();
+    expect(shown("A1")).toBe("theirs");
+    expect(shown("B1")).toBe("theirs!");
+  });
+
   it("doesn't let an edit held during a sheet reload undo a later save of the same cell", async () => {
     const meta = sheet("s1");
     const h = await loadClient(meta, { A1: cell("old") });

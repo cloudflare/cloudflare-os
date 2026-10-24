@@ -1889,10 +1889,13 @@ async function sendPendingOperation(): Promise<"saved" | "retry" | "conflict"> {
   // An acknowledgment advances versions but doesn't overwrite an edit typed while it was out.
   const noteCommits = (result.upserts?.length || 0) + (result.deletes?.length || 0) <= RACE_NOTICE_CELLS;
   // A remote write committed after this save, and already heard, wins over the acknowledgment.
+  let adoptedRemote = false;
   const overtaking = (sheetId: string, ref: string) => {
     const key = sheetId + "!" + ref, write = overtakingWrites.get(key);
     overtakingWrites.delete(key);
-    return write && write.revision > result.revision ? write : null;
+    if (!write || write.revision <= result.revision) return null;
+    adoptedRemote = true;
+    return write;
   };
   for (const up of result.upserts || []) {
     const cells = model.cells[up.sheetId] || (model.cells[up.sheetId] = {});
@@ -1938,8 +1941,8 @@ async function sendPendingOperation(): Promise<"saved" | "retry" | "conflict"> {
   }
   // Only the cells this reply touched need working out again.
   rebuildEngine([...(result.upserts || []), ...(result.deletes || []), ...conflicts].map((x) => ({ sheetId: x.sheetId, ref: x.ref })));
-  // Our own broadcasts are ignored; conflicts and reloads need a redraw after rebasing.
-  if (reloadedAfterFailure || conflicts.length) renderGrid();
+  // Our own broadcasts are ignored; conflicts, reloads and adopted remote writes need a redraw.
+  if (reloadedAfterFailure || conflicts.length || adoptedRemote) renderGrid();
   return conflicts.length ? "conflict" : "saved";
 }
 // Leaving or hiding the page saves immediately rather than after the debounce.

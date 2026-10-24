@@ -1009,12 +1009,13 @@ export const FUNCTIONS: Record<string, FormulaFunction> = (() => {
   // PRODUCT alone skips an empty argument (PRODUCT(2,) is 2) rather than counting it as 0.
   F.PRODUCT = (a, c, H) => { const n = numArgs(a.filter((node) => node.k !== "missing"), c, H); return n.length ? n.reduce((x, y) => x * y, 1) : 0; };
   F.AVERAGE = (a, c, H) => { const n = numArgs(a, c, H); if (!n.length) return ERR.DIV0(); return n.reduce((x, y) => x + y, 0) / n.length; };
-  // Excel's AVERAGEA: in references, text counts as 0 and booleans as 1/0 (blanks are skipped);
-  // a direct argument is coerced like any number.
+  // Excel's AVERAGEA: in references (a single cell too), text counts as 0 and booleans as 1/0
+  // (blanks are skipped); a direct argument is coerced like any number.
   F.AVERAGEA = (a, c, H) => {
     let total = 0, count = 0;
     for (const node of a) {
-      const v = H.evalNode(node, c);
+      const result = H.evalNode(node, c);
+      const v = !isMatrix(result) && unwrapParens(node).k === "ref" ? { matrix: true as const, rows: 1, cols: 1, get: () => result } : result;
       if (isMatrix(v)) {
         for (let i = 0; i < v.rows; i++) for (let j = 0; j < v.cols; j++) {
           const x = v.get(i, j);
