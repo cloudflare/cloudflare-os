@@ -20,6 +20,8 @@ describe("valueAxis", () => {
   it("draws one value, or nothing, on an axis from zero", () => {
     expect(valueAxis(7, 7)).toMatchObject({ min: 0, max: 7, step: 1 });
     expect(valueAxis(0, 0)).toMatchObject({ min: 0, max: 1 });
+    // 0.3 and 0.1 + 0.2: one value, not a range a step can't cross.
+    expect(valueAxis(0.3, 0.1 + 0.2)).toMatchObject({ min: 0, max: 0.3 });
   });
 });
 

@@ -2634,7 +2634,7 @@ function buildPivotOutput(pivot: PivotSettings): PivotOutput {
     addAggregate(stateFor(states, record.row + "\u0000" + record.column), record.value);
     addAggregate(stateFor(rowTotals, record.row), record.value); addAggregate(stateFor(columnTotals, record.column), record.value); addAggregate(grandTotal, record.value);
   }
-  const cells: CellMap = {}, put = (row: number, column: number, value: string | number, fmt: CellFmt | null = null) => { cells[rcToRef(row, column)] = { value: String(value ?? ""), fmt, version: 1 }; };
+  const cells: CellMap = {}, put = (row: number, column: number, value: string | number, fmt: CellFmt | null = null) => { cells[rcToRef(row, column)] = { value: typeof value === "number" ? storedValueOf(value) : String(value ?? ""), fmt, version: 1 }; };
   const label = literalText;
   const headerFmt = { b: true, bg: "#e1632e", c: "#ffffff" };
   const rowHeaderFmt = { b: true, bg: "#fff7f2", c: "#3f332e" };

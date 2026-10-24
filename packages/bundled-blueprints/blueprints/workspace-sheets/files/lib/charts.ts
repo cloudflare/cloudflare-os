@@ -23,6 +23,8 @@ const NICE_STEPS = [1, 2, 2.5, 5, 10];
 export function valueAxis(low: number, high: number): ValueAxis {
   let min = Math.min(low, high), max = Math.max(low, high);
   if (!Number.isFinite(min) || !Number.isFinite(max)) min = max = 0;
+  // Values apart only by rounding (0.3 and 0.1 + 0.2) are one value: a step that small can't be counted in.
+  if (max - min <= Math.max(Math.abs(min), Math.abs(max)) * 1e-9) min = max;
   if (min >= 0 && max - min >= max / 6) min = 0;
   else if (max <= 0 && max - min >= -min / 6) max = 0;
   if (min === max) {
@@ -38,7 +40,7 @@ export function valueAxis(low: number, high: number): ValueAxis {
   const round = (value: number) => Number(value.toFixed(Math.min(20, digits))) || 0;
   const first = Math.floor(min / step + 1e-9), last = Math.ceil(max / step - 1e-9);
   const ticks: number[] = [];
-  for (let n = first; n <= last; n++) ticks.push(round(n * step));
+  for (let n = first; n <= last && ticks.length <= MAX_STEPS + 2; n++) ticks.push(round(n * step));
   return { min: ticks[0], max: ticks[ticks.length - 1], step, ticks };
 }
 

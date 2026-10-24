@@ -497,6 +497,21 @@ describe("pivot tables", () => {
     expect(values).not.toContain("5");
   });
 
+  it("store a very small total as a number", async () => {
+    const source = sheet("s1"), pivot: SheetMeta = { ...sheet("p1"), name: "Pivot", pivot: {
+      sourceSheetId: "s1", sourceRange: "A1:B2", rowField: "Region", columnField: "", valueField: "Amount", aggregate: "sum",
+      showRowTotals: false, showColumnTotals: false, filterField: "", filterValues: [],
+    } };
+    const h = await loadClient(source);
+    h.callbacks.operation({ type: "operation", senderId: "someone-else", revision: 2, structure: { title: "Book", sheetOrder: ["s1", "p1"], sheets: { s1: source, p1: pivot } }, lastModified: 0, deletes: [], upserts: [
+      { sheetId: "s1", ref: "A1", cell: cell("Region") }, { sheetId: "s1", ref: "B1", cell: cell("Amount") },
+      { sheetId: "s1", ref: "A2", cell: cell("North") }, { sheetId: "s1", ref: "B2", cell: cell("0.0000001") },
+    ] });
+    await settle(); await settle();
+    const replaced = h.gadget.applyOperation.mock.calls.flatMap(([op]) => (op as Operation).sheetReplacements ?? []).find((r) => r.sheetId === "p1");
+    expect(Object.values((replaced as { cells: CellMap }).cells).map((c) => c.value)).toContain("0.0000001");
+  });
+
   it("follow an undone edit to their source", async () => {
     const source = sheet("s1"), pivot: SheetMeta = { ...sheet("p1"), name: "Pivot", pivot: {
       sourceSheetId: "s1", sourceRange: "A1:B2", rowField: "Region", columnField: "", valueField: "Amount", aggregate: "sum",
