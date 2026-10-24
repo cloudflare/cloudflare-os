@@ -172,6 +172,30 @@ it("leaves Enter to a focused toolbar button while a block is selected", async (
 });
 
 describe("in-place text", () => {
+  it("saves the text being typed on Ctrl+S", async () => {
+    await select("t1");
+    const field = onStage("t1").querySelector<HTMLElement>(".inline-edit")!;
+    type(field, "saved now");
+    const key = new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true, cancelable: true });
+    field.dispatchEvent(key);
+    expect(key.defaultPrevented).toBe(true);
+    await settle();
+    expect(gadget.updateBlock).toHaveBeenCalledWith("s1", "t1", { props: { text: "saved now" } });
+  });
+
+  // A second drop while the first reconnect is still loading: live updates must resume.
+  it("subscribes again when dropped during a reconnect", async () => {
+    let deliver!: () => void;
+    gadget.getDeck.mockImplementationOnce(() => new Promise((resolve) => { deliver = () => resolve(structuredClone(deck)); }));
+    (subscriber as unknown as Disposable)[Symbol.dispose]();
+    await vi.waitFor(() => expect(deliver).toBeDefined());
+    expect(gadget.subscribe).toHaveBeenCalledTimes(1);
+    (subscriber as unknown as Disposable)[Symbol.dispose]();
+    deliver();
+    await vi.waitFor(() => expect(gadget.subscribe).toHaveBeenCalledTimes(2));
+    await settle();
+  });
+
   // A reconnect brings a fresh snapshot; the text being typed stays, and is saved on blur.
   it("keeps the text being typed through a reconnect", async () => {
     await select("t1");

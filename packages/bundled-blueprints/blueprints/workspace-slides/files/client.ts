@@ -1821,6 +1821,14 @@ function setLiveProp(slideId: string, blockId: string, key: string, value: PropV
 // A key an input method is using (Enter confirming a candidate, say): it isn't
 // a command. Some browsers report it only as keyCode 229.
 const imeKey = (e: KeyboardEvent) => e.isComposing || e.keyCode === 229;
+// ⌘/Ctrl S in a field being edited in place: save it (in-place fields keep
+// their keys from the page's shortcuts). Returns whether it was that key.
+function saveKey(e: KeyboardEvent): boolean {
+  if (!(e.metaKey || e.ctrlKey) || e.altKey || e.key.toLowerCase() !== "s") return false;
+  e.preventDefault();
+  saveNow();
+  return true;
+}
 function bindInlineText<E extends HTMLElement>(elem: E, slide: Slide, block: Block, propKey: string, transform?: ((raw: PropValue) => string) | null, placeholder = "Type here"): E {
   const raw = (block.props || {})[propKey] ?? "";
   if (inlineEditing(block)) {
@@ -1882,7 +1890,7 @@ function bindInlineText<E extends HTMLElement>(elem: E, slide: Slide, block: Blo
     });
     elem.addEventListener("keydown", (e) => {
       e.stopPropagation();
-      if (imeKey(e)) return;
+      if (imeKey(e) || saveKey(e)) return;
       if ((e.key === "Enter" && !e.shiftKey) || e.key === "Escape") {
         e.preventDefault();
         elem.blur();
@@ -1983,7 +1991,7 @@ function bindInlineList<E extends HTMLElement>(list: E, slide: Slide, block: Blo
     makeEditable(textEl, "List item");
     textEl.addEventListener("keydown", (e) => {
       e.stopPropagation();
-      if (imeKey(e)) return;
+      if (imeKey(e) || saveKey(e)) return;
       const sel = getSelection();
       const range = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
       if (e.key === "Escape") {
@@ -3571,7 +3579,9 @@ function setSync(kind: SyncKind): void {
   }
 }
 function saveNow() {
-  // Every change is saved the moment it is made; ⌘S just says so.
+  // Every change is saved the moment it is made, except text being edited in
+  // place (saved when it's left): ⌘S saves that, then says so.
+  commitInlineEdit();
   forceSavedFlash = true;
   if (localPending > 0) showSync("saving", "Saving…");
   else setSync("saved");
@@ -6227,9 +6237,15 @@ async function connect(): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     try {
       if (!isSlidesExport && !subscription) {
+        // Held before the call returns, so a drop during it is seen.
         const sub = makeSubscriber();
-        await gadget.subscribe(sub, { patches: true });
         subscription = sub;
+        try {
+          await gadget.subscribe(sub, { patches: true });
+        } catch (e) {
+          if (subscription === sub) subscription = null;
+          throw e;
+        }
       }
       const fresh = await gadget.getDeck({ refs: true });
       await ensureAssets([...fresh?.slides || [], ...logoMedia(fresh?.logo)]);
@@ -6238,6 +6254,8 @@ async function connect(): Promise<void> {
         canUndo = !!u?.canUndo;
         canRedo = !!u?.canRedo;
       } catch {}
+      // The subscriber was dropped meanwhile: subscribe again and re-read.
+      if (!isSlidesExport && !subscription) continue;
       applySnapshot(fresh);
       updateUndoButtons();
       ready = true;
