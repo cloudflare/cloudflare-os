@@ -381,4 +381,18 @@ describe("edits racing the server's broadcasts", () => {
     await settle();
     expect(gadget.addBlock).toHaveBeenCalledWith("s1", expect.objectContaining({ props: expect.objectContaining({ text: "draft" }) }));
   });
+
+  // The asset sweep may delete the raster of artwork gone from the deck and its history: when the
+  // artwork comes back, the server is asked again whether it has one.
+  it("asks about an SVG's raster again when the artwork returns", async () => {
+    const svg = { id: "v1", type: "svg", x: 0, y: 0, w: 100, h: 100, props: { markup: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>' } };
+    const rasterPass = () => new Promise((r) => setTimeout(r, 1700));
+    await broadcast([...deck.slides[0]!.blocks, svg]);
+    await vi.waitFor(() => expect(gadget.missingSvgRasters).toHaveBeenCalledTimes(1), { timeout: 3000 });
+    await broadcast(deck.slides[0]!.blocks);
+    await rasterPass();
+    await broadcast([...deck.slides[0]!.blocks, svg]);
+    await vi.waitFor(() => expect(gadget.missingSvgRasters).toHaveBeenCalledTimes(2), { timeout: 3000 });
+    await broadcast(deck.slides[0]!.blocks);
+  }, 10_000);
 });

@@ -6160,7 +6160,7 @@ function scheduleSvgRasters(): void {
   rasterTimer = setTimeout(() => saveSvgRasters().catch((e) => console.error("Could not save SVG rasters", e)), 1500);
 }
 async function saveSvgRasters(): Promise<void> {
-  const sources = new Map<string, string>();
+  const sources = new Map<string, string>(), live = new Set<string>();
   for (const s of [...deck.slides, ...logoMedia(deck.logo)]) {
     for (const b of s.blocks || []) {
       const p = b.props || {};
@@ -6169,9 +6169,13 @@ async function saveSvgRasters(): Promise<void> {
       const raw = assetRaw(v);
       if (b.type === "svg" ? isBrandBarMarkup(raw) : !/^data:image\/svg\+xml/i.test(raw)) continue;
       const key = refHash(v) || await hashString(v);
+      live.add(key);
       if (!rasterKnown.has(key)) sources.set(key, raw);
     }
   }
+  // Artwork that leaves the deck may lose its raster to the asset sweep, so
+  // it is asked about again if it comes back.
+  for (const key of rasterKnown) if (!live.has(key)) rasterKnown.delete(key);
   if (!sources.size) return;
   const missing = await gadget.missingSvgRasters([...sources.keys()]);
   for (const key of sources.keys()) if (!missing.includes(key)) rasterKnown.add(key);
