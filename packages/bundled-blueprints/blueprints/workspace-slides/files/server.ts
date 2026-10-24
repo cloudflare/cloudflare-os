@@ -206,7 +206,7 @@ function mergeBlock(b: Block, patch: BlockPatch & { id?: unknown }): Record<stri
   // A geometry value that isn't a number leaves the old one (null clears w/h).
   for (const k of ["x", "y", "w", "h"]) {
     const v = loose[k];
-    if (k in loose && v !== null && !Number.isFinite(typeof v === "string" && v.trim() ? Number(v) : v)) delete loose[k];
+    if (k in loose && !(v === null && (k === "w" || k === "h")) && !Number.isFinite(typeof v === "string" && v.trim() ? Number(v) : v)) delete loose[k];
   }
   const next: Record<string, unknown> = { ...b, ...loose };
   if (props && typeof props === "object" && !Array.isArray(props)) next.props = { ...b.props, ...props };
@@ -300,10 +300,7 @@ export class Gadget extends DurableObject implements GadgetStub {
     if (meta && meta.v === 2 && (meta.legacyHash ?? null) === legacyHash) {
       return this.#loadV2(meta);
     }
-    if (meta) {
-      await st.deleteAll();
-      if (legacy) await st.put(LEGACY_KEY, legacy);
-    }
+    if (meta) await this.#clearV2();
     const usable = legacy && Array.isArray(legacy.slides);
     let slides: unknown[] = initialDeck().slides;
     if (usable) {
@@ -311,6 +308,19 @@ export class Gadget extends DurableObject implements GadgetStub {
       migrateLogoBlocks({ slides: slides as LooseSlide[] });
     }
     await this.#seed(slides);
+  }
+  // Deletes the v2 records but not the v1 one. Meta goes last, so a load
+  // after an interruption finds it stale and clears again.
+  async #clearV2(): Promise<void> {
+    const st = this.state.storage;
+    for (let after: string | undefined; ;) {
+      const keys = [...(await st.list({ startAfter: after, limit: 128 })).keys()];
+      if (!keys.length) break;
+      after = keys[keys.length - 1];
+      const doomed = keys.filter((k) => k !== LEGACY_KEY && k !== META_KEY);
+      if (doomed.length) await st.delete(doomed);
+    }
+    await st.delete(META_KEY);
   }
   async #loadV2(meta: StoredMeta): Promise<void> {
     const st = this.state.storage;

@@ -86,12 +86,22 @@ async function dotGridPng(alpha: number): Promise<string> {
   }
   return encodePng(W, H, px);
 }
+// Drawn once per opacity, then reused by every export.
+const dotGrids = new Map<number, Promise<string>>();
+function cachedDotGridPng(alpha: number): Promise<string> {
+  let png = dotGrids.get(alpha);
+  if (!png) {
+    png = dotGridPng(alpha).catch((e) => { dotGrids.delete(alpha); throw e; });
+    dotGrids.set(alpha, png);
+  }
+  return png;
+}
 // Everything deckToSlidesPptx needs that takes async work to build.
 export async function pptxAssets(deck: Deck): Promise<PptxAssets> {
   const assets: PptxAssets = { ...await brandRasters(), dotGrids: new Map() };
   for (const slide of deck.slides || []) {
     const a = dotGridOpacity(slide);
-    if (a && !assets.dotGrids.has(a)) assets.dotGrids.set(a, await dotGridPng(a));
+    if (a && !assets.dotGrids.has(a)) assets.dotGrids.set(a, await cachedDotGridPng(a));
   }
   return assets;
 }

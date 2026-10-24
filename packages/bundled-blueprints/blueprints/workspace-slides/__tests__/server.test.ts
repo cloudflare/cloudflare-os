@@ -27,8 +27,9 @@ class MemoryStorage {
   async deleteAll(): Promise<void> {
     this.data.clear();
   }
-  async list({ prefix = "" }: { prefix?: string } = {}): Promise<Map<string, unknown>> {
-    return new Map([...this.data].filter(([k]) => k.startsWith(prefix)).toSorted(([a], [b]) => a < b ? -1 : 1).map(([k, v]) => [k, this.copy(v)]));
+  async list({ prefix = "", startAfter, limit = Infinity }: { prefix?: string; startAfter?: string; limit?: number } = {}): Promise<Map<string, unknown>> {
+    const keys = [...this.data.keys()].filter((k) => k.startsWith(prefix) && (startAfter === undefined || k > startAfter)).toSorted();
+    return new Map(keys.slice(0, limit).map((k) => [k, this.copy(this.data.get(k))]));
   }
   // Storage hands out copies, as the runtime's structured clone does.
   copy(v: unknown): unknown {
@@ -346,11 +347,11 @@ describe("block normalization", () => {
     });
   });
 
-  it("keeps old geometry for a non-numeric patch value, and clears w/h with null", async () => {
+  it("keeps old geometry for a non-numeric patch value (null x/y included), and clears w/h with null", async () => {
     const { gadget } = await loadGadget();
     const slideId = await gadget.addSlide(null, { blocks: [] });
     const id = (await gadget.addBlock(slideId, { type: "box", x: 10, y: 20, w: 200, h: 100, props: {} }))!;
-    await gadget.updateBlock(slideId, id, { x: "oops", w: null, props: { title: "T" } } as unknown as Partial<Block>);
+    await gadget.updateBlock(slideId, id, { x: "oops", y: null, w: null, props: { title: "T" } } as unknown as Partial<Block>);
     expect((await gadget.getSlide(slideId))!.blocks[0]).toEqual({ id, type: "box", x: 10, y: 20, h: 100, props: { title: "T" } });
   });
 
@@ -461,6 +462,23 @@ describe("migration", () => {
     storage.data.set("deck", changed);
     const { gadget } = await loadGadget(storage);
     expect((await gadget.getSlide("s1"))!.blocks[1]!.props.text).toBe("Saved by the old build");
+  });
+
+  it("loses nothing when the object is evicted partway through migrating again", async () => {
+    const { gadget, storage } = await withLegacyDeck(legacy());
+    await gadget.addSlide(null, { blocks: [] }); // a v2-only slide, which must not survive
+    const changed = legacy();
+    changed.slides[0]!.blocks[1]!.props.text = "Saved by the old build";
+    storage.data.set("deck", changed);
+    // Evicted after the first delete of the clean-up.
+    const remove = storage.delete.bind(storage);
+    storage.delete = async (key) => { await remove(key); storage.delete = async () => { throw new Error("evicted"); }; };
+    await expect(loadGadget(storage)).rejects.toThrow("evicted");
+    storage.delete = remove;
+    expect(storage.data.get("deck")).toEqual(changed);
+    const { gadget: again } = await loadGadget(storage);
+    expect((await again.getDeck()).slides.map((s) => s.id)).toEqual(["s1", "s2"]);
+    expect((await again.getSlide("s1"))!.blocks[1]!.props.text).toBe("Saved by the old build");
   });
 
   it("migrates a logo stored without a name in the v2 layout on load", async () => {

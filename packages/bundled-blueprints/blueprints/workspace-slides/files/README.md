@@ -98,7 +98,7 @@ white with thin rules.
 
 ## API
 
-All methods are on the binding's `.rpc` stub. Ids are 8-character strings.
+All methods are on the binding's `.rpc` stub. Generated ids are 8-character strings.
 
 **Read**
 - `listSlides()` → `[{ id, index, label, background, blocks: [{ id, type, x, y, w?, h?, text }] }]`
@@ -146,10 +146,12 @@ agents don't need them.
 **Rules and limits**
 - Ids stay unique: a supplied slide or block `id` is kept only if it isn't
   taken.
-- Blocks are normalized: `type` must be a string and `x`/`y` finite numbers
-  (else the block is dropped), `w`/`h` positive numbers or absent, `props`
-  an object; numeric strings in geometry and numeric props become numbers.
-  A non-numeric `x`/`y`/`w`/`h` in a patch is ignored.
+- Blocks are normalized: a missing or invalid `type` becomes `text` and a
+  missing or non-numeric `x`/`y` becomes 0, so always send them; `w`/`h` are
+  positive numbers or absent, `props` an object; numeric strings in geometry
+  and numeric props become numbers. Anything that isn't an object is dropped.
+  A non-numeric `x`/`y`/`w`/`h` in a patch (including `null` for `x`/`y`) is
+  ignored; `null` clears `w`/`h`.
 - An edit that would take the deck past 500 slides, a slide past 1000
   blocks, or one slide's JSON past about 900,000 characters (media already
   moved to assets) throws and changes nothing. Logo alt text is cut to 500
