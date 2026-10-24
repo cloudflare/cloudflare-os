@@ -32,6 +32,10 @@ const MAX_SUBRESOURCES = 10_000;
 /** Longest subresource ID accepted. */
 const MAX_SUBRESOURCE_LENGTH = 512;
 
+// Budget only the ID array: two bytes per UTF-16 code unit plus serialization overhead per
+// element. Leave ample room for the action's metadata below SQLite's 8 MiB row limit.
+const SUBRESOURCE_CHUNK_BYTES = 4 * 1024 * 1024;
+
 /**
  * Most IDs sent to `checkObserverAccess()` in one call. One observation's always fit; the union of
  * every requirement a role reaches, which admission checks, may not.
@@ -268,13 +272,42 @@ export class ObserverLedger {
     this.host.ctx.waitUntil(this.host.retireLegacyObserverRegistrations(gatekeeperId));
   }
 
-  // The imported history is one audit record attributed to the baseline, by a user caller with no
-  // chat (see observerContextOf): no session read it, so nothing narrower can be attributed.
+  /**
+   * Persists an observation as byte-bounded requirement records, returning their action IDs.
+   * The caller must include this and any policy changes in one storage transaction, and publish
+   * notifications only after it commits. Verification must already cover the complete read.
+   */
+  recordObservation(record: Omit<Extract<ActionRecord, {type: "observation"}>, "id">): number[] {
+    let subresources = record.description.subresources;
+    let count = subresources?.length ?? 0;
+    let actionIds: number[] = [];
+    let start = 0;
+    do {
+      let end = start;
+      let bytes = 0;
+      while (end < count) {
+        let size = 2 * subresources![end].length + 8;
+        if (bytes + size > SUBRESOURCE_CHUNK_BYTES) break;
+        bytes += size;
+        end++;
+      }
+      let id = this.#storage.nextActionId.get();
+      this.#storage.nextActionId.put(id + 1);
+      this.#storage.actions.put({
+        ...record, id,
+        description: subresources && (start !== 0 || end !== subresources.length)
+            ? {...record.description, subresources: subresources.slice(start, end)}
+            : record.description,
+      });
+      actionIds.push(id);
+      start = end;
+    } while (start < count);
+    return actionIds;
+  }
+
+  // No session read the imported history, so its records belong to the baseline, not a chat.
   #recordImportedHistory(record: GatekeeperRecord, subresources: string[]): void {
-    let id = this.#storage.nextActionId.get();
-    this.#storage.nextActionId.put(id + 1);
-    this.#storage.actions.put({
-      id,
+    this.recordObservation({
       gatekeeperId: record.id,
       caller: {from: "user"},
       resourceTitle: record.resourceTitle,

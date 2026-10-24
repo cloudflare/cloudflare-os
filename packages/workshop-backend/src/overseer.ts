@@ -5367,34 +5367,30 @@ class OverseerImpl implements AgentHooks {
       let baseline = sharing && !this.storage.ownerInvitesOnly.get()
           ? sharing.computeEffectiveRoles() : undefined;
 
-      if (description.containsRestrictedData) {
-        this.storage.containsRestrictedData.put(true);
-      }
-      if (description.ownerInvitesOnly) {
-        this.storage.ownerInvitesOnly.put(true);
-      }
+      let actionIds = this.storage.transaction(() => {
+        if (description.containsRestrictedData) {
+          this.storage.containsRestrictedData.put(true);
+        }
+        if (description.ownerInvitesOnly) {
+          this.storage.ownerInvitesOnly.put(true);
+        }
 
-      let actionId = this.storage.nextActionId.get();
-      this.storage.nextActionId.put(actionId + 1);
-
-      // Only a tracked connection's observation keeps `subresources`, which makes it an observer
-      // requirement (see ActionRecord); a pending creation's simulated read must not.
-      let {subresources: _, ...untracked} = description;
-      let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
-      let record: ActionRecord = {
-        id: actionId,
-        gatekeeperId,
-        caller,
-        resourceTitle: gatekeeper?.resourceTitle,
-        resourceUrl: gatekeeper?.resourceUrl,
-        createdAt: new Date(),
-        state: "approved",
-        type: "observation",
-        description: subresources ? {...untracked, subresources} : untracked,
-      };
-
-      this.storage.actions.put(record);
-      this.#associateAction(caller, actionId);
+        // Only a tracked connection's observation keeps `subresources`, which makes it an observer
+        // requirement (see ActionRecord); a pending creation's simulated read must not.
+        let {subresources: _, ...untracked} = description;
+        let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
+        return this.observerLedger.recordObservation({
+          gatekeeperId,
+          caller,
+          resourceTitle: gatekeeper?.resourceTitle,
+          resourceUrl: gatekeeper?.resourceUrl,
+          createdAt: new Date(),
+          state: "approved",
+          type: "observation",
+          description: subresources ? {...untracked, subresources} : untracked,
+        });
+      });
+      for (let actionId of actionIds) this.#associateAction(caller, actionId);
 
       if (sharing && baseline) {
         let affected = sharing.computeAffectedByOwnerInvitesOnly(baseline);

@@ -905,7 +905,7 @@ workspace can mix the two. No shipping gatekeeper opts in yet.
 
 - **The audit log is the requirement store.** Every tracked observation reports `subresources`:
   opaque, stable, non-secret IDs, fully qualified within their vendor (`[]` is valid; omitting it,
-  or combining it with `excludeObservers`, is refused). Its audit record keeps them, and the
+  or combining it with `excludeObservers`, is refused). Its audit records keep them, and the
   Workshop strips `subresources` from every other observation, so keeping them is what marks a
   requirement. The record's `caller` attributes it (`observerContextOf`): the agent's chat, the
   calling gadget, the chat a slash command runs in, or the workspace legacy baseline for a user
@@ -925,6 +925,13 @@ workspace can mix the two. No shipping gatekeeper opts in yet.
   10,000 IDs. Each ID must be a string with a JavaScript `length` of 1–512 (UTF-16 code units).
   Complete historical exports have no observation count cap; their IDs undergo the same type and
   length checks and are deduplicated, and admission verifies them in batches.
+- **Bounded persistence.** Live reads and historical imports split their IDs across audit records
+  with a conservative 4 MiB ID-array budget (two bytes per UTF-16 code unit plus per-ID overhead),
+  leaving room for metadata below SQLite's row limit. Each record preserves the original caller
+  and metadata; admission unions every chunk. Live reads verify all IDs before committing all
+  chunks and workspace policy flags in one transaction. A failed write rolls everything back,
+  including action IDs; chat notifications happen only after the transaction commits. The
+  512-code-unit and 10,000-ID API limits are unchanged.
 - **Races.** Admissions are serialized per profile. After verifying, admission recomputes what it
   must verify and runs the pass again (at most three times) if a connection appeared, disappeared
   or changed protocol, or a requirement it did not check was recorded. An observation recomputes
@@ -936,7 +943,7 @@ workspace can mix the two. No shipping gatekeeper opts in yet.
   the first time it is initialized (session minting, slash commands, hook firings, admission):
   single-flight, behind a fence (the facet restarts, and the connection is unusable until the
   commit), calling `getHistoricalSubresources()` once. One transaction sets `observerTracking`
-  and, for a non-empty export, writes one baseline audit record. A crash before the commit exports
+  and, for a non-empty export, writes the baseline audit chunks. A crash before the commit exports
   again; after it, never. Collaborator sessions restart, and legacy registrations are retired
   best-effort. An observation is held to the connection's protocol when it arrives, whichever
   protocol its session was minted under, so a legacy-shaped observation after the import (no

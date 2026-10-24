@@ -149,6 +149,88 @@ function rows(impl: ObserverImpl, context: ObserverContext): string[] {
   return [...found].toSorted();
 }
 
+describe("byte-bounded observation persistence", () => {
+  for (let historical of [false, true]) {
+    let label = historical ? "historical import" : "live observation";
+
+    it(`keeps every requirement from an oversized ${label}`, () => withWorld(async world => {
+      let { impl } = world;
+      let ids = Array.from({ length: historical ? 20_000 : 10_000 },
+          (_, i) => String(i).padStart(512, historical ? "x" : "界"));
+      if (historical) {
+        seedLegacy(impl);
+        fakeFacets(impl, {
+          advertise: new Set([LEGACY]), exports: new Map([[LEGACY, async () => ids]]),
+        });
+        await impl.observerLedger.initialize(LEGACY);
+      } else {
+        seedTracked(impl);
+        await impl.authorizeObservation(TRACKED, observation({ subresources: ids }),
+            { from: "gadget", gadgetId: GADGET });
+      }
+      let connection = historical ? LEGACY : TRACKED;
+      expect(impl.observerLedger.requiredSubresources("use").get(connection)).toEqual(ids);
+      world.roles.set("carol", "use");
+      world.verifiers.set("carol", checkingVerifier(() => world, "carol",
+          batch => batch.map(id => id !== ids.at(-1))));
+      await expect(impl.ensureObserver("carol", world.clientUser("carol"), "use", configureAll))
+          .rejects.toThrow(/could not confirm/);
+      expect(impl.storage.observers.get("carol")).toBeUndefined();
+      world.verifiers.delete("carol");
+      await impl.ensureObserver("carol", world.clientUser("carol"), "use", configureAll);
+      expect(impl.storage.observers.get("carol").accountChoices).toEqual({ [connection]: connection * 10 });
+    }));
+
+    it(`rolls back every chunk and policy change after a failed ${label}`, () =>
+        withWorld(async ({ impl }) => {
+      let ids = Array.from({ length: historical ? 20_000 : 10_000 },
+          (_, i) => String(i).padStart(512, historical ? "x" : "界"));
+      if (historical) {
+        seedLegacy(impl);
+        fakeFacets(impl, {
+          advertise: new Set([LEGACY]), exports: new Map([[LEGACY, async () => ids]]),
+        });
+      } else {
+        seedTracked(impl);
+      }
+      let sharing = await impl.getSharingManager();
+      sharing.computeAffectedByOwnerInvitesOnly = () => [];
+      impl.getSharingManager = async () => sharing;
+      let before = impl.storage.nextActionId.get();
+      let put = impl.storage.actions.put.bind(impl.storage.actions);
+      let writes = 0;
+      impl.storage.actions.put = (record: Parameters<typeof put>[0]) => {
+        if (++writes === 2) throw new Error("later chunk failed");
+        return put(record);
+      };
+      let run = () => historical ? impl.observerLedger.initialize(LEGACY)
+          : impl.authorizeObservation(TRACKED, observation({
+            subresources: ids, containsRestrictedData: true, ownerInvitesOnly: true,
+          }), { from: "user" });
+      try {
+        await expect(run()).rejects.toThrow("later chunk failed");
+      } finally {
+        impl.storage.actions.put = put;
+      }
+      expect(impl.storage.nextActionId.get()).toBe(before);
+      expect([...impl.storage.actions.list()]).toEqual([]);
+      expect(impl.observerLedger.requiredSubresources("build").size).toBe(0);
+      expect(impl.storage.containsRestrictedData.get()).toBeFalsy();
+      expect(impl.storage.ownerInvitesOnly.get()).toBeFalsy();
+      if (historical) expect(impl.observerLedger.isTracked(LEGACY)).toBe(false);
+      await run();
+      expect(impl.observerLedger.requiredSubresources("build").get(historical ? LEGACY : TRACKED))
+          .toEqual(ids);
+      if (historical) {
+        expect(impl.observerLedger.isTracked(LEGACY)).toBe(true);
+      } else {
+        expect(impl.storage.containsRestrictedData.get()).toBe(true);
+        expect(impl.storage.ownerInvitesOnly.get()).toBe(true);
+      }
+    }));
+  }
+});
+
 // Facets: legacy ones advertise nothing; tracked ones advertise support.
 function fakeFacets(impl: any, opts: {
   adds?: number[],
