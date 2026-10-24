@@ -1520,7 +1520,10 @@ let ackedStructureRevision = -1;
 let inFlightStructure: StructureSnapshot | null = null; // structure sent in the save awaiting its response
 
 function queueCellOp(sheetId: string, ref: string, value: string | null, fmt: CellFmt | null, baseVersion?: number, layout = false) {
-  pendingCellOps.set(sheetId + "!" + ref, { sheetId, ref, value, fmt, baseVersion, ...(layout ? { layout: true as const } : {}) });
+  const key = sheetId + "!" + ref;
+  // An edit on top of a reference rewrite carries the rewritten text, so it depends on that layout too.
+  if (pendingCellOps.get(key)?.layout) layout = true;
+  pendingCellOps.set(key, { sheetId, ref, value, fmt, baseVersion, ...(layout ? { layout: true as const } : {}) });
   noteEditedCell(sheetId, ref);
   scheduleSave();
 }

@@ -34,7 +34,7 @@ await sheet.formatRange({ sheet: name, range: "B2:C5", fmt: { nf: "currency", d:
 
 ## Cell API
 
-Every write runs in the Durable Object's mutation queue, bumps versions only for cells whose value or format changed, persists, and broadcasts an `operation` event with `senderId: "agent"` (which is what the grid animates). Writes return `{ status: "applied" | "unchanged", revision, updated?, cleared? }`. Bad input throws a readable error (bad ref or range, unknown sheet, non-object `cells`, non-array `values`, missing or invalid `fmt`, unknown chart type, out-of-range sizes).
+Every write runs in the Durable Object's mutation queue, bumps versions only for cells whose value or format changed, and, when anything changed, persists and broadcasts an `operation` event with `senderId: "agent"` (which is what the grid animates). Writes return `{ status: "applied" | "unchanged", revision, updated?, cleared? }`. Bad input throws a readable error (bad ref or range, unknown sheet, non-object `cells`, non-array `values`, missing or invalid `fmt`, unknown chart type, out-of-range sizes).
 
 **Addressing.** `sheet` is a sheet id or name (case-insensitive); omitted means the first sheet. Cells are A1 refs (`$` allowed); ranges are `"A1:C9"`. Row arguments are 1-based numbers; column arguments are letters (`"C"`) or 1-based numbers. Writing past a sheet's edge grows it, up to 50,000 rows and 702 columns (`ZZ`).
 

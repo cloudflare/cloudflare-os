@@ -368,6 +368,34 @@ describe("a refused row insert", () => {
     const sent = h.gadget.applyOperation.mock.calls.map(([op]) => op as Operation).filter((op) => op !== refused).flatMap((op) => op.cellOps ?? []);
     expect(sent.filter((op) => op.sheetId === "s2")).toEqual([]);
   });
+
+  it("discards an edit made on top of such a rewrite while the insert was being saved", async () => {
+    const one = sheet("s1"), two = { ...sheet("s2"), name: "Other" };
+    const book = { title: "Book", sheetOrder: ["s1", "s2"], sheets: { s1: one, s2: two } };
+    const cells = { s1: { A1: cell("1") }, s2: { A1: cell("=Sheet1!A1") } };
+    const h = await loadClient(one);
+    h.gadget.openDocument.mockImplementation(async (): Promise<OpenedDocument> => ({ revision: 3, lastModified: 0, ...book, cells, cursors: {} }));
+    const reply = deferred<OperationResult>();
+    let refused: Operation | null = null;
+    h.gadget.applyOperation.mockImplementation(async (op: Operation): Promise<OperationResult> => {
+      if (!refused && op.sheetReplacements?.length) { refused = op; return reply.promise; }
+      return { status: "applied", revision: 4, conflicts: [] };
+    });
+    h.callbacks.operation({ type: "operation", senderId: "someone-else", revision: 2, structure: book, upserts: [{ sheetId: "s2", ref: "A1", cell: cell("=Sheet1!A1") }], deletes: [], lastModified: 0 });
+    await settle();
+    document.querySelector<HTMLElement>('td.cell[data-ref="A1"]')!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    [...document.querySelectorAll<HTMLElement>(".mi")].find((row) => row.textContent?.includes("Insert row above"))!.click();
+    await settle(); // the insert's save is out
+    // Bold the rewritten cell on the other sheet before the reply.
+    [...document.querySelectorAll<HTMLElement>(".tab")].find((tab) => tab.textContent?.includes("Other"))!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    [...document.querySelectorAll<HTMLElement>(".tab")].find((tab) => tab.textContent?.includes("Other"))!.click();
+    await settle();
+    press(gridEl(), { key: "b", ctrlKey: true, metaKey: true });
+    reply.resolve({ status: "conflict", revision: 3, conflicts: [], staleRevision: true });
+    await settle(); await settle();
+    const sent = h.gadget.applyOperation.mock.calls.map(([op]) => op as Operation).filter((op) => op !== refused).flatMap((op) => op.cellOps ?? []);
+    expect(sent.filter((op) => op.sheetId === "s2" && op.value === "=Sheet1!A2")).toEqual([]);
+  });
 });
 
 describe("pivot tables", () => {
