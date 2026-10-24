@@ -1328,6 +1328,17 @@ describe("PPTX SVG pictures", () => {
     expect(stored).not.toMatch(/tracker|javascript/);
   });
 
+  it("disarms animations that would write a link", async () => {
+    const png = dataUrl("png", pngFixture(4, 2));
+    const animated = '<svg viewBox="0 0 40 20"><a><set attributeName="href" to="https://x.example/"/>' +
+      "<animate attributeName='xlink:href' values='https://y.example/'/><rect width=\"40\"/></a>" +
+      '<animate attributeName="opacity" from="0" to="1"/></svg>';
+    const zip = await readZip(deckToPptx(oneSlide([block("image", {src: png, svgMarkup: animated}, {w: 400, h: 200})])));
+    const stored = partText(zip, [...zip.names].find(name => name.endsWith(".svg"))!);
+    expect(stored).not.toMatch(/attributeName\s*=\s*["'](xlink:)?href/);
+    expect(stored).toContain('attributeName="opacity"');
+  });
+
   it("strips outside CSS references from the SVG part, keeping its <style> and fragment fills", async () => {
     const png = dataUrl("png", pngFixture(4, 2));
     const styled = '<svg viewBox="0 0 40 20"><style>@import url(https://tracker.example/a.css); .a{fill:url(#g)}' +

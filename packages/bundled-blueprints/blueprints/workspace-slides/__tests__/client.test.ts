@@ -12,6 +12,7 @@ const deck: Deck = {
       { id: "t1", type: "text", x: 36, y: 204, w: 760, props: { text: "old" } },
       { id: "l1", type: "bulletList", x: 36, y: 300, w: 500, props: { text: "one\ntwo" } },
       { id: "i1", type: "image", x: 800, y: 100, w: 200, h: 100, props: { src: "asset:abc" } },
+      { id: "h1", type: "title", x: 36, y: 500, w: 700, props: { text: "My title", highlight: "title" } },
     ],
   }],
 };
@@ -159,7 +160,41 @@ it("menu rows work from the keyboard, and their keys don't reach the slide", asy
   expect(document.activeElement).toBe(more);
 });
 
+// Enter on a selected block opens Format, but a focused toolbar button keeps its own Enter.
+it("leaves Enter to a focused toolbar button while a block is selected", async () => {
+  await select("t1");
+  const more = button("More");
+  more.focus();
+  const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+  more.dispatchEvent(enter);
+  expect(enter.defaultPrevented).toBe(false);
+  expect(document.activeElement).toBe(more);
+});
+
 describe("in-place text", () => {
+  // Chromium inserts pasted lines as <div>s; a highlighted title must keep them as lines.
+  it("keeps the lines of text pasted into a highlighted title", async () => {
+    await select("h1");
+    const field = onStage("h1").querySelector<HTMLElement>(".inline-edit")!;
+    expect(field.querySelector("span")).not.toBeNull();
+    field.tabIndex = 0;
+    field.focus();
+    const range = document.createRange();
+    range.selectNodeContents(field);
+    range.collapse(false);
+    getSelection()!.removeAllRanges();
+    getSelection()!.addRange(range);
+    const paste = Object.assign(new Event("beforeinput", { bubbles: true, cancelable: true }), {
+      inputType: "insertFromPaste", data: null, isComposing: false,
+      dataTransfer: { getData: (type: string) => (type === "text/plain" ? "\r\nsecond line" : "") },
+    });
+    field.dispatchEvent(paste);
+    expect(paste.defaultPrevented).toBe(true);
+    field.blur();
+    await settle();
+    expect(gadget.updateBlock).toHaveBeenCalledWith("s1", "h1", { props: { text: "My title\nsecond line" } });
+  });
+
   // A field stays up through a save while another field is being edited; typing its text back
   // to what it was before that save is a change of its own.
   it("saves a field changed back after a save it outlived", async () => {

@@ -1035,7 +1035,7 @@ function sanitizeSvg(svg: string): string {
     SVG_SCRIPT_OPEN.lastIndex = at;
   }
   kept.push(svg.slice(at));
-  return mapSvgTags(sanitizeSvgStyleSheets(kept.join(" ")), (tag) => tag
+  return mapSvgTags(sanitizeSvgStyleSheets(kept.join(" ")), (tag) => (SVG_HREF_ANIMATION.test(tag) ? tag.replace(SVG_ATTRIBUTE_NAME, "") : tag)
     .replace(SVG_EVENT_HANDLER, "")
     .replace(SVG_LINK, (link: string, ...values: Array<string | undefined>) => SAFE_SVG_LINK.test(values[0] ?? values[1] ?? values[2] ?? "") ? link : "")
     .replace(SVG_QUOTED_ATTRIBUTE, (attribute: string, name: string, double?: string, single?: string) => {
@@ -1073,6 +1073,10 @@ function mapSvgTags(svg: string, clean: (tag: string) => string): string {
   return out + svg.slice(at);
 }
 
+// An animation that writes a link (`<set attributeName="href" to="https://…">`), which would get
+// past the link check; without its attributeName it animates nothing.
+const SVG_HREF_ANIMATION = /^<\s*(?:[\w.-]+:)?(?:animate|set)(?=[\s/>])[\s\S]*?\sattributeName\s*=\s*["']?\s*(?:[\w.-]+:)?href\b/i;
+const SVG_ATTRIBUTE_NAME = /\sattributeName\s*=\s*(?:"[^"]*"|'[^']*'|[^\s/>]+)/gi;
 const SVG_STYLE_OPEN = /<(?:[\w.-]+:)?style(?=[\s/>]|$)/gi;
 const SVG_STYLE_CLOSE = /<\/(?:[\w.-]+:)?style\s*>/gi;
 // A quoted attribute: its name with the `=`, and its value in double or single quotes.

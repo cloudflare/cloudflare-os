@@ -34,7 +34,7 @@ import type {
 } from "./lib/protocol.ts";
 import { highlightColorFor } from "./lib/highlight.ts";
 import { clampView, isFit, stepScale, wheelPixels, wheelZoomFactor, zoomAt, type ZoomView } from "./lib/zoom.ts";
-import { parseSvgMarkup, scopeSvgIds } from "./lib/svg.ts";
+import { parseSvgMarkup, scopeSvgIds, svgArtworkSize } from "./lib/svg.ts";
 import { SLIDE_LAYOUTS, type SlideTemplate } from "./lib/layouts.ts";
 import { LOGO_IMAGE_TYPES, LOGO_POSITIONS, deckLogoBox, isEmptyLogoSlot, logoAlt, logoBlockBox, logoShowsOn, newLogoBlockBox } from "./lib/logo.ts";
 
@@ -1106,6 +1106,7 @@ var COMPONENTS: Record<string, ComponentDef> = {
         return wrap;
       }
       scopeSvgIds(node);
+      svgArtworkSize(node);
       node.setAttribute("width", "100%");
       node.setAttribute("height", "100%");
       node.setAttribute(
@@ -1838,16 +1839,30 @@ function bindInlineText<E extends HTMLElement>(elem: E, slide: Slide, block: Blo
     const html = marked(String(raw));
     if (html) elem.innerHTML = html;
     else elem.textContent = String(raw);
+    const show = (text: string, next = marked(text)) => {
+      // (A text ending in a line break needs a placeholder <br> to show that empty last line.)
+      if (next) elem.innerHTML = next + (text.endsWith("\n") ? '<br data-tail="">' : "");
+      else elem.textContent = text;
+    };
     elem.addEventListener("input", (e) => {
       if (!transform || (e instanceof InputEvent && e.isComposing)) return;
       const next = marked(editableText(elem));
       if (!next && !elem.querySelector("span")) return;
       const caret = caretOffset(elem);
-      const text = editableText(elem);
-      // (A text ending in a line break needs a placeholder <br> to show that empty last line.)
-      if (next) elem.innerHTML = next + (text.endsWith("\n") ? '<br data-tail="">' : "");
-      else elem.textContent = text;
+      show(editableText(elem), next);
       if (caret != null) placeCaret(elem, caret);
+    });
+    // Multi-line text (pasted, dropped) goes in as text and line breaks: a
+    // browser may insert its lines as <div>s, which the markup above would join.
+    elem.addEventListener("beforeinput", (e) => {
+      if (!transform || e.isComposing) return;
+      const data = (e.data ?? e.dataTransfer?.getData("text/plain") ?? "").replace(/\r\n?/g, "\n");
+      const at = data.includes("\n") ? selectionOffsets(elem) : null;
+      if (!at) return;
+      e.preventDefault();
+      const text = editableText(elem);
+      show(text.slice(0, at.start) + data + text.slice(at.end));
+      placeCaret(elem, at.start + data.length);
     });
     elem.addEventListener("compositionend", () => elem.dispatchEvent(new Event("input")));
     elem.addEventListener("focus", () => {
@@ -1891,15 +1906,23 @@ function editableText(root: Node): string {
   root.childNodes.forEach(walk);
   return out;
 }
-// The caret's offset into editableText(root), or null without one inside it.
-function caretOffset(root: HTMLElement): number | null {
+// The selection's start and end as offsets into editableText(root), or null
+// without one inside it.
+function selectionOffsets(root: HTMLElement): { start: number; end: number } | null {
   const sel = getSelection();
   if (!sel || !sel.rangeCount || !root.contains(sel.anchorNode)) return null;
   const r = sel.getRangeAt(0);
-  const pre = document.createRange();
-  pre.selectNodeContents(root);
-  pre.setEnd(r.endContainer, r.endOffset);
-  return editableText(pre.cloneContents()).length;
+  const upTo = (node: Node, offset: number) => {
+    const pre = document.createRange();
+    pre.selectNodeContents(root);
+    pre.setEnd(node, offset);
+    return editableText(pre.cloneContents()).length;
+  };
+  return { start: upTo(r.startContainer, r.startOffset), end: upTo(r.endContainer, r.endOffset) };
+}
+// The caret's offset into editableText(root), or null without one inside it.
+function caretOffset(root: HTMLElement): number | null {
+  return selectionOffsets(root)?.end ?? null;
 }
 function placeCaret(root: HTMLElement, offset: number): void {
   let left = offset;
@@ -5567,7 +5590,8 @@ function onKeyDown(e: KeyboardEvent): void {
     return;
   }
   if (mod || e.altKey) return;
-  if (editMode && e.key === "Enter" && selectedBlockId) {
+  // Enter opens Format, unless it is pressing a focused button or link.
+  if (editMode && e.key === "Enter" && selectedBlockId && !(e.target instanceof Element && e.target.closest("button, a[href], [role=button], [role=menuitem]"))) {
     e.preventDefault();
     toggleInspector(true);
     requestAnimationFrame(() => shellRef.inspectorBody?.querySelector<HTMLElement>("input, textarea, select")?.focus());
@@ -6130,9 +6154,7 @@ async function rasterizeSvg(raw: string): Promise<string | null> {
     if (!node) return null;
     // (A foreignObject would taint the canvas.)
     node.querySelectorAll("foreignObject").forEach((n) => n.remove());
-    const vb = (node.getAttribute("viewBox") || "").trim().split(/[\s,]+/).map(Number);
-    let w = vb.length === 4 && vb[2] > 0 ? vb[2] : parseFloat(node.getAttribute("width") ?? "") || 300;
-    let h = vb.length === 4 && vb[3] > 0 ? vb[3] : parseFloat(node.getAttribute("height") ?? "") || 150;
+    let { w, h } = svgArtworkSize(node);
     const k = 1600 / Math.max(w, h);
     w = Math.max(1, Math.round(w * k));
     h = Math.max(1, Math.round(h * k));

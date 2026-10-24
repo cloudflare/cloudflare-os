@@ -1,6 +1,6 @@
 // The inline SVG sanitizer: deck SVG is untrusted (pasted, or written by an agent or a collaborator).
 import { describe, expect, it } from "vitest";
-import { parseSvgMarkup, scopeSvgIds } from "../files/lib/svg.ts";
+import { parseSvgMarkup, scopeSvgIds, svgArtworkSize } from "../files/lib/svg.ts";
 
 const PNG = "data:image/png;base64,iVBORw0KGgo=";
 const svg = (body: string, attrs = "") => parseSvgMarkup(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"${attrs}>${body}</svg>`)!;
@@ -80,5 +80,29 @@ describe("scopeSvgIds", () => {
     const node = art();
     scopeSvgIds(node);
     expect(node.querySelector("path")!.getAttribute("fill")).toBe("url(#elsewhere)");
+  });
+});
+
+// Drawn at another size (in its block, or rasterized for PowerPoint), artwork must scale with it.
+describe("svgArtworkSize", () => {
+  const bare = (attrs: string) => parseSvgMarkup(`<svg xmlns="http://www.w3.org/2000/svg" ${attrs}><rect width="100" height="100"/></svg>`)!;
+
+  it("gives an SVG with only a width and height the viewBox they imply", () => {
+    const node = bare('width="100" height="50px"');
+    expect(svgArtworkSize(node)).toEqual({ w: 100, h: 50 });
+    expect(node.getAttribute("viewBox")).toBe("0 0 100 50");
+  });
+
+  it("keeps a viewBox it already has", () => {
+    const node = bare('viewBox="0 0 40 20" width="400" height="200"');
+    expect(svgArtworkSize(node)).toEqual({ w: 40, h: 20 });
+    expect(node.getAttribute("viewBox")).toBe("0 0 40 20");
+  });
+
+  // A relative size says nothing about the artwork's own units.
+  it("leaves one sized in percentages alone", () => {
+    const node = bare('width="100%" height="100%"');
+    expect(svgArtworkSize(node)).toEqual({ w: 300, h: 150 });
+    expect(node.hasAttribute("viewBox")).toBe(false);
   });
 });

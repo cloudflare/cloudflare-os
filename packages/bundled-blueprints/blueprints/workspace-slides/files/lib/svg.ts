@@ -30,6 +30,20 @@ export function parseSvgMarkup(markup: string): SVGSVGElement | null {
   return node;
 }
 
+/**
+ * The size of `svg`'s artwork in its own units. One with a width and height but no viewBox is
+ * given the viewBox they imply, so that resizing it scales the artwork rather than showing it at
+ * its original size in a corner.
+ */
+export function svgArtworkSize(svg: SVGSVGElement): { w: number; h: number } {
+  const vb = (svg.getAttribute("viewBox") || "").trim().split(/[\s,]+/).map(Number);
+  if (vb.length === 4 && vb[2] > 0 && vb[3] > 0) return { w: vb[2], h: vb[3] };
+  const length = (name: string) => /^\s*[\d.]+(px)?\s*$/i.test(svg.getAttribute(name) ?? "") ? parseFloat(svg.getAttribute(name)!) : 0;
+  const w = length("width"), h = length("height");
+  if (w > 0 && h > 0) svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  return { w: w || 300, h: h || 150 };
+}
+
 let svgScopes = 0;
 
 /**

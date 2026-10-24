@@ -48,7 +48,7 @@ PowerPoint, HTML and PDF.
    they gave you. Don't invent one or type a company name as a logo.
 
 Every change is one step on the shared undo history, so the person watching
-can step back through your edits with ⌘Z.
+can step back through your edits with Ctrl+Z (⌘Z on a Mac).
 
 ```js
 const deck = env.MY_DECK.rpc; // use this gadget's binding name
