@@ -178,7 +178,8 @@ export type SheetChange =
  *
  * Changes are queued for the user's approval, and reads show them as entered until they are
  * decided. A queued change that no longer applies, because the spreadsheet was edited elsewhere,
- * fails when approved, and reads report it in `queuedChangeConflict`.
+ * fails when approved, and reads report it in `queuedChangeConflict`. Its comments are read and
+ * written through a Google Drive connection to the same file, not this one.
  */
 export interface GoogleSpreadsheetSession extends GoogleSpreadsheetReadSession {
   /**

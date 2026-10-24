@@ -16,8 +16,10 @@ import type { GoogleAccessToken } from "../../src/google-api";
 import { FOLDER_MIME_TYPE as FOLDER, SHORTCUT_MIME_TYPE as SHORTCUT } from "../../src/drive-api";
 import { OfficeConversion } from "../../src/office-conversion";
 import {
-  GOOGLE_DOC_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE, OFFICE_IMPORT_GRANT,
-  SHARED_DRIVES_GRANT, resourceUrlPatternsToOAuthScopes,
+  DRIVE_COMMENTS_GRANT, GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE,
+  GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE,
+  GOOGLE_SLIDES_RESOURCE, OFFICE_IMPORT_GRANT, SHARED_DRIVES_GRANT,
+  resourceUrlPatternsToOAuthScopes,
 } from "../../src/resources";
 
 const token = (value: string): GoogleAccessToken => ({
@@ -44,8 +46,8 @@ describe("Google resource configurators", () => {
   });
 
   describe("Drive picker", () => {
-    const picker = (holdsSharedDrivesGrant = true) =>
-      new DriveConfiguratorUI(async () => token("access-token"), async () => holdsSharedDrivesGrant);
+    const picker = (holdsSharedDrivesGrant = true) => new DriveConfiguratorUI(
+      async () => token("access-token"), async () => holdsSharedDrivesGrant, async () => false);
 
     /**
      * Answers each Drive request from `routes` by path, recording every URL asked for. A batch is
@@ -346,6 +348,31 @@ describe("Google resource configurators", () => {
       await expect(browser.getDriveNode("folder:missing")).resolves.toBeNull();
       await expect(browser.getDriveNode("shared-drives")).resolves.toBeNull();
     });
+
+    // Every Drive type opens the one picker, and each is where a connection opts in to commenting.
+    it.each([GOOGLE_DRIVE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE])(
+      "names the comments grant and reads it live, without asking Drive ($urlPattern)", async resource => {
+        const calls = stubDrive({});
+        const granted: string[] = [SHARED_DRIVES_GRANT];
+        const account = {
+          getAccessToken: vi.fn(async () => token("access-token")),
+          getGrantedResourceUrlPatterns: vi.fn(async () => granted),
+        };
+        const ctx = {
+          props: { userObjectId: "account-id" },
+          exports: { UserAccount: { idFromString: () => "account-id", get: () => account } },
+        };
+        const frame = await new GatekeeperUserImpl(ctx as never, {} as never)
+          .startResourceConfigurator(resource.urlPattern);
+        const ui = frame.ui as unknown as { getCommentAccess(): Promise<unknown> };
+
+        await expect(ui.getCommentAccess()).resolves.toEqual({ grant: DRIVE_COMMENTS_GRANT, held: false });
+        // The grant lands while the dialog is open, and the same configurator sees it.
+        granted.push(DRIVE_COMMENTS_GRANT);
+        await expect(ui.getCommentAccess()).resolves.toEqual({ grant: DRIVE_COMMENTS_GRANT, held: true });
+        expect(account.getGrantedResourceUrlPatterns).toHaveBeenCalledTimes(2);
+        expect(calls).toEqual([]);
+      });
   });
 
   it("offers every calendar the account can write, including limited writers", async () => {

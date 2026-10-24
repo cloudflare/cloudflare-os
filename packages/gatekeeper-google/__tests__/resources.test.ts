@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_CHAT_RESOURCE,
+  BIGQUERY_RESOURCE, DRIVE_COMMENTS_GRANT, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_CHAT_RESOURCE,
   GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE, GOOGLE_DOC_RESOURCE,
   GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE,
   GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE, IDENTITY_SCOPES,
@@ -883,5 +883,88 @@ describe("Drive resources' file content access", () => {
     // A reconnect asks for them again.
     expect(recordedResourceUrlPatterns({ resourceUrlPatterns: DRIVE_RESOURCES, oauthScopes: scopes }))
       .toEqual(DRIVE_RESOURCES);
+  });
+});
+
+describe("Drive comments grant", () => {
+  const DRIVE = "https://www.googleapis.com/auth/drive";
+  const DRIVE_RESOURCES = [GOOGLE_DRIVE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE]
+    .map(resource => resource.urlPattern);
+
+  it("is a private grant, not a resource anything can list, offer or bind", () => {
+    expect(DRIVE_COMMENTS_GRANT).toBe("https://drive.google.com/drive/comments");
+    expect(isPrivateGrant(DRIVE_COMMENTS_GRANT)).toBe(true);
+    expect(SUPPORTED_RESOURCES.map(resource => resource.urlPattern)).not.toContain(DRIVE_COMMENTS_GRANT);
+    expect(RESOURCE_SCOPES.map(entry => entry.resource.urlPattern)).not.toContain(DRIVE_COMMENTS_GRANT);
+    expect(Object.values(RESOURCE_BY_KIND).map(resource => resource.urlPattern))
+      .not.toContain(DRIVE_COMMENTS_GRANT);
+    expect(() => parseResourceUrl(DRIVE_COMMENTS_GRANT)).toThrow("Unsupported Google Drive resource URL");
+  });
+
+  it("stays out of the frozen inference lists", () => {
+    expect(SCOPE_DERIVED_RESOURCE_URL_PATTERNS).not.toContain(DRIVE_COMMENTS_GRANT);
+    expect(LEGACY_GRANTED_RESOURCE_URL_PATTERNS).not.toContain(DRIVE_COMMENTS_GRANT);
+  });
+
+  it("asks for full drive and nothing else beyond identity", () => {
+    expect(() => validateResourceUrlPatterns([DRIVE_COMMENTS_GRANT])).not.toThrow();
+    expect(resourceUrlPatternsToOAuthScopes([DRIVE_COMMENTS_GRANT])).toEqual([...IDENTITY_SCOPES, DRIVE]);
+  });
+
+  // connectAccount requests every supported resource when the caller names none; full drive comes
+  // only from this grant, so a first connection is never asked for it.
+  it("is not part of a first connection's request-everything default", () => {
+    expect(resourceUrlPatternsToOAuthScopes(SUPPORTED_RESOURCES.map(resource => resource.urlPattern)))
+      .not.toContain(DRIVE);
+  });
+
+  it("is covered only by full drive", () => {
+    expect(resourcesCoveredByScopes([DRIVE_COMMENTS_GRANT], [DRIVE])).toEqual([DRIVE_COMMENTS_GRANT]);
+    expect(resourcesCoveredByScopes([DRIVE_COMMENTS_GRANT], resourceUrlPatternsToOAuthScopes(DRIVE_RESOURCES)))
+      .toEqual([]);
+    expect(resourcesCoveredByScopes([DRIVE_COMMENTS_GRANT], [
+      "https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/drive.file",
+    ])).toEqual([]);
+  });
+
+  // An account description lists grants that are not private; getGrantedResourceUrlPatterns keeps
+  // every held grant, which is how the session and the configurator learn it is held.
+  it("is reported held once recorded, and implies no Drive resource", () => {
+    let grant = {
+      resourceUrlPatterns: [GOOGLE_DRIVE_FILE_RESOURCE.urlPattern, DRIVE_COMMENTS_GRANT],
+      oauthScopes: resourceUrlPatternsToOAuthScopes([GOOGLE_DRIVE_FILE_RESOURCE.urlPattern, DRIVE_COMMENTS_GRANT]),
+    };
+    let granted = grantedResourceUrlPatterns(grant);
+    expect(granted).toEqual([GOOGLE_DRIVE_FILE_RESOURCE.urlPattern, DRIVE_COMMENTS_GRANT]);
+    expect(granted.filter(pattern => !isPrivateGrant(pattern))).toEqual([GOOGLE_DRIVE_FILE_RESOURCE.urlPattern]);
+
+    let alone = { resourceUrlPatterns: [DRIVE_COMMENTS_GRANT], oauthScopes: [...IDENTITY_SCOPES, DRIVE] };
+    expect(grantedResourceUrlPatterns(alone)).toEqual([DRIVE_COMMENTS_GRANT]);
+    expect(hasDriveResourceGrant(grantedResourceUrlPatterns(alone))).toBe(false);
+  });
+
+  it("is retracted when full drive is declined, but asked for again on reconnect", () => {
+    let declined = {
+      resourceUrlPatterns: [GOOGLE_DRIVE_FILE_RESOURCE.urlPattern, DRIVE_COMMENTS_GRANT],
+      oauthScopes: resourceUrlPatternsToOAuthScopes([GOOGLE_DRIVE_FILE_RESOURCE.urlPattern]),
+    };
+    expect(grantedResourceUrlPatterns(declined)).toEqual([GOOGLE_DRIVE_FILE_RESOURCE.urlPattern]);
+    expect(recordedResourceUrlPatterns(declined)).toContain(DRIVE_COMMENTS_GRANT);
+  });
+
+  // Existing Drive connections must not be re-prompted: their resources' scopes are unchanged and
+  // never include full drive.
+  it("leaves every Drive resource's scopes as they were", () => {
+    for (let pattern of DRIVE_RESOURCES) {
+      expect(resourceUrlPatternsToOAuthScopes([pattern])).toEqual([
+        ...IDENTITY_SCOPES,
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/documents.readonly",
+        "https://www.googleapis.com/auth/spreadsheets.readonly",
+        "https://www.googleapis.com/auth/presentations.readonly",
+      ]);
+    }
+    let existing = { resourceUrlPatterns: DRIVE_RESOURCES, oauthScopes: resourceUrlPatternsToOAuthScopes(DRIVE_RESOURCES) };
+    expect(grantedResourceUrlPatterns(existing)).toEqual(DRIVE_RESOURCES);
   });
 });

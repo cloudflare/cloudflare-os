@@ -2,13 +2,16 @@ import { OBSERVATION_REFUSED_CODE } from "@gadgets/gatekeeper-kit/observers";
 import { describe, expect, it, vi } from "vitest";
 import type { ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { DriveObservation } from "../src/drive-observers";
+import { toDriveComment } from "../src/drive-comments";
 import {
   DriveFolderSessionCore, DriveSessionCore, driveFileToEntry, requireDriveBindingScope,
+  type CommentPageReader,
 } from "../src/drive-session";
 import { readFolderRoot, type FolderLocation } from "../src/drive-folder-scope";
 import {
   DriveApiRequestError, FOLDER_MIME_TYPE,
-  type DriveFile, type DriveListFilesOptions, type DriveScopeNode,
+  type DriveCommentList, type DriveCommentRecord, type DriveFile, type DriveListFilesOptions,
+  type DriveScopeNode,
 } from "../src/drive-api";
 import type { DriveListOptions, DriveSearchQuery } from "../src/drive-types";
 import type { ObserverCheck } from "../src/observers";
@@ -38,6 +41,10 @@ function core(overrides: {
     nextPageToken?: string;
   }>;
   getScopeNodes?: (ids: readonly string[]) => Promise<(DriveScopeNode | undefined)[]>;
+  canComment?: (id: string) => Promise<boolean>;
+  listComments?: (
+    id: string, options?: { pageToken?: string },
+  ) => Promise<DriveCommentList>;
   prepareObservation?: (
     observations: DriveObservation[],
   ) => Promise<ObserverCheck<DriveObservation>>;
@@ -48,12 +55,14 @@ function core(overrides: {
   let getFile = vi.fn(overrides.getFile ?? (async (id: string) => file({ id })));
   let getScopeNodes = vi.fn(overrides.getScopeNodes ??
     (async (ids: readonly string[]) => ids.map(() => undefined)));
+  let canComment = vi.fn(overrides.canComment ?? (async () => true));
+  let listComments = vi.fn(overrides.listComments ?? (async () => ({ comments: [] })));
   let prepared: string[][] = [];
   let units: DriveObservation[][] = [];
   let authorizations: ObservationDescription[] = [];
   let events: string[] = [];
   let session = new DriveSessionCore({
-    api: { listFiles, getFile, getScopeNodes },
+    api: { listFiles, getFile, getScopeNodes, canComment, listComments },
     scope: overrides.scope ?? { kind: "account" },
     prepareObservation: overrides.prepareObservation ?? (async observations => {
       prepared.push(observations.map(observation => observation.fileId));
@@ -76,7 +85,10 @@ function core(overrides: {
       await overrides.authorize?.(description);
     },
   });
-  return { session, listFiles, getFile, getScopeNodes, prepared, units, authorizations, events };
+  return {
+    session, listFiles, getFile, getScopeNodes, canComment, listComments, prepared, units,
+    authorizations, events,
+  };
 }
 
 const folder = (id: string, overrides: Partial<DriveFile> = {}): DriveFile =>
@@ -116,6 +128,19 @@ function tree(nodes: DriveFile[]) {
   };
 }
 
+/** A comment someone else wrote, as Drive lists it. */
+const record = (id: string): DriveCommentRecord => ({
+  id, content: `Comment ${id}`, author: { displayName: "Ada", me: false },
+  createdTime: "2026-10-20T10:00:00.000Z", resolved: false, deleted: false, replies: [],
+});
+/** Pages comments through as Drive lists them, with nothing queued to show. */
+const plainPages: CommentPageReader = async fetch => {
+  let { comments, nextPageToken } = await fetch();
+  return { comments: comments.map(toDriveComment), ...(nextPageToken ? { nextPageToken } : {}) };
+};
+
+const fileUnit = (fileId: string) => ({ kind: "file", fileId });
+const commentsUnit = (fileId: string) => ({ kind: "comments", fileId });
 
 describe("Drive metadata mapping", () => {
   it("maps the complete declared metadata shape without provider-only fields", () => {
@@ -448,6 +473,8 @@ describe("Drive native sessions", () => {
         listFiles: async () => ({ files: [] }),
         getFile: async () => { throw new DriveApiRequestError(404); },
         getScopeNodes: async ids => ids.map(() => undefined),
+        canComment: async () => true,
+        listComments: async () => ({ comments: [] }),
       },
       scope: { kind: "account" },
       prepareObservation: fileIds => track.prepareObservation(fileIds),
@@ -608,6 +635,10 @@ describe("positioned Drive folder session", () => {
         files: DriveFile[];
         nextPageToken?: string;
       }>,
+      comments: {
+        canComment?: (id: string) => Promise<boolean>;
+        listComments?: (id: string, options?: { pageToken?: string }) => Promise<DriveCommentList>;
+      } = {},
   ) {
     const provider = tree(nodes);
     const queries: DriveListFilesOptions[] = [];
@@ -633,6 +664,8 @@ describe("positioned Drive folder session", () => {
               node.mimeType !== FOLDER_MIME_TYPE),
           };
         },
+        canComment: comments.canComment ?? (async () => true),
+        listComments: comments.listComments ?? (async () => ({ comments: [] })),
       },
       location,
       prepareObservation: async units => {
@@ -919,5 +952,82 @@ describe("positioned Drive folder session", () => {
     await expect((await session.search({ namePrefix: "D", childFolderIds: ["A", "B"] })).next())
       .rejects.toThrow(/empty Drive search/);
     expect(scopeBatches).toEqual([["R"], ["A", "B"], ["R"], ["A", "B"]]);
+  });
+
+  it("stops a folder's comment listing once the file moves out, authorizing nothing more", async () => {
+    let doc = child("D0", "R", { mimeType: docMime });
+    let listComments = vi.fn(async (_id: string, options?: { pageToken?: string }) =>
+      options?.pageToken ? { comments: [record("c2")] } : { comments: [record("c1")], nextPageToken: "p2" });
+    let { session, authorizations, provider } =
+      positioned([folder("R", { parents: ["above"] }), doc], undefined, undefined, { listComments });
+
+    let target = await session.commentTarget("D0");
+    expect(target).toEqual({ fileId: "D0", mimeType: docMime, folderIds: ["R"] });
+    await session.requireCommentable("D0");
+    let pager = session.commentPager("D0", plainPages);
+    expect((await pager.next())?.map(comment => comment.id)).toEqual(["c1"]);
+    let authorized = authorizations.length;
+
+    provider.byId.set("D0", { ...doc, parents: ["elsewhere"] });
+    await expect(pager.next()).rejects.toThrow(/outside this Drive binding/);
+    expect(listComments).toHaveBeenCalledTimes(1);
+    expect(authorizations.slice(authorized).map(entry => entry.title))
+      .not.toContain("Read Google Drive comments");
+  });
+
+  it("discloses no page of a folder's comments read while the file moved out", async () => {
+    let doc = child("D0", "R", { mimeType: docMime });
+    let state: { provider?: ReturnType<typeof tree> } = {};
+    let listComments = vi.fn(async () => {
+      state.provider!.byId.set("D0", { ...doc, parents: ["elsewhere"] });
+      return { comments: [record("c1")] };
+    });
+    let positionedCore =
+      positioned([folder("R", { parents: ["above"] }), doc], undefined, undefined, { listComments });
+    state.provider = positionedCore.provider;
+
+    let pager = positionedCore.session.commentPager("D0", plainPages);
+    await expect(pager.next()).rejects.toThrow(/outside this Drive binding/);
+    expect(listComments).toHaveBeenCalledTimes(1);
+    expect(positionedCore.authorizations.map(entry => entry.title))
+      .not.toContain("Read Google Drive comments");
+  });
+});
+
+describe("Drive comment listing", () => {
+  it("authorizes the file, then its comments unit, before disclosing any comment", async () => {
+    let { session, units, events, listComments } = core({
+      listComments: async () => ({ comments: [record("c1")] }),
+    });
+
+    let target = await session.commentTarget("file-1");
+    await session.requireCommentable(target.fileId);
+    let pager = session.commentPager(target.fileId, plainPages);
+
+    expect(listComments).not.toHaveBeenCalled();
+    expect(units).toEqual([[fileUnit("file-1")], [fileUnit("file-1"), commentsUnit("file-1")]]);
+    expect((await pager.next())?.map(comment => comment.id)).toEqual(["c1"]);
+    expect(units.at(-1)).toEqual([fileUnit("file-1"), commentsUnit("file-1")]);
+    expect(events).toEqual(["authorize", "commit", "authorize", "commit", "authorize", "commit"]);
+  });
+
+  it("fences and refuses a file the account cannot comment on, reading no comments", async () => {
+    let { session, units, events, listComments } = core({ canComment: async () => false });
+
+    let target = await session.commentTarget("file-1");
+    await expect(session.requireCommentable(target.fileId)).rejects.toThrow(
+      "The connected account cannot comment on Drive file file-1, so its comments cannot be read " +
+      "or added to here.");
+    expect(units).toEqual([[fileUnit("file-1")]]);
+    expect(events).toEqual(["authorize", "commit", "authorize", "latch"]);
+    expect(listComments).not.toHaveBeenCalled();
+  });
+
+  it("refuses another file of an exact-file binding without calling Google", async () => {
+    let { session, getFile, canComment } = core({ scope: { kind: "file", fileId: "file-1" } });
+
+    await expect(session.commentTarget("file-2")).rejects.toThrow(/outside this Drive binding/);
+    expect(getFile).not.toHaveBeenCalled();
+    expect(canComment).not.toHaveBeenCalled();
   });
 });

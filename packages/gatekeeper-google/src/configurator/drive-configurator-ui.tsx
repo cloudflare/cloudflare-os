@@ -4,7 +4,7 @@ import {
   type ConfiguratorUIRenderContext, type ConfiguratorUISpec,
 } from "@gadgets/configurator-ui";
 import type {
-  DriveConfiguratorRpc, DriveConfiguratorValues, DriveNode, DriveNodeAncestor,
+  DriveCommentAccess, DriveConfiguratorRpc, DriveConfiguratorValues, DriveNode, DriveNodeAncestor,
 } from "./drive-configurator-types";
 
 // Must mirror `parseDriveUrl` in resources.ts, which is what actually mints the capability. This
@@ -114,18 +114,132 @@ let access: { grant: string; note?: Note } | null = null;
  */
 let listings = 0;
 
+const errorText = (error: unknown, fallback: string) =>
+  error instanceof Error && error.message ? error.message : fallback;
+
 /** Asks from the click, so the browser lets Workshop open Google's consent pop-up. */
 const allow = async ({ ensureResources, setValues }: Context, grant: string) => {
   const note = await ensureResources([grant]).then(
     (held): Note => ({ text: held ? "Access is allowed. Select Retry." : "Allow access in Google's window, then select Retry." }),
-    (error: unknown): Note => ({
-      text: error instanceof Error && error.message ? error.message : "Access wasn't allowed.",
-      tone: "error",
-    }));
+    (error: unknown): Note => ({ text: errorText(error, "Access wasn't allowed."), tone: "error" }));
   if (access?.grant !== grant) return;
   access = { grant, note };
   setValues({});
 };
+
+const ACCESS_POLL_MS = 2_000;
+const ACCESS_WAIT_MS = 3 * 60_000;
+
+/**
+ * The Commenting section: the grant commenting needs and whether the account holds it, once read;
+ * whether an Allow commenting click is still asking Workshop to open Google's pop-up, and whether it
+ * is waiting for the grant; and what the last read or click came to. Null until the first render
+ * starts the read.
+ */
+let commenting: {
+  known?: DriveCommentAccess; asking?: boolean; waiting?: boolean; note?: Note;
+} | null = null;
+
+const COMMENT_WAIT = "Waiting for permission in Google's window…";
+
+/** Bumped by every Allow commenting click, so only the latest click polls. */
+let commentRun = 0;
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+/** The runtime has no hook for a module's first render, so the first render starts the read. */
+function readCommentAccess({ ui, setValues }: Context) {
+  commenting = {};
+  setValues({});
+  void ui.getCommentAccess().then(
+    known => { commenting = { known }; },
+    (error: unknown) => {
+      const text = errorText(error, "Couldn't check whether commenting is allowed.");
+      commenting = { note: { text, tone: "error" } };
+    },
+  ).finally(() => setValues({}));
+}
+
+/**
+ * Asks for the grant from the click, before any await, so the browser lets Workshop open Google's
+ * consent pop-up, then polls the gatekeeper until the account holds it. Once Workshop has answered,
+ * a newer click (say, after the pop-up was closed) asks again and takes over the poll.
+ */
+function allowCommenting({ ensureResources, setValues, ui }: Context, known: DriveCommentAccess) {
+  const asked = ensureResources([known.grant]);
+  const run = ++commentRun;
+  const show = (next: NonNullable<typeof commenting>) => {
+    commenting = next;
+    setValues({});
+  };
+  show({ known, asking: true, waiting: true });
+  void (async () => {
+    try {
+      const held = await asked;
+      if (run !== commentRun) return;
+      show({ known, waiting: true });
+      const deadline = Date.now() + ACCESS_WAIT_MS;
+      // When Workshop already sees the grant it opened no pop-up, so read once, at once.
+      for (let wait = held ? 0 : ACCESS_POLL_MS; Date.now() < deadline; wait = ACCESS_POLL_MS) {
+        await sleep(wait);
+        if (run !== commentRun) return;
+        const latest = await ui.getCommentAccess();
+        if (run !== commentRun) return;
+        if (latest.held) {
+          show({ known: latest, note: access ? undefined : { text: "Commenting is allowed." } });
+          return;
+        }
+        if (held) throw new Error("Google hasn't allowed commenting. Select Allow commenting to try again.");
+      }
+      throw new Error("Commenting wasn't allowed within 3 minutes. Select Allow commenting to try again.");
+    } catch (error) {
+      if (run !== commentRun) return;
+      show({ known, note: { text: errorText(error, "Commenting wasn't allowed."), tone: "error" } });
+    }
+  })();
+}
+
+/**
+ * The Commenting section renders after the Shared drives block, and the runtime announces only the
+ * last info Notice on screen. So whenever that block is shown its notes are the ones announced: the
+ * section shows its success only while the block is not, and drops it once the block appears, or it
+ * would be announced again when the block goes.
+ */
+function dropCommentingSuccess() {
+  if (commenting?.note && commenting.note.tone !== "error") commenting = { ...commenting, note: undefined };
+}
+
+/**
+ * What this section always shows is plain text, as is its wait while the Shared drives block is
+ * shown, so that only what a click changes is announced, and never over that block's notes.
+ */
+function commentingSection(context: Context, sharedDrivesShown: boolean) {
+  const { known, asking, waiting, note } = commenting ?? {};
+  return <Section title="Commenting">
+    {known?.held
+      ? <p>Agents can comment on files through this connection.</p>
+      : <Fragment>
+        <p>
+          Agents can comment on files where you can comment, and suggest edits as plain comments.
+          Google will ask to let this app "See, edit, create, and delete all your Google Drive
+          files". The gatekeeper still touches only what this connection reaches, and queues every
+          comment for your approval.
+        </p>
+        {!known && note
+          // The read failed, so the grant to ask for is unknown until it is read again.
+          ? <Button onClick={() => readCommentAccess(context)}>Check again</Button>
+          // Workshop refuses a second access request until it has answered the first.
+          : <Button
+            disabled={!known || asking === true}
+            onClick={() => known && !asking && allowCommenting(context, known)}
+          >
+            Allow commenting
+          </Button>}
+      </Fragment>}
+    {waiting && (sharedDrivesShown ? <p>{COMMENT_WAIT}</p> : <Notice>{COMMENT_WAIT}</Notice>)}
+    {note && <Notice tone={note.tone}>{note.text}</Notice>}
+  </Section>;
+}
 
 export default {
   initial: { target: null },
@@ -148,6 +262,7 @@ export default {
   render(context) {
     const { values: { target = null }, setValues, ui, acceptedResourceUrlPatterns: accepted } = context;
     const pending = access;
+    if (!commenting) readCommentAccess(context);
     return <Section>
       <Field label="What to connect">
         <HierarchyPicker
@@ -165,6 +280,7 @@ export default {
             const page = await ui.listDriveNodes(parentId, query, cursor);
             if (listing === listings && (access || page.needsGrant)) {
               access = page.needsGrant ? { grant: page.needsGrant } : null;
+              if (access) dropCommentingSuccess();
               setValues({});
             }
             return page.needsGrant
@@ -188,6 +304,7 @@ export default {
         <Button onClick={() => void allow(context, pending.grant)}>Allow access</Button>
         {pending.note && <Notice tone={pending.note.tone}>{pending.note.text}</Notice>}
       </Fragment>}
+      {commentingSection(context, pending !== null)}
     </Section>;
   },
 } satisfies ConfiguratorUISpec<DriveConfiguratorRpc, DriveConfiguratorValues>;

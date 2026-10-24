@@ -6,6 +6,11 @@ import type {
 import { TestGitCache } from "./test-git-cache";
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import type { GoogleAccessToken } from "../src/google-api";
+import { COMMENT_ATTEMPT_PREFIX, type CommentAttempt } from "../src/drive-comments";
+import type { DriveBindingScope } from "../src/drive-session";
+import type {
+  DriveComment, DriveCommentReply, GoogleDriveFolderSession, GoogleDriveSession,
+} from "../src/drive-types";
 import type { GoogleDocSession, GoogleDocTab } from "../src/docs-types";
 import type { MarkerEntry } from "../src/sheets-actions";
 import type { SpreadsheetInfo, SpreadsheetRange } from "../src/sheets-read-types";
@@ -13,12 +18,12 @@ import type { GoogleSpreadsheetSession } from "../src/sheets-types";
 import type { PresentationInfo, Slide } from "../src/slides-read-types";
 import type { GooglePresentationSession } from "../src/slides-types";
 import GoogleWorker, {
-  GatekeeperVendor, GoogleDocGatekeeperImpl, GoogleSheetsGatekeeperImpl,
+  GatekeeperVendor, GoogleDocGatekeeperImpl, GoogleDriveGatekeeperImpl, GoogleSheetsGatekeeperImpl,
   GoogleSlidesGatekeeperImpl, GoogleVerifier,
 } from "../src/google";
 
 export {
-  GatekeeperVendor, GoogleDocGatekeeperImpl, GoogleSheetsGatekeeperImpl,
+  GatekeeperVendor, GoogleDocGatekeeperImpl, GoogleDriveGatekeeperImpl, GoogleSheetsGatekeeperImpl,
   GoogleSlidesGatekeeperImpl, GoogleVerifier,
 };
 export default GoogleWorker;
@@ -27,6 +32,15 @@ export class UserAccount extends DurableObject<Env> {
   /** Names the account in its token, so a provider fake can tell which account a request was made as. */
   async getAccessToken(): Promise<GoogleAccessToken> {
     return { token: `test-access-token:${this.ctx.id}`, expires: new Date(8640000000000000) };
+  }
+
+  /** The grants {@link setGrantedResourceUrlPatterns} last recorded; none until then. */
+  async getGrantedResourceUrlPatterns(): Promise<string[]> {
+    return this.ctx.storage.kv.get<string[]>("test:grants") ?? [];
+  }
+
+  async setGrantedResourceUrlPatterns(patterns: string[]): Promise<void> {
+    this.ctx.storage.kv.put("test:grants", patterns);
   }
 }
 
@@ -55,6 +69,25 @@ type SheetsCall = {
   action?: ActionDescription;
   observations: string[];
 };
+
+/** What one Drive session call returned or threw, and what it queued and observed. */
+type DriveCall = {
+  /** A write's pending item, or every page a comment listing yielded. */
+  value?: DriveComment | DriveCommentReply | DriveComment[][];
+  error?: string;
+  actionId?: number;
+  action?: ActionDescription;
+  observations: string[];
+};
+
+/** Every page a comment cursor yields, until it is exhausted. */
+async function drainComments(cursor: { next(): Promise<DriveComment[] | null> } & Disposable)
+    : Promise<DriveComment[][]> {
+  using owned = cursor;
+  let pages: DriveComment[][] = [];
+  for (let page = await owned.next(); page !== null; page = await owned.next()) pages.push(page);
+  return pages;
+}
 
 /** An error's message, so a test can assert on a failure that crossed the RPC boundary. */
 function failure(error: unknown): { error: string } {
@@ -99,6 +132,7 @@ export class TestHooks extends DurableObject<Env> {
   #classes = new Map<string, DurableObjectClass<Gatekeeper<any>>>();
   /** The class each facet's applyCreation() returned, until adoptCreated() switches to it. */
   #created = new Map<string, DurableObjectClass<Gatekeeper<any>>>();
+  #drives = new Map<string, GoogleDriveGatekeeperImpl>();
 
   /** The approval description of the edit most recently submitted through these hooks. */
   get lastActionDescription(): string {
@@ -348,6 +382,130 @@ export class TestHooks extends DurableObject<Env> {
     await (this.#slides(facetName) as unknown as TestGoogleSlidesGatekeeper).claimTestAction(actionId);
   }
 
+  /**
+   * The Drive gatekeeper `facetName` names, built over this object's own state and storage: the
+   * pool registers no Drive gatekeeper class a facet could run, so each test addresses a TestHooks
+   * object of its own instead. Dropped by {@link restartDrive}, as another activation would be.
+   */
+  #drive(facetName: string, scope: DriveBindingScope): GoogleDriveGatekeeperImpl {
+    let gatekeeper = this.#drives.get(facetName);
+    if (!gatekeeper) {
+      let userObjectId = this.ctx.exports.UserAccount.idFromName("test-user").toString();
+      // The props a facet would carry. The state itself must be the runtime's, which the base class
+      // checks, so they are set on it.
+      Object.defineProperty(this.ctx, "props", {
+        value: { userObjectId, scope }, configurable: true,
+      });
+      gatekeeper = new GoogleDriveGatekeeperImpl(
+        this.ctx as unknown as DurableObjectState<{ userObjectId: string; scope: DriveBindingScope }>,
+        this.env as unknown as ConstructorParameters<typeof GoogleDriveGatekeeperImpl>[1]);
+      this.#drives.set(facetName, gatekeeper);
+    }
+    return gatekeeper;
+  }
+
+  /** Forgets the Drive gatekeeper `facetName` names, keeping its storage. */
+  async restartDrive(facetName: string): Promise<void> {
+    this.#drives.delete(facetName);
+  }
+
+  /** Records the grants the test user's Google account holds. */
+  async setDriveGrants(patterns: string[]): Promise<void> {
+    let account = this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromName("test-user"));
+    await (account as unknown as UserAccount).setGrantedResourceUrlPatterns(patterns);
+  }
+
+  /**
+   * Calls one method of a fresh Drive session, after opening each folder of `path` in turn,
+   * reporting what it queued and observed. A comment cursor is drained into its pages.
+   */
+  async callDrive(
+    facetName: string, scope: DriveBindingScope, method: string, args: unknown[],
+    path: string[] = [],
+  ): Promise<DriveCall> {
+    let queue = new TestApprovalQueue();
+    using approvalQueue = new RpcStub<ApprovalQueue>(queue);
+    // Through a stub, so the session is reached over RPC as a binding reaches it.
+    let started = await this.#drive(facetName, scope).startSession(approvalQueue);
+    using session = new RpcStub(started as unknown as RpcTarget) as
+      unknown as GoogleDriveSession & Disposable;
+    let outcome: { value?: DriveCall["value"]; error?: string };
+    let opened: Disposable[] = [];
+    try {
+      let target: GoogleDriveSession | GoogleDriveFolderSession = session;
+      for (let folderId of path) {
+        let folder = await (target as GoogleDriveFolderSession).openFolder(folderId) as
+          GoogleDriveFolderSession & Disposable;
+        opened.push(folder);
+        target = folder;
+      }
+      let value = await (target as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>)[method](...args);
+      outcome = {
+        value: method === "listComments"
+          ? await drainComments(value as Parameters<typeof drainComments>[0])
+          : value as DriveComment | DriveCommentReply,
+      };
+    } catch (error) {
+      outcome = failure(error);
+    } finally {
+      for (let folder of opened.toReversed()) folder[Symbol.dispose]();
+    }
+    return { ...outcome, actionId: queue.actionId, action: queue.action, observations: queue.observations };
+  }
+
+  /** Applies a Drive comment write, returning the error message it failed with, if any. */
+  async applyDrive(facetName: string, scope: DriveBindingScope, actionId: number)
+      : Promise<string | null> {
+    try {
+      await this.#drive(facetName, scope).applyAction(actionId, new RpcStub(new TestGitCache()));
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  /** Rejects a Drive comment write, returning the error message it was refused with, if any. */
+  async rejectDrive(facetName: string, scope: DriveBindingScope, actionId: number)
+      : Promise<string | null> {
+    try {
+      await this.#drive(facetName, scope).rejectAction(actionId);
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  async driveAutoApprovable(facetName: string, scope: DriveBindingScope): Promise<ActionKind[]> {
+    return this.#drive(facetName, scope).getAutoApprovableActions();
+  }
+
+  /** Leaves a Drive comment write claimed, as an activation that died while applying it would. */
+  async orphanDriveClaim(facetName: string, scope: DriveBindingScope, actionId: number)
+      : Promise<void> {
+    await (this.#drive(facetName, scope) as unknown as TestGoogleDriveGatekeeper)
+      .claimTestAction(actionId);
+  }
+
+  /** Leaves a Drive comment write failed, as a resolution another activation finished would. */
+  async failDriveAction(facetName: string, scope: DriveBindingScope, actionId: number)
+      : Promise<void> {
+    await (this.#drive(facetName, scope) as unknown as TestGoogleDriveGatekeeper)
+      .failTestAction(actionId);
+  }
+
+  /** The attempt markers a Drive binding holds, by action ID. */
+  async driveAttempts(facetName: string, scope: DriveBindingScope)
+      : Promise<Record<number, CommentAttempt>> {
+    return (this.#drive(facetName, scope) as unknown as TestGoogleDriveGatekeeper).testAttempts();
+  }
+
+  /** Moves a Drive comment write's attempt marker `ms` into the past. */
+  async ageDriveAttempt(facetName: string, scope: DriveBindingScope, actionId: number, ms: number)
+      : Promise<void> {
+    await (this.#drive(facetName, scope) as unknown as TestGoogleDriveGatekeeper)
+      .ageTestAttempt(actionId, ms);
+  }
+
   #sheets(facetName: string) {
     let userObjectId = this.ctx.exports.UserAccount.idFromName("test-user").toString();
     return this.ctx.facets.get<GoogleSheetsGatekeeperImpl>(facetName, () => ({
@@ -457,6 +615,45 @@ type TestGoogleSlidesGatekeeper = GoogleSlidesGatekeeperImpl & { claimTestAction
   // A second journal over the same storage claims it, so the live one never knew of the apply.
   let storage = (this as unknown as TestDurableObjectState).ctx.storage;
   new ActionJournal(storage.kv, { namespace: "slides" }).markClaimed(id);
+};
+
+type TestGoogleDriveGatekeeper = GoogleDriveGatekeeperImpl & {
+  claimTestAction(id: number): void;
+  failTestAction(id: number): void;
+  testAttempts(): Record<number, CommentAttempt>;
+  ageTestAttempt(id: number, ms: number): void;
+};
+
+(GoogleDriveGatekeeperImpl.prototype as TestGoogleDriveGatekeeper).claimTestAction = function(
+  id: number,
+): void {
+  // A second journal over the same storage claims it, so the live one never knew of the apply.
+  let storage = (this as unknown as TestDurableObjectState).ctx.storage;
+  new ActionJournal(storage.kv, { namespace: "drive" }).markClaimed(id);
+};
+
+(GoogleDriveGatekeeperImpl.prototype as TestGoogleDriveGatekeeper).failTestAction = function(
+  id: number,
+): void {
+  let storage = (this as unknown as TestDurableObjectState).ctx.storage;
+  new ActionJournal(storage.kv, { namespace: "drive" }).markFailed(id, "Failed elsewhere.");
+};
+
+(GoogleDriveGatekeeperImpl.prototype as TestGoogleDriveGatekeeper).testAttempts = function(
+): Record<number, CommentAttempt> {
+  let storage = (this as unknown as TestDurableObjectState).ctx.storage;
+  return Object.fromEntries([...storage.kv.list<CommentAttempt>({ prefix: COMMENT_ATTEMPT_PREFIX })]
+    .map(([key, attempt]) => [Number(key.slice(COMMENT_ATTEMPT_PREFIX.length)), attempt]));
+};
+
+(GoogleDriveGatekeeperImpl.prototype as TestGoogleDriveGatekeeper).ageTestAttempt = function(
+  id: number, ms: number,
+): void {
+  let kv = (this as unknown as TestDurableObjectState).ctx.storage.kv;
+  let key = `${COMMENT_ATTEMPT_PREFIX}${id}`;
+  let attempt = kv.get<CommentAttempt>(key);
+  if (!attempt) throw new Error(`No attempt marker for action ${id}`);
+  kv.put(key, { at: attempt.at - ms });
 };
 
 type TestGoogleSheetsGatekeeper = GoogleSheetsGatekeeperImpl & {

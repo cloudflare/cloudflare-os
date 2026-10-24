@@ -1,6 +1,7 @@
 import { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind, GitCache, workerVersionTag, type ActionDescription, type ConnectHandoff } from '@gadgets/workshop-shared/gatekeeper';
+import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import { buildDescription, codeSpan, plainInline } from "@gadgets/gatekeeper-kit/action-description";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
@@ -37,7 +38,20 @@ import {
   computeReplaceOperations, docTabToMarkdown, markdownToDocRequests, MARKDOWN_RENDERING_VERSION,
   type DocTabSnapshot, type EditableMarkdown,
 } from "./markdown-converter";
-import { DriveApi, DriveApiRequestError, lacksFileContentAccess } from "./drive-api";
+import {
+  DriveApi, DriveApiRequestError, isDriveCommentId, lacksFileContentAccess,
+} from "./drive-api";
+import {
+  composeComment, composeReply, composeResolve, composeSuggestion, headingLink, locateQuote,
+  selectTab,
+} from "./drive-comment-body";
+import {
+  ALREADY_RESOLVED, COMMENT_GRANT_MISSING, COMMENT_NOT_FOUND, commentAttempts, commentParent,
+  DRIVE_COMMENT_ACTIONS, isPendingCommentId, overlayPending, PENDING_COMMENT_REFUSED,
+  pendingComment, pendingReply, readLiveComment, toDriveComment,
+  type CommentTargetPayload, type DriveCommentAction, type DriveCommentActions,
+  type DriveCommentQueue,
+} from "./drive-comments";
 import { CONVERSION_FAILED, pdfToText, type PdfConverter } from "./drive-pdf";
 import type { AiFetcher } from "./workers-ai-markdown";
 import { driveObserverTracker, type DriveObservation } from "./drive-observers";
@@ -45,10 +59,12 @@ import { outsideScope, readFolderRoot, type FolderLocation } from "./drive-folde
 import {
   DriveFolderSessionCore, DriveSessionCore, driveModifiedTime,
   GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE, PDF_MIME_TYPE,
-  requireDriveBindingScope, type DriveBindingScope, type DriveCore, type NativeObservation, type NativeRead,
+  requireDriveBindingScope, type CommentTarget, type DriveBindingScope, type DriveCore,
+  type NativeObservation, type NativeRead,
 } from "./drive-session";
 import type {
-  DriveEntry, DriveListOptions, DrivePdfText, DriveSessionSearchQuery, GoogleDriveFolderSession,
+  DriveComment, DriveCommentOptions, DriveCommentReply, DriveEntry, DriveListOptions, DrivePdfText,
+  DriveSessionSearchQuery, DriveSuggestEditOptions, GoogleDriveFolderSession,
   GoogleDriveReadSession, GoogleDriveSession,
 } from "./drive-types";
 import { ChatApi, isChatNoAccessError } from "./chat-api";
@@ -100,14 +116,15 @@ import GOOGLE_LOGO_SVG from "./google-logo.svg";
 import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS } from "./auth-retry";
 import { Mutex } from "./mutex";
+import { ReadGate } from "./read-gate";
 import {
   BIGQUERY_HOST, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
   GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE,
   GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE,
   RESOURCE_BY_KIND,
   SUPPORTED_RESOURCES, creatableKind, nativeFileUrl,
-  grantedResourceUrlPatterns, hasDriveResourceGrant, isPrivateGrant, OFFICE_IMPORT_GRANT,
-  SHARED_DRIVES_GRANT,
+  DRIVE_COMMENTS_GRANT, grantedResourceUrlPatterns, hasDriveResourceGrant, isPrivateGrant,
+  OFFICE_IMPORT_GRANT, SHARED_DRIVES_GRANT,
   parseResourceUrl, recordedResourceUrlPatterns, type RecordedResourceGrant,
 } from "./resources";
 import {
@@ -976,7 +993,8 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
         groupedWith === GOOGLE_DRIVE_RESOURCE.urlPattern) {
       return {
         iframeHtml: DRIVE_CONFIGURATOR_HTML,
-        ui: new RpcStub(new DriveConfiguratorUI(getToken, holds(SHARED_DRIVES_GRANT))),
+        ui: new RpcStub(new DriveConfiguratorUI(
+          getToken, holds(SHARED_DRIVES_GRANT), holds(DRIVE_COMMENTS_GRANT))),
       };
     }
 
@@ -2969,14 +2987,30 @@ type GoogleDriveGatekeeperImplProps = {
 export class GoogleDriveGatekeeperImpl
     extends DurableObject<Env, GoogleDriveGatekeeperImplProps>
     implements Gatekeeper<GoogleDriveSession> {
-  #tokens = new AccessTokenCache(opts => {
-    let account = this.ctx.exports.UserAccount.get(
-      this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
-    return account.getAccessToken(opts);
+  #tokens = new AccessTokenCache(opts => this.#account().getAccessToken(opts));
+  #api = new DriveApi(opts => this.#getAccessToken(opts));
+  #journal = new ActionJournal<DriveCommentAction>(this.ctx.storage.kv, { namespace: "drive" });
+  #attempts = commentAttempts(this.ctx.storage.kv);
+  #actions = DRIVE_COMMENT_ACTIONS.bind(this.#journal, {
+    api: this.#api,
+    scope: () => this.#scope,
+    holdsGrant: () => this.#holdsCommentGrant(),
+    attempts: this.#attempts,
   });
+  #reads = new ReadGate();
+
+  #account() {
+    return this.ctx.exports.UserAccount.get(
+      this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
+  }
 
   #getAccessToken(opts?: AccessTokenRequest): Promise<string> {
     return this.#tokens.get(opts);
+  }
+
+  /** Whether the connection opted in to commenting, read live so a revocation counts at once. */
+  async #holdsCommentGrant(): Promise<boolean> {
+    return (await this.#account().getGrantedResourceUrlPatterns()).includes(DRIVE_COMMENTS_GRANT);
   }
 
   async describe(): Promise<ResourceDescription> {
@@ -2990,7 +3024,7 @@ export class GoogleDriveGatekeeperImpl
         tsType: "GoogleDriveSession",
       };
     }
-    let api = new DriveApi(opts => this.#getAccessToken(opts));
+    let api = this.#api;
     if (scope.kind === "folder") {
       // Validated here too, so a hand-built resource URL fails at connect rather than minting a
       // presentable binding whose every call then refuses.
@@ -2999,7 +3033,7 @@ export class GoogleDriveGatekeeperImpl
         // The natural browser URL, not the internal `_resource` selector the grant is keyed on.
         url: `https://drive.google.com/drive/folders/${encodeURIComponent(scope.folderId)}`,
         title: folder.name,
-        snippet: `List and search direct children, navigate child folders, read native Google Docs, Sheets and Slides, and read PDFs' text with readPdf() in Drive folder "${folder.name}"`,
+        snippet: `List and search direct children, navigate child folders, read native Google Docs, Sheets and Slides, read PDFs' text with readPdf(), and read and queue comments on direct children in Drive folder "${folder.name}"`,
         suggestedBindingName: "GOOGLE_DRIVE_FOLDER",
         tsType: "GoogleDriveFolderSession",
       };
@@ -3008,7 +3042,7 @@ export class GoogleDriveGatekeeperImpl
     return {
       url: `https://drive.google.com/file/d/${encodeURIComponent(scope.fileId)}/view`,
       title: file.name,
-      snippet: `Read metadata and, when native, Google Doc, Sheet or Slides content, or with readPdf() a PDF's text, from Drive file "${file.name}"`,
+      snippet: `Read metadata and, when native, Google Doc, Sheet or Slides content, or with readPdf() a PDF's text, from Drive file "${file.name}", and read and queue comments on it`,
       suggestedBindingName: "GOOGLE_DRIVE_FILE",
       tsType: "GoogleDriveReadSession",
     };
@@ -3018,11 +3052,13 @@ export class GoogleDriveGatekeeperImpl
     return getGoogleDriveTypesCode();
   }
 
-  async getAutoApprovableActions() {
-    return [];
+  async getAutoApprovableActions(): Promise<ActionKind[]> {
+    return this.#actions.autoApprovableKinds();
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GoogleDriveSession> {
+    // Only an undecided or claimed write can be applied again, so no other marker is read again.
+    this.#attempts.sweep(new Set(this.#journal.listPending().map(({ id }) => id)));
     let observerTracker = this.#observerTracker();
     let getDriveAccessToken = (opts?: AccessTokenRequest) => this.#getAccessToken(opts);
     // `pnpm dev-server` drops the AI binding unless started with --use-workers-ai-binding.
@@ -3030,8 +3066,13 @@ export class GoogleDriveGatekeeperImpl
     let ai = this.env.AI as unknown as AiFetcher | undefined;
     let gatewayId = this.env.CF_AI_GATEWAY;
     let convertPdf: PdfConverter | undefined = ai && (pdf => pdfToText(ai, gatewayId, pdf));
+    let comments: DriveCommentQueue = {
+      holdsGrant: () => this.#holdsCommentGrant(),
+      submit: (queue, kind, payload) => this.#actions.submit(queue, kind, payload),
+      undecided: read => this.#reads.read(() => read(this.#journal.listUndecided())),
+    };
     return new GoogleDriveSessionImpl(
-      new DriveApi(getDriveAccessToken),
+      this.#api,
       new GoogleDocsApi(getDriveAccessToken),
       new GoogleSheetsApi(getDriveAccessToken),
       new GoogleSlidesApi(getDriveAccessToken),
@@ -3040,14 +3081,37 @@ export class GoogleDriveGatekeeperImpl
       approvalQueue.dup(),
       observations => observerTracker.prepareObservation(observations),
       () => observerTracker.prepareWithheld(),
+      comments,
     );
   }
 
-  /** Read-only — no side-effecting actions. */
-  async applyAction(_action: number): Promise<void> {}
-  async rejectAction(_action: number): Promise<void> {}
+  applyAction(actionId: number, _cache: RpcStub<GitCache>): Promise<void> {
+    return this.#reads.resolve(async () => {
+      this.#adoptOrphanedClaim(actionId);
+      await this.#actions.apply(actionId);
+    });
+  }
+
+  rejectAction(actionId: number): Promise<void> {
+    return this.#reads.resolve(async () => {
+      this.#adoptOrphanedClaim(actionId);
+      await this.#actions.reject(actionId);
+    });
+  }
+
   revertAction(_action: number): Promise<void> {
-    throw new Error("Google Drive gatekeeper has no writable actions to revert");
+    throw new Error("Google Drive comments cannot be reverted automatically.");
+  }
+
+  /**
+   * Hands a claim an earlier activation died holding back to the action set as undecided, rather
+   * than let it be failed as of unknown outcome: the send's attempt marker decides instead. With
+   * one, applying looks for what the send posted before anything is sent again, and rejecting is
+   * refused; without one, nothing was sent. Resolutions run one at a time behind the read gate, so
+   * a claim found here is never one this activation holds.
+   */
+  #adoptOrphanedClaim(actionId: number): void {
+    if (this.#journal.get(actionId)?.state === "claimed") this.#journal.restorePending(actionId);
   }
 
   #observerTracker(): ObserverTracker<DriveObservation, Fetcher<GoogleVerifierApi>> {
@@ -3180,6 +3244,12 @@ class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession
   }
 }
 
+/** Refuses a comment ID that names a queued write, or is not a comment ID at all. */
+function requirePostedCommentId(commentId: string): void {
+  if (isPendingCommentId(commentId)) throw new Error(PENDING_COMMENT_REFUSED);
+  if (!isDriveCommentId(commentId)) throw new Error("Not a Google Drive comment ID.");
+}
+
 /** The refusal for an account connected before Drive bindings could read file content. */
 const PDF_ACCESS_MISSING =
   "This Google account was connected before Drive bindings could read file content. Reconnect " +
@@ -3204,6 +3274,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     observations: DriveObservation[],
   ) => Promise<ObserverCheck<DriveObservation>>;
   #prepareWithheld: () => ObserverCheck<DriveObservation>;
+  #comments: DriveCommentQueue;
 
   constructor(
     driveApi: DriveApi,
@@ -3217,6 +3288,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
       observations: DriveObservation[],
     ) => Promise<ObserverCheck<DriveObservation>>,
     prepareWithheld: () => ObserverCheck<DriveObservation>,
+    comments: DriveCommentQueue,
     location?: FolderLocation,
   ) {
     super();
@@ -3232,6 +3304,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     this.#approvalQueue = approvalQueue;
     this.#prepareObservation = prepareObservation;
     this.#prepareWithheld = prepareWithheld;
+    this.#comments = comments;
     this.#core = this.#coreFor(this.#approvalQueue);
   }
 
@@ -3261,7 +3334,8 @@ export class GoogleDriveSessionImpl extends RpcTarget
       let location = await (core as DriveFolderSessionCore).openFolder(folderId);
       return new GoogleDriveSessionImpl(
         this.#driveApi, this.#docsApi, this.#sheetsApi, this.#slidesApi, this.#convertPdf,
-        this.#scope, queue, this.#prepareObservation, this.#prepareWithheld, location,
+        this.#scope, queue, this.#prepareObservation, this.#prepareWithheld, this.#comments,
+        location,
       );
     });
   }
@@ -3323,6 +3397,129 @@ export class GoogleDriveSessionImpl extends RpcTarget
       await converted?.text.cancel().catch(() => undefined);
       throw error;
     });
+  }
+
+  async listComments(fileId: string): Promise<Cursor<DriveComment>> {
+    return this.#withQueue(async (queue, core) => {
+      let { fileId: id } = await core.commentTarget(fileId);
+      await core.requireCommentable(id);
+      let pager = core.commentPager(id, fetch => this.#comments.undecided(async pending => {
+        let { comments, nextPageToken } = await fetch();
+        return {
+          comments: overlayPending(
+            id, comments.map(toDriveComment), pending, nextPageToken === undefined),
+          ...(nextPageToken ? { nextPageToken } : {}),
+        };
+      }));
+      return new RpcCursor(pager, queue);
+    });
+  }
+
+  async comment(
+    fileId: string, text: string, options: DriveCommentOptions = {},
+  ): Promise<DriveComment> {
+    let { quote, tabId } = options;
+    if (tabId !== undefined && quote === undefined) {
+      throw new Error("tabId names the tab a quote is in; pass the quote too.");
+    }
+    let queued = await this.#queueComment(fileId, "createComment", async (target, base) => {
+      composeComment(text, quote);
+      let link = quote === undefined ? undefined : await this.#headingLink(target, quote, tabId);
+      return { ...base, content: composeComment(text, quote, link) };
+    });
+    return pendingComment(queued.id, queued.payload);
+  }
+
+  async suggestEdit(
+    fileId: string, oldText: string, newText: string, options: DriveSuggestEditOptions = {},
+  ): Promise<DriveComment> {
+    let { note, tabId } = options;
+    let queued = await this.#queueComment(fileId, "createComment", async (target, base) => {
+      composeSuggestion(oldText, newText, note);
+      let link = await this.#headingLink(target, oldText, tabId);
+      return { ...base, content: composeSuggestion(oldText, newText, note, link) };
+    });
+    return pendingComment(queued.id, queued.payload);
+  }
+
+  async reply(fileId: string, commentId: string, text: string): Promise<DriveCommentReply> {
+    requirePostedCommentId(commentId);
+    let queued = await this.#queueComment(fileId, "createReply", async (target, base) => {
+      let content = composeReply(text);
+      let comment = await this.#liveComment(target.fileId, commentId);
+      return {
+        ...base, commentId, content, parent: commentParent(comment),
+        // Drive reopens a resolved comment that is replied to.
+        ...(comment.resolved ? { reopens: true as const } : {}),
+      };
+    });
+    return pendingReply(queued.id, { kind: "createReply", payload: queued.payload });
+  }
+
+  async resolve(fileId: string, commentId: string, text?: string): Promise<DriveCommentReply> {
+    requirePostedCommentId(commentId);
+    let queued = await this.#queueComment(fileId, "resolveComment", async (target, base) => {
+      let content = composeResolve(text);
+      let comment = await this.#liveComment(target.fileId, commentId);
+      // Drive would add another resolve reply to a resolved comment.
+      if (comment.resolved) throw new Error(ALREADY_RESOLVED);
+      return {
+        ...base, commentId, ...(content === undefined ? {} : { content }),
+        parent: commentParent(comment),
+      };
+    });
+    return pendingReply(queued.id, { kind: "resolveComment", payload: queued.payload });
+  }
+
+  /**
+   * Checks and queues one comment write: the file is in scope, the connection may comment, and the
+   * account can comment on the file, all before `prepare` builds the payload and nothing is queued
+   * until it has.
+   */
+  async #queueComment<K extends keyof DriveCommentActions>(
+    fileId: string,
+    kind: K,
+    prepare: (target: CommentTarget, base: CommentTargetPayload) => Promise<DriveCommentActions[K]>,
+  ): Promise<{ id: number; payload: DriveCommentActions[K] }> {
+    let core = this.#core;
+    let target = await core.commentTarget(fileId);
+    if (!(await this.#comments.holdsGrant())) throw new Error(COMMENT_GRANT_MISSING);
+    await core.requireCommentable(target.fileId);
+    let payload = await prepare(target, {
+      fileId: target.fileId,
+      ...(target.folderIds ? { folderIds: target.folderIds } : {}),
+      queuedAt: new Date().toISOString(),
+    });
+    let id = await this.#comments.submit(this.#approvalQueue, kind, payload);
+    return { id, payload };
+  }
+
+  /**
+   * A link to the heading above `quote` in a Google Doc, or `undefined` when no heading precedes
+   * it. Reading the Doc is a content read, authorized as one.
+   */
+  async #headingLink(
+    target: CommentTarget, quote: string, tabId: string | undefined,
+  ): Promise<string | undefined> {
+    if (target.mimeType !== GOOGLE_DOC_MIME_TYPE) {
+      throw new Error("Quoting and suggested edits work only on Google Docs.");
+    }
+    let documentId = target.fileId;
+    let document = await this.#core.nativeRead(documentId, GOOGLE_DOC_MIME_TYPE)(
+      () => this.#docsApi.getDocument(documentId),
+      () => ({
+        title: "Read Google Doc content",
+        description: `Read the text of Google Doc ${documentId} to find the quoted text.`,
+      }));
+    let tab = selectTab(document, tabId);
+    let headingId = locateQuote(tab, quote);
+    return headingId === undefined ? undefined : headingLink(documentId, tab.tabId, headingId);
+  }
+
+  async #liveComment(fileId: string, commentId: string) {
+    let comment = await readLiveComment(this.#driveApi, fileId, commentId);
+    if (!comment) throw new Error(COMMENT_NOT_FOUND);
+    return comment;
   }
 
   #coreFor(queue: RpcStub<ApprovalQueue>): DriveCore {

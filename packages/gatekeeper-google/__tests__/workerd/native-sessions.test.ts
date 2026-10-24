@@ -1,3 +1,4 @@
+import { env } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import type {
   ActionDescription, ApprovalQueue, GitCache, HookController, HookDescription,
@@ -6,10 +7,12 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleDocsApi } from "../../src/docs-api";
 import { DriveApi } from "../../src/drive-api";
+import type { DriveCommentQueue } from "../../src/drive-comments";
 import type { DriveBindingScope } from "../../src/drive-session";
 import type { PdfConverter } from "../../src/drive-pdf";
 import { GoogleDriveSessionImpl } from "../../src/google";
-import type { DrivePdfText, DriveSessionSearchQuery } from "../../src/drive-types";
+import type { DriveComment, DrivePdfText, DriveSessionSearchQuery } from "../../src/drive-types";
+import { DRIVE_COMMENTS_GRANT, GOOGLE_DRIVE_RESOURCE } from "../../src/resources";
 import { GoogleSheetsApi } from "../../src/sheets-api";
 import type { GoogleSpreadsheetSession } from "../../src/sheets-types";
 import { GoogleSlidesApi } from "../../src/slides-api";
@@ -230,6 +233,13 @@ function docFetches(): number {
   }).length;
 }
 
+/** A comment host for sessions these tests never comment through. */
+const NO_COMMENTS: DriveCommentQueue = {
+  holdsGrant: async () => false,
+  submit: async () => { throw new Error("Unexpected comment submission"); },
+  undecided: read => read([]),
+};
+
 function newSession(
   convertPdf?: PdfConverter, scope: DriveBindingScope = { kind: "account" },
 ) {
@@ -247,6 +257,7 @@ function newSession(
       queueStub,
       async fileIds => ({ pendingSets: fileIds, commit() {} }),
       () => ({ pendingSets: [], commit() {} }),
+      NO_COMMENTS,
     )),
   };
 }
@@ -728,6 +739,7 @@ describe("folder-scoped native sessions", () => {
         new RpcStub(queue),
         async fileIds => ({ pendingSets: fileIds, commit() {} }),
         () => ({ pendingSets: [], commit() {} }),
+        NO_COMMENTS,
       )),
     };
   }
@@ -1004,5 +1016,756 @@ describe("folder-scoped native sessions", () => {
 
     await expect(Promise.resolve(session.openGoogleDoc("doc-1")))
       .rejects.toThrow(OUTSIDE);
+  });
+});
+
+
+/** A Doc whose second paragraph is the heading the quoted text sits under. */
+function headedDoc() {
+  let tab = buildTab([
+    { runs: ["Plan\n"], namedStyleType: "TITLE" },
+    { runs: ["Launch\n"], namedStyleType: "HEADING_1" },
+    { runs: ["The launch is in May.\n"] },
+    { runs: ["We ship in May and June.\n"] },
+  ]);
+  let [, title, heading] = tab.body.content;
+  title.paragraph!.paragraphStyle.headingId = "h.title";
+  heading.paragraph!.paragraphStyle.headingId = "h.launch";
+  return {
+    documentId: "doc-1", title: "Plan", revisionId: "revision-1",
+    tabs: [{
+      tabProperties: { tabId: "t.0", title: "Tab 1" },
+      documentTab: { body: tab.body, lists: {}, namedRanges: {} },
+      childTabs: [],
+    }],
+  };
+}
+
+/** Records the grants the test user's Google account holds. */
+function grant(patterns: string[]): Promise<void> {
+  return env.TEST_HOOKS.getByName("grants").setDriveGrants(patterns);
+}
+
+// Comment writes through the Drive gatekeeper itself: queued by a session, then applied or
+// rejected by the gatekeeper, against a Drive that answers as Google was seen to.
+describe("Drive comment actions", () => {
+  const ROOT = "folder-root";
+  const GRANTED = [GOOGLE_DRIVE_RESOURCE.urlPattern, DRIVE_COMMENTS_GRANT];
+  const GRANT_MISSING =
+    "Commenting needs a permission this Google account hasn't granted yet. In Workshop, start " +
+    "adding a Google Drive connection for this account and choose \"Allow commenting\"; it " +
+    "covers every Drive connection on the account, so the dialog can then be closed.";
+  const OUTSIDE = "The requested file is outside this Drive binding.";
+  const LINK = "https://docs.google.com/document/d/doc-1/edit?tab=t.0#heading=h.launch";
+  const ME = { displayName: "Test User", me: true };
+  const ADA = { displayName: "Ada Lovelace", me: false };
+
+  type FakeFile = { mimeType: string; parents: string[]; canComment: boolean };
+  type FakeReply = {
+    id: string; content: string; author: typeof ME; createdTime: string; modifiedTime: string;
+    deleted: boolean; action?: "resolve" | "reopen";
+  };
+  type FakeComment = {
+    id: string; content: string; author: typeof ME; createdTime: string; modifiedTime: string;
+    deleted: boolean; replies: FakeReply[];
+    /** Absent until the comment is first resolved, as Drive sends it. */
+    resolved?: boolean;
+  };
+  type Refusal = { status: number; reason: string; message: string };
+
+  function driveError({ status, reason, message }: Refusal, location?: string): Response {
+    return Response.json({
+      error: {
+        code: status, message,
+        errors: [{ message, domain: "global", reason, ...location ? { location, locationType: "parameter" } : {} }],
+      },
+    }, { status });
+  }
+
+  /** Google Drive's files, comments and replies as far as these tests need them, and one Doc. */
+  class CommentsProvider {
+    readonly files = new Map<string, FakeFile>([
+      [ROOT, { mimeType: FOLDER_MIME, parents: ["above"], canComment: false }],
+      ["inner", { mimeType: FOLDER_MIME, parents: [ROOT], canComment: false }],
+      ["doc-1", { mimeType: DOC_MIME, parents: [ROOT], canComment: true }],
+      ["sheet-1", { mimeType: SHEET_MIME, parents: [ROOT], canComment: true }],
+      ["nested-doc", { mimeType: DOC_MIME, parents: ["inner"], canComment: true }],
+      ["view-only", { mimeType: DOC_MIME, parents: [ROOT], canComment: false }],
+    ]);
+    readonly comments = new Map<string, FakeComment[]>();
+    /** Every request, as `METHOD path`. */
+    readonly requests: string[] = [];
+    /** Every comment or reply write, with the field mask it asked to read back. */
+    readonly writes: { path: string; fields: string | null; body: Record<string, unknown> }[] = [];
+    /** How the next write answers: `lost` posts it and still answers 400; a refusal posts nothing. */
+    nextWrite?: "lost" | Refusal;
+    #ids = 0;
+
+    install(): this {
+      vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) =>
+        this.#handle(new Request(input, init))));
+      return this;
+    }
+
+    /** A comment by someone else, already on `fileId`. */
+    seed(fileId: string, comment: Partial<FakeComment> = {}): FakeComment {
+      let now = new Date().toISOString();
+      let seeded: FakeComment = {
+        id: this.#id(), content: "Is this date right?", author: ADA, createdTime: now,
+        modifiedTime: now, deleted: false, replies: [], ...comment,
+      };
+      this.#list(fileId).push(seeded);
+      return seeded;
+    }
+
+    /** Comments `fileId` shows, deleted ones left out. */
+    live(fileId: string): FakeComment[] {
+      return this.#list(fileId).filter(comment => !comment.deleted);
+    }
+
+    #list(fileId: string): FakeComment[] {
+      let list = this.comments.get(fileId);
+      if (!list) this.comments.set(fileId, list = []);
+      return list;
+    }
+
+    #id(): string {
+      return `doco.${String(++this.#ids).padStart(22, "A")}`;
+    }
+
+    #fileJson(id: string, file: FakeFile) {
+      return {
+        id, name: id, mimeType: file.mimeType, modifiedTime: "2026-10-20T09:00:00Z",
+        parents: file.parents, trashed: false,
+        capabilities: { canListChildren: file.mimeType === FOLDER_MIME, canComment: file.canComment },
+      };
+    }
+
+    #batch(body: string): Response {
+      let boundary = "comments_batch";
+      let ids = [...body.matchAll(/GET \/drive\/v3\/files\/([^?]+)\?/g)]
+        .map(match => decodeURIComponent(match[1]));
+      let parts = ids.map((id, index) => {
+        let file = this.files.get(id);
+        return [
+          `--${boundary}`, "Content-Type: application/http", `Content-ID: <response-item-${index}>`,
+          "", file ? "HTTP/1.1 200 OK" : "HTTP/1.1 404 Not Found", "Content-Type: application/json",
+          "", file ? JSON.stringify(this.#fileJson(id, file)) : "{}",
+        ].join("\r\n");
+      });
+      return new Response(`${parts.join("\r\n")}\r\n--${boundary}--\r\n`, {
+        headers: { "Content-Type": `multipart/mixed; boundary=${boundary}` },
+      });
+    }
+
+    async #handle(request: Request): Promise<Response> {
+      let url = new URL(request.url);
+      this.requests.push(`${request.method} ${url.pathname}`);
+      if (url.pathname === "/batch/drive/v3") {
+        return this.#batch(new TextDecoder().decode(await request.arrayBuffer()));
+      }
+      if (url.hostname === "docs.googleapis.com") return Response.json(headedDoc());
+      let match = /^\/drive\/v3\/files\/([^/]+)(\/comments(?:\/([^/]+)(\/replies)?)?)?$/
+        .exec(url.pathname);
+      if (!match) throw new Error(`Unexpected provider request: ${url}`);
+      let [, rawFileId, commentsPath, rawCommentId, repliesPath] = match;
+      let fileId = decodeURIComponent(rawFileId);
+      let file = this.files.get(fileId);
+      if (!file) {
+        return driveError({ status: 404, reason: "notFound", message: `File not found: ${fileId}.` },
+          "fileId");
+      }
+      if (!commentsPath) return Response.json(this.#fileJson(fileId, file));
+      if (rawCommentId === undefined) {
+        if (request.method === "POST") {
+          return this.#write(url, request, fileId, file, body => this.#createComment(fileId, body));
+        }
+        let since = url.searchParams.get("startModifiedTime");
+        return Response.json({
+          comments: this.live(fileId)
+            .filter(comment => since === null || Date.parse(comment.modifiedTime) >= Date.parse(since))
+            .map(wireComment),
+        });
+      }
+      let commentId = decodeURIComponent(rawCommentId);
+      let comment = this.live(fileId).find(candidate => candidate.id === commentId);
+      if (!comment) {
+        return driveError({
+          status: 404, reason: "notFound", message: `Comment not found: ${commentId}.`,
+        }, "commentId");
+      }
+      if (!repliesPath) return Response.json(wireComment(comment));
+      if (request.method === "POST") {
+        return this.#write(url, request, fileId, file, body => this.#createReply(comment, body));
+      }
+      return Response.json({ replies: comment.replies.filter(reply => !reply.deleted).map(wireReply) });
+    }
+
+    async #write(
+      url: URL, request: Request, fileId: string, file: FakeFile,
+      post: (body: Record<string, unknown>) => unknown,
+    ): Promise<Response> {
+      let body = await request.json() as Record<string, unknown>;
+      this.writes.push({ path: url.pathname, fields: url.searchParams.get("fields"), body });
+      if (!file.canComment) {
+        return driveError({
+          status: 403, reason: "insufficientFilePermissions",
+          message: `The user does not have sufficient permissions for file ${fileId}.`,
+        });
+      }
+      if (new TextEncoder().encode(String(body.content ?? "")).length > 4096) {
+        return driveError({
+          status: 403, reason: "commentLengthLimitExceeded",
+          message: "Comment content is limited to 4096 bytes in UTF-8 encoding.",
+        });
+      }
+      let outcome = this.nextWrite;
+      this.nextWrite = undefined;
+      if (outcome !== undefined && outcome !== "lost") return driveError(outcome);
+      let created = post(body);
+      if (outcome === "lost") {
+        return driveError({
+          status: 400, reason: "invalidParameter", message: "Invalid field selection notAField",
+        }, "fields");
+      }
+      return Response.json(created);
+    }
+
+    #createComment(fileId: string, body: Record<string, unknown>) {
+      let now = new Date().toISOString();
+      let comment: FakeComment = {
+        id: this.#id(), content: String(body.content ?? ""), author: ME, createdTime: now,
+        modifiedTime: now, deleted: false, replies: [],
+      };
+      this.#list(fileId).push(comment);
+      return wireComment(comment);
+    }
+
+    #createReply(comment: FakeComment, body: Record<string, unknown>) {
+      let now = new Date().toISOString();
+      // A plain reply to a resolved comment reopens it.
+      let action = body.action === "resolve" ? "resolve" as const
+        : body.action === "reopen" || comment.resolved ? "reopen" as const : undefined;
+      let reply: FakeReply = {
+        id: this.#id(), content: String(body.content ?? ""), author: ME, createdTime: now,
+        modifiedTime: now, deleted: false, ...action ? { action } : {},
+      };
+      comment.replies.push(reply);
+      comment.modifiedTime = now;
+      if (action) comment.resolved = action === "resolve";
+      return wireReply(reply);
+    }
+  }
+
+  function wireReply(reply: FakeReply) {
+    return { ...reply, htmlContent: reply.content.replaceAll("\n", "<br>") };
+  }
+
+  function wireComment(comment: FakeComment) {
+    return {
+      ...comment, htmlContent: comment.content.replaceAll("\n", "<br>"),
+      replies: comment.replies.map(wireReply),
+    };
+  }
+
+  let facets = 0;
+
+  /** A Drive binding of `scope`, on a TestHooks object of its own. */
+  function binding(scope: DriveBindingScope = { kind: "account" }) {
+    let facet = `drive-comments-${++facets}`;
+    let hooks = env.TEST_HOOKS.getByName(facet);
+    let call = (method: string, ...args: unknown[]) => hooks.callDrive(facet, scope, method, args);
+    return {
+      call,
+      callIn: (path: string[], method: string, ...args: unknown[]) =>
+        hooks.callDrive(facet, scope, method, args, path),
+      queued: async (method: string, ...args: unknown[]) => {
+        let outcome = await call(method, ...args);
+        if (outcome.error !== undefined) throw new Error(outcome.error);
+        if (outcome.actionId === undefined) throw new Error(`${method} queued nothing`);
+        return outcome as typeof outcome & { actionId: number };
+      },
+      comments: async (fileId: string) => {
+        let outcome = await call("listComments", fileId);
+        if (outcome.error !== undefined) throw new Error(outcome.error);
+        return (outcome.value as DriveComment[][]).flat();
+      },
+      apply: (actionId: number) => hooks.applyDrive(facet, scope, actionId),
+      reject: (actionId: number) => hooks.rejectDrive(facet, scope, actionId),
+      autoApprovable: () => hooks.driveAutoApprovable(facet, scope),
+      orphan: (actionId: number) => hooks.orphanDriveClaim(facet, scope, actionId),
+      fail: (actionId: number) => hooks.failDriveAction(facet, scope, actionId),
+      restart: () => hooks.restartDrive(facet),
+      attempts: () => hooks.driveAttempts(facet, scope),
+      age: (actionId: number, ms: number) => hooks.ageDriveAttempt(facet, scope, actionId, ms),
+    };
+  }
+
+  let provider: CommentsProvider;
+  beforeEach(async () => {
+    provider = new CommentsProvider().install();
+    await grant(GRANTED);
+  });
+
+  const posts = () => provider.requests.filter(request => request.startsWith("POST /drive/v3/files/"));
+
+  it("declares one auto-approvable kind for every comment write", async () => {
+    expect(await binding().autoApprovable()).toEqual([{ tag: "driveComments", label: "Drive comments" }]);
+  });
+
+  describe("queueing", () => {
+    it("refuses another file of an exact-file binding without asking Google", async () => {
+      let drive = binding({ kind: "file", fileId: "doc-1" });
+
+      let refused = await drive.call("comment", "sheet-1", "Looks good.");
+
+      expect(refused.error).toBe(OUTSIDE);
+      expect(refused.actionId).toBeUndefined();
+      expect(provider.requests).toEqual([]);
+    });
+
+    it("refuses a nested file of a folder binding without writing", async () => {
+      let drive = binding({ kind: "folder", folderId: ROOT });
+
+      let refused = await drive.call("comment", "nested-doc", "Looks good.");
+
+      expect(refused.error).toBe(OUTSIDE);
+      expect(refused.actionId).toBeUndefined();
+      expect(posts()).toEqual([]);
+    });
+
+    it("asks a connection that has not opted in to allow commenting", async () => {
+      await grant([GOOGLE_DRIVE_RESOURCE.urlPattern]);
+
+      let refused = await binding().call("comment", "doc-1", "Looks good.");
+
+      expect(refused.error).toBe(GRANT_MISSING);
+      expect(refused.actionId).toBeUndefined();
+    });
+
+    it("refuses a file the account can only view, as a withheld answer", async () => {
+      let refused = await binding().call("comment", "view-only", "Looks good.");
+
+      expect(refused.error).toBe("The connected account cannot comment on Drive file view-only, " +
+        "so its comments cannot be read or added to here.");
+      expect(refused.actionId).toBeUndefined();
+      expect(refused.observations.at(-1))
+        .toBe("Check whether the connected account can comment on Drive file view-only.");
+    });
+
+    it.each([
+      ["an empty comment", ["doc-1", "   "], "The comment is empty."],
+      ["a comment over Google's limit", ["doc-1", "é".repeat(2049)],
+        "The comment is 4098 bytes of UTF-8; Google Drive allows at most 4096."],
+      ["a quote over 500 characters", ["doc-1", "Why?", { quote: "x".repeat(501) }],
+        "The quote is 501 characters; at most 500 can be quoted."],
+      ["a quote on a Sheet", ["sheet-1", "Why?", { quote: "Revenue" }],
+        "Quoting and suggested edits work only on Google Docs."],
+      ["a quote the Doc lacks", ["doc-1", "Why?", { quote: "in April" }],
+        "That text was not found in tab t.0. Quote it as written, without " +
+        "Markdown or HTML formatting, and pass tabId if it is in another tab."],
+      ["a quote the Doc has twice", ["doc-1", "Why?", { quote: "May" }],
+        "That text appears 2 times; quote more of it so it is unique."],
+      ["a tab without a quote", ["doc-1", "Why?", { tabId: "t.0" }],
+        "tabId names the tab a quote is in; pass the quote too."],
+    ])("refuses %s", async (_name, args, message) => {
+      let refused = await binding().call("comment", ...args);
+
+      expect(refused.error).toBe(message);
+      expect(refused.actionId).toBeUndefined();
+    });
+
+    it("refuses to reply to a comment still waiting for approval, asking Google nothing", async () => {
+      let refused = await binding().call("reply", "doc-1", "pending:3", "Agreed.");
+
+      expect(refused.error).toBe("That comment is waiting for approval; reply to it once it is posted.");
+      expect(provider.requests).toEqual([]);
+    });
+
+    it("refuses to resolve a resolved comment, which Google would accept", async () => {
+      let comment = provider.seed("doc-1", { resolved: true });
+
+      let refused = await binding().call("resolve", "doc-1", comment.id);
+
+      expect(refused.error).toBe("That comment is already resolved.");
+      expect(refused.actionId).toBeUndefined();
+    });
+
+    it("refuses a reply to a comment Drive does not show", async () => {
+      let refused = await binding().call("reply", "doc-1", "doco.missing", "Agreed.");
+
+      expect(refused.error).toBe("That comment was not found on this file.");
+    });
+
+    it("queues a quoted comment as plain text with a link to the heading above the quote", async () => {
+      let drive = binding();
+
+      let queued = await drive.queued("comment", "doc-1", "Should this be June?",
+        { quote: "The launch is in May." });
+
+      let body = `"The launch is in May."\n\nShould this be June?\n\n${LINK}`;
+      expect(queued.value).toEqual({
+        id: `pending:${queued.actionId}`, author: { name: "You", me: true }, text: body,
+        createdTime: expect.any(String), resolved: false, replies: [], pending: true,
+      });
+      expect(queued.action).toMatchObject({
+        title: "Comment on a Google Drive file",
+        actionKind: { tag: "driveComments", label: "Drive comments" },
+        autoApprovable: true,
+        fields: [
+          { label: "File", kind: "inline", value: "doc-1" },
+          { label: "Comment", kind: "text", value: body },
+        ],
+      });
+      expect(queued.action!.description).toContain("Google emails the file's owner");
+      expect(queued.observations).toContain(
+        "Read the text of Google Doc doc-1 to find the quoted text.");
+      expect(posts()).toEqual([]);
+    });
+
+    it("queues a suggested edit as a comment describing it", async () => {
+      let queued = await binding().queued("suggestEdit", "doc-1", "launch is in May",
+        "launch is in June", { note: "Marketing moved it." });
+
+      let body = "Suggested edit: replace \"launch is in May\" with \"launch is in June\"\n\n" +
+        `Marketing moved it.\n\n${LINK}`;
+      expect((queued.value as DriveComment).text).toBe(body);
+      expect(queued.action!.fields).toContainEqual({ label: "Comment", kind: "text", value: body });
+    });
+
+    it("says a reply to a resolved comment reopens it", async () => {
+      let comment = provider.seed("doc-1", { resolved: true });
+
+      let queued = await binding().queued("reply", "doc-1", comment.id, "Still wrong.");
+
+      expect(queued.value).toEqual({
+        id: `pending:${queued.actionId}`, author: { name: "You", me: true }, text: "Still wrong.",
+        createdTime: expect.any(String), action: "reopen", pending: true,
+      });
+      expect(queued.action!.description).toContain("This reopens the resolved comment.");
+      expect(queued.action!.description).toContain("Ada Lovelace");
+      expect(queued.action!.description).toContain("> Is this date right?");
+    });
+  });
+
+  describe("pending writes", () => {
+    it("shows queued writes until they are decided", async () => {
+      let drive = binding();
+      let existing = provider.seed("doc-1");
+      let other = provider.seed("doc-1", { content: "Typo here." });
+      let comment = await drive.queued("comment", "doc-1", "Should this be June?");
+      let reply = await drive.queued("reply", "doc-1", existing.id, "Yes, it is.");
+      let resolve = await drive.queued("resolve", "doc-1", other.id);
+
+      let shown = await drive.comments("doc-1");
+
+      expect(shown.map(item => [item.id, item.pending ?? false])).toEqual([
+        [existing.id, false], [other.id, false], [`pending:${comment.actionId}`, true],
+      ]);
+      expect(shown[0].replies).toEqual([reply.value]);
+      expect(shown[1].replies).toEqual([resolve.value]);
+      expect(resolve.value).toMatchObject({ action: "resolve", text: "", pending: true });
+      // Resolved only once Drive says so.
+      expect(shown[1].resolved).toBe(false);
+
+      expect(await drive.apply(comment.actionId)).toBeNull();
+      expect(await drive.apply(resolve.actionId)).toBeNull();
+      expect(await drive.reject(reply.actionId)).toBeNull();
+      let decided = await drive.comments("doc-1");
+      expect(decided.some(item => item.pending)).toBe(false);
+      expect(decided.flatMap(item => item.replies).some(item => item.pending)).toBe(false);
+      expect(decided.map(item => item.text)).toEqual(
+        ["Is this date right?", "Typo here.", "Should this be June?"]);
+      expect(decided[1]).toMatchObject({ resolved: true, replies: [{ text: "", action: "resolve" }] });
+      expect(decided[0].replies).toEqual([]);
+    });
+
+    it("authorizes the file, then its comments, before disclosing a page of them", async () => {
+      provider.seed("doc-1");
+
+      let listed = await binding().call("listComments", "doc-1");
+
+      expect(listed.observations).toEqual([
+        "Check current metadata for Drive file doc-1 to work with its comments.",
+        "Check whether the connected account can comment on Drive file doc-1.",
+        "Read 1 comment on Drive file doc-1.",
+      ]);
+      expect((listed.value as DriveComment[][]).flat().map(comment => comment.text))
+        .toEqual(["Is this date right?"]);
+    });
+
+    it("refuses to list the comments of a file the account can only view", async () => {
+      provider.seed("view-only");
+
+      let refused = await binding().call("listComments", "view-only");
+
+      expect(refused.error).toMatch(/cannot comment on Drive file view-only/);
+      expect(provider.requests.filter(request => request.endsWith("/comments"))).toEqual([]);
+    });
+  });
+
+  describe("applying", () => {
+    it("posts each kind of write exactly as it was approved", async () => {
+      let drive = binding();
+      let existing = provider.seed("doc-1");
+      let comment = await drive.queued("comment", "doc-1", "Line one\r\nline two   \n");
+      let reply = await drive.queued("reply", "doc-1", existing.id, "Agreed.");
+      let resolve = await drive.queued("resolve", "doc-1", existing.id);
+
+      for (let { actionId } of [comment, reply, resolve]) expect(await drive.apply(actionId)).toBeNull();
+
+      expect(provider.writes.map(({ path, body }) => [path, body])).toEqual([
+        ["/drive/v3/files/doc-1/comments", { content: "Line one\r\nline two" }],
+        [`/drive/v3/files/doc-1/comments/${existing.id}/replies`, { content: "Agreed." }],
+        [`/drive/v3/files/doc-1/comments/${existing.id}/replies`, { action: "resolve" }],
+      ]);
+      expect(provider.live("doc-1").map(item => item.content))
+        .toEqual(["Is this date right?", "Line one\r\nline two"]);
+      expect(provider.live("doc-1")[0]).toMatchObject({ resolved: true });
+      expect(await drive.attempts()).toEqual({});
+    });
+
+    it("binds a comment a refused send posted anyway, without posting it again", async () => {
+      let drive = binding();
+      let { actionId } = await drive.queued("comment", "doc-1", "Should this be June?");
+      provider.nextWrite = "lost";
+
+      expect(await drive.apply(actionId)).toBe("Google Drive did not confirm whether this was " +
+        "posted, and it may have been. Approving it again first checks the file's comments, so it " +
+        "is not posted twice.");
+      expect(Object.keys(await drive.attempts())).toEqual([String(actionId)]);
+      expect(await drive.reject(actionId))
+        .toBe("This may already be posted on Google Drive; approve it to check.");
+
+      expect(await drive.apply(actionId)).toBeNull();
+      expect(posts()).toHaveLength(1);
+      expect(provider.live("doc-1").map(item => item.content)).toEqual(["Should this be June?"]);
+      expect(await drive.attempts()).toEqual({});
+      expect((await drive.comments("doc-1")).some(item => item.pending)).toBe(false);
+    });
+
+    it("binds a reply a refused send posted anyway, without posting it again", async () => {
+      let drive = binding();
+      let existing = provider.seed("doc-1", { resolved: true });
+      let { actionId } = await drive.queued("reply", "doc-1", existing.id, "Still wrong.");
+      provider.nextWrite = "lost";
+
+      expect(await drive.apply(actionId)).toMatch(/did not confirm whether this was posted/);
+      expect(await drive.apply(actionId)).toBeNull();
+
+      expect(posts()).toHaveLength(1);
+      expect(existing.replies).toMatchObject([{ content: "Still wrong.", action: "reopen" }]);
+    });
+
+    it("binds only the account's own comment, with the same text, from around the send", async () => {
+      let drive = binding();
+      let recent = new Date().toISOString();
+      let anHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      let sent = "Should this be June?";
+      // Each is listed since the send began, and none is what it posted.
+      provider.seed("doc-1", { content: sent, author: ADA });
+      provider.seed("doc-1", { content: sent, author: ME, createdTime: anHourAgo });
+      provider.seed("doc-1", { content: `${sent} `, author: ME });
+      let { actionId } = await drive.queued("comment", "doc-1", sent);
+      provider.nextWrite = "lost";
+      expect(await drive.apply(actionId)).toMatch(/did not confirm/);
+
+      expect(await drive.apply(actionId)).toBeNull();
+      expect(posts()).toHaveLength(1);
+      expect(recent <= provider.live("doc-1").at(-1)!.createdTime).toBe(true);
+    });
+
+    it("binds only the account's own reply, with the same text, from around the send", async () => {
+      let drive = binding();
+      let anHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      let existing = provider.seed("doc-1");
+      existing.replies.push(
+        { id: "doco.old", content: "Fixed.", author: ME, createdTime: anHourAgo, modifiedTime: anHourAgo, deleted: false },
+        { id: "doco.ada", content: "Fixed.", author: ADA, createdTime: new Date().toISOString(), modifiedTime: new Date().toISOString(), deleted: false },
+        { id: "doco.near", content: "Fixed. ", author: ME, createdTime: new Date().toISOString(), modifiedTime: new Date().toISOString(), deleted: false },
+      );
+      let { actionId } = await drive.queued("reply", "doc-1", existing.id, "Fixed.");
+      provider.nextWrite = "lost";
+      expect(await drive.apply(actionId)).toMatch(/did not confirm/);
+
+      expect(await drive.apply(actionId)).toBeNull();
+      expect(posts()).toHaveLength(1);
+      expect(existing.replies).toHaveLength(4);
+    });
+
+    it("does not take a reply already on the comment for what a send posted", async () => {
+      let drive = binding();
+      let existing = provider.seed("doc-1");
+      let first = await drive.queued("resolve", "doc-1", existing.id);
+      expect(await drive.apply(first.actionId)).toBeNull();
+      let reopen = await drive.queued("reply", "doc-1", existing.id, "Not yet.");
+      expect(await drive.apply(reopen.actionId)).toBeNull();
+      let { actionId } = await drive.queued("resolve", "doc-1", existing.id);
+      provider.nextWrite = { status: 503, reason: "backendError", message: "Backend Error" };
+      expect(await drive.apply(actionId)).toMatch(/did not confirm/);
+
+      expect(await drive.apply(actionId)).toMatch(/^Google Drive may still be posting this/);
+      expect(existing.resolved).toBe(false);
+
+      await drive.age(actionId, 6 * 60 * 1000);
+      expect(await drive.apply(actionId)).toBeNull();
+      expect(existing).toMatchObject({ resolved: true });
+      expect(existing.replies.map(reply => reply.action)).toEqual(["resolve", "reopen", "resolve"]);
+    });
+
+    it("waits out the window rather than send again while Google may still show the send", async () => {
+      let drive = binding();
+      let { actionId } = await drive.queued("comment", "doc-1", "Should this be June?");
+      provider.nextWrite = { status: 503, reason: "backendError", message: "Backend Error" };
+
+      expect(await drive.apply(actionId)).toMatch(/did not confirm whether this was posted/);
+      expect(await drive.apply(actionId))
+        .toMatch(/^Google Drive may still be posting this, so it wasn't sent again; approve again after \d\d:\d\d UTC\.$/);
+      expect(posts()).toHaveLength(1);
+
+      await drive.age(actionId, 6 * 60 * 1000);
+      expect(await drive.apply(actionId)).toBeNull();
+      expect(posts()).toHaveLength(2);
+      expect(provider.live("doc-1")).toHaveLength(1);
+      expect(await drive.attempts()).toEqual({});
+    });
+
+    it("gives up, as of unknown outcome, when two identical comments could be the send", async () => {
+      let drive = binding();
+      let { actionId } = await drive.queued("comment", "doc-1", "Should this be June?");
+      provider.nextWrite = "lost";
+      expect(await drive.apply(actionId)).toMatch(/did not confirm/);
+      provider.seed("doc-1", { content: "Should this be June?", author: ME });
+
+      let unknown = await drive.apply(actionId);
+
+      expect(unknown).toMatch(/more than one identical comment/);
+      expect(await drive.apply(actionId)).toBe(unknown);
+      expect(posts()).toHaveLength(1);
+      expect(await drive.attempts()).toEqual({});
+      expect(await drive.reject(actionId)).toBeNull();
+    });
+
+    it("fails a send Google refused before posting, clearing its marker", async () => {
+      let drive = binding();
+      let { actionId } = await drive.queued("comment", "doc-1", "Should this be June?");
+      provider.nextWrite = {
+        status: 403, reason: "insufficientFilePermissions",
+        message: "The user does not have sufficient permissions for file doc-1.",
+      };
+
+      let failed = await drive.apply(actionId);
+
+      expect(failed).toBe("The connected account can no longer comment on that file.");
+      expect(await drive.attempts()).toEqual({});
+      expect(await drive.apply(actionId)).toBe(failed);
+      expect(posts()).toHaveLength(1);
+      expect(provider.live("doc-1")).toEqual([]);
+    });
+
+    it("keeps a rate-limited send for a later approval", async () => {
+      let drive = binding();
+      let { actionId } = await drive.queued("comment", "doc-1", "Should this be June?");
+      provider.nextWrite = { status: 403, reason: "userRateLimitExceeded", message: "Rate limit" };
+
+      expect(await drive.apply(actionId)).toBe(
+        "Google Drive is limiting requests from this account. Approve it again in a minute.");
+      expect(await drive.attempts()).toEqual({});
+      expect(await drive.apply(actionId)).toBeNull();
+      expect(provider.live("doc-1")).toHaveLength(1);
+    });
+
+    it("reconciles a claim an activation died holding once its send may have gone", async () => {
+      let drive = binding();
+      let { actionId } = await drive.queued("comment", "doc-1", "Should this be June?");
+      provider.nextWrite = "lost";
+      expect(await drive.apply(actionId)).toMatch(/did not confirm/);
+      await drive.orphan(actionId);
+      await drive.restart();
+
+      expect(await drive.reject(actionId))
+        .toBe("This may already be posted on Google Drive; approve it to check.");
+      expect(await drive.apply(actionId)).toBeNull();
+      expect(posts()).toHaveLength(1);
+      expect(provider.live("doc-1")).toHaveLength(1);
+    });
+
+    it("forgets the markers of writes that cannot be applied again", async () => {
+      let drive = binding();
+      let { actionId } = await drive.queued("comment", "doc-1", "Should this be June?");
+      provider.nextWrite = "lost";
+      expect(await drive.apply(actionId)).toMatch(/did not confirm/);
+      let kept = await drive.queued("comment", "doc-1", "And this one?");
+      provider.nextWrite = "lost";
+      expect(await drive.apply(kept.actionId)).toMatch(/did not confirm/);
+      await drive.fail(actionId);
+
+      await drive.comments("doc-1");
+
+      expect(Object.keys(await drive.attempts())).toEqual([String(kept.actionId)]);
+    });
+
+    it("sends a claim an activation died holding before any send went", async () => {
+      let drive = binding();
+      let { actionId } = await drive.queued("comment", "doc-1", "Should this be June?");
+      await drive.orphan(actionId);
+      await drive.restart();
+
+      expect(await drive.apply(actionId)).toBeNull();
+      expect(posts()).toHaveLength(1);
+    });
+
+    it("refuses a write whose file moved out of the folder it was queued in", async () => {
+      let drive = binding({ kind: "folder", folderId: ROOT });
+      provider.files.set("inner-doc", { mimeType: DOC_MIME, parents: ["inner"], canComment: true });
+      let queued = await drive.callIn(["inner"], "comment", "inner-doc", "Should this be June?");
+      expect(queued.error).toBeUndefined();
+      provider.files.set("inner-doc", { mimeType: DOC_MIME, parents: [ROOT], canComment: true });
+
+      expect(await drive.apply(queued.actionId!))
+        .toBe("That file is no longer in this connection's scope.");
+      expect(posts()).toEqual([]);
+    });
+
+    it("applies a folder write while the file is still where it was queued", async () => {
+      let drive = binding({ kind: "folder", folderId: ROOT });
+      provider.files.set("inner-doc", { mimeType: DOC_MIME, parents: ["inner"], canComment: true });
+      let queued = await drive.callIn(["inner"], "comment", "inner-doc", "Should this be June?");
+
+      expect(await drive.apply(queued.actionId!)).toBeNull();
+      expect(provider.live("inner-doc")).toHaveLength(1);
+    });
+
+    it("refuses a write once the connection stops allowing comments", async () => {
+      let drive = binding();
+      let { actionId } = await drive.queued("comment", "doc-1", "Should this be June?");
+      await grant([GOOGLE_DRIVE_RESOURCE.urlPattern]);
+
+      expect(await drive.apply(actionId)).toBe(GRANT_MISSING);
+      expect(posts()).toEqual([]);
+    });
+
+    it("refuses to resolve a comment someone resolved after it was queued", async () => {
+      let drive = binding();
+      let existing = provider.seed("doc-1");
+      let { actionId } = await drive.queued("resolve", "doc-1", existing.id, "Fixed.");
+      existing.resolved = true;
+
+      expect(await drive.apply(actionId)).toBe("That comment is already resolved.");
+      expect(posts()).toEqual([]);
+    });
+
+    it("refuses a reply that would reopen a comment resolved since it was queued", async () => {
+      let drive = binding();
+      let existing = provider.seed("doc-1");
+      let reply = await drive.queued("reply", "doc-1", existing.id, "Changed to 2026.");
+      let resolve = await drive.queued("resolve", "doc-1", existing.id);
+      expect(await drive.apply(resolve.actionId)).toBeNull();
+
+      expect(await drive.apply(reply.actionId)).toBe("That comment was resolved after this reply " +
+        "was queued, and replying would reopen it. Queue the reply again to reopen it.");
+      expect(posts()).toHaveLength(1);
+      expect(existing).toMatchObject({ resolved: true });
+    });
   });
 });

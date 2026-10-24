@@ -34,6 +34,12 @@ export type DriveNodePage = {
   needsGrant?: string;
 };
 
+/**
+ * The grant Drive bindings need to write comments, to ask for with `ensureResources`, and whether
+ * the account holds it.
+ */
+export type DriveCommentAccess = { grant: string; held: boolean };
+
 export interface DriveConfiguratorRpc {
   /**
    * One page of a location's nodes: the whole account's (`drive`) groupings, a grouping's or a
@@ -42,4 +48,6 @@ export interface DriveConfiguratorRpc {
   listDriveNodes(parentId: string, query: string, cursor: string | null): Promise<DriveNodePage>;
   /** The folder or file a `folder:` or `file:` id names, or null if this account cannot see it. */
   getDriveNode(id: string): Promise<DriveNode | null>;
+  /** Whether the account may write comments, read afresh on every call. */
+  getCommentAccess(): Promise<DriveCommentAccess>;
 }

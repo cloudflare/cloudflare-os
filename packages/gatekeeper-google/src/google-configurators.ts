@@ -28,9 +28,9 @@ import type {
 import type { ChatSpaceConfiguratorRpc } from "./configurator/chat-space-configurator-types";
 import type { ChatThreadConfiguratorRpc } from "./configurator/chat-thread-configurator-types";
 import type {
-  DriveConfiguratorRpc, DriveNode, DriveNodeAncestor, DriveNodePage,
+  DriveCommentAccess, DriveConfiguratorRpc, DriveNode, DriveNodeAncestor, DriveNodePage,
 } from "./configurator/drive-configurator-types";
-import { parseResourceUrl, SHARED_DRIVES_GRANT } from "./resources";
+import { DRIVE_COMMENTS_GRANT, parseResourceUrl, SHARED_DRIVES_GRANT } from "./resources";
 
 /**
  * Mints an access token for a configurator, forwarding `AccessTokenRequest` to the `UserAccount`
@@ -41,6 +41,7 @@ type ConfiguratorTokenGetter = (opts?: AccessTokenRequest) => Promise<GoogleAcce
 const googleTokenGetters = new WeakMap<object, ConfiguratorTokenGetter>();
 const officeConversions = new WeakMap<object, OfficeConversion>();
 const sharedDrivesGrantChecks = new WeakMap<object, () => Promise<boolean>>();
+const commentGrantChecks = new WeakMap<object, () => Promise<boolean>>();
 const calendarConfiguratorCaches = new WeakMap<object, Promise<ConfiguratorOption[]>>();
 const bigQueryConfiguratorCaches = new WeakMap<object, Map<string, ConfiguratorOption[]>>();
 const BIGQUERY_CONFIGURATOR_CACHE_MAX_ENTRIES = 200;
@@ -558,10 +559,15 @@ function linkedDriveNodeId(text: string): string | undefined {
 
 @validateRpc()
 export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorRpc {
-  constructor(getToken: () => Promise<GoogleAccessToken>, holdsSharedDrivesGrant: () => Promise<boolean>) {
+  constructor(
+    getToken: () => Promise<GoogleAccessToken>,
+    holdsSharedDrivesGrant: () => Promise<boolean>,
+    holdsCommentGrant: () => Promise<boolean>,
+  ) {
     super();
     googleTokenGetters.set(this, getToken);
     sharedDrivesGrantChecks.set(this, holdsSharedDrivesGrant);
+    commentGrantChecks.set(this, holdsCommentGrant);
   }
 
   /**
@@ -636,5 +642,14 @@ export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorR
       let path = await drivePath(drive, file);
       return path ? { ...node, path } : node;
     });
+  }
+
+  /**
+   * The grant commenting needs, for the configurator to ask for with `ensureResources`, and whether
+   * the account holds it, read afresh on every call. The grant comes from here, so the configurator
+   * holds no copy of it to drift.
+   */
+  async getCommentAccess(): Promise<DriveCommentAccess> {
+    return { grant: DRIVE_COMMENTS_GRANT, held: await commentGrantChecks.get(this)!() };
   }
 }

@@ -114,6 +114,8 @@ export type Paragraph = {
 
 export type ParagraphStyle = {
   namedStyleType: string;
+  /** Set on a title or heading paragraph, and only there: the target of a `#heading=` link. */
+  headingId?: string;
 }
 
 /** Present on paragraphs that are list items. */

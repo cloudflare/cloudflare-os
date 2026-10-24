@@ -8,19 +8,31 @@ export const DRIVE_OBSERVATION_PREFIX = "observedDriveFile:";
 export const DRIVE_BASELINE_DENIED_MESSAGE =
   "This collaborator has not granted Google Drive access, so they cannot observe this binding.";
 
-/** Data access needed to observe a Drive disclosure. */
+/**
+ * Data access needed to observe a Drive disclosure: a file, a folder's listing, or a file's
+ * comments, which only an account that may comment on the file can observe.
+ */
 export type DriveObservation =
   | { kind: "file"; fileId: string }
-  | { kind: "folder"; fileId: string };
+  | { kind: "folder"; fileId: string }
+  | { kind: "comments"; fileId: string };
+
+/**
+ * Typed units carry a `<kind>:` prefix; a file unit is the bare encoded ID. Encoding turns every
+ * `:` in an ID into `%3A`, so no file ID can be read as a prefix.
+ */
+const TYPED_PREFIXES = ["folder", "comments"] as const;
 
 function encodeObservation(observation: DriveObservation): string {
   let id = encodeURIComponent(observation.fileId);
-  return observation.kind === "folder" ? `folder:${id}` : id;
+  return observation.kind === "file" ? id : `${observation.kind}:${id}`;
 }
 
 function decodeObservation(value: string): DriveObservation {
-  if (value.startsWith("folder:")) {
-    return {kind: "folder", fileId: decodeURIComponent(value.slice("folder:".length))};
+  for (let kind of TYPED_PREFIXES) {
+    if (value.startsWith(`${kind}:`)) {
+      return {kind, fileId: decodeURIComponent(value.slice(kind.length + 1))};
+    }
   }
   return {kind: "file", fileId: decodeURIComponent(value)};
 }

@@ -139,7 +139,79 @@ export type DrivePdfText = {
   hasText: boolean;
 };
 
-/** Read-only Drive metadata discovery, native Google Docs/Sheets/Slides access, and PDF text. */
+/** Who wrote a comment or reply. */
+export type DriveCommentAuthor = {
+  /** Their display name, as Drive shows it to the connected account. */
+  name: string;
+  /** Whether it was the connected account. */
+  me: boolean;
+};
+
+/** One reply to a Drive comment. */
+export type DriveCommentReply = {
+  /** Drive's reply ID, or `pending:<n>` while it waits for approval. */
+  id: string;
+  author: DriveCommentAuthor;
+  /** The reply as plain text. Empty for a resolve without text. */
+  text: string;
+  /** RFC 3339. */
+  createdTime: string;
+  /** RFC 3339. */
+  modifiedTime?: string;
+  /** Present when this reply resolved or reopened its comment. */
+  action?: "resolve" | "reopen";
+  /** Queued for approval and not yet on Drive. */
+  pending?: true;
+};
+
+/** One Drive comment and its replies. */
+export type DriveComment = {
+  /** Drive's comment ID, or `pending:<n>` while it waits for approval. */
+  id: string;
+  author: DriveCommentAuthor;
+  /** The comment as plain text. */
+  text: string;
+  /** RFC 3339. */
+  createdTime: string;
+  /** RFC 3339. A reply counts as a modification. */
+  modifiedTime?: string;
+  resolved: boolean;
+  /** As Drive lists them, then this connection's pending ones. */
+  replies: DriveCommentReply[];
+  /** Queued for approval and not yet on Drive. */
+  pending?: true;
+};
+
+/** Options for {@link GoogleDriveReadSession.comment}. */
+export type DriveCommentOptions = {
+  /**
+   * Text of the file this comment is about, within one paragraph, which must occur exactly once in
+   * it: the tab's text as `getContent()` shows it, without Markdown formatting (no `**`, list markers or escapes) and,
+   * in a table, without HTML (`&` rather than `&amp;`, no tags). It is shown in quotes at the top
+   * of the comment, with a link to the nearest heading above it. Google Docs only.
+   */
+  quote?: string;
+  /** The Doc tab `quote` is in. Defaults to the first tab. */
+  tabId?: string;
+};
+
+/** Options for {@link GoogleDriveReadSession.suggestEdit}. */
+export type DriveSuggestEditOptions = {
+  /** Why, added below the suggestion. */
+  note?: string;
+  /** The Doc tab `oldText` is in. Defaults to the first tab. */
+  tabId?: string;
+};
+
+/**
+ * Drive metadata discovery, read-only native Google Docs/Sheets/Slides access, PDF text, and
+ * comments.
+ *
+ * Comments are plain text, never anchored to text in the file. Writing one is queued for the
+ * user's approval, needs the connection's "Allow commenting" permission and that the user can
+ * comment on the file, and makes Google email the file's owner. A write returns the pending item,
+ * which `listComments()` shows until it is decided.
+ */
 export interface GoogleDriveReadSession {
   /** Return this capability's immutable scope with current display metadata. */
   getScope(): Promise<DriveScope>;
@@ -182,9 +254,37 @@ export interface GoogleDriveReadSession {
    * when the Google account was connected before Drive bindings could read file content.
    */
   readPdf(fileId: string): Promise<DrivePdfText>;
+
+  /**
+   * List an in-scope file's comments, with this connection's writes still awaiting approval
+   * marked `pending`. Only a file the user can comment on has its comments read.
+   */
+  listComments(fileId: string): Promise<Cursor<DriveComment>>;
+
+  /**
+   * Queue a plain-text comment on an in-scope file. `quote` works only on native Google Docs.
+   */
+  comment(fileId: string, text: string, options?: DriveCommentOptions): Promise<DriveComment>;
+
+  /**
+   * Queue a comment suggesting `oldText`, which must occur exactly once (matched as `quote` is),
+   * be replaced with `newText` (empty to delete it). The suggestion is a comment, not an edit the
+   * owner can accept. Native Google Docs only.
+   */
+  suggestEdit(
+    fileId: string, oldText: string, newText: string, options?: DriveSuggestEditOptions,
+  ): Promise<DriveComment>;
+
+  /**
+   * Queue a reply to a comment on an in-scope file. Replying to a resolved comment reopens it.
+   */
+  reply(fileId: string, commentId: string, text: string): Promise<DriveCommentReply>;
+
+  /** Queue resolving a comment on an in-scope file, with an optional closing reply. */
+  resolve(fileId: string, commentId: string, text?: string): Promise<DriveCommentReply>;
 }
 
-/** Read-only navigation within the originally selected folder. */
+/** Navigation within the originally selected folder, and comments on its direct children. */
 export interface GoogleDriveFolderSession extends Pick<GoogleDriveReadSession, "getScope"> {
   /** List only the positioned folder's direct children. */
   list(options?: DriveFolderListOptions): Promise<Cursor<DriveEntry>>;
@@ -217,6 +317,31 @@ export interface GoogleDriveFolderSession extends Pick<GoogleDriveReadSession, "
    * reconnect when the Google account was connected before Drive bindings could read file content.
    */
   readPdf(fileId: string): Promise<DrivePdfText>;
+
+  /**
+   * List a live direct child's comments, as {@link GoogleDriveReadSession.listComments} does. A
+   * file moved out of this folder ends the listing.
+   */
+  listComments(fileId: string): Promise<Cursor<DriveComment>>;
+
+  /** Queue a comment on a live direct child, as {@link GoogleDriveReadSession.comment} does. */
+  comment(fileId: string, text: string, options?: DriveCommentOptions): Promise<DriveComment>;
+
+  /**
+   * Queue a suggested edit on a live direct child Google Doc, as
+   * {@link GoogleDriveReadSession.suggestEdit} does.
+   */
+  suggestEdit(
+    fileId: string, oldText: string, newText: string, options?: DriveSuggestEditOptions,
+  ): Promise<DriveComment>;
+
+  /**
+   * Queue a reply to a comment on a live direct child. Replying to a resolved comment reopens it.
+   */
+  reply(fileId: string, commentId: string, text: string): Promise<DriveCommentReply>;
+
+  /** Queue resolving a comment on a live direct child, with an optional closing reply. */
+  resolve(fileId: string, commentId: string, text?: string): Promise<DriveCommentReply>;
 
   /** Open a live direct child folder as an independently disposable capability. */
   openFolder(folderId: string): Promise<GoogleDriveFolderSession>;
