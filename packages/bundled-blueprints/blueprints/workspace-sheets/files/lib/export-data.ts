@@ -58,6 +58,8 @@ export interface ExportWorkbook {
 export function disposeResult(result: unknown): void {
   if (result && typeof result === "object") (result as Partial<Disposable>)[Symbol.dispose]?.();
 }
+/** The most cells one export reads: past about this, the workbook no longer fits the export's memory (128 MB). */
+export const MAX_EXPORT_CELLS = 400_000;
 export async function loadExportWorkbook(gadget: ExportGadgetStub, { formats, sheetIds = null }: { formats: boolean; sheetIds?: string[] | null }): Promise<ExportWorkbook> {
   for (let attempt = 0; ; ++attempt) {
     const strict = attempt < 2;
@@ -65,7 +67,7 @@ export async function loadExportWorkbook(gadget: ExportGadgetStub, { formats, sh
     disposeResult(structure);
     const ids = [...new Set((sheetIds || structure.sheetOrder).map(String))].filter((id) => structure.sheets[id]);
     const cells = new Map<string, ExportCells>(), fmts: CellFmt[] = [], fmtIndex = new Map<string, number>();
-    let consistent = true;
+    let consistent = true, total = 0;
     for (const id of ids) {
       const data = new ExportCells();
       let after: string | null = "";
@@ -75,6 +77,8 @@ export async function loadExportWorkbook(gadget: ExportGadgetStub, { formats, sh
         disposeResult(page);
         if (page.revision !== structure.revision) { consistent = false; if (strict) break; }
         if (page.missing) break;
+        total += page.refs.length;
+        if (total > MAX_EXPORT_CELLS) throw new Error(`This export has more than ${MAX_EXPORT_CELLS.toLocaleString("en-US")} cells, more than can be exported at once. Export one sheet as CSV, or split the workbook.`);
         // A page asked for with formats carries `styles` and `fmts`.
         const local = formats ? (page.fmts as CellFmt[]).map((fmt) => {
           const key = JSON.stringify(fmt);

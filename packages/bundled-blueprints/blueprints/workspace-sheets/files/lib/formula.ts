@@ -315,6 +315,12 @@ export function serializeAst(node: Ast): string {
 }
 // `node` without grouping parentheses: ROW((A5)) still finds a reference.
 export function unwrapParens(node: Ast): Ast { return node && node.k === "paren" ? unwrapParens(node.a) : node; }
+// Whether an argument is a reference, whose text and booleans aggregates skip or count as in a
+// range. A reference-form INDEX picking one cell gives that cell's value, but is still a reference.
+function isReference(node: Ast): boolean {
+  const n = unwrapParens(node);
+  return n.k === "ref" || (n.k === "call" && n.name === "INDEX");
+}
 
 // --- Text-level reference scanning (copy, fill, cut and the formula editor) ---
 // A function name, identifier suffix, sheet prefix or quoted string never becomes a reference.
@@ -916,7 +922,7 @@ export function makeEngine(model: EngineModel, limits: EvaluationLimits = { work
         // An empty argument counts as 0 (MAX(-1,) is 0, AVERAGE(1,) is 0.5).
         if (node.k === "missing") { out.push(0); continue; }
         const v = evalNode(node, ctx);
-        if (unwrapParens(node).k === "ref" && !isMatrix(v)) collectNums({ matrix: true, rows: 1, cols: 1, get: () => v }, out);
+        if (isReference(node) && !isMatrix(v)) collectNums({ matrix: true, rows: 1, cols: 1, get: () => v }, out);
         else collectNums(v, out);
       }
       return out;
@@ -1015,7 +1021,7 @@ export const FUNCTIONS: Record<string, FormulaFunction> = (() => {
     let total = 0, count = 0;
     for (const node of a) {
       const result = H.evalNode(node, c);
-      const v = !isMatrix(result) && unwrapParens(node).k === "ref" ? { matrix: true as const, rows: 1, cols: 1, get: () => result } : result;
+      const v = !isMatrix(result) && isReference(node) ? { matrix: true as const, rows: 1, cols: 1, get: () => result } : result;
       if (isMatrix(v)) {
         for (let i = 0; i < v.rows; i++) for (let j = 0; j < v.cols; j++) {
           const x = v.get(i, j);
@@ -1036,7 +1042,7 @@ export const FUNCTIONS: Record<string, FormulaFunction> = (() => {
       let v: Value;
       try { v = H.evalNode(node, c); } catch (e) { if (!isErr(e)) throw e; continue; }
       if (isMatrix(v)) { for (let i = 0; i < v.rows; i++) for (let j = 0; j < v.cols; j++) if (typeof v.get(i, j) === "number") count++; }
-      else if (unwrapParens(node).k === "ref") { if (typeof v === "number") count++; }
+      else if (isReference(node)) { if (typeof v === "number") count++; }
       else if (typeof v === "number" || typeof v === "boolean") count++;
       else if (typeof v === "string" && v.trim() !== "") { try { toNum(v); count++; } catch (e) { /* not a number */ } }
     }
@@ -1227,7 +1233,11 @@ export const FUNCTIONS: Record<string, FormulaFunction> = (() => {
       if (isErr(value)) throw value;
       const text = H.toStr(value), sections = formatSections(f);
       const section = sections.length > 3 ? sections[3] : sections.find((part) => /@/.test(part.replace(/"[^"]*"/g, "")));
-      return section == null ? text : section.replace(/"([^"]*)"|@/g, (m, quoted) => quoted ?? text);
+      if (section == null) return text;
+      // The result is bounded like other built text (each @ repeats the whole text).
+      const ats = (section.replace(/"[^"]*"/g, "").match(/@/g) || []).length;
+      if (section.length + ats * text.length > MAX_TEXT) return ERR.VALUE();
+      return section.replace(/"([^"]*)"|@/g, (m, quoted) => quoted ?? text);
     }
     return applyTextFormat(v, f);
   };

@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { ExportHandler, Gadget } from "../files/server.ts";
+import { MAX_EXPORT_CELLS, loadExportWorkbook } from "../files/lib/export-data.ts";
 import type { Cell, Operation, SheetMeta, SubscriberEvent } from "../files/lib/protocol.ts";
 
 // Durable Object storage in memory: just the calls the gadget makes, with values copied in and out
@@ -796,5 +797,17 @@ describe("CSV export", () => {
     );
     const other = await csvText(gadget, owner);
     expect(other.split("\r\n").slice(0, 8)).toEqual(["﻿Ref,15081", ",#DIV/0!", ",2950", ",00123", ",TRUE", ",#CYCLE!", ",1.23E+08", ",ab"]);
+  });
+});
+
+describe("export size", () => {
+  it("refuses a workbook with more cells than one export can hold", async () => {
+    const meta: SheetMeta = { id: "s1", name: "Sheet1", rows: 100, cols: 26, colWidths: {}, rowHeights: {}, frozenRows: 0, frozenCols: 0, filter: null, charts: [], pivot: null };
+    const refs = Array.from({ length: MAX_EXPORT_CELLS + 1 }, () => "A1");
+    const gadget = {
+      getStructure: async () => ({ revision: 1, title: "Book", sheetOrder: ["s1"], sheets: { s1: meta } }),
+      exportPage: async () => ({ revision: 1, refs, values: refs, next: null }),
+    };
+    await expect(loadExportWorkbook(gadget, { formats: false })).rejects.toThrow("more than can be exported at once");
   });
 });

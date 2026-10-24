@@ -492,7 +492,7 @@ function prepareFilter(sheet: PreparedSheet, evaluator: ExportEvaluator, fmts: C
 function anchorPosition(pixels: number, sizes: unknown, defaultPixels: number, maximum: number): Anchor {
   const source: Record<string, unknown> = sizes && typeof sizes === "object" ? sizes as Record<string, unknown> : {};
   let index = 0;
-  let remaining = Number.isFinite(pixels) && pixels <= 5000 ? Math.max(0, Math.round(pixels)) : 0;
+  let remaining = Number.isFinite(pixels) ? Math.min(5000, Math.max(0, Math.round(pixels))) : 0;
   for (;;) {
     const size = pixelDimension(source[index]) ?? defaultPixels;
     if (remaining < size || index >= maximum - 1) return { index, offset: Math.min(remaining, size - 1) * EMU_PER_PIXEL };
@@ -515,10 +515,7 @@ function usableSeriesColumns(sheet: PreparedSheet, range: CellRange, firstColumn
 }
 // What a chart shows, for its cached values: labels and series names as the grid displays them,
 // and each point's number (null where the grid leaves a gap).
-function chartCaches(sheet: PreparedSheet, chart: ChartLayout, evaluator: ExportEvaluator, fmts: CellFmt[]): ChartCache {
-  const fmtAt = new Map<number, CellFmt>();
-  const data = sheet.data;
-  for (let i = 0; i < data.size; ++i) if (data.fmtIds[i] >= 0) fmtAt.set(data.rows[i] * XL_MAX_COLUMNS + data.cols[i], fmts[data.fmtIds[i]]);
+function chartCaches(sheet: PreparedSheet, chart: ChartLayout, evaluator: ExportEvaluator, fmtAt: Map<number, CellFmt>): ChartCache {
   const text = (row: number, column: number) => {
     const value = evaluator.value(sheet.id, row - 1, column - 1);
     return value === EXPORT_UNKNOWN ? "" : displayValue(value as Scalar, fmtAt.get((row - 1) * XL_MAX_COLUMNS + column - 1)).text;
@@ -541,6 +538,15 @@ function chartCaches(sheet: PreparedSheet, chart: ChartLayout, evaluator: Export
 function prepareCharts(sheet: PreparedSheet, evaluator: ExportEvaluator, fmts: CellFmt[]): PreparedChart[] {
   const source = Array.isArray(sheet.metadata.charts) ? sheet.metadata.charts : [];
   const charts: PreparedChart[] = [];
+  // Each cell's format by position, built once for all the sheet's charts.
+  let fmtAt: Map<number, CellFmt> | null = null;
+  const formatsByPosition = () => {
+    if (fmtAt) return fmtAt;
+    fmtAt = new Map();
+    const data = sheet.data;
+    for (let i = 0; i < data.size; ++i) if (data.fmtIds[i] >= 0) fmtAt.set(data.rows[i] * XL_MAX_COLUMNS + data.cols[i], fmts[data.fmtIds[i]]);
+    return fmtAt;
+  };
   for (const chart of source) {
     if (!chart || typeof chart !== "object") continue;
     const range = parseRangeReference(chart.range);
@@ -567,7 +573,7 @@ function prepareCharts(sheet: PreparedSheet, evaluator: ExportEvaluator, fmts: C
       row: anchorPosition(Number(chart.y ?? 44) - COLUMN_HEADER_PIXELS, sheet.metadata.rowHeights, XL_DEFAULT_ROW_PIXELS, XL_MAX_ROWS),
       extent: { cx: width * EMU_PER_PIXEL, cy: height * EMU_PER_PIXEL },
     };
-    charts.push({ ...prepared, cache: chartCaches(sheet, prepared, evaluator, fmts) });
+    charts.push({ ...prepared, cache: chartCaches(sheet, prepared, evaluator, formatsByPosition()) });
   }
   return charts;
 }
