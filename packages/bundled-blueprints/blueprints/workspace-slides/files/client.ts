@@ -1978,21 +1978,27 @@ function bindInlineList<E extends HTMLElement>(list: E, slide: Slide, block: Blo
     return textEl;
   };
   for (const item of items.length ? items : [""]) addRow(item, null);
+  let saved = items.join("\n");
+  const save = () => {
+    if (flushListEdit === save) flushListEdit = null;
+    list.style.outline = "none";
+    const edited = fields().map((f) => (f.textContent ?? "").replace(/\u00A0/g, " ").replace(/\s*\n\s*/g, "\n").trim()).filter(Boolean);
+    if (edited.join("\n") === saved) return;
+    saved = edited.join("\n");
+    const v = [...edited, ...hidden].join("\n");
+    block.props = { ...block.props || {}, [propKey]: v };
+    void api.updateBlock(slide.id, block.id, { props: { [propKey]: v } }).then(() => render());
+  };
   list.addEventListener("focusin", () => {
+    flushListEdit = save;
     list.style.outline = `1px dashed ${hexA(C.orange, 0.55)}`;
     list.style.outlineOffset = "2px";
   });
-  // Save once focus has left the whole list (not when moving between rows).
+  // Save once focus has left the whole list (not when moving between rows),
+  // or sooner through commitInlineEdit.
   list.addEventListener("focusout", () => {
-    setTimeout(async () => {
-      if (list.contains(document.activeElement)) return;
-      list.style.outline = "none";
-      const edited = fields().map((f) => (f.textContent ?? "").replace(/\u00A0/g, " ").replace(/\s*\n\s*/g, "\n").trim()).filter(Boolean);
-      if (edited.join("\n") === items.join("\n")) return;
-      const v = [...edited, ...hidden].join("\n");
-      block.props = { ...block.props || {}, [propKey]: v };
-      await api.updateBlock(slide.id, block.id, { props: { [propKey]: v } });
-      render();
+    setTimeout(() => {
+      if (flushListEdit === save && !list.contains(document.activeElement)) save();
     });
   });
   return list;
@@ -3879,6 +3885,7 @@ function renderSelectedBlock(slide: Slide, block: Block, def: ComponentDef | und
   return wrap;
 }
 async function reorderBlockBy(slide: Slide, block: Block, dir: number): Promise<void> {
+  commitInlineEdit();
   // The floating bar can outlive a deck update; work on the live slide.
   slide = deck.slides.find((s) => s.id === slide.id) || slide;
   const i = slide.blocks.findIndex((b) => b.id === block.id);
@@ -4001,10 +4008,13 @@ function commonValue<T = PropValue | null | undefined>(blocks: Block[], key: str
   const vals = new Set(blocks.map((b) => norm(styleValue(b, key))));
   return vals.size === 1 ? [...vals][0] : null;
 }
+// A bullet list being edited saves once focus has left it; this saves it now.
+var flushListEdit: (() => void) | null = null;
 // Finish any in-place text edit first, so its typing is saved, not lost.
 function commitInlineEdit() {
   const a = document.activeElement;
   if (a instanceof HTMLElement && a.isContentEditable) a.blur();
+  flushListEdit?.();
 }
 // Set an action's prop on every selected block it applies to (one save, one
 // undo step). `valueFor(block, field)` returns the new value, or null to
@@ -5047,11 +5057,18 @@ function attachSlideDragHandlers(row: HTMLElement, list: HTMLElement, i: number)
 // Copy, cut, paste, duplicate and delete all work on the whole selection
 // (one block or many); multi-block changes are saved as one undo step.
 function copySelectedBlock(): boolean {
+  commitInlineEdit();
   const blocks = selectedBlocks();
   if (!blocks.length) return false;
   clipboardBlocks = blocks.map((b) => {
     const clone = JSON.parse(JSON.stringify(b));
     delete clone.id;
+    // Media is held as its data, not its asset ref: once the source is gone
+    // the server can delete the asset, and a paste stores the data again.
+    for (const k in clone.props) {
+      const h = refHash(clone.props[k]);
+      if (h && assetCache.has(h)) clone.props[k] = assetCache.get(h);
+    }
     return clone;
   });
   return true;
@@ -5106,6 +5123,7 @@ async function pasteClipboardBlock(): Promise<void> {
   clipboardBlocks = clipboardBlocks.map((b) => offsetCopy(JSON.parse(JSON.stringify(b))));
 }
 async function duplicateSelectedBlock(): Promise<void> {
+  commitInlineEdit();
   await insertCopies(selectedBlocks());
 }
 function deleteSelectedBlock(): void {
