@@ -1304,6 +1304,19 @@ describe("PPTX SVG pictures", () => {
     expect(stored).toContain('width="40"');
   });
 
+  // Attributes exist only in tags: text that reads like one, or a `>` inside a quoted value, changes nothing.
+  it("strips handlers and links from tags only, leaving the SVG's text as written", async () => {
+    const png = dataUrl("png", pngFixture(4, 2));
+    const svg = '<svg viewBox="0 0 40 20"><text>Join onboarding = fun, see href=x and src="y"</text>' +
+      '<!-- onload="kept" --><rect title="a>b" onload="alert(1)" width="40"/></svg>';
+    const zip = await readZip(deckToPptx(oneSlide([block("image", {src: png, svgMarkup: svg}, {w: 400, h: 200})])));
+    const stored = partText(zip, [...zip.names].find(name => name.endsWith(".svg"))!);
+    expect(stored).toContain('<text>Join onboarding = fun, see href=x and src="y"</text>');
+    expect(stored).toContain('<!-- onload="kept" -->');
+    expect(stored).not.toContain("alert");
+    expect(stored).toContain('width="40"');
+  });
+
   it("keeps only fragment and image-data links in the SVG part", async () => {
     const png = dataUrl("png", pngFixture(4, 2));
     const linked = '<svg viewBox="0 0 40 20"><use href="#a"/><image xlink:href="https://tracker.example/p.png"/>' +

@@ -1035,13 +1035,42 @@ function sanitizeSvg(svg: string): string {
     SVG_SCRIPT_OPEN.lastIndex = at;
   }
   kept.push(svg.slice(at));
-  const stripped = kept.join(" ").replace(SVG_EVENT_HANDLER, "").replace(SVG_LINK, (link: string, ...values: Array<string | undefined>) =>
-    SAFE_SVG_LINK.test(values[0] ?? values[1] ?? values[2] ?? "") ? link : "");
-  return sanitizeSvgStyleSheets(stripped).replace(SVG_QUOTED_ATTRIBUTE, (attribute: string, name: string, double?: string, single?: string) => {
-    const decoded = decodeXmlText(double ?? single ?? "");
-    const clean = sanitizeSvgCss(decoded);
-    return clean === decoded ? attribute : name + '"' + escapeXmlText(clean).replace(/"/g, "&quot;") + '"';
-  });
+  return mapSvgTags(sanitizeSvgStyleSheets(kept.join(" ")), (tag) => tag
+    .replace(SVG_EVENT_HANDLER, "")
+    .replace(SVG_LINK, (link: string, ...values: Array<string | undefined>) => SAFE_SVG_LINK.test(values[0] ?? values[1] ?? values[2] ?? "") ? link : "")
+    .replace(SVG_QUOTED_ATTRIBUTE, (attribute: string, name: string, double?: string, single?: string) => {
+      const decoded = decodeXmlText(double ?? single ?? "");
+      const clean = sanitizeSvgCss(decoded);
+      return clean === decoded ? attribute : name + '"' + escapeXmlText(clean).replace(/"/g, "&quot;") + '"';
+    }));
+}
+
+// `svg` with each tag passed through `clean`, and its text, comments and CDATA left as they are:
+// attributes exist only inside tags. A tag runs to the first `>` outside quotes (one left open,
+// to the end of the markup).
+function mapSvgTags(svg: string, clean: (tag: string) => string): string {
+  let out = "", at = 0;
+  for (let lt = svg.indexOf("<"); lt >= 0; lt = svg.indexOf("<", at)) {
+    const opaque = svg.startsWith("<!--", lt) ? "-->" : svg.startsWith("<![CDATA[", lt) ? "]]>" : null;
+    if (opaque) {
+      const close = svg.indexOf(opaque, lt);
+      const end = close < 0 ? svg.length : close + opaque.length;
+      out += svg.slice(at, end);
+      at = end;
+      continue;
+    }
+    let end = lt + 1, quote = "";
+    for (; end < svg.length; end++) {
+      const c = svg[end];
+      if (quote) { if (c === quote) quote = ""; }
+      else if (c === '"' || c === "'") quote = c;
+      else if (c === ">") break;
+    }
+    end = Math.min(end + 1, svg.length);
+    out += svg.slice(at, lt) + clean(svg.slice(lt, end));
+    at = end;
+  }
+  return out + svg.slice(at);
 }
 
 const SVG_STYLE_OPEN = /<(?:[\w.-]+:)?style(?=[\s/>]|$)/gi;

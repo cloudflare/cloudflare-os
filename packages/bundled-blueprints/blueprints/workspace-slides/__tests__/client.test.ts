@@ -15,8 +15,10 @@ const deck: Deck = {
     ],
   }],
 };
+// The subscriber the client hands the server, which the server calls with each broadcast.
+let subscriber: { deckPatched: (patch: unknown, meta: unknown) => void };
 const gadget = {
-  subscribe: vi.fn(async () => {}),
+  subscribe: vi.fn(async (s: typeof subscriber) => { subscriber = s; }),
   getDeck: vi.fn(async () => structuredClone(deck)),
   getUndoState: vi.fn(async () => ({ canUndo: false, canRedo: false })),
   getBrandAssets: vi.fn(async () => ({ coverOrange: "" })),
@@ -188,5 +190,43 @@ describe("in-place text", () => {
       ["s1", "t1", { props: { text: "typed" } }],
       ["s1", "t1"],
     ]);
+  });
+});
+
+describe("edits racing the server's broadcasts", () => {
+  let rev = 1;
+  // The server's broadcast of the slide as `blocks` (fresh objects, as a real patch brings).
+  const broadcast = async (blocks: Deck["slides"][number]["blocks"]) => {
+    subscriber.deckPatched({ rev: rev + 1, base: rev, slides: { s1: { ...structuredClone(deck.slides[0]!), blocks: structuredClone(blocks) } } }, { canUndo: true, canRedo: false });
+    rev++;
+    await settle();
+  };
+  const press = (key: string) => document.body.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+  const nudgeSaved = () => new Promise((r) => setTimeout(r, 450));
+
+  // A broadcast of an earlier nudge save, arriving after more presses, must not be where the next
+  // press starts from.
+  it("keeps nudges made while an earlier nudge's broadcast was on its way", async () => {
+    await broadcast(deck.slides[0]!.blocks);
+    await select("i1");
+    press("ArrowRight");
+    await nudgeSaved();
+    expect(gadget.updateBlocks).toHaveBeenLastCalledWith("s1", [{ id: "i1", patch: { x: 801, y: 100 } }]);
+    press("ArrowRight");
+    await broadcast(deck.slides[0]!.blocks.map((b) => b.id === "i1" ? { ...b, x: 801 } : b));
+    press("ArrowRight");
+    await nudgeSaved();
+    expect(gadget.updateBlocks).toHaveBeenLastCalledWith("s1", [{ id: "i1", patch: { x: 803, y: 100 } }]);
+  });
+
+  // The editor outlives a broadcast that replaces its block; Duplicate must copy what was typed.
+  it("Duplicate copies text typed into an editor that outlived a broadcast", async () => {
+    await broadcast(deck.slides[0]!.blocks);
+    await select("t1");
+    type(onStage("t1").querySelector<HTMLElement>(".inline-edit")!, "draft");
+    await broadcast(deck.slides[0]!.blocks);
+    button("Duplicate").click();
+    await settle();
+    expect(gadget.addBlock).toHaveBeenCalledWith("s1", expect.objectContaining({ props: expect.objectContaining({ text: "draft" }) }));
   });
 });

@@ -1807,6 +1807,13 @@ function makeEditable(elem: HTMLElement, placeholder?: string): void {
   if (placeholder) elem.dataset.ph = placeholder;
   elem.addEventListener("pointerdown", (e) => e.stopPropagation());
 }
+// Sets a prop an in-place editor saves on the deck's current copy of its block:
+// a patch may have replaced the block the editor was drawn from, and commands
+// that follow (Duplicate, Copy) read the deck.
+function setLiveProp(slideId: string, blockId: string, key: string, value: PropValue): void {
+  const live = deck.slides.find((s) => s.id === slideId)?.blocks.find((b) => b.id === blockId);
+  if (live) live.props = { ...live.props || {}, [key]: value };
+}
 function bindInlineText<E extends HTMLElement>(elem: E, slide: Slide, block: Block, propKey: string, transform?: ((raw: PropValue) => string) | null, placeholder = "Type here"): E {
   const raw = (block.props || {})[propKey] ?? "";
   if (inlineEditing(block)) {
@@ -1848,7 +1855,7 @@ function bindInlineText<E extends HTMLElement>(elem: E, slide: Slide, block: Blo
       if (!v.trim()) v = "";
       if (v === saved) return;
       saved = v;
-      block.props = { ...block.props || {}, [propKey]: v };
+      setLiveProp(slide.id, block.id, propKey, v);
       await api.updateBlock(slide.id, block.id, { props: { [propKey]: v } });
       renderWhenIdle();
     });
@@ -1990,7 +1997,7 @@ function bindInlineList<E extends HTMLElement>(list: E, slide: Slide, block: Blo
     if (edited.join("\n") === saved) return;
     saved = edited.join("\n");
     const v = [...edited, ...hidden].join("\n");
-    block.props = { ...block.props || {}, [propKey]: v };
+    setLiveProp(slide.id, block.id, propKey, v);
     void api.updateBlock(slide.id, block.id, { props: { [propKey]: v } }).then(renderWhenIdle);
   };
   list.addEventListener("focusin", () => {
@@ -4428,6 +4435,23 @@ async function alignSelected(mode: AlignMode): Promise<void> {
 // together a moment after the last one.
 let nudgeTimer: ReturnType<typeof setTimeout> | null = null, nudgeSlideId: string | null = null;
 const nudgePending = new Map<string, BlockPatch>();
+// Where nudges have put blocks, kept until every nudge save has finished: the
+// broadcast of an earlier save must not move a block back, nor be where the
+// next nudge starts from. Laid over each deck that arrives meanwhile.
+const nudgeLocal = new Map<string, { slideId: string; patch: BlockPatch }>();
+let nudgeSaves = 0;
+function applyNudge(b: Block, patch: BlockPatch): void {
+  if (patch.props) b.props = { ...b.props || {}, ...patch.props };
+  else Object.assign(b, patch);
+}
+function overlayNudges(): void {
+  for (const slide of nudgeLocal.size ? deck.slides : []) {
+    for (const b of slide.blocks) {
+      const local = nudgeLocal.get(b.id);
+      if (local?.slideId === slide.id) applyNudge(b, local.patch);
+    }
+  }
+}
 // Save any nudges still waiting. Called before every other server call, so a
 // drag, undo or edit right after a nudge can't be overtaken (or undone) by
 // the late nudge save.
@@ -4437,7 +4461,11 @@ function flushNudges(): void {
   if (!nudgePending.size) return;
   const patches = [...nudgePending].map(([id, patch]) => ({ id, patch }));
   nudgePending.clear();
-  if (nudgeSlideId) call("updateBlocks", nudgeSlideId, patches);
+  if (!nudgeSlideId) return;
+  nudgeSaves++;
+  void call("updateBlocks", nudgeSlideId, patches).finally(() => {
+    if (--nudgeSaves === 0 && !nudgePending.size) nudgeLocal.clear();
+  });
 }
 function nudgeSelected(dx: number, dy: number): void {
   const slide = currentSlide();
@@ -4447,15 +4475,18 @@ function nudgeSelected(dx: number, dy: number): void {
   if (nudgeSlideId !== slide.id) flushNudges();
   nudgeSlideId = slide.id;
   for (const b of blocks) {
+    let patch: BlockPatch;
     if (COMPONENTS[b.type]?.fullBleed) {
       const p = b.props || {};
       b.props = { ...p, x1: (p.x1 ?? 0) + dx, y1: (p.y1 ?? 0) + dy, x2: (p.x2 ?? 0) + dx, y2: (p.y2 ?? 0) + dy };
-      nudgePending.set(b.id, { props: { x1: b.props.x1, y1: b.props.y1, x2: b.props.x2, y2: b.props.y2 } });
+      patch = { props: { x1: b.props.x1, y1: b.props.y1, x2: b.props.x2, y2: b.props.y2 } };
     } else {
       b.x = (b.x ?? 0) + dx;
       b.y = (b.y ?? 0) + dy;
-      nudgePending.set(b.id, { x: b.x, y: b.y });
+      patch = { x: b.x, y: b.y };
     }
+    nudgePending.set(b.id, patch);
+    nudgeLocal.set(b.id, { slideId: slide.id, patch });
   }
   render();
   if (blocks.length === 1) updateInspectorPositionFields(blocks[0]);
@@ -5963,6 +5994,7 @@ function onDeckChanged(newDeck: Deck, patch: DeckPatch): void {
   }
   const prevSlideId = prevStageSlide?.id;
   deck = newDeck;
+  overlayNudges();
   if (prevSlideId) {
     const i = deck.slides.findIndex((s) => s.id === prevSlideId);
     if (i >= 0) currentIndex = i;
@@ -6023,6 +6055,7 @@ function applySnapshot(fresh: Deck | null | undefined): void {
     deckRev = p.rev;
   }
   if (gap) setTimeout(() => { if (ready) resync(); }, 0);
+  overlayNudges();
   const i = prevSlideId ? deck.slides.findIndex((s) => s.id === prevSlideId) : -1;
   currentIndex = i >= 0 ? i : clamp(currentIndex, 0, Math.max(0, deck.slides.length - 1));
   if (selection.size) {
