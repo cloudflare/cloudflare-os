@@ -1508,6 +1508,9 @@ const pendingReplacements = new Map<string, CellMap>(); // sheetId -> cells (ful
 // with this revision and the server refuses it if the sheet has moved on. null while neither
 // is pending.
 let wholesaleBaseRevision: number | null = null;
+// The newest remote write (`cell: null` for a deletion) to a cell whose edit was pending when it
+// arrived. A save's reply can come after it, and must not put back the older acknowledged cell.
+const overtakingWrites = new Map<string, { revision: number; cell: Cell | null }>();
 // Set when a save failed, so the next attempt first asks the server where the sheet stands: a
 // failure says nothing about whether the commit landed.
 let resyncBeforeSave = false;
@@ -1883,12 +1886,20 @@ async function sendPendingOperation(): Promise<"saved" | "retry" | "conflict"> {
       && result.type === "operation" && result.revision === sentRevision + 1) wholesaleBaseRevision = result.revision;
   // An acknowledgment advances versions but doesn't overwrite an edit typed while it was out.
   const noteCommits = (result.upserts?.length || 0) + (result.deletes?.length || 0) <= RACE_NOTICE_CELLS;
+  // A remote write committed after this save, and already heard, wins over the acknowledgment.
+  const overtaking = (sheetId: string, ref: string) => {
+    const key = sheetId + "!" + ref, write = overtakingWrites.get(key);
+    overtakingWrites.delete(key);
+    return write && write.revision > result.revision ? write : null;
+  };
   for (const up of result.upserts || []) {
     const cells = model.cells[up.sheetId] || (model.cells[up.sheetId] = {});
     const pending = pendingCellOps.get(up.sheetId + "!" + up.ref);
     if (!pending && noteCommits) noteCommit(up.sheetId, up.ref, up.cell.value, up.cell.version);
     noteReloadAck(up.sheetId, up.ref, up.cell, result.revision);
-    if (!pending) cells[up.ref] = { ...up.cell };
+    const later = overtaking(up.sheetId, up.ref);
+    if (!pending && later) { if (later.cell) cells[up.ref] = later.cell; else delete cells[up.ref]; }
+    else if (!pending) cells[up.ref] = { ...up.cell };
     else {
       pending.baseVersion = up.cell.version;
       if (pending.value == null && pending.fmt == null) delete cells[up.ref];
@@ -1900,7 +1911,9 @@ async function sendPendingOperation(): Promise<"saved" | "retry" | "conflict"> {
     const pending = pendingCellOps.get(del.sheetId + "!" + del.ref);
     if (!pending && noteCommits) noteCommit(del.sheetId, del.ref, null, 0);
     noteReloadAck(del.sheetId, del.ref, null, result.revision);
-    if (!pending) delete cells[del.ref];
+    const later = overtaking(del.sheetId, del.ref);
+    if (!pending && later?.cell) cells[del.ref] = later.cell;
+    else if (!pending) delete cells[del.ref];
     else {
       pending.baseVersion = 0;
       if (pending.value == null && pending.fmt == null) delete cells[del.ref];
@@ -2007,6 +2020,16 @@ function setCellValue(ref: string, value: string | number | null | undefined, { 
   cells[ref] = { value: value == null ? "" : String(value), fmt: fmt || null, version: cur ? cur.version : 0 };
   queueCellOp(sheetId, ref, cells[ref].value, cells[ref].fmt);
   schedulePivotRefreshes();
+}
+// Text taken from a computed value, which the grid would re-read as something else (a formula,
+// a number, a boolean, an apostrophe), is stored with the literal-text prefix.
+function literalText(text: string): string { return /^[='+\-$.\d]|^(true|false)$/i.test(text) ? "'" + text : text; }
+/** What to store so a cell holds this computed value as a constant. */
+function storedValueOf(value: Scalar): string {
+  if (value == null) return "";
+  if (typeof value === "number") return String(value);
+  if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
+  return literalText(isErr(value) ? value.value : value instanceof HyperlinkValue ? value.label : value);
 }
 function setCellFmt(ref: string, mutator: (fmt: CellFmt) => void) {
   const sheetId = activeSheetId;
@@ -2596,9 +2619,7 @@ function buildPivotOutput(pivot: PivotSettings): PivotOutput {
     addAggregate(stateFor(rowTotals, record.row), record.value); addAggregate(stateFor(columnTotals, record.column), record.value); addAggregate(grandTotal, record.value);
   }
   const cells: CellMap = {}, put = (row: number, column: number, value: string | number, fmt: CellFmt | null = null) => { cells[rcToRef(row, column)] = { value: String(value ?? ""), fmt, version: 1 }; };
-  // Labels are text taken from computed values; one the grid would re-read as something else
-  // (a formula, a number, a boolean, an apostrophe) is stored with the literal-text prefix.
-  const label = (text: string) => /^[='+\-$.\d]|^(true|false)$/i.test(text) ? "'" + text : text;
+  const label = literalText;
   const headerFmt = { b: true, bg: "#e1632e", c: "#ffffff" };
   const rowHeaderFmt = { b: true, bg: "#fff7f2", c: "#3f332e" };
   const totalFmt = { b: true, bg: "#fde9dc", c: "#3f332e" };
@@ -5668,8 +5689,8 @@ function deleteSelectionContents() {
 // ===========================================================================
 // Copy / paste (TSV via clipboard)
 // ===========================================================================
-/** One copied cell as the clipboard snapshot holds it (`value: null` for an empty source). */
-interface ClipboardCell { value: string | null; fmt: CellFmt | null; sourceRef: string }
+/** One copied cell as the clipboard snapshot holds it (`value: null` for an empty source; `computed`: its result, as stored text). */
+interface ClipboardCell { value: string | null; fmt: CellFmt | null; sourceRef: string; computed?: string }
 /** What this tab last copied or cut: the text it wrote, the cells behind it, and the private token. */
 interface ClipboardSnapshot {
   tsv: string;
@@ -5763,7 +5784,7 @@ function prepareClipboard(cut = false) {
   const { refs, trimmed } = clipboardReferenceMatrix();
   const cells = refs.map((row) => row.map((ref) => {
     const cell = ref ? getCell(ref) : null;
-    return cell && ref ? { value: cell.value, fmt: cell.fmt, sourceRef: ref } : (ref ? { value: null, fmt: null, sourceRef: ref } : null);
+    return cell && ref ? { value: cell.value, fmt: cell.fmt, sourceRef: ref, computed: storedValueOf(engine.computeRef(activeSheetId, ref)) } : (ref ? { value: null, fmt: null, sourceRef: ref } : null);
   }));
   const tsv = refs.map((row) => row.map(clipboardCellText).join("\t")).join("\n");
   copyFallback = { tsv, cells, refs, trimmed, sheetId: activeSheetId, cut, cancelled: false, token: Math.random().toString(36).slice(2) };
@@ -6011,7 +6032,8 @@ function pasteText(text: string, { keepFormatting = true, token = null }: { keep
           queueCellOp(activeSheetId, ref, value, snapshot.fmt, curCells()[ref].version);
         } else clearStoredCell(activeSheetId, ref);
       } else if (useSnapshot && !keepFormatting) {
-        const value = snapshot && snapshot.value != null ? shiftedCopyFormula(snapshot.value, snapshot.sourceRef, ref, useSnapshot.cut) : "";
+        // Values only pastes what a copied cell showed; a cut still moves its formulas.
+        const value = snapshot?.value == null ? "" : useSnapshot.cut ? shiftedCopyFormula(snapshot.value, snapshot.sourceRef, ref, true) : snapshot.computed ?? "";
         setCellValue(ref, value === "" ? null : value);
       } else {
         const value = (values as string[][])[sourceRow]?.[sourceColumn] ?? "";
@@ -7143,13 +7165,13 @@ function applyRemoteOperation(event: OperationEvent) {
   for (const up of event.upserts || []) {
     // A local edit that hasn't been saved yet stays on screen; it is sent (and
     // rebased onto this version) by the next save.
-    if (pendingCellOps.has(up.sheetId + "!" + up.ref)) continue;
+    if (pendingCellOps.has(up.sheetId + "!" + up.ref)) { overtakingWrites.set(up.sheetId + "!" + up.ref, { revision: event.revision, cell: { ...up.cell } }); continue; }
     if (event.senderId !== "agent" && replacesRecentCommit(up.sheetId, up.ref, up.cell.value, up.cell.version)) replaced.push(up);
     const cells = model.cells[up.sheetId] || (model.cells[up.sheetId] = {});
     cells[up.ref] = { ...up.cell };
   }
   for (const del of event.deletes || []) {
-    if (pendingCellOps.has(del.sheetId + "!" + del.ref)) continue;
+    if (pendingCellOps.has(del.sheetId + "!" + del.ref)) { overtakingWrites.set(del.sheetId + "!" + del.ref, { revision: event.revision, cell: null }); continue; }
     if (event.senderId !== "agent" && replacesRecentCommit(del.sheetId, del.ref, null, Infinity)) replaced.push(del);
     const cells = model.cells[del.sheetId]; if (cells) delete cells[del.ref];
   }
@@ -7260,7 +7282,7 @@ function localStructureChanges(snapshot: Structure, remote?: Structure | null): 
 // back on top (structure merged field by field) so nothing typed is lost.
 function applySnapshot(doc: OpenedDocument | SheetsDocument, reconcile = false) {
   applyingRemote = true;
-  snapshotGeneration++; reloadAcks.length = 0;
+  snapshotGeneration++; reloadAcks.length = 0; overtakingWrites.clear();
   model.revision = doc.revision || 0;
   model.cells = doc.cells || {};
   const structure = { title: doc.title || "Untitled spreadsheet", sheetOrder: doc.sheetOrder || [], sheets: doc.sheets || {} };

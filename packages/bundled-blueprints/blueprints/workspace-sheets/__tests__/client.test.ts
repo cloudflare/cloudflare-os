@@ -115,6 +115,19 @@ describe("sync", () => {
     expect(shown("A1")).toBe("mine");
   });
 
+  it("keeps a remote edit that lands after this tab's save, even when the save's reply comes later", async () => {
+    const meta = sheet("s1");
+    const h = await loadClient(meta, { A1: cell("old") });
+    const save = deferred<OperationResult>();
+    h.gadget.applyOperation.mockImplementation(() => save.promise);
+    typeIntoActiveCell("mine");
+    await settle(); // the save is out, and commits at revision 2
+    h.callbacks.operation(remoteEvent(meta, 3, { upserts: [{ sheetId: "s1", ref: "A1", cell: cell("theirs", 3) }] }));
+    save.resolve({ status: "applied", revision: 2, conflicts: [], upserts: [{ sheetId: "s1", ref: "A1", cell: cell("mine", 2) }], deletes: [] });
+    await settle();
+    expect(shown("A1")).toBe("theirs");
+  });
+
   it("doesn't let a sheet reload started before a reconnect overwrite the reconnect's snapshot", async () => {
     const meta = sheet("s1");
     const h = await loadClient(meta, { A1: cell("old") });
@@ -206,6 +219,25 @@ describe("paste", () => {
     expect(shown("A1")).toBe("1");
     expect(shown("A2")).toBe("2");
   }, 60_000);
+});
+
+describe("paste values only", () => {
+  it("pastes what a copied formula showed, not the formula", async () => {
+    await loadClient(sheet("s1"), { A1: cell("10"), A2: cell("30"), B1: cell("=A1*2") });
+    const grid = document.querySelector<HTMLElement>(".grid-scroll")!;
+    grid.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    const written = new Map<string, string>();
+    const copy = new Event("copy", { bubbles: true, cancelable: true });
+    Object.defineProperty(copy, "clipboardData", { value: { setData: (type: string, data: string) => written.set(type, data) } });
+    grid.dispatchEvent(copy);
+    grid.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    grid.dispatchEvent(new KeyboardEvent("keydown", { key: "v", ctrlKey: true, metaKey: true, shiftKey: true, bubbles: true }));
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", { value: { getData: (type: string) => written.get(type) ?? "" } });
+    grid.dispatchEvent(paste);
+    await settle();
+    expect(shown("B2")).toBe("20");
+  });
 });
 
 const gridEl = () => document.querySelector<HTMLElement>(".grid-scroll")!;
