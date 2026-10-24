@@ -434,8 +434,11 @@ export class ObserverLedger {
     }
   }
 
-  // Observers without a choice for this connection have had no session since it was tracked
-  // (tracking a connection restarts every session), and their next admission checks everything.
+  // Observers without a choice for this connection have had no session since it entered their
+  // role's verification scope (every widening restarts the workspace), and their next admission
+  // checks everything. A "use" collaborator outside that scope (nothing binds or hooks the
+  // connection) usually has no choice and goes unchecked, as under the legacy protocol; a choice
+  // left from an earlier binding is still checked, which can only refuse more.
   #audience(sharing: SharingManager, context: ObserverContext,
             gatekeeperId: WorkpieceId): ObservationRecipient[] {
     let effective = sharing.computeEffectiveRoles();

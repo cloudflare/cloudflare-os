@@ -444,19 +444,18 @@ Six events trigger it:
 
 | Event | What grows |
 |---|---|
-| `addGatekeeper()` with a vendor-backed `creationSpec` | **build** scope — a live `build` session can `getGatekeeperById()`/`openSession()` on it with no observer check. A connection the Workshop tracks (§10) is in every role's scope at once, so its addition restarts regardless of role |
+| `addGatekeeper()` with a vendor-backed `creationSpec` | **build** scope — a live `build` session can `getGatekeeperById()`/`openSession()` on it with no observer check |
 | `bindWorkpiece()` for a permanent (non-`chatId`) edge onto a vendor-backed connection — or onto a legacy (pre-`creationSpec`) one, which nobody *can* be verified against, so it restarts and quarantines and fresh `use` opens then fail closed on the reconnect-required error | **use** scope — the gadget UI a `use` session drives can now invoke it |
 | A merge that promotes a pending gadget or a pending binding edge into `use` scope | **use** scope, same reason |
 | `enableHook` on a vendor-backed connection not already in `use` scope | **use** scope — the hook delivers the connection's data into a gadget a `use` session can open (a hook waking a still-provisional gadget stays out of `use` scope until promotion; the merge diff reports that widening) |
 | Approving a creation queued by the agent's `createExternalResource` | every role's scope — the connection was published without a restart because until now it only simulated its resource, so nobody was verified against the real one. The restart is unconditional on role, since the connection may already be bound |
-| A legacy connection moving to Workshop tracking (§10) — its history import | every role's scope — sessions were admitted against its legacy registrations, not the imported requirements, and it is now in every collaborator's scope bound or not |
+| A legacy connection moving to Workshop tracking (§10) — its history import | every role's scope — sessions were admitted against its legacy registrations, not the imported requirements |
 
 The two roles widen independently, so each trigger passes the role it grew and the restart is
 skipped when no collaborator holds it: a new connection is in every `build` collaborator's scope
 at once but in no `use` collaborator's until a gadget binds it, and binding one enters `use` scope
 having been in `build` scope since it was created. A workspace shared only the other way has nobody
-with new verification requirements. A tracked connection is the exception: it is in both roles'
-scope from the start, so binding one widens nothing.
+with new verification requirements. Connections the Workshop tracks (§10) follow the same rules.
 
 The three `use`-scope triggers share one helper (`#restartIfUseScopeWidened`) that compares the
 effective `use` scope before and after rather than firing on any mutation: most merges promote
@@ -704,9 +703,9 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    log, so the exposure is limited to what the agent chose to persist, and the forward
    remedy is binding the producer to a gadget — that puts it in `use` scope, so every
    collaborator is verified against it at their next open.
-   A connection the Workshop tracks (§10) is in every collaborator's scope whether or not anything
-   binds it, so neither flavor applies to it; what remains is the deliberate no-propagation rule
-   (chat requirements are not checked against `use` collaborators).
+   A connection the Workshop tracks (§10) has the same gap: its requirements are checked against
+   `use` collaborators only while something binds or hooks it. Even then, chat requirements are
+   not checked against them (the deliberate no-propagation rule).
 5. **Owner adds a new binding after sharing** — existing observers see an incremental modal for
    just the new binding on their next open, and may be denied if they lack access to the new
    resource (inherent to the security model). Because that next open is what verifies them, the
@@ -915,10 +914,13 @@ workspace can mix the two. No shipping gatekeeper opts in yet.
   else stores requirements, so the action log is append-only:
   deleting an entry would drop its checks. Client action-log entries omit `subresources`.
 - **Checks.** Account choices stay in `observers.accountChoices`, keyed by connection id under both
-  protocols. A tracked connection is in every collaborator's scope, bound or not, so each needs an
-  account for it. Admission checks every requirement the role reaches through
+  protocols. A tracked connection enters each role's verification scope exactly as a legacy one
+  does: "build" at creation, "use" while a gadget binds it or an enabled hook feeds it. Within that
+  scope, admission checks every requirement the role reaches through
   `getVerifier()` + `checkObserverAccess(subresources)`: "build" reaches every context, "use" the
-  workspace and every gadget. Each observation checks its IDs for every configured observer the
+  workspace and every gadget. Requirements through a connection outside a "use" collaborator's
+  scope (one nothing binds or hooks) are not checked against them, as under the legacy protocol.
+  Each observation checks its IDs for every configured observer the
   data reaches, online or not; a collaborator who lost access is skipped. A denial, wrong vendor,
   missing method, failed call, or malformed result fails closed, with no legacy fallback and no
   permission cached between operations. A single observation and each verifier call carry at most
@@ -966,14 +968,16 @@ workspace can mix the two. No shipping gatekeeper opts in yet.
 - **Execution fence.** Agent gatekeeper loopbacks carry their `executionId`; a session that
   outlives its executeCode call cannot authorize a tracked observation.
 - **Hooks.** Tracked connections support hook registration and delivery. Hook observations use the
-  workspace context, keeping `{from: "hook"}` as their audit caller. Both "build" and "use"
-  collaborators must pass verification before delivery, and later admission checks the recorded
-  subresources. This constrains every collaborator, not just users of the receiving gadget:
-  `BoundHookRecord.gadgetId` is heuristic bookkeeping, not a trusted observation destination.
-  Firings revalidate that the hook exists, is enabled, and its connection is usable on each call
-  and synchronously before the observation's audit/policy commit, after asynchronous verification.
-  A racing disable/delete prevents delivery; disabling/deleting a hook stops future events but
-  leaves delivered data's requirements in the action log, including across workspace restarts.
+  workspace context, keeping `{from: "hook"}` as their audit caller. While the hook is enabled,
+  both "build" and "use" collaborators must pass verification before delivery, and later
+  admission checks the recorded subresources. This constrains every collaborator, not just users
+  of the receiving gadget: `BoundHookRecord.gadgetId` is heuristic bookkeeping, not a trusted
+  observation destination. Firings revalidate that the hook exists, is enabled, and its
+  connection is usable on each call and synchronously before the observation's audit/policy
+  commit, after asynchronous verification. A racing disable/delete prevents delivery. Disabling
+  or deleting a hook stops future events and leaves delivered data's requirements in the action
+  log, including across workspace restarts; "build" collaborators stay verified against them, and
+  "use" collaborators only while something else still binds or hooks the connection.
 
 The integration fixture's tracked mode (`/control/observer-tracking`) exercises this end to end in
 `packages/integration-tests/__tests__/observer-tracking.test.ts`.

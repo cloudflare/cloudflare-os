@@ -123,9 +123,12 @@ function seedTracked(impl: ObserverImpl, id = TRACKED): void {
   });
 }
 
-function seedGadget(impl: any, id = GADGET): void {
-  impl.storage.gadgets.put(
-      { type: "gadget", id, title: "G", created: new Date(0), bindingName: `G${id}`, bindings: {} });
+// `bindings` maps binding names to connection ids; a bound connection is in "use" scope.
+function seedGadget(impl: ObserverImpl, id = GADGET, bindings: Record<string, number> = {}): void {
+  impl.storage.gadgets.put({
+    type: "gadget", id, title: "G", created: new Date(0), bindingName: `G${id}`,
+    bindings: Object.fromEntries(Object.entries(bindings).map(([name, target]) => [name, { target }])),
+  });
 }
 
 // Requirements are tracked observation audit records, attributed to a context by their caller.
@@ -159,6 +162,8 @@ describe("byte-bounded observation persistence", () => {
 
     it(`keeps every requirement from an oversized ${label}`, () => withWorld(async world => {
       let { impl } = world;
+      // Bound, so "use" collaborators are verified against it.
+      seedGadget(impl, GADGET, { C: historical ? LEGACY : TRACKED });
       let ids = Array.from({ length: historical ? 20_000 : 10_000 },
           (_, i) => String(i).padStart(512, historical ? "x" : "界"));
       if (historical) {
@@ -375,9 +380,12 @@ describe("tracked hook observations", () => {
     expect(impl.storage.actions.get(before)).toBeUndefined();
   }));
 
+  // Requirements stay in the log either way. A disabled or deleted hook no longer makes its
+  // connection reachable from a "use" session, so as under the legacy protocol only "build"
+  // collaborators are still verified against it.
   for (let operation of ["disable", "delete"] as const) {
     it.each(["build", "use"] as const)(
-        `retains delivered hook requirements after ${operation} and a DO restart for %s admission`,
+        `retains delivered hook requirements after ${operation} and a DO restart (%s admission)`,
         async role => {
       let name = `observer-ledger-hook-history-${++doCounter}`;
       let auditId = -1;
@@ -401,10 +409,14 @@ describe("tracked hook observations", () => {
         world.roles.set("carol", role);
         world.verifiers.set("carol", checkingVerifier(() => world, "carol", ids => ids.map(() => false)));
 
-        await expect(impl.ensureObserver("carol", world.clientUser("carol"), role, configureAll))
-            .rejects.toThrow(/could not confirm/);
-
-        expect(impl.storage.observers.get("carol")).toBeUndefined();
+        if (role === "build") {
+          await expect(impl.ensureObserver("carol", world.clientUser("carol"), role, configureAll))
+              .rejects.toThrow(/could not confirm/);
+          expect(impl.storage.observers.get("carol")).toBeUndefined();
+        } else {
+          await impl.ensureObserver("carol", world.clientUser("carol"), role, configureAll);
+          expect(world.checks).toEqual([]);
+        }
         expect(rows(impl, WORKSPACE)).toEqual(["2:past/event"]);
         expect(impl.observerLedger.requiredSubresources(role).get(TRACKED)).toEqual(["past/event"]);
         expect(impl.storage.actions.get(auditId)).toMatchObject({
@@ -655,7 +667,7 @@ describe("admission against tracked requirements", () => {
       withWorld(async world => {
     let { impl } = world;
     seedTracked(impl);
-    seedGadget(impl);
+    seedGadget(impl, GADGET, { C: TRACKED });
     seedGadget(impl, GADGET + 1);
     addRows(impl, WORKSPACE, TRACKED, ["workspace"]);
     addRows(impl, chat(1), TRACKED, ["chat-one"]);
@@ -786,6 +798,32 @@ describe("admission against tracked requirements", () => {
     expect(rows(impl, WORKSPACE)).toEqual([]);
     expect(impl.storage.nextActionId.get()).toBe(before);
     expect(impl.storage.actions.get(before)).toBeUndefined();
+  }));
+
+  it("asks use collaborators for no account for a connection nothing binds or hooks", () =>
+      withWorld(async world => {
+    let { impl } = world;
+    seedTracked(impl);
+    addRows(impl, chat(1), TRACKED, ["chat-only"]);
+    fakeFacets(impl);
+    world.roles.set("carol", "use");
+    world.roles.set("dave", "build");
+    let asked: number[][] = [];
+    // A direct-DO double supplying only the RPC method admission calls.
+    let configure = {
+      configure: async (needs: { gatekeeperId: number }[]) => {
+        asked.push(needs.map(need => need.gatekeeperId));
+        return needs.map(need => ({ gatekeeperId: need.gatekeeperId, accountId: need.gatekeeperId * 10 }));
+      },
+    } as unknown as NonNullable<Parameters<ObserverImpl["ensureObserver"]>[3]>;
+
+    await impl.ensureObserver("carol", world.clientUser("carol"), "use", configure);
+    expect(asked).toEqual([]);
+    expect(world.checks).toEqual([]);
+
+    await impl.ensureObserver("dave", world.clientUser("dave"), "build", configure);
+    expect(asked).toEqual([[TRACKED]]);
+    expect(world.checks).toEqual([{ profileId: "dave", ids: ["chat-only"] }]);
   }));
 });
 

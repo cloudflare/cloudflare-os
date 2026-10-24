@@ -464,16 +464,18 @@ it.concurrent("tracked hooks deliver authorized data, check both collaborator ro
   expect(await facet.deliveredValues()).toEqual([71]);
   expect(await ws.overseer.listActions({ filter: "observation" })).toEqual(audit);
 
-  // Hook removal does not erase data the callback has already brought into the workspace.
-  // Revoke each reported ID separately, covering both collaborator roles at later admission.
-  for (const [index, collaborator] of [builder, viewer].entries()) {
-    await setSubresourceAccess(collaborator.label, url, subresources[index]!, false);
-    const refused = await collaboratorOpens(collaborator, ws.gadgetId);
-    expect(refused.error?.message).toContain(DENIED);
-    expect(refused.recorder.calls[0]).toContainEqual(expect.objectContaining({
-      gatekeeperId: connectionId, failure: expect.objectContaining({ reason: expect.stringContaining(DENIED) }),
-    }));
-    await setSubresourceAccess(collaborator.label, url, subresources[index]!, true);
-  }
+  // Hook removal does not erase data the callback already brought into the workspace, so build
+  // collaborators are still verified against it. Nothing binds or hooks the connection any more,
+  // so as under the legacy protocol it has left "use" collaborators' verification scope.
+  await setSubresourceAccess(builder.label, url, subresources[0]!, false);
+  const refused = await collaboratorOpens(builder, ws.gadgetId);
+  expect(refused.error?.message).toContain(DENIED);
+  expect(refused.recorder.calls[0]).toContainEqual(expect.objectContaining({
+    gatekeeperId: connectionId, failure: expect.objectContaining({ reason: expect.stringContaining(DENIED) }),
+  }));
+  await setSubresourceAccess(viewer.label, url, subresources[1]!, false);
+  const admitted = await collaboratorOpens(viewer, ws.gadgetId);
+  expect(admitted.error).toBeUndefined();
+  expect(admitted.recorder.calls).toEqual([]);
   expect(await observerEvents(url)).toEqual([]);
 });

@@ -5137,8 +5137,7 @@ class OverseerImpl implements AgentHooks {
     // agentSpawner's env targets: an unbound spawner is unreachable and its env names
     // pre-existing records, so those enter "use" scope only when a gadget binds the spawner,
     // which the transitive bind/promotion/hook diffs pick up (#useScopeGatekeeperIds). A
-    // connection the Workshop tracks itself is in every collaborator's scope at once, bound or
-    // not (see #useScopeGatekeeperIds), so it severs every session.
+    // connection the Workshop tracks itself follows the same rules.
     //
     // When sessions are severed, the id is additionally blocked until the reset lands: the record
     // was published above (it must be durable before the reset) but the severed sessions stay live
@@ -5147,7 +5146,7 @@ class OverseerImpl implements AgentHooks {
     // interleave between the record appearing and the block taking effect.
     if (creationSpec && "vendorId" in creationSpec) {
       this.#restartIfSessionsAffected("Gadget restarted because a new connection was added.",
-          [id], this.observerLedger.isTracked(id) ? undefined : "build");
+          [id], "build");
     }
 
     return new GatekeeperClientImpl<any>(
@@ -6420,8 +6419,7 @@ class OverseerImpl implements AgentHooks {
   // (#inScopeGatekeepers): a new connection enters every "build" collaborator's scope but no "use"
   // collaborator's until some gadget binds it, and binding one enters "use" scope having been in
   // "build" scope since it was created. A session holding the other role therefore has no new
-  // verification requirements, and severing it would buy nothing. (A connection the Workshop
-  // tracks is in both roles' scope from creation, so its addition passes no role.) Omit the
+  // verification requirements, and severing it would buy nothing. Omit the
   // argument for a restart that isn't a widening at all (one that must sever regardless of role).
   //
   // Note that ensureAmbientCapsules() calls addGatekeeper() from inside open(), so on a shared
@@ -9801,13 +9799,6 @@ class OverseerImpl implements AgentHooks {
         pending.push(target);
       }
     }
-
-    // A connection the Workshop tracks itself is reachable, bound or not: its baseline
-    // requirements reach every gadget, and an observation can check only collaborators who chose
-    // an account for it (see ObserverLedger.requiredSubresources). Binding one widens nothing.
-    for (let gk of this.storage.gatekeepers.list()) {
-      if (gk.observerTracking) ids.add(gk.id);
-    }
     return ids;
   }
 
@@ -9834,8 +9825,9 @@ class OverseerImpl implements AgentHooks {
   // Selects the gatekeepers a non-owner observer with the given `role` must be verified against:
   //   - "build" collaborators (full access): every account-requiring gatekeeper.
   //   - "use" collaborators (UI only): only account-requiring gatekeepers some gadget binds or an
-  //     enabled hook feeds, since that is all their sessions can reach, plus every connection the
-  //     Workshop tracks itself (see #useScopeGatekeeperIds).
+  //     enabled hook feeds, since that is all their sessions can reach. A connection the Workshop
+  //     tracks itself is no exception: requirements recorded through one outside this scope are
+  //     not checked against "use" collaborators, the same never-bound gap as below.
   //
   // The scope filter runs before observerVendorId(), which throws on a legacy record with no
   // creationSpec: an unrelated legacy connection outside the caller's scope must not block their

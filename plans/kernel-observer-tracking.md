@@ -36,9 +36,12 @@ mix both.
   narrower attribution exists.
 - **Disconnect drops checks.** A removed connection's audit records stay but are ignored, matching
   the legacy protocol's behavior on removal (`docs/observers.md` edge case 8).
-- **Conservative exposure, no per-thread hiding.** "build" reaches every context, "use" the workspace
-  and every gadget. A tracked connection is in every collaborator's scope whether bound or not,
-  because an observation can only check collaborators who chose an account for it.
+- **Same verification scope as the legacy protocol.** A tracked connection enters "build" scope at
+  creation and "use" scope only while a gadget binds it or an enabled hook feeds it, through the
+  existing scope-widening restarts. Within scope, "build" reaches every context and "use" the
+  workspace and every gadget. Requirements through a connection outside a "use" collaborator's
+  scope are not checked against them: the legacy "never-bound producers" gap, kept rather than
+  closed so a connection only chats read asks "use" collaborators for no account.
 - **Direct contexts only; no propagation.** Attribution follows the trusted binding authorizer that
   approved the read. Calls, callbacks, spawned chats, code publication, arguments, and persistent
   writes transfer nothing between contexts. Indirect disclosure is knowingly outside the guarantee.
@@ -47,7 +50,9 @@ mix both.
   later admission. No per-gadget attribution: `BoundHookRecord.gadgetId` is heuristic bookkeeping,
   not a trusted destination. The tradeoff is conservative: hook observations constrain every
   collaborator, not just users of the receiving gadget. Disabling/deleting a hook stops future
-  events without erasing requirements for data already delivered, even after a restart.
+  events without erasing requirements for data already delivered, even after a restart; "use"
+  collaborators stay verified against them only while something still binds or hooks the
+  connection.
 - **Races are closed by re-checking at the commit point, not by locks or counters.** Admissions are
   serialized per profile; after verifying, admission recomputes its scope and re-runs if it grew.
   An observation recomputes its audience after its checks and re-checks if it changed. A hook
