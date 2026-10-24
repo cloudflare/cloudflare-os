@@ -62,6 +62,12 @@ function observerVerifier(world: () => World, profileId: string,
   };
 }
 
+function sparseIds(): string[] {
+  let ids: string[] = [];
+  ids.length = 1;
+  return ids;
+}
+
 let doCounter = 0;
 
 async function inOverseer(name: string, fn: (world: World) => Promise<void>): Promise<void> {
@@ -541,7 +547,7 @@ describe("observations through a tracked connection", () => {
     ["a denial", () => ({ denied: ["x"] })],
     ["missing denied IDs", () => ({})],
     ["non-array denied IDs", () => ({ denied: "x" })],
-    ["sparse denied IDs", () => ({ denied: new Array(1) })],
+    ["sparse denied IDs", () => ({ denied: sparseIds() })],
     ["non-string denied IDs", () => ({ denied: [false] })],
     ["an unwrapped array", () => []],
     ["a failed verification", () => { throw new Error("provider down"); }],
@@ -698,7 +704,7 @@ describe("admission against tracked requirements", () => {
     ["a denied resource", { verifyObserverAccess: async () => ({ denied: ["a"] }) }],
     ["missing denied IDs", { verifyObserverAccess: async () => ({}) }],
     ["non-array denied IDs", { verifyObserverAccess: async () => ({ denied: "a" }) }],
-    ["sparse denied IDs", { verifyObserverAccess: async () => ({ denied: new Array(1) }) }],
+    ["sparse denied IDs", { verifyObserverAccess: async () => ({ denied: sparseIds() }) }],
     ["non-string denied IDs", { verifyObserverAccess: async () => ({ denied: [false] }) }],
     ["an unwrapped result", { verifyObserverAccess: async () => [] }],
     ["a missing method", {}],
