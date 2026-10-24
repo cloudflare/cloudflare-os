@@ -1,0 +1,106 @@
+packages/api-cli/src/output.ts
+  s_c5f8d284ae2719::t_1a081d3b7db1ba 1-28
+packages/api-cli/README.md
+  s_c5f8d284ae2719::t_d5d5a34abe96c2 1-29,31-63,70-249
+  s_c5f8d284ae2719::t_181cf25827aebe 30,64-69,250-260
+packages/api-cli/src/main.ts
+  s_c5f8d284ae2719::t_3ab768b5c844ab 1-101
+packages/api-cli/src/main.test.ts
+  s_c5f8d284ae2719::t_eac6f1df132a72 1-124
+packages/api-cli/src/table.ts
+  s_c5f8d284ae2719::t_b93188fdcf8966 26-28
+  s_c5f8d284ae2719::t_a13f63daa3be68 42-43
+  s_c5f8d284ae2719::t_5cefcf6fabd99a 40,44,46,51,64,68,123-140,154,157
+  s_c5f8d284ae2719::t_32eed2093b045e 84-86
+  s_c5f8d284ae2719::t_2eb84d774221aa 1-25,29-39,41,45,47-50,52-63,65-67,69-83,87-122,141-153,155-156,158-165
+AGENTS.md
+  s_c5f8d284ae2719::t_4556ba6e70312f 23,87
+REVIEW.md
+  s_c5f8d284ae2719::t_cc17c33e3b022d 129-131
+docs/testing.md
+  s_c5f8d284ae2719::t_3abb35281feab9 8-9,11-12
+package.json
+  s_c5f8d284ae2719::t_364cc4908d43c5 19
+packages/api-cli/generated/agent-types.ts
+  s_c5f8d284ae2719::t_b8203553bd1ae4 1-7289
+packages/api-cli/generated/commands.ts
+  s_c5f8d284ae2719::t_696a5eacb2f502 1-3524
+packages/api-cli/generator/__fixtures__/generated/commands.ts
+  s_c5f8d284ae2719::t_cea7a3baff289f 1-217
+packages/api-cli/generator/__fixtures__/generated/schema.json
+  s_c5f8d284ae2719::t_8d0252ca127881 1-571
+packages/api-cli/generator/__fixtures__/src/table.ts
+  s_c5f8d284ae2719::t_1b0cab17e47f48 1-4
+packages/api-cli/generator/emit.test.ts
+  s_c5f8d284ae2719::t_0349d1da7874f9 1-403
+packages/api-cli/generator/emit.ts
+  s_c5f8d284ae2719::t_6c0c8a6bb730ab 1-535
+packages/api-cli/generator/generate.test.ts
+  s_c5f8d284ae2719::t_063d0aa8ebbcbf 1-42
+packages/api-cli/package.json
+  s_c5f8d284ae2719::t_a9e8f9a0997fb8 1-20
+packages/api-cli/src/api.test.ts
+  s_c5f8d284ae2719::t_d67f8a3b0c6f04 1-591
+packages/api-cli/src/api.ts
+  s_c5f8d284ae2719::t_9856426628006e 1-214
+packages/api-cli/src/callbacks.test.ts
+  s_c5f8d284ae2719::t_b20d4c9d0dbc01 1-158
+packages/api-cli/src/callbacks.ts
+  s_c5f8d284ae2719::t_152366ec2fa0c4 1-100
+packages/api-cli/src/codec.test.ts
+  s_c5f8d284ae2719::t_3dc7513f113253 1-241
+packages/api-cli/src/codec.ts
+  s_c5f8d284ae2719::t_ab3f45bc3a7e1f 1-376
+packages/api-cli/src/create-account.test.ts
+  s_c5f8d284ae2719::t_920ab091f78f56 1-67
+packages/api-cli/src/create-account.ts
+  s_c5f8d284ae2719::t_6dc3adc71926f4 1-154
+packages/api-cli/src/paths.ts
+  s_c5f8d284ae2719::t_60ee88f9967dae 1-40
+packages/api-cli/src/run.test.ts
+  s_c5f8d284ae2719::t_0ba063bd2eff7a 1-328
+packages/api-cli/src/run.ts
+  s_c5f8d284ae2719::t_9d469c739266d7 1-1108
+packages/api-cli/src/session.test.ts
+  s_c5f8d284ae2719::t_d1b1c34e80fce8 1-238
+packages/api-cli/src/session.ts
+  s_c5f8d284ae2719::t_e551add39b2f6b 1-327
+packages/api-cli/src/test-server.ts
+  s_c5f8d284ae2719::t_eae1a142db4a04 1-350
+packages/api-cli/src/type-text.ts
+  s_c5f8d284ae2719::t_666b4a574645b6 1-75
+packages/api-cli/src/types.test.ts
+  s_c5f8d284ae2719::t_8bed0be05bdf59 1-61
+packages/api-cli/src/types.ts
+  s_c5f8d284ae2719::t_0db7ea2d1bb5f5 1-34
+packages/api-cli/tsconfig.json
+  s_c5f8d284ae2719::t_2bc6e4ee6e0d14 1-22
+packages/api-cli/vite.config.ts
+  s_c5f8d284ae2719::t_a90120a45c211a 1-34
+packages/api-schema/README.md
+  s_c5f8d284ae2719::t_d4dd6f92a90342 43-44,48-50,71-75,98-99
+packages/api-schema/scripts/generate.ts
+  s_c5f8d284ae2719::t_3a27fcdece261d 5-10,19,21-23,55,57,63,70-75,80-81,85-87,89-91,93
+pnpm-lock.yaml
+  s_c5f8d284ae2719::t_209bde3cbb9e6a 85-106
+scripts/vitest-task.test.ts
+  s_c5f8d284ae2719::t_76a0296e3ee8e4 23
+vite.config.ts
+  s_c5f8d284ae2719::t_afeee03af900d3 179-181,188-191
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "f5ecee286ac276fb2caf40ec9d95ee697d968dca",
+  "prompts": {},
+  "sessions": {
+    "s_c5f8d284ae2719": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "8910de69-2a98-4e42-ab86-7bfa57a83c02",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Maximo Guk <62088388+Maximo-Guk@users.noreply.github.com>"
+    }
+  }
+}
