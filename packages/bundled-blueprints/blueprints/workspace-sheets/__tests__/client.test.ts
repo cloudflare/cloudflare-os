@@ -128,6 +128,25 @@ describe("sync", () => {
     expect(shown("A1")).toBe("theirs");
   });
 
+  it("doesn't let an edit held during a sheet reload undo a later save of the same cell", async () => {
+    const meta = sheet("s1");
+    const h = await loadClient(meta, { A1: cell("old") });
+    const save = deferred<OperationResult>();
+    h.gadget.applyOperation.mockImplementation(() => save.promise);
+    const slices = deferred<{ revision: number; slices: [] }>();
+    h.gadget.getSheetSlices.mockImplementation(() => slices.promise);
+    typeIntoActiveCell("mine");
+    await settle(); // the save is out
+    h.callbacks.operation(remoteEvent(meta, 2, { replacedSheets: ["s1"], replacedCells: { s1: null } }));
+    // Someone deletes A1 while the pages load; this tab's save of A1 then commits after it.
+    h.callbacks.operation(remoteEvent(meta, 3, { deletes: [{ sheetId: "s1", ref: "A1" }] }));
+    save.resolve({ status: "applied", revision: 4, conflicts: [], upserts: [{ sheetId: "s1", ref: "A1", cell: cell("mine", 4) }], deletes: [] });
+    await settle();
+    slices.resolve({ revision: 2, slices: [] });
+    await settle();
+    expect(shown("A1")).toBe("mine");
+  });
+
   it("doesn't let a sheet reload started before a reconnect overwrite the reconnect's snapshot", async () => {
     const meta = sheet("s1");
     const h = await loadClient(meta, { A1: cell("old") });
@@ -269,6 +288,20 @@ describe("paste values only", () => {
     grid.dispatchEvent(paste);
     await settle();
     expect(shown("A3")).toBe("TRUE");
+  });
+});
+
+describe("fill handle", () => {
+  it("continues a series of very small numbers as numbers", async () => {
+    await loadClient(sheet("s1"), { A1: cell("0.0000001"), A2: cell("0.0000002"), B1: cell("=ISNUMBER(A3)") });
+    const grid = document.querySelector<HTMLElement>(".grid-scroll")!;
+    grid.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", shiftKey: true, bubbles: true }));
+    const handle = document.querySelector<HTMLElement>(".fill-handle")!;
+    const target = document.querySelector<HTMLElement>('td.cell[data-ref="A3"]')!;
+    Object.assign(document, { elementFromPoint: () => target });
+    for (const type of ["pointerdown", "pointermove", "pointerup"]) handle.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0 }));
+    await settle();
+    expect(shown("B1")).toBe("TRUE");
   });
 });
 

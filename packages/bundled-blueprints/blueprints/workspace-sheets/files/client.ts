@@ -1750,8 +1750,10 @@ async function reloadSheets(ids: string[]) {
     }
   } finally {
     sheetReloads--;
-    if (!sheetReloads) reloadAcks.length = 0;
-    if (!connecting && !sheetReloads) { ready = true; replayBuffered(); if (hasPendingSave()) scheduleSave(40); }
+    // An event held during the reload mustn't undo a save of the same cell acknowledged after it.
+    const acked = new Map<string, number>();
+    if (!sheetReloads) for (const ack of reloadAcks.splice(0)) acked.set(ack.sheetId + "!" + ack.ref, Math.max(acked.get(ack.sheetId + "!" + ack.ref) ?? 0, ack.revision));
+    if (!connecting && !sheetReloads) { ready = true; replayBuffered(acked); if (hasPendingSave()) scheduleSave(40); }
   }
 }
 function noteReloadAck(sheetId: string, ref: string, cell: Cell | null, revision: number) {
@@ -4207,7 +4209,7 @@ function fillSeries(values: (string | undefined)[]): ((k: number) => string | nu
   };
   if (n >= 2 && texts.every((v) => /^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(v.trim()))) {
     const at = fit(texts.map(Number));
-    return (k: number) => String(at(k));
+    return (k: number) => storedValueOf(at(k));
   }
   // Any other number ("1.5", "$5", "1,200", "15%") is copied, as a lone number is.
   if (texts.some((v) => /^[-+]?\$?[\d,]*\.?\d+%?$/.test(v.trim()))) return null;
@@ -7336,10 +7338,14 @@ function applySnapshot(doc: OpenedDocument | SheetsDocument, reconcile = false) 
 // Events that arrive before the initial (or reconnect) snapshot is applied are
 // held back and replayed afterwards, so a snapshot read a moment earlier can't
 // overwrite a newer edit.
-function replayBuffered() {
+function replayBuffered(acked = new Map<string, number>()) {
   const events = buffered;
   buffered = [];
-  for (const event of events) if ((event.revision || 0) > replayFloor) applyRemoteOperation(event);
+  const current = (event: OperationEvent) => (cell: { sheetId: string; ref: string }) => (acked.get(cell.sheetId + "!" + cell.ref) ?? 0) < event.revision;
+  for (const event of events) {
+    if ((event.revision || 0) <= replayFloor) continue;
+    applyRemoteOperation(acked.size ? { ...event, upserts: (event.upserts || []).filter(current(event)), deletes: (event.deletes || []).filter(current(event)) } : event);
+  }
 }
 class SheetCallbacks extends RpcTarget implements SubscriberCallbacks {
   // The server's handle on this subscriber is dropped when the connection breaks; subscribe
