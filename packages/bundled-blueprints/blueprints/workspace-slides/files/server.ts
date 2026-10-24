@@ -68,8 +68,13 @@ const ASSET_INDEX_KEY = "assets";
 const RASTER_INDEX_KEY = "rasters";
 const MAX_RASTER_LENGTH = 6 * 1024 * 1024;
 // Editors draw rasters at most 1600px on a side; a larger one is refused, so
-// no stand-in can push an export past the PowerPoint library's image limits.
+// no one stand-in can pass the PowerPoint library's per-image limits.
 const MAX_RASTER_SIDE = 2048;
+// Together the stand-ins in one export get at most this many pixels, leaving
+// the rest of the library's 64M for the deck's photos and dot grids. An SVG
+// past it exports with the blank stand-in: PowerPoint 365 / 2019+ and Keynote
+// still draw the SVG itself.
+const MAX_EXPORT_RASTER_PIXELS = 24_000_000;
 const SLIDE_PREFIX = "s:";
 const HIST_PREFIX = "h:";
 const ASSET_PREFIX = "a:";
@@ -1190,7 +1195,18 @@ export class ExportHandler extends WorkerEntrypoint {
       for (const slide of [...deck.slides || [], logoAsSlide(deck.logo)]) for (const v of svgSourcesOf(slide, new Set())) keyOf.set(v, await svgKey(v));
       const byKey = keyOf.size ? await gadget.getSvgRasters([...new Set(keyOf.values())]) : {};
       const svgRasters = new Map<string, string>();
-      for (const [v, k] of keyOf) if (byKey[k]) svgRasters.set(v, byKey[k]);
+      const counted = new Set<string>();
+      let pixels = 0;
+      for (const [v, k] of keyOf) {
+        const png = byKey[k], size = png ? pngSize(png) : null;
+        if (!size) continue;
+        if (!counted.has(k)) {
+          if (pixels + size.w * size.h > MAX_EXPORT_RASTER_PIXELS) continue;
+          pixels += size.w * size.h;
+          counted.add(k);
+        }
+        svgRasters.set(v, png);
+      }
       return deckToSlidesPptx(deck, { ...await pptxAssets(deck), svgRasters });
     }
     throw new Error("Unsupported slides export format: " + id);

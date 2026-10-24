@@ -1509,6 +1509,9 @@ type CallResult<K extends keyof GadgetStub> = Awaited<ReturnType<GadgetStub[K]>>
 async function call<K extends keyof GadgetStub>(method: K, ...args: Parameters<GadgetStub[K]>): Promise<CallResult<K>> {
   // Nudges waiting to be saved go first (see nudgeSelected).
   if (nudgePending.size) flushNudges();
+  // Any other change, undo included, supersedes where nudges put blocks: the
+  // broadcasts from here on are the server's word.
+  if (!sendingNudges && (isEditMethod(method) || method === "undo" || method === "redo")) nudgeLocal.clear();
   if (isEditMethod(method)) seedAssets(args);
   localPending++;
   // An edit is undoable the moment it is made: light up undo now rather than
@@ -4439,7 +4442,7 @@ const nudgePending = new Map<string, BlockPatch>();
 // broadcast of an earlier save must not move a block back, nor be where the
 // next nudge starts from. Laid over each deck that arrives meanwhile.
 const nudgeLocal = new Map<string, { slideId: string; patch: BlockPatch }>();
-let nudgeSaves = 0;
+let nudgeSaves = 0, sendingNudges = false;
 function applyNudge(b: Block, patch: BlockPatch): void {
   if (patch.props) b.props = { ...b.props || {}, ...patch.props };
   else Object.assign(b, patch);
@@ -4463,7 +4466,10 @@ function flushNudges(): void {
   nudgePending.clear();
   if (!nudgeSlideId) return;
   nudgeSaves++;
-  void call("updateBlocks", nudgeSlideId, patches).finally(() => {
+  sendingNudges = true;
+  const saved = call("updateBlocks", nudgeSlideId, patches);
+  sendingNudges = false;
+  void saved.finally(() => {
     if (--nudgeSaves === 0 && !nudgePending.size) nudgeLocal.clear();
   });
 }

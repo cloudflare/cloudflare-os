@@ -101,7 +101,8 @@ function withHighlightColors(slide: Slide): Slide {
 // every other slide's dot grid is a picture under its blocks. The deck logo
 // goes on top of those, under the blocks, on every slide it shows on. These
 // pictures are drawn with the slide's first block where it has one, so they
-// don't count against the export's limit on blocks per slide.
+// don't count against the 1000 blocks a slide may have, only against the
+// higher limit on blocks once adapted, which they add only a few to.
 export function deckToSlidesPptx(deck: Deck, assets: PptxAssets): ReadableStream<Uint8Array> {
   const covers = new Map<unknown, { image: ExportBlock; first: Block | undefined; inset: boolean; dots: ExportBlock | null; logo: ExportBlock[] }>();
   const underFirst = new Map<unknown, ExportBlock[]>();

@@ -29,6 +29,7 @@ const gadget = {
   addBlock: vi.fn(async () => "n1"),
   reorderBlock: vi.fn(async () => true),
   removeBlock: vi.fn(async () => true),
+  undo: vi.fn(async () => true),
 };
 
 beforeAll(async () => {
@@ -217,6 +218,27 @@ describe("edits racing the server's broadcasts", () => {
     press("ArrowRight");
     await nudgeSaved();
     expect(gadget.updateBlocks).toHaveBeenLastCalledWith("s1", [{ id: "i1", patch: { x: 803, y: 100 } }]);
+  });
+
+  // Undo right after a nudge restores the block: its broadcast is the server's word, not the
+  // position the nudge gave the block.
+  it("lets an undo right after a nudge put the block back", async () => {
+    await broadcast(deck.slides[0]!.blocks);
+    await select("i1");
+    // The server broadcasts each change before it replies.
+    let replyToNudge!: () => void;
+    gadget.updateBlocks.mockImplementationOnce(() => new Promise((resolve) => { replyToNudge = () => resolve(true); }));
+    press("ArrowRight");
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "z", metaKey: true, ctrlKey: true, bubbles: true, cancelable: true }));
+    await settle();
+    expect(gadget.undo).toHaveBeenCalled();
+    await broadcast(deck.slides[0]!.blocks.map((b) => b.id === "i1" ? { ...b, x: 801 } : b));
+    await broadcast(deck.slides[0]!.blocks);
+    replyToNudge();
+    await settle();
+    press("ArrowRight");
+    await nudgeSaved();
+    expect(gadget.updateBlocks).toHaveBeenLastCalledWith("s1", [{ id: "i1", patch: { x: 801, y: 100 } }]);
   });
 
   // The editor outlives a broadcast that replaces its block; Duplicate must copy what was typed.

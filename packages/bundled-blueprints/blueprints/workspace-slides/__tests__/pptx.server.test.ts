@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { deflateSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
 import { ExportHandler } from "../files/server.ts";
 import type { Deck, GadgetStub, Slide } from "../files/lib/protocol.ts";
@@ -69,6 +70,25 @@ const slide = (blocks: Slide["blocks"], background: Slide["background"] = { colo
 
 const PNG_1x1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 const BRAND_BAR = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 12" preserveAspectRatio="none"><defs><linearGradient id="g"><stop offset="0" stop-color="#FF6633"/><stop offset=".5" stop-color="#F6821F"/><stop offset="1" stop-color="#FBAD41"/></linearGradient></defs><rect width="1200" height="12" fill="url(#g)"/></svg>';
+// A valid, transparent PNG of the given size; `mark` sets one pixel, so each is distinct.
+function blankPng(w: number, h: number, mark = 0): string {
+  const crcTable = Array.from({ length: 256 }, (_, n) => { for (let k = 0; k < 8; k++) n = n & 1 ? 0xedb88320 ^ (n >>> 1) : n >>> 1; return n >>> 0; });
+  const crc = (bytes: Uint8Array) => { let c = 0xffffffff; for (const b of bytes) c = crcTable[(c ^ b) & 0xff]! ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+  const chunk = (type: string, data: Uint8Array) => {
+    const out = new Uint8Array(12 + data.length), v = new DataView(out.buffer);
+    v.setUint32(0, data.length);
+    out.set(Buffer.from(type, "ascii"), 4);
+    out.set(data, 8);
+    v.setUint32(8 + data.length, crc(out.subarray(4, 8 + data.length)));
+    return out;
+  };
+  const ihdr = new Uint8Array(13), hv = new DataView(ihdr.buffer);
+  hv.setUint32(0, w); hv.setUint32(4, h); ihdr[8] = 8; ihdr[9] = 6;
+  const pixels = new Uint8Array((w * 4 + 1) * h);
+  pixels[1] = mark;
+  const idat = deflateSync(pixels);
+  return "data:image/png;base64," + Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", idat), chunk("IEND", new Uint8Array())]).toString("base64");
+}
 const ART = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 10"><rect width="20" height="10" fill="#FF6633"/></svg>';
 async function sha(value: string): Promise<string> {
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)));
@@ -184,6 +204,20 @@ describe("Slides PowerPoint export", () => {
     const bar = shapeNamed(xml, "Block 1 brandBar");
     expect(bar).toContain("<a:gradFill");
     expect(xml).not.toContain("<p:pic>");
+  });
+
+  // Each stand-in fits the library's per-image limit, but many together would pass its limit for
+  // the whole deck and fail the export: past their share, an SVG keeps only the blank stand-in.
+  it("gives SVG stand-ins a share of the export's pixels, past which they fall back to blank", async () => {
+    // 27 distinct 1600 x 1600 rasters would be 69.1M pixels, past the library's 64Mi (67.1M).
+    const arts = Array.from({ length: 27 }, (_, i) => ART.replace("#FF6633", `#FF66${String(i).padStart(2, "0")}`));
+    const rasters = Object.fromEntries(await Promise.all(arts.map(async (a, i) => [await sha(a), blankPng(1600, 1600, i + 1)])));
+    const deck: Deck = { slides: arts.map((markup, i) => ({ id: `s${i}`, background: { color: "#FFFFFF", inset: false }, blocks: [{ id: "a", type: "svg", x: 0, y: 0, w: 200, h: 100, props: { markup } }] })) };
+    const parts = await exportDeck(deck, rasters);
+    const sizes = [...parts].filter(([n]) => n.startsWith("ppt/media/") && n.endsWith(".png")).map(([, b]) => new DataView(b.buffer, b.byteOffset).getUint32(16));
+    // Nine fit in the 24M share; the rest use the 1 x 1 blank.
+    expect(sizes.filter((w) => w === 1600)).toHaveLength(9);
+    expect(sizes).toContain(1);
   });
 
   it("embeds SVG artwork as an SVG picture over the PNG a browser saved for it", async () => {
