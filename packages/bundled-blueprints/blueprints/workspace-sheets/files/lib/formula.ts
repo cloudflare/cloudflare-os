@@ -2,8 +2,8 @@
 // Sheets formula engine: the tokenizer, the Pratt parser and its serializer, the text-level
 // reference scanner, number formatting, the evaluator (`makeEngine`) and the function library.
 // One module, imported by client.ts (the grid) and server.ts (exports: cached formula results
-// in Excel files, CSV values, filters and charts), so an export computes exactly what the grid
-// shows. It touches neither the DOM nor the Workers runtime, and is type-checked under both.
+// in Excel files, CSV values, filters and charts), so an export computes what the grid shows
+// (except NOW() and TODAY(), which use the browser's clock in the grid and UTC in exports). It touches neither the DOM nor the Workers runtime, and is type-checked under both.
 // It ships inlined into both bundles; this is section 3 of the client's index.
 // ─────────────────────────────────────────────────────────────────────────────
 
