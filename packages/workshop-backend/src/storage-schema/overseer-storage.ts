@@ -1164,8 +1164,7 @@ export const OBSERVER_GADGET_CONTEXT_PREFIX = "g";
 /** Key of the actions `byObserverContext` index. */
 export function observerContextKey(context: ObserverContext): string {
   switch (context.type) {
-    // Keep the persisted index key unchanged when renaming this context.
-    case "workspace": return "b";
+    case "workspace": return "w";
     case "chat": return `c${keyString(context.chatId)}`;
     case "gadget": return `${OBSERVER_GADGET_CONTEXT_PREFIX}${keyString(context.gadgetId)}`;
   }

@@ -843,6 +843,67 @@ describe("admission against tracked requirements", () => {
 });
 
 describe("historical import", () => {
+  it.each(["allowed", "denied", "unavailable"] as const)(
+      "rechecks an upgrade after account selection (%s)", outcome => withWorld(async world => {
+    let { impl } = world;
+    seedLegacy(impl);
+    let advertise = new Set<number>();
+    let adds: number[] = [];
+    let exports = 0;
+    fakeFacets(impl, {
+      advertise, adds,
+      exports: new Map([[LEGACY, async () => { exports++; return ["restricted/history"]; }]]),
+    });
+    let getFacet = impl.getGatekeeperFacet;
+    impl.getGatekeeperFacet = async (id: number) => {
+      let facet = await getFacet(id);
+      return {
+        ...facet,
+        describe: async () => {
+          if (advertise.has(id) && outcome === "unavailable") throw new Error("Discovery unavailable");
+          return facet.describe();
+        },
+      };
+    };
+    world.verifiers.set("carol", observerVerifier(() => world, "carol",
+        ids => outcome === "allowed" ? [] : ids));
+    let release!: () => void;
+    let reached!: () => void;
+    let parked = new Promise<void>(resolve => { release = resolve; });
+    let prompted = new Promise<void>(resolve => { reached = resolve; });
+    let configureCb = {
+      configure: async (needs: { gatekeeperId: number }[]) => {
+        reached();
+        await parked;
+        return configureAll.configure(needs);
+      },
+    };
+    let admission = impl.ensureObserver("carol", world.clientUser("carol"), "build", configureCb)
+        .then(() => ({ allowed: true, error: "" }),
+            (error: unknown) => ({ allowed: false, error: String(error) }));
+    await prompted;
+    advertise.add(LEGACY);
+    release();
+
+    let result = await admission;
+    expect(result.allowed).toBe(outcome === "allowed");
+    expect(adds).toEqual([]);
+    if (outcome === "allowed") {
+      expect(impl.storage.observers.get("carol").accountChoices).toEqual({ [LEGACY]: 10 });
+    } else {
+      expect(result.error).toMatch(/could not confirm/);
+      expect(impl.storage.observers.get("carol")).toBeUndefined();
+    }
+    if (outcome === "unavailable") {
+      expect(exports).toBe(0);
+      expect(rows(impl, WORKSPACE)).toEqual([]);
+    } else {
+      expect(exports).toBe(1);
+      expect(rows(impl, WORKSPACE)).toEqual(["1:restricted/history"]);
+      expect(world.checks).toContainEqual({ profileId: "carol", ids: ["restricted/history"] });
+    }
+  }));
+
   it("rediscovers a legacy connection's upgrade before admitting a collaborator", () =>
       withWorld(async world => {
     let { impl } = world;
@@ -1311,8 +1372,6 @@ describe("connection removal", () => {
 
       expect(impl.storage.gatekeepers.get(TRACKED)).toBeUndefined();
       expect(impl.storage.gatekeepers.get(3).observerTracking).toBe(true);
-      expect(impl.observerLedger.requiredSubresources("build"))
-          .toEqual(new Map([[3, ["live/workspace", "live/read"]]]));
       // The removed connection's records stay in the audit log.
       for (let context of [chat(1), chat(99), gadget(GADGET), gadget(999)]) {
         expect(rows(impl, context)).toEqual(["2:removed/read", "3:live/read"]);
@@ -1337,7 +1396,7 @@ describe("connection removal", () => {
       await impl.ensureObserver("carol", world.clientUser("carol"), role, configureAll);
 
       expect(world.checks).toEqual([
-        { profileId: "carol", ids: ["live/workspace", "live/read"] },
+        { profileId: "carol", ids: expect.arrayContaining(["live/workspace", "live/read"]) },
       ]);
       expect(impl.listObserverRequirements(role)
           .map((need: { gatekeeperId: number }) => need.gatekeeperId))

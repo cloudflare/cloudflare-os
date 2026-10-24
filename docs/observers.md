@@ -910,8 +910,9 @@ workspace can mix the two. No shipping gatekeeper opts in yet.
   calling gadget, the chat a slash command runs in, or the workspace context for a hook or a user
   acting outside any chat (a session opened from the connection itself, a new chat's first slash
   command, an import). A gadget caller persisted without a `gadgetId` is refused. The sparse
-  `actions.byObserverContext` index, keyed by that context, is how admission finds them. Nothing
-  else stores requirements, so the action log is append-only:
+  `actions.byObserverContext` index, keyed by that context (`w` for workspace, `c` for chats,
+  `g` for gadgets), is how admission finds them. Nothing else stores requirements, so the action
+  log is append-only:
   deleting an entry would drop its checks. Client action-log entries omit `subresources`.
 - **Checks.** Account choices stay in `observers.accountChoices`, keyed by connection id under both
   protocols. A tracked connection enters each role's verification scope exactly as a legacy one
@@ -957,6 +958,9 @@ workspace can mix the two. No shipping gatekeeper opts in yet.
   is refused.
   Legacy protocol discovery is single-flight but its settled result is not cached, so subsequent
   initialization, including every admission, detects upgrades without waiting for a new observation.
+  Admission also rediscovers legacy protocols after account selection and verifier lookup, inside
+  the registration lock. An upgrade there imports its history instead of registering a legacy
+  observer; admission reruns against the updated tracked requirements before publishing its record.
   Failed discovery refuses the connection and retries on the next initialization; it never assumes
   that legacy verification is still enforced.
 - **Pending creations.** A simulated resource from `createExternalResource` is not initialized

@@ -5,7 +5,7 @@
 
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
-import type { AuthenticatedApi, Overseer, PublicApi } from "@gadgets/workshop-shared/api";
+import type { AuthenticatedApi, ObserverBindingNeed, Overseer, PublicApi } from "@gadgets/workshop-shared/api";
 import { diffFiles } from "@gadgets/workshop-shared/code-change";
 import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
 import {
@@ -15,7 +15,7 @@ import { NetworkInterceptor } from "../src/network-interceptor.js";
 import {
   accountLabel, connect, listConnectedAccounts, MAX_OBSERVER_PROMPTS, nextUsernames,
   ObserverConfigRecorder, restartWorkspace, signUp, stubFor, waitFor, WorkpieceRecorder,
-  type ConnectedAccount, type RpcTarget,
+  type ConnectedAccount, RpcTarget,
 } from "../src/rpc-client.js";
 
 let harness: Harness;
@@ -241,6 +241,46 @@ it.concurrent("a legacy connection's history is imported before the next admissi
   expect((await collaboratorOpens(bob, ws.gadgetId)).error).toBeUndefined();
   // The import committed, so the history is never exported again.
   expect(await historyExportCount(url)).toBe(1);
+});
+
+it.concurrent("imports a protocol upgrade that arrives while account selection is pending",
+    async () => {
+  using publicApi = connect(harness.url);
+  using ws = await newWorkspace(publicApi);
+  const url = freshThingUrl("prompt-upgrade");
+  await connectAndRead(ws, url, ["historical-secret"]);
+  using bob = await addCollaborator(ws);
+  await setSubresourceAccess(bob.label, url, "historical-secret", false);
+
+  let reached!: () => void;
+  let release!: () => void;
+  const prompted = new Promise<void>(resolve => { reached = resolve; });
+  const parked = new Promise<void>(resolve => { release = resolve; });
+  class DelayedAccounts extends RpcTarget {
+    async configure(needs: ObserverBindingNeed[]) {
+      reached();
+      await parked;
+      return needs.map(need => ({ gatekeeperId: need.gatekeeperId, accountId: bob.account.id }));
+    }
+  }
+  using callback = stubFor(new DelayedAccounts());
+  const opening = bob.api.openGadget(ws.gadgetId, undefined, callback).then(stub => {
+    stub[Symbol.dispose]();
+    return undefined;
+  }, error => error as Error);
+  await prompted;
+  try {
+    await setObserverTracking(url, true);
+  } finally {
+    release();
+  }
+
+  expect((await opening)?.message).toContain(DENIED);
+  expect(await historyExportCount(url)).toBe(1);
+
+  await settleRestart();
+  await setSubresourceAccess(bob.label, url, "historical-secret", true);
+  expect((await collaboratorOpens(bob, ws.gadgetId)).error).toBeUndefined();
 });
 
 it.concurrent("disconnect drops tracked permission checks but keeps the observation audit",

@@ -10145,8 +10145,13 @@ class OverseerImpl implements AgentHooks {
             // Serialized per (observer, gatekeeper) so this registration can't land while an
             // exclusion teardown's removeObserver for the same pair is still in flight (which
             // would delete it moments later); see #serialized.
-            await this.#serialized(`${observerId}/${gk.id}`,
-                async () => (await this.getGatekeeperFacet(gk.id)).addObserver(observerId, verifier));
+            await this.#serialized(`${observerId}/${gk.id}`, async () => {
+              // Account selection, verifier lookup, or this lock may have waited across an
+              // upgrade. Import it now; step 6 reruns the pass against its tracked requirements.
+              await this.observerLedger.initialize(gk.id);
+              if (this.observerLedger.isTracked(gk.id)) return;
+              await (await this.getGatekeeperFacet(gk.id)).addObserver(observerId, verifier);
+            });
           } catch (err) {
             // Either a settled denial or an operational failure (expired credentials, upstream
             // outage). Treat every failure as repairable and let the user try again.
