@@ -172,6 +172,30 @@ it("leaves Enter to a focused toolbar button while a block is selected", async (
 });
 
 describe("in-place text", () => {
+  // A Format field's save finishing while slide text is being typed redraws around the field.
+  it("keeps a field being typed in when a Format save finishes", async () => {
+    await select("t1");
+    let reply!: () => void;
+    gadget.updateBlock.mockImplementationOnce(() => new Promise((resolve) => { reply = () => resolve(true); }));
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await settle();
+    const advanced = () => document.querySelector<HTMLButtonElement>(".adv-toggle")!;
+    advanced().click();
+    const x = document.querySelector<HTMLInputElement>('input[data-key="pos-x"]')!;
+    x.value = "50";
+    x.dispatchEvent(new Event("change"));
+    expect(gadget.updateBlock).toHaveBeenCalledWith("s1", "t1", { x: 50 });
+    const field = onStage("t1").querySelector<HTMLElement>(".inline-edit")!;
+    type(field, "typing");
+    reply();
+    await settle();
+    expect(field.isConnected).toBe(true);
+    expect(document.activeElement).toBe(field);
+    field.blur();
+    await settle();
+    advanced().click();
+  });
+
   // Chromium inserts pasted lines as <div>s; a highlighted title must keep them as lines.
   it("keeps the lines of text pasted into a highlighted title", async () => {
     await select("h1");

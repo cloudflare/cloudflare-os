@@ -2407,7 +2407,7 @@ function addResizeHandle(wrap: HTMLElement, slide: Slide, block: Block, def: Com
       if (def.resizableW) patch.w = block.w;
       if (def.resizableH) patch.h = block.h;
       await api.updateBlock(slide.id, block.id, patch);
-      render();
+      renderWhenIdle();
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -3371,17 +3371,17 @@ function slideMenu(owner: HTMLElement): void {
       colorField("Page color", slide.background?.color || C.page, async (v) => {
         slide.background = { ...slide.background, color: v };
         await api.updateSlide(slide.id, { background: { color: v } });
-        render();
+        renderWhenIdle();
       }),
       numberField("Dot grid", slide.background?.dotGrid ?? 0, async (v) => {
         slide.background = { ...slide.background, dotGrid: v };
         await api.updateSlide(slide.id, { background: { dotGrid: v } });
-        render();
+        renderWhenIdle();
       }, { min: 0, max: 1, step: 0.05 }),
       checkField("Inset surface", slide.background?.inset !== false, async (v) => {
         slide.background = { ...slide.background, inset: v };
         await api.updateSlide(slide.id, { background: { inset: v } });
-        render();
+        renderWhenIdle();
       })
     ]),
     deckLogoSettings()
@@ -4559,15 +4559,18 @@ function renderAdvancedDisclosure(slide: Slide, block: Block, def: ComponentDef 
   wrap.appendChild(body);
   return wrap;
 }
+// The stage is redrawn once the save is done, but not under text being edited
+// in place meanwhile: that would take the field (and, where removing it fires
+// no blur, its unsaved text) away.
 async function patchBlock(slide: Slide, block: Block, patch: BlockPatch): Promise<void> {
   Object.assign(block, patch);
   await api.updateBlock(slide.id, block.id, patch);
-  render();
+  renderWhenIdle();
 }
 async function patchBlockProp(slide: Slide, block: Block, key: string, value: PropValue): Promise<void> {
   block.props = { ...block.props || {}, [key]: value };
   await api.updateBlock(slide.id, block.id, { props: { [key]: value } });
-  render();
+  renderWhenIdle();
 }
 function updateInspectorPositionFields(block: Block): void {
   if (!shellRef.inspectorBody) return;
