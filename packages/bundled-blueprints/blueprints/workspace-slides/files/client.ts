@@ -5232,6 +5232,8 @@ async function insertCopies(blocks: BlockInput[]): Promise<void> {
     ids = await api.addBlocks(slide.id, copies);
   }
   if (!ids || !ids.length) return;
+  // Text typed while the copies were being made is saved before the stage moves on.
+  commitInlineEdit();
   const live = deck.slides.find((s) => s.id === slide.id);
   const added = ids;
   if (live) copies.forEach((c, i) => { if (!live.blocks.some((b) => b.id === added[i])) live.blocks.push({ ...c, id: added[i] }); });
@@ -5342,6 +5344,8 @@ async function addBlockOfType(type: string): Promise<void> {
   const block: BlockInput = { type, ...base };
   const id = await api.addBlock(slide.id, block);
   if (id === null) return;
+  // Text typed while the block was being added is saved before the stage moves on.
+  commitInlineEdit();
   block.id = id;
   const live = deck.slides.find((s) => s.id === slide.id);
   if (live && !live.blocks.some((b) => b.id === id)) live.blocks.push({ ...block, id });
@@ -5359,6 +5363,7 @@ async function addSlide(template?: SlideTemplate): Promise<void> {
   const seed = template ? JSON.parse(JSON.stringify(template)) : void 0;
   const id = await api.addSlide(currentIndex + 1, seed);
   await resyncUnless(() => deck.slides.some((s) => s.id === id));
+  commitInlineEdit();
   const i = deck.slides.findIndex((s) => s.id === id);
   if (i >= 0) currentIndex = i;
   setSelection([]);
@@ -5387,6 +5392,7 @@ async function moveSlideTo(fromIndex: number, toIndex: number): Promise<void> {
 async function duplicateSlideById(slideId: string): Promise<void> {
   const newId = await api.duplicateSlide(slideId);
   await resyncUnless(() => deck.slides.some((s) => s.id === newId));
+  commitInlineEdit();
   const i = deck.slides.findIndex((s) => s.id === newId);
   if (i >= 0) currentIndex = i;
   setSelection([]);

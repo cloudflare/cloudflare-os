@@ -172,6 +172,20 @@ it("leaves Enter to a focused toolbar button while a block is selected", async (
 });
 
 describe("in-place text", () => {
+  // Typing resumed in the original while Duplicate is waiting on the server is saved, not dropped.
+  it("saves text typed while a duplicate is being made", async () => {
+    await select("t1");
+    let reply!: () => void;
+    gadget.addBlock.mockImplementationOnce(() => new Promise((resolve) => { reply = () => resolve("n2"); }));
+    button("Duplicate").click();
+    await vi.waitFor(() => expect(reply).toBeDefined());
+    const field = onStage("t1").querySelector<HTMLElement>(".inline-edit")!;
+    type(field, "typed meanwhile");
+    reply();
+    await settle();
+    expect(gadget.updateBlock).toHaveBeenCalledWith("s1", "t1", { props: { text: "typed meanwhile" } });
+  });
+
   it("saves the text being typed on Ctrl+S", async () => {
     await select("t1");
     const field = onStage("t1").querySelector<HTMLElement>(".inline-edit")!;
