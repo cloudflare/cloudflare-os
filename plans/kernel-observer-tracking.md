@@ -32,23 +32,29 @@ mix both.
   imported once (fenced, single-flight, repeatable until it commits). No kernel-side "did it read
   anything" flag: the gatekeeper's export is authoritative, `[]` is cheap, and a flag would fail
   open for requirements recorded outside `authorizeObservation`. A connection created already
-  advertising support starts tracked. Imported IDs land on the workspace baseline, since no
+  advertising support starts tracked. Imported IDs land on the workspace context, since no
   narrower attribution exists.
 - **Disconnect drops checks.** A removed connection's audit records stay but are ignored, matching
   the legacy protocol's behavior on removal (`docs/observers.md` edge case 8).
-- **Conservative exposure, no per-thread hiding.** "build" reaches every context, "use" the baseline
+- **Conservative exposure, no per-thread hiding.** "build" reaches every context, "use" the workspace
   and every gadget. A tracked connection is in every collaborator's scope whether bound or not,
   because an observation can only check collaborators who chose an account for it.
 - **Direct contexts only; no propagation.** Attribution follows the trusted binding authorizer that
   approved the read. Calls, callbacks, spawned chats, code publication, arguments, and persistent
   writes transfer nothing between contexts. Indirect disclosure is knowingly outside the guarantee.
+- **Hook observations use the workspace context.** The audit caller stays `{from: "hook"}`;
+  the existing ledger checks both collaborator roles and records subresource requirements for
+  later admission. No per-gadget attribution: `BoundHookRecord.gadgetId` is heuristic bookkeeping,
+  not a trusted destination. The tradeoff is conservative: hook observations constrain every
+  collaborator, not just users of the receiving gadget. Disabling/deleting a hook stops future
+  events without erasing requirements for data already delivered, even after a restart.
 - **Races are closed by re-checking at the commit point, not by locks or counters.** Admissions are
   serialized per profile; after verifying, admission recomputes its scope and re-runs if it grew.
-  An observation recomputes its audience after its checks and re-checks if it changed.
+  An observation recomputes its audience after its checks and re-checks if it changed. A hook
+  firing also revalidates its live record and usable connection synchronously before committing
+  an observation, so a disable/delete during verification prevents delivery and policy/log writes.
 
 ## Deferred
 
-- Hook observations have no destination rule, so tracked connections refuse hooks at registration
-  and delivery.
 - Message-level attribution and historical cutoffs (the log's ordered ids are a starting point).
 - Migrating shipping gatekeepers and their trackers.

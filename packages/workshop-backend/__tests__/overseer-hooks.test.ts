@@ -23,7 +23,6 @@ function makeOverseer(
       // observer-ledger.ts and observer-ledger.test.ts for the tracked one).
       observerLedger: {
         initialize: async () => {},
-        assertHooksAllowed: () => {},
       },
       storage: {
         boundHooks: { get: () => hook && ({ ...hook, gatekeeperId: 1 }) },

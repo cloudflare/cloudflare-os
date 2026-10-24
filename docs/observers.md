@@ -908,17 +908,17 @@ workspace can mix the two. No shipping gatekeeper opts in yet.
   or combining it with `excludeObservers`, is refused). Its audit records keep them, and the
   Workshop strips `subresources` from every other observation, so keeping them is what marks a
   requirement. The record's `caller` attributes it (`observerContextOf`): the agent's chat, the
-  calling gadget, the chat a slash command runs in, or the workspace legacy baseline for a user
+  calling gadget, the chat a slash command runs in, or the workspace context for a hook or a user
   acting outside any chat (a session opened from the connection itself, a new chat's first slash
-  command, an import). A caller with no context (a hook, or a gadget caller persisted without a
-  `gadgetId`) is refused. The sparse `actions.byObserverContext` index, keyed by that context, is
-  how admission finds them. Nothing else stores requirements, so the action log is append-only:
+  command, an import). A gadget caller persisted without a `gadgetId` is refused. The sparse
+  `actions.byObserverContext` index, keyed by that context, is how admission finds them. Nothing
+  else stores requirements, so the action log is append-only:
   deleting an entry would drop its checks. Client action-log entries omit `subresources`.
 - **Checks.** Account choices stay in `observers.accountChoices`, keyed by connection id under both
   protocols. A tracked connection is in every collaborator's scope, bound or not, so each needs an
   account for it. Admission checks every requirement the role reaches through
   `getVerifier()` + `checkObserverAccess(subresources)`: "build" reaches every context, "use" the
-  baseline and every gadget. Each observation checks its IDs for every configured observer the
+  workspace and every gadget. Each observation checks its IDs for every configured observer the
   data reaches, online or not; a collaborator who lost access is skipped. A denial, wrong vendor,
   missing method, failed call, or malformed result fails closed, with no legacy fallback and no
   permission cached between operations. A single observation and each verifier call carry at most
@@ -943,7 +943,7 @@ workspace can mix the two. No shipping gatekeeper opts in yet.
   the first time it is initialized (session minting, slash commands, hook firings, admission):
   single-flight, behind a fence (the facet restarts, and the connection is unusable until the
   commit), calling `getHistoricalSubresources()` once. One transaction sets `observerTracking`
-  and, for a non-empty export, writes the baseline audit chunks. A crash before the commit exports
+  and, for a non-empty export, writes the workspace audit chunks. A crash before the commit exports
   again; after it, never. Collaborator sessions restart, and legacy registrations are retired
   best-effort. An observation is held to the connection's protocol when it arrives, whichever
   protocol its session was minted under, so a legacy-shaped observation after the import (no
@@ -965,8 +965,15 @@ workspace can mix the two. No shipping gatekeeper opts in yet.
   Attribution follows the original authorizer, not wherever its capability is passed.
 - **Execution fence.** Agent gatekeeper loopbacks carry their `executionId`; a session that
   outlives its executeCode call cannot authorize a tracked observation.
-- **Hooks.** Tracked connections are refused at hook registration and delivery
-  (`ObserverLedger.assertHooksAllowed`) until hook observations have a destination rule.
+- **Hooks.** Tracked connections support hook registration and delivery. Hook observations use the
+  workspace context, keeping `{from: "hook"}` as their audit caller. Both "build" and "use"
+  collaborators must pass verification before delivery, and later admission checks the recorded
+  subresources. This constrains every collaborator, not just users of the receiving gadget:
+  `BoundHookRecord.gadgetId` is heuristic bookkeeping, not a trusted observation destination.
+  Firings revalidate that the hook exists, is enabled, and its connection is usable on each call
+  and synchronously before the observation's audit/policy commit, after asynchronous verification.
+  A racing disable/delete prevents delivery; disabling/deleting a hook stops future events but
+  leaves delivered data's requirements in the action log, including across workspace restarts.
 
 The integration fixture's tracked mode (`/control/observer-tracking`) exercises this end to end in
 `packages/integration-tests/__tests__/observer-tracking.test.ts`.

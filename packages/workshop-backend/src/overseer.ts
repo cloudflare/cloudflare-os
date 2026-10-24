@@ -5338,9 +5338,11 @@ class OverseerImpl implements AgentHooks {
   }
 
   // `executionId` is an agent session's originating execution (see ApprovalQueueImpl); it matters
-  // only to connections the Workshop tracks itself.
+  // only to connections the Workshop tracks itself. A hook firing's `hookId` is revalidated at
+  // the synchronous commit point, after any policy lookup or observer verification has awaited.
   async authorizeObservation(gatekeeperId: number, description: ObservationDescription,
-                             caller: GatekeeperCaller, executionId?: string): Promise<void> {
+                             caller: GatekeeperCaller, executionId?: string,
+                             hookId?: number): Promise<void> {
     // Setting ownerInvitesOnly narrows access to direct owner grants (see
     // SharingManager.computeEffectiveRoles), so the first observation to set it snapshots who had
     // access beforehand. The manager may need an RPC on first use, so it is fetched before the
@@ -5364,6 +5366,7 @@ class OverseerImpl implements AgentHooks {
     // admission or import that could invalidate the audience or protocol it checked.
     await this.observerLedger.authorizeObservation(
         gatekeeperId, description, caller, executionId, subresources => {
+      if (hookId !== undefined) requireLiveHook(this, hookId);
       let baseline = sharing && !this.storage.ownerInvitesOnly.get()
           ? sharing.computeEffectiveRoles() : undefined;
 
@@ -10905,9 +10908,6 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     // have landed while it was in flight, and issuing from the captured record would hand out a
     // firing on a dead hook (the enableHookRecord/disableHook idiom).
     record = requireLiveHook(this.impl, hookId);
-    // Tracked connections fire no hooks into gadget code until hook observations have a
-    // destination (requireLiveHook above refused a connection still importing).
-    this.impl.observerLedger.assertHooksAllowed(record.gatekeeperId);
 
     // Both returned capabilities revalidate the hook per call rather than trusting this moment:
     // they are held outside this DO (even across resets -- the stored callback is a persistent
@@ -13570,7 +13570,7 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
   authorizeObservation(description: ObservationDescription): Promise<void> {
     if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
     return this.impl.authorizeObservation(
-        this.gatekeeperId, description, this.caller, this.executionId);
+        this.gatekeeperId, description, this.caller, this.executionId, this.hookId);
   }
 
   async getGitCache(): Promise<GitCache> {
@@ -13586,8 +13586,6 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
         controller: Fetcher<HookController<Hook>>, callback: NativeRpcStub<Hook>,
         description: HookDescription): Promise<void> {
     if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
-    // A hook delivers the connection's data into gadget code (see assertHooksAllowed).
-    this.impl.observerLedger.assertHooksAllowed(this.gatekeeperId);
     return this.impl.bindHook(this.gatekeeperId, controller, callback, description, this.caller);
   }
 }

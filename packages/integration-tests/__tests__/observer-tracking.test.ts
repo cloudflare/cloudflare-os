@@ -352,3 +352,128 @@ it.concurrent("a gadget's tracked reads enforce use collaborator admission and l
   expect((await collaboratorOpens(viewer, ws.gadgetId)).error?.message).toContain(DENIED);
   expect(await observerEvents(url)).toEqual([]);
 });
+
+interface TrackedHookGadget extends RpcTarget {
+  watch(key: string): Promise<void>;
+  deliveredValues(): Promise<number[]>;
+}
+
+const TRACKED_HOOK_SERVER = `import { DurableObject, RpcTarget, restore } from "cloudflare:workers";
+export class Gadget extends DurableObject {
+  async [restore](params) {
+    if (params.type !== "tracked-hook") throw new TypeError("Unknown hook type");
+    return new TrackedHook(this.ctx.storage);
+  }
+  async watch(key) {
+    await this.env.TRACKED_THING.watch(key, await this.ctx.restore({ type: "tracked-hook" }));
+  }
+  async deliveredValues() { return (await this.ctx.storage.get("values")) ?? []; }
+}
+class TrackedHook extends RpcTarget {
+  constructor(storage) { super(); this.storage = storage; }
+  async onValueRequested(value) {
+    const values = (await this.storage.get("values")) ?? [];
+    await this.storage.put("values", [...values, value]);
+  }
+}`;
+
+it.concurrent("tracked hooks deliver authorized data, check both collaborator roles, and retain history after deletion",
+    async () => {
+  using publicApi = connect(harness.url);
+  using ws = await newWorkspace(publicApi);
+  const url = freshThingUrl("hook-tracked");
+  const hookKey = `tracked-hook-${crypto.randomUUID()}`;
+  await setObserverTracking(url, true);
+  using tracked = await ws.overseer.newGatekeeper(ws.account.id, url);
+  if (!tracked) throw new Error("Failed to create the tracked connection");
+  const connectionId = await tracked.getId();
+  using gadget = await ws.overseer.createGadget("Tracked Hook", undefined, "TRACKED_HOOK");
+  const gadgetId = await gadget.getId();
+  await gadget.bind("TRACKED_THING", connectionId);
+
+  const workpieces = new WorkpieceRecorder();
+  using subscriber = stubFor(workpieces);
+  using _subscription = await ws.overseer.subscribeToWorkpieces(subscriber);
+  await workpieces.loaded;
+  const summary = workpieces.summaries.get(gadgetId);
+  if (summary?.type !== "gadget" || summary.commitId === undefined) {
+    throw new Error("The new gadget has no committed head");
+  }
+  const chatId = await ws.overseer.newChat("Implement the tracked hook", null);
+  await ws.overseer.submitCodeChange(chatId, {
+    generation: 0, revision: 0, clientId: "tracked-hook", seq: 1,
+    pins: [{ gadgetId, baseCommit: summary.commitId }],
+    change: diffFiles(new Map(), new Map([[gadgetId, new Map([["server.js", TRACKED_HOOK_SERVER]])]])),
+  });
+  expect(await ws.overseer.mergeChanges(chatId)).toEqual({ outcome: "merged" });
+
+  using registrationFacet = await gadget.connectToGadget() as RpcStub<TrackedHookGadget>;
+  await registrationFacet.watch(hookKey);
+  const [hook] = await ws.overseer.listHooks();
+  expect(hook).toMatchObject({ gatekeeperId: connectionId, gadgetId, enabled: false });
+  if (!hook) throw new Error("The gadget did not register its tracked hook");
+  // The temporary binding is only needed to register. Delivery and later admission must work
+  // without a gadget binding keeping this connection in scope.
+  await gadget.unbind("TRACKED_THING");
+  await ws.overseer.enableHook(hook.id);
+  expect(await ws.overseer.listHooks()).toMatchObject([{ id: hook.id, enabled: true }]);
+  using facet = await gadget.connectToGadget() as RpcStub<TrackedHookGadget>;
+
+  using builder = await addCollaborator(ws, "build");
+  using viewer = await addCollaborator(ws, "use");
+  using observers = new DisposableStack();
+  for (const collaborator of [builder, viewer]) {
+    const recorder = new ObserverConfigRecorder()
+        .alwaysChoose(collaborator.account.id, MAX_OBSERVER_PROMPTS);
+    using callback = stubFor(recorder);
+    observers.use(await collaborator.api.openGadget(ws.gadgetId, undefined, callback));
+    expect(recorder.calls[0]).toContainEqual(expect.objectContaining({ gatekeeperId: connectionId }));
+  }
+
+  // No session read has seeded these IDs: the hook must authorize them before invoking the
+  // persistent callback, which records the delivered data in the actual gadget's storage.
+  const subresources = ["hook-doc-1", 'hook/local#id:"雪"'];
+  expect(await testControl(harness, "fire-hook", { key: hookKey, value: 71, subresources }))
+      .toEqual({ fired: true });
+  expect(await facet.deliveredValues()).toEqual([71]);
+  const audit = await ws.overseer.listActions({ filter: "observation" });
+  expect(audit.entries).toMatchObject([{
+    type: "observation", gatekeeperId: connectionId,
+    description: {
+      title: `Hook ${hookKey} requested 71`,
+    },
+  }]);
+
+  for (const [index, collaborator] of [builder, viewer].entries()) {
+    const deniedId = `denied-hook-${index}`;
+    await setSubresourceAccess(collaborator.label, url, deniedId, false);
+    expect(await testControl(harness, "fire-hook", {
+      key: hookKey, value: 80 + index, subresources: [deniedId],
+    })).toEqual({ error: expect.stringContaining(
+      "blocked because it contains data that a current collaborator") });
+    expect(await facet.deliveredValues()).toEqual([71]);
+    expect(await ws.overseer.listActions({ filter: "observation" })).toEqual(audit);
+    // A failed delivery must not commit an admission requirement for its denied subresource.
+    expect((await collaboratorOpens(collaborator, ws.gadgetId)).error).toBeUndefined();
+  }
+
+  await ws.overseer.deleteHook(hook.id);
+  expect(await ws.overseer.listHooks()).toEqual([]);
+  expect(await testControl(harness, "fire-hook", { key: hookKey, value: 99, subresources }))
+      .toEqual({ error: "Hook has been deleted or disabled." });
+  expect(await facet.deliveredValues()).toEqual([71]);
+  expect(await ws.overseer.listActions({ filter: "observation" })).toEqual(audit);
+
+  // Hook removal does not erase data the callback has already brought into the workspace.
+  // Revoke each reported ID separately, covering both collaborator roles at later admission.
+  for (const [index, collaborator] of [builder, viewer].entries()) {
+    await setSubresourceAccess(collaborator.label, url, subresources[index]!, false);
+    const refused = await collaboratorOpens(collaborator, ws.gadgetId);
+    expect(refused.error?.message).toContain(DENIED);
+    expect(refused.recorder.calls[0]).toContainEqual(expect.objectContaining({
+      gatekeeperId: connectionId, failure: expect.objectContaining({ reason: expect.stringContaining(DENIED) }),
+    }));
+    await setSubresourceAccess(collaborator.label, url, subresources[index]!, true);
+  }
+  expect(await observerEvents(url)).toEqual([]);
+});

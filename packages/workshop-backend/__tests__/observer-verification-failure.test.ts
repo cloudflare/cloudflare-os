@@ -50,8 +50,8 @@ function seedTrackedGatekeeper(impl: ObserverImpl, id: number): void {
 }
 
 // Observer requirements are tracked observation audit records; a chatless user caller puts them
-// on the baseline.
-function seedBaselineRequirement(impl: ObserverImpl, gatekeeperId: number, subresource: string): void {
+// on the workspace context.
+function seedWorkspaceRequirement(impl: ObserverImpl, gatekeeperId: number, subresource: string): void {
   let id = impl.storage.nextActionId.get();
   impl.storage.nextActionId.put(id + 1);
   impl.storage.actions.put({
@@ -306,7 +306,7 @@ describe("a binding that fails verification", () => {
       seedGatekeepers(impl);
       if (workspace === "mixed") {
         seedTrackedGatekeeper(impl, 2);
-        seedBaselineRequirement(impl, 2, "read");
+        seedWorkspaceRequirement(impl, 2, "read");
       }
       let registrations: {id: number, observerId: string}[] = [];
       setLegacyFacets(impl, {
@@ -415,7 +415,7 @@ describe("a binding that fails verification", () => {
       seedOwner(impl);
       seedGatekeepers(impl, [1]);
       seedTrackedGatekeeper(impl, 2);
-      seedBaselineRequirement(impl, 2, "live/read");
+      seedWorkspaceRequirement(impl, 2, "live/read");
       let checkedAccounts: number[] = [];
       let checks: string[][] = [];
       const clientUser = {

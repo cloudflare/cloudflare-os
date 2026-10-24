@@ -1130,31 +1130,31 @@ export type ObserverRecord = {
 };
 
 /**
- * What an observer requirement is attached to: the workspace legacy baseline (requirements of
- * unknown attribution, which every chat and gadget includes), one chat, or one gadget's state.
+ * What an observer requirement is attached to: the workspace (requirements with no
+ * narrower trusted attribution, which every chat and gadget includes), one chat, or one gadget.
  */
 export type ObserverContext =
-  | {type: "baseline"}
+  | {type: "workspace"}
   | {type: "chat", chatId: number}
   | {type: "gadget", gadgetId: WorkpieceId};
 
 /**
  * The context an observation by `caller` is attributed to: its trusted binding authorizer's chat
- * or gadget, or the baseline for a user acting outside any chat. Undefined for callers with no
- * attributable context (hooks, and gadget callers persisted without a gadgetId).
+ * or gadget, or the workspace for hooks and a user acting outside any chat. Undefined for gadget
+ * callers persisted without a gadgetId; a hook's bookkeeping gadgetId is not trusted attribution.
  *
  * The actions `byObserverContext` index stores this mapping's result when each record is written,
- * so changing it requires a migration that reindexes every observation keeping `subresources`;
- * otherwise old records stay filed under contexts admission no longer reads.
+ * so changing an existing attributed mapping requires reindexing its observations keeping
+ * `subresources`. Hooks previously could not record requirements, so adding them needs no reindex.
  */
 export function observerContextOf(caller: GatekeeperCaller): ObserverContext | undefined {
   switch (caller.from) {
     case "agent": return {type: "chat", chatId: caller.chatId};
     case "user":
-      return caller.chatId !== undefined ? {type: "chat", chatId: caller.chatId} : {type: "baseline"};
+      return caller.chatId !== undefined ? {type: "chat", chatId: caller.chatId} : {type: "workspace"};
     case "gadget":
       return caller.gadgetId !== undefined ? {type: "gadget", gadgetId: caller.gadgetId} : undefined;
-    case "hook": return undefined;
+    case "hook": return {type: "workspace"};
   }
 }
 
@@ -1164,7 +1164,8 @@ export const OBSERVER_GADGET_CONTEXT_PREFIX = "g";
 /** Key of the actions `byObserverContext` index. */
 export function observerContextKey(context: ObserverContext): string {
   switch (context.type) {
-    case "baseline": return "b";
+    // Keep the persisted index key unchanged when renaming this context.
+    case "workspace": return "b";
     case "chat": return `c${keyString(context.chatId)}`;
     case "gadget": return `${OBSERVER_GADGET_CONTEXT_PREFIX}${keyString(context.gadgetId)}`;
   }

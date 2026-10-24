@@ -17,6 +17,8 @@ import type { OverseerDurableObject } from "../src/overseer.js";
 import {
   observerContextKey, type GatekeeperCaller, type GatekeeperRecord, type ObserverContext,
 } from "../src/storage-schema/overseer-storage.js";
+import { openFakeOverseer } from "./fixtures.js";
+import type { BoundHookRecord } from "../src/storage-schema/overseer-storage.js";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -27,7 +29,7 @@ declare module "cloudflare:workers" {
 const LEGACY = 1;
 const TRACKED = 2;
 const GADGET = 100;
-const BASELINE: ObserverContext = { type: "baseline" };
+const WORKSPACE: ObserverContext = { type: "workspace" };
 const chat = (chatId: number): ObserverContext => ({ type: "chat", chatId });
 const gadget = (gadgetId: number): ObserverContext => ({ type: "gadget", gadgetId });
 
@@ -41,6 +43,7 @@ type Check = { profileId: string, ids: string[] };
 // asked of them.
 type World = {
   impl: any;
+  instance: OverseerDurableObject;
   roles: Map<string, "build" | "use">;
   // Per profile: answers checkObserverAccess(ids), or is the whole verifier.
   verifiers: Map<string, unknown>;
@@ -69,6 +72,7 @@ async function inOverseer(name: string, fn: (world: World) => Promise<void>): Pr
     impl.ownerProfileId = "owner";
     let world: World = {
       impl,
+      instance,
       roles: new Map(),
       verifiers: new Map(),
       checks: [],
@@ -260,13 +264,214 @@ function observation(extra: Partial<ObservationDescription> = {}): ObservationDe
   return { title: "Read", description: "A read", ...extra };
 }
 
+// Only controller/callback capabilities are faked; the hook row, ledger, and action log use
+// real DO storage. Functions cannot be structured-cloned, so attach capabilities on reads.
+async function startTrackedHook(world: World, gadgetId?: number) {
+  let { impl, instance } = world;
+  let deliveries: string[] = [];
+  let hooks: ObserverImpl["storage"]["boundHooks"] = impl.storage.boundHooks;
+  let get = hooks.get.bind(hooks);
+  let put = hooks.put.bind(hooks);
+  // Inert persisted capability slots are replaced by local gatekeeper/gadget fakes below.
+  let storedController = {} as BoundHookRecord["controller"];
+  let storedCallback = {} as BoundHookRecord["callback"];
+  let controller = { disable: async () => {} } as unknown as BoundHookRecord["controller"];
+  let callback = {
+    deliver: async (payload: string) => { deliveries.push(payload); },
+  } as unknown as BoundHookRecord["callback"];
+  put({
+    id: 5, actionId: 999, gatekeeperId: TRACKED, vendorId: "trackedvendor", gadgetId,
+    controller: storedController, callback: storedCallback, enabled: true,
+    description: { title: "Hook", description: "Delivers events" },
+  });
+  hooks.get = (id: number) => {
+    let record = get(id);
+    return record && { ...record, controller, callback };
+  };
+  hooks.put = (record: BoundHookRecord) => put({
+    ...record, controller: storedController, callback: storedCallback,
+  });
+  // The unit-test worker has no admin-config KV binding. Replace only that external read.
+  let host = instance as unknown as { env: { BLUEPRINTS: { get(): Promise<null> } } };
+  host.env = { ...host.env, BLUEPRINTS: { get: async () => null } };
+  fakeFacets(impl);
+  let firing = await instance.startHook(5);
+  // The firing wrapper preserves the stored callback's deliver method across its RPC type.
+  let deliveryCallback = firing.callback as unknown as { deliver(payload: string): Promise<void> };
+  let client = await openFakeOverseer({ boundHooks: hooks, actions: impl.storage.actions }, {
+    impl: { deleteHook: (id: number) => impl.deleteHook(id) },
+  });
+  return {
+    approvalQueue: firing.approvalQueue,
+    // Await once here: native RPC promises fork on each .then, including assertion handlers.
+    deliver: async (payload: string) => { await deliveryCallback.deliver(payload); },
+    deliveries,
+    revoke: (operation: "disable" | "delete") => operation === "disable"
+        ? client.disableHook(5) : client.deleteHook(5),
+    [Symbol.dispose]() {
+      firing.callback[Symbol.dispose]();
+      (client as typeof client & Disposable)[Symbol.dispose]();
+      hooks.get = get;
+      hooks.put = put;
+    },
+  };
+}
+
+describe("tracked hook observations", () => {
+  it.each([undefined, GADGET])(
+      "delivers through the firing queue and records workspace requirements (hook gadgetId: %s)",
+      gadgetId => withWorld(async world => {
+    let { impl } = world;
+    seedTracked(impl);
+    seedGadget(impl);
+    addRows(impl, gadget(GADGET), TRACKED, ["gadget-only"]);
+    for (let [profileId, role] of [["bob", "build"], ["carol", "use"]] as const) {
+      world.roles.set(profileId, role);
+      impl.storage.observers.put(
+          { profileId, observerId: `obs-${profileId}`, accountChoices: { [TRACKED]: 20 } });
+    }
+    using firing = await startTrackedHook(world, gadgetId);
+    let before = impl.storage.nextActionId.get();
+
+    await firing.approvalQueue.authorizeObservation(observation({ subresources: ["hook/event"] }));
+    await firing.deliver("evt");
+
+    expect(firing.deliveries).toEqual(["evt"]);
+    expect(world.checks).toHaveLength(2);
+    for (let profileId of ["bob", "carol"]) {
+      expect(world.checks).toContainEqual({ profileId, ids: ["hook/event"] });
+    }
+    expect(rows(impl, WORKSPACE)).toEqual(["2:hook/event"]);
+    expect(rows(impl, gadget(GADGET))).toEqual(["2:gadget-only"]);
+    expect(impl.storage.actions.get(before)).toMatchObject({
+      gatekeeperId: TRACKED, type: "observation", state: "approved", caller: { from: "hook" },
+      description: { subresources: ["hook/event"] },
+    });
+    expect(impl.storage.nextActionId.get()).toBe(before + 1);
+  }));
+
+  it.each(["build", "use"] as const)(
+      "does not deliver or commit a read denied by a %s collaborator", role =>
+      withWorld(async world => {
+    let { impl } = world;
+    seedTracked(impl);
+    world.roles.set("carol", role);
+    impl.storage.observers.put(
+        { profileId: "carol", observerId: "obs-c", accountChoices: { [TRACKED]: 20 } });
+    world.verifiers.set("carol", checkingVerifier(() => world, "carol", ids => ids.map(() => false)));
+    using firing = await startTrackedHook(world);
+    let before = impl.storage.nextActionId.get();
+    let deliver = async () => {
+      await firing.approvalQueue.authorizeObservation(observation({ subresources: ["denied"] }));
+      await firing.deliver("evt");
+    };
+
+    await expect(deliver()).rejects.toThrow(/could not be confirmed/);
+
+    expect(world.checks).toEqual([{ profileId: "carol", ids: ["denied"] }]);
+    expect(firing.deliveries).toEqual([]);
+    expect(rows(impl, WORKSPACE)).toEqual([]);
+    expect(impl.storage.nextActionId.get()).toBe(before);
+    expect(impl.storage.actions.get(before)).toBeUndefined();
+  }));
+
+  for (let operation of ["disable", "delete"] as const) {
+    it.each(["build", "use"] as const)(
+        `retains delivered hook requirements after ${operation} and a DO restart for %s admission`,
+        async role => {
+      let name = `observer-ledger-hook-history-${++doCounter}`;
+      let auditId = -1;
+      await inOverseer(name, async world => {
+        let { impl } = world;
+        seedTracked(impl);
+        using firing = await startTrackedHook(world);
+        auditId = impl.storage.nextActionId.get();
+        await firing.approvalQueue.authorizeObservation(observation({ subresources: ["past/event"] }));
+        await firing.deliver("evt");
+        expect(firing.deliveries).toEqual(["evt"]);
+        await firing.revoke(operation);
+        expect(impl.storage.boundHooks.get(5)?.enabled).not.toBe(true);
+      });
+
+      await abortAllDurableObjects();
+
+      await inOverseer(name, async world => {
+        let { impl } = world;
+        fakeFacets(impl);
+        world.roles.set("carol", role);
+        world.verifiers.set("carol", checkingVerifier(() => world, "carol", ids => ids.map(() => false)));
+
+        await expect(impl.ensureObserver("carol", world.clientUser("carol"), role, configureAll))
+            .rejects.toThrow(/could not confirm/);
+
+        expect(impl.storage.observers.get("carol")).toBeUndefined();
+        expect(rows(impl, WORKSPACE)).toEqual(["2:past/event"]);
+        expect(impl.observerLedger.requiredSubresources(role).get(TRACKED)).toEqual(["past/event"]);
+        expect(impl.storage.actions.get(auditId)).toMatchObject({
+          caller: { from: "hook" }, description: { subresources: ["past/event"] },
+        });
+        expect(impl.storage.boundHooks.get(5)?.enabled).not.toBe(true);
+      });
+    });
+  }
+
+  it.each(["disable", "delete", "restart"] as const)(
+      "refuses authorization and policy/log writes when %s races verification", operation =>
+      withWorld(async world => {
+      let { impl } = world;
+      seedTracked(impl);
+      world.roles.set("carol", "use");
+      impl.storage.observers.put(
+          { profileId: "carol", observerId: "obs-c", accountChoices: { [TRACKED]: 20 } });
+      let release!: () => void;
+      let reached!: () => void;
+      let parked = new Promise<void>(resolve => { release = resolve; });
+      let checking = new Promise<void>(resolve => { reached = resolve; });
+      world.verifiers.set("carol", checkingVerifier(() => world, "carol", async ids => {
+        reached();
+        await parked;
+        return ids.map(() => true);
+      }));
+      using firing = await startTrackedHook(world);
+      let before = impl.storage.nextActionId.get();
+      let authorize = firing.approvalQueue.authorizeObservation(observation({
+        subresources: ["racing/event"], containsRestrictedData: true, ownerInvitesOnly: true,
+      })).then(() => ({ authorized: true, error: "" }),
+          error => ({ authorized: false, error: String(error) }));
+      await checking;
+      let refusal = operation === "restart" ? /restarting/ : /deleted or disabled/;
+      if (operation === "restart") {
+        // Exercise the real pending-restart quarantine without letting its timer abort this DO.
+        impl.scheduleAccessRestart = () => {};
+        let leave = impl.joinSession("use");
+        impl.restartForObserverTracking("connection changed during hook verification", TRACKED);
+        leave();
+        expect(impl.gatekeeperUsable(TRACKED)).toBe(false);
+      } else {
+        await firing.revoke(operation);
+      }
+      release();
+
+      expect(await authorize).toEqual({
+        authorized: false, error: expect.stringMatching(refusal),
+      });
+      await expect(firing.deliver("evt")).rejects.toThrow(refusal);
+      expect(firing.deliveries).toEqual([]);
+      expect(rows(impl, WORKSPACE)).toEqual([]);
+      expect(impl.storage.nextActionId.get()).toBe(before);
+      expect(impl.storage.actions.get(before)).toBeUndefined();
+      expect(impl.storage.containsRestrictedData.get()).toBe(false);
+      expect(impl.storage.ownerInvitesOnly.get()).toBe(false);
+    }));
+});
+
 describe("legacy and tracked connections coexist", () => {
   it("verifies each by its own protocol and keeps the legacy exclusion path", () =>
       withWorld(async world => {
     let { impl } = world;
     seedLegacy(impl);
     seedTracked(impl);
-    addRows(impl, BASELINE, TRACKED, ["a"]);
+    addRows(impl, WORKSPACE, TRACKED, ["a"]);
     let adds: number[] = [];
     fakeFacets(impl, { adds });
     world.roles.set("carol", "build");
@@ -313,7 +518,7 @@ describe("observations through a tracked connection", () => {
 
     await impl.authorizeObservation(TRACKED, observation({ subresources: [] }), { from: "user" });
     expect(impl.storage.nextActionId.get()).toBe(before + 1);  // audited
-    expect(rows(impl, BASELINE)).toEqual([]);
+    expect(rows(impl, WORKSPACE)).toEqual([]);
 
     await expect(impl.authorizeObservation(TRACKED, observation(), { from: "user" }))
         .rejects.toThrow(/must report its subresources/);
@@ -339,7 +544,7 @@ describe("observations through a tracked connection", () => {
     await expect(impl.authorizeObservation(TRACKED, observation({ subresources: ["x"] }),
         { from: "user" }))
         .rejects.toThrow(/could not be confirmed/);
-    expect(rows(impl, BASELINE)).toEqual([]);
+    expect(rows(impl, WORKSPACE)).toEqual([]);
     expect(impl.storage.nextActionId.get()).toBe(before);
   }));
 
@@ -358,7 +563,7 @@ describe("observations through a tracked connection", () => {
     await impl.authorizeObservation(TRACKED, observation({ subresources: ["x"] }),
         { from: "user" });
     expect(world.checks).toEqual([{ profileId: "carol", ids: ["x"] }]);
-    expect(rows(impl, BASELINE)).toEqual(["2:x"]);
+    expect(rows(impl, WORKSPACE)).toEqual(["2:x"]);
 
     // A remembered ID is not a remembered grant: the next read checks it again.
     await impl.authorizeObservation(TRACKED, observation({ subresources: ["x"] }),
@@ -393,10 +598,10 @@ describe("observations through a tracked connection", () => {
     let authorized = await read;
     if (admitted) {
       expect(authorized).toBe(false);
-      expect(rows(impl, BASELINE)).toEqual([]);
+      expect(rows(impl, WORKSPACE)).toEqual([]);
     } else {
       expect(authorized).toBe(true);
-      expect(rows(impl, BASELINE)).toEqual(["2:x"]);
+      expect(rows(impl, WORKSPACE)).toEqual(["2:x"]);
       expect(impl.storage.observers.get("carol")).toBeUndefined();
     }
     expect(world.checks).toContainEqual({ profileId: "carol", ids: ["x"] });
@@ -438,7 +643,7 @@ describe("observations through a tracked connection", () => {
     if (granted) await read;
     else await expect(read).rejects.toThrow(/could not be confirmed/);
     expect(accounts).toEqual([20, 21]);
-    expect(rows(impl, BASELINE)).toEqual(granted ? ["2:x"] : []);
+    expect(rows(impl, WORKSPACE)).toEqual(granted ? ["2:x"] : []);
     expect(impl.storage.nextActionId.get()).toBe(before + (granted ? 1 : 0));
     if (!granted) expect(impl.storage.actions.get(before)).toBeUndefined();
   }));
@@ -446,13 +651,13 @@ describe("observations through a tracked connection", () => {
 
 describe("admission against tracked requirements", () => {
   it.each(["build", "use"] as const)(
-      "admits %s collaborators against baseline and every reachable context", role =>
+      "admits %s collaborators against workspace and every reachable context", role =>
       withWorld(async world => {
     let { impl } = world;
     seedTracked(impl);
     seedGadget(impl);
     seedGadget(impl, GADGET + 1);
-    addRows(impl, BASELINE, TRACKED, ["baseline"]);
+    addRows(impl, WORKSPACE, TRACKED, ["workspace"]);
     addRows(impl, chat(1), TRACKED, ["chat-one"]);
     addRows(impl, chat(2), TRACKED, ["chat-two"]);
     addRows(impl, gadget(GADGET), TRACKED, ["gadget-one"]);
@@ -464,7 +669,7 @@ describe("admission against tracked requirements", () => {
 
     await impl.ensureObserver("carol", world.clientUser("carol"), role, configureAll);
 
-    let expected = ["baseline", "gadget-one", "gadget-two"];
+    let expected = ["workspace", "gadget-one", "gadget-two"];
     if (role === "build") expected.push("chat-one", "chat-two");
     expect(world.checks.map(check => ({ ...check, ids: check.ids.toSorted() }))).toEqual([
       { profileId: "carol", ids: expected.toSorted() },
@@ -482,7 +687,7 @@ describe("admission against tracked requirements", () => {
       withWorld(async world => {
     let { impl } = world;
     seedTracked(impl);
-    addRows(impl, BASELINE, TRACKED, ["a"]);
+    addRows(impl, WORKSPACE, TRACKED, ["a"]);
     let adds: number[] = [];
     fakeFacets(impl, { adds });
     world.roles.set("carol", "build");
@@ -501,7 +706,7 @@ describe("admission against tracked requirements", () => {
     seedLegacy(impl, 5);
     seedLegacy(impl, LEGACY);
     seedTracked(impl);
-    addRows(impl, BASELINE, TRACKED, ["still-live"]);
+    addRows(impl, WORKSPACE, TRACKED, ["still-live"]);
     let adds: number[] = [];
     fakeFacets(impl, { adds });
     world.roles.set("carol", "build");
@@ -520,7 +725,7 @@ describe("admission against tracked requirements", () => {
       withWorld(async world => {
     let { impl } = world;
     seedTracked(impl);
-    addRows(impl, BASELINE, TRACKED, ["a"]);
+    addRows(impl, WORKSPACE, TRACKED, ["a"]);
     fakeFacets(impl);
     world.roles.set("carol", "build");
 
@@ -578,7 +783,7 @@ describe("admission against tracked requirements", () => {
         { profileId: "dave", observerId: "obs-d", accountChoices: { [TRACKED]: 30 } });
     release();
     await expect(read).rejects.toThrow(/could not be confirmed/);
-    expect(rows(impl, BASELINE)).toEqual([]);
+    expect(rows(impl, WORKSPACE)).toEqual([]);
     expect(impl.storage.nextActionId.get()).toBe(before);
     expect(impl.storage.actions.get(before)).toBeUndefined();
   }));
@@ -601,7 +806,7 @@ describe("historical import", () => {
     expect(exports).toBe(1);
     // An empty export writes no audit record.
     expect(impl.storage.nextActionId.get()).toBe(before);
-    expect(rows(impl, BASELINE)).toEqual([]);
+    expect(rows(impl, WORKSPACE)).toEqual([]);
     world.roles.set("carol", "build");
     await impl.ensureObserver("carol", world.clientUser("carol"), "build", configureAll);
     await impl.authorizeObservation(LEGACY, observation({ subresources: ["first-real-read"] }),
@@ -609,10 +814,10 @@ describe("historical import", () => {
     expect(world.checks).toEqual([
       { profileId: "carol", ids: ["first-real-read"] },
     ]);
-    expect(rows(impl, BASELINE)).toEqual(["1:first-real-read"]);
+    expect(rows(impl, WORKSPACE)).toEqual(["1:first-real-read"]);
   }));
 
-  it("exports once for concurrent first callers and merges into the baseline", () =>
+  it("exports once for concurrent first callers and merges into the workspace context", () =>
       withWorld(async world => {
     let { impl } = world;
     seedLegacy(impl, 3);
@@ -626,13 +831,13 @@ describe("historical import", () => {
     await Promise.all([impl.observerLedger.initialize(3), impl.observerLedger.initialize(3)]);
     expect(exports).toBe(1);
     expect(impl.observerLedger.isTracked(3)).toBe(true);
-    // One baseline audit record carries the whole (deduplicated) export.
+    // One workspace audit record carries the whole (deduplicated) export.
     expect(impl.storage.nextActionId.get()).toBe(before + 1);
     expect(impl.storage.actions.get(before)).toMatchObject({
       gatekeeperId: 3, type: "observation", caller: { from: "user" },
       description: { title: "Imported earlier reads", subresources: ["p1", "p2"] },
     });
-    // Every context, existing or future, includes the baseline.
+    // Every context, existing or future, includes workspace requirements.
     expect(impl.observerLedger.requiredSubresources("use").get(3)).toEqual(["p1", "p2"]);
   }));
 
@@ -678,9 +883,9 @@ describe("historical import", () => {
       seedLegacy(impl, 3);
       facets(impl);
       await expect(impl.observerLedger.initialize(3)).rejects.toThrow(/export interrupted/);
-      // A failed export is never an empty baseline, and leaves the connection legacy.
+      // A failed export never clears workspace requirements, and leaves the connection legacy.
       expect(impl.observerLedger.isTracked(3)).toBe(false);
-      expect(rows(impl, BASELINE)).toEqual([]);
+      expect(rows(impl, WORKSPACE)).toEqual([]);
 
       fail = false;
       await impl.observerLedger.initialize(3);
@@ -693,7 +898,7 @@ describe("historical import", () => {
       facets(impl);
       await impl.observerLedger.initialize(3);
       expect(exports).toBe(2);  // completion is durable: the stored history is authoritative
-      expect(rows(impl, BASELINE)).toEqual(["3:p1"]);
+      expect(rows(impl, WORKSPACE)).toEqual(["3:p1"]);
     });
   });
 
@@ -719,14 +924,14 @@ describe("historical import", () => {
 
     await expect(impl.authorizeObservation(LEGACY, observation(), { from: "hook" }))
         .rejects.toThrow(/being migrated/);
-    expect(rows(impl, BASELINE)).toEqual([]);
+    expect(rows(impl, WORKSPACE)).toEqual([]);
     expect(impl.storage.nextActionId.get()).toBe(before);
     expect(impl.storage.actions.get(before)).toBeUndefined();
     expect(impl.observerLedger.isTracked(LEGACY)).toBe(false);
 
     release();
     await importing;
-    expect(rows(impl, BASELINE)).toEqual(["1:history"]);
+    expect(rows(impl, WORKSPACE)).toEqual(["1:history"]);
   }));
 
   it("refuses a legacy observation imported while its policy lookup was in flight", () =>
@@ -802,7 +1007,7 @@ describe("historical import", () => {
     expect(impl.observerLedger.isTracked(id)).toBe(true);
     expect(impl.storage.gatekeepers.get(id).observerTracking).toBe(true);
     expect(exports).toBe(0);
-    expect(rows(impl, BASELINE)).toEqual([]);
+    expect(rows(impl, WORKSPACE)).toEqual([]);
   }));
 
   it("audits simulated reads without external permissions, then checks the approved real resource", () =>
@@ -893,7 +1098,7 @@ describe("historical import", () => {
       });
       // Approval makes it an existing connection advertising support: imported exactly once.
       expect(exports).toBe(1);
-      expect(rows(impl, BASELINE)).toEqual([]);
+      expect(rows(impl, WORKSPACE)).toEqual([]);
 
       world.roles.set("carol", "build");
       await impl.ensureObserver("carol", world.clientUser("carol"), "build", configureAll);
@@ -902,14 +1107,14 @@ describe("historical import", () => {
       await expect(realSession.read(observation({ subresources: ["real-id"] })))
           .rejects.toThrow(/could not be confirmed/);
       expect(impl.storage.nextActionId.get()).toBe(beforeDenied);
-      expect(rows(impl, BASELINE)).toEqual([]);
+      expect(rows(impl, WORKSPACE)).toEqual([]);
       world.verifiers.delete("carol");
       await realSession.read(observation({ subresources: ["real-id"] }));
       expect(world.checks).toEqual([
         { profileId: "carol", ids: ["real-id"] },
         { profileId: "carol", ids: ["real-id"] },
       ]);
-      expect(rows(impl, BASELINE)).toEqual([`${gatekeeperId}:real-id`]);
+      expect(rows(impl, WORKSPACE)).toEqual([`${gatekeeperId}:real-id`]);
       expect(exports).toBe(1);
     } finally {
       leave();
@@ -934,7 +1139,7 @@ describe("historical import", () => {
     let second = "workspace-b/documents/shared";
     seedTracked(impl);
     seedLegacy(impl, 3, { creationSpec: spec("trackedvendor", 3) });
-    addRows(impl, BASELINE, TRACKED, [first]);
+    addRows(impl, WORKSPACE, TRACKED, [first]);
     fakeFacets(impl, {
       advertise: new Set([3]),
       exports: new Map([[3, async () => [second]]]),
@@ -948,7 +1153,7 @@ describe("historical import", () => {
         .rejects.toThrow(/could not confirm/);
     expect(world.checks.some(check => check.ids.includes(second))).toBe(true);
     expect(impl.storage.observers.get("carol")).toBeUndefined();
-    expect(rows(impl, BASELINE)).toEqual([`2:${first}`, `3:${second}`]);
+    expect(rows(impl, WORKSPACE)).toEqual([`2:${first}`, `3:${second}`]);
 
     world.verifiers.delete("carol");
     await impl.ensureObserver("carol", world.clientUser("carol"), "build", configureAll);
@@ -961,7 +1166,7 @@ describe("historical import", () => {
     await expect(impl.authorizeObservation(TRACKED, observation({ subresources: [second] }),
         { from: "user" })).rejects.toThrow(/could not be confirmed/);
     expect(world.checks.at(-1)).toEqual({ profileId: "carol", ids: [second] });
-    expect(rows(impl, BASELINE)).toEqual([`2:${first}`, `3:${second}`]);
+    expect(rows(impl, WORKSPACE)).toEqual([`2:${first}`, `3:${second}`]);
     expect(impl.storage.nextActionId.get()).toBe(before);
   }));
 });
@@ -982,9 +1187,9 @@ describe("connection removal", () => {
           observation({ title: "Retained read", subresources: ["removed/first"] }),
           { from: "user" });
       liveAuditId = impl.storage.nextActionId.get();
-      await impl.authorizeObservation(3, observation({ subresources: ["live/baseline"] }),
+      await impl.authorizeObservation(3, observation({ subresources: ["live/workspace"] }),
           { from: "user" });
-      for (let context of [BASELINE, chat(1), chat(99), gadget(GADGET), gadget(999)]) {
+      for (let context of [WORKSPACE, chat(1), chat(99), gadget(GADGET), gadget(999)]) {
         addRows(impl, context, TRACKED, ["removed/read"]);
         addRows(impl, context, 3, ["live/read"]);
       }
@@ -996,7 +1201,7 @@ describe("connection removal", () => {
       expect(impl.storage.gatekeepers.get(TRACKED)).toBeUndefined();
       expect(impl.storage.gatekeepers.get(3).observerTracking).toBe(true);
       expect(impl.observerLedger.requiredSubresources("build"))
-          .toEqual(new Map([[3, ["live/baseline", "live/read"]]]));
+          .toEqual(new Map([[3, ["live/workspace", "live/read"]]]));
       // The removed connection's records stay in the audit log.
       for (let context of [chat(1), chat(99), gadget(GADGET), gadget(999)]) {
         expect(rows(impl, context)).toEqual(["2:removed/read", "3:live/read"]);
@@ -1021,7 +1226,7 @@ describe("connection removal", () => {
       await impl.ensureObserver("carol", world.clientUser("carol"), role, configureAll);
 
       expect(world.checks).toEqual([
-        { profileId: "carol", ids: ["live/baseline", "live/read"] },
+        { profileId: "carol", ids: ["live/workspace", "live/read"] },
       ]);
       expect(impl.listObserverRequirements(role)
           .map((need: { gatekeeperId: number }) => need.gatekeeperId))
@@ -1042,7 +1247,7 @@ describe("direct context authorization", () => {
     let { impl } = world;
     seedTracked(impl);
     seedGadget(impl);
-    addRows(impl, BASELINE, TRACKED, ["baseline"]);
+    addRows(impl, WORKSPACE, TRACKED, ["workspace"]);
     addRows(impl, gadget(GADGET), TRACKED, ["gadget"]);
     addRows(impl, chat(2), TRACKED, ["other-chat"]);
     world.roles.set("bob", "build");
@@ -1061,7 +1266,7 @@ describe("direct context authorization", () => {
     expect(rows(impl, chat(1))).toEqual(["2:read"]);
     expect(rows(impl, chat(2))).toEqual(["2:other-chat"]);
     expect(rows(impl, gadget(GADGET))).toEqual(["2:gadget"]);
-    expect(rows(impl, BASELINE)).toEqual(["2:baseline"]);
+    expect(rows(impl, WORKSPACE)).toEqual(["2:workspace"]);
 
     impl.isLiveExecution = () => false;
     let before = impl.storage.nextActionId.get();
@@ -1142,7 +1347,7 @@ describe("direct context authorization", () => {
     seedTracked(impl);
     seedGadget(impl);
     seedGadget(impl, GADGET + 1);
-    addRows(impl, BASELINE, TRACKED, ["baseline"]);
+    addRows(impl, WORKSPACE, TRACKED, ["workspace"]);
     addRows(impl, chat(1), TRACKED, ["chat"]);
     addRows(impl, gadget(GADGET), TRACKED, ["other-gadget"]);
     addRows(impl, gadget(GADGET + 1), TRACKED, ["retained"]);
@@ -1172,7 +1377,7 @@ describe("direct context authorization", () => {
     expect(rows(impl, gadget(GADGET + 1))).toEqual(["2:first", "2:retained", "2:second"]);
     expect(rows(impl, gadget(GADGET))).toEqual(["2:other-gadget"]);
     expect(rows(impl, chat(1))).toEqual(["2:chat"]);
-    expect(rows(impl, BASELINE)).toEqual(["2:baseline"]);
+    expect(rows(impl, WORKSPACE)).toEqual(["2:workspace"]);
   }));
 
   it.each(["build", "use"] as const)(
@@ -1194,7 +1399,7 @@ describe("direct context authorization", () => {
 
     expect(world.checks).toEqual([{ profileId: "carol", ids: ["denied"] }]);
     expect(rows(impl, gadget(GADGET))).toEqual(["2:retained"]);
-    expect(rows(impl, BASELINE)).toEqual([]);
+    expect(rows(impl, WORKSPACE)).toEqual([]);
     expect(impl.storage.nextActionId.get()).toBe(before);
     expect(impl.storage.actions.get(before)).toBeUndefined();
   }));
@@ -1207,12 +1412,10 @@ describe("direct context authorization", () => {
     impl.storage.defaultGadgetId.put(GADGET);
     let before = impl.storage.nextActionId.get();
 
-    // A hook has no destination model, and a gadget caller without a gadgetId (only ever
-    // persisted before multi-gadget support) is not guessed at: neither can be recorded.
-    for (let caller of [{ from: "hook" }, { from: "gadget", chatId: 1 }]) {
-      await expect(impl.authorizeObservation(TRACKED, observation({ subresources: ["x"] }),
-          caller, true)).rejects.toThrow(/no attributable chat or gadget/);
-    }
+    // A gadget caller persisted before multi-gadget support has no gadgetId. Even a default
+    // gadget and chatId do not make that historical caller attributable.
+    await expect(impl.authorizeObservation(TRACKED, observation({ subresources: ["x"] }),
+        { from: "gadget", chatId: 1 }, true)).rejects.toThrow(/no attributable chat or gadget/);
 
     expect([...impl.storage.actions.byObserverContext.list()]).toEqual([]);
     expect(impl.storage.nextActionId.get()).toBe(before);

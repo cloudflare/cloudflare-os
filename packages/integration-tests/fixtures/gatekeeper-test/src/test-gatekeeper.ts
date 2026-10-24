@@ -91,6 +91,7 @@ type TestActionState = {
 type HookState = {
   initiator?: Fetcher<HookInitiator<ValueHook>>;
   target?: HookTargetMetadata;
+  resourceUrl?: string;
   disableCount: number;
 };
 
@@ -282,8 +283,9 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
   }
 
   enableHook(
-      key: string, initiator: Fetcher<HookInitiator<ValueHook>>, target: HookTargetMetadata): void {
-    this.ctx.storage.kv.put(`hook:${key}`, { ...this.#hook(key), initiator, target });
+      key: string, resourceUrl: string, initiator: Fetcher<HookInitiator<ValueHook>>,
+      target: HookTargetMetadata): void {
+    this.ctx.storage.kv.put(`hook:${key}`, { ...this.#hook(key), resourceUrl, initiator, target });
   }
 
   /**
@@ -300,15 +302,20 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     return { enabled: initiator !== undefined, target, disableCount };
   }
 
-  async fireHook(key: string, value: number): Promise<{ fired: true } | { error: string }> {
-    const { initiator } = this.#hook(key);
+  async fireHook(key: string, value: number, subresources?: string[])
+      : Promise<{ fired: true } | { error: string }> {
+    const { initiator, resourceUrl } = this.#hook(key);
     if (!initiator) return { error: "hook was never enabled" };
     try {
       const { callback, approvalQueue } = await initiator.startHook();
       try {
+        const tracked = resourceUrl !== undefined && this.isObserverTracked(resourceUrl);
         await approvalQueue.authorizeObservation({
           title: `Hook ${key} requested ${value}`,
           description: "The integration test fired this hook.",
+          ...(tracked ? {
+            subresources: (subresources ?? []).map(id => JSON.stringify([resourceUrl, id])),
+          } : {}),
         });
         await callback.onValueRequested(value);
       } finally {
@@ -716,7 +723,7 @@ class TestSessionTarget extends RpcTarget implements TestSession {
   async watch(key: string, callback: RpcStub<ValueHook>): Promise<void> {
     await this.approvalQueue.bindHook(
         // @ts-expect-error Workers currently widens the controller's hook type across bindHook RPC.
-        this.ctx.exports.TestHookController({ props: { key } }),
+        this.ctx.exports.TestHookController({ props: { key, resourceUrl: this.resourceUrl } }),
         callback,
         { title: `Test hook ${key}`, description: "Delivers values the integration test fires." });
   }
@@ -873,10 +880,12 @@ export class TestGatekeeper
 
 @validateRpc()
 export class TestHookController
-    extends WorkerEntrypoint<Cloudflare.Env, { key: string }> implements HookController<ValueHook> {
+    extends WorkerEntrypoint<Cloudflare.Env, { key: string; resourceUrl: string }>
+    implements HookController<ValueHook> {
   async enable(initiator: Fetcher<HookInitiator<ValueHook>>, target: HookTargetMetadata)
       : Promise<void> {
-    await control(this.ctx.exports).enableHook(this.ctx.props.key, initiator, target);
+    await control(this.ctx.exports).enableHook(
+        this.ctx.props.key, this.ctx.props.resourceUrl, initiator, target);
   }
 
   async disable(): Promise<void> {
@@ -1121,12 +1130,17 @@ export default {
     }
 
     // Fire a hook through the initiator its controller's enable() stored.
-    // Body: {"key": "...", "value": number} -> {"fired": true} | {"error": string}
+    // Body: {"key": "...", "value": number, "subresources"?: string[]}
+    // -> {"fired": true} | {"error": string}
     if (url.pathname === "/control/fire-hook" && req.method === "POST") {
-      const { key, value } = body as Record<string, unknown>;
+      const { key, value, subresources } = body as Record<string, unknown>;
       if (!isNonEmptyString(key)) return badRequest("`key` must be a non-empty string");
       if (typeof value !== "number") return badRequest("`value` must be a number");
-      return Response.json(await control(ctx.exports).fireHook(key, value));
+      if (subresources !== undefined &&
+          (!Array.isArray(subresources) || !subresources.every(isNonEmptyString))) {
+        return badRequest("`subresources` must be an array of non-empty strings");
+      }
+      return Response.json(await control(ctx.exports).fireHook(key, value, subresources));
     }
 
     // Call the stub a session's keepSelfStub() stored.

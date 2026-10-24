@@ -305,7 +305,7 @@ export class ObserverLedger {
     return actionIds;
   }
 
-  // No session read the imported history, so its records belong to the baseline, not a chat.
+  // No session read the imported history, so its records belong to the workspace, not a chat.
   #recordImportedHistory(record: GatekeeperRecord, subresources: string[]): void {
     this.recordObservation({
       gatekeeperId: record.id,
@@ -322,15 +322,6 @@ export class ObserverLedger {
         subresources,
       },
     });
-  }
-
-  /** Refuses hooks on a tracked connection until hook observations have a destination model. */
-  assertHooksAllowed(gatekeeperId: WorkpieceId): void {
-    if (this.isTracked(gatekeeperId)) {
-      throw new Error(
-          "This connection's observations are tracked by the Workshop, but hook observation " +
-          "destinations are not supported yet, so hooks can't use it.");
-    }
   }
 
   // ---------------------------------------------------------------------------------------
@@ -375,8 +366,8 @@ export class ObserverLedger {
           "observers.");
     }
     // Attributed to the trusted binding authorizer's caller, not its holder or a gatekeeper-
-    // supplied ID: passing that capability elsewhere does not change its context. Hooks are
-    // refused before they can get here (assertHooksAllowed).
+    // supplied ID: passing that capability elsewhere does not change its context. Hook events
+    // use the workspace context because their callbacks have no trusted narrower attribution.
     let context = observerContextOf(caller);
     if (context === undefined) {
       throw new Error("This observation has no attributable chat or gadget.");
@@ -469,13 +460,13 @@ export class ObserverLedger {
 
   /**
    * The deduplicated subresources a collaborator holding `role` must be able to read, per tracked
-   * connection: a "build" collaborator reaches every context, a "use" collaborator the baseline
+   * connection: a "build" collaborator reaches every context, a "use" collaborator the workspace
    * and every gadget. Records through a connection since removed are skipped.
    */
   requiredSubresources(role: CollaboratorRole): Map<WorkpieceId, string[]> {
     let index = this.#storage.actions.byObserverContext;
     let records: ActionRecord[] = role === "build" ? [...index.list()] : [
-      ...index.get(observerContextKey({type: "baseline"})),
+      ...index.get(observerContextKey({type: "workspace"})),
       ...index.list({prefix: OBSERVER_GADGET_CONTEXT_PREFIX}),
     ];
     let byConnection = new Map<WorkpieceId, Set<string>>();
