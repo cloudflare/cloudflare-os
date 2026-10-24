@@ -157,11 +157,15 @@ describe("Slides PowerPoint export", () => {
     expect([...parts.keys()].filter((n) => n.startsWith("ppt/media/"))).toHaveLength(1);
   });
 
-  it("draws at most 20 dot grids, however many opacities the slides use", async () => {
-    // Each distinct grid is a 2400 x 1350 PNG: 40 of them would exceed the export's pixel budget.
-    const slides = Array.from({ length: 40 }, (_, i) => slide([], { color: "#FFFFFF", dotGrid: (i + 1) / 40 }));
-    const parts = await exportDeck({ slides });
-    expect([...parts.keys()].filter((n) => n.startsWith("ppt/media/"))).toHaveLength(20);
+  // Each distinct grid is a full-slide PNG, and together they must leave the export's pixel budget
+  // for the deck's own pictures: past four opacities they are drawn at 1x.
+  it("draws at most 20 dot grids, however many opacities the slides use, at 1x past four", async () => {
+    const size = (png: Uint8Array) => { const v = new DataView(png.buffer, png.byteOffset); return [v.getUint32(16), v.getUint32(20)]; };
+    const media = (parts: Map<string, Uint8Array>) => [...parts].filter(([n]) => n.startsWith("ppt/media/")).map(([, b]) => size(b));
+    const many = await exportDeck({ slides: Array.from({ length: 40 }, (_, i) => slide([], { color: "#FFFFFF", dotGrid: (i + 1) / 40 })) });
+    expect(media(many)).toEqual(Array.from({ length: 20 }, () => [1200, 675]));
+    const few = await exportDeck({ slides: [0.2, 0.4].map((dotGrid) => slide([], { color: "#FFFFFF", dotGrid })) });
+    expect(media(few)).toEqual([[2400, 1350], [2400, 1350]]);
   }, 30_000);
 
   it("exports a slide at the 1000-block limit with its dot grid and the deck logo", async () => {

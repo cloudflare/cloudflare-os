@@ -67,6 +67,9 @@ const ASSET_INDEX_KEY = "assets";
 // PowerPoint viewers without SVG support: { <svgKey>: <assetHash> }.
 const RASTER_INDEX_KEY = "rasters";
 const MAX_RASTER_LENGTH = 6 * 1024 * 1024;
+// Editors draw rasters at most 1600px on a side; a larger one is refused, so
+// no stand-in can push an export past the PowerPoint library's image limits.
+const MAX_RASTER_SIDE = 2048;
 const SLIDE_PREFIX = "s:";
 const HIST_PREFIX = "h:";
 const ASSET_PREFIX = "a:";
@@ -188,6 +191,22 @@ function assetHashesOf(slide: Slide | null | undefined, out: Set<string>): Set<s
 // The deck logo as a "slide" of one image, so the slide walks above cover it.
 function logoAsSlide(logo: DeckLogo | null | undefined): Slide | null {
   return logo ? { id: "", background: {}, blocks: [{ id: "", type: "image", x: 0, y: 0, props: { src: logo.src } }] } : null;
+}
+// Deep equality of stored JSON, whatever order its keys were written in.
+function sameValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== "object" || typeof b !== "object" || Array.isArray(a) !== Array.isArray(b)) return false;
+  const x = a as Record<string, unknown>, y = b as Record<string, unknown>;
+  const keys = Object.keys(x);
+  return keys.length === Object.keys(y).length && keys.every((k) => Object.hasOwn(y, k) && sameValue(x[k], y[k]));
+}
+// The width and height a PNG data URI's header gives, or null if it isn't a PNG.
+function pngSize(dataUri: string): { w: number; h: number } | null {
+  let head: string;
+  try { head = atob(dataUri.slice(dataUri.indexOf(",") + 1, dataUri.indexOf(",") + 33)); } catch { return null; }
+  if (!head.startsWith("\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR")) return null;
+  const at = (i: number) => ((head.charCodeAt(i) << 24) | (head.charCodeAt(i + 1) << 16) | (head.charCodeAt(i + 2) << 8) | head.charCodeAt(i + 3)) >>> 0;
+  return { w: at(16), h: at(20) };
 }
 function sameLogo(a: DeckLogo | null, b: DeckLogo | null): boolean {
   return a === b || !!a && !!b && a.src === b.src && a.position === b.position && a.onCover === b.onCover && a.alt === b.alt;
@@ -568,6 +587,7 @@ export class Gadget extends DurableObject implements GadgetStub {
     if (nextOrder && sameOrder(nextOrder, this.#order)) nextOrder = null;
     const logoChanged = nextLogo !== undefined && !sameLogo(nextLogo, this.#logo);
     if (kind === "edit") {
+      for (const [id, s] of changes) if (sameValue(s, this.#slides.get(id) ?? null)) changes.delete(id);
       if (!changes.size && !nextOrder && !logoChanged) return;
       this.#checkLimits(changes, nextOrder);
     }
@@ -755,6 +775,8 @@ export class Gadget extends DurableObject implements GadgetStub {
     return this.#run(async () => {
       if (typeof key !== "string" || !/^[0-9a-f]{32}$/.test(key)) return false;
       if (typeof png !== "string" || !png.startsWith("data:image/png;base64,") || png.length > MAX_RASTER_LENGTH) return false;
+      const size = pngSize(png);
+      if (!size || !size.w || !size.h || size.w > MAX_RASTER_SIDE || size.h > MAX_RASTER_SIDE) return false;
       if (this.#rasters.has(key)) return true;
       if (!(await this.#liveSvgKeys()).has(key)) return false;
       const ref = await this.#putAsset(png);

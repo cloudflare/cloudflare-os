@@ -57,9 +57,9 @@ async function buildBrandRasters(): Promise<BrandRasters> {
   };
 }
 // The slide dot grid (client DotGrid): #fff7ef dots of radius 1.5px on a
-// 38×36 grid offset by 30,18, drawn at 2× over the whole slide.
-async function dotGridPng(alpha: number): Promise<string> {
-  const K = 2, W = 1200 * K, H = 675 * K, r = 1.5 * K;
+// 38×36 grid offset by 30,18, drawn at `K`× over the whole slide.
+async function dotGridPng(alpha: number, K: number): Promise<string> {
+  const W = 1200 * K, H = 675 * K, r = 1.5 * K;
   const px = new Uint8Array(W * H * 4);
   const rgb = hexRgb("#FFF7EF");
   // Transparent pixels carry the dot colour too: a viewer that scales the
@@ -86,26 +86,30 @@ async function dotGridPng(alpha: number): Promise<string> {
   }
   return encodePng(W, H, px);
 }
-// Drawn once per opacity, then reused by every export.
-const dotGrids = new Map<number, Promise<string>>();
-function cachedDotGridPng(alpha: number): Promise<string> {
-  let png = dotGrids.get(alpha);
+// Drawn once per opacity and scale, then reused by every export.
+const dotGrids = new Map<string, Promise<string>>();
+function cachedDotGridPng(alpha: number, K: number): Promise<string> {
+  const key = `${alpha}@${K}`;
+  let png = dotGrids.get(key);
   if (!png) {
-    png = dotGridPng(alpha).catch((e) => { dotGrids.delete(alpha); throw e; });
-    dotGrids.set(alpha, png);
+    png = dotGridPng(alpha, K).catch((e) => { dotGrids.delete(key); throw e; });
+    dotGrids.set(key, png);
   }
   return png;
 }
+// A deck with many dot grid opacities gets them at 1×, so together they use
+// under a quarter of the PowerPoint library's total image pixels, leaving the
+// rest for the deck's own pictures.
+const MAX_SHARP_DOT_GRIDS = 4;
 // Everything deckToSlidesPptx needs that takes async work to build.
 export async function pptxAssets(deck: Deck): Promise<PptxAssets> {
   const assets: PptxAssets = { ...await brandRasters(), dotGrids: new Map() };
-  for (const slide of deck.slides || []) {
-    const a = dotGridOpacity(slide);
-    if (a && !assets.dotGrids.has(a)) assets.dotGrids.set(a, await cachedDotGridPng(a));
-  }
+  const opacities = new Set((deck.slides || []).map(dotGridOpacity).filter((a) => a > 0));
+  const K = opacities.size > MAX_SHARP_DOT_GRIDS ? 1 : 2;
+  for (const a of opacities) assets.dotGrids.set(a, await cachedDotGridPng(a, K));
   return assets;
 }
-// The dot grid's opacity, in steps of 0.05: each distinct opacity is a 2400 × 1350 PNG to draw
+// The dot grid's opacity, in steps of 0.05: each distinct opacity is a full-slide PNG to draw
 // and embed, so a deck can't make the export draw more than 20.
 export function dotGridOpacity(slide: Slide | null | undefined): number {
   const a = Number(slide?.background?.dotGrid);

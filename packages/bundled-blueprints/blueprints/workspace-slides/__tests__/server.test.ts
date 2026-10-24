@@ -84,6 +84,14 @@ async function sha(value: string): Promise<string> {
   return [...digest.subarray(0, 16)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+// The start of a PNG of the given size: as far as the header.
+function pngHeader(w: number, h: number): string {
+  const b = new Uint8Array(24);
+  b.set([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82]);
+  new DataView(b.buffer).setUint32(16, w);
+  new DataView(b.buffer).setUint32(20, h);
+  return "data:image/png;base64," + Buffer.from(b).toString("base64");
+}
 const PNG_1x1 = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 const bigImage = () => PNG_1x1 + "A".repeat(4096);
 
@@ -296,6 +304,8 @@ describe("limits and no-op edits", () => {
     await gadget.removeSlide("missing");
     await gadget.moveSlide(cover!.id, 0);
     await gadget.reorderBlock(cover!.id, cover!.blocks[0]!.id, 0);
+    const first = cover!.blocks[0]!;
+    await gadget.updateBlock(cover!.id, first.id, { x: first.x, y: first.y, props: first.props });
     expect((await gadget.getDeck()).rev).toBe(rev);
     // Redo still brings the block back.
     expect(await gadget.getUndoState()).toEqual({ canUndo: false, canRedo: true });
@@ -625,6 +635,9 @@ describe("SVG rasters", () => {
     expect(await gadget.saveSvgRaster(key, "data:image/jpeg;base64,AAAA")).toBe(false);
     expect(await gadget.saveSvgRaster(key, 42 as unknown as string)).toBe(false);
     expect(await gadget.saveSvgRaster(key, "data:image/png;base64," + "A".repeat(6 * 1024 * 1024))).toBe(false);
+    // Not a PNG, or larger than an editor draws one.
+    expect(await gadget.saveSvgRaster(key, "data:image/png;base64,AAAA")).toBe(false);
+    expect(await gadget.saveSvgRaster(key, pngHeader(4000, 10))).toBe(false);
     expect(storage.data.has("rasters")).toBe(false);
     expect(await gadget.saveSvgRaster(key, PNG_1x1)).toBe(true);
     expect(await gadget.getSvgRasters([key, "f".repeat(32)])).toEqual({ [key]: PNG_1x1 });
