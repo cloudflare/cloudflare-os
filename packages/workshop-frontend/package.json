@@ -36,7 +36,7 @@
     "@lezer/highlight": "^1.2.5",
     "@phosphor-icons/react": "^2.1.10",
     "@tailwindcss/vite": "^4.3.3",
-    "@tanstack/react-router": "^1.170.39",
+    "@tanstack/react-router": "^1.170.41",
     "capnweb": "catalog:",
     "hash-wasm": "^4.12.0",
     "motion": "^13.5.1",
@@ -49,7 +49,7 @@
   },
   "devDependencies": {
     "@gadgets/scripts": "workspace:*",
-    "@tanstack/router-plugin": "^1.168.40",
+    "@tanstack/router-plugin": "^1.168.42",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.7",
     "@vitejs/plugin-react": "^5.2.0",
