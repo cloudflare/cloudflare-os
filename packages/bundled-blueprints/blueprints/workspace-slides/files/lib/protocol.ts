@@ -211,7 +211,8 @@ export interface GadgetStub {
   getUndoState(): Promise<UndoState>;
   undo(): Promise<boolean>;
   redo(): Promise<boolean>;
-  getDeck(): Promise<Deck>;
+  /** The deck with big media as asset refs; `refs: true` keeps them refs while a previous-version tab is open. */
+  getDeck(options?: { refs?: boolean }): Promise<Deck>;
   getDeckInlined(): Promise<Deck>;
   getAsset(ref: string): Promise<string | null>;
   missingSvgRasters(keys: string[]): Promise<string[]>;

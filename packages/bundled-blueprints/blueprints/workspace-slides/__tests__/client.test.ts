@@ -115,3 +115,42 @@ it("copied media is pasted as its data, so it survives the source's asset being 
   await settle();
   expect(gadget.addBlock).toHaveBeenCalledWith("s1", expect.objectContaining({ type: "image", props: expect.objectContaining({ src: IMAGE }) }));
 });
+
+it("a slow bullet-list save doesn't redraw over text being typed in another block", async () => {
+  let reply!: (ok: boolean) => void;
+  gadget.updateBlock.mockImplementationOnce(() => new Promise((resolve) => { reply = resolve; }));
+  await select("l1");
+  const row = onStage("l1").querySelector<HTMLElement>(".inline-edit")!;
+  type(row, "late");
+  row.blur();
+  await settle();
+  expect(gadget.updateBlock).toHaveBeenCalledWith("s1", "l1", { props: { text: "late\ntwo" } });
+  await select("t1");
+  const field = onStage("t1").querySelector<HTMLElement>(".inline-edit")!;
+  type(field, "typing");
+  reply(true);
+  await settle();
+  expect(field.isConnected).toBe(true);
+  expect(field.textContent).toBe("typing");
+  field.blur();
+});
+
+it("menu rows work from the keyboard, and their keys don't reach the slide", async () => {
+  const more = button("More");
+  more.click();
+  const rows = [...document.querySelectorAll<HTMLElement>(".pop:not(.closing) .mi")];
+  expect(rows.length).toBeGreaterThan(1);
+  expect(document.activeElement).toBe(rows[0]);
+  const key = (k: string) => {
+    const e = new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true });
+    document.activeElement!.dispatchEvent(e);
+    return e;
+  };
+  expect(key("ArrowDown").defaultPrevented).toBe(true);
+  expect(document.activeElement).toBe(rows[1]);
+  key("End");
+  expect(document.activeElement).toBe(rows.at(-1));
+  key("Escape");
+  expect(document.querySelector(".pop:not(.closing)")).toBeNull();
+  expect(document.activeElement).toBe(more);
+});

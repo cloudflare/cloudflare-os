@@ -99,9 +99,12 @@ function withHighlightColors(slide: Slide): Slide {
 // The deck's PowerPoint file. Cover slides get the orange artwork as a
 // full-slide picture under the inset surface (when on) and the dot grid;
 // every other slide's dot grid is a picture under its blocks. The deck logo
-// goes on top of those, under the blocks, on every slide it shows on.
+// goes on top of those, under the blocks, on every slide it shows on. These
+// pictures are drawn with the slide's first block where it has one, so they
+// don't count against the export's limit on blocks per slide.
 export function deckToSlidesPptx(deck: Deck, assets: PptxAssets): ReadableStream<Uint8Array> {
   const covers = new Map<unknown, { image: ExportBlock; first: Block | undefined; inset: boolean; dots: ExportBlock | null; logo: ExportBlock[] }>();
+  const underFirst = new Map<unknown, ExportBlock[]>();
   const slides = deck.slides.map((source: Slide) => {
     const slide = withHighlightColors(source);
     const dotAlpha = dotGridOpacity(slide);
@@ -116,7 +119,10 @@ export function deckToSlidesPptx(deck: Deck, assets: PptxAssets): ReadableStream
     const logo = deckLogoBlocks(deck.logo, slide, assets);
     if (!slide.background?.coverOrange) {
       const under = dots ? [dots, ...logo] : logo;
-      return under.length ? { ...slide, blocks: [...under, ...slide.blocks] } : slide;
+      if (!under.length) return slide;
+      if (!slide.blocks.length) return { ...slide, blocks: under };
+      underFirst.set(slide.blocks[0], under);
+      return slide;
     }
     const image: ExportBlock = {
       id: "pptx-cover",
@@ -136,7 +142,10 @@ export function deckToSlidesPptx(deck: Deck, assets: PptxAssets): ReadableStream
   });
   return deckToPptx({ ...deck, slides }, (block) => {
     const cover = covers.get(block);
-    if (!cover) return adaptBlockForPptx(block, assets);
+    if (!cover) {
+      const under = underFirst.get(block);
+      return under ? [...under, ...adaptBlockForPptx(block, assets) ?? [block as ExportBlock]] : adaptBlockForPptx(block, assets);
+    }
     const blocks: ExportBlock[] = [cover.image];
     if (cover.inset) blocks.push({
       type: "shape",

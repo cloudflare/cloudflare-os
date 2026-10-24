@@ -164,6 +164,14 @@ describe("Slides PowerPoint export", () => {
     expect([...parts.keys()].filter((n) => n.startsWith("ppt/media/"))).toHaveLength(20);
   }, 30_000);
 
+  it("exports a slide at the 1000-block limit with its dot grid and the deck logo", async () => {
+    const blocks = Array.from({ length: 1000 }, (_, i) => ({ id: `b${i}`, type: "shape", x: i % 1000, y: 300, w: 4, h: 4, props: {} }));
+    const parts = await exportDeck({ logo: { src: PNG_1x1, position: "top-right", onCover: true }, slides: [slide(blocks, { color: "#FFFFFF", inset: false, dotGrid: 0.4 })] });
+    const names = shapes(text(parts, "ppt/slides/slide1.xml")).map(nameOf);
+    expect(names.slice(0, 3)).toEqual(["Block 1 image", "Block 2 image", "Block 3 shape"]);
+    expect(names).toHaveLength(1002);
+  });
+
   it("exports the content-slide brand bar as a native gradient, not a picture", async () => {
     const parts = await exportDeck({ slides: [slide([
       { id: "bar", type: "svg", x: 0, y: 663, w: 1200, h: 12, props: { markup: BRAND_BAR, fit: "stretch" } },

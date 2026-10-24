@@ -355,6 +355,16 @@ describe("block normalization", () => {
     expect((await gadget.getSlide(slideId))!.blocks[0]).toEqual({ id, type: "box", x: 10, y: 20, h: 100, props: { title: "T" } });
   });
 
+  it("keeps a supplied id in addBlocks only when it is unique on the slide", async () => {
+    const { gadget } = await loadGadget();
+    const slideId = await gadget.addSlide(null, { blocks: [{ id: "taken", type: "text", x: 0, y: 0, props: {} }] });
+    const block = (id: string) => ({ id, type: "text", x: 0, y: 0, props: {} });
+    const ids = await gadget.addBlocks(slideId, [block("mine"), block("taken"), block("mine")]);
+    expect(ids[0]).toBe("mine");
+    expect(ids.slice(1)).not.toContain("taken");
+    expect(new Set(["taken", ...ids]).size).toBe(4);
+  });
+
   it("drops non-blocks and re-mints duplicate or missing ids in a block list", async () => {
     const { gadget } = await loadGadget();
     const slideId = await gadget.addSlide(null, {
@@ -586,6 +596,19 @@ describe("a tab of the previous client", () => {
     expect(legacyTab.patches).toEqual([]);
     expect(currentTab.decks).toEqual([]);
     expect(currentTab.patches).toHaveLength(3);
+  });
+});
+
+describe("a tab of the previous client reading the deck", () => {
+  it("gets media inlined while it is connected, unless the caller asks for refs", async () => {
+    const { gadget } = await loadGadget();
+    const [cover] = (await gadget.getDeck()).slides;
+    await gadget.addBlock(cover!.id, { type: "image", x: 0, y: 0, props: { src: bigImage() } });
+    const src = async (options?: { refs?: boolean }) => (await gadget.getDeck(options)).slides[0]!.blocks.at(-1)!.props.src;
+    expect(await src()).toMatch(/^asset:/);
+    await gadget.subscribe(recorder().stub);
+    expect(await src()).toBe(bigImage());
+    expect(await src({ refs: true })).toMatch(/^asset:/);
   });
 });
 

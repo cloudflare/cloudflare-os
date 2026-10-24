@@ -686,8 +686,12 @@ export class Gadget extends DurableObject implements GadgetStub {
 
   // -------- read ----------------------------------------------------------
   // The deck as stored: big media appears as "asset:<hash>" refs (read them
-  // with getAsset). `rev` counts saved changes.
-  async getDeck(): Promise<Deck> {
+  // with getAsset). `rev` counts saved changes. While a tab of the previous
+  // client is open, the media is inlined unless the caller passes
+  // `{ refs: true }` (as this client does): that client reads the deck back
+  // after some edits and can't resolve refs.
+  async getDeck(options?: { refs?: boolean }): Promise<Deck> {
+    if (this.legacySubscribers.size && !(isPlainObject(options) && options.refs === true)) return this.getDeckInlined();
     return this.#deckView();
   }
   // The deck with every asset ref replaced by its data (used for export).
@@ -969,7 +973,9 @@ export class Gadget extends DurableObject implements GadgetStub {
       for (const block of blocks) {
         const b = await this.#prepareBlock(block);
         if (!b) continue;
-        const id = genId();
+        // As in addBlock: a supplied id is kept only if it is unique on the slide.
+        const supplied = b.id;
+        const id = typeof supplied !== "string" || !supplied || next.some((x) => x.id === supplied) ? genId() : supplied;
         next.push({ ...b, id });
         ids.push(id);
       }

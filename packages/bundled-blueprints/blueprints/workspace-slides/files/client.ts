@@ -1846,7 +1846,7 @@ function bindInlineText<E extends HTMLElement>(elem: E, slide: Slide, block: Blo
       if (v === String(raw)) return;
       block.props = { ...block.props || {}, [propKey]: v };
       await api.updateBlock(slide.id, block.id, { props: { [propKey]: v } });
-      render();
+      renderWhenIdle();
     });
     elem.addEventListener("keydown", (e) => {
       e.stopPropagation();
@@ -1987,7 +1987,7 @@ function bindInlineList<E extends HTMLElement>(list: E, slide: Slide, block: Blo
     saved = edited.join("\n");
     const v = [...edited, ...hidden].join("\n");
     block.props = { ...block.props || {}, [propKey]: v };
-    void api.updateBlock(slide.id, block.id, { props: { [propKey]: v } }).then(() => render());
+    void api.updateBlock(slide.id, block.id, { props: { [propKey]: v } }).then(renderWhenIdle);
   };
   list.addEventListener("focusin", () => {
     flushListEdit = save;
@@ -2892,7 +2892,8 @@ button { font: inherit; color: inherit; -webkit-tap-highlight-color: transparent
 @keyframes pop-in { from { opacity: 0; transform: scale(.96); } }
 @keyframes pop-out { to { opacity: 0; transform: scale(.98); } }
 .mi { display: flex; align-items: center; gap: 10px; padding: 6px 10px 6px 7px; border-radius: 7px; cursor: pointer; user-select: none; white-space: nowrap; }
-.mi:hover, .mi.active { background: var(--hover); }
+.mi:hover, .mi.active, .mi:focus-visible { background: var(--hover); }
+.mi:focus { outline: none; }
 .mi.danger:hover, .mi.danger:hover .mi-icon { color: var(--bad); }
 .mi-icon { width: 22px; height: 22px; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; color: var(--muted); }
 .mi-icon svg { display: block; }
@@ -3179,7 +3180,32 @@ function showPop(content: ElChild | ElChild[], rect: DOMRect, { className = "", 
   openPop = { pop, owner, kind, align };
   owner?.classList.add("open");
   placePop(pop, rect, align);
+  if (kind === "menu") wireMenuKeys(pop, owner);
   return pop;
+}
+// Menu rows work from the keyboard: the current (or first) row takes focus,
+// arrows and Home/End move between rows, Enter or Space picks one, and Esc or
+// Tab closes the menu back onto its button. The keys stop here, so they don't
+// also drive the slide. A menu with a search box keeps its own keys, and one
+// opened while text is being edited leaves the focus in that text.
+function wireMenuKeys(pop: HTMLDivElement, owner: HTMLElement | null): void {
+  const rows = () => Array.from(pop.querySelectorAll<HTMLElement>(".mi"));
+  for (const row of rows()) row.tabIndex = -1;
+  if (pop.querySelector("input")) return;
+  pop.addEventListener("keydown", (e) => {
+    const list = rows(), i = list.indexOf(document.activeElement as HTMLElement);
+    const move = (to: number) => list[(to + list.length) % list.length]?.focus();
+    if (e.key === "ArrowDown") move(i + 1);
+    else if (e.key === "ArrowUp") move(i < 0 ? -1 : i - 1);
+    else if (e.key === "Home") move(0);
+    else if (e.key === "End") move(-1);
+    else if ((e.key === "Enter" || e.key === " ") && i >= 0) list[i].click();
+    else if (e.key === "Escape" || e.key === "Tab") { closePop(); owner?.focus(); }
+    else return;
+    e.preventDefault();
+    e.stopPropagation();
+  });
+  if (!isEditingInline()) (pop.querySelector<HTMLElement>(".mi.current") ?? rows()[0])?.focus({ preventScroll: true });
 }
 function placePop(pop: HTMLElement, r: DOMRect, align = "start"): void {
   const m = 8, gap = 6;
@@ -3778,6 +3804,11 @@ function isEditingField(scope: HTMLElement): boolean {
 function isEditingInline(): boolean {
   const a = document.activeElement;
   return a instanceof HTMLElement && a.isContentEditable && !!stageRef.el?.contains(a);
+}
+// Redraws the stage now, or once the text being edited on it loses focus.
+function renderWhenIdle(): void {
+  if (isEditingInline()) stageStale = true;
+  else render();
 }
 
 /* ═════════════════════════ 9. Inspector & fields ═════════════════════════ */
@@ -5891,7 +5922,7 @@ function resync(): Promise<void> {
     resyncing = (async () => {
       syncing = true;
       try {
-        const fresh = await gadget.getDeck();
+        const fresh = await gadget.getDeck({ refs: true });
         await ensureAssets([...fresh?.slides || [], ...logoMedia(fresh?.logo)]);
         syncing = false;
         applySnapshot(fresh);
@@ -6096,7 +6127,7 @@ async function connect(): Promise<void> {
         await gadget.subscribe(sub, { patches: true });
         subscription = sub;
       }
-      const fresh = await gadget.getDeck();
+      const fresh = await gadget.getDeck({ refs: true });
       await ensureAssets([...fresh?.slides || [], ...logoMedia(fresh?.logo)]);
       try {
         const u = await gadget.getUndoState();
