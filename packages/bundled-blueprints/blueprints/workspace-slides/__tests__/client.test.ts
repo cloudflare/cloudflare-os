@@ -89,6 +89,21 @@ describe("in-place edits are saved before a command acts on the block", () => {
     ]);
   });
 
+  it("Duplicate copies the text being typed in Format", async () => {
+    await select("t1");
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await settle();
+    const field = document.querySelector<HTMLTextAreaElement>(".insp-scroll textarea")!;
+    field.focus();
+    field.value = "from format";
+    button("Duplicate").click();
+    await settle();
+    expect(calls(gadget.updateBlock, gadget.addBlock)).toEqual([
+      ["s1", "t1", { props: { text: "from format" } }],
+      ["s1", expect.objectContaining({ type: "text", props: expect.objectContaining({ text: "from format" }) })],
+    ]);
+  });
+
   it("Bring forward saves the text being typed", async () => {
     await select("t1");
     type(onStage("t1").querySelector<HTMLElement>(".inline-edit")!, "newer");

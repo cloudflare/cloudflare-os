@@ -4121,7 +4121,9 @@ var flushListEdit: (() => void) | null = null;
 // Finish any in-place text edit first, so its typing is saved, not lost.
 function commitInlineEdit() {
   const a = document.activeElement;
-  if (a instanceof HTMLElement && a.isContentEditable) a.blur();
+  // In-place text and Format text fields save when they're left. (Clicking a
+  // bar button keeps focus where it is, so a command leaves them here.)
+  if (a instanceof HTMLElement && (a.isContentEditable || (a.matches("input[type=text], textarea") && shellRef.inspectorBody?.contains(a)))) a.blur();
   flushListEdit?.();
 }
 // Set an action's prop on every selected block it applies to (one save, one
