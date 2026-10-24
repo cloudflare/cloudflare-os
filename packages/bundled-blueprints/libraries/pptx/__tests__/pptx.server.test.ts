@@ -1328,6 +1328,15 @@ describe("PPTX SVG pictures", () => {
     expect(stored).not.toMatch(/tracker|javascript/);
   });
 
+  // An icon-heavy deck: every distinct SVG adds its own part.
+  it("exports hundreds of distinct SVG pictures", async () => {
+    const png = dataUrl("png", pngFixture(4, 2));
+    const icons = Array.from({length: 300}, (_, i) =>
+      block("image", {src: png, svgMarkup: `<svg viewBox="0 0 40 20"><rect width="${i % 40}" height="${Math.floor(i / 40)}"/></svg>`}, {w: 40, h: 20}));
+    const zip = await readZip(deckToPptx(oneSlide(icons)));
+    expect([...zip.names].filter(name => name.endsWith(".svg"))).toHaveLength(300);
+  });
+
   it("disarms animations that would write a link", async () => {
     const png = dataUrl("png", pngFixture(4, 2));
     const animated = '<svg viewBox="0 0 40 20"><a><set attributeName="href" to="https://x.example/"/>' +

@@ -242,7 +242,9 @@ const MAX_TOTAL_HIGHLIGHT_TRANSITIONS = 32768;
 const TEXT_CHUNK_SIZE = 64 * 1024;
 // The deck's own data-URL strings stay alive alongside the decoded bytes for the whole export, so
 // the aggregate budgets are set for both to fit comfortably inside a Worker's 128 MiB heap.
-const MAX_MEDIA_COUNT = 256;
+// Each SVG picture is two parts (the SVG and its PNG stand-in); the byte and pixel budgets below
+// are what bound memory.
+const MAX_MEDIA_COUNT = 1024;
 const MAX_MEDIA_ENCODED_BYTES = 24 * 1024 * 1024;
 const MAX_TOTAL_MEDIA_ENCODED_BYTES = 48 * 1024 * 1024;
 const MAX_MEDIA_DECODED_BYTES = 16 * 1024 * 1024;

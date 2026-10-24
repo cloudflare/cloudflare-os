@@ -3397,7 +3397,7 @@ function deckLogoSettings(): HTMLDivElement {
     const stored = await api.setLogo(patch);
     // (A failed call re-reads the deck, which puts the logo right.)
     if (stored || !patch || patch.src === "") deck = { ...deck, logo: stored };
-    render();
+    renderWhenIdle();
     renderSlideList();
     if (section.isConnected) section.replaceWith(deckLogoSettings());
   };
