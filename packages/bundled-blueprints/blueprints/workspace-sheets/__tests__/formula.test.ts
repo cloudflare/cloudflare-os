@@ -169,6 +169,12 @@ describe("reference scanning", () => {
 });
 
 describe("evaluation", () => {
+  // Past a few hundred levels the engine suspends a chain and resumes it; COUNT mustn't treat that as a skipped argument.
+  it("counts a reference at the end of a long chain", () => {
+    const cells: Record<string, unknown> = { A1: 1, B1: "=COUNT(A500)" };
+    for (let r = 2; r <= 500; r++) cells["A" + r] = `=A${r - 1}+1`;
+    expect(makeEngine(workbook(cells)).computeRef("s1", "B1")).toBe(1);
+  });
   it("reports cycles, and keeps evaluating a long chain without overflowing the stack", () => {
     const cells: Record<string, unknown> = { A1: "=A1+1", B1: 1 };
     for (let r = 2; r <= 5000; r++) cells["B" + r] = `=B${r - 1}+1`;

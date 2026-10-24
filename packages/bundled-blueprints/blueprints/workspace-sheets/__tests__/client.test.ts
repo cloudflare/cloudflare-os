@@ -345,3 +345,48 @@ describe("menus", () => {
     expect(document.querySelector(".pop.fmt-menu:not(.closing)")).toBeNull();
   });
 });
+
+describe("a refused row insert", () => {
+  it("discards the references it rewrote on other sheets", async () => {
+    const one = sheet("s1"), two = { ...sheet("s2"), name: "Other" };
+    const book = { title: "Book", sheetOrder: ["s1", "s2"], sheets: { s1: one, s2: two } };
+    const cells = { s1: { A1: cell("1") }, s2: { A1: cell("=Sheet1!A1") } };
+    const h = await loadClient(one);
+    h.gadget.openDocument.mockImplementation(async (): Promise<OpenedDocument> => ({ revision: 3, lastModified: 0, ...book, cells, cursors: {} }));
+    // Someone else's edit lands first, so the insert's save is refused and the workbook reloads.
+    let refused: Operation | null = null;
+    h.gadget.applyOperation.mockImplementation(async (op: Operation): Promise<OperationResult> => {
+      if (!refused && op.sheetReplacements?.length) { refused = op; return { status: "conflict", revision: 3, conflicts: [], staleRevision: true }; }
+      return { status: "applied", revision: 4, conflicts: [] };
+    });
+    h.callbacks.operation({ type: "operation", senderId: "someone-else", revision: 2, structure: book, upserts: [{ sheetId: "s2", ref: "A1", cell: cell("=Sheet1!A1") }], deletes: [], lastModified: 0 });
+    await settle();
+    document.querySelector<HTMLElement>('td.cell[data-ref="A1"]')!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    [...document.querySelectorAll<HTMLElement>(".mi")].find((row) => row.textContent?.includes("Insert row above"))!.click();
+    await settle(); await settle();
+    expect(refused!.cellOps).toEqual([expect.objectContaining({ sheetId: "s2", value: "=Sheet1!A2" })]);
+    const sent = h.gadget.applyOperation.mock.calls.map(([op]) => op as Operation).filter((op) => op !== refused).flatMap((op) => op.cellOps ?? []);
+    expect(sent.filter((op) => op.sheetId === "s2")).toEqual([]);
+  });
+});
+
+describe("pivot tables", () => {
+  it("leave blank values out of an average", async () => {
+    const source = sheet("s1"), pivot: SheetMeta = { ...sheet("p1"), name: "Pivot", pivot: {
+      sourceSheetId: "s1", sourceRange: "A1:B3", rowField: "Region", columnField: "", valueField: "Amount", aggregate: "average",
+      showRowTotals: true, showColumnTotals: true, filterField: "", filterValues: [],
+    } };
+    const book = { title: "Book", sheetOrder: ["s1", "p1"], sheets: { s1: source, p1: pivot } };
+    const h = await loadClient(source);
+    // Region North: one amount of 10, one blank.
+    h.callbacks.operation({ type: "operation", senderId: "someone-else", revision: 2, structure: book, lastModified: 0, deletes: [], upserts: [
+      { sheetId: "s1", ref: "A1", cell: cell("Region") }, { sheetId: "s1", ref: "B1", cell: cell("Amount") },
+      { sheetId: "s1", ref: "A2", cell: cell("North") }, { sheetId: "s1", ref: "B2", cell: cell("10") }, { sheetId: "s1", ref: "A3", cell: cell("North") },
+    ] });
+    await settle(); await settle();
+    const replaced = h.gadget.applyOperation.mock.calls.flatMap(([op]) => (op as Operation).sheetReplacements ?? []).find((r) => r.sheetId === "p1");
+    const values = Object.values((replaced as { cells: CellMap }).cells).map((c) => c.value);
+    expect(values).toContain("10");
+    expect(values).not.toContain("5");
+  });
+});

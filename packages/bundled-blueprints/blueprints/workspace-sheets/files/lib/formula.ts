@@ -1033,7 +1033,7 @@ export const FUNCTIONS: Record<string, FormulaFunction> = (() => {
     for (const node of a) {
       if (node.k === "missing") { count++; continue; } // as Excel's 0
       let v: Value;
-      try { v = H.evalNode(node, c); } catch (e) { continue; }
+      try { v = H.evalNode(node, c); } catch (e) { if (!isErr(e)) throw e; continue; }
       if (isMatrix(v)) { for (let i = 0; i < v.rows; i++) for (let j = 0; j < v.cols; j++) if (typeof v.get(i, j) === "number") count++; }
       else if (unwrapParens(node).k === "ref") { if (typeof v === "number") count++; }
       else if (typeof v === "number" || typeof v === "boolean") count++;

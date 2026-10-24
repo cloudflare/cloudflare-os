@@ -767,8 +767,9 @@ export class Gadget extends DurableObject<unknown, unknown> {
   }
 
   setCell({ sheet, ref, value, fmt }: { sheet?: string; ref?: string; value?: CellSpec; fmt?: FmtPatch | null } = {}): Promise<AgentWriteResult> {
-    // An object `value` is a `{ value, fmt }` spec of its own, passed on as setCells reads it.
-    const spec = fmt === undefined && (value === null || typeof value !== "object") ? value as CellSpec : { value, fmt } as CellSpec;
+    // An object `value` is a `{ value, fmt }` spec of its own, passed on as setCells reads it
+    // (with `fmt`, if given, in place of its own).
+    const spec = (value !== null && typeof value === "object" ? (fmt === undefined ? value : { ...value, fmt }) : fmt === undefined ? value : { value, fmt }) as CellSpec;
     return this.setCells({ sheet, cells: { [String(ref)]: spec } });
   }
 

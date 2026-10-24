@@ -50,6 +50,14 @@ async function values(gadget: Gadget, range: string, sheet?: string): Promise<st
 }
 
 describe("agent cell API", () => {
+  it("takes a { value, fmt } spec as setCell's value, as setCells does", async () => {
+    const gadget = newGadget();
+    await gadget.setCell({ ref: "A1", value: { value: 42, fmt: { b: true } } });
+    await gadget.setCell({ ref: "B1", value: { value: 7, fmt: { b: true } }, fmt: { i: true } });
+    const read = await gadget.readRange({ range: "A1:B1", formats: true });
+    expect(read.values).toEqual([["42", "7"]]);
+    expect(read.formats).toEqual([[{ b: true }, { i: true }]]);
+  });
   it("reads, writes and formats cells, bumping versions only on real changes", async () => {
     const gadget = newGadget();
     expect(await gadget.setCells({ cells: { A1: "Revenue", B2: 42, C3: "=SUM(B1:B9)", D4: true } })).toMatchObject({ status: "applied", revision: 1, updated: 4, cleared: 0 });

@@ -1492,8 +1492,12 @@ function holdEvents() {
   if (ready) replayFloor = model.revision;
   ready = false;
 }
-/** A local cell edit waiting to be saved; `baseVersion` unset means "the cell's version when sent". */
-interface PendingCellOp { sheetId: string; ref: string; value: string | null; fmt: CellFmt | null; baseVersion?: number }
+/**
+ * A local cell edit waiting to be saved; `baseVersion` unset means "the cell's version when sent".
+ * `layout`: a reference rewrite on another sheet that belongs to a pending row or column change,
+ * and is discarded with it if that change is refused.
+ */
+interface PendingCellOp { sheetId: string; ref: string; value: string | null; fmt: CellFmt | null; baseVersion?: number; layout?: true }
 /** A whole-workbook structure snapshot, with the revision it was built on. */
 type StructureSnapshot = Structure & { revision: number };
 const pendingCellOps = new Map<string, PendingCellOp>();
@@ -1515,8 +1519,8 @@ let ackedStructure: Structure | null = null;
 let ackedStructureRevision = -1;
 let inFlightStructure: StructureSnapshot | null = null; // structure sent in the save awaiting its response
 
-function queueCellOp(sheetId: string, ref: string, value: string | null, fmt: CellFmt | null, baseVersion?: number) {
-  pendingCellOps.set(sheetId + "!" + ref, { sheetId, ref, value, fmt, baseVersion });
+function queueCellOp(sheetId: string, ref: string, value: string | null, fmt: CellFmt | null, baseVersion?: number, layout = false) {
+  pendingCellOps.set(sheetId + "!" + ref, { sheetId, ref, value, fmt, baseVersion, ...(layout ? { layout: true as const } : {}) });
   noteEditedCell(sheetId, ref);
   scheduleSave();
 }
@@ -1547,6 +1551,13 @@ function copyCellMap(cells: CellMap): CellMap {
 }
 function dropCellOpsFor(sheetId: string) {
   for (const [key, op] of pendingCellOps) if (op.sheetId === sheetId) pendingCellOps.delete(key);
+}
+// Forgets refused sheet replacements, with every edit that depends on their layout: edits on
+// those sheets, and the reference rewrites they made on others. Other edits stay queued.
+function dropPendingLayouts() {
+  for (const sheetId of pendingReplacements.keys()) dropCellOpsFor(sheetId);
+  for (const [key, op] of pendingCellOps) if (op.layout) pendingCellOps.delete(key);
+  pendingReplacements.clear();
 }
 // Cells read from the server for a sheet, with this tab's unsaved edits laid back on top.
 function layPendingCellOps(sheetId: string, cells: CellMap) {
@@ -1760,9 +1771,8 @@ async function sendPendingOperation(): Promise<"saved" | "retry" | "conflict"> {
       wholesaleBaseRevision = null;
       // A cell op queued after a replacement is keyed by the layout the replacement built, which
       // the server may not have. Losing an edit after a failed save is something the user sees
-      // and can redo; writing into the wrong cell isn't. Ops on other sheets stay queued.
-      for (const sheetId of pendingReplacements.keys()) dropCellOpsFor(sheetId);
-      pendingReplacements.clear();
+      // and can redo; writing into the wrong cell isn't.
+      dropPendingLayouts();
       applySnapshot(doc, true);
       noteReloadedAfterFailure();
     });
@@ -1826,8 +1836,7 @@ async function sendPendingOperation(): Promise<"saved" | "retry" | "conflict"> {
     const newerStructure = pendingStructure && pendingStructure !== sentStructure ? localStructureChanges(pendingStructure) : null;
     const rejectedLayoutSheets = new Set(pendingReplacements.keys());
     await reloadHoldingEvents((doc) => {
-      for (const [sheetId] of pendingReplacements) dropCellOpsFor(sheetId);
-      pendingReplacements.clear(); pendingStructure = null; wholesaleBaseRevision = null;
+      dropPendingLayouts(); pendingStructure = null; wholesaleBaseRevision = null;
       applySnapshot(doc, true);
       noteReloadedAfterFailure();
     });
@@ -1853,7 +1862,11 @@ async function sendPendingOperation(): Promise<"saved" | "retry" | "conflict"> {
   for (const [key, op] of sentCellOps) if (pendingCellOps.get(key) === op) pendingCellOps.delete(key);
   if (pendingStructure === sentStructure) pendingStructure = null;
   for (const [sheetId, cells] of sentReplacements) if (pendingReplacements.get(sheetId) === cells) pendingReplacements.delete(sheetId);
-  if (pendingStructure === null && pendingReplacements.size === 0) wholesaleBaseRevision = null;
+  if (pendingStructure === null && pendingReplacements.size === 0) {
+    wholesaleBaseRevision = null;
+    // The layout they belong to has landed, so they are ordinary edits now.
+    for (const op of pendingCellOps.values()) delete op.layout;
+  }
 
   model.revision = Math.max(model.revision, result.revision || 0);
   // A late reply mustn't replace a newer structure already received from someone else.
@@ -2227,7 +2240,7 @@ function rewriteFormulasByMap(rows: boolean, map: LineMap) {
       const next = remapFormulaLines(cell.value, { rows, map, sheetName, ownSheet: own });
       if (next === cell.value) continue;
       cell.value = next;
-      if (!own) queueCellOp(sheetId, ref, next, cell.fmt, cell.version || 0);
+      if (!own) queueCellOp(sheetId, ref, next, cell.fmt, cell.version || 0, true);
     }
   }
 }
@@ -2527,9 +2540,11 @@ const MAX_FILTER_SELECTIONS = 500; // mirrors the server's bound on filter and p
 interface AggregateState { sum: number; count: number; numericCount: number; min: number; max: number }
 function aggregateState(): AggregateState { return { sum: 0, count: 0, numericCount: 0, min: Infinity, max: -Infinity }; }
 function addAggregate(state: AggregateState, value: Scalar) {
-  if (value != null && value !== "" && !isErr(value)) state.count++;
+  // A blank isn't a value: it counts as nothing, not as 0.
+  if (value == null || value === "" || isErr(value)) return;
+  state.count++;
   const number = typeof value === "number" ? value : Number(value);
-  if (Number.isFinite(number) && value !== "") { state.sum += number; state.numericCount++; state.min = Math.min(state.min, number); state.max = Math.max(state.max, number); }
+  if (Number.isFinite(number)) { state.sum += number; state.numericCount++; state.min = Math.min(state.min, number); state.max = Math.max(state.max, number); }
 }
 function finishAggregate(state: AggregateState, kind: PivotAggregate): number {
   if (kind === "count") return state.count;
