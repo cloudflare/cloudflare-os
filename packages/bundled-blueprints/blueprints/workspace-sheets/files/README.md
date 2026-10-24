@@ -46,7 +46,7 @@ Every write runs in the Durable Object's mutation queue, bumps versions only for
 | `readRange({ sheet?, range?, formats? })` | `{ revision, sheetId, sheet, range, values: [[…]], formats? }`; empty cells read as `""`. No range reads the used range. At most 50,000 cells per call. |
 | `setCells({ sheet?, cells })` | `cells` maps refs to values: `{ A1: "Revenue", B2: 42, C3: "=SUM(B1:B9)", D4: null, E5: { value?, fmt? } }`. A plain value keeps the cell's format; `null` clears the cell; `fmt` merges into the existing format (a key set to `null` removes it; `fmt: null` removes all formatting). |
 | `setCell({ sheet?, ref, value, fmt? })` | One cell, same rules. |
-| `setRange({ sheet?, start = "A1", values: [[…], …], fmt? })` | A rectangular block; `undefined` entries are skipped; `fmt` merges into every written cell. |
+| `setRange({ sheet?, start = "A1", values: [[…], …], fmt? })` | A rectangular block; `undefined` entries are skipped; `fmt` merges into every written cell (`null` clears their formatting). |
 | `formatRange({ sheet?, range, fmt })` | Merges `fmt` into every cell (`fmt: null` clears formatting). At most 50,000 cells. |
 | `clearRange({ sheet?, range, formats = false })` | Clears values; formatting stays unless `formats: true`. Any size. |
 | `insertRows({ sheet?, at, count = 1 })` / `deleteRows(…)` | Inserts before row `at`. As in the grid, formula references from every sheet move, references into deleted lines become `#REF!`, ranges shrink, and chart ranges, pivot sources, the filter and row heights follow. A sheet keeps at least one row. |
@@ -57,7 +57,7 @@ Every write runs in the Durable Object's mutation queue, bumps versions only for
 | `addChart({ sheet?, range, type = "line", title?, xAxisTitle?, yAxisTitle?, legend?, firstRowHeaders?, firstColLabels?, x?, y?, width?, height? })` | Returns `{ chartId }`. `type` is `line`, `pie`, `area` or `stackedBar`. `legend`, `firstRowHeaders` and `firstColLabels` default to true. Size is clamped to 280–1200 × 200–900 px (default 520 × 320). Without `x`/`y` it's placed beside the data, past any filled columns next to it, or under it when there's no room. At most 50 charts per sheet. |
 | `setColumnWidths({ sheet?, widths: { A: 180, C: 120 } })` | In px, 24–2000; `null` resets a column to the default (92). |
 
-There is no agent API for filters, pivot tables, row heights or deleting charts; those are edited in the grid (or through the structure snapshot of the low-level `applyOperation`, which the client uses).
+There is no agent API for filters, pivot tables, row heights or deleting charts; those are edited in the grid (or through the structure snapshot of the low-level `applyOperation`, which the client uses). A pivot table's cells are recalculated by an open grid, so after a change to its source data, an export taken before anyone opens the workbook has the earlier totals.
 
 **Formats** (`fmt`):
 

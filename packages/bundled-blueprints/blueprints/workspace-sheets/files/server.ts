@@ -774,7 +774,7 @@ export class Gadget extends DurableObject<unknown, unknown> {
   }
 
   // A rectangular block of values (rows of cells) starting at `start`.
-  // `fmt`, if given, is merged into every written cell.
+  // `fmt`, if given, is merged into every written cell; `null` clears their formatting.
   setRange({ sheet, start = "A1", values = [], fmt }: { sheet?: string; start?: string; values?: unknown[]; fmt?: FmtPatch | null } = {}): Promise<AgentWriteResult> {
     const origin = parseCellRef(start);
     if (!origin) throw new Error(`Bad start cell: ${start}`);
@@ -786,7 +786,7 @@ export class Gadget extends DurableObject<unknown, unknown> {
           const ref = colLetters(origin.c + dc) + (origin.r + dr + 1);
           const cur = read(ref);
           if (value === undefined) return;
-          write(ref, { value: value ?? "", fmt: fmt ? mergeFmt(cur?.fmt, fmt) : cur?.fmt ?? null });
+          write(ref, { value: value ?? "", fmt: fmt === undefined ? cur?.fmt ?? null : fmt === null ? null : mergeFmt(cur?.fmt, fmt) });
         });
       });
     });

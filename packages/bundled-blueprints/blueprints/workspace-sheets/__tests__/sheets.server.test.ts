@@ -104,6 +104,11 @@ describe("agent cell API", () => {
     expect((await gadget.readRange({ range: "Y99", formats: true })).formats).toEqual([[{ a: "r" }]]);
     expect(await gadget.clearRange({ range: "Y99:AA100", formats: true })).toMatchObject({ updated: 0, cleared: 5 });
 
+    await gadget.setRange({ values: [[1]], fmt: { b: true, nf: "currency" } });
+    await gadget.setRange({ values: [[2]], fmt: null });
+    expect((await gadget.readRange({ range: "A1", formats: true })).formats).toEqual([[null]]);
+    await gadget.clearRange({ range: "A1" });
+
     // A huge area visits only the cells in it.
     await gadget.setCells({ cells: { C40000: "x", D2: "y" } });
     expect(await gadget.clearRange({ range: "A1000:Z50000", formats: true })).toMatchObject({ cleared: 1 });
