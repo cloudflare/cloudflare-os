@@ -105,7 +105,9 @@ All methods are on the binding's `.rpc` stub. Generated ids are 8-character stri
 - `getSlide(slideId)` → the slide `{ id, background, blocks }` with every
   prop (big media as `"asset:<hash>"` refs, read with `getAsset`), or `null`
 - `getDeck()` → `{ themeVersion, rev, slides, logo }`; big media appears as
-  `"asset:<hash>"` refs. `getDeckInlined()` is the same with refs replaced
+  `"asset:<hash>"` refs (while an editor of the previous version is open,
+  it inlines them unless called as `getDeck({ refs: true })`).
+  `getDeckInlined()` is the same with refs replaced
   by their data; `getAsset(ref)` → one asset's data, or `null`.
 - `getUndoState()` → `{ canUndo, canRedo }`
 

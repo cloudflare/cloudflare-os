@@ -6100,9 +6100,12 @@ function applySnapshot(fresh: Deck | null | undefined): void {
     const s = currentSlide();
     setSelection(s ? s.blocks.filter((b) => selection.has(b.id)).map((b) => b.id) : []);
   }
-  render();
+  // As for a patch: text being typed (saved on blur) or a drag keeps its stage.
+  if (isEditingInline() || shellRef.root?.classList.contains("dragging")) stageStale = true;
+  else render();
   renderSlideList();
-  renderInspector();
+  if (shellRef.inspectorBody && isEditingField(shellRef.inspectorBody)) inspectorStale = true;
+  else renderInspector();
   updateCounter();
   scheduleSvgRasters();
 }
@@ -6151,7 +6154,8 @@ async function rasterizeSvg(raw: string): Promise<string | null> {
     if (/^data:/i.test(raw)) {
       const comma = raw.indexOf(",");
       const head = raw.slice(0, comma), body = raw.slice(comma + 1);
-      markup = /;base64/i.test(head) ? new TextDecoder().decode(Uint8Array.from(atob(body), (c) => c.charCodeAt(0))) : decodeURIComponent(body);
+      // (A bare %, as in width="100%", is taken as itself.)
+      markup = /;base64/i.test(head) ? new TextDecoder().decode(Uint8Array.from(atob(body), (c) => c.charCodeAt(0))) : decodeURIComponent(body.replace(/%(?![0-9a-f]{2})/gi, "%25"));
     }
     const node = parseSvgMarkup(markup);
     if (!node) return null;

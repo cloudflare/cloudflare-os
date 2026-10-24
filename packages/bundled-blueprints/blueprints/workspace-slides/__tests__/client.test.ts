@@ -172,6 +172,20 @@ it("leaves Enter to a focused toolbar button while a block is selected", async (
 });
 
 describe("in-place text", () => {
+  // A reconnect brings a fresh snapshot; the text being typed stays, and is saved on blur.
+  it("keeps the text being typed through a reconnect", async () => {
+    await select("t1");
+    const field = onStage("t1").querySelector<HTMLElement>(".inline-edit")!;
+    type(field, "draft");
+    (subscriber as unknown as Disposable)[Symbol.dispose]();
+    await vi.waitFor(() => expect(gadget.getDeck).toHaveBeenCalled());
+    await settle();
+    expect(field.isConnected).toBe(true);
+    field.blur();
+    await settle();
+    expect(gadget.updateBlock).toHaveBeenCalledWith("s1", "t1", { props: { text: "draft" } });
+  });
+
   // A Format field's save finishing while slide text is being typed redraws around the field.
   it("keeps a field being typed in when a Format save finishes", async () => {
     await select("t1");
