@@ -978,8 +978,8 @@ var COMPONENTS: Record<string, ComponentDef> = {
     resizableH: true,
     fields: [
       // Custom field type — implemented in renderField(). Renders a
-      // preview + upload button + URL input + clear, and writes the
-      // resulting data: URL (or external URL) into `src`.
+      // preview + upload button + data: URI input + clear, and writes the
+      // resulting data: URL into `src`.
       { key: "src", label: "Source", type: "image" },
       {
         key: "fit",
@@ -4867,7 +4867,8 @@ function imageField(label: string, stored: PropValue, cb: (value: string) => unk
   const shownUrl = value && value.startsWith("data:") ? "" : value;
   const urlInput = el("input", {
     type: "text",
-    placeholder: "or paste an image URL / data URI",
+    // Outside images can't load in the gadget frame: only data: URIs show.
+    placeholder: "or paste an image or a data: URI",
     value: shownUrl,
     class: "field-input",
     onblur: (e) => {
