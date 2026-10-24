@@ -63,6 +63,13 @@ export type GatekeeperRecord = {
   bindings?: Record<string, BindingRecord>;
 
   /**
+   * Set once the Workshop tracks this connection's observations itself (see observer-ledger.ts):
+   * created advertising ResourceDescription.supportsObserverTracking, or its history imported
+   * when it began advertising it. Never cleared.
+   */
+  observerTracking?: true;
+
+  /**
    * OBSOLETE: Before we had support for multiple gadgets per workspace, the binding name and
    * blueprint annotation information lived on the GatekeeperRecord. These properties continue
    * to be declared only to support migrating them away. The version 0 -> 1 migration copies
@@ -72,6 +79,16 @@ export type GatekeeperRecord = {
   bindingName?: string;
   blueprintAnnotation?: StoredBlueprintBindingAnnotation;
 };
+
+/**
+ * The vendor a connection belongs to, as its creationSpec names it (case preserved, as account
+ * selection and the User DO's getVerifier() expect it). Undefined for vendorless records
+ * (aiModel/agentSpawner) and legacy ones with no creationSpec.
+ */
+export function connectionVendorId(record: GatekeeperRecord | undefined): string | undefined {
+  let spec = record?.creationSpec;
+  return spec && "vendorId" in spec ? spec.vendorId : undefined;
+}
 
 /**
  * A stored blueprint annotation. Those written while the UI still offered an exclusion control
@@ -405,7 +422,9 @@ export type GatekeeperCaller = {
   /**
    * Which gadget made the call. Optional for backward compatibility: callers embedded in
    * ActionRecords persisted before multi-gadget support have no gadgetId. `defaultGadgetId`
-   * should be assumed when `gadgetId` is absent.
+   * should be assumed when `gadgetId` is absent -- except by observer tracking, which refuses
+   * such a caller (see observerContextOf): the default gadget can change, and attribution must
+   * not.
    */
   gadgetId?: WorkpieceId;
 } | {
@@ -449,6 +468,16 @@ export type ActionRecord = {
   autoApproved?: boolean;         // set when applied by an auto-approval rule rather than a human
 } | {
   type: "observation";
+
+  /**
+   * `subresources` is kept only on observations through a connection the Workshop tracks itself
+   * (and on the history it imported when tracking began): the Workshop writes the validated list
+   * and strips the field from every other observation. Kept, it makes the record an observer
+   * requirement, attributed by `caller` (see observerContextOf and
+   * ObserverLedger.requiredSubresources). Nothing else stores requirements, which is why the
+   * action log is append-only: deleting such a record would silently drop checks while its
+   * connection still exists.
+   */
   description: ObservationDescription;
 } | {
   type: "bindHook";
@@ -1092,13 +1121,54 @@ export type ObserverRecord = {
   observerId: string;
 
   /**
-   * The account the user chose to satisfy each in-scope gatekeeper binding, remembered so they are
-   * not asked again. Keyed by gatekeeper id (GatekeeperRecord.id). The accountId refers to a
-   * ConnectedAccountRecord in THIS user's own User DO. An entry records only that choice -- it
-   * asserts nothing about whether the gatekeeper still admits them, which every open re-checks.
+   * The account the user chose for each connection, remembered so they are not asked again.
+   * Keyed by GatekeeperRecord.id for both protocols; choices for removed connections are ignored.
+   * The accountId refers to a ConnectedAccountRecord in THIS user's own User DO. A choice is not
+   * a permission grant: every open re-checks access.
    */
   accountChoices: { [gatekeeperId: number]: number };
 };
+
+/**
+ * What an observer requirement is attached to: the workspace (requirements with no
+ * narrower trusted attribution, which every chat and gadget includes), one chat, or one gadget.
+ */
+export type ObserverContext =
+  | {type: "workspace"}
+  | {type: "chat", chatId: number}
+  | {type: "gadget", gadgetId: WorkpieceId};
+
+/**
+ * The context an observation by `caller` is attributed to: its trusted binding authorizer's chat
+ * or gadget, or the workspace for hooks and a user acting outside any chat. Undefined for gadget
+ * callers persisted without a gadgetId; a hook's bookkeeping gadgetId is not trusted attribution.
+ *
+ * The actions `byObserverContext` index stores this mapping's result when each record is written,
+ * so changing an existing attributed mapping requires reindexing its observations keeping
+ * `subresources`. Hooks previously could not record requirements, so adding them needs no reindex.
+ */
+export function observerContextOf(caller: GatekeeperCaller): ObserverContext | undefined {
+  switch (caller.from) {
+    case "agent": return {type: "chat", chatId: caller.chatId};
+    case "user":
+      return caller.chatId !== undefined ? {type: "chat", chatId: caller.chatId} : {type: "workspace"};
+    case "gadget":
+      return caller.gadgetId !== undefined ? {type: "gadget", gadgetId: caller.gadgetId} : undefined;
+    case "hook": return {type: "workspace"};
+  }
+}
+
+/** Leads the observerContextKey() of every gadget context, so they all list under it. */
+export const OBSERVER_GADGET_CONTEXT_PREFIX = "g";
+
+/** Key of the actions `byObserverContext` index. */
+export function observerContextKey(context: ObserverContext): string {
+  switch (context.type) {
+    case "workspace": return "w";
+    case "chat": return `c${keyString(context.chatId)}`;
+    case "gadget": return `${OBSERVER_GADGET_CONTEXT_PREFIX}${keyString(context.gadgetId)}`;
+  }
+}
 
 // =======================================================================================
 // Blueprints
@@ -1353,7 +1423,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       actions: collection<ActionRecord>()({
         primaryKey: "id",
 
-        // All three indexes are backfilled by the version-3 migration.
+        // The first three indexes are backfilled by the version-3 migration; byObserverContext
+        // needs none, since no observation written before it existed carries `subresources`.
         uniqueIndexes: {
           // Resume-replay index (see subscribeToActions): keyed by last state-change time so a
           // reconnect replays only the records changed during the gap.
@@ -1372,6 +1443,15 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
           // read. The "all" filter has no key: it reads the collection itself.
           byHistoryFilter(record: ActionRecord) {
             return record.state === "pending" ? ["pending", record.type] : record.type;
+          },
+
+          // Sparse index over the observer requirements: observations through a real connection
+          // that kept `subresources` (see ActionRecord), keyed by the context their caller
+          // attributes them to, so admission reads only the contexts a role reaches.
+          byObserverContext(record: ActionRecord) {
+            let context = record.type === "observation" && record.gatekeeperId >= 0 &&
+                record.description.subresources ? observerContextOf(record.caller) : undefined;
+            return context ? observerContextKey(context) : null;
           },
         }
       }),

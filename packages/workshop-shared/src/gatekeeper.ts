@@ -321,6 +321,25 @@ export type ResourceDescription = {
   hasSlashCommands?: true;
 
   /**
+   * Opts this resource into kernel-owned observer tracking. When set, the gatekeeper promises:
+   * - `Gatekeeper.getHistoricalSubresources()` is implemented, so the Workshop can import the
+   *   requirements recorded before it opted in;
+   * - every `ObservationDescription` it submits carries `subresources` (`[]` when the read has no
+   *   permission-restricting dependency) and never `excludeObservers`;
+   * - its vendor's `GatekeeperUserVerifier` implements `verifyObserverAccess()`.
+   *
+   * The Workshop then records each observation's subresource IDs against its binding's context
+   * and checks that context's collaborators itself; `addObserver()`/`removeObserver()` are no
+   * longer called for this resource. Absence keeps the legacy protocol. A resource advertising
+   * support when it is connected is tracked from the start; one that starts advertising it later
+   * has its history imported once.
+   * Once tracked, a resource that stops advertising support is refused rather than downgraded.
+   * Pending accountless creations are not tracked and need not advertise this flag; their reads
+   * still undergo normal auditing and workspace policy checks.
+   */
+  supportsObserverTracking?: true;
+
+  /**
    * Some resources implement the ability for the client to subscribe to events. The application
    * implements a "hook", which is a WorkerEntrypoint that implements the TypeScript interface
    * named by `hookTsType` (which must be one of the exports from `getTypescriptTypes()`).
@@ -698,6 +717,10 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
    * account to reach the provider through, though it may still be asked to describe() itself.
    * Creates nothing. The Overseer queues `action` as the creation, which applies before anything
    * else queued on the gatekeeper, through Gatekeeper.applyCreation() once a user approves it.
+   * While creation is pending, reads are audited and enforce normal workspace policy but are not
+   * observer-tracked. After approval, a real connection advertising
+   * `ResourceDescription.supportsObserverTracking` has its history imported once (see
+   * Gatekeeper.getHistoricalSubresources()).
    * Present only on vendors with a `creatable` resource type.
    */
   createResource?(resourceUrlPattern: string, title: string): Promise<{
@@ -947,8 +970,9 @@ export interface GatekeeperUser extends WorkerEntrypoint {
  * Also returned from `GatekeeperUserSelectionExchange.redeem()` for the selected user's eligible
  * accounts with the same vendor.
  *
- * At present, this interface has no methods, because it is merely meant to be passed back to the
- * Gatekeeper that created it.
+ * Its only standard method is the optional `verifyObserverAccess()`, which the overseer calls itself
+ * for resources that opted in to observer tracking. Otherwise it is merely meant to be passed back
+ * to the Gatekeeper that created it.
  *
  * IMPLEMENTATION NOTE: As of this writing, there is no runtime-supported way to "unwrap" a
  * `Fetcher` passed back to its implementer in order to extract the underlying `props`. This will
@@ -958,7 +982,26 @@ export interface GatekeeperUser extends WorkerEntrypoint {
  * back to the same gatekeeper that created it, so they can then call that non-standard method and
  * trust the results.
  */
-export interface GatekeeperUserVerifier extends WorkerEntrypoint {}
+export interface GatekeeperUserVerifier extends WorkerEntrypoint {
+  /**
+   * Verify this account's access to the fully qualified IDs reported in
+   * `ObservationDescription.subresources` (or `getHistoricalSubresources()`). Each ID must
+   * identify its scope unambiguously within this vendor and carry everything needed to check
+   * access using this account, without connection-specific context. IDs are stable in meaning
+   * and must not contain credentials. The Workshop treats them as opaque strings.
+   *
+   * `denied` contains the input IDs this account cannot read now; an empty array grants access
+   * to the entire batch. Throws if access cannot be determined (expired credentials, provider
+   * outage); a throw, malformed result, or non-empty `denied` array is a denial. Called only by
+   * the Workshop for resources that opted in to observer tracking; it must not depend on the
+   * producing gatekeeper's state.
+   *
+   * (The array is wrapped in an object because RPC result types re-map a bare array differently
+   * on each hop, and the Workshop relays verifiers: a verifier returning `string[]` would stop
+   * matching this interface once passed on to `addObserver()` or `applyCreation()`.)
+   */
+  verifyObserverAccess?(subresources: string[]): Promise<{denied: string[]}>;
+}
 
 /** Status of a Git pack stream in its producing gatekeeper. */
 export type GitPullStatus =
@@ -1087,6 +1130,24 @@ export interface Gatekeeper<Session> extends DurableObject {
    * should just ignore the call rather than throw.
    */
   removeObserver(id: string): Promise<void>;
+
+  /**
+   * For a gatekeeper advertising `ResourceDescription.supportsObserverTracking`: every
+   * subresource ID this gatekeeper's past observations still oblige observers to be able to read
+   * -- completed and pending, plus any binding-wide or owner-only requirement it records itself --
+   * in the same fully qualified, verification-complete form as
+   * `ObservationDescription.subresources`. Not an audit log or listing of today's resources.
+   * Each ID must have a JavaScript `length` of 1–512 (UTF-16 code units). The complete historical
+   * export has no ID count cap; the Workshop verifies its IDs in batches of at most 10,000.
+   *
+   * The Workshop calls this once, the first time an existing connection advertises support
+   * (including after a pending creation is approved), and stores the result in the same commit
+   * that marks tracking initialized. It must therefore be read-only and repeatable: an interrupted
+   * import calls it again. `[]` is valid. Reads made while a creation was pending were simulated
+   * and must not be exported. A gatekeeper connected while already advertising support is never
+   * asked.
+   */
+  getHistoricalSubresources?(): Promise<string[]>;
 
   /** Returns the provider for describe().hasSlashCommands, if supported. */
   getSlashCommandProvider?(): Promise<SlashCommandProvider>;
@@ -1495,6 +1556,27 @@ export type ObservationDescription = {
    * the observation.
    */
   excludeObservers?: string[];
+
+  /**
+   * Required for (and only for) a real connection advertising
+   * `ResourceDescription.supportsObserverTracking`: the fully qualified IDs of everything this
+   * disclosure depends on that might restrict who may see it. IDs must be stable, non-secret,
+   * and sufficient for the vendor's verifier to check access without a separate scope descriptor.
+   * Each ID must have a JavaScript `length` of 1–512 (UTF-16 code units), and a single observation
+   * may report at most 10,000 IDs before deduplication.
+   * `[]` means nothing restricts it; omitting the field is an error, never an empty observation.
+   * Include any coarse binding-wide requirement the read relies on.
+   * Pending accountless creations have no external permission dependencies and record no
+   * requirements; auditing and workspace policy still apply.
+   *
+   * The Workshop records these IDs on the chat or gadget whose trusted binding authorizer
+   * approved the read (or the workspace baseline for a user session with no known chat), checks
+   * that context's collaborators before authorizing, and checks its history at later admission.
+   * Attribution stays with the original authorizer, including child sessions that reuse it;
+   * passing capabilities or data between contexts does not transfer requirements. Must not be
+   * combined with `excludeObservers`.
+   */
+  subresources?: string[];
 }
 
 /** The language a `text` action field is written in, named so the approver knows how it is read. */
