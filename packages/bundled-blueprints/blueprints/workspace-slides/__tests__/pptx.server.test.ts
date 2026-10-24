@@ -220,6 +220,13 @@ describe("Slides PowerPoint export", () => {
     expect(sizes).toContain(1);
   });
 
+  // Browsers accept a bare % in a data URL, so a hand-written one has them (width="100%").
+  it("embeds an SVG data URL with a bare % in it", async () => {
+    const src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="100%" height="100%"/></svg>';
+    const parts = await exportDeck({ slides: [slide([{ id: "a", type: "image", x: 0, y: 0, w: 100, h: 100, props: { src } }])] });
+    expect(shapeNamed(text(parts, "ppt/slides/slide1.xml"), "Block 1 image")).toContain("<asvg:svgBlip");
+  });
+
   it("embeds SVG artwork as an SVG picture over the PNG a browser saved for it", async () => {
     const raster = PNG_1x1;
     const svgUrl = "data:image/svg+xml;base64," + btoa(ART);

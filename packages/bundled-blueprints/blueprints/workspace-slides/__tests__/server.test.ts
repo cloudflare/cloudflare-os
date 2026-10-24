@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Gadget } from "../files/server.ts";
 import { BOTTOM_BAR_SVG } from "../files/lib/layouts.ts";
 import type { Block, Deck, DeckCallbacks, DeckPatch, LegacyDeckCallbacks, Slide, UndoState } from "../files/lib/protocol.ts";
@@ -427,6 +427,60 @@ describe("media assets", () => {
     // A small value stays inline.
     await gadget.addBlock(slideId, { type: "image", x: 0, y: 0, props: { src: PNG_1x1 } });
     expect((await gadget.getSlide(slideId))!.blocks[2]!.props.src).toBe(PNG_1x1);
+  });
+});
+
+// Stored media nothing uses any more is deleted a while later, and nothing still in use is.
+describe("asset sweep", () => {
+  beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] }));
+  afterEach(() => vi.useRealTimers());
+  const big = (fill: string) => PNG_1x1 + fill.repeat(4096);
+  // Waits out the sweep delay, then for the sweep itself (queued like a mutation).
+  const sweep = async (gadget: Gadget) => {
+    await vi.advanceTimersByTimeAsync(30_000);
+    await gadget.saveSvgRaster("", "");
+  };
+  const lastSrc = async (gadget: Gadget, slideId: string) => (await gadget.getSlide(slideId))!.blocks.at(-1)!.props.src as string;
+
+  it("keeps what the deck, its logo, undo or redo use, and deletes the rest", async () => {
+    const { gadget } = await loadGadget();
+    const slideId = await gadget.addSlide(null, { blocks: [] });
+    await gadget.addBlock(slideId, { type: "image", x: 0, y: 0, props: { src: big("L") } });
+    const live = await lastSrc(gadget, slideId);
+    const logo = (await gadget.setLogo({ src: big("G") }))!.src;
+    const undoId = (await gadget.addBlock(slideId, { type: "image", x: 0, y: 0, props: { src: big("U") } }))!;
+    const undoOnly = await lastSrc(gadget, slideId);
+    await gadget.removeBlock(slideId, undoId);
+    await gadget.addBlock(slideId, { type: "image", x: 0, y: 0, props: { src: big("X") } });
+    const unused = await lastSrc(gadget, slideId);
+    await gadget.undo();
+    // This edit drops the redo step, the only use of `unused`, and so schedules a sweep.
+    await gadget.addBlock(slideId, { type: "text", x: 0, y: 0, props: { text: "hi" } });
+    await gadget.addBlock(slideId, { type: "image", x: 0, y: 0, props: { src: big("R") } });
+    const redoOnly = await lastSrc(gadget, slideId);
+    await gadget.undo();
+    await sweep(gadget);
+    expect(await gadget.getAsset(unused)).toBeNull();
+    for (const ref of [live, logo, undoOnly, redoOnly]) expect(await gadget.getAsset(ref)).not.toBeNull();
+  });
+
+  it("keeps an SVG's raster until neither the deck nor its history shows the SVG", async () => {
+    const markup = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="100%" height="100%"/></svg>';
+    const { gadget } = await loadGadget();
+    const slideId = await gadget.addSlide(null, { blocks: [] });
+    const svgId = (await gadget.addBlock(slideId, { type: "svg", x: 0, y: 0, props: { markup } }))!;
+    const key = await sha(markup);
+    expect(await gadget.saveSvgRaster(key, PNG_1x1)).toBe(true);
+    await gadget.removeBlock(slideId, svgId);
+    await gadget.addBlock(slideId, { type: "text", x: 0, y: 0, props: { text: "0" } });
+    await gadget.undo();
+    await gadget.addBlock(slideId, { type: "text", x: 0, y: 0, props: { text: "drops redo" } });
+    await sweep(gadget);
+    expect(await gadget.getSvgRasters([key])).toEqual({ [key]: PNG_1x1 });
+    // Enough edits to push the SVG's steps out of undo history.
+    for (let i = 1; i <= 55; i++) await gadget.updateBlock(slideId, (await gadget.getSlide(slideId))!.blocks.at(-1)!.id, { props: { text: String(i) } });
+    await sweep(gadget);
+    expect(await gadget.getSvgRasters([key])).toEqual({});
   });
 });
 

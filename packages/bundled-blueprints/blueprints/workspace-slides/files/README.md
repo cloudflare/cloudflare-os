@@ -223,7 +223,8 @@ editor.
   and the cover art are pictures; SVG embeds with a PNG fallback that an open
   editor renders (until one has, the fallback is transparent). Each slide's
   first `title` is its title placeholder. Text uses Arial metrics, so it may
-  wrap slightly differently than in the browser.
+  wrap slightly differently than in the browser. A deck of more than 10,000
+  blocks in all can't be exported.
 - **HTML** and **PDF**, rendered in the browser: every slide at 1200 × 675
   without the app chrome, exact to the screen.
 

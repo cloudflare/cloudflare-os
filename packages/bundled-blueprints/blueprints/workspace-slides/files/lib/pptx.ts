@@ -33,7 +33,8 @@ function svgDataUrlMarkup(src: string): string | null {
   const head = src.slice(0, comma), body = src.slice(comma + 1);
   try {
     if (/;base64/i.test(head)) return new TextDecoder().decode(Uint8Array.from(atob(body), (ch) => ch.charCodeAt(0)));
-    return decodeURIComponent(body);
+    // A bare % (as in width="100%") is taken as itself.
+    return decodeURIComponent(body.replace(/%(?![0-9a-f]{2})/gi, "%25"));
   } catch {
     return null;
   }
