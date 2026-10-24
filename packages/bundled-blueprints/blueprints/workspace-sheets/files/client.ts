@@ -2023,8 +2023,12 @@ function setCellValue(ref: string, value: string | number | null | undefined, { 
   schedulePivotRefreshes();
 }
 // Text taken from a computed value, which the grid would re-read as something else (a formula,
-// a number, a boolean, an apostrophe), is stored with the literal-text prefix.
-function literalText(text: string): string { return /^[='+\-$.\d]|^(true|false)$/i.test(text) ? "'" + text : text; }
+// a number, a boolean, an apostrophe), is stored with the literal-text prefix. The tests follow
+// the engine's reading of a constant (`literalValue` in lib/formula.ts).
+function literalText(text: string): string {
+  const s = text.trim();
+  return /^[=']/.test(text) || /^(true|false)$/i.test(s) || (/^[-+]?\$?[\d,]*\.?\d+%?$/.test(s) && /\d/.test(s)) ? "'" + text : text;
+}
 /** What to store so a cell holds this computed value as a constant. */
 function storedValueOf(value: Scalar): string {
   if (value == null) return "";
@@ -2207,14 +2211,32 @@ function renameFormulaSheet(value: string, oldName: string, prefix: string): str
   }
   return result + value.slice(start);
 }
-/** A line map: where line `i` goes, or null if it was deleted. */
-type LineMap = (i: number) => number | null;
+/**
+ * A line map: where line `i` goes, or null if it was deleted. A reorder lists `breaks`, the lines
+ * where its runs of consecutively moving lines start and end.
+ */
+type LineMap = ((i: number) => number | null) & { breaks?: number[] };
+// Where the lines lo..hi go, as a low-to-high pair, or null if all were deleted. Lines reordered
+// among themselves keep their whole extent; otherwise the range shrinks around deleted lines and
+// follows its two ends.
+function mapLineSpan(lo: number, hi: number, map: LineMap): [number, number] | null {
+  if (map.breaks) {
+    // Each run moves as one, so the lines' images are bounded by the images of their run ends.
+    const images = [lo, hi, ...map.breaks.filter((i) => i > lo && i < hi)].map((i) => map(i) as number);
+    const min = Math.min(...images), max = Math.max(...images);
+    if (max - min === hi - lo) return [min, max];
+  }
+  let start: number | null = null, end: number | null = null;
+  for (let i = lo; i <= hi && start == null; i++) start = map(i);
+  for (let i = hi; i >= lo && end == null; i--) end = map(i);
+  if (start == null || end == null) return null;
+  return start > end ? [end, start] : [start, end];
+}
 // Rewrites a formula's text for rows or columns of the sheet named `sheetName` moved through
 // `map` (inserted, deleted or reordered). Only references into that sheet move: unqualified ones
 // when the formula lives there (`ownSheet`), qualified ones from anywhere. A reference into
-// deleted lines becomes #REF!; a range shrinks around them, and follows its two corners when
-// lines are reordered (so it keeps its extent when lines move within it, and is written
-// low-to-high). Everything else in the formula (spacing, quoted text, number spelling, `$`
+// deleted lines becomes #REF!; a range shrinks around them, and is moved as `mapLineSpan` says
+// (written low-to-high). Everything else in the formula (spacing, quoted text, number spelling, `$`
 // locks) is left exactly as typed.
 /** One endpoint of a reference, parsed: where it sits in the reference's text, its sheet prefix, `$` locks and position. */
 interface RefPart { start: number; end: number; prefix: string; fc: string; col: number; fr: string; row: number }
@@ -2232,16 +2254,12 @@ function remapFormulaLines(value: string, { rows, map, sheetName, ownSheet }: { 
     if (!onTarget) continue;
     const index = (part: RefPart) => rows ? part.row : part.col;
     const lo = Math.min(...parts.map(index)), hi = Math.max(...parts.map(index));
-    let nlo: number | null = null, nhi: number | null = null;
-    for (let i = lo; i <= hi && nlo == null; i++) nlo = map(i);
-    for (let i = hi; i >= lo && nhi == null; i--) nhi = map(i);
-    if (nlo != null && nhi != null && nlo > nhi) [nlo, nhi] = [nhi, nlo];
+    const span = mapLineSpan(lo, hi, map);
     let replacement = "#REF!";
-    if (nlo != null && (parts.length > 1 || lo === hi)) {
+    if (span && (parts.length > 1 || lo === hi)) {
       replacement = ""; let cursor = 0;
       for (const part of parts) {
-        // nhi is found whenever nlo is: both scans cross the line nlo came from.
-        const n = (index(part) === lo ? nlo : nhi)!;
+        const n = index(part) === lo ? span[0] : span[1];
         replacement += reference.text.slice(cursor, part.start) + part.prefix + part.fc + colToLetter(rows ? part.col : n) + part.fr + ((rows ? n : part.row) + 1);
         cursor = part.end;
       }
@@ -2293,14 +2311,9 @@ function rebuildSheetCells(mapRow: LineMap, mapCol: LineMap) {
 }
 function remapRange(text: string, mapRow: LineMap, mapCol: LineMap): string {
   const range = parseRangeText(text); if (!range) return text;
-  const first = (from: number, to: number, map: LineMap) => { for (let i = from; i <= to; i++) { const m = map(i); if (m != null) return m; } return null; };
-  const last = (from: number, to: number, map: LineMap) => { for (let i = to; i >= from; i--) { const m = map(i); if (m != null) return m; } return null; };
-  let r1 = first(range.r1, range.r2, mapRow), r2 = last(range.r1, range.r2, mapRow);
-  let c1 = first(range.c1, range.c2, mapCol), c2 = last(range.c1, range.c2, mapCol);
-  if (r1 == null || r2 == null || c1 == null || c2 == null) return "";
-  // A move can carry one corner past the other.
-  if (r1 > r2) [r1, r2] = [r2, r1];
-  if (c1 > c2) [c1, c2] = [c2, c1];
+  const rows = mapLineSpan(range.r1, range.r2, mapRow), columns = mapLineSpan(range.c1, range.c2, mapCol);
+  if (!rows || !columns) return "";
+  const [r1, r2] = rows, [c1, c2] = columns;
   return text.includes(":") || r1 !== r2 || c1 !== c2 ? `${rcToRef(r1, c1)}:${rcToRef(r2, c2)}` : rcToRef(r1, c1);
 }
 const sameIndex = (i: number) => i;
@@ -2391,13 +2404,14 @@ function deleteCols() {
 // every formula in the workbook follows the cells it points at (a range follows its corners),
 // as do charts, pivot sources, the filter, and row heights / column widths. Undoable: the
 // history gets the inverse move (see applyMoveHistory).
-function lineMoveMap(from: number, count: number, to: number): (i: number) => number {
+function lineMoveMap(from: number, count: number, to: number): ((i: number) => number) & { breaks: number[] } {
   const dest = to < from ? to : to - count;
-  return (i) => {
+  const map = (i: number) => {
     if (i >= from && i < from + count) return dest + (i - from);
     if (to < from) return i >= to && i < from ? i + count : i;
     return i >= from + count && i < to ? i - count : i;
   };
+  return Object.assign(map, { breaks: [to - 1, to, from - 1, from, from + count - 1, from + count] });
 }
 function moveLines(rows: boolean, from: number, count: number, to: number, { restoreFilter, fromHistory = null }: { restoreFilter?: SheetFilter | null; fromHistory?: HistoryEntry[] | null } = {}): boolean {
   const sh = curSheet(); if (!sh) return false;

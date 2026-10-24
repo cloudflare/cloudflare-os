@@ -254,6 +254,37 @@ describe("paste values only", () => {
     await settle();
     expect(shown("A3")).toBe("TRUE");
   });
+
+  it("keeps text that reads as a number once trimmed as text", async () => {
+    await loadClient(sheet("s1"), { A1: cell('=" 00123"'), A3: cell("=ISTEXT(A2)") });
+    const grid = document.querySelector<HTMLElement>(".grid-scroll")!;
+    const written = new Map<string, string>();
+    const copy = new Event("copy", { bubbles: true, cancelable: true });
+    Object.defineProperty(copy, "clipboardData", { value: { setData: (type: string, data: string) => written.set(type, data) } });
+    grid.dispatchEvent(copy);
+    grid.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    grid.dispatchEvent(new KeyboardEvent("keydown", { key: "v", ctrlKey: true, metaKey: true, shiftKey: true, bubbles: true }));
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", { value: { getData: (type: string) => written.get(type) ?? "" } });
+    grid.dispatchEvent(paste);
+    await settle();
+    expect(shown("A3")).toBe("TRUE");
+  });
+});
+
+describe("moving rows", () => {
+  it("keeps a range whole when its first row moves below its last", async () => {
+    await loadClient(sheet("s1"), { A1: cell("10"), A2: cell("20"), A3: cell("30"), B5: cell("=SUM(A1:A3)") });
+    const head = () => document.querySelector<HTMLElement>('th.rowhead[data-row="0"]')!;
+    const mouse = (target: EventTarget, type: string, clientY: number) => target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX: 10, clientY }));
+    // Select row 1, then drag it by its header into the lower half of row 3.
+    mouse(head(), "mousedown", 36); mouse(window, "mouseup", 36);
+    await settle();
+    mouse(head(), "mousedown", 36); mouse(window, "mousemove", 60); mouse(window, "mousemove", 90); mouse(window, "mouseup", 90);
+    await settle();
+    expect([shown("A1"), shown("A2"), shown("A3")]).toEqual(["20", "30", "10"]);
+    expect(shown("B5")).toBe("60");
+  });
 });
 
 const gridEl = () => document.querySelector<HTMLElement>(".grid-scroll")!;
