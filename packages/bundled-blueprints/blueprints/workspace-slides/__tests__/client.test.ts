@@ -182,6 +182,18 @@ describe("in-place text", () => {
     ]);
   });
 
+  // Enter confirming an input method's candidate is the IME's, not a command to finish editing.
+  it("leaves Enter to an input method that is composing", async () => {
+    await select("t1");
+    const field = onStage("t1").querySelector<HTMLElement>(".inline-edit")!;
+    type(field, "日本");
+    const enter = new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true, cancelable: true });
+    field.dispatchEvent(enter);
+    expect(enter.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(field);
+    expect(gadget.updateBlock).not.toHaveBeenCalled();
+  });
+
   it("Delete saves the text being typed first, so undo brings it back", async () => {
     await select("t1");
     type(onStage("t1").querySelector<HTMLElement>(".inline-edit")!, "typed");

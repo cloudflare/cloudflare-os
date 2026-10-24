@@ -1817,6 +1817,9 @@ function setLiveProp(slideId: string, blockId: string, key: string, value: PropV
   const live = deck.slides.find((s) => s.id === slideId)?.blocks.find((b) => b.id === blockId);
   if (live) live.props = { ...live.props || {}, [key]: value };
 }
+// A key an input method is using (Enter confirming a candidate, say): it isn't
+// a command. Some browsers report it only as keyCode 229.
+const imeKey = (e: KeyboardEvent) => e.isComposing || e.keyCode === 229;
 function bindInlineText<E extends HTMLElement>(elem: E, slide: Slide, block: Block, propKey: string, transform?: ((raw: PropValue) => string) | null, placeholder = "Type here"): E {
   const raw = (block.props || {})[propKey] ?? "";
   if (inlineEditing(block)) {
@@ -1864,6 +1867,7 @@ function bindInlineText<E extends HTMLElement>(elem: E, slide: Slide, block: Blo
     });
     elem.addEventListener("keydown", (e) => {
       e.stopPropagation();
+      if (imeKey(e)) return;
       if ((e.key === "Enter" && !e.shiftKey) || e.key === "Escape") {
         e.preventDefault();
         elem.blur();
@@ -1956,6 +1960,7 @@ function bindInlineList<E extends HTMLElement>(list: E, slide: Slide, block: Blo
     makeEditable(textEl, "List item");
     textEl.addEventListener("keydown", (e) => {
       e.stopPropagation();
+      if (imeKey(e)) return;
       const sel = getSelection();
       const range = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
       if (e.key === "Escape") {

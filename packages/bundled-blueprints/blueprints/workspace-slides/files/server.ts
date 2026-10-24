@@ -406,7 +406,7 @@ export class Gadget extends DurableObject implements GadgetStub {
     const seen = new Set<string>();
     for (const raw of rawSlides) {
       if (!isPlainObject(raw)) continue;
-      const id = typeof raw.id === "string" && raw.id && !seen.has(raw.id) ? raw.id : genId();
+      const id = slideIdFrom(raw.id, (x) => seen.has(x));
       seen.add(id);
       this.#slides.set(id, await this.#prepareSlide({ ...raw, id }));
       this.#order.push(id);
@@ -875,7 +875,7 @@ export class Gadget extends DurableObject implements GadgetStub {
       if (raw.blocks !== undefined) boundedList(raw.blocks, MAX_BLOCKS_PER_SLIDE, "blocks");
       // Slide and block ids must be unique: keep a supplied one only if it is
       // (#prepareSlide sees to the blocks).
-      const id = typeof raw.id !== "string" || !raw.id || this.#slides.has(raw.id) ? genId() : raw.id;
+      const id = slideIdFrom(raw.id, (x) => this.#slides.has(x));
       const s = await this.#prepareSlide({ ...raw, id });
       const order = [...this.#order];
       order.splice(insertIndex(atIndex, order.length), 0, s.id);
@@ -1051,7 +1051,7 @@ export class Gadget extends DurableObject implements GadgetStub {
     const order: string[] = [], seen = new Set<string>();
     for (const raw of list) {
       if (!isPlainObject(raw)) continue;
-      const id = typeof raw.id === "string" && raw.id && !seen.has(raw.id) ? raw.id : genId();
+      const id = slideIdFrom(raw.id, (x) => seen.has(x));
       seen.add(id);
       changes.set(id, await this.#prepareSlide({ ...raw, id }));
       order.push(id);
@@ -1093,6 +1093,12 @@ export class Gadget extends DurableObject implements GadgetStub {
   }
 }
 
+// A caller's slide id, unless it is missing, taken, or a name every object has
+// already: history steps and patches key slides by id, and `__proto__` would
+// vanish from them.
+function slideIdFrom(raw: unknown, taken: (id: string) => boolean): string {
+  return typeof raw === "string" && raw && !(raw in Object.prototype) && !taken(raw) ? raw : genId();
+}
 function genId(): string {
   return crypto.randomUUID().slice(0, 8);
 }

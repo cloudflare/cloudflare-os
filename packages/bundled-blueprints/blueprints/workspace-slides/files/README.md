@@ -36,7 +36,7 @@ PowerPoint, HTML and PDF.
    words in an accent colour. Cover and content titles normally have none.
 5. **Read before you write.** `listSlides()` gives every slide's id, index,
    label and background, and each block's id, type, position and readable
-   text. `getSlide(id)` gives one slide in full.
+   text. `getSlide(id)` gives one slide with every prop (big media as `"asset:<hash>"` refs).
 6. **One change per call, patch only what changes.** `updateBlock` merges
    `props`, so send just `{ props: { text } }`. Pause about 150 ms between
    calls and work top to bottom, so each change reads as its own moment.
@@ -103,7 +103,7 @@ All methods are on the binding's `.rpc` stub. Generated ids are 8-character stri
 **Read**
 - `listSlides()` → `[{ id, index, label, background, blocks: [{ id, type, x, y, w?, h?, text }] }]`
 - `getSlide(slideId)` → the slide `{ id, background, blocks }` with every
-  prop, or `null`
+  prop (big media as `"asset:<hash>"` refs, read with `getAsset`), or `null`
 - `getDeck()` → `{ themeVersion, rev, slides, logo }`; big media appears as
   `"asset:<hash>"` refs. `getDeckInlined()` is the same with refs replaced
   by their data; `getAsset(ref)` → one asset's data, or `null`.

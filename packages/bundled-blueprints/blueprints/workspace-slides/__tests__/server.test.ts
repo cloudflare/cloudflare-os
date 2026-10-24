@@ -169,6 +169,16 @@ describe("agent API", () => {
     expect(left[0]!.blocks.map((b) => b.type)).toEqual(["title"]);
   });
 
+  // History steps and patches key slides by id, and an object drops a "__proto__" key.
+  it("gives a slide a fresh id in place of a name every object has, so undo still works", async () => {
+    const { gadget } = await loadGadget();
+    const id = await gadget.addSlide(null, { id: "__proto__", blocks: [{ id: "t", type: "text", x: 0, y: 0, props: { text: "before" } }] });
+    expect(id).not.toBe("__proto__");
+    await gadget.updateBlock(id!, "t", { props: { text: "after" } });
+    expect(await gadget.undo()).toBe(true);
+    expect((await gadget.getSlide(id!))!.blocks[0]!.props.text).toBe("before");
+  });
+
   it("merges slide background patches and replaces block lists", async () => {
     const { gadget } = await loadGadget();
     const slideId = await gadget.addSlide(null, { background: { color: "#FFFFFF", dotGrid: 0.4 }, blocks: [] });
