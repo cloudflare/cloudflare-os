@@ -238,6 +238,22 @@ describe("paste values only", () => {
     await settle();
     expect(shown("B2")).toBe("20");
   });
+
+  it("keeps a very small result a number", async () => {
+    await loadClient(sheet("s1"), { A1: cell("=1/10000000"), A3: cell("=ISNUMBER(A2)") });
+    const grid = document.querySelector<HTMLElement>(".grid-scroll")!;
+    const written = new Map<string, string>();
+    const copy = new Event("copy", { bubbles: true, cancelable: true });
+    Object.defineProperty(copy, "clipboardData", { value: { setData: (type: string, data: string) => written.set(type, data) } });
+    grid.dispatchEvent(copy);
+    grid.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    grid.dispatchEvent(new KeyboardEvent("keydown", { key: "v", ctrlKey: true, metaKey: true, shiftKey: true, bubbles: true }));
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", { value: { getData: (type: string) => written.get(type) ?? "" } });
+    grid.dispatchEvent(paste);
+    await settle();
+    expect(shown("A3")).toBe("TRUE");
+  });
 });
 
 const gridEl = () => document.querySelector<HTMLElement>(".grid-scroll")!;
@@ -448,5 +464,33 @@ describe("pivot tables", () => {
     const values = Object.values((replaced as { cells: CellMap }).cells).map((c) => c.value);
     expect(values).toContain("10");
     expect(values).not.toContain("5");
+  });
+
+  it("follow an undone edit to their source", async () => {
+    const source = sheet("s1"), pivot: SheetMeta = { ...sheet("p1"), name: "Pivot", pivot: {
+      sourceSheetId: "s1", sourceRange: "A1:B2", rowField: "Region", columnField: "", valueField: "Amount", aggregate: "sum",
+      showRowTotals: false, showColumnTotals: false, filterField: "", filterValues: [],
+    } };
+    const book = { title: "Book", sheetOrder: ["s1", "p1"], sheets: { s1: source, p1: pivot } };
+    const h = await loadClient(source);
+    h.callbacks.operation({ type: "operation", senderId: "someone-else", revision: 2, structure: book, lastModified: 0, deletes: [], upserts: [
+      { sheetId: "s1", ref: "A1", cell: cell("Region") }, { sheetId: "s1", ref: "B1", cell: cell("Amount") },
+      { sheetId: "s1", ref: "A2", cell: cell("North") }, { sheetId: "s1", ref: "B2", cell: cell("10") },
+    ] });
+    await settle(); await settle();
+    const lastPivot = () => {
+      const replaced = h.gadget.applyOperation.mock.calls.flatMap(([op]) => (op as Operation).sheetReplacements ?? []).filter((r) => r.sheetId === "p1").at(-1);
+      return Object.values((replaced as { cells: CellMap }).cells).map((c) => c.value);
+    };
+    const grid = document.querySelector<HTMLElement>(".grid-scroll")!;
+    grid.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    grid.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    typeIntoActiveCell("20");
+    await settle(); await settle();
+    expect(lastPivot()).toContain("20");
+    grid.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, metaKey: true, bubbles: true }));
+    await settle(); await settle();
+    expect(shown("B2")).toBe("10");
+    expect(lastPivot()).toContain("10");
   });
 });

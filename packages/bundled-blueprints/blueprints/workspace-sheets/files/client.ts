@@ -1991,6 +1991,7 @@ function applyHistory(entry: CellHistory, into: HistoryEntry[]) {
   rebuildEngine([]);
   renderGrid();
   updateUndoButtons();
+  schedulePivotRefreshes();
 }
 function undo() { if (!undoStack.length) return; const entry = undoStack.pop()!; if (entry.kind === "move") applyMoveHistory(entry, redoStack); else applyHistory(entry, redoStack); }
 function redo() { if (!redoStack.length) return; const entry = redoStack.pop()!; if (entry.kind === "move") applyMoveHistory(entry, undoStack); else applyHistory(entry, undoStack); }
@@ -2027,7 +2028,8 @@ function literalText(text: string): string { return /^[='+\-$.\d]|^(true|false)$
 /** What to store so a cell holds this computed value as a constant. */
 function storedValueOf(value: Scalar): string {
   if (value == null) return "";
-  if (typeof value === "number") return String(value);
+  // The grid reads `1e-7` as text, so a very small or large number is written out in full.
+  if (typeof value === "number") return Number.isFinite(value) && /e/i.test(String(value)) ? value.toLocaleString("en-US", { useGrouping: false, maximumSignificantDigits: 17 }) : String(value);
   if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
   return literalText(isErr(value) ? value.value : value instanceof HyperlinkValue ? value.label : value);
 }
