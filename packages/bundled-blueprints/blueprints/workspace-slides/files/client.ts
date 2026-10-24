@@ -3250,7 +3250,7 @@ function showPop(content: ElChild | ElChild[], rect: DOMRect, { className = "", 
   closePop(true);
   hideTip();
   const pop = el("div", { class: "pop " + className, role: kind === "menu" ? "menu" : "dialog" }, content);
-  pop.addEventListener("mousedown", (e) => { if (!(e.target instanceof Element && e.target.closest("input, textarea"))) e.preventDefault(); });
+  pop.addEventListener("mousedown", (e) => { if (!(e.target instanceof Element && e.target.closest("input, textarea, select"))) e.preventDefault(); });
   document.body.appendChild(pop);
   openPop = { pop, owner, kind, align };
   owner?.classList.add("open");
@@ -4674,6 +4674,7 @@ function multilineField(label: string, value: PropValue, cb: (value: string) => 
   return fieldRow(label, ta, { stacked: true });
 }
 function numberField(label: string, value: PropValue, cb: (value: number) => unknown, opts: { min?: number; max?: number; step?: number } = {}, attrs: { dataKey?: string } = {}): HTMLDivElement {
+  let last = value;
   const input = el("input", {
     type: "number",
     value,
@@ -4685,7 +4686,8 @@ function numberField(label: string, value: PropValue, cb: (value: number) => unk
     onchange: (e) => {
       if (!(e.target instanceof HTMLInputElement)) return;
       const n = Number(e.target.value);
-      if (!Number.isNaN(n) && n !== value) cb(n);
+      // Compared with the last value sent: the field can outlive its saves.
+      if (!Number.isNaN(n) && n !== last) { last = n; cb(n); }
     },
     onkeydown: (e) => e.stopPropagation()
   });

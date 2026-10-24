@@ -186,6 +186,19 @@ describe("in-place text", () => {
     expect(gadget.updateBlock).toHaveBeenCalledWith("s1", "t1", { props: { text: "typed meanwhile" } });
   });
 
+  // A number set back to where it started is a change of its own.
+  it("saves a Format number changed back to its first value", async () => {
+    await select("t1");
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await settle();
+    document.querySelector<HTMLButtonElement>(".adv-toggle")!.click();
+    const x = document.querySelector<HTMLInputElement>('input[data-key="pos-x"]')!;
+    for (const v of ["37", "36"]) { x.value = v; x.dispatchEvent(new Event("change")); }
+    expect(calls(gadget.updateBlock)).toEqual([["s1", "t1", { x: 37 }], ["s1", "t1", { x: 36 }]]);
+    await settle();
+    document.querySelector<HTMLButtonElement>(".adv-toggle")!.click();
+  });
+
   it("saves the text being typed on Ctrl+S", async () => {
     await select("t1");
     const field = onStage("t1").querySelector<HTMLElement>(".inline-edit")!;
