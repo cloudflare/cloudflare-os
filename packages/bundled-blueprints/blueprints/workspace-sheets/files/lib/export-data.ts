@@ -60,6 +60,8 @@ export function disposeResult(result: unknown): void {
 }
 /** The most cells one export reads: past about this, the workbook no longer fits the export's memory (128 MB). */
 export const MAX_EXPORT_CELLS = 400_000;
+/** The most characters of cell text one export reads, for workbooks of long texts that stay under the cell cap. */
+export const MAX_EXPORT_TEXT = 40_000_000;
 export async function loadExportWorkbook(gadget: ExportGadgetStub, { formats, sheetIds = null }: { formats: boolean; sheetIds?: string[] | null }): Promise<ExportWorkbook> {
   for (let attempt = 0; ; ++attempt) {
     const strict = attempt < 2;
@@ -67,7 +69,7 @@ export async function loadExportWorkbook(gadget: ExportGadgetStub, { formats, sh
     disposeResult(structure);
     const ids = [...new Set((sheetIds || structure.sheetOrder).map(String))].filter((id) => structure.sheets[id]);
     const cells = new Map<string, ExportCells>(), fmts: CellFmt[] = [], fmtIndex = new Map<string, number>();
-    let consistent = true, total = 0;
+    let consistent = true, total = 0, text = 0;
     for (const id of ids) {
       const data = new ExportCells();
       let after: string | null = "";
@@ -78,7 +80,8 @@ export async function loadExportWorkbook(gadget: ExportGadgetStub, { formats, sh
         if (page.revision !== structure.revision) { consistent = false; if (strict) break; }
         if (page.missing) break;
         total += page.refs.length;
-        if (total > MAX_EXPORT_CELLS) throw new Error(`This workbook has more than ${MAX_EXPORT_CELLS.toLocaleString("en-US")} cells, more than can be exported at once. Split it into smaller workbooks to export it.`);
+        for (const value of page.values) text += value.length;
+        if (total > MAX_EXPORT_CELLS || text > MAX_EXPORT_TEXT) throw new Error(`This workbook has more than ${total > MAX_EXPORT_CELLS ? MAX_EXPORT_CELLS.toLocaleString("en-US") + " cells" : MAX_EXPORT_TEXT.toLocaleString("en-US") + " characters of text"}, more than can be exported at once. Split it into smaller workbooks to export it.`);
         // A page asked for with formats carries `styles` and `fmts`.
         const local = formats ? (page.fmts as CellFmt[]).map((fmt) => {
           const key = JSON.stringify(fmt);

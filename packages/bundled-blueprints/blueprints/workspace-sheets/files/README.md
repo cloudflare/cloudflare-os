@@ -80,7 +80,7 @@ The engine (`lib/formula.ts`) has 100+ functions across math, statistics, logic,
 
 ## Data model
 
-- `meta`: revision, title, sheet order, and per-sheet metadata (`rows`, `cols`, `colWidths`, `rowHeights`, frozen panes, `filter`, `charts`, `pivot`). `title` isn't shown or edited; the browser tab shows the active sheet's name. Frozen panes exist in the model but have no UI.
+- `meta`: revision, title, sheet order, and per-sheet metadata (`rows`, `cols`, `colWidths`, `rowHeights`, frozen panes, `filter`, `charts`, `pivot`). `title` isn't edited in the grid; the browser tab shows it when set, and otherwise the active sheet's name. Frozen panes exist in the model but have no UI.
 - Cells are `{ value, fmt, version }`, stored in blocks of 32 rows (`b:<sheetId>:<block>`), packed as parallel arrays.
 - Clients send per-cell edits with the version they rest on; conflicts are rebased and resent, so when two people commit the same cell, the later commit wins. Layout-changing edits (sort, row/column insert or delete) are sent as whole-sheet replacements guarded by `baseRevision`, refused if the document moved on.
 - Presence events flow between clients, but no remote cursors are drawn.
@@ -88,7 +88,7 @@ The engine (`lib/formula.ts`) has 100+ functions across math, statistics, logic,
 
 ## Export formats
 
-Excel and CSV are computed on the server with the grid's own formula engine, so they show what the grid shows (evaluation is capped at about 60 million cell reads per export; past it, Excel gets the remaining formulas without a cached result and recalculates them on open, and CSV gets their formula text). One export reads at most 400,000 cells across the workbook (a CSV of one sheet reads every sheet too, since its formulas may read them); a larger workbook is refused with a message saying so.
+Excel and CSV are computed on the server with the grid's own formula engine, so they show what the grid shows (evaluation is capped at about 60 million cell reads per export; past it, Excel gets the remaining formulas without a cached result and recalculates them on open, and CSV gets their formula text). One export reads at most 400,000 cells (and 40 million characters of text) across the workbook (a CSV of one sheet reads every sheet too, since its formulas may read them); a larger workbook is refused with a message saying so.
 
 - **Excel** (`.xlsx`): every sheet with values, formulas (rewritten for Excel) and cached results, number formats, fonts, colours, alignment, wrap, column widths, row heights, frozen panes, filters, hyperlinks and native Excel charts. Excel recalculates on open. Sheet names are made Excel-safe (31 characters, no `:\/?*[]`). Rows the grid grew to fit wrapped text are written at Excel's default height.
 - **CSV**: one format per sheet (up to 30): displayed values through the used range, UTF-8 with BOM, CRLF. Rows hidden by a filter are included. With several sheets each file is named after its sheet.

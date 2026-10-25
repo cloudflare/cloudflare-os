@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { ExportHandler, Gadget } from "../files/server.ts";
-import { EXPORT_UNKNOWN, ExportEvaluator, MAX_EXPORT_CELLS, loadExportWorkbook } from "../files/lib/export-data.ts";
+import { EXPORT_UNKNOWN, ExportEvaluator, MAX_EXPORT_CELLS, MAX_EXPORT_TEXT, loadExportWorkbook } from "../files/lib/export-data.ts";
 import type { Cell, Operation, SheetMeta, SubscriberEvent } from "../files/lib/protocol.ts";
 
 // Durable Object storage in memory: just the calls the gadget makes, with values copied in and out
@@ -809,6 +809,16 @@ describe("export size", () => {
       exportPage: async () => ({ revision: 1, refs, values: refs, next: null }),
     };
     await expect(loadExportWorkbook(gadget, { formats: false })).rejects.toThrow("more than can be exported at once");
+  });
+
+  it("refuses a workbook with more text than one export can hold", async () => {
+    const meta: SheetMeta = { id: "s1", name: "Sheet1", rows: 100, cols: 26, colWidths: {}, rowHeights: {}, frozenRows: 0, frozenCols: 0, filter: null, charts: [], pivot: null };
+    const long = "x".repeat(8192), count = Math.ceil(MAX_EXPORT_TEXT / long.length) + 1;
+    const gadget = {
+      getStructure: async () => ({ revision: 1, title: "Book", sheetOrder: ["s1"], sheets: { s1: meta } }),
+      exportPage: async () => ({ revision: 1, refs: Array.from({ length: count }, () => "A1"), values: Array.from({ length: count }, () => long), next: null }),
+    };
+    await expect(loadExportWorkbook(gadget, { formats: false })).rejects.toThrow("characters of text");
   });
 
   it("leaves formulas past the evaluation budget without a result, and still reads literals", async () => {
