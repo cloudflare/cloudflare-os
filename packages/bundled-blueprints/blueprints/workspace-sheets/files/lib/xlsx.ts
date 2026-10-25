@@ -762,15 +762,15 @@ function missingArguments(formula: string, offset: number): boolean {
   const name = EMPTY_CALL.exec(formula)?.[1].toUpperCase();
   return name !== undefined && Object.hasOwn(FUNCTIONS, name) && !NO_ARGUMENT_FUNCTIONS.has(name);
 }
-// Mirrors the grid's tokenizer: inside a string a doubled quote, or a backslash before the
-// quote, is a literal quote. Emits Excel's form (double quotes, doubled inside), or null when
+// Mirrors the grid's tokenizer: inside a string a doubled quote is a literal quote (in a
+// single-quoted string, a backslash before the quote too; `"C:\"` stays as in Excel). Emits Excel's form (double quotes, doubled inside), or null when
 // unterminated.
 function stringLiteralAt(formula: string, offset: number): FormulaPiece | null {
   const quote = formula[offset];
   let text = "";
   for (let i = offset + 1; i < formula.length; ++i) {
     const character = formula[i];
-    const escaped = formula[i + 1] === quote && (character === quote || character === "\\");
+    const escaped = formula[i + 1] === quote && (character === quote || (quote === "'" && character === "\\"));
     if (escaped) { text += quote; ++i; }
     else if (character === quote) return { end: i + 1, text: `"${text.replace(/"/g, '""')}"` };
     else text += character;

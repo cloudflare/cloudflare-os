@@ -4438,7 +4438,7 @@ function activeFormulaCall(text: string, cursor: number): FormulaCall | null {
   for (let index = 1; index < cursor; index++) {
     const char = text[index];
     if (quote) {
-      if (char === "\\" && text[index + 1] === quote) { index++; continue; }
+      if (quote === "'" && char === "\\" && text[index + 1] === quote) { index++; continue; }
       if (char === quote) { if (text[index + 1] === quote) { index++; continue; } quote = null; }
       continue;
     }
@@ -4460,7 +4460,7 @@ function formulaCursorInQuote(value: string, cursor: number | null): boolean {
   for (let index = 1; index < (cursor ?? 0); index++) {
     const char = value[index];
     if (quote) {
-      if (char === "\\" && value[index + 1] === quote) { index++; continue; }
+      if (quote === "'" && char === "\\" && value[index + 1] === quote) { index++; continue; }
       if (char === quote) { if (value[index + 1] === quote) { index++; continue; } quote = null; }
     } else if (char === '"' || char === "'") quote = char;
   }
@@ -4745,7 +4745,7 @@ function activeFormulaArgumentSpans(value: string, cursor: number): TextSpan[] {
   for (let index = 1; index < cursor; index++) {
     const char = value[index];
     if (quote) {
-      if (char === "\\" && value[index + 1] === quote) { index++; continue; }
+      if (quote === "'" && char === "\\" && value[index + 1] === quote) { index++; continue; }
       if (char === quote) { if (value[index + 1] === quote) { index++; continue; } quote = null; }
       continue;
     }
@@ -4758,7 +4758,7 @@ function activeFormulaArgumentSpans(value: string, cursor: number): TextSpan[] {
   for (let index = start; index <= value.length; index++) {
     const char = value[index];
     if (quote) {
-      if (char === "\\" && value[index + 1] === quote) { index++; continue; }
+      if (quote === "'" && char === "\\" && value[index + 1] === quote) { index++; continue; }
       if (char === quote) { if (value[index + 1] === quote) { index++; continue; } quote = null; }
       continue;
     }
@@ -5066,7 +5066,7 @@ function completeFormulaParentheses(value: string): string | null {
   for (let index = 1; index < value.length; index++) {
     const char = value[index];
     if (quote) {
-      if (char === "\\" && value[index + 1] === quote) { index++; continue; }
+      if (quote === "'" && char === "\\" && value[index + 1] === quote) { index++; continue; }
       if (char === quote) { if (value[index + 1] === quote) { index++; continue; } quote = null; }
       continue;
     }
@@ -7424,6 +7424,8 @@ async function connect() {
         if (!isExport) gridScroll.focus({ preventScroll: true });
       }
       replayBuffered();
+      // A pivot's source may have changed while no grid was open to rebuild it.
+      if (!isExport) schedulePivotRefreshes();
       if (hasPendingSave()) scheduleSave(20);
       else if (syncShown === "offline") hideSync();
       sendPresence();

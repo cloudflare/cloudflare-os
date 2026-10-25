@@ -25,12 +25,12 @@ interface Harness {
   gadget: { [K in keyof GadgetStub]: ReturnType<typeof vi.fn> };
 }
 
-async function loadClient(meta: SheetMeta, cells: CellMap = {}): Promise<Harness> {
+async function loadClient(meta: SheetMeta, cells: CellMap = {}, doc: Partial<OpenedDocument> = {}): Promise<Harness> {
   let callbacks: SubscriberCallbacks | null = null;
   const gadget = {
     subscribe: vi.fn(async (callback: SubscriberCallbacks): Promise<OpenedDocument> => {
       callbacks = callback;
-      return { revision: 1, lastModified: 0, ...structure(meta), cells: { [meta.id]: cells }, cursors: {} };
+      return { revision: 1, lastModified: 0, ...structure(meta), cells: { [meta.id]: cells }, cursors: {}, ...doc };
     }),
     openDocument: vi.fn(),
     getCellsPage: vi.fn(),
@@ -584,6 +584,22 @@ describe("pivot tables", () => {
     await settle(); await settle();
     const replaced = h.gadget.applyOperation.mock.calls.flatMap(([op]) => (op as Operation).sheetReplacements ?? []).find((r) => r.sheetId === "p1");
     expect(Object.values((replaced as { cells: CellMap }).cells).map((c) => c.value)).toContain("0.0000001");
+  });
+
+  it("are rebuilt on open when their source changed while the workbook was closed", async () => {
+    const source = sheet("s1"), pivot: SheetMeta = { ...sheet("p1"), name: "Pivot", pivot: {
+      sourceSheetId: "s1", sourceRange: "A1:B2", rowField: "Region", columnField: "", valueField: "Amount", aggregate: "sum",
+      showRowTotals: false, showColumnTotals: false, filterField: "", filterValues: [],
+    } };
+    await loadClient(source, {}, {
+      sheetOrder: ["s1", "p1"], sheets: { s1: source, p1: pivot },
+      cells: {
+        s1: { A1: cell("Region"), B1: cell("Amount"), A2: cell("North"), B2: cell("20"), D1: cell("=Pivot!B2") },
+        p1: { A1: cell("Region"), B1: cell("Amount"), A2: cell("North"), B2: cell("10") },
+      },
+    });
+    await settle(); await settle();
+    expect(shown("D1")).toBe("20");
   });
 
   it("update formulas on the visible sheet that read them", async () => {

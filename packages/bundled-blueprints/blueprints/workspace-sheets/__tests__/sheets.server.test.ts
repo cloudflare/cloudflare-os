@@ -502,6 +502,12 @@ describe("XLSX export", () => {
     expect(cellStyle(parts, sheetXml, "A1").fill).toContain('rgb="FF102030"');
     expect(cellStyle(parts, sheetXml, "A300").fill).not.toContain("rgb=");
   });
+  it("reads a backslash before a closing double quote as text, as Excel does", async () => {
+    const gadget = newGadget();
+    await gadget.setCell({ ref: "A1", value: '="C:\\"&"x"' });
+    const sheetXml = part(await xlsx(gadget), "xl/worksheets/sheet1.xml");
+    expect(cellXml(sheetXml, "A1")).toBe('<c r="A1" t="str"><f>"C:\\"&amp;"x"</f><v>C:\\x</v></c>');
+  });
   it("writes the workbook, sheets, cached values and formulas", async () => {
     const parts = await xlsx(await salesWorkbook());
     expect([...parts.keys()].toSorted()).toEqual([

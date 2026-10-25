@@ -105,7 +105,7 @@ const EXCEL_CASES: [string, Scalar][] = [
   // Criteria compare numbers with numbers and text with text.
   ['=COUNTIF(F1:F5,">1")', 2], ['=SUMIF(F1:F5,"<5",G1:G5)', 5], ['=SUMIFS(G1:G5,F1:F5,">1")', 6], ['=COUNTIF(F1:F5,">a")', 1],
   // AVERAGEA counts text as 0 and booleans as 1 in references.
-  ["=AVERAGEA(F1:F5)", 1.6], ["=AVERAGEA(F1,F4)", 2.5], ['=SUBSTITUTE("abc","","x",0)', "#VALUE!"], ['=SUBSTITUTE("abc","","x",1)', "abc"], ['=SUBSTITUTE("abab","b","x",2.7)', "abax"], ["=SUM(INDEX(F1:F5,4))", 0], ["=AVERAGE(10,INDEX(F1:F5,4))", 10], ['=TEXT(REPT("ab",10000),"@@")', "#VALUE!"], ['=TEXT("ab","@-@")', "ab-ab"], ["=AVERAGEA(1,TRUE)", 1],
+  ["=AVERAGEA(F1:F5)", 1.6], ["=AVERAGEA(F1,F4)", 2.5], ['="C:\\"&"x"', "C:\\x"], ['=SUBSTITUTE("abc","","x",0)', "#VALUE!"], ['=SUBSTITUTE("abc","","x",1)', "abc"], ['=SUBSTITUTE("abab","b","x",2.7)', "abax"], ["=SUM(INDEX(F1:F5,4))", 0], ["=AVERAGE(10,INDEX(F1:F5,4))", 10], ['=TEXT(REPT("ab",10000),"@@")', "#VALUE!"], ['=TEXT("ab","@-@")', "ab-ab"], ["=AVERAGEA(1,TRUE)", 1],
   // A single reference aggregates like a range; a direct value is coerced, else #VALUE!.
   ["=SUM(F2)", 0], ["=SUM(F3)", 0], ['=SUM("5",6)', 11], ['=SUM("x")', "#VALUE!"], ["=SUM((F1),1)", 6],
   ["=SUMPRODUCT(F1:F2,G1:G3)", "#VALUE!"],
