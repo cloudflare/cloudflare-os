@@ -88,7 +88,7 @@ The engine (`lib/formula.ts`) has 100+ functions across math, statistics, logic,
 
 ## Export formats
 
-Excel and CSV are computed on the server with the grid's own formula engine, so they show what the grid shows (evaluation is capped at about 60 million cell reads per export; past it, Excel gets the remaining formulas without a cached result and recalculates them on open, and CSV gets their formula text). One export reads at most 400,000 cells; a larger workbook is refused with a message saying so (a single sheet can still be exported as CSV if it fits).
+Excel and CSV are computed on the server with the grid's own formula engine, so they show what the grid shows (evaluation is capped at about 60 million cell reads per export; past it, Excel gets the remaining formulas without a cached result and recalculates them on open, and CSV gets their formula text). One export reads at most 400,000 cells across the workbook (a CSV of one sheet reads every sheet too, since its formulas may read them); a larger workbook is refused with a message saying so.
 
 - **Excel** (`.xlsx`): every sheet with values, formulas (rewritten for Excel) and cached results, number formats, fonts, colours, alignment, wrap, column widths, row heights, frozen panes, filters, hyperlinks and native Excel charts. Excel recalculates on open. Sheet names are made Excel-safe (31 characters, no `:\/?*[]`). Rows the grid grew to fit wrapped text are written at Excel's default height.
 - **CSV**: one format per sheet (up to 30): displayed values through the used range, UTF-8 with BOM, CRLF. Rows hidden by a filter are included. With several sheets each file is named after its sheet.

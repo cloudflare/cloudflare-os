@@ -78,7 +78,7 @@ export async function loadExportWorkbook(gadget: ExportGadgetStub, { formats, sh
         if (page.revision !== structure.revision) { consistent = false; if (strict) break; }
         if (page.missing) break;
         total += page.refs.length;
-        if (total > MAX_EXPORT_CELLS) throw new Error(`This export has more than ${MAX_EXPORT_CELLS.toLocaleString("en-US")} cells, more than can be exported at once. Export one sheet as CSV, or split the workbook.`);
+        if (total > MAX_EXPORT_CELLS) throw new Error(`This workbook has more than ${MAX_EXPORT_CELLS.toLocaleString("en-US")} cells, more than can be exported at once. Split it into smaller workbooks to export it.`);
         // A page asked for with formats carries `styles` and `fmts`.
         const local = formats ? (page.fmts as CellFmt[]).map((fmt) => {
           const key = JSON.stringify(fmt);

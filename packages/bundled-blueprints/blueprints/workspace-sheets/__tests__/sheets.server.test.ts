@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { ExportHandler, Gadget } from "../files/server.ts";
-import { MAX_EXPORT_CELLS, loadExportWorkbook } from "../files/lib/export-data.ts";
+import { EXPORT_UNKNOWN, ExportEvaluator, MAX_EXPORT_CELLS, loadExportWorkbook } from "../files/lib/export-data.ts";
 import type { Cell, Operation, SheetMeta, SubscriberEvent } from "../files/lib/protocol.ts";
 
 // Durable Object storage in memory: just the calls the gadget makes, with values copied in and out
@@ -809,5 +809,22 @@ describe("export size", () => {
       exportPage: async () => ({ revision: 1, refs, values: refs, next: null }),
     };
     await expect(loadExportWorkbook(gadget, { formats: false })).rejects.toThrow("more than can be exported at once");
+  });
+
+  it("leaves formulas past the evaluation budget without a result, and still reads literals", async () => {
+    const meta: SheetMeta = { id: "s1", name: "Sheet1", rows: 100, cols: 26, colWidths: {}, rowHeights: {}, frozenRows: 0, frozenCols: 0, filter: null, charts: [], pivot: null };
+    const refs = ["A1", "A2", "B1", "B2"], cellValues = ["1", "2", "=SUM(A1:A2)", "=A1*10"];
+    const gadget = {
+      getStructure: async () => ({ revision: 1, title: "Book", sheetOrder: ["s1"], sheets: { s1: meta } }),
+      exportPage: async () => ({ revision: 1, refs, values: cellValues, next: null }),
+    };
+    const evaluator = new ExportEvaluator(await loadExportWorkbook(gadget, { formats: false }));
+    evaluator.limits.budget = 1; // spent by the first formula's reads
+    expect(evaluator.value("s1", 0, 1)).toBe(EXPORT_UNKNOWN);
+    expect(evaluator.value("s1", 1, 1)).toBe(EXPORT_UNKNOWN);
+    expect(evaluator.value("s1", 0, 0)).toBe(1);
+    // CSV writes an unknown formula as its text.
+    expect(evaluator.display("s1", 1, 1, null)).toBe("=A1*10");
+    expect(evaluator.display("s1", 1, 0, null)).toBe("2");
   });
 });

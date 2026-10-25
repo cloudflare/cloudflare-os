@@ -22,6 +22,8 @@ describe("valueAxis", () => {
     expect(valueAxis(0, 0)).toMatchObject({ min: 0, max: 1 });
     // 0.3 and 0.1 + 0.2: one value, not a range a step can't cross.
     expect(valueAxis(0.3, 0.1 + 0.2)).toMatchObject({ min: 0, max: 0.3 });
+    // Very small values keep their axis.
+    expect(valueAxis(1e-22, 3e-22)).toMatchObject({ min: 0, max: 3e-22 });
   });
 });
 

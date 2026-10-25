@@ -35,9 +35,8 @@ export function valueAxis(low: number, high: number): ValueAxis {
   const rough = (max - min) / MAX_STEPS;
   const magnitude = 10 ** Math.floor(Math.log10(rough));
   const step = NICE_STEPS.find((nice) => nice * magnitude >= rough * (1 - 1e-9))! * magnitude;
-  // Rounded to the step's own precision, so 0.1 + 0.2 reads 0.3.
-  const digits = Math.max(0, 1 - Math.floor(Math.log10(step)));
-  const round = (value: number) => Number(value.toFixed(Math.min(20, digits))) || 0;
+  // Rounded to 12 significant digits, so 0.1 + 0.2 reads 0.3 at any scale.
+  const round = (value: number) => Number(value.toPrecision(12));
   const first = Math.floor(min / step + 1e-9), last = Math.ceil(max / step - 1e-9);
   const ticks: number[] = [];
   for (let n = first; n <= last && ticks.length <= MAX_STEPS + 2; n++) ticks.push(round(n * step));
