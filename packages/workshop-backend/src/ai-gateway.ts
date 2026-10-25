@@ -71,9 +71,9 @@ export function gatewayRunConfig(
 export class AiGatewayConfig {
   readonly gateway: string;
   /**
-   * The gateway name for Workers-AI-binding calls (webFetch's toMarkdown): binding calls only
-   * reach gateways in the Worker's own account, so this is the platform gateway whenever the
-   * binding transport is active, and unset when it isn't (see {@link binding}).
+   * The gateway name for Workers-AI-binding calls (webFetch's toMarkdown, transcription): binding
+   * calls only reach gateways in the Worker's own account, so this is the platform gateway whenever
+   * the binding transport is active, and unset when it isn't (see {@link binding}).
    */
   readonly sameAccountGateway?: string;
   readonly accountId: string;

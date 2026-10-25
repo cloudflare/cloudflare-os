@@ -93,12 +93,22 @@ new user. On a public server, set it to **Disabled** in the admin Gatekeepers pa
 accept that spend. A change applies to each workspace when it next opens; uninstalling the Worker
 stops searches at once.
 
+**Voice input** spends outside these controls too, and is off by default. Each dictated prompt is
+transcribed with Workers AI (`@cf/openai/whisper-large-v3-turbo`), billed per audio minute to the
+deployment's account, and is not counted against the free daily allowance. The server limits each
+recording to 4 MiB, which limits its size, not the minutes billed: a low-bitrate recording fits an
+hour or more of audio, and nothing limits how many recordings a user sends. On a public server,
+leave **Voice input** off on the General tab of `/admin` unless you accept that spend. A change
+applies on each user's next connection. Each transcription is logged (`transcription.run`) with
+the user's Durable Object ID, its size and its audio length, never its content.
+
 When using `CF_AI_GATEWAY*` in local development, start the server with
 `pnpm run dev-server -- --use-workers-ai-binding` so the server has a `WORKERS_AI` binding for
-the webFetch tool's document-to-Markdown conversion and for the gateway transport above (without
-it, gateway traffic falls back to HTTPS with `CF_AI_GATEWAY_API_TOKEN`). If your dev Gateway
-lives in a different account than the binding, also set `CF_AI_GATEWAY_USE_BINDING=false` — keep
-`--use-workers-ai-binding` on, since the Markdown conversion still needs the binding.
+the webFetch tool's document-to-Markdown conversion, for voice input, and for the gateway
+transport above (without it, gateway traffic falls back to HTTPS with `CF_AI_GATEWAY_API_TOKEN`).
+If your dev Gateway lives in a different account than the binding, also set
+`CF_AI_GATEWAY_USE_BINDING=false` — keep `--use-workers-ai-binding` on, since the Markdown
+conversion and voice input still need the binding.
 The same flag gives the Web Search gatekeeper its own `AI` binding, which it needs for every search.
 
 Each gatekeeper's OAuth app must be registered with that gatekeeper's redirect URI (replace the host

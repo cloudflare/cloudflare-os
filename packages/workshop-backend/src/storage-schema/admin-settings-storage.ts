@@ -30,6 +30,11 @@ export type AdminConfig = {
    */
   userSearchEnabled: boolean;
   /**
+   * Whether users may dictate prompts, transcribed on the deployment's Workers AI (default false,
+   * since it spends outside every usage limit). Enforced in transcription.ts on every call.
+   */
+  transcriptionEnabled: boolean;
+  /**
    * Site name shown next to the top-bar logo, or "" to use DEFAULT_SITE_NAME. Resolve it for
    * display with `resolveSiteName()`.
    */
@@ -142,6 +147,7 @@ export type FormatCuration = {
 export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   signupsEnabled: true,
   userSearchEnabled: false,
+  transcriptionEnabled: false,
   siteName: "",
   siteLogoConfigured: false,
   instanceInstructions: "",

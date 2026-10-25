@@ -58,6 +58,7 @@ export async function getServerConfig(env: Cloudflare.Env): Promise<ServerConfig
     cloudflareLimitsEnabled: isCloudflareLimitsEnabled(env),
     signupsEnabled: config.signupsEnabled,
     userSearchEnabled: config.userSearchEnabled,
+    transcriptionEnabled: config.transcriptionEnabled,
     siteName: config.siteName,
     siteLogo: siteLogoImage(config.siteLogoConfigured),
     announcement: config.announcement,

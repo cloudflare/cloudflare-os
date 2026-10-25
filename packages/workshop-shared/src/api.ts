@@ -466,6 +466,12 @@ export type DeviceSessionHandoffStart = {
   ticket: string;
 };
 
+/**
+ * The largest recording `AuthenticatedApi.transcribeAudio()` accepts, in bytes. It limits the copies
+ * a call makes on its way to Workers AI, not the minutes of audio billed.
+ */
+export const MAX_TRANSCRIPTION_AUDIO_BYTES = 4 * 1024 * 1024;
+
 /** Top-level API exposed to the user after they have authenticated. */
 export interface AuthenticatedApi extends RpcTarget {
   /** Get profile info for the user who is logged in. */
@@ -653,6 +659,14 @@ export interface AuthenticatedApi extends RpcTarget {
    * Accepts any user ID so that other users' avatars can be displayed (e.g. in chat).
    */
   getAvatar(userId: string): Promise<Uint8Array | null>;
+
+  /**
+   * Transcribe a recording of speech (any container a browser's MediaRecorder produces) into text,
+   * on the deployment's Workers AI. Returns "" when no speech is recognized. Throws unless an admin
+   * has turned transcription on (`ServerConfig.transcriptionEnabled`), or if `audio` exceeds
+   * MAX_TRANSCRIPTION_AUDIO_BYTES. Nothing is stored.
+   */
+  transcribeAudio(audio: Uint8Array): Promise<string>;
 
   /**
    * Open an existing gadget.
@@ -1139,6 +1153,8 @@ export type AdminSettingsView = {
   signupsEnabled: boolean;
   /** Whether users may search the user directory to find collaborators. */
   userSearchEnabled: boolean;
+  /** Whether users may dictate prompts (see AdminApi.setTranscriptionEnabled). */
+  transcriptionEnabled: boolean;
   /** Site name shown next to the top-bar logo ("" falls back to DEFAULT_SITE_NAME). */
   siteName: string;
   /** Custom deployment logo, or undefined to use the default Cloudflare OS mark. */
@@ -1311,6 +1327,12 @@ export interface AdminApi {
    * either way, and this switch just controls user access.
    */
   setUserSearchEnabled(enabled: boolean): Promise<void>;
+
+  /**
+   * Turn speech-to-text for dictated prompts on or off (off by default). When off,
+   * `AuthenticatedApi.transcribeAudio()` throws and the composer hides its microphone.
+   */
+  setTranscriptionEnabled(enabled: boolean): Promise<void>;
 
   /**
    * Set the site name shown next to the top-bar logo. Pass "" to reset to DEFAULT_SITE_NAME.
@@ -1645,6 +1667,12 @@ export type ServerConfig = {
    * only an exact username/email field.
    */
   userSearchEnabled: boolean;
+
+  /**
+   * Whether users may dictate prompts, transcribed by `AuthenticatedApi.transcribeAudio()`
+   * (admin-configurable, default false). The composer shows its microphone only when true.
+   */
+  transcriptionEnabled: boolean;
 
   /**
    * Site name shown next to the top-bar logo (admin-configurable). Empty falls back to

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, type ChangeEvent } from 'react'
 import { RpcStub } from 'capnweb'
 import { useNavigate, useSearch } from '@tanstack/react-router'
 import { Switch, Textarea, Input, Button, Tabs, Loader, useKumoToastManager } from '@cloudflare/kumo'
-import { Hexagon, MagnifyingGlass, ShieldWarning, UserPlus } from '@phosphor-icons/react'
+import { Hexagon, MagnifyingGlass, Microphone, ShieldWarning, UserPlus } from '@phosphor-icons/react'
 import { useAuthenticatedApi } from './AuthContext'
 import { AdminApi, AdminFormat, AdminResourceVendor, AdminSettingsView, AmbientGatekeeperMode, DeploymentUpdateStatus, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_ANNOUNCEMENT_LENGTH, MAX_SITE_NAME_LENGTH, DEFAULT_SITE_NAME, BannerColor, BANNER_COLORS, DEFAULT_BANNER_COLOR } from '@gadgets/workshop-shared/api'
 import { applyAccentColor, DEFAULT_ACCENT_COLOR } from './theme'
@@ -87,6 +87,10 @@ export default function AdminPage() {
   const [userSearchEnabled, setUserSearchEnabled] = useState(false)
   const [savingUserSearch, setSavingUserSearch] = useState(false)
 
+  // Whether users may dictate prompts.
+  const [transcriptionEnabled, setTranscriptionEnabled] = useState(false)
+  const [savingTranscription, setSavingTranscription] = useState(false)
+
   // Gatekeeper resource config, and the set of resource keys ("vendorId\u0000urlPattern") busy toggling.
   const [resourceVendors, setResourceVendors] = useState<AdminResourceVendor[]>([])
   const [resourceBusy, setResourceBusy] = useState<Set<string>>(new Set())
@@ -124,6 +128,7 @@ export default function AdminPage() {
   const applySettings = (view: Awaited<ReturnType<RpcStub<AdminApi>['getSettings']>>) => {
     setSignupsEnabled(view.signupsEnabled)
     setUserSearchEnabled(view.userSearchEnabled)
+    setTranscriptionEnabled(view.transcriptionEnabled)
     setSavedSiteName(view.siteName)
     setSiteNameDraft(view.siteName)
     setSiteLogoUrl(view.siteLogo?.url ?? null)
@@ -351,6 +356,21 @@ export default function AdminPage() {
       toasts.add({ title: message, variant: 'error' })
     } finally {
       setSavingUserSearch(false)
+    }
+  }
+
+  const handleTranscriptionToggle = async (enabled: boolean) => {
+    if (!admin) return
+    setSavingTranscription(true)
+    setTranscriptionEnabled(enabled) // optimistic
+    try {
+      await admin.api.setTranscriptionEnabled(enabled)
+    } catch (err) {
+      setTranscriptionEnabled(!enabled) // revert
+      const message = err instanceof Error ? err.message : 'Update failed'
+      toasts.add({ title: message, variant: 'error' })
+    } finally {
+      setSavingTranscription(false)
     }
   }
 
@@ -908,6 +928,31 @@ export default function AdminPage() {
           </div>
         </div>
       </div>
+      )}
+
+      {/* Dictated prompts */}
+      {activeTab === 'general' && (
+        <div className="bg-kumo-elevated border border-kumo-line rounded-xl p-6">
+          <div className="flex items-center gap-4">
+            <div className="w-9 h-9 rounded-lg flex-shrink-0 flex items-center justify-center bg-kumo-tint">
+              <Microphone size={18} className="text-kumo-subtle" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <h2 className="text-lg font-semibold text-kumo-strong">Voice input</h2>
+              <p className="text-sm text-kumo-subtle mt-0.5">
+                Let users dictate prompts with the microphone. Recordings are transcribed with
+                Workers AI, billed to this deployment&rsquo;s account and not counted against
+                users&rsquo; usage limits. Applies on each user&rsquo;s next connection.
+              </p>
+            </div>
+            <Switch
+              aria-label="Allow voice input"
+              checked={transcriptionEnabled}
+              disabled={savingTranscription}
+              onCheckedChange={handleTranscriptionToggle}
+            />
+          </div>
+        </div>
       )}
 
       {/* Gatekeeper resources */}

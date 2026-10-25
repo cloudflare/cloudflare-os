@@ -34,6 +34,7 @@ import { createWorkshopLogger } from "./observability";
 import { deployServiceInstall, routerVersionTag } from "./deployment-updates.js";
 import { retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
 import { deviceSessionCallback } from "./auth/device-session-callback.js";
+import { transcribeAudio } from "./transcription.js";
 
 const logger = createWorkshopLogger("workshop.server");
 
@@ -265,6 +266,10 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     let result = await this.env.AVATARS.get(userId, "arrayBuffer");
     if (!result) return null;
     return new Uint8Array(result);
+  }
+
+  transcribeAudio(audio: Uint8Array): Promise<string> {
+    return transcribeAudio(this.env, this.#userId, audio);
   }
 
   async getAiConfig(): Promise<AiGatewayInfo> {

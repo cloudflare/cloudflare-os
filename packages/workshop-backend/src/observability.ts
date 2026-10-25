@@ -5,6 +5,7 @@ export type WorkshopObservabilityFields = {
   accountId: number;
   actionId: number | string;
   agentName: string;
+  audioSeconds: number;
   autoProvisioned: boolean;
   blueprintId: string;
   cacheLifetimeMs: number;
