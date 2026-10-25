@@ -468,7 +468,8 @@ function prepareFilter(sheet: PreparedSheet, evaluator: ExportEvaluator, fmts: C
   if (criteria.size) {
     for (let row = headerRow + 1; row <= endRow; ++row) {
       for (const [column, criterion] of criteria) {
-        const token = (tokenOf.get(column) as Map<number, string | null>).get(row) ?? "z:"; // every criteria column has its map
+        // An empty cell is blank; one whose value is unknown (null) hides nothing.
+        const tokens = tokenOf.get(column) as Map<number, string | null>, token = tokens.has(row) ? tokens.get(row) as string | null : "z:";
         if (criterion.selectsNothing || (token !== null && !criterion.tokens.has(token))) { hiddenRows.push(row + 1); break; }
       }
     }

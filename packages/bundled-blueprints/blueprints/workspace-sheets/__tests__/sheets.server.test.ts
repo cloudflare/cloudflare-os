@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { ExportHandler, Gadget } from "../files/server.ts";
+import { workbookToXlsx } from "../files/lib/xlsx.ts";
 import { EXPORT_UNKNOWN, ExportEvaluator, MAX_EXPORT_CELLS, MAX_EXPORT_TEXT, loadExportWorkbook } from "../files/lib/export-data.ts";
 import type { Cell, Operation, SheetMeta, SubscriberEvent } from "../files/lib/protocol.ts";
 
@@ -586,6 +587,20 @@ describe("XLSX export", () => {
     const contentTypes = part(parts, "[Content_Types].xml");
     expect(contentTypes).toContain('<Override PartName="/xl/charts/chart2.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>');
     expect(contentTypes).toContain('<Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>');
+  });
+
+  it("hides no row for a filter value the export couldn't work out", async () => {
+    const gadget = newGadget();
+    await gadget.setRange({ values: [["Name", "Double"], ["a", "=1*2"], ["b", "=2*2"]] });
+    const document = await gadget.getStructure();
+    const [id] = document.sheetOrder;
+    const filter = { row: 0, endRow: 2, columns: [0, 1], criteria: { 1: ["n:2"] }, rowOrder: [], sort: null };
+    await gadget.applyOperation({ structure: { sheetOrder: document.sheetOrder, sheets: { [id]: { ...document.sheets[id], filter } } } });
+    const workbook = await loadExportWorkbook(gadget, { formats: true });
+    const evaluator = new ExportEvaluator(workbook);
+    evaluator.limits.budget = 0; // no formula is worked out
+    const xml = part(await unzip(workbookToXlsx(workbook, evaluator)), "xl/worksheets/sheet1.xml");
+    expect(xml).not.toContain('hidden="1"');
   });
 
   it("writes frozen panes, row heights, and a filter with its hidden rows and sort", async () => {
