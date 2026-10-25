@@ -71,7 +71,7 @@ There is no agent API for filters, pivot tables, row heights or deleting charts;
 
 The engine (`lib/formula.ts`) has 100+ functions across math, statistics, logic, text, lookup, date/time and information, and follows Excel's results, so an exported workbook almost always recalculates to the values the grid shows. What matters when writing formulas:
 
-- Cross-sheet references: `Sheet2!A1`, `'Sales Data'!B4`; a name with an apostrophe is `'Owner\'s Sheet'!A1` (or `''`). `HYPERLINK(url, label)` and plain `http(s)` values are links.
+- Cross-sheet references: `Sheet2!A1`, `'Sales Data'!B4`; a name with an apostrophe is `'Owner\'s Sheet'!A1` (or `'Owner''s Sheet'!A1`). `HYPERLINK(url, label)` and plain `http(s)` values are links.
 - Not supported (the formula is invalid): whole-column/row references (`A:A`, `1:1`), structured references (`[ ]`), `@`, and `;` outside an array constant.
 - Array constants `{1,2;3,4}` work wherever a range does. Nothing spills: a formula returning an array shows its first item. Where one value is expected, a range gives the cell in the formula's own row or column (implicit intersection), else `#VALUE!`. Only `SUMPRODUCT` evaluates operators over ranges item by item, so `=SUMPRODUCT((A2:A9="North")*B2:B9)` works; elsewhere use `SUMIFS`/`COUNTIFS`/`AVERAGEIFS`.
 - Criteria such as `">1"` match only numbers; a single cell reference in `SUM`/`AVERAGE` counts only a number.

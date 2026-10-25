@@ -3406,7 +3406,9 @@ interface FilterRow { rowCells: Record<number, Cell>; originalOrder: number; cur
 function reorderFilteredRows(compare: (left: FilterRow, right: FilterRow) => number, nextSort: FilterSort | null) {
   const filter = curSheet()?.filter;
   if (!filter) return;
-  const columns = filterColumns(filter);
+  // Every column across the table moves, including one left blank when the filter was made.
+  const listed = filterColumns(filter), first = Math.min(...listed), last = Math.max(...listed);
+  const columns = Array.from({ length: last - first + 1 }, (_, index) => first + index);
   const rows: FilterRow[] = [];
   const endRow = filter.endRow ?? curSheet().rows - 1;
   const baseline = filter.rowOrder?.length === endRow - filter.row

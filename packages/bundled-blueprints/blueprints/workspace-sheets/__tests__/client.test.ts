@@ -473,6 +473,18 @@ describe("menus", () => {
   });
 });
 
+describe("filter sort", () => {
+  it("moves a column filled in after the filter was made with its records", async () => {
+    const meta: SheetMeta = { ...sheet("s1"), filter: { row: 0, endRow: 2, columns: [0, 2], criteria: {}, rowOrder: [1, 2], sort: null } };
+    await loadClient(meta, { A1: cell("Name"), C1: cell("Amount"), A2: cell("Z"), A3: cell("A"), C2: cell("10"), C3: cell("20"), B2: cell("for Z"), B3: cell("for A") });
+    press(gridEl(), { key: "ArrowDown", altKey: true });
+    [...document.querySelectorAll<HTMLElement>(".mi")].find((row) => row.textContent?.includes("Sort A → Z"))!.click();
+    await settle();
+    expect([shown("A2"), shown("B2"), shown("C2")]).toEqual(["A", "for A", "20"]);
+    expect([shown("A3"), shown("B3"), shown("C3")]).toEqual(["Z", "for Z", "10"]);
+  });
+});
+
 describe("a refused row insert", () => {
   it("discards the references it rewrote on other sheets", async () => {
     const one = sheet("s1"), two = { ...sheet("s2"), name: "Other" };
