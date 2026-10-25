@@ -473,6 +473,20 @@ describe("menus", () => {
   });
 });
 
+describe("filtered rows", () => {
+  it("are stepped over by the keyboard, so typing never edits a hidden record", async () => {
+    const meta: SheetMeta = { ...sheet("s1"), filter: { row: 0, endRow: 3, columns: [0], criteria: { 0: ["s:keep"] }, rowOrder: [1, 2, 3], sort: null } };
+    const h = await loadClient(meta, { A1: cell("Name"), A2: cell("keep"), A3: cell("hide"), A4: cell("keep") });
+    press(gridEl(), { key: "ArrowDown" });
+    press(gridEl(), { key: "ArrowDown" });
+    typeIntoActiveCell("edited");
+    await settle();
+    const refs = h.gadget.applyOperation.mock.calls.flatMap(([op]) => (op as Operation).cellOps ?? []).map((op) => op.ref);
+    expect(refs).toContain("A4");
+    expect(refs).not.toContain("A3");
+  });
+});
+
 describe("filter sort", () => {
   it("moves a column filled in after the filter was made with its records", async () => {
     const meta: SheetMeta = { ...sheet("s1"), filter: { row: 0, endRow: 2, columns: [0, 2], criteria: {}, rowOrder: [1, 2], sort: null } };

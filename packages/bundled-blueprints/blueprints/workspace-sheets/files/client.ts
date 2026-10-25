@@ -4290,6 +4290,14 @@ function clampRC(r: number, c: number): RC {
 function moveActive(r: number, c: number, extend = false, preserveExtra = false) {
   tabRun = null;
   const p = clampRC(r, c);
+  // Rows a filter hides are stepped over in the direction of travel, so typing never lands on one.
+  if (rowHidden(p.r)) {
+    const step = p.r < focus.r ? -1 : 1, rows = curSheet().rows;
+    let row = p.r;
+    while (row >= 0 && row < rows && rowHidden(row)) row += step;
+    if (row < 0 || row >= rows) for (row = p.r; row >= 0 && row < rows && rowHidden(row); row -= step);
+    if (row >= 0 && row < rows) p.r = row;
+  }
   focus = { r: p.r, c: p.c };
   if (!extend) { anchor = { r: p.r, c: p.c }; if (!preserveExtra) extraRanges = []; }
   updateSelectionUI();
