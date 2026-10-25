@@ -1814,8 +1814,13 @@ function makeEditable(elem: HTMLElement, placeholder?: string): void {
 // Sets a prop an in-place editor saves on the deck's current copy of its block:
 // a patch may have replaced the block the editor was drawn from, and commands
 // that follow (Duplicate, Copy) read the deck.
+// The block as the deck holds it now: a broadcast replaces block objects, so one captured when
+// a field was drawn may be stale.
+function liveBlock(slideId: string, blockId: string): Block | undefined {
+  return deck.slides.find((s) => s.id === slideId)?.blocks.find((b) => b.id === blockId);
+}
 function setLiveProp(slideId: string, blockId: string, key: string, value: PropValue): void {
-  const live = deck.slides.find((s) => s.id === slideId)?.blocks.find((b) => b.id === blockId);
+  const live = liveBlock(slideId, blockId);
   if (live) live.props = { ...live.props || {}, [key]: value };
 }
 // A key an input method is using (Enter confirming a candidate, say): it isn't
@@ -1957,7 +1962,9 @@ function placeCaret(root: HTMLElement, offset: number): void {
 // A one-item-per-line prop (bullet lists) edited in place, one editable row
 // per item. Enter splits the item at the caret into a new row (on an empty
 // last row, or at the item limit, it finishes); Backspace at the start of a
-// row joins it onto the one above; Esc or clicking away saves.
+// row joins it onto the one above; Esc or clicking away saves. ⌘/Ctrl Z undoes
+// a split, join or multi-line paste when nothing was typed after it (the
+// browser's own undo covers typing).
 function bindInlineList<E extends HTMLElement>(list: E, slide: Slide, block: Block, propKey: string, makeRow: (item: string) => ListRow, maxItems = Infinity): E {
   const raw = String((block.props || {})[propKey] ?? "");
   const allItems = raw.split("\n").map((s) => s.trim()).filter(Boolean);
@@ -1986,15 +1993,51 @@ function bindInlineList<E extends HTMLElement>(list: E, slide: Slide, block: Blo
     r.setEnd(container, offset);
     return r.toString().length;
   };
+  // Splits, joins and multi-line pastes rebuild rows, which the browser's undo can't follow.
+  type ListState = { texts: string[]; caret: [number, number] };
+  const undone: Array<{ before: ListState; after: ListState }> = [], redone: typeof undone = [];
+  const state = (): ListState => {
+    const all = fields(), sel = getSelection();
+    const at = all.findIndex((f) => sel?.anchorNode && f.contains(sel.anchorNode));
+    return { texts: all.map((f) => f.textContent ?? ""), caret: at < 0 || !sel?.anchorNode ? [0, 0] : [at, offsetIn(all[at], sel.anchorNode, sel.anchorOffset)] };
+  };
+  const structural = (change: () => void) => {
+    const before = state();
+    change();
+    undone.push({ before, after: state() });
+    redone.length = 0;
+  };
+  const restore = (to: ListState) => {
+    let all = fields();
+    for (let i = all.length - 1; i >= to.texts.length; i--) [...list.children].find((c) => c.contains(all[i]))?.remove();
+    all = fields();
+    for (let i = 0; i < to.texts.length; i++) {
+      if (all[i]) all[i].textContent = to.texts[i];
+      else all.push(addRow(to.texts[i], [...list.children].find((c) => c.contains(all[i - 1])) as HTMLElement));
+    }
+    caretAt(all[to.caret[0]] ?? all[0], to.caret[1]);
+  };
+  // Undoes (or redoes) the last structural edit if the rows still show its result.
+  const step = (redo: boolean): boolean => {
+    const from = redo ? redone : undone, entry = from[from.length - 1];
+    if (!entry || state().texts.join("\n") !== (redo ? entry.before : entry.after).texts.join("\n")) return false;
+    from.pop();
+    restore(redo ? entry.after : entry.before);
+    (redo ? undone : redone).push(entry);
+    return true;
+  };
   const addRow = (text: string, after: HTMLElement | null): HTMLElement => {
     const { row, textEl } = makeRow(text);
     makeEditable(textEl, "List item");
+    textEl.addEventListener("input", () => { redone.length = 0; });
     textEl.addEventListener("keydown", (e) => {
       e.stopPropagation();
       if (imeKey(e) || saveKey(e)) return;
       const sel = getSelection();
       const range = sel && sel.rangeCount ? sel.getRangeAt(0) : null;
-      if (e.key === "Escape") {
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && e.key.toLowerCase() === "z") {
+        if (step(e.shiftKey)) e.preventDefault();
+      } else if (e.key === "Escape") {
         e.preventDefault();
         textEl.blur();
       } else if (e.key === "Enter") {
@@ -2008,9 +2051,10 @@ function bindInlineList<E extends HTMLElement>(list: E, slide: Slide, block: Blo
         const text = textEl.textContent ?? "";
         const start = offsetIn(textEl, range.startContainer, range.startOffset);
         const end = offsetIn(textEl, range.endContainer, range.endOffset);
-        textEl.textContent = text.slice(0, start);
-        const next = addRow(text.slice(end), row);
-        caretAt(next, 0);
+        structural(() => {
+          textEl.textContent = text.slice(0, start);
+          caretAt(addRow(text.slice(end), row), 0);
+        });
       } else if (e.key === "Backspace" && range && range.collapsed && offsetIn(textEl, range.startContainer, range.startOffset) === 0) {
         const all = fields();
         const i = all.indexOf(textEl);
@@ -2018,9 +2062,11 @@ function bindInlineList<E extends HTMLElement>(list: E, slide: Slide, block: Blo
         e.preventDefault();
         const prev = all[i - 1];
         const at = prev.textContent?.length ?? 0;
-        prev.textContent += textEl.textContent;
-        row.remove();
-        caretAt(prev, at);
+        structural(() => {
+          prev.textContent += textEl.textContent;
+          row.remove();
+          caretAt(prev, at);
+        });
       }
     });
     // Pasted (or dropped) lines become rows from the caret on; lines past the
@@ -2038,15 +2084,17 @@ function bindInlineList<E extends HTMLElement>(list: E, slide: Slide, block: Blo
       const lines = data.split("\n");
       const room = Math.max(1, maxItems - fields().length + 1);
       const parts = [...lines.slice(0, room - 1), lines.slice(room - 1).join(" ")];
-      textEl.textContent = text.slice(0, start) + parts[0];
-      let last = textEl, after = row;
-      for (const line of parts.slice(1)) {
-        last = addRow(line, after);
-        after = [...list.children].find((c) => c.contains(last)) as HTMLElement;
-      }
-      const at = last.textContent?.length ?? 0;
-      last.textContent += text.slice(end);
-      caretAt(last, at);
+      structural(() => {
+        textEl.textContent = text.slice(0, start) + parts[0];
+        let last = textEl, after = row;
+        for (const line of parts.slice(1)) {
+          last = addRow(line, after);
+          after = [...list.children].find((c) => c.contains(last)) as HTMLElement;
+        }
+        const at = last.textContent?.length ?? 0;
+        last.textContent += text.slice(end);
+        caretAt(last, at);
+      });
     });
     if (after) after.after(row);
     else list.appendChild(row);
@@ -4600,12 +4648,13 @@ function renderAdvancedDisclosure(slide: Slide, block: Block, def: ComponentDef 
 // in place meanwhile: that would take the field (and, where removing it fires
 // no blur, its unsaved text) away.
 async function patchBlock(slide: Slide, block: Block, patch: BlockPatch): Promise<void> {
-  Object.assign(block, patch);
+  Object.assign(liveBlock(slide.id, block.id) ?? block, patch);
   await api.updateBlock(slide.id, block.id, patch);
   renderWhenIdle();
 }
 async function patchBlockProp(slide: Slide, block: Block, key: string, value: PropValue): Promise<void> {
-  block.props = { ...block.props || {}, [key]: value };
+  const live = liveBlock(slide.id, block.id) ?? block;
+  live.props = { ...live.props || {}, [key]: value };
   await api.updateBlock(slide.id, block.id, { props: { [key]: value } });
   renderWhenIdle();
 }

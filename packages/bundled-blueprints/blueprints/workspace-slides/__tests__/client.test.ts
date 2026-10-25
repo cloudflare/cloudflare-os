@@ -424,6 +424,51 @@ describe("edits racing the server's broadcasts", () => {
     expect(gadget.addBlock).toHaveBeenCalledWith("s1", expect.objectContaining({ props: expect.objectContaining({ text: "draft" }) }));
   });
 
+  // A Format field that outlives a broadcast edits the deck's block, not the one it was drawn for.
+  it("Duplicate copies a position typed into a Format field that outlived a broadcast", async () => {
+    await broadcast(deck.slides[0]!.blocks);
+    await select("t1");
+    press("Enter");
+    await settle();
+    const advanced = () => document.querySelector<HTMLButtonElement>(".adv-toggle")!;
+    advanced().click();
+    const x = document.querySelector<HTMLInputElement>('input[data-key="pos-x"]')!;
+    x.focus();
+    x.value = "101";
+    x.dispatchEvent(new Event("change", { bubbles: true }));
+    await broadcast(deck.slides[0]!.blocks.map((b) => b.id === "t1" ? { ...b, x: 101 } : b));
+    expect(document.activeElement).toBe(x);
+    x.value = "102";
+    x.dispatchEvent(new Event("change", { bubbles: true }));
+    button("Duplicate").click();
+    await settle();
+    expect(gadget.addBlock).toHaveBeenCalledWith("s1", expect.objectContaining({ x: 126 }));
+    advanced().click();
+  });
+
+  // Splitting a bullet row is undone by ⌘Z (the browser's undo can't follow it).
+  it("undoes and redoes a bullet row split", async () => {
+    await broadcast(deck.slides[0]!.blocks);
+    await select("l1");
+    const rows = () => [...onStage("l1").querySelectorAll<HTMLElement>(".inline-edit")];
+    const first = rows()[0]!;
+    first.tabIndex = 0;
+    first.focus();
+    const range = document.createRange();
+    range.setStart(first.firstChild!, 1);
+    getSelection()!.removeAllRanges();
+    getSelection()!.addRange(range);
+    first.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    expect(rows().map((r) => r.textContent)).toEqual(["o", "ne", "two"]);
+    const undo = (shiftKey = false) => (document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent("keydown", { key: "z", metaKey: true, shiftKey, bubbles: true, cancelable: true }));
+    undo();
+    expect(rows().map((r) => r.textContent)).toEqual(["one", "two"]);
+    undo(true);
+    expect(rows().map((r) => r.textContent)).toEqual(["o", "ne", "two"]);
+    (document.activeElement as HTMLElement).blur();
+    await settle();
+  });
+
   // The asset sweep may delete the raster of artwork gone from the deck and its history: when the
   // artwork comes back, the server is asked again whether it has one.
   it("asks about an SVG's raster again when the artwork returns", async () => {
