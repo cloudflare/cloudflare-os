@@ -431,20 +431,22 @@ describe("UserDurableObject notifications", () => {
     const workspaceId = env.TEST_OVERSEER.idFromName(crypto.randomUUID()).toString();
     using metadata = vi.spyOn(OverseerDurableObject.prototype, "getChatHeadsForUser")
       .mockRejectedValue(new Error("No metadata reads"));
-    using recount = vi.spyOn(OverseerDurableObject.prototype, "getChatStateForUser")
-      .mockResolvedValue({chatTitle: "Updated", unreadCount: 4, notifications: [], timelineTailSequence: 4});
+    using recount = vi.spyOn(OverseerDurableObject.prototype, "getChatReadPositionForUser")
+      .mockRejectedValue(new Error("No source reads"));
     await runInDurableObject(stub, async (user, ctx) => {
-      await user.newGadget(workspaceId, "Existing workspace");
+      await user.newWorkspace(workspaceId, "Existing workspace");
       const storage = makeUserStorage(ctx.storage);
       for (const [chatId, unreadCount] of [[1, 3], [2, 5]]) storage.chatReadCursors.put({
-        workspaceId, chatId, readThroughSequence: -1, unreadCount, notifiedThroughSequence: -1});
+        workspaceId, chatId, readThroughSequence: -1, readThroughVisibleSequence: 0,
+        latestVisibleSequence: unreadCount, unreadCount, notifiedThroughSequence: -1});
       storage.notificationSubscriptions.put({phone: ONE});
       storage.notificationBadge.put({version: 1, count: 8});
     });
     await evictDurableObject(stub);
     await runInDurableObject(stub, async (user, ctx) => {
       Object.defineProperty(user, "env", {value: installEnv});
-      await user.messageArrived(workspaceId, 1);
+      await user.messageArrived(workspaceId, 1, {firstMessageSequence: 4,
+        firstVisibleSequence: 4, latestVisibleSequence: 4, notifications: []});
       const storage = makeUserStorage(ctx.storage);
       expect(storage.notificationBadge.get()).toMatchObject({count: 9});
       storage.notificationBadge.put({...storage.notificationBadge.get(), retryAt: 0});
@@ -453,16 +455,16 @@ describe("UserDurableObject notifications", () => {
     });
     expect(bodies(fetcher, "/v1/badges").map(({count}) => count)).toEqual([9]);
     expect(metadata).not.toHaveBeenCalled();
-    expect(recount).toHaveBeenCalledOnce();
+    expect(recount).not.toHaveBeenCalled();
   });
 
-  it.each(["workspaceRemoved", "deleteGadget"] as const)("invalidates a cold badge on %s without cached cursors", async removal => {
+  it.each(["workspaceRemoved", "deleteWorkspace"] as const)("invalidates a cold badge on %s without cached cursors", async removal => {
     const fetcher = stubService();
     const stub = env.TEST_USER.getByName(`badge-${crypto.randomUUID()}`);
     const workspaceId = env.TEST_OVERSEER.idFromName(crypto.randomUUID()).toString();
     using _metadata = vi.spyOn(OverseerDurableObject.prototype, "getChatHeadsForUser").mockResolvedValue(null);
     await runInDurableObject(stub, async (user, ctx) => {
-      await user.newGadget(workspaceId, "Deleted workspace");
+      await user.newWorkspace(workspaceId, "Deleted workspace");
       const storage = makeUserStorage(ctx.storage);
       storage.notificationSubscriptions.put({phone: ONE});
       storage.notificationBadge.put({version: 1, count: 8});
@@ -494,12 +496,12 @@ describe("UserDurableObject notifications", () => {
     const workspaceId = env.TEST_OVERSEER.idFromName(crypto.randomUUID()).toString();
     using metadata = vi.spyOn(OverseerDurableObject.prototype, "getChatHeadsForUser")
       .mockRejectedValue(new Error("Metadata unavailable"));
-    using recount = vi.spyOn(OverseerDurableObject.prototype, "getChatStateForUser")
+    using recount = vi.spyOn(OverseerDurableObject.prototype, "getChatReadPositionForUser")
       .mockRejectedValue(new Error("Count source unavailable"));
     await runInDurableObject(stub, async (user, ctx) => {
-      await user.newGadget(workspaceId, "Existing workspace");
+      await user.newWorkspace(workspaceId, "Existing workspace");
       makeUserStorage(ctx.storage).chatReadCursors.put({workspaceId, chatId: 1, readThroughSequence: -1,
-        unreadCount: 8, notifiedThroughSequence: 7});
+        readThroughVisibleSequence: 0, latestVisibleSequence: 8, unreadCount: 8, notifiedThroughSequence: 7});
     });
     await evictDurableObject(stub);
     await runInDurableObject(stub, async (user, ctx) => {
@@ -514,16 +516,23 @@ describe("UserDurableObject notifications", () => {
     expect(metadata).not.toHaveBeenCalled(); expect(recount).not.toHaveBeenCalled();
   });
 
-  it("recovers a pending badge after eviction and retries a lost ACK without replaying an alert", async () => {
+  it("recovers a pending badge after reset and retries a lost ACK without replaying an alert", async () => {
     const fetcher = stubService();
-    const stub = env.TEST_USER.getByName(`badge-${crypto.randomUUID()}`);
+    let stub = env.TEST_USER.getByName(`badge-${crypto.randomUUID()}`);
+    const reset = async () => {
+      await expect(runInDurableObject(stub, async (_user, ctx) => {
+        await ctx.storage.sync();
+        ctx.abort("Badge recovery reset");
+      })).rejects.toThrow("Badge recovery reset");
+      stub = env.TEST_USER.get(stub.id);
+    };
     await runInDurableObject(stub, async (user, ctx) => {
       Object.defineProperty(user, "env", {value: installEnv});
       await user.registerNotificationDevice("a".repeat(64));
       const storage = makeUserStorage(ctx.storage);
       storage.notificationBadge.put({version: 7, count: 8, retryAt: 0});
     });
-    await evictDurableObject(stub);
+    await reset();
     await runInDurableObject(stub, async (user, ctx) => {
       Object.defineProperty(user, "env", {value: installEnv});
       const storage = makeUserStorage(ctx.storage);
@@ -533,7 +542,7 @@ describe("UserDurableObject notifications", () => {
       expect(storage.notificationBadge.get().retryAt).toBeGreaterThan(Date.now());
       expect(await ctx.storage.getAlarm()).not.toBeNull();
     });
-    await evictDurableObject(stub);
+    await reset();
     await runInDurableObject(stub, async (user, ctx) => {
       Object.defineProperty(user, "env", {value: installEnv});
       const storage = makeUserStorage(ctx.storage);
@@ -563,7 +572,7 @@ describe("UserDurableObject notifications", () => {
       const delivery = user.alarm();
       try {
         await entered.promise;
-        await user.newGadget(env.TEST_OVERSEER.idFromName(crypto.randomUUID()).toString(), "Not loaded");
+        await user.newWorkspace(env.TEST_OVERSEER.idFromName(crypto.randomUUID()).toString(), "Not loaded");
         await user.registerNotificationDevice("b".repeat(64));
         expect(storage.notificationBadge.get().count).toBe(0);
       } finally { release.resolve(); }

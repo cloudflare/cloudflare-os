@@ -971,18 +971,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (!this.env.NOTIFICATION_SERVICE_URL ||
         !Object.keys(this.storage.notificationSubscriptions.get()).length) return;
     let previous = this.storage.notificationBadge.get();
-    // All counts are durable local rows; only an in-flight recount can make the sum provisional.
-    let complete = [...this.#readCursors.values()].every(cursor =>
-      !this.#hasWorkspace(cursor.workspaceId) || this.#deniedUnreadWorkspaces.has(cursor.workspaceId) ||
-      !cursor.unreadDirty);
-    if (!complete) {
-      // Null plus retryAt is reconstruction intent in the existing outbox, surviving eviction.
-      if (previous.count === null && previous.retryAt !== undefined) return;
-      this.storage.notificationBadge.put({...previous, count: null,
-        retryAt: previous.retryAt ?? Date.now() + 1_000});
-      this.ctx.waitUntil(this.#armExpirySweep());
-      return;
-    }
     let {unreadMessageCount} = this.#unreadCounts();
     if (!force && previous.count === unreadMessageCount) return;
     this.storage.notificationBadge.put({version: previous.version + 1,
