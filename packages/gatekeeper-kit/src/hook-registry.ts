@@ -40,6 +40,10 @@ type Held<Hook extends RpcTarget, Message> = {
   }[Stub];
 };
 
+/** A `HookRegistry`'s `screen`: whether a hook, as registered, might take `message`. */
+type Screen<Hook extends RpcTarget, Message, Registration> =
+  (registration: Registration, capabilities: HookCapabilities<Hook, Message>, message: Message) => Promise<boolean>;
+
 const REGISTRATIONS = "reg:";
 const CAPABILITIES = "caps:";
 
@@ -79,14 +83,20 @@ const CAPABILITIES = "caps:";
 export class HookRegistry<Hook extends RpcTarget, Message, Registration> {
   readonly #kv: KvScannable;
   readonly #queue: HookDeliveryQueue<Message>;
+  readonly #screen?: Screen<Hook, Message, Registration>;
   #running?: Promise<void>;
 
   /**
    * @param kv The driver's `ctx.storage.kv`.
    * @param onDrop Called once for each message dropped after repeated delivery failures.
+   * @param screen Asked before a message's firing is started: resolve `false` to finish the message
+   * without one. For a provider that can't narrow what it pushes to what a hook watches for, whose
+   * every event would otherwise start a firing in each hook's workspace. A throw is retried, as a
+   * delivery's is.
    */
-  constructor(kv: KvScannable, onDrop: () => void) {
+  constructor(kv: KvScannable, onDrop: () => void, screen?: Screen<Hook, Message, Registration>) {
     this.#kv = kv;
+    this.#screen = screen;
     this.#queue = new HookDeliveryQueue<Message>(kv, onDrop);
   }
 
@@ -149,9 +159,14 @@ export class HookRegistry<Hook extends RpcTarget, Message, Registration> {
 
   async #deliver(key: string, message: Message): Promise<void> {
     // A disabled hook's rows are finished, and it gets no new ones.
-    const capabilities = this.#kv.get<Held<Hook, Message>>(CAPABILITIES + key);
+    const capabilities = this.#kv.get<Held<Hook, Message> & HookCapabilities<Hook, Message>>(CAPABILITIES + key);
     if (!capabilities) return;
     try {
+      const registration = this.#kv.get<Registration>(REGISTRATIONS + key);
+      if (this.#screen && registration !== undefined &&
+          !await this.#screen(registration, capabilities, message)) {
+        return;
+      }
       // A refused firing is retried like a failed one, being indistinguishable from a transient
       // failure; disabling the hook ends the retries. Awaited, not pipelined: workerd can't pass a
       // property of a pending result into another call.

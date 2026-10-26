@@ -17,7 +17,7 @@ import type { HookController, HookInitiator, HookTargetMetadata } from "@gadgets
 import { GmailApi, GmailApiError } from "./google-api";
 import { obsContext } from "./observability";
 import type { PushHooksEnv } from "./pubsub-push";
-import type { GmailMessageHook } from "./types";
+import type { GmailGroupMessageEntry, GmailMessageEntry } from "./types";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.google.gmail-hooks", vendorId: "google" });
 
@@ -26,7 +26,10 @@ type Env = Cloudflare.Env & PushHooksEnv;
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 
-export type GmailMessageHookTarget = RpcTarget & GmailMessageHook;
+/** A hook's target: a gadget's `GmailMessageHook`, or a `GmailGroupMessageHook` on a group binding. */
+export type GmailMessageHookTarget = RpcTarget & {
+  receiveMessage(entry: GmailMessageEntry | GmailGroupMessageEntry): Promise<void>;
+};
 
 /**
  * Where a hook delivers, sealed into its delivery stub by the facet's `ctx.restore()`: one thread,
@@ -40,6 +43,15 @@ export type GmailHookParams = { threadId?: string };
  */
 export type GmailHookDelivery = HookDelivery<GmailMessageHookTarget, string>;
 
+/** A delivery that can be asked first, as a `screened` hook's is. */
+export interface GmailScreenedHookDelivery extends GmailHookDelivery {
+  /**
+   * Whether `deliver` might take message `messageId`. Answers only for the driver, which starts no
+   * firing for a message it refuses: `deliver` checks again.
+   */
+  screen(messageId: string): Promise<boolean>;
+}
+
 /** Everything a hook needs once enabled, captured when the facet binds it. */
 export type GmailHookProps = GmailHookParams & {
   key: string;
@@ -48,6 +60,12 @@ export type GmailHookProps = GmailHookParams & {
   userObjectId: string;
   /** A label new mail must arrive with for this hook to be tried: grants nothing, only spares deliveries the facet would refuse. */
   labelId?: string;
+  /**
+   * Put each message to the delivery's `screen()` (it is a `GmailScreenedHookDelivery`) before
+   * starting a firing, for a binding no label narrows. Without it, all of the mailbox's new mail
+   * would wake the workspace.
+   */
+  screened?: boolean;
   delivery: RpcStub<GmailHookDelivery>;
 };
 
@@ -90,9 +108,11 @@ const MAX_HISTORY_PAGES_PER_SYNC = 10;
 const TRACKING_RECHECK_MS = 24 * HOUR_MS;
 /**
  * Labels whose mail no hook is delivered: the account's own mail, spam and trash, even on a label
- * binding to SPAM or TRASH, which lists them.
+ * binding to SPAM or TRASH, which lists them. A screened hook is offered the account's own mail.
  */
 export const UNDELIVERED_GMAIL_LABELS: readonly string[] = ["SENT", "DRAFT", "SPAM", "TRASH"];
+// The owner's own posts to a group are the group's mail, so a screened hook's screen() decides them.
+const UNDELIVERED_TO_SCREENED_GMAIL_LABELS = UNDELIVERED_GMAIL_LABELS.filter(label => label !== "SENT");
 
 type Registration = Omit<GmailHookProps, "key" | "delivery"> & {
   /** The mailbox's history ID when the hook was enabled: only later records reach it. */
@@ -130,7 +150,8 @@ export class GmailHookDriver extends DurableObject<Env> {
   #watching = new SingleFlight();
   #hooks = new HookRegistry<GmailMessageHookTarget, string, Registration>(this.ctx.storage.kv, () => {
     logger.warn("dropped a Gmail message after repeated delivery failures", { event: "gmail.hooks.delivery.dropped" });
-  });
+  }, async (registration, { delivery }, messageId) =>
+    !registration.screened || await (delivery as RpcStub<GmailScreenedHookDelivery>).screen(messageId));
 
   async register(key: string, registration: Omit<Registration, "since">, capabilities: Capabilities): Promise<void> {
     const kv = this.ctx.storage.kv;
@@ -304,8 +325,9 @@ export class GmailHookDriver extends DurableObject<Env> {
   #enqueue(registrations: [string, Registration][], recordId: string, { id, threadId, labelIds }: AddedMessage): void {
     // The facet re-checks authoritatively. This prefilter exists because every delivery attempt
     // starts a hook firing in its workspace, so unfiltered spam would wake every subscriber.
-    if (labelIds?.some(label => UNDELIVERED_GMAIL_LABELS.includes(label))) return;
     for (const [key, registration] of registrations) {
+      const undelivered = registration.screened ? UNDELIVERED_TO_SCREENED_GMAIL_LABELS : UNDELIVERED_GMAIL_LABELS;
+      if (labelIds?.some(label => undelivered.includes(label))) continue;
       if (labelIds && registration.labelId !== undefined && !labelIds.includes(registration.labelId)) continue;
       if (BigInt(recordId) <= BigInt(registration.since)) continue;
       if (registration.threadId !== undefined && registration.threadId !== threadId) continue;

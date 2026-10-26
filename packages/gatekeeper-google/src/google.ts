@@ -62,6 +62,7 @@ import type {
 } from "./drive-types";
 import { ChatApi, ChatApiError } from "./chat-api";
 import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
+import { CloudIdentityApi, CloudIdentityApiError } from "./cloud-identity-api";
 import { BigQueryApi, BigQueryApiError, DEFAULT_MAX_BYTES_BILLED } from "./bigquery-api";
 import {
   BigQueryDataset, BigQueryDryRunResult, BigQueryField, BigQueryProject,
@@ -94,6 +95,7 @@ import {
   ChatSpaceConfiguratorUI,
   ChatThreadConfiguratorUI,
   GmailConfiguratorUI,
+  GoogleGroupConfiguratorUI,
   DriveConfiguratorUI,
 } from "./google-configurators";
 import BIGQUERY_CONFIGURATOR_HTML from "./generated/bigquery-configurator-ui.txt";
@@ -102,6 +104,7 @@ import CHAT_ACCOUNT_CONFIGURATOR_HTML from "./generated/chat-account-configurato
 import CHAT_SPACE_CONFIGURATOR_HTML from "./generated/chat-space-configurator-ui.txt";
 import CHAT_THREAD_CONFIGURATOR_HTML from "./generated/chat-thread-configurator-ui.txt";
 import GMAIL_CONFIGURATOR_HTML from "./generated/gmail-configurator-ui.txt";
+import GOOGLE_GROUP_CONFIGURATOR_HTML from "./generated/google-group-configurator-ui.txt";
 import DRIVE_CONFIGURATOR_HTML from "./generated/drive-configurator-ui.txt";
 import GOOGLE_LOGO_SVG from "./google-logo.svg";
 import { obsContext } from "./observability.js";
@@ -110,7 +113,7 @@ import { Mutex } from "./mutex";
 import {
   BIGQUERY_HOST, BIGQUERY_QUERY_PROJECT_PARAM, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
   GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE,
-  GOOGLE_DRIVE_RESOURCE,
+  GOOGLE_DRIVE_RESOURCE, GOOGLE_GROUP_RESOURCE,
   RESOURCE_BY_KIND,
   SUPPORTED_RESOURCES, creatableKind, nativeFileUrl,
   grantedResourceUrlPatterns, hasDriveResourceGrant, isPrivateGrant,
@@ -159,7 +162,7 @@ function getGoogleDriveTypesCode(): string {
 }
 
 import {
-  GMAIL_SUBRESOURCE_NAMESPACE, parseGmailUserSubresource, type GmailGatekeeperImplProps,
+  GMAIL_SUBRESOURCE_NAMESPACE, parseGmailSubresource, type GmailGatekeeperImplProps, type GmailSubresource,
 } from "./gmail";
 import {
   CHAT_SUBRESOURCE_NAMESPACE, parseChatSubresource, type ChatSubresource, type GoogleChatGatekeeperImplProps,
@@ -483,13 +486,14 @@ const SUBRESOURCE_ACCESS_DENIED_TTL_MS = 15_000;
 type AccountSubresource =
   | { kind: "calendar" | "freeBusy"; calendarId: string }
   | { kind: "bigQueryDataset"; dataset: BigQueryDatasetRef }
-  | { kind: "gmailUser"; subject: string }
+  | GmailSubresource
   | ChatSubresource
   | FileSubresource;
 
 /**
  * What a subresource a Google gatekeeper asks an account about names: a calendar or its free/busy
- * (see parseCalendarSubresource), a BigQuery dataset, a Gmail mailbox's owner, a Google Chat
+ * (see parseCalendarSubresource), a BigQuery dataset, a Gmail mailbox's owner or a Google Group
+ * whose mail a Gmail binding shares (see parseGmailSubresource), a Google Chat
  * conversation, its member list or account (see parseChatSubresource), or a Drive file, its content
  * or a folder, or a native Docs, Sheets or Slides file (see parseFileSubresource). Throws for any
  * other ID.
@@ -501,7 +505,7 @@ function parseAccountSubresource(subresource: string): AccountSubresource {
     case BIGQUERY_SUBRESOURCE_NAMESPACE:
       return { kind: "bigQueryDataset", dataset: parseBigQueryDatasetSubresource(subresource) };
     case GMAIL_SUBRESOURCE_NAMESPACE:
-      return { kind: "gmailUser", subject: parseGmailUserSubresource(subresource) };
+      return parseGmailSubresource(subresource);
     case CHAT_SUBRESOURCE_NAMESPACE:
       return parseChatSubresource(subresource);
     case DRIVE_SUBRESOURCE_NAMESPACE:
@@ -710,6 +714,7 @@ export class UserAccount extends DurableObject<Env> {
     let calendars = new Map<string, string>();
     let datasets = new Map<string, BigQueryDatasetRef>();
     let owners = new Map<string, string>();
+    let groups = new Map<string, string>();
     let conversations = new Map<string, { spaceName: string; members: boolean }>();
     let driveUnits = new Map<string, DriveUnit>();
     let nativeFiles = new Map<string, NativeFileSubresource>();
@@ -717,6 +722,8 @@ export class UserAccount extends DurableObject<Env> {
       if (resource.kind === "bigQueryDataset") datasets.set(subresource, resource.dataset);
       else if (resource.kind === "gmailUser" || resource.kind === "chatUser") {
         owners.set(subresource, resource.subject);
+      } else if (resource.kind === "gmailGroup") {
+        groups.set(subresource, resource.groupName);
       } else if (resource.kind === "chatSpace" || resource.kind === "chatSpaceMembers") {
         conversations.set(subresource,
           { spaceName: resource.spaceName, members: resource.kind === "chatSpaceMembers" });
@@ -781,6 +788,13 @@ export class UserAccount extends DurableObject<Env> {
       let answers = await mapWithConcurrency(entries, DEFAULT_CONCURRENCY, ([subresource, file]) =>
           this.#access.cached(subresource, ttl, () => hasNativeFileAccess(getToken, file)));
       entries.forEach(([subresource], index) => access.set(subresource, answers[index]));
+    }
+    if (groups.size > 0) {
+      let identity = new CloudIdentityApi(getToken);
+      for (let [subresource, groupName] of groups) {
+        access.set(subresource, await this.#access.cached(subresource, ttl,
+            () => hasGoogleGroupMembership(identity, getToken, groupName)));
+      }
     }
     if (owners.size > 0) {
       // A mailbox or a Chat account is private to its owner, so only that same Google account can
@@ -1024,6 +1038,10 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
         };
         return {class: this.ctx.exports.GmailGatekeeperImpl({props}), resource};
       }
+      case "group": {
+        let props: GmailGatekeeperImplProps = {userObjectId, groupAddress: target.groupAddress};
+        return {class: this.ctx.exports.GmailGatekeeperImpl({props}), resource};
+      }
       case "doc": {
         let props: GoogleDocGatekeeperImplProps = {userObjectId, documentId: target.documentId};
         return {class: this.ctx.exports.GoogleDocGatekeeperImpl({props}), resource};
@@ -1101,6 +1119,13 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
       return {
         iframeHtml: GMAIL_CONFIGURATOR_HTML,
         ui: new RpcStub(new GmailConfiguratorUI()),
+      };
+    }
+
+    if (resourceUrlPattern === GOOGLE_GROUP_RESOURCE.urlPattern) {
+      return {
+        iframeHtml: GOOGLE_GROUP_CONFIGURATOR_HTML,
+        ui: new RpcStub(new GoogleGroupConfiguratorUI(getToken, holds)),
       };
     }
 
@@ -1204,6 +1229,10 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 //   - Gmail Mailbox — strategy A (private-only), kernel-checked: every read reports its owner's
 //     account as a `gmail/user/<sub>` subresource, which checkSubresourceAccess grants only to that
 //     same Google account. addObserver still always throws, for reads made before they reported it.
+//   - Google Group — strategy B (ACL check, single unit), kernel-checked: every read reports the
+//     group as `gmail/group/<groupId>`, which checkSubresourceAccess grants only to an account that
+//     is a direct member of it, as Cloud Identity answers that account's own token (see
+//     hasGoogleGroupMembership).
 //   - Google Doc, Sheets and Slides — strategy B (ACL check, single unit), kernel-checked: every
 //     read reports the bound file as `docs/document/<documentId>`,
 //     `sheets/spreadsheet/<spreadsheetId>` or `slides/presentation/<presentationId>`, which
@@ -1301,6 +1330,31 @@ async function hasChatAccess(api: ChatApi, spaceName: string, members: boolean):
       return false;
     }
     throw error;
+  }
+}
+
+/**
+ * Whether the account behind `getToken` is a direct member of the Google Group named `groupName`,
+ * asked of Cloud Identity with that account's own token, about the address Google's userinfo
+ * verified for the same token: false when it isn't one (404) or the group doesn't let it see its
+ * members (403), which is all a group that shows its members only to them tells anyone else, and a
+ * throw for any other failure. Two 403s say nothing about membership, and throw: the account never
+ * let this app see its groups, or the deployment's project lacks the API.
+ */
+async function hasGoogleGroupMembership(
+    identity: CloudIdentityApi, getToken: () => Promise<string>, groupName: string): Promise<boolean> {
+  let email = await getGoogleVerifiedEmail(await getToken());
+  if (!email) throw new Error("This Google account has no verified email address.");
+  try {
+    return await identity.isDirectMember(groupName, email.toLowerCase());
+  } catch (error) {
+    if (!(error instanceof CloudIdentityApiError) || error.status !== 403) throw error;
+    if (error.reason === "ACCESS_TOKEN_SCOPE_INSUFFICIENT") {
+      throw new Error("A collaborator's Google account hasn't let this app see its groups. They " +
+          "need to grant it access to Google Groups.", {cause: error});
+    }
+    if (error.reason === "SERVICE_DISABLED") throw error;
+    return false;
   }
 }
 

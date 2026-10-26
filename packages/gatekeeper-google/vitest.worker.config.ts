@@ -49,6 +49,7 @@ export default defineConfig({
       "__tests__/workerd/chat-observers.test.ts",
       "__tests__/workerd/configurators.test.ts",
       "__tests__/workerd/gmail-actions.test.ts",
+      "__tests__/workerd/gmail-group.test.ts",
       "__tests__/workerd/gmail-hooks.test.ts",
       "__tests__/workerd/gmail-observers.test.ts",
       "__tests__/workerd/gmail-state.test.ts",

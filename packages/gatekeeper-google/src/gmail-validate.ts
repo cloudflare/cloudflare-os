@@ -88,6 +88,37 @@ export function combineGmailQueries(
   return effective;
 }
 
+// Operators that test only what a message says. The rest (label:, is:, in:, category:,
+// deliveredto:, bcc:, and has: for stars and labels) test the mailbox owner's own state.
+const GROUP_QUERY_OPERATORS = new Set([
+  "from", "to", "cc", "subject", "list", "filename", "rfc822msgid", "has",
+  "after", "before", "older", "newer", "older_than", "newer_than", "size", "larger", "smaller",
+]);
+const GROUP_QUERY_HAS = /^(?:attachment|drive|document|spreadsheet|presentation|youtube)(?=[\s)}]|$)/i;
+
+/**
+ * Rejects a search over a group binding that uses an operator testing the owner's own state, which
+ * would let a member learn it from which of the group's messages match.
+ */
+export function validateGmailGroupQuery(query: string): void {
+  validateGmailQueryForGrouping(query);
+  let quoted = false;
+  for (let i = 0; i < query.length; i++) {
+    if (query[i] === '"') quoted = !quoted;
+    if (quoted || query[i] !== ":") continue;
+    const name = /[A-Za-z0-9_]*$/.exec(query.slice(0, i))![0];
+    // A time such as 10:30 is a word, not an operator.
+    if (/^\d*$/.test(name)) continue;
+    const before = query[i - name.length - 1];
+    const operator = name.toLowerCase();
+    if ((before !== undefined && !/[\s({\-+]/.test(before)) || !GROUP_QUERY_OPERATORS.has(operator) ||
+        (operator === "has" && !GROUP_QUERY_HAS.test(query.slice(i + 1)))) {
+      throw new Error(`A group search can't use "${name}:". Search by words, sender, recipient, ` +
+        "subject, date or attachment instead.");
+    }
+  }
+}
+
 /** Rejects a label name that is empty or over the byte limit. */
 export function validateGmailLabelName(labelName: string): void {
   // oxlint-disable-next-line no-control-regex -- label names are rendered into approval text

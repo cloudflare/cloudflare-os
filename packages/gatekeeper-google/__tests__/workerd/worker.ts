@@ -31,7 +31,9 @@ import type {
 } from "../../src/chat-types";
 import type { ChatMessageRaw } from "../../src/chat-api";
 import { ChatHookDriver as GoogleChatHookDriver, type ChatHookParams } from "../../src/chat-hooks";
-import { GmailHookDriver as GoogleGmailHookDriver, type GmailHookParams } from "../../src/gmail-hooks";
+import {
+  GmailHookDriver as GoogleGmailHookDriver, type GmailHookParams, type GmailScreenedHookDelivery,
+} from "../../src/gmail-hooks";
 
 export { default } from "../../src/google";
 export { ChatHookController } from "../../src/chat-hooks";
@@ -96,6 +98,7 @@ type TestGmail = GmailGatekeeperImpl & {
   captureTestSnapshot(bytes: Uint8Array): Promise<unknown>;
   runTestOperation(queue: unknown, operation: string, args: unknown[]): Promise<unknown>;
   testGmailDeliver(params: GmailHookParams, callback: unknown, queue: unknown, messageId: string): Promise<void>;
+  testGmailScreen(messageId: string): Promise<boolean>;
   testGmailRestoreThrough(hooks: string, facet: GmailFacet): void;
 };
 
@@ -360,6 +363,11 @@ export class TestGmailHookDelivery extends WorkerEntrypoint<Cloudflare.Env, Test
     const { hooks, facet, params } = this.ctx.props;
     return testHooks(this.ctx.exports, hooks).gmailDeliver(facet, params, callback, approvalQueue, messageId);
   }
+
+  screen(messageId: string) {
+    return testHooks(this.ctx.exports, this.ctx.props.hooks).gmailScreen(
+      this.ctx.props.facet.facetName, this.ctx.props.facet.id, this.ctx.props.facet.props, messageId);
+  }
 }
 
 /** Test-only hook that creates and drives the props-bearing Gmail facet. */
@@ -456,6 +464,36 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
         id: observerId, verifier: this.ctx.exports.GoogleVerifier({ props: { userObjectId } }),
       })),
       subresources);
+  }
+
+  /** Opens a Gmail session the way the overseer does, for a test to drive over RPC. */
+  async openGmailSession(
+      facetName: string, id: string, props: GmailGatekeeperImplProps, queueId: string,
+  ): Promise<unknown> {
+    const queue = this.#queues.get(queueId);
+    if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
+    using queueStub = new RpcStub(queue);
+    return await this.#gatekeeper(facetName, id, props).startSession(queueStub);
+  }
+
+  /** Delivers one message through the facet's hook target, as a firing would, returning what arrived. */
+  async gmailDeliverOnce(
+      facetName: string, id: string, props: GmailGatekeeperImplProps, queueId: string, messageId: string,
+  ): Promise<GmailMessageInfo[]> {
+    const queue = this.#queues.get(queueId);
+    if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
+    const state: GmailHookState = { received: [], failures: 0 };
+    using callback = new RpcStub(new GmailRecordingHook(state));
+    using queueStub = new RpcStub(queue);
+    await (this.#gatekeeper(facetName, id, props) as unknown as TestGmail)
+      .testGmailDeliver({}, callback, queueStub, messageId);
+    return state.received;
+  }
+
+  async gmailScreen(
+      facetName: string, id: string, props: GmailGatekeeperImplProps, messageId: string,
+  ): Promise<boolean> {
+    return (this.#gatekeeper(facetName, id, props) as unknown as TestGmail).testGmailScreen(messageId);
   }
 
   async readQueue(queueId: string): Promise<{
@@ -855,6 +893,7 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   #hookQueue = new TestApprovalQueue();
   #hook: HookState = { received: [], failures: 0 };
   #gmailHook: GmailHookState = { received: [], failures: 0 };
+  #firings = 0;
   /** Which gatekeeper bound the hook, and so which recording hook its firings get. */
   #hookKind: "chat" | "gmail" = "chat";
 
@@ -917,6 +956,7 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   }
 
   startHook() {
+    this.#firings++;
     if (this.#hook.admissionFailures) {
       this.#hook.admissionFailures--;
       throw new Error("The test Workshop failed to start the firing.");
@@ -947,15 +987,16 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     Object.assign(this.#gmailHook, behavior);
   }
 
-  /** What the Gmail hook received, how many of its failures remain, and what it queued. */
+  /** What the Gmail hook received, how many of its failures remain, what it queued, and how many firings started. */
   readGmailHook(): {
     received: GmailMessageInfo[]; failures: number; submissions: Array<{ actionId: number }>;
-    observations: Array<{ title: string }>; holding: boolean;
+    observations: Array<{ title: string }>; holding: boolean; firings: number;
   } {
     const { submissions, observations } = this.#hookQueue.read();
     return {
       received: this.#gmailHook.received, failures: this.#gmailHook.failures, submissions,
       observations: observations as Array<{ title: string }>, holding: this.#gmailHook.holding === true,
+      firings: this.#firings,
     };
   }
 }
@@ -1005,6 +1046,11 @@ type TestBigQuery = BigQueryGatekeeperImpl & {
 /** Deliver through the target the facet's `[restore]()` returns for a hook's delivery stub. */
 testGmailPrototype.testGmailDeliver = function(params, callback, queue, messageId) {
   return this[restore](params).deliver(callback as never, queue as never, messageId);
+};
+
+/** Screen through that same target, as the driver does before starting a screened hook's firing. */
+testGmailPrototype.testGmailScreen = function(messageId) {
+  return (this[restore]({}) as GmailScreenedHookDelivery).screen(messageId);
 };
 
 /** As testChatPrototype.testRestoreThrough, for a Gmail facet. */

@@ -28,14 +28,15 @@ import driveConfigurator from "../src/configurator/drive-configurator-ui";
 import calendarConfigurator from "../src/configurator/calendar-configurator-ui";
 import type { CalendarConfiguratorRpc } from "../src/configurator/calendar-configurator-types";
 import gmailConfigurator from "../src/configurator/gmail-configurator-ui";
+import googleGroupConfigurator from "../src/configurator/google-group-configurator-ui";
 import chatAccountConfigurator from "../src/configurator/chat-account-configurator-ui";
 import chatSpaceConfigurator from "../src/configurator/chat-space-configurator-ui";
 import chatThreadConfigurator from "../src/configurator/chat-thread-configurator-ui";
 import {
   BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE, GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE,
   GOOGLE_CHAT_THREAD_RESOURCE,
-  GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE,
-  parseResourceUrl,
+  GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_RESOURCE, GOOGLE_GROUP_RESOURCE,
+  groupResourceUrl, parseResourceUrl,
 } from "../src/resources";
 
 // The configurators never call `ui` from these two methods; it is present only to satisfy the
@@ -112,6 +113,38 @@ describe("Gmail configurator URLs", () => {
 
     expect(gmailValues(inbox)).toEqual({ mode: "all" });
     expect(parseResourceUrl(inbox)).toEqual({ kind: "gmail" });
+  });
+});
+
+describe("Google Group configurator URLs", () => {
+  const groupUrl = (group: string) => configurableUrl(googleGroupConfigurator, { group });
+  const groupValues = (resourceUrl: string) => googleGroupConfigurator.initialValuesFromResourceUrl!({
+    resourceUrl, resourceUrlPattern: GOOGLE_GROUP_RESOURCE.urlPattern, ui: noUi,
+  });
+
+  it.for(["team@example.com", "team+launch@example.com", "o'brien-team@example.com", "a%b@example.com"])(
+    "mints the server's own URL for %s, which reads back to the same group", group => {
+      const url = groupUrl(group);
+      expect(url).toBe(groupResourceUrl(group));
+      expect(parseResourceUrl(url)).toEqual({ kind: "group", groupAddress: group });
+      expect(groupValues(url)).toEqual({ group });
+    });
+
+  it("reads a pasted Google Groups page case-insensitively, as the server does", () => {
+    const pasted = "https://groups.google.com/a/Example.com/g/Team/";
+
+    expect(groupValues(pasted)).toEqual({ group: "team@example.com" });
+    expect(parseResourceUrl(pasted)).toEqual({ kind: "group", groupAddress: "team@example.com" });
+  });
+
+  it("refuses a group address the server would refuse", () => {
+    for (const group of ["", "team", "team@example.com, other@example.com", "Team <team@example.com>"]) {
+      expect(() => groupUrl(group), group).toThrow("Choose a group.");
+    }
+  });
+
+  it("prefills nothing from a Google Groups URL that isn't one group's page", () => {
+    expect(groupValues("https://groups.google.com/g/team")).toEqual({});
   });
 });
 

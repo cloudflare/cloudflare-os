@@ -1302,7 +1302,9 @@ shallow-info.
   `nextDue()` and its own deadlines. `remove()` only forgets the hook, so provider teardown stays
   in the driver's `unregister`. Delete a hook's records directly only when clearing all of the
   driver's storage: on their own, its queued messages outlive them and are delivered if the hook
-  is enabled again.
+  is enabled again. Where the provider can't narrow what it pushes to what a hook watches for, pass
+  `screen`, which is asked before each firing is started, so that an event no hook wants wakes no
+  workspace; the binding's `deliver` still decides.
 - Every callback the kit invokes must throw display-safe errors. `discardMint`, the rejection heal,
   and the expiry notification all log what they catch, so a thrown token, header, or response body
   lands in the deployment's logs.

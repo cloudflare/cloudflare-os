@@ -95,6 +95,25 @@ describe("HookRegistry", () => {
     expect([kv.get("reg:old"), kv.get("caps:old")]).toEqual([undefined, undefined]);
   });
 
+  it("starts no firing for a message its screen turns away, and retries one whose screen throws", async () => {
+    const kv = kvHoldingStubs();
+    const screen = vi.fn(async (registration: { repo: string }, _capabilities: unknown, message: string) => {
+      if (message === "unknown") throw new Error("can't tell yet");
+      return message === registration.repo;
+    });
+    const hooks = new HookRegistry<never, string, { repo: string }>(kv, () => {}, screen);
+    const enabled = hook();
+    hooks.set("a", { repo: "one" }, enabled.capabilities);
+
+    for (const message of ["one", "two", "unknown"]) hooks.enqueue("a", message, message, Date.now());
+    await hooks.run(Date.now());
+
+    expect(enabled.startHook).toHaveBeenCalledTimes(1);
+    expect(enabled.deliver).toHaveBeenCalledWith(enabled.firing.callback, enabled.firing.approvalQueue, "one");
+    // Only the one that couldn't be screened is still pending.
+    expect(hooks.nextDue()).toBe(Date.now() + MINUTE);
+  });
+
   it("refuses a key the queue could not tell from a message id", () => {
     const kv = kvHoldingStubs();
 

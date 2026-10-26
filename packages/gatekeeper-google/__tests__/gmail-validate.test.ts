@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   combineGmailQueries, MAX_GMAIL_ADDRESS_BYTES, MAX_GMAIL_BODY_BYTES, MAX_GMAIL_LABEL_BYTES,
   MAX_GMAIL_QUERY_BYTES, MAX_GMAIL_RECIPIENTS, MAX_GMAIL_SUBJECT_BYTES, validateGmailAddress,
-  validateGmailBody, validateGmailBodyAlternatives, validateGmailLabelName, validateGmailQueryForGrouping,
+  validateGmailBody, validateGmailBodyAlternatives, validateGmailGroupQuery, validateGmailLabelName,
+  validateGmailQueryForGrouping,
   validateGmailRecipientCount, validateOutboundInput,
 } from "../src/gmail-validate";
 
@@ -70,6 +71,30 @@ describe("combineGmailQueries", () => {
     const half = "a".repeat(MAX_GMAIL_QUERY_BYTES / 2);
     expect(() => validateGmailQueryForGrouping(half)).not.toThrow();
     expect(() => combineGmailQueries(half, half)).toThrow(/at most/);
+  });
+});
+
+describe("validateGmailGroupQuery", () => {
+  it.for([
+    "launch notes", "from:ada@example.net", "to:team@example.com cc:x@example.com", "subject:(launch venue)",
+    "list:team@example.com", "filename:pdf", "has:attachment", "has:drive has:document", "after:2026/01/01",
+    "older_than:7d -from:bot@example.com", "larger:5M", "rfc822msgid:abc@example.com", "meeting at 10:30",
+    '"label:secret"', "{from:a from:b}", "HAS:ATTACHMENT", "From:ada@example.net",
+  ])("accepts %s, which tests only what a message says", query => {
+    expect(() => validateGmailGroupQuery(query)).not.toThrow();
+  });
+
+  it.for([
+    "label:secret", "-label:secret", "is:starred", "is:unread", "in:sent", "category:social",
+    "deliveredto:owner@example.com", "bcc:someone@example.com", "has:userlabels", "has:nouserlabels",
+    "has:yellow-star", "has:(attachment)", "LABEL:x", "(launch OR label:x)", "{label:x}", "x.label:y",
+    "\u00e9label:x", "launch label:x", "unknownoperator:x",
+  ])("rejects %s, which tests the mailbox owner's own state", query => {
+    expect(() => validateGmailGroupQuery(query)).toThrow(/A group search can't use/);
+  });
+
+  it("still refuses what any binding query refuses", () => {
+    expect(() => validateGmailGroupQuery("(open")).toThrow(/unterminated/);
   });
 });
 

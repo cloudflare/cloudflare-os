@@ -24,6 +24,7 @@ const PUSH_URL = "http://localhost:8787/gatekeeper/google/pubsub";
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 const CLIENTS_LABEL = {id: "Label_7", name: "Clients", type: "user"};
+const GROUP = "team@example.com";
 
 const json = (value: unknown, status = 200) =>
   new Response(JSON.stringify(value), {status, headers: {"Content-Type": "application/json"}});
@@ -58,7 +59,11 @@ async function pass(gate: Gate | undefined): Promise<void> {
   await vi.waitFor(() => expect(gate.released).toBe(true), {timeout: 10_000, interval: 5});
 }
 
-type MockMessage = {id: string; threadId: string; labelIds: string[]; subject: string};
+type MockMessage = {
+  id: string; threadId: string; labelIds: string[]; subject: string;
+  /** Headers in place of the defaults, for mail sent to a group. */
+  headers?: Array<{name: string; value: string}>;
+};
 
 /** Gmail, for one mailbox that every connection reads. */
 type MockGmail = {
@@ -93,9 +98,9 @@ function mockGmail(): MockGmail {
     watchFailures: [], historyExpired: false, otherAccountTokens: new Set(), reconnectAfterProfile: false,
     requests: [],
   };
-  const metadata = ({id, threadId, labelIds, subject}: MockMessage) => ({
+  const metadata = ({id, threadId, labelIds, subject, headers}: MockMessage) => ({
     id, threadId, labelIds, internalDate: String(Date.now()), sizeEstimate: 100,
-    payload: {headers: [
+    payload: {headers: headers ?? [
       {name: "From", value: "Bob <bob@example.com>"}, {name: "To", value: MAILBOX},
       {name: "Subject", value: subject}, {name: "Message-ID", value: `<${id}@example.com>`},
     ]},
@@ -116,6 +121,14 @@ function mockGmail(): MockGmail {
       return json(otherAccount
         ? {sub: "other-subject", email: OTHER_ACCOUNT}
         : {sub: "account-subject", email: MAILBOX});
+    }
+    if (url.hostname === "cloudidentity.googleapis.com") {
+      if (url.pathname === "/v1/groups:lookup") return json({name: "groups/0team"});
+      if (url.pathname === "/v1/groups/0team") {
+        return json({name: "groups/0team", groupKey: {id: GROUP}, labels: {
+          "cloudidentity.googleapis.com/groups.discussion_forum": "",
+        }});
+      }
     }
     if (url.hostname !== "gmail.googleapis.com" || !url.pathname.startsWith("/gmail/v1/users/me/")) {
       throw new Error(`Unexpected request: ${method} ${url}`);
@@ -188,12 +201,12 @@ let nextMessage = 0;
  * A new message lands in the mailbox, carrying `labelIds` now. Its history record says it arrived
  * with `arrivedWith`, which defaults to the same labels; `null` leaves them out of the record.
  */
-function arrive(gmail: MockGmail, {threadId, labelIds = ["INBOX", "UNREAD"], arrivedWith}: {
-  threadId?: string; labelIds?: string[]; arrivedWith?: string[] | null;
+function arrive(gmail: MockGmail, {threadId, labelIds = ["INBOX", "UNREAD"], arrivedWith, headers}: {
+  threadId?: string; labelIds?: string[]; arrivedWith?: string[] | null; headers?: MockMessage["headers"];
 } = {}): string {
   const n = ++nextMessage;
   const id = `aa${n}`;
-  const message = {id, threadId: threadId ?? `bb${n}`, labelIds, subject: `Hello ${n}`};
+  const message = {id, threadId: threadId ?? `bb${n}`, labelIds, subject: `Hello ${n}`, headers};
   gmail.historyId += 3;
   gmail.messages.set(id, message);
   const recorded = arrivedWith === undefined ? labelIds : arrivedWith;
@@ -204,7 +217,7 @@ function arrive(gmail: MockGmail, {threadId, labelIds = ["INBOX", "UNREAD"], arr
 }
 
 /** One connection to the mailbox, its hook subscribed through the restored facet. */
-async function connect(binding: {labelName?: string; searchQuery?: string; threadId?: string} = {}) {
+async function connect(binding: {labelName?: string; searchQuery?: string; groupAddress?: string; threadId?: string} = {}) {
   const name = `gmail-hooks-${crypto.randomUUID()}`;
   const userObject = testEnv.UserAccount.get(testEnv.UserAccount.idFromName(name));
   await runInDurableObject(userObject, (_instance: unknown, state: DurableObjectState) => {
@@ -729,4 +742,39 @@ it.each([
 
   expect(await receivedIds(ada)).toEqual([message]);
   expect(await receivedIds(bob)).toEqual([message]);
+});
+
+it("starts a group hook's firing only for mail sent to the group", async () => {
+  const gmail = mockGmail();
+  const team = await connect({groupAddress: GROUP});
+  await enable(team);
+
+  const toGroup = arrive(gmail, {headers: [
+    {name: "Authentication-Results", value: "mx.google.com; dmarc=pass header.from=example.org"},
+    {name: "From", value: "Bea <bea@example.org>"}, {name: "To", value: GROUP}, {name: "Subject", value: "Venue"},
+  ]});
+  arrive(gmail);
+  arrive(gmail);
+  expect(await push(gmail)).toBe(204);
+  await settled();
+
+  expect(await receivedIds(team)).toEqual([toGroup]);
+  // The rest of the mailbox is screened out before a firing starts, so it never wakes the workspace.
+  expect((await team.hooks.readGmailHook()).firings).toBe(1);
+});
+
+it("starts a group hook's firing for the owner's own mail to the group", async () => {
+  const gmail = mockGmail();
+  const team = await connect({groupAddress: GROUP});
+  await enable(team);
+
+  const posted = arrive(gmail, {labelIds: ["SENT"], headers: [
+    {name: "From", value: MAILBOX}, {name: "To", value: GROUP}, {name: "Subject", value: "Kickoff"},
+  ]});
+  arrive(gmail, {labelIds: ["SENT"]});
+  expect(await push(gmail)).toBe(204);
+  await settled();
+
+  expect(await receivedIds(team)).toEqual([posted]);
+  expect((await team.hooks.readGmailHook()).firings).toBe(1);
 });

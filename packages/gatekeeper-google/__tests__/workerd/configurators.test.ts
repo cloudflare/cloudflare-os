@@ -9,7 +9,7 @@ import {
   calendarPickerRank, hasCalendarPrivateAccessRole, hasCalendarWriteRole,
 } from "../../src/calendar-api";
 import {
-  BigQueryConfiguratorUI, CalendarConfiguratorUI, DriveConfiguratorUI,
+  BigQueryConfiguratorUI, CalendarConfiguratorUI, DriveConfiguratorUI, GoogleGroupConfiguratorUI,
 } from "../../src/google-configurators";
 import type { GoogleAccessToken } from "../../src/google-api";
 import { FOLDER_MIME_TYPE as FOLDER, SHORTCUT_MIME_TYPE as SHORTCUT } from "../../src/drive-api";
@@ -1072,5 +1072,115 @@ describe("BigQuery picker", () => {
     for (const prefix of ["th", "thei", "their"]) await ui.listNodes("bigquery", prefix, null);
     expect(calls.filter(path => path !== "/projects")).toEqual([]);
     expect((await ui.listNodes("bigquery", "theirs", null)).nodes[0]).toMatchObject({ id: "project:theirs" });
+  });
+});
+
+describe("Google Group check", () => {
+  const GROUP = "team@example.com";
+  const OWNER = "owner@example.com";
+
+  /** Cloud Identity and Gmail for one group whose newest mail is `mail`. */
+  function mockGroup(
+      { mail, membership }: { mail: Array<Array<[string, string]>>; membership: "member" | "none" | "hidden" }) {
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      let url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+      if (url.href === "https://www.googleapis.com/oauth2/v3/userinfo") {
+        return Response.json({ sub: "owner-subject", email: OWNER, email_verified: true });
+      }
+      if (url.pathname === "/v1/groups:lookup") return Response.json({ name: "groups/0team" });
+      if (url.pathname === "/v1/groups/0team") {
+        return Response.json({
+          name: "groups/0team", groupKey: { id: GROUP },
+          labels: { "cloudidentity.googleapis.com/groups.discussion_forum": "" },
+        });
+      }
+      if (url.pathname === "/v1/groups/0team/memberships:lookup") {
+        if (membership === "member") return Response.json({ name: "groups/0team/memberships/owner" });
+        let code = membership === "hidden" ? 403 : 404;
+        return Response.json({ error: { code, details: [{ reason: "PERMISSION_DENIED" }] } }, { status: code });
+      }
+      if (url.pathname === "/gmail/v1/users/me/messages") {
+        return Response.json({ messages: mail.map((_, n) => ({ id: `a${n}`, threadId: `f${n}` })) });
+      }
+      let message = /^\/gmail\/v1\/users\/me\/messages\/a(\d+)$/.exec(url.pathname);
+      if (message) {
+        return Response.json({
+          id: `a${message[1]}`, threadId: `f${message[1]}`, labelIds: ["INBOX"], internalDate: "1767225600000",
+          payload: { headers: mail[Number(message[1])].map(([name, value]) => ({ name, value })) },
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }));
+  }
+
+  const ui = () => new GoogleGroupConfiguratorUI(async () => token("access-token"), async () => true);
+  const check = () => ui().checkGroup(GROUP);
+  const authenticated: Array<[string, string]> = [
+    ["Authentication-Results", "mx.google.com; dmarc=pass (p=REJECT) header.from=example.org"],
+    ["From", "Bea <bea@example.org>"], ["To", GROUP], ["Subject", "Venue"],
+  ];
+  const forged: Array<[string, string]> = [["From", "Mallory <mallory@example.org>"], ["To", GROUP]];
+
+  it.for([
+    ["mail it can show", [authenticated], "ready"],
+    ["no mail yet", [], "empty"],
+    ["only mail Google doesn't vouch for", [forged], "unverified"],
+  ] as const)("reports %s", async ([, mail, finding]) => {
+    mockGroup({ mail: mail.map(headers => [...headers]), membership: "member" });
+    await expect(check()).resolves.toEqual({ mail: finding, membership: "member" });
+  });
+
+  it("says so when the group hides its members from the account, whatever its mail", async () => {
+    mockGroup({ mail: [authenticated], membership: "hidden" });
+    await expect(check()).resolves.toEqual({ mail: "ready", membership: "hidden" });
+  });
+
+  describe("listing", () => {
+    const FORUM = { "cloudidentity.googleapis.com/groups.discussion_forum": "" };
+
+    function mockGroups(groups: () => Response) {
+      let searches = 0;
+      vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+        let url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+        if (url.href === "https://www.googleapis.com/oauth2/v3/userinfo") {
+          return Response.json({ sub: "owner-subject", email: OWNER, email_verified: true });
+        }
+        if (url.pathname === "/v1/groups/-/memberships:searchDirectGroups") {
+          searches++;
+          return groups();
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      }));
+      return () => searches;
+    }
+
+    it("offers the account's groups by address, searched by name or address, from one lookup", async () => {
+      let searches = mockGroups(() => Response.json({ memberships: [
+        { group: "groups/0team", groupKey: { id: GROUP }, displayName: "Team", labels: FORUM },
+        { group: "groups/0ops", groupKey: { id: "ops@example.com" }, labels: FORUM },
+        { group: "groups/0acl", groupKey: { id: "acl@example.com" }, displayName: "Access only", labels: {} },
+      ] }));
+      let groups = ui();
+      await expect(groups.listGroups("")).resolves.toEqual([
+        { value: GROUP, title: "Team", subtitle: GROUP },
+        { value: "ops@example.com", title: "ops@example.com" },
+      ]);
+      await expect(groups.listGroups("OPS")).resolves.toEqual([{ value: "ops@example.com", title: "ops@example.com" }]);
+      expect(searches()).toBe(1);
+    });
+
+    it("says why when Google won't list them, and asks again next time", async () => {
+      let searches = mockGroups(() =>
+        Response.json({ error: { code: 403, details: [{ reason: "PERMISSION_DENIED" }] } }, { status: 403 }));
+      let groups = ui();
+      await expect(groups.listGroups("")).rejects.toThrow("Google won't let this account look up its groups.");
+      await expect(groups.listGroups("")).rejects.toThrow("Google won't let this account look up its groups.");
+      expect(searches()).toBe(2);
+    });
+  });
+
+  it("says so when the account isn't in the group directly", async () => {
+    mockGroup({ mail: [authenticated], membership: "none" });
+    await expect(check()).resolves.toEqual({ mail: "ready", membership: "none" });
   });
 });

@@ -2564,6 +2564,30 @@ export class GmailApi {
     return await response.json() as GmailMessageFull;
   }
 
+  /** Fetch only the named headers, every instance in message order, and the labels. */
+  async getMessageHeaders(messageId: string, names: readonly string[]): Promise<GmailMessageFull> {
+    validateGmailId(messageId, "message ID");
+    const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${messageId}`);
+    url.searchParams.set("format", "metadata");
+    for (const name of names) url.searchParams.append("metadataHeaders", name);
+    const response = await this.authedFetch(url.toString());
+    if (!response.ok) await gmailApiFailure("messages.get", response);
+    return await response.json() as GmailMessageFull;
+  }
+
+  /** Every message in a thread with only the named headers, as {@link getMessageHeaders} fetches one. */
+  async getThreadHeaders(threadId: string, names: readonly string[]): Promise<GmailMessageFull[]> {
+    validateGmailId(threadId, "thread ID");
+    const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${threadId}`);
+    url.searchParams.set("format", "metadata");
+    for (const name of names) url.searchParams.append("metadataHeaders", name);
+    const response = await this.authedFetch(url.toString());
+    if (!response.ok) await gmailApiFailure("threads.get", response);
+    const thread = await response.json() as {id?: string; messages?: GmailMessageFull[]};
+    if (thread.id !== threadId) throw new Error("Gmail returned a different thread.");
+    return thread.messages ?? [];
+  }
+
   /** Fetch the MIME tree while leaving detached attachment data lazy. */
   async getMessageFull(messageId: string): Promise<GmailMessageFull> {
     validateGmailId(messageId, "message ID");
