@@ -144,9 +144,13 @@ jobs:
             echo "active=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # The head, not the merge commit: opencode reviews the branch, and the setup below installs
+      # what it checks out.
       - name: Checkout repository
         if: steps.break_glass.outputs.active != 'true'
         uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Enable Corepack
         if: steps.break_glass.outputs.active != 'true'
