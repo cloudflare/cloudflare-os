@@ -2,8 +2,9 @@
 
 /**
  * `FAST_CHECK_SEED` pins every property's seed, so a run generates the same cases each time; CI
- * sets it. Unset, fast-check draws a fresh seed per run and prints it with any failure, along with
- * the `path` of the shrunk counterexample, so a local failure can be replayed.
+ * sets it. Unset, fast-check draws a fresh seed whenever the suite actually runs (a cached task
+ * replays its last result instead) and prints it with any failure, along with the `path` of the
+ * shrunk counterexample, so a local failure can be replayed.
  */
 function seedFromEnv(): { seed?: number } {
   const raw = process.env.FAST_CHECK_SEED;
