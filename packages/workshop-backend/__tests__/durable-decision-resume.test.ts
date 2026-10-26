@@ -276,7 +276,7 @@ describe("decision handoff using the existing execution row", () => {
       const authorize = vi.spyOn(impl, "authorizeCollaborator").mockResolvedValue(null);
       decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT);
       await impl.waitForAllAgentsToComplete();
-      expect(authorize).toHaveBeenCalledWith(USER.id, expect.anything(), {requireRole: "build"});
+      expect(authorize).toHaveBeenCalledWith(USER.id, expect.anything(), {requireBuild: true});
       expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
       expect([...impl.storage.chats.list()]).toContainEqual(expect.objectContaining({
         type: "error", message: expect.stringContaining("no longer has build access"),

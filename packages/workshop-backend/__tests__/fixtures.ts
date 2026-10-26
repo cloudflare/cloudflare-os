@@ -5,7 +5,7 @@
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type { Collection, Singleton } from "@gadgets/typed-storage";
-import type { Overseer } from "@gadgets/workshop-shared/api";
+import type { CollaboratorAccess, Overseer } from "@gadgets/workshop-shared/api";
 import { OverseerDurableObject } from "../src/overseer.js";
 import { makeOverseerStorage, type ActionRecord } from "../src/storage-schema/overseer-storage.js";
 import { makeMockStorage } from "./mock-storage.js";
@@ -67,14 +67,18 @@ export function putAction(
 
 /**
  * Forges a client interface over the given storage via open(). `role` picks the returned
- * interface class ("build" opens as the owner); `exports` supplies any ctx.exports entries the
+ * interface class ("build" opens as the owner); `access` is a "use" viewer's effective access
+ * (default: the legacy all-gadget grant); `exports` supplies any ctx.exports entries the
  * exercised paths dereference; `impl` overrides individual members of the forged impl (e.g. to
  * delegate one method to a real OverseerImpl under test).
  */
 export async function openFakeOverseer(
     storage: object,
-    opts: { role?: "build" | "use", exports?: object, impl?: object } = {}): Promise<Overseer> {
+    opts: { role?: "build" | "use", access?: CollaboratorAccess, exports?: object,
+            impl?: object } = {}): Promise<Overseer> {
   let role = opts.role ?? "build";
+  let access: CollaboratorAccess = role === "build"
+      ? { role: "build" } : opts.access ?? { role: "use", gadgetIds: "all" };
   let ownerId = "owner-id";
   let userId = role === "build" ? ownerId : "viewer-id";
   let overseer = {
@@ -90,11 +94,12 @@ export async function openFakeOverseer(
       ensureObserver: async () => {},
       syncOutputsTo: async () => {},
       recordGadgetAnalytics: () => {},
+      outputsSnapshot: () => [],
       wrapUserDo: (stub: unknown) => stub,
-      // What open() consults for a non-owner's role: the permission-graph lookup and observer
-      // verification in one. The sharing manager is still reached, but only to redeem a share key,
-      // which these tests never pass.
-      authorizeCollaborator: async () => role,
+      // What open() consults for a non-owner's access: the permission-graph lookup and (for
+      // "build") observer verification in one. The sharing manager is still reached, but only to
+      // redeem a share key, which these tests never pass.
+      authorizeCollaborator: async () => access,
       getSharingManager: async () => ({}),
       ctx: { id: { toString: () => "workspace-id" }, exports: opts.exports ?? {} },
       users: {

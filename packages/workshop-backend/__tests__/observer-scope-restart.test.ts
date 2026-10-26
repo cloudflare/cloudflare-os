@@ -43,10 +43,11 @@ async function withImpl(
   });
 }
 
-// Open a collaborator session of the given role, which is what the restart gate counts (an entry in
-// the sharing table is not: a collaborator who isn't connected has no session to sever).
-function joinSession(impl: any, role: "build" | "use" = "build"): () => void {
-  return impl.joinSession(role);
+// Open a collaborator session -- a "build" one, or a "use" one holding the given gadget -- which is
+// what the restart gate counts (an entry in the sharing table is not: a collaborator who isn't
+// connected has no session to sever).
+function joinSession(impl: any, holds: "build" | number = "build"): () => void {
+  return holds === "build" ? impl.joinSession("build") : impl.joinSession("use", holds);
 }
 
 function seedGatekeeper(impl: any, id: number): void {
@@ -77,7 +78,19 @@ function seedVendorlessGatekeeper(impl: any, id: number): void {
 
 function seedGadget(impl: any, id: number): void {
   impl.storage.gadgets.put(
-      { type: "gadget", id, title: "G", created: new Date(0), bindingName: "G", bindings: {} });
+      { type: "gadget", id, title: "G", created: new Date(0), bindingName: `G${id}`, bindings: {} });
+}
+
+// Record a requirement on a connection attributed to `gadgetId`, as a read reporting
+// subresources that the gadget made through it would.
+function seedGadgetHistory(impl: any, gadgetId: number, gatekeeperId: number): void {
+  let id = impl.storage.nextActionId.get();
+  impl.storage.nextActionId.put(id + 1);
+  impl.storage.actions.put({
+    id, gatekeeperId, caller: { from: "gadget", gadgetId }, createdAt: new Date(0),
+    state: "approved", type: "observation",
+    description: { title: "Read", description: "Read", subresources: [`doc-${gadgetId}`] },
+  });
 }
 
 // A facet that lets addGatekeeper's describe() succeed.
@@ -199,14 +212,14 @@ describe("restarting sessions when verification scope widens", () => {
     expect(restarts).toEqual([]);
   }));
 
-  it("binding a connection into a gadget restarts a connected use collaborator",
+  it("binding a connection into a gadget restarts a connected use collaborator holding it",
       () => withImpl(async (impl, restarts) => {
-    joinSession(impl, "use");
+    joinSession(impl, 100);
     seedGatekeeper(impl, 1);
     seedGadget(impl, 100);
 
-    // A permanent edge puts the connection into "use" scope: the gadget UI the collaborator drives
-    // can now invoke it.
+    // A permanent edge puts the connection into the gadget's scope: the gadget UI the collaborator
+    // drives can now invoke it.
     impl.bindWorkpiece(100, "DB", 1);
 
     expect(restarts).toHaveLength(1);
@@ -219,7 +232,7 @@ describe("restarting sessions when verification scope widens", () => {
 
   it("refuses observations through the blocked connection's existing sessions until the reset",
       () => withImpl(async impl => {
-    joinSession(impl, "use");
+    joinSession(impl, 100);
     seedGatekeeper(impl, 1);
     seedGadget(impl, 100);
     impl.bindWorkpiece(100, "DB", 1);
@@ -237,6 +250,33 @@ describe("restarting sessions when verification scope widens", () => {
     expect(impl.storage.nextActionId.get()).toBe(before);
   }));
 
+  it("binding a connection into another gadget leaves a session holding only this one alone",
+      () => withImpl(async (impl, restarts) => {
+    joinSession(impl, 100);
+    seedGatekeeper(impl, 1);
+    seedGadget(impl, 100);
+    seedGadget(impl, 101);
+
+    // Gadget 100's scope is unchanged: nothing the session holds can reach the connection.
+    impl.bindWorkpiece(101, "DB", 1);
+
+    expect(restarts).toEqual([]);
+    expect(() => impl.assertGatekeeperUsable(1)).not.toThrow();
+  }));
+
+  it("a use workspace shell holding no gadget is not severed by a gadget's widening",
+      () => withImpl(async (impl, restarts) => {
+    // The shell lists gadgets but shows nothing any gadget read; each gadget is verified as it is
+    // got, and a session holding it counts for it then.
+    impl.joinSession("use");
+    seedGatekeeper(impl, 1);
+    seedGadget(impl, 100);
+
+    impl.bindWorkpiece(100, "DB", 1);
+
+    expect(restarts).toEqual([]);
+  }));
+
   it("binding with nobody to sever leaves the connection immediately usable",
       () => withImpl(async (impl, restarts) => {
     seedGatekeeper(impl, 1);
@@ -252,7 +292,7 @@ describe("restarting sessions when verification scope widens", () => {
 
   it("a merge that promotes only a vendorless edge restarts nothing",
       () => withImpl(async (impl, restarts) => {
-    joinSession(impl, "use");
+    joinSession(impl, 100);
     seedVendorlessGatekeeper(impl, 1);
     seedGadget(impl, 100);
     impl.storage.chatMeta.put(
@@ -282,8 +322,8 @@ describe("restarting sessions when verification scope widens", () => {
     seedGatekeeper(impl, 1);
     seedGadget(impl, 100);
 
-    // Binding widens "use" scope only. The connection has been in "build" scope since it was
-    // created, so this session's verification requirements don't change.
+    // Binding widens the gadget's scope only. The connection has been in "build" scope since it
+    // was created, so this session's verification requirements don't change.
     impl.bindWorkpiece(100, "DB", 1);
 
     expect(restarts).toEqual([]);
@@ -292,7 +332,7 @@ describe("restarting sessions when verification scope widens", () => {
   it("an open parked in verification counts as a session of its role",
       () => withImpl(async (impl, restarts) => {
     stubFacets(impl);
-    impl.getSharingManager = async () => ({ getEffectiveRole: () => "build" });
+    impl.getSharingManager = async () => ({ getEffectiveAccess: () => ({ role: "build" }) });
     // Verification parks on collaborator-controlled awaits (the configuration prompt, verifier
     // RPCs), and the parked open holds no client interface yet -- only the authorization lease
     // counts it.
@@ -313,7 +353,7 @@ describe("restarting sessions when verification scope widens", () => {
     expect(restarts).toHaveLength(1);
 
     release();
-    expect(await parked).toBe("build");
+    expect(await parked).toEqual({ role: "build" });
 
     // The lease ended with the call (the caller's interface, not tested here, takes over the
     // count), so a further widening finds nothing to sever.
@@ -343,7 +383,7 @@ describe("restarting sessions when verification scope widens", () => {
         }),
       };
     });
-    impl.authorizeCollaborator = async () => "build";
+    impl.authorizeCollaborator = async () => ({ role: "build" });
 
     let pending = instance.receiveExternalMessage({
       callerEmail: "carol@example.com", externalChatKey: "k", idempotencyKey: "i",
@@ -417,11 +457,13 @@ describe("restarting sessions when verification scope widens", () => {
       () => withImpl(async (impl, restarts) => {
     seedGatekeeper(impl, 1);
     seedGadget(impl, 100);
-    // A real "use" client interface whose session counting is the real impl's.
+    // A real "use" client interface whose session counting is the real impl's. (Per-gadget
+    // authorization is covered with the real authorizeGadget below.)
     let client = await openFakeOverseer(
         { gadgets: impl.storage.gadgets },
         { role: "use", impl: {
-            joinSession: (kind: string) => impl.joinSession(kind),
+            joinSession: (kind: string, gadgetId?: number) => impl.joinSession(kind, gadgetId),
+            authorizeGadget: async () => true,
             getGadgetRecord: (id: number) => impl.getGadgetRecord(id),
           } });
     let child = await client.getGadget(100);
@@ -441,7 +483,7 @@ describe("restarting sessions when verification scope widens", () => {
 
   it("a session that has closed no longer holds the gate open",
       () => withImpl(async (impl, restarts) => {
-    let leave = joinSession(impl, "use");
+    let leave = joinSession(impl, 100);
     seedGatekeeper(impl, 1);
     seedGadget(impl, 100);
 
@@ -488,13 +530,15 @@ describe("restarting sessions when verification scope widens", () => {
   it("an unrelated legacy connection does not block a use collaborator",
       () => withImpl(async (impl) => {
     seedLegacyGatekeeper(impl, 1);
+    seedGadget(impl, 100);
 
-    // Nothing binds the legacy record and no hook feeds it, so a "use" collaborator's sessions
-    // can't reach it: the scope filter must drop it before the legacy check throws, or one stale
-    // record would block every use open in the workspace.
-    expect(impl.listObserverRequirements("use")).toEqual([]);
+    // Nothing binds the legacy record and no hook feeds it, so a session holding the gadget can't
+    // reach it: the scope filter must drop it before the legacy check throws, or one stale record
+    // would block every gadget open in the workspace.
+    expect(impl.listObserverRequirements({ gadgetId: 100 })).toEqual([]);
     let fakeClientUser = { listProvidedAccounts: async () => [] } as any;
-    await expect(impl.ensureObserver("alice", fakeClientUser, "use")).resolves.toBeUndefined();
+    await expect(impl.ensureObserver("alice", fakeClientUser, { gadgetId: 100 }))
+        .resolves.toBeUndefined();
   }));
 
   it("...but a legacy connection still blocks a build collaborator",
@@ -506,20 +550,38 @@ describe("restarting sessions when verification scope widens", () => {
     expect(() => impl.listObserverRequirements("build")).toThrow(/cannot verify collaborators/);
   }));
 
-  it("...and still blocks a use collaborator once a gadget binds it",
+  it("...and still blocks opening the gadget that binds it, and only that one",
       () => withImpl(async (impl) => {
     seedLegacyGatekeeper(impl, 1);
     seedGadget(impl, 100);
+    seedGadget(impl, 101);
 
-    // Bound, the record is genuinely in "use" scope, and verification can't proceed without
-    // knowing what to verify against -- same fail-closed refusal as "build".
+    // Bound, the record is genuinely in gadget 100's scope, and verification can't proceed without
+    // knowing what to verify against -- same fail-closed refusal as "build". Gadget 101 can't reach
+    // it, so opening that one is unaffected.
     impl.bindWorkpiece(100, "DB", 1);
-    expect(() => impl.listObserverRequirements("use")).toThrow(/cannot verify collaborators/);
+    expect(() => impl.listObserverRequirements({ gadgetId: 100 }))
+        .toThrow(/cannot verify collaborators/);
+    expect(impl.listObserverRequirements({ gadgetId: 101 })).toEqual([]);
+  }));
+
+  it("lists no requirements for a gadget that can't be opened",
+      () => withImpl(async (impl) => {
+    seedGatekeeper(impl, 1);
+    impl.storage.gadgets.put({
+      type: "gadget", id: 100, title: "G", created: new Date(0), bindingName: "G",
+      bindings: { DB: { target: 1 } }, pending: { chatId: 1 },
+    });
+
+    // Neither a provisional gadget nor a missing one is shareable, so neither reveals what it
+    // binds.
+    expect(() => impl.listObserverRequirements({ gadgetId: 100 })).toThrow(/No such gadget/);
+    expect(() => impl.listObserverRequirements({ gadgetId: 999 })).toThrow(/No such gadget/);
   }));
 
   it("binding a legacy connection restarts a connected use collaborator and quarantines it",
       () => withImpl(async (impl, restarts) => {
-    joinSession(impl, "use");
+    joinSession(impl, 100);
     seedLegacyGatekeeper(impl, 1);
     seedGadget(impl, 100);
 
@@ -535,10 +597,11 @@ describe("restarting sessions when verification scope widens", () => {
   }));
 });
 
-// An enabled hook is a live write channel into the gadget it wakes, so its connection is in every
-// "use" collaborator's verification scope regardless of binding edges -- and enabling one is a
-// scope widening like binding one.
-describe("hooks widen use scope", () => {
+// An enabled hook is a live write channel into the gadget it wakes -- the one its record names,
+// which its firings are attributed to -- so its connection is in that gadget's verification scope
+// regardless of binding edges, or in every gadget's when it names none; enabling one is a scope
+// widening like binding one.
+describe("hooks widen the scope of the gadget they wake", () => {
   function seedHook(
       impl: any,
       opts: { enabled?: boolean; controller?: object; gadgetId?: number } = {}): void {
@@ -569,11 +632,11 @@ describe("hooks widen use scope", () => {
     seedGatekeeper(impl, 1);
     seedGadget(impl, 100);
     impl.bindWorkpiece(100, "DB", 1);  // nobody connected yet: no restart, no mark
-    joinSession(impl, "use");
+    joinSession(impl, 100);
     seedHook(impl);
 
-    // The binding already put the connection in "use" scope, so the live session was verified
-    // against it and the hook adds nothing new.
+    // The binding already put the connection in the gadget's scope, so the live session was
+    // verified against it and the hook adds nothing new.
     impl.enableHookRecord(impl.storage.boundHooks.get(5));
 
     expect(restarts).toEqual([]);
@@ -582,7 +645,7 @@ describe("hooks widen use scope", () => {
 
   it("enabling a hook on a still-provisional gadget widens nothing",
       () => withImpl(async (impl, restarts) => {
-    joinSession(impl, "use");
+    joinSession(impl, 100);
     seedGatekeeper(impl, 1);
     seedPendingGadget(impl, 100, 7);
     seedHook(impl, { gadgetId: 100 });
@@ -597,9 +660,11 @@ describe("hooks widen use scope", () => {
     expect(() => impl.assertGatekeeperUsable(1)).not.toThrow();
   }));
 
-  it("promoting the hook's gadget at merge is the widening",
+  it("promoting the hook's gadget at merge widens only that gadget's scope",
       () => withImpl(async (impl, restarts) => {
-    joinSession(impl, "use");
+    // Another gadget's session is live; nobody can hold the provisional one.
+    seedGadget(impl, 101);
+    joinSession(impl, 101);
     seedGatekeeper(impl, 1);
     seedPendingGadget(impl, 100, 1);
     seedHook(impl, { gadgetId: 100 });
@@ -621,19 +686,59 @@ describe("hooks widen use scope", () => {
     expect(await impl.mergeChanges(1, USER_META, "owner-user-do"))
         .toEqual({ outcome: "merged" });
 
-    // Accepting the creation is the moment the hook's write channel becomes state the "use"
-    // collaborator can open, so the merge's scope diff reports the widening: restart plus
-    // quarantine, exactly like promoting a pending binding edge.
+    // Accepting the creation makes the hook live for real, in gadget 100's scope -- which nobody
+    // can have opened yet -- and not in gadget 101's, whose live session has nothing new.
     expect(impl.storage.gadgets.get(100).pending).toBeUndefined();
+    expect(restarts).toEqual([]);
+    expect(() => impl.assertGatekeeperUsable(1)).not.toThrow();
+    expect(impl.listObserverRequirements({ gadgetId: 100 }).map(
+        (need: { gatekeeperId: number }) => need.gatekeeperId)).toEqual([1]);
+    expect(impl.listObserverRequirements({ gadgetId: 101 })).toEqual([]);
+  }));
+
+  it("enabling a hook recorded for another gadget leaves a session holding this one alone",
+      () => withImpl(async (impl, restarts) => {
+    joinSession(impl, 100);
+    seedGatekeeper(impl, 1);
+    seedGadget(impl, 100);
+    seedGadget(impl, 101);
+    seedHook(impl, { gadgetId: 101 });
+
+    impl.enableHookRecord(impl.storage.boundHooks.get(5));
+
+    expect(restarts).toEqual([]);
+    expect(() => impl.assertGatekeeperUsable(1)).not.toThrow();
+    expect(impl.listObserverRequirements({ gadgetId: 100 })).toEqual([]);
+    expect(impl.listObserverRequirements({ gadgetId: 101 }).map(
+        (need: { gatekeeperId: number }) => need.gatekeeperId)).toEqual([1]);
+  }));
+
+  it("enabling a hook that names no gadget restarts a session holding any gadget",
+      () => withImpl(async (impl, restarts) => {
+    joinSession(impl, 100);
+    seedGatekeeper(impl, 1);
+    seedGadget(impl, 100);
+    seedGadget(impl, 101);
+    seedHook(impl);
+
+    // Neither the record nor a default gadget says where it delivers, so it reaches every
+    // gadget, fail-closed, as its firings are attributed to the whole workspace.
+    impl.enableHookRecord(impl.storage.boundHooks.get(5));
+
     expect(restarts).toHaveLength(1);
     expect(() => impl.assertGatekeeperUsable(1)).toThrow(/restarting/);
+    for (let gadgetId of [100, 101]) {
+      expect(impl.listObserverRequirements({ gadgetId }).map(
+          (need: { gatekeeperId: number }) => need.gatekeeperId)).toEqual([1]);
+    }
   }));
 
   it("hook delivery is refused while the connection is blocked pending the restart",
       () => withImpl(async (impl, restarts, instance) => {
-    joinSession(impl, "use");
+    joinSession(impl, 100);
     seedGatekeeper(impl, 1);
-    seedHook(impl);
+    seedGadget(impl, 100);
+    seedHook(impl, { gadgetId: 100 });
 
     // The enable is itself the widening that schedules the restart and marks the connection.
     impl.enableHookRecord(impl.storage.boundHooks.get(5));
@@ -755,11 +860,11 @@ describe("hooks widen use scope", () => {
   }));
 });
 
-// An agent spawner's env is a reachability edge: once a gadget binds the spawner, any "use"
-// collaborator can spawn an agent seeded with the env's connections (connectToGadget ->
-// spawn/spawnCallable), so those connections join their verification scope transitively -- and
-// binding the spawner is the widening moment, exactly like binding the connection itself.
-describe("agent spawner envs widen use scope", () => {
+// An agent spawner's env is a reachability edge: once a gadget binds the spawner, anyone holding
+// that gadget can spawn an agent seeded with the env's connections (connectToGadget ->
+// spawn/spawnCallable), so those connections join the gadget's verification scope transitively --
+// and binding the spawner is the widening moment, exactly like binding the connection itself.
+describe("agent spawner envs widen the binding gadget's scope", () => {
   function seedSpawner(impl: any, id: number, env: Record<string, number>): void {
     impl.storage.gatekeepers.put({
       id,
@@ -773,7 +878,7 @@ describe("agent spawner envs widen use scope", () => {
 
   it("binding a spawner restarts a connected use collaborator and quarantines its env targets",
       () => withImpl(async (impl, restarts) => {
-    joinSession(impl, "use");
+    joinSession(impl, 100);
     seedGatekeeper(impl, 1);
     seedSpawner(impl, 2, { DB: 1 });
     seedGadget(impl, 100);
@@ -789,7 +894,7 @@ describe("agent spawner envs widen use scope", () => {
 
   it("spawner-to-spawner env edges widen transitively",
       () => withImpl(async (impl, restarts) => {
-    joinSession(impl, "use");
+    joinSession(impl, 100);
     seedGatekeeper(impl, 1);
     seedSpawner(impl, 2, { DB: 1 });
     seedSpawner(impl, 3, { INNER: 2 });
@@ -808,7 +913,7 @@ describe("agent spawner envs widen use scope", () => {
     seedGatekeeper(impl, 1);
     seedGadget(impl, 100);
     impl.bindWorkpiece(100, "DB", 1);  // nobody connected yet: no restart, no mark
-    joinSession(impl, "use");
+    joinSession(impl, 100);
     seedSpawner(impl, 2, { DB: 1 });
 
     // The direct binding already put the connection in scope, so the live session was verified
@@ -824,7 +929,7 @@ describe("agent spawner envs widen use scope", () => {
     seedSpawner(impl, 2, {});
     seedGadget(impl, 100);
     impl.bindWorkpiece(100, "SPAWN", 2);  // nobody connected yet: no restart, no mark
-    joinSession(impl, "use");
+    joinSession(impl, 100);
     seedGatekeeper(impl, 1);
     impl.storage.chatMeta.put(
         { id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
@@ -847,6 +952,97 @@ describe("agent spawner envs widen use scope", () => {
     expect(impl.storage.gatekeepers.get(2).bindings.DB).toEqual({ target: 1 });
     expect(restarts).toHaveLength(1);
     expect(() => impl.assertGatekeeperUsable(1)).toThrow(/restarting/);
+  }));
+
+  it("a gadget a bound spawner binds widens the binding gadget's scope with its own",
+      () => withImpl(async (impl, restarts) => {
+    seedGadget(impl, 100);
+    seedGadget(impl, 101);
+    seedSpawner(impl, 2, { DESK: 101 });
+    impl.bindWorkpiece(100, "SPAWN", 2);  // nobody connected yet: no restart, no mark
+    joinSession(impl, 100);
+    seedGatekeeper(impl, 1);
+
+    // An agent spawned through gadget 100 can drive gadget 101, so binding a connection into 101
+    // widens what a session holding 100 reaches.
+    impl.bindWorkpiece(101, "DB", 1);
+
+    expect(restarts).toHaveLength(1);
+    expect(() => impl.assertGatekeeperUsable(1)).toThrow(/restarting/);
+    expect(impl.listObserverRequirements({ gadgetId: 100 }).map(
+        (need: { gatekeeperId: number }) => need.gatekeeperId)).toEqual([1]);
+  }));
+
+  // A gadget a spawner newly exposes brings its recorded history -- and the connections it
+  // was read through -- into the binding gadget's scope even when no connection is newly reachable,
+  // so the binding gadget's live sessions must re-verify.
+  it("binding a spawner that exposes another gadget's history restarts sessions holding the " +
+      "binding gadget, though no connection is new", () => withImpl(async (impl, restarts) => {
+    seedGatekeeper(impl, 1);
+    seedGadget(impl, 100);
+    seedGadget(impl, 101);
+    // Both gadgets bind the connection, but 101 also read through it before, and through a
+    // connection it no longer binds.
+    impl.bindWorkpiece(100, "DB", 1);
+    impl.bindWorkpiece(101, "DB", 1);
+    seedGatekeeper(impl, 3);
+    seedGadgetHistory(impl, 101, 1);
+    seedGadgetHistory(impl, 101, 3);
+    seedSpawner(impl, 2, { DESK: 101 });
+    let leave = joinSession(impl, 100);
+
+    impl.bindWorkpiece(100, "SPAWN", 2);
+
+    expect(restarts).toHaveLength(1);
+    // What reopening gadget 100 now demands: gadget 101's history on both connections.
+    expect(impl.listObserverRequirements({ gadgetId: 100 })
+        .map((need: { gatekeeperId: number }) => need.gatekeeperId)).toEqual([1, 3]);
+    // The spawner is the newly exposed route to gadget 101, so it is blocked until the reset
+    // lands; the connection reachable before stays usable.
+    expect(() => impl.assertGatekeeperUsable(2)).toThrow(/restarting/);
+    expect(() => impl.assertGatekeeperUsable(1)).not.toThrow();
+    leave();
+  }));
+
+  it("a session holding only the exposed gadget is not severed for the binding gadget's widening",
+      () => withImpl(async (impl, restarts) => {
+    seedGadget(impl, 100);
+    seedGadget(impl, 101);
+    seedSpawner(impl, 2, { DESK: 101 });
+    joinSession(impl, 101);
+
+    impl.bindWorkpiece(100, "SPAWN", 2);
+
+    expect(restarts).toEqual([]);
+    expect(() => impl.assertGatekeeperUsable(2)).not.toThrow();
+  }));
+
+  it("a spawner session opened before the block starts no agent while it is blocked",
+      () => withImpl(async (impl, restarts) => {
+    seedGadget(impl, 100);
+    seedGadget(impl, 101);
+    seedSpawner(impl, 2, { DESK: 101 });
+    impl.ownerId = "owner-user-id";
+    impl.users = {
+      idFromString: (id: string) => ({ toString: () => id }),
+      get: () => ({
+        getChatContext: async () => ({ profile: USER_META.profile }),
+        // Best-effort bookkeeping the bind triggers for the owner.
+        setGadgetLastActive: async () => {},
+        syncWorkspaceOutputs: async () => {},
+      }),
+    };
+    // The queue the spawner's facet would wrap, minted while the spawner was still usable.
+    impl.getGatekeeperFacet = async () => ({ startSession: (queue: unknown) => queue });
+    let queue = await impl.openGatekeeperSession(
+        2, await impl.getGatekeeperFacet(2), { from: "gadget", gadgetId: 100 });
+    joinSession(impl, 100);
+
+    impl.bindWorkpiece(100, "SPAWN", 2);
+
+    expect(restarts).toHaveLength(1);
+    await expect(queue.spawnAgent("Desk", "use the desk")).rejects.toThrow(/restarting/);
+    expect([...impl.storage.chatMeta.list()]).toEqual([]);
   }));
 
   it("removing a gadget a spawner binds removes the spawner's bindings to it, and the " +
@@ -911,21 +1107,39 @@ describe("subscriptions count as sessions", () => {
     seedGatekeeper(impl, 1);
     seedGadget(impl, 100);
     let client = await openFakeOverseer({}, { role: "use", impl: {
-      joinSession: (kind: string) => impl.joinSession(kind),
+      joinSession: (kind: string, gadgetId?: number) => impl.joinSession(kind, gadgetId),
       subscribeToWorkpieces: () => new NativeRpcStub<{}>({ [Symbol.dispose]() {} } as any),
     } });
     let sub = await client.subscribeToWorkpieces(
         new NativeRpcStub({ init: async () => {} } as any) as any);
 
+    // The workspace shell holds no gadget, so a gadget's widening leaves it be; but a restart
+    // that must sever every collaborator session (approving a resource's creation, which the
+    // connection may already be bound for) still counts it.
+    impl.traceAgentActionApproval = () => {};
+    impl.getGatekeeperFacet = async () => ({
+      applyCreation: async () => ({ class: {}, resourceUrl: "https://example.com/real" }),
+    });
+    let approveCreation = async (id: number) => {
+      let record = {
+        id, gatekeeperId: 1, type: "action", action: "create", state: "pending",
+        caller: { from: "user" }, createdAt: new Date(0),
+        description: { title: "Create", description: "Create", implementsRevert: false },
+      };
+      impl.storage.actions.put(record);
+      await impl.applyPendingAction(record, { type: "user", id: "owner", name: "Owner" }, false,
+          { creator: {}, configuration: null });
+    };
     (client as any)[Symbol.dispose]();
     impl.bindWorkpiece(100, "DB", 1);
+    expect(restarts).toEqual([]);
+    await approveCreation(1);
     expect(restarts).toHaveLength(1);
 
     // (Stub disposal reaches the wrapped target's disposer asynchronously, so let it settle.)
     (sub as any)[Symbol.dispose]();
     await new Promise(resolve => setTimeout(resolve, 0));
-    seedGatekeeper(impl, 2);
-    impl.bindWorkpiece(100, "DB2", 2);
+    await approveCreation(2);
     expect(restarts).toHaveLength(1);
   }));
 
@@ -972,7 +1186,8 @@ describe("gadget facet stubs count as sessions", () => {
     impl.getGadgetFacetFetcher = () => ({});
     // A real "use" client whose session counting and facet minting are the real impl's.
     let client = await openFakeOverseer({ gadgets: impl.storage.gadgets }, { role: "use", impl: {
-      joinSession: (kind: string) => impl.joinSession(kind),
+      joinSession: (kind: string, gadgetId?: number) => impl.joinSession(kind, gadgetId),
+      authorizeGadget: async () => true,
       getGadgetRecord: (id: number) => impl.getGadgetRecord(id),
       getGadgetFacet: (id: number, chatId?: number, joinAs?: string) =>
           impl.getGadgetFacet(id, chatId, joinAs),
@@ -1008,13 +1223,23 @@ describe("gadget facet stubs count as sessions", () => {
 // scheduled in the same synchronous step as the sharing mutation, never behind the best-effort
 // cross-DO cleanup, which can stall or hang.
 describe("revocation restart ordering", () => {
-  it("removeCollaborator schedules the restart before the observer teardown", async () => {
+  it.each([
+    ["loses access entirely", null],
+    ["loses one gadget but keeps another", { role: "use", gadgetIds: [101] }],
+  ] as const)("removeCollaborator schedules the restart before the cleanup when the target %s",
+      async (_label, newAccess) => {
     let restarts: string[] = [];
     let restartRecorded = Promise.withResolvers<void>();
+    let removed: unknown[] = [];
     let client = await openFakeOverseer({}, { impl: {
       getSharingManager: async () => ({
-        removeCollaborator: () =>
-            [{ profile: { type: "user", id: "carol", name: "Carol" }, newRole: null }],
+        removeCollaborator: (...args: unknown[]) => {
+          removed.push(args.slice(1));
+          return [{
+            profile: { type: "user", id: "carol", name: "Carol" }, addedBy: [],
+            oldAccess: { role: "use", gadgetIds: [100, 101] }, newAccess,
+          }];
+        },
       }),
       // A hung gatekeeper/User-DO round trip: the cleanup never settles.
       tearDownLostObservers: () => new Promise(() => {}),
@@ -1026,11 +1251,13 @@ describe("revocation restart ordering", () => {
       },
     } });
 
-    let pending = client.removeCollaborator("carol", []);
+    // Narrowing is a revocation too: the live session may be holding the lost gadget.
+    let pending = client.removeCollaborator("carol", [], newAccess ? 100 : undefined);
     pending.catch(() => {});  // never settles; the restart is what revokes
 
     await restartRecorded.promise;
     expect(restarts).toHaveLength(1);
+    expect(removed).toEqual([["carol", [], newAccess ? 100 : undefined]]);
   });
 });
 

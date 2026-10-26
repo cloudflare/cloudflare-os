@@ -361,12 +361,13 @@ export type ObserverAccountChoice = {
 };
 
 /**
- * Provided by the client when opening a gadget. Invoked by the overseer ONLY if the opening user
- * must choose connected accounts for one or more gatekeeper bindings before they can observe the
- * gadget. In the common case (owner, or an already-configured observer) this is never called and
- * open() resolves without an extra round trip. The overseer does not resolve open() until this
- * returns. If the user cannot or will not provide the needed accounts, the callback should reject,
- * and the overseer denies the open.
+ * Provided by the client when opening a workspace, or a gadget within it (see
+ * Overseer.getGadget()). Invoked by the overseer ONLY if the user must choose connected accounts
+ * for one or more gatekeeper bindings before they can observe what they are opening. In the common
+ * case (owner, or an already-configured observer) this is never called and the open resolves
+ * without an extra round trip. The overseer does not resolve the open until this returns. If the
+ * user cannot or will not provide the needed accounts, the callback should reject, and the
+ * overseer denies the open.
  *
  * `configure()` may be called a second time within one open, for the subset of bindings that failed
  * verification (each carrying an ObserverBindingNeed.failure). This lets the user repair a binding --
@@ -681,10 +682,12 @@ export interface AuthenticatedApi extends RpcTarget {
    * To allow for pipelining, this throws an exception if the workspace doesn't exist. Expected
    * missing and authorization failures carry a code from `OPEN_WORKSPACE_ERROR_CODES`.
    *
-   * `configureObservers` is invoked only when the opening user is a non-owner who must choose
-   * connected accounts for one or more gatekeeper bindings before they can observe the workspace
-   * (see ObserverConfigCallback). It is never called for the owner or an already-configured
-   * observer, so the common-case open is still a single pipelined round trip.
+   * `configureObservers` is invoked only when the opening user is a non-owner "build" collaborator
+   * who must choose connected accounts for one or more gatekeeper bindings before they can observe
+   * the workspace (see ObserverConfigCallback). It is never called for the owner or an
+   * already-configured observer, so the common-case open is still a single pipelined round trip.
+   * Collaborators with access to individual gadgets are verified when they get each gadget instead
+   * (see Overseer.getGadget()).
    */
   openWorkspace(id: string, shareKey?: string,
       configureObservers?: RpcStub<ObserverConfigCallback>): Promise<RpcStub<Overseer>>;
@@ -2775,8 +2778,14 @@ export interface Overseer extends RpcTarget {
   /**
    * Get the gadget with the given workpiece ID. To allow for pipelining, this throws an
    * exception if there is no such gadget.
+   *
+   * A collaborator without "build" access is verified as an observer of this one gadget here,
+   * rather than when opening the workspace, so `configureObservers` is invoked as described for
+   * AuthenticatedApi.openWorkspace(). Failing to verify for one gadget leaves the others that
+   * collaborator holds untouched. Ignored for everyone else, whom opening the workspace verified.
    */
-  getGadget(id: WorkpieceId): Promise<RpcStub<GadgetClient>>;
+  getGadget(id: WorkpieceId, configureObservers?: RpcStub<ObserverConfigCallback>)
+      : Promise<RpcStub<GadgetClient>>;
 
   /**
    * Read a commit's whole tree as nested TreeNodes: the root directory's entries, each
@@ -3324,50 +3333,50 @@ export interface Overseer extends RpcTarget {
   // --- Collaborator management ---
 
   /**
-   * List the connections a recipient with `role` must verify before opening this workspace, in
+   * List the connections a recipient of `grant` must verify before opening what it grants, in
    * the order the connections were created. Reports what sharing will cost the recipient; it
    * grants nothing and mints no capability.
    */
-  listObserverRequirements(role: CollaboratorRole): Promise<ObserverBindingNeed[]>;
+  listObserverRequirements(grant: CollaboratorGrant): Promise<ObserverBindingNeed[]>;
 
   /** List all collaborators. Available to owner and all collaborators. */
   listCollaborators(): Promise<CollaboratorInfo[]>;
 
   /**
-   * Add a collaborator by username/email. The caller must be the owner or an existing
-   * collaborator. `role` is the access level to grant; the caller may not grant a role higher
-   * than their own effective role. Returns the new collaborator's info, or null if the username
-   * doesn't correspond to an existing account.
+   * Add a collaborator by username/email, or grant an existing one more access. The caller must be
+   * the owner or an existing collaborator, and may not grant access they don't have themselves.
+   * A grant the caller already gave them covers (e.g. a gadget, after "build") changes nothing but
+   * the note; one that covers the caller's earlier grants to them replaces those. Returns the
+   * collaborator's info, or null if the username doesn't correspond to an existing account.
    */
-  addCollaborator(username: string, role: CollaboratorRole,
+  addCollaborator(username: string, grant: CollaboratorGrant,
                   note?: string): Promise<CollaboratorInfo | null>;
 
   /**
-   * Remove a collaborator (identified by profile.id).
+   * Remove a collaborator (identified by profile.id), or with `gadgetId`, only their grants to
+   * that gadget. Access they hold through grants to the whole workspace is unaffected by the
+   * latter.
    *
    * Owner can remove anyone. A non-owner collaborator can only remove their own edge(s)
-   * from the target. If the target still has edges from other sources, they keep access
-   * and the return is an empty array. If no edges remain, the target is fully removed.
+   * from the target. If the target still has edges from other sources, they keep that access.
    *
-   * When a target is fully removed, `keepUsers` lists the profile.ids of users who would
-   * lose access transitively but should be retained. Their PermissionEdges through the
-   * removed user are replaced with new edges from the caller. Users reachable only through
-   * the removed user who are NOT in `keepUsers` are also removed.
+   * `keepUsers` lists the profile.ids of users who would lose access transitively but should be
+   * retained: each is given fresh edges from the caller restoring the access they lost. Users
+   * reachable only through the removed grants who are NOT in `keepUsers` lose that access too.
    *
-   * Returns the list of users whose access actually changed (removed or downgraded), including
-   * the primary target. An empty array means the caller's edge was removed but no one's effective
-   * access changed (the target retained their role through other edges).
+   * Returns the list of users whose access actually narrowed, including the primary target. An
+   * empty array means no one's effective access changed (the target retained it through other
+   * edges).
    */
-  removeCollaborator(profileId: string, keepUsers: string[]): Promise<AffectedCollaborator[]>;
+  removeCollaborator(profileId: string, keepUsers: string[], gadgetId?: WorkpieceId)
+      : Promise<AffectedCollaborator[]>;
 
   /**
-   * Preview what would happen if a collaborator were removed. For a non-owner caller,
-   * if the target has edges from other sources that would survive, returns an empty array
-   * (the target would not actually be affected). Otherwise, returns the list of users whose
-   * access would change (lose access or be downgraded to a lower role) as a consequence, so the
-   * caller can present checkboxes for which to keep vs. remove.
+   * Preview what removeCollaborator() would do with the same arguments: the users whose access
+   * would narrow as a consequence, so the caller can present checkboxes for which to keep.
    */
-  previewRemoveCollaborator(profileId: string): Promise<AffectedCollaborator[]>;
+  previewRemoveCollaborator(profileId: string, gadgetId?: WorkpieceId)
+      : Promise<AffectedCollaborator[]>;
 
   // --- Share link management ---
   //
@@ -3377,11 +3386,10 @@ export interface Overseer extends RpcTarget {
   /**
    * Create a share link. The server generates a random 128-bit key, stores its HMAC-SHA-256
    * hash, and returns the raw key (hex-encoded) along with the id of the link it created. The
-   * caller constructs a URL from the key. The raw key is never stored server-side. `role` is the
-   * access level granted to anyone who redeems the link; the caller may not grant a role higher
-   * than their own effective role.
+   * caller constructs a URL from the key. The raw key is never stored server-side. Anyone who
+   * redeems the link receives `grant`, which the caller may not exceed their own access with.
    */
-  createShareLink(role: CollaboratorRole, note?: string)
+  createShareLink(grant: CollaboratorGrant, note?: string)
       : Promise<{ key: string; linkId: string }>;
 
   /**
@@ -3401,16 +3409,15 @@ export interface Overseer extends RpcTarget {
 
   /**
    * Revoke a share link by its `linkId`, which revokes every secret ever minted for it. Users who
-   * gained access through the link may be transitively removed or downgraded. `keepUsers` lists
-   * profile.ids of users who should be retained at their prior role with fresh edges from the
-   * caller. Returns the list of users whose access actually changed (removed or downgraded).
+   * gained access through the link may transitively lose some or all of it. `keepUsers` lists
+   * profile.ids of users who should keep the access they would lose, through fresh edges from the
+   * caller. Returns the list of users whose access actually narrowed.
    */
   revokeShareLink(linkId: string, keepUsers: string[]): Promise<AffectedCollaborator[]>;
 
   /**
    * Preview what would happen if a share link were revoked. Returns the list of users whose access
-   * would change (lose access or be downgraded to a lower role) as a consequence, so the caller
-   * can present checkboxes for which to keep vs. remove.
+   * would narrow as a consequence, so the caller can present checkboxes for which to keep.
    */
   previewRevokeShareLink(linkId: string): Promise<AffectedCollaborator[]>;
 }
@@ -5773,18 +5780,32 @@ export interface GatekeeperClient<Session extends RpcCompatible<Session>> extend
 }
 
 /**
- * The level of access a collaborator (or share key) grants.
+ * The level of access a collaborator holds or a permission edge or share link confers.
  *
  * - "build": full access -- edit code, use and participate in chats, manage bindings, etc. (the
  *   same access the owner has, modulo the owner-only exceptions documented in sharing.md).
- * - "use": may only render, interact with, and export the gadget's deployed UI (getUiBundle(),
- *   connectToGadget(), getExportFormats(), and export()), plus read basic metadata.
- *
- * Roles are ordered build > use. A collaborator's effective role is the maximum role reachable
- * from the owner through their valid permission edges, where each edge grants
- * min(edge role, sharer's effective role). The owner is the implicit root at "build".
+ * - "use": may only render, interact with, and export the deployed UIs of certain gadgets
+ *   (getUiBundle(), connectToGadget(), getExportFormats(), and export()), plus read basic
+ *   metadata. Which gadgets is part of the grant (see CollaboratorGrant, CollaboratorAccess).
  */
 export type CollaboratorRole = "build" | "use";
+
+/**
+ * Access a new grant confers: "build" on the whole workspace, or "use" of one gadget's deployed
+ * UI. ("use" of every gadget at once can no longer be granted, though collaborators who received
+ * it before gadgets were shared individually keep it; see CollaboratorAccess.)
+ */
+export type CollaboratorGrant = "build" | {gadgetId: WorkpieceId};
+
+/**
+ * A collaborator's effective access: the union, over every path of permission edges from the
+ * owner, of what each edge grants intersected with what its sharer holds. The owner is the
+ * implicit root with "build". `gadgetIds` lists the gadgets a "use" collaborator may open, or is
+ * "all" for a collaborator granted every gadget before gadgets were shared individually.
+ */
+export type CollaboratorAccess =
+  | {role: "build"}
+  | {role: "use", gadgetIds: WorkpieceId[] | "all"};
 
 /** One person currently connected to a gadget. */
 export type PresenceParticipant = {
@@ -5813,6 +5834,13 @@ export type PermissionEdge = {
    * edges are treated as "build" for backwards compatibility.
    */
   role?: CollaboratorRole;
+
+  /**
+   * The one gadget a "use" edge grants (for a share key edge, a copy of its link's). A "use" edge
+   * without one grants every gadget in the workspace; those are no longer created except to keep
+   * access someone already had (see removeCollaborator()'s `keepUsers`).
+   */
+  gadgetId?: WorkpieceId;
 } & ({
   /** Granted directly by another user. */
   type: "user";
@@ -5834,27 +5862,24 @@ export type CollaboratorInfo = {
   profile: AiChatAuthorInfo;
   addedBy: PermissionEdge[];
 
-  /**
-   * The collaborator's effective role (the maximum role reachable from the owner). Absent implies
-   * "build" for backwards compatibility.
-   */
-  role?: CollaboratorRole;
+  /** The collaborator's effective access. */
+  access: CollaboratorAccess;
 };
 
 /**
- * Describes a collaborator whose access would change (or did change) as a result of a removal or
+ * Describes a collaborator whose access would narrow (or did narrow) as a result of a removal or
  * share key revocation. Used by the preview/confirm flow, which must surface not only users who
- * lose access entirely but also users who would be downgraded to a lower role.
+ * lose access entirely but also users who would keep only some of it.
  */
 export type AffectedCollaborator = {
   profile: AiChatAuthorInfo;
   addedBy: PermissionEdge[];
 
-  /** The effective role before the change. */
-  oldRole: CollaboratorRole;
+  /** The effective access before the change. */
+  oldAccess: CollaboratorAccess;
 
-  /** The effective role after the change, or null if the user loses access entirely. */
-  newRole: CollaboratorRole | null;
+  /** The effective access after the change, or null if the user loses access entirely. */
+  newAccess: CollaboratorAccess | null;
 };
 
 /**
@@ -5872,4 +5897,11 @@ export type ShareLinkInfo = {
    * before roles were introduced.
    */
   role?: CollaboratorRole;
+
+  /**
+   * The one gadget a "use" link grants. A "use" link without one grants every gadget, as links
+   * did before gadgets were shared individually; it can no longer be copied, and redeeming it
+   * adds no one new.
+   */
+  gadgetId?: WorkpieceId;
 };

@@ -134,11 +134,11 @@ it.concurrent("disposing a console log subscription stops its logs but not other
 });
 
 it.concurrent("a use collaborator's console log subscription receives nothing", async () => {
-  await withLoggingGadget(async ({ ws, gadget }) => {
+  await withLoggingGadget(async ({ ws, gadget, gadgetId }) => {
     const [viewer] = nextUsernames("logviewer");
     using viewerPublic = connect(harness.url);
     using viewerApi = await signUp(viewerPublic, viewer!);
-    if (!await ws.addCollaborator(viewer!, "use")) {
+    if (!await ws.addCollaborator(viewer!, { gadgetId })) {
       throw new Error(`Failed to share with ${viewer}`);
     }
     using useWs = await viewerApi.openWorkspace((await ws.getMetadata()).id);

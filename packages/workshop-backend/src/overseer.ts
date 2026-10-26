@@ -1,6 +1,6 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
+import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
@@ -77,9 +77,9 @@ import type { ProductAnalyticsConnectionType, ProductAnalyticsGadgetInput } from
 import { checkUsageAndBalance } from "./ai-gateway-billing/limits/usage-checker";
 import { normalizeAgentCatalog } from "./agent-catalog";
 import { refreshCachedBalance } from "./ai-gateway-billing/cloudflare/connection-service";
-import { SharingManager, SharingCaller, roleRank } from "./sharing";
+import { SharingManager, SharingCaller, accessIncludesGadget } from "./sharing";
 import {
-  MAX_VERIFICATION_PASSES, ObserverLedger, observerScopeCovers, requireVerifier,
+  MAX_VERIFICATION_PASSES, ObserverLedger, observerScopeCovers, requireVerifier, type ObserverScope,
 } from "./observer-ledger";
 import { AutoApprovalDrainer, autoApprovalRule } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
@@ -361,6 +361,12 @@ function observerBindingNeed(record: GatekeeperRecord): ObserverBindingNeed {
   };
 }
 
+// What a session holding one gadget can reach (see OverseerImpl.#gadgetReach): the gadgets whose
+// state it can read, and the connections that can deliver data into them.
+type GadgetReach = {
+  gadgetIds: Set<WorkpieceId>;
+  gatekeeperIds: Set<WorkpieceId>;
+};
 // Copied from normalizeText() in agent-catalog.ts, minus its length clamp
 function oneLineReason(reason: string): string {
   return reason.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trim();
@@ -875,26 +881,43 @@ class OverseerImpl implements AgentHooks {
   // authorizations, which are sessions-to-be parked on collaborator-controlled awaits.
   #liveSessions: Record<SessionKind, number> = {owner: 0, build: 0, use: 0};
 
-  // Count a session for its lifetime. Returns a function that uncounts it, like joinPresence().
+  // The subset of live "use" sessions that hold a gadget, by gadget: a "use" collaborator is
+  // verified one gadget at a time, so widening what one gadget reaches only strands sessions
+  // holding that gadget. (The workspace shell a "use" collaborator opens shows nothing a gadget
+  // read, and holds none.)
+  #liveGadgetSessions = new Map<WorkpieceId, number>();
+
+  // Count a session for its lifetime, as one holding `gadgetId` if it is a "use" session holding
+  // a gadget. Returns a function that uncounts it, like joinPresence().
   //
   // Deliberately not derived from #presence, which looks like it holds the same thing: a session
   // joins presence only once its fetchProfile() resolves, so a just-opened session is briefly
   // invisible there. That is fine for a roster and wrong for an access decision, which must never
   // conclude "nobody is here" about a session that already exists.
-  joinSession(kind: SessionKind): () => void {
+  joinSession(kind: SessionKind, gadgetId?: WorkpieceId): () => void {
     this.#liveSessions[kind]++;
+    let gadget = kind === "use" ? gadgetId : undefined;
+    if (gadget !== undefined) {
+      this.#liveGadgetSessions.set(gadget, (this.#liveGadgetSessions.get(gadget) ?? 0) + 1);
+    }
     let left = false;
     return () => {
       if (left) return;
       left = true;
       this.#liveSessions[kind]--;
+      if (gadget === undefined) return;
+      let remaining = this.#liveGadgetSessions.get(gadget)! - 1;
+      if (remaining > 0) this.#liveGadgetSessions.set(gadget, remaining);
+      else this.#liveGadgetSessions.delete(gadget);
     };
   }
 
-  // Whether some non-owner session of `role` (or of any role, when omitted) is live right now.
-  // The owner is never an observer, so their session never counts here.
-  #hasCollaboratorSession(role?: CollaboratorRole): boolean {
-    if (role !== undefined) return this.#liveSessions[role] > 0;
+  // Whether some non-owner session is live right now that holds "build", or one of `affected`'s
+  // gadgets, or anything at all when `affected` is omitted. The owner is never an observer, so
+  // their session never counts here.
+  #hasCollaboratorSession(affected?: "build" | ReadonlySet<WorkpieceId>): boolean {
+    if (affected === "build") return this.#liveSessions.build > 0;
+    if (affected) return [...affected].some(id => this.#liveGadgetSessions.has(id));
     return Object.entries(this.#liveSessions).some(([kind, n]) => kind !== "owner" && n > 0);
   }
 
@@ -1148,7 +1171,7 @@ class OverseerImpl implements AgentHooks {
       aiModel = userMeta.aiModel;
       if (this.ownerId && record.initiator.type === "user" && record.initiatorUserId !== this.ownerId) {
         let user = this.users.get(this.users.idFromString(record.initiatorUserId));
-        if (!await this.authorizeCollaborator(record.initiator.id, user, {requireRole: "build"})) {
+        if (!await this.authorizeCollaborator(record.initiator.id, user, {requireBuild: true})) {
           throw new Error("The original initiator no longer has build access to this workspace.");
         }
         // Keep verification live through inference, including after the approving client leaves.
@@ -1748,13 +1771,14 @@ class OverseerImpl implements AgentHooks {
       }
       throw new Error(`No such gatekeeper: ${target}`);
     }
-    // A permanent edge can put an account-requiring connection into every "use" collaborator's
-    // verification scope, since the gadget UI they drive can now invoke it. Snapshot the scope
-    // first and compare after, exactly as mergeChatChanges does: the edge widens nothing when it
-    // is pending (invisible to them until promotion, which restarts then), when its target is
-    // vendorless, or when some other gadget already binds that target -- and severing every
-    // session for a rebind that changed nobody's scope is disruption bought for nothing.
-    let useScopeBefore = this.#accountRequiringUseScope();
+    // A permanent edge can put an account-requiring connection into the verification scope of
+    // everyone holding this gadget (or one whose agent spawner reaches it), since the gadget UI
+    // they drive can now invoke it. Snapshot the scopes first and compare after, exactly as
+    // mergeChatChanges does: the edge widens nothing when it is pending (invisible to them until
+    // promotion, which restarts then), when its target is vendorless, or when this gadget already
+    // reaches that target -- and severing every session for a rebind that changed nobody's scope is
+    // disruption bought for nothing.
+    let reachesBefore = this.#gadgetReaches();
 
     gadget.bindings[name] = {target, ...(chatId !== undefined ? {pending: {chatId}} : {})};
     this.storage.gadgets.put(gadget);
@@ -1762,8 +1786,8 @@ class OverseerImpl implements AgentHooks {
     // The gadget's env changed, so its code must reload.
     this.bumpVersion([gadgetId]);
 
-    this.#restartIfUseScopeWidened(
-        useScopeBefore, "Gadget restarted because a connection was bound to a gadget.");
+    this.#restartIfGadgetScopesWidened(
+        reachesBefore, "Gadget restarted because a connection was bound to a gadget.");
   }
 
   // Remove the named binding edge from the gadget. The target gatekeeper itself survives,
@@ -1874,16 +1898,18 @@ class OverseerImpl implements AgentHooks {
   // deleted either while it was in flight, and putting the captured record back would silently
   // resurrect an enabled hook on a connection that no longer exists -- one delivering into the
   // gadget (startHook accepts via the record's denormalized vendorId) while being invisible to
-  // the widening detector (#accountRequiringUseScope filters on the gatekeeper record). Deleting
-  // the record must stay the authoritative kill, so in that case the goal state is "no hook":
-  // send the compensating gatekeeper-side disable best-effort and refuse the flip.
+  // the widening detector (#gadgetReach skips a connection whose gatekeeper record is gone).
+  // Deleting the record must stay the authoritative kill, so in that case the goal state is "no
+  // hook": send the compensating gatekeeper-side disable best-effort and refuse the flip.
   //
-  // Enabling can widen every "use" collaborator's verification scope: the connection becomes
-  // reachable through the gadget the hook wakes even when no binding edge names it (see
-  // #useScopeGatekeeperIds), so the scope is diffed around the flip exactly as bindWorkpiece
-  // does. Disabling or deleting a hook only shrinks scope, which never under-verifies anyone, so
-  // those paths need no counterpart -- capabilities issued to firings already in flight are
-  // revoked by their own per-call revalidation instead (see requireLiveHook).
+  // Enabling can widen the verification scope of everyone holding the gadget the hook wakes (or
+  // one whose agent spawner reaches it), or of everyone holding any gadget when the hook names
+  // none (see #enabledHookConnections): the connection becomes reachable through that gadget even
+  // when no binding edge names it, so the scopes are diffed around the flip exactly as
+  // bindWorkpiece does. Disabling or deleting a hook only shrinks scope, which never
+  // under-verifies anyone, so those paths need no counterpart -- capabilities issued to firings
+  // already in flight are revoked by their own per-call revalidation instead (see
+  // requireLiveHook).
   enableHookRecord(record: BoundHookRecord): void {
     let current = this.storage.boundHooks.get(record.id);
     if (!current || !this.storage.gatekeepers.get(current.gatekeeperId)) {
@@ -1896,12 +1922,12 @@ class OverseerImpl implements AgentHooks {
       throw new Error("The connection or hook was removed while the hook was being enabled.");
     }
 
-    let useScopeBefore = this.#accountRequiringUseScope();
+    let reachesBefore = this.#gadgetReaches();
     current.enabled = true;
     this.storage.boundHooks.put(current);
     stampBindHookAction(this.storage, current.actionId, true);
-    this.#restartIfUseScopeWidened(
-        useScopeBefore, "Gadget restarted because a connection's hook was enabled.");
+    this.#restartIfGadgetScopesWidened(
+        reachesBefore, "Gadget restarted because a connection's hook was enabled.");
   }
 
   // Subscribe to the workspace's workpiece list: gadgets, and -- on subscriptions that include
@@ -1910,11 +1936,12 @@ class OverseerImpl implements AgentHooks {
   // worktree, accepted or not: both are proposals within the owner's chats, not part of the
   // shared workspace (a worktree is its chat's for life). (A gadget's promotion then surfaces it
   // via the collection's update notification.) Those subscribers are not told which blueprint a
-  // gadget follows either: its id is a share link to code they have no other way to read. Every
-  // record write re-delivers the summary, which is how a worktree's `pinBase` (advanced by an
-  // accept) and `headCommit` (an explicit commit, or its rollback) reach clients.
+  // gadget follows either: its id is a share link to code they have no other way to read. Given
+  // `access`, gadgets it does not include are withheld too. Every record write re-delivers the
+  // summary, which is how a worktree's `pinBase` (advanced by an accept) and `headCommit` (an
+  // explicit commit, or its rollback) reach clients.
   subscribeToWorkpieces(subscriber: RpcStub<WorkpiecesSubscriber>,
-                        includePending: boolean): RpcStub<{}> {
+                        includePending: boolean, access?: CollaboratorAccess): RpcStub<{}> {
     let gadgets = this.storage.gadgets;
     subscriber = subscriber.dup();  // keep stub after return
 
@@ -1960,7 +1987,8 @@ class OverseerImpl implements AgentHooks {
 
     // Whether the record is published to this subscriber (see above for what is withheld).
     let published = (record: WorkpieceRecord): boolean =>
-        includePending || (record.type === "gadget" && !record.pending);
+        (includePending || (record.type === "gadget" && !record.pending)) &&
+        (!access || accessIncludesGadget(access, record.id));
 
     let dbSubscriber = {
       add(record: WorkpieceRecord) {
@@ -4107,11 +4135,11 @@ class OverseerImpl implements AgentHooks {
       throw new Error("The chat's code is being actively edited; please retry.");
     }
 
-    // Promotion below can widen every "use" collaborator's verification scope, so snapshot the
-    // scope first and compare after. Comparing the effective scope rather than restarting on any
-    // promotion matters because most merges promote neither: a gadget with no bindings, or an edge
-    // to a vendorless connection, is in nobody's verification scope.
-    let useScopeBefore = this.#accountRequiringUseScope();
+    // Promotion below can widen gadgets' verification scopes, so snapshot them first and compare
+    // after. Comparing the effective scopes rather than restarting on any promotion matters because
+    // most merges widen nothing anyone holds: a gadget with no bindings, an edge to a vendorless
+    // connection, or a newly promoted gadget, which nobody can have opened yet.
+    let reachesBefore = this.#gadgetReaches();
 
     // Promote provisional gadgets whose creation is covered by this merge: accepting the chat's
     // changes through `mergeThrough` makes them permanent workspace members. Each covered
@@ -4268,11 +4296,11 @@ class OverseerImpl implements AgentHooks {
     });
 
     // Sever live sessions whose verification scope the promotions widened, now that the writes
-    // above have landed: a "use" collaborator's session was admitted against the narrower scope,
-    // and the gadget UI they drive can now invoke a connection nobody verified them against.
+    // above have landed: a session holding a gadget was admitted against its narrower scope, and
+    // the gadget UI it drives can now invoke a connection nobody verified its holder against.
     // (Everything since the promotions is synchronous, so the scope diffed here is theirs.)
-    this.#restartIfUseScopeWidened(
-        useScopeBefore, "Gadget restarted because accepted changes added gadget bindings.");
+    this.#restartIfGadgetScopesWidened(
+        reachesBefore, "Gadget restarted because accepted changes added gadget bindings.");
 
     return {outcome: "merged"};
   }
@@ -4693,7 +4721,7 @@ class OverseerImpl implements AgentHooks {
   async getGadgetFacet(gadgetId: WorkpieceId, chatId?: number, joinAs?: SessionKind)
       : Promise<RpcStub<any>> {
     let facet = await this.getGadgetFacetFetcher(gadgetId, chatId);
-    let leaveSession = joinAs ? this.joinSession(joinAs) : undefined;
+    let leaveSession = joinAs ? this.joinSession(joinAs, gadgetId) : undefined;
 
     let self = this;
 
@@ -5115,12 +5143,12 @@ class OverseerImpl implements AgentHooks {
 
     // A new account-requiring connection is in every "build" collaborator's verification scope
     // immediately -- a live build session can getGatekeeperById() and openSession() on it with no
-    // observer check -- so sever those sessions. It is in no "use" collaborator's scope until some
-    // gadget binds it, which restarts then. A vendorless spec (aiModel/agentSpawner) is in nobody's
+    // observer check -- so sever those sessions. It is in no gadget's scope until some gadget
+    // binds it, which restarts then. A vendorless spec (aiModel/agentSpawner) is in nobody's
     // scope (#inScopeGatekeepers skips it), so it widens nothing at creation -- including an
     // agentSpawner's env targets: an unbound spawner is unreachable and its env names
-    // pre-existing records, so those enter "use" scope only when a gadget binds the spawner,
-    // which the transitive bind/promotion/hook diffs pick up (#useScopeGatekeeperIds).
+    // pre-existing records, so those enter a gadget's scope only when it binds the spawner,
+    // which the transitive bind/promotion/hook diffs pick up (#gadgetReach).
     //
     // When sessions were severed, additionally block the id until the reset lands: the record was
     // published above (it must be durable before the reset) but the severed sessions stay live for
@@ -5328,14 +5356,14 @@ class OverseerImpl implements AgentHooks {
     // Forward exclusion: the gatekeeper may name observers who must not see this observation. Since
     // v1 has no per-thread hiding, the only way to let such an observation proceed is if no named
     // observer could reach it -- either they have lost access in the sharing graph, or this
-    // connection has left their role's verification scope. See
+    // connection has left their access's verification scope. See
     // observers-implementation-plan.md §5 Step 5.
     if (description.excludeObservers && description.excludeObservers.length > 0) {
       await this.#enforceExcludeObservers(gatekeeperId, description.excludeObservers);
     }
 
     // Setting ownerInvitesOnly narrows access to direct owner grants (see
-    // SharingManager.computeEffectiveRoles), so the first observation to set it snapshots who had
+    // SharingManager.computeEffectiveAccess), so the first observation to set it snapshots who had
     // access beforehand. The manager may need an RPC on first use; from the flag read below through
     // the diff after the writes, nothing awaits.
     let sharing = description.ownerInvitesOnly && !this.storage.ownerInvitesOnly.get()
@@ -5347,7 +5375,7 @@ class OverseerImpl implements AgentHooks {
         gatekeeperId, description, caller, executionId, subresources => {
       if (hookId !== undefined) requireLiveHook(this, hookId);
       let baseline = sharing && !this.storage.ownerInvitesOnly.get()
-          ? sharing.computeEffectiveRoles() : undefined;
+          ? sharing.computeEffectiveAccess() : undefined;
 
       // One transaction: a failed audit write must not leave a policy flag latched without the
       // revocation below, nor an action ID spent.
@@ -5791,8 +5819,9 @@ class OverseerImpl implements AgentHooks {
   //   - Map it back to a profileId via the byObserverId index. An unknown id is not an active
   //     observer (e.g. already torn down), so it is ignored.
   //   - If that profileId is still authorized in the sharing graph *and* this gatekeeper is still
-  //     in their role's verification scope, we cannot guarantee they won't see the observation (v1
-  //     has no per-thread hiding), so we throw to block it.
+  //     in their access's verification scope, we cannot guarantee they won't see the observation
+  //     (v1 has no per-thread hiding, and a legacy connection's observations are not attributed to
+  //     a gadget), so we throw to block it.
   //   - If this gatekeeper has left their scope, they cannot reach the observation and must not
   //     block it. They stay a collaborator with an intact record, so only their registration on
   //     *this* gatekeeper is dropped -- which is what left them named here after the connection
@@ -5817,10 +5846,10 @@ class OverseerImpl implements AgentHooks {
       // unknown and the observation is admitted. Fix: an in-memory pending-id map consulted
       // here, failing closed.
       if (!observer) continue;  // not an active observer -> ignore
-      let role = sharing.getEffectiveRole(observer.profileId);
-      if (!role) {
+      let access = sharing.getEffectiveAccess(observer.profileId);
+      if (!access) {
         unauthorized.push(observer);
-      } else if (this.#inRoleVerificationScope(gatekeeperId, role)) {
+      } else if (this.#inAccessVerificationScope(gatekeeperId, access)) {
         throw new Error(
             "This observation was blocked because it contains data that a current collaborator " +
             "is not permitted to see.");
@@ -5844,23 +5873,29 @@ class OverseerImpl implements AgentHooks {
     await Promise.all(removals);
   }
 
-  // Whether `gatekeeperId` is in the verification scope of a collaborator holding `role`, i.e.
-  // whether an observer of that role could have been verified against it -- and so whether their
-  // being named in its `excludeObservers` means anything.
+  // Whether `gatekeeperId` is in the verification scope of a collaborator holding `access`, i.e.
+  // whether they could have been verified against it -- and so whether their being named in its
+  // `excludeObservers` means anything. For "use" access that is every gadget it includes, whether
+  // or not the collaborator has opened it: a legacy connection's registrations and exclusions span
+  // the connection, not one gadget.
   //
-  // Fail-closed and deliberately narrow: the only way out is "role is `use`, the connection
-  // requires an account, and neither a gadget binding, an enabled hook, nor a reachable agent
-  // spawner's env makes it reachable" (see #useScopeGatekeeperIds). A "build" collaborator's
-  // scope is every account-requiring connection, and a connection requiring no account never
-  // verifies anyone, so both stay in scope and block exactly as before.
+  // Fail-closed and deliberately narrow: the only way out is "access is `use`, the connection
+  // requires an account, and no gadget it includes reaches it" (see #gadgetReach). A "build"
+  // collaborator's scope is every account-requiring connection, and a connection requiring no
+  // account never verifies anyone, so both stay in scope and block exactly as before.
   //
-  // Uses #accountRequiringUseScope() rather than #inScopeGatekeepers("use"), whose
-  // observerVendorId() throws on a legacy record with no creationSpec: an unrelated legacy
-  // connection must not turn the observation path into an error.
-  #inRoleVerificationScope(gatekeeperId: number, role: CollaboratorRole): boolean {
-    if (role !== "use") return true;
+  // Uses #gadgetReaches() rather than #inScopeGatekeepers(), whose observerVendorId() throws on a
+  // legacy record with no creationSpec: an unrelated legacy connection must not turn the
+  // observation path into an error.
+  #inAccessVerificationScope(gatekeeperId: number, access: CollaboratorAccess): boolean {
+    if (access.role === "build") return true;
     if (!gatekeeperVendorId(this.storage.gatekeepers.get(gatekeeperId))) return true;
-    return this.#accountRequiringUseScope().has(gatekeeperId);
+    for (let [gadgetId, reach] of this.#gadgetReaches()) {
+      if (reach.gatekeeperIds.has(gatekeeperId) && accessIncludesGadget(access, gadgetId)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   // Provides web-fetch with the Workers AI binding and AI Gateway config it needs to call
@@ -6130,22 +6165,26 @@ class OverseerImpl implements AgentHooks {
   // changes may create and stamp several gadgets), so pushes coalesce onto a single flush.
   #outputsFlushScheduled = false;
 
-  // User DO ids whose outputs index this workspace is keeping live, one token per open session.
+  // User DO ids whose outputs index this workspace is keeping live, one token per open session,
+  // and the access of the latest session to join, for those who hold some gadgets rather than
+  // "build". (An earlier session's access is never wider: narrowing anyone's access restarts the
+  // workspace, ending every session.)
   //
   // In memory, not persisted, which is what makes fanning out to collaborators safe: revoking
   // access aborts the DO (see scheduleAccessRestart()), so this is destroyed with the sessions
   // it describes and can only be rebuilt by an open() that re-checks the permission graph.
-  #connectedIndexes = new Map<string, Set<object>>();
+  #connectedIndexes = new Map<string, {tokens: Set<object>, access?: CollaboratorAccess}>();
 
-  // Keep `userId`'s outputs index up to date for the duration of one session. Returns a function
-  // that ends it, like joinPresence().
-  joinOutputsFanout(userId: string): () => void {
+  // Keep `userId`'s outputs index up to date for the duration of one session, listing only the
+  // gadgets `access` includes when given. Returns a function that ends it, like joinPresence().
+  joinOutputsFanout(userId: string, access?: CollaboratorAccess): () => void {
     let token = {};
     let sessions = this.#connectedIndexes.get(userId);
     if (sessions) {
-      sessions.add(token);
+      sessions.tokens.add(token);
+      sessions.access = access;
     } else {
-      this.#connectedIndexes.set(userId, new Set([token]));
+      this.#connectedIndexes.set(userId, {tokens: new Set([token]), access});
     }
 
     let left = false;
@@ -6154,20 +6193,22 @@ class OverseerImpl implements AgentHooks {
       left = true;
       let remaining = this.#connectedIndexes.get(userId);
       if (!remaining) return;
-      remaining.delete(token);
-      if (remaining.size === 0) this.#connectedIndexes.delete(userId);
+      remaining.tokens.delete(token);
+      if (remaining.tokens.size === 0) this.#connectedIndexes.delete(userId);
     };
   }
 
-  // This workspace's outputs, as pushed to a user's index. Provisional gadgets are excluded: they
-  // are proposals inside a chat, not things the user has made yet.
+  // This workspace's outputs, as pushed to a user's index: only the gadgets `access` includes,
+  // when given. Provisional gadgets are excluded: they are proposals inside a chat, not things the
+  // user has made yet.
   //
   // Whole-snapshot rather than a delta, so that a user's index can be brought into line with this
   // workspace in one call from anywhere, without either side reconciling per workpiece.
-  outputsSnapshot(): WorkspaceOutputEntry[] {
+  outputsSnapshot(access?: CollaboratorAccess): WorkspaceOutputEntry[] {
     let entries: WorkspaceOutputEntry[] = [];
     for (let gadget of this.storage.gadgets.list()) {
       if (gadget.type !== "gadget" || gadget.pending) continue;  // worktrees have no outputs
+      if (access && !accessIncludesGadget(access, gadget.id)) continue;
       entries.push({
         workpieceId: gadget.id,
         title: gadget.title,
@@ -6221,20 +6262,28 @@ class OverseerImpl implements AgentHooks {
     if (!ownerId) return;
 
     // Built once and shared, rather than once per recipient: the registry is the same for all of
-    // them, and rebuilding it per viewer is what made a push cost outputs times viewers.
+    // them, and rebuilding it per viewer is what made a push cost outputs times viewers. (Those
+    // holding some gadgets get it filtered, which reads no storage.)
     let snapshot = this.outputsSnapshot();
 
     // The registry notifies on every gadget update, but this carries only titles and presentation,
     // so code commits, binding edits and activity stamps all produce a snapshot nobody's index
     // would change on. Skipping those is most of the traffic. Safe to compare against what this
     // instance last sent because a newly connected watcher is synced by open() before it joins the
-    // fan-out, and a cold DO has nothing recorded and so always pushes.
+    // fan-out, and a cold DO has nothing recorded and so always pushes. (A session's access never
+    // narrows without a restart, so a filtered view changes only when the snapshot does or the
+    // session reopens.)
     let encoded = JSON.stringify(snapshot);
     if (encoded === this.#lastOutputsPushed) return;
 
-    let userIds = new Set([ownerId, ...this.#connectedIndexes.keys()]);
-    let delivered = await Promise.all([...userIds].map(
-        userId => this.syncOutputsTo(this.users.get(this.users.idFromString(userId)), snapshot)));
+    let watchers = new Map<string, CollaboratorAccess | undefined>([[ownerId, undefined]]);
+    for (let [userId, {access}] of this.#connectedIndexes) {
+      if (userId !== ownerId) watchers.set(userId, access);
+    }
+    let delivered = await Promise.all([...watchers].map(([userId, access]) => this.syncOutputsTo(
+        this.users.get(this.users.idFromString(userId)),
+        access ? snapshot.filter(entry => accessIncludesGadget(access, entry.workpieceId))
+            : snapshot)));
 
     // Recorded only once every index has it, so that a recipient this failed for is included in
     // the next flush instead of being remembered as up to date. If nothing changes again, their
@@ -6377,10 +6426,11 @@ class OverseerImpl implements AgentHooks {
     return facet.startSession(queue);
   }
 
-  // Sessions are authorized and verified only at open(), so widening what a live session's holder
-  // must be verified against leaves that session holding unverified access. Restart everyone --
-  // the same mechanism used when access is revoked -- so each client's next open() re-runs
-  // authorizeCollaborator/ensureObserver against the new scope.
+  // Sessions are authorized and verified only when they open what they hold (the workspace, or
+  // for a "use" collaborator each gadget), so widening what a live session's holder must be
+  // verified against leaves that session holding unverified access. Restart everyone -- the same
+  // mechanism used when access is revoked -- so each client re-opens and re-runs ensureObserver
+  // against the new scope.
   //
   // The condition is a live *session*, not an entry in the sharing graph: the only thing a restart
   // achieves is severing sessions that were admitted at the narrower scope, so a workspace where
@@ -6389,37 +6439,72 @@ class OverseerImpl implements AgentHooks {
   // synchronous, so a widening cannot be missed because an async lookup failed, and the restart is
   // scheduled at the moment of the change rather than an RPC round trip later.
   //
-  // `affectedRole` names whose scope the caller widened, since the two roles widen independently
-  // (#inScopeGatekeepers): a new connection enters every "build" collaborator's scope but no "use"
-  // collaborator's until some gadget binds it, and binding one enters "use" scope having been in
-  // "build" scope since it was created. A session holding the other role therefore has no new
-  // verification requirements, and severing it would buy nothing. Omit the argument for a restart
-  // that isn't a widening at all (one that must sever regardless of role).
+  // `affected` names whose scope the caller widened: "build" collaborators', or those holding one
+  // of a set of gadgets, since scopes widen independently (#inScopeGatekeepers): a new connection
+  // enters every "build" collaborator's scope but no gadget's until one binds it, and binding one
+  // enters that gadget's scope having been in "build" scope since it was created. A session that
+  // holds nothing affected has no new verification requirements, and severing it would buy
+  // nothing. Omit the argument for a restart that isn't a widening at all (one that must sever
+  // regardless of what sessions hold).
   //
   // Note that ensureAmbientCapsules() calls addGatekeeper() from inside open(), so on a shared
   // workspace the first open after an ambient capsule appears bounces itself once; the capsule
   // exists by then, so the client's retry is clean.
   // Returns whether a restart was scheduled, so a caller that just published a widened
   // capability knows to hold it back until the reset lands (see #gatekeepersPendingRestart).
-  #restartIfSessionsAffected(reason: string, affectedRole?: CollaboratorRole): boolean {
-    if (!this.#hasCollaboratorSession(affectedRole)) return false;
+  #restartIfSessionsAffected(reason: string,
+                             affected?: "build" | ReadonlySet<WorkpieceId>): boolean {
+    if (!this.#hasCollaboratorSession(affected)) return false;
     this.scheduleAccessRestart(reason);
     return true;
   }
 
-  // Diff the account-requiring "use" scope against a snapshot taken just before a mutation, and
-  // when it widened onto a live "use" session, restart -- additionally blocking each widened
-  // connection until the reset lands (see #gatekeepersPendingRestart): the severed sessions stay
-  // live for the reset's ~100ms delay, and a gadget facet reload in that window would otherwise
-  // mint fresh binding loopbacks onto a connection nobody verified the holder against. Marking
-  // the gatekeeper ids suffices as quarantine because every such loopback funnels through
-  // openGatekeeperSession (assertGatekeeperUsable). Shared by every "use"-scope widening site:
-  // bindWorkpiece, mergeChatChanges, enableHookRecord.
-  #restartIfUseScopeWidened(useScopeBefore: Set<WorkpieceId>, reason: string): void {
-    let widened = [...this.#accountRequiringUseScope()].filter(id => !useScopeBefore.has(id));
-    if (widened.length === 0) return;
-    if (this.#restartIfSessionsAffected(reason, "use")) {
-      for (let id of widened) this.#gatekeepersPendingRestart.add(id);
+  // Diff what each openable gadget reaches against a snapshot taken just before a mutation, and
+  // when that widened what a session holding the gadget must be verified against, restart. Two
+  // things widen it: an account-requiring connection it newly reaches, and a gadget it newly
+  // reaches through an agent spawner -- whose recorded history, and the connections that history
+  // was read through, its holders were never verified against, even when no connection is new
+  // (see ObserverLedger.observerScope). A vendorless connection newly reached widens nothing by
+  // itself: nobody is verified against it.
+  //
+  // A restart additionally blocks what the widening exposed until the reset lands (see
+  // #gatekeepersPendingRestart): the severed sessions stay live for the reset's ~100ms delay, and
+  // in that window a gadget facet reload would mint fresh binding loopbacks onto a connection
+  // nobody verified the holder against, and a spawn would hand them an agent driving a gadget
+  // they were never verified for. So the newly reached account-requiring connections are
+  // blocked, and so is every spawner the gadget reaches that binds a newly reached gadget.
+  // Blocking gatekeeper ids suffices as quarantine: every loopback funnels through
+  // openGatekeeperSession, and every spawn through its spawner's queue, and both check
+  // (assertGatekeeperUsable). Shared by every gadget-scope widening site: bindWorkpiece,
+  // mergeChatChanges, enableHookRecord.
+  #restartIfGadgetScopesWidened(before: Map<WorkpieceId, GadgetReach>, reason: string): void {
+    let gadgets = new Set<WorkpieceId>();
+    let hold = new Set<WorkpieceId>();
+    for (let [gadgetId, reach] of this.#gadgetReaches()) {
+      let prior = before.get(gadgetId);
+      let newGadgets = new Set([...reach.gadgetIds].filter(id => !prior?.gadgetIds.has(id)));
+      let newConnections = [...reach.gatekeeperIds].filter(id => {
+        if (prior?.gatekeeperIds.has(id)) return false;
+        let gk = this.storage.gatekeepers.get(id);
+        // A reachable legacy record (no creationSpec) counts even though it has no vendor to
+        // verify against: nobody CAN be verified against it, so it becoming reachable must
+        // restart and quarantine -- fresh gadget opens then fail closed via observerVendorId().
+        return gk && (!gk.creationSpec || gatekeeperVendorId(gk));
+      });
+      if (newGadgets.size === 0 && newConnections.length === 0) continue;
+      gadgets.add(gadgetId);
+      for (let id of newConnections) hold.add(id);
+      for (let id of reach.gatekeeperIds) {
+        let spawner = this.storage.gatekeepers.get(id);
+        if (this.visibleBindings({bindings: spawner?.bindings ?? {}})
+            .some(([, edge]) => newGadgets.has(edge.target))) {
+          hold.add(id);
+        }
+      }
+    }
+    if (gadgets.size === 0) return;
+    if (this.#restartIfSessionsAffected(reason, gadgets)) {
+      for (let id of hold) this.#gatekeepersPendingRestart.add(id);
     }
   }
 
@@ -8152,7 +8237,7 @@ class OverseerImpl implements AgentHooks {
     // started (e.g. the owner turned on Web Search), deduped against every name in its scope. The
     // system prompt keeps the list the chat started with; the agent learns of the new resource from
     // a "catalogChange" message instead (see agent.ts). A spawned chat's env stays its spawner's
-    // (see #useScopeGatekeeperIds).
+    // (see #gadgetReach).
     if (!context.spawnerConfig) {
       let known = new Set(ambientIds);
       let gained = [...this.storage.gatekeepers.list()]
@@ -9716,103 +9801,119 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
-  // Gatekeeper ids reachable from a "use" collaborator's session, and therefore all of their
-  // verification scope: everything bound by some non-provisional gadget (the gadget UI they drive
-  // can invoke it), plus every connection with an *enabled* hook -- a hook is a live write channel
-  // into the gadget it wakes, delivering the connection's data into state that collaborator can
-  // open, regardless of binding edges -- plus, transitively, every binding target of a reachable
-  // agent spawner: connectToGadget mints the bound spawner's loopback with no role filter
-  // (getEnvForLoader), and spawn/spawnCallable seeds the spawned agent's bindings from the
-  // spawner's (AgentSpawnerQueueImpl), handing the collaborator an agent that reads those
-  // connections with the creator's authority and returns their data.
-  #useScopeGatekeeperIds(): Set<WorkpieceId> {
-    let ids = new Set<WorkpieceId>();
-    for (let gadget of this.storage.gadgets.list()) {
-      // Provisional gadgets and binding edges aren't visible to "use" collaborators, so they
-      // don't bring gatekeepers into scope. (Worktrees have no binding edges at all.)
-      if (gadget.type !== "gadget" || gadget.pending) continue;
-      for (let [, edge] of this.visibleBindings(gadget)) {
-        ids.add(edge.target);
-      }
-    }
-    for (let hook of this.storage.boundHooks.list()) {
+  // The connections of every enabled hook, by the gadget it wakes: its record's `gadgetId`, or
+  // `defaultGadgetId` -- the gadget its firings are attributed to (see BoundHookRecord.gadgetId
+  // and startHook), trusted here as there even though an agent-bound hook's is inferred. A hook
+  // whose gadget can't be resolved (none named, or its record gone) is keyed `undefined` and
+  // reaches every gadget, fail-closed. A hook waking a still-provisional gadget reaches nothing
+  // until promotion, which mergeChanges' scope diff reports.
+  #enabledHookConnections(): Map<WorkpieceId | undefined, WorkpieceId[]> {
+    let connections = new Map<WorkpieceId | undefined, WorkpieceId[]>();
+    for (let hook of Array.from(this.storage.boundHooks.list())) {
       if (!hook.enabled) continue;
-      // A hook wakes one gadget; while that gadget is still provisional to a chat, "use"
-      // collaborators can't open it (getGadget refuses pending gadgets), so the hook doesn't
-      // bring its connection into their scope. Promotion deletes `pending` inside
-      // mergeChanges' scope diff, which reports the widening then. An unresolvable target
-      // (no gadgetId and no default gadget, or a deleted record) stays in scope, fail-closed.
       let gadgetId = hook.gadgetId ?? this.defaultGadgetId;
-      if (gadgetId !== undefined && this.storage.gadgets.get(gadgetId)?.pending) continue;
-      ids.add(hook.gatekeeperId);
+      let gadget = gadgetId === undefined ? undefined : this.storage.gadgets.get(gadgetId);
+      if (gadget?.pending) continue;
+      let key = gadget ? gadgetId : undefined;
+      let list = connections.get(key);
+      if (list) list.push(hook.gatekeeperId);
+      else connections.set(key, [hook.gatekeeperId]);
     }
+    return connections;
+  }
 
-    // Close over agent spawners' bindings. The closure roots at the reachable set above because
-    // an *unbound* spawner is unreachable (loopbacks are minted only through gadget binding edges
-    // and chat bindings, and chats are owner/build-only), and a spawner's permanent bindings grow
-    // only by promotion -- so every widening lands on the diffs around the sites that grow the
-    // roots or promote (bindWorkpiece, mergeChatChanges, enableHookRecord), with no dedicated
-    // trigger. Spawner-to-spawner bindings are legal, hence the worklist; a binding target that
-    // is a gadget is skipped -- such gadgets are non-pending, so their bindings are covered by
-    // the first loop.
-    //
-    // The bindings are also the ceiling, not just the seed: a spawned chat's agent has neither
-    // the requestConnection tool nor setGadgetBinding (agent.ts restricts spawned agents to
-    // describeBinding/executeCode), and connection requests are created only by the former, so
-    // no accepted request can ever add a connection to a spawned chat beyond the spawner's
-    // bindings. If spawned agents ever gain either tool, this closure must learn about it too.
-    let pending = [...ids];
+  // What a session holding gadget `gadgetId` can reach, and therefore all of a "use"
+  // collaborator's verification scope for it: the gadget's state, everything it binds (the gadget
+  // UI they drive can invoke it), the connection of every *enabled* hook waking it -- a hook is a
+  // live write channel into its gadget, delivering the connection's data into state they may
+  // open, regardless of binding edges (see #enabledHookConnections) -- and, transitively,
+  // everything a reachable agent spawner binds: connectToGadget mints the bound spawner's
+  // loopback with no role filter (getEnvForLoader), and spawn/spawnCallable seeds the spawned
+  // agent's bindings from the spawner's (AgentSpawnerQueueImpl), handing the holder an agent that
+  // reads those connections with the creator's authority and returns their data -- including
+  // another gadget a spawner binds, whose reach (its hooks included) is then this one's too.
+  // Provisional gadgets and binding edges reach nothing: their holders can't open them (see
+  // UseOverseerInterface.getGadget), and every widening -- an edge, a promotion, a hook enabled --
+  // lands on the diffs around the sites that make it (bindWorkpiece, mergeChatChanges,
+  // enableHookRecord), with no dedicated trigger.
+  //
+  // A spawner's bindings are also the ceiling of what its agents reach, not just the seed: a
+  // spawned chat's agent has neither the requestConnection tool nor setGadgetBinding (agent.ts
+  // restricts spawned agents to describeBinding/executeCode), and connection requests are created
+  // only by the former, so no accepted request can ever add a connection to a spawned chat beyond
+  // the spawner's bindings. If spawned agents ever gain either tool, this closure must learn about
+  // it too.
+  #gadgetReach(gadgetId: WorkpieceId, hooks = this.#enabledHookConnections()): GadgetReach {
+    let reach: GadgetReach = {gadgetIds: new Set(), gatekeeperIds: new Set()};
+    let pending = [gadgetId, ...hooks.get(undefined) ?? []];
     while (pending.length > 0) {
-      let spawner = this.storage.gatekeepers.get(pending.pop()!);
-      for (let [, {target}] of this.visibleBindings({bindings: spawner?.bindings ?? {}})) {
-        if (ids.has(target) || !this.storage.gatekeepers.get(target)) continue;
-        ids.add(target);
-        pending.push(target);
+      let id = pending.pop()!;
+      let gadget = this.storage.gadgets.get(id);
+      if (gadget) {
+        if (gadget.type !== "gadget" || gadget.pending || reach.gadgetIds.has(id)) continue;
+        reach.gadgetIds.add(id);
+        pending.push(...this.visibleBindings(gadget).map(([, edge]) => edge.target),
+            ...hooks.get(id) ?? []);
+        continue;
       }
+      let gatekeeper = this.storage.gatekeepers.get(id);
+      if (!gatekeeper || reach.gatekeeperIds.has(id)) continue;
+      reach.gatekeeperIds.add(id);
+      pending.push(...this.visibleBindings({bindings: gatekeeper.bindings ?? {}})
+          .map(([, edge]) => edge.target));
     }
-    return ids;
+    return reach;
   }
 
-  // The account-requiring subset of #useScopeGatekeeperIds(): exactly what a "use" collaborator
-  // is verified against, as an id set two states can be compared by (see mergeChatChanges).
-  //
-  // Uses the non-throwing gatekeeperVendorId() rather than #inScopeGatekeepers("use"), whose
-  // observerVendorId() throws on a legacy record with no creationSpec: an unrelated legacy
-  // connection must not turn a caller's ordinary bookkeeping into an error.
-  //
-  // A reachable legacy record (no creationSpec) joins the set even though it has no vendor to
-  // verify against: nobody CAN be verified against it, so it becoming reachable must restart
-  // and quarantine -- fresh use opens then fail closed via observerVendorId() -- rather than
-  // vanish from both sides of the widening diff and leave live sessions invoking it.
-  #accountRequiringUseScope(): Set<WorkpieceId> {
-    let ids = new Set<WorkpieceId>();
-    for (let id of this.#useScopeGatekeeperIds()) {
-      let gk = this.storage.gatekeepers.get(id);
-      if (gk && (!gk.creationSpec || gatekeeperVendorId(gk))) ids.add(id);
-    }
-    return ids;
+  // #gadgetReach() of every gadget that can be opened (permanent ones).
+  #gadgetReaches(): Map<WorkpieceId, GadgetReach> {
+    let hooks = this.#enabledHookConnections();
+    let gadgetIds = Array.from(this.storage.gadgets.list())
+        .filter(record => record.type === "gadget" && !record.pending)
+        .map(record => record.id);
+    return new Map(gadgetIds.map(id => [id, this.#gadgetReach(id, hooks)]));
   }
 
-  // Selects the gatekeepers a non-owner observer with the given `role` must be verified against:
+  // ObserverLedgerHost: the gadgets whose holders can read what `gadgetId` reads -- itself, and
+  // any gadget whose agent spawners reach it (see #gadgetReach).
+  gadgetsReaching(gadgetId: WorkpieceId): WorkpieceId[] {
+    return Array.from(this.#gadgetReaches())
+        .filter(([, reach]) => reach.gadgetIds.has(gadgetId))
+        .map(([id]) => id);
+  }
+
+  // Whether `gadgetId` is a gadget that can be shared and opened: it exists and is no longer
+  // provisional to a chat (the SharingManager's gadgetExists).
+  isShareableGadget(gadgetId: WorkpieceId): boolean {
+    let record = this.storage.gadgets.get(gadgetId);
+    return record?.type === "gadget" && !record.pending;
+  }
+
+  // Selects the gatekeepers a non-owner observer holding `grant` must be verified against:
   //   - "build" collaborators (full access): every account-requiring gatekeeper.
-  //   - "use" collaborators (UI only): only account-requiring gatekeepers some gadget binds or an
-  //     enabled hook feeds, since that is all their sessions can reach.
+  //   - a "use" collaborator's gadget: only account-requiring gatekeepers the gadget reaches (see
+  //     #gadgetReach), since that is all a session holding it can reach -- plus every connection
+  //     through which a gadget it reaches recorded requirements, whose data that gadget's state
+  //     may hold whether or not it still binds the connection.
   //
   // The scope filter runs before observerVendorId(), which throws on a legacy record with no
   // creationSpec: an unrelated legacy connection outside the caller's scope must not block their
   // open, since nothing they can reach needs verification against it. An in-scope one still
   // throws, fail-closed (and "build" scope is everything, so it always throws there).
   //
-  // TODO(known-risk): a "use" collaborator is never verified against a producer outside their
-  //   scope, yet restricted data read from it can reach gadget state they see, because provenance
-  //   is not tracked past the observation. Accepted for v1; see "Known security risk -- never-bound
-  //   producers" in plans/restricted-data-sharing.md.
-  #inScopeGatekeepers(role: CollaboratorRole): GatekeeperRecord[] {
-    let boundIds = role === "use" ? this.#useScopeGatekeeperIds() : undefined;
+  // TODO(known-risk): a "use" collaborator is never verified against a legacy producer that never
+  //   reached their gadget, yet restricted data read from it can reach gadget state they see,
+  //   because provenance is not tracked past the observation. Accepted for v1; see "Known security
+  //   risk -- never-bound producers" in plans/restricted-data-sharing.md.
+  #inScopeGatekeepers(grant: CollaboratorGrant,
+                      reach = grant === "build" ? undefined : this.#gadgetReach(grant.gadgetId))
+      : GatekeeperRecord[] {
+    let ids = reach && new Set(
+        [...reach.gatekeeperIds, ...this.observerLedger.gadgetProducers(reach.gadgetIds)]);
 
     let result: GatekeeperRecord[] = [];
     for (let gk of this.storage.gatekeepers.list()) {
-      if (boundIds && !boundIds.has(gk.id)) continue;
+      if (ids && !ids.has(gk.id)) continue;
       if (!observerVendorId(gk)) continue;
       result.push(gk);
     }
@@ -9822,8 +9923,11 @@ class OverseerImpl implements AgentHooks {
     return result.filter(gk => !this.creationPending(gk.id));
   }
 
-  listObserverRequirements(role: CollaboratorRole): ObserverBindingNeed[] {
-    return this.#inScopeGatekeepers(role).map(observerBindingNeed);
+  listObserverRequirements(grant: CollaboratorGrant): ObserverBindingNeed[] {
+    if (grant !== "build" && !this.isShareableGadget(grant.gadgetId)) {
+      throw new Error(`No such gadget: ${grant.gadgetId}`);
+    }
+    return this.#inScopeGatekeepers(grant).map(observerBindingNeed);
   }
 
   // Tail of the in-flight addObserver/removeObserver chain per `${observerId}/${gatekeeperId}`
@@ -9874,7 +9978,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Tear down observer records for collaborators who lost access as a result of a sharing change.
-  // For each affected collaborator who is now fully unauthorized (newRole === null) and has an
+  // For each affected collaborator who is now fully unauthorized (newAccess === null) and has an
   // observer record: best-effort removeObserver on all gatekeeper facets, then delete the record.
   // All calls are best-effort -- an orphaned observer entry only causes superfluous future checks,
   // never a data leak: a registration is what admits an open, and every open re-runs addObserver,
@@ -9882,7 +9986,7 @@ class OverseerImpl implements AgentHooks {
   async tearDownLostObservers(affected: AffectedCollaborator[]): Promise<void> {
     let gatekeeperIds = [...this.storage.gatekeepers.list()].map(gk => gk.id);
     for (let entry of affected) {
-      if (entry.newRole !== null) continue;  // downgraded but still has access -> keep record
+      if (entry.newAccess !== null) continue;  // narrowed but still has access -> keep record
       let observer = this.storage.observers.get(entry.profile.id);
       if (!observer) continue;
       this.storage.observers.delete(observer.profileId);
@@ -9891,8 +9995,8 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Reconcile this workspace's cached listing for collaborators whose access changed: remove it
-  // for those who lost access entirely, and refresh the presentation-only role for those who were
-  // downgraded.
+  // for those who lost access entirely, and for those who kept some, refresh the
+  // presentation-only role and their Outputs index, which may list gadgets they no longer hold.
   async refreshAffectedCollaboratorListings(affected: AffectedCollaborator[]): Promise<void> {
     let gadgetId = this.ctx.id.toString();
 
@@ -9904,9 +10008,12 @@ class OverseerImpl implements AgentHooks {
       let batch = affected.slice(i, i + LISTING_REFRESH_BATCH);
       let results = await Promise.allSettled(batch.map(entry => {
         let user = this.users.get(this.users.idFromName(entry.profile.id));
-        return entry.newRole === null
+        return entry.newAccess === null
           ? user.forgetSharedWorkspace(gadgetId)
-          : user.updateSharedWorkspaceRole(gadgetId, entry.newRole);
+          : Promise.all([
+              user.updateSharedWorkspaceRole(gadgetId, entry.newAccess.role),
+              user.syncWorkspaceOutputs(gadgetId, this.outputsSnapshot(entry.newAccess)),
+            ]);
       }));
       for (let j = 0; j < results.length; j++) {
         let result = results[j];
@@ -9919,24 +10026,28 @@ class OverseerImpl implements AgentHooks {
   }
 
   // The authorization gate every non-owner entry point (open(), receiveExternalMessage()) must
-  // pass through: resolve the caller's effective role, then verify them as an observer of
-  // everything this workspace has read. Returns null for no access; verification failures throw.
-  // A caller that requires at least `requireRole` (e.g. receiveExternalMessage needs "build")
-  // passes it so an insufficient role is denied *before* verification runs -- otherwise the caller
-  // would be verified (real addObserver calls, a persisted observer record) only to be turned
-  // away, or worse, told to fix a verification failure that can never grant them access.
-  // `configureCb` is forwarded to ensureObserver to prompt for unconfigured account choices;
-  // without it, verification is non-interactive and an unconfigured binding denies access.
+  // pass through: resolve the caller's effective access, then verify a "build" collaborator as an
+  // observer of everything this workspace has read. Returns null for no access; verification
+  // failures throw. Collaborators with "use" access are not verified here: what they are admitted
+  // to is a workspace shell showing nothing any gadget read, and they are verified for each gadget
+  // as they get it (see authorizeGadget). A caller that requires "build" (e.g.
+  // receiveExternalMessage) passes `requireBuild` so other access is denied *before* verification
+  // runs -- otherwise the caller would be verified (real addObserver calls, a persisted observer
+  // record) only to be turned away, or worse, told to fix a verification failure that can never
+  // grant them access. `configureCb` is forwarded to ensureObserver to prompt for unconfigured
+  // account choices; without it, verification is non-interactive and an unconfigured binding
+  // denies access.
   async authorizeCollaborator(
       profileId: string,
       clientUser: DurableObjectStub<UserDurableObject>,
       opts: {
         configureCb?: RpcStub<ObserverConfigCallback>;
-        requireRole?: CollaboratorRole;
-      } = {}): Promise<CollaboratorRole | null> {
+        requireBuild?: boolean;
+      } = {}): Promise<CollaboratorAccess | null> {
     let sharing = await this.getSharingManager();
-    let role = sharing.getEffectiveRole(profileId);
-    if (!role || (opts.requireRole && roleRank(role) < roleRank(opts.requireRole))) return null;
+    let access = sharing.getEffectiveAccess(profileId);
+    if (!access || (opts.requireBuild && access.role !== "build")) return null;
+    if (access.role !== "build") return access;
 
     // A session-to-be counts as a session for its role from the moment its role is resolved:
     // verification can park indefinitely on collaborator-controlled awaits (the account-
@@ -9946,22 +10057,49 @@ class OverseerImpl implements AgentHooks {
     // interface there are only microtask continuations (open() awaits nothing else after this
     // call), and no incoming event can be delivered inside a microtask drain, so nothing can
     // observe the count dip to zero across the handoff.
-    let leaveSession = this.joinSession(role);
+    let leaveSession = this.joinSession("build");
     try {
-      await this.ensureObserver(profileId, clientUser, role, opts.configureCb);
+      await this.ensureObserver(profileId, clientUser, "build", opts.configureCb);
     } finally {
       leaveSession();
     }
-    return role;
+    return access;
   }
 
-  // Bring a non-owner `profileId` into compliance as an observer for their `role`, so that they may
-  // open the Gadget. May invoke `configureCb` to ask the user to choose connected accounts for
-  // gatekeeper bindings they haven't configured yet. Re-verifies already-configured bindings on
-  // every open, catching revocation of the user's underlying resource access promptly: every
-  // connection through its `addObserver()`, plus its `verifyObserverAccess()` for the
-  // requirements its observations recorded that the role reaches (see observer-ledger.ts). Returns
-  // when fully verified; throws to deny access.
+  // The gate a "use" collaborator passes to get gadget `gadgetId` (UseOverseerInterface.getGadget):
+  // confirm their effective access includes it -- re-read live, since the workspace shell they hold
+  // was admitted with whatever access they had then -- and that it can be opened, then verify them
+  // as an observer of what that one gadget reaches. Returns false for no access, so the caller can
+  // deny without revealing whether the gadget exists; verification failures throw. A failure
+  // denies only this gadget: the others they hold keep the access their own gets verified.
+  // `configureCb` is as for authorizeCollaborator. The in-flight session lease and its handoff are
+  // too: it counts as a session holding this gadget, so widening the gadget's scope mid-
+  // verification restarts it.
+  async authorizeGadget(
+      profileId: string,
+      clientUser: DurableObjectStub<UserDurableObject>,
+      gadgetId: WorkpieceId,
+      configureCb?: RpcStub<ObserverConfigCallback>): Promise<boolean> {
+    let access = (await this.getSharingManager()).getEffectiveAccess(profileId);
+    if (!access || !accessIncludesGadget(access, gadgetId) || !this.isShareableGadget(gadgetId)) {
+      return false;
+    }
+    let leaveSession = this.joinSession("use", gadgetId);
+    try {
+      await this.ensureObserver(profileId, clientUser, {gadgetId}, configureCb);
+    } finally {
+      leaveSession();
+    }
+    return true;
+  }
+
+  // Bring a non-owner `profileId` into compliance as an observer for `grant`, so that they may
+  // open what it grants: the workspace, or one gadget. May invoke `configureCb` to ask the user to
+  // choose connected accounts for gatekeeper bindings they haven't configured yet. Re-verifies
+  // already-configured bindings on every open, catching revocation of the user's underlying
+  // resource access promptly: every connection through `addObserver()`, plus its
+  // `verifyObserverAccess()` for the requirements the grant reaches (see observer-ledger.ts).
+  // Returns when fully verified; throws to deny access.
   //
   // See observers-implementation-plan.md §5 Step 3.
   //
@@ -9971,13 +10109,12 @@ class OverseerImpl implements AgentHooks {
   async ensureObserver(
       profileId: string,
       clientUser: DurableObjectStub<UserDurableObject>,
-      role: CollaboratorRole,
+      grant: CollaboratorGrant,
       configureCb?: RpcStub<ObserverConfigCallback>): Promise<void> {
-    // 1. Select in-scope gatekeepers, and the requirements recorded through them (see
-    //    ObserverLedger.observerScope). If none require an account, there is nothing to verify and
-    //    no observer record is needed (built-in gatekeepers never name observers in
-    //    excludeObservers).
-    let scope = this.observerLedger.observerScope(role, this.#inScopeGatekeepers(role));
+    // 1. Select in-scope gatekeepers and the requirements recorded through them (see
+    //    #observerScope). If none require an account, there is nothing to verify and no observer
+    //    record is needed (built-in gatekeepers never name observers in excludeObservers).
+    let scope = this.#observerScope(grant);
     if (scope.gatekeepers.length === 0) return;
 
     // 2. Load any existing observer record, and build a working copy of its account choices.
@@ -10075,7 +10212,7 @@ class OverseerImpl implements AgentHooks {
 
         // 5. Verify all in-scope bindings (covered + newly chosen) with the chosen accounts: hand
         //    each account's verifier to the connection's addObserver(), then, if its observations
-        //    recorded requirements the role reaches, ask it to check those with the same verifier.
+        //    recorded requirements the grant reaches, ask it to check those with the same verifier.
         //    Collect *every* failure rather than just the first, so a re-prompt can present them
         //    all at once.
         let failures = new Map<number, ObserverBindingFailure>();
@@ -10112,12 +10249,12 @@ class OverseerImpl implements AgentHooks {
           }
         }));
 
-        // 6. What this open must verify can change while it awaits: a requirement recorded, or a
-        //    connection added, removed, or approved. Successes and failures alike may be stale, so
-        //    re-run the pass rather than admit against them. This check and the publication below
-        //    share one synchronous block, so nothing recorded after it can be missed: an
-        //    observation checks every published observer.
-        let current = this.observerLedger.observerScope(role, this.#inScopeGatekeepers(role));
+        // 6. What this open must verify can change while it awaits: a requirement recorded, a
+        //    connection added, removed, or approved, or a gadget newly reached. Successes and
+        //    failures alike may be stale, so re-run the pass rather than admit against them. This
+        //    check and the publication below share one synchronous block, so nothing recorded
+        //    after it can be missed: an observation checks every published observer.
+        let current = this.#observerScope(grant);
         if (!observerScopeCovers(scope, current)) {
           if (++scopePasses > MAX_VERIFICATION_PASSES) {
             throw new Error(
@@ -10182,6 +10319,14 @@ class OverseerImpl implements AgentHooks {
     this.storage.observers.put({profileId, observerId, accountChoices});
   }
 
+  // Everything a collaborator holding `grant` is verified against (see
+  // ObserverLedger.observerScope): for "build", every connection and context; for a gadget, the
+  // connections it reaches (see #inScopeGatekeepers) and the contexts of the gadgets it reaches.
+  #observerScope(grant: CollaboratorGrant): ObserverScope {
+    let reach = grant === "build" ? undefined : this.#gadgetReach(grant.gadgetId);
+    return this.observerLedger.observerScope(
+        reach?.gadgetIds ?? "build", this.#inScopeGatekeepers(grant, reach));
+  }
   // Render the observer verification failures as one line per binding, naming the connection and the
   // account that was refused: `<resourceTitle> (<account label>) — <reason>`. Cold path only (we're
   // about to deny the open), so the extra User DO round trip per failure is fine. Discloses nothing
@@ -10244,7 +10389,8 @@ class OverseerImpl implements AgentHooks {
   async getSharingManager(): Promise<SharingManager> {
     if (!this.#sharingManager) {
       this.#sharingManager = new SharingManager(
-          this.storage, await this.getOwnerProfileId(), () => this.storage.ownerInvitesOnly.get());
+          this.storage, await this.getOwnerProfileId(), () => this.storage.ownerInvitesOnly.get(),
+          gadgetId => this.isShareableGadget(gadgetId));
     }
     return this.#sharingManager;
   }
@@ -10496,8 +10642,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       this.impl.markOutputsDirty();
     }
 
-    // The caller's effective role. The owner always has "build".
-    let role: CollaboratorRole = "build";
+    // The caller's effective access. The owner always has "build".
+    let access: CollaboratorAccess = {role: "build"};
 
     if (!isOwner) {
       let sharing = await this.impl.getSharingManager();
@@ -10516,21 +10662,23 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       // the observer snapshot so every capability exposed to this collaborator has an observer.
       await ensureCapsules;
 
-      // Check authorization: compute the caller's effective role from the permission graph, then
-      // verify they may observe everything this Gadget has read through its in-scope gatekeepers,
-      // configuring their connected accounts if needed. Observer verification runs only after a
-      // valid role is confirmed, so it never reveals gatekeeper or resource metadata to an
-      // unauthorized user.
+      // Check authorization: compute the caller's effective access from the permission graph,
+      // then verify a "build" collaborator may observe everything this Gadget has read through its
+      // in-scope gatekeepers, configuring their connected accounts if needed. Observer
+      // verification runs only after valid access is confirmed, so it never reveals gatekeeper or
+      // resource metadata to an unauthorized user. A "use" collaborator is verified for each
+      // gadget they get instead (see UseOverseerInterface.getGadget).
       //
-      // An unauthorized caller (no effective role -- never had access, or was removed) gets a
+      // An unauthorized caller (no effective access -- never had any, or was removed) gets a
       // distinct denial without workspace metadata. A removed collaborator who reconnects after
       // their session is force-restarted lands here and sees the terminal access-denied page.
-      let effectiveRole = await this.impl.authorizeCollaborator(
+      let effectiveAccess = await this.impl.authorizeCollaborator(
           profileId, clientUser, {configureCb: configureObservers});
-      if (!effectiveRole) {
+      if (!effectiveAccess) {
         throw createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied);
       }
-      role = effectiveRole;
+      access = effectiveAccess;
+      let role = access.role;
 
       // Fire-and-forget a call to the collaborator's user DO so the gadget appears on
       // (or is refreshed on) their home page.
@@ -10548,7 +10696,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
         }
         // Catch up whatever happened while they were away; changes from here on reach them
         // through the session fan-out (joinOutputsFanout).
-        await this.impl.syncOutputsTo(clientUser);
+        await this.impl.syncOutputsTo(clientUser, this.impl.outputsSnapshot(access));
       })();
     }
 
@@ -10558,10 +10706,10 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       source: shareKey ? "share_key" : "direct",
     });
 
-    if (role === "use") {
-      // "use" collaborators get a restricted capability exposing only the gadget UI.
+    if (access.role === "use") {
+      // "use" collaborators get a restricted capability exposing only the UIs of their gadgets.
       return new UseOverseerInterface(
-          this.impl, profileId, userId, notifyClosed.dup());
+          this.impl, profileId, userId, notifyClosed.dup(), access);
     }
 
     return new OverseerClientInterface(
@@ -10642,10 +10790,10 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     // denial below rather than being verified (or told to fix a verification failure) for access
     // this path can never grant them.
     if (ownerId !== callerId) {
-      let role: CollaboratorRole | null;
+      let access: CollaboratorAccess | null;
       try {
-        role = await this.impl.authorizeCollaborator(
-            callerProfile.id, caller, {requireRole: "build"});
+        access = await this.impl.authorizeCollaborator(
+            callerProfile.id, caller, {requireBuild: true});
       } catch (err) {
         return {
           accepted: false,
@@ -10654,7 +10802,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
               `(${stringifyError(err)})`,
         };
       }
-      if (role !== "build") {
+      if (access?.role !== "build") {
         return {
           accepted: false,
           message: "You do not have access to interact with this workspace through its agent.",
@@ -11444,7 +11592,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         this.#mintedCapabilityKind());
   }
 
-  async getGadget(id: WorkpieceId): Promise<RpcStub<GadgetClient>> {
+  // A "build" session was verified for everything when the workspace opened, so there is nothing
+  // to configure here.
+  async getGadget(id: WorkpieceId, _configureObservers?: RpcStub<ObserverConfigCallback>)
+      : Promise<RpcStub<GadgetClient>> {
     this.impl.getGadgetRecord(id);  // validate it exists
     // @ts-expect-error An RpcTarget implementing the interface works in place of a stub, but the
     //     type system doesn't know this.
@@ -12547,15 +12698,15 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   // the RPC-bound pieces (resolving profiles via User DOs) and delegate the rest.
 
   async listObserverRequirements(
-      role: CollaboratorRole): Promise<ObserverBindingNeed[]> {
-    return this.impl.listObserverRequirements(role);
+      grant: CollaboratorGrant): Promise<ObserverBindingNeed[]> {
+    return this.impl.listObserverRequirements(grant);
   }
 
   async listCollaborators(): Promise<CollaboratorInfo[]> {
     return (await this.impl.getSharingManager()).listCollaborators();
   }
 
-  async addCollaborator(username: string, role: CollaboratorRole, note?: string)
+  async addCollaborator(username: string, grant: CollaboratorGrant, note?: string)
       : Promise<CollaboratorInfo | null> {
     // Look up the user DO to check if the account exists.
     let userDoId = this.impl.users.idFromName(username);
@@ -12568,19 +12719,21 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return (await this.impl.getSharingManager()).addCollaborator({
       caller: this.#sharingCaller(),
       profile,
-      role,
+      grant,
       note,
     });
   }
 
-  async previewRemoveCollaborator(profileId: string): Promise<AffectedCollaborator[]> {
+  async previewRemoveCollaborator(profileId: string, gadgetId?: WorkpieceId)
+      : Promise<AffectedCollaborator[]> {
     return (await this.impl.getSharingManager())
-        .previewRemoveCollaborator(this.#sharingCaller(), profileId);
+        .previewRemoveCollaborator(this.#sharingCaller(), profileId, gadgetId);
   }
 
-  async removeCollaborator(profileId: string, keepUsers: string[]): Promise<AffectedCollaborator[]> {
+  async removeCollaborator(profileId: string, keepUsers: string[], gadgetId?: WorkpieceId)
+      : Promise<AffectedCollaborator[]> {
     let affected = (await this.impl.getSharingManager())
-        .removeCollaborator(this.#sharingCaller(), profileId, keepUsers);
+        .removeCollaborator(this.#sharingCaller(), profileId, keepUsers, gadgetId);
     // Schedule the restart in the same synchronous step as the sharing mutation: the revoked
     // collaborator's live sessions must not outlive the cleanup below, which crosses gatekeeper
     // and User-DO round trips that can stall or hang. Only restart if someone actually lost
@@ -12620,10 +12773,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   // --- Share link management ---
 
-  async createShareLink(role: CollaboratorRole, note?: string)
+  async createShareLink(grant: CollaboratorGrant, note?: string)
       : Promise<{ key: string; linkId: string }> {
     return (await this.impl.getSharingManager())
-        .createShareLink({ caller: this.#sharingCaller(), role, note });
+        .createShareLink({ caller: this.#sharingCaller(), grant, note });
   }
 
   async newShareLinkKey(linkId: string): Promise<{ key: string }> {
@@ -12667,6 +12820,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         created: record.created,
         createdBy,
         role: record.role ?? "build",
+        ...(record.gadgetId !== undefined ? {gadgetId: record.gadgetId} : {}),
       });
     }
     return result;
@@ -12680,16 +12834,21 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
 // Restricted capability handed to "use"-role collaborators. It implements the full `Overseer`
 // interface but permits only the handful of methods needed to render and interact with the
-// gadgets' deployed UIs: getMetadata() (restricted to id/title/owner), a restricted
-// subscribeToMetadata(), subscribeToPresence(), subscribeToWorkpieces(), and getGadget()
-// (returning a restricted, mainline-only UseGadgetClientInterface). Presence includes active
-// viewers' names, profile IDs, and roles. Every other
+// deployed UIs of the gadgets their access includes: getMetadata() (restricted to
+// id/title/owner), a restricted subscribeToMetadata(), subscribeToPresence(),
+// subscribeToWorkpieces() (listing only those gadgets), and getGadget() (verifying them for that
+// gadget, then returning a restricted, mainline-only UseGadgetClientInterface). Presence includes
+// active viewers' names, profile IDs, and roles. Every other
 // method throws "Unauthorized", with a few exceptions: subscribeToConsoleLogs() and
 // subscribeToActions() return inert subscriptions (they never deliver data), and
 // listActions() returns an empty terminal page, rather than denying.
 // The editor calls all of these speculatively from its top-level hooks, before it has switched to
 // the use-only view; an inert result lets those calls resolve quietly instead of surfacing
 // as spurious client-side errors, while still revealing nothing to the "use" collaborator.
+//
+// Opening this verifies nothing: none of what it exposes is anything a gadget has read. `access`
+// is the collaborator's effective access as of then, which only decides what is listed (getGadget
+// re-reads it); narrowing anyone's access restarts the workspace, ending this session.
 //
 // Default-deny is enforced at compile time: because this class `implements Overseer`, adding any
 // new method to the interface will fail to compile here until a developer consciously decides
@@ -12699,13 +12858,14 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   constructor(private impl: OverseerImpl,
               private clientProfileId: string,
               private clientUserId: string,
-              private notifyClosed: NativeRpcStub<() => void>) {
+              private notifyClosed: NativeRpcStub<() => void>,
+              private access: CollaboratorAccess) {
     super();
     this.#leaveSession = this.impl.joinSession("use");
     this.#leavePresence = joinSessionPresence(
         this.impl, this.clientProfileId, "use",
         () => retryOnDoReset(() => this.#clientUser.whoami(), this.impl.logger));
-    this.#leaveOutputsFanout = this.impl.joinOutputsFanout(this.clientUserId);
+    this.#leaveOutputsFanout = this.impl.joinOutputsFanout(this.clientUserId, this.access);
   }
 
   // Fresh stub per call; see OverseerClientInterface.#clientUser.
@@ -12810,17 +12970,24 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
     return this.#subscriptionLease(this.impl.addPresenceSubscriber(subscriber));
   }
 
-  // The gadget list is visible to "use" collaborators (v1 shares the whole workspace), and each
-  // gadget is exposed through a restricted UseGadgetClientInterface that only permits rendering
-  // its deployed UI. Gadgets still provisional to a chat are withheld: they are proposals within
-  // the owner's chats, and their mainline code is empty anyway. Worktrees are withheld likewise,
-  // being chat-private (and readable only through the build-only commit reads).
+  // The gadgets the collaborator's access includes are listed, and each is exposed through a
+  // restricted UseGadgetClientInterface that only permits rendering its deployed UI. Gadgets
+  // still provisional to a chat are withheld: they are proposals within the owner's chats, and
+  // their mainline code is empty anyway. Worktrees are withheld likewise, being chat-private (and
+  // readable only through the build-only commit reads).
   async subscribeToWorkpieces(subscriber: RpcStub<WorkpiecesSubscriber>): Promise<RpcStub<{}>> {
-    return this.#subscriptionLease(this.impl.subscribeToWorkpieces(subscriber, false));
+    return this.#subscriptionLease(
+        this.impl.subscribeToWorkpieces(subscriber, false, this.access));
   }
 
-  async getGadget(id: WorkpieceId): Promise<RpcStub<GadgetClient>> {
-    if (this.impl.getGadgetRecord(id).pending) {  // also validates it exists
+  // Verifies the collaborator for this one gadget (see OverseerImpl.authorizeGadget) before
+  // handing it over. A gadget their access does not include is refused exactly like one that
+  // doesn't exist, so the refusal reveals nothing about the workspace.
+  async getGadget(id: WorkpieceId, configureObservers?: RpcStub<ObserverConfigCallback>)
+      : Promise<RpcStub<GadgetClient>> {
+    let clientUser = this.impl.users.get(this.impl.users.idFromString(this.clientUserId));
+    if (!await this.impl.authorizeGadget(
+        this.clientProfileId, clientUser, id, configureObservers)) {
       throw new Error(`No such gadget: ${id}`);
     }
     // @ts-expect-error An RpcTarget implementing the interface works in place of a stub, but the
@@ -12946,16 +13113,17 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async deleteBlueprint(_blueprintId: string): Promise<void> { this.#deny(); }
   async retryBlueprintPublish(_blueprintId: string): Promise<void> { this.#deny(); }
   async listObserverRequirements(
-      _role: CollaboratorRole): Promise<ObserverBindingNeed[]> { this.#deny(); }
+      _grant: CollaboratorGrant): Promise<ObserverBindingNeed[]> { this.#deny(); }
   async listCollaborators(): Promise<CollaboratorInfo[]> { this.#deny(); }
-  async addCollaborator(_username: string, _role: CollaboratorRole, _note?: string)
+  async addCollaborator(_username: string, _grant: CollaboratorGrant, _note?: string)
       : Promise<CollaboratorInfo | null> { this.#deny(); }
-  async removeCollaborator(_profileId: string, _keepUsers: string[])
+  async removeCollaborator(_profileId: string, _keepUsers: string[], _gadgetId?: WorkpieceId)
       : Promise<AffectedCollaborator[]> { this.#deny(); }
-  async previewRemoveCollaborator(_profileId: string): Promise<AffectedCollaborator[]> {
+  async previewRemoveCollaborator(_profileId: string, _gadgetId?: WorkpieceId)
+      : Promise<AffectedCollaborator[]> {
     this.#deny();
   }
-  async createShareLink(_role: CollaboratorRole, _note?: string)
+  async createShareLink(_grant: CollaboratorGrant, _note?: string)
       : Promise<{ key: string; linkId: string }> {
     this.#deny();
   }
@@ -13251,15 +13419,16 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
 // fails to compile here until a developer decides whether "use" callers may invoke it.
 @validateRpc()
 class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
-  // Only ever minted for "use" collaborators, so it always counts toward #hasCollaboratorSession:
-  // a client can dispose their UseOverseerInterface while retaining this, and a retained
-  // capability that escaped the count would let a scope widening find no session to sever.
+  // Only ever minted for "use" collaborators, so it always counts toward #hasCollaboratorSession,
+  // as a session holding this gadget: a client can dispose their UseOverseerInterface while
+  // retaining this, and a retained capability that escaped the count would let a scope widening
+  // find no session to sever.
   #leaveSession: () => void;
 
   constructor(private impl: OverseerImpl, private id: WorkpieceId,
       private clientUserId: string) {
     super();
-    this.#leaveSession = impl.joinSession("use");
+    this.#leaveSession = impl.joinSession("use", id);
   }
 
   [Symbol.dispose]() {
@@ -13618,8 +13787,12 @@ class AgentSpawnerQueueImpl extends ApprovalQueueImpl implements AgentSpawnerQue
     let user = this.impl.users.get(this.impl.users.idFromString(resolveUserId));
     let userMeta = await user.getChatContext(this.#spawner().config.modelId);
 
-    // Read again after the await, across which the spawner may have been deleted or edited.
+    // Read again after the await, across which the spawner may have been deleted or edited. A
+    // spawner blocked pending a restart starts nothing (see #restartIfGadgetScopesWidened): its
+    // session may predate the block, and the agent would drive a gadget the sessions being
+    // severed were never verified for.
     let {config, bindings: edges} = this.#spawner();
+    this.impl.assertGatekeeperUsable(this.gatekeeperId);
 
     let chatId = this.impl.nextChatId();
     let timestamp = this.impl.getChatTimestamp();
@@ -13702,8 +13875,8 @@ export class AgentSpawnerGatekeeper
   async addObserver(_id: string, _user: Fetcher): Promise<void> {
     // The agent spawner itself is not a restricted-access resource: it reads nothing that
     // identifies the observer or leaks private data, so any observer is permitted. What it
-    // *reaches* -- the connections its env names -- is modeled in the use-scope closure
-    // (#useScopeGatekeeperIds), so observers are verified against those targets directly.
+    // *reaches* -- the connections its env names -- is modeled in the gadget reach closure
+    // (#gadgetReach), so observers are verified against those targets directly.
     // No-op (never throws).
   }
 
