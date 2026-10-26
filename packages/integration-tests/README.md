@@ -36,6 +36,24 @@ vendor this one as a submodule:
 - **A test that redeploys the Workshop starts a harness of its own.** A redeploy restarts the Workers
   under every session they have, which would break the tests sharing the file's harness.
 
+## Property-based suites
+
+`__tests__/workshop-properties.test.ts` uses [fast-check](https://fast-check.dev/) to generate
+sequences of the operations a real client performs and replays each against the Workshop, checking
+the result against a small model: decisions on staged writes (with and without an auto-approval
+rule), chats with shared and same-named attachments created and deleted, and two editors
+submitting stale and retried code changes before an accept. Each run takes a fresh account, so
+runs and shrink attempts are independent.
+
+Every run is real RPC, so a property costs hundreds of milliseconds per run and `numRuns` is kept
+small; `interruptAfterTimeLimit` bounds the shrink of a failing property inside the test timeout
+(`src/property-runs.ts`).
+
+`FAST_CHECK_SEED` pins the seed of every property, so the same cases run each time. CI sets it, so
+a pull request's result depends only on its code. Without it, each run draws a fresh seed. A
+failure prints `{ seed, path }`: rerun with `FAST_CHECK_SEED=<seed>` to reproduce it, or pass both
+to that property's `fc.assert()` options to replay the shrunk counterexample directly.
+
 ## The fixture gatekeeper
 
 `fixtures/gatekeeper-test/` is a real Worker speaking the real gatekeeper protocol, whose verification
